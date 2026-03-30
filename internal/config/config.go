@@ -15,12 +15,12 @@ type Config struct {
 type CrawlerConfig struct {
 	Target string                 `mapstructure:"target"`
 	Stages map[string]StageConfig `mapstructure:"stages"`
-	Retry  RetryConfig            `mapstructure:"retry"`
 }
 
 type StageConfig struct {
-	WorkerCount int `mapstructure:"worker_count"`
-	QueueSize   int `mapstructure:"queue_size"`
+	WorkerCount int         `mapstructure:"worker_count"`
+	QueueSize   int         `mapstructure:"queue_size"`
+	Retry       RetryConfig `mapstructure:"retry"`
 }
 
 type RetryConfig struct {

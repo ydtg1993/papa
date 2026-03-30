@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/chromedp/chromedp"
-	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/middleware/proxy"
 	"sync"
 	"sync/atomic"
@@ -13,17 +12,21 @@ import (
 
 // Browser 封装一个 chromedp 浏览器实例
 type Browser struct {
-	AllocCtx context.Context    // 分配器上下文（整个浏览器生命周期）
-	Ctx      context.Context    // 标签页上下文（每次创建新标签页）
-	cancel   context.CancelFunc // 关闭浏览器的函数
-	proxy    string             // 当前使用的代理地址
-	useCount int64              // 已使用次数（原子操作）
-	lastUsed time.Time          // 最后使用时间
-	mu       sync.Mutex         // 保护 lastUsed
+	AllocCtx  context.Context    // 分配器上下文（整个浏览器生命周期）
+	Ctx       context.Context    // 当前标签页上下文（每次 Get 时新建）
+	cancel    context.CancelFunc // 关闭浏览器的函数
+	tabCancel context.CancelFunc // 关闭当前标签页的函数
+	proxy     string             // 当前使用的代理地址
+	useCount  int64              // 已使用次数（原子操作）
+	lastUsed  time.Time          // 最后使用时间
+	mu        sync.Mutex         // 保护 lastUsed
 }
 
 // Close 关闭浏览器
 func (b *Browser) Close() {
+	if b.tabCancel != nil {
+		b.tabCancel()
+	}
 	if b.cancel != nil {
 		b.cancel()
 	}
@@ -85,9 +88,8 @@ func (p *Pool) SetProxyMgr(proxyMgr *proxy.Manager) {
 	p.proxyManager = proxyMgr
 }
 
-// newBrowser 创建一个新的浏览器实例（使用下一个代理）
+// newBrowser 创建一个新的浏览器实例
 func (p *Pool) newBrowser() (*Browser, error) {
-	// 选择代理（轮询）
 	opts := make([]chromedp.ExecAllocatorOption, len(p.opts))
 	copy(opts, p.opts)
 	var proxyURL string
@@ -100,10 +102,8 @@ func (p *Pool) newBrowser() (*Browser, error) {
 	}
 
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, _ := chromedp.NewContext(allocCtx) // 创建标签页上下文
 	b := &Browser{
 		AllocCtx: allocCtx,
-		Ctx:      ctx,
 		cancel:   cancel,
 		proxy:    proxyURL,
 	}
@@ -113,11 +113,21 @@ func (p *Pool) newBrowser() (*Browser, error) {
 
 // Get 从池中获取一个浏览器实例（阻塞直到有可用）
 func (p *Pool) Get(ctx context.Context) (*Browser, error) {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("browser pool closed")
+	}
+	p.mu.Unlock()
 	select {
 	case b := <-p.browsers:
 		if b == nil {
 			return nil, fmt.Errorf("browser pool closed")
 		}
+		// 基于分配器创建新标签页
+		tabCtx, tabCancel := chromedp.NewContext(b.AllocCtx)
+		b.Ctx = tabCtx
+		b.tabCancel = tabCancel
 		b.markUsed()
 		return b, nil
 	case <-ctx.Done():
@@ -126,26 +136,40 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 }
 
 // Put 将浏览器实例归还池中
-func (p *Pool) Put(b *Browser) {
-	// 如果浏览器已关闭或空闲太久，丢弃并重建
+func (p *Pool) Put(b *Browser) error {
 	if b == nil {
-		return
+		return fmt.Errorf("browser is nil")
 	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		b.Close()
+		return fmt.Errorf("browser pool closed")
+	}
+	p.mu.Unlock()
+	// 1. 关闭当前标签页
+	if b.tabCancel != nil {
+		b.tabCancel()
+		b.tabCancel = nil
+	}
+	b.Ctx = nil // 清空引用，避免误用
+	// 2. 检查空闲超时，如果空闲太久则重建分配器
 	if p.maxIdleTime > 0 && time.Since(b.lastUsed) > p.maxIdleTime {
 		b.Close()
 		newB, err := p.newBrowser()
 		if err != nil {
-			loggers.BrowserLogger.Errorf("failed to recreate idle browser: %v", err)
-			return
+			return fmt.Errorf("failed to recreate idle browser: %v", err)
 		}
 		b = newB
 	}
+	// 3. 归还到池中
 	select {
 	case p.browsers <- b:
 	default:
 		// 池已满，关闭此浏览器（正常情况下不会发生，因为我们使用缓冲通道大小等于池大小）
 		b.Close()
 	}
+	return nil
 }
 
 // Close 关闭池中所有浏览器

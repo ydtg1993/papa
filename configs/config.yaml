@@ -4,12 +4,12 @@ crawler:
     catalog:
       worker_count: 2
       queue_size: 20
+      retry:
+        max_attempts: 3
+        backoff: "30s"
     detail:
       worker_count: 5
       queue_size: 50
-  retry:
-    max_attempts: 3
-    backoff: "1s"
 browser:
   pool_size: 3
   headless: true

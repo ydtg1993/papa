@@ -58,7 +58,7 @@ func (m *Manager) refreshProxies() {
 		return
 	}
 	m.mu.Lock()
-	m.proxies = make([]string, len(list))
+	m.proxies = make([]string, 0, len(list))
 	for _, url := range list {
 		m.proxies = append(m.proxies, url)
 	}

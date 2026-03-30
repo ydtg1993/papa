@@ -17,7 +17,7 @@ var (
 	DBLogger      *logrus.Logger
 )
 
-func init() {
+func InitLogger() {
 	// 通用配置
 	formatter := &logrus.TextFormatter{
 		FullTimestamp:   true,

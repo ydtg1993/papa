@@ -23,35 +23,6 @@ type WorkerPool[T Tasker] struct {
 	activities chan Activity
 }
 
-// Tasker 任务接口 方法
-type Tasker interface {
-	GetUrl() string
-	GetRetry() int
-	IncRetry()
-}
-
-// TaskHandler 处理单个任务
-type TaskHandler[T Tasker] func(ctx context.Context, task T) error
-
-// ActivityType 活动类型//
-type ActivityType int
-
-const (
-	ActivityTaskStart ActivityType = iota
-	ActivityTaskEnd
-)
-
-// Activity 活动事件
-type Activity struct {
-	Type      ActivityType
-	WorkerID  int
-	Task      Tasker
-	StartTime time.Time
-	EndTime   time.Time
-	Duration  time.Duration
-	Error     error
-}
-
 // NewWorkerPool 创建工作池
 func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
 	return &WorkerPool[T]{
@@ -63,7 +34,7 @@ func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
 }
 
 // Start 启动 worker 协程
-func (p *WorkerPool[T]) Start(handler TaskHandler[T]) {
+func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 	for i := 0; i < p.workers; i++ {
 		p.wg.Add(1)
 		go func(workerID int) {
@@ -74,14 +45,14 @@ func (p *WorkerPool[T]) Start(handler TaskHandler[T]) {
 				}
 			}()
 			for task := range p.taskQueue {
-				p.processTask(workerID, task, handler)
+				p.processTask(ctx, workerID, task, handler)
 			}
 			p.errors <- fmt.Errorf("worker %d stopped", workerID)
 		}(i)
 	}
 }
 
-func (p *WorkerPool[T]) processTask(workerID int, task T, handler TaskHandler[T]) {
+func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, handler TaskHandler[T]) {
 	start := time.Now()
 	p.sendActivity(Activity{
 		Type:      ActivityTaskStart,
@@ -90,7 +61,6 @@ func (p *WorkerPool[T]) processTask(workerID int, task T, handler TaskHandler[T]
 		StartTime: start,
 	})
 
-	ctx := context.Background()
 	err := handler(ctx, task)
 
 	p.sendActivity(Activity{
@@ -148,11 +118,9 @@ func (p *WorkerPool[T]) Stop(timeout time.Duration) error {
 		case <-done:
 			p.errors <- fmt.Errorf("all workers finished gracefully")
 		case <-time.After(timeout):
-			p.errors <- fmt.Errorf("graceful stop timeout, forcing exit")
+			p.errors <- fmt.Errorf("graceful stop timeout")
 			err = fmt.Errorf("graceful stop timeout after %v", timeout)
 		}
-		//close(p.errors)
-		close(p.activities)
 	})
 	return err
 }

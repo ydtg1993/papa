@@ -2,12 +2,11 @@ package main
 
 import (
 	"github.com/chromedp/chromedp"
+	_ "github.com/ydtg1993/papa/internal"
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/internal/fetcher"
 	"github.com/ydtg1993/papa/internal/loggers"
-	_ "github.com/ydtg1993/papa/internal/loggers"
-	"github.com/ydtg1993/papa/pkg/database"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,23 +14,7 @@ import (
 )
 
 func main() {
-	// 1. 加载配置
-	err := config.Load("configs/config.yaml")
-	if err != nil {
-		loggers.SysLogger.Fatal("load config failed:", err)
-	}
-	// 2.加载数据库
-	err = database.NewDB(&config.Cfg.DB)
-	if err != nil {
-		loggers.DBLogger.WithError(err).Fatal("connect database failed")
-	}
-	defer func() {
-		sqlDB, _ := database.DB.DB()
-		if sqlDB != nil {
-			_ = sqlDB.Close()
-		}
-	}()
-	// 3. 创建引擎
+	// 1. 创建引擎
 	engine := crawler.NewEngine(crawler.BrowserConfig{
 		Size: 2,
 		Opts: []chromedp.ExecAllocatorOption{
@@ -44,9 +27,9 @@ func main() {
 		//设置代理
 		//ProxyMgr: proxy.NewManager(config.Cfg.Proxy.APIURL, config.Cfg.Proxy.RefreshInterval),
 	})
-	// 4. 注册爬取阶段
+	// 2. 注册爬取阶段
 	fetchCatalog := &fetcher.FetchCatalog{}
-	err = engine.RegisterStage(fetchCatalog,
+	err := engine.RegisterStage(fetchCatalog,
 		crawler.StageConfig{
 			WorkerCount: config.Cfg.Crawler.Stages["catalog"].WorkerCount,
 			QueueSize:   config.Cfg.Crawler.Stages["catalog"].QueueSize,
@@ -59,12 +42,19 @@ func main() {
 		URL:   "https://hanime.tv/home",
 		Stage: fetchCatalog.GetStage(),
 	})
-	//启动错误收集
+	//恢复未完成任务
+	engine.RecoverTasks()
+
+	//启动任务监控
 	go func() {
 		for err := range engine.Errors(fetchCatalog.GetStage()) {
 			loggers.EngineLogger.Printf("crawler catalog error: %v", err)
 		}
 	}()
+
+	/*mon := monitor.NewMonitor(engine.("catalog"))
+	mon.Start()
+	defer mon.Stop()*/
 
 	// 6. 等待退出信号
 	sigCh := make(chan os.Signal, 1)
