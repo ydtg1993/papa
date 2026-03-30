@@ -2,14 +2,14 @@ package main
 
 import (
 	"github.com/chromedp/chromedp"
+	"github.com/ydtg1993/papa/internal/config"
+	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/internal/fetcher"
+	"github.com/ydtg1993/papa/internal/loggers"
+	_ "github.com/ydtg1993/papa/internal/loggers"
+	"github.com/ydtg1993/papa/pkg/database"
 	"os"
 	"os/signal"
-	"papa/internal/config"
-	"papa/internal/crawler"
-	"papa/internal/fetcher"
-	"papa/internal/loggers"
-	_ "papa/internal/loggers"
-	"papa/pkg/database"
 	"syscall"
 	"time"
 )

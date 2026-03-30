@@ -2,8 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
+	"github.com/ydtg1993/papa/internal/loggers"
 	"net/http"
-	"papa/internal/loggers"
 	"sync"
 	"sync/atomic"
 	"time"

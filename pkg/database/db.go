@@ -2,10 +2,10 @@ package database
 
 import (
 	"fmt"
+	"github.com/ydtg1993/papa/internal/config"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"papa/internal/config"
 )
 
 var DB *gorm.DB

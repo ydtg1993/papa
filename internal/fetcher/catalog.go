@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"github.com/chromedp/chromedp"
+	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/internal/loggers"
 	"log"
-	"papa/internal/crawler"
-	"papa/internal/loggers"
 	"time"
 )
 
