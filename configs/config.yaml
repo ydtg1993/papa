@@ -1,0 +1,29 @@
+crawler:
+  target: "https://example.com/catalog"
+  stages:
+    catalog:
+      worker_count: 2
+      queue_size: 20
+    detail:
+      worker_count: 5
+      queue_size: 50
+  retry:
+    max_attempts: 3
+    backoff: "1s"
+browser:
+  pool_size: 3
+  headless: true
+  max_idle_time: "5m"
+proxy:
+  api_url:
+  refresh_interval: 300s
+db:
+  driver: "mysql"
+  dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 1h
+  conn_max_idle_time: 10m
+log:
+  dir: "./logs"
+  max_size: 10
