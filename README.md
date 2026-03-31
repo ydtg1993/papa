@@ -19,7 +19,7 @@
 > ⚙️ 灵活配置 – 通过 YAML 配置文件设置各阶段 worker 数量、队列大小、重试次数、浏览器参数等
 
 ### 📐 架构设计
-![整体架构图](https://github.com/ydtg1993/papa/architecture.png)
+![整体架构图](https://github.com/ydtg1993/papa/blob/master/architecture.png)
 
 #### 模块说明
 <!-- 模块描述表格 -->
@@ -162,4 +162,4 @@
 
 数据库连接池参数请根据实际负载调整。
 
-![MIT license](https://github.com/ydtg1993/papa/LICENSE.txt)
+### [MIT license](https://github.com/ydtg1993/papa/LICENSE.txt)
