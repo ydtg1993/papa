@@ -64,11 +64,12 @@ type Pool struct {
 }
 
 // NewPool 创建浏览器池
-func NewPool(size int, commonOpts []chromedp.ExecAllocatorOption, maxIdleTime time.Duration) (*Pool, error) {
+func NewPool(size int, commonOpts []chromedp.ExecAllocatorOption, maxIdleTime time.Duration, proxyMgr *proxy.Manager) (*Pool, error) {
 	pool := &Pool{
-		opts:        commonOpts,
-		browsers:    make(chan *Browser, size),
-		maxIdleTime: maxIdleTime,
+		opts:         commonOpts,
+		browsers:     make(chan *Browser, size),
+		maxIdleTime:  maxIdleTime,
+		proxyManager: proxyMgr,
 	}
 
 	// 预创建浏览器实例
@@ -82,10 +83,6 @@ func NewPool(size int, commonOpts []chromedp.ExecAllocatorOption, maxIdleTime ti
 		pool.browsers <- browser
 	}
 	return pool, nil
-}
-
-func (p *Pool) SetProxyMgr(proxyMgr *proxy.Manager) {
-	p.proxyManager = proxyMgr
 }
 
 // newBrowser 创建一个新的浏览器实例
@@ -107,7 +104,6 @@ func (p *Pool) newBrowser() (*Browser, error) {
 		cancel:   cancel,
 		proxy:    proxyURL,
 	}
-	b.markUsed()
 	return b, nil
 }
 

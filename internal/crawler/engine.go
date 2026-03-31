@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"github.com/chromedp/chromedp"
+	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/middleware/proxy"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
-	"github.com/ydtg1993/papa/pkg/database"
 	"github.com/ydtg1993/papa/pkg/workerpool"
+	"gorm.io/gorm"
 	"sync"
 	"time"
 )
@@ -17,9 +18,12 @@ import (
 type Engine struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
-	BrowserPool *browser.Pool
 	stages      map[string]*stageInfo
 	mu          sync.RWMutex
+	db          *gorm.DB
+	loggerSet   *loggers.LoggerSet
+	cfg         *config.Config
+	browserPool *browser.Pool
 }
 
 type WorkerConfig struct {
@@ -53,21 +57,16 @@ type StageConfig struct {
 }
 
 // NewEngine 创建引擎
-func NewEngine(bCfg BrowserConfig) *Engine {
+func NewEngine(pool *browser.Pool, db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
-	browserPool, err := browser.NewPool(bCfg.Size, bCfg.Opts, bCfg.MaxIdleTime)
-	if err != nil {
-		loggers.EngineLogger.Printf("crawler new browser pool error: %v", err)
-		panic("crawler new browser pool error")
-	}
 	engine := &Engine{
 		ctx:         ctx,
 		cancel:      cancel,
-		BrowserPool: browserPool,
 		stages:      make(map[string]*stageInfo),
-	}
-	if bCfg.ProxyMgr != nil {
-		browserPool.SetProxyMgr(bCfg.ProxyMgr)
+		db:          db,
+		loggerSet:   loggerSet,
+		cfg:         cfg,
+		browserPool: pool,
 	}
 	return engine
 }
@@ -85,23 +84,23 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 		cfg.Backoff = time.Second
 	}
 
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
+	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.loggerSet.Worker)
 	e.stages[f.GetStage()] = &stageInfo{
 		WorkerPool: pool,
 		Config:     cfg,
 	}
 	pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
 		// 1. 更新状态为 processing
-		task.UpdateStatus(models.TaskStatusProcessing, nil)
+		task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusProcessing, nil)
 		// 2. 重试FetchHandler
 		var lastErr error
 		for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
 			if attempt > 0 {
-				task.IncRetry()
+				task.IncRetry(e.db, e.loggerSet.DB)
 			}
 			err := f.FetchHandler(ctx, task, e)
 			if err == nil {
-				task.UpdateStatus(models.TaskStatusSuccess, nil)
+				task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusSuccess, nil)
 				return nil
 			}
 			lastErr = err
@@ -112,38 +111,20 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 			}
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
-		task.UpdateStatus(models.TaskStatusFailed, lastErr)
+		task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, lastErr)
 		return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
 	})
 	return nil
 }
 
-// recordError 记录错误到数据库
-func (e *Engine) recordError(task *Task, stage string, err error) error {
-	crawlerTask := &models.CrawlerTask{
-		URL:   task.URL,
-		Stage: stage,
-		Error: err.Error(),
-		Retry: task.Retry,
-	}
-	return database.DB.Create(crawlerTask).Error
-}
-
 func (e *Engine) SubmitTask(stage string, task *Task) error {
-	// 1. 写入数据库
-	dbTask := &models.CrawlerTask{
-		URL:    task.URL,
-		Stage:  stage,
-		Retry:  0,
-		Status: models.TaskStatusPending,
-	}
-	if err := database.DB.Create(dbTask).Error; err != nil {
-		return fmt.Errorf("save task to db failed: %v", err)
-	}
-	task.ID = int64(dbTask.ID) // 记录数据库 ID
-	if err := e.submitToPool(stage, task); err != nil {
-		task.UpdateStatus(models.TaskStatusFailed, err)
+	task.Stage = stage
+	if err := e.submitToPool(task); err != nil {
 		return err
+	}
+	// 成功入队后再写数据库
+	if ok := task.Insert(e.db, e.loggerSet.DB); ok == false {
+		return fmt.Errorf("insert crawler task to db failed")
 	}
 	return nil
 }
@@ -154,20 +135,11 @@ func (e *Engine) Stop(timeout time.Duration) {
 		wg.Add(1)
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()
-			if err := pool.Stop(timeout); err != nil {
-				loggers.EngineLogger.Printf("stop stage %s error: %v", stage, err)
-			}
+			pool.Stop(timeout)
 		}(name, s.WorkerPool)
 	}
 	wg.Wait()
-
-	if e.BrowserPool != nil {
-		e.BrowserPool.Close()
-	}
-	sqlDB, _ := database.DB.DB()
-	if sqlDB != nil {
-		_ = sqlDB.Close()
-	}
+	e.loggerSet.Engine.Info("all workers stopped")
 }
 
 func (e *Engine) Errors(stage string) <-chan error {
@@ -190,41 +162,82 @@ func (e *Engine) GetWorkerPool(stage string) (*workerpool.WorkerPool[*Task], err
 	return info.WorkerPool, nil
 }
 
+// GetBrowserPool 获取浏览器池
+func (e *Engine) GetBrowserPool() *browser.Pool {
+	return e.browserPool
+}
+
 // RecoverTasks 从数据库加载未完成的任务并重新提交
 func (e *Engine) RecoverTasks() {
+	// 1. 查询需要恢复的任务（pending 或超时的 processing）
 	var tasks []models.CrawlerTask
-	// 查询所有 pending 状态，以及处理中但超过 10 分钟未完成的任务
 	timeout := time.Now().Add(-10 * time.Minute)
-	database.DB.Where("status IN (?) OR (status = ? AND updated_at < ?)",
-		[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing},
-		models.TaskStatusProcessing, timeout).Find(&tasks)
 
-	loggers.SysLogger.Infof("found %d tasks to recover", len(tasks))
+	if err := e.db.Where("status = ? OR (status = ? AND updated_at < ?)",
+		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
+		Find(&tasks).Error; err != nil {
+		e.loggerSet.DB.Errorf("failed to load tasks for recovery: %v", err)
+		return
+	}
 
+	if len(tasks) == 0 {
+		e.loggerSet.Engine.Info("no tasks need recovery")
+		return
+	}
+
+	e.loggerSet.Engine.Infof("found %d tasks to recover", len(tasks))
+
+	// 2. 分别记录提交成功和失败的任务 ID
+	var successIDs []uint
+	var failIDs []uint
 	for _, t := range tasks {
-		// 重置状态为 pending（如果是 processing 且超时）
-		if t.Status == models.TaskStatusProcessing {
-			database.DB.Model(&t).Update("status", models.TaskStatusPending)
-		}
 		task := &Task{
 			ID:    int64(t.ID),
 			URL:   t.URL,
 			Stage: t.Stage,
 			Retry: t.Retry,
 		}
-		// 重新提交
-		if err := e.submitToPool(t.Stage, task); err != nil {
-			loggers.EngineLogger.Errorf("recover task %d failed: %v", t.ID, err)
+
+		// 尝试提交到队列（非阻塞）
+		if err := e.submitToPool(task); err != nil {
+			e.loggerSet.Worker.Errorf("recover task %d (url: %s) submit failed: %v",
+				t.ID, t.URL, err)
+			failIDs = append(failIDs, t.ID)
+		} else {
+			successIDs = append(successIDs, t.ID)
+			e.loggerSet.Engine.Debugf("task %d submitted successfully", t.ID)
+		}
+	}
+
+	// 3. 批量更新成功任务的状态为 Processing
+	if len(successIDs) > 0 {
+		if err := e.db.Model(&models.CrawlerTask{}).
+			Where("id IN ?", successIDs).
+			Update("status", models.TaskStatusProcessing).Error; err != nil {
+			e.loggerSet.DB.Errorf("failed to mark recovered tasks as processing: %v", err)
+		} else {
+			e.loggerSet.Engine.Infof("marked %d tasks as processing", len(successIDs))
+		}
+	}
+
+	// 4. 失败的任务状态回滚为 Pending（记录为失败进入失败任务流程）
+	if len(failIDs) > 0 {
+		if err := e.db.Model(&models.CrawlerTask{}).
+			Where("id IN ?", failIDs).
+			Update("status", models.TaskStatusFailed).Error; err != nil {
+			e.loggerSet.DB.Errorf("failed to rollback failed tasks to failed: %v", err)
+		} else {
+			e.loggerSet.Engine.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
 		}
 	}
 }
 
-func (e *Engine) submitToPool(stage string, task *Task) error {
+func (e *Engine) submitToPool(task *Task) error {
 	e.mu.RLock()
-	info, ok := e.stages[stage]
+	info, ok := e.stages[task.Stage]
 	e.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("stage %s not found", stage)
+		return fmt.Errorf("stage %s not found", task.Stage)
 	}
 	return info.WorkerPool.Submit(task)
 }

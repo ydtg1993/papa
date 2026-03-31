@@ -1,3 +1,5 @@
+app:
+  env: dev
 crawler:
   target: "https://example.com/catalog"
   stages:
@@ -12,8 +14,10 @@ crawler:
       queue_size: 50
 browser:
   pool_size: 3
-  headless: true
   max_idle_time: "5m"
+  headless: false
+  disable_gpu: false
+  no_sandbox: false
 proxy:
   api_url:
   refresh_interval: 300s

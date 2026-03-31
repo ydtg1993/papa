@@ -2,49 +2,47 @@ package loggers
 
 import (
 	"github.com/sirupsen/logrus"
+	"github.com/ydtg1993/papa/internal/config"
 	"gopkg.in/natefinch/lumberjack.v2"
 	_ "gopkg.in/natefinch/lumberjack.v2"
 	"os"
+	"path/filepath"
 )
 
-var (
-	SysLogger     *logrus.Logger
-	EngineLogger  *logrus.Logger
-	WorkerLogger  *logrus.Logger
-	MonitorLogger *logrus.Logger
-	BrowserLogger *logrus.Logger
-	ProxyLogger   *logrus.Logger
-	DBLogger      *logrus.Logger
-)
+type LoggerSet struct {
+	Sys     *logrus.Logger
+	Engine  *logrus.Logger
+	Worker  *logrus.Logger
+	Monitor *logrus.Logger
+	Browser *logrus.Logger
+	Proxy   *logrus.Logger
+	DB      *logrus.Logger
+}
 
-func InitLogger() {
+func NewLoggerSet(cfg config.LogConfig) LoggerSet {
 	// 通用配置
 	formatter := &logrus.TextFormatter{
 		FullTimestamp:   true,
 		TimestampFormat: "2006-01-02 15:04:05",
 	}
-	//主程日志
-	SysLogger = newLogger("./logs/sys.log", formatter)
-	// 引擎日志
-	EngineLogger = newLogger("./logs/engine.log", formatter)
-	// 工作池日志
-	WorkerLogger = newLogger("./logs/worker.log", formatter)
-	// 监控日志
-	MonitorLogger = newLogger("./logs/monitor.log", formatter)
-	// 浏览器日志
-	BrowserLogger = newLogger("./logs/browser.log", formatter)
-	// 代理日志
-	ProxyLogger = newLogger("./logs/proxy.log", formatter)
-	// 数据库日志
-	DBLogger = newLogger("./logs/db.log", formatter)
+
+	return LoggerSet{
+		Sys:     newLogger(filepath.Join(cfg.Dir, "/sys.log"), formatter, cfg),
+		Engine:  newLogger(filepath.Join(cfg.Dir, "/engine.log"), formatter, cfg),
+		Worker:  newLogger(filepath.Join(cfg.Dir, "/worker.log"), formatter, cfg),
+		Monitor: newLogger(filepath.Join(cfg.Dir, "/monitor.log"), formatter, cfg),
+		Browser: newLogger(filepath.Join(cfg.Dir, "/browser.log"), formatter, cfg),
+		Proxy:   newLogger(filepath.Join(cfg.Dir, "/proxy.log"), formatter, cfg),
+		DB:      newLogger(filepath.Join(cfg.Dir, "/db.log"), formatter, cfg),
+	}
 }
 
-func newLogger(filename string, formatter logrus.Formatter) *logrus.Logger {
+func newLogger(filename string, formatter logrus.Formatter, cfg config.LogConfig) *logrus.Logger {
 	logger := logrus.New()
 	logger.SetFormatter(formatter)
 	logger.SetOutput(&lumberjack.Logger{
 		Filename:   filename,
-		MaxSize:    10, // MB
+		MaxSize:    cfg.MaxSize, // MB
 		MaxBackups: 5,
 		MaxAge:     30, // days
 		Compress:   true,

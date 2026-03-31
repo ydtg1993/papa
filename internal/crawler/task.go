@@ -2,8 +2,9 @@ package crawler
 
 import (
 	"context"
+	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/internal/models"
-	"github.com/ydtg1993/papa/pkg/database"
+	"gorm.io/gorm"
 )
 
 type Task struct {
@@ -21,28 +22,57 @@ func (t *Task) GetRetry() int {
 	return t.Retry
 }
 
-func (t *Task) IncRetry() {
+func (t *Task) IncRetry(db *gorm.DB, logger *logrus.Logger) {
 	t.Retry++
+	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
+		Update("retry", gorm.Expr("retry + ?", 1))
+	if upErr != nil {
+		logger.Errorf("increment crawler task retry failed: %v", upErr)
+	}
 }
 
-func (t *Task) UpdateStatus(status models.TaskStatus, err error) {
+func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
+	crawlerTask := models.CrawlerTask{
+		URL:    t.URL,
+		Stage:  t.Stage,
+		Retry:  0,
+		Status: models.TaskStatusPending,
+	}
+	if err := db.Create(&crawlerTask).Error; err != nil {
+		logger.Errorf("insert crawler task to db failed: %v", err)
+		return false
+	}
+	t.ID = int64(crawlerTask.ID)
+	return true
+}
+
+func (t *Task) UpdateStatus(db *gorm.DB, logger *logrus.Logger, status models.TaskStatus, err error) bool {
 	if t.ID == 0 {
-		return
+		return false
 	}
 	if status == models.TaskStatusFailed {
 		var errMsg string
 		if err != nil {
 			errMsg = err.Error()
 		}
-		database.DB.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
+		result := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
 			Updates(map[string]interface{}{
 				"status": status,
 				"error":  errMsg,
 			})
-		return
+		if result.Error != nil {
+			logger.Errorf("crawler task update status error: %v", result.Error)
+			return false
+		}
+		return true
 	}
-	database.DB.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
+	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
 		Update("status", status)
+	if upErr != nil {
+		logger.Errorf("crawler task update status error: %v", upErr)
+		return false
+	}
+	return true
 }
 
 type Handler interface {

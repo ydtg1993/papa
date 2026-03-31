@@ -18,11 +18,11 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	timeout := 60 * time.Second
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	browser, err := engine.BrowserPool.Get(reqCtx)
+	browser, err := engine.GetBrowserPool().Get(reqCtx)
 	if err != nil {
 		return err
 	}
-	defer engine.BrowserPool.Put(browser)
+	defer engine.GetBrowserPool().Put(browser)
 
 	err = chromedp.Run(browser.Ctx,
 		chromedp.Navigate(task.URL),

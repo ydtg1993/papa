@@ -3,13 +3,22 @@ package config
 import "time"
 import "github.com/spf13/viper"
 
-var Cfg *Config
-
 type Config struct {
+	App     AppConfig     `mapstructure:"app"`
+	Log     LogConfig     `mapstructure:"log"`
 	Crawler CrawlerConfig `mapstructure:"crawler"`
 	Browser BrowserConfig `mapstructure:"browser"`
 	Proxy   ProxyConfig   `mapstructure:"proxy"`
 	DB      DBConfig      `mapstructure:"db"`
+}
+
+type AppConfig struct {
+	Env string `mapstructure:"env"`
+}
+
+type LogConfig struct {
+	Dir     string `mapstructure:"dir"`
+	MaxSize int    `mapstructure:"max_size"`
 }
 
 type CrawlerConfig struct {
@@ -30,8 +39,10 @@ type RetryConfig struct {
 
 type BrowserConfig struct {
 	PoolSize    int           `mapstructure:"pool_size"`
-	Headless    bool          `mapstructure:"headless"`
 	MaxIdleTime time.Duration `mapstructure:"max_idle_time"`
+	Headless    bool          `mapstructure:"headless"`
+	DisableGpu  bool          `mapstructure:"disable_gpu"`
+	NoSandbox   bool          `mapstructure:"no_sandbox"`
 }
 
 type ProxyConfig struct {
@@ -49,19 +60,14 @@ type DBConfig struct {
 	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"` // 空闲连接最大存活时间
 }
 
-type OutputConfig struct {
-	File string `mapstructure:"file"`
-}
-
-func Load(path string) error {
+func Load(path string) (*Config, error) {
 	viper.SetConfigFile(path)
 	if err := viper.ReadInConfig(); err != nil {
-		return err
+		return nil, err
 	}
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
-		return err
+		return nil, err
 	}
-	Cfg = &cfg
-	return nil
+	return &cfg, nil
 }

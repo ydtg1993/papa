@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
-	"github.com/ydtg1993/papa/internal/loggers"
+	"github.com/sirupsen/logrus"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -17,14 +17,16 @@ type Manager struct {
 	client  *http.Client
 	mu      sync.RWMutex
 	index   uint64
+	logger  *logrus.Logger
 }
 
 // NewManager 创建代理管理器
-func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
+func NewManager(apiURL string, refreshInterval time.Duration, logger *logrus.Logger) *Manager {
 	m := &Manager{
 		apiURL:  apiURL,
 		refresh: refreshInterval,
 		client:  &http.Client{Timeout: 10 * time.Second},
+		logger:  logger,
 	}
 	if apiURL != "" {
 		m.refreshProxies()
@@ -37,24 +39,24 @@ func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
 func (m *Manager) refreshProxies() {
 	req, err := http.NewRequest("GET", m.apiURL, nil)
 	if err != nil {
-		loggers.ProxyLogger.Printf("create proxy request failed: %v", err)
+		m.logger.Printf("create proxy request failed: %v", err)
 		return
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		loggers.ProxyLogger.Printf("fetch proxies failed: %v", err)
+		m.logger.Printf("fetch proxies failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		loggers.ProxyLogger.Printf("proxy API returned status %d", resp.StatusCode)
+		m.logger.Printf("proxy API returned status %d", resp.StatusCode)
 		return
 	}
 
 	var list []string
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		loggers.ProxyLogger.Printf("decode proxy list failed: %v", err)
+		m.logger.Printf("decode proxy list failed: %v", err)
 		return
 	}
 	m.mu.Lock()
@@ -63,7 +65,7 @@ func (m *Manager) refreshProxies() {
 		m.proxies = append(m.proxies, url)
 	}
 	m.mu.Unlock()
-	loggers.ProxyLogger.Printf("updated proxies: %d available", len(m.proxies))
+	m.logger.Printf("updated proxies: %d available", len(m.proxies))
 }
 
 // startRefresh 定时刷新
