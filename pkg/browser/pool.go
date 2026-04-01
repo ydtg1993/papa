@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/chromedp/chromedp"
-	"github.com/ydtg1993/papa/internal/middleware/proxy"
+	"github.com/ydtg1993/papa/pkg/middleware/proxy"
 	"sync"
 	"sync/atomic"
 	"time"
