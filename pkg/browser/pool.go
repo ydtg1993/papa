@@ -52,7 +52,7 @@ func (b *Browser) GetLastUsed() time.Time {
 	return b.lastUsed
 }
 
-// Pool 浏览器池
+// Pool Browser池封装管理多个chromedp
 type Pool struct {
 	opts         []chromedp.ExecAllocatorOption // 公共选项（如 headless 等）
 	browsers     chan *Browser                  // 浏览器池（缓冲通道）

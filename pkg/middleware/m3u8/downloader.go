@@ -50,7 +50,7 @@ func NewDownloader(cfg *Config) *Downloader {
 	return &Downloader{
 		config: cfg,
 		client: &http.Client{
-			Timeout: time.Duration(cfg.SegmentTimeout) * time.Second,
+			Timeout: cfg.SegmentTimeout,
 		},
 		log: cfg.Logger,
 	}

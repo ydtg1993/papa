@@ -46,7 +46,7 @@ func TestDownloadRealM3U8(t *testing.T) {
 
 			cfg := DefaultConfig()
 			cfg.MaxConcurrent = 3
-			cfg.SegmentTimeout = 10
+			cfg.SegmentTimeout = 10 * time.Second / 2
 			cfg.MaxRetries = 1
 			cfg.EnableResume = false
 			cfg.Logger = defaultLogger()
@@ -83,7 +83,7 @@ func TestDownloadWithProgress(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.OutputDir = tmpDir
 	cfg.MaxConcurrent = 3
-	cfg.SegmentTimeout = 10
+	cfg.SegmentTimeout = 10 * time.Second
 	cfg.MaxRetries = 1
 	cfg.EnableResume = false
 	cfg.Logger = defaultLogger()

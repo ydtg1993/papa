@@ -9,6 +9,7 @@ import (
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/pkg/monitor"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
 	"sync"
@@ -24,6 +25,7 @@ type Engine struct {
 	loggerSet   *loggers.LoggerSet
 	cfg         *config.Config
 	browserPool *browser.Pool
+	monitors    map[string]*monitor.Monitor[*Task] // key: stage name 分阶段监控器组
 }
 
 type WorkerConfig struct {
@@ -89,6 +91,7 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 		WorkerPool: pool,
 		Config:     cfg,
 	}
+	// 启动 worker pool
 	pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
 		// 1. 更新状态为 processing
 		task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusProcessing, nil)
@@ -105,31 +108,53 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 			}
 			lastErr = err
 			select {
-			case <-time.After(cfg.Backoff):
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-time.After(cfg.Backoff):
+				continue
 			}
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
 		task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, lastErr)
 		return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
 	})
+	// 如果全局配置开启了监控，则为该阶段创建监控器并启动
+	if e.cfg.Monitor.Enabled {
+		mon := monitor.NewMonitor(pool)
+		mon.Start()
+		e.SetMonitor(f.GetStage(), mon)
+		e.loggerSet.Engine.Infof("monitor started for stage: %s", f.GetStage())
+	}
 	return nil
 }
 
-func (e *Engine) SubmitTask(stage string, task *Task) error {
-	task.Stage = stage
+// SubmitTask 任务提交
+func (e *Engine) SubmitTask(task *Task) error {
+	if task.Stage == "" || task.URL == "" {
+		return fmt.Errorf("task stage or url is empty: %v", task)
+	}
 	if err := e.submitToPool(task); err != nil {
 		return err
 	}
-	// 成功入队后再写数据库
-	if ok := task.Insert(e.db, e.loggerSet.DB); ok == false {
+	if !task.Insert(e.db, e.loggerSet.DB) {
 		return fmt.Errorf("insert crawler task to db failed")
 	}
 	return nil
 }
 
+func (e *Engine) submitToPool(task *Task) error {
+	e.mu.RLock()
+	info, ok := e.stages[task.Stage]
+	e.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("stage %s not found", task.Stage)
+	}
+	return info.WorkerPool.Submit(task)
+}
+
+// Stop 停止engine
 func (e *Engine) Stop(timeout time.Duration) {
+	e.cancel()
 	var wg sync.WaitGroup
 	for name, s := range e.stages {
 		wg.Add(1)
@@ -142,6 +167,7 @@ func (e *Engine) Stop(timeout time.Duration) {
 	e.loggerSet.Engine.Info("all workers stopped")
 }
 
+// Errors 返回work pool中的错误消息队列
 func (e *Engine) Errors(stage string) <-chan error {
 	for name, s := range e.stages {
 		if name == stage {
@@ -167,6 +193,28 @@ func (e *Engine) GetBrowserPool() *browser.Pool {
 	return e.browserPool
 }
 
+// SetMonitor 设置阶段监控器
+func (e *Engine) SetMonitor(stage string, mon *monitor.Monitor[*Task]) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.monitors == nil {
+		e.monitors = make(map[string]*monitor.Monitor[*Task])
+	}
+	e.monitors[stage] = mon
+}
+
+// GetMonitors 获取全部监控器
+func (e *Engine) GetMonitors() map[string]*monitor.Monitor[*Task] {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	// 返回副本
+	cp := make(map[string]*monitor.Monitor[*Task], len(e.monitors))
+	for k, v := range e.monitors {
+		cp[k] = v
+	}
+	return cp
+}
+
 // RecoverTasks 从数据库加载未完成的任务并重新提交
 func (e *Engine) RecoverTasks() {
 	// 1. 查询需要恢复的任务（pending 或超时的 processing）
@@ -185,7 +233,7 @@ func (e *Engine) RecoverTasks() {
 		return
 	}
 
-	e.loggerSet.Engine.Infof("found %d tasks to recover", len(tasks))
+	e.loggerSet.Engine.Infof("found %d tasks need to recover", len(tasks))
 
 	// 2. 分别记录提交成功和失败的任务 ID
 	var successIDs []uint
@@ -205,7 +253,7 @@ func (e *Engine) RecoverTasks() {
 			failIDs = append(failIDs, t.ID)
 		} else {
 			successIDs = append(successIDs, t.ID)
-			e.loggerSet.Engine.Debugf("task %d submitted successfully", t.ID)
+			e.loggerSet.Engine.Infof("recover task %d submitted successfully", t.ID)
 		}
 	}
 
@@ -224,20 +272,11 @@ func (e *Engine) RecoverTasks() {
 	if len(failIDs) > 0 {
 		if err := e.db.Model(&models.CrawlerTask{}).
 			Where("id IN ?", failIDs).
-			Update("status", models.TaskStatusFailed).Error; err != nil {
+			Update("status", models.TaskStatusFailed).
+			Update("error", "RecoverTasks 恢复任务提交队列失败").Error; err != nil {
 			e.loggerSet.DB.Errorf("failed to rollback failed tasks to failed: %v", err)
 		} else {
 			e.loggerSet.Engine.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
 		}
 	}
-}
-
-func (e *Engine) submitToPool(task *Task) error {
-	e.mu.RLock()
-	info, ok := e.stages[task.Stage]
-	e.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("stage %s not found", task.Stage)
-	}
-	return info.WorkerPool.Submit(task)
 }

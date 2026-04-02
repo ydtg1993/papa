@@ -1,6 +1,9 @@
 package filedown
 
-import "github.com/sirupsen/logrus"
+import (
+	"github.com/sirupsen/logrus"
+	"time"
+)
 
 // Config 文件下载器配置
 type Config struct {
@@ -11,7 +14,7 @@ type Config struct {
 	// 重试间隔（秒），默认 2
 	RetryInterval int
 	// 下载超时（秒），默认 30
-	Timeout int
+	Timeout time.Duration
 	// 是否启用断点续传（仅对支持 Range 的服务器有效），默认 false
 	EnableResume bool
 	// 并发数
@@ -32,7 +35,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		OutputDir:     "./downloads",
-		Timeout:       60,
+		Timeout:       30 * time.Second,
 		MaxRetries:    3,
 		RetryInterval: 1,
 		EnableResume:  false,

@@ -35,7 +35,7 @@ func NewDownloader(cfg *Config) *Downloader {
 	return &Downloader{
 		config: cfg,
 		client: &http.Client{
-			Timeout: time.Duration(cfg.Timeout) * time.Second,
+			Timeout: cfg.Timeout,
 		},
 		log: cfg.Logger,
 	}
@@ -109,7 +109,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 	}
 	fileName = filepath.Base(fileName)
 
-	os.MkdirAll(d.config.OutputDir, 0755)
+	_ = os.MkdirAll(d.config.OutputDir, 0755)
 	filePath := filepath.Join(d.config.OutputDir, fileName)
 
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
@@ -119,7 +119,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 	}
 	defer file.Close()
 
-	file.Truncate(totalSize)
+	_ = file.Truncate(totalSize)
 
 	// ===== 分片下载 =====
 	var wg sync.WaitGroup
@@ -127,6 +127,8 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 
 	var downloaded int64
 	var mu sync.Mutex
+	var downloadErr error
+	var errMu sync.Mutex
 
 	for start := int64(0); start < totalSize; start += d.config.ChunkSize {
 		end := start + d.config.ChunkSize - 1
@@ -142,7 +144,6 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 			defer func() { <-sem }()
 
 			for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
-
 				req, _ := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
 				d.applyHeaders(req)
 				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
@@ -154,7 +155,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 				}
 
 				if resp.StatusCode != http.StatusPartialContent {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					continue
 				}
 
@@ -164,7 +165,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 				for {
 					n, err := resp.Body.Read(buf)
 					if n > 0 {
-						file.WriteAt(buf[:n], offset)
+						_, _ = file.WriteAt(buf[:n], offset)
 						offset += int64(n)
 
 						mu.Lock()
@@ -179,16 +180,26 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 					}
 				}
 
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				return
 			}
-
-			d.log.Errorf("分片失败: %d-%d", start, end)
+			// 所有重试失败，记录错误
+			errMu.Lock()
+			if downloadErr == nil {
+				downloadErr = fmt.Errorf("分片失败: %d-%d", start, end)
+			}
+			errMu.Unlock()
 		}(start, end)
 	}
 
 	wg.Wait()
-
+	// 检查错误并清理不完整文件
+	if downloadErr != nil {
+		_ = file.Close()        // 确保文件句柄关闭
+		_ = os.Remove(filePath) // 删除不完整文件
+		result.Error = downloadErr
+		return result
+	}
 	result.OutputFile = filePath
 	result.Size = totalSize
 	return result
@@ -226,7 +237,7 @@ func (d *Downloader) downloadSingle(ctx context.Context, fileURL, fileName strin
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			file.Write(buf[:n])
+			_, _ = file.Write(buf[:n])
 			written += int64(n)
 
 			if d.config.OnProgress != nil {

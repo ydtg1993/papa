@@ -1,7 +1,7 @@
 app:
   env: dev
 crawler:
-  target: "https://example.com/catalog"
+  target: "https://www.bilibili.com/"
   stages:
     catalog:
       worker_count: 2
@@ -12,6 +12,9 @@ crawler:
     detail:
       worker_count: 5
       queue_size: 50
+      retry:
+        max_attempts: 3
+        backoff: "30s"
 browser:
   pool_size: 3
   max_idle_time: "5m"
@@ -31,3 +34,6 @@ db:
 log:
   dir: "./logs"
   max_size: 10
+monitor:   
+  enabled: true
+  port: 9090

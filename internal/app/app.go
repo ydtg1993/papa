@@ -10,8 +10,10 @@ import (
 	"github.com/ydtg1993/papa/internal/fetcher"
 	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/models"
+	"github.com/ydtg1993/papa/internal/server"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/database"
+	"github.com/ydtg1993/papa/pkg/monitor"
 	"gorm.io/gorm"
 	"time"
 )
@@ -25,9 +27,9 @@ type App struct {
 }
 
 // NewApp 统一初始化所有组件，并完成依赖注入
-func NewApp(cfgPath string) (*App, error) {
+func NewApp() (*App, error) {
 	// 1. 加载配置
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
@@ -43,7 +45,7 @@ func NewApp(cfgPath string) (*App, error) {
 
 	// 4. 自动迁移（开发环境）
 	if cfg.App.Env == "dev" {
-		if err := database.AutoMigrate(db, &models.Page{}, &models.CrawlerTask{}); err != nil {
+		if err := database.AutoMigrate(db, &models.CrawlerTask{}); err != nil {
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
 	}
@@ -91,7 +93,7 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 	}
 
 	// 提交起始任务
-	if err := engine.SubmitTask("catalog", &crawler.Task{
+	if err := engine.SubmitTask(&crawler.Task{
 		URL:   cfg.Crawler.Target,
 		Stage: fetchCatalog.GetStage(),
 	}); err != nil {
@@ -113,6 +115,16 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
+	// 启动监控 HTTP 服务（如果配置启用）
+	if a.Config.Monitor.Enabled {
+		getter := func() map[string]*monitor.Monitor[*crawler.Task] {
+			return a.Engine.GetMonitors()
+		}
+		// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
+		mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
+		go mServer.Start(ctx)
+	}
+
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")

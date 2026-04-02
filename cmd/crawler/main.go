@@ -11,10 +11,9 @@ import (
 
 func main() {
 	// 1. 创建应用容器
-	appInstance, err := app.NewApp("configs/config.yaml")
+	appInstance, err := app.NewApp()
 	if err != nil {
-		fmt.Printf("init app failed: %v\n", err)
-		os.Exit(1)
+		panic(fmt.Sprintf("init app failed: %v", err))
 	}
 	// 2. 创建可取消的 context，用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())

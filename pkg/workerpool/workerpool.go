@@ -30,7 +30,7 @@ func NewWorkerPool[T Tasker](workers, queueSize int, logger *logrus.Logger) *Wor
 	return &WorkerPool[T]{
 		taskQueue:  make(chan T, queueSize),
 		workers:    workers,
-		errors:     make(chan error, queueSize),
+		errors:     make(chan error, workers*queueSize*2),
 		activities: make(chan Activity, workers*queueSize*2),
 		logger:     logger,
 	}

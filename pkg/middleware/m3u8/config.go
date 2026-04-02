@@ -1,6 +1,9 @@
 package m3u8
 
-import "github.com/sirupsen/logrus"
+import (
+	"github.com/sirupsen/logrus"
+	"time"
+)
 
 // Config M3U8 下载器配置
 type Config struct {
@@ -9,7 +12,7 @@ type Config struct {
 	// 最大并发下载片段数，默认 5
 	MaxConcurrent int `yaml:"max_concurrent"`
 	// 单个片段下载超时（秒），默认 30
-	SegmentTimeout int `yaml:"segment_timeout"`
+	SegmentTimeout time.Duration `yaml:"segment_timeout"`
 	// 最大重试次数，默认 3
 	MaxRetries int `yaml:"max_retries"`
 	// 初始重试间隔（秒），实际使用指数退避，此值作为基础间隔，默认 2
@@ -34,7 +37,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		OutputDir:      "./downloads",
 		MaxConcurrent:  5,
-		SegmentTimeout: 30,
+		SegmentTimeout: 30 * time.Second,
 		MaxRetries:     3,
 		RetryInterval:  2,
 		EnableResume:   true,

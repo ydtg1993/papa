@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Crawler Monitor</title>
+    <meta charset="utf-8">
+    <meta http-equiv="refresh" content="5">
+    <style>
+        body { font-family: monospace; margin: 20px; }
+        table { border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: left; }
+        th { background-color: #f0f0f0; }
+        .stage { margin-top: 30px; }
+        h2 { color: #333; }
+    </style>
+</head>
+<body>
+<h1>Crawler Monitor (auto-refresh every 5s)</h1>
+<div id="content">Loading...</div>
+<script>
+    async function fetchData() {
+        const resp = await fetch('/api/monitor');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        let html = '';
+        for (const [stage, info] of Object.entries(data)) {
+            const global = info.global;
+            const workers = info.workers;
+            html += '<div class="stage"><h2>Stage: ' + stage + '</h2>';
+            html += '<h3>Global Stats</h3>';
+            html += '<table><tr><th>TotalTasks</th><th>TotalFailed</th><th>TotalTime</th><th>AvgTime</th><th>MaxTime</th><th>MinTime</th></tr>';
+            html += '<tr><td>' + global.TotalTasks + '</td><td>' + global.TotalFailed + '</td><td>' + (global.TotalTime/1e9).toFixed(2) + 's</td><td>' + (global.AvgTime/1e9).toFixed(3) + 's</td><td>' + (global.MaxTime/1e9).toFixed(3) + 's</td><td>' + (global.MinTime/1e9).toFixed(3) + 's</td></tr>';
+            html += '</table><h3>Workers</h3><table><tr><th>WorkerID</th><th>TotalTasks</th><th>FailedTasks</th><th>TotalTime</th><th>MaxTime</th><th>MinTime</th></tr>';
+            for (const [wid, ws] of Object.entries(workers)) {
+                html += '<tr><td>' + wid + '</td><td>' + ws.TotalTasks + '</td><td>' + ws.FailedTasks + '</td><td>' + (ws.TotalTime/1e9).toFixed(2) + 's</td><td>' + (ws.MaxTime/1e9).toFixed(3) + 's</td><td>' + (ws.MinTime/1e9).toFixed(3) + 's</td></tr>';
+            }
+            html += '</table></div>';
+        }
+        document.getElementById('content').innerHTML = html;
+    }
+    fetchData();
+    setInterval(fetchData, 5000);
+</script>
+</body>
+</html>
