@@ -210,9 +210,9 @@ func (e *Engine) GetMonitors() map[string]*monitor.Monitor[*Task] {
 func (e *Engine) RecoverTasks() {
 	// 1. 查询需要恢复的任务（pending 或超时的 processing）
 	var tasks []models.CrawlerTask
-	timeout := time.Now().Add(-10 * time.Minute)
+	timeout := time.Now().Add(-2 * time.Hour)
 
-	if err := e.db.Where("status = ? OR (status = ? AND updated_at < ?)",
+	if err := e.db.Where("(status = ? OR status = ?) AND updated_at < ?",
 		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
 		Find(&tasks).Error; err != nil {
 		e.LoggerSet.DB.Errorf("failed to load tasks for recovery: %v", err)
@@ -239,7 +239,7 @@ func (e *Engine) RecoverTasks() {
 
 		// 尝试提交到队列（非阻塞）
 		if err := e.submitToPool(task); err != nil {
-			e.LoggerSet.Worker.Errorf("recover task %d (url: %s) submit failed: %v",
+			e.LoggerSet.Engine.Errorf("recover task %d (url: %s) submit failed: %v",
 				t.ID, t.URL, err)
 			failIDs = append(failIDs, t.ID)
 		} else {

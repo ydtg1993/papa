@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/pkg/middleware/m3u8"
 	"strings"
 	"time"
 )
@@ -52,9 +53,12 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		return err
 	}
 
-	element, err := page.Element(".play-btn")
-	if err != nil {
-		_ = element.Click(proto.InputMouseButtonLeft, 1)
+	for i := 0; i < 3; i++ {
+		element, err := page.Timeout(3 * time.Second).Element(".plyr__control plyr__control--overlaid")
+		if err == nil {
+			_ = element.Click(proto.InputMouseButtonLeft, 1)
+			break
+		}
 	}
 	// 多重触发播放
 	page.MustEval(`() => {
@@ -71,11 +75,11 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	case m3u8URL := <-m3u8Chan:
 		engine.LoggerSet.Sys.Infof("捕获到 M3U8 链接: %s", m3u8URL)
 		// 可以继续下载或返回
+		downloader := m3u8.NewDownloader(nil)
+		downloader.Download(context.Background(), m3u8URL, "ok.mp4")
 	case <-time.After(30 * time.Second):
 		engine.LoggerSet.Sys.Warn("未捕获到 M3U8 链接")
 	}
 
-	// 保持页面一段时间以便观察（可选）
-	<-time.After(5 * time.Second)
 	return nil
 }

@@ -4,13 +4,14 @@ import "time"
 import "github.com/spf13/viper"
 
 type Config struct {
-	App     AppConfig     `mapstructure:"app"`
-	Log     LogConfig     `mapstructure:"log"`
-	Crawler CrawlerConfig `mapstructure:"crawler"`
-	Browser BrowserConfig `mapstructure:"browser"`
-	Proxy   ProxyConfig   `mapstructure:"proxy"`
-	DB      DBConfig      `mapstructure:"db"`
-	Monitor MonitorConfig `mapstructure:"monitor"`
+	App       AppConfig       `mapstructure:"app"`
+	Log       LogConfig       `mapstructure:"log"`
+	Crawler   CrawlerConfig   `mapstructure:"crawler"`
+	Browser   BrowserConfig   `mapstructure:"browser"`
+	Proxy     ProxyConfig     `mapstructure:"proxy"`
+	DB        DBConfig        `mapstructure:"db"`
+	Monitor   MonitorConfig   `mapstructure:"monitor"`
+	Scheduler SchedulerConfig `mapstructure:"scheduler"`
 }
 
 // AppConfig 环境基础配置
@@ -69,6 +70,19 @@ type DBConfig struct {
 type MonitorConfig struct {
 	Enabled bool `mapstructure:"enabled"` // 是否开启监控网页
 	Port    int  `mapstructure:"port"`    // 监听端口，如 9090
+}
+
+type SchedulerConfig struct {
+	Enabled  bool        `mapstructure:"enabled"`
+	Timezone string      `mapstructure:"timezone"`
+	Jobs     []JobConfig `mapstructure:"jobs"`
+}
+
+type JobConfig struct {
+	Name     string            `mapstructure:"name"`
+	Type     string            `mapstructure:"type"`     // "catalog" or "recover"
+	Schedule string            `mapstructure:"schedule"` // cron 表达式
+	Args     map[string]string `mapstructure:"args"`     // 可选参数
 }
 
 func Load(path string) (*Config, error) {

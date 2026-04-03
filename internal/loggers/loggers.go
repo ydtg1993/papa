@@ -10,13 +10,12 @@ import (
 )
 
 type LoggerSet struct {
-	Sys     *logrus.Logger
-	Engine  *logrus.Logger
-	Worker  *logrus.Logger
-	Monitor *logrus.Logger
-	Browser *logrus.Logger
-	Proxy   *logrus.Logger
-	DB      *logrus.Logger
+	Sys       *logrus.Logger //系统日志
+	Engine    *logrus.Logger //引擎管理器
+	Monitor   *logrus.Logger //监控器
+	Browser   *logrus.Logger //rod浏览器驱动
+	DB        *logrus.Logger //数据库
+	Scheduler *logrus.Logger //任务计划
 }
 
 func NewLoggerSet(cfg config.LogConfig) LoggerSet {
@@ -27,13 +26,12 @@ func NewLoggerSet(cfg config.LogConfig) LoggerSet {
 	}
 
 	return LoggerSet{
-		Sys:     newLogger(filepath.Join(cfg.Dir, "/sys.log"), formatter, cfg),
-		Engine:  newLogger(filepath.Join(cfg.Dir, "/engine.log"), formatter, cfg),
-		Worker:  newLogger(filepath.Join(cfg.Dir, "/worker.log"), formatter, cfg),
-		Monitor: newLogger(filepath.Join(cfg.Dir, "/monitor.log"), formatter, cfg),
-		Browser: newLogger(filepath.Join(cfg.Dir, "/browser.log"), formatter, cfg),
-		Proxy:   newLogger(filepath.Join(cfg.Dir, "/proxy.log"), formatter, cfg),
-		DB:      newLogger(filepath.Join(cfg.Dir, "/db.log"), formatter, cfg),
+		Sys:       newLogger(filepath.Join(cfg.Dir, "/sys.log"), formatter, cfg),
+		Engine:    newLogger(filepath.Join(cfg.Dir, "/engine.log"), formatter, cfg),
+		Monitor:   newLogger(filepath.Join(cfg.Dir, "/monitor.log"), formatter, cfg),
+		Browser:   newLogger(filepath.Join(cfg.Dir, "/browser.log"), formatter, cfg),
+		DB:        newLogger(filepath.Join(cfg.Dir, "/db.log"), formatter, cfg),
+		Scheduler: newLogger(filepath.Join(cfg.Dir, "/scheduler.log"), formatter, cfg),
 	}
 }
 

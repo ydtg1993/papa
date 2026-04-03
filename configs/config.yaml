@@ -38,3 +38,13 @@ log:
 monitor:   
   enabled: true
   port: 9090
+scheduler:
+  enabled: true
+  timezone: "Asia/Shanghai"
+  jobs:
+    - name: "catalog_daily"
+      type: "catalog"          # 对应 catalog 阶段
+      schedule: "0 8 * * *"    # 每天 8:00 执行
+    - name: "recover_tasks"
+      type: "recover"
+      schedule: "0 */6 * * *"  # 每 6 小时执行一次

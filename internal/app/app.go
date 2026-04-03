@@ -9,6 +9,7 @@ import (
 	"github.com/ydtg1993/papa/internal/fetcher"
 	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/models"
+	"github.com/ydtg1993/papa/internal/scheduler"
 	"github.com/ydtg1993/papa/internal/server"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/database"
@@ -128,8 +129,7 @@ func (a *App) Run(ctx context.Context) {
 		mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
 		go mServer.Start(ctx)
 	}
-	// 恢复未完成任务
-	a.Engine.RecoverTasks()
+
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
@@ -141,4 +141,32 @@ func (a *App) Run(ctx context.Context) {
 		_ = sqlDB.Close()
 	}
 	a.Logger.Sys.Info("shutdown completed")
+}
+
+// 任务计划
+func (a *App) schedule() {
+	if a.Config.Scheduler.Enabled == false {
+		return
+	}
+	sched := scheduler.NewScheduler(a.Engine, a.Config.Scheduler.Timezone)
+	for _, jobCfg := range a.Config.Scheduler.Jobs {
+		var cmd func()
+		switch jobCfg.Type {
+		case "catalog":
+			// 需要 targetURL，可以从配置中获取，也可以从 engine 配置拿
+			catalogJob := scheduler.NewCatalogJob(a.Engine, a.Config.Crawler.Target)
+			cmd = catalogJob.Run
+		case "recover":
+			recoverJob := scheduler.NewRecoverJob(a.Engine)
+			cmd = recoverJob.Run
+		default:
+			panic(fmt.Sprintf("unknown job type: %s", jobCfg.Type))
+		}
+
+		if err := sched.AddJob(jobCfg.Name, jobCfg.Schedule, cmd); err != nil {
+			a.Engine.LoggerSet.Scheduler.Errorf("failed to add job %s: %v", jobCfg.Name, err)
+		}
+	}
+
+	sched.Start()
 }
