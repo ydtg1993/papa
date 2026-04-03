@@ -163,6 +163,4 @@ go run cmd/crawler/main.go
 - 自动合并 MP4 需要系统安装 ffmpeg，若不使用可设置 auto_merge: false
 
 ### 本项目基于[MIT license](https://github.com/ydtg1993/papa/LICENSE.txt)开源
-
-        end
     N4
