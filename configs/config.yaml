@@ -1,50 +1,65 @@
+# 应用基础配置
 app:
-  env: loc
+  env: loc                     # 运行环境：loc(本地) / dev(开发) / prod(生产)
+
+# 爬虫核心配置
 crawler:
-  target: "https://www.bilibili.com/"
-  stages:
-    catalog:
-      worker_count: 1
-      queue_size: 20
+  target: "https://www.bilibili.com/"   # 起始目标网站
+  stages:                                # 爬取阶段配置
+    catalog:                             # 目录/列表页阶段
+      worker_count: 1                    # 并发工作协程数
+      queue_size: 20                     # 任务队列缓冲大小
+      retry:                             # 重试策略
+        max_attempts: 3                  # 最大重试次数
+        backoff: "30s"                   # 重试退避间隔
+    detail:                              # 详情页阶段
+      worker_count: 5                    # 并发工作协程数
+      queue_size: 50                     # 任务队列缓冲大小
       retry:
         max_attempts: 3
         backoff: "30s"
-    detail:
-      worker_count: 5
-      queue_size: 50
-      retry:
-        max_attempts: 3
-        backoff: "30s"
+
+# 浏览器自动化池配置
 browser:
-  pool_size: 1
-  max_idle_time: "5m"
-  headless: false
-  disable_gpu: false
-  no_sandbox: false
-  browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
+  pool_size: 1                           # 浏览器实例数量
+  max_idle_time: "5m"                    # 空闲浏览器最大存活时间
+  headless: false                        # 是否无头模式（false 可见浏览器界面）
+  disable_gpu: false                     # 禁用 GPU 加速
+  no_sandbox: false                      # 禁用沙箱（容器环境可能需要）
+  browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"  # Chrome 可执行文件路径 空置则调用默认Chromium
+
+# 代理管理器配置（未启用）
 proxy:
-  api_url:
-  refresh_interval: 300s
+  api_url:                               # 代理 API 地址（为空则不启用）
+  refresh_interval: 300s                 # 代理列表刷新间隔
+
+# 数据库配置
 db:
-  driver: "mysql"
-  dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"
-  max_idle_conns: 10
-  max_open_conns: 100
-  conn_max_lifetime: 1h
-  conn_max_idle_time: 10m
+  driver: "mysql"                        # 数据库驱动类型
+  dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"  # 数据源名称
+  max_idle_conns: 10                     # 最大空闲连接数
+  max_open_conns: 100                    # 最大打开连接数
+  conn_max_lifetime: 1h                  # 连接最大生命周期
+  conn_max_idle_time: 10m                # 空闲连接最大存活时间
+
+# 日志配置
 log:
-  dir: "./logs"
-  max_size: 10
-monitor:   
-  enabled: true
-  port: 9090
+  dir: "./logs"                          # 日志输出目录
+  max_size: 10                           # 单个日志文件最大大小（MB）
+
+# Web 监控服务配置
+monitor:
+  enabled: true                          # 是否启用监控界面
+  port: 9090                             # 监听端口
+
+# 定时任务调度器配置
 scheduler:
-  enabled: true
-  timezone: "Asia/Shanghai"
-  jobs:
-    - name: "catalog_daily"
-      type: "catalog"          # 对应 catalog 阶段
-      schedule: "0 8 * * *"    # 每天 8:00 执行
-    - name: "recover_tasks"
-      type: "recover"
-      schedule: "0 */6 * * *"  # 每 6 小时执行一次
+  enabled: true                          # 是否启用调度器
+  timezone: "Asia/Shanghai"              # 时区（用于 cron 表达式）
+  jobs:                                  # 定时任务列表
+    - name: "catalog_daily"              # 任务名称
+      type: "catalog"                    # 任务类型：catalog（每日轮询新内容）
+      schedule: "0 8 * * *"              # cron 表达式：每天 8:00 执行
+    - name: "recover_tasks"              # 任务名称
+      type: "recover"                    # 任务类型：recover（恢复未完成任务）
+      schedule: "0 */6 * * *"            # cron 表达式：每 6 小时执行一次
