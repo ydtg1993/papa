@@ -2,7 +2,6 @@ package monitor
 
 import (
 	"github.com/ydtg1993/papa/pkg/workerpool"
-	"log"
 	"sync"
 	"time"
 )
@@ -47,25 +46,22 @@ func NewMonitor[T workerpool.Tasker](pool *workerpool.WorkerPool[T]) *Monitor[T]
 
 // Start 启动监控（在一个 goroutine 中）
 func (m *Monitor[T]) Start() {
-	go m.run()
-}
-
-// run 持续消费 Activities 通道
-func (m *Monitor[T]) run() {
-	activities := m.WorkPool.Activities()
-	for {
-		select {
-		case <-m.stopCh:
-			return
-		case act, ok := <-activities:
-			if !ok {
-				// 通道已关闭，退出
-				log.Println("monitor: activities channel closed, stopping")
+	go func() {
+		// run 持续消费 Activities 通道
+		activities := m.WorkPool.Activities()
+		for {
+			select {
+			case <-m.stopCh:
 				return
+			case act, ok := <-activities:
+				if !ok {
+					// 通道已关闭，退出
+					return
+				}
+				m.processActivity(act)
 			}
-			m.processActivity(act)
 		}
-	}
+	}()
 }
 
 // processActivity 处理单个活动事件

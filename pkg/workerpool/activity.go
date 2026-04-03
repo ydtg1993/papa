@@ -8,6 +8,7 @@ type ActivityType int
 const (
 	ActivityTaskStart ActivityType = iota
 	ActivityTaskEnd
+	ActivityWorkerStop
 )
 
 // Activity 活动事件

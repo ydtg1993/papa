@@ -46,6 +46,7 @@ type BrowserConfig struct {
 	Headless    bool          `mapstructure:"headless"`      //无头模式
 	DisableGpu  bool          `mapstructure:"disable_gpu"`
 	NoSandbox   bool          `mapstructure:"no_sandbox"`
+	BrowserPath string        `mapstructure:"browser_path"`
 }
 
 // ProxyConfig 爬虫代理管理器

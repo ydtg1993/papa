@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -30,9 +29,9 @@ type Downloader struct {
 	config  *Config
 	client  *http.Client
 	mu      sync.RWMutex // 保护动态设置的请求头
-	log     *logrus.Logger
-	referer string // 动态 Referer
-	cookie  string // 动态 Cookie
+	referer string       // 动态 Referer
+	cookie  string       // 动态 Cookie
+	errors  chan error   //错误消息队列
 }
 
 // NewDownloader 创建下载器实例
@@ -40,19 +39,12 @@ func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-	if cfg.Logger == nil {
-		cfg.Logger = logrus.New()
-		cfg.Logger.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "2006-01-02 15:04:05",
-		})
-	}
 	return &Downloader{
 		config: cfg,
 		client: &http.Client{
 			Timeout: cfg.SegmentTimeout,
 		},
-		log: cfg.Logger,
+		errors: make(chan error, 10),
 	}
 }
 
@@ -63,7 +55,7 @@ func (d *Downloader) SetUserAgent(ua string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.config.UserAgent = ua
-	d.log.Debugf("User-Agent 已更新: %s", ua)
+	d.sendError(fmt.Errorf("User-Agent 已更新: %s", ua))
 }
 
 // SetReferer 动态设置 Referer
@@ -71,7 +63,7 @@ func (d *Downloader) SetReferer(ref string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.referer = ref
-	d.log.Debugf("Referer 已更新: %s", ref)
+	d.sendError(fmt.Errorf("Referer 已更新: %s", ref))
 }
 
 // SetCookie 动态设置 Cookie
@@ -79,7 +71,7 @@ func (d *Downloader) SetCookie(cookie string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.cookie = cookie
-	d.log.Debugf("Cookie 已更新: %s", cookie)
+	d.sendError(fmt.Errorf("Cookie 已更新: %s", cookie))
 }
 
 // SetHeader 动态设置单个自定义 Header（会覆盖同名的已有 Header）
@@ -90,7 +82,7 @@ func (d *Downloader) SetHeader(key, value string) {
 		d.config.Headers = make(map[string]string)
 	}
 	d.config.Headers[key] = value
-	d.log.Debugf("Header 已设置: %s: %s", key, value)
+	d.sendError(fmt.Errorf("Header 已设置: %s: %s", key, value))
 }
 
 // SetHeaders 批量设置 Headers（合并方式，覆盖同名）
@@ -103,7 +95,7 @@ func (d *Downloader) SetHeaders(headers map[string]string) {
 	for k, v := range headers {
 		d.config.Headers[k] = v
 	}
-	d.log.Debugf("批量设置 %d 个 Headers", len(headers))
+	d.sendError(fmt.Errorf("批量设置 %d 个 Headers", len(headers)))
 }
 
 // ======================== HTTP 请求（统一处理重试、限速、请求头） ========================
@@ -127,7 +119,7 @@ func (d *Downloader) doRequest(ctx context.Context, url string, rangeHeader stri
 				sleepTime = 10 * time.Second
 			}
 			time.Sleep(sleepTime)
-			d.log.Debugf("重试 %s (第 %d 次)", url, attempt)
+			d.sendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -251,14 +243,14 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	if strings.Contains(playlist, "#EXT-X-STREAM-INF") {
 		bestURL, err := d.selectBestStream(playlist, baseURL)
 		if err == nil {
-			d.log.Infof("选择最高码率流: %s", bestURL)
+			d.sendError(fmt.Errorf("选择最高码率流: %s", bestURL))
 			playlist, baseURL, err = d.fetchPlaylist(ctx, bestURL)
 			if err != nil {
 				result.Error = fmt.Errorf("fetch best stream playlist: %w", err)
 				return result
 			}
 		} else {
-			d.log.Warnf("自动选择最高码率失败，使用原始播放列表: %v", err)
+			d.sendError(fmt.Errorf("自动选择最高码率失败，使用原始播放列表: %v", err))
 		}
 	}
 
@@ -290,10 +282,10 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	var totalBytes int64
 	if d.config.EnableResume {
 		if err := d.loadProgress(progressFile, &downloadedSet, &totalBytes); err == nil {
-			d.log.Infof("断点续传: 已下载 %d/%d 片段，已接收 %d 字节",
-				len(downloadedSet), len(segments), totalBytes)
+			d.sendError(fmt.Errorf("断点续传: 已下载 %d/%d 片段，已接收 %d 字节",
+				len(downloadedSet), len(segments), totalBytes))
 		} else {
-			d.log.Warnf("加载进度文件失败，将重新下载: %v", err)
+			d.sendError(fmt.Errorf("加载进度文件失败，将重新下载: %v", err))
 			downloadedSet = make(map[int]bool)
 			totalBytes = 0
 		}
@@ -418,7 +410,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 			if d.config.OnProgress != nil {
 				d.config.OnProgress(completedCount, len(segments), idx+1, int64(len(data)), totalBytes)
 			}
-			d.log.Debugf("片段 %d/%d 完成", idx+1, len(segments))
+			d.sendError(fmt.Errorf("片段 %d/%d 完成", idx+1, len(segments)))
 		}(i)
 	}
 	wg.Wait()
@@ -426,7 +418,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	if downloadErr != nil {
 		// 下载失败，清理不完整文件
 		file.Close()
-		d.log.Errorf("下载失败，删除不完整文件: %s", outputPath)
+		d.sendError(fmt.Errorf("下载失败，删除不完整文件: %s", outputPath))
 		os.Remove(outputPath)
 		os.Remove(progressFile)
 		result.Error = downloadErr
@@ -742,4 +734,13 @@ func RemuxTS2MP4(tsFile, mp4File string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// sendError非阻塞发送错误
+func (d *Downloader) sendError(err error) {
+	select {
+	case d.errors <- err:
+	default:
+		break
+	}
 }

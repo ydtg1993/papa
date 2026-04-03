@@ -3,12 +3,10 @@ package crawler
 import (
 	"context"
 	"fmt"
-	"github.com/chromedp/chromedp"
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
-	"github.com/ydtg1993/papa/pkg/middleware/proxy"
 	"github.com/ydtg1993/papa/pkg/monitor"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
@@ -22,10 +20,10 @@ type Engine struct {
 	stages      map[string]*stageInfo
 	mu          sync.RWMutex
 	db          *gorm.DB
-	loggerSet   *loggers.LoggerSet
 	cfg         *config.Config
 	browserPool *browser.Pool
 	monitors    map[string]*monitor.Monitor[*Task] // key: stage name 分阶段监控器组
+	LoggerSet   *loggers.LoggerSet
 }
 
 type WorkerConfig struct {
@@ -33,13 +31,6 @@ type WorkerConfig struct {
 	QueueSize      int
 	StopTimeout    time.Duration
 	RequestTimeout time.Duration
-}
-
-type BrowserConfig struct {
-	Size        int
-	Opts        []chromedp.ExecAllocatorOption
-	MaxIdleTime time.Duration
-	ProxyMgr    *proxy.Manager
 }
 
 // stageInfo 内部阶段信息
@@ -66,7 +57,7 @@ func NewEngine(pool *browser.Pool, db *gorm.DB, cfg *config.Config, loggerSet *l
 		cancel:      cancel,
 		stages:      make(map[string]*stageInfo),
 		db:          db,
-		loggerSet:   loggerSet,
+		LoggerSet:   loggerSet,
 		cfg:         cfg,
 		browserPool: pool,
 	}
@@ -86,7 +77,7 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 		cfg.Backoff = time.Second
 	}
 
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.loggerSet.Worker)
+	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
 	e.stages[f.GetStage()] = &stageInfo{
 		WorkerPool: pool,
 		Config:     cfg,
@@ -94,16 +85,16 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 	// 启动 worker pool
 	pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
 		// 1. 更新状态为 processing
-		task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusProcessing, nil)
+		task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusProcessing, nil)
 		// 2. 重试FetchHandler
 		var lastErr error
 		for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
 			if attempt > 0 {
-				task.IncRetry(e.db, e.loggerSet.DB)
+				task.IncRetry(e.db, e.LoggerSet.DB)
 			}
 			err := f.FetchHandler(ctx, task, e)
 			if err == nil {
-				task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusSuccess, nil)
+				task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusSuccess, nil)
 				return nil
 			}
 			lastErr = err
@@ -115,7 +106,7 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 			}
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
-		task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, lastErr)
+		task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusFailed, lastErr)
 		return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
 	})
 	// 如果全局配置开启了监控，则为该阶段创建监控器并启动
@@ -123,7 +114,7 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 		mon := monitor.NewMonitor(pool)
 		mon.Start()
 		e.SetMonitor(f.GetStage(), mon)
-		e.loggerSet.Engine.Infof("monitor started for stage: %s", f.GetStage())
+		e.LoggerSet.Engine.Infof("monitor started for stage: %s", f.GetStage())
 	}
 	return nil
 }
@@ -136,7 +127,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if err := e.submitToPool(task); err != nil {
 		return err
 	}
-	if !task.Insert(e.db, e.loggerSet.DB) {
+	if !task.Insert(e.db, e.LoggerSet.DB) {
 		return fmt.Errorf("insert crawler task to db failed")
 	}
 	return nil
@@ -164,7 +155,7 @@ func (e *Engine) Stop(timeout time.Duration) {
 		}(name, s.WorkerPool)
 	}
 	wg.Wait()
-	e.loggerSet.Engine.Info("all workers stopped")
+	e.LoggerSet.Engine.Info("all workers stopped")
 }
 
 // Errors 返回work pool中的错误消息队列
@@ -224,16 +215,16 @@ func (e *Engine) RecoverTasks() {
 	if err := e.db.Where("status = ? OR (status = ? AND updated_at < ?)",
 		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
 		Find(&tasks).Error; err != nil {
-		e.loggerSet.DB.Errorf("failed to load tasks for recovery: %v", err)
+		e.LoggerSet.DB.Errorf("failed to load tasks for recovery: %v", err)
 		return
 	}
 
 	if len(tasks) == 0 {
-		e.loggerSet.Engine.Info("no tasks need recovery")
+		e.LoggerSet.Engine.Info("no tasks need recovery")
 		return
 	}
 
-	e.loggerSet.Engine.Infof("found %d tasks need to recover", len(tasks))
+	e.LoggerSet.Engine.Infof("found %d tasks need to recover", len(tasks))
 
 	// 2. 分别记录提交成功和失败的任务 ID
 	var successIDs []uint
@@ -248,12 +239,12 @@ func (e *Engine) RecoverTasks() {
 
 		// 尝试提交到队列（非阻塞）
 		if err := e.submitToPool(task); err != nil {
-			e.loggerSet.Worker.Errorf("recover task %d (url: %s) submit failed: %v",
+			e.LoggerSet.Worker.Errorf("recover task %d (url: %s) submit failed: %v",
 				t.ID, t.URL, err)
 			failIDs = append(failIDs, t.ID)
 		} else {
 			successIDs = append(successIDs, t.ID)
-			e.loggerSet.Engine.Infof("recover task %d submitted successfully", t.ID)
+			e.LoggerSet.Engine.Infof("recover task %d submitted successfully", t.ID)
 		}
 	}
 
@@ -262,9 +253,9 @@ func (e *Engine) RecoverTasks() {
 		if err := e.db.Model(&models.CrawlerTask{}).
 			Where("id IN ?", successIDs).
 			Update("status", models.TaskStatusProcessing).Error; err != nil {
-			e.loggerSet.DB.Errorf("failed to mark recovered tasks as processing: %v", err)
+			e.LoggerSet.DB.Errorf("failed to mark recovered tasks as processing: %v", err)
 		} else {
-			e.loggerSet.Engine.Infof("marked %d tasks as processing", len(successIDs))
+			e.LoggerSet.Engine.Infof("marked %d tasks as processing", len(successIDs))
 		}
 	}
 
@@ -274,9 +265,9 @@ func (e *Engine) RecoverTasks() {
 			Where("id IN ?", failIDs).
 			Update("status", models.TaskStatusFailed).
 			Update("error", "RecoverTasks 恢复任务提交队列失败").Error; err != nil {
-			e.loggerSet.DB.Errorf("failed to rollback failed tasks to failed: %v", err)
+			e.LoggerSet.DB.Errorf("failed to rollback failed tasks to failed: %v", err)
 		} else {
-			e.loggerSet.Engine.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
+			e.LoggerSet.Engine.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
 		}
 	}
 }

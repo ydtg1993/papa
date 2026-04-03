@@ -105,7 +105,7 @@ func TestDownloadWithProgress(t *testing.T) {
 
 // 测试解析功能（无需网络）
 func TestParsePlaylistEnhanced_Local(t *testing.T) {
-	d := &Downloader{log: defaultLogger()}
+	d := &Downloader{}
 
 	tests := []struct {
 		name     string
@@ -195,7 +195,7 @@ segment.ts`,
 
 // 测试码率选择（无网络）
 func TestSelectBestStream_Local(t *testing.T) {
-	d := &Downloader{log: defaultLogger()}
+	d := &Downloader{}
 	playlist := `#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=500000
 low.m3u8

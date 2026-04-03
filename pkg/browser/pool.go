@@ -3,80 +3,61 @@ package browser
 import (
 	"context"
 	"fmt"
-	"github.com/chromedp/chromedp"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/devices"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/launcher/flags"
+	"github.com/go-rod/rod/lib/proto"
+	_ "github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/pkg/middleware/proxy"
 	"sync"
-	"sync/atomic"
+	_ "sync/atomic"
 	"time"
 )
 
-// Browser 封装一个 chromedp 浏览器实例
-type Browser struct {
-	AllocCtx  context.Context    // 分配器上下文（整个浏览器生命周期）
-	Ctx       context.Context    // 当前标签页上下文（每次 Get 时新建）
-	cancel    context.CancelFunc // 关闭浏览器的函数
-	tabCancel context.CancelFunc // 关闭当前标签页的函数
-	proxy     string             // 当前使用的代理地址
-	useCount  int64              // 已使用次数（原子操作）
-	lastUsed  time.Time          // 最后使用时间
-	mu        sync.Mutex         // 保护 lastUsed
-}
-
-// Close 关闭浏览器
-func (b *Browser) Close() {
-	if b.tabCancel != nil {
-		b.tabCancel()
-	}
-	if b.cancel != nil {
-		b.cancel()
-	}
-}
-
-// markUsed 标记浏览器被使用，增加使用计数并更新最后使用时间
-func (b *Browser) markUsed() {
-	atomic.AddInt64(&b.useCount, 1)
-	b.mu.Lock()
-	b.lastUsed = time.Now()
-	b.mu.Unlock()
-}
-
-// GetUseCount 获取使用次数
-func (b *Browser) GetUseCount() int64 {
-	return atomic.LoadInt64(&b.useCount)
-}
-
-// GetLastUsed 获取最后使用时间
-func (b *Browser) GetLastUsed() time.Time {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.lastUsed
-}
-
-// Pool Browser池封装管理多个chromedp
+// Pool Browser池封装管理多个rod
 type Pool struct {
-	opts         []chromedp.ExecAllocatorOption // 公共选项（如 headless 等）
-	browsers     chan *Browser                  // 浏览器池（缓冲通道）
-	maxIdleTime  time.Duration                  // 最大空闲时间，0 表示无限制
-	mu           sync.Mutex
-	closeOnce    sync.Once
-	closed       bool
-	proxyManager *proxy.Manager
+	browsers  chan *Browser // 浏览器池（缓冲通道）
+	mu        sync.Mutex
+	closeOnce sync.Once
+	closed    bool
+	cfg       PoolConfig
+}
+
+// PoolConfig 浏览器池配置
+type PoolConfig struct {
+	Size           int            // 唤起浏览器操作实例
+	MaxIdleTime    time.Duration  // 最大空闲时间，0 表示无限制
+	ProxyManager   *proxy.Manager //代理管理器
+	Headless       bool
+	NoSandbox      bool
+	BrowserPath    string            // 浏览器可执行文件路径，为空则使用系统默认
+	Flags          map[string]string // 浏览器启动参数，如 "disable-gpu": "", "window-size": "1920,1080"
+	DefaultDevice  *devices.Device   // 可选：全局设备模拟
+	DefaultHeaders map[string]string // 默认 HTTP 请求头
+	DefaultCookies []*proto.NetworkCookieParam
 }
 
 // NewPool 创建浏览器池
-func NewPool(size int, commonOpts []chromedp.ExecAllocatorOption, maxIdleTime time.Duration, proxyMgr *proxy.Manager) (*Pool, error) {
-	pool := &Pool{
-		opts:         commonOpts,
-		browsers:     make(chan *Browser, size),
-		maxIdleTime:  maxIdleTime,
-		proxyManager: proxyMgr,
+func NewPool(cfg PoolConfig) (*Pool, error) {
+	if cfg.Flags == nil {
+		cfg.Flags = make(map[string]string)
+	}
+	if cfg.DefaultHeaders == nil {
+		cfg.DefaultHeaders = make(map[string]string)
+	}
+	if cfg.DefaultCookies == nil {
+		cfg.DefaultCookies = []*proto.NetworkCookieParam{}
 	}
 
+	pool := &Pool{
+		browsers: make(chan *Browser, cfg.Size),
+		cfg:      cfg,
+	}
 	// 预创建浏览器实例
-	for i := 0; i < size; i++ {
+	for i := 0; i < cfg.Size; i++ {
 		browser, err := pool.newBrowser()
 		if err != nil {
-			// 创建失败时关闭已创建的浏览器
 			pool.Close()
 			return nil, fmt.Errorf("create browser %d: %w", i, err)
 		}
@@ -87,24 +68,40 @@ func NewPool(size int, commonOpts []chromedp.ExecAllocatorOption, maxIdleTime ti
 
 // newBrowser 创建一个新的浏览器实例
 func (p *Pool) newBrowser() (*Browser, error) {
-	opts := make([]chromedp.ExecAllocatorOption, len(p.opts))
-	copy(opts, p.opts)
-	var proxyURL string
-	if p.proxyManager != nil {
-		// 获取代理（轮询）
-		proxyURL = p.proxyManager.Next()
-		if proxyURL != "" {
-			opts = append(opts, chromedp.ProxyServer(proxyURL))
+	l := launcher.New().
+		Headless(p.cfg.Headless).
+		NoSandbox(p.cfg.NoSandbox)
+	// 如果配置了浏览器路径，则使用指定路径
+	if p.cfg.BrowserPath != "" {
+		l = l.Bin(p.cfg.BrowserPath)
+	}
+	// 设置自定义启动 flags
+	for key, val := range p.cfg.Flags {
+		if val == "" {
+			l.Set(flags.Flag(key))
+		} else {
+			l.Set(flags.Flag(key), val)
+		}
+	}
+	if p.cfg.ProxyManager != nil {
+		if proxyURL := p.cfg.ProxyManager.Next(); proxyURL != "" {
+			l.Proxy(proxyURL)
 		}
 	}
 
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	b := &Browser{
-		AllocCtx: allocCtx,
-		cancel:   cancel,
-		proxy:    proxyURL,
+	url, err := l.Launch()
+	if err != nil {
+		return nil, err
 	}
-	return b, nil
+
+	browser := rod.New().ControlURL(url).MustConnect()
+	return &Browser{
+		Browser:        browser,
+		launcher:       l,
+		defaultDevice:  p.cfg.DefaultDevice,
+		defaultHeaders: copyMap(p.cfg.DefaultHeaders),
+		defaultCookies: copyCookies(p.cfg.DefaultCookies),
+	}, nil
 }
 
 // Get 从池中获取一个浏览器实例（阻塞直到有可用）
@@ -120,10 +117,6 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 		if b == nil {
 			return nil, fmt.Errorf("browser pool closed")
 		}
-		// 基于分配器创建新标签页
-		tabCtx, tabCancel := chromedp.NewContext(b.AllocCtx)
-		b.Ctx = tabCtx
-		b.tabCancel = tabCancel
 		b.markUsed()
 		return b, nil
 	case <-ctx.Done():
@@ -143,14 +136,9 @@ func (p *Pool) Put(b *Browser) error {
 		return fmt.Errorf("browser pool closed")
 	}
 	p.mu.Unlock()
-	// 1. 关闭当前标签页
-	if b.tabCancel != nil {
-		b.tabCancel()
-		b.tabCancel = nil
-	}
-	b.Ctx = nil // 清空引用，避免误用
-	// 2. 检查空闲超时，如果空闲太久则重建分配器
-	if p.maxIdleTime > 0 && time.Since(b.lastUsed) > p.maxIdleTime {
+
+	// 空闲超时检查
+	if p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime {
 		b.Close()
 		newB, err := p.newBrowser()
 		if err != nil {
@@ -158,11 +146,9 @@ func (p *Pool) Put(b *Browser) error {
 		}
 		b = newB
 	}
-	// 3. 归还到池中
 	select {
 	case p.browsers <- b:
 	default:
-		// 池已满，关闭此浏览器（正常情况下不会发生，因为我们使用缓冲通道大小等于池大小）
 		b.Close()
 	}
 	return nil
@@ -177,4 +163,29 @@ func (p *Pool) Close() {
 			b.Close()
 		}
 	})
+}
+
+// 辅助函数：深拷贝 map
+func copyMap(m map[string]string) map[string]string {
+	if m == nil {
+		return make(map[string]string)
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+// 辅助函数：深拷贝 cookies
+func copyCookies(cookies []*proto.NetworkCookieParam) []*proto.NetworkCookieParam {
+	if cookies == nil {
+		return []*proto.NetworkCookieParam{}
+	}
+	cp := make([]*proto.NetworkCookieParam, len(cookies))
+	for i, c := range cookies {
+		cpy := *c
+		cp[i] = &cpy
+	}
+	return cp
 }

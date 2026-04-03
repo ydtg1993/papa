@@ -3,7 +3,6 @@ package workerpool
 import (
 	"context"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,23 +15,21 @@ type WorkerPool[T Tasker] struct {
 	wg         sync.WaitGroup
 	stopOnce   sync.Once
 	stopped    atomic.Bool
-	errors     chan error
 	cancel     context.CancelFunc
-	submitted  atomic.Int64 // 已提交的任务总数
-	completed  atomic.Int64 // 已完成的任务数
-	failed     atomic.Int64 // 失败的任务数（可选）
-	activities chan Activity
-	logger     *logrus.Logger
+	submitted  atomic.Int64  // 已提交的任务总数
+	completed  atomic.Int64  // 已完成的任务数
+	failed     atomic.Int64  // 失败的任务数（可选）
+	activities chan Activity //活动消息队列
+	errors     chan error    //错误消息队列
 }
 
 // NewWorkerPool 创建工作池
-func NewWorkerPool[T Tasker](workers, queueSize int, logger *logrus.Logger) *WorkerPool[T] {
+func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
 	return &WorkerPool[T]{
 		taskQueue:  make(chan T, queueSize),
 		workers:    workers,
 		errors:     make(chan error, workers*queueSize*2),
 		activities: make(chan Activity, workers*queueSize*2),
-		logger:     logger,
 	}
 }
 
@@ -45,7 +42,11 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 			for task := range p.taskQueue {
 				p.processTask(ctx, workerID, task, handler)
 			}
-			p.logger.Errorf("worker %d stopped", workerID)
+			p.sendActivity(Activity{
+				Type:     ActivityWorkerStop,
+				WorkerID: workerID,
+				EndTime:  time.Now(),
+			})
 		}(i)
 	}
 }
@@ -83,22 +84,27 @@ func (p *WorkerPool[T]) sendActivity(act Activity) {
 	select {
 	case p.activities <- act:
 	default:
-		p.errors <- fmt.Errorf("activity dropped")
+		select {
+		case p.errors <- fmt.Errorf("activity send to channel dropped"):
+		default:
+			break
+		}
 	}
 }
 
-// sendError非阻塞发送错误，失败时记录日志
+// sendError非阻塞发送错误
 func (p *WorkerPool[T]) sendError(err error) {
 	select {
 	case p.errors <- err:
 	default:
-		p.logger.Errorf("error dropped: %v", err)
+		break
 	}
 }
 
 // Submit 提交任务，若已停止则拒绝
 func (p *WorkerPool[T]) Submit(task T) error {
 	if p.stopped.Load() {
+		p.sendError(fmt.Errorf("worker pool already stopped,failed to submit task: %v", task))
 		return fmt.Errorf("worker pool already stopped,failed to submit task: %v", task)
 	}
 	select {
@@ -106,6 +112,7 @@ func (p *WorkerPool[T]) Submit(task T) error {
 		p.submitted.Add(1) // 提交成功，增加计数
 		return nil
 	default:
+		p.sendError(fmt.Errorf("task submission task url: %s", task.GetUrl()))
 		return fmt.Errorf("task submission task url: %s", task.GetUrl())
 	}
 }

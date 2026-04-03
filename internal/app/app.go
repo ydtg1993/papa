@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"github.com/chromedp/chromedp"
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/crawler"
@@ -51,12 +50,20 @@ func NewApp() (*App, error) {
 	}
 
 	// 5. 初始化浏览器池
-	browserPool, err := browser.NewPool(cfg.Browser.PoolSize, []chromedp.ExecAllocatorOption{
-		chromedp.Flag("headless", cfg.Browser.Headless),
-		chromedp.Flag("disable-gpu", cfg.Browser.DisableGpu),
-		chromedp.Flag("no-sandbox", cfg.Browser.NoSandbox),
-		chromedp.Flag("window-size", "1280,720"),
-	}, cfg.Browser.MaxIdleTime, nil)
+	browserPool, err := browser.NewPool(browser.PoolConfig{
+		Size:        cfg.Browser.PoolSize,
+		MaxIdleTime: cfg.Browser.MaxIdleTime,
+		Headless:    cfg.Browser.Headless,
+		NoSandbox:   cfg.Browser.NoSandbox,
+		BrowserPath: cfg.Browser.BrowserPath,
+		Flags:       map[string]string{},
+		DefaultHeaders: map[string]string{
+			"User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+			"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+		},
+		// 如果需要代理，设置 ProxyManager
+	})
 	if err != nil {
 		return nil, fmt.Errorf("new browser pool: %w", err)
 	}
@@ -100,9 +107,6 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 		logger.Errorf("submit initial task: %v", err)
 	}
 
-	// 恢复未完成任务
-	engine.RecoverTasks()
-
 	// 启动错误监听
 	go func() {
 		for err := range engine.Errors("catalog") {
@@ -124,7 +128,8 @@ func (a *App) Run(ctx context.Context) {
 		mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
 		go mServer.Start(ctx)
 	}
-
+	// 恢复未完成任务
+	a.Engine.RecoverTasks()
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")

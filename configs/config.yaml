@@ -1,10 +1,10 @@
 app:
-  env: dev
+  env: loc
 crawler:
   target: "https://www.bilibili.com/"
   stages:
     catalog:
-      worker_count: 2
+      worker_count: 1
       queue_size: 20
       retry:
         max_attempts: 3
@@ -16,11 +16,12 @@ crawler:
         max_attempts: 3
         backoff: "30s"
 browser:
-  pool_size: 3
+  pool_size: 1
   max_idle_time: "5m"
   headless: false
   disable_gpu: false
   no_sandbox: false
+  browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"
 proxy:
   api_url:
   refresh_interval: 300s
