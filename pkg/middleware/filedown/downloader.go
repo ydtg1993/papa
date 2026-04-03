@@ -3,6 +3,7 @@ package filedown
 import (
 	"context"
 	"fmt"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,25 +12,20 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 type Downloader struct {
 	config  *Config
 	client  *http.Client
 	mu      sync.RWMutex
-	log     *logrus.Logger
 	referer string
 	cookie  string
+	errors  chan error //错误消息队列
 }
 
 func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {
 		cfg = DefaultConfig()
-	}
-	if cfg.Logger == nil {
-		cfg.Logger = logrus.New()
 	}
 
 	return &Downloader{
@@ -37,7 +33,7 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		log: cfg.Logger,
+		errors: make(chan error, 10),
 	}
 }
 
@@ -90,7 +86,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 
 	resp, err := d.client.Do(req)
 	if err != nil || resp.StatusCode >= 400 {
-		d.log.Warn("HEAD失败，降级为单线程")
+		d.sendError(fmt.Errorf("HEAD失败，降级为单线程"))
 		return d.downloadSingle(ctx, fileURL, fileName)
 	}
 	defer resp.Body.Close()
@@ -99,7 +95,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 	supportRange := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
 
 	if totalSize <= 0 || !supportRange {
-		d.log.Info("不支持分片下载")
+		d.sendError(fmt.Errorf("不支持分片下载"))
 		return d.downloadSingle(ctx, fileURL, fileName)
 	}
 
@@ -294,25 +290,85 @@ func (d *Downloader) genFileName(rawURL string, resp *http.Response) string {
 	return fmt.Sprintf("file_%d%s", time.Now().UnixNano(), ext)
 }
 
-func guessExtFromContentType(ct string) string {
-	ct = strings.ToLower(ct)
+// 扩展的 MIME 类型到扩展名的映射（不含点）
+var mimeToExt = map[string]string{
+	// 图片
+	"image/jpeg":    "jpg",
+	"image/png":     "png",
+	"image/gif":     "gif",
+	"image/webp":    "webp",
+	"image/bmp":     "bmp",
+	"image/svg+xml": "svg",
+	"image/tiff":    "tiff",
+	"image/x-icon":  "ico",
+	// 文档
+	"application/pdf":    "pdf",
+	"application/msword": "doc",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+	"application/vnd.ms-excel": "xls",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         "xlsx",
+	"application/vnd.ms-powerpoint":                                             "ppt",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+	"text/plain":       "txt",
+	"text/html":        "html",
+	"text/css":         "css",
+	"text/csv":         "csv",
+	"application/json": "json",
+	"application/xml":  "xml",
+	"application/rtf":  "rtf",
+	// 压缩包
+	"application/zip":              "zip",
+	"application/x-rar-compressed": "rar",
+	"application/x-7z-compressed":  "7z",
+	"application/x-tar":            "tar",
+	"application/gzip":             "gz",
+	// 音视频
+	"video/mp4":       "mp4",
+	"video/mpeg":      "mpeg",
+	"video/quicktime": "mov",
+	"video/x-msvideo": "avi",
+	"video/webm":      "webm",
+	"audio/mpeg":      "mp3",
+	"audio/wav":       "wav",
+	"audio/ogg":       "ogg",
+	"audio/flac":      "flac",
+	// 其他
+	"application/octet-stream": "bin",
+}
 
-	switch {
-	case strings.Contains(ct, "image/jpeg"):
-		return ".jpg"
-	case strings.Contains(ct, "image/png"):
-		return ".png"
-	case strings.Contains(ct, "image/gif"):
-		return ".gif"
-	case strings.Contains(ct, "image/webp"):
-		return ".webp"
-	case strings.Contains(ct, "application/pdf"):
-		return ".pdf"
-	case strings.Contains(ct, "application/zip"):
-		return ".zip"
-	case strings.Contains(ct, "video/mp4"):
-		return ".mp4"
+func guessExtFromContentType(ct string) string {
+	// 去除 charset 等参数，例如 "text/html; charset=utf-8" -> "text/html"
+	if idx := strings.Index(ct, ";"); idx != -1 {
+		ct = ct[:idx]
+	}
+	ct = strings.ToLower(strings.TrimSpace(ct))
+
+	// 先查自定义映射表
+	if ext, ok := mimeToExt[ct]; ok {
+		return "." + ext
+	}
+
+	// 降级：使用 Go 标准库 mime 包根据 MIME 推断扩展名（可能返回空）
+	exts, err := mime.ExtensionsByType(ct)
+	if err == nil && len(exts) > 0 {
+		// 取第一个常用扩展名
+		return exts[0]
+	}
+
+	// 最终 fallback
+	return ".txt"
+}
+
+// GetErrors 获取错误消息队列
+func (d *Downloader) GetErrors() <-chan error {
+	return d.errors
+}
+
+// sendError非阻塞发送错误
+func (d *Downloader) sendError(err error) {
+	select {
+	case d.errors <- err:
 	default:
-		return ""
+		break
 	}
 }

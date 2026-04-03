@@ -736,6 +736,11 @@ func RemuxTS2MP4(tsFile, mp4File string) error {
 	return err
 }
 
+// GetErrors 获取错误消息队列
+func (d *Downloader) GetErrors() <-chan error {
+	return d.errors
+}
+
 // sendError非阻塞发送错误
 func (d *Downloader) sendError(err error) {
 	select {
