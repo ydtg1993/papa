@@ -5,7 +5,7 @@
 >等特性，适用于需要处理 JavaScript 渲染、反爬严格的网站以及流媒体资源的抓取与下载。
 
 ### 📐 架构设计
-![整体架构图](https://github.com/ydtg1993/papa/blob/master/architecture.png)
+![整体架构图]([https://github.com/ydtg1993/papa/blob/master/architecture.png](https://github.com/ydtg1993/papa/blob/master/storage/architecture.png))
 
 ### ✨ 核心特性
 - 🚀 **多阶段爬取** – 支持 `catalog` → `detail` 等多阶段流水线，每个阶段可独立配置并发数和队列大小。
