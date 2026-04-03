@@ -5,19 +5,21 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	neturl "net/url"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	_ "sync/atomic"
 	"time"
 )
 
@@ -29,6 +31,7 @@ type Downloader struct {
 	referer string
 	cookie  string
 	errors  chan error
+	stateMu sync.Mutex // 保护状态文件写入
 }
 
 // NewDownloader 创建下载器
@@ -187,10 +190,11 @@ func (r *RateLimiter) Wait(n int) {
 	time.Sleep(sleep)
 }
 
-// SegmentInfo 片段信息
+// SegmentInfo 片段信息（增加 Index 字段）
 type SegmentInfo struct {
 	URL   string
 	Range string
+	Index int // 0-based 索引
 }
 
 // KeyInfo 密钥信息
@@ -207,7 +211,65 @@ type DownloadResult struct {
 	Error      error
 }
 
-// Download 同步阻塞下载，保证顺序
+// ==================== 断点续传状态管理 ====================
+
+type ResumeState struct {
+	M3U8URL       string   `json:"m3u8_url"`
+	OutputFile    string   `json:"output_file"`
+	TotalSegments int      `json:"total_segments"`
+	Completed     []int    `json:"completed"`     // 已完成的片段索引
+	SegmentFiles  []string `json:"segment_files"` // 每个片段的临时文件路径（索引对应）
+}
+
+func (d *Downloader) getStateFilePath(m3u8URL, outputFile string) string {
+	hash := fmt.Sprintf("%x", md5.Sum([]byte(m3u8URL+"|"+outputFile)))
+	return filepath.Join(d.config.ResumeStateDir, hash+".json")
+}
+
+func (d *Downloader) loadResumeState(m3u8URL, outputFile string) (*ResumeState, error) {
+	statePath := d.getStateFilePath(m3u8URL, outputFile)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var state ResumeState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
+func (d *Downloader) saveResumeState(state *ResumeState) error {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+
+	if err := os.MkdirAll(d.config.ResumeStateDir, 0755); err != nil {
+		return err
+	}
+	statePath := d.getStateFilePath(state.M3U8URL, state.OutputFile)
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	// 原子写入：先写临时文件，再重命名
+	tmpPath := statePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, statePath)
+}
+
+func (d *Downloader) cleanResumeState(m3u8URL, outputFile string) error {
+	statePath := d.getStateFilePath(m3u8URL, outputFile)
+	return os.Remove(statePath)
+}
+
+// ==================== 下载核心（支持断点续传、并发、合并） ====================
+
+// Download 同步阻塞下载，支持断点续传和自动合并
 func (d *Downloader) Download(ctx context.Context, m3u8URL, outputFile string) *DownloadResult {
 	return d.download(ctx, m3u8URL, outputFile)
 }
@@ -235,13 +297,14 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 		}
 	}
 
-	// 3. 解析
-	initSegment, segments, segmentKeys, err := d.parsePlaylistEnhanced(playlist, baseURL)
+	// 3. 解析（增强版，给片段加上索引）
+	initSegment, segments, segmentKeys, err := d.parsePlaylistEnhancedWithIndex(playlist, baseURL)
 	if err != nil {
 		result.Error = fmt.Errorf("parse playlist: %w", err)
 		return result
 	}
-	if len(segments) == 0 {
+	totalSegments := len(segments)
+	if totalSegments == 0 {
 		result.Error = fmt.Errorf("no segments found")
 		return result
 	}
@@ -252,85 +315,303 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	}
 	outputPath := filepath.Join(d.config.OutputDir, outputFile)
 	if err := os.MkdirAll(d.config.OutputDir, 0755); err != nil {
-		result.Error = fmt.Errorf("mkdir: %w", err)
+		result.Error = fmt.Errorf("mkdir output dir: %w", err)
 		return result
 	}
 
-	// 5. 打开最终文件（覆盖或追加）
-	flag := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	file, err := os.OpenFile(outputPath, flag, 0644)
-	if err != nil {
-		result.Error = fmt.Errorf("open output: %w", err)
+	// 5. 断点续传：加载状态
+	var resumeState *ResumeState
+	if d.config.EnableResume {
+		resumeState, err = d.loadResumeState(m3u8URL, outputFile)
+		if err != nil {
+			d.sendError(fmt.Errorf("load resume state failed: %v, will restart", err))
+			resumeState = nil
+		}
+	}
+	// 校验状态是否匹配
+	if resumeState != nil && resumeState.TotalSegments != totalSegments {
+		d.sendError(fmt.Errorf("segment count mismatch (state:%d, actual:%d), restart", resumeState.TotalSegments, totalSegments))
+		resumeState = nil
+	}
+
+	// 初始化或重建状态
+	if resumeState == nil {
+		resumeState = &ResumeState{
+			M3U8URL:       m3u8URL,
+			OutputFile:    outputFile,
+			TotalSegments: totalSegments,
+			Completed:     []int{},
+			SegmentFiles:  make([]string, totalSegments),
+		}
+	}
+
+	// 6. 准备临时目录（存放单个片段文件）
+	tempDir := filepath.Join(d.config.ResumeStateDir, "segments", filepath.Base(outputFile))
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		result.Error = fmt.Errorf("mkdir temp dir: %w", err)
 		return result
 	}
-	defer file.Close()
 
-	// 6. 写入初始化段（如果有）
+	// 7. 处理初始化段（如果有，下载到单独文件，合并时使用）
+	initSegmentPath := ""
 	if initSegment != nil {
-		data, err := d.downloadSegment(ctx, initSegment.URL)
-		if err != nil {
-			result.Error = fmt.Errorf("init segment: %w", err)
+		initSegmentPath = filepath.Join(tempDir, "init.ts")
+		if _, err := os.Stat(initSegmentPath); os.IsNotExist(err) {
+			data, err := d.downloadSegment(ctx, initSegment.URL)
+			if err != nil {
+				result.Error = fmt.Errorf("init segment: %w", err)
+				return result
+			}
+			if err := os.WriteFile(initSegmentPath, data, 0644); err != nil {
+				result.Error = fmt.Errorf("write init segment: %w", err)
+				return result
+			}
+		}
+	}
+
+	// 8. 并发下载未完成的片段
+	completedMap := make(map[int]bool)
+	for _, idx := range resumeState.Completed {
+		completedMap[idx] = true
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, d.config.MaxConcurrent)
+	var downloadErr error
+	var errMu sync.Mutex
+	limiter := &RateLimiter{rate: int64(d.config.RateKB) * 1024}
+
+	for idx, segInfo := range segments {
+		if completedMap[idx] {
+			continue
+		}
+		wg.Add(1)
+		go func(index int, seg *SegmentInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// 片段临时文件路径
+			tempFilePath := filepath.Join(tempDir, fmt.Sprintf("segment_%05d.ts", index))
+			// 下载片段（支持重试、解密）
+			err := d.downloadSegmentToFile(ctx, seg, segmentKeys[index], limiter, tempFilePath)
+			if err != nil {
+				errMu.Lock()
+				if downloadErr == nil {
+					downloadErr = fmt.Errorf("segment %d: %w", index, err)
+				}
+				errMu.Unlock()
+				return
+			}
+
+			// 更新状态
+			resumeState.Completed = append(resumeState.Completed, index)
+			resumeState.SegmentFiles[index] = tempFilePath
+			if err := d.saveResumeState(resumeState); err != nil {
+				d.sendError(fmt.Errorf("save resume state failed: %v", err))
+			}
+
+			// 进度回调
+			if d.config.OnProgress != nil {
+				info, _ := os.Stat(tempFilePath)
+				size := int64(0)
+				if info != nil {
+					size = info.Size()
+				}
+				d.config.OnProgress(len(resumeState.Completed), totalSegments, index+1, size, 0)
+			}
+			d.sendError(fmt.Errorf("片段 %d/%d 完成", len(resumeState.Completed), totalSegments))
+		}(idx, segInfo)
+	}
+	wg.Wait()
+
+	if downloadErr != nil {
+		result.Error = downloadErr
+		return result
+	}
+
+	// 9. 所有片段下载完成，进行合并
+	var finalOutput string
+	if d.config.AutoMerge {
+		// 合并为 MP4
+		baseName := strings.TrimSuffix(outputPath, filepath.Ext(outputPath))
+		finalOutput = baseName + d.config.MergeOutputExt
+		if err := d.mergeToMP4(initSegmentPath, resumeState.SegmentFiles, finalOutput); err != nil {
+			result.Error = fmt.Errorf("merge to MP4 failed: %w", err)
 			return result
 		}
-		if _, err := file.Write(data); err != nil {
-			result.Error = fmt.Errorf("write init: %w", err)
+	} else {
+		// 直接拼接为 TS 文件
+		finalOutput = outputPath
+		if err := d.concatTSFiles(initSegmentPath, resumeState.SegmentFiles, finalOutput); err != nil {
+			result.Error = fmt.Errorf("concat TS failed: %w", err)
 			return result
 		}
 	}
 
-	// 7. 顺序下载每个片段
-	limiter := &RateLimiter{rate: int64(d.config.RateKB) * 1024}
-	var totalBytes int64
-	for idx, segInfo := range segments {
-		// 下载片段数据
-		var data []byte
-		if segInfo.Range != "" {
-			data, err = d.downloadPartialSegment(ctx, segInfo.URL, segInfo.Range)
-		} else {
-			data, err = d.downloadSegment(ctx, segInfo.URL)
+	// 10. 清理临时文件（根据配置）
+	if !d.config.KeepSegmentsAfterMerge {
+		for _, f := range resumeState.SegmentFiles {
+			_ = os.Remove(f)
 		}
-		if err != nil {
-			result.Error = fmt.Errorf("segment %d: %w", idx+1, err)
-			return result
+		if initSegmentPath != "" {
+			_ = os.Remove(initSegmentPath)
+		}
+		_ = os.RemoveAll(tempDir)
+	}
+
+	// 11. 清理状态文件
+	_ = d.cleanResumeState(m3u8URL, outputFile)
+
+	result.OutputFile = finalOutput
+	result.Segments = totalSegments
+	result.Size = d.getTotalSize(resumeState.SegmentFiles)
+	return result
+}
+
+// downloadSegmentToFile 下载单个片段并写入文件（支持重试、解密、限速）
+func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo, keyInfo *KeyInfo, limiter *RateLimiter, destPath string) error {
+	// 如果文件已存在且大小 > 0，直接跳过（片段级续传）
+	if info, err := os.Stat(destPath); err == nil && info.Size() > 0 {
+		d.sendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
+		return nil
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			sleepTime := time.Duration(1<<uint(attempt)) * time.Second
+			if sleepTime > 10*time.Second {
+				sleepTime = 10 * time.Second
+			}
+			time.Sleep(sleepTime)
+			d.sendError(fmt.Errorf("retry segment %d (attempt %d)", seg.Index, attempt))
 		}
 
-		// 解密
-		keyInfo := segmentKeys[idx]
+		// 下载原始数据
+		var data []byte
+		var err error
+		if seg.Range != "" {
+			data, err = d.doRequest(ctx, seg.URL, "bytes="+seg.Range)
+		} else {
+			data, err = d.doRequest(ctx, seg.URL, "")
+		}
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// 解密（如果需要）
 		if keyInfo != nil {
-			key, iv, err := d.prepareKey(ctx, keyInfo, idx)
+			key, iv, err := d.prepareKey(ctx, keyInfo, seg.Index)
 			if err != nil {
-				result.Error = fmt.Errorf("segment %d key: %w", idx+1, err)
-				return result
+				lastErr = err
+				continue
 			}
 			data, err = d.decryptAES128CBC(data, key, iv)
 			if err != nil {
-				result.Error = fmt.Errorf("segment %d decrypt: %w", idx+1, err)
-				return result
+				lastErr = err
+				continue
 			}
 		}
 
 		// 限速
 		limiter.Wait(len(data))
 
-		// 写入文件
-		if _, err := file.Write(data); err != nil {
-			result.Error = fmt.Errorf("write segment %d: %w", idx+1, err)
-			return result
+		// 写入临时文件
+		if err := os.WriteFile(destPath, data, 0644); err != nil {
+			lastErr = err
+			continue
 		}
-		totalBytes += int64(len(data))
-
-		// 进度回调
-		if d.config.OnProgress != nil {
-			d.config.OnProgress(idx+1, len(segments), idx+1, int64(len(data)), totalBytes)
-		}
-		d.sendError(fmt.Errorf("片段 %d/%d 完成", idx+1, len(segments)))
+		return nil
 	}
-
-	result.OutputFile = outputPath
-	result.Segments = len(segments)
-	result.Size = totalBytes
-	return result
+	return fmt.Errorf("failed after %d retries: %w", d.config.MaxRetries, lastErr)
 }
+
+// mergeToMP4 使用 ffmpeg 将 TS 片段合并为 MP4
+func (d *Downloader) mergeToMP4(initSegmentPath string, segmentFiles []string, outputPath string) error {
+	// 创建 concat 文件列表
+	listFilePath := filepath.Join(d.config.ResumeStateDir, "concat_list_"+filepath.Base(outputPath)+".txt")
+	var listContent strings.Builder
+	if initSegmentPath != "" {
+		absPath, _ := filepath.Abs(initSegmentPath)
+		listContent.WriteString(fmt.Sprintf("file '%s'\n", absPath))
+	}
+	for _, f := range segmentFiles {
+		if f == "" {
+			continue
+		}
+		absPath, _ := filepath.Abs(f)
+		listContent.WriteString(fmt.Sprintf("file '%s'\n", absPath))
+	}
+	if err := os.WriteFile(listFilePath, []byte(listContent.String()), 0644); err != nil {
+		return err
+	}
+	defer os.Remove(listFilePath)
+
+	ffmpegPath := d.config.FfmpegPath
+	if ffmpegPath == "" {
+		ffmpegPath = "ffmpeg"
+	}
+	cmd := exec.CommandContext(context.Background(), ffmpegPath,
+		"-f", "concat",
+		"-safe", "0",
+		"-i", listFilePath,
+		"-c", "copy",
+		"-bsf:a", "aac_adtstoasc",
+		outputPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg error: %v, output: %s", err, output)
+	}
+	return nil
+}
+
+// concatTSFiles 直接拼接 TS 文件（不转码）
+func (d *Downloader) concatTSFiles(initSegmentPath string, segmentFiles []string, outputPath string) error {
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	if initSegmentPath != "" {
+		data, err := os.ReadFile(initSegmentPath)
+		if err != nil {
+			return err
+		}
+		if _, err := outFile.Write(data); err != nil {
+			return err
+		}
+	}
+	for _, f := range segmentFiles {
+		if f == "" {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		if _, err := outFile.Write(data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// getTotalSize 计算所有片段文件的总大小
+func (d *Downloader) getTotalSize(files []string) int64 {
+	var total int64
+	for _, f := range files {
+		if info, err := os.Stat(f); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
+// ==================== 辅助函数（原有函数增强） ====================
 
 // fetchPlaylist 获取 M3U8 内容及 base URL
 func (d *Downloader) fetchPlaylist(ctx context.Context, m3u8URL string) (string, string, error) {
@@ -369,6 +650,7 @@ func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, segmentIn
 	return key, iv, err
 }
 
+// decryptAES128CBC 优化了 PKCS#7 填充验证
 func (d *Downloader) decryptAES128CBC(ciphertext, key, iv []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -380,14 +662,22 @@ func (d *Downloader) decryptAES128CBC(ciphertext, key, iv []byte) ([]byte, error
 	plaintext := make([]byte, len(ciphertext))
 	mode := cipher.NewCBCDecrypter(block, iv)
 	mode.CryptBlocks(plaintext, ciphertext)
-	// 去除 PKCS#7 填充
-	if len(plaintext) > 0 {
-		paddingLen := int(plaintext[len(plaintext)-1])
-		if paddingLen <= aes.BlockSize && paddingLen > 0 {
-			plaintext = plaintext[:len(plaintext)-paddingLen]
+
+	// 去除 PKCS#7 填充（带验证）
+	if len(plaintext) == 0 {
+		return plaintext, nil
+	}
+	paddingLen := int(plaintext[len(plaintext)-1])
+	if paddingLen < 1 || paddingLen > aes.BlockSize {
+		return nil, fmt.Errorf("invalid padding length: %d", paddingLen)
+	}
+	// 验证填充内容
+	for i := 0; i < paddingLen; i++ {
+		if plaintext[len(plaintext)-1-i] != byte(paddingLen) {
+			return nil, fmt.Errorf("invalid padding")
 		}
 	}
-	return plaintext, nil
+	return plaintext[:len(plaintext)-paddingLen], nil
 }
 
 func (d *Downloader) parseIV(ivStr string) ([]byte, error) {
@@ -398,13 +688,14 @@ func (d *Downloader) parseIV(ivStr string) ([]byte, error) {
 	return hex.DecodeString(ivStr)
 }
 
-// parsePlaylistEnhanced 解析 M3U8，返回 init 段、片段列表、每个片段对应的密钥
-func (d *Downloader) parsePlaylistEnhanced(playlist, baseURL string) (*SegmentInfo, []*SegmentInfo, []*KeyInfo, error) {
+// parsePlaylistEnhancedWithIndex 解析 M3U8，为每个片段分配索引
+func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*SegmentInfo, []*SegmentInfo, []*KeyInfo, error) {
 	scanner := bufio.NewScanner(strings.NewReader(playlist))
 	var initSegment *SegmentInfo
 	var segments []*SegmentInfo
 	var segmentKeys []*KeyInfo
 	var currentKey *KeyInfo
+	segmentIndex := 0
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -422,16 +713,18 @@ func (d *Downloader) parsePlaylistEnhanced(playlist, baseURL string) (*SegmentIn
 				urlLine := strings.TrimSpace(scanner.Text())
 				if !strings.HasPrefix(urlLine, "#") {
 					segURL := d.resolveURL(urlLine, baseURL)
-					segments = append(segments, &SegmentInfo{URL: segURL, Range: byteRange})
+					segments = append(segments, &SegmentInfo{URL: segURL, Range: byteRange, Index: segmentIndex})
 					segmentKeys = append(segmentKeys, currentKey)
+					segmentIndex++
 				}
 			}
 		case strings.HasPrefix(line, "#"):
 			// 其他标签忽略
 		default:
 			segURL := d.resolveURL(line, baseURL)
-			segments = append(segments, &SegmentInfo{URL: segURL})
+			segments = append(segments, &SegmentInfo{URL: segURL, Index: segmentIndex})
 			segmentKeys = append(segmentKeys, currentKey)
+			segmentIndex++
 		}
 	}
 	return initSegment, segments, segmentKeys, nil
@@ -550,7 +843,7 @@ func (d *Downloader) generateFileName(m3u8URL string) string {
 	return base + ".ts"
 }
 
-// RemuxTS2MP4 简单复制（实际需用 ffmpeg）
+// RemuxTS2MP4 简单复制（保留兼容，但推荐使用自动合并）
 func RemuxTS2MP4(tsFile, mp4File string) error {
 	in, err := os.Open(tsFile)
 	if err != nil {
