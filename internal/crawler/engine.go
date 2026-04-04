@@ -7,7 +7,7 @@ import (
 	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
-	"github.com/ydtg1993/papa/pkg/monitor"
+	"github.com/ydtg1993/papa/pkg/track"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
 	"sync"
@@ -18,11 +18,13 @@ type Engine struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	stages      map[string]*stageInfo
+	activeTasks map[string]bool // hash去重任务表 key: "stage|url"
+	activeMu    sync.RWMutex
 	mu          sync.RWMutex
 	db          *gorm.DB
 	cfg         *config.Config
 	browserPool *browser.Pool
-	monitors    map[string]*monitor.Monitor[*Task] // key: stage name 分阶段监控器组
+	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
 	LoggerSet   *loggers.LoggerSet
 }
 
@@ -56,11 +58,13 @@ func NewEngine(pool *browser.Pool, db *gorm.DB, cfg *config.Config, loggerSet *l
 		ctx:         ctx,
 		cancel:      cancel,
 		stages:      make(map[string]*stageInfo),
+		activeTasks: make(map[string]bool),
 		db:          db,
-		LoggerSet:   loggerSet,
 		cfg:         cfg,
 		browserPool: pool,
+		LoggerSet:   loggerSet,
 	}
+	engine.loadActiveTasks()
 	return engine
 }
 
@@ -101,7 +105,7 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(cfg.Backoff):
+			case <-time.After(cfg.Backoff * (1 << uint(attempt))):
 				continue
 			}
 		}
@@ -111,36 +115,46 @@ func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
 	})
 	// 如果全局配置开启了监控，则为该阶段创建监控器并启动
 	if e.cfg.Monitor.Enabled {
-		mon := monitor.NewMonitor(pool)
-		mon.Start()
-		e.SetMonitor(f.GetStage(), mon)
+		stats := track.NewStatsQueue(pool)
+		stats.Start()
+		e.SetStatsQueue(f.GetStage(), stats)
 		e.LoggerSet.Engine.Infof("monitor started for stage: %s", f.GetStage())
 	}
 	return nil
 }
 
 // SubmitTask 任务提交
-func (e *Engine) SubmitTask(task *Task) error {
+func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
 	if task.Stage == "" || task.URL == "" {
 		return fmt.Errorf("task stage or url is empty: %v", task)
 	}
-	if err := e.submitToPool(task); err != nil {
-		return err
+	//加入去重hash map
+	key := task.Stage + "|" + task.URL
+	e.activeMu.RLock()
+	if e.activeTasks[key] {
+		e.activeMu.RUnlock()
+		return fmt.Errorf("task already exists: %s", key)
 	}
-	if !task.Insert(e.db, e.LoggerSet.DB) {
+	e.activeMu.RUnlock()
+	// 提交到 pool 前先插入数据库（避免并发竞争）
+	if insertToDB && !task.Insert(e.db, e.LoggerSet.DB) {
 		return fmt.Errorf("insert crawler task to db failed")
 	}
-	return nil
-}
+	// 插入成功后加入内存 map
+	e.activeMu.Lock()
+	e.activeTasks[key] = true
+	e.activeMu.Unlock()
 
-func (e *Engine) submitToPool(task *Task) error {
-	e.mu.RLock()
-	info, ok := e.stages[task.Stage]
-	e.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("stage %s not found", task.Stage)
+	info := e.stages[task.Stage]
+	if err := info.WorkerPool.Submit(task); err != nil {
+		// 提交失败，回滚内存 map 和数据库状态
+		e.activeMu.Lock()
+		delete(e.activeTasks, key)
+		e.activeMu.Unlock()
+		_ = task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusFailed, err)
+		return err
 	}
-	return info.WorkerPool.Submit(task)
+	return nil
 }
 
 // Stop 停止engine
@@ -184,23 +198,23 @@ func (e *Engine) GetBrowserPool() *browser.Pool {
 	return e.browserPool
 }
 
-// SetMonitor 设置阶段监控器
-func (e *Engine) SetMonitor(stage string, mon *monitor.Monitor[*Task]) {
+// SetStatsQueue 设置阶段统计信息管理器
+func (e *Engine) SetStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.monitors == nil {
-		e.monitors = make(map[string]*monitor.Monitor[*Task])
+	if e.statsQueue == nil {
+		e.statsQueue = make(map[string]*track.StatsQueue[*Task])
 	}
-	e.monitors[stage] = mon
+	e.statsQueue[stage] = mon
 }
 
-// GetMonitors 获取全部监控器
-func (e *Engine) GetMonitors() map[string]*monitor.Monitor[*Task] {
+// GetStatsQueue 获取全部统计信息控制器
+func (e *Engine) GetStatsQueue() map[string]*track.StatsQueue[*Task] {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	// 返回副本
-	cp := make(map[string]*monitor.Monitor[*Task], len(e.monitors))
-	for k, v := range e.monitors {
+	cp := make(map[string]*track.StatsQueue[*Task], len(e.statsQueue))
+	for k, v := range e.statsQueue {
 		cp[k] = v
 	}
 	return cp
@@ -238,7 +252,7 @@ func (e *Engine) RecoverTasks() {
 		}
 
 		// 尝试提交到队列（非阻塞）
-		if err := e.submitToPool(task); err != nil {
+		if err := e.SubmitTask(task, false); err != nil {
 			e.LoggerSet.Engine.Errorf("recover task %d (url: %s) submit failed: %v",
 				t.ID, t.URL, err)
 			failIDs = append(failIDs, t.ID)
@@ -269,5 +283,23 @@ func (e *Engine) RecoverTasks() {
 		} else {
 			e.LoggerSet.Engine.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
 		}
+	}
+}
+
+// loadActiveTasks 启动时加载已处理任务到去重hash map
+func (e *Engine) loadActiveTasks() {
+	var tasks []models.CrawlerTask
+	if err := e.db.Where("status IN (?)",
+		[]models.TaskStatus{
+			models.TaskStatusSuccess,
+			models.TaskStatusFailed}).Find(&tasks).Error; err != nil {
+		e.LoggerSet.DB.Errorf("load active tasks failed: %v", err)
+		return
+	}
+	e.activeMu.Lock()
+	defer e.activeMu.Unlock()
+	for _, t := range tasks {
+		key := t.Stage + "|" + t.URL
+		e.activeTasks[key] = true
 	}
 }

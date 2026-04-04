@@ -1,4 +1,4 @@
-package monitor
+package track
 
 import (
 	"github.com/ydtg1993/papa/pkg/workerpool"
@@ -26,8 +26,8 @@ type GlobalStats struct {
 	MinTime     time.Duration // 最短任务耗时
 }
 
-// Monitor 监控消费者，统计任务和 worker 的活动
-type Monitor[T workerpool.Tasker] struct {
+// StatsQueue 监控消息队列 监控消费者，统计任务和 worker 的活动
+type StatsQueue[T workerpool.Tasker] struct {
 	WorkPool    *workerpool.WorkerPool[T]
 	mu          sync.RWMutex
 	workerStats map[int]*WorkerStat // key: workerID
@@ -35,9 +35,9 @@ type Monitor[T workerpool.Tasker] struct {
 	stopCh      chan struct{}
 }
 
-// NewMonitor 创建监控器
-func NewMonitor[T workerpool.Tasker](pool *workerpool.WorkerPool[T]) *Monitor[T] {
-	return &Monitor[T]{
+// NewStatsQueue 创建监控器
+func NewStatsQueue[T workerpool.Tasker](pool *workerpool.WorkerPool[T]) *StatsQueue[T] {
+	return &StatsQueue[T]{
 		WorkPool:    pool,
 		workerStats: make(map[int]*WorkerStat),
 		stopCh:      make(chan struct{}),
@@ -45,7 +45,7 @@ func NewMonitor[T workerpool.Tasker](pool *workerpool.WorkerPool[T]) *Monitor[T]
 }
 
 // Start 启动监控（在一个 goroutine 中）
-func (m *Monitor[T]) Start() {
+func (m *StatsQueue[T]) Start() {
 	go func() {
 		// run 持续消费 Activities 通道
 		activities := m.WorkPool.Activities()
@@ -65,7 +65,7 @@ func (m *Monitor[T]) Start() {
 }
 
 // processActivity 处理单个活动事件
-func (m *Monitor[T]) processActivity(act workerpool.Activity) {
+func (m *StatsQueue[T]) processActivity(act workerpool.Activity) {
 	switch act.Type {
 	case workerpool.ActivityTaskStart:
 		// 任务开始：可以记录开始时间到某个临时存储，但这里我们不记录，因为结束时已有 Duration
@@ -76,7 +76,7 @@ func (m *Monitor[T]) processActivity(act workerpool.Activity) {
 }
 
 // updateStats 更新统计信息
-func (m *Monitor[T]) updateStats(act workerpool.Activity) {
+func (m *StatsQueue[T]) updateStats(act workerpool.Activity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -122,7 +122,7 @@ func (m *Monitor[T]) updateStats(act workerpool.Activity) {
 }
 
 // GetWorkerStats 获取指定 worker 的统计（返回副本）
-func (m *Monitor[T]) GetWorkerStats(workerID int) (WorkerStat, bool) {
+func (m *StatsQueue[T]) GetWorkerStats(workerID int) (WorkerStat, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ws, ok := m.workerStats[workerID]
@@ -133,7 +133,7 @@ func (m *Monitor[T]) GetWorkerStats(workerID int) (WorkerStat, bool) {
 }
 
 // GetAllWorkerStats 获取所有 worker 统计
-func (m *Monitor[T]) GetAllWorkerStats() map[int]WorkerStat {
+func (m *StatsQueue[T]) GetAllWorkerStats() map[int]WorkerStat {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make(map[int]WorkerStat, len(m.workerStats))
@@ -144,13 +144,13 @@ func (m *Monitor[T]) GetAllWorkerStats() map[int]WorkerStat {
 }
 
 // GetGlobalStats 获取全局统计（返回副本）
-func (m *Monitor[T]) GetGlobalStats() GlobalStats {
+func (m *StatsQueue[T]) GetGlobalStats() GlobalStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.globalStats
 }
 
 // Stop 停止监控器（关闭内部的 goroutine）
-func (m *Monitor[T]) Stop() {
+func (m *StatsQueue[T]) Stop() {
 	close(m.stopCh)
 }

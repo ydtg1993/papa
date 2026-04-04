@@ -29,7 +29,7 @@ func (j *CatalogJob) Run() {
 		Retry: 0,
 	}
 	// 提交任务（非阻塞，内部会写入数据库并加入队列）
-	if err := j.engine.SubmitTask(task); err != nil {
+	if err := j.engine.SubmitTask(task, true); err != nil {
 		j.logger.Errorf("catalog job submit failed: %v", err)
 	} else {
 		j.logger.Infof("catalog job submitted task: %s", task.URL)

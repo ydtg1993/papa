@@ -13,7 +13,7 @@ import (
 	"github.com/ydtg1993/papa/internal/server"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/database"
-	"github.com/ydtg1993/papa/pkg/monitor"
+	"github.com/ydtg1993/papa/pkg/track"
 	"gorm.io/gorm"
 	"time"
 )
@@ -104,7 +104,7 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 	if err := engine.SubmitTask(&crawler.Task{
 		URL:   cfg.Crawler.Target,
 		Stage: fetchCatalog.GetStage(),
-	}); err != nil {
+	}, true); err != nil {
 		logger.Errorf("submit initial task: %v", err)
 	}
 
@@ -121,19 +121,20 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
 	// 启动监控 HTTP 服务（如果配置启用）
-	if a.Config.Monitor.Enabled {
-		getter := func() map[string]*monitor.Monitor[*crawler.Task] {
-			return a.Engine.GetMonitors()
-		}
-		// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
-		mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
-		go mServer.Start(ctx)
-	}
+	mo := a.monitor(ctx)
+	// 任务计划
+	sched := a.schedule()
 
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
 	a.Engine.Stop(5 * time.Second)
+	if mo != nil {
+		mo.Stop()
+	}
+	if sched != nil {
+		sched.Stop()
+	}
 	if a.BrowserPool != nil {
 		a.BrowserPool.Close()
 	}
@@ -143,10 +144,24 @@ func (a *App) Run(ctx context.Context) {
 	a.Logger.Sys.Info("shutdown completed")
 }
 
+// monitor
+func (a *App) monitor(ctx context.Context) *server.Monitor {
+	if a.Config.Monitor.Enabled == false {
+		return nil
+	}
+	getter := func() map[string]*track.StatsQueue[*crawler.Task] {
+		return a.Engine.GetStatsQueue()
+	}
+	// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
+	mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
+	go mServer.Start(ctx)
+	return mServer
+}
+
 // 任务计划
-func (a *App) schedule() {
+func (a *App) schedule() *scheduler.Scheduler {
 	if a.Config.Scheduler.Enabled == false {
-		return
+		return nil
 	}
 	sched := scheduler.NewScheduler(a.Engine, a.Config.Scheduler.Timezone)
 	for _, jobCfg := range a.Config.Scheduler.Jobs {
@@ -169,4 +184,5 @@ func (a *App) schedule() {
 	}
 
 	sched.Start()
+	return sched
 }

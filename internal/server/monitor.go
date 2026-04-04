@@ -4,7 +4,8 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"github.com/ydtg1993/papa/pkg/monitor"
+	"errors"
+	"github.com/ydtg1993/papa/pkg/track"
 	"html/template"
 	"net/http"
 	"strconv"
@@ -18,7 +19,7 @@ import (
 var templateFS embed.FS
 
 // MonitorGetter 定义获取所有阶段监控器的函数类型
-type MonitorGetter func() map[string]*monitor.Monitor[*crawler.Task]
+type MonitorGetter func() map[string]*track.StatsQueue[*crawler.Task]
 
 // Monitor Server监控 HTTP 服务器
 type Monitor struct {
@@ -74,9 +75,13 @@ func (s *Monitor) Start(ctx context.Context) {
 	}()
 
 	s.logger.Infof("monitor server starting on %s", addr)
-	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		s.logger.Errorf("monitor server failed: %v", err)
 	}
+}
+
+func (s *Monitor) Stop() {
+	_ = s.server.Close()
 }
 
 // apiHandler 返回 JSON 格式的监控数据

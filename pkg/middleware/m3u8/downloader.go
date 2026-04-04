@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/time/rate"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -179,15 +180,27 @@ func (d *Downloader) applyHeaders(req *http.Request) {
 
 // RateLimiter 限速器
 type RateLimiter struct {
-	rate int64
+	limiter *rate.Limiter
+}
+
+// NewRateLimiter 创建限速器，rateKB 为 KB/s
+func NewRateLimiter(rateKB int) *RateLimiter {
+	if rateKB <= 0 {
+		return nil // 不限速
+	}
+	// 转换为 bytes/s
+	limit := rate.Limit(float64(rateKB) * 1024)
+	return &RateLimiter{
+		limiter: rate.NewLimiter(limit, int(limit)), // 桶大小等于速率
+	}
 }
 
 func (r *RateLimiter) Wait(n int) {
-	if r.rate <= 0 {
+	if r == nil || r.limiter == nil {
 		return
 	}
-	sleep := time.Duration(int64(time.Second) * int64(n) / r.rate)
-	time.Sleep(sleep)
+	// 等待 n 个字节的令牌
+	_ = r.limiter.WaitN(context.Background(), n)
 }
 
 // SegmentInfo 片段信息（增加 Index 字段）
@@ -379,7 +392,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	sem := make(chan struct{}, d.config.MaxConcurrent)
 	var downloadErr error
 	var errMu sync.Mutex
-	limiter := &RateLimiter{rate: int64(d.config.RateKB) * 1024}
+	limiter := NewRateLimiter(d.config.RateKB)
 
 	for idx, segInfo := range segments {
 		if completedMap[idx] {
@@ -841,20 +854,4 @@ func (d *Downloader) generateFileName(m3u8URL string) string {
 		base = fmt.Sprintf("video_%d", time.Now().Unix())
 	}
 	return base + ".ts"
-}
-
-// RemuxTS2MP4 简单复制（保留兼容，但推荐使用自动合并）
-func RemuxTS2MP4(tsFile, mp4File string) error {
-	in, err := os.Open(tsFile)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(mp4File)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
 }

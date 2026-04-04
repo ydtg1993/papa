@@ -64,7 +64,7 @@ func TestDownload_MultiPart(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
-	cfg.NumWorkers = 4
+	cfg.MaxConcurrent = 4
 	cfg.ChunkSize = 1024
 
 	d := NewDownloader(cfg)

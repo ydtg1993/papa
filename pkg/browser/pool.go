@@ -114,8 +114,13 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 	p.mu.Unlock()
 	select {
 	case b := <-p.browsers:
-		if b == nil {
-			return nil, fmt.Errorf("browser pool closed")
+		if !b.IsAlive() {
+			b.Close()
+			newB, err := p.newBrowser()
+			if err != nil {
+				return nil, fmt.Errorf("failed to recreate dead browser: %v", err)
+			}
+			b = newB
 		}
 		b.markUsed()
 		return b, nil
@@ -136,9 +141,16 @@ func (p *Pool) Put(b *Browser) error {
 		return fmt.Errorf("browser pool closed")
 	}
 	p.mu.Unlock()
-
-	// 空闲超时检查
-	if p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime {
+	// 检查浏览器是否存活
+	if !b.IsAlive() {
+		b.Close()
+		newB, err := p.newBrowser()
+		if err != nil {
+			return fmt.Errorf("failed to recreate dead browser: %v", err)
+		}
+		b = newB
+	} else if p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime {
+		// 空闲超时检查
 		b.Close()
 		newB, err := p.newBrowser()
 		if err != nil {
