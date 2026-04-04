@@ -75,6 +75,10 @@ func (t *Task) UpdateStatus(db *gorm.DB, logger *logrus.Logger, status models.Ta
 	return true
 }
 
+func (t *Task) Unique() string {
+	return t.Stage + "|" + t.URL
+}
+
 type Handler interface {
 	GetStage() string
 	FetchHandler(ctx context.Context, task *Task, engine *Engine) error

@@ -14,13 +14,6 @@ import (
 	"time"
 )
 
-type EngineInterface interface {
-	SubmitTask(task *Task, insertToDB bool) error
-	RecoverTasks()
-	GetBrowserPool() *browser.Pool
-	Stop(timeout time.Duration)
-}
-
 type Engine struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -136,11 +129,10 @@ func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
 		return fmt.Errorf("task stage or url is empty: %v", task)
 	}
 	//加入去重hash map
-	key := task.Stage + "|" + task.URL
 	e.activeMu.RLock()
-	if e.activeTasks[key] {
+	if e.activeTasks[task.Unique()] {
 		e.activeMu.RUnlock()
-		return fmt.Errorf("task already exists: %s", key)
+		return fmt.Errorf("task already exists: %s", task.Unique())
 	}
 	e.activeMu.RUnlock()
 	// 提交到 pool 前先插入数据库（避免并发竞争）
@@ -149,14 +141,14 @@ func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
 	}
 	// 插入成功后加入内存 map
 	e.activeMu.Lock()
-	e.activeTasks[key] = true
+	e.activeTasks[task.Unique()] = true
 	e.activeMu.Unlock()
 
 	info := e.stages[task.Stage]
 	if err := info.WorkerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
 		e.activeMu.Lock()
-		delete(e.activeTasks, key)
+		delete(e.activeTasks, task.Unique())
 		e.activeMu.Unlock()
 		_ = task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusFailed, err)
 		return err
@@ -257,8 +249,9 @@ func (e *Engine) RecoverTasks() {
 			Stage: t.Stage,
 			Retry: t.Retry,
 		}
-
-		// 尝试提交到队列（非阻塞）
+		// 剔除去重hash map的暂存
+		delete(e.activeTasks, task.Unique())
+		// 重新提交到队列（非阻塞）
 		if err := e.SubmitTask(task, false); err != nil {
 			e.LoggerSet.Engine.Errorf("recover task %d (url: %s) submit failed: %v",
 				t.ID, t.URL, err)
@@ -298,6 +291,8 @@ func (e *Engine) loadActiveTasks() {
 	var tasks []models.CrawlerTask
 	if err := e.db.Where("status IN (?)",
 		[]models.TaskStatus{
+			models.TaskStatusPending,
+			models.TaskStatusProcessing,
 			models.TaskStatusSuccess,
 			models.TaskStatusFailed}).Find(&tasks).Error; err != nil {
 		e.LoggerSet.DB.Errorf("load active tasks failed: %v", err)
@@ -306,7 +301,7 @@ func (e *Engine) loadActiveTasks() {
 	e.activeMu.Lock()
 	defer e.activeMu.Unlock()
 	for _, t := range tasks {
-		key := t.Stage + "|" + t.URL
-		e.activeTasks[key] = true
+		task := Task{URL: t.URL, Stage: t.Stage}
+		e.activeTasks[task.Unique()] = true
 	}
 }

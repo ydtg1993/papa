@@ -14,6 +14,7 @@ type Tasker interface {
 	IncRetry(db *gorm.DB, logger *logrus.Logger)
 	Insert(db *gorm.DB, logger *logrus.Logger) bool
 	UpdateStatus(db *gorm.DB, logger *logrus.Logger, status models.TaskStatus, err error) bool
+	Unique() string
 }
 
 // TaskHandler 处理单个任务
