@@ -15,10 +15,10 @@ const (
 
 type CrawlerTask struct {
 	ID          uint       `gorm:"primarykey;comment:任务ID"`
-	URL         string     `gorm:"type:varchar(500);not null;comment:任务URL"`
+	Stage       string     `gorm:"type:varchar(50);not null;uniqueIndex:idx_stage_url,priority:1;comment:所属阶段(catalog/detail等)"`
+	URL         string     `gorm:"type:varchar(500);not null;uniqueIndex:idx_stage_url,priority:2;comment:任务URL"`
 	Title       string     `gorm:"type:text;comment:页面标题"`
 	Content     string     `gorm:"type:longtext;comment:页面HTML内容"`
-	Stage       string     `gorm:"type:varchar(50);not null;comment:所属阶段(catalog/detail等)"`
 	Retry       int        `gorm:"default:0;comment:已重试次数"`
 	Status      TaskStatus `gorm:"default:0;comment:0:待处理 1:成功 2:失败 3:处理中"`
 	Error       string     `gorm:"type:text;comment:错误信息"`
