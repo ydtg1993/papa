@@ -58,7 +58,6 @@
     │ ├── config/ # 配置加载
     │ ├── crawler/ # 引擎核心
     │ ├── fetcher/ # 抓取阶段实现
-    │ ├── loggers/ # 日志封装（sys, engine, scheduler, db, browser...）
     │ ├── models/ # 数据模型
     │ ├── scheduler/ # 定时任务调度器
     │ └── server/ # Web 监控服务
@@ -66,6 +65,7 @@
     │ ├── browser/ # 浏览器池
     │ ├── database/ # 数据库连接
     │ ├── middleware/ # 下载中间件（filedown, m3u8, proxy）
+    │ ├── loggers/ # 日志封装（sys, engine, scheduler, db, browser...）
     │ ├── monitor/ # 任务监控
     │ └── workerpool/ # 泛型工作池
     ├── logs/ # 日志文件目录（运行时生成）
@@ -163,4 +163,3 @@ go run cmd/crawler/main.go
 - 自动合并 MP4 需要系统安装 ffmpeg，若不使用可设置 auto_merge: false
 
 ### 本项目基于[MIT license](https://github.com/ydtg1993/papa/LICENSE.txt)开源
-    N4
