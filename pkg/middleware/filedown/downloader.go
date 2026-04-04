@@ -3,6 +3,7 @@ package filedown
 import (
 	"context"
 	"fmt"
+	pkg2 "github.com/ydtg1993/papa/pkg"
 	"mime"
 	"net/http"
 	"net/url"
@@ -15,12 +16,12 @@ import (
 )
 
 type Downloader struct {
-	config  *Config
-	client  *http.Client
-	mu      sync.RWMutex
-	referer string
-	cookie  string
-	errors  chan error //错误消息队列
+	config     *Config
+	client     *http.Client
+	mu         sync.RWMutex
+	referer    string
+	cookie     string
+	trackQueue *pkg2.MsgQueue[any] //系统消息队列
 }
 
 func NewDownloader(cfg *Config) *Downloader {
@@ -33,7 +34,7 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		errors: make(chan error, 10),
+		trackQueue: pkg2.NewMsgQueue[any](10),
 	}
 }
 
@@ -86,7 +87,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 
 	resp, err := d.client.Do(req)
 	if err != nil || resp.StatusCode >= 400 {
-		d.sendError(fmt.Errorf("HEAD失败，降级为单线程"))
+		d.trackQueue.SendError(fmt.Errorf("HEAD失败，降级为单线程"))
 		return d.downloadSingle(ctx, fileURL, fileName)
 	}
 	defer resp.Body.Close()
@@ -95,7 +96,7 @@ func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *Do
 	supportRange := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
 
 	if totalSize <= 0 || !supportRange {
-		d.sendError(fmt.Errorf("不支持分片下载"))
+		d.trackQueue.SendError(fmt.Errorf("不支持分片下载"))
 		return d.downloadSingle(ctx, fileURL, fileName)
 	}
 
@@ -361,14 +362,5 @@ func guessExtFromContentType(ct string) string {
 
 // GetErrors 获取错误消息队列
 func (d *Downloader) GetErrors() <-chan error {
-	return d.errors
-}
-
-// sendError非阻塞发送错误
-func (d *Downloader) sendError(err error) {
-	select {
-	case d.errors <- err:
-	default:
-		break
-	}
+	return d.trackQueue.Errors()
 }

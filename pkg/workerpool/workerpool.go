@@ -3,6 +3,7 @@ package workerpool
 import (
 	"context"
 	"fmt"
+	pkg2 "github.com/ydtg1993/papa/pkg"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,11 +17,10 @@ type WorkerPool[T Tasker] struct {
 	stopOnce   sync.Once
 	stopped    atomic.Bool
 	cancel     context.CancelFunc
-	submitted  atomic.Int64  // 已提交的任务总数
-	completed  atomic.Int64  // 已完成的任务数
-	failed     atomic.Int64  // 失败的任务数（可选）
-	activities chan Activity //活动消息队列
-	errors     chan error    //错误消息队列
+	submitted  atomic.Int64             // 已提交的任务总数
+	completed  atomic.Int64             // 已完成的任务数
+	failed     atomic.Int64             // 失败的任务数（可选）
+	trackQueue *pkg2.MsgQueue[Activity] //系统消息队列
 }
 
 // NewWorkerPool 创建工作池
@@ -28,8 +28,7 @@ func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
 	return &WorkerPool[T]{
 		taskQueue:  make(chan T, queueSize),
 		workers:    workers,
-		errors:     make(chan error, workers*queueSize*2),
-		activities: make(chan Activity, workers*queueSize*2),
+		trackQueue: pkg2.NewMsgQueue[Activity](10),
 	}
 }
 
@@ -42,7 +41,7 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 			for task := range p.taskQueue {
 				p.processTask(ctx, workerID, task, handler)
 			}
-			p.sendActivity(Activity{
+			p.trackQueue.SendActivity(Activity{
 				Type:     ActivityWorkerStop,
 				WorkerID: workerID,
 				EndTime:  time.Now(),
@@ -53,7 +52,7 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 
 func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, handler TaskHandler[T]) {
 	start := time.Now()
-	p.sendActivity(Activity{
+	p.trackQueue.SendActivity(Activity{
 		Type:      ActivityTaskStart,
 		WorkerID:  workerID,
 		Task:      task,
@@ -62,7 +61,7 @@ func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, h
 
 	err := handler(ctx, task)
 
-	p.sendActivity(Activity{
+	p.trackQueue.SendActivity(Activity{
 		Type:      ActivityTaskEnd,
 		WorkerID:  workerID,
 		Task:      task,
@@ -74,37 +73,16 @@ func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, h
 
 	if err != nil {
 		p.failed.Add(1)
-		p.sendError(fmt.Errorf("worker %d: %w", workerID, err))
+		p.trackQueue.SendError(fmt.Errorf("worker %d: %w", workerID, err))
 	} else {
 		p.completed.Add(1)
-	}
-}
-
-func (p *WorkerPool[T]) sendActivity(act Activity) {
-	select {
-	case p.activities <- act:
-	default:
-		select {
-		case p.errors <- fmt.Errorf("activity send to channel dropped"):
-		default:
-			break
-		}
-	}
-}
-
-// sendError非阻塞发送错误
-func (p *WorkerPool[T]) sendError(err error) {
-	select {
-	case p.errors <- err:
-	default:
-		break
 	}
 }
 
 // Submit 提交任务，若已停止则拒绝
 func (p *WorkerPool[T]) Submit(task T) error {
 	if p.stopped.Load() {
-		p.sendError(fmt.Errorf("worker pool already stopped,failed to submit task: %v", task))
+		p.trackQueue.SendError(fmt.Errorf("worker pool already stopped,failed to submit task: %v", task))
 		return fmt.Errorf("worker pool already stopped,failed to submit task: %v", task)
 	}
 	select {
@@ -112,7 +90,7 @@ func (p *WorkerPool[T]) Submit(task T) error {
 		p.submitted.Add(1) // 提交成功，增加计数
 		return nil
 	default:
-		p.sendError(fmt.Errorf("task submission task url: %s", task.GetUrl()))
+		p.trackQueue.SendError(fmt.Errorf("task submission task url: %s", task.GetUrl()))
 		return fmt.Errorf("task submission task url: %s", task.GetUrl())
 	}
 }
@@ -129,24 +107,14 @@ func (p *WorkerPool[T]) Stop(timeout time.Duration) {
 		}()
 		select {
 		case <-done:
-			p.sendError(fmt.Errorf("all workers finished gracefully"))
+			p.trackQueue.SendError(fmt.Errorf("all workers finished gracefully"))
 		case <-time.After(timeout):
-			p.sendError(fmt.Errorf("graceful stop timeout"))
+			p.trackQueue.SendError(fmt.Errorf("graceful stop timeout"))
 		}
 	})
 }
 
-// Errors 返回错误通道
-func (p *WorkerPool[T]) Errors() <-chan error {
-	return p.errors
-}
-
-func (p *WorkerPool[T]) Activities() <-chan Activity {
-	return p.activities
-}
-
 // Stats 返回当前池的统计信息
-// Stats 返回统计信息
 func (p *WorkerPool[T]) Stats() (submitted, completed, failed, inProgress int64, queueLen int) {
 	submitted = p.submitted.Load()
 	completed = p.completed.Load()
@@ -154,4 +122,12 @@ func (p *WorkerPool[T]) Stats() (submitted, completed, failed, inProgress int64,
 	inProgress = submitted - completed - failed
 	queueLen = len(p.taskQueue)
 	return
+}
+
+func (p *WorkerPool[T]) Activities() <-chan Activity {
+	return p.trackQueue.Activities()
+}
+
+func (p *WorkerPool[T]) Errors() <-chan error {
+	return p.trackQueue.Errors()
 }

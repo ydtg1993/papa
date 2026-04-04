@@ -4,15 +4,22 @@ import (
 	"context"
 	"fmt"
 	"github.com/ydtg1993/papa/internal/config"
-	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
+	"github.com/ydtg1993/papa/pkg/loggers"
 	"github.com/ydtg1993/papa/pkg/track"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
 	"sync"
 	"time"
 )
+
+type EngineInterface interface {
+	SubmitTask(task *Task, insertToDB bool) error
+	RecoverTasks()
+	GetBrowserPool() *browser.Pool
+	Stop(timeout time.Duration)
+}
 
 type Engine struct {
 	ctx         context.Context
@@ -44,8 +51,8 @@ type stageInfo struct {
 // StageConfig 阶段配置
 type StageConfig struct {
 	Handler     func(ctx context.Context, task *Task, engine *Engine) error // Handler 是fetcher阶段的核心处理函数
-	MaxAttempts int                                                         // Handler最大重试次数
-	Backoff     time.Duration                                               // Handler初始退避时间
+	MaxAttempts int                                                         // Handler 最大重试次数
+	Backoff     time.Duration                                               // Handler 初始退避时间
 	NextStage   string                                                      // NextStage 可选：解析出的链接自动使用的下一阶段
 	WorkerCount int                                                         // WorkerCount 该阶段专用的 worker 数量
 	QueueSize   int                                                         // QueueSize 该阶段的任务队列缓冲大小

@@ -7,12 +7,12 @@ import (
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/internal/fetcher"
-	"github.com/ydtg1993/papa/internal/loggers"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/internal/scheduler"
 	"github.com/ydtg1993/papa/internal/server"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/database"
+	"github.com/ydtg1993/papa/pkg/loggers"
 	"github.com/ydtg1993/papa/pkg/track"
 	"gorm.io/gorm"
 	"time"
@@ -35,7 +35,10 @@ func NewApp() (*App, error) {
 	}
 
 	// 2. 初始化日志（传入配置，以便控制日志级别、输出等）
-	loggerSet := loggers.NewLoggerSet(cfg.Log)
+	loggerSet := loggers.NewLoggerSet(loggers.LoggerConfig{
+		Dir:     cfg.Log.Dir,
+		MaxSize: cfg.Log.MaxSize,
+	})
 
 	// 3. 初始化数据库
 	db, err := database.NewDB(cfg.DB)

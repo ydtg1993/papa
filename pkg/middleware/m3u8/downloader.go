@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	pkg2 "github.com/ydtg1993/papa/pkg"
 	"golang.org/x/time/rate"
 	"io"
 	"net/http"
@@ -26,13 +27,13 @@ import (
 
 // Downloader 实例
 type Downloader struct {
-	config  *Config
-	client  *http.Client
-	mu      sync.RWMutex
-	referer string
-	cookie  string
-	errors  chan error
-	stateMu sync.Mutex // 保护状态文件写入
+	config     *Config
+	client     *http.Client
+	mu         sync.RWMutex
+	referer    string
+	cookie     string
+	stateMu    sync.Mutex          // 保护状态文件写入
+	trackQueue *pkg2.MsgQueue[any] //系统消息队列
 }
 
 // NewDownloader 创建下载器
@@ -45,7 +46,7 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.SegmentTimeout,
 		},
-		errors: make(chan error, 10),
+		trackQueue: pkg2.NewMsgQueue[any](10),
 	}
 }
 
@@ -94,14 +95,7 @@ func (d *Downloader) SetHeaders(headers map[string]string) {
 
 // GetErrors 获取错误通道
 func (d *Downloader) GetErrors() <-chan error {
-	return d.errors
-}
-
-func (d *Downloader) sendError(err error) {
-	select {
-	case d.errors <- err:
-	default:
-	}
+	return d.trackQueue.Errors()
 }
 
 // doRequest 执行 HTTP 请求，支持重试
@@ -117,7 +111,7 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string) ([]
 				sleepTime = 10 * time.Second
 			}
 			time.Sleep(sleepTime)
-			d.sendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
+			d.trackQueue.SendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -301,7 +295,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	if strings.Contains(playlist, "#EXT-X-STREAM-INF") {
 		bestURL, err := d.selectBestStream(playlist, baseURL)
 		if err == nil {
-			d.sendError(fmt.Errorf("选择最高码率流: %s", bestURL))
+			d.trackQueue.SendError(fmt.Errorf("选择最高码率流: %s", bestURL))
 			playlist, baseURL, err = d.fetchPlaylist(ctx, bestURL)
 			if err != nil {
 				result.Error = fmt.Errorf("fetch best stream: %w", err)
@@ -337,13 +331,13 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 	if d.config.EnableResume {
 		resumeState, err = d.loadResumeState(m3u8URL, outputFile)
 		if err != nil {
-			d.sendError(fmt.Errorf("load resume state failed: %v, will restart", err))
+			d.trackQueue.SendError(fmt.Errorf("load resume state failed: %v, will restart", err))
 			resumeState = nil
 		}
 	}
 	// 校验状态是否匹配
 	if resumeState != nil && resumeState.TotalSegments != totalSegments {
-		d.sendError(fmt.Errorf("segment count mismatch (state:%d, actual:%d), restart", resumeState.TotalSegments, totalSegments))
+		d.trackQueue.SendError(fmt.Errorf("segment count mismatch (state:%d, actual:%d), restart", resumeState.TotalSegments, totalSegments))
 		resumeState = nil
 	}
 
@@ -421,7 +415,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 			resumeState.Completed = append(resumeState.Completed, index)
 			resumeState.SegmentFiles[index] = tempFilePath
 			if err := d.saveResumeState(resumeState); err != nil {
-				d.sendError(fmt.Errorf("save resume state failed: %v", err))
+				d.trackQueue.SendError(fmt.Errorf("save resume state failed: %v", err))
 			}
 
 			// 进度回调
@@ -433,7 +427,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 				}
 				d.config.OnProgress(len(resumeState.Completed), totalSegments, index+1, size, 0)
 			}
-			d.sendError(fmt.Errorf("片段 %d/%d 完成", len(resumeState.Completed), totalSegments))
+			d.trackQueue.SendError(fmt.Errorf("片段 %d/%d 完成", len(resumeState.Completed), totalSegments))
 		}(idx, segInfo)
 	}
 	wg.Wait()
@@ -486,7 +480,7 @@ func (d *Downloader) download(ctx context.Context, m3u8URL, outputFile string) *
 func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo, keyInfo *KeyInfo, limiter *RateLimiter, destPath string) error {
 	// 如果文件已存在且大小 > 0，直接跳过（片段级续传）
 	if info, err := os.Stat(destPath); err == nil && info.Size() > 0 {
-		d.sendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
+		d.trackQueue.SendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
 		return nil
 	}
 
@@ -498,7 +492,7 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 				sleepTime = 10 * time.Second
 			}
 			time.Sleep(sleepTime)
-			d.sendError(fmt.Errorf("retry segment %d (attempt %d)", seg.Index, attempt))
+			d.trackQueue.SendError(fmt.Errorf("retry segment %d (attempt %d)", seg.Index, attempt))
 		}
 
 		// 下载原始数据
