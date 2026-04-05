@@ -36,8 +36,12 @@ func NewApp() (*App, error) {
 
 	// 2. 初始化日志（传入配置，以便控制日志级别、输出等）
 	loggerSet := loggers.NewLoggerSet(loggers.LoggerConfig{
-		Dir:     cfg.Log.Dir,
-		MaxSize: cfg.Log.MaxSize,
+		Dir:        cfg.Log.Dir,
+		MaxSize:    cfg.Log.MaxSize,
+		MaxAge:     cfg.Log.MaxDays,
+		MaxBackups: cfg.Log.MaxBackups,
+		LocalTime:  cfg.Log.LocalTime,
+		Compress:   cfg.Log.Compress,
 	})
 
 	// 3. 初始化数据库
@@ -124,20 +128,20 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
 	// 启动监控 HTTP 服务（如果配置启用）
-	mo := a.monitor(ctx)
+	mon := a.monitor(ctx)
 	// 任务计划
-	sched := a.schedule()
+	sch := a.schedule()
 
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
+	if sch != nil {
+		sch.Stop()
+	}
+	if mon != nil {
+		mon.Stop()
+	}
 	a.Engine.Stop(5 * time.Second)
-	if mo != nil {
-		mo.Stop()
-	}
-	if sched != nil {
-		sched.Stop()
-	}
 	if a.BrowserPool != nil {
 		a.BrowserPool.Close()
 	}
@@ -145,6 +149,31 @@ func (a *App) Run(ctx context.Context) {
 		_ = sqlDB.Close()
 	}
 	a.Logger.Sys.Info("shutdown completed")
+}
+
+// mdMsgListener 监听中间件活动日志和错误
+func (a *App) mdMsgListener() {
+	if a.Engine.Proxy != nil {
+		go func() {
+			for err := range a.Engine.Proxy.GetErrors() {
+				a.Logger.Proxy.Error(err)
+			}
+		}()
+	}
+	if a.Engine.Filedown != nil {
+		go func() {
+			for err := range a.Engine.Filedown.GetErrors() {
+				a.Logger.Filedown.Error(err)
+			}
+		}()
+	}
+	if a.Engine.M3U8 != nil {
+		go func() {
+			for err := range a.Engine.M3U8.GetErrors() {
+				a.Logger.M3u8.Error(err)
+			}
+		}()
+	}
 }
 
 // monitor
@@ -185,7 +214,6 @@ func (a *App) schedule() *scheduler.Scheduler {
 			a.Engine.LoggerSet.Scheduler.Errorf("failed to add job %s: %v", jobCfg.Name, err)
 		}
 	}
-
-	sched.Start()
+	go sched.Start()
 	return sched
 }

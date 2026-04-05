@@ -46,6 +46,10 @@ db:
 log:
   dir: "./logs"                          # 日志输出目录
   max_size: 10                           # 单个日志文件最大大小（MB）
+  max_days: 7                            # 保留旧日志文件的最大天数
+  max_backups: 30                        # 保留的旧日志文件的最大数量
+  compress: true                         # 日志文件是否应使用 gzip 压缩
+  local_time: true                       # 本地时间
 
 # Web 监控服务配置
 monitor:

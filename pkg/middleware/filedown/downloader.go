@@ -3,8 +3,7 @@ package filedown
 import (
 	"context"
 	"fmt"
-	pkg2 "github.com/ydtg1993/papa/pkg"
-	"mime"
+	_ "mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,22 +12,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	pkg2 "github.com/ydtg1993/papa/pkg"
 )
 
+// Downloader 文件下载器（并发安全，无状态）
 type Downloader struct {
 	config     *Config
 	client     *http.Client
-	mu         sync.RWMutex
-	referer    string
-	cookie     string
-	trackQueue *pkg2.MsgQueue[any] //系统消息队列
+	trackQueue *pkg2.MsgQueue[any]
 }
 
+// NewDownloader 创建下载器
 func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-
 	return &Downloader{
 		config: cfg,
 		client: &http.Client{
@@ -38,184 +37,237 @@ func NewDownloader(cfg *Config) *Downloader {
 	}
 }
 
-func (d *Downloader) SetHeader(k, v string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.config.Headers[k] = v
+// DownloadOptions 单次下载选项
+type DownloadOptions struct {
+	UserAgent string
+	Referer   string
+	Cookie    string
+	Headers   map[string]string
 }
 
-func (d *Downloader) SetReferer(v string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.referer = v
-}
-
-func (d *Downloader) SetCookie(v string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.cookie = v
-}
-
-func (d *Downloader) applyHeaders(req *http.Request) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	req.Header.Set("User-Agent", d.config.UserAgent)
-	for k, v := range d.config.Headers {
-		req.Header.Set(k, v)
-	}
-	if d.referer != "" {
-		req.Header.Set("Referer", d.referer)
-	}
-	if d.cookie != "" {
-		req.Header.Set("Cookie", d.cookie)
-	}
-}
-
+// DownloadResult 下载结果
 type DownloadResult struct {
 	OutputFile string
 	Size       int64
 	Error      error
 }
 
-func (d *Downloader) Download(ctx context.Context, fileURL, fileName string) *DownloadResult {
-	result := &DownloadResult{}
+// Download 并发安全下载
+func (d *Downloader) Download(ctx context.Context, fileURL, fileName string, opts *DownloadOptions) *DownloadResult {
+	reqCfg := d.buildRequestConfig(opts)
 
-	// ===== HEAD =====
-	req, _ := http.NewRequestWithContext(ctx, "HEAD", fileURL, nil)
-	d.applyHeaders(req)
-
-	resp, err := d.client.Do(req)
-	if err != nil || resp.StatusCode >= 400 {
-		d.trackQueue.SendError(fmt.Errorf("HEAD失败，降级为单线程"))
-		return d.downloadSingle(ctx, fileURL, fileName)
-	}
-	defer resp.Body.Close()
-
-	totalSize := resp.ContentLength
-	supportRange := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
-
+	// HEAD 探测
+	totalSize, supportRange, contentDisposition := d.headFile(ctx, fileURL, reqCfg)
 	if totalSize <= 0 || !supportRange {
-		d.trackQueue.SendError(fmt.Errorf("不支持分片下载"))
-		return d.downloadSingle(ctx, fileURL, fileName)
+		d.trackQueue.SendError(fmt.Errorf("不支持分片下载，降级为单线程"))
+		return d.downloadSingle(ctx, fileURL, fileName, contentDisposition, reqCfg)
 	}
 
-	// ===== 文件准备 =====
+	// 确定输出文件名
 	if fileName == "" {
-		fileName = d.genFileName(fileURL, resp)
+		fileName = d.genFileName(fileURL, contentDisposition)
 	}
 	fileName = filepath.Base(fileName)
-
 	_ = os.MkdirAll(d.config.OutputDir, 0755)
 	filePath := filepath.Join(d.config.OutputDir, fileName)
 
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		result.Error = err
-		return result
+		return &DownloadResult{Error: err}
 	}
 	defer file.Close()
-
 	_ = file.Truncate(totalSize)
 
-	// ===== 分片下载 =====
+	// 分片下载
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, d.config.MaxConcurrent)
-
-	var downloaded int64
-	var mu sync.Mutex
 	var downloadErr error
 	var errMu sync.Mutex
+	var downloaded int64
+	var mu sync.Mutex
 
 	for start := int64(0); start < totalSize; start += d.config.ChunkSize {
 		end := start + d.config.ChunkSize - 1
 		if end >= totalSize {
 			end = totalSize - 1
 		}
-
 		wg.Add(1)
 		sem <- struct{}{}
-
 		go func(start, end int64) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
-				req, _ := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
-				d.applyHeaders(req)
-				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-
-				resp, err := d.client.Do(req)
-				if err != nil {
-					time.Sleep(time.Second)
-					continue
+			err := d.downloadChunk(ctx, fileURL, start, end, file, reqCfg, totalSize, &downloaded, &mu)
+			if err != nil {
+				errMu.Lock()
+				if downloadErr == nil {
+					downloadErr = err
 				}
-
-				if resp.StatusCode != http.StatusPartialContent {
-					_ = resp.Body.Close()
-					continue
-				}
-
-				buf := make([]byte, 128*1024)
-				var offset = start
-
-				for {
-					n, err := resp.Body.Read(buf)
-					if n > 0 {
-						_, _ = file.WriteAt(buf[:n], offset)
-						offset += int64(n)
-
-						mu.Lock()
-						downloaded += int64(n)
-						if d.config.OnProgress != nil {
-							d.config.OnProgress(downloaded, totalSize)
-						}
-						mu.Unlock()
-					}
-					if err != nil {
-						break
-					}
-				}
-
-				_ = resp.Body.Close()
-				return
+				errMu.Unlock()
 			}
-			// 所有重试失败，记录错误
-			errMu.Lock()
-			if downloadErr == nil {
-				downloadErr = fmt.Errorf("分片失败: %d-%d", start, end)
-			}
-			errMu.Unlock()
 		}(start, end)
 	}
-
 	wg.Wait()
-	// 检查错误并清理不完整文件
+
 	if downloadErr != nil {
-		_ = file.Close()        // 确保文件句柄关闭
-		_ = os.Remove(filePath) // 删除不完整文件
-		result.Error = downloadErr
-		return result
+		_ = file.Close()
+		_ = os.Remove(filePath)
+		return &DownloadResult{Error: downloadErr}
 	}
-	result.OutputFile = filePath
-	result.Size = totalSize
-	return result
+
+	return &DownloadResult{
+		OutputFile: filePath,
+		Size:       totalSize,
+	}
 }
 
-func (d *Downloader) downloadSingle(ctx context.Context, fileURL, fileName string) *DownloadResult {
-	result := &DownloadResult{}
+// buildRequestConfig 合并全局配置与单次选项
+func (d *Downloader) buildRequestConfig(opts *DownloadOptions) *requestConfig {
+	cfg := &requestConfig{
+		headers: make(map[string]string),
+	}
+	if opts == nil {
+		return cfg
+	}
+	cfg.userAgent = opts.UserAgent
+	cfg.referer = opts.Referer
+	cfg.cookie = opts.Cookie
+	for k, v := range opts.Headers {
+		cfg.headers[k] = v
+	}
+	return cfg
+}
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
-	d.applyHeaders(req)
+// requestConfig 单次请求配置
+type requestConfig struct {
+	userAgent string
+	referer   string
+	cookie    string
+	headers   map[string]string
+}
+
+// headFile 发送 HEAD 请求，返回文件大小、是否支持 Range、Content-Disposition
+func (d *Downloader) headFile(ctx context.Context, fileURL string, cfg *requestConfig) (int64, bool, string) {
+	req, err := http.NewRequestWithContext(ctx, "HEAD", fileURL, nil)
+	if err != nil {
+		return 0, false, ""
+	}
+	d.applyHeadersToReq(req, cfg)
+
+	resp, err := d.client.Do(req)
+	if err != nil || resp.StatusCode >= 400 {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return 0, false, ""
+	}
+	defer resp.Body.Close()
+
+	totalSize := resp.ContentLength
+	supportRange := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
+	contentDisposition := resp.Header.Get("Content-Disposition")
+	return totalSize, supportRange, contentDisposition
+}
+
+// downloadChunk 下载单个分片，支持重试，实时更新进度
+func (d *Downloader) downloadChunk(ctx context.Context, fileURL string, start, end int64, file *os.File,
+	cfg *requestConfig, totalSize int64, downloaded *int64, mu *sync.Mutex) error {
+
+	var lastErr error
+	chunkSize := end - start + 1
+
+	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
+		// 检查 context 取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if attempt > 0 {
+			sleepTime := time.Duration(1<<attempt) * time.Second
+			if sleepTime > 10*time.Second {
+				sleepTime = 10 * time.Second
+			}
+			time.Sleep(sleepTime)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		d.applyHeadersToReq(req, cfg)
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+
+		resp, err := d.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode != http.StatusPartialContent {
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("unexpected status: %d", resp.StatusCode)
+			continue
+		}
+
+		buf := make([]byte, 128*1024)
+		offset := start
+		var chunkDownloaded int64
+		success := true
+
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := file.WriteAt(buf[:n], offset); writeErr != nil {
+					lastErr = writeErr
+					success = false
+					break
+				}
+				offset += int64(n)
+				chunkDownloaded += int64(n)
+
+				mu.Lock()
+				*downloaded += int64(n)
+				if d.config.OnProgress != nil {
+					d.config.OnProgress(*downloaded, totalSize)
+				}
+				mu.Unlock()
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		_ = resp.Body.Close()
+		if success {
+			// 确保下载的字节数与分片大小一致
+			if chunkDownloaded != chunkSize {
+				// 理论上应该相等，若不相等则视为失败
+				lastErr = fmt.Errorf("downloaded %d bytes, expected %d", chunkDownloaded, chunkSize)
+				continue
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("分片 [%d-%d] 失败: %w", start, end, lastErr)
+}
+
+// downloadSingle 单线程降级下载
+func (d *Downloader) downloadSingle(ctx context.Context, fileURL, fileName, contentDisposition string, cfg *requestConfig) *DownloadResult {
+	req, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
+	if err != nil {
+		return &DownloadResult{Error: err}
+	}
+	d.applyHeadersToReq(req, cfg)
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		result.Error = err
-		return result
+		return &DownloadResult{Error: err}
 	}
 	defer resp.Body.Close()
+
 	if fileName == "" {
-		fileName = d.genFileName(fileURL, resp)
+		fileName = d.genFileName(fileURL, contentDisposition)
 	}
 	fileName = filepath.Base(fileName)
 	_ = os.MkdirAll(d.config.OutputDir, 0755)
@@ -223,144 +275,74 @@ func (d *Downloader) downloadSingle(ctx context.Context, fileURL, fileName strin
 
 	file, err := os.Create(filePath)
 	if err != nil {
-		result.Error = err
-		return result
+		return &DownloadResult{Error: err}
 	}
 	defer file.Close()
 
 	buf := make([]byte, 128*1024)
 	var written int64
-
 	for {
-		n, err := resp.Body.Read(buf)
+		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			_, _ = file.Write(buf[:n])
 			written += int64(n)
-
 			if d.config.OnProgress != nil {
 				d.config.OnProgress(written, resp.ContentLength)
 			}
 		}
-		if err != nil {
+		if readErr != nil {
 			break
 		}
 	}
-
-	result.OutputFile = filePath
-	result.Size = written
-	return result
+	return &DownloadResult{
+		OutputFile: filePath,
+		Size:       written,
+	}
 }
 
-func (d *Downloader) genFileName(rawURL string, resp *http.Response) string {
-	// ===== 1. Content-Disposition =====
-	if resp != nil {
-		cd := resp.Header.Get("Content-Disposition")
-		if cd != "" {
-			// 常见格式: attachment; filename="xxx.jpg"
-			if strings.Contains(cd, "filename=") {
-				parts := strings.Split(cd, "filename=")
-				if len(parts) > 1 {
-					name := strings.Trim(parts[1], `"`)
-					if name != "" {
-						return filepath.Base(name)
-					}
+// applyHeadersToReq 应用请求头（仅当值非空时设置）
+func (d *Downloader) applyHeadersToReq(req *http.Request, cfg *requestConfig) {
+	if cfg.userAgent != "" {
+		req.Header.Set("User-Agent", cfg.userAgent)
+	}
+	for k, v := range cfg.headers {
+		req.Header.Set(k, v)
+	}
+	if cfg.referer != "" {
+		req.Header.Set("Referer", cfg.referer)
+	}
+	if cfg.cookie != "" {
+		req.Header.Set("Cookie", cfg.cookie)
+	}
+}
+
+// genFileName 生成文件名（优先 Content-Disposition，其次 URL 路径，最后默认）
+func (d *Downloader) genFileName(rawURL, contentDisposition string) string {
+	// 1. Content-Disposition
+	if contentDisposition != "" {
+		if strings.Contains(contentDisposition, "filename=") {
+			parts := strings.Split(contentDisposition, "filename=")
+			if len(parts) > 1 {
+				name := strings.Trim(parts[1], `"`)
+				if name != "" {
+					return filepath.Base(name)
 				}
 			}
 		}
 	}
-
-	// ===== 2. URL path =====
+	// 2. URL 路径
 	u, err := url.Parse(rawURL)
 	if err == nil {
 		base := path.Base(u.Path)
-
-		// 必须包含扩展名才可信
 		if base != "" && base != "/" && strings.Contains(base, ".") {
 			return filepath.Base(base)
 		}
 	}
-
-	// ===== 3. Content-Type 推断扩展名 =====
-	ext := ""
-	if resp != nil {
-		ct := resp.Header.Get("Content-Type")
-		ext = guessExtFromContentType(ct)
-	}
-
-	// ===== 4. fallback =====
-	return fmt.Sprintf("file_%d%s", time.Now().UnixNano(), ext)
+	// 3. 默认
+	return fmt.Sprintf("file_%d", time.Now().UnixNano())
 }
 
-// 扩展的 MIME 类型到扩展名的映射（不含点）
-var mimeToExt = map[string]string{
-	// 图片
-	"image/jpeg":    "jpg",
-	"image/png":     "png",
-	"image/gif":     "gif",
-	"image/webp":    "webp",
-	"image/bmp":     "bmp",
-	"image/svg+xml": "svg",
-	"image/tiff":    "tiff",
-	"image/x-icon":  "ico",
-	// 文档
-	"application/pdf":    "pdf",
-	"application/msword": "doc",
-	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-	"application/vnd.ms-excel": "xls",
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":         "xlsx",
-	"application/vnd.ms-powerpoint":                                             "ppt",
-	"application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-	"text/plain":       "txt",
-	"text/html":        "html",
-	"text/css":         "css",
-	"text/csv":         "csv",
-	"application/json": "json",
-	"application/xml":  "xml",
-	"application/rtf":  "rtf",
-	// 压缩包
-	"application/zip":              "zip",
-	"application/x-rar-compressed": "rar",
-	"application/x-7z-compressed":  "7z",
-	"application/x-tar":            "tar",
-	"application/gzip":             "gz",
-	// 音视频
-	"video/mp4":       "mp4",
-	"video/mpeg":      "mpeg",
-	"video/quicktime": "mov",
-	"video/x-msvideo": "avi",
-	"video/webm":      "webm",
-	"audio/mpeg":      "mp3",
-	"audio/wav":       "wav",
-	"audio/ogg":       "ogg",
-	"audio/flac":      "flac",
-	// 其他
-	"application/octet-stream": "bin",
-}
-
-func guessExtFromContentType(ct string) string {
-	// 去除 charset 等参数，例如 "text/html; charset=utf-8" -> "text/html"
-	if idx := strings.Index(ct, ";"); idx != -1 {
-		ct = ct[:idx]
-	}
-	ct = strings.ToLower(strings.TrimSpace(ct))
-
-	// 先查自定义映射表
-	if ext, ok := mimeToExt[ct]; ok {
-		return "." + ext
-	}
-
-	// 降级：使用 Go 标准库 mime 包根据 MIME 推断扩展名（可能返回空）
-	exts, err := mime.ExtensionsByType(ct)
-	if err == nil && len(exts) > 0 {
-		// 取第一个常用扩展名
-		return exts[0]
-	}
-
-	// 最终 fallback
-	return ".txt"
-}
-
-// GetErrors 获取错误消息队列
+// GetErrors 获取错误通道
 func (d *Downloader) GetErrors() <-chan error {
 	return d.trackQueue.Errors()
 }

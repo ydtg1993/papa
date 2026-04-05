@@ -20,8 +20,12 @@ type AppConfig struct {
 }
 
 type LogConfig struct {
-	Dir     string `mapstructure:"dir"`      //日志目录
-	MaxSize int    `mapstructure:"max_size"` //文件大小限制
+	Dir        string `mapstructure:"dir"`      //日志目录
+	MaxSize    int    `mapstructure:"max_size"` //文件大小限制
+	MaxDays    int    `mapstructure:"max_days"`
+	MaxBackups int    `mapstructure:"max_backups"`
+	Compress   bool   `mapstructure:"compress"`
+	LocalTime  bool   `mapstructure:"local_time"`
 }
 
 type CrawlerConfig struct {

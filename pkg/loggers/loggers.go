@@ -15,6 +15,9 @@ type LoggerSet struct {
 	Browser   *logrus.Logger //rod浏览器驱动
 	DB        *logrus.Logger //数据库
 	Scheduler *logrus.Logger //任务计划
+	Proxy     *logrus.Logger
+	Filedown  *logrus.Logger
+	M3u8      *logrus.Logger
 	cfg       LoggerConfig
 }
 
@@ -63,6 +66,9 @@ func NewLoggerSet(cfg LoggerConfig) LoggerSet {
 		Browser:   newLogger(cfg, filepath.Join(cfg.Dir, "/browser.log"), formatter),
 		DB:        newLogger(cfg, filepath.Join(cfg.Dir, "/db.log"), formatter),
 		Scheduler: newLogger(cfg, filepath.Join(cfg.Dir, "/scheduler.log"), formatter),
+		Proxy:     newLogger(cfg, filepath.Join(cfg.Dir, "/proxy.log"), formatter),
+		Filedown:  newLogger(cfg, filepath.Join(cfg.Dir, "/filedown.log"), formatter),
+		M3u8:      newLogger(cfg, filepath.Join(cfg.Dir, "/m3u8.log"), formatter),
 		cfg:       cfg,
 	}
 }

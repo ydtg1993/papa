@@ -7,6 +7,9 @@ import (
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/loggers"
+	"github.com/ydtg1993/papa/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/pkg/middleware/proxy"
 	"github.com/ydtg1993/papa/pkg/track"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
@@ -26,6 +29,9 @@ type Engine struct {
 	browserPool *browser.Pool
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
 	LoggerSet   *loggers.LoggerSet
+	Proxy       *proxy.Manager       // 代理管理器中间件
+	M3U8        *m3u8.Downloader     // m3u8下载器
+	Filedown    *filedown.Downloader // 文件下载器
 }
 
 type WorkerConfig struct {
@@ -66,6 +72,21 @@ func NewEngine(pool *browser.Pool, db *gorm.DB, cfg *config.Config, loggerSet *l
 	}
 	engine.loadActiveTasks()
 	return engine
+}
+
+// SetProxy 设置代理 需要在RegisterStage之前设置
+func (e *Engine) SetProxy(proxy *proxy.Manager) {
+	e.Proxy = proxy
+}
+
+// SetM3U8 设置m3u8下载器 需要在RegisterStage之前设置
+func (e *Engine) SetM3U8(m3u *m3u8.Downloader) {
+	e.M3U8 = m3u
+}
+
+// SetFiledown 设置文件下载器 需要在RegisterStage之前设置
+func (e *Engine) SetFiledown(f *filedown.Downloader) {
+	e.Filedown = f
 }
 
 // RegisterStage 注册一个爬取阶段
