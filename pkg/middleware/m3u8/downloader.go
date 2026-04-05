@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	pkg2 "github.com/ydtg1993/papa/pkg"
-	"golang.org/x/time/rate"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -130,30 +129,6 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 		return data, nil
 	}
 	return nil, fmt.Errorf("failed after %d retries: %w", d.config.MaxRetries, lastErr)
-}
-
-// RateLimiter 限速器
-type RateLimiter struct {
-	limiter *rate.Limiter
-}
-
-// NewRateLimiter 创建限速器，rateKB 为 KB/s
-func NewRateLimiter(rateKB int) *RateLimiter {
-	if rateKB <= 0 {
-		return nil // 不限速
-	}
-	// 转换为 bytes/s
-	limit := rate.Limit(float64(rateKB) * 1024)
-	return &RateLimiter{
-		limiter: rate.NewLimiter(limit, int(limit)), // 桶大小等于速率
-	}
-}
-
-func (r *RateLimiter) Wait(ctx context.Context, n int) error {
-	if r == nil || r.limiter == nil {
-		return nil
-	}
-	return r.limiter.WaitN(ctx, n)
 }
 
 // SegmentInfo 片段信息
@@ -623,12 +598,10 @@ func (d *Downloader) downloadSegment(ctx context.Context, url string, opts *Down
 }
 
 func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, segmentIndex int, opts *DownloadOptions) (key, iv []byte, err error) {
-	if keyInfo.IV != "" {
-		cacheKey := keyInfo.URL + "|" + keyInfo.IV
-		if cached, ok := d.keyCache.Load(cacheKey); ok {
-			k := cached.(*cachedKey)
-			return k.key, k.iv, nil
-		}
+	cacheKey := keyInfo.URL + "|" + keyInfo.IV
+	if cached, ok := d.keyCache.Load(cacheKey); ok {
+		k := cached.(*cachedKey)
+		return k.key, k.iv, nil
 	}
 	keyData, err := d.doRequest(ctx, keyInfo.URL, "", opts)
 	if err != nil {
@@ -644,9 +617,7 @@ func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, segmentIn
 		ivData = make([]byte, 16)
 		binary.BigEndian.PutUint64(ivData[8:], uint64(segmentIndex))
 	}
-	if keyInfo.IV != "" {
-		d.keyCache.Store(keyInfo.URL+"|"+keyInfo.IV, &cachedKey{key: keyData, iv: ivData})
-	}
+	d.keyCache.Store(keyInfo.URL+"|"+keyInfo.IV, &cachedKey{key: keyData, iv: ivData})
 	return keyData, ivData, nil
 }
 
