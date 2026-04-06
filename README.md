@@ -1,8 +1,8 @@
 # Papa - 高性能分布式爬虫框架
 
->Papa 是一个基于 Go 语言和 [Rod](https://github.com/go-rod/rod) 的高性能、可扩展的浏览器自动化爬虫框架。
->它内置了浏览器池、多阶段工作池、任务持久化与恢复、M3U8 视频下载（支持断点续传、自动合并）、定时任务调度、Web 监控
->等特性，适用于需要处理 JavaScript 渲染、反爬严格的网站以及流媒体资源的抓取与下载。
+> Papa 是一个基于 Go 语言和 [Rod](https://github.com/go-rod/rod) 的高性能、可扩展的浏览器自动化爬虫框架。
+> 它内置了浏览器池、多阶段工作池、任务持久化与恢复、M3U8 视频下载（支持断点续传、自动合并）、文件下载、定时任务调度、Web 监控等特性，
+> 适用于需要处理 JavaScript 渲染、反爬严格的网站以及流媒体资源的抓取与下载。
 
 ### 📐 架构设计
 ![整体架构图](https://github.com/ydtg1993/papa/blob/master/storage/architecture.png)
@@ -21,6 +21,7 @@
   - AES-128 解密（自动处理 PKCS#7 填充）
   - 自动合并为 MP4（需 ffmpeg）
   - 多码率自适应（自动选择最高码率）
+- 📎 **通用文件下载器** – 支持 HTTP Range 分片并发下载、断点续传、进度回调，适用于图片、音频、普通视频等文件。
 - 🔄 **代理轮换** – 集成代理管理器，支持从 API 动态获取代理列表并轮换使用。
 
 #### 模块说明
@@ -35,8 +36,8 @@
 | **Scheduler** | 基于 Cron 的定时任务调度器，支持周期性提交 catalog 任务或执行恢复任务。 |
 | **Database** | 通过 GORM 连接 MySQL，存储任务状态（crawler_tasks）和页面数据。 |
 | **Proxy Manager** | 从 API 获取代理列表，轮询返回，支持定时刷新。 |
-| **M3U8 downloader** | 提供m3u8链接下载视频切片合并等。 |
-| **file downloader** | 下载各类网络资源 图片，mp4，音频等 |
+| **M3U8 downloader** | 下载 M3U8 视频流，支持切片合并、解密、断点续传。 |
+| **File Downloader** | 下载普通文件（图片、音频、MP4 等），支持分片并发和断点续传。 |
 
 #### 数据流
 1. **任务提交**：入口（`main.go`）调用 `engine.SubmitTask`，任务先写入数据库（状态 `pending`），然后提交到对应阶段的队列。
@@ -48,32 +49,37 @@
 
 📁 目录结构
 
-    ├── cmd/
-    │ └── crawler/ # 程序入口
-    │ └── main.go
-    ├── configs/ # 配置文件
-    │ └── config.yaml
-    ├── internal/ # 内部私有代码
-    │ ├── app/ # 应用组装
-    │ ├── config/ # 配置加载
-    │ ├── crawler/ # 引擎核心
-    │ ├── fetcher/ # 抓取阶段实现
-    │ ├── models/ # 数据模型
-    │ ├── scheduler/ # 定时任务调度器
-    │ └── server/ # Web 监控服务
-    ├── pkg/ # 公共可复用包
-    │ ├── browser/ # 浏览器池
-    │ ├── database/ # 数据库连接
-    │ ├── middleware/ # 下载中间件（filedown, m3u8, proxy）
-    │ ├── loggers/ # 日志封装（sys, engine, scheduler, db, browser...）
-    │ ├── monitor/ # 任务监控
-    │ └── workerpool/ # 泛型工作池
-    ├── logs/ # 日志文件目录（运行时生成）
-    ├── downloads/ # 默认下载目录
-    ├── scripts/ # 辅助脚本
-    ├── storage/ # 其他存储
-    ├── go.mod
-    └── go.sum
+      ├── cmd/
+      │   └── crawler/            # 程序入口
+      │       └── main.go
+      ├── configs/
+      │   └── config.yaml         # 配置文件
+      ├── internal/               # 内部私有代码
+      │   ├── app/                # 应用组装（依赖注入、启动）
+      │   ├── config/             # 配置加载（viper）
+      │   ├── crawler/            # 引擎核心（Engine, Task）
+      │   ├── fetcher/            # 抓取阶段实现（catalog, detail）
+      │   ├── models/             # 数据模型（CrawlerTask）
+      │   ├── scheduler/          # 定时任务调度器（cron jobs）
+      │   └── server/             # Web 监控服务（HTML + JSON API）
+      ├── pkg/                    # 公共可复用包
+      │   ├── browser/            # 浏览器池（基于 rod）
+      │   ├── database/           # 数据库连接（GORM）
+      │   ├── loggers/            # 日志封装（lumberjack + logrus）
+      │   ├── middleware/         # 下载中间件
+      │   │   ├── filedown/       # 文件下载器
+      │   │   ├── m3u8/           # M3U8 视频下载器
+      │   │   └── proxy/          # 代理管理器
+      │   ├── queue.go            # 通用消息队列（错误/活动）
+      │   ├── track/              # 监控统计（StatsQueue）
+      │   └── workerpool/         # 泛型工作池
+      ├── logs/                   # 日志文件目录（运行时生成）
+      ├── downloads/              # 默认下载目录
+      ├── scripts/                # 辅助脚本（Docker、数据库迁移等）
+      ├── storage/                # 其他存储（架构图等）
+      ├── go.mod
+      └── go.sum
+
 
 ### 🚀 快速开始
 #### 环境要求
@@ -95,10 +101,11 @@ go mod download
 #### 初始化数据库
 首次运行前设置环境变量dev以自动迁移表结构
 ```
-configs/config.yaml
-# 应用基础配置
+yaml
+
+# configs/config.yaml
 app:
-  env: dev 
+  env: dev   # loc/dev/prod，dev 时自动迁移表结构
 ```
 
 #### 运行
@@ -142,6 +149,7 @@ go run cmd/crawler/main.go
         return err
     }
 ```
+
 #### 使用 M3U8 下载器
 ```
     cfg := m3u8.DefaultConfig()
@@ -152,6 +160,18 @@ go run cmd/crawler/main.go
     result := downloader.Download(context.Background(), "https://example.com/video.m3u8", "myvideo")
     if result.Error == nil {
         fmt.Println("Saved to", result.OutputFile)
+    }
+```
+
+#### 使用文件下载器
+```
+    cfg := filedown.DefaultConfig()
+    cfg.MaxConcurrent = 4      // 分片并发数
+    cfg.ChunkSize = 5 << 20    // 5MB 每片
+    downloader := filedown.NewDownloader(cfg)
+    result := downloader.Download(context.Background(), "https://example.com/file.zip", "archive.zip", nil)
+    if result.Error == nil {
+        fmt.Printf("Downloaded %d bytes to %s\n", result.Size, result.OutputFile)
     }
 ```
 
