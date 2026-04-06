@@ -1,18 +1,15 @@
 package server
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
 	"errors"
+	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/pkg/track"
 	"html/template"
 	"net/http"
 	"strconv"
 	"sync"
-	"time"
-
-	"github.com/ydtg1993/papa/internal/crawler"
 )
 
 //go:embed template.html
@@ -57,22 +54,13 @@ func (s *Monitor) loadTemplate() (*template.Template, error) {
 }
 
 // Start 启动 HTTP 服务（非阻塞）
-func (s *Monitor) Start(ctx context.Context) {
+func (s *Monitor) Start() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/monitor", s.htmlHandler)
 	mux.HandleFunc("/api/monitor", s.apiHandler)
 
 	addr := ":" + strconv.Itoa(s.port)
 	s.server = &http.Server{Addr: addr, Handler: mux}
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.server.Shutdown(shutdownCtx); err != nil {
-			s.logger.Errorf("monitor server shutdown error: %v", err)
-		}
-	}()
 
 	s.logger.Infof("monitor server starting on %s", addr)
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -2,6 +2,7 @@ package pkg
 
 import "fmt"
 
+// MsgQueue 系统错误,活动消息队列
 type MsgQueue[T any] struct {
 	activities chan T
 	errors     chan error

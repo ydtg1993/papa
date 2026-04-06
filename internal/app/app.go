@@ -13,6 +13,7 @@ import (
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/database"
 	"github.com/ydtg1993/papa/pkg/loggers"
+	"github.com/ydtg1993/papa/pkg/middleware"
 	"github.com/ydtg1993/papa/pkg/track"
 	"gorm.io/gorm"
 	"time"
@@ -127,10 +128,12 @@ func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.L
 
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
-	// 启动监控 HTTP 服务（如果配置启用）
-	mon := a.monitor(ctx)
 	// 任务计划
 	sch := a.schedule()
+	// 监听中间件活动日志和错误
+	a.mdMsgListener(ctx)
+	// 启动监控 HTTP 服务（如果配置启用）
+	mon := a.monitor()
 
 	//触发结束任务 清理资源
 	<-ctx.Done()
@@ -152,32 +155,32 @@ func (a *App) Run(ctx context.Context) {
 }
 
 // mdMsgListener 监听中间件活动日志和错误
-func (a *App) mdMsgListener() {
-	if a.Engine.Proxy != nil {
+func (a *App) mdMsgListener(ctx context.Context) {
+	listen := func(md middleware.Err, log *logrus.Logger) {
+		if md == nil || log == nil {
+			return
+		}
 		go func() {
-			for err := range a.Engine.Proxy.GetErrors() {
-				a.Logger.Proxy.Error(err)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case err, ok := <-md.GetErrors():
+					if !ok {
+						return // 通道关闭
+					}
+					log.Error(err)
+				}
 			}
 		}()
 	}
-	if a.Engine.Filedown != nil {
-		go func() {
-			for err := range a.Engine.Filedown.GetErrors() {
-				a.Logger.Filedown.Error(err)
-			}
-		}()
-	}
-	if a.Engine.M3U8 != nil {
-		go func() {
-			for err := range a.Engine.M3U8.GetErrors() {
-				a.Logger.M3u8.Error(err)
-			}
-		}()
-	}
+	listen(a.Engine.Proxy, a.Logger.Proxy)
+	listen(a.Engine.Filedown, a.Logger.Filedown)
+	listen(a.Engine.M3U8, a.Logger.M3u8)
 }
 
 // monitor
-func (a *App) monitor(ctx context.Context) *server.Monitor {
+func (a *App) monitor() *server.Monitor {
 	if a.Config.Monitor.Enabled == false {
 		return nil
 	}
@@ -186,7 +189,7 @@ func (a *App) monitor(ctx context.Context) *server.Monitor {
 	}
 	// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
 	mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
-	go mServer.Start(ctx)
+	go mServer.Start()
 	return mServer
 }
 
