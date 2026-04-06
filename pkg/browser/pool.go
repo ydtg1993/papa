@@ -141,16 +141,8 @@ func (p *Pool) Put(b *Browser) error {
 		return fmt.Errorf("browser pool closed")
 	}
 	p.mu.Unlock()
-	// 检查浏览器是否存活
-	if !b.IsAlive() {
-		b.Close()
-		newB, err := p.newBrowser()
-		if err != nil {
-			return fmt.Errorf("failed to recreate dead browser: %v", err)
-		}
-		b = newB
-	} else if p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime {
-		// 空闲超时检查
+	// 检查浏览器是否存活  || 空闲超时检查
+	if !b.IsAlive() || (p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime) {
 		b.Close()
 		newB, err := p.newBrowser()
 		if err != nil {
@@ -161,7 +153,9 @@ func (p *Pool) Put(b *Browser) error {
 	select {
 	case p.browsers <- b:
 	default:
-		b.Close()
+		if b.IsAlive() {
+			b.Close()
+		}
 	}
 	return nil
 }

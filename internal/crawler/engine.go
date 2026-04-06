@@ -34,13 +34,6 @@ type Engine struct {
 	Filedown    *filedown.Downloader // 文件下载器
 }
 
-type WorkerConfig struct {
-	Workers        int
-	QueueSize      int
-	StopTimeout    time.Duration
-	RequestTimeout time.Duration
-}
-
 // stageInfo 内部阶段信息
 type stageInfo struct {
 	WorkerPool *workerpool.WorkerPool[*Task]
