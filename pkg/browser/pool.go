@@ -10,6 +10,7 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	_ "github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/pkg/middleware/proxy"
+	"reflect"
 	"sync"
 	_ "sync/atomic"
 	"time"
@@ -83,7 +84,7 @@ func (p *Pool) newBrowser() (*Browser, error) {
 			l.Set(flags.Flag(key), val)
 		}
 	}
-	if p.cfg.ProxyManager != nil {
+	if false == reflect.ValueOf(p.cfg.ProxyManager).IsNil() {
 		if proxyURL := p.cfg.ProxyManager.Next(); proxyURL != "" {
 			l.Proxy(proxyURL)
 		}

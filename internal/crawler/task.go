@@ -8,10 +8,13 @@ import (
 )
 
 type Task struct {
-	ID    int64 `json:"id"` // 数据库记录 ID
-	URL   string
-	Retry int
-	Stage string //阶段标识，如 "catalog", "detail"
+	ID         int `json:"id"`  // 数据库记录 ID
+	PID        int `json:"pid"` // 父级任务ID
+	URL        string
+	Retry      int
+	Stage      string //阶段标识，如 "catalog", "detail"
+	NextStage  string //下阶段标识 生成子任务时标识阶段
+	Repeatable bool
 }
 
 func (t *Task) GetUrl() string {
@@ -32,17 +35,23 @@ func (t *Task) IncRetry(db *gorm.DB, logger *logrus.Logger) {
 }
 
 func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
+	repeat := models.RepeatableNo
+	if t.Repeatable {
+		repeat = models.RepeatableYes
+	}
 	crawlerTask := models.CrawlerTask{
-		URL:    t.URL,
-		Stage:  t.Stage,
-		Retry:  0,
-		Status: models.TaskStatusPending,
+		PID:        uint(t.PID),
+		URL:        t.URL,
+		Stage:      t.Stage,
+		Retry:      0,
+		Repeatable: repeat,
+		Status:     models.TaskStatusPending,
 	}
 	if err := db.Create(&crawlerTask).Error; err != nil {
 		logger.Errorf("insert crawler task to db failed: %v", err)
 		return false
 	}
-	t.ID = int64(crawlerTask.ID)
+	t.ID = int(crawlerTask.ID)
 	return true
 }
 
@@ -79,7 +88,8 @@ func (t *Task) Unique() string {
 	return t.Stage + "|" + t.URL
 }
 
-type Handler interface {
+// Fetcher 爬虫操作业务逻辑接口
+type Fetcher interface {
 	GetStage() string
 	FetchHandler(ctx context.Context, task *Task, engine *Engine) error
 }

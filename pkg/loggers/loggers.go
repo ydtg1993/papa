@@ -17,7 +17,7 @@ type LoggerSet struct {
 	Scheduler *logrus.Logger //任务计划
 	Proxy     *logrus.Logger
 	Filedown  *logrus.Logger
-	M3u8      *logrus.Logger
+	M3U8      *logrus.Logger
 	cfg       LoggerConfig
 }
 
@@ -68,7 +68,7 @@ func NewLoggerSet(cfg LoggerConfig) LoggerSet {
 		Scheduler: newLogger(cfg, filepath.Join(cfg.Dir, "/scheduler.log"), formatter),
 		Proxy:     newLogger(cfg, filepath.Join(cfg.Dir, "/proxy.log"), formatter),
 		Filedown:  newLogger(cfg, filepath.Join(cfg.Dir, "/filedown.log"), formatter),
-		M3u8:      newLogger(cfg, filepath.Join(cfg.Dir, "/m3u8.log"), formatter),
+		M3U8:      newLogger(cfg, filepath.Join(cfg.Dir, "/m3u8.log"), formatter),
 		cfg:       cfg,
 	}
 }

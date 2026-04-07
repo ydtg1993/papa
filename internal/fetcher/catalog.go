@@ -2,10 +2,11 @@ package fetcher
 
 import (
 	"context"
-	"github.com/go-rod/rod/lib/proto"
+	"encoding/json"
+	"fmt"
+	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/internal/crawler"
-	"github.com/ydtg1993/papa/pkg/middleware/m3u8"
-	"strings"
+	"log"
 	"time"
 )
 
@@ -17,11 +18,7 @@ func (f *FetchCatalog) GetStage() string {
 }
 
 func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
-	timeout := 60 * time.Second
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	browserWrapper, err := engine.GetBrowserPool().Get(reqCtx)
+	browserWrapper, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
 		return err
 	}
@@ -30,56 +27,66 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	// 1. 创建空白页面（不自动导航）
 	page := browserWrapper.Browser.MustPage("")
 	defer page.Close()
-	time.Sleep(3 * time.Second)
 
-	m3u8Chan := make(chan string, 1)
-	go page.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
-		url := e.Request.URL
-		// 匹配视频分段或清单文件
-		if strings.Contains(url, ".m3u8") {
-			select {
-			case m3u8Chan <- url:
-			default:
-			}
+	if err := page.Timeout(10 * time.Second).Navigate(task.URL); err != nil {
+		return err
+	}
+	page.MustWaitLoad()
+
+	// 执行滚动加载
+	// 定义常量
+	const (
+		maxScrolls     = 3               // 最大滚动次数，防止无限循环
+		waitTimeMs     = 1500            // 每次滚动后等待新内容加载的时间（毫秒）
+		scrollInterval = 2 * time.Second // 额外间隔（可选）
+	)
+	_, err = page.Evaluate(&rod.EvalOptions{
+		JS: `
+			window.scrollOnce = function scrollOnce(lastHeight) {
+				window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+				const currentHeight = document.documentElement.scrollHeight;
+				const heightIncreased = currentHeight > lastHeight;
+				const reachedBottom = (lastHeight > 0 && !heightIncreased);
+				window.dispatchEvent(new Event('scroll'));
+				return { currentHeight, reachedBottom, heightIncreased };
+			};
+		`,
+		ByValue: true,
+	})
+	if err != nil {
+		log.Fatalf("注入 scrollOnce 函数失败: %v", err)
+	}
+	var lastHeight int
+	for i := 0; i < maxScrolls; i++ {
+		// 调用 scrollOnce
+		evalOpts := &rod.EvalOptions{
+			JS:      "window.scrollOnce",
+			JSArgs:  []interface{}{lastHeight},
+			ByValue: true,
 		}
-	})()
-
-	// 3. 导航到目标 URL
-	task.URL = "https://hanime.tv/videos/hentai/my-mother-1"
-	if err := page.Timeout(timeout).Navigate(task.URL); err != nil {
-		return err
-	}
-	if err := page.Timeout(timeout).WaitLoad(); err != nil {
-		return err
-	}
-
-	for i := 0; i < 3; i++ {
-		element, err := page.Timeout(3 * time.Second).Element(".plyr__control plyr__control--overlaid")
-		if err == nil {
-			_ = element.Click(proto.InputMouseButtonLeft, 1)
+		res, err := page.Evaluate(evalOpts)
+		if err != nil {
+			log.Printf("第 %d 次滚动执行出错: %v", i+1, err)
 			break
 		}
-	}
-	// 多重触发播放
-	page.MustEval(`() => {
-    const btn = document.querySelector('.play-btn, .vjs-big-play-button');
-        if (btn) btn.click();
-        setTimeout(() => {
-            const v = document.querySelector('video');
-            if (v && v.paused) v.play();
-        }, 1000);
-}`)
 
-	// 6. 等待 M3U8 链接被捕获
-	select {
-	case m3u8URL := <-m3u8Chan:
-		engine.LoggerSet.Sys.Infof("捕获到 M3U8 链接: %s", m3u8URL)
-		// 可以继续下载或返回
-		downloader := m3u8.NewDownloader(nil)
-		downloader.Download(context.Background(), m3u8URL, "ok.mp4")
-	case <-time.After(30 * time.Second):
-		engine.LoggerSet.Sys.Warn("未捕获到 M3U8 链接")
-	}
+		var result struct {
+			CurrentHeight   int  `json:"currentHeight"`
+			ReachedBottom   bool `json:"reachedBottom"`
+			HeightIncreased bool `json:"heightIncreased"`
+		}
+		jsonData, err := json.Marshal(res.Value)
+		if err != nil {
+			log.Printf("JSON 编码失败: %v", err)
+			break
+		}
+		if err := json.Unmarshal(jsonData, &result); err != nil {
+			log.Printf("解析返回值失败: %v", err)
+			break
+		}
+		fmt.Printf("高度: %d, 到底: %v\n", result.CurrentHeight, result.ReachedBottom)
 
+		time.Sleep(scrollInterval)
+	}
 	return nil
 }

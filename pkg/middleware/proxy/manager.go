@@ -74,17 +74,19 @@ func (m *Manager) refreshProxies() {
 		m.trackQueue.SendError(fmt.Errorf("proxy API returned status %d", resp.StatusCode))
 		return
 	}
-
-	var list []string
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	//===============接受数据结构按照三方返回做调整===============/
+	var proxies []map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&proxies); err != nil {
 		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %v", err))
 		return
 	}
 	m.mu.Lock()
-	m.proxies = make([]string, 0, len(list))
-	for _, url := range list {
-		m.proxies = append(m.proxies, url)
+	m.proxies = make([]string, 0, len(proxies))
+	var list []string
+	for _, p := range proxies {
+		list = append(list, "http://"+p["host"]+":"+p["port"])
 	}
+	m.proxies = list
 	m.mu.Unlock()
 	m.trackQueue.SendError(fmt.Errorf("updated proxies: %d available", len(m.proxies)))
 }
