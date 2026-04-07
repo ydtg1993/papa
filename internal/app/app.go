@@ -69,6 +69,7 @@ func NewApp() (*App, error) {
 	}, nil
 }
 
+// RegisterStage 注册爬虫业务阶段流程
 func (a *App) RegisterStage(stage string, NextStage string, fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
 	// 从配置中读取 stage 配置
 	cfg, ok := a.Config.Crawler.Stages[stage]
@@ -101,7 +102,7 @@ func (a *App) RegisterStage(stage string, NextStage string, fetcher crawler.Fetc
 func (a *App) Run(ctx context.Context) {
 	// 初始化引擎浏览器池
 	a.Engine.SetBrowserPool()
-	// 注入工作流程到工作池
+	// 启用工作流和对应工作池
 	a.Engine.ApplyRegisterStage()
 
 	// 任务计划

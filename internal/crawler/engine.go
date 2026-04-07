@@ -131,61 +131,7 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
 
-// RegisterStage 注册一个爬取阶段
-/*func (e *Engine) RegisterStage(f Fetcher, cfg StageConfig) error {
-	//配置检查
-	if cfg.WorkerCount <= 0 || cfg.QueueSize <= 0 {
-		return fmt.Errorf("stage %s: WorkerCount and QueueSize must be positive", f.GetStage())
-	}
-	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 3
-	}
-	if cfg.Backoff <= 0 {
-		cfg.Backoff = time.Second
-	}
-
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
-	e.stages[f.GetStage()] = &stageInfo{
-		WorkerPool: pool,
-		Config:     cfg,
-	}
-	// 启动 worker pool
-	pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
-		// 1. 更新状态为 processing
-		task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusProcessing, nil)
-		// 2. 重试FetchHandler
-		var lastErr error
-		for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
-			if attempt > 0 {
-				task.IncRetry(e.DB, e.LoggerSet.DB)
-			}
-			err := f.FetchHandler(ctx, task, e)
-			if err == nil {
-				task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusSuccess, nil)
-				return nil
-			}
-			lastErr = err
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(cfg.Backoff * (1 << uint(attempt))):
-				continue
-			}
-		}
-		// 所有重试失败：记录错误并更新状态为 failed
-		task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusFailed, lastErr)
-		return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
-	})
-	// 如果全局配置开启了监控，则为该阶段创建监控器并启动
-	if e.cfg.Monitor.Enabled {
-		stats := track.NewStatsQueue(pool)
-		stats.Start()
-		e.SetStatsQueue(f.GetStage(), stats)
-		e.LoggerSet.Engine.Infof("monitor started for stage: %s", f.GetStage())
-	}
-	return nil
-}*/
-
+// ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
 	for stage, stageInfo := range e.stages {
 		cfg := stageInfo.Config
@@ -225,8 +171,8 @@ func (e *Engine) ApplyRegisterStage() {
 		// 如果全局配置开启了监控，则为该阶段创建监控器并启动
 		if e.cfg.Monitor.Enabled {
 			stats := track.NewStatsQueue(pool)
-			stats.Start()
-			e.SetStatsQueue(stage, stats)
+			stats.Start(e.ctx)
+			e.setStatsQueue(stage, stats)
 			e.LoggerSet.Engine.Infof("monitor started for stage: %s", stage)
 		}
 	}
@@ -290,19 +236,8 @@ func (e *Engine) Errors() (errors []<-chan error) {
 	return
 }
 
-// GetWorkerPool 返回指定阶段的 worker 池，用于监控等
-func (e *Engine) GetWorkerPool(stage string) (*workerpool.WorkerPool[*Task], error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	info, ok := e.stages[stage]
-	if !ok {
-		return nil, fmt.Errorf("stage %s not found", stage)
-	}
-	return info.WorkerPool, nil
-}
-
-// SetStatsQueue 设置阶段统计信息管理器
-func (e *Engine) SetStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
+// setStatsQueue 设置阶段统计信息管理器
+func (e *Engine) setStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.statsQueue == nil {

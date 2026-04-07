@@ -1,6 +1,7 @@
 package track
 
 import (
+	"context"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"sync"
 	"time"
@@ -32,7 +33,6 @@ type StatsQueue[T workerpool.Tasker] struct {
 	mu          sync.RWMutex
 	workerStats map[int]*WorkerStat // key: workerID
 	globalStats GlobalStats
-	stopCh      chan struct{}
 }
 
 // NewStatsQueue 创建监控器
@@ -40,18 +40,17 @@ func NewStatsQueue[T workerpool.Tasker](pool *workerpool.WorkerPool[T]) *StatsQu
 	return &StatsQueue[T]{
 		WorkPool:    pool,
 		workerStats: make(map[int]*WorkerStat),
-		stopCh:      make(chan struct{}),
 	}
 }
 
 // Start 启动监控（在一个 goroutine 中）
-func (m *StatsQueue[T]) Start() {
+func (m *StatsQueue[T]) Start(ctx context.Context) {
 	go func() {
 		// run 持续消费 Activities 通道
 		activities := m.WorkPool.Activities()
 		for {
 			select {
-			case <-m.stopCh:
+			case <-ctx.Done():
 				return
 			case act, ok := <-activities:
 				if !ok {
@@ -148,9 +147,4 @@ func (m *StatsQueue[T]) GetGlobalStats() GlobalStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.globalStats
-}
-
-// Stop 停止监控器（关闭内部的 goroutine）
-func (m *StatsQueue[T]) Stop() {
-	close(m.stopCh)
 }
