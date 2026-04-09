@@ -7,7 +7,6 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/internal/models"
-	"log"
 	"strings"
 	"time"
 )
@@ -20,14 +19,14 @@ func (f *FetchCatalog) GetStage() string {
 }
 
 func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
-	browserWrapper, err := engine.GetBrowserPool().Get(ctx)
+	bw, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
 		return err
 	}
-	defer engine.GetBrowserPool().Put(browserWrapper)
+	defer engine.GetBrowserPool().Put(bw)
 
 	// 1. 创建空白页面（不自动导航）
-	page := browserWrapper.Browser.MustPage("")
+	page := bw.Browser.MustPage("")
 	defer page.Close()
 
 	if err := page.Timeout(10 * time.Second).Navigate(task.URL); err != nil {
@@ -35,7 +34,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	}
 	page.MustWaitLoad()
 
-	// 执行滚动加载
+	logger := engine.GetLoggerSet().Fetcher
 	// 定义常量
 	const (
 		maxScrolls     = 3               // 最大滚动次数，防止无限循环
@@ -67,7 +66,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		}
 		res, err := page.Evaluate(evalOpts)
 		if err != nil {
-			log.Printf("第 %d 次滚动执行出错: %v", i+1, err)
+			logger.Errorf("第 %d 次滚动执行出错: %v", i+1, err)
 			break
 		}
 
@@ -78,15 +77,11 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		}
 		jsonData, err := json.Marshal(res.Value)
 		if err != nil {
-			log.Printf("JSON 编码失败: %v", err)
 			break
 		}
 		if err := json.Unmarshal(jsonData, &result); err != nil {
-			log.Printf("解析返回值失败: %v", err)
 			break
 		}
-		fmt.Printf("高度: %d, 到底: %v\n", result.CurrentHeight, result.ReachedBottom)
-
 		time.Sleep(scrollInterval)
 	}
 	elements, err := page.Elements("div.topic-list-box")
@@ -95,6 +90,8 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	}
 
 	var dataTasks []*models.CrawlerTask
+	detail := &FetchDetail{}
+	// 遍历动漫列表 采集url 封面 标签 标题
 	for _, element := range elements {
 		// 1. 提取链接和 URL
 		aElem, err := element.Element("a.topic-list-item")
@@ -151,18 +148,25 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 			}
 		}
 
-		// 组装内容结构
-		contentData := models.DetailContent{
-			Cover:  coverSrc,
-			Title:  title,
-			Author: author,
-			Tags:   tags,
+		downloadResult := engine.GetFiledown().Download(ctx, coverSrc, "", nil)
+		if downloadResult.Error != nil {
+			logger.Errorf("下载图片失败 %s", coverSrc)
 		}
 		// 转为 JSON 存入 datatypes.JSON
-		jsonData, err := json.Marshal(contentData)
+		jsonData, err := json.Marshal(models.DetailContent{
+			Cover:    downloadResult.OutputFile,
+			CoverURL: coverSrc,
+			Title:    title,
+			Author:   author,
+			Tags:     tags,
+			SeriesContent: models.SeriesContent{
+				Series:    make(map[string]string),
+				Downloads: map[string]bool{},
+			},
+		})
 		dataTasks = append(dataTasks, &models.CrawlerTask{
 			PID:     uint(task.ID),
-			Stage:   "detail",
+			Stage:   detail.GetStage(), //子任务分发到detail阶段
 			URL:     fullURL,
 			Title:   title,
 			Content: jsonData,
@@ -186,5 +190,6 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 			engine.GetLoggerSet().Engine.Error(fmt.Errorf("详情任务提交失败: %w; task ID: %d", err, dataTask.ID))
 		}
 	}
+	engine.GetDB().Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Update("status", models.TaskStatusSuccess)
 	return nil
 }

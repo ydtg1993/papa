@@ -13,6 +13,7 @@ type LoggerSet struct {
 	Engine    *logrus.Logger //引擎管理器
 	Monitor   *logrus.Logger //监控器
 	Browser   *logrus.Logger //rod浏览器驱动
+	Fetcher   *logrus.Logger //爬虫业务层
 	DB        *logrus.Logger //数据库
 	Scheduler *logrus.Logger //任务计划
 	Proxy     *logrus.Logger
@@ -64,6 +65,7 @@ func NewLoggerSet(cfg LoggerConfig) LoggerSet {
 		Engine:    newLogger(cfg, filepath.Join(cfg.Dir, "/engine.log"), formatter),
 		Monitor:   newLogger(cfg, filepath.Join(cfg.Dir, "/monitor.log"), formatter),
 		Browser:   newLogger(cfg, filepath.Join(cfg.Dir, "/browser.log"), formatter),
+		Fetcher:   newLogger(cfg, filepath.Join(cfg.Dir, "/fetcher.log"), formatter),
 		DB:        newLogger(cfg, filepath.Join(cfg.Dir, "/db.log"), formatter),
 		Scheduler: newLogger(cfg, filepath.Join(cfg.Dir, "/scheduler.log"), formatter),
 		Proxy:     newLogger(cfg, filepath.Join(cfg.Dir, "/proxy.log"), formatter),

@@ -25,7 +25,7 @@ const (
 type CrawlerTask struct {
 	ID         uint             `gorm:"primarykey;comment:任务ID"`
 	PID        uint             `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
-	Stage      string           `gorm:"type:varchar(50);not null;uniqueIndex:idx_stage_url,priority:2;comment:所属阶段(catalog/detail等)"`
+	Stage      string           `gorm:"type:varchar(50);not null;index;uniqueIndex:idx_stage_url,priority:2;comment:所属阶段(例如catalog/detail等)"`
 	URL        string           `gorm:"type:varchar(500);not null;uniqueIndex:idx_stage_url,priority:1;comment:任务URL"`
 	Title      string           `gorm:"type:text;comment:页面标题"`
 	Content    datatypes.JSON   `gorm:"type:json;comment:页面提取内容"`
@@ -47,10 +47,12 @@ func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
 
 // DetailContent 定义要存入 Content 的结构 动漫详情
 type DetailContent struct {
-	Cover  string   `json:"cover"`
-	Title  string   `json:"title"`
-	Author string   `json:"author"`
-	Tags   []string `json:"tags"`
+	Cover         string               `json:"cover"` //下载本地化地址
+	CoverURL      string               `json:"cover_url"`
+	Title         string               `json:"title"`
+	Author        string               `json:"author"`
+	Tags          []string             `json:"tags"`
+	SeriesContent `json:"series_info"` //剧集列表信息
 }
 
 // SeriesContent 动漫剧集

@@ -13,7 +13,6 @@ import (
 	"github.com/ydtg1993/papa/pkg/track"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
-	"reflect"
 	"sync"
 	"time"
 )
@@ -85,6 +84,11 @@ func (e *Engine) GetDB() *gorm.DB {
 // GetLoggerSet 获取日志管理器列表
 func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
 	return e.loggerSet
+}
+
+// GetConfig 获取全局配置
+func (e *Engine) GetConfig() *config.Config {
+	return e.cfg
 }
 
 // SetBrowserPool 创建浏览器操作池
@@ -176,7 +180,7 @@ func (e *Engine) ApplyRegisterStage() {
 			return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
 		})
 		// 检查提交任务
-		if reflect.ValueOf(stageInfo.submitFunc).IsNil() == false {
+		if stageInfo.submitFunc != nil {
 			stageInfo.submitFunc(e)
 		}
 		// 如果全局配置开启了监控，则为该阶段创建监控器并启动
@@ -201,11 +205,19 @@ func (e *Engine) SubmitTask(task *Task) error {
 		//存入轮询任务列表 在任务计划中读取调用
 		e.repeatTasks.Store(task.Unique(), task)
 	}
+	var record models.CrawlerTask
 	//查询去重hash map
 	_, exist := e.activeTasks.Load(task.Unique())
 	if exist {
 		if task.Repeatable == false {
 			return fmt.Errorf("task already exists: %s", task.Unique())
+		} else {
+			//已经入库的轮询任务 查找记录防止重复录入
+			e.db.Model(&models.CrawlerTask{}).
+				Where("url = ?", task.URL).
+				Where("stage = ?", task.Stage).
+				First(&record)
+			task.ID = int(record.ID)
 		}
 	}
 
@@ -217,8 +229,9 @@ func (e *Engine) SubmitTask(task *Task) error {
 	}
 	// 插入成功后加入内存去重map
 	e.activeTasks.Store(task.Unique(), true)
-	var record models.CrawlerTask
-	e.db.Model(models.CrawlerTask{ID: uint(task.ID)}).First(record)
+	if record.ID == 0 {
+		e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
+	}
 	if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 		return nil
 	}

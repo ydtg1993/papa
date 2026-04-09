@@ -3,6 +3,7 @@ package filedown
 import (
 	"context"
 	"fmt"
+	"mime"
 	_ "mime"
 	"net/http"
 	"net/url"
@@ -318,27 +319,47 @@ func (d *Downloader) applyHeadersToReq(req *http.Request, cfg *requestConfig) {
 
 // genFileName 生成文件名（优先 Content-Disposition，其次 URL 路径，最后默认）
 func (d *Downloader) genFileName(rawURL, contentDisposition string) string {
-	// 1. Content-Disposition
-	if contentDisposition != "" {
-		if strings.Contains(contentDisposition, "filename=") {
-			parts := strings.Split(contentDisposition, "filename=")
-			if len(parts) > 1 {
-				name := strings.Trim(parts[1], `"`)
-				if name != "" {
-					return filepath.Base(name)
+	// 内部辅助函数：解析 Content-Disposition 头部
+	parseCD := func(header string) string {
+		_, params, err := mime.ParseMediaType(header)
+		if err != nil {
+			return ""
+		}
+		// 优先 filename*
+		if name, ok := params["filename*"]; ok {
+			parts := strings.SplitN(name, "'", 3)
+			if len(parts) == 3 {
+				if decoded, err := url.QueryUnescape(parts[2]); err == nil {
+					return decoded
 				}
 			}
 		}
+		// 回退 filename
+		if name, ok := params["filename"]; ok {
+			return name
+		}
+		return ""
 	}
-	// 2. URL 路径
-	u, err := url.Parse(rawURL)
-	if err == nil {
+
+	// 1. 优先从 Content-Disposition 获取
+	if contentDisposition != "" {
+		if name := parseCD(contentDisposition); name != "" {
+			return filepath.Base(name)
+		}
+	}
+
+	// 2. 从 URL 路径提取
+	if u, err := url.Parse(rawURL); err == nil {
 		base := path.Base(u.Path)
-		if base != "" && base != "/" && strings.Contains(base, ".") {
+		if base != "" && base != "/" && base != "." {
+			if decoded, err := url.QueryUnescape(base); err == nil {
+				base = decoded
+			}
 			return filepath.Base(base)
 		}
 	}
-	// 3. 默认
+
+	// 3. 默认随机名
 	return fmt.Sprintf("file_%d", time.Now().UnixNano())
 }
 
