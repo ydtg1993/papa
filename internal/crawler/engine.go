@@ -152,9 +152,7 @@ func (e *Engine) ApplyRegisterStage() {
 		e.stages[stage].workerPool = pool
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
-			// 1. 更新状态为 processing
-			task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusProcessing, nil)
-			// 2. 重试FetchHandler
+			// 重试FetchHandler
 			var lastErr error
 			for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
 				if attempt > 0 {
@@ -192,7 +190,7 @@ func (e *Engine) ApplyRegisterStage() {
 }
 
 // SubmitTask 任务提交
-func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
+func (e *Engine) SubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
 		return fmt.Errorf("task stage or url is empty: %v", task)
 	}
@@ -208,25 +206,39 @@ func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
 	if exist {
 		if task.Repeatable == false {
 			return fmt.Errorf("task already exists: %s", task.Unique())
-		} else {
-			//重复任务 已经存在记录不重复insert
-			insertToDB = false
 		}
 	}
-	// 提交到 pool 前先插入数据库（避免并发竞争）
-	if insertToDB && !task.Insert(e.db, e.loggerSet.DB) {
-		return fmt.Errorf("insert crawler task to db failed")
-	}
-	// 插入成功后加入内存 map
-	e.activeTasks.Store(task.Unique(), true)
 
+	if task.ID == 0 {
+		// 提交到 pool 前先插入数据库
+		if task.Insert(e.db, e.loggerSet.DB) == false {
+			return fmt.Errorf("insert crawler task to db failed")
+		}
+	}
+	// 插入成功后加入内存去重map
+	e.activeTasks.Store(task.Unique(), true)
+	var record models.CrawlerTask
+	e.db.Model(models.CrawlerTask{ID: uint(task.ID)}).First(record)
+	if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
+		return nil
+	}
 	info := e.stages[task.Stage]
 	if err := info.workerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
 		e.activeTasks.Delete(task.Unique())
-		_ = task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, err)
+		record.Error += err.Error() + "\r"
+		record.Status = models.TaskStatusFailed
+		e.db.Save(&record)
 		return err
 	}
+	if task.Repeatable && task.ID != 0 {
+		//状态修改 repeat+1
+		record.Repeat += 1
+		record.Status = models.TaskStatusPending
+	} else {
+		record.Status = models.TaskStatusPending
+	}
+	e.db.Save(record)
 	return nil
 }
 

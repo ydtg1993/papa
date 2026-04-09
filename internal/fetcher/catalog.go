@@ -181,7 +181,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 				PID:   task.ID,
 				Stage: dataTask.Stage,
 				URL:   dataTask.URL,
-			}, true)
+			})
 		if err != nil {
 			engine.GetLoggerSet().Engine.Error(fmt.Errorf("详情任务提交失败: %w; task ID: %d", err, dataTask.ID))
 		}

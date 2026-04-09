@@ -33,7 +33,8 @@ func (r *RepeatJob) Run() {
 	r.logger.Info("catalog repeat job started")
 	r.engine.GetRepeatTasks().Range(func(k, v interface{}) bool {
 		task := v.(crawler.Task)
-		if err := r.engine.SubmitTask(&task, false); err != nil {
+		task.UpdateStatus(r.engine.GetDB(), r.logger, models.TaskStatusPending, nil)
+		if err := r.engine.SubmitTask(&task); err != nil {
 			r.logger.Errorf("repeat job submit failed: %v", err)
 		} else {
 			r.logger.Infof("repeat job submitted task: %v", task)
@@ -55,9 +56,9 @@ func NewRecoverJob(sched *Scheduler) *RecoverJob {
 
 func (j *RecoverJob) Run() {
 	e := j.engine
-	// 1. 查询需要恢复的任务（pending 或超时的 processing）
+	// 1. 查询需要恢复的任务（pending或processing超时的）
 	var tasks []models.CrawlerTask
-	timeout := time.Now().Add(-2 * time.Hour)
+	timeout := time.Now().Add(-6 * time.Hour)
 
 	if err := e.GetDB().Where("(status = ? OR status = ?) AND updated_at < ?",
 		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
@@ -74,7 +75,6 @@ func (j *RecoverJob) Run() {
 	j.logger.Infof("found %d tasks need to recover", len(tasks))
 
 	// 2. 分别记录提交成功和失败的任务 ID
-	var successIDs []uint
 	var failIDs []uint
 	for _, t := range tasks {
 		task := &crawler.Task{
@@ -88,25 +88,11 @@ func (j *RecoverJob) Run() {
 		// 剔除去重hash map的暂存
 		e.DelActiveTask(task)
 		// 重新提交到队列（非阻塞）
-		if err := e.SubmitTask(task, false); err != nil {
+		task.UpdateStatus(j.engine.GetDB(), j.logger, models.TaskStatusPending, nil)
+		if err := e.SubmitTask(task); err != nil {
 			j.logger.Errorf("recover task %d (url: %s) submit failed: %v",
 				t.ID, t.URL, err)
 			failIDs = append(failIDs, t.ID)
-		} else {
-			successIDs = append(successIDs, t.ID)
-			j.logger.Infof("recover task %d submitted successfully", t.ID)
-		}
-	}
-
-	// 3. 批量更新成功任务的状态为 Processing
-	if len(successIDs) > 0 {
-		if err := e.GetDB().Model(&models.CrawlerTask{}).
-			Where("id IN ?", successIDs).
-			Update("status", models.TaskStatusProcessing).
-			Update("repeat", gorm.Expr("repeat + ?", 1)).Error; err != nil {
-			j.logger.Errorf("failed to mark recovered tasks as processing: %v", err)
-		} else {
-			j.logger.Infof("marked %d tasks as processing", len(successIDs))
 		}
 	}
 
@@ -114,8 +100,11 @@ func (j *RecoverJob) Run() {
 	if len(failIDs) > 0 {
 		if err := e.GetDB().Model(&models.CrawlerTask{}).
 			Where("id IN ?", failIDs).
-			Update("status", models.TaskStatusFailed).
-			Update("error", "RecoverTasks 恢复任务提交队列失败").Error; err != nil {
+			Updates(map[string]interface{}{
+				"status": models.TaskStatusFailed,
+				"retry":  gorm.Expr("retry + 1"),
+				"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", "RecoverTasks 恢复任务提交队列失败\n"),
+			}).Error; err != nil {
 			j.logger.Errorf("failed to rollback failed tasks to failed: %v", err)
 		} else {
 			j.logger.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))

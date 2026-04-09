@@ -38,12 +38,12 @@ func main() {
 				URL:        appInstance.Config.Crawler.Target + "classify?type=rexue",
 				Stage:      "catalog",
 				Repeatable: true, //可重复抓取，为后期轮询标识
-			}, true); err != nil {
+			}); err != nil {
 				appInstance.Logger.Engine.Errorf("submit initial task: %v", err)
 			}
 		})
 	// 阶段二: 抓取详情目录页内容 采集:动漫封面,更新时间,简介,选集内容列表
-	//appInstance.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
+	appInstance.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
 	// 阶段二: 抓取详情目录页内容 采集:动漫视频
 	//appInstance.RegisterStage("video", &fetcher.FetchCatalog{}, nil)
 	//=========================爬虫具体业务相关=========================//

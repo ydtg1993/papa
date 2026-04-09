@@ -14,13 +14,13 @@ crawler:
         backoff: "30s"                   # 重试退避间隔
     detail:                              # 详情页阶段
       worker_count: 2                    # 并发工作协程数
-      queue_size: 50                     # 任务队列缓冲大小
+      queue_size: 500                     # 任务队列缓冲大小
       retry:
         max_attempts: 3
         backoff: "30s"
     video:                               # 视频内容
-      worker_count: 5                    # 并发工作协程数
-      queue_size: 100                     # 任务队列缓冲大小
+      worker_count: 3                    # 并发工作协程数
+      queue_size: 1000                     # 任务队列缓冲大小
       retry:
         max_attempts: 3
         backoff: "30s"
