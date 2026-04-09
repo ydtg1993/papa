@@ -33,14 +33,6 @@ func (t *Task) IncRetry(db *gorm.DB, logger *logrus.Logger) {
 	}
 }
 
-func (t *Task) IncRepeat(db *gorm.DB, logger *logrus.Logger) {
-	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-		Update("repeat", gorm.Expr("repeat + ?", 1))
-	if upErr != nil {
-		logger.Errorf("increment crawler task repeat failed: %v", upErr)
-	}
-}
-
 func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
 	repeat := models.RepeatableNo
 	if t.Repeatable {
@@ -50,7 +42,6 @@ func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
 		PID:        uint(t.PID),
 		URL:        t.URL,
 		Stage:      t.Stage,
-		Retry:      0,
 		Repeatable: repeat,
 		Status:     models.TaskStatusPending,
 	}

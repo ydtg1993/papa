@@ -82,6 +82,11 @@ func (e *Engine) GetDB() *gorm.DB {
 	return e.db
 }
 
+// GetLoggerSet 获取日志管理器列表
+func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
+	return e.loggerSet
+}
+
 // SetBrowserPool 创建浏览器操作池
 func (e *Engine) SetBrowserPool() {
 	pool, err := browser.NewPool(browser.PoolConfig{

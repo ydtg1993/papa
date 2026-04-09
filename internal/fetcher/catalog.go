@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/internal/models"
 	"log"
 	"strings"
 	"time"
@@ -54,7 +55,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		ByValue: true,
 	})
 	if err != nil {
-		log.Fatalf("注入 scrollOnce 函数失败: %v", err)
+		return fmt.Errorf("注入 scrollOnce 函数失败: %v", err)
 	}
 	var lastHeight int
 	for i := 0; i < maxScrolls; i++ {
@@ -92,7 +93,8 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	if err != nil {
 		return fmt.Errorf("获取列表元素失败: %w", err)
 	}
-	var subtasks []*crawler.Task
+
+	var dataTasks []*models.CrawlerTask
 	for _, element := range elements {
 		// 1. 提取链接和 URL
 		aElem, err := element.Element("a.topic-list-item")
@@ -150,8 +152,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		}
 
 		// 组装内容结构
-		contentData := TopicContent{
-			URL:    fullURL,
+		contentData := models.DetailContent{
 			Cover:  coverSrc,
 			Title:  title,
 			Author: author,
@@ -159,18 +160,31 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		}
 		// 转为 JSON 存入 datatypes.JSON
 		jsonData, err := json.Marshal(contentData)
+		dataTasks = append(dataTasks, &models.CrawlerTask{
+			PID:     uint(task.ID),
+			Stage:   "detail",
+			URL:     fullURL,
+			Title:   title,
+			Content: jsonData,
+		})
 		if err != nil {
 			return fmt.Errorf("JSON 编码失败: %w", err)
 		}
 	}
+	if err := engine.GetDB().CreateInBatches(dataTasks, 100).Error; err != nil {
+		return fmt.Errorf("批量新增任务失败: %w", err)
+	}
+	for _, dataTask := range dataTasks {
+		err := engine.SubmitTask(
+			&crawler.Task{
+				ID:    int(dataTask.ID),
+				PID:   task.ID,
+				Stage: dataTask.Stage,
+				URL:   dataTask.URL,
+			}, true)
+		if err != nil {
+			engine.GetLoggerSet().Engine.Error(fmt.Errorf("详情任务提交失败: %w; task ID: %d", err, dataTask.ID))
+		}
+	}
 	return nil
-}
-
-// 定义要存入 Content 的结构
-type TopicContent struct {
-	URL    string   `json:"url"`
-	Cover  string   `json:"cover"`
-	Title  string   `json:"title"`
-	Author string   `json:"author"`
-	Tags   []string `json:"tags"`
 }

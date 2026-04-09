@@ -34,7 +34,6 @@ func (r *RepeatJob) Run() {
 	r.engine.GetRepeatTasks().Range(func(k, v interface{}) bool {
 		task := v.(crawler.Task)
 		if err := r.engine.SubmitTask(&task, false); err != nil {
-			task.IncRepeat(r.engine.GetDB(), r.logger)
 			r.logger.Errorf("repeat job submit failed: %v", err)
 		} else {
 			r.logger.Infof("repeat job submitted task: %v", task)
