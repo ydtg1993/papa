@@ -16,7 +16,7 @@ type Scheduler struct {
 	jobs   map[string]cron.EntryID
 }
 
-func NewScheduler(engine *crawler.Engine, timezone string) *Scheduler {
+func NewScheduler(engine *crawler.Engine, logger *logrus.Logger, timezone string) *Scheduler {
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
 		panic(err)
@@ -24,7 +24,7 @@ func NewScheduler(engine *crawler.Engine, timezone string) *Scheduler {
 	return &Scheduler{
 		cron:   cron.New(cron.WithSeconds(), cron.WithLocation(location)), // 支持秒级
 		engine: engine,
-		logger: engine.LoggerSet.Scheduler,
+		logger: logger,
 		jobs:   make(map[string]cron.EntryID),
 	}
 }

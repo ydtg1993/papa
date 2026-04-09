@@ -19,10 +19,8 @@ import (
 )
 
 type Engine struct {
-	ActiveTasks sync.Map // hash去重任务表 key: "stage|url"
-	RepeatTasks sync.Map // 重复轮询任务
-	DB          *gorm.DB
-	LoggerSet   *loggers.LoggerSet
+	db        *gorm.DB
+	loggerSet *loggers.LoggerSet
 
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -31,6 +29,8 @@ type Engine struct {
 	cfg         *config.Config
 	browserPool *browser.Pool
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
+	activeTasks sync.Map                            // hash去重任务表 key: "stage|url"
+	repeatTasks sync.Map                            // 重复轮询任务
 
 	proxy    *proxy.Manager       // 代理管理器中间件
 	m3u8     *m3u8.Downloader     // m3u8下载器
@@ -39,26 +39,25 @@ type Engine struct {
 
 // stageInfo 内部阶段信息
 type stageInfo struct {
-	WorkerPool *workerpool.WorkerPool[*Task]
-	Config     StageConfig
-	Fetcher    Fetcher
-	SubmitFunc func(engine *Engine)
+	workerPool *workerpool.WorkerPool[*Task]
+	config     StageConfig
+	fetcher    Fetcher
+	submitFunc func(engine *Engine)
 }
 
 // StageConfig 阶段配置
 type StageConfig struct {
 	MaxAttempts int           // Handler 最大重试次数
 	Backoff     time.Duration // Handler 初始退避时间
-	NextStage   string        // NextStage 可选：解析出的链接自动使用的下一阶段
 	WorkerCount int           // WorkerCount 该阶段专用的 worker 数量
 	QueueSize   int           // QueueSize 该阶段的任务队列缓冲大小
 }
 
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
 	e.stages[stage] = &stageInfo{
-		Config:     config,
-		Fetcher:    fetcher,
-		SubmitFunc: subFunc,
+		config:     config,
+		fetcher:    fetcher,
+		submitFunc: subFunc,
 	}
 }
 
@@ -69,15 +68,21 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		ctx:         ctx,
 		cancel:      cancel,
 		stages:      make(map[string]*stageInfo),
-		ActiveTasks: sync.Map{},
-		DB:          db,
+		activeTasks: sync.Map{},
+		db:          db,
 		cfg:         cfg,
-		LoggerSet:   loggerSet,
+		loggerSet:   loggerSet,
 	}
 	engine.loadActiveTasks()
 	return engine
 }
 
+// GetDB 获取数据库操作实例
+func (e *Engine) GetDB() *gorm.DB {
+	return e.db
+}
+
+// SetBrowserPool 创建浏览器操作池
 func (e *Engine) SetBrowserPool() {
 	pool, err := browser.NewPool(browser.PoolConfig{
 		Size:        e.cfg.Browser.PoolSize,
@@ -94,7 +99,7 @@ func (e *Engine) SetBrowserPool() {
 		ProxyManager: e.GetProxy(),
 	})
 	if err != nil {
-		e.LoggerSet.Browser.Errorf("new browser pool: %v", err.Error())
+		e.loggerSet.Browser.Errorf("new browser pool: %v", err.Error())
 	}
 	e.browserPool = pool
 }
@@ -109,6 +114,7 @@ func (e *Engine) SetProxy(proxy *proxy.Manager) {
 	e.proxy = proxy
 }
 
+// GetProxy 获取代理管理器
 func (e *Engine) GetProxy() *proxy.Manager {
 	return e.proxy
 }
@@ -118,6 +124,7 @@ func (e *Engine) SetM3U8(m3u *m3u8.Downloader) {
 	e.m3u8 = m3u
 }
 
+// GetM3U8 获取m3u8下载器
 func (e *Engine) GetM3U8() *m3u8.Downloader {
 	return e.m3u8
 }
@@ -127,6 +134,7 @@ func (e *Engine) SetFiledown(f *filedown.Downloader) {
 	e.filedown = f
 }
 
+// GetFiledown 获取文件下载器实例
 func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
@@ -134,22 +142,22 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
 	for stage, stageInfo := range e.stages {
-		cfg := stageInfo.Config
+		cfg := stageInfo.config
 		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
-		e.stages[stage].WorkerPool = pool
+		e.stages[stage].workerPool = pool
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
 			// 1. 更新状态为 processing
-			task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusProcessing, nil)
+			task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusProcessing, nil)
 			// 2. 重试FetchHandler
 			var lastErr error
 			for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
 				if attempt > 0 {
-					task.IncRetry(e.DB, e.LoggerSet.DB)
+					task.IncRetry(e.db, e.loggerSet.DB)
 				}
-				err := stageInfo.Fetcher.FetchHandler(ctx, task, e)
+				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
 				if err == nil {
-					task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusSuccess, nil)
+					task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusSuccess, nil)
 					return nil
 				}
 				lastErr = err
@@ -161,19 +169,19 @@ func (e *Engine) ApplyRegisterStage() {
 				}
 			}
 			// 所有重试失败：记录错误并更新状态为 failed
-			task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusFailed, lastErr)
+			task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, lastErr)
 			return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
 		})
 		// 检查提交任务
-		if reflect.ValueOf(stageInfo.SubmitFunc).IsNil() == false {
-			stageInfo.SubmitFunc(e)
+		if reflect.ValueOf(stageInfo.submitFunc).IsNil() == false {
+			stageInfo.submitFunc(e)
 		}
 		// 如果全局配置开启了监控，则为该阶段创建监控器并启动
 		if e.cfg.Monitor.Enabled {
 			stats := track.NewStatsQueue(pool)
 			stats.Start(e.ctx)
 			e.setStatsQueue(stage, stats)
-			e.LoggerSet.Engine.Infof("monitor started for stage: %s", stage)
+			e.loggerSet.Engine.Infof("monitor started for stage: %s", stage)
 		}
 	}
 }
@@ -183,31 +191,35 @@ func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
 	if task.Stage == "" || task.URL == "" {
 		return fmt.Errorf("task stage or url is empty: %v", task)
 	}
+	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
+		return fmt.Errorf("invalid stage : %s", task.Stage)
+	}
 	if task.Repeatable {
 		//存入轮询任务列表 在任务计划中读取调用
-		e.RepeatTasks.Store(task.Unique(), task)
+		e.repeatTasks.Store(task.Unique(), task)
 	}
 	//查询去重hash map
-	_, exist := e.ActiveTasks.Load(task.Unique())
-	if exist && task.Repeatable == false {
-		return fmt.Errorf("task already exists: %s", task.Unique())
-	}
-	//重复任务 已经存在记录不重复insert
-	if task.Repeatable && exist {
-		insertToDB = false
+	_, exist := e.activeTasks.Load(task.Unique())
+	if exist {
+		if task.Repeatable == false {
+			return fmt.Errorf("task already exists: %s", task.Unique())
+		} else {
+			//重复任务 已经存在记录不重复insert
+			insertToDB = false
+		}
 	}
 	// 提交到 pool 前先插入数据库（避免并发竞争）
-	if insertToDB && !task.Insert(e.DB, e.LoggerSet.DB) {
+	if insertToDB && !task.Insert(e.db, e.loggerSet.DB) {
 		return fmt.Errorf("insert crawler task to db failed")
 	}
 	// 插入成功后加入内存 map
-	e.ActiveTasks.Store(task.Unique(), true)
+	e.activeTasks.Store(task.Unique(), true)
 
 	info := e.stages[task.Stage]
-	if err := info.WorkerPool.Submit(task); err != nil {
+	if err := info.workerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
-		e.ActiveTasks.Delete(task.Unique())
-		_ = task.UpdateStatus(e.DB, e.LoggerSet.DB, models.TaskStatusFailed, err)
+		e.activeTasks.Delete(task.Unique())
+		_ = task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, err)
 		return err
 	}
 	return nil
@@ -222,16 +234,16 @@ func (e *Engine) Stop(timeout time.Duration) {
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()
 			pool.Stop(timeout)
-		}(name, s.WorkerPool)
+		}(name, s.workerPool)
 	}
 	wg.Wait()
-	e.LoggerSet.Engine.Info("all workers stopped")
+	e.loggerSet.Engine.Info("all workers stopped")
 }
 
 // Errors 返回work pool中的错误消息队列
 func (e *Engine) Errors() (errors []<-chan error) {
 	for _, s := range e.stages {
-		errors = append(errors, s.WorkerPool.Errors())
+		errors = append(errors, s.workerPool.Errors())
 	}
 	return
 }
@@ -258,15 +270,25 @@ func (e *Engine) GetStatsQueue() map[string]*track.StatsQueue[*Task] {
 	return cp
 }
 
+// DelActiveTask 从去重任务列表中删除任务
+func (e *Engine) DelActiveTask(task *Task) {
+	e.activeTasks.Delete(task.Unique())
+}
+
+// GetRepeatTasks 获取轮询任务列表
+func (e *Engine) GetRepeatTasks() *sync.Map {
+	return &e.repeatTasks
+}
+
 // loadActiveTasks 启动时加载数据库记录到去重hash map
 func (e *Engine) loadActiveTasks() {
 	var tasks []models.CrawlerTask
-	if err := e.DB.Where("id > ?", 0).Find(&tasks).Error; err != nil {
-		e.LoggerSet.DB.Errorf("load active tasks failed: %v", err)
+	if err := e.db.Where("id > ?", 0).Find(&tasks).Error; err != nil {
+		e.loggerSet.DB.Errorf("load active tasks failed: %v", err)
 		return
 	}
 	for _, t := range tasks {
 		task := Task{URL: t.URL, Stage: t.Stage}
-		e.ActiveTasks.Store(task.Unique(), true)
+		e.activeTasks.Store(task.Unique(), true)
 	}
 }

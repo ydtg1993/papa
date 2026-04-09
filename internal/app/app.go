@@ -70,14 +70,11 @@ func NewApp() (*App, error) {
 }
 
 // RegisterStage 注册爬虫业务阶段流程
-func (a *App) RegisterStage(stage string, NextStage string, fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
+func (a *App) RegisterStage(stage string, fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
 	// 从配置中读取 stage 配置
 	cfg, ok := a.Config.Crawler.Stages[stage]
 	if ok != true {
 		panic(fmt.Errorf("invalid crawler stage: %s", stage))
-	}
-	if _, ok = a.Config.Crawler.Stages[NextStage]; ok != true && NextStage != "" {
-		panic(fmt.Errorf("invalid crawler next stage: %s", NextStage))
 	}
 	if cfg.WorkerCount <= 0 || cfg.QueueSize <= 0 {
 		panic(fmt.Errorf("stage %s: WorkerCount and QueueSize must be positive", stage))
@@ -92,7 +89,6 @@ func (a *App) RegisterStage(stage string, NextStage string, fetcher crawler.Fetc
 	a.Engine.AddStage(stage, crawler.StageConfig{
 		MaxAttempts: cfg.Retry.MaxAttempts,
 		Backoff:     cfg.Retry.Backoff,
-		NextStage:   NextStage,
 		WorkerCount: cfg.WorkerCount,
 		QueueSize:   cfg.QueueSize,
 	}, fetcher, subFunc)
@@ -106,21 +102,15 @@ func (a *App) Run(ctx context.Context) {
 	a.Engine.ApplyRegisterStage()
 
 	// 任务计划
-	sch := a.schedule()
+	a.schedule(ctx)
 	// 监听c错误日志 中间件活动等队列消息
 	a.mdMsgListener(ctx)
 	// 启动监控 HTTP 服务（如果配置启用）
-	mon := a.monitor()
+	a.monitor(ctx)
 
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
-	if sch != nil {
-		sch.Stop()
-	}
-	if mon != nil {
-		mon.Stop()
-	}
 	a.Engine.Stop(5 * time.Second)
 	if reflect.ValueOf(a.Engine.GetBrowserPool()).IsNil() == false {
 		a.Engine.GetBrowserPool().Close()
@@ -143,9 +133,6 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	}
 	//监听中间件消息
 	listen := func(md middleware.Err, log *logrus.Logger) {
-		if reflect.ValueOf(md).IsNil() {
-			return
-		}
 		go func() {
 			for {
 				select {
@@ -160,15 +147,21 @@ func (a *App) mdMsgListener(ctx context.Context) {
 			}
 		}()
 	}
-	listen(a.Engine.GetProxy(), a.Logger.Proxy)
-	listen(a.Engine.GetFiledown(), a.Logger.Filedown)
-	listen(a.Engine.GetM3U8(), a.Logger.M3U8)
+	if proxy := a.Engine.GetProxy(); proxy != nil {
+		listen(proxy, a.Logger.Proxy)
+	}
+	if filedown := a.Engine.GetFiledown(); filedown != nil {
+		listen(filedown, a.Logger.Filedown)
+	}
+	if m3u8 := a.Engine.GetM3U8(); m3u8 != nil {
+		listen(m3u8, a.Logger.M3U8)
+	}
 }
 
 // monitor
-func (a *App) monitor() *server.Monitor {
+func (a *App) monitor(ctx context.Context) {
 	if a.Config.Monitor.Enabled == false {
-		return nil
+		return
 	}
 	getter := func() map[string]*track.StatsQueue[*crawler.Task] {
 		return a.Engine.GetStatsQueue()
@@ -176,32 +169,38 @@ func (a *App) monitor() *server.Monitor {
 	// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
 	mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
 	go mServer.Start()
-	return mServer
+	go func() {
+		<-ctx.Done()
+		mServer.Stop()
+	}()
 }
 
 // 任务计划
-func (a *App) schedule() *scheduler.Scheduler {
+func (a *App) schedule(ctx context.Context) {
 	if a.Config.Scheduler.Enabled == false {
-		return nil
+		return
 	}
-	sched := scheduler.NewScheduler(a.Engine, a.Config.Scheduler.Timezone)
+	sched := scheduler.NewScheduler(a.Engine, a.Logger.Scheduler, a.Config.Scheduler.Timezone)
 	for _, jobCfg := range a.Config.Scheduler.Jobs {
 		var cmd func()
 		switch jobCfg.Type {
 		case "repeat":
-			repeatJob := scheduler.NewRepeatJob(a.Engine)
+			repeatJob := scheduler.NewRepeatJob(sched)
 			cmd = repeatJob.Run
 		case "recover":
-			recoverJob := scheduler.NewRecoverJob(a.Engine)
+			recoverJob := scheduler.NewRecoverJob(sched)
 			cmd = recoverJob.Run
 		default:
 			panic(fmt.Sprintf("unknown job type: %s", jobCfg.Type))
 		}
 
 		if err := sched.AddJob(jobCfg.Name, jobCfg.Schedule, cmd); err != nil {
-			a.Engine.LoggerSet.Scheduler.Errorf("failed to add job %s: %v", jobCfg.Name, err)
+			a.Logger.Scheduler.Errorf("failed to add job %s: %v", jobCfg.Name, err)
 		}
 	}
 	go sched.Start()
-	return sched
+	go func() {
+		<-ctx.Done()
+		sched.Stop()
+	}()
 }

@@ -8,25 +8,33 @@ import (
 	"time"
 )
 
-// RepeatJob 周期性执行 catalog 阶段，检查新增任务
-type RepeatJob struct {
+type SchJob struct {
 	engine *crawler.Engine
 	logger *logrus.Logger
 }
 
-func NewRepeatJob(engine *crawler.Engine) *RepeatJob {
-	return &RepeatJob{
-		engine: engine,
-		logger: engine.LoggerSet.Scheduler,
-	}
+func (s *SchJob) Init(sched *Scheduler) {
+	s.engine = sched.engine
+	s.logger = sched.logger
+}
+
+// RepeatJob 周期性执行 catalog 阶段，检查新增任务
+type RepeatJob struct {
+	SchJob
+}
+
+func NewRepeatJob(sched *Scheduler) *RepeatJob {
+	rj := &RepeatJob{}
+	rj.Init(sched) // 显式调用基类初始化
+	return rj
 }
 
 func (r *RepeatJob) Run() {
 	r.logger.Info("catalog repeat job started")
-	r.engine.RepeatTasks.Range(func(k, v interface{}) bool {
+	r.engine.GetRepeatTasks().Range(func(k, v interface{}) bool {
 		task := v.(crawler.Task)
 		if err := r.engine.SubmitTask(&task, false); err != nil {
-			task.IncRepeat(r.engine.DB, r.logger)
+			task.IncRepeat(r.engine.GetDB(), r.logger)
 			r.logger.Errorf("repeat job submit failed: %v", err)
 		} else {
 			r.logger.Infof("repeat job submitted task: %v", task)
@@ -37,14 +45,13 @@ func (r *RepeatJob) Run() {
 
 // RecoverJob 定期恢复未完成的任务
 type RecoverJob struct {
-	engine *crawler.Engine
-	logger *logrus.Logger
+	SchJob
 }
 
-func NewRecoverJob(engine *crawler.Engine) *RecoverJob {
-	return &RecoverJob{engine: engine,
-		logger: engine.LoggerSet.Scheduler,
-	}
+func NewRecoverJob(sched *Scheduler) *RecoverJob {
+	rj := &RecoverJob{}
+	rj.Init(sched) // 显式调用基类初始化
+	return rj
 }
 
 func (j *RecoverJob) Run() {
@@ -53,7 +60,7 @@ func (j *RecoverJob) Run() {
 	var tasks []models.CrawlerTask
 	timeout := time.Now().Add(-2 * time.Hour)
 
-	if err := e.DB.Where("(status = ? OR status = ?) AND updated_at < ?",
+	if err := e.GetDB().Where("(status = ? OR status = ?) AND updated_at < ?",
 		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
 		Find(&tasks).Error; err != nil {
 		j.logger.Errorf("failed to load tasks for recovery: %v", err)
@@ -80,7 +87,7 @@ func (j *RecoverJob) Run() {
 			Repeatable: false,
 		}
 		// 剔除去重hash map的暂存
-		e.ActiveTasks.Delete(task.Unique())
+		e.DelActiveTask(task)
 		// 重新提交到队列（非阻塞）
 		if err := e.SubmitTask(task, false); err != nil {
 			j.logger.Errorf("recover task %d (url: %s) submit failed: %v",
@@ -94,7 +101,7 @@ func (j *RecoverJob) Run() {
 
 	// 3. 批量更新成功任务的状态为 Processing
 	if len(successIDs) > 0 {
-		if err := e.DB.Model(&models.CrawlerTask{}).
+		if err := e.GetDB().Model(&models.CrawlerTask{}).
 			Where("id IN ?", successIDs).
 			Update("status", models.TaskStatusProcessing).
 			Update("repeat", gorm.Expr("repeat + ?", 1)).Error; err != nil {
@@ -106,7 +113,7 @@ func (j *RecoverJob) Run() {
 
 	// 4. 失败的任务状态回滚为 Pending（记录为失败进入失败任务流程）
 	if len(failIDs) > 0 {
-		if err := e.DB.Model(&models.CrawlerTask{}).
+		if err := e.GetDB().Model(&models.CrawlerTask{}).
 			Where("id IN ?", failIDs).
 			Update("status", models.TaskStatusFailed).
 			Update("error", "RecoverTasks 恢复任务提交队列失败").Error; err != nil {

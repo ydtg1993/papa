@@ -7,6 +7,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -37,7 +38,6 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	// 定义常量
 	const (
 		maxScrolls     = 3               // 最大滚动次数，防止无限循环
-		waitTimeMs     = 1500            // 每次滚动后等待新内容加载的时间（毫秒）
 		scrollInterval = 2 * time.Second // 额外间隔（可选）
 	)
 	_, err = page.Evaluate(&rod.EvalOptions{
@@ -88,5 +88,89 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 
 		time.Sleep(scrollInterval)
 	}
+	elements, err := page.Elements("div.topic-list-box")
+	if err != nil {
+		return fmt.Errorf("获取列表元素失败: %w", err)
+	}
+	var subtasks []*crawler.Task
+	for _, element := range elements {
+		// 1. 提取链接和 URL
+		aElem, err := element.Element("a.topic-list-item")
+		if err != nil {
+			// 如果连 a 标签都没有，跳过这个 item
+			continue
+		}
+		href, err := aElem.Attribute("href")
+		if err != nil || href == nil {
+			continue
+		}
+		fullURL := *href
+		// 2. 提取封面图 src
+		// 优先找 amp-img，再找 img
+		coverSrc := ""
+		ampImg, err := element.Element("amp-img")
+		if err == nil {
+			src, _ := ampImg.Attribute("src")
+			if src != nil {
+				coverSrc = *src
+			}
+		}
+		if coverSrc == "" {
+			img, err := element.Element("img")
+			if err == nil {
+				src, _ := img.Attribute("src")
+				if src != nil {
+					coverSrc = *src
+				}
+			}
+		}
+		// 3. 提取标题（.h3）
+		titleElem, err := element.Element(".h3")
+		title := ""
+		if err == nil {
+			title = titleElem.MustText()
+		}
+		// 4. 提取作者（.topic-list-item--author）
+		authorElem, err := element.Element(".topic-list-item--author")
+		author := ""
+		if err == nil {
+			author = strings.TrimSpace(authorElem.MustText())
+		}
+
+		// 5. 提取所有分类（.tag）
+		tagElems, err := element.Elements(".tag")
+		var tags []string
+		if err == nil {
+			for _, tagElem := range tagElems {
+				text := strings.TrimSpace(tagElem.MustText())
+				if text != "" {
+					tags = append(tags, text)
+				}
+			}
+		}
+
+		// 组装内容结构
+		contentData := TopicContent{
+			URL:    fullURL,
+			Cover:  coverSrc,
+			Title:  title,
+			Author: author,
+			Tags:   tags,
+		}
+		// 转为 JSON 存入 datatypes.JSON
+		jsonData, err := json.Marshal(contentData)
+		if err != nil {
+			return fmt.Errorf("JSON 编码失败: %w", err)
+		}
+	}
 	return nil
+}
+
+// 定义要存入 Content 的结构
+type TopicContent struct {
+	URL    string   `json:"url"`
+	Cover  string   `json:"cover"`
+	Title  string   `json:"title"`
+	Author string   `json:"author"`
+	Tags   []string `json:"tags"`
 }

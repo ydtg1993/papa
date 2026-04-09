@@ -12,8 +12,7 @@ type Task struct {
 	PID        int `json:"pid"` // 父级任务ID
 	URL        string
 	Retry      int
-	Stage      string //阶段标识，如 "catalog", "detail"
-	NextStage  string //下阶段标识 生成子任务时标识阶段
+	Stage      string //阶段标识，如 "catalog", "detail", "video"
 	Repeatable bool
 }
 
