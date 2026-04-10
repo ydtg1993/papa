@@ -49,7 +49,7 @@ type labor struct {
 	execMu   sync.Mutex
 }
 
-func (l *labor) GetUniqueKey() string {
+func (l *labor) getUniqueKey() string {
 	return l.source + "|" + l.outDir + "|" + l.filename
 }
 
@@ -238,19 +238,23 @@ func (d *Downloader) Download(ctx context.Context, m3u8URL, outputDir, outputFil
 	if outputFile == "" {
 		outputFile = d.generateFileName(m3u8URL)
 	}
-	l := &labor{
-		source:   m3u8URL,
-		outDir:   outputDir,
-		filename: outputFile,
-	}
+	key := m3u8URL + "|" + outputDir + "|" + outputFile
 	d.laborMu.Lock()
-	if _, exists := d.labors[l.GetUniqueKey()]; !exists {
-		d.labors[l.GetUniqueKey()] = l
-	} else {
-		l = d.labors[l.GetUniqueKey()]
+	l, exists := d.labors[key]
+	if !exists {
+		l = &labor{
+			source:   m3u8URL,
+			outDir:   outputDir,
+			filename: outputFile,
+		}
+		d.labors[key] = l
 	}
 	d.laborMu.Unlock()
-
+	defer func() {
+		d.laborMu.Lock()
+		delete(d.labors, key)
+		d.laborMu.Unlock()
+	}()
 	var opt *DownloadOptions
 	if len(opts) > 0 && opts[0] != nil {
 		opt = opts[0]
@@ -371,7 +375,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 
 	saveBatchSize := cfg.SaveBatchSize
 	if saveBatchSize <= 0 {
-		saveBatchSize = 1 // 或跳过批量逻辑，每片都保存
+		saveBatchSize = 10
 	}
 	var completedCount int32
 	var totalBytes int64
@@ -427,10 +431,6 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}(idx, segInfo)
 	}
 	wg.Wait()
-	// 确保最后再保存一次（防止漏掉不足 saveBatchSize 的部分）
-	if err := d.saveResumeState(la, resumeState); err != nil {
-		d.trackQueue.SendError(fmt.Errorf("final save resume state failed: %w", err))
-	}
 	if downloadErr != nil {
 		result.Error = downloadErr
 		return result
@@ -471,14 +471,14 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	// 11. 清理状态文件
 	_ = d.cleanResumeState(la)
 
-	result.OutputFile = finalOutput
+	relOutput := filepath.Join(outputDir, outputFile)
+	if cfg.AutoMerge {
+		baseName := strings.TrimSuffix(relOutput, filepath.Ext(relOutput))
+		relOutput = baseName + cfg.MergeOutputExt
+	}
+	result.OutputFile = relOutput
 	result.Segments = totalSegments
 	result.Size = d.getTotalSize(resumeState.SegmentFiles)
-
-	// 函数末尾添加清理（注意需要知道 key）
-	d.laborMu.Lock()
-	delete(d.labors, la.GetUniqueKey())
-	d.laborMu.Unlock()
 	return result
 }
 
@@ -546,8 +546,8 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 // mergeToMP4 使用 ffmpeg 将 TS 片段合并为 MP4
 func (d *Downloader) mergeToMP4(ctx context.Context, initSegmentPath string, segmentFiles []string, outputPath string) error {
 	// 创建 concat 文件列表
-	safeName := strings.ReplaceAll(outputPath, string(filepath.Separator), "_")
-	listFilePath := filepath.Join(d.config.ResumeStateDir, "concat_list_"+safeName+".txt")
+	hash := fmt.Sprintf("%x", md5.Sum([]byte(outputPath)))
+	listFilePath := filepath.Join(d.config.ResumeStateDir, "concat_list_"+hash+".txt")
 	var listContent strings.Builder
 	if initSegmentPath != "" {
 		absPath, _ := filepath.Abs(initSegmentPath)

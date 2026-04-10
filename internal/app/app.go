@@ -85,12 +85,16 @@ func (a *App) RegisterStage(stage string, fetcher crawler.Fetcher, subFunc func(
 	if cfg.Retry.Backoff <= 0 {
 		cfg.Retry.Backoff = time.Second
 	}
+	if cfg.Delay <= 0 {
+		cfg.Delay = time.Minute
+	}
 
 	a.Engine.AddStage(stage, crawler.StageConfig{
 		MaxAttempts: cfg.Retry.MaxAttempts,
 		Backoff:     cfg.Retry.Backoff,
 		WorkerCount: cfg.WorkerCount,
 		QueueSize:   cfg.QueueSize,
+		Delay:       cfg.Delay,
 	}, fetcher, subFunc)
 }
 

@@ -6,6 +6,8 @@ import (
 	"github.com/ydtg1993/papa/internal/app"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/internal/fetcher"
+	"github.com/ydtg1993/papa/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/pkg/middleware/m3u8"
 	"github.com/ydtg1993/papa/pkg/middleware/proxy"
 	"os"
 	"os/signal"
@@ -25,6 +27,8 @@ func main() {
 
 	//=========================设置爬虫middleware代理,m3u8下载器等=========================//
 	appInstance.Engine.SetProxy(proxy.NewManager(appInstance.Config.Proxy.APIURL, 8*time.Minute))
+	appInstance.Engine.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))
+	appInstance.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))
 
 	//=========================爬虫具体业务相关=========================//
 	// 3. 注册业务逻辑所需要的爬虫流程阶段
@@ -39,13 +43,13 @@ func main() {
 				Stage:      "catalog",
 				Repeatable: true, //可重复抓取，为后期轮询标识
 			}); err != nil {
-				appInstance.Logger.Engine.Errorf("submit initial task: %v", err)
+				appInstance.Logger.Engine.Errorf("submit initial task: %w", err)
 			}
 		})
 	// 阶段二: 抓取详情目录页内容 采集:动漫封面,更新时间,简介,选集内容列表
 	appInstance.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
 	// 阶段二: 抓取详情目录页内容 采集:动漫视频
-	//appInstance.RegisterStage("video", &fetcher.FetchCatalog{}, nil)
+	appInstance.RegisterStage("video", &fetcher.FetchCatalog{}, nil)
 	//=========================爬虫具体业务相关=========================//
 
 	// 3. 捕获退出信号

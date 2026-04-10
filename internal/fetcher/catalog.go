@@ -7,6 +7,8 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/internal/models"
+	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,7 +148,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 			}
 		}
 
-		downloadResult := engine.GetFiledown().Download(ctx, coverSrc, "", nil)
+		downloadResult := engine.GetFiledown().Download(ctx, coverSrc, strconv.Itoa(rand.Intn(10)), "")
 		if downloadResult.Error != nil {
 			return fmt.Errorf("下载图片失败 %s", coverSrc)
 		}

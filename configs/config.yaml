@@ -9,18 +9,21 @@ crawler:
     catalog:                             # 目录/列表页阶段
       worker_count: 1                    # 并发工作协程数
       queue_size: 20                     # 任务队列缓冲大小
+      delay: "60s"                       # 任务间隔延迟
       retry:                             # 重试策略
         max_attempts: 3                  # 最大重试次数
         backoff: "30s"                   # 重试退避间隔
     detail:                              # 详情页阶段
-      worker_count: 2                    # 并发工作协程数
-      queue_size: 500                     # 任务队列缓冲大小
+      worker_count: 1                    # 并发工作协程数
+      queue_size: 500                    # 任务队列缓冲大小
+      delay: "5m"                       # 任务间隔延迟
       retry:
         max_attempts: 3
         backoff: "30s"
     video:                               # 视频内容
-      worker_count: 3                    # 并发工作协程数
-      queue_size: 1000                     # 任务队列缓冲大小
+      worker_count: 1                    # 并发工作协程数
+      queue_size: 1000                   # 任务队列缓冲大小
+      delay: "60s"                       # 任务间隔延迟
       retry:
         max_attempts: 3
         backoff: "30s"
@@ -28,7 +31,7 @@ crawler:
 # 浏览器自动化池配置
 browser:
   #只有catalog和detail video阶段需要浏览器抓取信息，唤起浏览器数量应大于等于三阶段worker_count之和以避免争抢
-  pool_size: 1                           # 浏览器实例数量
+  pool_size: 3                           # 浏览器实例数量
   max_idle_time: "5m"                    # 空闲浏览器最大存活时间
   headless: false                        # 是否无头模式（false 可见浏览器界面）
   disable_gpu: false                     # 禁用 GPU 加速

@@ -47,7 +47,8 @@ type stageInfo struct {
 // StageConfig 阶段配置
 type StageConfig struct {
 	MaxAttempts int           // Handler 最大重试次数
-	Backoff     time.Duration // Handler 初始退避时间
+	Backoff     time.Duration // Handler 错误重试退避时间
+	Delay       time.Duration // 任务间隔延迟
 	WorkerCount int           // WorkerCount 该阶段专用的 worker 数量
 	QueueSize   int           // QueueSize 该阶段的任务队列缓冲大小
 }
@@ -165,6 +166,7 @@ func (e *Engine) ApplyRegisterStage() {
 				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
 				if err == nil {
 					task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusSuccess, nil)
+					<-time.After(cfg.Delay)
 					return nil
 				}
 				lastErr = err
