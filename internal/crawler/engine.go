@@ -109,7 +109,7 @@ func (e *Engine) SetBrowserPool() {
 		ProxyManager: e.GetProxy(),
 	})
 	if err != nil {
-		e.loggerSet.Browser.Errorf("new browser pool: %v", err)
+		e.loggerSet.Browser.Errorf("new browser pool: %s", err.Error())
 	}
 	e.browserPool = pool
 }
@@ -198,7 +198,7 @@ func (e *Engine) ApplyRegisterStage() {
 // SubmitTask 任务提交
 func (e *Engine) SubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
-		return fmt.Errorf("task stage or url is empty: %v", task)
+		return fmt.Errorf("task stage or url is empty: %+v", task)
 	}
 	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
 		return fmt.Errorf("invalid stage : %s", task.Stage)
@@ -316,7 +316,7 @@ func (e *Engine) GetRepeatTasks() *sync.Map {
 func (e *Engine) loadActiveTasks() {
 	var tasks []models.CrawlerTask
 	if err := e.db.Where("id > ?", 0).Find(&tasks).Error; err != nil {
-		e.loggerSet.DB.Errorf("load active tasks failed: %v", err)
+		e.loggerSet.DB.Errorf("load active tasks failed: %s", err.Error())
 		return
 	}
 	for _, t := range tasks {

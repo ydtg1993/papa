@@ -19,7 +19,7 @@ func main() {
 	// 1. 创建应用容器
 	appInstance, err := app.NewApp()
 	if err != nil {
-		panic(fmt.Sprintf("init app failed: %v", err))
+		panic(fmt.Sprintf("init app failed: %s", err.Error()))
 	}
 	// 2. 创建可取消的 context，用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
@@ -43,7 +43,7 @@ func main() {
 				Stage:      "catalog",
 				Repeatable: true, //可重复抓取，为后期轮询标识
 			}); err != nil {
-				appInstance.Logger.Engine.Errorf("submit initial task: %w", err)
+				appInstance.Logger.Engine.Errorf("submit initial task: %s", err.Error())
 			}
 		})
 	// 阶段二: 抓取详情目录页内容 采集:动漫封面,更新时间,简介,选集内容列表

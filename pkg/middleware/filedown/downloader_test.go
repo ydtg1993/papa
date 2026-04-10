@@ -74,7 +74,7 @@ func TestDownloadWithChunks(t *testing.T) {
 
 	result := downloader.Download(context.Background(), server.URL, "subdir", "test.txt", nil)
 	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
+		t.Fatalf("download failed: %s", result.Error.Error())
 	}
 	expectedRel := filepath.Join("subdir", "test.txt")
 	if result.OutputFile != expectedRel {
@@ -95,7 +95,7 @@ func TestDownloadWithChunks(t *testing.T) {
 	// 检查状态文件是否被清理
 	stateFiles, _ := filepath.Glob(filepath.Join(tempState, "subdir", "*.json"))
 	if len(stateFiles) != 0 {
-		t.Errorf("state file not cleaned: %v", stateFiles)
+		t.Errorf("state file not cleaned: %+v", stateFiles)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestDownloadResume(t *testing.T) {
 	// 第二次下载，应续传
 	result2 := downloader.Download(context.Background(), server.URL, "resume", "file.bin", nil)
 	if result2.Error != nil {
-		t.Fatalf("resume download failed: %v", result2.Error)
+		t.Fatalf("resume download failed: %s", result2.Error.Error())
 	}
 	absPath := filepath.Join(tempOut, "resume", "file.bin")
 	data, err := os.ReadFile(absPath)
@@ -166,7 +166,7 @@ func TestDownloadNoRangeFallback(t *testing.T) {
 	downloader := NewDownloader(cfg)
 	result := downloader.Download(context.Background(), server.URL, "no_range", "file.txt", nil)
 	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
+		t.Fatalf("download failed: %s", result.Error.Error())
 	}
 	absPath := filepath.Join(tempOut, "no_range", "file.txt")
 	data, err := os.ReadFile(absPath)
@@ -261,7 +261,7 @@ func TestConcurrentSameFile(t *testing.T) {
 	}()
 	wg.Wait()
 	if err1 != nil || err2 != nil {
-		t.Errorf("download errors: %v, %v", err1, err2)
+		t.Errorf("download errors: %s, %s", err1.Error(), err2.Error())
 	}
 	// 文件应只被写入一次，内容完整
 	data, err := os.ReadFile(filepath.Join(tempOut, "same", "file.dat"))
@@ -332,7 +332,7 @@ func TestProgressCallback(t *testing.T) {
 	downloader := NewDownloader(cfg)
 	result := downloader.Download(context.Background(), server.URL, "progress", "file.bin", nil)
 	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
+		t.Fatalf("download failed: %s", result.Error.Error())
 	}
 	mu.Lock()
 	defer mu.Unlock()

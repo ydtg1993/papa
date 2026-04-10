@@ -131,7 +131,7 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	for _, e := range a.Engine.Errors() {
 		go func() {
 			for err := range e {
-				a.Logger.Engine.Errorf("engine error: %v", err)
+				a.Logger.Engine.Errorf("engine error: %s", err.Error())
 			}
 		}()
 	}
@@ -199,7 +199,7 @@ func (a *App) schedule(ctx context.Context) {
 		}
 
 		if err := sched.AddJob(jobCfg.Name, jobCfg.Schedule, cmd); err != nil {
-			a.Logger.Scheduler.Errorf("failed to add job %s: %v", jobCfg.Name, err)
+			a.Logger.Scheduler.Errorf("failed to add job %s: %s", jobCfg.Name, err.Error())
 		}
 	}
 	go sched.Start()

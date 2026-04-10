@@ -60,7 +60,7 @@ func (m *Manager) GetErrors() <-chan error {
 func (m *Manager) refreshProxies() {
 	req, err := http.NewRequest("GET", m.apiURL, nil)
 	if err != nil {
-		m.trackQueue.SendError(fmt.Errorf("create proxy request failed: %v", err))
+		m.trackQueue.SendError(fmt.Errorf("create proxy request failed: %s", err.Error()))
 		return
 	}
 	resp, err := m.client.Do(req)

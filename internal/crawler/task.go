@@ -27,9 +27,9 @@ func (t *Task) GetRetry() int {
 func (t *Task) IncRetry(db *gorm.DB, logger *logrus.Logger) {
 	t.Retry++
 	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-		Update("retry", gorm.Expr("retry + ?", 1))
+		Update("retry", gorm.Expr("retry + ?", 1)).Error
 	if upErr != nil {
-		logger.Errorf("increment crawler task retry failed: %v", upErr)
+		logger.Errorf("increment crawler task retry failed: %s", upErr.Error())
 	}
 }
 
@@ -46,7 +46,7 @@ func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
 		Status:     models.TaskStatusPending,
 	}
 	if err := db.Create(&crawlerTask).Error; err != nil {
-		logger.Errorf("insert crawler task to db failed: %v", err)
+		logger.Errorf("insert crawler task to db failed: %s", err.Error())
 		return false
 	}
 	t.ID = int(crawlerTask.ID)
@@ -68,15 +68,15 @@ func (t *Task) UpdateStatus(db *gorm.DB, logger *logrus.Logger, status models.Ta
 				"error":  errMsg,
 			})
 		if result.Error != nil {
-			logger.Errorf("crawler task update status error: %v", result.Error)
+			logger.Errorf("crawler task update status error: %s", result.Error.Error())
 			return false
 		}
 		return true
 	}
 	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-		Update("status", status)
+		Update("status", status).Error
 	if upErr != nil {
-		logger.Errorf("crawler task update status error: %v", upErr)
+		logger.Errorf("crawler task update status error: %s", upErr.Error())
 		return false
 	}
 	return true

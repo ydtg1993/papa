@@ -9,14 +9,14 @@ crawler:
     catalog:                             # 目录/列表页阶段
       worker_count: 1                    # 并发工作协程数
       queue_size: 20                     # 任务队列缓冲大小
-      delay: "60s"                       # 任务间隔延迟
+      delay: "5m"                       # 任务间隔延迟
       retry:                             # 重试策略
         max_attempts: 3                  # 最大重试次数
         backoff: "30s"                   # 重试退避间隔
     detail:                              # 详情页阶段
       worker_count: 1                    # 并发工作协程数
       queue_size: 500                    # 任务队列缓冲大小
-      delay: "5m"                       # 任务间隔延迟
+      delay: "3m"                       # 任务间隔延迟
       retry:
         max_attempts: 3
         backoff: "30s"

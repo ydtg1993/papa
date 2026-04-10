@@ -90,7 +90,7 @@ segment4.ts
 		t.Fatal(err)
 	}
 	if init == nil || init.URL != "https://example.com/path/init.ts" {
-		t.Errorf("init segment wrong: %v", init)
+		t.Errorf("init segment wrong: %+v", init)
 	}
 	if len(segs) != 4 {
 		t.Fatalf("expected 4 segments, got %d", len(segs))
@@ -105,7 +105,7 @@ segment4.ts
 	}
 	// 检查 segment3 带密钥
 	if keys[2] == nil || keys[2].URL != "https://example.com/path/key.bin" || keys[2].IV != "0x1234567890abcdef1234567890abcdef" {
-		t.Errorf("segment3 key: %v", keys[2])
+		t.Errorf("segment3 key: %+v", keys[2])
 	}
 	// 检查 byte range
 	if segs[3].Range != "1024@0" {
@@ -181,7 +181,7 @@ segment2.ts
 
 	result := downloader.Download(context.Background(), url, outputDirRel, outputFile, nil)
 	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
+		t.Fatalf("download failed: %s", result.Error.Error())
 	}
 	if result.Segments != 2 {
 		t.Errorf("Segments = %d, want 2", result.Segments)
@@ -203,7 +203,7 @@ segment2.ts
 	// 检查状态文件是否已清理
 	stateFiles, _ := filepath.Glob(filepath.Join(stateDir, outputDirRel, "*.json"))
 	if len(stateFiles) != 0 {
-		t.Errorf("state file not cleaned: %v", stateFiles)
+		t.Errorf("state file not cleaned: %+v", stateFiles)
 	}
 }
 
@@ -262,7 +262,7 @@ seg2.ts
 	// 第二次下载应续传
 	res2 := downloader.Download(context.Background(), server.URL+"/playlist.m3u8", "resume", "video.ts", nil)
 	if res2.Error != nil {
-		t.Fatalf("resume download failed: %v", res2.Error)
+		t.Fatalf("resume download failed: %s", res2.Error.Error())
 	}
 	absPath := filepath.Join(outDir, "resume", "video.ts")
 	data, err := os.ReadFile(absPath)
@@ -317,6 +317,6 @@ seg.ts
 	}()
 	wg.Wait()
 	if err1 != nil || err2 != nil {
-		t.Errorf("errors: %v, %v", err1, err2)
+		t.Errorf("errors: %s, %s", err1.Error(), err2.Error())
 	}
 }

@@ -35,9 +35,9 @@ func (r *RepeatJob) Run() {
 		task := v.(crawler.Task)
 		task.UpdateStatus(r.engine.GetDB(), r.logger, models.TaskStatusPending, nil)
 		if err := r.engine.SubmitTask(&task); err != nil {
-			r.logger.Errorf("repeat job submit failed: %v", err)
+			r.logger.Errorf("repeat job submit failed: %s", err.Error())
 		} else {
-			r.logger.Infof("repeat job submitted task: %v", task)
+			r.logger.Infof("repeat job submitted task: %+v", task)
 		}
 		return true
 	})
@@ -63,7 +63,7 @@ func (j *RecoverJob) Run() {
 	if err := e.GetDB().Where("(status = ? OR status = ?) AND updated_at < ?",
 		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
 		Find(&tasks).Error; err != nil {
-		j.logger.Errorf("failed to load tasks for recovery: %v", err)
+		j.logger.Errorf("failed to load tasks for recovery: %s", err.Error())
 		return
 	}
 
@@ -90,8 +90,8 @@ func (j *RecoverJob) Run() {
 		// 重新提交到队列（非阻塞）
 		task.UpdateStatus(j.engine.GetDB(), j.logger, models.TaskStatusPending, nil)
 		if err := e.SubmitTask(task); err != nil {
-			j.logger.Errorf("recover task %d (url: %s) submit failed: %v",
-				t.ID, t.URL, err)
+			j.logger.Errorf("recover task %d (url: %s) submit failed: %s",
+				t.ID, t.URL, err.Error())
 			failIDs = append(failIDs, t.ID)
 		}
 	}
@@ -105,7 +105,7 @@ func (j *RecoverJob) Run() {
 				"retry":  gorm.Expr("retry + 1"),
 				"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", "RecoverTasks 恢复任务提交队列失败\n"),
 			}).Error; err != nil {
-			j.logger.Errorf("failed to rollback failed tasks to failed: %v", err)
+			j.logger.Errorf("failed to rollback failed tasks to failed: %s", err.Error())
 		} else {
 			j.logger.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
 		}

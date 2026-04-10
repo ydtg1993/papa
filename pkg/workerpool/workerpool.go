@@ -82,7 +82,7 @@ func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, h
 // Submit 提交任务，若已停止则拒绝
 func (p *WorkerPool[T]) Submit(task T) error {
 	if p.stopped.Load() {
-		err := fmt.Errorf("worker pool already stopped,failed to submit task: %v", task)
+		err := fmt.Errorf("worker pool already stopped,failed to submit task: %+v", task)
 		p.trackQueue.SendError(err)
 		return err
 	}
