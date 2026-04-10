@@ -34,7 +34,6 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	}
 	page.MustWaitLoad()
 
-	logger := engine.GetLoggerSet().Fetcher
 	// 定义常量
 	const (
 		maxScrolls     = 3               // 最大滚动次数，防止无限循环
@@ -54,7 +53,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		ByValue: true,
 	})
 	if err != nil {
-		return fmt.Errorf("注入 scrollOnce 函数失败: %v", err)
+		return fmt.Errorf("注入 scrollOnce 函数失败: %w", err)
 	}
 	var lastHeight int
 	for i := 0; i < maxScrolls; i++ {
@@ -66,7 +65,6 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		}
 		res, err := page.Evaluate(evalOpts)
 		if err != nil {
-			logger.Errorf("第 %d 次滚动执行出错: %v", i+1, err)
 			break
 		}
 
@@ -150,7 +148,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 
 		downloadResult := engine.GetFiledown().Download(ctx, coverSrc, "", nil)
 		if downloadResult.Error != nil {
-			logger.Errorf("下载图片失败 %s", coverSrc)
+			return fmt.Errorf("下载图片失败 %s", coverSrc)
 		}
 		// 转为 JSON 存入 datatypes.JSON
 		jsonData, err := json.Marshal(models.DetailContent{
@@ -178,6 +176,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 	if err := engine.GetDB().CreateInBatches(dataTasks, 100).Error; err != nil {
 		return fmt.Errorf("批量新增任务失败: %w", err)
 	}
+
 	for _, dataTask := range dataTasks {
 		err := engine.SubmitTask(
 			&crawler.Task{
@@ -187,7 +186,10 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 				URL:   dataTask.URL,
 			})
 		if err != nil {
-			engine.GetLoggerSet().Engine.Error(fmt.Errorf("详情任务提交失败: %w; task ID: %d", err, dataTask.ID))
+			subErr := fmt.Errorf("详情任务提交失败: %w; task ID: %d \r", err, dataTask.ID)
+			dataTask.Status = models.TaskStatusFailed
+			dataTask.Error += subErr.Error()
+			engine.GetDB().Save(dataTask)
 		}
 	}
 	engine.GetDB().Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Update("status", models.TaskStatusSuccess)

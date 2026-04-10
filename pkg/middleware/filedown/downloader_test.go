@@ -227,7 +227,7 @@ func TestDownload_Concurrent(t *testing.T) {
 			opts := &DownloadOptions{UserAgent: fmt.Sprintf("UA-%d", idx)}
 			result := downloader.Download(context.Background(), server.URL, fmt.Sprintf("file%d.bin", idx), opts)
 			if result.Error != nil {
-				errs <- fmt.Errorf("job %d: %v", idx, result.Error)
+				errs <- fmt.Errorf("job %d: %w", idx, result.Error)
 			}
 		}(i)
 	}

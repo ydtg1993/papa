@@ -78,14 +78,14 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *crawler.Task, engi
 	var content models.DetailContent
 	if len(detailRecord.Content) > 0 {
 		if err := json.Unmarshal(detailRecord.Content, &content); err != nil {
-			engine.GetLoggerSet().Engine.Warnf("解析现有 Content 失败: %v，将使用新数据覆盖", err)
+			return fmt.Errorf("解析现有 detailRecord 失败: %w", err)
 		}
 	}
 	content.Series = seriesMap
 	content.Downloads = downloadMap
 	newJSON, err := json.Marshal(content)
 	if err != nil {
-		return fmt.Errorf("序列化 Content 失败: %w", err)
+		return fmt.Errorf("序列化 detailRecord 失败: %w", err)
 	}
 	detailRecord.Content = newJSON
 	engine.GetDB().Save(&detailRecord)
@@ -103,7 +103,10 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *crawler.Task, engi
 				URL:   dataTask.URL,
 			})
 		if err != nil {
-			engine.GetLoggerSet().Engine.Error(fmt.Errorf("剧集任务提交失败: %w; task ID: %d", err, dataTask.ID))
+			subErr := fmt.Errorf("剧集任务提交失败: %w; task ID: %d \r", err, dataTask.ID)
+			dataTask.Status = models.TaskStatusFailed
+			dataTask.Error += subErr.Error()
+			engine.GetDB().Save(dataTask)
 		}
 	}
 

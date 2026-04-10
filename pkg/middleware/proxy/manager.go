@@ -65,7 +65,7 @@ func (m *Manager) refreshProxies() {
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		m.trackQueue.SendError(fmt.Errorf("fetch proxies failed: %v", err))
+		m.trackQueue.SendError(fmt.Errorf("fetch proxies failed: %w", err))
 		return
 	}
 	defer resp.Body.Close()
@@ -77,7 +77,7 @@ func (m *Manager) refreshProxies() {
 	//===============接受数据结构按照三方返回做调整===============/
 	var proxies []map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&proxies); err != nil {
-		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %v", err))
+		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %w", err))
 		return
 	}
 	m.mu.Lock()

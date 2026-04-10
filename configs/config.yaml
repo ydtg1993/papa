@@ -27,7 +27,7 @@ crawler:
 
 # 浏览器自动化池配置
 browser:
-  #只有catalog和detail阶段需要浏览器抓取信息，唤起浏览器数量大于等于两阶段worker_count之和即可避免争抢
+  #只有catalog和detail video阶段需要浏览器抓取信息，唤起浏览器数量应大于等于三阶段worker_count之和以避免争抢
   pool_size: 1                           # 浏览器实例数量
   max_idle_time: "5m"                    # 空闲浏览器最大存活时间
   headless: false                        # 是否无头模式（false 可见浏览器界面）

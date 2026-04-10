@@ -119,7 +119,7 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 			b.Close()
 			newB, err := p.newBrowser()
 			if err != nil {
-				return nil, fmt.Errorf("failed to recreate dead browser: %v", err)
+				return nil, fmt.Errorf("failed to recreate dead browser: %w", err)
 			}
 			b = newB
 		}
@@ -147,7 +147,7 @@ func (p *Pool) Put(b *Browser) error {
 		b.Close()
 		newB, err := p.newBrowser()
 		if err != nil {
-			return fmt.Errorf("failed to recreate idle browser: %v", err)
+			return fmt.Errorf("failed to recreate idle browser: %w", err)
 		}
 		b = newB
 	}

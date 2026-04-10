@@ -108,7 +108,7 @@ func (e *Engine) SetBrowserPool() {
 		ProxyManager: e.GetProxy(),
 	})
 	if err != nil {
-		e.loggerSet.Browser.Errorf("new browser pool: %v", err.Error())
+		e.loggerSet.Browser.Errorf("new browser pool: %v", err)
 	}
 	e.browserPool = pool
 }
@@ -177,7 +177,7 @@ func (e *Engine) ApplyRegisterStage() {
 			}
 			// 所有重试失败：记录错误并更新状态为 failed
 			task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, lastErr)
-			return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
+			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
 		})
 		// 检查提交任务
 		if stageInfo.submitFunc != nil {
@@ -188,7 +188,7 @@ func (e *Engine) ApplyRegisterStage() {
 			stats := track.NewStatsQueue(pool)
 			stats.Start(e.ctx)
 			e.setStatsQueue(stage, stats)
-			e.loggerSet.Engine.Infof("monitor started for stage: %s", stage)
+			e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
 		}
 	}
 }
