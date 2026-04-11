@@ -146,7 +146,7 @@ go run cmd/crawler/main.go
     type FirstStage struct{}
     
     func (m *FirstStage) GetStage() string {
-        return "FirstStage"
+        return "FirstStage"  //需要与配置stage相同
     }
     
     func (m *FirstStage) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
@@ -159,6 +159,14 @@ go run cmd/crawler/main.go
         
         // 使用 Rod 操作页面...
         // 解析出下一阶段的 URL 后，可通过 engine.SubmitTask 提交新任务
+
+		// 在 fetcher 中使用
+		result := engine.GetM3U8().Download(ctx, m3u8URL, "downloads", "myvideo", nil)
+		if result.Error != nil {
+		    return result.Error
+		}
+
+		//分发提交子任务到下个阶段
         engine.SubmitTask(&crawler.Task{
         PID:   task.ID,
         URL:   videoURL,
@@ -170,20 +178,24 @@ go run cmd/crawler/main.go
 
 #### fetcher中使用 M3U8 下载器 示例
 ```
-    cfg := m3u8.DefaultConfig()
-cfg.EnableResume = true
-cfg.AutoMerge = true
-downloader := m3u8.NewDownloader(cfg)
-result := downloader.Download(context.Background(), 
-    "https://example.com/video.m3u8", 
-    "downloads",    // 输出子目录
-    "myvideo",      // 输出文件名（不含扩展名，会自动加 .mp4）
-    nil)
+	    cfg := m3u8.DefaultConfig()
+		cfg.EnableResume = true
+		cfg.AutoMerge = true
+		downloader := m3u8.NewDownloader(cfg)
+		result := downloader.Download(context.Background(), 
+		    "https://example.com/video.m3u8", 
+		    "downloads",    // 输出子目录
+		    "myvideo",      // 输出文件名（不含扩展名，会自动加 .mp4）
+		    nil)
 ```
 
 #### fetcher中使用下载器 示例
 ```
-    engine.GetFiledown().Download(ctx, coverSrc, "自定义目录", "")
+    // 下载封面图，输出到 "covers" 子目录，自动生成文件名
+	res := engine.GetFiledown().Download(ctx, coverURL, "covers", "")
+	if res.Error != nil {
+	    return res.Error
+	}
 ```
 
 ### 📝 注意事项
