@@ -123,9 +123,11 @@ go run cmd/crawler/main.go
     appInstance.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))              //可按照m3u8.DefaultConfig config自定义修改
 
 
-    **注册阶段**
-    **目录内容页爬取初级任务内容**
-    appInstance.RegisterStage("catalog", &fetcher.FetchFirstStage{},
+    //=========================注册业务逻辑所需要的爬虫流程阶段=========================//
+	// 参数： 传入对应的爬虫业务层fetcher, 回调方法用于初始任务手动提交
+	// 阶段一: 抓取分类目录页(需要做一次手动提交将目录页url传入任务) 采集:url 标题 分类信息
+	// 注:fetcher.FetchFirst{}中GetStage()返回字串需要与配置保持一直 配置:crawler.stages.first
+    appInstance.RegisterStage(&fetcher.FetchFirstStage{},
 	func(engine *crawler.Engine) {
 		// 手动提交起始任务 任务需标注下一个阶段为流水作业需要 一般用于初期目录阶段后续任务分发均由fetcher步骤里具体实现
 		if err := engine.SubmitTask(&crawler.Task{
@@ -137,8 +139,9 @@ go run cmd/crawler/main.go
 			appInstance.Logger.Engine.Errorf("submit initial task: %s", err.Error())
 		}
 	})
-    **详情页内容爬取**
-    app.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
+    // 阶段二: 抓取详情目录页内容
+	// 注:fetcher.FetchSecond{} GetStage()返回字串 second 同配置 crawler.stages.second
+    app.RegisterStage(&fetcher.FetchSecond{}, nil)
 ```
 
 2. 在 internal/fetcher 下创建新文件，实现 crawler.Handler 接口：
@@ -170,7 +173,7 @@ go run cmd/crawler/main.go
         engine.SubmitTask(&crawler.Task{
         PID:   task.ID,
         URL:   videoURL,
-        Stage: "detail",  //交由已注册好的detail阶段处理
+        Stage: "second",  //交由已注册好的second阶段处理
     })
         return nil
     }
