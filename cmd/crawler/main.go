@@ -49,7 +49,7 @@ func main() {
 	// 阶段二: 抓取详情目录页内容 采集:动漫封面,更新时间,简介,选集内容列表
 	appInstance.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
 	// 阶段二: 抓取详情目录页内容 采集:动漫视频
-	appInstance.RegisterStage("video", &fetcher.FetchCatalog{}, nil)
+	appInstance.RegisterStage("video", &fetcher.FetchVideo{}, nil)
 	//=========================爬虫具体业务相关=========================//
 
 	// 3. 捕获退出信号

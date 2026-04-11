@@ -147,10 +147,10 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 				}
 			}
 		}
-
+		var downloadCoverErr string
 		downloadResult := engine.GetFiledown().Download(ctx, coverSrc, strconv.Itoa(rand.Intn(10)), "")
 		if downloadResult.Error != nil {
-			return fmt.Errorf("下载图片失败 %s", coverSrc)
+			downloadCoverErr = fmt.Errorf("下载图片失败 %s", coverSrc).Error()
 		}
 		// 转为 JSON 存入 datatypes.JSON
 		jsonData, err := json.Marshal(models.DetailContent{
@@ -170,6 +170,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 			URL:     fullURL,
 			Title:   title,
 			Content: jsonData,
+			Error:   downloadCoverErr,
 		})
 		if err != nil {
 			return fmt.Errorf("JSON 编码失败: %w", err)
@@ -183,7 +184,7 @@ func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engin
 		err := engine.SubmitTask(
 			&crawler.Task{
 				ID:    int(dataTask.ID),
-				PID:   task.ID,
+				PID:   int(dataTask.PID),
 				Stage: dataTask.Stage,
 				URL:   dataTask.URL,
 			})

@@ -98,7 +98,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *crawler.Task, engi
 		err := engine.SubmitTask(
 			&crawler.Task{
 				ID:    int(dataTask.ID),
-				PID:   task.ID,
+				PID:   int(dataTask.PID),
 				Stage: dataTask.Stage,
 				URL:   dataTask.URL,
 			})
