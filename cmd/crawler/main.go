@@ -34,7 +34,7 @@ func main() {
 	// 3. 注册业务逻辑所需要的爬虫流程阶段
 	// stage 需要填入预先配置config.yaml crawler.stages的阶段并适用其配置
 	// 阶段一: 抓取分类目录页(需要做一次手动提交将目录页url传入任务) 采集:url 标题 分类信息
-	appInstance.RegisterStage("catalog", &fetcher.FetchCatalog{},
+	appInstance.RegisterStage(&fetcher.FetchCatalog{},
 		func(engine *crawler.Engine) {
 			// 手动提交起始任务 任务需标注下一个阶段为流水作业需要 一般用于初期目录阶段后续任务分发均由fetcher步骤里具体实现
 			if err := engine.SubmitTask(&crawler.Task{
@@ -47,9 +47,9 @@ func main() {
 			}
 		})
 	// 阶段二: 抓取详情目录页内容 采集:动漫封面,更新时间,简介,选集内容列表
-	appInstance.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
+	appInstance.RegisterStage(&fetcher.FetchDetail{}, nil)
 	// 阶段二: 抓取详情目录页内容 采集:动漫视频
-	appInstance.RegisterStage("video", &fetcher.FetchVideo{}, nil)
+	appInstance.RegisterStage(&fetcher.FetchVideo{}, nil)
 	//=========================爬虫具体业务相关=========================//
 
 	// 3. 捕获退出信号

@@ -70,7 +70,8 @@ func NewApp() (*App, error) {
 }
 
 // RegisterStage 注册爬虫业务阶段流程
-func (a *App) RegisterStage(stage string, fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
+func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
+	stage := fetcher.GetStage()
 	// 从配置中读取 stage 配置
 	cfg, ok := a.Config.Crawler.Stages[stage]
 	if ok != true {
