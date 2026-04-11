@@ -5,25 +5,18 @@ app:
 # 爬虫核心配置
 crawler:
   target: ""   # 起始目标网站
-  stages:                                # 爬取阶段配置
-    catalog:                             # 目录/列表页阶段
+  stages: # 爬取阶段配置
+    first: # 初级阶段名 可自定义
       worker_count: 1                    # 并发工作协程数
       queue_size: 20                     # 任务队列缓冲大小
       delay: "5m"                       # 任务间隔延迟
-      retry:                             # 重试策略
+      retry: # 重试策略
         max_attempts: 3                  # 最大重试次数
         backoff: "30s"                   # 重试退避间隔
-    detail:                              # 详情页阶段
-      worker_count: 1                    # 并发工作协程数
+    second: # 二级阶段名 可自定义
+      worker_count: 3                    # 并发工作协程数
       queue_size: 500                    # 任务队列缓冲大小
       delay: "3m"                       # 任务间隔延迟
-      retry:
-        max_attempts: 3
-        backoff: "30s"
-    video:                               # 视频内容
-      worker_count: 1                    # 并发工作协程数
-      queue_size: 1000                   # 任务队列缓冲大小
-      delay: "60s"                       # 任务间隔延迟
       retry:
         max_attempts: 3
         backoff: "30s"
@@ -70,7 +63,7 @@ monitor:
 scheduler:
   enabled: true                          # 是否启用调度器
   timezone: "Asia/Shanghai"              # 时区（用于 cron 表达式）
-  jobs:                                  # 定时任务列表
+  jobs: # 定时任务列表
     - name: "repeat_daily"              # 任务名称
       type: "repeat"                    # 任务类型：repeat（每日轮询新内容）
       schedule: "0 8 * * *"              # cron 表达式：每天 8:00 执行

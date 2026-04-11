@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-type FetchVideo struct {
+type FetchFirst struct {
 }
 
-func (f *FetchVideo) GetStage() string {
-	return "video"
+func (f *FetchFirst) GetStage() string {
+	return "first" //必须与配置中自定义的保持一致
 }
 
-func (f *FetchVideo) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (*FetchFirst) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
 		return err

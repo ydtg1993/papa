@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-type FetchCatalog struct {
+type FetchSecond struct {
 }
 
-func (f *FetchCatalog) GetStage() string {
-	return "catalog"
+func (f *FetchSecond) GetStage() string {
+	return "second" //必须与配置中自定义的保持一致
 }
 
-func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchSecond) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
 		return err
