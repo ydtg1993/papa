@@ -38,7 +38,7 @@ browser:
   no_sandbox: false                      # 禁用沙箱（容器环境可能需要）
   browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"  # Chrome 可执行文件路径 空置则调用默认Chromium
 
-# 代理管理器配置（未启用）
+# 代理管理器配置（启用）
 proxy:
   api_url: "https://white.1024proxy.com/white/api?region=Rand&num=2&time=10&format=1&type=json"                              # 代理 API 地址（为空则不启用）
   refresh_interval: 500s                 # 代理列表刷新间隔

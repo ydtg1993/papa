@@ -23,7 +23,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		OutputDir:              "./downloads",
-		ResumeStateDir:         "./.resume",
+		ResumeStateDir:         "./downloads/.resume",
 		Timeout:                30 * time.Second,
 		MaxRetries:             3,
 		RetryInterval:          1,

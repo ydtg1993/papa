@@ -257,6 +257,35 @@ func (e *Engine) SubmitTask(task *Task) error {
 	return nil
 }
 
+// ReSubmitTask 已入库的非轮询任务进行重提交任务
+func (e *Engine) ReSubmitTask(task *Task) error {
+	if task.Stage == "" || task.URL == "" {
+		return fmt.Errorf("task stage or url is empty: %+v", task)
+	}
+	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
+		return fmt.Errorf("invalid stage : %s", task.Stage)
+	}
+	var record models.CrawlerTask
+	e.db.Model(&models.CrawlerTask{}).
+		Where("url = ?", task.URL).
+		Where("stage = ?", task.Stage).
+		First(&record)
+	if record.ID == 0 {
+		return fmt.Errorf("record not exists: %s", task.URL)
+	}
+	task.ID = int(record.ID)
+	info := e.stages[task.Stage]
+	if err := info.workerPool.Submit(task); err != nil {
+		// 提交失败，回滚内存 map 和数据库状态
+		e.activeTasks.Delete(task.Unique())
+		record.Error += err.Error() + "\r"
+		record.Status = models.TaskStatusFailed
+		e.db.Save(&record)
+		return err
+	}
+	return nil
+}
+
 // Stop 停止engine
 func (e *Engine) Stop(timeout time.Duration) {
 	e.cancel()
