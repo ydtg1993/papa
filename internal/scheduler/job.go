@@ -33,7 +33,7 @@ func (r *RepeatJob) Run() {
 	r.logger.Info("catalog repeat job started")
 	r.engine.GetRepeatTasks().Range(func(k, v interface{}) bool {
 		task := v.(crawler.Task)
-		task.UpdateStatus(r.engine.GetDB(), r.logger, models.TaskStatusPending, nil)
+		task.UpdateStatus(r.engine.GetDB(), models.TaskStatusPending, nil)
 		if err := r.engine.SubmitTask(&task); err != nil {
 			r.logger.Errorf("repeat job submit failed: %s", err.Error())
 		} else {
@@ -88,7 +88,7 @@ func (j *RecoverJob) Run() {
 		// 剔除去重hash map的暂存
 		e.DelActiveTask(task)
 		// 重新提交到队列（非阻塞）
-		task.UpdateStatus(j.engine.GetDB(), j.logger, models.TaskStatusPending, nil)
+		task.UpdateStatus(j.engine.GetDB(), models.TaskStatusPending, nil)
 		if err := e.SubmitTask(task); err != nil {
 			j.logger.Errorf("recover task %d (url: %s) submit failed: %s",
 				t.ID, t.URL, err.Error())

@@ -109,7 +109,7 @@ func (e *Engine) SetBrowserPool() {
 		ProxyManager: e.GetProxy(),
 	})
 	if err != nil {
-		e.loggerSet.Browser.Errorf("new browser pool: %s", err.Error())
+		panic(fmt.Errorf("new browser pool: %s", err.Error()))
 	}
 	e.browserPool = pool
 }
@@ -161,11 +161,11 @@ func (e *Engine) ApplyRegisterStage() {
 			var lastErr error
 			for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
 				if attempt > 0 {
-					task.IncRetry(e.db, e.loggerSet.DB)
+					task.IncRetry(e.db)
 				}
 				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
 				if err == nil {
-					task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusSuccess, nil)
+					task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
 					<-time.After(cfg.Delay)
 					return nil
 				}
@@ -178,7 +178,7 @@ func (e *Engine) ApplyRegisterStage() {
 				}
 			}
 			// 所有重试失败：记录错误并更新状态为 failed
-			task.UpdateStatus(e.db, e.loggerSet.DB, models.TaskStatusFailed, lastErr)
+			task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
 			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
 		})
 		// 检查提交任务
@@ -225,7 +225,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 
 	if task.ID == 0 {
 		// 提交到 pool 前先插入数据库
-		if task.Insert(e.db, e.loggerSet.DB) == false {
+		if task.Insert(e.db) == false {
 			return fmt.Errorf("insert crawler task to db failed")
 		}
 	}

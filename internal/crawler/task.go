@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"context"
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/internal/models"
 	"gorm.io/gorm"
 )
@@ -24,16 +23,13 @@ func (t *Task) GetRetry() int {
 	return t.Retry
 }
 
-func (t *Task) IncRetry(db *gorm.DB, logger *logrus.Logger) {
+func (t *Task) IncRetry(db *gorm.DB) {
 	t.Retry++
-	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-		Update("retry", gorm.Expr("retry + ?", 1)).Error
-	if upErr != nil {
-		logger.Errorf("increment crawler task retry failed: %s", upErr.Error())
-	}
+	db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
+		Update("retry", gorm.Expr("retry + ?", 1))
 }
 
-func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
+func (t *Task) Insert(db *gorm.DB) bool {
 	repeat := models.RepeatableNo
 	if t.Repeatable {
 		repeat = models.RepeatableYes
@@ -46,15 +42,19 @@ func (t *Task) Insert(db *gorm.DB, logger *logrus.Logger) bool {
 		Status:     models.TaskStatusPending,
 	}
 	if err := db.Create(&crawlerTask).Error; err != nil {
-		logger.Errorf("insert crawler task to db failed: %s", err.Error())
 		return false
 	}
 	t.ID = int(crawlerTask.ID)
 	return true
 }
 
-func (t *Task) UpdateStatus(db *gorm.DB, logger *logrus.Logger, status models.TaskStatus, err error) bool {
+func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bool {
 	if t.ID == 0 {
+		return false
+	}
+	var record models.CrawlerTask
+	db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
+	if record.ID <= 0 {
 		return false
 	}
 	if status == models.TaskStatusFailed {
@@ -62,23 +62,13 @@ func (t *Task) UpdateStatus(db *gorm.DB, logger *logrus.Logger, status models.Ta
 		if err != nil {
 			errMsg = err.Error()
 		}
-		result := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-			Updates(map[string]interface{}{
-				"status": status,
-				"error":  errMsg,
-			})
-		if result.Error != nil {
-			logger.Errorf("crawler task update status error: %s", result.Error.Error())
-			return false
-		}
+		record.Status = status
+		record.Error += errMsg + "\r"
+		db.Save(&record)
 		return true
 	}
-	upErr := db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-		Update("status", status).Error
-	if upErr != nil {
-		logger.Errorf("crawler task update status error: %s", upErr.Error())
-		return false
-	}
+	record.Status = status
+	db.Save(&record)
 	return true
 }
 
