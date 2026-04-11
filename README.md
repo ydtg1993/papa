@@ -28,7 +28,7 @@
 | 模块 | 描述 |
 | :--- | :--- |
 | **Engine** | 核心引擎，管理多个爬取阶段，负责任务注册、提交、恢复和生命周期控制。 |
-| **Stage** | 每个阶段包含一个独立的工作池（WorkerPool）和对应的抓取处理器（Handler），通过 NextStage 配置支持自动流转。 |
+| **Stage** | 每个阶段包含一个独立的工作池（WorkerPool）和对应的抓取处理器（Handler），用户需在 FetchHandler 中调用 SubmitTask 实现阶段跳转。 |
 | **WorkerPool** | 泛型工作池，消费任务队列，调用 Handler 执行具体抓取逻辑，并发布活动事件供监控。 |
 | **Handler** | 业务实现接口，每个阶段需实现 FetchHandler 方法，负责页面抓取和链接解析。 |
 | **Browser Pool** | 管理 Rod 浏览器实例，支持代理注入、空闲回收，提供 Get/Put 方法。 |
@@ -115,15 +115,41 @@ go run cmd/crawler/main.go
 
 ### 🔧 扩展开发  
 #### 添加新抓取阶段
-1. 在 internal/fetcher 下创建新文件，实现 crawler.Handler 接口：
+1. 在 main.go 中注册阶段配置代理,下载器：
 ```
-    type MyStage struct{}
+    **使用下载器,代理,等中间件 用于fetcher中资源落地**
+    appInstance.Engine.SetProxy(proxy.NewManager(appInstance.Config.Proxy.APIURL, 8*time.Minute))
+    appInstance.Engine.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))  //可按照filedown.DefaultConfig config自定义修改
+    appInstance.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))              //可按照m3u8.DefaultConfig config自定义修改
+
+
+    **注册阶段**
+    **目录内容页爬取初级任务内容**
+    appInstance.RegisterStage("catalog", &fetcher.FetchFirstStage{},
+	func(engine *crawler.Engine) {
+		// 手动提交起始任务 任务需标注下一个阶段为流水作业需要 一般用于初期目录阶段后续任务分发均由fetcher步骤里具体实现
+		if err := engine.SubmitTask(&crawler.Task{
+			PID:        0, //标明初级任务
+			URL:        "目录主页url用于爬取单任务所需内容",
+			Stage:      "FirstStage", //配置中提前设定好的stage标识 对应任务stage将交由对应阶段fetcher处理
+			Repeatable: true, //可重复抓取，为后期轮询标识
+		}); err != nil {
+			appInstance.Logger.Engine.Errorf("submit initial task: %s", err.Error())
+		}
+	})
+    **详情页内容爬取**
+    app.RegisterStage("detail", &fetcher.FetchDetail{}, nil)
+```
+
+2. 在 internal/fetcher 下创建新文件，实现 crawler.Handler 接口：
+```
+    type FirstStage struct{}
     
-    func (m *MyStage) GetStage() string {
-        return "mystage"
+    func (m *FirstStage) GetStage() string {
+        return "FirstStage"
     }
     
-    func (m *MyStage) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+    func (m *FirstStage) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
         // 获取浏览器实例
         browser, err := engine.GetBrowserPool().Get(ctx)
         if err != nil {
@@ -133,46 +159,31 @@ go run cmd/crawler/main.go
         
         // 使用 Rod 操作页面...
         // 解析出下一阶段的 URL 后，可通过 engine.SubmitTask 提交新任务
+        engine.SubmitTask(&crawler.Task{
+        PID:   task.ID,
+        URL:   videoURL,
+        Stage: "detail",  //交由已注册好的detail阶段处理
+    })
         return nil
     }
 ```
 
-2. 在 internal/app/app.go 的 registerStages 中注册该阶段：
-```
-    myStage := &fetcher.MyStage{}
-    if err := engine.RegisterStage(myStage, crawler.StageConfig{
-        WorkerCount: 3,
-        QueueSize:   30,
-        NextStage:   "detail",
-        Handler:     myStage.FetchHandler,
-    }); err != nil {
-        return err
-    }
-```
-
-#### 使用 M3U8 下载器
+#### fetcher中使用 M3U8 下载器 示例
 ```
     cfg := m3u8.DefaultConfig()
-    cfg.EnableResume = true    // 启用断点续传
-    cfg.AutoMerge = true       // 自动合并为 MP4
-    cfg.MaxConcurrent = 8      // 并发下载数
-    downloader := m3u8.NewDownloader(cfg)
-    result := downloader.Download(context.Background(), "https://example.com/video.m3u8", "myvideo")
-    if result.Error == nil {
-        fmt.Println("Saved to", result.OutputFile)
-    }
+cfg.EnableResume = true
+cfg.AutoMerge = true
+downloader := m3u8.NewDownloader(cfg)
+result := downloader.Download(context.Background(), 
+    "https://example.com/video.m3u8", 
+    "downloads",    // 输出子目录
+    "myvideo",      // 输出文件名（不含扩展名，会自动加 .mp4）
+    nil)
 ```
 
-#### 使用文件下载器
+#### fetcher中使用下载器 示例
 ```
-    cfg := filedown.DefaultConfig()
-    cfg.MaxConcurrent = 4      // 分片并发数
-    cfg.ChunkSize = 5 << 20    // 5MB 每片
-    downloader := filedown.NewDownloader(cfg)
-    result := downloader.Download(context.Background(), "https://example.com/file.zip", "archive.zip", nil)
-    if result.Error == nil {
-        fmt.Printf("Downloaded %d bytes to %s\n", result.Size, result.OutputFile)
-    }
+    engine.GetFiledown().Download(ctx, coverSrc, "自定义目录", "")
 ```
 
 ### 📝 注意事项
