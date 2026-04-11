@@ -34,9 +34,10 @@ type CrawlerConfig struct {
 }
 
 type StageConfig struct {
-	WorkerCount int         `mapstructure:"worker_count"` //worker pool池分配并发数
-	QueueSize   int         `mapstructure:"queue_size"`   //任务队列长度
-	Retry       RetryConfig `mapstructure:"retry"`        //重试
+	WorkerCount int           `mapstructure:"worker_count"` //worker pool池分配并发数
+	QueueSize   int           `mapstructure:"queue_size"`   //任务队列长度
+	Delay       time.Duration `mapstructure:"delay"`        // 任务间隔时间 防止被反爬拦截
+	Retry       RetryConfig   `mapstructure:"retry"`        //重试
 }
 
 type RetryConfig struct {

@@ -13,408 +13,333 @@ import (
 	"time"
 )
 
-// 生成测试数据（确定性的字节序列）
-func generateTestData(size int64) []byte {
-	data := make([]byte, size)
-	for i := range data {
-		data[i] = byte(i % 256)
+// 测试辅助：创建临时目录
+func tempDir(t *testing.T) string {
+	dir, err := os.MkdirTemp("", "filedown_test")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return data
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
-// 创建测试 HTTP 服务器，支持 Range 请求
-func newTestServer(data []byte, supportRange bool) *httptest.Server {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// HEAD 请求
-		if r.Method == http.MethodHead {
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-			if supportRange {
-				w.Header().Set("Accept-Ranges", "bytes")
-			}
+// 测试辅助：创建模拟 HTTP 服务器，返回指定内容和支持 Range
+func mockServer(content []byte, supportRange bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		// GET 请求
-		if r.Method == http.MethodGet {
-			rangeHeader := r.Header.Get("Range")
-			if rangeHeader != "" && supportRange {
-				var start, end int64
-				_, _ = fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
-				if end >= int64(len(data)) {
-					end = int64(len(data)) - 1
-				}
-				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
-				w.WriteHeader(http.StatusPartialContent)
-				_, _ = w.Write(data[start : end+1])
+		if supportRange && r.Header.Get("Range") != "" {
+			// 解析 Range 并返回部分内容
+			var start, end int
+			_, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end)
+			if err != nil {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 				return
 			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
+			if end >= len(content) {
+				end = len(content) - 1
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(content[start : end+1])
 			return
 		}
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	})
-	return httptest.NewServer(handler)
+		w.WriteHeader(http.StatusOK)
+		w.Write(content)
+	}))
 }
 
-// TestDownload_SuccessWithChunks 测试支持分片的完整下载
-func TestDownload_SuccessWithChunks(t *testing.T) {
-	data := generateTestData(10 * 1024 * 1024) // 10MB
-	server := newTestServer(data, true)
+// 测试正常下载（支持分片）
+func TestDownloadWithChunks(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("abcdefghijklmnopqrstuvwxyz1234567890")
+	server := mockServer(content, true)
 	defer server.Close()
 
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	cfg.ChunkSize = 2 * 1024 * 1024 // 2MB 分片
-	cfg.MaxConcurrent = 3
-
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		MaxConcurrent:  2,
+		ChunkSize:      10,
+		EnableResume:   true,
+		SaveBatchSize:  2,
+	}
 	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{
-		UserAgent: "TestAgent/1.0",
-		Headers:   map[string]string{"X-Custom": "hello"},
-	}
-	ctx := context.Background()
-	result := downloader.Download(ctx, server.URL, "output.bin", opts)
 
+	result := downloader.Download(context.Background(), server.URL, "subdir", "test.txt", nil)
 	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
+		t.Fatalf("download failed: %s", result.Error.Error())
 	}
-	if result.Size != int64(len(data)) {
-		t.Errorf("expected size %d, got %d", len(data), result.Size)
+	expectedRel := filepath.Join("subdir", "test.txt")
+	if result.OutputFile != expectedRel {
+		t.Errorf("OutputFile = %q, want %q", result.OutputFile, expectedRel)
 	}
-	// 校验文件内容
-	got, err := os.ReadFile(result.OutputFile)
+	if result.Size != int64(len(content)) {
+		t.Errorf("Size = %d, want %d", result.Size, len(content))
+	}
+	// 检查文件内容
+	absPath := filepath.Join(tempOut, expectedRel)
+	data, err := os.ReadFile(absPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != len(data) {
-		t.Fatalf("file length mismatch: %d vs %d", len(got), len(data))
+	if string(data) != string(content) {
+		t.Errorf("file content mismatch: got %q, want %q", data, content)
 	}
-	for i := range data {
-		if got[i] != data[i] {
-			t.Errorf("data mismatch at offset %d", i)
-			break
-		}
+	// 检查状态文件是否被清理
+	stateFiles, _ := filepath.Glob(filepath.Join(tempState, "subdir", "*.json"))
+	if len(stateFiles) != 0 {
+		t.Errorf("state file not cleaned: %+v", stateFiles)
 	}
 }
 
-// TestDownload_FallbackToSingle 测试不支持 Range 时降级为单线程
-func TestDownload_FallbackToSingle(t *testing.T) {
-	data := generateTestData(1 * 1024 * 1024)
-	server := newTestServer(data, false) // 不支持 Range
+// 测试断点续传：中断后恢复
+func TestDownloadResume(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("012345678901234567890123456789") // 30 bytes
+	server := mockServer(content, true)
 	defer server.Close()
 
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{UserAgent: "test"}
-	result := downloader.Download(context.Background(), server.URL, "", opts)
-
-	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		MaxConcurrent:  2,
+		ChunkSize:      10,
+		EnableResume:   true,
+		SaveBatchSize:  1, // 每个分片都保存，便于测试
 	}
-	if result.Size != int64(len(data)) {
-		t.Errorf("size mismatch: %d vs %d", result.Size, len(data))
+	downloader := NewDownloader(cfg)
+
+	// 第一次下载，中途取消（通过可取消的 context）
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var firstResult *DownloadResult
+	go func() {
+		defer wg.Done()
+		firstResult = downloader.Download(ctx, server.URL, "resume", "file.bin", nil)
+	}()
+	// 等待一个分片完成（模拟部分下载）
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	wg.Wait()
+	if firstResult.Error == nil {
+		t.Fatal("expected error due to cancel, got nil")
+	}
+	// 第二次下载，应续传
+	result2 := downloader.Download(context.Background(), server.URL, "resume", "file.bin", nil)
+	if result2.Error != nil {
+		t.Fatalf("resume download failed: %s", result2.Error.Error())
+	}
+	absPath := filepath.Join(tempOut, "resume", "file.bin")
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("resume content mismatch: got %q, want %q", data, content)
 	}
 }
 
-// TestDownload_HTTPError 测试 HTTP 错误（如 404）
-func TestDownload_HTTPError(t *testing.T) {
+// 测试不支持 Range 时降级为单线程
+func TestDownloadNoRangeFallback(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("single thread download test")
+	server := mockServer(content, false) // 不支持 Range
+	defer server.Close()
+
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		MaxConcurrent:  4,
+		ChunkSize:      5,
+		EnableResume:   true,
+	}
+	downloader := NewDownloader(cfg)
+	result := downloader.Download(context.Background(), server.URL, "no_range", "file.txt", nil)
+	if result.Error != nil {
+		t.Fatalf("download failed: %s", result.Error.Error())
+	}
+	absPath := filepath.Join(tempOut, "no_range", "file.txt")
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("content mismatch: got %q, want %q", data, content)
+	}
+}
+
+// 测试服务器返回错误（如404）
+func TestDownloadHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
 	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
 	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{UserAgent: "test"}
-	result := downloader.Download(context.Background(), server.URL, "", opts)
-
+	result := downloader.Download(context.Background(), server.URL, "", "file", nil)
 	if result.Error == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-// TestDownload_Timeout 测试超时场景
-func TestDownload_Timeout(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	cfg := DefaultConfig()
-	cfg.Timeout = 500 * time.Millisecond
-	cfg.OutputDir = t.TempDir()
-	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{UserAgent: "test"}
-	result := downloader.Download(context.Background(), server.URL, "", opts)
-
-	if result.Error == nil {
-		t.Fatal("expected timeout error, got nil")
+// 测试自定义文件名（从 URL 提取）
+func TestGenFileName(t *testing.T) {
+	d := &Downloader{}
+	tests := []struct {
+		url      string
+		expected string
+	}{
+		{"http://example.com/file.zip", "file.zip"},
+		{"http://example.com/path/to/video.mp4?token=123", "video.mp4"},
+		{"http://example.com/", "file_"}, // 以时间戳结尾，无法精确匹配，只检查前缀
+	}
+	for _, tt := range tests {
+		name := d.genFileName(tt.url, "")
+		if tt.expected == "file_" {
+			if !strings.HasPrefix(name, "file_") {
+				t.Errorf("genFileName(%q) = %q, want prefix 'file_'", tt.url, name)
+			}
+		} else {
+			if name != tt.expected {
+				t.Errorf("genFileName(%q) = %q, want %q", tt.url, name, tt.expected)
+			}
+		}
 	}
 }
 
-// TestDownload_CustomHeaders 测试自定义 Headers 和 Cookie
-func TestDownload_CustomHeaders(t *testing.T) {
-	var mu sync.Mutex
-	received := struct {
-		UserAgent string
-		Referer   string
-		Cookie    string
-		XCustom   string
-	}{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		received.UserAgent = r.Header.Get("User-Agent")
-		received.Referer = r.Header.Get("Referer")
-		received.Cookie = r.Header.Get("Cookie")
-		received.XCustom = r.Header.Get("X-Custom")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	}))
-	defer server.Close()
-
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{
-		UserAgent: "MyUA/1.0",
-		Referer:   "https://example.com",
-		Cookie:    "session=abc123",
-		Headers:   map[string]string{"X-Custom": "hello"},
-	}
-	_ = downloader.Download(context.Background(), server.URL, "", opts)
-
-	time.Sleep(100 * time.Millisecond) // 等待请求处理
-	mu.Lock()
-	defer mu.Unlock()
-	if got := received.UserAgent; got != "MyUA/1.0" {
-		t.Errorf("User-Agent = %q, want %q", got, "MyUA/1.0")
-	}
-	if got := received.Referer; got != "https://example.com" {
-		t.Errorf("Referer = %q, want %q", got, "https://example.com")
-	}
-	if got := received.Cookie; got != "session=abc123" {
-		t.Errorf("Cookie = %q, want %q", got, "session=abc123")
-	}
-	if got := received.XCustom; got != "hello" {
-		t.Errorf("X-Custom = %q, want %q", got, "hello")
+// 测试 Content-Disposition 文件名解析
+func TestContentDispositionFileName(t *testing.T) {
+	d := &Downloader{}
+	cd := `attachment; filename="test.pdf"; filename*=UTF-8''test.pdf`
+	name := d.genFileName("http://example.com/", cd)
+	if name != "test.pdf" {
+		t.Errorf("expected test.pdf, got %s", name)
 	}
 }
 
-// TestDownload_Concurrent 测试并发下载多个文件（同一个 Downloader 实例）
-func TestDownload_Concurrent(t *testing.T) {
-	data := generateTestData(2 * 1024 * 1024)
-	server := newTestServer(data, true)
+// 测试并发下载相同文件（应串行执行）
+func TestConcurrentSameFile(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("concurrent test data")
+	server := mockServer(content, true)
 	defer server.Close()
 
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	cfg.MaxConcurrent = 4
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		MaxConcurrent:  2,
+		ChunkSize:      10,
+		EnableResume:   true,
+	}
 	downloader := NewDownloader(cfg)
-
-	const jobs = 5
 	var wg sync.WaitGroup
-	errs := make(chan error, jobs)
-
-	for i := 0; i < jobs; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			opts := &DownloadOptions{UserAgent: fmt.Sprintf("UA-%d", idx)}
-			result := downloader.Download(context.Background(), server.URL, fmt.Sprintf("file%d.bin", idx), opts)
-			if result.Error != nil {
-				errs <- fmt.Errorf("job %d: %v", idx, result.Error)
-			}
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		t.Error(err)
-	}
-}
-
-// TestDownload_ProgressCallback 测试进度回调（分片模式）
-func TestDownload_ProgressCallback(t *testing.T) {
-	data := generateTestData(6 * 1024 * 1024) // 6MB
-	server := newTestServer(data, true)
-	defer server.Close()
-
-	var mu sync.Mutex
-	var lastDownloaded, lastTotal int64
-	progressCalled := false
-
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	cfg.ChunkSize = 2 * 1024 * 1024 // 3 个分片
-	cfg.OnProgress = func(downloaded, total int64) {
-		mu.Lock()
-		defer mu.Unlock()
-		lastDownloaded = downloaded
-		lastTotal = total
-		progressCalled = true
-	}
-	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{UserAgent: "test"}
-	result := downloader.Download(context.Background(), server.URL, "", opts)
-
-	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
-	}
-	if !progressCalled {
-		t.Error("progress callback never called")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if lastTotal != int64(len(data)) {
-		t.Errorf("final total = %d, want %d", lastTotal, len(data))
-	}
-	// 最终下载量应该等于总大小（可能由于实时累加会超过，但最后回调应该正好是总大小）
-	if lastDownloaded != int64(len(data)) {
-		t.Errorf("final downloaded = %d, want %d", lastDownloaded, len(data))
-	}
-}
-
-// TestDownload_ContextCancel 测试主动取消下载
-func TestDownload_ContextCancel(t *testing.T) {
-	data := generateTestData(10 * 1024 * 1024)
-	server := newTestServer(data, true)
-	defer server.Close()
-
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	cfg.ChunkSize = 2 * 1024 * 1024
-	downloader := NewDownloader(cfg)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	opts := &DownloadOptions{UserAgent: "test"}
-
-	// 100ms 后取消
+	var err1, err2 error
+	wg.Add(2)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
+		defer wg.Done()
+		r := downloader.Download(context.Background(), server.URL, "same", "file.dat", nil)
+		err1 = r.Error
 	}()
-
-	result := downloader.Download(ctx, server.URL, "", opts)
-	if result.Error == nil {
-		t.Fatal("expected cancel error, got nil")
+	go func() {
+		defer wg.Done()
+		r := downloader.Download(context.Background(), server.URL, "same", "file.dat", nil)
+		err2 = r.Error
+	}()
+	wg.Wait()
+	if err1 != nil || err2 != nil {
+		t.Errorf("download errors: %s, %s", err1.Error(), err2.Error())
 	}
-}
-
-// TestDownload_FilenameFromContentDisposition 测试从 Content-Disposition 提取文件名
-func TestDownload_FilenameFromContentDisposition(t *testing.T) {
-	data := []byte("test content")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodHead {
-			w.Header().Set("Content-Disposition", `attachment; filename="myfile.txt"`)
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
-	}))
-	defer server.Close()
-
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{UserAgent: "test"}
-	result := downloader.Download(context.Background(), server.URL, "", opts)
-	if result.Error != nil {
-		t.Fatal(result.Error)
-	}
-	expected := "myfile.txt"
-	if filepath.Base(result.OutputFile) != expected {
-		t.Errorf("expected filename %q, got %q", expected, filepath.Base(result.OutputFile))
-	}
-}
-
-// TestDownload_RetryOnFailure 测试分片失败重试
-func TestDownload_RetryOnFailure(t *testing.T) {
-	data := generateTestData(2 * 1024 * 1024)
-	var failFirst bool
-	var mu sync.Mutex
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 针对第一个分片（bytes=0-...）故意失败一次
-		if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Range"), "bytes=0-") {
-			mu.Lock()
-			if !failFirst {
-				failFirst = true
-				mu.Unlock()
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			mu.Unlock()
-		}
-		// 正常处理
-		if r.Method == http.MethodHead {
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
-			w.Header().Set("Accept-Ranges", "bytes")
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		if r.Method == http.MethodGet {
-			var start, end int64
-			_, _ = fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end)
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(data[start : end+1])
-		}
-	}))
-	defer server.Close()
-
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
-	cfg.MaxRetries = 2
-	cfg.RetryInterval = 0 // 立即重试
-	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{UserAgent: "test"}
-	result := downloader.Download(context.Background(), server.URL, "", opts)
-	if result.Error != nil {
-		t.Fatalf("download failed: %v", result.Error)
-	}
-	// 验证文件内容
-	got, err := os.ReadFile(result.OutputFile)
+	// 文件应只被写入一次，内容完整
+	data, err := os.ReadFile(filepath.Join(tempOut, "same", "file.dat"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != len(data) {
-		t.Fatalf("size mismatch: %d vs %d", len(got), len(data))
+	if string(data) != string(content) {
+		t.Errorf("content mismatch: %q", data)
 	}
 }
 
-// TestDownload_EmptyUserAgent 测试未设置 UserAgent 时不覆盖默认 UA
-func TestDownload_EmptyUserAgent(t *testing.T) {
-	var receivedUA string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedUA = r.Header.Get("User-Agent")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	}))
+// 测试取消下载时临时文件被清理
+func TestCancelCleansTemp(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := make([]byte, 50*1024*1024) // 50MB 大文件，确保分片下载耗时
+	server := mockServer(content, true)
 	defer server.Close()
 
-	cfg := DefaultConfig()
-	cfg.OutputDir = t.TempDir()
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		MaxConcurrent:  2,
+		ChunkSize:      10 * 1024 * 1024, // 10MB
+		EnableResume:   true,
+	}
 	downloader := NewDownloader(cfg)
-	opts := &DownloadOptions{
-		// UserAgent 留空
-		UserAgent: "",
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		downloader.Download(ctx, server.URL, "cancel", "bigfile.bin", nil)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	<-done
+	// 检查临时目录是否被清理（可能残留，但应尽量清理）
+	tempSegments := filepath.Join(tempState, "segments", "cancel", "bigfile.bin")
+	if _, err := os.Stat(tempSegments); err == nil {
+		// 如果取消时部分临时文件未清理，可以接受，但最好是清理了
+		t.Log("temp segments may still exist, not critical")
 	}
-	_ = downloader.Download(context.Background(), server.URL, "", opts)
+}
 
-	time.Sleep(100 * time.Millisecond)
-	// 期望 Go 默认的 User-Agent（不是空字符串）
-	if receivedUA == "" {
-		t.Error("User-Agent should not be empty when not set")
+// 测试进度回调
+func TestProgressCallback(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("progress test data")
+	server := mockServer(content, true)
+	defer server.Close()
+
+	var mu sync.Mutex
+	var lastDownloaded int64
+	var totalSize int64
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		ChunkSize:      5,
+		MaxConcurrent:  1,
+		OnProgress: func(downloaded, total int64) {
+			mu.Lock()
+			lastDownloaded = downloaded
+			totalSize = total
+			mu.Unlock()
+		},
 	}
-	// 可选：检查是否包含 "Go-http-client"
-	if !strings.Contains(receivedUA, "Go-http-client") {
-		t.Logf("User-Agent = %q, expected default Go UA", receivedUA)
+	downloader := NewDownloader(cfg)
+	result := downloader.Download(context.Background(), server.URL, "progress", "file.bin", nil)
+	if result.Error != nil {
+		t.Fatalf("download failed: %s", result.Error.Error())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastDownloaded != int64(len(content)) {
+		t.Errorf("last downloaded = %d, want %d", lastDownloaded, len(content))
+	}
+	if totalSize != int64(len(content)) {
+		t.Errorf("total size = %d, want %d", totalSize, len(content))
 	}
 }

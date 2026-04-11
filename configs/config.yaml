@@ -1,37 +1,47 @@
 # 应用基础配置
 app:
-  env: loc                     # 运行环境：loc(本地) / dev(开发) / prod(生产)
+  env: dev                     # 运行环境：loc(本地) / dev(开发) / prod(生产)
 
 # 爬虫核心配置
 crawler:
-  target: "https://www.bilibili.com/"   # 起始目标网站
+  target: ""   # 起始目标网站
   stages:                                # 爬取阶段配置
     catalog:                             # 目录/列表页阶段
       worker_count: 1                    # 并发工作协程数
       queue_size: 20                     # 任务队列缓冲大小
+      delay: "5m"                       # 任务间隔延迟
       retry:                             # 重试策略
         max_attempts: 3                  # 最大重试次数
         backoff: "30s"                   # 重试退避间隔
     detail:                              # 详情页阶段
-      worker_count: 5                    # 并发工作协程数
-      queue_size: 50                     # 任务队列缓冲大小
+      worker_count: 1                    # 并发工作协程数
+      queue_size: 500                    # 任务队列缓冲大小
+      delay: "3m"                       # 任务间隔延迟
+      retry:
+        max_attempts: 3
+        backoff: "30s"
+    video:                               # 视频内容
+      worker_count: 1                    # 并发工作协程数
+      queue_size: 1000                   # 任务队列缓冲大小
+      delay: "60s"                       # 任务间隔延迟
       retry:
         max_attempts: 3
         backoff: "30s"
 
 # 浏览器自动化池配置
 browser:
-  pool_size: 1                           # 浏览器实例数量
+  #只有catalog和detail video阶段需要浏览器抓取信息，唤起浏览器数量应大于等于三阶段worker_count之和以避免争抢
+  pool_size: 3                           # 浏览器实例数量
   max_idle_time: "5m"                    # 空闲浏览器最大存活时间
   headless: false                        # 是否无头模式（false 可见浏览器界面）
   disable_gpu: false                     # 禁用 GPU 加速
   no_sandbox: false                      # 禁用沙箱（容器环境可能需要）
-  browser_path: "C:/Program Files/Google/Chrome/Application/chrome.exe"  # Chrome 可执行文件路径 空置则调用默认Chromium
+  browser_path: ""  # Chrome 可执行文件路径 空置则调用默认Chromium
 
 # 代理管理器配置（未启用）
 proxy:
-  api_url:                               # 代理 API 地址（为空则不启用）
-  refresh_interval: 300s                 # 代理列表刷新间隔
+  api_url: ""                              # 代理 API 地址（为空则不启用）
+  refresh_interval: 500s                 # 代理列表刷新间隔
 
 # 数据库配置
 db:
@@ -56,14 +66,14 @@ monitor:
   enabled: true                          # 是否启用监控界面
   port: 9090                             # 监听端口
 
-# 定时任务调度器配置
+# 定时任务调度器配置 (可按业务自行增加或修改)
 scheduler:
   enabled: true                          # 是否启用调度器
   timezone: "Asia/Shanghai"              # 时区（用于 cron 表达式）
   jobs:                                  # 定时任务列表
-    - name: "catalog_daily"              # 任务名称
-      type: "catalog"                    # 任务类型：catalog（每日轮询新内容）
+    - name: "repeat_daily"              # 任务名称
+      type: "repeat"                    # 任务类型：repeat（每日轮询新内容）
       schedule: "0 8 * * *"              # cron 表达式：每天 8:00 执行
     - name: "recover_tasks"              # 任务名称
-      type: "recover"                    # 任务类型：recover（恢复未完成任务）
+      type: "recover"                    # 任务类型：recover（恢复超时未完成任务）
       schedule: "0 */6 * * *"            # cron 表达式：每 6 小时执行一次

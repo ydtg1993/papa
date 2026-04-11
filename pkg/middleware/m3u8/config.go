@@ -23,7 +23,8 @@ type Config struct {
 	// 进度回调函数（可选）
 	// 参数：已下载片段数，总片段数，当前片段索引（从1开始），当前片段大小（字节），累计已下载字节数
 	OnProgress func(downloadedSegments, totalSegments int, currentSegment int, segmentSize, totalBytes int64)
-
+	// 并发下载保存数量
+	SaveBatchSize int
 	// 断点续传相关
 	ResumeStateDir         string // 状态文件存储目录，默认 "./downloads/.resume"
 	AutoMerge              bool   // 自动合并为 MP4，默认 true
@@ -48,6 +49,7 @@ func DefaultConfig() *Config {
 		SegmentTimeout: 30 * time.Second,
 		MaxRetries:     3,
 		RetryInterval:  2,
+		SaveBatchSize:  10,
 		EnableResume:   true,
 		RateKB:         0,
 		ResumeStateDir: "./downloads/.resume",

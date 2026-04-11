@@ -6,14 +6,14 @@ import (
 	"time"
 )
 
-type FetchCatalog struct {
+type FetchVideo struct {
 }
 
-func (f *FetchCatalog) GetStage() string {
-	return "catalog"
+func (f *FetchVideo) GetStage() string {
+	return "video"
 }
 
-func (*FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchVideo) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
 		return err

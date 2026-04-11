@@ -60,12 +60,12 @@ func (m *Manager) GetErrors() <-chan error {
 func (m *Manager) refreshProxies() {
 	req, err := http.NewRequest("GET", m.apiURL, nil)
 	if err != nil {
-		m.trackQueue.SendError(fmt.Errorf("create proxy request failed: %v", err))
+		m.trackQueue.SendError(fmt.Errorf("create proxy request failed: %s", err.Error()))
 		return
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		m.trackQueue.SendError(fmt.Errorf("fetch proxies failed: %v", err))
+		m.trackQueue.SendError(fmt.Errorf("fetch proxies failed: %w", err))
 		return
 	}
 	defer resp.Body.Close()
@@ -74,17 +74,19 @@ func (m *Manager) refreshProxies() {
 		m.trackQueue.SendError(fmt.Errorf("proxy API returned status %d", resp.StatusCode))
 		return
 	}
-
-	var list []string
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %v", err))
+	//===============接受数据结构按照三方返回做调整===============/
+	var proxies []map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&proxies); err != nil {
+		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %w", err))
 		return
 	}
 	m.mu.Lock()
-	m.proxies = make([]string, 0, len(list))
-	for _, url := range list {
-		m.proxies = append(m.proxies, url)
+	m.proxies = make([]string, 0, len(proxies))
+	var list []string
+	for _, p := range proxies {
+		list = append(list, "http://"+p["host"]+":"+p["port"])
 	}
+	m.proxies = list
 	m.mu.Unlock()
 	m.trackQueue.SendError(fmt.Errorf("updated proxies: %d available", len(m.proxies)))
 }

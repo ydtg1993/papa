@@ -64,7 +64,7 @@ func (s *Monitor) Start() {
 
 	s.logger.Infof("monitor server starting on %s", addr)
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.logger.Errorf("monitor server failed: %v", err)
+		s.logger.Errorf("monitor server failed: %s", err.Error())
 	}
 }
 
@@ -98,12 +98,12 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := s.loadTemplate()
 	if err != nil {
-		s.logger.Errorf("load monitor template: %v", err)
+		s.logger.Errorf("load monitor template: %s", err.Error())
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.Execute(w, nil); err != nil {
-		s.logger.Errorf("execute monitor template: %v", err)
+		s.logger.Errorf("execute monitor template: %s", err.Error())
 	}
 }

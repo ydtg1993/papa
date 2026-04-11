@@ -18,153 +18,269 @@ import (
 )
 
 type Engine struct {
+	db        *gorm.DB
+	loggerSet *loggers.LoggerSet
+
 	ctx         context.Context
 	cancel      context.CancelFunc
 	stages      map[string]*stageInfo
-	activeTasks map[string]bool // hash去重任务表 key: "stage|url"
-	activeMu    sync.RWMutex
 	mu          sync.RWMutex
-	db          *gorm.DB
 	cfg         *config.Config
 	browserPool *browser.Pool
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
-	LoggerSet   *loggers.LoggerSet
-	Proxy       *proxy.Manager       // 代理管理器中间件
-	M3U8        *m3u8.Downloader     // m3u8下载器
-	Filedown    *filedown.Downloader // 文件下载器
+	activeTasks sync.Map                            // hash去重任务表 key: "stage|url"
+	repeatTasks sync.Map                            // 重复轮询任务
+
+	proxy    *proxy.Manager       // 代理管理器中间件
+	m3u8     *m3u8.Downloader     // m3u8下载器
+	filedown *filedown.Downloader // 文件下载器
 }
 
 // stageInfo 内部阶段信息
 type stageInfo struct {
-	WorkerPool *workerpool.WorkerPool[*Task]
-	Config     StageConfig
+	workerPool *workerpool.WorkerPool[*Task]
+	config     StageConfig
+	fetcher    Fetcher
+	submitFunc func(engine *Engine)
 }
 
 // StageConfig 阶段配置
 type StageConfig struct {
-	Handler     func(ctx context.Context, task *Task, engine *Engine) error // Handler 是fetcher阶段的核心处理函数
-	MaxAttempts int                                                         // Handler 最大重试次数
-	Backoff     time.Duration                                               // Handler 初始退避时间
-	NextStage   string                                                      // NextStage 可选：解析出的链接自动使用的下一阶段
-	WorkerCount int                                                         // WorkerCount 该阶段专用的 worker 数量
-	QueueSize   int                                                         // QueueSize 该阶段的任务队列缓冲大小
+	MaxAttempts int           // Handler 最大重试次数
+	Backoff     time.Duration // Handler 错误重试退避时间
+	Delay       time.Duration // 任务间隔延迟
+	WorkerCount int           // WorkerCount 该阶段专用的 worker 数量
+	QueueSize   int           // QueueSize 该阶段的任务队列缓冲大小
+}
+
+func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
+	e.stages[stage] = &stageInfo{
+		config:     config,
+		fetcher:    fetcher,
+		submitFunc: subFunc,
+	}
 }
 
 // NewEngine 创建引擎
-func NewEngine(pool *browser.Pool, db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
+func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &Engine{
 		ctx:         ctx,
 		cancel:      cancel,
 		stages:      make(map[string]*stageInfo),
-		activeTasks: make(map[string]bool),
+		activeTasks: sync.Map{},
 		db:          db,
 		cfg:         cfg,
-		browserPool: pool,
-		LoggerSet:   loggerSet,
+		loggerSet:   loggerSet,
 	}
 	engine.loadActiveTasks()
 	return engine
 }
 
+// GetDB 获取数据库操作实例
+func (e *Engine) GetDB() *gorm.DB {
+	return e.db
+}
+
+// GetLoggerSet 获取日志管理器列表
+func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
+	return e.loggerSet
+}
+
+// GetConfig 获取全局配置
+func (e *Engine) GetConfig() *config.Config {
+	return e.cfg
+}
+
+// SetBrowserPool 创建浏览器操作池
+func (e *Engine) SetBrowserPool() {
+	pool, err := browser.NewPool(browser.PoolConfig{
+		Size:        e.cfg.Browser.PoolSize,
+		MaxIdleTime: e.cfg.Browser.MaxIdleTime,
+		Headless:    e.cfg.Browser.Headless,
+		NoSandbox:   e.cfg.Browser.NoSandbox,
+		BrowserPath: e.cfg.Browser.BrowserPath,
+		Flags:       map[string]string{},
+		DefaultHeaders: map[string]string{
+			"User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+			"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+		},
+		ProxyManager: e.GetProxy(),
+	})
+	if err != nil {
+		panic(fmt.Errorf("new browser pool: %s", err.Error()))
+	}
+	e.browserPool = pool
+}
+
+// GetBrowserPool 获取浏览器池
+func (e *Engine) GetBrowserPool() *browser.Pool {
+	return e.browserPool
+}
+
 // SetProxy 设置代理 需要在RegisterStage之前设置
 func (e *Engine) SetProxy(proxy *proxy.Manager) {
-	e.Proxy = proxy
+	e.proxy = proxy
+}
+
+// GetProxy 获取代理管理器
+func (e *Engine) GetProxy() *proxy.Manager {
+	return e.proxy
 }
 
 // SetM3U8 设置m3u8下载器 需要在RegisterStage之前设置
 func (e *Engine) SetM3U8(m3u *m3u8.Downloader) {
-	e.M3U8 = m3u
+	e.m3u8 = m3u
+}
+
+// GetM3U8 获取m3u8下载器
+func (e *Engine) GetM3U8() *m3u8.Downloader {
+	return e.m3u8
 }
 
 // SetFiledown 设置文件下载器 需要在RegisterStage之前设置
 func (e *Engine) SetFiledown(f *filedown.Downloader) {
-	e.Filedown = f
+	e.filedown = f
 }
 
-// RegisterStage 注册一个爬取阶段
-func (e *Engine) RegisterStage(f Handler, cfg StageConfig) error {
-	//配置检查
-	if cfg.WorkerCount <= 0 || cfg.QueueSize <= 0 {
-		return fmt.Errorf("stage %s: WorkerCount and QueueSize must be positive", f.GetStage())
-	}
-	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 3
-	}
-	if cfg.Backoff <= 0 {
-		cfg.Backoff = time.Second
-	}
+// GetFiledown 获取文件下载器实例
+func (e *Engine) GetFiledown() *filedown.Downloader {
+	return e.filedown
+}
 
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
-	e.stages[f.GetStage()] = &stageInfo{
-		WorkerPool: pool,
-		Config:     cfg,
-	}
-	// 启动 worker pool
-	pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
-		// 1. 更新状态为 processing
-		task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusProcessing, nil)
-		// 2. 重试FetchHandler
-		var lastErr error
-		for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
-			if attempt > 0 {
-				task.IncRetry(e.db, e.LoggerSet.DB)
+// ApplyRegisterStage 启用注册业务流程开启对应工作池
+func (e *Engine) ApplyRegisterStage() {
+	for stage, stageInfo := range e.stages {
+		cfg := stageInfo.config
+		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
+		e.stages[stage].workerPool = pool
+		// 启动 worker pool
+		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
+			// 重试FetchHandler
+			var lastErr error
+			for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
+				if attempt > 0 {
+					task.IncRetry(e.db)
+				}
+				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
+				if err == nil {
+					task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
+					<-time.After(cfg.Delay)
+					return nil
+				}
+				lastErr = err
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(cfg.Backoff * (1 << uint(attempt))):
+					continue
+				}
 			}
-			err := f.FetchHandler(ctx, task, e)
-			if err == nil {
-				task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusSuccess, nil)
-				return nil
-			}
-			lastErr = err
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(cfg.Backoff * (1 << uint(attempt))):
-				continue
-			}
+			// 所有重试失败：记录错误并更新状态为 failed
+			task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
+			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
+		})
+		// 检查提交任务
+		if stageInfo.submitFunc != nil {
+			stageInfo.submitFunc(e)
 		}
-		// 所有重试失败：记录错误并更新状态为 failed
-		task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusFailed, lastErr)
-		return fmt.Errorf("failed after %d retries: %w", cfg.MaxAttempts, lastErr)
-	})
-	// 如果全局配置开启了监控，则为该阶段创建监控器并启动
-	if e.cfg.Monitor.Enabled {
-		stats := track.NewStatsQueue(pool)
-		stats.Start()
-		e.SetStatsQueue(f.GetStage(), stats)
-		e.LoggerSet.Engine.Infof("monitor started for stage: %s", f.GetStage())
+		// 如果全局配置开启了监控，则为该阶段创建监控器并启动
+		if e.cfg.Monitor.Enabled {
+			stats := track.NewStatsQueue(pool)
+			stats.Start(e.ctx)
+			e.setStatsQueue(stage, stats)
+			e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
+		}
 	}
-	return nil
 }
 
 // SubmitTask 任务提交
-func (e *Engine) SubmitTask(task *Task, insertToDB bool) error {
+func (e *Engine) SubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
-		return fmt.Errorf("task stage or url is empty: %v", task)
+		return fmt.Errorf("task stage or url is empty: %+v", task)
 	}
-	//加入去重hash map
-	e.activeMu.RLock()
-	if e.activeTasks[task.Unique()] {
-		e.activeMu.RUnlock()
-		return fmt.Errorf("task already exists: %s", task.Unique())
+	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
+		return fmt.Errorf("invalid stage : %s", task.Stage)
 	}
-	e.activeMu.RUnlock()
-	// 提交到 pool 前先插入数据库（避免并发竞争）
-	if insertToDB && !task.Insert(e.db, e.LoggerSet.DB) {
-		return fmt.Errorf("insert crawler task to db failed")
+	if task.Repeatable {
+		//存入轮询任务列表 在任务计划中读取调用
+		e.repeatTasks.Store(task.Unique(), task)
 	}
-	// 插入成功后加入内存 map
-	e.activeMu.Lock()
-	e.activeTasks[task.Unique()] = true
-	e.activeMu.Unlock()
+	var record models.CrawlerTask
+	//查询去重hash map
+	_, exist := e.activeTasks.Load(task.Unique())
+	if exist {
+		if task.Repeatable == false {
+			return fmt.Errorf("task already exists: %s", task.Unique())
+		} else {
+			//已经入库的轮询任务 查找记录防止重复录入
+			e.db.Model(&models.CrawlerTask{}).
+				Where("url = ?", task.URL).
+				Where("stage = ?", task.Stage).
+				First(&record)
+			task.ID = int(record.ID)
+		}
+	}
 
+	if task.ID == 0 {
+		// 提交到 pool 前先插入数据库
+		if task.Insert(e.db) == false {
+			return fmt.Errorf("insert crawler task to db failed")
+		}
+	}
+	// 插入成功后加入内存去重map
+	e.activeTasks.Store(task.Unique(), true)
+	if record.ID == 0 {
+		e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
+	}
+	if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
+		return nil
+	}
 	info := e.stages[task.Stage]
-	if err := info.WorkerPool.Submit(task); err != nil {
+	if err := info.workerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
-		e.activeMu.Lock()
-		delete(e.activeTasks, task.Unique())
-		e.activeMu.Unlock()
-		_ = task.UpdateStatus(e.db, e.LoggerSet.DB, models.TaskStatusFailed, err)
+		e.activeTasks.Delete(task.Unique())
+		record.Error += err.Error() + "\r"
+		record.Status = models.TaskStatusFailed
+		e.db.Save(&record)
+		return err
+	}
+	if task.Repeatable && task.ID != 0 {
+		//状态修改 repeat+1
+		record.Repeat += 1
+		record.Status = models.TaskStatusPending
+	} else {
+		record.Status = models.TaskStatusPending
+	}
+	e.db.Save(record)
+	return nil
+}
+
+// ReSubmitTask 已入库的非轮询任务进行重提交任务
+func (e *Engine) ReSubmitTask(task *Task) error {
+	if task.Stage == "" || task.URL == "" {
+		return fmt.Errorf("task stage or url is empty: %+v", task)
+	}
+	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
+		return fmt.Errorf("invalid stage : %s", task.Stage)
+	}
+	var record models.CrawlerTask
+	e.db.Model(&models.CrawlerTask{}).
+		Where("url = ?", task.URL).
+		Where("stage = ?", task.Stage).
+		First(&record)
+	if record.ID == 0 {
+		return fmt.Errorf("record not exists: %s", task.URL)
+	}
+	task.ID = int(record.ID)
+	info := e.stages[task.Stage]
+	if err := info.workerPool.Submit(task); err != nil {
+		// 提交失败，回滚内存 map 和数据库状态
+		e.activeTasks.Delete(task.Unique())
+		record.Error += err.Error() + "\r"
+		record.Status = models.TaskStatusFailed
+		e.db.Save(&record)
 		return err
 	}
 	return nil
@@ -179,40 +295,22 @@ func (e *Engine) Stop(timeout time.Duration) {
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()
 			pool.Stop(timeout)
-		}(name, s.WorkerPool)
+		}(name, s.workerPool)
 	}
 	wg.Wait()
-	e.LoggerSet.Engine.Info("all workers stopped")
+	e.loggerSet.Engine.Info("all workers stopped")
 }
 
 // Errors 返回work pool中的错误消息队列
-func (e *Engine) Errors(stage string) <-chan error {
-	for name, s := range e.stages {
-		if name == stage {
-			return s.WorkerPool.Errors()
-		}
+func (e *Engine) Errors() (errors []<-chan error) {
+	for _, s := range e.stages {
+		errors = append(errors, s.workerPool.Errors())
 	}
-	panic(fmt.Sprintf("stage %s not found", stage))
+	return
 }
 
-// GetWorkerPool 返回指定阶段的 worker 池，用于监控等
-func (e *Engine) GetWorkerPool(stage string) (*workerpool.WorkerPool[*Task], error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	info, ok := e.stages[stage]
-	if !ok {
-		return nil, fmt.Errorf("stage %s not found", stage)
-	}
-	return info.WorkerPool, nil
-}
-
-// GetBrowserPool 获取浏览器池
-func (e *Engine) GetBrowserPool() *browser.Pool {
-	return e.browserPool
-}
-
-// SetStatsQueue 设置阶段统计信息管理器
-func (e *Engine) SetStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
+// setStatsQueue 设置阶段统计信息管理器
+func (e *Engine) setStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.statsQueue == nil {
@@ -233,89 +331,25 @@ func (e *Engine) GetStatsQueue() map[string]*track.StatsQueue[*Task] {
 	return cp
 }
 
-// RecoverTasks 从数据库加载未完成的任务并重新提交
-func (e *Engine) RecoverTasks() {
-	// 1. 查询需要恢复的任务（pending 或超时的 processing）
-	var tasks []models.CrawlerTask
-	timeout := time.Now().Add(-2 * time.Hour)
-
-	if err := e.db.Where("(status = ? OR status = ?) AND updated_at < ?",
-		models.TaskStatusPending, models.TaskStatusProcessing, timeout).
-		Find(&tasks).Error; err != nil {
-		e.LoggerSet.DB.Errorf("failed to load tasks for recovery: %v", err)
-		return
-	}
-
-	if len(tasks) == 0 {
-		e.LoggerSet.Engine.Info("no tasks need recovery")
-		return
-	}
-
-	e.LoggerSet.Engine.Infof("found %d tasks need to recover", len(tasks))
-
-	// 2. 分别记录提交成功和失败的任务 ID
-	var successIDs []uint
-	var failIDs []uint
-	for _, t := range tasks {
-		task := &Task{
-			ID:    int64(t.ID),
-			URL:   t.URL,
-			Stage: t.Stage,
-			Retry: t.Retry,
-		}
-		// 剔除去重hash map的暂存
-		delete(e.activeTasks, task.Unique())
-		// 重新提交到队列（非阻塞）
-		if err := e.SubmitTask(task, false); err != nil {
-			e.LoggerSet.Engine.Errorf("recover task %d (url: %s) submit failed: %v",
-				t.ID, t.URL, err)
-			failIDs = append(failIDs, t.ID)
-		} else {
-			successIDs = append(successIDs, t.ID)
-			e.LoggerSet.Engine.Infof("recover task %d submitted successfully", t.ID)
-		}
-	}
-
-	// 3. 批量更新成功任务的状态为 Processing
-	if len(successIDs) > 0 {
-		if err := e.db.Model(&models.CrawlerTask{}).
-			Where("id IN ?", successIDs).
-			Update("status", models.TaskStatusProcessing).Error; err != nil {
-			e.LoggerSet.DB.Errorf("failed to mark recovered tasks as processing: %v", err)
-		} else {
-			e.LoggerSet.Engine.Infof("marked %d tasks as processing", len(successIDs))
-		}
-	}
-
-	// 4. 失败的任务状态回滚为 Pending（记录为失败进入失败任务流程）
-	if len(failIDs) > 0 {
-		if err := e.db.Model(&models.CrawlerTask{}).
-			Where("id IN ?", failIDs).
-			Update("status", models.TaskStatusFailed).
-			Update("error", "RecoverTasks 恢复任务提交队列失败").Error; err != nil {
-			e.LoggerSet.DB.Errorf("failed to rollback failed tasks to failed: %v", err)
-		} else {
-			e.LoggerSet.Engine.Warnf("rolled back %d tasks to pending due to submit failure", len(failIDs))
-		}
-	}
+// DelActiveTask 从去重任务列表中删除任务
+func (e *Engine) DelActiveTask(task *Task) {
+	e.activeTasks.Delete(task.Unique())
 }
 
-// loadActiveTasks 启动时加载已处理任务到去重hash map
+// GetRepeatTasks 获取轮询任务列表
+func (e *Engine) GetRepeatTasks() *sync.Map {
+	return &e.repeatTasks
+}
+
+// loadActiveTasks 启动时加载数据库记录到去重hash map
 func (e *Engine) loadActiveTasks() {
 	var tasks []models.CrawlerTask
-	if err := e.db.Where("status IN (?)",
-		[]models.TaskStatus{
-			models.TaskStatusPending,
-			models.TaskStatusProcessing,
-			models.TaskStatusSuccess,
-			models.TaskStatusFailed}).Find(&tasks).Error; err != nil {
-		e.LoggerSet.DB.Errorf("load active tasks failed: %v", err)
+	if err := e.db.Where("id > ?", 0).Find(&tasks).Error; err != nil {
+		e.loggerSet.DB.Errorf("load active tasks failed: %s", err.Error())
 		return
 	}
-	e.activeMu.Lock()
-	defer e.activeMu.Unlock()
 	for _, t := range tasks {
 		task := Task{URL: t.URL, Stage: t.Stage}
-		e.activeTasks[task.Unique()] = true
+		e.activeTasks.Store(task.Unique(), true)
 	}
 }

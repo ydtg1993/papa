@@ -6,7 +6,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/crawler"
-	"github.com/ydtg1993/papa/internal/fetcher"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/internal/scheduler"
 	"github.com/ydtg1993/papa/internal/server"
@@ -16,6 +15,7 @@ import (
 	"github.com/ydtg1993/papa/pkg/middleware"
 	"github.com/ydtg1993/papa/pkg/track"
 	"gorm.io/gorm"
+	"reflect"
 	"time"
 )
 
@@ -58,95 +58,66 @@ func NewApp() (*App, error) {
 		}
 	}
 
-	// 5. 初始化浏览器池
-	browserPool, err := browser.NewPool(browser.PoolConfig{
-		Size:        cfg.Browser.PoolSize,
-		MaxIdleTime: cfg.Browser.MaxIdleTime,
-		Headless:    cfg.Browser.Headless,
-		NoSandbox:   cfg.Browser.NoSandbox,
-		BrowserPath: cfg.Browser.BrowserPath,
-		Flags:       map[string]string{},
-		DefaultHeaders: map[string]string{
-			"User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-			"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-		},
-		// 如果需要代理，设置 ProxyManager
-	})
-	if err != nil {
-		return nil, fmt.Errorf("new browser pool: %w", err)
-	}
-
-	// 6. 创建爬虫引擎（注入依赖）
-	engine := crawler.NewEngine(browserPool, db, cfg, &loggerSet)
-
-	// 7. 注册阶段
-	if err := registerStages(engine, cfg, loggerSet.Engine); err != nil {
-		return nil, fmt.Errorf("register stages: %w", err)
-	}
+	// 5. 创建爬虫引擎（注入依赖）
+	engine := crawler.NewEngine(db, cfg, &loggerSet)
 
 	return &App{
-		Config:      cfg,
-		Logger:      &loggerSet,
-		DB:          db,
-		BrowserPool: browserPool,
-		Engine:      engine,
+		Config: cfg,
+		Logger: &loggerSet,
+		DB:     db,
+		Engine: engine,
 	}, nil
 }
 
-// registerStages 专门负责注册各个爬取阶段，避免 NewApp 过长
-func registerStages(engine *crawler.Engine, cfg *config.Config, logger *logrus.Logger) error {
+// RegisterStage 注册爬虫业务阶段流程
+func (a *App) RegisterStage(stage string, fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
 	// 从配置中读取 stage 配置
-	catalogCfg := cfg.Crawler.Stages["catalog"]
-	fetchCatalog := &fetcher.FetchCatalog{}
-	if err := engine.RegisterStage(fetchCatalog, crawler.StageConfig{
-		WorkerCount: catalogCfg.WorkerCount,
-		QueueSize:   catalogCfg.QueueSize,
-		NextStage:   "detail",
-		Handler:     fetchCatalog.FetchHandler,
-	}); err != nil {
-		return fmt.Errorf("register catalog stage: %w", err)
+	cfg, ok := a.Config.Crawler.Stages[stage]
+	if ok != true {
+		panic(fmt.Errorf("invalid crawler stage: %s", stage))
+	}
+	if cfg.WorkerCount <= 0 || cfg.QueueSize <= 0 {
+		panic(fmt.Errorf("stage %s: WorkerCount and QueueSize must be positive", stage))
+	}
+	if cfg.Retry.MaxAttempts <= 0 {
+		cfg.Retry.MaxAttempts = 3
+	}
+	if cfg.Retry.Backoff <= 0 {
+		cfg.Retry.Backoff = time.Second
+	}
+	if cfg.Delay <= 0 {
+		cfg.Delay = time.Minute
 	}
 
-	// 提交起始任务
-	if err := engine.SubmitTask(&crawler.Task{
-		URL:   cfg.Crawler.Target,
-		Stage: fetchCatalog.GetStage(),
-	}, true); err != nil {
-		logger.Errorf("submit initial task: %v", err)
-	}
-
-	// 启动错误监听
-	go func() {
-		for err := range engine.Errors("catalog") {
-			logger.Errorf("catalog error: %v", err)
-		}
-	}()
-
-	return nil
+	a.Engine.AddStage(stage, crawler.StageConfig{
+		MaxAttempts: cfg.Retry.MaxAttempts,
+		Backoff:     cfg.Retry.Backoff,
+		WorkerCount: cfg.WorkerCount,
+		QueueSize:   cfg.QueueSize,
+		Delay:       cfg.Delay,
+	}, fetcher, subFunc)
 }
 
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
+	// 初始化引擎浏览器池
+	a.Engine.SetBrowserPool()
+	// 启用工作流和对应工作池
+	a.Engine.ApplyRegisterStage()
+
 	// 任务计划
-	sch := a.schedule()
-	// 监听中间件活动日志和错误
+	a.schedule(ctx)
+	// 监听c错误日志 中间件活动等队列消息
 	a.mdMsgListener(ctx)
 	// 启动监控 HTTP 服务（如果配置启用）
-	mon := a.monitor()
+	a.monitor(ctx)
 
 	//触发结束任务 清理资源
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
-	if sch != nil {
-		sch.Stop()
-	}
-	if mon != nil {
-		mon.Stop()
-	}
 	a.Engine.Stop(5 * time.Second)
-	if a.BrowserPool != nil {
-		a.BrowserPool.Close()
+	if reflect.ValueOf(a.Engine.GetBrowserPool()).IsNil() == false {
+		a.Engine.GetBrowserPool().Close()
 	}
 	if sqlDB, err := a.DB.DB(); err == nil {
 		_ = sqlDB.Close()
@@ -156,10 +127,16 @@ func (a *App) Run(ctx context.Context) {
 
 // mdMsgListener 监听中间件活动日志和错误
 func (a *App) mdMsgListener(ctx context.Context) {
+	//监听引擎各stage的workerpool池消息
+	for _, e := range a.Engine.Errors() {
+		go func() {
+			for err := range e {
+				a.Logger.Engine.Errorf("engine error: %s", err.Error())
+			}
+		}()
+	}
+	//监听中间件消息
 	listen := func(md middleware.Err, log *logrus.Logger) {
-		if md == nil || log == nil {
-			return
-		}
 		go func() {
 			for {
 				select {
@@ -174,15 +151,21 @@ func (a *App) mdMsgListener(ctx context.Context) {
 			}
 		}()
 	}
-	listen(a.Engine.Proxy, a.Logger.Proxy)
-	listen(a.Engine.Filedown, a.Logger.Filedown)
-	listen(a.Engine.M3U8, a.Logger.M3u8)
+	if proxy := a.Engine.GetProxy(); proxy != nil {
+		listen(proxy, a.Logger.Proxy)
+	}
+	if filedown := a.Engine.GetFiledown(); filedown != nil {
+		listen(filedown, a.Logger.Filedown)
+	}
+	if m3u8 := a.Engine.GetM3U8(); m3u8 != nil {
+		listen(m3u8, a.Logger.M3U8)
+	}
 }
 
 // monitor
-func (a *App) monitor() *server.Monitor {
+func (a *App) monitor(ctx context.Context) {
 	if a.Config.Monitor.Enabled == false {
-		return nil
+		return
 	}
 	getter := func() map[string]*track.StatsQueue[*crawler.Task] {
 		return a.Engine.GetStatsQueue()
@@ -190,33 +173,38 @@ func (a *App) monitor() *server.Monitor {
 	// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
 	mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
 	go mServer.Start()
-	return mServer
+	go func() {
+		<-ctx.Done()
+		mServer.Stop()
+	}()
 }
 
 // 任务计划
-func (a *App) schedule() *scheduler.Scheduler {
+func (a *App) schedule(ctx context.Context) {
 	if a.Config.Scheduler.Enabled == false {
-		return nil
+		return
 	}
-	sched := scheduler.NewScheduler(a.Engine, a.Config.Scheduler.Timezone)
+	sched := scheduler.NewScheduler(a.Engine, a.Logger.Scheduler, a.Config.Scheduler.Timezone)
 	for _, jobCfg := range a.Config.Scheduler.Jobs {
 		var cmd func()
 		switch jobCfg.Type {
-		case "catalog":
-			// 需要 targetURL，可以从配置中获取，也可以从 engine 配置拿
-			catalogJob := scheduler.NewCatalogJob(a.Engine, a.Config.Crawler.Target)
-			cmd = catalogJob.Run
+		case "repeat":
+			repeatJob := scheduler.NewRepeatJob(sched)
+			cmd = repeatJob.Run
 		case "recover":
-			recoverJob := scheduler.NewRecoverJob(a.Engine)
+			recoverJob := scheduler.NewRecoverJob(sched)
 			cmd = recoverJob.Run
 		default:
 			panic(fmt.Sprintf("unknown job type: %s", jobCfg.Type))
 		}
 
 		if err := sched.AddJob(jobCfg.Name, jobCfg.Schedule, cmd); err != nil {
-			a.Engine.LoggerSet.Scheduler.Errorf("failed to add job %s: %v", jobCfg.Name, err)
+			a.Logger.Scheduler.Errorf("failed to add job %s: %s", jobCfg.Name, err.Error())
 		}
 	}
 	go sched.Start()
-	return sched
+	go func() {
+		<-ctx.Done()
+		sched.Stop()
+	}()
 }
