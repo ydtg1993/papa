@@ -18,7 +18,6 @@ import (
 	"github.com/ydtg1993/papa/pkg/track"
 	"gorm.io/gorm"
 	"net/http"
-	"reflect"
 	"strconv"
 	"time"
 )
@@ -123,7 +122,7 @@ func (a *App) Run(ctx context.Context) {
 	<-ctx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
 	a.Engine.Stop(5 * time.Second)
-	if reflect.ValueOf(a.Engine.GetBrowserPool()).IsNil() == false {
+	if a.Engine.GetBrowserPool() != nil {
 		a.Engine.GetBrowserPool().Close()
 	}
 	if sqlDB, err := a.DB.DB(); err == nil {

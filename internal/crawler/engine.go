@@ -113,6 +113,7 @@ func (e *Engine) SetBrowserPool() {
 
 	pool, err := browser.NewPool(browser.PoolConfig{
 		Size:           e.cfg.Browser.PoolSize,
+		DirectSize:     e.cfg.Browser.DirectSize,
 		MaxIdleTime:    e.cfg.Browser.MaxIdleTime,
 		Headless:       e.cfg.Browser.Headless,
 		NoSandbox:      e.cfg.Browser.NoSandbox,

@@ -48,10 +48,11 @@ type RetryConfig struct {
 
 // BrowserConfig chromedp浏览器池配置
 type BrowserConfig struct {
-	Enable      bool              `mapstructure:"enable"`        //是否启用浏览器池，false 则不创建
-	PoolSize    int               `mapstructure:"pool_size"`     //唤起浏览器数量
-	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"` //浏览器生命周期
-	Headless    bool              `mapstructure:"headless"`      //无头模式
+	Enable      bool              `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
+	PoolSize    int               `mapstructure:"pool_size"`        //唤起浏览器数量
+	DirectSize  int               `mapstructure:"direct_pool_size"` //强制直连浏览器数量（不经过代理）
+	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"`    //浏览器生命周期
+	Headless    bool              `mapstructure:"headless"`         //无头模式
 	DisableGpu  bool              `mapstructure:"disable_gpu"`
 	NoSandbox   bool              `mapstructure:"no_sandbox"`
 	BrowserPath string            `mapstructure:"browser_path"`

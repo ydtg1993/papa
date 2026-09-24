@@ -17,6 +17,7 @@ import (
 type Browser struct {
 	Browser  *rod.Browser       // rod 浏览器对象
 	launcher *launcher.Launcher // 启动器，用于关闭
+	useProxy bool               // 是否走代理（false 为强制直连）
 	useCount int64              // 已使用次数（原子操作）
 	lastUsed time.Time          // 最后使用时间
 	mu       sync.Mutex

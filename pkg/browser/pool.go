@@ -10,7 +10,6 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	_ "github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/pkg/middleware/proxy"
-	"reflect"
 	"sync"
 	_ "sync/atomic"
 	"time"
@@ -18,16 +17,19 @@ import (
 
 // Pool Browser池封装管理多个rod
 type Pool struct {
-	browsers  chan *Browser // 浏览器池（缓冲通道）
-	mu        sync.Mutex
-	closeOnce sync.Once
-	closed    bool
-	cfg       PoolConfig
+	browsers       chan *Browser // 代理浏览器池（未配置代理时即直连）
+	directBrowsers chan *Browser // 强制直连浏览器池
+	mu             sync.Mutex
+	closeOnce      sync.Once
+	closed         bool
+	cfg            PoolConfig
+	newBrowserFn   func(useProxy bool) (*Browser, error) // 浏览器工厂，测试可注入
 }
 
 // PoolConfig 浏览器池配置
 type PoolConfig struct {
-	Size           int            // 唤起浏览器操作实例
+	Size           int            // 代理浏览器实例数
+	DirectSize     int            // 强制直连浏览器实例数（不经过代理）
 	MaxIdleTime    time.Duration  // 最大空闲时间，0 表示无限制
 	ProxyManager   *proxy.Manager //代理管理器
 	Headless       bool
@@ -52,23 +54,34 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	}
 
 	pool := &Pool{
-		browsers: make(chan *Browser, cfg.Size),
-		cfg:      cfg,
+		browsers:       make(chan *Browser, cfg.Size),
+		directBrowsers: make(chan *Browser, cfg.DirectSize),
+		cfg:            cfg,
 	}
-	// 预创建浏览器实例
+	pool.newBrowserFn = pool.newBrowser
+	// 预创建代理浏览器实例
 	for i := 0; i < cfg.Size; i++ {
-		browser, err := pool.newBrowser()
+		browser, err := pool.newBrowserFn(true)
 		if err != nil {
 			pool.Close()
-			return nil, fmt.Errorf("create browser %d: %w", i, err)
+			return nil, fmt.Errorf("create proxy browser %d: %w", i, err)
 		}
 		pool.browsers <- browser
+	}
+	// 预创建强制直连浏览器实例
+	for i := 0; i < cfg.DirectSize; i++ {
+		browser, err := pool.newBrowserFn(false)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("create direct browser %d: %w", i, err)
+		}
+		pool.directBrowsers <- browser
 	}
 	return pool, nil
 }
 
-// newBrowser 创建一个新的浏览器实例
-func (p *Pool) newBrowser() (*Browser, error) {
+// newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
+func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	l := launcher.New().
 		Headless(p.cfg.Headless).
 		NoSandbox(p.cfg.NoSandbox)
@@ -84,7 +97,7 @@ func (p *Pool) newBrowser() (*Browser, error) {
 			l.Set(flags.Flag(key), val)
 		}
 	}
-	if false == reflect.ValueOf(p.cfg.ProxyManager).IsNil() {
+	if useProxy && p.cfg.ProxyManager != nil {
 		if proxyURL := p.cfg.ProxyManager.Next(); proxyURL != "" {
 			l.Proxy(proxyURL)
 		}
@@ -99,14 +112,28 @@ func (p *Pool) newBrowser() (*Browser, error) {
 	return &Browser{
 		Browser:        browser,
 		launcher:       l,
+		useProxy:       useProxy,
 		defaultDevice:  p.cfg.DefaultDevice,
 		defaultHeaders: copyMap(p.cfg.DefaultHeaders),
 		defaultCookies: copyCookies(p.cfg.DefaultCookies),
 	}, nil
 }
 
-// Get 从池中获取一个浏览器实例（阻塞直到有可用）
+// Get 从池中获取一个代理浏览器实例（阻塞直到有可用）
 func (p *Pool) Get(ctx context.Context) (*Browser, error) {
+	return p.get(ctx, p.browsers)
+}
+
+// GetDirect 从池中获取一个强制直连浏览器实例（阻塞直到有可用）
+func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) {
+	if p.cfg.DirectSize <= 0 {
+		return nil, fmt.Errorf("direct browsers not configured")
+	}
+	return p.get(ctx, p.directBrowsers)
+}
+
+// get 从指定通道获取浏览器实例，处理实例死亡重建
+func (p *Pool) get(ctx context.Context, ch chan *Browser) (*Browser, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -114,10 +141,10 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 	}
 	p.mu.Unlock()
 	select {
-	case b := <-p.browsers:
+	case b := <-ch:
 		if !b.IsAlive() {
 			b.Close()
-			newB, err := p.newBrowser()
+			newB, err := p.newBrowserFn(b.useProxy)
 			if err != nil {
 				return nil, fmt.Errorf("failed to recreate dead browser: %w", err)
 			}
@@ -145,14 +172,18 @@ func (p *Pool) Put(b *Browser) error {
 	// 检查浏览器是否存活  || 空闲超时检查
 	if !b.IsAlive() || (p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime) {
 		b.Close()
-		newB, err := p.newBrowser()
+		newB, err := p.newBrowserFn(b.useProxy)
 		if err != nil {
 			return fmt.Errorf("failed to recreate idle browser: %w", err)
 		}
 		b = newB
 	}
+	ch := p.browsers
+	if !b.useProxy {
+		ch = p.directBrowsers
+	}
 	select {
-	case p.browsers <- b:
+	case ch <- b:
 	default:
 		if b.IsAlive() {
 			b.Close()
@@ -166,7 +197,11 @@ func (p *Pool) Close() {
 	p.closeOnce.Do(func() {
 		p.closed = true
 		close(p.browsers)
+		close(p.directBrowsers)
 		for b := range p.browsers {
+			b.Close()
+		}
+		for b := range p.directBrowsers {
 			b.Close()
 		}
 	})
