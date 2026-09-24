@@ -20,6 +20,36 @@ const (
 	defaultUserAgent   = "PapaStaticHTML/1.0"
 )
 
+// proxyModeKey 标记单次请求的代理模式
+type proxyModeKey struct{}
+
+// WithProxy 指定本次请求是否走代理：true 走代理，false 强制直连。
+// 未设置时默认行为：配置了代理管理器则走代理，否则直连。
+func WithProxy(ctx context.Context, use bool) context.Context {
+	return context.WithValue(ctx, proxyModeKey{}, use)
+}
+
+// proxyFunc 返回 http.Transport.Proxy 使用的函数，按请求上下文决定是否走代理
+func proxyFunc(manager *proxy.Manager) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		if use, ok := req.Context().Value(proxyModeKey{}).(bool); ok && !use {
+			return nil, nil
+		}
+		if manager == nil {
+			return nil, nil
+		}
+		proxyAddress := manager.Next()
+		if proxyAddress == "" {
+			return nil, nil
+		}
+		proxyURL, err := url.Parse(proxyAddress)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy URL: %w", err)
+		}
+		return proxyURL, nil
+	}
+}
+
 // Config controls static HTML requests.
 type Config struct {
 	Timeout      time.Duration
@@ -65,20 +95,7 @@ func NewClient(cfg Config) *Client {
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = func(req *http.Request) (*url.URL, error) {
-		if cfg.ProxyManager == nil {
-			return nil, nil
-		}
-		proxyAddress := cfg.ProxyManager.Next()
-		if proxyAddress == "" {
-			return nil, nil
-		}
-		proxyURL, err := url.Parse(proxyAddress)
-		if err != nil {
-			return nil, fmt.Errorf("parse proxy URL: %w", err)
-		}
-		return proxyURL, nil
-	}
+	transport.Proxy = proxyFunc(cfg.ProxyManager)
 
 	return &Client{
 		httpClient: &http.Client{
@@ -96,20 +113,7 @@ func (c *Client) SetProxyManager(manager *proxy.Manager) {
 	if !ok {
 		return
 	}
-	transport.Proxy = func(req *http.Request) (*url.URL, error) {
-		if manager == nil {
-			return nil, nil
-		}
-		proxyAddress := manager.Next()
-		if proxyAddress == "" {
-			return nil, nil
-		}
-		proxyURL, err := url.Parse(proxyAddress)
-		if err != nil {
-			return nil, fmt.Errorf("parse proxy URL: %w", err)
-		}
-		return proxyURL, nil
-	}
+	transport.Proxy = proxyFunc(manager)
 }
 
 // Fetch downloads and parses one static HTML page.

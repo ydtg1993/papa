@@ -110,3 +110,50 @@ func TestClientUsesProxyManager(t *testing.T) {
 		t.Fatalf("Text(p) = %q, %t", got, ok)
 	}
 }
+
+func TestClientPerRequestProxyToggle(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><p>direct</p></body></html>`))
+	}))
+	defer target.Close()
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><p>through-proxy</p></body></html>`))
+	}))
+	defer proxyServer.Close()
+
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]string{{
+			"host": proxyURL.Hostname(),
+			"port": proxyURL.Port(),
+		}})
+	}))
+	defer proxyAPI.Close()
+
+	proxyManager := proxy.NewManager(proxyAPI.URL, time.Minute)
+	client := NewClient(Config{ProxyManager: proxyManager})
+
+	// 默认：配置了代理则走代理
+	page, err := client.Fetch(context.Background(), target.URL)
+	if err != nil {
+		t.Fatalf("Fetch() default error = %v", err)
+	}
+	if got, ok := page.Document.Text("p"); !ok || got != "through-proxy" {
+		t.Fatalf("default Text(p) = %q, %t, want through-proxy", got, ok)
+	}
+
+	// 显式直连
+	page, err = client.Fetch(WithProxy(context.Background(), false), target.URL)
+	if err != nil {
+		t.Fatalf("Fetch() direct error = %v", err)
+	}
+	if got, ok := page.Document.Text("p"); !ok || got != "direct" {
+		t.Fatalf("direct Text(p) = %q, %t, want direct", got, ok)
+	}
+}
