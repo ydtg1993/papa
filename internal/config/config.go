@@ -8,6 +8,7 @@ type Config struct {
 	Log       LogConfig       `mapstructure:"log"`
 	Crawler   CrawlerConfig   `mapstructure:"crawler"`
 	Browser   BrowserConfig   `mapstructure:"browser"`
+	HTML      HTMLConfig      `mapstructure:"html"`
 	Proxy     ProxyConfig     `mapstructure:"proxy"`
 	DB        DBConfig        `mapstructure:"db"`
 	Server    ServerConfig    `mapstructure:"server"`
@@ -47,12 +48,22 @@ type RetryConfig struct {
 
 // BrowserConfig chromedp浏览器池配置
 type BrowserConfig struct {
-	PoolSize    int           `mapstructure:"pool_size"`     //唤起浏览器数量
-	MaxIdleTime time.Duration `mapstructure:"max_idle_time"` //浏览器生命周期
-	Headless    bool          `mapstructure:"headless"`      //无头模式
-	DisableGpu  bool          `mapstructure:"disable_gpu"`
-	NoSandbox   bool          `mapstructure:"no_sandbox"`
-	BrowserPath string        `mapstructure:"browser_path"`
+	Enable      bool              `mapstructure:"enable"`        //是否启用浏览器池，false 则不创建
+	PoolSize    int               `mapstructure:"pool_size"`     //唤起浏览器数量
+	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"` //浏览器生命周期
+	Headless    bool              `mapstructure:"headless"`      //无头模式
+	DisableGpu  bool              `mapstructure:"disable_gpu"`
+	NoSandbox   bool              `mapstructure:"no_sandbox"`
+	BrowserPath string            `mapstructure:"browser_path"`
+	Headers     map[string]string `mapstructure:"headers"` //默认请求头
+}
+
+// HTMLConfig 静态 HTML 抓取客户端配置
+type HTMLConfig struct {
+	Enable      bool              `mapstructure:"enable"`        //是否启用静态 HTML 客户端
+	Timeout     time.Duration     `mapstructure:"timeout"`       //请求超时
+	MaxBodySize int64             `mapstructure:"max_body_size"` //响应体大小上限（字节）
+	Headers     map[string]string `mapstructure:"headers"`       //额外请求头
 }
 
 // ProxyConfig 爬虫代理管理器

@@ -6,6 +6,7 @@ import (
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/pkg/browser"
+	"github.com/ydtg1993/papa/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/pkg/loggers"
 	"github.com/ydtg1993/papa/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/pkg/middleware/m3u8"
@@ -13,6 +14,7 @@ import (
 	"github.com/ydtg1993/papa/pkg/track"
 	"github.com/ydtg1993/papa/pkg/workerpool"
 	"gorm.io/gorm"
+	"maps"
 	"sync"
 	"time"
 )
@@ -27,6 +29,7 @@ type Engine struct {
 	mu          sync.RWMutex
 	cfg         *config.Config
 	browserPool *browser.Pool
+	htmlClient  *htmlfetch.Client
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
 	activeTasks sync.Map                            // hash去重任务表 key: "stage|url"
 	repeatTasks sync.Map                            // 重复轮询任务
@@ -92,21 +95,31 @@ func (e *Engine) GetConfig() *config.Config {
 	return e.cfg
 }
 
-// SetBrowserPool 创建浏览器操作池
+// defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项
+var defaultHeaders = map[string]string{
+	"User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+	"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+	"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
+
+// SetBrowserPool 创建浏览器操作池，未启用时跳过
 func (e *Engine) SetBrowserPool() {
+	if !e.cfg.Browser.Enable {
+		return
+	}
+	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.Browser.Headers))
+	maps.Copy(headers, defaultHeaders)
+	maps.Copy(headers, e.cfg.Browser.Headers)
+
 	pool, err := browser.NewPool(browser.PoolConfig{
-		Size:        e.cfg.Browser.PoolSize,
-		MaxIdleTime: e.cfg.Browser.MaxIdleTime,
-		Headless:    e.cfg.Browser.Headless,
-		NoSandbox:   e.cfg.Browser.NoSandbox,
-		BrowserPath: e.cfg.Browser.BrowserPath,
-		Flags:       map[string]string{},
-		DefaultHeaders: map[string]string{
-			"User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-			"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-		},
-		ProxyManager: e.GetProxy(),
+		Size:           e.cfg.Browser.PoolSize,
+		MaxIdleTime:    e.cfg.Browser.MaxIdleTime,
+		Headless:       e.cfg.Browser.Headless,
+		NoSandbox:      e.cfg.Browser.NoSandbox,
+		BrowserPath:    e.cfg.Browser.BrowserPath,
+		Flags:          map[string]string{},
+		DefaultHeaders: headers,
+		ProxyManager:   e.GetProxy(),
 	})
 	if err != nil {
 		panic(fmt.Errorf("new browser pool: %s", err.Error()))
@@ -117,6 +130,37 @@ func (e *Engine) SetBrowserPool() {
 // GetBrowserPool 获取浏览器池
 func (e *Engine) GetBrowserPool() *browser.Pool {
 	return e.browserPool
+}
+
+// GetHTMLClient 获取静态 HTML 抓取客户端
+func (e *Engine) GetHTMLClient() *htmlfetch.Client {
+	return e.htmlClient
+}
+
+// FetchHTML 抓取并解析静态 HTML 页面，不创建浏览器实例
+func (e *Engine) FetchHTML(ctx context.Context, rawURL string) (*htmlfetch.Page, error) {
+	return e.htmlClient.Fetch(ctx, rawURL)
+}
+
+// SetHTMLClient 创建静态 HTML 抓取客户端，未启用时跳过
+func (e *Engine) SetHTMLClient() {
+	if !e.cfg.HTML.Enable {
+		return
+	}
+	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.HTML.Headers))
+	maps.Copy(headers, defaultHeaders)
+	maps.Copy(headers, e.cfg.HTML.Headers)
+
+	userAgent := headers["User-Agent"]
+	delete(headers, "User-Agent")
+
+	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{
+		Timeout:      e.cfg.HTML.Timeout,
+		MaxBodySize:  e.cfg.HTML.MaxBodySize,
+		UserAgent:    userAgent,
+		Headers:      headers,
+		ProxyManager: e.GetProxy(),
+	})
 }
 
 // SetProxy 设置代理 需要在RegisterStage之前设置

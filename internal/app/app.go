@@ -106,7 +106,13 @@ func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawle
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
 	// 初始化引擎浏览器池
-	a.Engine.SetBrowserPool()
+	if a.Engine.GetConfig().Browser.Enable {
+		a.Engine.SetBrowserPool()
+	}
+	// 初始化静态 HTML 抓取客户端（读取请求头与代理配置）
+	if a.Engine.GetConfig().HTML.Enable {
+		a.Engine.SetHTMLClient()
+	}
 	// 启用工作流和对应工作池
 	a.Engine.ApplyRegisterStage()
 

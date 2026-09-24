@@ -39,16 +39,14 @@ func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
 // Next 位移获取一条proxy
 func (m *Manager) Next() string {
 	m.mu.RLock()
-	proxies := m.proxies
-	m.mu.RUnlock()
-	if len(proxies) == 0 {
+	proxyCount := len(m.proxies)
+	defer m.mu.RUnlock()
+	if proxyCount == 0 {
 		return ""
 	}
-	if m.index >= uint64(len(proxies)) {
-		m.index = 0
-	}
 	idx := atomic.AddUint64(&m.index, 1) - 1
-	return proxies[idx%uint64(len(proxies))]
+	proxyAddress := m.proxies[idx%uint64(proxyCount)]
+	return proxyAddress
 }
 
 // GetErrors 获取错误消息队列
