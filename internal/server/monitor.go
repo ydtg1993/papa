@@ -3,12 +3,10 @@ package server
 import (
 	"embed"
 	"encoding/json"
-	"errors"
 	"github.com/ydtg1993/papa/internal/crawler"
 	"github.com/ydtg1993/papa/pkg/track"
 	"html/template"
 	"net/http"
-	"strconv"
 	"sync"
 )
 
@@ -18,12 +16,10 @@ var templateFS embed.FS
 // MonitorGetter 定义获取所有阶段监控器的函数类型
 type MonitorGetter func() map[string]*track.StatsQueue[*crawler.Task]
 
-// Monitor Server监控 HTTP 服务器
+// Monitor 监控 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
 type Monitor struct {
-	port      int
 	getter    MonitorGetter
 	logger    Logger
-	server    *http.Server
 	template  *template.Template
 	parseOnce sync.Once
 	parseErr  error
@@ -36,13 +32,18 @@ type Logger interface {
 	Errorf(format string, args ...interface{})
 }
 
-// NewMonitor 创建监控服务器
-func NewMonitor(port int, getter MonitorGetter, logger Logger) *Monitor {
+// NewMonitor 创建监控路由
+func NewMonitor(getter MonitorGetter, logger Logger) *Monitor {
 	return &Monitor{
-		port:   port,
 		getter: getter,
 		logger: logger,
 	}
+}
+
+// Register 将监控路由注册到统一 mux 上
+func (s *Monitor) Register(mux *http.ServeMux) {
+	mux.HandleFunc("/monitor", s.htmlHandler)
+	mux.HandleFunc("/api/monitor", s.apiHandler)
 }
 
 // loadTemplate 加载 HTML 模板（懒加载，线程安全）
@@ -51,25 +52,6 @@ func (s *Monitor) loadTemplate() (*template.Template, error) {
 		s.template, s.parseErr = template.ParseFS(templateFS, "template.html")
 	})
 	return s.template, s.parseErr
-}
-
-// Start 启动 HTTP 服务（非阻塞）
-func (s *Monitor) Start() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/monitor", s.htmlHandler)
-	mux.HandleFunc("/api/monitor", s.apiHandler)
-
-	addr := ":" + strconv.Itoa(s.port)
-	s.server = &http.Server{Addr: addr, Handler: mux}
-
-	s.logger.Infof("monitor server starting on %s", addr)
-	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.logger.Errorf("monitor server failed: %s", err.Error())
-	}
-}
-
-func (s *Monitor) Stop() {
-	_ = s.server.Close()
 }
 
 // apiHandler 返回 JSON 格式的监控数据

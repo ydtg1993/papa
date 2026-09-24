@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/internal/mcp"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/internal/scheduler"
 	"github.com/ydtg1993/papa/internal/server"
@@ -15,7 +17,9 @@ import (
 	"github.com/ydtg1993/papa/pkg/middleware"
 	"github.com/ydtg1993/papa/pkg/track"
 	"gorm.io/gorm"
+	"net/http"
 	"reflect"
+	"strconv"
 	"time"
 )
 
@@ -110,8 +114,8 @@ func (a *App) Run(ctx context.Context) {
 	a.schedule(ctx)
 	// 监听c错误日志 中间件活动等队列消息
 	a.mdMsgListener(ctx)
-	// 启动监控 HTTP 服务（如果配置启用）
-	a.monitor(ctx)
+	// 启动统一 HTTP 服务（监控页面 + MCP 端点共用一个 listener）
+	a.httpServer(ctx)
 
 	//触发结束任务 清理资源
 	<-ctx.Done()
@@ -163,20 +167,35 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	}
 }
 
-// monitor
-func (a *App) monitor(ctx context.Context) {
-	if a.Config.Monitor.Enabled == false {
+// httpServer 启动统一 HTTP 服务(监控页面 + MCP 端点共用同一端口)
+func (a *App) httpServer(ctx context.Context) {
+	cfg := a.Config.Server
+	if !cfg.Enabled {
 		return
 	}
-	getter := func() map[string]*track.StatsQueue[*crawler.Task] {
-		return a.Engine.GetStatsQueue()
+
+	mux := http.NewServeMux()
+	if cfg.Monitor {
+		getter := func() map[string]*track.StatsQueue[*crawler.Task] {
+			return a.Engine.GetStatsQueue()
+		}
+		mon := server.NewMonitor(getter, a.Logger.Sys)
+		mon.Register(mux)
 	}
-	// 使用 a.Logger.Sys 作为日志（需实现 monitor.Logger 接口，或简单适配）
-	mServer := server.NewMonitor(a.Config.Monitor.Port, getter, a.Logger.Sys)
-	go mServer.Start()
+	if cfg.MCP {
+		mux.Handle("/mcp", mcp.Handler(a.Engine))
+	}
+
+	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: mux}
+	a.Logger.Sys.Infof("http server starting on :%d (monitor=%t mcp=%t)", cfg.Port, cfg.Monitor, cfg.MCP)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			a.Logger.Sys.Errorf("http server failed: %s", err.Error())
+		}
+	}()
 	go func() {
 		<-ctx.Done()
-		mServer.Stop()
+		_ = srv.Close()
 	}()
 }
 

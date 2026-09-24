@@ -185,8 +185,8 @@ func (e *Engine) ApplyRegisterStage() {
 		if stageInfo.submitFunc != nil {
 			stageInfo.submitFunc(e)
 		}
-		// 如果全局配置开启了监控，则为该阶段创建监控器并启动
-		if e.cfg.Monitor.Enabled {
+		// 监控页面或 MCP 任一开启时，为该阶段创建统计器并启动
+		if e.cfg.Server.Monitor || e.cfg.Server.MCP {
 			stats := track.NewStatsQueue(pool)
 			stats.Start(e.ctx)
 			e.setStatsQueue(stage, stats)
