@@ -1,0 +1,499 @@
+# Papa Fetcher 书写手册（路径 B：AI 直接书写 Go fetcher）
+
+> 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
+>
+> 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
+> 不涉及声明式策略（那是 `AI_CRAWL_STRATEGY_PLAN.md` 的终态，尚未实现）。
+>
+> 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
+
+---
+
+## 0. 一句话工作流
+
+```text
+你描述目标站点（投喂）
+  -> AI 读代码、按本手册的契约写一个 fetcher（internal/fetcher/xxx.go）
+  -> 你在 config.yaml 加一个 stage、在 main.go 注册这个 fetcher
+  -> 启动后通过 MCP submit_task 提交起始 URL
+  -> 任务被 worker 池调度执行，结果写入 CrawlerTask
+```
+
+整个过程 AI 不修改框架代码，只在 `internal/fetcher/` 下新增文件，并给 `config.yaml` / `main.go` 加几行。
+
+---
+
+## 1. 核心契约（AI 必须遵守的边界）
+
+### 1.1 Fetcher 接口
+
+定义在 `internal/crawler/task.go`：
+
+```go
+type Fetcher interface {
+    GetStage() string
+    FetchHandler(ctx context.Context, task *Task, engine *Engine) error
+}
+```
+
+- `GetStage()` 返回的字符串**必须**等于 `config.yaml` 里 `crawler.stages` 的一个 key，否则 `RegisterStage` 会 panic。
+- `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
+- **不要**在 fetcher 里自己调 `task.UpdateStatus`，状态由引擎自动维护；你只负责提取结果并写库。
+
+### 1.2 Task 结构
+
+```go
+type Task struct {
+    ID         int    // 数据库记录 ID，写结果时用它定位
+    PID        int    // 父任务 ID，派发子任务时用它关联
+    URL        string // 当前任务要处理的 URL
+    Retry      int
+    Stage      string
+    Repeatable bool
+}
+```
+
+### 1.3 Engine 暴露的能力
+
+fetcher 里通过 `engine` 参数能拿到的东西：
+
+| 方法 | 用途 |
+| --- | --- |
+| `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（`pkg/browser`，Rod 封装） |
+| `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
+| `engine.GetM3U8()` | m3u8 下载器（`pkg/middleware/m3u8`），需在 main.go 先 `SetM3U8` |
+| `engine.GetFiledown()` | 文件下载器（`pkg/middleware/filedown`），需先 `SetFiledown` |
+| `engine.GetDB()` | gorm 实例，用于写结果 / 查任务 |
+| `engine.GetConfig()` | 全局配置 |
+| `engine.SubmitTask(&crawler.Task{...})` | 派发子任务（列表页 → 详情页） |
+| `engine.GetProxy()` | 代理管理器 |
+
+### 1.4 写结果到数据库
+
+任务表是 `models.CrawlerTask`（`internal/models/crawler_task.go`），结果字段是 `Title`（string）和 `Content`（JSON）。fetcher 里这样写：
+
+```go
+import (
+    "encoding/json"
+    "gorm.io/datatypes"
+    "github.com/ydtg1993/papa/internal/models"
+)
+
+content := models.DetailContent{ Title: "xxx", CoverURL: "https://..." } // 或你的自定义结构
+b, _ := json.Marshal(content)
+err := engine.GetDB().Model(&models.CrawlerTask{}).
+    Where("id = ?", task.ID).
+    Updates(map[string]any{
+        "title":   content.Title,
+        "content": datatypes.JSON(b),
+    }).Error
+```
+
+`Content` 可以是任何可 JSON 序列化的结构。项目里已内置两个例子：`models.DetailContent`（动漫详情/剧集）和 `models.VideoContent`（视频资源），可以直接用，也可以自己定义。
+
+### 1.5 派发子任务（阶段串联）
+
+列表页抓到详情 URL 后，把详情页作为**子任务**提交到下一个 stage：
+
+```go
+err := engine.SubmitTask(&crawler.Task{
+    PID:   task.ID,       // 关联父任务
+    URL:   detailURL,
+    Stage: "detail",      // 必须对应 config.yaml 里已配置的 stage
+})
+```
+
+去重键是 `stage|url`，同一个 URL 重复提交会被引擎拒绝，天然防重。
+
+---
+
+## 2. 投喂清单（你写 fetcher 前要给 AI 的信息）
+
+AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准：
+
+1. **起始 URL** 和登录态：是否需要 Cookie / 登录？Cookie 从哪来？
+2. **页面加载方式**：
+   - 服务端渲染（直接抓 HTML 即可）还是 JS 动态渲染（必须用浏览器）？
+   - 列表是「点下一页」还是「滚动加载」还是「点击下拉/分类触发」？
+3. **数据位置**：列表项的 CSS 选择器、详情链接在哪个标签的哪个属性（`href`）、标题/封面等字段的选择器。
+4. **要提取哪些字段**，最终想存成什么结构。
+5. **是否需要视频/文件**：是否要抓 m3u8、是否要下载图片/文件，referer / user-agent 是否有特殊要求。
+6. **阶段划分**：一个 stage 够不够，还是需要「列表 → 详情 → 视频」多阶段流水。
+
+> 建议你直接把页面「另存为 HTML」或者贴出关键 DOM 片段，AI 写选择器会快很多。
+
+---
+
+## 3. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
+
+典型例子：目录页要点「展开分类」下拉、滚动到底部触发懒加载，才能拿到所有文档的标题和链接。
+
+### 3.1 config.yaml 加两个 stage
+
+```yaml
+crawler:
+  stages:
+    catalog:            # 列表页阶段
+      worker_count: 1
+      queue_size: 20
+      delay: "5m"
+      retry: { max_attempts: 3, backoff: "30s" }
+    detail:             # 详情页阶段
+      worker_count: 3
+      queue_size: 500
+      delay: "3m"
+      retry: { max_attempts: 3, backoff: "30s" }
+```
+
+### 3.2 main.go 注册
+
+```go
+appInstance.RegisterStage(&fetcher.FetchCatalog{}, nil)
+appInstance.RegisterStage(&fetcher.FetchDetail{}, nil)
+```
+
+### 3.3 catalog fetcher（列表页：点下拉 + 滚动 + 派发）
+
+```go
+package fetcher
+
+import (
+    "context"
+    "strings"
+    "time"
+
+    "github.com/go-rod/rod"
+    "github.com/ydtg1993/papa/internal/crawler"
+)
+
+type FetchCatalog struct{}
+
+func (f *FetchCatalog) GetStage() string { return "catalog" }
+
+func (f *FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+    bw, err := engine.GetBrowserPool().Get(ctx)
+    if err != nil {
+        return err
+    }
+    defer engine.GetBrowserPool().Put(bw)
+
+    page := bw.Browser.MustPage("")
+    defer page.Close()
+
+    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+        return err
+    }
+    page.MustWaitLoad()
+
+    // 1. 点击「展开分类」下拉，加载全部列表项
+    if el, err := page.Element(".dropdown-trigger"); err == nil {
+        el.MustClick()
+        page.MustWaitLoad()
+    }
+
+    // 2. 滚动到底部触发懒加载，直到没有新内容（最多 N 次）
+    for i := 0; i < 10; i++ {
+        page.MustEval(`() => window.scrollTo(0, document.body.scrollHeight)`)
+        time.Sleep(500 * time.Millisecond)
+    }
+
+    // 3. 遍历列表项，提取标题 + 详情链接
+    items := page.MustElements(".doc-item")
+    for _, item := range items {
+        title := item.MustElement(".doc-title").MustText()
+        href, err := item.MustElement("a").Attribute("href")
+        if err != nil || href == nil {
+            continue
+        }
+        detailURL := *href
+        // 相对路径补全为绝对 URL
+        if strings.HasPrefix(detailURL, "/") {
+            info, _ := page.Info()
+            detailURL = strings.TrimRight(info.URL, "/") + detailURL
+        }
+
+        // 4. 派发详情子任务
+        if err := engine.SubmitTask(&crawler.Task{
+            PID:   task.ID,
+            URL:   detailURL,
+            Stage: "detail",
+        }); err != nil {
+            // 去重导致的重复提交报错可忽略
+            _ = err
+        }
+        _ = title
+    }
+    return nil
+}
+```
+
+> `rod.Page` 的常用操作：`MustElements(sel)` 取多个、`MustElement(sel)` 取单个、`MustClick()`、`MustText()`、`Attribute(name)`、`MustEval(js)`、`MustWaitLoad()`。完整 API 见 go-rod 文档。
+
+### 3.4 detail fetcher（详情页：提取字段 + 写库）
+
+```go
+package fetcher
+
+import (
+    "context"
+    "encoding/json"
+    "time"
+
+    "gorm.io/datatypes"
+    "github.com/ydtg1993/papa/internal/crawler"
+    "github.com/ydtg1993/papa/internal/models"
+)
+
+type FetchDetail struct{}
+
+func (f *FetchDetail) GetStage() string { return "detail" }
+
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+    bw, err := engine.GetBrowserPool().Get(ctx)
+    if err != nil {
+        return err
+    }
+    defer engine.GetBrowserPool().Put(bw)
+
+    page := bw.Browser.MustPage("")
+    defer page.Close()
+
+    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+        return err
+    }
+    page.MustWaitLoad()
+
+    title := page.MustElement("h1").MustText()
+    coverURL, _ := page.MustElement(".cover img").Attribute("src")
+
+    content := models.DetailContent{
+        Title:    title,
+        CoverURL: deref(coverURL),
+        // ... 其他字段按需提取
+    }
+    b, _ := json.Marshal(content)
+    return engine.GetDB().Model(&models.CrawlerTask{}).
+        Where("id = ?", task.ID).
+        Updates(map[string]any{"title": title, "content": datatypes.JSON(b)}).Error
+}
+
+func deref(s *string) string {
+    if s == nil {
+        return ""
+    }
+    return *s
+}
+```
+
+---
+
+## 4. 场景二：详情页点击播放 → 捕获 m3u8 → 下载
+
+典型例子：详情页要「点播放按钮」才发起视频请求，m3u8 地址不在 DOM 里，只能从网络请求里截获。
+
+### 4.1 关键点：先挂监听，再点播放
+
+m3u8 地址是点播放后才产生的网络请求，所以**必须在导航后、点击前**用 Rod 的 `EachEvent` 监听网络请求：
+
+```go
+package fetcher
+
+import (
+    "context"
+    "strings"
+    "sync"
+    "time"
+
+    "github.com/go-rod/rod/lib/proto"
+    "github.com/ydtg1993/papa/internal/crawler"
+    "github.com/ydtg1993/papa/internal/models"
+    "github.com/ydtg1993/papa/pkg/middleware/m3u8"
+)
+
+type FetchVideo struct{}
+
+func (f *FetchVideo) GetStage() string { return "video" }
+
+func (f *FetchVideo) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+    bw, err := engine.GetBrowserPool().Get(ctx)
+    if err != nil {
+        return err
+    }
+    defer engine.GetBrowserPool().Put(bw)
+
+    page := bw.Browser.MustPage("")
+    defer page.Close()
+
+    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+        return err
+    }
+    page.MustWaitLoad()
+
+    // 1. 监听网络请求，捕获 m3u8 地址（必须在点击播放前挂上）
+    var mu sync.Mutex
+    var m3u8URL string
+    wait := page.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
+        if strings.Contains(e.Request.URL, ".m3u8") {
+            mu.Lock()
+            if m3u8URL == "" {
+                m3u8URL = e.Request.URL
+            }
+            mu.Unlock()
+        }
+    })()
+
+    // 2. 点击播放按钮，触发视频请求
+    page.MustElement(".play-btn").MustClick()
+    page.MustWaitLoad()
+    time.Sleep(2 * time.Second) // 等 m3u8 请求发出
+    wait()
+
+    mu.Lock()
+    url := m3u8URL
+    mu.Unlock()
+    if url == "" {
+        return nil // 或返回 error 触发重试
+    }
+
+    // 3. 交给 m3u8 下载器（main.go 里要先 SetM3U8）
+    dl := engine.GetM3U8()
+    if dl == nil {
+        return nil
+    }
+    res := dl.Download(ctx, url, task.Stage, "video.ts", &m3u8.DownloadOptions{
+        Referer: task.URL, // 多数 m3u8 站点要求 referer
+    })
+    if res.Error != nil {
+        return res.Error
+    }
+
+    // 4. 写库（记录 m3u8 地址和本地输出）
+    content := models.VideoContent{ Dir: res.OutputFile, Source: url }
+    b, _ := json.Marshal(content)
+    return engine.GetDB().Model(&models.CrawlerTask{}).
+        Where("id = ?", task.ID).
+        Updates(map[string]any{"content": datatypes.JSON(b)}).Error
+}
+```
+
+### 4.2 下载器接线（main.go）
+
+```go
+import "github.com/ydtg1993/papa/pkg/middleware/m3u8"
+
+cfg := m3u8.DefaultConfig()
+cfg.OutputDir = "./downloads/video"      // 输出目录
+cfg.AutoMerge = false                    // 不转码，直接拼 TS（要 mp4 则保持 true 并装 ffmpeg）
+appInstance.Engine.SetM3U8(m3u8.NewDownloader(cfg))
+```
+
+m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
+
+### 4.3 静态页 / 普通文件用 filedown
+
+不需要浏览器、直接下载文件（图片、附件等）时用 `filedown`：
+
+```go
+import "github.com/ydtg1993/papa/pkg/middleware/filedown"
+
+res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filedown.DownloadOptions{
+    Referer: task.URL,
+})
+```
+
+---
+
+## 5. 最小可跑骨架（复制即用）
+
+```go
+package fetcher
+
+import (
+    "context"
+    "time"
+
+    "github.com/ydtg1993/papa/internal/crawler"
+)
+
+type FetchXxx struct{}
+
+func (f *FetchXxx) GetStage() string { return "xxx" }
+
+func (f *FetchXxx) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+    bw, err := engine.GetBrowserPool().Get(ctx)
+    if err != nil {
+        return err
+    }
+    defer engine.GetBrowserPool().Put(bw)
+
+    page := bw.Browser.MustPage("")
+    defer page.Close()
+
+    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+        return err
+    }
+    page.MustWaitLoad()
+
+    // 你的抓取逻辑
+
+    return nil
+}
+```
+
+配套三处改动：
+1. `config.yaml` 的 `crawler.stages` 加 `xxx:`（worker_count / queue_size / delay / retry）。
+2. `main.go` 里 `appInstance.RegisterStage(&fetcher.FetchXxx{}, nil)`。
+3. 若用下载器，`main.go` 里先 `SetM3U8` / `SetFiledown`（要在 `RegisterStage` 之前）。
+
+---
+
+## 6. 用 MCP 驱动任务
+
+启动后（默认 `:9090`，`server.mcp: true`）挂载在 `/mcp`。当前可用工具：
+
+| 工具 | 作用 |
+| --- | --- |
+| `submit_task` | 提交任务：`{stage, url, repeatable?, pid?}` |
+| `list_stages` | 看有哪些 stage 及其并发/重试参数 |
+| `list_tasks` | 按阶段/状态查任务（`{stage?, status?, limit?}`） |
+| `get_stats` | 各阶段成功/失败/耗时统计 |
+| `resubmit_task` | 重提一个已入库未完成的任务 |
+| `recover_tasks` | 恢复超时未完成的任务 |
+
+最常用：`submit_task` 提交起始 URL（`repeatable: true` 用于轮询任务，配合调度器每日重抓）。
+
+> 注意：MCP 目前只能「提交任务 + 查状态」，**没有**「投喂页面 → 出策略」的工具，那是计划书里阶段六的东西。所以现在是「你在 Claude Code 里描述站点 → AI 写 fetcher → 你编译重启 → MCP 提交任务」。
+
+---
+
+## 7. 常见坑
+
+1. **`GetStage()` 与 config 不一致** → `RegisterStage` 直接 panic。写完先核对两边字符串。
+2. **浏览器池耗尽**：浏览器池 `pool_size` 要 ≥ 各 stage `worker_count` 之和（config 注释里也写了），否则 worker 会阻塞在 `pool.Get`。
+3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.DownloadOptions{Referer: ...}` 传详情页 URL。
+4. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。
+5. **相对链接**：`href`/`src` 可能是相对路径，用 `page.Info().URL` 拼成绝对 URL 再提交任务。
+6. **重试语义**：fetcher 返回 error 会触发重试。对「确实失败、重试无意义」的（比如页面 404 且稳定），也返回 error 让引擎按配置重试即可，不必自己处理退避。
+7. **写库用 task.ID**：子任务派发后，每个 fetcher 只写自己这个 `task.ID` 的记录。
+8. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
+
+---
+
+## 8. API 速查
+
+**go-rod（页面操作）**
+- `bw.Browser.MustPage("")` 建空白页；`page.Close()` 关页。
+- `page.Context(ctx).Timeout(d).Navigate(url)` 带取消+超时导航；`page.MustWaitLoad()`。
+- `page.MustElement(sel)` / `page.MustElements(sel)`；`el.MustClick()` / `el.MustText()` / `el.Attribute(name)`。
+- `page.MustEval(js)` 执行 JS（滚动、取全局变量等）。
+- `page.EachEvent(func(e *proto.NetworkRequestWillBeSent){...})()` 监听网络请求（挂上后返回 wait 函数）。
+
+**静态 HTML（goquery）**
+- `engine.FetchHTML(ctx, url)` → `*htmlfetch.Page`；`page.Document.Text/Texts/Attr/Attrs/HTML(selector)`。
+
+**下载器**
+- m3u8：`NewDownloader(cfg)` / `Download(ctx, url, outDir, outFile, opts...) → DownloadResult`。
+- filedown：`NewDownloader(cfg)` / `Download(ctx, url, outDir, fileName, opts...) → DownloadResult`。
+
+**数据库**
+- `engine.GetDB().Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Updates(map[string]any{...})`。
