@@ -70,12 +70,11 @@ log:
   compress: true                         # 日志文件是否应使用 gzip 压缩
   local_time: true                       # 本地时间
 
-# 统一 HTTP 服务配置（监控页面 + MCP 端点共用一个端口）
+# 统一 HTTP 服务配置（监控页面）
 server:
   enabled: true                          # 是否开启 HTTP 服务
   port: 9090                             # 监听端口
   monitor: true                          # 是否挂载监控页面/API（/monitor /api/monitor）
-  mcp: true                              # 是否挂载 MCP 端点（/mcp）
 
 # 定时任务调度器配置 (可按业务自行增加或修改)
 scheduler:

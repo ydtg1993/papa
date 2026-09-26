@@ -14,8 +14,7 @@
 ```text
 你描述目标站点（投喂）
   -> AI 读代码、按本手册的契约写一个 fetcher（internal/fetcher/xxx.go）
-  -> 你在 config.yaml 加一个 stage、在 main.go 注册这个 fetcher
-  -> 启动后通过 MCP submit_task 提交起始 URL
+  -> 你在 config.yaml 加一个 stage、在 main.go 注册这个 fetcher，并在注册回调里提交起始 URL
   -> 任务被 worker 池调度执行，结果写入 CrawlerTask
 ```
 
@@ -447,22 +446,30 @@ func (f *FetchXxx) FetchHandler(ctx context.Context, task *crawler.Task, engine 
 
 ---
 
-## 6. 用 MCP 驱动任务
+## 6. 如何驱动任务（提交 + 监控）
 
-启动后（默认 `:9090`，`server.mcp: true`）挂载在 `/mcp`。当前可用工具：
+Papa 没有 MCP 了，任务驱动靠三处：
 
-| 工具 | 作用 |
-| --- | --- |
-| `submit_task` | 提交任务：`{stage, url, repeatable?, pid?}` |
-| `list_stages` | 看有哪些 stage 及其并发/重试参数 |
-| `list_tasks` | 按阶段/状态查任务（`{stage?, status?, limit?}`） |
-| `get_stats` | 各阶段成功/失败/耗时统计 |
-| `resubmit_task` | 重提一个已入库未完成的任务 |
-| `recover_tasks` | 恢复超时未完成的任务 |
+1. **初始任务**：在 `main.go` 的 `RegisterStage(fetcher, subFunc)` 第二个回调里手动提交，例如：
 
-最常用：`submit_task` 提交起始 URL（`repeatable: true` 用于轮询任务，配合调度器每日重抓）。
+```go
+appInstance.RegisterStage(&fetcher.FetchCatalog{},
+    func(engine *crawler.Engine) {
+        engine.SubmitTask(&crawler.Task{
+            URL:        appInstance.Config.Crawler.Target + "classify?type=rexue",
+            Stage:      "catalog",
+            Repeatable: true,
+        })
+    })
+```
 
-> 注意：MCP 目前只能「提交任务 + 查状态」，**没有**「投喂页面 → 出策略」的工具，那是计划书里阶段六的东西。所以现在是「你在 Claude Code 里描述站点 → AI 写 fetcher → 你编译重启 → MCP 提交任务」。
+2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&crawler.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
+
+3. **定时重抓 / 恢复失败**：由调度器负责（`config.yaml` 的 `scheduler.jobs`）：
+   - `repeat` 每日重跑 `repeatable: true` 的轮询任务；
+   - `recover` 恢复超时未完成的任务。
+
+**看状态**：启动后打开监控页面 `http://localhost:9090/monitor`（`server.monitor: true`），查看各阶段任务与统计。
 
 ---
 

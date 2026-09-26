@@ -7,7 +7,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/internal/config"
 	"github.com/ydtg1993/papa/internal/crawler"
-	"github.com/ydtg1993/papa/internal/mcp"
 	"github.com/ydtg1993/papa/internal/models"
 	"github.com/ydtg1993/papa/internal/scheduler"
 	"github.com/ydtg1993/papa/internal/server"
@@ -115,7 +114,7 @@ func (a *App) Run(ctx context.Context) {
 	a.schedule(ctx)
 	// 监听c错误日志 中间件活动等队列消息
 	a.mdMsgListener(ctx)
-	// 启动统一 HTTP 服务（监控页面 + MCP 端点共用一个 listener）
+	// 启动统一 HTTP 服务（监控页面）
 	a.httpServer(ctx)
 
 	//触发结束任务 清理资源
@@ -168,7 +167,7 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	}
 }
 
-// httpServer 启动统一 HTTP 服务(监控页面 + MCP 端点共用同一端口)
+// httpServer 启动统一 HTTP 服务（监控页面）
 func (a *App) httpServer(ctx context.Context) {
 	cfg := a.Config.Server
 	if !cfg.Enabled {
@@ -183,12 +182,9 @@ func (a *App) httpServer(ctx context.Context) {
 		mon := server.NewMonitor(getter, a.Logger.Sys)
 		mon.Register(mux)
 	}
-	if cfg.MCP {
-		mux.Handle("/mcp", mcp.Handler(a.Engine))
-	}
 
 	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: mux}
-	a.Logger.Sys.Infof("http server starting on :%d (monitor=%t mcp=%t)", cfg.Port, cfg.Monitor, cfg.MCP)
+	a.Logger.Sys.Infof("http server starting on :%d (monitor=%t)", cfg.Port, cfg.Monitor)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.Logger.Sys.Errorf("http server failed: %s", err.Error())

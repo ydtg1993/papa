@@ -83,12 +83,11 @@ type DBConfig struct {
 	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"` // 空闲连接最大存活时间
 }
 
-// ServerConfig 统一 HTTP 服务(监控页面 + MCP 端点)
+// ServerConfig 统一 HTTP 服务(监控页面)
 type ServerConfig struct {
 	Enabled bool `mapstructure:"enabled"` // 是否开启 HTTP 服务
 	Port    int  `mapstructure:"port"`    // 监听端口，如 9090
 	Monitor bool `mapstructure:"monitor"` // 是否挂载监控页面/API(/monitor /api/monitor)
-	MCP     bool `mapstructure:"mcp"`     // 是否挂载 MCP 端点(/mcp)
 }
 
 type SchedulerConfig struct {

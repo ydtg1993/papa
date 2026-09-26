@@ -230,8 +230,8 @@ func (e *Engine) ApplyRegisterStage() {
 		if stageInfo.submitFunc != nil {
 			stageInfo.submitFunc(e)
 		}
-		// 监控页面或 MCP 任一开启时，为该阶段创建统计器并启动
-		if e.cfg.Server.Monitor || e.cfg.Server.MCP {
+		// 监控页面开启时，为该阶段创建统计器并启动
+		if e.cfg.Server.Monitor {
 			stats := track.NewStatsQueue(pool)
 			stats.Start(e.ctx)
 			e.setStatsQueue(stage, stats)
