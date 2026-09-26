@@ -27,7 +27,9 @@ func tempDir(t *testing.T) string {
 func mockServer(content []byte, supportRange bool) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "HEAD" {
-			w.Header().Set("Accept-Ranges", "bytes")
+			if supportRange {
+				w.Header().Set("Accept-Ranges", "bytes")
+			}
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
 			w.WriteHeader(http.StatusOK)
 			return
@@ -103,8 +105,28 @@ func TestDownloadWithChunks(t *testing.T) {
 func TestDownloadResume(t *testing.T) {
 	tempOut := tempDir(t)
 	tempState := tempDir(t)
-	content := []byte("012345678901234567890123456789") // 30 bytes
-	server := mockServer(content, true)
+	content := make([]byte, 100) // 100 bytes, 10 chunks of 10 bytes
+	// 慢速服务器：每个分片请求延迟，确保取消发生在下载中途
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+		var start, end int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if end >= len(content) {
+			end = len(content) - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(content[start : end+1])
+	}))
 	defer server.Close()
 
 	cfg := &Config{
@@ -126,8 +148,8 @@ func TestDownloadResume(t *testing.T) {
 		defer wg.Done()
 		firstResult = downloader.Download(ctx, server.URL, "resume", "file.bin", nil)
 	}()
-	// 等待一个分片完成（模拟部分下载）
-	time.Sleep(200 * time.Millisecond)
+	// 等待几个分片完成（模拟部分下载），仍有多数分片未完成
+	time.Sleep(150 * time.Millisecond)
 	cancel()
 	wg.Wait()
 	if firstResult.Error == nil {

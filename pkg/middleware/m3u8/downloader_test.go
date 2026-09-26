@@ -239,7 +239,7 @@ seg2.ts
 	cfg.OutputDir = outDir
 	cfg.ResumeStateDir = stateDir
 	cfg.AutoMerge = false
-	cfg.MaxConcurrent = 2
+	cfg.MaxConcurrent = 1
 	cfg.EnableResume = true
 	cfg.SaveBatchSize = 1
 	downloader := NewDownloader(cfg)
@@ -252,7 +252,7 @@ seg2.ts
 		res := downloader.Download(ctx, server.URL+"/playlist.m3u8", "resume", "video.ts", nil)
 		firstErr = res.Error
 	}()
-	// 等待第一个片段完成，然后取消
+	// 等待第一个片段完成、第二个片段进行中，然后取消
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	<-done

@@ -83,6 +83,11 @@ func (d *Downloader) GetErrors() <-chan error {
 func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opts *DownloadOptions) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		if attempt > 0 {
 			base := time.Duration(d.config.RetryInterval) * time.Second
 			if base == 0 {
@@ -492,6 +497,11 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 
 	var lastErr error
 	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if attempt > 0 {
 			sleepTime := time.Duration(1<<uint(attempt)) * time.Second
 			if sleepTime > 10*time.Second {
@@ -859,9 +869,9 @@ func (d *Downloader) generateFileName(m3u8URL string) string {
 	if err != nil {
 		return fmt.Sprintf("video_%d.ts", time.Now().Unix())
 	}
-	base := filepath.Base(u.Path)
+	base := path.Base(u.Path)
 	base = strings.TrimSuffix(base, ".m3u8")
-	if base == "" {
+	if base == "" || base == "." || base == "/" || base == "\\" {
 		base = fmt.Sprintf("video_%d", time.Now().Unix())
 	}
 	return base + ".ts"

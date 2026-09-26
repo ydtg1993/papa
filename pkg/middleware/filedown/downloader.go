@@ -425,6 +425,9 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 		return &DownloadResult{Error: err}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &DownloadResult{Error: fmt.Errorf("unexpected status: %d", resp.StatusCode)}
+	}
 
 	file, err := os.Create(absOutput)
 	if err != nil {
