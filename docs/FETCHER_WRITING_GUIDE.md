@@ -12,13 +12,13 @@
 ## 0. 一句话工作流
 
 ```text
-你描述目标站点（投喂）
-  -> AI 读代码、按本手册的契约写一个 fetcher（internal/fetcher/xxx.go）
-  -> 你在 config.yaml 加一个 stage、在 main.go 注册这个 fetcher，并在注册回调里提交起始 URL
+papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / config / logs）
+  -> 你投喂目标站点，AI 在生成的 fetcher/ 下填抓取逻辑（只 import github.com/ydtg1993/papa）
+  -> 在 config.yaml 加 stage、在 main.go 注册 fetcher，并在注册回调里提交起始 URL
   -> 任务被 worker 池调度执行，结果写入 CrawlerTask
 ```
 
-整个过程 AI 不修改框架代码，只在 `internal/fetcher/` 下新增文件，并给 `config.yaml` / `main.go` 加几行。
+整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher，并给 `config.yaml` / `main.go` 加几行。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 1.1 Fetcher 接口
 
-定义在 `internal/crawler/task.go`：
+框架对外是一个门面包 `github.com/ydtg1993/papa`，fetcher 只需 import 它：
 
 ```go
 type Fetcher interface {
@@ -58,29 +58,30 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 | 方法 | 用途 |
 | --- | --- |
-| `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（`pkg/browser`，Rod 封装） |
+| `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（Rod 封装） |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
-| `engine.GetM3U8()` | m3u8 下载器（`pkg/middleware/m3u8`），需在 main.go 先 `SetM3U8` |
-| `engine.GetFiledown()` | 文件下载器（`pkg/middleware/filedown`），需先 `SetFiledown` |
+| `engine.GetM3U8()` | m3u8 下载器，需在 main.go 先 `SetM3U8` |
+| `engine.GetFiledown()` | 文件下载器，需先 `SetFiledown` |
 | `engine.GetDB()` | gorm 实例，用于写结果 / 查任务 |
 | `engine.GetConfig()` | 全局配置 |
-| `engine.SubmitTask(&crawler.Task{...})` | 派发子任务（列表页 → 详情页） |
+| `engine.SubmitTask(&papa.Task{...})` | 派发子任务（列表页 → 详情页） |
 | `engine.GetProxy()` | 代理管理器 |
 
 ### 1.4 写结果到数据库
 
-任务表是 `models.CrawlerTask`（`internal/models/crawler_task.go`），结果字段是 `Title`（string）和 `Content`（JSON）。fetcher 里这样写：
+任务表是 `CrawlerTask`（框架内置），结果字段是 `Title`（string）和 `Content`（JSON）。fetcher 里这样写：
 
 ```go
 import (
     "encoding/json"
     "gorm.io/datatypes"
-    "github.com/ydtg1993/papa/internal/models"
+    "github.com/ydtg1993/papa"
+    "yourproject/models" // 你的项目 models 包，papa new 已生成
 )
 
-content := models.DetailContent{ Title: "xxx", CoverURL: "https://..." } // 或你的自定义结构
+content := models.DetailContent{ Title: "xxx", CoverURL: "https://..." } // 你的自定义结构
 b, _ := json.Marshal(content)
-err := engine.GetDB().Model(&models.CrawlerTask{}).
+err := engine.GetDB().Model(&papa.CrawlerTask{}).
     Where("id = ?", task.ID).
     Updates(map[string]any{
         "title":   content.Title,
@@ -88,14 +89,14 @@ err := engine.GetDB().Model(&models.CrawlerTask{}).
     }).Error
 ```
 
-`Content` 可以是任何可 JSON 序列化的结构。项目里已内置两个例子：`models.DetailContent`（动漫详情/剧集）和 `models.VideoContent`（视频资源），可以直接用，也可以自己定义。
+`Content` 可以是任何可 JSON 序列化的结构。业务内容结构（如 `DetailContent`）不在框架里，而是 `papa new` 生成在你自己的 `models` 包里，按需增删字段即可。
 
 ### 1.5 派发子任务（阶段串联）
 
 列表页抓到详情 URL 后，把详情页作为**子任务**提交到下一个 stage：
 
 ```go
-err := engine.SubmitTask(&crawler.Task{
+err := engine.SubmitTask(&papa.Task{
     PID:   task.ID,       // 关联父任务
     URL:   detailURL,
     Stage: "detail",      // 必须对应 config.yaml 里已配置的 stage
@@ -147,8 +148,8 @@ crawler:
 ### 3.2 main.go 注册
 
 ```go
-appInstance.RegisterStage(&fetcher.FetchCatalog{}, nil)
-appInstance.RegisterStage(&fetcher.FetchDetail{}, nil)
+app.RegisterStage(&fetcher.FetchCatalog{}, nil)
+app.RegisterStage(&fetcher.FetchDetail{}, nil)
 ```
 
 ### 3.3 catalog fetcher（列表页：点下拉 + 滚动 + 派发）
@@ -162,14 +163,14 @@ import (
     "time"
 
     "github.com/go-rod/rod"
-    "github.com/ydtg1993/papa/internal/crawler"
+    "github.com/ydtg1993/papa"
 )
 
 type FetchCatalog struct{}
 
 func (f *FetchCatalog) GetStage() string { return "catalog" }
 
-func (f *FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
     bw, err := engine.GetBrowserPool().Get(ctx)
     if err != nil {
         return err
@@ -212,7 +213,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *crawler.Task, eng
         }
 
         // 4. 派发详情子任务
-        if err := engine.SubmitTask(&crawler.Task{
+        if err := engine.SubmitTask(&papa.Task{
             PID:   task.ID,
             URL:   detailURL,
             Stage: "detail",
@@ -239,15 +240,15 @@ import (
     "time"
 
     "gorm.io/datatypes"
-    "github.com/ydtg1993/papa/internal/crawler"
-    "github.com/ydtg1993/papa/internal/models"
+    "github.com/ydtg1993/papa"
+    "yourproject/models"
 )
 
 type FetchDetail struct{}
 
 func (f *FetchDetail) GetStage() string { return "detail" }
 
-func (f *FetchDetail) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
     bw, err := engine.GetBrowserPool().Get(ctx)
     if err != nil {
         return err
@@ -271,7 +272,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *crawler.Task, engi
         // ... 其他字段按需提取
     }
     b, _ := json.Marshal(content)
-    return engine.GetDB().Model(&models.CrawlerTask{}).
+    return engine.GetDB().Model(&papa.CrawlerTask{}).
         Where("id = ?", task.ID).
         Updates(map[string]any{"title": title, "content": datatypes.JSON(b)}).Error
 }
@@ -299,21 +300,22 @@ package fetcher
 
 import (
     "context"
+    "encoding/json"
     "strings"
     "sync"
     "time"
 
     "github.com/go-rod/rod/lib/proto"
-    "github.com/ydtg1993/papa/internal/crawler"
-    "github.com/ydtg1993/papa/internal/models"
+    "github.com/ydtg1993/papa"
     "github.com/ydtg1993/papa/pkg/middleware/m3u8"
+    "yourproject/models"
 )
 
 type FetchVideo struct{}
 
 func (f *FetchVideo) GetStage() string { return "video" }
 
-func (f *FetchVideo) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
     bw, err := engine.GetBrowserPool().Get(ctx)
     if err != nil {
         return err
@@ -369,7 +371,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *crawler.Task, engin
     // 4. 写库（记录 m3u8 地址和本地输出）
     content := models.VideoContent{ Dir: res.OutputFile, Source: url }
     b, _ := json.Marshal(content)
-    return engine.GetDB().Model(&models.CrawlerTask{}).
+    return engine.GetDB().Model(&papa.CrawlerTask{}).
         Where("id = ?", task.ID).
         Updates(map[string]any{"content": datatypes.JSON(b)}).Error
 }
@@ -383,7 +385,7 @@ import "github.com/ydtg1993/papa/pkg/middleware/m3u8"
 cfg := m3u8.DefaultConfig()
 cfg.OutputDir = "./downloads/video"      // 输出目录
 cfg.AutoMerge = false                    // 不转码，直接拼 TS（要 mp4 则保持 true 并装 ffmpeg）
-appInstance.Engine.SetM3U8(m3u8.NewDownloader(cfg))
+app.Engine.SetM3U8(m3u8.NewDownloader(cfg))
 ```
 
 m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
@@ -402,7 +404,9 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ---
 
-## 5. 最小可跑骨架（复制即用）
+## 5. 最小可跑骨架（脚手架已生成）
+
+`papa new <name>` 会生成好 main.go / fetcher/fetcher.go / models/content.go / configs/config.yaml / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
 
 ```go
 package fetcher
@@ -411,14 +415,14 @@ import (
     "context"
     "time"
 
-    "github.com/ydtg1993/papa/internal/crawler"
+    "github.com/ydtg1993/papa"
 )
 
 type FetchXxx struct{}
 
 func (f *FetchXxx) GetStage() string { return "xxx" }
 
-func (f *FetchXxx) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchXxx) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
     bw, err := engine.GetBrowserPool().Get(ctx)
     if err != nil {
         return err
@@ -441,7 +445,7 @@ func (f *FetchXxx) FetchHandler(ctx context.Context, task *crawler.Task, engine 
 
 配套三处改动：
 1. `config.yaml` 的 `crawler.stages` 加 `xxx:`（worker_count / queue_size / delay / retry）。
-2. `main.go` 里 `appInstance.RegisterStage(&fetcher.FetchXxx{}, nil)`。
+2. `main.go` 里 `app.RegisterStage(&fetcher.FetchXxx{}, nil)`。
 3. 若用下载器，`main.go` 里先 `SetM3U8` / `SetFiledown`（要在 `RegisterStage` 之前）。
 
 ---
@@ -453,17 +457,17 @@ Papa 没有 MCP 了，任务驱动靠三处：
 1. **初始任务**：在 `main.go` 的 `RegisterStage(fetcher, subFunc)` 第二个回调里手动提交，例如：
 
 ```go
-appInstance.RegisterStage(&fetcher.FetchCatalog{},
-    func(engine *crawler.Engine) {
-        engine.SubmitTask(&crawler.Task{
-            URL:        appInstance.Config.Crawler.Target + "classify?type=rexue",
+app.RegisterStage(&fetcher.FetchCatalog{},
+    func(engine *papa.Engine) {
+        engine.SubmitTask(&papa.Task{
+            URL:        app.Config.Crawler.Target + "classify?type=rexue",
             Stage:      "catalog",
             Repeatable: true,
         })
     })
 ```
 
-2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&crawler.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
+2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
 
 3. **定时重抓 / 恢复失败**：由调度器负责（`config.yaml` 的 `scheduler.jobs`）：
    - `repeat` 每日重跑 `repeatable: true` 的轮询任务；
@@ -503,4 +507,4 @@ appInstance.RegisterStage(&fetcher.FetchCatalog{},
 - filedown：`NewDownloader(cfg)` / `Download(ctx, url, outDir, fileName, opts...) → DownloadResult`。
 
 **数据库**
-- `engine.GetDB().Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Updates(map[string]any{...})`。
+- `engine.GetDB().Model(&papa.CrawlerTask{}).Where("id = ?", task.ID).Updates(map[string]any{...})`。

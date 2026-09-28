@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/crawler"
 	"time"
 )
 

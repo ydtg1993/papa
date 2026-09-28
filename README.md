@@ -14,7 +14,7 @@
 - 📊 **可观测性** – 工作池提供活动事件通道，监控模块可实时统计各阶段任务执行情况（成功/失败/耗时），并提供 Web 界面与 JSON API。
 - ⚙️ **灵活配置** – 通过 YAML 配置文件设置各阶段 worker 数量、队列大小、重试次数、浏览器参数等。
 - ⏰ **定时任务调度** – 基于 Cron 表达式，支持周期执行 `catalog` 轮询（如每日检查新视频）、`recover` 恢复未完成任务等。
-- 🔧 **可扩展** – 清晰的接口设计（`Handler`、`Tasker`），方便自定义爬取逻辑和下载器。
+- 🔧 **可扩展** – 清晰的接口设计（`Fetcher`），方便自定义抓取逻辑和下载器。
 - 📦 **M3U8 下载器** – 高性能 M3U8 视频下载模块，支持：
   - 多线程并发下载
   - 断点续传（任务级 + 片段级）
@@ -28,9 +28,9 @@
 | 模块 | 描述 |
 | :--- | :--- |
 | **Engine** | 核心引擎，管理多个爬取阶段，负责任务注册、提交、恢复和生命周期控制。 |
-| **Stage** | 每个阶段包含一个独立的工作池（WorkerPool）和对应的抓取处理器（Handler），用户需在 FetchHandler 中调用 SubmitTask 实现阶段跳转。 |
-| **WorkerPool** | 泛型工作池，消费任务队列，调用 Handler 执行具体抓取逻辑，并发布活动事件供监控。 |
-| **Handler** | 业务实现接口，每个阶段需实现 FetchHandler 方法，负责页面抓取和链接解析。 |
+| **Stage** | 每个阶段包含一个独立的工作池（WorkerPool）和对应的抓取处理器（Fetcher），用户需在 FetchHandler 中调用 SubmitTask 实现阶段跳转。 |
+| **WorkerPool** | 泛型工作池，消费任务队列，调用 Fetcher 执行具体抓取逻辑，并发布活动事件供监控。 |
+| **Fetcher** | 业务实现接口，每个阶段需实现 GetStage + FetchHandler 方法，负责页面抓取和链接解析。 |
 | **Browser Pool** | 管理 Rod 浏览器实例，支持代理注入、空闲回收，提供 Get/Put 方法。 |
 | **Monitor** | 消费 WorkerPool 的活动事件，统计任务执行情况（按 worker 和全局），并通过 HTTP 服务展示。 |
 | **Scheduler** | 基于 Cron 的定时任务调度器，支持周期性提交 catalog 任务或执行恢复任务。 |
@@ -41,30 +41,25 @@
 
 #### 数据流
 1. **任务提交**：入口（`main.go`）调用 `engine.SubmitTask`，任务先写入数据库（状态 `pending`），然后提交到对应阶段的队列。
-2. **任务处理**：Worker 从队列获取任务，调用 Handler 的 `FetchHandler`。处理前将任务状态更新为 `processing`，成功后更新为 `success`，失败则重试（最多 `MaxAttempts` 次），最终状态为 `failed`。
-3. **阶段流转**：Handler 在解析页面后，可通过 `engine.SubmitTask` 将新任务提交到下一阶段（如 `detail`）。
+2. **任务处理**：Worker 从队列获取任务，调用 Fetcher 的 `FetchHandler`。处理前将任务状态更新为 `processing`，成功后更新为 `success`，失败则重试（最多 `MaxAttempts` 次），最终状态为 `failed`。
+3. **阶段流转**：Fetcher 在解析页面后，可通过 `engine.SubmitTask` 将新任务提交到下一阶段（如 `detail`）。
 4. **恢复机制**：引擎启动时调用 `RecoverTasks`，加载所有 `pending` 或超时 `processing` 的任务，重置状态后重新提交。
 5. **监控**：WorkerPool 将任务开始/结束事件发送到 `Activities` 通道，Monitor 消费并更新统计。
 6. **定时任务**：Scheduler 根据配置的 Cron 表达式，定时执行 `catalog` 提交或 `recover` 恢复，实现自动化维护。
 
 📁 目录结构
 
-      ├── cmd/
-      │   └── crawler/            # 程序入口
-      │       └── main.go
-      ├── configs/
-      │   └── config.yaml         # 配置文件
-      ├── internal/               # 内部私有代码
-      │   ├── app/                # 应用组装（依赖注入、启动）
-      │   ├── config/             # 配置加载（viper）
-      │   ├── crawler/            # 引擎核心（Engine, Task）
-      │   ├── fetcher/            # 抓取阶段实现（catalog, detail）
-      │   ├── models/             # 数据模型（CrawlerTask）
-      │   ├── scheduler/          # 定时任务调度器（cron jobs）
-      │   └── server/             # Web 监控服务（HTML + JSON API）
+      ├── papa.go                 # 门面包：papa.New() + 类型别名（Fetcher/Task/Engine/Config/CrawlerTask）
+      ├── app/                    # 应用组装（依赖注入、启动、选项）
+      ├── config/                 # 配置加载（viper）
+      ├── crawler/                # 引擎核心（Engine, Task, Fetcher）
+      ├── models/                 # 数据模型（CrawlerTask）
+      ├── scheduler/              # 定时任务调度器（cron jobs）
+      ├── server/                 # Web 监控服务（HTML + JSON API）
       ├── pkg/                    # 公共可复用包
       │   ├── browser/            # 浏览器池（基于 rod）
       │   ├── database/           # 数据库连接（GORM）
+      │   ├── htmlfetch/          # 静态 HTML 抓取（goquery）
       │   ├── loggers/            # 日志封装（lumberjack + logrus）
       │   ├── middleware/         # 下载中间件
       │   │   ├── filedown/       # 文件下载器
@@ -73,8 +68,10 @@
       │   ├── queue.go            # 通用消息队列（错误/活动）
       │   ├── track/              # 监控统计（StatsQueue）
       │   └── workerpool/         # 泛型工作池
+      ├── cmd/papa/               # 脚手架 CLI：papa new <name> 生成新爬虫项目
+      ├── examples/video/         # 示例：动漫爬虫（main.go + fetcher + models）
+      ├── configs/                # 示例配置文件
       ├── logs/                   # 日志文件目录（运行时生成）
-      ├── downloads/              # 默认下载目录
       ├── scripts/                # 辅助脚本（Docker、数据库迁移等）
       ├── storage/                # 其他存储（架构图等）
       ├── go.mod
@@ -82,124 +79,226 @@
 
 
 ### 🚀 快速开始
+
+Papa 是框架包，你在**自己的项目里 `import "github.com/ydtg1993/papa"`** 使用它，不需要 clone 这个仓库。
+
 #### 环境要求
 - Go 1.21+
 - MySQL 5.7+ 或 8.0
 - Chrome/Chromium 浏览器（用于 Rod，可自动下载或指定路径）
 - （可选）ffmpeg（用于自动合并 MP4）
-  
-#### 安装
+
+#### 方式一：用脚手架生成新项目（推荐）
+
+```bash
+go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
+cd mycrawler
+go mod tidy   # 自动拉取 github.com/ydtg1993/papa 依赖
+go run .
+```
+
+完整流程见下方「具体怎么用」一节。
+
+#### 方式二：在已有项目里手动引入
+
+```bash
+cd your-project
+go get github.com/ydtg1993/papa@latest
+```
+
+然后在 `main.go` 里 `import "github.com/ydtg1993/papa"`，用 `papa.New()` 创建应用、注册阶段即可。
+
+#### 运行内置示例（可选）
+
+只想跑仓库自带的动漫爬虫示例时，才需要 clone 本仓库：
+
 ```bash
 git clone https://github.com/ydtg1993/papa.git
 cd papa
-go mod download
+go run ./examples/video
 ```
 
-#### 配置
->编辑 configs/config.yaml，修改数据库连接、浏览器路径、爬虫阶段参数、定时任务等。文件中已包含详细中文注释。
+#### 配置 / 初始化数据库
 
-#### 初始化数据库
-首次运行前设置环境变量dev以自动迁移表结构
-```
-yaml
+编辑 `configs/config.yaml`（脚手架生成，含中文注释），改数据库连接、爬虫阶段、浏览器参数等。
 
+首次运行前把 `app.env` 设为 `dev` 以自动迁移表结构：
+
+```yaml
 # configs/config.yaml
 app:
   env: dev   # loc/dev/prod，dev 时自动迁移表结构
 ```
 
-#### 运行
-```
-go run cmd/crawler/main.go
+### 📖 具体怎么用（从零写一个爬虫）
+
+#### 1. 生成项目骨架
+
+```bash
+go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
+cd mycrawler
+go mod tidy
 ```
 
-### 🔧 扩展开发  
-#### 添加新抓取阶段
-1. 在 main.go 中注册阶段配置代理,下载器：
+生成结构：
+
 ```
-    **使用下载器,代理,等中间件 用于fetcher中资源落地**
-    appInstance.Engine.SetProxy(proxy.NewManager(appInstance.Config.Proxy.APIURL, 8*time.Minute))
-    appInstance.Engine.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))  //可按照filedown.DefaultConfig config自定义修改
-    appInstance.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))              //可按照m3u8.DefaultConfig config自定义修改
-
-
-    //=========================注册业务逻辑所需要的爬虫流程阶段=========================//
-	// 参数： 传入对应的爬虫业务层fetcher, 回调方法用于初始任务手动提交
-	// 阶段一: 抓取分类目录页(需要做一次手动提交将目录页url传入任务) 采集:url 标题 分类信息
-	// 注:fetcher.FetchFirst{}中GetStage()返回字串需要与配置保持一直 配置:crawler.stages.first
-    appInstance.RegisterStage(&fetcher.FetchFirstStage{},
-	func(engine *crawler.Engine) {
-		// 手动提交起始任务 任务需标注下一个阶段为流水作业需要 一般用于初期目录阶段后续任务分发均由fetcher步骤里具体实现
-		if err := engine.SubmitTask(&crawler.Task{
-			PID:        0, //标明初级任务
-			URL:        "目录主页url用于爬取单任务所需内容",
-			Stage:      "FirstStage", //配置中提前设定好的stage标识 对应任务stage将交由对应阶段fetcher处理
-			Repeatable: true, //可重复抓取，为后期轮询标识
-		}); err != nil {
-			appInstance.Logger.Engine.Errorf("submit initial task: %s", err.Error())
-		}
-	})
-    // 阶段二: 抓取详情目录页内容
-	// 注:fetcher.FetchSecond{} GetStage()返回字串 second 同配置 crawler.stages.second
-    app.RegisterStage(&fetcher.FetchSecond{}, nil)
+mycrawler/
+├── main.go               # 入口：papa.New() + RegisterStage
+├── configs/config.yaml   # 配置
+├── fetcher/fetcher.go    # 两个 fetcher 伪代码（catalog / detail）
+├── models/content.go     # 业务内容结构
+└── logs/                 # 日志目录
 ```
 
-2. 在 internal/fetcher 下创建新文件，实现 crawler.Handler 接口：
+#### 2. 改配置 `configs/config.yaml`
+
+改数据库连接；`crawler.stages` 已预置 `catalog`、`detail` 两个阶段，可按需调并发/队列/延迟/重试：
+
+```yaml
+crawler:
+  target: "https://example.com/"   # 起始目标站（main.go 里拼起始 URL 用）
+  stages:
+    catalog:
+      worker_count: 1
+      queue_size: 20
+      delay: "5m"
+      retry: { max_attempts: 3, backoff: "30s" }
+    detail:
+      worker_count: 3
+      queue_size: 500
+      delay: "3m"
+      retry: { max_attempts: 3, backoff: "30s" }
+db:
+  dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"
 ```
-    type FirstStage struct{}
-    
-    func (m *FirstStage) GetStage() string {
-        return "FirstStage"  //需要与配置stage相同
+
+#### 3. 写 fetcher 逻辑（`fetcher/fetcher.go`）
+
+每个 fetcher 实现 `papa.Fetcher`：`GetStage()` 返回阶段名，`FetchHandler` 写抓取逻辑。
+
+```go
+package fetcher
+
+import (
+    "context"
+    "time"
+
+    "github.com/ydtg1993/papa"
+)
+
+// 阶段一：目录页 —— 抓详情链接，派发子任务
+type FetchCatalog struct{}
+
+func (f *FetchCatalog) GetStage() string { return "catalog" }
+
+func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+    bw, err := engine.GetBrowserPool().Get(ctx)   // 取一个浏览器实例
+    if err != nil {
+        return err
     }
-    
-    func (m *FirstStage) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
-        // 获取浏览器实例
-        browser, err := engine.GetBrowserPool().Get(ctx)
-        if err != nil {
-            return err
+    defer engine.GetBrowserPool().Put(bw)         // 用完归还
+
+    page := bw.Browser.MustPage("")
+    defer page.Close()
+    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+        return err
+    }
+    page.MustWaitLoad()
+
+    // 遍历列表项，把详情链接派发到下一阶段
+    for _, item := range page.MustElements(".item a") {
+        href, err := item.Attribute("href")
+        if err != nil || href == nil {
+            continue
         }
-        defer engine.GetBrowserPool().Put(browser)
-        
-        // 使用 Rod 操作页面...
-        // 解析出下一阶段的 URL 后，可通过 engine.SubmitTask 提交新任务
-
-		// 在 fetcher 中使用
-		result := engine.GetM3U8().Download(ctx, m3u8URL, "downloads", "myvideo", nil)
-		if result.Error != nil {
-		    return result.Error
-		}
-
-		//分发提交子任务到下个阶段
-        engine.SubmitTask(&crawler.Task{
-        PID:   task.ID,
-        URL:   videoURL,
-        Stage: "second",  //交由已注册好的second阶段处理
-    })
-        return nil
+        engine.SubmitTask(&papa.Task{PID: task.ID, URL: *href, Stage: "detail"})
     }
+    return nil
+}
+
+// 阶段二：详情页 —— 抓字段，写回数据库
+type FetchDetail struct{}
+
+func (f *FetchDetail) GetStage() string { return "detail" }
+
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+    bw, err := engine.GetBrowserPool().Get(ctx)
+    if err != nil {
+        return err
+    }
+    defer engine.GetBrowserPool().Put(bw)
+
+    page := bw.Browser.MustPage("")
+    defer page.Close()
+    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+        return err
+    }
+    page.MustWaitLoad()
+
+    title := page.MustElement("h1").MustText()
+    // 结果写回当前任务的 title 列（content 结构见 models/content.go）
+    return engine.GetDB().Model(&papa.CrawlerTask{}).
+        Where("id = ?", task.ID).
+        Update("title", title).Error
+}
 ```
 
-#### fetcher中使用 M3U8 下载器 示例
-```
-	    cfg := m3u8.DefaultConfig()
-		cfg.EnableResume = true
-		cfg.AutoMerge = true
-		downloader := m3u8.NewDownloader(cfg)
-		result := downloader.Download(context.Background(), 
-		    "https://example.com/video.m3u8", 
-		    "downloads",    // 输出子目录
-		    "myvideo",      // 输出文件名（不含扩展名，会自动加 .mp4）
-		    nil)
+#### 4. 注册阶段 + 提交起始任务（`main.go`）
+
+`papa new` 已生成好 `main.go`，把起始 URL 填上即可：
+
+```go
+app, err := papa.New()
+// ...
+
+app.RegisterStage(&fetcher.FetchCatalog{},
+    func(engine *papa.Engine) {
+        engine.SubmitTask(&papa.Task{
+            URL:        app.Config.Crawler.Target + "list", // 起始列表页
+            Stage:      "catalog",
+            Repeatable: true, // 可重复轮询
+        })
+    })
+app.RegisterStage(&fetcher.FetchDetail{}, nil)
 ```
 
-#### fetcher中使用下载器 示例
+#### 5. 跑起来 + 看监控
+
+```bash
+go run .
 ```
-    // 下载封面图，输出到 "covers" 子目录，自动生成文件名
-	res := engine.GetFiledown().Download(ctx, coverURL, "covers", "")
-	if res.Error != nil {
-	    return res.Error
-	}
+
+- 日志写在 `logs/`。
+- 监控页：`http://localhost:9090/monitor`（`server.monitor: true`），可看各阶段任务统计。
+- 定时重抓 / 恢复失败：由 `config.yaml` 的 `scheduler.jobs` 驱动（`repeat` 每日重跑轮询任务，`recover` 恢复超时任务）。
+
+### 🔧 中间件与下载器（可选）
+
+需要代理、m3u8 视频、文件下载时，在 `RegisterStage` 之前设置：
+
+```go
+import (
+    "github.com/ydtg1993/papa/pkg/middleware/m3u8"
+    "github.com/ydtg1993/papa/pkg/middleware/filedown"
+    "github.com/ydtg1993/papa/pkg/middleware/proxy"
+)
+
+app.Engine.SetProxy(proxy.NewManager(app.Config.Proxy.APIURL, 8*time.Minute))
+app.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))
+app.Engine.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))
 ```
+
+fetcher 里取用：
+
+```go
+// m3u8 视频下载
+res := engine.GetM3U8().Download(ctx, m3u8URL, "downloads/video", "video.ts", &m3u8.DownloadOptions{Referer: task.URL})
+// 文件下载（图片/附件等）
+res := engine.GetFiledown().Download(ctx, coverURL, "covers", "")
+```
+
+> 更详细的抓取技巧与数据落地见 [docs/FETCHER_WRITING_GUIDE.md](docs/FETCHER_WRITING_GUIDE.md) 和 [docs/DATA_LANDING_GUIDE.md](docs/DATA_LANDING_GUIDE.md)。
 
 ### 📝 注意事项
 - 请遵守目标网站的 robots.txt 和法律法规，合理设置爬取频率。

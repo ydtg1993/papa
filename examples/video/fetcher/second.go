@@ -2,18 +2,18 @@ package fetcher
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/internal/crawler"
 	"time"
+
+	"github.com/ydtg1993/papa"
 )
 
-type FetchFirst struct {
+type FetchSecond struct{}
+
+func (f *FetchSecond) GetStage() string {
+	return "second" // 必须与 config.yaml 的 crawler.stages 的 key 保持一致
 }
 
-func (f *FetchFirst) GetStage() string {
-	return "first" //必须与配置中自定义的保持一致
-}
-
-func (*FetchFirst) FetchHandler(ctx context.Context, task *crawler.Task, engine *crawler.Engine) error {
+func (f *FetchSecond) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
 		return err
@@ -29,7 +29,7 @@ func (*FetchFirst) FetchHandler(ctx context.Context, task *crawler.Task, engine 
 	}
 	page.MustWaitLoad()
 
-	//爬取页面逻辑 TODO
+	// 爬取页面逻辑 TODO
 
 	return nil
 }

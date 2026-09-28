@@ -3,8 +3,8 @@ package crawler
 import (
 	"context"
 	"fmt"
-	"github.com/ydtg1993/papa/internal/config"
-	"github.com/ydtg1993/papa/internal/models"
+	"github.com/ydtg1993/papa/config"
+	"github.com/ydtg1993/papa/models"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/pkg/loggers"

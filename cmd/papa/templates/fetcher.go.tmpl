@@ -1,0 +1,63 @@
+package fetcher
+
+import (
+	"context"
+	"time"
+
+	"github.com/ydtg1993/papa"
+)
+
+// FetchCatalog 阶段一：抓取目录/列表页。
+// 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
+type FetchCatalog struct{}
+
+func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 config.yaml 的 crawler.stages 的 key 一致
+
+func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+	bw, err := engine.GetBrowserPool().Get(ctx)
+	if err != nil {
+		return err
+	}
+	defer engine.GetBrowserPool().Put(bw)
+
+	page := bw.Browser.MustPage("")
+	defer page.Close()
+
+	if err := page.Context(ctx).Timeout(30 * time.Second).Navigate(task.URL); err != nil {
+		return err
+	}
+	page.MustWaitLoad()
+
+	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
+	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})
+
+	return nil
+}
+
+// FetchDetail 阶段二：抓取详情页。
+// 职责：打开详情页 → 提取字段 → 序列化后写回任务记录。
+type FetchDetail struct{}
+
+func (f *FetchDetail) GetStage() string { return "detail" } // 必须与 config.yaml 的 crawler.stages 的 key 一致
+
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+	bw, err := engine.GetBrowserPool().Get(ctx)
+	if err != nil {
+		return err
+	}
+	defer engine.GetBrowserPool().Put(bw)
+
+	page := bw.Browser.MustPage("")
+	defer page.Close()
+
+	if err := page.Context(ctx).Timeout(30 * time.Second).Navigate(task.URL); err != nil {
+		return err
+	}
+	page.MustWaitLoad()
+
+	// TODO: 提取字段，json.Marshal 后写回（content 结构见 models/content.go）：
+	// engine.GetDB().Model(&papa.CrawlerTask{}).Where("id = ?", task.ID).
+	//     Updates(map[string]any{"title": title, "content": datatypes.JSON(b)})
+
+	return nil
+}

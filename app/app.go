@@ -5,18 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/internal/config"
-	"github.com/ydtg1993/papa/internal/crawler"
-	"github.com/ydtg1993/papa/internal/models"
-	"github.com/ydtg1993/papa/internal/scheduler"
-	"github.com/ydtg1993/papa/internal/server"
+	"github.com/ydtg1993/papa/config"
+	"github.com/ydtg1993/papa/crawler"
+	"github.com/ydtg1993/papa/models"
 	"github.com/ydtg1993/papa/pkg/browser"
 	"github.com/ydtg1993/papa/pkg/database"
 	"github.com/ydtg1993/papa/pkg/loggers"
 	"github.com/ydtg1993/papa/pkg/middleware"
 	"github.com/ydtg1993/papa/pkg/track"
+	"github.com/ydtg1993/papa/scheduler"
+	"github.com/ydtg1993/papa/server"
 	"gorm.io/gorm"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 )
@@ -27,12 +28,48 @@ type App struct {
 	DB          *gorm.DB
 	BrowserPool *browser.Pool
 	Engine      *crawler.Engine
+
+	configPath  string
+	extraModels []any
+}
+
+// Option 应用初始化选项
+type Option func(*App) error
+
+// WithConfigPath 指定配置文件路径；缺省依次读 PAPA_CONFIG 环境变量、configs/config.yaml
+func WithConfigPath(path string) Option {
+	return func(a *App) error {
+		a.configPath = path
+		return nil
+	}
+}
+
+// WithModels 追加需要自动迁移的用户模型（框架默认迁移 CrawlerTask）
+func WithModels(models ...any) Option {
+	return func(a *App) error {
+		a.extraModels = append(a.extraModels, models...)
+		return nil
+	}
 }
 
 // NewApp 统一初始化所有组件，并完成依赖注入
-func NewApp() (*App, error) {
+func NewApp(opts ...Option) (*App, error) {
+	a := &App{}
+	for _, opt := range opts {
+		if err := opt(a); err != nil {
+			return nil, err
+		}
+	}
+
 	// 1. 加载配置
-	cfg, err := config.Load("configs/config.yaml")
+	cfgPath := a.configPath
+	if cfgPath == "" {
+		cfgPath = os.Getenv("PAPA_CONFIG")
+	}
+	if cfgPath == "" {
+		cfgPath = "configs/config.yaml"
+	}
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
@@ -55,7 +92,8 @@ func NewApp() (*App, error) {
 
 	// 4. 自动迁移（开发环境）
 	if cfg.App.Env == "dev" {
-		if err := database.AutoMigrate(db, &models.CrawlerTask{}); err != nil {
+		allModels := append([]any{&models.CrawlerTask{}}, a.extraModels...)
+		if err := database.AutoMigrate(db, allModels...); err != nil {
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
 	}
@@ -63,12 +101,11 @@ func NewApp() (*App, error) {
 	// 5. 创建爬虫引擎（注入依赖）
 	engine := crawler.NewEngine(db, cfg, &loggerSet)
 
-	return &App{
-		Config: cfg,
-		Logger: &loggerSet,
-		DB:     db,
-		Engine: engine,
-	}, nil
+	a.Config = cfg
+	a.Logger = &loggerSet
+	a.DB = db
+	a.Engine = engine
+	return a, nil
 }
 
 // RegisterStage 注册爬虫业务阶段流程

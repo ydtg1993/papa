@@ -1,0 +1,19 @@
+package models
+
+// DetailContent 详情页落地结构示例。
+// 抓到的内容用 json.Marshal 序列化后写入 CrawlerTask.Content 列。
+// 字段可自由增删，只影响 content 里的 JSON，不影响表结构。
+type DetailContent struct {
+	Title   string   `json:"title"`
+	Cover   string   `json:"cover"`
+	Author  string   `json:"author"`
+	Tags    []string `json:"tags"`
+}
+
+// 如果需要独立建表（要按字段查询/统计），在这里定义 GORM 模型，
+// 并在 main.go 里用 papa.New(papa.WithModels(&YourModel{})) 注册迁移。例如：
+//
+// type YourModel struct {
+//     ID   uint   `gorm:"primarykey"`
+//     Name string `gorm:"index"`
+// }

@@ -2,8 +2,8 @@ package scheduler
 
 import (
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/internal/crawler"
-	"github.com/ydtg1993/papa/internal/models"
+	"github.com/ydtg1993/papa/crawler"
+	"github.com/ydtg1993/papa/models"
 	"gorm.io/gorm"
 	"time"
 )

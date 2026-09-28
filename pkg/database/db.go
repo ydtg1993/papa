@@ -2,7 +2,7 @@ package database
 
 import (
 	"fmt"
-	"github.com/ydtg1993/papa/internal/config"
+	"github.com/ydtg1993/papa/config"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

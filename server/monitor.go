@@ -3,7 +3,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
-	"github.com/ydtg1993/papa/internal/crawler"
+	"github.com/ydtg1993/papa/crawler"
 	"github.com/ydtg1993/papa/pkg/track"
 	"html/template"
 	"net/http"
