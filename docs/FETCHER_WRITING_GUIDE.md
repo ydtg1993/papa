@@ -559,7 +559,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
    - `repeat` 每日重跑 `repeatable: true` 的轮询任务；
    - `recover` 恢复超时未完成的任务。
 
-**看状态**：启动后打开监控页面 `http://localhost:9090/monitor`（`server.monitor: true`），查看各阶段任务与统计。
+**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.monitor: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录密钥由 `papa new` 生成的 `configs/secret` 提供（`server.auth_key_file` 引用，也可用内联 `server.auth_key`）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
 
 ---
 

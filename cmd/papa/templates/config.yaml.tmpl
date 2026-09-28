@@ -67,6 +67,13 @@ server:
   enabled: true
   port: 9090
   monitor: true
+  auth_key: ""                    # 内联密钥（优先级低于 auth_key_file）；两者都空则不校验
+  auth_key_file: "configs/secret" # 密钥文件路径，papa new 已自动生成 configs/secret
+  whitelist: []                   # 回退白名单（仅当 whitelist_file 不存在时生效）
+  whitelist_file: "configs/whitelist" # 白名单持久化文件（设置页动态改白名单会写回此文件）
+  monitor_dirs:                   # 监控页展示的业务目录占用（name: path）
+    downloads: "./downloads"
+    logs: "./logs"
 
 # 定时任务调度器配置
 scheduler:

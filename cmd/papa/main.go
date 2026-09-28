@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,9 +113,32 @@ func runNew(name string, args []string) error {
 		return err
 	}
 
+	// 生成监控后台访问密钥文件，供 config.yaml 的 server.auth_key_file 引用
+	secret, err := generateSecret()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(name, "configs", "secret"), []byte(secret+"\n"), 0o600); err != nil {
+		return err
+	}
+
+	// 生成白名单持久化文件，供 config.yaml 的 server.whitelist_file 引用
+	if err := os.WriteFile(filepath.Join(name, "configs", "whitelist"), []byte("# 每行一个 IP 或 CIDR，留空 = 不限制\n"), 0o600); err != nil {
+		return err
+	}
+
 	fmt.Printf("project %q generated.\n", name)
 	fmt.Printf("next: cd %s && go mod tidy && go run .\n", name)
 	return nil
+}
+
+// generateSecret 生成 32 字节随机密钥的十六进制串
+func generateSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func appendReplace(goModPath, replacePath string) error {

@@ -11,7 +11,9 @@ import (
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/database"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
+	"github.com/ydtg1993/papa/v2/pkg/metrics"
 	"github.com/ydtg1993/papa/v2/pkg/middleware"
+	"github.com/ydtg1993/papa/v2/pkg/sysinfo"
 	"github.com/ydtg1993/papa/v2/pkg/track"
 	"github.com/ydtg1993/papa/v2/scheduler"
 	"github.com/ydtg1993/papa/v2/server"
@@ -19,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +34,9 @@ type App struct {
 
 	configPath  string
 	extraModels []any
+	metrics     *metrics.Registry
+	sysInfo     *sysinfo.Collector
+	cancel      context.CancelFunc
 }
 
 // Option 应用初始化选项
@@ -100,11 +106,14 @@ func NewApp(opts ...Option) (*App, error) {
 
 	// 5. 创建爬虫引擎（注入依赖）
 	engine := crawler.NewEngine(db, cfg, &loggerSet)
+	metricsReg := metrics.New()
+	engine.SetMetrics(metricsReg)
 
 	a.Config = cfg
 	a.Logger = &loggerSet
 	a.DB = db
 	a.Engine = engine
+	a.metrics = metricsReg
 	return a, nil
 }
 
@@ -140,6 +149,10 @@ func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawle
 
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
+	runCtx, cancel := context.WithCancel(ctx)
+	a.cancel = cancel
+	defer cancel()
+
 	// 初始化引擎浏览器池
 	a.Engine.SetBrowserPool()
 	// 初始化静态 HTML 抓取客户端（读取请求头与代理配置）
@@ -148,14 +161,14 @@ func (a *App) Run(ctx context.Context) {
 	a.Engine.ApplyRegisterStage()
 
 	// 任务计划
-	a.schedule(ctx)
+	a.schedule(runCtx)
 	// 监听c错误日志 中间件活动等队列消息
-	a.mdMsgListener(ctx)
+	a.mdMsgListener(runCtx)
 	// 启动统一 HTTP 服务（监控页面）
-	a.httpServer(ctx)
+	a.httpServer(runCtx)
 
 	//触发结束任务 清理资源
-	<-ctx.Done()
+	<-runCtx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
 	a.Engine.Stop(5 * time.Second)
 	if a.Engine.GetBrowserPool() != nil {
@@ -165,6 +178,13 @@ func (a *App) Run(ctx context.Context) {
 		_ = sqlDB.Close()
 	}
 	a.Logger.Sys.Info("shutdown completed")
+}
+
+// Shutdown 触发优雅退出（供监控后台等外部调用）
+func (a *App) Shutdown() {
+	if a.cancel != nil {
+		a.cancel()
+	}
 }
 
 // mdMsgListener 监听中间件活动日志和错误
@@ -204,6 +224,47 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	}
 }
 
+// resolveAuthKey 解析监控访问密钥：优先读 auth_key_file，读不到则回退到内联 auth_key
+func (a *App) resolveAuthKey(cfg config.ServerConfig) string {
+	if cfg.AuthKeyFile != "" {
+		if b, err := os.ReadFile(cfg.AuthKeyFile); err == nil {
+			if key := strings.TrimSpace(string(b)); key != "" {
+				return key
+			}
+		} else {
+			a.Logger.Sys.Errorf("read auth key file %s: %s", cfg.AuthKeyFile, err.Error())
+		}
+	}
+	return cfg.AuthKey
+}
+
+// resolveWhitelist 解析白名单：优先读 whitelist_file（文件存在即采用，即使为空），读不到回退内联 whitelist
+func (a *App) resolveWhitelist(cfg config.ServerConfig) []string {
+	if cfg.WhitelistFile != "" {
+		if entries := readWhitelistFile(cfg.WhitelistFile); entries != nil {
+			return entries
+		}
+	}
+	return cfg.Whitelist
+}
+
+// readWhitelistFile 读取白名单文件：每行一个 IP/CIDR，忽略空行与 # 注释；文件不存在返回 nil
+func readWhitelistFile(path string) []string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	out := []string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
 // httpServer 启动统一 HTTP 服务（监控页面）
 func (a *App) httpServer(ctx context.Context) {
 	cfg := a.Config.Server
@@ -216,7 +277,22 @@ func (a *App) httpServer(ctx context.Context) {
 		getter := func() map[string]*track.StatsQueue[*crawler.Task] {
 			return a.Engine.GetStatsQueue()
 		}
-		mon := server.NewMonitor(getter, a.Logger.Sys)
+		if a.sysInfo == nil {
+			a.sysInfo = sysinfo.NewCollector(2*time.Second, cfg.MonitorDirs)
+			a.sysInfo.Start(ctx)
+		}
+		authKey := a.resolveAuthKey(cfg)
+		whitelist := a.resolveWhitelist(cfg)
+		mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
+			AuthKey:       authKey,
+			AuthKeyFile:   cfg.AuthKeyFile,
+			Whitelist:     whitelist,
+			WhitelistFile: cfg.WhitelistFile,
+			Metrics:       a.metrics,
+			SysInfo:       a.sysInfo,
+			LogDir:        a.Config.Log.Dir,
+			OnShutdown:    a.Shutdown,
+		})
 		mon.Register(mux)
 	}
 

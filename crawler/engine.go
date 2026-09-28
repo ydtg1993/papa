@@ -9,6 +9,7 @@ import (
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
+	"github.com/ydtg1993/papa/v2/pkg/metrics"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
@@ -39,6 +40,7 @@ type Engine struct {
 	proxy    *proxy.Manager       // 代理管理器中间件
 	m3u8     *m3u8.Downloader     // m3u8下载器
 	filedown *filedown.Downloader // 文件下载器
+	metrics  *metrics.Registry    // 业务自定义监控数据注册表
 }
 
 // stageInfo 内部阶段信息
@@ -132,6 +134,24 @@ func (e *Engine) GetResult(taskID int, out any) error {
 		return nil
 	}
 	return json.Unmarshal(rec.Content, out)
+}
+
+// SetMetrics 注入业务自定义监控数据注册表（App 初始化时调用）
+func (e *Engine) SetMetrics(m *metrics.Registry) {
+	e.metrics = m
+}
+
+// RecordMetric 写入一条业务自定义监控数据，供监控页展示
+func (e *Engine) RecordMetric(key string, v any) {
+	if e.metrics == nil {
+		return
+	}
+	e.metrics.Set(key, v)
+}
+
+// GetMetrics 获取业务自定义监控数据注册表（监控服务读取）
+func (e *Engine) GetMetrics() *metrics.Registry {
+	return e.metrics
 }
 
 // defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项

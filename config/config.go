@@ -85,9 +85,14 @@ type DBConfig struct {
 
 // ServerConfig 统一 HTTP 服务(监控页面)
 type ServerConfig struct {
-	Enabled bool `mapstructure:"enabled"` // 是否开启 HTTP 服务
-	Port    int  `mapstructure:"port"`    // 监听端口，如 9090
-	Monitor bool `mapstructure:"monitor"` // 是否挂载监控页面/API(/monitor /api/monitor)
+	Enabled       bool              `mapstructure:"enabled"`        // 是否开启 HTTP 服务
+	Port          int               `mapstructure:"port"`           // 监听端口，如 9090
+	Monitor       bool              `mapstructure:"monitor"`        // 是否挂载监控页面/API(/monitor /api/monitor)
+	AuthKey       string            `mapstructure:"auth_key"`       // 监控访问密钥，空=不校验
+	AuthKeyFile   string            `mapstructure:"auth_key_file"`  // 密钥文件路径，优先于 auth_key
+	Whitelist     []string          `mapstructure:"whitelist"`      // 来源 IP/CIDR 白名单（回退默认），空=不限制
+	WhitelistFile string            `mapstructure:"whitelist_file"` // 白名单持久化文件路径，优先于 whitelist
+	MonitorDirs   map[string]string `mapstructure:"monitor_dirs"`   // 监控页展示的业务目录占用，name->path
 }
 
 type SchedulerConfig struct {

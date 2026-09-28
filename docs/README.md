@@ -239,8 +239,28 @@ go run .
 ```
 
 - 日志写在 `logs/`。
-- 监控页：`http://localhost:9090/monitor`（`server.monitor: true`），可看各阶段任务统计。
+- 监控页：`http://localhost:9090/monitor`（`server.monitor: true`），OA 后台布局，Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用、任务队列概览。
+  - `server.auth_key` / `server.auth_key_file`：访问密钥，`papa new` 已自动生成 `configs/secret` 密钥文件；密钥文件优先于内联 `auth_key`，两者都空则不校验。
+  - `server.whitelist` / `server.whitelist_file`：来源 IP/CIDR 白名单。`whitelist_file`（`papa new` 生成 `configs/whitelist`）优先于内联 `whitelist`，设置页动态改白名单会写回该文件、重启后仍生效。
+  - `server.monitor_dirs`：监控页「业务目录占用」要统计的目录（`name: path`）。
+  - 业务自定义数据：fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据」模块实时展示。
+  - 「设置」模块：动态改白名单、重新生成登录密钥、优雅退出爬虫、导出日志。
 - 定时重抓 / 恢复失败：由 `config.yaml` 的 `scheduler.jobs` 驱动（`repeat` 每日重跑轮询任务，`recover` 恢复超时任务）。
+
+### 监控后台设置 API
+
+所有接口都在密钥 + 白名单校验之后（密钥见上）。写接口均为 `POST`，请求头带 `Authorization: Bearer <key>`（或 `X-Auth-Key`，或 `?key=`）。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/settings` | 返回当前白名单、密钥/白名单文件路径与是否存在、日志目录 |
+| POST | `/api/settings/whitelist` | 更新白名单并持久化到 `whitelist_file`；body `{"whitelist": ["127.0.0.1","10.0.0.0/8"]}` |
+| POST | `/api/settings/secret` | 重新生成密钥并写回 `auth_key_file`；返回 `{"key": "<新密钥>"}` |
+| POST | `/api/settings/shutdown` | 触发优雅退出 |
+| GET | `/api/logs` | 列出日志目录文件 |
+| GET | `/api/logs/download` | 下载日志；`?file=name` 下载单个，缺省打包全部为 zip |
+
+> 白名单文件为纯文本：每行一个 IP/CIDR，`#` 开头为注释，留空 = 不限制。动态改动会写回该文件，重启后仍生效。
 
 ### 🔧 中间件与下载器（可选）
 
