@@ -41,7 +41,17 @@ type CrawlerTask struct {
 
 ### 1.2 业务内容结构（你自己的 `models` 包，`papa new` 已生成）
 
-脚手架生成 `models/content.go`，示例结构如下（按需增删字段）：
+脚手架生成的 `models/content.go` 是**极简起点**，字段如下（加字段只影响 `content` 里的 JSON，不影响表结构）：
+
+```go
+type DetailContent struct {
+    Title string   `json:"title"`
+    Cover string   `json:"cover"`
+    Tags  []string `json:"tags"`
+}
+```
+
+下面是一个**更完整的动漫示例**，你可以把这些结构写进 `models/content.go` 按需使用：
 
 ```go
 // 动漫详情页内容

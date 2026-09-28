@@ -4,9 +4,6 @@
 > 它内置了浏览器池、多阶段工作池、任务持久化与恢复、M3U8 视频下载（支持断点续传、自动合并）、文件下载、定时任务调度、Web 监控等特性，
 > 适用于需要处理 JavaScript 渲染、反爬严格的网站以及流媒体资源的抓取与下载。
 
-### 📐 架构设计
-![整体架构图](https://github.com/ydtg1993/papa/blob/master/storage/architecture.png)
-
 ### ✨ 核心特性
 - 🚀 **多阶段爬取** – 支持 `catalog` → `detail` 等多阶段流水线，每个阶段可独立配置并发数和队列大小。
 - 🌐 **浏览器池** – 基于 Rod 封装浏览器池，支持无头/有头模式，自动管理浏览器生命周期。
@@ -43,7 +40,7 @@
 1. **任务提交**：入口（`main.go`）调用 `engine.SubmitTask`，任务先写入数据库（状态 `pending`），然后提交到对应阶段的队列。
 2. **任务处理**：Worker 从队列获取任务，调用 Fetcher 的 `FetchHandler`。处理前将任务状态更新为 `processing`，成功后更新为 `success`，失败则重试（最多 `MaxAttempts` 次），最终状态为 `failed`。
 3. **阶段流转**：Fetcher 在解析页面后，可通过 `engine.SubmitTask` 将新任务提交到下一阶段（如 `detail`）。
-4. **恢复机制**：引擎启动时调用 `RecoverTasks`，加载所有 `pending` 或超时 `processing` 的任务，重置状态后重新提交。
+4. **恢复机制**：调度器按配置定时执行 `recover` 任务，把 `pending` 或超时 `processing` 的任务重置状态后重新提交。
 5. **监控**：WorkerPool 将任务开始/结束事件发送到 `Activities` 通道，Monitor 消费并更新统计。
 6. **定时任务**：Scheduler 根据配置的 Cron 表达式，定时执行 `catalog` 提交或 `recover` 恢复，实现自动化维护。
 
@@ -71,8 +68,7 @@
       ├── cmd/papa/               # 脚手架 CLI：papa new <name> 生成新爬虫项目
       ├── configs/                # 示例配置文件
       ├── logs/                   # 日志文件目录（运行时生成）
-      ├── scripts/                # 辅助脚本（Docker、数据库迁移等）
-      ├── storage/                # 其他存储（架构图等）
+      ├── scripts/                # 辅助脚本（Makefile、Docker）
       ├── go.mod
       └── go.sum
 
@@ -82,7 +78,7 @@
 Papa 是框架包，你在**自己的项目里 `import "github.com/ydtg1993/papa"`** 使用它，不需要 clone 这个仓库。
 
 #### 环境要求
-- Go 1.21+
+- Go 1.25+
 - MySQL 5.7+ 或 8.0
 - Chrome/Chromium 浏览器（用于 Rod，可自动下载或指定路径）
 - （可选）ffmpeg（用于自动合并 MP4）
@@ -120,16 +116,6 @@ go get github.com/ydtg1993/papa@latest
 
 然后在 `main.go` 里 `import "github.com/ydtg1993/papa"`，用 `papa.New()` 创建应用、注册阶段即可。
 
-#### 运行内置示例（可选）
-
-只想跑仓库自带的动漫爬虫示例时，才需要 clone 本仓库：
-
-```bash
-git clone https://github.com/ydtg1993/papa.git
-cd papa
-go run ./examples/video
-```
-
 #### 配置 / 初始化数据库
 
 编辑 `configs/config.yaml`（脚手架生成，含中文注释），改数据库连接、爬虫阶段、浏览器参数等。
@@ -159,16 +145,19 @@ go mod tidy
 
 ```
 mycrawler/
-├── main.go               # 入口：papa.New() + RegisterStage
-├── configs/config.yaml   # 配置
-├── fetcher/fetcher.go    # 两个 fetcher 伪代码（catalog / detail）
-├── models/content.go     # 业务内容结构
-└── logs/                 # 日志目录
+├── main.go                   # 入口：papa.New() + RegisterStage
+├── configs/config.yaml       # 配置（预置 catalog 一个阶段）
+├── fetcher/fetch_catalog.go  # 一个 fetcher 伪代码（catalog）
+├── models/content.go         # 业务内容结构（极简起点）
+├── docker/                   # Dockerfile + docker-compose.yml（开发容器）
+├── docs/                     # 使用手册（写 fetcher / model 的指南）
+├── Makefile                  # build / run / docker-up 等快捷命令
+└── logs/                     # 日志目录
 ```
 
 #### 2. 改配置 `configs/config.yaml`
 
-改数据库连接；`crawler.stages` 已预置 `catalog`、`detail` 两个阶段，可按需调并发/队列/延迟/重试：
+改数据库连接；`crawler.stages` 已预置 `catalog` 一个阶段，可按需调并发/队列/延迟/重试：
 
 ```yaml
 crawler:
@@ -179,16 +168,11 @@ crawler:
       queue_size: 20
       delay: "5m"
       retry: { max_attempts: 3, backoff: "30s" }
-    detail:
-      worker_count: 3
-      queue_size: 500
-      delay: "3m"
-      retry: { max_attempts: 3, backoff: "30s" }
 db:
   dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"
 ```
 
-#### 3. 写 fetcher 逻辑（`fetcher/fetcher.go`）
+#### 3. 写 fetcher 逻辑（`fetcher/fetch_catalog.go`）
 
 每个 fetcher 实现 `papa.Fetcher`：`GetStage()` 返回阶段名，`FetchHandler` 写抓取逻辑。
 
@@ -202,7 +186,6 @@ import (
     "github.com/ydtg1993/papa"
 )
 
-// 阶段一：目录页 —— 抓详情链接，派发子任务
 type FetchCatalog struct{}
 
 func (f *FetchCatalog) GetStage() string { return "catalog" }
@@ -221,43 +204,17 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
     }
     page.MustWaitLoad()
 
-    // 遍历列表项，把详情链接派发到下一阶段
-    for _, item := range page.MustElements(".item a") {
-        href, err := item.Attribute("href")
-        if err != nil || href == nil {
-            continue
-        }
-        engine.SubmitTask(&papa.Task{PID: task.ID, URL: *href, Stage: "detail"})
-    }
-    return nil
-}
-
-// 阶段二：详情页 —— 抓字段，写回数据库
-type FetchDetail struct{}
-
-func (f *FetchDetail) GetStage() string { return "detail" }
-
-func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
-    bw, err := engine.GetBrowserPool().Get(ctx)
-    if err != nil {
-        return err
-    }
-    defer engine.GetBrowserPool().Put(bw)
-
-    page := bw.Browser.MustPage("")
-    defer page.Close()
-    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
-        return err
-    }
-    page.MustWaitLoad()
-
+    // 提取字段
     title := page.MustElement("h1").MustText()
+
     // 结果写回当前任务的 title 列（content 结构见 models/content.go）
     return engine.GetDB().Model(&papa.CrawlerTask{}).
         Where("id = ?", task.ID).
         Update("title", title).Error
 }
 ```
+
+要抓多个阶段（列表 → 详情 → 视频），就再写一个 fetcher、在 `config.yaml` 加一个 stage、在 `main.go` 再 `RegisterStage` 一次，并在 catalog 里 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})` 派发子任务（完整多阶段示例见 [FETCHER_WRITING_GUIDE.md](FETCHER_WRITING_GUIDE.md)）。
 
 #### 4. 注册阶段 + 提交起始任务（`main.go`）
 
@@ -275,7 +232,6 @@ app.RegisterStage(&fetcher.FetchCatalog{},
             Repeatable: true, // 可重复轮询
         })
     })
-app.RegisterStage(&fetcher.FetchDetail{}, nil)
 ```
 
 #### 5. 跑起来 + 看监控

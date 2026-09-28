@@ -12,8 +12,8 @@
 ## 0. 一句话工作流
 
 ```text
-papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / config / logs）
-  -> 你投喂目标站点，AI 在生成的 fetcher/ 下填抓取逻辑（只 import github.com/ydtg1993/papa）
+papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / config / docker / docs / Makefile / logs）
+  -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa）
   -> 在 config.yaml 加 stage、在 main.go 注册 fetcher，并在注册回调里提交起始 URL
   -> 任务被 worker 池调度执行，结果写入 CrawlerTask
 ```
@@ -79,7 +79,7 @@ import (
     "yourproject/models" // 你的项目 models 包，papa new 已生成
 )
 
-content := models.DetailContent{ Title: "xxx", CoverURL: "https://..." } // 你的自定义结构
+content := models.DetailContent{ Title: "xxx", Cover: "https://..." } // 你的自定义结构（字段见 models/content.go，按需扩展）
 b, _ := json.Marshal(content)
 err := engine.GetDB().Model(&papa.CrawlerTask{}).
     Where("id = ?", task.ID).
@@ -125,6 +125,8 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 ---
 
 ## 3. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
+
+> 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段——加一个 stage、一个 fetcher、一次 `RegisterStage` 即可。
 
 典型例子：目录页要点「展开分类」下拉、滚动到底部触发懒加载，才能拿到所有文档的标题和链接。
 
@@ -267,9 +269,9 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
     coverURL, _ := page.MustElement(".cover img").Attribute("src")
 
     content := models.DetailContent{
-        Title:    title,
-        CoverURL: deref(coverURL),
-        // ... 其他字段按需提取
+        Title: title,
+        Cover: deref(coverURL),
+        // ... 其他字段按需扩展（在 models/content.go 里加）
     }
     b, _ := json.Marshal(content)
     return engine.GetDB().Model(&papa.CrawlerTask{}).
@@ -368,7 +370,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
         return res.Error
     }
 
-    // 4. 写库（记录 m3u8 地址和本地输出）
+    // 4. 写库（记录 m3u8 地址和本地输出；VideoContent 是你在 models/content.go 里自定义的结构）
     content := models.VideoContent{ Dir: res.OutputFile, Source: url }
     b, _ := json.Marshal(content)
     return engine.GetDB().Model(&papa.CrawlerTask{}).
@@ -406,7 +408,7 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ## 5. 最小可跑骨架（脚手架已生成）
 
-`papa new <name>` 会生成好 main.go / fetcher/fetcher.go / models/content.go / configs/config.yaml / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
+`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models/content.go / configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
 
 ```go
 package fetcher
