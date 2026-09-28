@@ -124,7 +124,100 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 
 ---
 
-## 3. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
+## 3. 两种抓取策略：HTMLFetch 与 Rod 浏览器
+
+先根据响应中的数据来源选策略，而不是默认启动浏览器：
+
+| 策略 | 入口 | 适用页面 | 节点获取方式 | 校验重点 | 不适用场景 |
+| --- | --- | --- | --- | --- | --- |
+| **HTMLFetch（优先）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
+| **Rod 浏览器** | `engine.GetBrowserPool().Get(ctx)` | JS 渲染、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | 静态页面；此时浏览器成本高且占用浏览器池 |
+
+HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`，并保证 `browser.pool_size` 不小于并发使用浏览器的 worker 数量。
+
+### 3.1 HTMLFetch：静态目录页的完整方式
+
+`engine.FetchHTML` 请求并解析 HTML，非 2xx、超时、响应体超过限制和 HTML 解析异常都会返回 `error`，应直接返回给引擎触发重试。成功后从 `page.Document` 获取节点：
+
+```go
+page, err := engine.FetchHTML(ctx, task.URL)
+if err != nil {
+    return fmt.Errorf("fetch catalog html: %w", err)
+}
+
+entries := page.Document.Find(`h3 a[href^="/detail/"]`)
+if entries.Length() == 0 {
+    return fmt.Errorf("catalog selector matched no entries at %s", page.URL)
+}
+
+entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
+    title := strings.TrimSpace(entry.Text())
+    href, ok := entry.Attr("href")
+    if !ok || title == "" || strings.TrimSpace(href) == "" {
+        entryErr = fmt.Errorf("catalog entry %d is missing a title or href", index)
+        return false
+    }
+
+    detailURL, err := page.URL.Parse(href)
+    if err != nil {
+        entryErr = fmt.Errorf("resolve catalog entry %d URL: %w", index, err)
+        return false
+    }
+    // 保存或派发 detailURL.String()
+    return true
+})
+```
+
+`Document` 的常用 API：
+
+| 需求 | API | 用法 / 返回值 |
+| --- | --- | --- |
+| 获取重复节点，需逐个处理属性与文本 | `Find(selector)` | 返回 `*goquery.Selection`；用 `Each` / `EachWithBreak` 遍历 |
+| 获取第一个节点文本 | `Text(selector)` | `(string, bool)`；`bool=false` 表示节点不存在 |
+| 获取全部节点文本 | `Texts(selector)` | `[]string`，每项已 `TrimSpace` |
+| 获取第一个节点属性 | `Attr(selector, attribute)` | `(string, bool)`；不可把空字符串当作有效 URL |
+| 获取多个节点属性 | `Attrs(selector, attribute)` | `[]string`；适合已确定只有同类节点时批量取值 |
+| 需要原始局部标记调试或解析 | `HTML(selector)` | `(string, bool)` |
+
+**节点选择步骤**：先用浏览器的“查看源代码”或保存的原始 HTML 定位页面中实际存在的元素；优先选择业务语义和链接路径共同限定的 CSS 选择器，例如 `h3 a[href^="/detail/"]`，不要使用易变的层级、序号或样式类。若列表项有稳定容器，应先 `Find(".item")`，再在每项内部 `Find("a")`，避免将侧栏、分页或导航的同名链接误收集。
+
+**最小验证集**：
+
+1. `Find` 的结果数量必须大于零；零个节点常表示页面改版、被反爬页替换或内容改为前端渲染，应返回 error 重试并检查响应 HTML。
+2. 每一项的标题和 `href` 都必须非空；出现一个残缺条目就返回 error，避免把不完整目录标记为成功。
+3. 用 `page.URL.Parse(href)` 将相对地址解析为绝对 URL，不能通过字符串拼接当前页面 URL。
+4. 需要时再校验域名、路径前缀、ID 格式或条目数下限，确保选中的不是导航链接。
+5. 将列表快照写入当前 `catalog` 任务；只有已在 `config.yaml` 和 `main.go` 注册 `detail` stage 时，才为通过校验的链接调用 `engine.SubmitTask`。
+
+### 3.2 Rod：动态页面或浏览器交互方式
+
+仅当原始 HTML 不含目标节点，或数据必须经 JavaScript、点击、滚动、登录或网络监听才能得到时使用 Rod。浏览器模式的核心是：导航完成后等待目标交互/渲染，随后对 DOM 做与 HTMLFetch 同等严格的节点和属性校验；不要只因一个页面“看起来像网页”就启动浏览器。
+
+```go
+bw, err := engine.GetBrowserPool().Get(ctx)
+if err != nil {
+    return err
+}
+defer engine.GetBrowserPool().Put(bw)
+
+page := bw.Browser.MustPage("")
+defer page.Close()
+if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+    return err
+}
+page.MustWaitLoad()
+
+items := page.MustElements(".doc-item")
+if len(items) == 0 {
+    return fmt.Errorf("catalog selector matched no entries")
+}
+```
+
+需要下拉、滚动或点击时，先完成操作并等待新节点出现，再提取；m3u8 这类只在播放后产生的资源，必须先通过 `EachEvent` 挂好网络监听，再点击播放。Rod 的 `Must*` 方法遇到节点缺失会 panic，因此生产 fetcher 更适合使用返回 `error` 的 API 或预先检查元素存在性，保证错误交给引擎重试。
+
+---
+
+## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
 > 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段——加一个 stage、一个 fetcher、一次 `RegisterStage` 即可。
 
@@ -289,7 +382,7 @@ func deref(s *string) string {
 
 ---
 
-## 4. 场景二：详情页点击播放 → 捕获 m3u8 → 下载
+## 5. 场景二：详情页点击播放 → 捕获 m3u8 → 下载
 
 典型例子：详情页要「点播放按钮」才发起视频请求，m3u8 地址不在 DOM 里，只能从网络请求里截获。
 
@@ -406,7 +499,7 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ---
 
-## 5. 最小可跑骨架（脚手架已生成）
+## 6. 最小可跑骨架（脚手架已生成）
 
 `papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models/content.go / configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
 
@@ -452,7 +545,7 @@ func (f *FetchXxx) FetchHandler(ctx context.Context, task *papa.Task, engine *pa
 
 ---
 
-## 6. 如何驱动任务（提交 + 监控）
+## 7. 如何驱动任务（提交 + 监控）
 
 Papa 没有 MCP 了，任务驱动靠三处：
 
@@ -479,7 +572,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 
 ---
 
-## 7. 常见坑
+## 8. 常见坑
 
 1. **`GetStage()` 与 config 不一致** → `RegisterStage` 直接 panic。写完先核对两边字符串。
 2. **浏览器池耗尽**：浏览器池 `pool_size` 要 ≥ 各 stage `worker_count` 之和（config 注释里也写了），否则 worker 会阻塞在 `pool.Get`。
@@ -492,7 +585,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 
 ---
 
-## 8. API 速查
+## 9. API 速查
 
 **go-rod（页面操作）**
 - `bw.Browser.MustPage("")` 建空白页；`page.Close()` 关页。
