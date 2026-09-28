@@ -44,25 +44,3 @@ func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
 	}
 	return nil
 }
-
-// DetailContent 定义要存入 Content 的结构 动漫详情
-type DetailContent struct {
-	Cover         string               `json:"cover"` //下载本地化地址
-	CoverURL      string               `json:"cover_url"`
-	Title         string               `json:"title"`
-	Author        string               `json:"author"`
-	Tags          []string             `json:"tags"`
-	SeriesContent `json:"series_info"` //剧集列表信息
-}
-
-// SeriesContent 动漫剧集
-type SeriesContent struct {
-	Series    map[string]string `json:"series"`   // title-url
-	Downloads map[string]bool   `json:"download"` // url-is download
-}
-
-// VideoContent 动漫视频资源
-type VideoContent struct {
-	Dir    string `json:"dir"`
-	Source string `json:"source"` // m3u8地址
-}
