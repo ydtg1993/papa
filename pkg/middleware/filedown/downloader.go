@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pkg2 "github.com/ydtg1993/papa/pkg"
+	pkg2 "github.com/ydtg1993/papa/v2/pkg"
 )
 
 // Downloader 文件下载器（并发安全）

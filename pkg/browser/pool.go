@@ -9,7 +9,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
 	_ "github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 	"sync"
 	_ "sync/atomic"
 	"time"

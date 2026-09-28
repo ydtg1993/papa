@@ -75,7 +75,7 @@
 
 ### 🚀 快速开始
 
-Papa 是框架包，你在**自己的项目里 `import "github.com/ydtg1993/papa"`** 使用它，不需要 clone 这个仓库。
+Papa 是框架包，你在**自己的项目里 `import "github.com/ydtg1993/papa/v2"`** 使用它，不需要 clone 这个仓库。
 
 #### 环境要求
 - Go 1.25+
@@ -100,7 +100,7 @@ cd mycrawler && go mod tidy && go run .
 **外部用户（框架发布后）** —— 从 GitHub 拉取脚手架：
 
 ```bash
-go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
+go run github.com/ydtg1993/papa/v2/cmd/papa@latest new mycrawler
 cd mycrawler
 go mod tidy && go run .
 ```
@@ -111,10 +111,10 @@ go mod tidy && go run .
 
 ```bash
 cd your-project
-go get github.com/ydtg1993/papa@latest
+go get github.com/ydtg1993/papa/v2@latest
 ```
 
-然后在 `main.go` 里 `import "github.com/ydtg1993/papa"`，用 `papa.New()` 创建应用、注册阶段即可。
+然后在 `main.go` 里 `import "github.com/ydtg1993/papa/v2"`，用 `papa.New()` 创建应用、注册阶段即可。
 
 #### 配置 / 初始化数据库
 
@@ -135,7 +135,7 @@ app:
 ```bash
 # 本地验证（推荐）：先 go install ./cmd/papa，再
 papa new mycrawler --replace /path/to/papa
-# 或外部拉取：go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
+# 或外部拉取：go run github.com/ydtg1993/papa/v2/cmd/papa@latest new mycrawler
 
 cd mycrawler
 go mod tidy
@@ -183,7 +183,7 @@ import (
     "context"
     "time"
 
-    "github.com/ydtg1993/papa"
+    "github.com/ydtg1993/papa/v2"
 )
 
 type FetchCatalog struct{}
@@ -250,9 +250,9 @@ go run .
 
 ```go
 import (
-    "github.com/ydtg1993/papa/pkg/middleware/m3u8"
-    "github.com/ydtg1993/papa/pkg/middleware/filedown"
-    "github.com/ydtg1993/papa/pkg/middleware/proxy"
+    "github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
+    "github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
+    "github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 )
 
 app.Engine.SetProxy(proxy.NewManager(app.Config.Proxy.APIURL, 8*time.Minute))

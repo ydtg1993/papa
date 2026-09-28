@@ -2,7 +2,7 @@ package crawler
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/models"
+	"github.com/ydtg1993/papa/v2/models"
 	"gorm.io/gorm"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ydtg1993/papa"
+	"github.com/ydtg1993/papa/v2"
 )
 
 // mockFetcher 用于验证 papa.Fetcher 接口别名能被子包外的业务代码实现。
@@ -17,7 +17,7 @@ func (mockFetcher) FetchHandler(_ context.Context, _ *papa.Task, _ *papa.Engine)
 }
 
 // TestFacadeAPI 验证门面包对外暴露的类型别名/函数签名都可用，
-// 也就是验证「在自己的项目里 import github.com/ydtg1993/papa 然后使用」这条链路是通的。
+// 也就是验证「在自己的项目里 import github.com/ydtg1993/papa/v2 然后使用」这条链路是通的。
 func TestFacadeAPI(t *testing.T) {
 	// Fetcher 接口别名可用（值类型和指针类型都能实现）
 	var _ papa.Fetcher = mockFetcher{}

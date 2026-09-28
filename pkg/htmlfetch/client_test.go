@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 )
 
 func TestClientFetchAndQuery(t *testing.T) {

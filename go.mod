@@ -1,4 +1,4 @@
-module github.com/ydtg1993/papa
+module github.com/ydtg1993/papa/v2
 
 go 1.25.0
 

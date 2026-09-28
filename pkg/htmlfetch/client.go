@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/ydtg1993/papa/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 )
 
 const (

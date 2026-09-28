@@ -2,7 +2,7 @@ package track
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/pkg/workerpool"
+	"github.com/ydtg1993/papa/v2/pkg/workerpool"
 	"sync"
 	"time"
 )

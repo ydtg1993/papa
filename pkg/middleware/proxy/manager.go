@@ -3,7 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
-	pkg2 "github.com/ydtg1993/papa/pkg"
+	pkg2 "github.com/ydtg1993/papa/v2/pkg"
 	"net/http"
 	"sync"
 	"sync/atomic"

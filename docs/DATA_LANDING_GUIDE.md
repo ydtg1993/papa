@@ -164,7 +164,7 @@ engine.SubmitTask(&papa.Task{ PID: task.ID, URL: detailURL, Stage: "detail" })
 import (
     "encoding/json"
     "gorm.io/datatypes"
-    "github.com/ydtg1993/papa"
+    "github.com/ydtg1993/papa/v2"
     "yourproject/models"
 )
 
@@ -294,7 +294,7 @@ app, err := papa.New(papa.WithModels(&models.Episode{}))
 import (
     "encoding/json"
     "gorm.io/datatypes"
-    "github.com/ydtg1993/papa"
+    "github.com/ydtg1993/papa/v2"
 )
 
 // 写 content + title（最常用）

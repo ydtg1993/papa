@@ -3,10 +3,10 @@
 package papa
 
 import (
-	"github.com/ydtg1993/papa/app"
-	"github.com/ydtg1993/papa/config"
-	"github.com/ydtg1993/papa/crawler"
-	"github.com/ydtg1993/papa/models"
+	"github.com/ydtg1993/papa/v2/app"
+	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/models"
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
