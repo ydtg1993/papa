@@ -9,35 +9,25 @@
 
 Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一张 `crawler_tasks` 表，用 `stage` 列区分阶段，抓到的结构化内容以 JSON 塞进 `content` 列。你要做的是：**把页面提取成 Go 结构体，序列化后写回对应任务的 `content`（和 `title`）列**。
 
-> 框架只内置 `CrawlerTask`（任务表）。业务内容结构（`DetailContent` 等）由 `papa new` 生成在**你自己的 `models` 包**里。
+> 框架只内置一张 `crawler_tasks` 任务表（业务通过结果 API 读写，不直接碰 model）。业务内容结构（`DetailContent` 等）由 `papa new` 生成在**你自己的 `models` 包**里。
 
 ---
 
 ## 1. 读懂现状：已有哪些模型
 
-### 1.1 任务表 `CrawlerTask`（框架内置，`papa.CrawlerTask`）
+### 1.1 任务表 `crawler_tasks`（框架内置）
 
-```go
-type CrawlerTask struct {
-    ID         uint           // 任务 ID
-    PID        uint           // 父任务 ID（子任务关联父任务）
-    Stage      string         // 阶段标识：catalog / detail / video ...
-    URL        string         // 任务 URL
-    Title      string         // 页面标题（落地用）
-    Content    datatypes.JSON // 结构化内容（落地用，JSON 列）
-    Retry      int
-    Status     TaskStatus     // 0待处理 1处理中 2成功 3失败
-    Repeatable RepeatableStatus
-    Repeat     int
-    Error      string
-    CreatedAt  time.Time
-    UpdatedAt  time.Time
-}
-```
+框架内置一张 `crawler_tasks` 任务表，业务关心的只有两个落地列：
 
-- `content` 是 `gorm.io/datatypes.JSON`（本质 `[]byte`），存什么结构由**每个 stage 自己决定**。
-- 内置的唯一约束是 `(stage, url)` 唯一，同一个 URL 在一个阶段只会有一条记录。
-- fetcher 里用 `&papa.CrawlerTask{}` 定位这张表。
+| 列 | 说明 |
+| --- | --- |
+| `title` | 页面标题（string） |
+| `content` | 结构化内容（JSON，本质 `[]byte`），存什么结构由**每个 stage 自己决定** |
+
+其余列（`status` / `retry` / `error` / `repeat` 等）是框架运行态，由引擎自动维护，**业务不要直接读写**。
+
+- 内置唯一约束 `(stage, url)`：同一个 URL 在一个阶段只会有一条记录。
+- 业务**不直接碰 model**，而是通过结果 API 读写（见第 2 节）。
 
 ### 1.2 业务内容结构（你自己的 `models` 包，`papa new` 已生成）
 
@@ -99,13 +89,7 @@ type VideoContent struct {
 func (f *FetchDetail) FetchHandler(ctx, task, engine) error {
     // ... 抓取得到 title / cover / series ...
     content := models.DetailContent{ Title: title, CoverURL: coverURL, /* ... */ }
-    b, _ := json.Marshal(content)
-    return engine.GetDB().Model(&papa.CrawlerTask{}).
-        Where("id = ?", task.ID).
-        Updates(map[string]any{
-            "title":   title,
-            "content": datatypes.JSON(b),
-        }).Error
+    return engine.SaveResult(task.ID, title, content)
 }
 ```
 
@@ -115,14 +99,12 @@ func (f *FetchDetail) FetchHandler(ctx, task, engine) error {
 
 ```go
 // models/repo.go（你自己的 models 包里）
-func SaveDetail(db *gorm.DB, taskID int, dc DetailContent) error {
-    b, _ := json.Marshal(dc)
-    return db.Model(&papa.CrawlerTask{}).Where("id = ?", taskID).
-        Updates(map[string]any{"title": dc.Title, "content": datatypes.JSON(b)}).Error
+func SaveDetail(engine *papa.Engine, taskID int, dc DetailContent) error {
+    return engine.SaveResult(taskID, dc.Title, dc)
 }
 ```
 
-fetcher 里只调 `models.SaveDetail(engine.GetDB(), task.ID, content)`。
+fetcher 里只调 `models.SaveDetail(engine, task.ID, content)`。
 
 ### 路径 C：新建独立 GORM 表
 
@@ -162,8 +144,6 @@ engine.SubmitTask(&papa.Task{ PID: task.ID, URL: detailURL, Stage: "detail" })
 
 ```go
 import (
-    "encoding/json"
-    "gorm.io/datatypes"
     "github.com/ydtg1993/papa/v2"
     "yourproject/models"
 )
@@ -194,10 +174,7 @@ content := models.DetailContent{
         Downloads: map[string]bool{}, // 初始为空
     },
 }
-b, _ := json.Marshal(content)
-return engine.GetDB().Model(&papa.CrawlerTask{}).
-    Where("id = ?", task.ID).
-    Updates(map[string]any{"title": title, "content": datatypes.JSON(b)}).Error
+return engine.SaveResult(task.ID, title, content)
 ```
 
 ### 3.3 video 阶段：抓视频 → 写 `VideoContent`，并回写详情页下载标记
@@ -206,10 +183,7 @@ return engine.GetDB().Model(&papa.CrawlerTask{}).
 
 ```go
 content := models.VideoContent{ Dir: res.OutputFile, Source: m3u8URL }
-b, _ := json.Marshal(content)
-engine.GetDB().Model(&papa.CrawlerTask{}).
-    Where("id = ?", task.ID).
-    Updates(map[string]any{"content": datatypes.JSON(b)}).Error
+engine.SaveContent(task.ID, content)
 
 // 回写父任务(detail)的下载标记：读-改-写
 markDownloaded(engine, task.PID, m3u8URL)
@@ -219,22 +193,15 @@ markDownloaded(engine, task.PID, m3u8URL)
 
 ```go
 func markDownloaded(engine *papa.Engine, detailTaskID int, seriesURL string) error {
-    var rec papa.CrawlerTask
-    if err := engine.GetDB().Where("id = ?", detailTaskID).First(&rec).Error; err != nil {
-        return err
-    }
     var dc models.DetailContent
-    if err := json.Unmarshal(rec.Content, &dc); err != nil { // rec.Content 是 []byte，可直接 Unmarshal
+    if err := engine.GetResult(detailTaskID, &dc); err != nil {
         return err
     }
     if dc.SeriesContent.Downloads == nil {
         dc.SeriesContent.Downloads = map[string]bool{}
     }
     dc.SeriesContent.Downloads[seriesURL] = true
-    b, _ := json.Marshal(dc)
-    return engine.GetDB().Model(&papa.CrawlerTask{}).
-        Where("id = ?", detailTaskID).
-        Update("content", datatypes.JSON(b)).Error
+    return engine.SaveContent(detailTaskID, dc)
 }
 ```
 
@@ -292,42 +259,30 @@ app, err := papa.New(papa.WithModels(&models.Episode{}))
 
 ```go
 import (
-    "encoding/json"
-    "gorm.io/datatypes"
     "github.com/ydtg1993/papa/v2"
 )
 
 // 写 content + title（最常用）
-b, _ := json.Marshal(someStruct)
-engine.GetDB().Model(&papa.CrawlerTask{}).
-    Where("id = ?", task.ID).
-    Updates(map[string]any{"title": t, "content": datatypes.JSON(b)})
+engine.SaveResult(task.ID, t, someStruct)
 
 // 只写 content
-engine.GetDB().Model(&papa.CrawlerTask{}).
-    Where("id = ?", task.ID).Update("content", datatypes.JSON(b))
+engine.SaveContent(task.ID, someStruct)
 
 // 读 content 回结构体
-var rec papa.CrawlerTask
-engine.GetDB().Where("id = ?", task.ID).First(&rec)
 var dc models.DetailContent
-json.Unmarshal(rec.Content, &dc) // datatypes.JSON 就是 []byte
-
-// 按 stage/url 查（去重键）
-var rec papa.CrawlerTask
-engine.GetDB().Where("stage = ? AND url = ?", "detail", u).First(&rec)
+engine.GetResult(task.ID, &dc)
 ```
 
 ---
 
 ## 6. 常见坑
 
-1. **`datatypes.JSON` 就是 `[]byte`**：`json.Marshal` 出来的 `[]byte` 直接转 `datatypes.JSON(b)`；读取时直接 `json.Unmarshal(rec.Content, &v)`，不要再包一层。
+1. **结果 API 帮你序列化**：`SaveResult` / `SaveContent` 内部自动 `json.Marshal`，`GetResult` 自动 `json.Unmarshal`，业务不用再碰 `datatypes.JSON` / `json.Marshal`。
 2. **写库只写自己的 `task.ID`**：子任务各自写各自记录，不要越界改别人的任务。
 3. **改 JSON 里的嵌套字段要「读-改-写」**：`content` 是整列 JSON，没有嵌套路径更新，改 `Downloads` 这类内层字段必须整列读出来改完写回。
 4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`（dev 环境自动迁移，生产迁移要另外走正式流程）。
 5. **并发写同一记录**：detail 派发多个 video 子任务时，多个子任务可能同时回写父任务的 `Downloads`，会丢更新。需要的话对父任务加锁或串行回写（简单做法：用数据库事务或 `gorm` 的 `clause.Locking`）。
-6. **Content 空值**：`CrawlerTask.BeforeCreate` 已把空 content 兜成 `{}`，但手动 `Update("content", ...)` 不会走这个钩子，确保你 Marshal 前结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
+6. **Content 空值 / nil map**：确保传给 `SaveResult` / `SaveContent` 的结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
 7. **字段命名**：JSON tag 用下划线风格，和现有 `cover_url` / `series_info` 一致，避免和别处拼写不一致。
 
 ---
@@ -336,7 +291,7 @@ engine.GetDB().Where("stage = ? AND url = ?", "detail", u).First(&rec)
 
 | 问题 | 答案 |
 | --- | --- |
-| 结果写哪张表 | `crawler_tasks` 表的 `content`（JSON）+ `title` 列（`papa.CrawlerTask`） |
+| 结果写哪张表 | `crawler_tasks` 表的 `content`（JSON）+ `title` 列（通过 `engine.SaveResult` / `SaveContent`） |
 | 用什么结构 | 复用脚手架 `models/content.go` 里的结构，或自定义 struct |
 | 写在哪 | 默认直接写 `FetchHandler`；复用/复杂了再抽 repository；要按列查询才建独立表 |
 | 建表要不要迁移 | 是，`papa.New(papa.WithModels(...))` 里注册（dev 环境） |

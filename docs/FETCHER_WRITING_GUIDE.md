@@ -15,7 +15,7 @@
 papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / config / docker / docs / Makefile / logs）
   -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v2）
   -> 在 config.yaml 加 stage、在 main.go 注册 fetcher，并在注册回调里提交起始 URL
-  -> 任务被 worker 池调度执行，结果写入 CrawlerTask
+  -> 任务被 worker 池调度执行，结果通过结果 API 写入 crawler_tasks 表
 ```
 
 整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher，并给 `config.yaml` / `main.go` 加几行。
@@ -69,27 +69,27 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 ### 1.4 写结果到数据库
 
-任务表是 `CrawlerTask`（框架内置），结果字段是 `Title`（string）和 `Content`（JSON）。fetcher 里这样写：
+任务表由框架内置（`crawler_tasks`），结果字段是 `title` 和 `content`（JSON）。fetcher 不直接碰表，而是通过引擎的结果 API 落库：
 
 ```go
 import (
-    "encoding/json"
-    "gorm.io/datatypes"
     "github.com/ydtg1993/papa/v2"
     "yourproject/models" // 你的项目 models 包，papa new 已生成
 )
 
 content := models.DetailContent{ Title: "xxx", Cover: "https://..." } // 你的自定义结构（字段见 models/content.go，按需扩展）
-b, _ := json.Marshal(content)
-err := engine.GetDB().Model(&papa.CrawlerTask{}).
-    Where("id = ?", task.ID).
-    Updates(map[string]any{
-        "title":   content.Title,
-        "content": datatypes.JSON(b),
-    }).Error
+err := engine.SaveResult(task.ID, content.Title, content)
 ```
 
-`Content` 可以是任何可 JSON 序列化的结构。业务内容结构（如 `DetailContent`）不在框架里，而是 `papa new` 生成在你自己的 `models` 包里，按需增删字段即可。
+`content` 可以是任何可 JSON 序列化的结构，框架自动 `json.Marshal` 后写进 `content` 列。业务内容结构（如 `DetailContent`）不在框架里，而是 `papa new` 生成在你自己的 `models` 包里，按需增删字段即可。
+
+结果 API 一览：
+
+| 方法 | 用途 |
+| --- | --- |
+| `engine.SaveResult(task.ID, title, content)` | 写 `title` + `content`（最常见） |
+| `engine.SaveContent(task.ID, content)` | 只写 `content`，保留已有 `title`（回写已有结果用） |
+| `engine.GetResult(task.ID, &out)` | 读回 `content` 并反序列化到 `out` |
 
 ### 1.5 派发子任务（阶段串联）
 
@@ -331,10 +331,8 @@ package fetcher
 
 import (
     "context"
-    "encoding/json"
     "time"
 
-    "gorm.io/datatypes"
     "github.com/ydtg1993/papa/v2"
     "yourproject/models"
 )
@@ -366,10 +364,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
         Cover: deref(coverURL),
         // ... 其他字段按需扩展（在 models/content.go 里加）
     }
-    b, _ := json.Marshal(content)
-    return engine.GetDB().Model(&papa.CrawlerTask{}).
-        Where("id = ?", task.ID).
-        Updates(map[string]any{"title": title, "content": datatypes.JSON(b)}).Error
+    return engine.SaveResult(task.ID, title, content)
 }
 
 func deref(s *string) string {
@@ -395,7 +390,6 @@ package fetcher
 
 import (
     "context"
-    "encoding/json"
     "strings"
     "sync"
     "time"
@@ -465,10 +459,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
 
     // 4. 写库（记录 m3u8 地址和本地输出；VideoContent 是你在 models/content.go 里自定义的结构）
     content := models.VideoContent{ Dir: res.OutputFile, Source: url }
-    b, _ := json.Marshal(content)
-    return engine.GetDB().Model(&papa.CrawlerTask{}).
-        Where("id = ?", task.ID).
-        Updates(map[string]any{"content": datatypes.JSON(b)}).Error
+    return engine.SaveContent(task.ID, content)
 }
 ```
 
@@ -601,5 +592,8 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 - m3u8：`NewDownloader(cfg)` / `Download(ctx, url, outDir, outFile, opts...) → DownloadResult`。
 - filedown：`NewDownloader(cfg)` / `Download(ctx, url, outDir, fileName, opts...) → DownloadResult`。
 
-**数据库**
-- `engine.GetDB().Model(&papa.CrawlerTask{}).Where("id = ?", task.ID).Updates(map[string]any{...})`。
+**数据库 / 结果落地**
+- `engine.SaveResult(task.ID, title, content)` 写 `title` + `content`。
+- `engine.SaveContent(task.ID, content)` 只写 `content`（保留 `title`）。
+- `engine.GetResult(task.ID, &out)` 读回 `content` 反序列化到 `out`。
+- `engine.GetDB()` 拿 gorm 实例（建独立表、复杂查询时用）。

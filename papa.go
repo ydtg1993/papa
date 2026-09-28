@@ -6,7 +6,6 @@ import (
 	"github.com/ydtg1993/papa/v2/app"
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/models"
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
@@ -35,9 +34,6 @@ type StageConfig = crawler.StageConfig
 
 // Config 全局配置。
 type Config = config.Config
-
-// CrawlerTask 任务表模型（fetcher 写结果时用 db.Model(&papa.CrawlerTask{}) 定位）。
-type CrawlerTask = models.CrawlerTask
 
 // New 创建应用实例，完成配置加载、日志、数据库、引擎的初始化。
 func New(opts ...Option) (*App, error) {

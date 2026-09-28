@@ -29,13 +29,12 @@ func TestFacadeAPI(t *testing.T) {
 		t.Fatalf("unexpected unique key: %s", got)
 	}
 
-	// Config / CrawlerTask 类型可用
+	// Config 类型可用
 	var _ *papa.Config = (*papa.Config)(nil)
-	var _ *papa.CrawlerTask = (*papa.CrawlerTask)(nil)
 
 	// Option 与构造选项可用
 	var _ papa.Option = papa.WithConfigPath("configs/config.yaml")
-	var _ papa.Option = papa.WithModels(&papa.CrawlerTask{})
+	var _ papa.Option = papa.WithModels(&struct{}{})
 
 	// New 的签名：func(...papa.Option) (*papa.App, error)
 	var _ func(...papa.Option) (*papa.App, error) = papa.New

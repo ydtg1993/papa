@@ -207,10 +207,8 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
     // 提取字段
     title := page.MustElement("h1").MustText()
 
-    // 结果写回当前任务的 title 列（content 结构见 models/content.go）
-    return engine.GetDB().Model(&papa.CrawlerTask{}).
-        Where("id = ?", task.ID).
-        Update("title", title).Error
+    // 结果写回当前任务（title 列 + content 列）
+    return engine.SaveResult(task.ID, title, map[string]any{"title": title})
 }
 ```
 

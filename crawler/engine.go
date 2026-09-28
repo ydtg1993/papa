@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/models"
@@ -13,6 +14,7 @@ import (
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 	"github.com/ydtg1993/papa/v2/pkg/track"
 	"github.com/ydtg1993/papa/v2/pkg/workerpool"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"maps"
 	"sync"
@@ -93,6 +95,43 @@ func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
 // GetConfig 获取全局配置
 func (e *Engine) GetConfig() *config.Config {
 	return e.cfg
+}
+
+// SaveResult 写任务结果：title 写入 title 列，content 序列化为 JSON 写入 content 列。
+func (e *Engine) SaveResult(taskID int, title string, content any) error {
+	b, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	return e.db.Model(&models.CrawlerTask{}).
+		Where("id = ?", taskID).
+		Updates(map[string]any{
+			"title":   title,
+			"content": datatypes.JSON(b),
+		}).Error
+}
+
+// SaveContent 仅更新 content 列（保留 title），用于回写已有任务的结果。
+func (e *Engine) SaveContent(taskID int, content any) error {
+	b, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	return e.db.Model(&models.CrawlerTask{}).
+		Where("id = ?", taskID).
+		Update("content", datatypes.JSON(b)).Error
+}
+
+// GetResult 读回任务的 content 列并反序列化到 out（out 需为指针）。
+func (e *Engine) GetResult(taskID int, out any) error {
+	var rec models.CrawlerTask
+	if err := e.db.Where("id = ?", taskID).First(&rec).Error; err != nil {
+		return err
+	}
+	if len(rec.Content) == 0 {
+		return nil
+	}
+	return json.Unmarshal(rec.Content, out)
 }
 
 // defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项
