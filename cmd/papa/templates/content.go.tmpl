@@ -3,9 +3,9 @@ package models
 // DetailContent 详情页落地结构示例。
 // 抓到的内容用 json.Marshal 序列化后写入 CrawlerTask.Content 列。
 // 字段可自由增删，只影响 content 里的 JSON，不影响表结构。
+// 注意：这是序列化进 content 列的 JSON 结构，不是 GORM 表模型，不要加 gorm 标签。
 type DetailContent struct {
-    ID      uint     `gorm:"primarykey"`
-	Title   string   `json:"title"`
-	Cover   string   `json:"cover"`
-	Tags    []string `json:"tags"`
+	Title string   `json:"title"`
+	Cover string   `json:"cover"`
+	Tags  []string `json:"tags"`
 }

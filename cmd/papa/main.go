@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/ydtg1993/papa/docs"
 )
 
 //go:embed templates/*
@@ -78,12 +80,20 @@ func runNew(name string, args []string) error {
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
 		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},
 		{"content.go.tmpl", filepath.Join("models", "content.go")},
+		{"Dockerfile.tmpl", filepath.Join("docker", "Dockerfile")},
+		{"docker-compose.yml.tmpl", filepath.Join("docker", "docker-compose.yml")},
+		{"Makefile.tmpl", "Makefile"},
 	}
 
 	for _, f := range files {
 		if err := render(f.tmpl, filepath.Join(name, f.dest), data); err != nil {
 			return err
 		}
+	}
+
+	// docs：复制使用手册，方便查用法 / 喂给 Claude 写 fetcher、model
+	if err := copyDocs(filepath.Join(name, "docs")); err != nil {
+		return err
 	}
 
 	// 本地验证：把依赖指向本地 papa 仓库，避免先发布版本
@@ -130,4 +140,28 @@ func render(tmplName, dest string, data scaffoldData) error {
 	}
 	defer f.Close()
 	return tmpl.Execute(f, data)
+}
+
+func copyDocs(destDir string) error {
+	entries, err := docs.Files.ReadDir(".")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := docs.Files.ReadFile(e.Name())
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(destDir, e.Name())
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
