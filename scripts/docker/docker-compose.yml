@@ -1,3 +1,5 @@
+# 本地开发数据库：docker compose up -d 一键启动 MySQL
+# 与 configs/config.yaml 的 db.dsn 对应（root:123456@tcp(127.0.0.1:3306)/crawler）
 version: '3.8'
 services:
   mysql:
@@ -13,22 +15,6 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       retries: 5
-
-  crawler:
-    build:
-      context: ../..
-      dockerfile: scripts/docker/Dockerfile
-    depends_on:
-      mysql:
-        condition: service_healthy
-    environment:
-      APP_ENV: prod
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./logs:/root/logs
-      - ./downloads:/root/downloads
-    restart: unless-stopped
 
 volumes:
   mysql_data:

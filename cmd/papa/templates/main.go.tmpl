@@ -36,7 +36,6 @@ func main() {
 				app.Logger.Engine.Errorf("submit initial task: %s", err.Error())
 			}
 		})
-	app.RegisterStage(&fetcher.FetchDetail{}, nil)
 
 	// 4. 优雅关闭
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

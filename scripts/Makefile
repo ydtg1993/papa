@@ -1,10 +1,7 @@
-.PHONY: build run test clean docker-up docker-down migrate
+.PHONY: build test clean docker-up docker-down
 
 build:
-	go build -o bin/papa cmd/crawler/main.go
-
-run:
-	go run cmd/crawler/main.go
+	go build -o bin/papa ./cmd/papa
 
 test:
 	go test -v -race -cover ./...
@@ -17,7 +14,3 @@ docker-up:
 
 docker-down:
 	docker-compose -f scripts/docker/docker-compose.yml down
-
-migrate:
-	@echo "Running auto migration (set APP_ENV=dev to enable)"
-	go run cmd/crawler/main.go

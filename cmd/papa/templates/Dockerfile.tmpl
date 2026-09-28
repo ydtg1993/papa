@@ -1,0 +1,8 @@
+# 开发容器：带 Go 工具链 + Chromium，源码通过 volume 挂载后 go run 热启动
+FROM golang:1.25-alpine
+
+RUN apk --no-cache add chromium ffmpeg ca-certificates
+
+WORKDIR /app
+EXPOSE 9090
+CMD ["go", "run", "."]

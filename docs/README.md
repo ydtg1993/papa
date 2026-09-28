@@ -69,7 +69,6 @@
       │   ├── track/              # 监控统计（StatsQueue）
       │   └── workerpool/         # 泛型工作池
       ├── cmd/papa/               # 脚手架 CLI：papa new <name> 生成新爬虫项目
-      ├── examples/video/         # 示例：动漫爬虫（main.go + fetcher + models）
       ├── configs/                # 示例配置文件
       ├── logs/                   # 日志文件目录（运行时生成）
       ├── scripts/                # 辅助脚本（Docker、数据库迁移等）
@@ -90,11 +89,24 @@ Papa 是框架包，你在**自己的项目里 `import "github.com/ydtg1993/papa
 
 #### 方式一：用脚手架生成新项目（推荐）
 
+**框架作者本地验证（无需发布版本）** —— 先安装脚手架到本机，再用 `--replace` 指向本地仓库：
+
+```bash
+go install ./cmd/papa        # 一次性安装，得到 papa 命令
+
+cd /some/where
+papa new mycrawler --replace E:/go-project/papa   # 生成的 go.mod 直接指向本地 papa 仓库
+cd mycrawler && go mod tidy && go run .
+```
+
+> 不想安装就直接 `go run ./cmd/papa new mycrawler --replace ..`（在 papa 仓库根目录下运行，`..` 指回 papa 仓库）。
+
+**外部用户（框架发布后）** —— 从 GitHub 拉取脚手架：
+
 ```bash
 go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
 cd mycrawler
-go mod tidy   # 自动拉取 github.com/ydtg1993/papa 依赖
-go run .
+go mod tidy && go run .
 ```
 
 完整流程见下方「具体怎么用」一节。
@@ -135,7 +147,10 @@ app:
 #### 1. 生成项目骨架
 
 ```bash
-go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
+# 本地验证（推荐）：先 go install ./cmd/papa，再
+papa new mycrawler --replace /path/to/papa
+# 或外部拉取：go run github.com/ydtg1993/papa/cmd/papa@latest new mycrawler
+
 cd mycrawler
 go mod tidy
 ```
