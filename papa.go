@@ -20,6 +20,12 @@ var WithConfigPath = app.WithConfigPath
 // WithModels 追加需要自动迁移的用户模型（框架默认迁移 CrawlerTask）。
 var WithModels = app.WithModels
 
+// ModelDef 可浏览模型登记信息（监控后台数据浏览）。
+type ModelDef = app.ModelDef
+
+// WithBrowsableModels 登记可浏览模型（监控后台数据浏览；dev 环境一并自动迁移）。
+var WithBrowsableModels = app.WithBrowsableModels
+
 // Fetcher 爬虫业务逻辑接口。
 type Fetcher = crawler.Fetcher
 

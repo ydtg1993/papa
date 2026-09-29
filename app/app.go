@@ -9,6 +9,7 @@ import (
 	"github.com/ydtg1993/papa/v2/crawler"
 	"github.com/ydtg1993/papa/v2/models"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
+	"github.com/ydtg1993/papa/v2/pkg/dataadmin"
 	"github.com/ydtg1993/papa/v2/pkg/database"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
 	"github.com/ydtg1993/papa/v2/pkg/metrics"
@@ -32,11 +33,20 @@ type App struct {
 	BrowserPool *browser.Pool
 	Engine      *crawler.Engine
 
-	configPath  string
-	extraModels []any
-	metrics     *metrics.Registry
-	sysInfo     *sysinfo.Collector
-	cancel      context.CancelFunc
+	configPath      string
+	extraModels     []any
+	browsableModels []ModelDef
+	metrics         *metrics.Registry
+	sysInfo         *sysinfo.Collector
+	dataAdmin       *dataadmin.Registry
+	cancel          context.CancelFunc
+}
+
+// ModelDef 一个可浏览模型的登记信息（供监控后台数据浏览）
+type ModelDef struct {
+	Key   string // URL 安全标识
+	Label string // 展示名，空则用 Key
+	Model any    // 结构体指针
 }
 
 // Option 应用初始化选项
@@ -54,6 +64,14 @@ func WithConfigPath(path string) Option {
 func WithModels(models ...any) Option {
 	return func(a *App) error {
 		a.extraModels = append(a.extraModels, models...)
+		return nil
+	}
+}
+
+// WithBrowsableModels 登记可浏览模型（监控后台数据浏览；dev 环境一并自动迁移）
+func WithBrowsableModels(defs ...ModelDef) Option {
+	return func(a *App) error {
+		a.browsableModels = append(a.browsableModels, defs...)
 		return nil
 	}
 }
@@ -98,7 +116,13 @@ func NewApp(opts ...Option) (*App, error) {
 
 	// 4. 自动迁移（开发环境）
 	if cfg.App.Env == "dev" {
-		allModels := append([]any{&models.CrawlerTask{}}, a.extraModels...)
+		allModels := []any{&models.CrawlerTask{}}
+		allModels = append(allModels, a.extraModels...)
+		for _, def := range a.browsableModels {
+			if def.Model != nil {
+				allModels = append(allModels, def.Model)
+			}
+		}
 		if err := database.AutoMigrate(db, allModels...); err != nil {
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
@@ -109,11 +133,26 @@ func NewApp(opts ...Option) (*App, error) {
 	metricsReg := metrics.New()
 	engine.SetMetrics(metricsReg)
 
+	// 6. 数据浏览注册表（监控后台通用数据浏览）
+	dataAdmin := dataadmin.New(db)
+	if err := dataAdmin.Register("task", "任务", &models.CrawlerTask{}); err != nil {
+		return nil, fmt.Errorf("register task model: %w", err)
+	}
+	for _, def := range a.browsableModels {
+		if def.Model == nil || def.Key == "" {
+			continue
+		}
+		if err := dataAdmin.Register(def.Key, def.Label, def.Model); err != nil {
+			return nil, fmt.Errorf("register model %s: %w", def.Key, err)
+		}
+	}
+
 	a.Config = cfg
 	a.Logger = &loggerSet
 	a.DB = db
 	a.Engine = engine
 	a.metrics = metricsReg
+	a.dataAdmin = dataAdmin
 	return a, nil
 }
 
@@ -290,6 +329,7 @@ func (a *App) httpServer(ctx context.Context) {
 			WhitelistFile: cfg.WhitelistFile,
 			Metrics:       a.metrics,
 			SysInfo:       a.sysInfo,
+			DataAdmin:     a.dataAdmin,
 			LogDir:        a.Config.Log.Dir,
 			OnShutdown:    a.Shutdown,
 		})

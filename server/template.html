@@ -4,170 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Papa Admin</title>
-    <style>
-        :root {
-            --bg: #f4efe4;
-            --ink: #111111;
-            --paper: #ffffff;
-            --yellow: #ffd43b;
-            --pink: #ff7eb6;
-            --blue: #74c0fc;
-            --green: #69db7c;
-            --red: #ff6b6b;
-            --purple: #b197fc;
-            --border: 3px solid var(--ink);
-            --shadow: 5px 5px 0 0 var(--ink);
-        }
-        * { box-sizing: border-box; }
-        html, body { height: 100%; }
-        body {
-            margin: 0; background: var(--bg); color: var(--ink);
-            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-            font-weight: 600; display: flex;
-        }
-
-        /* ---- sidebar ---- */
-        .sidebar {
-            width: 220px; min-height: 100vh; background: var(--ink); color: #fff;
-            display: flex; flex-direction: column; flex-shrink: 0;
-            padding: 20px 14px;
-        }
-        .brand {
-            font-size: 20px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
-            background: var(--yellow); color: var(--ink); border: 2px solid #fff;
-            box-shadow: 4px 4px 0 0 #fff; padding: 10px 12px; margin-bottom: 24px;
-        }
-        nav { display: flex; flex-direction: column; gap: 12px; }
-        .nav-item {
-            text-align: left; font-size: 15px; font-weight: 700; letter-spacing: .5px;
-            color: var(--ink); background: var(--paper); border: 2px solid var(--ink);
-            box-shadow: 4px 4px 0 0 var(--yellow); padding: 12px 14px; cursor: pointer;
-        }
-        .nav-item.active { background: var(--green); transform: translate(2px, 2px); box-shadow: 2px 2px 0 0 var(--yellow); }
-        .side-status {
-            margin-top: auto; display: flex; align-items: center; gap: 8px;
-            font-size: 12px; color: #ddd; padding-top: 16px;
-        }
-        .dot { width: 13px; height: 13px; border-radius: 50%; background: var(--red); border: 2px solid #fff; }
-        .dot.ok { background: var(--green); }
-
-        /* ---- main ---- */
-        .content { flex: 1; padding: 22px 26px 60px; overflow-x: hidden; }
-        .content-top {
-            display: flex; align-items: center; justify-content: space-between;
-            background: var(--yellow); border: var(--border); box-shadow: var(--shadow);
-            padding: 12px 18px; margin-bottom: 24px;
-        }
-        .content-top h1 { margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: 1px; }
-        .refresh { font-size: 12px; font-family: "Consolas", monospace; }
-
-        section { margin-bottom: 28px; }
-        section > h2 {
-            font-size: 14px; text-transform: uppercase; letter-spacing: 1px;
-            display: inline-block; background: var(--paper); border: var(--border);
-            box-shadow: 4px 4px 0 0 var(--ink); padding: 6px 12px; margin: 0 0 16px;
-        }
-
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; }
-        .card { background: var(--paper); border: var(--border); box-shadow: var(--shadow); padding: 16px; }
-        .card .label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; opacity: .7; }
-        .card .value { font-size: 28px; font-family: "Consolas", monospace; margin: 6px 0 10px; word-break: break-all; }
-        .card .sub { font-size: 12px; opacity: .6; font-family: "Consolas", monospace; }
-
-        .bar { height: 18px; border: 2px solid var(--ink); background: var(--paper); overflow: hidden; }
-        .bar > span { display: block; height: 100%; transition: width .4s; }
-        .bar.cpu > span { background: var(--blue); }
-        .bar.ram > span { background: var(--pink); }
-        .bar.disk > span { background: var(--purple); }
-
-        .stage { background: var(--paper); border: var(--border); box-shadow: var(--shadow); padding: 18px; margin-bottom: 20px; }
-        .stage h3 {
-            margin: 0 0 14px; font-size: 17px; display: inline-block;
-            background: var(--green); border: 2px solid var(--ink); box-shadow: 3px 3px 0 0 var(--ink);
-            padding: 4px 12px;
-        }
-        .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; margin-bottom: 14px; }
-        .tile { border: 2px solid var(--ink); box-shadow: 3px 3px 0 0 var(--ink); padding: 8px 10px; background: #fff; }
-        .tile .k { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; opacity: .65; }
-        .tile .v { font-size: 20px; font-family: "Consolas", monospace; }
-        .tile.queued .v { color: #1c7ed6; }
-        .tile.running .v { color: #f08c00; }
-        .tile.done .v { color: #2b8a3e; }
-        .tile.failed .v { color: #c92a2a; }
-        .tile.submitted .v { color: #6741d9; }
-
-        table { border-collapse: collapse; width: 100%; font-size: 13px; }
-        th, td { border: 2px solid var(--ink); padding: 6px 8px; text-align: left; }
-        th { background: var(--yellow); }
-        td { font-family: "Consolas", monospace; }
-        .muted { opacity: .55; font-size: 12px; }
-
-        .kv { display: grid; grid-template-columns: 1fr; gap: 10px; }
-        .kv .row { display: flex; border: 2px solid var(--ink); box-shadow: 3px 3px 0 0 var(--ink); }
-        .kv .k { background: var(--blue); padding: 8px 12px; min-width: 160px; font-family: "Consolas", monospace; }
-        .kv .v { padding: 8px 12px; background: var(--paper); flex: 1; font-family: "Consolas", monospace; word-break: break-all; }
-
-        .empty { border: 2px dashed var(--ink); padding: 14px; opacity: .6; }
-
-        .module { display: none; }
-        .module.active { display: block; }
-
-        .btn {
-            display: inline-block; padding: 10px 16px; font-size: 14px; font-weight: 700;
-            background: var(--yellow); border: 2px solid var(--ink); box-shadow: 4px 4px 0 0 var(--ink);
-            cursor: pointer; letter-spacing: .5px; margin-top: 12px;
-        }
-        .btn:active { transform: translate(4px, 4px); box-shadow: 0 0 0 0 var(--ink); }
-        .btn.danger { background: var(--red); color: #fff; }
-        textarea {
-            width: 100%; padding: 10px; font-family: "Consolas", monospace; font-size: 14px;
-            border: 2px solid var(--ink); box-shadow: 3px 3px 0 0 var(--ink); outline: none; resize: vertical;
-        }
-        .hint { font-size: 12px; opacity: .65; margin: 8px 0; }
-        .secret-box {
-            margin-top: 12px; padding: 10px; border: 2px dashed var(--ink);
-            font-family: "Consolas", monospace; word-break: break-all; background: #fff; font-size: 13px;
-        }
-        .log-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-        .log-row {
-            display: flex; justify-content: space-between; align-items: center;
-            border: 2px solid var(--ink); box-shadow: 3px 3px 0 0 var(--ink); padding: 8px 12px; background: #fff;
-        }
-        .log-row .nm { font-family: "Consolas", monospace; word-break: break-all; }
-        .log-row .sz { font-family: "Consolas", monospace; opacity: .6; font-size: 12px; margin: 0 12px; flex-shrink: 0; }
-        .log-row a { cursor: pointer; color: #1c7ed6; font-weight: 700; text-decoration: none; flex-shrink: 0; }
-
-        /* login overlay */
-        #login {
-            position: fixed; inset: 0; background: var(--bg); z-index: 99;
-            display: flex; align-items: center; justify-content: center;
-        }
-        #login .box {
-            background: var(--paper); border: var(--border); box-shadow: 8px 8px 0 0 var(--ink);
-            padding: 28px; width: 90%; max-width: 380px;
-        }
-        #login h1 { margin: 0 0 6px; font-size: 22px; }
-        #login p { margin: 0 0 18px; opacity: .7; font-size: 13px; }
-        #login input {
-            width: 100%; padding: 12px; font-size: 16px; font-family: "Consolas", monospace;
-            border: var(--border); box-shadow: 4px 4px 0 0 var(--ink); outline: none;
-        }
-        #login button {
-            margin-top: 16px; width: 100%; padding: 12px; font-size: 15px; font-weight: 700;
-            background: var(--yellow); border: var(--border); box-shadow: 4px 4px 0 0 var(--ink);
-            cursor: pointer; letter-spacing: 1px;
-        }
-        #login button:active { transform: translate(4px, 4px); box-shadow: 0 0 0 0 var(--ink); }
-        #login .err { color: #c92a2a; font-size: 13px; margin-top: 12px; display: none; }
-        .hidden { display: none !important; }
-
-        @media (max-width: 720px) {
-            body { flex-direction: column; }
-            .sidebar { width: 100%; min-height: auto; flex-direction: row; flex-wrap: wrap; gap: 8px; align-items: center; }
-            nav { flex-direction: row; flex-wrap: wrap; }
-            .side-status { margin-top: 0; }
-        }
-    </style>
+    <link rel="stylesheet" href="/static/mo.css">
 </head>
 <body>
 <div id="login">
@@ -175,7 +12,7 @@
         <h1>PAPA ADMIN</h1>
         <p>输入访问密钥以登录监控后台</p>
         <input id="key" type="password" placeholder="访问密钥" autocomplete="off">
-        <button onclick="submitKey()">登录</button>
+        <button class="btn" onclick="submitKey()">登录</button>
         <div class="err" id="err">密钥错误，请重试</div>
     </div>
 </div>
@@ -183,9 +20,12 @@
 <div class="shell" id="app">
     <aside class="sidebar">
         <div class="brand">Papa Admin</div>
+        <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
         <nav>
             <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">Dashboard</button>
             <button class="nav-item" data-module="queue" onclick="switchModule('queue')">任务队列</button>
+            <button class="nav-item" data-module="tasks" onclick="switchModule('tasks')">任务</button>
+            <button class="nav-item" data-module="data" onclick="switchModule('data')">数据浏览</button>
             <button class="nav-item" data-module="custom" onclick="switchModule('custom')">自定义数据</button>
             <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
         </nav>
@@ -217,6 +57,44 @@
             <section>
                 <h2>各阶段队列详情</h2>
                 <div id="queue-stages"></div>
+            </section>
+        </div>
+
+        <div class="module" id="mod-tasks">
+            <section>
+                <h2>任务明细</h2>
+                <div class="card">
+                    <div class="toolbar">
+                        <select id="task-stage" onchange="DataBrowser.page=1;loadTasks()"><option value="">全部阶段</option></select>
+                        <select id="task-status" onchange="DataBrowser.page=1;loadTasks()">
+                            <option value="">全部状态</option>
+                            <option value="0">待处理</option>
+                            <option value="1">处理中</option>
+                            <option value="2">成功</option>
+                            <option value="3">失败</option>
+                        </select>
+                        <input id="task-search" placeholder="搜索 URL / 标题" onkeydown="if(event.key==='Enter'){DataBrowser.page=1;loadTasks();}">
+                        <button class="btn" style="margin-top:0" onclick="DataBrowser.page=1;loadTasks()">查询</button>
+                    </div>
+                    <div class="table-wrap" id="task-table"></div>
+                    <div class="pager" id="task-pager"></div>
+                </div>
+            </section>
+        </div>
+
+        <div class="module" id="mod-data">
+            <section>
+                <h2>数据浏览</h2>
+                <div class="card">
+                    <div class="toolbar">
+                        <select id="data-model-select" onchange="onDataModelChange()"></select>
+                        <input id="data-search" placeholder="搜索（模糊匹配字符串列）" onkeydown="if(event.key==='Enter'){DataBrowser.page=1;loadDataBrowser();}">
+                        <button class="btn" style="margin-top:0" onclick="DataBrowser.page=1;loadDataBrowser()">查询</button>
+                    </div>
+                    <div class="filters" id="data-filters"></div>
+                    <div class="table-wrap" id="data-table"></div>
+                    <div class="pager" id="data-pager"></div>
+                </div>
             </section>
         </div>
 
@@ -264,272 +142,6 @@
     </main>
 </div>
 
-<script>
-    const KEY_STORAGE = 'papa_monitor_key';
-    const MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', custom: '自定义数据', settings: '设置' };
-    let currentModule = 'dashboard';
-
-    function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
-    function saveKey(k) { localStorage.setItem(KEY_STORAGE, k); }
-    function clearKey() { localStorage.removeItem(KEY_STORAGE); }
-
-    function showLogin(showErr) {
-        document.getElementById('login').classList.remove('hidden');
-        document.getElementById('err').style.display = showErr ? 'block' : 'none';
-        document.getElementById('key').focus();
-    }
-    function hideLogin() { document.getElementById('login').classList.add('hidden'); }
-
-    function submitKey() { saveKey(document.getElementById('key').value); fetchData(); }
-    document.getElementById('key').addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') submitKey();
-    });
-
-    function switchModule(name) {
-        currentModule = name;
-        document.querySelectorAll('.module').forEach(function (m) { m.classList.remove('active'); });
-        document.getElementById('mod-' + name).classList.add('active');
-        document.querySelectorAll('.nav-item').forEach(function (b) {
-            b.classList.toggle('active', b.dataset.module === name);
-        });
-        document.getElementById('moduleTitle').textContent = MODULE_TITLES[name];
-        if (name === 'settings') { fetchSettings(); fetchLogs(); }
-    }
-
-    function setStatus(ok, text) {
-        document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
-        document.getElementById('statusText').textContent = text;
-    }
-
-    function fmtDuration(ns) {
-        if (ns == null || isNaN(ns)) return '-';
-        if (ns < 1e6) return (ns / 1e3).toFixed(2) + 'µs';
-        if (ns < 1e9) return (ns / 1e6).toFixed(2) + 'ms';
-        return (ns / 1e9).toFixed(2) + 's';
-    }
-    function fmtBytes(b) {
-        if (b == null) return '-';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let i = 0, v = b;
-        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-        return v.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
-    }
-    function pct(p) { return p == null ? 0 : Math.min(100, Math.max(0, p)); }
-    function jsonVal(v) {
-        if (v === null || v === undefined) return String(v);
-        if (typeof v === 'object') return JSON.stringify(v);
-        return String(v);
-    }
-    function bar(cls, p) {
-        return '<div class="bar ' + cls + '"><span style="width:' + p + '%"></span></div>';
-    }
-
-    function renderSystem(s) {
-        const el = document.getElementById('dash-sys');
-        if (!s) { el.innerHTML = '<div class="empty">无系统指标</div>'; return; }
-        el.innerHTML =
-            '<div class="card"><div class="label">CPU</div><div class="value">' + (s.cpu_percent || 0).toFixed(1) + '%</div>' + bar('cpu', pct(s.cpu_percent)) + '</div>'
-            + '<div class="card"><div class="label">内存</div><div class="value">' + fmtBytes(s.mem_used) + '</div><div class="sub">共 ' + fmtBytes(s.mem_total) + '</div>' + bar('ram', pct(s.mem_percent)) + '</div>'
-            + '<div class="card"><div class="label">磁盘</div><div class="value">' + fmtBytes(s.disk_used) + '</div><div class="sub">共 ' + fmtBytes(s.disk_total) + '</div>' + bar('disk', pct(s.disk_percent)) + '</div>';
-    }
-
-    function renderDirs(dirs) {
-        const el = document.getElementById('dash-dirs');
-        const keys = Object.keys(dirs || {});
-        if (keys.length === 0) { el.innerHTML = '<div class="empty">未配置 monitor_dirs</div>'; return; }
-        el.innerHTML = keys.map(function (name) {
-            const d = dirs[name];
-            return '<div class="card"><div class="label">' + name + '</div><div class="value">' + fmtBytes(d.size) + '</div><div class="sub">' + (d.path || '') + '</div></div>';
-        }).join('');
-    }
-
-    function stageTiles(q) {
-        q = q || {};
-        return '<div class="tiles">'
-            + '<div class="tile queued"><div class="k">排队</div><div class="v">' + q.queue_len + '</div></div>'
-            + '<div class="tile running"><div class="k">执行中</div><div class="v">' + q.in_progress + '</div></div>'
-            + '<div class="tile done"><div class="k">完成</div><div class="v">' + q.completed + '</div></div>'
-            + '<div class="tile failed"><div class="k">错误</div><div class="v">' + q.failed + '</div></div>'
-            + '<div class="tile submitted"><div class="k">已提交</div><div class="v">' + q.submitted + '</div></div>'
-            + '</div>';
-    }
-
-    function renderQueueSummary(stages) {
-        const el = document.getElementById('dash-queue');
-        const names = Object.keys(stages || {});
-        if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
-        el.innerHTML = names.map(function (name) {
-            return '<div class="stage"><h3>' + name + '</h3>' + stageTiles(stages[name].queue) + '</div>';
-        }).join('');
-    }
-
-    function renderQueue(stages) {
-        const el = document.getElementById('queue-stages');
-        const names = Object.keys(stages || {});
-        if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
-        el.innerHTML = names.map(function (name) {
-            const st = stages[name];
-            const g = st.global || {};
-            const workers = st.workers || {};
-            const wrows = Object.keys(workers).map(function (id) {
-                const w = workers[id];
-                return '<tr><td>#' + id + '</td><td>' + w.TotalTasks + '</td><td>' + w.FailedTasks
-                    + '</td><td>' + fmtDuration(w.TotalTime) + '</td><td>' + fmtDuration(w.MaxTime)
-                    + '</td><td>' + fmtDuration(w.MinTime) + '</td></tr>';
-            }).join('');
-            return '<div class="stage"><h3>' + name + '</h3>' + stageTiles(st.queue)
-                + '<div class="muted">累计任务 ' + g.TotalTasks + ' · 累计失败 ' + g.TotalFailed
-                + ' · 平均 ' + fmtDuration(g.AvgTime) + ' · 最大 ' + fmtDuration(g.MaxTime) + ' · 最小 ' + fmtDuration(g.MinTime) + '</div>'
-                + '<div style="margin-top:12px"><table><tr><th>Worker</th><th>任务</th><th>失败</th><th>总耗时</th><th>最大</th><th>最小</th></tr>'
-                + wrows + '</table></div></div>';
-        }).join('');
-    }
-
-    function renderCustom(custom) {
-        const el = document.getElementById('custom');
-        const keys = Object.keys(custom || {});
-        if (keys.length === 0) { el.innerHTML = '<div class="empty">暂无自定义数据（fetcher 里调 engine.RecordMetric 写入）</div>'; return; }
-        el.innerHTML = keys.map(function (k) {
-            return '<div class="row"><div class="k">' + k + '</div><div class="v">' + jsonVal(custom[k]) + '</div></div>';
-        }).join('');
-    }
-
-    function renderAll(data) {
-        renderSystem(data.system);
-        renderDirs(data.system && data.system.dirs);
-        renderQueueSummary(data.stages);
-        renderQueue(data.stages);
-        renderCustom(data.custom);
-    }
-
-    async function fetchData() {
-        const key = loadKey();
-        const headers = {};
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        let resp;
-        try {
-            resp = await fetch('/api/monitor', { headers: headers });
-        } catch (e) {
-            setStatus(false, '连接失败');
-            return;
-        }
-        if (resp.status === 401) {
-            clearKey();
-            setStatus(false, '需要密钥');
-            showLogin(true);
-            return;
-        }
-        if (!resp.ok) { setStatus(false, 'HTTP ' + resp.status); return; }
-        const data = await resp.json();
-        hideLogin();
-        setStatus(true, '已连接');
-        document.getElementById('refreshTime').textContent = '刷新于 ' + new Date().toLocaleTimeString();
-        renderAll(data);
-    }
-
-    async function apiFetch(url) {
-        const headers = {};
-        const key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        const resp = await fetch(url, { headers: headers });
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
-        return resp;
-    }
-    async function apiPost(url, body) {
-        const headers = { 'Content-Type': 'application/json' };
-        const key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        const resp = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body || {}) });
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
-        return resp;
-    }
-    async function downloadFile(url) {
-        const headers = {};
-        const key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        const resp = await fetch(url, { headers: headers });
-        if (resp.status === 401) { clearKey(); showLogin(true); return; }
-        if (!resp.ok) { alert('下载失败 HTTP ' + resp.status); return; }
-        const blob = await resp.blob();
-        const cd = resp.headers.get('Content-Disposition') || '';
-        let name = 'logs.zip';
-        const m = /filename="?([^";]+)"?/.exec(cd);
-        if (m) name = m[1];
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(a.href);
-    }
-
-    async function fetchSettings() {
-        const resp = await apiFetch('/api/settings');
-        if (!resp) return;
-        const data = await resp.json();
-        document.getElementById('wl-input').value = (data.whitelist || []).join('\n');
-        document.getElementById('wl-file-info').textContent = data.whitelist_file
-            ? ('持久化文件：' + data.whitelist_file + (data.has_whitelist_file ? '（已存在）' : '（首次保存时创建）'))
-            : '未配置 whitelist_file：改动仅本次运行有效';
-        document.getElementById('secret-file-info').textContent = data.auth_key_file
-            ? ('密钥文件：' + data.auth_key_file + (data.has_secret_file ? '（已存在）' : '（不存在）'))
-            : '未配置密钥文件：重新生成的密钥仅本次运行有效';
-    }
-    async function saveWhitelist() {
-        const lines = document.getElementById('wl-input').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-        const resp = await apiPost('/api/settings/whitelist', { whitelist: lines });
-        document.getElementById('wl-msg').textContent = resp && resp.ok ? '已保存' : '保存失败';
-    }
-    async function regenSecret() {
-        const resp = await apiPost('/api/settings/secret', {});
-        if (!resp || !resp.ok) return;
-        const data = await resp.json();
-        saveKey(data.key);
-        const box = document.getElementById('secret-result');
-        box.classList.remove('hidden');
-        box.innerHTML = '新密钥：<br><b>' + data.key + '</b><br><br>已自动更新登录态；请妥善保存，未配置密钥文件时重启会失效。';
-    }
-    async function doShutdown() {
-        if (!confirm('确定要优雅退出爬虫进程吗？')) return;
-        document.getElementById('shutdown-msg').textContent = '正在关闭...';
-        await apiPost('/api/settings/shutdown', {});
-    }
-    async function fetchLogs() {
-        const resp = await apiFetch('/api/logs');
-        if (!resp) return;
-        const data = await resp.json();
-        const el = document.getElementById('log-list');
-        const files = data.files || [];
-        el.innerHTML = '';
-        if (files.length === 0) { el.innerHTML = '<div class="hint">日志目录为空</div>'; return; }
-        files.forEach(function (f) {
-            const row = document.createElement('div');
-            row.className = 'log-row';
-            const nm = document.createElement('span');
-            nm.className = 'nm';
-            nm.textContent = f.name;
-            const sz = document.createElement('span');
-            sz.className = 'sz';
-            sz.textContent = fmtBytes(f.size);
-            const a = document.createElement('a');
-            a.textContent = '下载';
-            a.onclick = function () { downloadLog(f.name); };
-            row.appendChild(nm);
-            row.appendChild(sz);
-            row.appendChild(a);
-            el.appendChild(row);
-        });
-    }
-    async function downloadLog(name) {
-        await downloadFile('/api/logs/download?file=' + encodeURIComponent(name));
-    }
-    async function downloadLogs() {
-        await downloadFile('/api/logs/download');
-    }
-
-    fetchData();
-    setInterval(fetchData, 3000);
-</script>
+<script src="/static/mo.js"></script>
 </body>
 </html>

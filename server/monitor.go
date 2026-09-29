@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/pkg/dataadmin"
 	"github.com/ydtg1993/papa/v2/pkg/metrics"
 	"github.com/ydtg1993/papa/v2/pkg/sysinfo"
 	"github.com/ydtg1993/papa/v2/pkg/track"
@@ -26,19 +27,23 @@ import (
 //go:embed template.html
 var templateFS embed.FS
 
+//go:embed static
+var staticFS embed.FS
+
 // MonitorGetter 定义获取所有阶段监控器的函数类型
 type MonitorGetter func() map[string]*track.StatsQueue[*crawler.Task]
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	AuthKey       string             // 初始访问密钥，空=不校验
-	AuthKeyFile   string             // 密钥文件路径（重新生成时持久化到此文件）
-	Whitelist     []string           // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile string             // 白名单持久化文件路径（动态更新时写回）
-	Metrics       *metrics.Registry  // 业务自定义数据（可空）
-	SysInfo       *sysinfo.Collector // 系统指标采集器（可空）
-	LogDir        string             // 日志目录（导出用）
-	OnShutdown    func()             // 优雅退出回调
+	AuthKey       string              // 初始访问密钥，空=不校验
+	AuthKeyFile   string              // 密钥文件路径（重新生成时持久化到此文件）
+	Whitelist     []string            // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile string              // 白名单持久化文件路径（动态更新时写回）
+	Metrics       *metrics.Registry   // 业务自定义数据（可空）
+	SysInfo       *sysinfo.Collector  // 系统指标采集器（可空）
+	DataAdmin     *dataadmin.Registry // 通用数据浏览注册表（可空）
+	LogDir        string              // 日志目录（导出用）
+	OnShutdown    func()              // 优雅退出回调
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -100,6 +105,11 @@ func parseWhitelist(items []string, logger Logger) []*net.IPNet {
 
 // Register 将监控路由注册到统一 mux 上
 func (s *Monitor) Register(mux *http.ServeMux) {
+	// 静态资源（CSS/JS），无需鉴权
+	if sub, err := fs.Sub(staticFS, "static"); err == nil {
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+	}
+
 	mux.HandleFunc("/monitor", s.wrap(s.htmlHandler))
 	mux.HandleFunc("/api/monitor", s.wrap(s.apiHandler))
 	mux.HandleFunc("/api/settings", s.wrap(s.settingsHandler))
@@ -108,6 +118,8 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
+	mux.HandleFunc("/api/data/models", s.wrap(s.dataModelsHandler))
+	mux.HandleFunc("/api/data/{model}", s.wrap(s.dataListHandler))
 }
 
 // wrap 包装处理器：先 IP 白名单，再密钥校验（仅 /api/ 数据接口）

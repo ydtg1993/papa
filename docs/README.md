@@ -262,6 +262,29 @@ go run .
 
 > 白名单文件为纯文本：每行一个 IP/CIDR，`#` 开头为注释，留空 = 不限制。动态改动会写回该文件，重启后仍生效。
 
+### 数据浏览 API（通用 model 浏览）
+
+把业务 model 登记进 OA，即可在「数据浏览」模块分页/搜索/筛选/排序查看。注册在代码层完成：
+
+```go
+app, err := papa.New(
+    papa.WithBrowsableModels(
+        papa.ModelDef{Key: "episode", Label: "剧集", Model: &models.Episode{}},
+    ),
+)
+```
+
+框架默认已登记 `task`（任务表 `crawler_tasks`）。接口（同样走密钥 + 白名单）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/data/models` | 列出可浏览模型及列元数据 |
+| GET | `/api/data/:model` | 分页列表；query：`page`(1 起)、`size`(默认 20，上限 200)、`search`(字符串列 LIKE)、`sort`(`col` / `-col`)、`filter[col]=val`(可重复，等值) |
+
+示例：`/api/data/episode?page=1&size=20&search=火影&sort=-id&filter[downloaded]=true`
+
+> 只读，无写端点。`sort`/`filter` 列名走白名单校验，非法列会被忽略；未登记 model 返回 404。
+
 ### 🔧 中间件与下载器（可选）
 
 需要代理、m3u8 视频、文件下载时，在 `RegisterStage` 之前设置：
