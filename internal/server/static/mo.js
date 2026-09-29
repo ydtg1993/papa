@@ -168,16 +168,22 @@
         var headers = {};
         var key = loadKey();
         if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp = await fetch(url, { headers: headers });
+        var resp;
+        try { resp = await fetch(url, { headers: headers }); }
+        catch (e) { setStatus(false, '连接失败'); return null; }
         if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
+        if (!resp.ok) return null;
         return resp;
     }
     async function apiPost(url, body) {
         var headers = { 'Content-Type': 'application/json' };
         var key = loadKey();
         if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body || {}) });
+        var resp;
+        try { resp = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body || {}) }); }
+        catch (e) { setStatus(false, '连接失败'); return null; }
         if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
+        if (!resp.ok) return null;
         return resp;
     }
     async function fetchData() {

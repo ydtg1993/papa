@@ -277,7 +277,35 @@ app, err := papa.New(
 )
 ```
 
-框架默认已登记 `task`（任务表 `crawler_tasks`）。接口（同样走密钥 + 白名单）：
+#### ModelDef 字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `Key` | URL 安全标识（字母/数字/下划线/连字符），是 `/api/data/{key}` 的路径段，**别用中文或空格** |
+| `Label` | 后台「数据浏览」下拉框里的展示名，留空则回退用 `Key` |
+| `Model` | **GORM 表模型的指针**（对应一张表）。注意：像 `DetailContent` 那种序列化进 `content` 列的 JSON 结构不是表模型，不能注册 |
+
+#### 列能力自动判定
+
+框架用 GORM schema 内省 `Model` 的字段，自动决定每列的能力：
+
+| 字段类型 | 模糊搜索（`search`） | 排序（`sort`） | 等值筛选（`filter`） |
+| --- | --- | --- | --- |
+| 字符串 | ✅ LIKE | ✅ | ✅ |
+| 数字 / bool / 时间 | ❌ | ✅ | ✅ |
+| JSON / 其它 | ❌ | ❌ | ❌（只读展示） |
+
+#### 建表与 `WithModels` 的关系
+
+`WithBrowsableModels` 的模型在 `app.env: dev` 时会被自动迁移建表，**无需再写一次 `WithModels`**。`WithModels` 只用于「要建表但不想在后台浏览」的模型。
+
+#### 后台怎么看
+
+监控后台「数据浏览」模块：下拉框选模型 → 搜索框模糊搜 → 列筛选 → 点表头排序 → 翻页。框架默认已登记 `task`（任务表 `crawler_tasks`）。
+
+#### 接口
+
+（同样走密钥 + 白名单）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -286,7 +314,7 @@ app, err := papa.New(
 
 示例：`/api/data/episode?page=1&size=20&search=火影&sort=-id&filter[downloaded]=true`
 
-> 只读，无写端点。`sort`/`filter` 列名走白名单校验，非法列会被忽略；未登记 model 返回 404。
+> 只读，无写端点。`sort`/`filter`/`search` 的列名均走白名单校验，非法列会被忽略；未登记 model 返回 404。
 
 ### 🔧 中间件与下载器（可选）
 
