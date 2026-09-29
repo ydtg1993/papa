@@ -10,6 +10,8 @@
 - 💾 **任务持久化与恢复** – 基于 GORM 将任务状态持久化到 MySQL，支持断点续爬，引擎启动时自动恢复未完成或超时的任务。
 - 📊 **可观测性** – 工作池提供活动事件通道，监控模块可实时统计各阶段任务执行情况（成功/失败/耗时），并提供 Web 界面与 JSON API。
 - ⚙️ **灵活配置** – 通过 YAML 配置文件设置各阶段 worker 数量、队列大小、重试次数、浏览器参数等。
+- ⏱️ **延迟投递与随机间隔** – 任务支持 `NotBefore`/`Delay` 延迟投递（到点才入队，不空占 worker）；阶段 `delay` 支持 `"10s-30s"` 随机区间，反爬更隐蔽。
+- 🛡️ **错误分类与告警** – 区分「可重试 / 不可重试」错误，失败时结构化记录 `stage/task_id/url/retry/kind` 并触发告警 hook（webhook/钉钉）。
 - ⏰ **定时任务调度** – 基于 Cron 表达式，支持周期执行 `catalog` 轮询（如每日检查新视频）、`recover` 恢复未完成任务等。
 - 🔧 **可扩展** – 清晰的接口设计（`Fetcher`），方便自定义抓取逻辑和下载器。
 - 📦 **M3U8 下载器** – 高性能 M3U8 视频下载模块，支持：
@@ -66,6 +68,7 @@
       │   ├── browser/            # 浏览器池（基于 rod）
       │   ├── htmlfetch/          # 静态 HTML 抓取（goquery）
       │   ├── loggers/            # 日志封装（lumberjack + logrus）
+      │   ├── notify/             # 告警通知器（webhook，可接钉钉）
       │   └── middleware/         # 下载中间件
       │       ├── filedown/       # 文件下载器
       │       ├── m3u8/           # M3U8 视频下载器
@@ -169,7 +172,7 @@ crawler:
     catalog:
       worker_count: 1
       queue_size: 20
-      delay: "5m"
+      delay: "10s-30s"             # 任务间隔：固定 "5m" 或随机区间 "10s-30s"
       retry: { max_attempts: 3, backoff: "30s" }
 db:
   dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"
@@ -342,6 +345,14 @@ res := engine.GetFiledown().Download(ctx, coverURL, "covers", "")
 ```
 
 > 更详细的抓取技巧与数据落地见 [docs/FETCHER_WRITING_GUIDE.md](docs/FETCHER_WRITING_GUIDE.md) 和 [docs/DATA_LANDING_GUIDE.md](docs/DATA_LANDING_GUIDE.md)。
+
+### 🛡️ 错误分类、延迟投递与告警
+
+- **不可重试错误**：fetcher 里 `return papa.WrapNoRetryKind("structure", err)`（或 `papa.WrapNoRetry(err)`），引擎**不重试**，直接把任务标 `failed` 并触发告警——适合结构错误 / 404 / 访问受限这类重试无意义的失败；普通 `error` 仍按配置自动重试。
+- **业务键解耦**：`Task.Meta map[string]string` 承载 `series_id`/`episode_id` 等业务键，不再塞进 URL；`Task.IdempotencyKey` 可自定义去重键（默认 `stage|url`）。
+- **延迟投递**：`Task.NotBefore` / `Task.Delay` 让任务到点才入队（episode 反爬要 10–30s 随机间隔时，直接设 `Delay`，别在 handler 里空等）。
+- **告警 hook**：`engine.AddNotifier(notify.NewWebhook("https://..."))`，任务最终失败时自动推送 `AlertEvent`（含 `stage/task_id/url/retry/kind/message`）。
+- **便捷 API**：`engine.FetchRendered(ctx, url, waitSelector)` 一次包好借浏览器→导航→等 DOM→解析→最终 URL；`engine.Upsert(record, conflictCols, updateCols)` 冲突更新并回填主键；`engine.SubmitTasks([]*Task)` 批量投递（事务化入库）。
 
 ### 📝 注意事项
 - 请遵守目标网站的 robots.txt 和法律法规，合理设置爬取频率。

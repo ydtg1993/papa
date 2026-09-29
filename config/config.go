@@ -1,7 +1,10 @@
 package config
 
-import "time"
-import "github.com/spf13/viper"
+import (
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/spf13/viper"
+	"time"
+)
 
 type Config struct {
 	App       AppConfig       `mapstructure:"app"`
@@ -37,7 +40,7 @@ type CrawlerConfig struct {
 type StageConfig struct {
 	WorkerCount int           `mapstructure:"worker_count"` //worker pool池分配并发数
 	QueueSize   int           `mapstructure:"queue_size"`   //任务队列长度
-	Delay       time.Duration `mapstructure:"delay"`        // 任务间隔时间 防止被反爬拦截
+	Delay       DurationRange `mapstructure:"delay"`        // 任务间隔时间 防止被反爬拦截，支持 "10s" 或 "10s-30s"
 	Retry       RetryConfig   `mapstructure:"retry"`        //重试
 }
 
@@ -114,7 +117,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
+	// 组合默认 hook（时长/切片）与 TextUnmarshaller hook，使 DurationRange 支持 "10s-30s"。
+	if err := viper.Unmarshal(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		mapstructure.TextUnmarshallerHookFunc(),
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+	))); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

@@ -273,6 +273,12 @@ engine.SaveContent(task.ID, someStruct)
 // 读 content 回结构体
 var dc models.DetailContent
 engine.GetResult(task.ID, &dc)
+
+// 独立表 upsert：按冲突列更新，并回填主键（无需再手写 OnConflict + if ID==0 查回）
+engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
+    []string{"series_id", "episode_no"},
+    []string{"title", "source_url", "updated_at"})
+// 调用后 ep.ID 已被回填
 ```
 
 ---
@@ -286,6 +292,7 @@ engine.GetResult(task.ID, &dc)
 5. **并发写同一记录**：detail 派发多个 video 子任务时，多个子任务可能同时回写父任务的 `Downloads`，会丢更新。需要的话对父任务加锁或串行回写（简单做法：用数据库事务或 `gorm` 的 `clause.Locking`）。
 6. **Content 空值 / nil map**：确保传给 `SaveResult` / `SaveContent` 的结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
 7. **字段命名**：JSON tag 用下划线风格，和现有 `cover_url` / `series_info` 一致，避免和别处拼写不一致。
+8. **upsert 回填主键**：`gorm` 的 `OnConflict` 在「冲突更新」路径不回填自增 ID，别手写 `if ID==0 { 按唯一键查回 }`；直接用 `engine.Upsert(record, conflictCols, updateCols)`，它自动回填。
 
 ---
 

@@ -3,8 +3,11 @@ package crawler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/internal/database"
 	"github.com/ydtg1993/papa/v2/internal/metrics"
 	"github.com/ydtg1993/papa/v2/internal/track"
 	"github.com/ydtg1993/papa/v2/internal/workerpool"
@@ -37,10 +40,11 @@ type Engine struct {
 	activeTasks sync.Map                            // hash去重任务表 key: "stage|url"
 	repeatTasks sync.Map                            // 重复轮询任务
 
-	proxy    *proxy.Manager       // 代理管理器中间件
-	m3u8     *m3u8.Downloader     // m3u8下载器
-	filedown *filedown.Downloader // 文件下载器
-	metrics  *metrics.Registry    // 业务自定义监控数据注册表
+	proxy     *proxy.Manager       // 代理管理器中间件
+	m3u8      *m3u8.Downloader     // m3u8下载器
+	filedown  *filedown.Downloader // 文件下载器
+	metrics   *metrics.Registry    // 业务自定义监控数据注册表
+	notifiers []Notifier           // 告警通知器，任务最终失败时触发
 }
 
 // stageInfo 内部阶段信息
@@ -53,11 +57,11 @@ type stageInfo struct {
 
 // StageConfig 阶段配置
 type StageConfig struct {
-	MaxAttempts int           // Handler 最大重试次数
-	Backoff     time.Duration // Handler 错误重试退避时间
-	Delay       time.Duration // 任务间隔延迟
-	WorkerCount int           // WorkerCount 该阶段专用的 worker 数量
-	QueueSize   int           // QueueSize 该阶段的任务队列缓冲大小
+	MaxAttempts int                  // Handler 最大重试次数
+	Backoff     time.Duration        // Handler 错误重试退避时间
+	Delay       config.DurationRange // 任务间隔延迟，支持随机区间
+	WorkerCount int                  // WorkerCount 该阶段专用的 worker 数量
+	QueueSize   int                  // QueueSize 该阶段的任务队列缓冲大小
 }
 
 // StageStats 阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
@@ -124,6 +128,63 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 // GetDB 获取数据库操作实例
 func (e *Engine) GetDB() *gorm.DB {
 	return e.db
+}
+
+// Upsert 冲突时按 conflictColumns 更新 updateColumns，并回填主键，使 record 指向最终记录。
+func (e *Engine) Upsert(record any, conflictColumns, updateColumns []string) error {
+	return database.Upsert(e.db, record, conflictColumns, updateColumns)
+}
+
+// AddNotifier 注册告警通知器；任务最终失败时触发 Notify。
+func (e *Engine) AddNotifier(n Notifier) {
+	if n == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.notifiers = append(e.notifiers, n)
+}
+
+func (e *Engine) getNotifiers() []Notifier {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]Notifier, len(e.notifiers))
+	copy(out, e.notifiers)
+	return out
+}
+
+// notifyFailure 结构化记录失败日志，并触发告警通知器。
+func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
+	te := TaskError{
+		Stage:   task.Stage,
+		TaskID:  task.ID,
+		URL:     task.URL,
+		Retry:   task.Retry,
+		Kind:    ErrorKind(err),
+		Message: err.Error(),
+	}
+	e.loggerSet.Engine.WithFields(logrus.Fields{
+		"stage":   te.Stage,
+		"task_id": te.TaskID,
+		"url":     te.URL,
+		"retry":   te.Retry,
+		"kind":    te.Kind,
+	}).Errorf("task failed: %s", te.Message)
+
+	notifiers := e.getNotifiers()
+	if len(notifiers) == 0 {
+		return
+	}
+	level := AlertError
+	if Retryable(err) {
+		level = AlertWarn
+	}
+	event := AlertEvent{Level: level, TaskError: te}
+	for _, n := range notifiers {
+		if nerr := n.Notify(ctx, event); nerr != nil {
+			e.loggerSet.Engine.Errorf("notify alert failed: %s", nerr.Error())
+		}
+	}
 }
 
 // GetLoggerSet 获取日志管理器列表
@@ -305,8 +366,14 @@ func (e *Engine) ApplyRegisterStage() {
 				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
 				if err == nil {
 					task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
-					<-time.After(cfg.Delay)
+					<-time.After(cfg.Delay.Random())
 					return nil
+				}
+				// 不可重试的错误：直接标 failed，不再空转重试
+				if !Retryable(err) {
+					task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+					e.notifyFailure(ctx, task, err)
+					return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
 				}
 				lastErr = err
 				select {
@@ -318,6 +385,7 @@ func (e *Engine) ApplyRegisterStage() {
 			}
 			// 所有重试失败：记录错误并更新状态为 failed
 			task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
+			e.notifyFailure(ctx, task, lastErr)
 			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
 		})
 		// 检查提交任务
@@ -376,6 +444,17 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 		return nil
 	}
+
+	// 延迟投递：到点才入队，避免 worker 空等浪费并发位
+	if at := task.deliverAt(); !at.IsZero() && at.After(time.Now()) {
+		go e.deliverLater(at, task, record)
+		return nil
+	}
+	return e.submitToPool(task, record)
+}
+
+// submitToPool 将任务提交到对应阶段工作池，并更新数据库状态。
+func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	info := e.stages[task.Stage]
 	if err := info.workerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
@@ -394,6 +473,90 @@ func (e *Engine) SubmitTask(task *Task) error {
 	}
 	e.db.Save(record)
 	return nil
+}
+
+// deliverLater 等待到 at 时刻后入队；引擎停止时退出。
+func (e *Engine) deliverLater(at time.Time, task *Task, record models.CrawlerTask) {
+	timer := time.NewTimer(time.Until(at))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		if err := e.submitToPool(task, record); err != nil {
+			e.loggerSet.Engine.Errorf("delayed submit task %d failed: %s", task.ID, err.Error())
+		}
+	case <-e.ctx.Done():
+		return
+	}
+}
+
+// SubmitTasks 批量提交任务：一次性批量入库（减少 DB 往返），再逐个入队。
+func (e *Engine) SubmitTasks(tasks []*Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	for _, t := range tasks {
+		if t.Stage == "" || t.URL == "" {
+			return fmt.Errorf("task stage or url is empty: %+v", t)
+		}
+		if _, ok := e.cfg.Crawler.Stages[t.Stage]; !ok {
+			return fmt.Errorf("invalid stage : %s", t.Stage)
+		}
+	}
+
+	// 去重与 repeatable 处理，收集需入库的任务
+	var toInsert []*Task
+	for _, t := range tasks {
+		if t.Repeatable {
+			e.repeatTasks.Store(t.Unique(), t)
+		}
+		if _, exist := e.activeTasks.Load(t.Unique()); exist {
+			if !t.Repeatable {
+				return fmt.Errorf("task already exists: %s", t.Unique())
+			}
+			var record models.CrawlerTask
+			e.db.Model(&models.CrawlerTask{}).
+				Where("url = ?", t.URL).
+				Where("stage = ?", t.Stage).
+				First(&record)
+			t.ID = int(record.ID)
+		}
+		if t.ID == 0 {
+			toInsert = append(toInsert, t)
+		}
+	}
+
+	// 批量入库（单条多行 INSERT）
+	if len(toInsert) > 0 {
+		records := make([]models.CrawlerTask, 0, len(toInsert))
+		for _, t := range toInsert {
+			records = append(records, t.toModel())
+		}
+		if err := e.db.Create(&records).Error; err != nil {
+			return fmt.Errorf("insert crawler tasks: %w", err)
+		}
+		for i, t := range toInsert {
+			t.ID = int(records[i].ID)
+		}
+	}
+
+	// 逐个入队（含延迟投递）
+	var errs []error
+	for _, t := range tasks {
+		e.activeTasks.Store(t.Unique(), true)
+		var record models.CrawlerTask
+		e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
+		if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
+			continue
+		}
+		if at := t.deliverAt(); !at.IsZero() && at.After(time.Now()) {
+			go e.deliverLater(at, t, record)
+			continue
+		}
+		if err := e.submitToPool(t, record); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ReSubmitTask 已入库的非轮询任务进行重提交任务

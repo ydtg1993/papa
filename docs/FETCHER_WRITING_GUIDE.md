@@ -36,21 +36,30 @@ type Fetcher interface {
 ```
 
 - `GetStage()` 返回的字符串**必须**等于 `config.yaml` 里 `crawler.stages` 的一个 key，否则 `RegisterStage` 会 panic。
-- `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
+- `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
+- 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
 - **不要**在 fetcher 里自己调 `task.UpdateStatus`，状态由引擎自动维护；你只负责提取结果并写库。
 
 ### 1.2 Task 结构
 
 ```go
 type Task struct {
-    ID         int    // 数据库记录 ID，写结果时用它定位
-    PID        int    // 父任务 ID，派发子任务时用它关联
-    URL        string // 当前任务要处理的 URL
-    Retry      int
-    Stage      string
-    Repeatable bool
+    ID             int               // 数据库记录 ID，写结果时用它定位
+    PID            int               // 父任务 ID，派发子任务时用它关联
+    URL            string            // 当前任务要处理的 URL
+    Retry          int
+    Stage          string
+    Repeatable     bool
+    Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
+    IdempotencyKey string            // 自定义幂等键，空则回退 stage|url
+    NotBefore      time.Time         // 延迟投递：最早可执行时间
+    Delay          time.Duration     // 延迟投递：相对现在的延迟
 }
 ```
+
+- `Meta` 承载业务键（`series_id`/`episode_id` 等），**不要**再把它们拼进 URL 或用 `hg2:series:123` 之类的 scheme；handler 里直接读 `task.Meta["series_id"]`。
+- `IdempotencyKey` 自定义去重键（如「标准化分类 URL + 页码」），空值回退到默认的 `stage|url`。
+- `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
 
 ### 1.3 Engine 暴露的能力
 
@@ -59,12 +68,16 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | 方法 | 用途 |
 | --- | --- |
 | `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（Rod 封装） |
+| `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
 | `engine.GetM3U8()` | m3u8 下载器，需在 main.go 先 `SetM3U8` |
 | `engine.GetFiledown()` | 文件下载器，需先 `SetFiledown` |
 | `engine.GetDB()` | gorm 实例，用于写结果 / 查任务 |
+| `engine.Upsert(record, conflictCols, updateCols)` | 冲突更新并回填主键（替代手写 `clause.OnConflict` + `if ID==0` 查回） |
 | `engine.GetConfig()` | 全局配置 |
 | `engine.SubmitTask(&papa.Task{...})` | 派发子任务（列表页 → 详情页） |
+| `engine.SubmitTasks([]*papa.Task{...})` | 批量派发子任务（事务化入库，减少 DB 往返） |
+| `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
 
 ### 1.4 写结果到数据库
@@ -100,10 +113,31 @@ err := engine.SubmitTask(&papa.Task{
     PID:   task.ID,       // 关联父任务
     URL:   detailURL,
     Stage: "detail",      // 必须对应 config.yaml 里已配置的 stage
+    Meta:  map[string]string{"series_id": "119002"}, // 携带业务键，handler 里读 task.Meta
 })
 ```
 
-去重键是 `stage|url`，同一个 URL 重复提交会被引擎拒绝，天然防重。
+去重键默认是 `stage|url`，同一个 URL 重复提交会被引擎拒绝，天然防重；需要别的幂等键时设 `IdempotencyKey`。
+
+**延迟投递**：episode 这类要反爬随机间隔的任务，设 `Delay`（或 `NotBefore`），引擎到点才入队，不空占 worker：
+
+```go
+engine.SubmitTask(&papa.Task{
+    URL:   episodeURL,
+    Stage: "episode",
+    Delay: time.Duration(10+rand.Intn(21)) * time.Second, // 10–30s 随机
+})
+```
+
+**批量派发**：一次要投 N 个 episode 时用 `SubmitTasks`（事务化入库，比循环 N 次 `SubmitTask` 更快）：
+
+```go
+var tasks []*papa.Task
+for _, ep := range episodes {
+    tasks = append(tasks, &papa.Task{PID: task.ID, URL: ep.URL, Stage: "episode"})
+}
+engine.SubmitTasks(tasks)
+```
 
 ---
 
@@ -212,6 +246,16 @@ if len(items) == 0 {
     return fmt.Errorf("catalog selector matched no entries")
 }
 ```
+
+> 若只需「借浏览器 → 导航 → 等某个选择器出现 → 拿 HTML/最终 URL」，直接用高层封装 `engine.FetchRendered`，免去手写借还浏览器：
+>
+> ```go
+> doc, finalURL, err := engine.FetchRendered(ctx, task.URL, ".doc-item")
+> if err != nil {
+>     return err
+> }
+> // doc 是 *goquery.Document，finalURL 是导航后的最终地址
+> ```
 
 需要下拉、滚动或点击时，先完成操作并等待新节点出现，再提取；m3u8 这类只在播放后产生的资源，必须先通过 `EachEvent` 挂好网络监听，再点击播放。Rod 的 `Must*` 方法遇到节点缺失会 panic，因此生产 fetcher 更适合使用返回 `error` 的 API 或预先检查元素存在性，保证错误交给引擎重试。
 
@@ -570,9 +614,10 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.DownloadOptions{Referer: ...}` 传详情页 URL。
 4. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。
 5. **相对链接**：`href`/`src` 可能是相对路径，用 `page.Info().URL` 拼成绝对 URL 再提交任务。
-6. **重试语义**：fetcher 返回 error 会触发重试。对「确实失败、重试无意义」的（比如页面 404 且稳定），也返回 error 让引擎按配置重试即可，不必自己处理退避。
+6. **重试语义**：fetcher 返回普通 error 会触发重试；对「确实失败、重试无意义」的（页面 404、缺字段、验证码拦截等），返回 `papa.WrapNoRetryKind("structure", err)`（或 `WrapNoRetry(err)`），引擎不重试、直接标 failed 并告警，别再「返回 nil 假装成功」。
 7. **写库用 task.ID**：子任务派发后，每个 fetcher 只写自己这个 `task.ID` 的记录。
 8. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
+9. **延迟投递**：反爬随机间隔用 `task.Delay`（或 `NotBefore`）在派发时设置，别在 handler 里 `time.Sleep` 空等，那会浪费 worker 并发位。
 
 ---
 
@@ -596,4 +641,12 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 - `engine.SaveResult(task.ID, title, content)` 写 `title` + `content`。
 - `engine.SaveContent(task.ID, content)` 只写 `content`（保留 `title`）。
 - `engine.GetResult(task.ID, &out)` 读回 `content` 反序列化到 `out`。
+- `engine.Upsert(record, conflictCols, updateCols)` 冲突更新并回填主键（独立表用）。
 - `engine.GetDB()` 拿 gorm 实例（建独立表、复杂查询时用）。
+
+**任务派发 / 错误分类 / 告警**
+- `engine.SubmitTask(&papa.Task{...})` 派发单个子任务；`engine.SubmitTasks([]*papa.Task{...})` 批量派发。
+- `papa.WrapNoRetry(err)` / `papa.WrapNoRetryKind(kind, err)` 标记不可重试错误。
+- `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
+- `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。
+- `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。

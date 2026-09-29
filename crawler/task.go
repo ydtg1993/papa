@@ -2,17 +2,34 @@ package crawler
 
 import (
 	"context"
+	"time"
+
 	"github.com/ydtg1993/papa/v2/models"
 	"gorm.io/gorm"
 )
 
 type Task struct {
-	ID         int `json:"id"`  // 数据库记录 ID
-	PID        int `json:"pid"` // 父级任务ID
-	URL        string
-	Retry      int
-	Stage      string //阶段标识，如 "catalog", "detail", "video"
-	Repeatable bool
+	ID             int    `json:"id"`  // 数据库记录 ID
+	PID            int    `json:"pid"` // 父级任务ID
+	URL            string // 要打开的 URL
+	Retry          int
+	Stage          string // 阶段标识，如 "catalog", "detail", "video"
+	Repeatable     bool
+	Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
+	IdempotencyKey string            // 自定义幂等键，为空时回退 Stage|URL
+	NotBefore      time.Time         // 延迟投递：最早可执行时间
+	Delay          time.Duration     // 延迟投递：相对当前时间的延迟
+}
+
+// deliverAt 返回任务的延迟投递时间；无延迟时返回零值 time.Time。
+func (t *Task) deliverAt() time.Time {
+	if !t.NotBefore.IsZero() {
+		return t.NotBefore
+	}
+	if t.Delay > 0 {
+		return time.Now().Add(t.Delay)
+	}
+	return time.Time{}
 }
 
 func (t *Task) GetUrl() string {
@@ -29,18 +46,23 @@ func (t *Task) IncRetry(db *gorm.DB) {
 		Update("retry", gorm.Expr("retry + ?", 1))
 }
 
-func (t *Task) Insert(db *gorm.DB) bool {
+// toModel 将任务转换为数据库记录（不含 ID，由数据库生成）。
+func (t *Task) toModel() models.CrawlerTask {
 	repeat := models.RepeatableNo
 	if t.Repeatable {
 		repeat = models.RepeatableYes
 	}
-	crawlerTask := models.CrawlerTask{
+	return models.CrawlerTask{
 		PID:        uint(t.PID),
 		URL:        t.URL,
 		Stage:      t.Stage,
 		Repeatable: repeat,
 		Status:     models.TaskStatusPending,
 	}
+}
+
+func (t *Task) Insert(db *gorm.DB) bool {
+	crawlerTask := t.toModel()
 	if err := db.Create(&crawlerTask).Error; err != nil {
 		return false
 	}
@@ -73,6 +95,9 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 }
 
 func (t *Task) Unique() string {
+	if t.IdempotencyKey != "" {
+		return t.IdempotencyKey
+	}
 	return t.Stage + "|" + t.URL
 }
 

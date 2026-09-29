@@ -9,7 +9,7 @@ crawler:
     catalog:                   # 阶段名需与 fetcher.GetStage() 返回一致
       worker_count: 1
       queue_size: 20
-      delay: "5m"              # 任务间隔延迟
+      delay: "5m"              # 任务间隔延迟：固定 "5m" 或随机区间 "10s-30s"
       retry:
         max_attempts: 3
         backoff: "30s"

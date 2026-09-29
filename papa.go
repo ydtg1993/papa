@@ -41,6 +41,40 @@ type StageConfig = crawler.StageConfig
 // Config 全局配置。
 type Config = config.Config
 
+// NoRetryError 标记不可重试的错误（结构错误、资源不存在等）。
+type NoRetryError = crawler.NoRetryError
+
+// WrapNoRetry 将错误标记为不可重试。
+var WrapNoRetry = crawler.WrapNoRetry
+
+// WrapNoRetryKind 将错误标记为不可重试并携带分类标识（如 structure/not-found/protected）。
+var WrapNoRetryKind = crawler.WrapNoRetryKind
+
+// Retryable 判断错误是否应重试。
+var Retryable = crawler.Retryable
+
+// ErrorKind 返回错误的分类标识。
+var ErrorKind = crawler.ErrorKind
+
+// Notifier 告警通知接口。
+type Notifier = crawler.Notifier
+
+// AlertEvent 告警事件。
+type AlertEvent = crawler.AlertEvent
+
+// TaskError 结构化任务错误上下文。
+type TaskError = crawler.TaskError
+
+// AlertLevel 告警级别。
+type AlertLevel = crawler.AlertLevel
+
+// 告警级别常量。
+const (
+	AlertInfo  = crawler.AlertInfo
+	AlertWarn  = crawler.AlertWarn
+	AlertError = crawler.AlertError
+)
+
 // New 创建应用实例，完成配置加载、日志、数据库、引擎的初始化。
 func New(opts ...Option) (*App, error) {
 	return app.NewApp(opts...)

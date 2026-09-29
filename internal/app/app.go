@@ -167,8 +167,8 @@ func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawle
 	if cfg.Retry.Backoff <= 0 {
 		cfg.Retry.Backoff = time.Second
 	}
-	if cfg.Delay <= 0 {
-		cfg.Delay = time.Minute
+	if cfg.Delay.Min <= 0 {
+		cfg.Delay = config.DurationRange{Min: time.Minute, Max: time.Minute}
 	}
 
 	a.Engine.AddStage(stage, crawler.StageConfig{
