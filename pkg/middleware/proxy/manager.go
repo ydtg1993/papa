@@ -3,7 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
-	pkg2 "github.com/ydtg1993/papa/v2/pkg"
+	"github.com/ydtg1993/papa/v2/internal/msgqueue"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -18,7 +18,7 @@ type Manager struct {
 	client     *http.Client
 	mu         sync.RWMutex
 	index      uint64
-	trackQueue *pkg2.MsgQueue[any] //系统消息队列
+	trackQueue *msgqueue.MsgQueue[any] //系统消息队列
 }
 
 // NewManager 创建代理管理器
@@ -27,7 +27,7 @@ func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
 		apiURL:     apiURL,
 		refresh:    refreshInterval,
 		client:     &http.Client{Timeout: 10 * time.Second},
-		trackQueue: pkg2.NewMsgQueue[any](10),
+		trackQueue: msgqueue.NewMsgQueue[any](10),
 	}
 	if apiURL != "" {
 		m.refreshProxies()

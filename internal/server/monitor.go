@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/pkg/dataadmin"
+	"github.com/ydtg1993/papa/v2/internal/dataadmin"
+	"github.com/ydtg1993/papa/v2/internal/sysinfo"
 	"github.com/ydtg1993/papa/v2/pkg/metrics"
-	"github.com/ydtg1993/papa/v2/pkg/sysinfo"
 	"github.com/ydtg1993/papa/v2/pkg/track"
 )
 

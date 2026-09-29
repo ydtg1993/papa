@@ -18,14 +18,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	pkg2 "github.com/ydtg1993/papa/v2/pkg"
+	"github.com/ydtg1993/papa/v2/internal/msgqueue"
 )
 
 // Downloader 文件下载器（并发安全）
 type Downloader struct {
 	config     *Config
 	client     *http.Client
-	trackQueue *pkg2.MsgQueue[any]
+	trackQueue *msgqueue.MsgQueue[any]
 	labors     map[string]*labor
 	laborMu    sync.RWMutex
 }
@@ -53,7 +53,7 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		trackQueue: pkg2.NewMsgQueue[any](10),
+		trackQueue: msgqueue.NewMsgQueue[any](10),
 		labors:     make(map[string]*labor),
 	}
 }

@@ -1,0 +1,141 @@
+{
+  "custom": {
+    "catalog_total": 128,
+    "detail_total": 96,
+    "running": true,
+    "started_at": "2026-09-29T08:00:00Z",
+    "success_rate": 0.972,
+    "video_total": 42
+  },
+  "stages": {
+    "catalog": {
+      "global": {
+        "AvgTime": 12394837,
+        "MaxTime": 22919800,
+        "MinTime": 5305700,
+        "TotalFailed": 1,
+        "TotalTasks": 8,
+        "TotalTime": 99158700
+      },
+      "queue": {
+        "completed": 7,
+        "failed": 1,
+        "in_progress": 0,
+        "queue_len": 0,
+        "submitted": 8
+      },
+      "workers": {
+        "0": {
+          "FailedTasks": 0,
+          "MaxTime": 18207500,
+          "MinTime": 8315900,
+          "TotalTasks": 3,
+          "TotalTime": 38604300,
+          "WorkerID": 0
+        },
+        "1": {
+          "FailedTasks": 0,
+          "MaxTime": 15310600,
+          "MinTime": 7106100,
+          "TotalTasks": 3,
+          "TotalTime": 32328900,
+          "WorkerID": 1
+        },
+        "2": {
+          "FailedTasks": 1,
+          "MaxTime": 22919800,
+          "MinTime": 5305700,
+          "TotalTasks": 2,
+          "TotalTime": 28225500,
+          "WorkerID": 2
+        }
+      }
+    },
+    "detail": {
+      "global": {
+        "AvgTime": 24920766,
+        "MaxTime": 40427000,
+        "MinTime": 7094900,
+        "TotalFailed": 0,
+        "TotalTasks": 6,
+        "TotalTime": 149524600
+      },
+      "queue": {
+        "completed": 6,
+        "failed": 0,
+        "in_progress": 0,
+        "queue_len": 0,
+        "submitted": 6
+      },
+      "workers": {
+        "0": {
+          "FailedTasks": 0,
+          "MaxTime": 40427000,
+          "MinTime": 30286300,
+          "TotalTasks": 2,
+          "TotalTime": 70713300,
+          "WorkerID": 0
+        },
+        "1": {
+          "FailedTasks": 0,
+          "MaxTime": 33492300,
+          "MinTime": 7094900,
+          "TotalTasks": 4,
+          "TotalTime": 78811300,
+          "WorkerID": 1
+        }
+      }
+    },
+    "video": {
+      "global": {
+        "AvgTime": 36548810,
+        "MaxTime": 60503200,
+        "MinTime": 10715300,
+        "TotalFailed": 2,
+        "TotalTasks": 10,
+        "TotalTime": 365488100
+      },
+      "queue": {
+        "completed": 8,
+        "failed": 2,
+        "in_progress": 0,
+        "queue_len": 0,
+        "submitted": 10
+      },
+      "workers": {
+        "0": {
+          "FailedTasks": 1,
+          "MaxTime": 55876800,
+          "MinTime": 50354900,
+          "TotalTasks": 2,
+          "TotalTime": 106231700,
+          "WorkerID": 0
+        },
+        "1": {
+          "FailedTasks": 0,
+          "MaxTime": 60503200,
+          "MinTime": 10715300,
+          "TotalTasks": 2,
+          "TotalTime": 71218500,
+          "WorkerID": 1
+        },
+        "2": {
+          "FailedTasks": 1,
+          "MaxTime": 42803600,
+          "MinTime": 15470600,
+          "TotalTasks": 4,
+          "TotalTime": 114022100,
+          "WorkerID": 2
+        },
+        "3": {
+          "FailedTasks": 0,
+          "MaxTime": 45650100,
+          "MinTime": 28365700,
+          "TotalTasks": 2,
+          "TotalTime": 74015800,
+          "WorkerID": 3
+        }
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@ package workerpool
 import (
 	"context"
 	"fmt"
-	pkg2 "github.com/ydtg1993/papa/v2/pkg"
+	"github.com/ydtg1993/papa/v2/internal/msgqueue"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,10 +17,10 @@ type WorkerPool[T Tasker] struct {
 	stopOnce   sync.Once
 	stopped    atomic.Bool
 	cancel     context.CancelFunc
-	submitted  atomic.Int64             // 已提交的任务总数
-	completed  atomic.Int64             // 已完成的任务数
-	failed     atomic.Int64             // 失败的任务数（可选）
-	trackQueue *pkg2.MsgQueue[Activity] //系统消息队列
+	submitted  atomic.Int64                 // 已提交的任务总数
+	completed  atomic.Int64                 // 已完成的任务数
+	failed     atomic.Int64                 // 失败的任务数（可选）
+	trackQueue *msgqueue.MsgQueue[Activity] //系统消息队列
 }
 
 // NewWorkerPool 创建工作池
@@ -28,7 +28,7 @@ func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
 	return &WorkerPool[T]{
 		taskQueue:  make(chan T, queueSize),
 		workers:    workers,
-		trackQueue: pkg2.NewMsgQueue[Activity](10),
+		trackQueue: msgqueue.NewMsgQueue[Activity](10),
 	}
 }
 

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ydtg1993/papa/v2/pkg/dataadmin"
+	"github.com/ydtg1993/papa/v2/internal/dataadmin"
 )
 
 // dataModelsHandler 列出所有可浏览模型及其列元数据

@@ -10,7 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	pkg2 "github.com/ydtg1993/papa/v2/pkg"
+	"github.com/ydtg1993/papa/v2/internal/msgqueue"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -29,10 +29,10 @@ import (
 type Downloader struct {
 	config     *Config
 	client     *http.Client
-	trackQueue *pkg2.MsgQueue[any] // 系统消息队列
-	keyCache   sync.Map            // 密钥缓存: key -> *cachedKey
-	labors     map[string]*labor   // 任务专用锁管理
-	laborMu    sync.RWMutex        // 保护 labors map
+	trackQueue *msgqueue.MsgQueue[any] // 系统消息队列
+	keyCache   sync.Map                // 密钥缓存: key -> *cachedKey
+	labors     map[string]*labor       // 任务专用锁管理
+	laborMu    sync.RWMutex            // 保护 labors map
 }
 
 type cachedKey struct {
@@ -63,7 +63,7 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.SegmentTimeout,
 		},
-		trackQueue: pkg2.NewMsgQueue[any](10),
+		trackQueue: msgqueue.NewMsgQueue[any](10),
 		keyCache:   sync.Map{},
 		labors:     make(map[string]*labor),
 	}
