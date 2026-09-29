@@ -1,9 +1,7 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,9 +14,6 @@ import (
 
 	"github.com/ydtg1993/papa/v2/crawler"
 	"github.com/ydtg1993/papa/v2/internal/dataadmin"
-	"github.com/ydtg1993/papa/v2/pkg/metrics"
-	"github.com/ydtg1993/papa/v2/pkg/track"
-	"github.com/ydtg1993/papa/v2/pkg/workerpool"
 )
 
 // testLogger 静默日志，仅把 Errorf 转发到测试输出，便于排查。
@@ -28,62 +23,37 @@ func (l testLogger) Info(args ...any)                  {}
 func (l testLogger) Infof(format string, args ...any)  {}
 func (l testLogger) Errorf(format string, args ...any) { l.t.Logf(format, args...) }
 
-// fakeTask 描述一条假任务：id 唯一、fail 是否失败、duration 处理耗时。
-type fakeTask struct {
-	id       int
-	url      string
-	fail     bool
-	duration time.Duration
-}
-
-// newFakeStage 用真实 WorkerPool + StatsQueue 跑一批假任务，产出真实的队列/worker/全局统计。
-func newFakeStage(t *testing.T, stage string, workers int, tasks []fakeTask) *track.StatsQueue[*crawler.Task] {
-	t.Helper()
-
-	pool := workerpool.NewWorkerPool[*crawler.Task](workers, 256)
-	stats := track.NewStatsQueue(pool)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	stats.Start(ctx)
-
-	failIDs := make(map[int]bool, len(tasks))
-	durByID := make(map[int]time.Duration, len(tasks))
-	for _, tk := range tasks {
-		failIDs[tk.id] = tk.fail
-		durByID[tk.id] = tk.duration
+// fakeStageStats 直接构造各阶段统计快照（纯值假数据，确定性且无并发）。
+func fakeStageStats() map[string]crawler.StageStats {
+	return map[string]crawler.StageStats{
+		"catalog": {
+			Global: crawler.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
+			Workers: map[int]crawler.WorkerStat{
+				0: {WorkerID: 0, TotalTasks: 3, FailedTasks: 0, TotalTime: 39456100, MaxTime: 19010900, MinTime: 8489000},
+				1: {WorkerID: 1, TotalTasks: 3, FailedTasks: 0, TotalTime: 30861700, MaxTime: 15401900, MinTime: 6222500},
+				2: {WorkerID: 2, TotalTasks: 2, FailedTasks: 1, TotalTime: 28637200, MaxTime: 22137200, MinTime: 6500000},
+			},
+			Queue: crawler.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
+		},
+		"detail": {
+			Global: crawler.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
+			Workers: map[int]crawler.WorkerStat{
+				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 0, TotalTime: 70649100, MaxTime: 40192700, MinTime: 30456400},
+				1: {WorkerID: 1, TotalTasks: 4, FailedTasks: 0, TotalTime: 79244200, MaxTime: 33409100, MinTime: 7538800},
+			},
+			Queue: crawler.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
+		},
+		"video": {
+			Global: crawler.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
+			Workers: map[int]crawler.WorkerStat{
+				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 1, TotalTime: 106798900, MaxTime: 56096300, MinTime: 50702600},
+				1: {WorkerID: 1, TotalTasks: 3, FailedTasks: 1, TotalTime: 71555400, MaxTime: 35336700, MinTime: 15549000},
+				2: {WorkerID: 2, TotalTasks: 3, FailedTasks: 0, TotalTime: 112815500, MaxTime: 60246100, MinTime: 10220500},
+				3: {WorkerID: 3, TotalTasks: 2, FailedTasks: 0, TotalTime: 74546000, MaxTime: 45605400, MinTime: 28940600},
+			},
+			Queue: crawler.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
+		},
 	}
-
-	pool.Start(ctx, func(ctx context.Context, task *crawler.Task) error {
-		if d := durByID[task.ID]; d > 0 {
-			select {
-			case <-time.After(d):
-			case <-ctx.Done():
-			}
-		}
-		if failIDs[task.ID] {
-			return errors.New("simulated failure")
-		}
-		return nil
-	})
-
-	for _, tk := range tasks {
-		if err := pool.Submit(&crawler.Task{ID: tk.id, Stage: stage, URL: tk.url}); err != nil {
-			t.Fatalf("submit %s/%d: %v", stage, tk.id, err)
-		}
-	}
-	pool.Stop(5 * time.Second)
-
-	// 等监控消费者把 activity 通道排空，避免异步读竞态。
-	want := int64(len(tasks))
-	deadline := time.Now().Add(3 * time.Second)
-	for stats.GetGlobalStats().TotalTasks != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("stage %s: stats not drained: got %d want %d", stage, stats.GetGlobalStats().TotalTasks, want)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	return stats
 }
 
 type fakeUser struct {
@@ -101,64 +71,31 @@ type fakeOrder struct {
 	Status string
 }
 
-// fakeMetrics 造一批业务自定义指标。
-func fakeMetrics() *metrics.Registry {
-	r := metrics.New()
-	r.Set("catalog_total", 128)
-	r.Set("detail_total", 96)
-	r.Set("video_total", 42)
-	r.Set("success_rate", 0.972)
-	r.Set("running", true)
-	r.Set("started_at", "2026-09-29T08:00:00Z")
-	return r
+// fakeMetricsSnapshot 造一批业务自定义指标快照。
+func fakeMetricsSnapshot() map[string]any {
+	return map[string]any{
+		"catalog_total": 128,
+		"detail_total":  96,
+		"video_total":   42,
+		"success_rate":  0.972,
+		"running":       true,
+		"started_at":    "2026-09-29T08:00:00Z",
+	}
 }
 
 // newFakeMonitor 组装一个带全套假数据的监控路由。
 func newFakeMonitor(t *testing.T) *Monitor {
 	t.Helper()
 
-	stages := map[string]*track.StatsQueue[*crawler.Task]{
-		"catalog": newFakeStage(t, "catalog", 3, []fakeTask{
-			{id: 1, url: "https://example.com/catalog/1", duration: 8 * time.Millisecond},
-			{id: 2, url: "https://example.com/catalog/2", duration: 15 * time.Millisecond},
-			{id: 3, url: "https://example.com/catalog/3", duration: 5 * time.Millisecond},
-			{id: 4, url: "https://example.com/catalog/4", duration: 22 * time.Millisecond, fail: true},
-			{id: 5, url: "https://example.com/catalog/5", duration: 11 * time.Millisecond},
-			{id: 6, url: "https://example.com/catalog/6", duration: 9 * time.Millisecond},
-			{id: 7, url: "https://example.com/catalog/7", duration: 18 * time.Millisecond},
-			{id: 8, url: "https://example.com/catalog/8", duration: 6 * time.Millisecond},
-		}),
-		"detail": newFakeStage(t, "detail", 2, []fakeTask{
-			{id: 1, url: "https://example.com/detail/1", duration: 30 * time.Millisecond},
-			{id: 2, url: "https://example.com/detail/2", duration: 12 * time.Millisecond},
-			{id: 3, url: "https://example.com/detail/3", duration: 25 * time.Millisecond},
-			{id: 4, url: "https://example.com/detail/4", duration: 40 * time.Millisecond},
-			{id: 5, url: "https://example.com/detail/5", duration: 7 * time.Millisecond},
-			{id: 6, url: "https://example.com/detail/6", duration: 33 * time.Millisecond},
-		}),
-		"video": newFakeStage(t, "video", 4, []fakeTask{
-			{id: 1, url: "https://example.com/video/1", duration: 50 * time.Millisecond},
-			{id: 2, url: "https://example.com/video/2", duration: 20 * time.Millisecond, fail: true},
-			{id: 3, url: "https://example.com/video/3", duration: 60 * time.Millisecond},
-			{id: 4, url: "https://example.com/video/4", duration: 45 * time.Millisecond},
-			{id: 5, url: "https://example.com/video/5", duration: 15 * time.Millisecond},
-			{id: 6, url: "https://example.com/video/6", duration: 35 * time.Millisecond},
-			{id: 7, url: "https://example.com/video/7", duration: 28 * time.Millisecond},
-			{id: 8, url: "https://example.com/video/8", duration: 55 * time.Millisecond, fail: true},
-			{id: 9, url: "https://example.com/video/9", duration: 10 * time.Millisecond},
-			{id: 10, url: "https://example.com/video/10", duration: 42 * time.Millisecond},
-		}),
-	}
-
 	reg := dataadmin.New(nil)
 	_ = reg.Register("users", "用户", &fakeUser{})
 	_ = reg.Register("orders", "订单", &fakeOrder{})
 
 	return NewMonitor(
-		func() map[string]*track.StatsQueue[*crawler.Task] { return stages },
+		fakeStageStats,
 		testLogger{t: t},
 		MonitorConfig{
-			Metrics:   fakeMetrics(),
+			Metrics:   fakeMetricsSnapshot,
 			DataAdmin: reg,
 		},
 	)
@@ -183,8 +120,8 @@ func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	return v
 }
 
-func emptyGetter() map[string]*track.StatsQueue[*crawler.Task] {
-	return map[string]*track.StatsQueue[*crawler.Task]{}
+func emptyGetter() map[string]crawler.StageStats {
+	return map[string]crawler.StageStats{}
 }
 
 func TestAPIMonitor(t *testing.T) {

@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/internal/metrics"
+	"github.com/ydtg1993/papa/v2/internal/track"
+	"github.com/ydtg1993/papa/v2/internal/workerpool"
 	"github.com/ydtg1993/papa/v2/models"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
-	"github.com/ydtg1993/papa/v2/pkg/metrics"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
-	"github.com/ydtg1993/papa/v2/pkg/track"
-	"github.com/ydtg1993/papa/v2/pkg/workerpool"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"maps"
@@ -60,6 +60,42 @@ type StageConfig struct {
 	QueueSize   int           // QueueSize 该阶段的任务队列缓冲大小
 }
 
+// StageStats 阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
+type StageStats struct {
+	Global  GlobalStats
+	Workers map[int]WorkerStat
+	Queue   QueueStats
+}
+
+// GlobalStats 阶段全局统计
+type GlobalStats struct {
+	TotalTasks  int64
+	TotalFailed int64
+	TotalTime   time.Duration
+	AvgTime     time.Duration
+	MaxTime     time.Duration
+	MinTime     time.Duration
+}
+
+// WorkerStat 单个 worker 统计
+type WorkerStat struct {
+	WorkerID    int
+	TotalTasks  int64
+	FailedTasks int64
+	TotalTime   time.Duration
+	MaxTime     time.Duration
+	MinTime     time.Duration
+}
+
+// QueueStats 阶段队列计数
+type QueueStats struct {
+	Submitted  int64
+	Completed  int64
+	Failed     int64
+	InProgress int64
+	QueueLen   int
+}
+
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
 	e.stages[stage] = &stageInfo{
 		config:     config,
@@ -79,6 +115,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		db:          db,
 		cfg:         cfg,
 		loggerSet:   loggerSet,
+		metrics:     metrics.New(),
 	}
 	engine.loadActiveTasks()
 	return engine
@@ -136,11 +173,6 @@ func (e *Engine) GetResult(taskID int, out any) error {
 	return json.Unmarshal(rec.Content, out)
 }
 
-// SetMetrics 注入业务自定义监控数据注册表（App 初始化时调用）
-func (e *Engine) SetMetrics(m *metrics.Registry) {
-	e.metrics = m
-}
-
 // RecordMetric 写入一条业务自定义监控数据，供监控页展示
 func (e *Engine) RecordMetric(key string, v any) {
 	if e.metrics == nil {
@@ -149,9 +181,12 @@ func (e *Engine) RecordMetric(key string, v any) {
 	e.metrics.Set(key, v)
 }
 
-// GetMetrics 获取业务自定义监控数据注册表（监控服务读取）
-func (e *Engine) GetMetrics() *metrics.Registry {
-	return e.metrics
+// GetMetrics 返回业务自定义监控数据快照（纯值类型，供监控页读取）
+func (e *Engine) GetMetrics() map[string]any {
+	if e.metrics == nil {
+		return map[string]any{}
+	}
+	return e.metrics.GetAll()
 }
 
 // defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项
@@ -423,16 +458,31 @@ func (e *Engine) setStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
 	e.statsQueue[stage] = mon
 }
 
-// GetStatsQueue 获取全部统计信息控制器
-func (e *Engine) GetStatsQueue() map[string]*track.StatsQueue[*Task] {
+// GetStageStats 返回各阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
+func (e *Engine) GetStageStats() map[string]StageStats {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	// 返回副本
-	cp := make(map[string]*track.StatsQueue[*Task], len(e.statsQueue))
-	for k, v := range e.statsQueue {
-		cp[k] = v
+	out := make(map[string]StageStats, len(e.statsQueue))
+	for stage, mon := range e.statsQueue {
+		submitted, completed, failed, inProgress, queueLen := mon.WorkPool.Stats()
+		allWorkers := mon.GetAllWorkerStats()
+		workers := make(map[int]WorkerStat, len(allWorkers))
+		for id, w := range allWorkers {
+			workers[id] = WorkerStat(w)
+		}
+		out[stage] = StageStats{
+			Global:  GlobalStats(mon.GetGlobalStats()),
+			Workers: workers,
+			Queue: QueueStats{
+				Submitted:  submitted,
+				Completed:  completed,
+				Failed:     failed,
+				InProgress: inProgress,
+				QueueLen:   queueLen,
+			},
+		}
 	}
-	return cp
+	return out
 }
 
 // DelActiveTask 从去重任务列表中删除任务

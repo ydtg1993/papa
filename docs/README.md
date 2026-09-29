@@ -55,21 +55,21 @@
       │   ├── app/                # 应用组装（依赖注入、启动、选项）
       │   ├── dataadmin/          # 通用数据浏览注册表
       │   ├── database/           # 数据库连接（GORM）
+      │   ├── metrics/            # 业务自定义监控数据
       │   ├── msgqueue/           # 通用消息队列（错误/活动）
       │   ├── scheduler/          # 定时任务调度器（cron jobs）
       │   ├── server/             # Web 监控服务（HTML + JSON API）
-      │   └── sysinfo/            # 系统指标采集
+      │   ├── sysinfo/            # 系统指标采集
+      │   ├── track/              # 监控统计（StatsQueue）
+      │   └── workerpool/         # 泛型工作池
       ├── pkg/                    # 公开可复用库（引擎 API 会暴露其类型）
       │   ├── browser/            # 浏览器池（基于 rod）
       │   ├── htmlfetch/          # 静态 HTML 抓取（goquery）
       │   ├── loggers/            # 日志封装（lumberjack + logrus）
-      │   ├── metrics/            # 业务自定义监控数据
-      │   ├── middleware/         # 下载中间件
-      │   │   ├── filedown/       # 文件下载器
-      │   │   ├── m3u8/           # M3U8 视频下载器
-      │   │   └── proxy/          # 代理管理器
-      │   ├── track/              # 监控统计（StatsQueue）
-      │   └── workerpool/         # 泛型工作池
+      │   └── middleware/         # 下载中间件
+      │       ├── filedown/       # 文件下载器
+      │       ├── m3u8/           # M3U8 视频下载器
+      │       └── proxy/          # 代理管理器
       ├── cmd/papa/               # 脚手架 CLI：papa new <name> 生成新爬虫项目
       ├── logs/                   # 日志文件目录（运行时生成）
       ├── scripts/                # 辅助脚本（Makefile、Docker）

@@ -10,12 +10,12 @@
   "stages": {
     "catalog": {
       "global": {
-        "AvgTime": 12394837,
-        "MaxTime": 22919800,
-        "MinTime": 5305700,
+        "AvgTime": 12369375,
+        "MaxTime": 22137200,
+        "MinTime": 6222500,
         "TotalFailed": 1,
         "TotalTasks": 8,
-        "TotalTime": 99158700
+        "TotalTime": 98955000
       },
       "queue": {
         "completed": 7,
@@ -27,38 +27,38 @@
       "workers": {
         "0": {
           "FailedTasks": 0,
-          "MaxTime": 18207500,
-          "MinTime": 8315900,
+          "MaxTime": 19010900,
+          "MinTime": 8489000,
           "TotalTasks": 3,
-          "TotalTime": 38604300,
+          "TotalTime": 39456100,
           "WorkerID": 0
         },
         "1": {
           "FailedTasks": 0,
-          "MaxTime": 15310600,
-          "MinTime": 7106100,
+          "MaxTime": 15401900,
+          "MinTime": 6222500,
           "TotalTasks": 3,
-          "TotalTime": 32328900,
+          "TotalTime": 30861700,
           "WorkerID": 1
         },
         "2": {
           "FailedTasks": 1,
-          "MaxTime": 22919800,
-          "MinTime": 5305700,
+          "MaxTime": 22137200,
+          "MinTime": 6500000,
           "TotalTasks": 2,
-          "TotalTime": 28225500,
+          "TotalTime": 28637200,
           "WorkerID": 2
         }
       }
     },
     "detail": {
       "global": {
-        "AvgTime": 24920766,
-        "MaxTime": 40427000,
-        "MinTime": 7094900,
+        "AvgTime": 24982216,
+        "MaxTime": 40192700,
+        "MinTime": 7094600,
         "TotalFailed": 0,
         "TotalTasks": 6,
-        "TotalTime": 149524600
+        "TotalTime": 149893300
       },
       "queue": {
         "completed": 6,
@@ -70,30 +70,30 @@
       "workers": {
         "0": {
           "FailedTasks": 0,
-          "MaxTime": 40427000,
-          "MinTime": 30286300,
+          "MaxTime": 40192700,
+          "MinTime": 30456400,
           "TotalTasks": 2,
-          "TotalTime": 70713300,
+          "TotalTime": 70649100,
           "WorkerID": 0
         },
         "1": {
           "FailedTasks": 0,
-          "MaxTime": 33492300,
-          "MinTime": 7094900,
+          "MaxTime": 33409100,
+          "MinTime": 7538800,
           "TotalTasks": 4,
-          "TotalTime": 78811300,
+          "TotalTime": 79244200,
           "WorkerID": 1
         }
       }
     },
     "video": {
       "global": {
-        "AvgTime": 36548810,
-        "MaxTime": 60503200,
-        "MinTime": 10715300,
+        "AvgTime": 36571580,
+        "MaxTime": 60246100,
+        "MinTime": 10220500,
         "TotalFailed": 2,
         "TotalTasks": 10,
-        "TotalTime": 365488100
+        "TotalTime": 365715800
       },
       "queue": {
         "completed": 8,
@@ -105,34 +105,34 @@
       "workers": {
         "0": {
           "FailedTasks": 1,
-          "MaxTime": 55876800,
-          "MinTime": 50354900,
+          "MaxTime": 56096300,
+          "MinTime": 50702600,
           "TotalTasks": 2,
-          "TotalTime": 106231700,
+          "TotalTime": 106798900,
           "WorkerID": 0
         },
         "1": {
-          "FailedTasks": 0,
-          "MaxTime": 60503200,
-          "MinTime": 10715300,
-          "TotalTasks": 2,
-          "TotalTime": 71218500,
+          "FailedTasks": 1,
+          "MaxTime": 35336700,
+          "MinTime": 15549000,
+          "TotalTasks": 3,
+          "TotalTime": 71555400,
           "WorkerID": 1
         },
         "2": {
-          "FailedTasks": 1,
-          "MaxTime": 42803600,
-          "MinTime": 15470600,
-          "TotalTasks": 4,
-          "TotalTime": 114022100,
+          "FailedTasks": 0,
+          "MaxTime": 60246100,
+          "MinTime": 10220500,
+          "TotalTasks": 3,
+          "TotalTime": 112815500,
           "WorkerID": 2
         },
         "3": {
           "FailedTasks": 0,
-          "MaxTime": 45650100,
-          "MinTime": 28365700,
+          "MaxTime": 45605400,
+          "MinTime": 28940600,
           "TotalTasks": 2,
-          "TotalTime": 74015800,
+          "TotalTime": 74546000,
           "WorkerID": 3
         }
       }

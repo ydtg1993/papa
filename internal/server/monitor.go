@@ -20,8 +20,6 @@ import (
 	"github.com/ydtg1993/papa/v2/crawler"
 	"github.com/ydtg1993/papa/v2/internal/dataadmin"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
-	"github.com/ydtg1993/papa/v2/pkg/metrics"
-	"github.com/ydtg1993/papa/v2/pkg/track"
 )
 
 //go:embed template.html
@@ -30,20 +28,20 @@ var templateFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-// MonitorGetter 定义获取所有阶段监控器的函数类型
-type MonitorGetter func() map[string]*track.StatsQueue[*crawler.Task]
+// MonitorGetter 定义获取所有阶段统计快照的函数类型
+type MonitorGetter func() map[string]crawler.StageStats
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	AuthKey       string              // 初始访问密钥，空=不校验
-	AuthKeyFile   string              // 密钥文件路径（重新生成时持久化到此文件）
-	Whitelist     []string            // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile string              // 白名单持久化文件路径（动态更新时写回）
-	Metrics       *metrics.Registry   // 业务自定义数据（可空）
-	SysInfo       *sysinfo.Collector  // 系统指标采集器（可空）
-	DataAdmin     *dataadmin.Registry // 通用数据浏览注册表（可空）
-	LogDir        string              // 日志目录（导出用）
-	OnShutdown    func()              // 优雅退出回调
+	AuthKey       string                // 初始访问密钥，空=不校验
+	AuthKeyFile   string                // 密钥文件路径（重新生成时持久化到此文件）
+	Whitelist     []string              // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile string                // 白名单持久化文件路径（动态更新时写回）
+	Metrics       func() map[string]any // 业务自定义数据快照（可空）
+	SysInfo       *sysinfo.Collector    // 系统指标采集器（可空）
+	DataAdmin     *dataadmin.Registry   // 通用数据浏览注册表（可空）
+	LogDir        string                // 日志目录（导出用）
+	OnShutdown    func()                // 优雅退出回调
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -212,17 +210,16 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Monitor) stageData() map[string]any {
 	monitors := s.getter()
 	out := make(map[string]any, len(monitors))
-	for stage, mon := range monitors {
-		submitted, completed, failed, inProgress, queueLen := mon.WorkPool.Stats()
+	for stage, ss := range monitors {
 		out[stage] = map[string]any{
-			"global":  mon.GetGlobalStats(),
-			"workers": mon.GetAllWorkerStats(),
+			"global":  ss.Global,
+			"workers": ss.Workers,
 			"queue": map[string]any{
-				"submitted":   submitted,
-				"completed":   completed,
-				"failed":      failed,
-				"in_progress": inProgress,
-				"queue_len":   queueLen,
+				"submitted":   ss.Queue.Submitted,
+				"completed":   ss.Queue.Completed,
+				"failed":      ss.Queue.Failed,
+				"in_progress": ss.Queue.InProgress,
+				"queue_len":   ss.Queue.QueueLen,
 			},
 		}
 	}
@@ -234,7 +231,7 @@ func (s *Monitor) customData() map[string]any {
 	if s.cfg.Metrics == nil {
 		return map[string]any{}
 	}
-	return s.cfg.Metrics.GetAll()
+	return s.cfg.Metrics()
 }
 
 // settingsHandler 返回当前后台设置状态（不含密钥明文）

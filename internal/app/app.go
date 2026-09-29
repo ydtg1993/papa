@@ -15,9 +15,7 @@ import (
 	"github.com/ydtg1993/papa/v2/models"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
-	"github.com/ydtg1993/papa/v2/pkg/metrics"
 	"github.com/ydtg1993/papa/v2/pkg/middleware"
-	"github.com/ydtg1993/papa/v2/pkg/track"
 	"gorm.io/gorm"
 	"net/http"
 	"os"
@@ -36,7 +34,6 @@ type App struct {
 	configPath      string
 	extraModels     []any
 	browsableModels []ModelDef
-	metrics         *metrics.Registry
 	sysInfo         *sysinfo.Collector
 	dataAdmin       *dataadmin.Registry
 	cancel          context.CancelFunc
@@ -128,10 +125,8 @@ func NewApp(opts ...Option) (*App, error) {
 		}
 	}
 
-	// 5. 创建爬虫引擎（注入依赖）
+	// 5. 创建爬虫引擎
 	engine := crawler.NewEngine(db, cfg, &loggerSet)
-	metricsReg := metrics.New()
-	engine.SetMetrics(metricsReg)
 
 	// 6. 数据浏览注册表（监控后台通用数据浏览）
 	dataAdmin := dataadmin.New(db)
@@ -151,7 +146,6 @@ func NewApp(opts ...Option) (*App, error) {
 	a.Logger = &loggerSet
 	a.DB = db
 	a.Engine = engine
-	a.metrics = metricsReg
 	a.dataAdmin = dataAdmin
 	return a, nil
 }
@@ -313,8 +307,8 @@ func (a *App) httpServer(ctx context.Context) {
 
 	mux := http.NewServeMux()
 	if cfg.Monitor {
-		getter := func() map[string]*track.StatsQueue[*crawler.Task] {
-			return a.Engine.GetStatsQueue()
+		getter := func() map[string]crawler.StageStats {
+			return a.Engine.GetStageStats()
 		}
 		if a.sysInfo == nil {
 			a.sysInfo = sysinfo.NewCollector(2*time.Second, cfg.MonitorDirs)
@@ -327,7 +321,7 @@ func (a *App) httpServer(ctx context.Context) {
 			AuthKeyFile:   cfg.AuthKeyFile,
 			Whitelist:     whitelist,
 			WhitelistFile: cfg.WhitelistFile,
-			Metrics:       a.metrics,
+			Metrics:       a.Engine.GetMetrics,
 			SysInfo:       a.sysInfo,
 			DataAdmin:     a.dataAdmin,
 			LogDir:        a.Config.Log.Dir,
