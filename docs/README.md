@@ -71,8 +71,7 @@
       │       ├── m3u8/           # M3U8 视频下载器
       │       └── proxy/          # 代理管理器
       ├── cmd/papa/               # 脚手架 CLI：papa new <name> 生成新爬虫项目
-      ├── logs/                   # 日志文件目录（运行时生成）
-      ├── scripts/                # 辅助脚本（Makefile、Docker）
+      ├── scripts/                # 辅助脚本（Makefile）
       ├── go.mod
       └── go.sum
 
@@ -95,7 +94,7 @@ Papa 是框架包，你在**自己的项目里 `import "github.com/ydtg1993/papa
 go install ./cmd/papa        # 一次性安装，得到 papa 命令
 
 cd /some/where
-papa new mycrawler --replace E:/go-project/papa   # 生成的 go.mod 直接指向本地 papa 仓库
+papa new mycrawler --replace /path/to/papa   # 生成的 go.mod 直接指向本地 papa 仓库
 cd mycrawler && go mod tidy && go run .
 ```
 
