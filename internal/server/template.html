@@ -20,15 +20,17 @@
 <div class="shell" id="app">
     <aside class="sidebar">
         <div class="brand">Papa Admin</div>
-        <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
         <nav>
+            <div class="nav-section">Menu</div>
             <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">Dashboard</button>
             <button class="nav-item" data-module="queue" onclick="switchModule('queue')">任务队列</button>
             <button class="nav-item" data-module="tasks" onclick="switchModule('tasks')">任务</button>
+            <div class="nav-section">General</div>
             <button class="nav-item" data-module="data" onclick="switchModule('data')">数据浏览</button>
             <button class="nav-item" data-module="custom" onclick="switchModule('custom')">自定义数据</button>
             <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
         </nav>
+        <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
         <div class="side-status"><span class="dot" id="dot"></span><span id="statusText">未连接</span></div>
     </aside>
 

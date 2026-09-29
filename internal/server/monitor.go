@@ -105,7 +105,7 @@ func parseWhitelist(items []string, logger Logger) []*net.IPNet {
 func (s *Monitor) Register(mux *http.ServeMux) {
 	// 静态资源（CSS/JS），无需鉴权
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
-		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
+		mux.Handle("/static/", http.StripPrefix("/static/", noCache(http.FileServer(http.FS(sub)))))
 	}
 
 	mux.HandleFunc("/monitor", s.wrap(s.htmlHandler))
@@ -393,6 +393,14 @@ func generateSecret() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// noCache 禁止静态资源被浏览器缓存，改样式后无需手动清缓存即可看到。
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // writeJSON 统一写 JSON 响应
