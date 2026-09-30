@@ -5,7 +5,7 @@
 ## 快速开始
 
 ```bash
-go install ./cmd/papa
+go install github.com/ydtg1993/papa/v2/cmd/papa@latest
 papa new mycrawler --replace /path/to/papa   # 或外部 go run github.com/ydtg1993/papa/v2/cmd/papa@latest new mycrawler
 cd mycrawler && go mod tidy && go run .
 ```
