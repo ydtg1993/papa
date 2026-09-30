@@ -8,8 +8,13 @@
 ## 0. 安装
 
 ```bash
-go install ./cmd/papa          # 一次性安装，得到 papa 命令
-# 不想装：在 papa 仓库根目录 go run ./cmd/papa <子命令> ...
+# 免克隆安装（推荐）：直接装最新版，得到 papa 命令
+go install github.com/ydtg1993/papa/v2/cmd/papa@latest
+
+# 已在 papa 仓库内（贡献/调试）：装当前源码
+go install ./cmd/papa
+
+# 不想装：在仓库根目录 go run ./cmd/papa <子命令> ...
 ```
 
 ## 1. 命令总览

@@ -25,6 +25,10 @@ type Browser struct {
 	// 从池配置中继承的默认值（固定，不可热更）
 	defaultDevice  *devices.Device
 	defaultCookies []*proto.NetworkCookieParam
+
+	// aliveOverride 测试钩子：非 nil 时 IsAlive 直接返回其值，跳过真实 CDP 探测。
+	// 仅同包测试使用，生产环境恒为 nil。
+	aliveOverride *bool
 }
 
 // Close 关闭浏览器
@@ -45,6 +49,14 @@ func (b *Browser) markUsed() {
 	b.mu.Unlock()
 }
 
+// markIdle 标记浏览器已归还池中，记录空闲起始时间。
+// 空闲回收（max_idle_time）以此时间点为基准。
+func (b *Browser) markIdle() {
+	b.mu.Lock()
+	b.lastUsed = time.Now()
+	b.mu.Unlock()
+}
+
 // GetUseCount 获取使用次数
 func (b *Browser) GetUseCount() int64 {
 	return atomic.LoadInt64(&b.useCount)
@@ -59,6 +71,9 @@ func (b *Browser) GetLastUsed() time.Time {
 
 // IsAlive 检查浏览器是否可用
 func (b *Browser) IsAlive() bool {
+	if b.aliveOverride != nil {
+		return *b.aliveOverride
+	}
 	if b.Browser == nil {
 		return false
 	}

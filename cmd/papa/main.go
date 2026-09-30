@@ -92,6 +92,7 @@ func runNew(name string, args []string) error {
 		dest string
 	}{
 		{"go.mod.tmpl", "go.mod"},
+		{"gitignore.tmpl", ".gitignore"},
 		{"main.go.tmpl", "main.go"},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
 		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},

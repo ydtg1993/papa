@@ -16,8 +16,11 @@ import (
 )
 
 // Pool Browser池封装管理多个rod。
-// 采用双核冷热切换：active 原子指针指向当前服务的 core；调整池大小时后台预建新 core 再原子换入，
-// 旧 core 排空（在途浏览器归还后）自动回收。headers/max_idle_time 为共享可热更字段，改动即时全局生效。
+// 浏览器按需懒创建：Get 时若无空闲实例且未达容量上限才新建；归还后不再立即重建。
+// 空闲超过 max_idle_time 的实例由后台回收协程定期关闭，避免长期无任务仍反复唤起浏览器。
+// headers/max_idle_time 为共享可热更字段，改动即时全局生效。
+// 双核冷热切换：active 原子指针指向当前服务的 core；调整池大小时后台预建新 core 再原子换入，
+// 旧 core 排空（在途浏览器归还后）自动回收。
 type Pool struct {
 	active       atomic.Pointer[poolCore]
 	cfg          PoolConfig
@@ -28,14 +31,20 @@ type Pool struct {
 
 	closed    atomic.Bool
 	closeOnce sync.Once
+
+	reaperMu   sync.Mutex
+	reaperStop chan struct{} // 非 nil 表示空闲回收协程在运行
 }
 
-// poolCore 一个浏览器池内核，持有代理/直连两条通道与排空状态。
+// poolCore 一个浏览器池内核，持有代理/直连两条空闲通道与排空状态。
 type poolCore struct {
-	pool      *Pool
-	browsers  chan *Browser
-	direct    chan *Browser
-	retiredCh chan struct{} // 内核被换下时关闭，用于唤醒阻塞中的 Get
+	pool     *Pool
+	browsers chan *Browser
+	direct   chan *Browser
+	cond     *sync.Cond // L: mu，广播唤醒阻塞中的 Get
+
+	proxyAlive  atomic.Int64 // 当前存活（含借用中）的代理浏览器数
+	directAlive atomic.Int64 // 当前存活（含借用中）的直连浏览器数
 
 	mu        sync.Mutex
 	refs      int  // 在途数量：已借出未归还 + 阻塞在 Get 的调用
@@ -64,6 +73,9 @@ type PoolConfig struct {
 
 // NewPool 创建浏览器池
 func NewPool(cfg PoolConfig) (*Pool, error) {
+	if cfg.Size < 0 || cfg.DirectSize < 0 {
+		return nil, fmt.Errorf("invalid pool size: %d/%d", cfg.Size, cfg.DirectSize)
+	}
 	if cfg.Flags == nil {
 		cfg.Flags = make(map[string]string)
 	}
@@ -80,39 +92,20 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	p.headers.Store(&h)
 	p.maxIdle.Store(int64(cfg.MaxIdleTime))
 
-	core, err := p.newCore(cfg.Size, cfg.DirectSize)
-	if err != nil {
-		return nil, err
-	}
-	p.active.Store(core)
+	p.active.Store(p.newCore(cfg.Size, cfg.DirectSize))
+	p.ensureReaper()
 	return p, nil
 }
 
-// newCore 预建一个内核：创建 size+directSize 个浏览器实例。
-func (p *Pool) newCore(size, directSize int) (*poolCore, error) {
+// newCore 创建一个空内核：只分配空闲通道，浏览器按需在 Get 时创建。
+func (p *Pool) newCore(size, directSize int) *poolCore {
 	c := &poolCore{
-		pool:      p,
-		browsers:  make(chan *Browser, size),
-		direct:    make(chan *Browser, directSize),
-		retiredCh: make(chan struct{}),
+		pool:     p,
+		browsers: make(chan *Browser, size),
+		direct:   make(chan *Browser, directSize),
 	}
-	for i := 0; i < size; i++ {
-		b, err := c.newBrowser(true)
-		if err != nil {
-			c.close()
-			return nil, fmt.Errorf("create proxy browser %d: %w", i, err)
-		}
-		c.browsers <- b
-	}
-	for i := 0; i < directSize; i++ {
-		b, err := c.newBrowser(false)
-		if err != nil {
-			c.close()
-			return nil, fmt.Errorf("create direct browser %d: %w", i, err)
-		}
-		c.direct <- b
-	}
-	return c, nil
+	c.cond = sync.NewCond(&c.mu)
+	return c
 }
 
 // newBrowser 通过工厂创建浏览器并绑定内核。
@@ -172,7 +165,7 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 		if core == nil {
 			return nil, fmt.Errorf("browser pool closed")
 		}
-		b, err := core.get(ctx, core.browsers)
+		b, err := core.get(ctx, core.browsers, &core.proxyAlive, true)
 		if err == errRetired {
 			continue
 		}
@@ -193,7 +186,7 @@ func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) {
 		if cap(core.direct) == 0 {
 			return nil, fmt.Errorf("direct browsers not configured")
 		}
-		b, err := core.get(ctx, core.direct)
+		b, err := core.get(ctx, core.direct, &core.directAlive, false)
 		if err == errRetired {
 			continue
 		}
@@ -201,8 +194,10 @@ func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) {
 	}
 }
 
-// get 从指定通道获取浏览器实例，处理实例死亡重建
-func (c *poolCore) get(ctx context.Context, ch chan *Browser) (*Browser, error) {
+// get 从指定通道获取浏览器实例：优先复用空闲，其次按需新建，最后阻塞等待状态变化。
+// 快路径（取空闲 / 新建）在锁外完成，避免慢操作（CDP 探测、Chrome 启动）持锁；
+// 慢路径在 c.mu 下复查条件并用 cond.Wait 原子休眠，所有状态变化均持 c.mu 广播，杜绝丢失唤醒。
+func (c *poolCore) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, useProxy bool) (*Browser, error) {
 	c.mu.Lock()
 	if c.retired {
 		c.mu.Unlock()
@@ -211,30 +206,76 @@ func (c *poolCore) get(ctx context.Context, ch chan *Browser) (*Browser, error) 
 	c.refs++
 	c.mu.Unlock()
 
-	select {
-	case b := <-ch:
-		if b == nil {
-			c.release()
-			return nil, fmt.Errorf("browser pool closed")
-		}
-		if !b.IsAlive() {
-			b.Close()
-			newB, err := c.newBrowser(b.useProxy)
-			if err != nil {
+	cap := int64(cap(ch))
+	stopCtx := context.AfterFunc(ctx, func() {
+		c.mu.Lock()
+		c.cond.Broadcast()
+		c.mu.Unlock()
+	})
+	defer stopCtx()
+
+	for {
+		maxIdle := c.pool.maxIdleDuration()
+
+		// 1. 非阻塞复用空闲实例
+		select {
+		case b := <-ch:
+			if b == nil {
 				c.release()
-				return nil, fmt.Errorf("failed to recreate dead browser: %w", err)
+				return nil, fmt.Errorf("browser pool closed")
 			}
-			b = newB
+			if b = c.usable(b, alive, maxIdle); b == nil {
+				continue
+			}
+			b.markUsed()
+			return b, nil
+		default:
 		}
-		b.markUsed()
-		return b, nil
-	case <-c.retiredCh:
-		c.release()
-		return nil, errRetired
-	case <-ctx.Done():
-		c.release()
-		return nil, ctx.Err()
+
+		// 2. 未达容量上限则按需新建
+		if cap > 0 && alive.Add(1) <= cap {
+			b, err := c.newBrowser(useProxy)
+			if err != nil {
+				alive.Add(-1)
+				c.release()
+				return nil, fmt.Errorf("create browser: %w", err)
+			}
+			b.markUsed()
+			return b, nil
+		}
+		if cap > 0 {
+			alive.Add(-1)
+		}
+
+		// 3. 加锁复查条件，仍不满足则 cond.Wait（原子释放锁休眠）
+		c.mu.Lock()
+		if c.retired {
+			c.mu.Unlock()
+			c.release()
+			return nil, errRetired
+		}
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			c.release()
+			return nil, err
+		}
+		if len(ch) > 0 || (cap > 0 && alive.Load() < cap) {
+			c.mu.Unlock()
+			continue
+		}
+		c.cond.Wait()
+		c.mu.Unlock()
 	}
+}
+
+// usable 校验空闲实例：死掉或空闲超时的关闭并扣减存活计数，返回 nil 让调用方重试。
+func (c *poolCore) usable(b *Browser, alive *atomic.Int64, maxIdle time.Duration) *Browser {
+	if !b.IsAlive() || (maxIdle > 0 && time.Since(b.GetLastUsed()) > maxIdle) {
+		b.Close()
+		alive.Add(-1)
+		return nil
+	}
+	return b
 }
 
 // Put 将浏览器实例归还池中
@@ -253,7 +294,7 @@ func (p *Pool) Put(b *Browser) error {
 	return b.core.put(b)
 }
 
-// put 归还到浏览器所属内核；内核排空中则直接回收。
+// put 归还到浏览器所属内核；死实例直接回收不重建，内核排空中则直接回收。
 func (c *poolCore) put(b *Browser) error {
 	defer c.release()
 
@@ -262,41 +303,45 @@ func (c *poolCore) put(b *Browser) error {
 	c.mu.Unlock()
 	if retired {
 		b.Close()
+		c.decAlive(b)
 		return nil
 	}
 
-	maxIdle := c.pool.maxIdleDuration()
-	if !b.IsAlive() || (maxIdle > 0 && time.Since(b.GetLastUsed()) > maxIdle) {
-		b.Close()
-		newB, err := c.newBrowser(b.useProxy)
-		if err != nil {
-			return fmt.Errorf("failed to recreate idle browser: %w", err)
-		}
-		b = newB
-	}
-
-	// 二次校验 + 入队放在同一把锁内：retired 只在 close 之前置位，
-	// 锁内看到 retired=false 即保证 channel 尚未关闭，避免 send-on-closed panic。
-	c.mu.Lock()
 	enqueued := false
-	if !c.retired {
-		ch := c.browsers
-		if !b.useProxy {
-			ch = c.direct
+	if b.IsAlive() {
+		b.markIdle()
+		c.mu.Lock()
+		if !c.retired {
+			ch := c.browsers
+			if !b.useProxy {
+				ch = c.direct
+			}
+			select {
+			case ch <- b:
+				enqueued = true
+			default:
+			}
 		}
-		select {
-		case ch <- b:
-			enqueued = true
-		default:
-		}
+		c.mu.Unlock()
 	}
-	c.mu.Unlock()
-
-	// 未入队（内核已排空或队列满）：锁外回收，避免慢速 Close 持锁。
-	if !enqueued && b.IsAlive() {
+	if !enqueued {
 		b.Close()
+		c.decAlive(b)
 	}
+
+	c.mu.Lock()
+	c.cond.Broadcast()
+	c.mu.Unlock()
 	return nil
+}
+
+// decAlive 扣减存活计数（实例已关闭）。
+func (c *poolCore) decAlive(b *Browser) {
+	if b.useProxy {
+		c.proxyAlive.Add(-1)
+	} else {
+		c.directAlive.Add(-1)
+	}
 }
 
 // Resize 运行期调整池大小：后台预建新内核再原子换入，旧内核排空后回收。
@@ -307,10 +352,7 @@ func (p *Pool) Resize(size, directSize int) error {
 	if p.closed.Load() {
 		return fmt.Errorf("browser pool closed")
 	}
-	core, err := p.newCore(size, directSize)
-	if err != nil {
-		return err
-	}
+	core := p.newCore(size, directSize)
 	old := p.active.Swap(core)
 	if old != nil {
 		old.retire()
@@ -327,6 +369,7 @@ func (p *Pool) SetHeaders(headers map[string]string) {
 // SetMaxIdleTime 运行期热更空闲回收阈值。
 func (p *Pool) SetMaxIdleTime(d time.Duration) {
 	p.maxIdle.Store(int64(d))
+	p.ensureReaper()
 }
 
 // headersSnapshot 返回当前共享默认请求头（只读，调用方不得修改）。
@@ -343,6 +386,122 @@ func (p *Pool) maxIdleDuration() time.Duration {
 	return time.Duration(p.maxIdle.Load())
 }
 
+// ensureReaper 空闲回收协程：max_idle_time > 0 时启动，定期关闭空闲超时的浏览器。
+func (p *Pool) ensureReaper() {
+	if p.closed.Load() || p.maxIdleDuration() <= 0 {
+		return
+	}
+	p.reaperMu.Lock()
+	defer p.reaperMu.Unlock()
+	if p.reaperStop != nil {
+		return
+	}
+	p.reaperStop = make(chan struct{})
+	go p.reaperLoop(p.reaperStop)
+}
+
+func (p *Pool) reaperLoop(stop <-chan struct{}) {
+	interval := p.reaperInterval()
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			p.reapIdle()
+		}
+	}
+}
+
+// reaperInterval 回收协程的扫描间隔，取 max_idle_time 的一半并夹在 [1s, 30s]。
+func (p *Pool) reaperInterval() time.Duration {
+	d := p.maxIdleDuration()
+	if d <= 0 {
+		return 0
+	}
+	d /= 2
+	if d < time.Second {
+		d = time.Second
+	}
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
+}
+
+func (p *Pool) reapIdle() {
+	core := p.active.Load()
+	if core == nil {
+		return
+	}
+	maxIdle := p.maxIdleDuration()
+	if maxIdle <= 0 {
+		return
+	}
+	core.reapIdle(maxIdle)
+}
+
+func (c *poolCore) reapIdle(maxIdle time.Duration) {
+	c.reapChannel(c.browsers, &c.proxyAlive, maxIdle)
+	c.reapChannel(c.direct, &c.directAlive, maxIdle)
+}
+
+// reapChannel 排空空闲通道，关闭死掉/空闲超时的实例，放回仍有效的实例。
+func (c *poolCore) reapChannel(ch chan *Browser, alive *atomic.Int64, maxIdle time.Duration) {
+	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return
+	}
+	idle := make([]*Browser, 0, len(ch))
+drain:
+	for {
+		select {
+		case b := <-ch:
+			idle = append(idle, b)
+		default:
+			break drain
+		}
+	}
+	c.mu.Unlock()
+
+	now := time.Now()
+	fresh := idle[:0]
+	for _, b := range idle {
+		if !b.IsAlive() || now.Sub(b.GetLastUsed()) > maxIdle {
+			b.Close()
+			alive.Add(-1)
+		} else {
+			fresh = append(fresh, b)
+		}
+	}
+
+	c.mu.Lock()
+	if c.retired {
+		for _, b := range fresh {
+			b.Close()
+			alive.Add(-1)
+		}
+	} else {
+		for _, b := range fresh {
+			select {
+			case ch <- b:
+			default:
+				b.Close()
+				alive.Add(-1)
+			}
+		}
+	}
+	if len(idle) > 0 {
+		c.cond.Broadcast()
+	}
+	c.mu.Unlock()
+}
+
 // release 归还一个在途引用；内核已排空且无在途引用时关闭。
 func (c *poolCore) release() {
 	c.mu.Lock()
@@ -357,13 +516,10 @@ func (c *poolCore) release() {
 // retire 标记内核已换下，唤醒阻塞中的 Get 去重试新内核；无在途引用时立即关闭。
 func (c *poolCore) retire() {
 	c.mu.Lock()
-	already := c.retired
 	c.retired = true
 	shouldClose := c.refs == 0
+	c.cond.Broadcast()
 	c.mu.Unlock()
-	if !already {
-		close(c.retiredCh)
-	}
 	if shouldClose {
 		c.close()
 	}
@@ -372,12 +528,10 @@ func (c *poolCore) retire() {
 // close 关闭通道并回收其中所有浏览器。
 func (c *poolCore) close() {
 	c.closeOnce.Do(func() {
-		// 关 channel 与 put 的入队用同一把 c.mu 串行化，杜绝 send-on-closed panic。
 		c.mu.Lock()
 		close(c.browsers)
 		close(c.direct)
 		c.mu.Unlock()
-		// 回收浏览器可能较慢（Chrome 清理），放在锁外。
 		for b := range c.browsers {
 			b.Close()
 		}
@@ -391,6 +545,11 @@ func (c *poolCore) close() {
 func (p *Pool) Close() {
 	p.closeOnce.Do(func() {
 		p.closed.Store(true)
+		p.reaperMu.Lock()
+		if p.reaperStop != nil {
+			close(p.reaperStop)
+		}
+		p.reaperMu.Unlock()
 		core := p.active.Swap(nil)
 		if core != nil {
 			core.retire()
