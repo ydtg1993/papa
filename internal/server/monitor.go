@@ -45,6 +45,7 @@ type MonitorConfig struct {
 	OnShutdown          func()                            // 优雅退出回调
 	ProcessErrorQueue   func() (int, error)               // 错误队列手动触发回调（可空）
 	ProcessRecoverQueue func() (int, error)               // 中断恢复队列手动触发回调（可空）
+	ProcessRepeatQueue  func() (int, error)               // 周期轮询队列手动触发回调（可空）
 	ConfigGet           func() *config.RuntimeConfig      // 返回当前运行期覆盖层（可空）
 	ConfigSet           func(*config.RuntimeConfig) error // 应用运行期覆盖层（可空）
 }
@@ -121,6 +122,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
 	mux.HandleFunc("/api/recoverqueue/process", s.wrap(s.recoverQueueProcessHandler))
+	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
 	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
@@ -363,10 +365,32 @@ func (s *Monitor) recoverQueueProcessHandler(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, map[string]any{"status": "ok", "recovered": count})
 }
 
+// repeatQueueProcessHandler 手动触发周期轮询队列处理
+func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.ProcessRepeatQueue == nil {
+		http.Error(w, "repeat queue not configured", http.StatusNotFound)
+		return
+	}
+	count, err := s.cfg.ProcessRepeatQueue()
+	if err != nil {
+		s.logger.Errorf("process repeat queue: %s", err.Error())
+		http.Error(w, "process repeat queue failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "repolled": count})
+}
+
 // hotReloadableFields 可热更字段（供后台 UI 标注）。
 var hotReloadableFields = []string{
 	"browser.pool_size", "browser.direct_pool_size", "browser.max_idle_time", "browser.headers",
 	"html.timeout", "html.max_body_size", "html.headers",
+	"error_queue.enabled", "error_queue.interval", "error_queue.worker_count", "error_queue.max_retry", "error_queue.batch_size",
+	"recover_queue.enabled", "recover_queue.interval", "recover_queue.worker_count", "recover_queue.timeout", "recover_queue.batch_size",
+	"repeat_queue.enabled", "repeat_queue.interval", "repeat_queue.worker_count", "repeat_queue.batch_size",
 }
 
 // restartOnlyFields 需重启才生效的字段（PUT 时会被拒绝）。
@@ -374,7 +398,6 @@ var restartOnlyFields = []string{
 	"browser.enable", "browser.headless", "browser.no_sandbox", "browser.leakless", "browser.browser_path",
 	"proxy.api_url", "proxy.refresh_interval",
 	"crawler.stages", "crawler.dedup_cache_size",
-	"error_queue.enabled", "error_queue.interval",
 }
 
 // configHandler 查询/更新运行期动态配置。
@@ -419,6 +442,24 @@ func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if rt.Browser.DirectSize != nil && *rt.Browser.DirectSize < 0 {
 		http.Error(w, "browser.direct_pool_size 必须 >= 0", http.StatusBadRequest)
+		return
+	}
+	for name, v := range map[string]*int{
+		"error_queue.worker_count":   rt.ErrorQueue.WorkerCount,
+		"error_queue.max_retry":      rt.ErrorQueue.MaxRetry,
+		"error_queue.batch_size":     rt.ErrorQueue.BatchSize,
+		"recover_queue.worker_count": rt.RecoverQueue.WorkerCount,
+		"recover_queue.batch_size":   rt.RecoverQueue.BatchSize,
+		"repeat_queue.worker_count":  rt.RepeatQueue.WorkerCount,
+		"repeat_queue.batch_size":    rt.RepeatQueue.BatchSize,
+	} {
+		if v != nil && *v < 0 {
+			http.Error(w, name+" 必须 >= 0", http.StatusBadRequest)
+			return
+		}
+	}
+	if rt.RecoverQueue.Timeout != nil && rt.RecoverQueue.Timeout.Duration < 0 {
+		http.Error(w, "recover_queue.timeout 必须 >= 0", http.StatusBadRequest)
 		return
 	}
 	if err := s.cfg.ConfigSet(&rt); err != nil {

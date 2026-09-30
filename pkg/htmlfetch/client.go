@@ -112,24 +112,13 @@ func applyConfigDefaults(cfg *Config) {
 
 // SetConfig 运行期更新请求配置（timeout/max_body_size/user_agent/headers），用于 OA 后台热更。
 // 传入的 Headers 归 Client 所有，调用方随后不应再修改该 map。
+// 代理在 NewClient 时定死（transport.Proxy），不随 SetConfig 改变。
 func (c *Client) SetConfig(cfg Config) {
 	applyConfigDefaults(&cfg)
 	c.mu.Lock()
+	cfg.ProxyManager = c.config.ProxyManager
 	c.config = cfg
 	c.mu.Unlock()
-}
-
-// SetProxyManager changes the proxy source used by subsequent requests.
-func (c *Client) SetProxyManager(manager *proxy.Manager) {
-	c.mu.Lock()
-	c.config.ProxyManager = manager
-	c.mu.Unlock()
-
-	transport, ok := c.httpClient.Transport.(*http.Transport)
-	if !ok {
-		return
-	}
-	transport.Proxy = proxyFunc(manager)
 }
 
 // Fetch downloads and parses one static HTML page.

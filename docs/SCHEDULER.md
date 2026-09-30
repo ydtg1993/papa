@@ -1,7 +1,7 @@
 # Papa 定时任务手册
 
-> 面向：想在业务层注册自己的定时任务（周期轮询、对账、清理等）。
-> 背景：框架**不再内置** `repeat` / `recover` 定时 job；业务定时任务统一通过 `app.RegisterCronJob` 注册，框架级恢复/失败重试走 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) / [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+> 面向：想在业务层注册自己的定时任务（对账、清理、指定时刻的轮询等）。
+> 背景：框架**不再内置** `repeat` / `recover` 定时 job。周期轮询 repeatable 任务推荐用框架级 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)（interval 定时）；需要 cron 语义或自定义任务时用本文的 `RegisterCronJob`。框架级恢复/失败重试走 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) / [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
 ---
 
@@ -65,7 +65,7 @@ app.Run(ctx)
 
 | 方法 | 作用 | 返回 |
 | --- | --- | --- |
-| `engine.RepollRepeatableTasks()` | 重新投递所有 `repeatable` 任务 | `(投递数, error)` |
+| `engine.RepollRepeatableTasks()` | 重新投递「已完成」的 repeatable 任务（success/failed） | `(投递数, error)` |
 | `engine.ProcessErrorQueue()` | 手动触发失败任务重投 | `(投递数, error)` |
 | `engine.ProcessRecoverQueue()` | 手动触发卡死任务恢复 | `(恢复数, error)` |
 
@@ -74,6 +74,7 @@ app.Run(ctx)
 | 能力 | 归属 | 触发方式 |
 | --- | --- | --- |
 | 业务自定义定时任务 | 本文（`RegisterCronJob`） | 自定 cron |
-| 周期轮询 repeatable 任务 | `RepollRepeatableTasks` | 业务用 cron 触发 |
+| 周期轮询 repeatable（interval 定时） | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | interval + 手动 |
+| 周期轮询 repeatable（cron 语义） | `RegisterCronJob` + `RepollRepeatableTasks` | 自定 cron |
 | 失败任务重试 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | interval + 手动 |
 | 卡死任务恢复 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | 启动时 + interval + 手动 |

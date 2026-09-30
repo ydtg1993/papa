@@ -32,14 +32,6 @@ func (t *Task) deliverAt() time.Time {
 	return time.Time{}
 }
 
-func (t *Task) GetUrl() string {
-	return t.URL
-}
-
-func (t *Task) GetRetry() int {
-	return t.Retry
-}
-
 func (t *Task) IncRetry(db *gorm.DB) {
 	t.Retry++
 	db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).

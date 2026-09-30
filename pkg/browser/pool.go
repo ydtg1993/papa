@@ -274,16 +274,27 @@ func (c *poolCore) put(b *Browser) error {
 		}
 		b = newB
 	}
-	ch := c.browsers
-	if !b.useProxy {
-		ch = c.direct
-	}
-	select {
-	case ch <- b:
-	default:
-		if b.IsAlive() {
-			b.Close()
+
+	// 二次校验 + 入队放在同一把锁内：retired 只在 close 之前置位，
+	// 锁内看到 retired=false 即保证 channel 尚未关闭，避免 send-on-closed panic。
+	c.mu.Lock()
+	enqueued := false
+	if !c.retired {
+		ch := c.browsers
+		if !b.useProxy {
+			ch = c.direct
 		}
+		select {
+		case ch <- b:
+			enqueued = true
+		default:
+		}
+	}
+	c.mu.Unlock()
+
+	// 未入队（内核已排空或队列满）：锁外回收，避免慢速 Close 持锁。
+	if !enqueued && b.IsAlive() {
+		b.Close()
 	}
 	return nil
 }
@@ -361,8 +372,12 @@ func (c *poolCore) retire() {
 // close 关闭通道并回收其中所有浏览器。
 func (c *poolCore) close() {
 	c.closeOnce.Do(func() {
+		// 关 channel 与 put 的入队用同一把 c.mu 串行化，杜绝 send-on-closed panic。
+		c.mu.Lock()
 		close(c.browsers)
 		close(c.direct)
+		c.mu.Unlock()
+		// 回收浏览器可能较慢（Chrome 清理），放在锁外。
 		for b := range c.browsers {
 			b.Close()
 		}

@@ -92,6 +92,7 @@ error_queue:
   worker_count: 2         # 并发重新投递失败任务的数量
   interval: "10m"         # 自动轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
   max_retry: 3            # 单个失败任务最多再处理代数；0 = 不限
+  batch_size: 1000        # 每批查询处理的任务数；0 = 默认 1000（分页流式，避免海量失败任务一次性全量加载）
 
 # 中断恢复队列（主程序重启后立即恢复卡死的 pending/processing 任务，也可定时/手动触发）
 recover_queue:
@@ -99,3 +100,11 @@ recover_queue:
   worker_count: 2         # 并发恢复数量
   interval: "10m"         # 自动轮询间隔；0 = 仅启动时 + OA 后台手动触发
   timeout: "6h"           # 任务卡住多久算卡死（updated_at 早于 now-timeout）
+  batch_size: 1000        # 每批查询处理的任务数；0 = 默认 1000（分页流式，避免海量卡死任务一次性全量加载）
+
+# 周期轮询队列（配合 main.go 里 Repeatable: true 的任务：定时重投「已完成」的 repeatable 任务，实现周期轮询）
+repeat_queue:
+  enabled: true           # 是否启用周期轮询 repeatable 任务
+  worker_count: 2         # 并发重新投递 repeatable 任务的数量
+  interval: "10m"         # 轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
+  batch_size: 1000        # 每批查询处理的任务数；0 = 默认 1000（分页流式）

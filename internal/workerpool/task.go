@@ -4,10 +4,8 @@ import (
 	"context"
 )
 
-// Tasker 任务接口 方法
+// Tasker 任务接口：唯一要求是可去重（Unique）。
 type Tasker interface {
-	GetUrl() string
-	GetRetry() int
 	Unique() string
 }
 

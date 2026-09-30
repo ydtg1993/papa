@@ -363,6 +363,7 @@ func (a *App) httpServer(ctx context.Context) {
 			OnShutdown:          a.Shutdown,
 			ProcessErrorQueue:   a.Engine.ProcessErrorQueue,
 			ProcessRecoverQueue: a.Engine.ProcessRecoverQueue,
+			ProcessRepeatQueue:  a.Engine.RepollRepeatableTasks,
 			ConfigGet:           a.Engine.GetRuntimeConfig,
 			ConfigSet:           a.Engine.ApplyRuntimeConfig,
 		})

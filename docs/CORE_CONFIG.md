@@ -106,6 +106,7 @@
 | `worker_count` | int | 并发重新投递数 |
 | `interval` | duration | 自动轮询间隔；`0`=仅手动 |
 | `max_retry` | int | 单个任务最多再处理代数；`0`=不限 |
+| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
 ### recover_queue —— 中断恢复队列（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
@@ -115,6 +116,16 @@
 | `worker_count` | int | 并发恢复数 |
 | `interval` | duration | 自动轮询间隔；`0`=仅启动时+手动 |
 | `timeout` | duration | 任务卡住多久算卡死 |
+| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+
+### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
+
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `enabled` | bool | 是否启用周期轮询 repeatable 任务 |
+| `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
+| `interval` | duration | 轮询间隔；`0`=不自动轮询，仅手动触发 |
+| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
 ## 2. 时长格式
 
@@ -123,6 +134,8 @@
 
 ## 3. 运行期热更（OA 后台）
 
-- 可热更字段（`PUT /api/config`，改后即时生效）：`browser.pool_size` / `direct_pool_size` / `max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
-- 需重启字段：`browser.enable/headless/no_sandbox/leakless/browser_path`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`error_queue.enabled/interval`、`recover_queue.*`。
+- 可热更字段（`PUT /api/config`，改后即时生效）：
+  - 浏览器/HTML：`browser.pool_size` / `direct_pool_size` / `max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
+  - 三个队列（`error_queue` / `recover_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`、`recover_queue.timeout`。
+- 需重启字段：`browser.enable/headless/no_sandbox/leakless/browser_path`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`。
 - 持久化：热更只写内存；关停时把「被改字段」写成 `configs/runtime.yaml` 覆盖层，下次启动叠加回 `config.yaml`。

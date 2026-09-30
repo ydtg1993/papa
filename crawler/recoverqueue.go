@@ -1,8 +1,6 @@
 package crawler
 
 import (
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ydtg1993/papa/v2/models"
@@ -12,49 +10,18 @@ import (
 // ProcessRecoverQueue 查询「卡死」的 pending/processing 任务（updated_at 早于 now-timeout）并重新投递，
 // 返回实际恢复的数量。供启动时、定时轮询、OA 后台手动触发复用。
 func (e *Engine) ProcessRecoverQueue() (int, error) {
-	cfg := e.cfg.RecoverQueue
+	cfg := e.recoverQueueConfig()
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 6 * time.Hour
 	}
 	cutoff := time.Now().Add(-timeout)
 
-	var tasks []models.CrawlerTask
-	if err := e.db.Where("(status = ? OR status = ?) AND updated_at < ?",
-		models.TaskStatusPending, models.TaskStatusProcessing, cutoff).
-		Find(&tasks).Error; err != nil {
-		e.loggerSet.Engine.Errorf("recover queue: query stuck tasks: %s", err.Error())
-		return 0, err
+	query := func() *gorm.DB {
+		return e.db.Where("(status = ? OR status = ?) AND updated_at < ?",
+			models.TaskStatusPending, models.TaskStatusProcessing, cutoff)
 	}
-	if len(tasks) == 0 {
-		return 0, nil
-	}
-
-	workers := cfg.WorkerCount
-	if workers <= 0 {
-		workers = 1
-	}
-	jobs := make(chan models.CrawlerTask, len(tasks))
-	for _, t := range tasks {
-		jobs <- t
-	}
-	close(jobs)
-
-	var wg sync.WaitGroup
-	var processed int64
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for t := range jobs {
-				if e.requeueRecoverTask(&t) {
-					atomic.AddInt64(&processed, 1)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	return int(processed), nil
+	return e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
 }
 
 // requeueRecoverTask 将单条卡死任务重置为 pending 并重新投递；提交失败则标 failed。
@@ -84,41 +51,35 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 		})
 		return false
 	}
+	e.recoveredCount.Add(1)
 	return true
 }
 
 // startRecoverQueue 若启用：启动时立即恢复一次；配置了 interval 再启动后台定时轮询。
 func (e *Engine) startRecoverQueue() {
-	cfg := e.cfg.RecoverQueue
-	if !cfg.Enabled {
-		return
-	}
-	// 启动时立即恢复（异步，避免阻塞启动）
-	go func() {
-		if n, err := e.ProcessRecoverQueue(); err != nil {
-			e.loggerSet.Engine.Errorf("recover queue: startup recover: %s", err.Error())
-		} else if n > 0 {
-			e.loggerSet.Engine.Infof("recover queue: startup recovered %d tasks", n)
-		}
-	}()
-
-	if cfg.Interval <= 0 {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(cfg.Interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-ticker.C:
-				if n, err := e.ProcessRecoverQueue(); err != nil {
-					e.loggerSet.Engine.Errorf("recover queue: auto recover: %s", err.Error())
-				} else if n > 0 {
-					e.loggerSet.Engine.Infof("recover queue: auto recovered %d tasks", n)
-				}
+	// 启动时立即恢复一次（仅启动时；异步避免阻塞启动）
+	if e.recoverQueueConfig().Enabled {
+		go func() {
+			if n, err := e.ProcessRecoverQueue(); err != nil {
+				e.loggerSet.Engine.Errorf("recover queue: startup recover: %s", err.Error())
+			} else if n > 0 {
+				e.loggerSet.Engine.Infof("recover queue: startup recovered %d tasks", n)
 			}
+		}()
+	}
+
+	// 定时轮询（enabled/interval 运行期可热更）
+	e.runDynamicTicker(func() time.Duration {
+		cfg := e.recoverQueueConfig()
+		if !cfg.Enabled || cfg.Interval <= 0 {
+			return 0
 		}
-	}()
+		return cfg.Interval
+	}, func() {
+		if n, err := e.ProcessRecoverQueue(); err != nil {
+			e.loggerSet.Engine.Errorf("recover queue: auto recover: %s", err.Error())
+		} else if n > 0 {
+			e.loggerSet.Engine.Infof("recover queue: auto recovered %d tasks", n)
+		}
+	})
 }

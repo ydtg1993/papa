@@ -44,14 +44,20 @@ type Engine struct {
 	appliedPoolSize   int // 已应用的代理池大小，用于判断运行期是否需要 resize
 	appliedDirectSize int // 已应用的直连池大小
 
-	spillMu sync.Mutex
-	spilled map[string][]*Task // stage -> 高水位溢出的待回灌任务
+	spillMu           sync.Mutex
+	spilled           map[string][]*Task // stage -> 高水位溢出的待回灌任务
+	spilledCount      atomic.Int64       // 累计溢出任务数（监控埋点）
+	recoveredCount    atomic.Int64       // 累计恢复任务数（recover_queue）
+	errorRetriedCount atomic.Int64       // 累计失败重投任务数（error_queue）
 
 	delayMu   sync.Mutex // 保护 delayHeap
 	delayHeap delayHeap  // 延迟投递最小堆
 	delayCh   chan struct{}
 
-	errorQueueMu sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
+	configChanged chan struct{} // 运行期配置变更信号（唤醒动态 ticker 重新读生效配置）
+
+	errorQueueMu  sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
+	repeatQueueMu sync.Mutex // 串行化周期轮询队列处理，避免自动+手动并发重复投递
 
 	proxy     *proxy.Manager       // 代理管理器中间件
 	m3u8      *m3u8.Downloader     // m3u8下载器
@@ -125,16 +131,17 @@ func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, sub
 func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &Engine{
-		ctx:        ctx,
-		cancel:     cancel,
-		stages:     make(map[string]*stageInfo),
-		dedupCache: newDedupCache(cfg.Crawler.DedupCacheSize),
-		db:         db,
-		cfg:        cfg,
-		loggerSet:  loggerSet,
-		metrics:    metrics.New(),
-		delayCh:    make(chan struct{}, 1),
-		spilled:    make(map[string][]*Task),
+		ctx:           ctx,
+		cancel:        cancel,
+		stages:        make(map[string]*stageInfo),
+		dedupCache:    newDedupCache(cfg.Crawler.DedupCacheSize),
+		db:            db,
+		cfg:           cfg,
+		loggerSet:     loggerSet,
+		metrics:       metrics.New(),
+		delayCh:       make(chan struct{}, 1),
+		configChanged: make(chan struct{}, 1),
+		spilled:       make(map[string][]*Task),
 	}
 	engine.runtime.Store(&config.RuntimeConfig{})
 	engine.loadActiveTasks()
@@ -259,12 +266,28 @@ func (e *Engine) RecordMetric(key string, v any) {
 	e.metrics.Set(key, v)
 }
 
-// GetMetrics 返回业务自定义监控数据快照（纯值类型，供监控页读取）
+// GetMetrics 返回监控数据快照：业务自定义数据 + 框架级队列治理计数（溢出/恢复/失败重投）。
 func (e *Engine) GetMetrics() map[string]any {
-	if e.metrics == nil {
-		return map[string]any{}
+	base := map[string]any{}
+	if e.metrics != nil {
+		base = e.metrics.GetAll()
 	}
-	return e.metrics.GetAll()
+	base["queue_spilled"] = e.spilledCount.Load()
+	base["queue_spill_backlog"] = e.spillBacklog()
+	base["recover_total"] = e.recoveredCount.Load()
+	base["error_retry_total"] = e.errorRetriedCount.Load()
+	return base
+}
+
+// spillBacklog 返回当前溢出列表中待回灌的任务总数。
+func (e *Engine) spillBacklog() int {
+	e.spillMu.Lock()
+	defer e.spillMu.Unlock()
+	n := 0
+	for _, tasks := range e.spilled {
+		n += len(tasks)
+	}
+	return n
 }
 
 // defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项
@@ -412,6 +435,11 @@ func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
 	if e.htmlClient != nil {
 		e.htmlClient.SetConfig(e.htmlConfig())
 	}
+	// 通知动态 ticker 重新读取生效配置（队列 enabled/interval 等）
+	select {
+	case e.configChanged <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -516,6 +544,8 @@ func (e *Engine) ApplyRegisterStage() {
 	e.startErrorQueue()
 	// 启动中断恢复队列（启用时启动即恢复一次 + 定时轮询）
 	e.startRecoverQueue()
+	// 启动周期轮询队列（repeatable 任务的定时重跑）
+	e.startRepeatQueue()
 }
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
@@ -614,6 +644,7 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	if err := info.workerPool.Submit(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			// 队列达 75% 高水位：任务保持 pending（已入库），加入溢出列表由 drain 稍后回灌
+			e.spilledCount.Add(1)
 			e.spillTask(task)
 			return nil
 		}

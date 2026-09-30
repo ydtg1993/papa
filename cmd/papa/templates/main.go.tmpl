@@ -28,9 +28,12 @@ func main() {
 	app.RegisterStage(&fetcher.FetchCatalog{},
 		func(engine *papa.Engine) {
 			if err := engine.SubmitTask(&papa.Task{
-				PID:        0,
-				URL:        app.Config.Crawler.Target, // 起始 URL，改成你的目标站
-				Stage:      "catalog",
+				PID:  0,
+				URL:  app.Config.Crawler.Target, // 起始 URL，改成你的目标站
+				Stage: "catalog",
+				// Repeatable: true = 该任务会被「周期轮询」（定时重新抓取、发现新内容），
+				// 由 configs/config.yaml 的 repeat_queue 驱动（enabled + interval）。
+				// 不需要周期轮询就删掉这一行，或把 repeat_queue.enabled 设为 false。
 				Repeatable: true,
 			}); err != nil {
 				app.Logger.Engine.Errorf("submit initial task: %s", err.Error())

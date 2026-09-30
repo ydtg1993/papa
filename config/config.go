@@ -20,6 +20,7 @@ type Config struct {
 	Scheduler    SchedulerConfig    `mapstructure:"scheduler"`
 	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
 	RecoverQueue RecoverQueueConfig `mapstructure:"recover_queue"`
+	RepeatQueue  RepeatQueueConfig  `mapstructure:"repeat_queue"`
 }
 
 // ErrorQueueConfig 失败任务错误队列处理配置
@@ -28,6 +29,7 @@ type ErrorQueueConfig struct {
 	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量
 	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 不自动轮询，仅手动触发
 	MaxRetry    int           `mapstructure:"max_retry"`    // 单个失败任务最多再处理代数；0 = 不限
+	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 
 // RecoverQueueConfig 中断恢复队列处理配置（主程序重启后立即恢复卡死的 pending/processing 任务）
@@ -36,6 +38,15 @@ type RecoverQueueConfig struct {
 	WorkerCount int           `mapstructure:"worker_count"` // 并发恢复数量
 	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 仅启动时+手动触发
 	Timeout     time.Duration `mapstructure:"timeout"`      // 任务卡住多久算卡死（updated_at 早于 now-timeout）；0 = 默认 6h
+	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
+}
+
+// RepeatQueueConfig 周期轮询队列处理配置（定时重新投递「已完成」的 repeatable 任务，实现周期轮询）
+type RepeatQueueConfig struct {
+	Enabled     bool          `mapstructure:"enabled"`      // 是否启用周期轮询 repeatable 任务
+	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递 repeatable 任务的数量
+	Interval    time.Duration `mapstructure:"interval"`     // 轮询间隔；0 = 不自动轮询，仅手动触发
+	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式）
 }
 
 // AppConfig 环境基础配置

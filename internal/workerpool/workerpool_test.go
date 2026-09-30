@@ -8,8 +8,6 @@ type testTask struct {
 	url string
 }
 
-func (t *testTask) GetUrl() string { return t.url }
-func (t *testTask) GetRetry() int  { return 0 }
 func (t *testTask) Unique() string { return t.url }
 
 func TestSubmitWatermark(t *testing.T) {

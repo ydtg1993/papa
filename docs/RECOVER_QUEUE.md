@@ -17,6 +17,7 @@ recover_queue:
   worker_count: 2     # 并发恢复数量
   interval: "10m"     # 自动轮询间隔；0 = 仅启动时 + 手动触发
   timeout: "6h"       # 任务卡住多久算卡死（updated_at 早于 now-timeout）
+  batch_size: 1000    # 每批查询处理的任务数；0 = 默认 1000（分页流式）
 ```
 
 ## 2. 触发方式

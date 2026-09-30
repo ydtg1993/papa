@@ -68,6 +68,7 @@ app, err := papa.New(
 | --- | --- | --- |
 | POST | `/api/errorqueue/process` | 手动触发失败任务重投；返回 `{"status":"ok","processed":N}` |
 | POST | `/api/recoverqueue/process` | 手动触发卡死任务恢复；返回 `{"status":"ok","recovered":N}` |
+| POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投已完成的 repeatable 任务）；返回 `{"status":"ok","repolled":N}` |
 
 ## 6. 日志导出
 
@@ -79,3 +80,12 @@ app, err := papa.New(
 ## 7. 业务自定义数据展示
 
 fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据」模块实时展示（配合 `engine.GetMetrics()` 读快照）。
+
+`GetMetrics()` 除了业务自定义数据，还会附带**框架级队列治理计数**（同样展示在「自定义数据」模块）：
+
+| 键 | 含义 |
+| --- | --- |
+| `queue_spilled` | 累计溢出任务数（队列达高水位被回灌 DB 的次数） |
+| `queue_spill_backlog` | 当前待回灌的溢出任务数（>0 说明队列持续满） |
+| `recover_total` | 累计恢复任务数（recover_queue） |
+| `error_retry_total` | 累计失败重投任务数（error_queue） |

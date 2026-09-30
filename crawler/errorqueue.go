@@ -1,8 +1,6 @@
 package crawler
 
 import (
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ydtg1993/papa/v2/models"
@@ -14,45 +12,15 @@ func (e *Engine) ProcessErrorQueue() (int, error) {
 	e.errorQueueMu.Lock()
 	defer e.errorQueueMu.Unlock()
 
-	cfg := e.cfg.ErrorQueue
-	q := e.db.Where("status = ?", models.TaskStatusFailed)
-	if cfg.MaxRetry > 0 {
-		q = q.Where("reprocess < ?", cfg.MaxRetry)
+	cfg := e.errorQueueConfig()
+	query := func() *gorm.DB {
+		q := e.db.Where("status = ?", models.TaskStatusFailed)
+		if cfg.MaxRetry > 0 {
+			q = q.Where("reprocess < ?", cfg.MaxRetry)
+		}
+		return q
 	}
-	var tasks []models.CrawlerTask
-	if err := q.Find(&tasks).Error; err != nil {
-		e.loggerSet.Engine.Errorf("error queue: query failed tasks: %s", err.Error())
-		return 0, err
-	}
-	if len(tasks) == 0 {
-		return 0, nil
-	}
-
-	workers := cfg.WorkerCount
-	if workers <= 0 {
-		workers = 1
-	}
-	jobs := make(chan models.CrawlerTask, len(tasks))
-	for _, t := range tasks {
-		jobs <- t
-	}
-	close(jobs)
-
-	var wg sync.WaitGroup
-	var processed int64
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for t := range jobs {
-				if e.requeueFailedTask(&t) {
-					atomic.AddInt64(&processed, 1)
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	return int(processed), nil
+	return e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueFailedTask)
 }
 
 // requeueFailedTask 将单条失败任务重置为 pending 并重新投递到其阶段工作池。
@@ -85,29 +53,23 @@ func (e *Engine) requeueFailedTask(t *models.CrawlerTask) bool {
 		e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
 		return false
 	}
+	e.errorRetriedCount.Add(1)
 	return true
 }
 
-// startErrorQueue 若启用且配置了轮询间隔，则启动后台定时自动处理失败任务。
+// startErrorQueue 启动后台定时自动处理失败任务（enabled/interval 运行期可热更）。
 func (e *Engine) startErrorQueue() {
-	cfg := e.cfg.ErrorQueue
-	if !cfg.Enabled || cfg.Interval <= 0 {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(cfg.Interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-ticker.C:
-				if n, err := e.ProcessErrorQueue(); err != nil {
-					e.loggerSet.Engine.Errorf("error queue: auto process: %s", err.Error())
-				} else if n > 0 {
-					e.loggerSet.Engine.Infof("error queue: auto processed %d failed tasks", n)
-				}
-			}
+	e.runDynamicTicker(func() time.Duration {
+		cfg := e.errorQueueConfig()
+		if !cfg.Enabled || cfg.Interval <= 0 {
+			return 0
 		}
-	}()
+		return cfg.Interval
+	}, func() {
+		if n, err := e.ProcessErrorQueue(); err != nil {
+			e.loggerSet.Engine.Errorf("error queue: auto process: %s", err.Error())
+		} else if n > 0 {
+			e.loggerSet.Engine.Infof("error queue: auto processed %d failed tasks", n)
+		}
+	})
 }
