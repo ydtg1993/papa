@@ -140,6 +140,14 @@
                     <div class="hint" id="shutdown-msg"></div>
                 </div>
             </section>
+            <section>
+                <h2>错误队列处理</h2>
+                <div class="card">
+                    <p class="hint">立即重新投递所有失败任务（受 error_queue.max_retry 上限约束）。</p>
+                    <button class="btn" onclick="processErrorQueue()">手动处理失败任务</button>
+                    <div class="hint" id="errorqueue-msg"></div>
+                </div>
+            </section>
         </div>
     </main>
 </div>

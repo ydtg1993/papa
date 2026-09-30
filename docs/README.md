@@ -12,6 +12,7 @@
 - ⚙️ **灵活配置** – 通过 YAML 配置文件设置各阶段 worker 数量、队列大小、重试次数、浏览器参数等。
 - ⏱️ **延迟投递与随机间隔** – 任务支持 `NotBefore`/`Delay` 延迟投递（到点才入队，不空占 worker）；阶段 `delay` 支持 `"10s-30s"` 随机区间，反爬更隐蔽。
 - 🛡️ **错误分类与告警** – 区分「可重试 / 不可重试」错误，失败时结构化记录 `stage/task_id/url/retry/kind` 并触发告警 hook（webhook/钉钉）。
+- 🔁 **失败任务错误队列** – 自动或手动把 `failed` 任务重新投递回各自阶段，带并发数与「再处理代数」上限，防止永久坏任务无限重试。
 - ⏰ **定时任务调度** – 基于 Cron 表达式，支持周期执行 `catalog` 轮询（如每日检查新视频）、`recover` 恢复未完成任务等。
 - 🔧 **可扩展** – 清晰的接口设计（`Fetcher`），方便自定义抓取逻辑和下载器。
 - 📦 **M3U8 下载器** – 高性能 M3U8 视频下载模块，支持：
@@ -263,6 +264,7 @@ go run .
 | POST | `/api/settings/whitelist` | 更新白名单并持久化到 `whitelist_file`；body `{"whitelist": ["127.0.0.1","10.0.0.0/8"]}` |
 | POST | `/api/settings/secret` | 重新生成密钥并写回 `auth_key_file`；返回 `{"key": "<新密钥>"}` |
 | POST | `/api/settings/shutdown` | 触发优雅退出 |
+| POST | `/api/errorqueue/process` | 手动触发失败任务错误队列处理；返回 `{"status":"ok","processed":N}` |
 | GET | `/api/logs` | 列出日志目录文件 |
 | GET | `/api/logs/download` | 下载日志；`?file=name` 下载单个，缺省打包全部为 zip |
 
@@ -353,6 +355,23 @@ res := engine.GetFiledown().Download(ctx, coverURL, "covers", "")
 - **延迟投递**：`Task.NotBefore` / `Task.Delay` 让任务到点才入队（episode 反爬要 10–30s 随机间隔时，直接设 `Delay`，别在 handler 里空等）。
 - **告警 hook**：`engine.AddNotifier(notify.NewWebhook("https://..."))`，任务最终失败时自动推送 `AlertEvent`（含 `stage/task_id/url/retry/kind/message`）。
 - **便捷 API**：`engine.FetchRendered(ctx, url, waitSelector)` 一次包好借浏览器→导航→等 DOM→解析→最终 URL；`engine.Upsert(record, conflictCols, updateCols)` 冲突更新并回填主键；`engine.SubmitTasks([]*Task)` 批量投递（事务化入库）。
+
+### 🔁 失败任务错误队列（自动 / 手动再处理）
+
+任务重试耗尽后进入 `status = failed`，持久化在 `crawler_tasks` 表里不会丢。框架内置一个「错误队列」把它重新投递回各自阶段，受 `error_queue` 配置控制：
+
+```yaml
+error_queue:
+  enabled: false      # 是否启用错误队列处理
+  worker_count: 2     # 并发重新投递失败任务的数量
+  interval: "10m"     # 自动轮询间隔；0 = 不自动轮询，仅手动触发
+  max_retry: 3        # 单个失败任务最多再处理代数；0 = 不限
+```
+
+- **自动轮询**：`enabled: true` 且 `interval` 非 0 时，后台按间隔自动把失败任务重置为 `pending` 并重新入队。
+- **手动触发**：`interval: 0`（或任何时刻）可在 OA 后台「设置 → 错误队列处理」点「手动处理失败任务」，或直接 `POST /api/errorqueue/process`。
+- **再处理代数上限**：每次重新投递会把该任务的 `reprocess + 1`；超过 `max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。配合 #错误分类的 `WrapNoRetryKind` 使用更精准（如只重试 `retryable`/`protected`，跳过 `structure`/`not-found`）。
+- **业务自定义**：`engine.ProcessErrorQueue()` 已公开，可在你自己的 cron / 调度里直接调用，按需加过滤条件（如按阶段、按错误 kind）。
 
 ### 📝 注意事项
 - 请遵守目标网站的 robots.txt 和法律法规，合理设置爬取频率。

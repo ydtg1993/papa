@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/ydtg1993/papa/v2/internal/msgqueue"
+	"github.com/ydtg1993/papa/v2/pkg/middleware"
 	"io"
 	"net/http"
 	neturl "net/url"
@@ -243,6 +244,11 @@ func (d *Downloader) Download(ctx context.Context, m3u8URL, outputDir, outputFil
 	if outputFile == "" {
 		outputFile = d.generateFileName(m3u8URL)
 	}
+	dir, file, ok := middleware.SanitizeOutputPath(outputDir, outputFile)
+	if !ok {
+		return &DownloadResult{Error: fmt.Errorf("invalid output path: dir=%q file=%q", outputDir, outputFile)}
+	}
+	outputDir, outputFile = dir, file
 	key := m3u8URL + "|" + outputDir + "|" + outputFile
 	d.laborMu.Lock()
 	l, exists := d.labors[key]

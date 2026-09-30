@@ -1,0 +1,113 @@
+package crawler
+
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/ydtg1993/papa/v2/models"
+	"gorm.io/gorm"
+)
+
+// ProcessErrorQueue 查询失败任务并重新投递到各自阶段，返回实际重新投递的数量。
+func (e *Engine) ProcessErrorQueue() (int, error) {
+	e.errorQueueMu.Lock()
+	defer e.errorQueueMu.Unlock()
+
+	cfg := e.cfg.ErrorQueue
+	q := e.db.Where("status = ?", models.TaskStatusFailed)
+	if cfg.MaxRetry > 0 {
+		q = q.Where("reprocess < ?", cfg.MaxRetry)
+	}
+	var tasks []models.CrawlerTask
+	if err := q.Find(&tasks).Error; err != nil {
+		e.loggerSet.Engine.Errorf("error queue: query failed tasks: %s", err.Error())
+		return 0, err
+	}
+	if len(tasks) == 0 {
+		return 0, nil
+	}
+
+	workers := cfg.WorkerCount
+	if workers <= 0 {
+		workers = 1
+	}
+	jobs := make(chan models.CrawlerTask, len(tasks))
+	for _, t := range tasks {
+		jobs <- t
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	var processed int64
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range jobs {
+				if e.requeueFailedTask(&t) {
+					atomic.AddInt64(&processed, 1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return int(processed), nil
+}
+
+// requeueFailedTask 将单条失败任务重置为 pending 并重新投递到其阶段工作池。
+func (e *Engine) requeueFailedTask(t *models.CrawlerTask) bool {
+	info := e.stages[t.Stage]
+	if info == nil {
+		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", t.Stage, t.ID)
+		return false
+	}
+	if err := e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(map[string]any{
+		"status":    models.TaskStatusPending,
+		"retry":     0,
+		"reprocess": gorm.Expr("reprocess + 1"),
+	}).Error; err != nil {
+		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, err.Error())
+		return false
+	}
+
+	task := &Task{
+		ID:             int(t.ID),
+		PID:            int(t.PID),
+		URL:            t.URL,
+		Stage:          t.Stage,
+		Repeatable:     t.Repeatable == models.RepeatableYes,
+		IdempotencyKey: t.IdempotencyKey,
+	}
+	e.activeTasks.Store(task.Unique(), true)
+	if err := info.workerPool.Submit(task); err != nil {
+		e.activeTasks.Delete(task.Unique())
+		e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
+		return false
+	}
+	return true
+}
+
+// startErrorQueue 若启用且配置了轮询间隔，则启动后台定时自动处理失败任务。
+func (e *Engine) startErrorQueue() {
+	cfg := e.cfg.ErrorQueue
+	if !cfg.Enabled || cfg.Interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(cfg.Interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-ticker.C:
+				if n, err := e.ProcessErrorQueue(); err != nil {
+					e.loggerSet.Engine.Errorf("error queue: auto process: %s", err.Error())
+				} else if n > 0 {
+					e.loggerSet.Engine.Infof("error queue: auto processed %d failed tasks", n)
+				}
+			}
+		}
+	}()
+}

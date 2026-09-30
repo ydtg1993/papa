@@ -86,3 +86,10 @@ scheduler:
     - name: "recover_tasks"
       type: "recover"
       schedule: "0 */6 * * *"
+
+# 错误队列处理（失败任务自动/手动重新投递）
+error_queue:
+  enabled: false          # 是否启用错误队列处理
+  worker_count: 2         # 并发重新投递失败任务的数量
+  interval: "10m"         # 自动轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
+  max_retry: 3            # 单个失败任务最多再处理代数；0 = 不限

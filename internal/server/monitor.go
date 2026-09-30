@@ -33,15 +33,16 @@ type MonitorGetter func() map[string]crawler.StageStats
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	AuthKey       string                // 初始访问密钥，空=不校验
-	AuthKeyFile   string                // 密钥文件路径（重新生成时持久化到此文件）
-	Whitelist     []string              // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile string                // 白名单持久化文件路径（动态更新时写回）
-	Metrics       func() map[string]any // 业务自定义数据快照（可空）
-	SysInfo       *sysinfo.Collector    // 系统指标采集器（可空）
-	DataAdmin     *dataadmin.Registry   // 通用数据浏览注册表（可空）
-	LogDir        string                // 日志目录（导出用）
-	OnShutdown    func()                // 优雅退出回调
+	AuthKey           string                // 初始访问密钥，空=不校验
+	AuthKeyFile       string                // 密钥文件路径（重新生成时持久化到此文件）
+	Whitelist         []string              // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile     string                // 白名单持久化文件路径（动态更新时写回）
+	Metrics           func() map[string]any // 业务自定义数据快照（可空）
+	SysInfo           *sysinfo.Collector    // 系统指标采集器（可空）
+	DataAdmin         *dataadmin.Registry   // 通用数据浏览注册表（可空）
+	LogDir            string                // 日志目录（导出用）
+	OnShutdown        func()                // 优雅退出回调
+	ProcessErrorQueue func() (int, error)   // 错误队列手动触发回调（可空）
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -114,6 +115,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
 	mux.HandleFunc("/api/settings/secret", s.wrap(s.secretHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
+	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
 	mux.HandleFunc("/api/data/models", s.wrap(s.dataModelsHandler))
@@ -317,6 +319,25 @@ func (s *Monitor) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// errorQueueProcessHandler 手动触发失败任务错误队列处理
+func (s *Monitor) errorQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.ProcessErrorQueue == nil {
+		http.Error(w, "error queue not configured", http.StatusNotFound)
+		return
+	}
+	count, err := s.cfg.ProcessErrorQueue()
+	if err != nil {
+		s.logger.Errorf("process error queue: %s", err.Error())
+		http.Error(w, "process error queue failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "processed": count})
+}
+
 // logFile 日志文件条目
 type logFile struct {
 	Name    string    `json:"name"`
@@ -380,8 +401,8 @@ func zipLogs(w http.ResponseWriter, dir string) {
 		if err != nil {
 			return nil
 		}
-		defer src.Close()
 		_, _ = io.Copy(fw, src)
+		_ = src.Close()
 		return nil
 	})
 }

@@ -234,6 +234,16 @@
         document.getElementById('shutdown-msg').textContent = '正在关闭...';
         await apiPost('/api/settings/shutdown', {});
     }
+    async function processErrorQueue() {
+        document.getElementById('errorqueue-msg').textContent = '处理中...';
+        var resp = await apiPost('/api/errorqueue/process', {});
+        if (!resp || !resp.ok) {
+            document.getElementById('errorqueue-msg').textContent = '处理失败';
+            return;
+        }
+        var data = await resp.json();
+        document.getElementById('errorqueue-msg').textContent = '已重新投递 ' + data.processed + ' 个失败任务';
+    }
 
     /* ============ 日志 ============ */
     async function fetchLogs() {

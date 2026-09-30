@@ -40,6 +40,12 @@ type Engine struct {
 	activeTasks sync.Map                            // hash去重任务表 key: "stage|url"
 	repeatTasks sync.Map                            // 重复轮询任务
 
+	delayMu   sync.Mutex // 保护 delayHeap
+	delayHeap delayHeap  // 延迟投递最小堆
+	delayCh   chan struct{}
+
+	errorQueueMu sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
+
 	proxy     *proxy.Manager       // 代理管理器中间件
 	m3u8      *m3u8.Downloader     // m3u8下载器
 	filedown  *filedown.Downloader // 文件下载器
@@ -57,7 +63,7 @@ type stageInfo struct {
 
 // StageConfig 阶段配置
 type StageConfig struct {
-	MaxAttempts int                  // Handler 最大重试次数
+	MaxAttempts int                  // Handler 最大尝试次数（含首次执行）
 	Backoff     time.Duration        // Handler 错误重试退避时间
 	Delay       config.DurationRange // 任务间隔延迟，支持随机区间
 	WorkerCount int                  // WorkerCount 该阶段专用的 worker 数量
@@ -120,8 +126,10 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		cfg:         cfg,
 		loggerSet:   loggerSet,
 		metrics:     metrics.New(),
+		delayCh:     make(chan struct{}, 1),
 	}
 	engine.loadActiveTasks()
+	go engine.delayDispatcher()
 	return engine
 }
 
@@ -359,13 +367,16 @@ func (e *Engine) ApplyRegisterStage() {
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
 			// 重试FetchHandler
 			var lastErr error
-			for attempt := 0; attempt <= cfg.MaxAttempts; attempt++ {
+			for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
 				if attempt > 0 {
 					task.IncRetry(e.db)
 				}
 				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
 				if err == nil {
 					task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
+					if !task.Repeatable {
+						e.DelActiveTask(task)
+					}
 					<-time.After(cfg.Delay.Random())
 					return nil
 				}
@@ -373,6 +384,9 @@ func (e *Engine) ApplyRegisterStage() {
 				if !Retryable(err) {
 					task.UpdateStatus(e.db, models.TaskStatusFailed, err)
 					e.notifyFailure(ctx, task, err)
+					if !task.Repeatable {
+						e.DelActiveTask(task)
+					}
 					return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
 				}
 				lastErr = err
@@ -386,6 +400,9 @@ func (e *Engine) ApplyRegisterStage() {
 			// 所有重试失败：记录错误并更新状态为 failed
 			task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
 			e.notifyFailure(ctx, task, lastErr)
+			if !task.Repeatable {
+				e.DelActiveTask(task)
+			}
 			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
 		})
 		// 检查提交任务
@@ -400,15 +417,23 @@ func (e *Engine) ApplyRegisterStage() {
 			e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
 		}
 	}
+	// 启动错误队列后台自动轮询（未配置 interval 则不启动，仅手动触发）
+	e.startErrorQueue()
+}
+
+// logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
+func (e *Engine) logSubmitError(task *Task, err error) error {
+	e.loggerSet.Engine.Errorf("submit task failed: stage=%q url=%q err=%v", task.Stage, task.URL, err)
+	return err
 }
 
 // SubmitTask 任务提交
 func (e *Engine) SubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
-		return fmt.Errorf("task stage or url is empty: %+v", task)
+		return e.logSubmitError(task, fmt.Errorf("task stage or url is empty: %+v", task))
 	}
-	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
-		return fmt.Errorf("invalid stage : %s", task.Stage)
+	if _, ok := e.cfg.Crawler.Stages[task.Stage]; !ok {
+		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s", task.Stage))
 	}
 	if task.Repeatable {
 		//存入轮询任务列表 在任务计划中读取调用
@@ -418,22 +443,21 @@ func (e *Engine) SubmitTask(task *Task) error {
 	//查询去重hash map
 	_, exist := e.activeTasks.Load(task.Unique())
 	if exist {
-		if task.Repeatable == false {
-			return fmt.Errorf("task already exists: %s", task.Unique())
-		} else {
-			//已经入库的轮询任务 查找记录防止重复录入
-			e.db.Model(&models.CrawlerTask{}).
-				Where("url = ?", task.URL).
-				Where("stage = ?", task.Stage).
-				First(&record)
-			task.ID = int(record.ID)
+		if !task.Repeatable {
+			return nil // 去重命中：视为成功，无需重复处理
 		}
+		//已经入库的轮询任务 查找记录防止重复录入
+		e.db.Model(&models.CrawlerTask{}).
+			Where("url = ?", task.URL).
+			Where("stage = ?", task.Stage).
+			First(&record)
+		task.ID = int(record.ID)
 	}
 
 	if task.ID == 0 {
 		// 提交到 pool 前先插入数据库
-		if task.Insert(e.db) == false {
-			return fmt.Errorf("insert crawler task to db failed")
+		if err := task.Insert(e.db); err != nil {
+			return e.logSubmitError(task, fmt.Errorf("insert crawler task to db failed: %w", err))
 		}
 	}
 	// 插入成功后加入内存去重map
@@ -447,10 +471,13 @@ func (e *Engine) SubmitTask(task *Task) error {
 
 	// 延迟投递：到点才入队，避免 worker 空等浪费并发位
 	if at := task.deliverAt(); !at.IsZero() && at.After(time.Now()) {
-		go e.deliverLater(at, task, record)
+		e.enqueueDelayed(at, task, record)
 		return nil
 	}
-	return e.submitToPool(task, record)
+	if err := e.submitToPool(task, record); err != nil {
+		return e.logSubmitError(task, err)
+	}
+	return nil
 }
 
 // submitToPool 将任务提交到对应阶段工作池，并更新数据库状态。
@@ -459,7 +486,7 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	if err := info.workerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
 		e.activeTasks.Delete(task.Unique())
-		record.Error += err.Error() + "\r"
+		record.Error += err.Error() + "\n"
 		record.Status = models.TaskStatusFailed
 		e.db.Save(&record)
 		return err
@@ -475,20 +502,6 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	return nil
 }
 
-// deliverLater 等待到 at 时刻后入队；引擎停止时退出。
-func (e *Engine) deliverLater(at time.Time, task *Task, record models.CrawlerTask) {
-	timer := time.NewTimer(time.Until(at))
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		if err := e.submitToPool(task, record); err != nil {
-			e.loggerSet.Engine.Errorf("delayed submit task %d failed: %s", task.ID, err.Error())
-		}
-	case <-e.ctx.Done():
-		return
-	}
-}
-
 // SubmitTasks 批量提交任务：一次性批量入库（减少 DB 往返），再逐个入队。
 func (e *Engine) SubmitTasks(tasks []*Task) error {
 	if len(tasks) == 0 {
@@ -496,22 +509,23 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 	}
 	for _, t := range tasks {
 		if t.Stage == "" || t.URL == "" {
-			return fmt.Errorf("task stage or url is empty: %+v", t)
+			return e.logSubmitError(t, fmt.Errorf("task stage or url is empty: %+v", t))
 		}
 		if _, ok := e.cfg.Crawler.Stages[t.Stage]; !ok {
-			return fmt.Errorf("invalid stage : %s", t.Stage)
+			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s", t.Stage))
 		}
 	}
 
-	// 去重与 repeatable 处理，收集需入库的任务
+	// 去重与 repeatable 处理，收集需入库/入队的任务
 	var toInsert []*Task
+	var toProcess []*Task
 	for _, t := range tasks {
 		if t.Repeatable {
 			e.repeatTasks.Store(t.Unique(), t)
 		}
 		if _, exist := e.activeTasks.Load(t.Unique()); exist {
 			if !t.Repeatable {
-				return fmt.Errorf("task already exists: %s", t.Unique())
+				continue // 去重命中：跳过
 			}
 			var record models.CrawlerTask
 			e.db.Model(&models.CrawlerTask{}).
@@ -523,6 +537,7 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		if t.ID == 0 {
 			toInsert = append(toInsert, t)
 		}
+		toProcess = append(toProcess, t)
 	}
 
 	// 批量入库（单条多行 INSERT）
@@ -532,7 +547,9 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 			records = append(records, t.toModel())
 		}
 		if err := e.db.Create(&records).Error; err != nil {
-			return fmt.Errorf("insert crawler tasks: %w", err)
+			err = fmt.Errorf("insert crawler tasks: %w", err)
+			e.loggerSet.Engine.Errorf("submit tasks failed: %v", err)
+			return err
 		}
 		for i, t := range toInsert {
 			t.ID = int(records[i].ID)
@@ -541,7 +558,7 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 
 	// 逐个入队（含延迟投递）
 	var errs []error
-	for _, t := range tasks {
+	for _, t := range toProcess {
 		e.activeTasks.Store(t.Unique(), true)
 		var record models.CrawlerTask
 		e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
@@ -549,10 +566,11 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 			continue
 		}
 		if at := t.deliverAt(); !at.IsZero() && at.After(time.Now()) {
-			go e.deliverLater(at, t, record)
+			e.enqueueDelayed(at, t, record)
 			continue
 		}
 		if err := e.submitToPool(t, record); err != nil {
+			e.logSubmitError(t, err)
 			errs = append(errs, err)
 		}
 	}
@@ -562,10 +580,10 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 // ReSubmitTask 已入库的非轮询任务进行重提交任务
 func (e *Engine) ReSubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
-		return fmt.Errorf("task stage or url is empty: %+v", task)
+		return e.logSubmitError(task, fmt.Errorf("task stage or url is empty: %+v", task))
 	}
-	if _, ok := e.cfg.Crawler.Stages[task.Stage]; ok != true {
-		return fmt.Errorf("invalid stage : %s", task.Stage)
+	if _, ok := e.cfg.Crawler.Stages[task.Stage]; !ok {
+		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s", task.Stage))
 	}
 	var record models.CrawlerTask
 	e.db.Model(&models.CrawlerTask{}).
@@ -573,17 +591,17 @@ func (e *Engine) ReSubmitTask(task *Task) error {
 		Where("stage = ?", task.Stage).
 		First(&record)
 	if record.ID == 0 {
-		return fmt.Errorf("record not exists: %s", task.URL)
+		return e.logSubmitError(task, fmt.Errorf("record not exists: %s", task.URL))
 	}
 	task.ID = int(record.ID)
 	info := e.stages[task.Stage]
 	if err := info.workerPool.Submit(task); err != nil {
 		// 提交失败，回滚内存 map 和数据库状态
 		e.activeTasks.Delete(task.Unique())
-		record.Error += err.Error() + "\r"
+		record.Error += err.Error() + "\n"
 		record.Status = models.TaskStatusFailed
 		e.db.Save(&record)
-		return err
+		return e.logSubmitError(task, err)
 	}
 	return nil
 }
@@ -658,15 +676,20 @@ func (e *Engine) GetRepeatTasks() *sync.Map {
 	return &e.repeatTasks
 }
 
-// loadActiveTasks 启动时加载数据库记录到去重hash map
+// loadActiveTasks 启动时把「进行中」任务（pending/processing）与全部轮询任务加载进内存去重表，
+// 避免全表加载导致内存随历史任务无限增长；已完成任务由 DB 唯一索引兜底去重。
 func (e *Engine) loadActiveTasks() {
 	var tasks []models.CrawlerTask
-	if err := e.db.Where("id > ?", 0).Find(&tasks).Error; err != nil {
+	err := e.db.Where("status IN ? OR repeatable = ?",
+		[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing},
+		models.RepeatableYes).
+		Find(&tasks).Error
+	if err != nil {
 		e.loggerSet.DB.Errorf("load active tasks failed: %s", err.Error())
 		return
 	}
 	for _, t := range tasks {
-		task := Task{URL: t.URL, Stage: t.Stage}
+		task := Task{URL: t.URL, Stage: t.Stage, IdempotencyKey: t.IdempotencyKey}
 		e.activeTasks.Store(task.Unique(), true)
 	}
 }

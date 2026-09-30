@@ -53,21 +53,22 @@ func (t *Task) toModel() models.CrawlerTask {
 		repeat = models.RepeatableYes
 	}
 	return models.CrawlerTask{
-		PID:        uint(t.PID),
-		URL:        t.URL,
-		Stage:      t.Stage,
-		Repeatable: repeat,
-		Status:     models.TaskStatusPending,
+		PID:            uint(t.PID),
+		URL:            t.URL,
+		Stage:          t.Stage,
+		IdempotencyKey: t.IdempotencyKey,
+		Repeatable:     repeat,
+		Status:         models.TaskStatusPending,
 	}
 }
 
-func (t *Task) Insert(db *gorm.DB) bool {
+func (t *Task) Insert(db *gorm.DB) error {
 	crawlerTask := t.toModel()
 	if err := db.Create(&crawlerTask).Error; err != nil {
-		return false
+		return err
 	}
 	t.ID = int(crawlerTask.ID)
-	return true
+	return nil
 }
 
 func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bool {
@@ -85,7 +86,7 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 			errMsg = err.Error()
 		}
 		record.Status = status
-		record.Error += errMsg + "\r"
+		record.Error += errMsg + "\n"
 		db.Save(&record)
 		return true
 	}

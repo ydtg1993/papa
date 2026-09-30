@@ -39,6 +39,7 @@ type Fetcher interface {
 - `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
 - 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
 - **不要**在 fetcher 里自己调 `task.UpdateStatus`，状态由引擎自动维护；你只负责提取结果并写库。
+- **日志由框架兜底**：`FetchHandler` 返回的 error 会由引擎结构化记入日志并触发告警（`stage/task_id/url/retry/kind`），你**不需要**再自己拼日志。同样，`engine.SubmitTask` / `SubmitTasks` 的提交类错误（非法 stage、入库失败、入队失败）框架也会自动记录——你只需在返回值上做控制流判断（要不要继续、要不要 abort），不用再记一遍。
 
 ### 1.2 Task 结构
 
@@ -117,7 +118,7 @@ err := engine.SubmitTask(&papa.Task{
 })
 ```
 
-去重键默认是 `stage|url`，同一个 URL 重复提交会被引擎拒绝，天然防重；需要别的幂等键时设 `IdempotencyKey`。
+去重键默认是 `stage|url`，同一个 URL 重复提交会被引擎识别为**已存在**：单任务 `SubmitTask` 返回 `nil`（视为成功，无需 `_ = err` 忽略），批量 `SubmitTasks` 直接跳过该条——天然防重。需要别的幂等键时设 `IdempotencyKey`。
 
 **延迟投递**：episode 这类要反爬随机间隔的任务，设 `Delay`（或 `NotBefore`），引擎到点才入队，不空占 worker：
 
@@ -582,7 +583,7 @@ func (f *FetchXxx) FetchHandler(ctx context.Context, task *papa.Task, engine *pa
 
 ## 7. 如何驱动任务（提交 + 监控）
 
-Papa 没有 MCP 了，任务驱动靠三处：
+Papa 没有 MCP 了，任务驱动靠四处：
 
 1. **初始任务**：在 `main.go` 的 `RegisterStage(fetcher, subFunc)` 第二个回调里手动提交，例如：
 
@@ -603,6 +604,8 @@ app.RegisterStage(&fetcher.FetchCatalog{},
    - `repeat` 每日重跑 `repeatable: true` 的轮询任务；
    - `recover` 恢复超时未完成的任务。
 
+4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（OA「设置 → 错误队列处理」/ `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [README.md](./README.md) 的「失败任务错误队列」一节。
+
 **看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.monitor: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录密钥由 `papa new` 生成的 `configs/secret` 提供（`server.auth_key_file` 引用，也可用内联 `server.auth_key`）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
 
 ---
@@ -618,6 +621,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 7. **写库用 task.ID**：子任务派发后，每个 fetcher 只写自己这个 `task.ID` 的记录。
 8. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
 9. **延迟投递**：反爬随机间隔用 `task.Delay`（或 `NotBefore`）在派发时设置，别在 handler 里 `time.Sleep` 空等，那会浪费 worker 并发位。
+10. **别重复记日志**：`FetchHandler` 的 error 和 `SubmitTask` 的提交错误框架都会自动记，fetcher 里**不必再** `logger.Errorf` 记一遍，否则会刷双份。你只需判断 error 要不要改变控制流（继续/中止/告警）。
 
 ---
 
@@ -650,3 +654,4 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。
+- `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。

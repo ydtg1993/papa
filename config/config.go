@@ -7,15 +7,24 @@ import (
 )
 
 type Config struct {
-	App       AppConfig       `mapstructure:"app"`
-	Log       LogConfig       `mapstructure:"log"`
-	Crawler   CrawlerConfig   `mapstructure:"crawler"`
-	Browser   BrowserConfig   `mapstructure:"browser"`
-	HTML      HTMLConfig      `mapstructure:"html"`
-	Proxy     ProxyConfig     `mapstructure:"proxy"`
-	DB        DBConfig        `mapstructure:"db"`
-	Server    ServerConfig    `mapstructure:"server"`
-	Scheduler SchedulerConfig `mapstructure:"scheduler"`
+	App        AppConfig        `mapstructure:"app"`
+	Log        LogConfig        `mapstructure:"log"`
+	Crawler    CrawlerConfig    `mapstructure:"crawler"`
+	Browser    BrowserConfig    `mapstructure:"browser"`
+	HTML       HTMLConfig       `mapstructure:"html"`
+	Proxy      ProxyConfig      `mapstructure:"proxy"`
+	DB         DBConfig         `mapstructure:"db"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Scheduler  SchedulerConfig  `mapstructure:"scheduler"`
+	ErrorQueue ErrorQueueConfig `mapstructure:"error_queue"`
+}
+
+// ErrorQueueConfig 失败任务错误队列处理配置
+type ErrorQueueConfig struct {
+	Enabled     bool          `mapstructure:"enabled"`      // 是否启用错误队列处理
+	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量
+	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 不自动轮询，仅手动触发
+	MaxRetry    int           `mapstructure:"max_retry"`    // 单个失败任务最多再处理代数；0 = 不限
 }
 
 // AppConfig 环境基础配置
@@ -45,7 +54,7 @@ type StageConfig struct {
 }
 
 type RetryConfig struct {
-	MaxAttempts int           `mapstructure:"max_attempts"` //重试次数
+	MaxAttempts int           `mapstructure:"max_attempts"` //最大尝试次数（含首次执行）
 	Backoff     time.Duration `mapstructure:"backoff"`      //退出延迟
 }
 

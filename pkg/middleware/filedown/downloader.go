@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/internal/msgqueue"
+	"github.com/ydtg1993/papa/v2/pkg/middleware"
 )
 
 // Downloader 文件下载器（并发安全）
@@ -149,6 +150,11 @@ func (d *Downloader) Download(ctx context.Context, fileURL, outputDir, fileName 
 	if fileName == "" {
 		fileName = d.genFileName(fileURL, "")
 	}
+	dir, file, ok := middleware.SanitizeOutputPath(outputDir, fileName)
+	if !ok {
+		return &DownloadResult{Error: fmt.Errorf("invalid output path: dir=%q file=%q", outputDir, fileName)}
+	}
+	outputDir, fileName = dir, file
 	key := fileURL + "|" + outputDir + "|" + fileName
 	d.laborMu.Lock()
 	l, exists := d.labors[key]

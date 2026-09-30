@@ -55,7 +55,11 @@ func (r *Registry) List(key string, q ListQuery) (*ListResult, error) {
 			if !ok || !col.Filterable {
 				continue
 			}
-			db = db.Where(name+" = ?", coerce(val, col.Kind))
+			v, ok := coerce(val, col.Kind)
+			if !ok {
+				continue // 非法值跳过该筛选，避免静默按 0/字符串查询
+			}
+			db = db.Where(name+" = ?", v)
 		}
 		if q.Search != "" {
 			var clauses []string
@@ -113,27 +117,27 @@ func (r *Registry) List(key string, q ListQuery) (*ListResult, error) {
 	return &ListResult{Total: total, Page: q.Page, Size: q.Size, Columns: info.Columns, Rows: rows}, nil
 }
 
-// coerce 按 Kind 把筛选字符串转为对应类型
-func coerce(val string, kind Kind) any {
+// coerce 按 Kind 把筛选字符串转为对应类型；解析失败返回 ok=false。
+func coerce(val string, kind Kind) (any, bool) {
 	switch kind {
 	case KindNumber:
 		if i, err := strconv.ParseInt(val, 10, 64); err == nil {
-			return i
+			return i, true
 		}
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
-			return f
+			return f, true
 		}
-		return val
+		return nil, false
 	case KindBool:
 		switch strings.ToLower(strings.TrimSpace(val)) {
 		case "true", "1", "yes":
-			return true
+			return true, true
 		case "false", "0", "no", "":
-			return false
+			return false, true
 		}
-		return val
+		return nil, false
 	default:
-		return val
+		return val, true
 	}
 }
 

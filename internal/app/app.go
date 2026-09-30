@@ -317,15 +317,16 @@ func (a *App) httpServer(ctx context.Context) {
 		authKey := a.resolveAuthKey(cfg)
 		whitelist := a.resolveWhitelist(cfg)
 		mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-			AuthKey:       authKey,
-			AuthKeyFile:   cfg.AuthKeyFile,
-			Whitelist:     whitelist,
-			WhitelistFile: cfg.WhitelistFile,
-			Metrics:       a.Engine.GetMetrics,
-			SysInfo:       a.sysInfo,
-			DataAdmin:     a.dataAdmin,
-			LogDir:        a.Config.Log.Dir,
-			OnShutdown:    a.Shutdown,
+			AuthKey:           authKey,
+			AuthKeyFile:       cfg.AuthKeyFile,
+			Whitelist:         whitelist,
+			WhitelistFile:     cfg.WhitelistFile,
+			Metrics:           a.Engine.GetMetrics,
+			SysInfo:           a.sysInfo,
+			DataAdmin:         a.dataAdmin,
+			LogDir:            a.Config.Log.Dir,
+			OnShutdown:        a.Shutdown,
+			ProcessErrorQueue: a.Engine.ProcessErrorQueue,
 		})
 		mon.Register(mux)
 	}
