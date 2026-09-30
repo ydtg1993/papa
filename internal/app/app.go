@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -32,11 +33,20 @@ type App struct {
 	Engine      *crawler.Engine
 
 	configPath      string
+	runtimePath     string
 	extraModels     []any
 	browsableModels []ModelDef
 	sysInfo         *sysinfo.Collector
 	dataAdmin       *dataadmin.Registry
 	cancel          context.CancelFunc
+	customJobs      []cronJob // 业务注册的自定义定时任务
+}
+
+// cronJob 业务注册的自定义定时任务。
+type cronJob struct {
+	name     string
+	schedule string
+	fn       func()
 }
 
 // ModelDef 一个可浏览模型的登记信息（供监控后台数据浏览）
@@ -128,6 +138,17 @@ func NewApp(opts ...Option) (*App, error) {
 	// 5. 创建爬虫引擎
 	engine := crawler.NewEngine(db, cfg, &loggerSet)
 
+	// 5.1 加载运行期覆盖（runtime.yaml）并应用到引擎；文件缺失视为空覆盖
+	runtimePath := filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
+	runtimeCfg, err := config.LoadRuntime(runtimePath)
+	if err != nil {
+		loggerSet.Sys.Errorf("load runtime config %s: %s", runtimePath, err.Error())
+		runtimeCfg = &config.RuntimeConfig{}
+	}
+	if err := engine.ApplyRuntimeConfig(runtimeCfg); err != nil {
+		return nil, fmt.Errorf("apply runtime config: %w", err)
+	}
+
 	// 6. 数据浏览注册表（监控后台通用数据浏览）
 	dataAdmin := dataadmin.New(db)
 	if err := dataAdmin.Register("task", "任务", &models.CrawlerTask{}); err != nil {
@@ -147,6 +168,7 @@ func NewApp(opts ...Option) (*App, error) {
 	a.DB = db
 	a.Engine = engine
 	a.dataAdmin = dataAdmin
+	a.runtimePath = runtimePath
 	return a, nil
 }
 
@@ -180,6 +202,13 @@ func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawle
 	}, fetcher, subFunc)
 }
 
+// RegisterCronJob 注册一个业务自定义定时任务（cron 表达式，支持秒级，如 "0 3 * * * *"）。
+// 必须在 Run 之前调用；任务随框架生命周期一起启动与优雅停止。
+// fn 内可通过闭包访问 app 的 Engine/DB 等资源。
+func (a *App) RegisterCronJob(name, schedule string, fn func()) {
+	a.customJobs = append(a.customJobs, cronJob{name: name, schedule: schedule, fn: fn})
+}
+
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -209,6 +238,12 @@ func (a *App) Run(ctx context.Context) {
 	}
 	if sqlDB, err := a.DB.DB(); err == nil {
 		_ = sqlDB.Close()
+	}
+	// 关停时把运行期覆盖层落盘（delta 写回 runtime.yaml，重启后叠加生效）
+	if a.runtimePath != "" {
+		if err := config.SaveRuntime(a.runtimePath, a.Engine.GetRuntimeConfig()); err != nil {
+			a.Logger.Sys.Errorf("save runtime config: %s", err.Error())
+		}
 	}
 	a.Logger.Sys.Info("shutdown completed")
 }
@@ -317,16 +352,19 @@ func (a *App) httpServer(ctx context.Context) {
 		authKey := a.resolveAuthKey(cfg)
 		whitelist := a.resolveWhitelist(cfg)
 		mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-			AuthKey:           authKey,
-			AuthKeyFile:       cfg.AuthKeyFile,
-			Whitelist:         whitelist,
-			WhitelistFile:     cfg.WhitelistFile,
-			Metrics:           a.Engine.GetMetrics,
-			SysInfo:           a.sysInfo,
-			DataAdmin:         a.dataAdmin,
-			LogDir:            a.Config.Log.Dir,
-			OnShutdown:        a.Shutdown,
-			ProcessErrorQueue: a.Engine.ProcessErrorQueue,
+			AuthKey:             authKey,
+			AuthKeyFile:         cfg.AuthKeyFile,
+			Whitelist:           whitelist,
+			WhitelistFile:       cfg.WhitelistFile,
+			Metrics:             a.Engine.GetMetrics,
+			SysInfo:             a.sysInfo,
+			DataAdmin:           a.dataAdmin,
+			LogDir:              a.Config.Log.Dir,
+			OnShutdown:          a.Shutdown,
+			ProcessErrorQueue:   a.Engine.ProcessErrorQueue,
+			ProcessRecoverQueue: a.Engine.ProcessRecoverQueue,
+			ConfigGet:           a.Engine.GetRuntimeConfig,
+			ConfigSet:           a.Engine.ApplyRuntimeConfig,
 		})
 		mon.Register(mux)
 	}
@@ -346,25 +384,13 @@ func (a *App) httpServer(ctx context.Context) {
 
 // 任务计划
 func (a *App) schedule(ctx context.Context) {
-	if a.Config.Scheduler.Enabled == false {
+	if len(a.customJobs) == 0 {
 		return
 	}
 	sched := scheduler.NewScheduler(a.Engine, a.Logger.Scheduler, a.Config.Scheduler.Timezone)
-	for _, jobCfg := range a.Config.Scheduler.Jobs {
-		var cmd func()
-		switch jobCfg.Type {
-		case "repeat":
-			repeatJob := scheduler.NewRepeatJob(sched)
-			cmd = repeatJob.Run
-		case "recover":
-			recoverJob := scheduler.NewRecoverJob(sched)
-			cmd = recoverJob.Run
-		default:
-			panic(fmt.Sprintf("unknown job type: %s", jobCfg.Type))
-		}
-
-		if err := sched.AddJob(jobCfg.Name, jobCfg.Schedule, cmd); err != nil {
-			a.Logger.Scheduler.Errorf("failed to add job %s: %s", jobCfg.Name, err.Error())
+	for _, job := range a.customJobs {
+		if err := sched.AddJob(job.name, job.schedule, job.fn); err != nil {
+			a.Logger.Scheduler.Errorf("failed to add custom job %s: %s", job.name, err.Error())
 		}
 	}
 	go sched.Start()

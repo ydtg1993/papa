@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
 	"github.com/ydtg1993/papa/v2/internal/dataadmin"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
@@ -33,16 +34,19 @@ type MonitorGetter func() map[string]crawler.StageStats
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	AuthKey           string                // 初始访问密钥，空=不校验
-	AuthKeyFile       string                // 密钥文件路径（重新生成时持久化到此文件）
-	Whitelist         []string              // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile     string                // 白名单持久化文件路径（动态更新时写回）
-	Metrics           func() map[string]any // 业务自定义数据快照（可空）
-	SysInfo           *sysinfo.Collector    // 系统指标采集器（可空）
-	DataAdmin         *dataadmin.Registry   // 通用数据浏览注册表（可空）
-	LogDir            string                // 日志目录（导出用）
-	OnShutdown        func()                // 优雅退出回调
-	ProcessErrorQueue func() (int, error)   // 错误队列手动触发回调（可空）
+	AuthKey             string                            // 初始访问密钥，空=不校验
+	AuthKeyFile         string                            // 密钥文件路径（重新生成时持久化到此文件）
+	Whitelist           []string                          // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile       string                            // 白名单持久化文件路径（动态更新时写回）
+	Metrics             func() map[string]any             // 业务自定义数据快照（可空）
+	SysInfo             *sysinfo.Collector                // 系统指标采集器（可空）
+	DataAdmin           *dataadmin.Registry               // 通用数据浏览注册表（可空）
+	LogDir              string                            // 日志目录（导出用）
+	OnShutdown          func()                            // 优雅退出回调
+	ProcessErrorQueue   func() (int, error)               // 错误队列手动触发回调（可空）
+	ProcessRecoverQueue func() (int, error)               // 中断恢复队列手动触发回调（可空）
+	ConfigGet           func() *config.RuntimeConfig      // 返回当前运行期覆盖层（可空）
+	ConfigSet           func(*config.RuntimeConfig) error // 应用运行期覆盖层（可空）
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -116,6 +120,8 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings/secret", s.wrap(s.secretHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
+	mux.HandleFunc("/api/recoverqueue/process", s.wrap(s.recoverQueueProcessHandler))
+	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
 	mux.HandleFunc("/api/data/models", s.wrap(s.dataModelsHandler))
@@ -336,6 +342,91 @@ func (s *Monitor) errorQueueProcessHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, map[string]any{"status": "ok", "processed": count})
+}
+
+// recoverQueueProcessHandler 手动触发中断恢复队列处理
+func (s *Monitor) recoverQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.ProcessRecoverQueue == nil {
+		http.Error(w, "recover queue not configured", http.StatusNotFound)
+		return
+	}
+	count, err := s.cfg.ProcessRecoverQueue()
+	if err != nil {
+		s.logger.Errorf("process recover queue: %s", err.Error())
+		http.Error(w, "process recover queue failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "recovered": count})
+}
+
+// hotReloadableFields 可热更字段（供后台 UI 标注）。
+var hotReloadableFields = []string{
+	"browser.pool_size", "browser.direct_pool_size", "browser.max_idle_time", "browser.headers",
+	"html.timeout", "html.max_body_size", "html.headers",
+}
+
+// restartOnlyFields 需重启才生效的字段（PUT 时会被拒绝）。
+var restartOnlyFields = []string{
+	"browser.enable", "browser.headless", "browser.no_sandbox", "browser.leakless", "browser.browser_path",
+	"proxy.api_url", "proxy.refresh_interval",
+	"crawler.stages", "crawler.dedup_cache_size",
+	"error_queue.enabled", "error_queue.interval",
+}
+
+// configHandler 查询/更新运行期动态配置。
+func (s *Monitor) configHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.configGet(w)
+	case http.MethodPut:
+		s.configPut(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Monitor) configGet(w http.ResponseWriter) {
+	if s.cfg.ConfigGet == nil {
+		http.Error(w, "config not available", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"overrides":           s.cfg.ConfigGet(),
+		"hot_fields":          hotReloadableFields,
+		"restart_only_fields": restartOnlyFields,
+	})
+}
+
+func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.ConfigSet == nil {
+		http.Error(w, "config not available", http.StatusNotFound)
+		return
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var rt config.RuntimeConfig
+	if err := dec.Decode(&rt); err != nil {
+		http.Error(w, "invalid config: "+err.Error()+" (仅支持热更字段)", http.StatusBadRequest)
+		return
+	}
+	if rt.Browser.PoolSize != nil && *rt.Browser.PoolSize < 0 {
+		http.Error(w, "browser.pool_size 必须 >= 0", http.StatusBadRequest)
+		return
+	}
+	if rt.Browser.DirectSize != nil && *rt.Browser.DirectSize < 0 {
+		http.Error(w, "browser.direct_pool_size 必须 >= 0", http.StatusBadRequest)
+		return
+	}
+	if err := s.cfg.ConfigSet(&rt); err != nil {
+		s.logger.Errorf("apply config: %s", err.Error())
+		http.Error(w, "apply config failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok"})
 }
 
 // logFile 日志文件条目

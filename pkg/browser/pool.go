@@ -3,28 +3,48 @@ package browser
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/devices"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
-	_ "github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
-	"sync"
-	_ "sync/atomic"
-	"time"
 )
 
-// Pool Browser池封装管理多个rod
+// Pool Browser池封装管理多个rod。
+// 采用双核冷热切换：active 原子指针指向当前服务的 core；调整池大小时后台预建新 core 再原子换入，
+// 旧 core 排空（在途浏览器归还后）自动回收。headers/max_idle_time 为共享可热更字段，改动即时全局生效。
 type Pool struct {
-	browsers       chan *Browser // 代理浏览器池（未配置代理时即直连）
-	directBrowsers chan *Browser // 强制直连浏览器池
-	mu             sync.Mutex
-	closeOnce      sync.Once
-	closed         bool
-	cfg            PoolConfig
-	newBrowserFn   func(useProxy bool) (*Browser, error) // 浏览器工厂，测试可注入
+	active       atomic.Pointer[poolCore]
+	cfg          PoolConfig
+	newBrowserFn func(useProxy bool) (*Browser, error) // 浏览器工厂，测试可注入
+
+	headers atomic.Pointer[map[string]string] // 共享可热更：默认请求头（copy-on-write）
+	maxIdle atomic.Int64                      // 共享可热更：空闲回收阈值（纳秒）
+
+	closed    atomic.Bool
+	closeOnce sync.Once
 }
+
+// poolCore 一个浏览器池内核，持有代理/直连两条通道与排空状态。
+type poolCore struct {
+	pool      *Pool
+	browsers  chan *Browser
+	direct    chan *Browser
+	retiredCh chan struct{} // 内核被换下时关闭，用于唤醒阻塞中的 Get
+
+	mu        sync.Mutex
+	refs      int  // 在途数量：已借出未归还 + 阻塞在 Get 的调用
+	retired   bool // 已被换下，排空中
+	closeOnce sync.Once
+}
+
+// errRetired 内核已被换下，Get 应换到新内核重试。
+var errRetired = fmt.Errorf("pool core retired")
 
 // PoolConfig 浏览器池配置
 type PoolConfig struct {
@@ -36,7 +56,7 @@ type PoolConfig struct {
 	NoSandbox      bool
 	Leakless       bool
 	BrowserPath    string            // 浏览器可执行文件路径，为空则使用系统默认
-	Flags          map[string]string // 浏览器启动参数，如 "disable-gpu": "", "window-size": "1920,1080"
+	Flags          map[string]string // 浏览器启动参数
 	DefaultDevice  *devices.Device   // 可选：全局设备模拟
 	DefaultHeaders map[string]string // 默认 HTTP 请求头
 	DefaultCookies []*proto.NetworkCookieParam
@@ -54,31 +74,55 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		cfg.DefaultCookies = []*proto.NetworkCookieParam{}
 	}
 
-	pool := &Pool{
-		browsers:       make(chan *Browser, cfg.Size),
-		directBrowsers: make(chan *Browser, cfg.DirectSize),
-		cfg:            cfg,
+	p := &Pool{cfg: cfg}
+	p.newBrowserFn = p.newBrowser
+	h := copyMap(cfg.DefaultHeaders)
+	p.headers.Store(&h)
+	p.maxIdle.Store(int64(cfg.MaxIdleTime))
+
+	core, err := p.newCore(cfg.Size, cfg.DirectSize)
+	if err != nil {
+		return nil, err
 	}
-	pool.newBrowserFn = pool.newBrowser
-	// 预创建代理浏览器实例
-	for i := 0; i < cfg.Size; i++ {
-		browser, err := pool.newBrowserFn(true)
+	p.active.Store(core)
+	return p, nil
+}
+
+// newCore 预建一个内核：创建 size+directSize 个浏览器实例。
+func (p *Pool) newCore(size, directSize int) (*poolCore, error) {
+	c := &poolCore{
+		pool:      p,
+		browsers:  make(chan *Browser, size),
+		direct:    make(chan *Browser, directSize),
+		retiredCh: make(chan struct{}),
+	}
+	for i := 0; i < size; i++ {
+		b, err := c.newBrowser(true)
 		if err != nil {
-			pool.Close()
+			c.close()
 			return nil, fmt.Errorf("create proxy browser %d: %w", i, err)
 		}
-		pool.browsers <- browser
+		c.browsers <- b
 	}
-	// 预创建强制直连浏览器实例
-	for i := 0; i < cfg.DirectSize; i++ {
-		browser, err := pool.newBrowserFn(false)
+	for i := 0; i < directSize; i++ {
+		b, err := c.newBrowser(false)
 		if err != nil {
-			pool.Close()
+			c.close()
 			return nil, fmt.Errorf("create direct browser %d: %w", i, err)
 		}
-		pool.directBrowsers <- browser
+		c.direct <- b
 	}
-	return pool, nil
+	return c, nil
+}
+
+// newBrowser 通过工厂创建浏览器并绑定内核。
+func (c *poolCore) newBrowser(useProxy bool) (*Browser, error) {
+	b, err := c.pool.newBrowserFn(useProxy)
+	if err != nil {
+		return nil, err
+	}
+	b.core = c
+	return b, nil
 }
 
 // newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
@@ -87,11 +131,9 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 		Headless(p.cfg.Headless).
 		NoSandbox(p.cfg.NoSandbox).
 		Leakless(p.cfg.Leakless)
-	// 如果配置了浏览器路径，则使用指定路径
 	if p.cfg.BrowserPath != "" {
 		l = l.Bin(p.cfg.BrowserPath)
 	}
-	// 设置自定义启动 flags
 	for key, val := range p.cfg.Flags {
 		if val == "" {
 			l.Set(flags.Flag(key))
@@ -116,45 +158,81 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 		launcher:       l,
 		useProxy:       useProxy,
 		defaultDevice:  p.cfg.DefaultDevice,
-		defaultHeaders: copyMap(p.cfg.DefaultHeaders),
 		defaultCookies: copyCookies(p.cfg.DefaultCookies),
 	}, nil
 }
 
 // Get 从池中获取一个代理浏览器实例（阻塞直到有可用）
 func (p *Pool) Get(ctx context.Context) (*Browser, error) {
-	return p.get(ctx, p.browsers)
+	for {
+		if p.closed.Load() {
+			return nil, fmt.Errorf("browser pool closed")
+		}
+		core := p.active.Load()
+		if core == nil {
+			return nil, fmt.Errorf("browser pool closed")
+		}
+		b, err := core.get(ctx, core.browsers)
+		if err == errRetired {
+			continue
+		}
+		return b, err
+	}
 }
 
 // GetDirect 从池中获取一个强制直连浏览器实例（阻塞直到有可用）
 func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) {
-	if p.cfg.DirectSize <= 0 {
-		return nil, fmt.Errorf("direct browsers not configured")
+	for {
+		if p.closed.Load() {
+			return nil, fmt.Errorf("browser pool closed")
+		}
+		core := p.active.Load()
+		if core == nil {
+			return nil, fmt.Errorf("browser pool closed")
+		}
+		if cap(core.direct) == 0 {
+			return nil, fmt.Errorf("direct browsers not configured")
+		}
+		b, err := core.get(ctx, core.direct)
+		if err == errRetired {
+			continue
+		}
+		return b, err
 	}
-	return p.get(ctx, p.directBrowsers)
 }
 
 // get 从指定通道获取浏览器实例，处理实例死亡重建
-func (p *Pool) get(ctx context.Context, ch chan *Browser) (*Browser, error) {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, fmt.Errorf("browser pool closed")
+func (c *poolCore) get(ctx context.Context, ch chan *Browser) (*Browser, error) {
+	c.mu.Lock()
+	if c.retired {
+		c.mu.Unlock()
+		return nil, errRetired
 	}
-	p.mu.Unlock()
+	c.refs++
+	c.mu.Unlock()
+
 	select {
 	case b := <-ch:
+		if b == nil {
+			c.release()
+			return nil, fmt.Errorf("browser pool closed")
+		}
 		if !b.IsAlive() {
 			b.Close()
-			newB, err := p.newBrowserFn(b.useProxy)
+			newB, err := c.newBrowser(b.useProxy)
 			if err != nil {
+				c.release()
 				return nil, fmt.Errorf("failed to recreate dead browser: %w", err)
 			}
 			b = newB
 		}
 		b.markUsed()
 		return b, nil
+	case <-c.retiredCh:
+		c.release()
+		return nil, errRetired
 	case <-ctx.Done():
+		c.release()
 		return nil, ctx.Err()
 	}
 }
@@ -164,25 +242,41 @@ func (p *Pool) Put(b *Browser) error {
 	if b == nil {
 		return fmt.Errorf("browser is nil")
 	}
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
+	if p.closed.Load() {
 		b.Close()
 		return fmt.Errorf("browser pool closed")
 	}
-	p.mu.Unlock()
-	// 检查浏览器是否存活  || 空闲超时检查
-	if !b.IsAlive() || (p.cfg.MaxIdleTime > 0 && time.Since(b.lastUsed) > p.cfg.MaxIdleTime) {
+	if b.core == nil {
 		b.Close()
-		newB, err := p.newBrowserFn(b.useProxy)
+		return fmt.Errorf("browser has no pool core")
+	}
+	return b.core.put(b)
+}
+
+// put 归还到浏览器所属内核；内核排空中则直接回收。
+func (c *poolCore) put(b *Browser) error {
+	defer c.release()
+
+	c.mu.Lock()
+	retired := c.retired
+	c.mu.Unlock()
+	if retired {
+		b.Close()
+		return nil
+	}
+
+	maxIdle := c.pool.maxIdleDuration()
+	if !b.IsAlive() || (maxIdle > 0 && time.Since(b.GetLastUsed()) > maxIdle) {
+		b.Close()
+		newB, err := c.newBrowser(b.useProxy)
 		if err != nil {
 			return fmt.Errorf("failed to recreate idle browser: %w", err)
 		}
 		b = newB
 	}
-	ch := p.browsers
+	ch := c.browsers
 	if !b.useProxy {
-		ch = p.directBrowsers
+		ch = c.direct
 	}
 	select {
 	case ch <- b:
@@ -194,17 +288,98 @@ func (p *Pool) Put(b *Browser) error {
 	return nil
 }
 
+// Resize 运行期调整池大小：后台预建新内核再原子换入，旧内核排空后回收。
+func (p *Pool) Resize(size, directSize int) error {
+	if size < 0 || directSize < 0 {
+		return fmt.Errorf("invalid pool size: %d/%d", size, directSize)
+	}
+	if p.closed.Load() {
+		return fmt.Errorf("browser pool closed")
+	}
+	core, err := p.newCore(size, directSize)
+	if err != nil {
+		return err
+	}
+	old := p.active.Swap(core)
+	if old != nil {
+		old.retire()
+	}
+	return nil
+}
+
+// SetHeaders 运行期热更默认请求头（copy-on-write）。
+func (p *Pool) SetHeaders(headers map[string]string) {
+	h := copyMap(headers)
+	p.headers.Store(&h)
+}
+
+// SetMaxIdleTime 运行期热更空闲回收阈值。
+func (p *Pool) SetMaxIdleTime(d time.Duration) {
+	p.maxIdle.Store(int64(d))
+}
+
+// headersSnapshot 返回当前共享默认请求头（只读，调用方不得修改）。
+func (p *Pool) headersSnapshot() map[string]string {
+	m := p.headers.Load()
+	if m == nil {
+		return nil
+	}
+	return *m
+}
+
+// maxIdleDuration 返回当前空闲回收阈值。
+func (p *Pool) maxIdleDuration() time.Duration {
+	return time.Duration(p.maxIdle.Load())
+}
+
+// release 归还一个在途引用；内核已排空且无在途引用时关闭。
+func (c *poolCore) release() {
+	c.mu.Lock()
+	c.refs--
+	shouldClose := c.retired && c.refs == 0
+	c.mu.Unlock()
+	if shouldClose {
+		c.close()
+	}
+}
+
+// retire 标记内核已换下，唤醒阻塞中的 Get 去重试新内核；无在途引用时立即关闭。
+func (c *poolCore) retire() {
+	c.mu.Lock()
+	already := c.retired
+	c.retired = true
+	shouldClose := c.refs == 0
+	c.mu.Unlock()
+	if !already {
+		close(c.retiredCh)
+	}
+	if shouldClose {
+		c.close()
+	}
+}
+
+// close 关闭通道并回收其中所有浏览器。
+func (c *poolCore) close() {
+	c.closeOnce.Do(func() {
+		close(c.browsers)
+		close(c.direct)
+		for b := range c.browsers {
+			b.Close()
+		}
+		for b := range c.direct {
+			b.Close()
+		}
+	})
+}
+
 // Close 关闭池中所有浏览器
 func (p *Pool) Close() {
 	p.closeOnce.Do(func() {
-		p.closed = true
-		close(p.browsers)
-		close(p.directBrowsers)
-		for b := range p.browsers {
-			b.Close()
-		}
-		for b := range p.directBrowsers {
-			b.Close()
+		p.closed.Store(true)
+		core := p.active.Swap(nil)
+		if core != nil {
+			core.retire()
+			core.close()
 		}
 	})
 }

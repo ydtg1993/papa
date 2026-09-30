@@ -2,6 +2,7 @@ package workerpool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v2/internal/msgqueue"
 	"sync"
@@ -9,10 +10,14 @@ import (
 	"time"
 )
 
+// ErrQueueFull 队列达到高水位（75%），任务应溢出到数据库而非入队。
+var ErrQueueFull = errors.New("worker pool queue full")
+
 // WorkerPool 泛型工作池
 type WorkerPool[T Tasker] struct {
 	taskQueue  chan T
 	workers    int
+	watermark  float64 // 队列高水位比例(0-1)，达到后 Submit 返回 ErrQueueFull
 	wg         sync.WaitGroup
 	stopOnce   sync.Once
 	stopped    atomic.Bool
@@ -23,11 +28,15 @@ type WorkerPool[T Tasker] struct {
 	trackQueue *msgqueue.MsgQueue[Activity] //系统消息队列
 }
 
-// NewWorkerPool 创建工作池
-func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
+// NewWorkerPool 创建工作池；watermark 为队列高水位比例(0-1)，非法值回退 0.75。
+func NewWorkerPool[T Tasker](workers, queueSize int, watermark float64) *WorkerPool[T] {
+	if watermark <= 0 || watermark > 1 {
+		watermark = 0.75
+	}
 	return &WorkerPool[T]{
 		taskQueue:  make(chan T, queueSize),
 		workers:    workers,
+		watermark:  watermark,
 		trackQueue: msgqueue.NewMsgQueue[Activity](10),
 	}
 }
@@ -79,21 +88,23 @@ func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, h
 	}
 }
 
-// Submit 提交任务，若已停止则拒绝
+// Submit 提交任务，若已停止则拒绝；达到 75% 高水位时返回 ErrQueueFull 由上层溢出。
 func (p *WorkerPool[T]) Submit(task T) error {
 	if p.stopped.Load() {
 		err := fmt.Errorf("worker pool already stopped,failed to submit task: %+v", task)
 		p.trackQueue.SendError(err)
 		return err
 	}
+	// 达到高水位时提前拒绝入队，避免 100% 时静默丢弃，由上层把任务留库/溢出。
+	if float64(len(p.taskQueue)) >= float64(cap(p.taskQueue))*p.watermark {
+		return ErrQueueFull
+	}
 	select {
 	case p.taskQueue <- task:
 		p.submitted.Add(1) // 提交成功，增加计数
 		return nil
 	default:
-		err := fmt.Errorf("task submission task url: %s", task.GetUrl())
-		p.trackQueue.SendError(err)
-		return err
+		return ErrQueueFull
 	}
 }
 

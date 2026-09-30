@@ -600,11 +600,11 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 
 2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
 
-3. **定时重抓 / 恢复失败**：由调度器负责（`config.yaml` 的 `scheduler.jobs`）：
-   - `repeat` 每日重跑 `repeatable: true` 的轮询任务；
-   - `recover` 恢复超时未完成的任务。
+3. **定时重抓 / 恢复失败**：
+   - 定时轮询：业务用 `app.RegisterCronJob("repeat_daily", "0 0 8 * * *", func(){ app.Engine.RepollRepeatableTasks() })` 注册，每日重跑 `repeatable: true` 的轮询任务；
+   - 中断恢复：`recover_queue` 配置开启后，启动时立即 + `interval` 定时恢复卡死的 pending/processing 任务。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 与 [SCHEDULER.md](./SCHEDULER.md)。
 
-4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（OA「设置 → 错误队列处理」/ `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [README.md](./README.md) 的「失败任务错误队列」一节。
+4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（OA「设置 → 错误队列处理」/ `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
 **看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.monitor: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录密钥由 `papa new` 生成的 `configs/secret` 提供（`server.auth_key_file` 引用，也可用内联 `server.auth_key`）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
 

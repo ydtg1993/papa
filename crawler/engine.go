@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,11 +35,17 @@ type Engine struct {
 	stages      map[string]*stageInfo
 	mu          sync.RWMutex
 	cfg         *config.Config
+	runtime     atomic.Pointer[config.RuntimeConfig] // 运行期动态配置覆盖层（delta）
 	browserPool *browser.Pool
 	htmlClient  *htmlfetch.Client
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
-	activeTasks sync.Map                            // hash去重任务表 key: "stage|url"
-	repeatTasks sync.Map                            // 重复轮询任务
+	dedupCache  *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
+
+	appliedPoolSize   int // 已应用的代理池大小，用于判断运行期是否需要 resize
+	appliedDirectSize int // 已应用的直连池大小
+
+	spillMu sync.Mutex
+	spilled map[string][]*Task // stage -> 高水位溢出的待回灌任务
 
 	delayMu   sync.Mutex // 保护 delayHeap
 	delayHeap delayHeap  // 延迟投递最小堆
@@ -118,16 +125,18 @@ func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, sub
 func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &Engine{
-		ctx:         ctx,
-		cancel:      cancel,
-		stages:      make(map[string]*stageInfo),
-		activeTasks: sync.Map{},
-		db:          db,
-		cfg:         cfg,
-		loggerSet:   loggerSet,
-		metrics:     metrics.New(),
-		delayCh:     make(chan struct{}, 1),
+		ctx:        ctx,
+		cancel:     cancel,
+		stages:     make(map[string]*stageInfo),
+		dedupCache: newDedupCache(cfg.Crawler.DedupCacheSize),
+		db:         db,
+		cfg:        cfg,
+		loggerSet:  loggerSet,
+		metrics:    metrics.New(),
+		delayCh:    make(chan struct{}, 1),
+		spilled:    make(map[string][]*Task),
 	}
+	engine.runtime.Store(&config.RuntimeConfig{})
 	engine.loadActiveTasks()
 	go engine.delayDispatcher()
 	return engine
@@ -270,26 +279,24 @@ func (e *Engine) SetBrowserPool() {
 	if !e.cfg.Browser.Enable {
 		return
 	}
-	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.Browser.Headers))
-	maps.Copy(headers, defaultHeaders)
-	maps.Copy(headers, e.cfg.Browser.Headers)
-
 	pool, err := browser.NewPool(browser.PoolConfig{
-		Size:           e.cfg.Browser.PoolSize,
-		DirectSize:     e.cfg.Browser.DirectSize,
-		MaxIdleTime:    e.cfg.Browser.MaxIdleTime,
+		Size:           e.browserPoolSize(),
+		DirectSize:     e.browserDirectSize(),
+		MaxIdleTime:    e.browserMaxIdle(),
 		Headless:       e.cfg.Browser.Headless,
 		NoSandbox:      e.cfg.Browser.NoSandbox,
 		Leakless:       e.cfg.Browser.Leakless,
 		BrowserPath:    e.cfg.Browser.BrowserPath,
 		Flags:          map[string]string{},
-		DefaultHeaders: headers,
+		DefaultHeaders: e.browserHeaders(),
 		ProxyManager:   e.GetProxy(),
 	})
 	if err != nil {
 		panic(fmt.Errorf("new browser pool: %s", err.Error()))
 	}
 	e.browserPool = pool
+	e.appliedPoolSize = e.browserPoolSize()
+	e.appliedDirectSize = e.browserDirectSize()
 }
 
 // GetBrowserPool 获取浏览器池
@@ -312,20 +319,105 @@ func (e *Engine) SetHTMLClient() {
 	if !e.cfg.HTML.Enable {
 		return
 	}
+	e.htmlClient = htmlfetch.NewClient(e.htmlConfig())
+}
+
+// browserHeaders 合并内置默认头、基础配置、运行期覆盖，返回生效的浏览器默认请求头（每次新建 map）。
+func (e *Engine) browserHeaders() map[string]string {
+	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.Browser.Headers))
+	maps.Copy(headers, defaultHeaders)
+	maps.Copy(headers, e.cfg.Browser.Headers)
+	maps.Copy(headers, e.runtime.Load().Browser.Headers)
+	return headers
+}
+
+// browserMaxIdle 返回生效的浏览器空闲回收阈值。
+func (e *Engine) browserMaxIdle() time.Duration {
+	rt := e.runtime.Load()
+	if rt.Browser.MaxIdleTime != nil {
+		return rt.Browser.MaxIdleTime.Duration
+	}
+	return e.cfg.Browser.MaxIdleTime
+}
+
+// browserPoolSize 返回生效的代理池大小。
+func (e *Engine) browserPoolSize() int {
+	rt := e.runtime.Load()
+	if rt.Browser.PoolSize != nil {
+		return *rt.Browser.PoolSize
+	}
+	return e.cfg.Browser.PoolSize
+}
+
+// browserDirectSize 返回生效的直连池大小。
+func (e *Engine) browserDirectSize() int {
+	rt := e.runtime.Load()
+	if rt.Browser.DirectSize != nil {
+		return *rt.Browser.DirectSize
+	}
+	return e.cfg.Browser.DirectSize
+}
+
+// htmlConfig 计算生效的静态 HTML 客户端配置（基础 + 运行期覆盖）。
+func (e *Engine) htmlConfig() htmlfetch.Config {
 	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.HTML.Headers))
 	maps.Copy(headers, defaultHeaders)
 	maps.Copy(headers, e.cfg.HTML.Headers)
+	rt := e.runtime.Load()
+	maps.Copy(headers, rt.HTML.Headers)
 
 	userAgent := headers["User-Agent"]
 	delete(headers, "User-Agent")
 
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{
-		Timeout:      e.cfg.HTML.Timeout,
-		MaxBodySize:  e.cfg.HTML.MaxBodySize,
+	timeout := e.cfg.HTML.Timeout
+	maxBody := e.cfg.HTML.MaxBodySize
+	if rt.HTML.Timeout != nil {
+		timeout = rt.HTML.Timeout.Duration
+	}
+	if rt.HTML.MaxBodySize != nil {
+		maxBody = *rt.HTML.MaxBodySize
+	}
+
+	return htmlfetch.Config{
+		Timeout:      timeout,
+		MaxBodySize:  maxBody,
 		UserAgent:    userAgent,
 		Headers:      headers,
 		ProxyManager: e.GetProxy(),
-	})
+	}
+}
+
+// ApplyRuntimeConfig 应用运行期动态配置：tunable 字段原地热更，pool_size/direct_pool_size 触发双池切换。
+func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
+	if rt == nil {
+		rt = &config.RuntimeConfig{}
+	}
+	e.runtime.Store(rt)
+
+	if e.browserPool != nil {
+		e.browserPool.SetHeaders(e.browserHeaders())
+		e.browserPool.SetMaxIdleTime(e.browserMaxIdle())
+
+		poolSize := e.browserPoolSize()
+		directSize := e.browserDirectSize()
+		if poolSize != e.appliedPoolSize || directSize != e.appliedDirectSize {
+			if err := e.browserPool.Resize(poolSize, directSize); err != nil {
+				return fmt.Errorf("resize browser pool: %w", err)
+			}
+			e.appliedPoolSize = poolSize
+			e.appliedDirectSize = directSize
+		}
+	}
+
+	if e.htmlClient != nil {
+		e.htmlClient.SetConfig(e.htmlConfig())
+	}
+	return nil
+}
+
+// GetRuntimeConfig 返回当前运行期覆盖层（只读，调用方勿修改）。
+func (e *Engine) GetRuntimeConfig() *config.RuntimeConfig {
+	return e.runtime.Load()
 }
 
 // SetProxy 设置代理 需要在RegisterStage之前设置
@@ -362,7 +454,7 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 func (e *Engine) ApplyRegisterStage() {
 	for stage, stageInfo := range e.stages {
 		cfg := stageInfo.config
-		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
+		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
 		e.stages[stage].workerPool = pool
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
@@ -418,8 +510,12 @@ func (e *Engine) ApplyRegisterStage() {
 			e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
 		}
 	}
+	// 启动高水位溢出任务的回灌协程
+	e.startDrain()
 	// 启动错误队列后台自动轮询（未配置 interval 则不启动，仅手动触发）
 	e.startErrorQueue()
+	// 启动中断恢复队列（启用时启动即恢复一次 + 定时轮询）
+	e.startRecoverQueue()
 }
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
@@ -436,40 +532,71 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if _, ok := e.cfg.Crawler.Stages[task.Stage]; !ok {
 		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s", task.Stage))
 	}
-	if task.Repeatable {
-		//存入轮询任务列表 在任务计划中读取调用
-		e.repeatTasks.Store(task.Unique(), task)
-	}
+
+	key := task.Unique()
 	var record models.CrawlerTask
-	//查询去重hash map
-	_, exist := e.activeTasks.Load(task.Unique())
-	if exist {
+
+	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_stage_url 兜底）
+	if e.dedupCache.Get(key) {
 		if !task.Repeatable {
 			return nil // 去重命中：视为成功，无需重复处理
 		}
-		//已经入库的轮询任务 查找记录防止重复录入
-		e.db.Model(&models.CrawlerTask{}).
-			Where("url = ?", task.URL).
-			Where("stage = ?", task.Stage).
-			First(&record)
+		// 已入库的轮询任务：查找记录防止重复录入
+		if err := e.findTaskRecord(task, &record); err != nil {
+			return e.logSubmitError(task, fmt.Errorf("load repeat task record: %w", err))
+		}
 		task.ID = int(record.ID)
+		return e.submitIfActive(task, record)
 	}
 
-	if task.ID == 0 {
-		// 提交到 pool 前先插入数据库
-		if err := task.Insert(e.db); err != nil {
-			return e.logSubmitError(task, fmt.Errorf("insert crawler task to db failed: %w", err))
+	err := e.findTaskRecord(task, &record)
+	if err == nil {
+		// DB 命中：复用已有记录（重新加入内存缓存）
+		e.dedupCache.Add(key)
+		wasNew := task.ID == 0
+		task.ID = int(record.ID)
+		// 仅「新任务」去重跳过；已带 ID 的重提交（如 RecoverJob）需继续入队
+		if !task.Repeatable && wasNew {
+			return nil
 		}
+		return e.submitIfActive(task, record)
 	}
-	// 插入成功后加入内存去重map
-	e.activeTasks.Store(task.Unique(), true)
-	if record.ID == 0 {
-		e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return e.logSubmitError(task, fmt.Errorf("query task dedup: %w", err))
 	}
+
+	// 全新任务：提交到 pool 前先插入数据库
+	if ierr := task.Insert(e.db); ierr != nil {
+		// 并发下撞唯一索引：另一 goroutine 已入库并将入队，此处回填 ID 后跳过，避免重复入队
+		if rerr := e.findTaskRecord(task, &record); rerr != nil {
+			return e.logSubmitError(task, fmt.Errorf("insert crawler task to db failed: %w", ierr))
+		}
+		e.dedupCache.Add(key)
+		task.ID = int(record.ID)
+		return nil
+	}
+	e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
+	e.dedupCache.Add(key)
+	return e.submitIfActive(task, record)
+}
+
+// findTaskRecord 按去重键查找已存在的任务记录；未找到返回 gorm.ErrRecordNotFound。
+// 幂等键优先，否则回退 stage+url（与 DB 唯一索引 idx_stage_url 一致）。
+func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
+	q := e.db.Model(&models.CrawlerTask{})
+	if task.IdempotencyKey != "" {
+		q = q.Where("idempotency_key = ?", task.IdempotencyKey)
+	} else {
+		q = q.Where("url = ? AND stage = ?", task.URL, task.Stage)
+	}
+	return q.First(record).Error
+}
+
+// submitIfActive 若任务尚未到终态（success/failed）则延迟投递或入队，否则静默跳过。
+func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) error {
 	if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 		return nil
 	}
-
 	// 延迟投递：到点才入队，避免 worker 空等浪费并发位
 	if at := task.deliverAt(); !at.IsZero() && at.After(time.Now()) {
 		e.enqueueDelayed(at, task, record)
@@ -485,8 +612,13 @@ func (e *Engine) SubmitTask(task *Task) error {
 func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	info := e.stages[task.Stage]
 	if err := info.workerPool.Submit(task); err != nil {
-		// 提交失败，回滚内存 map 和数据库状态
-		e.activeTasks.Delete(task.Unique())
+		if errors.Is(err, workerpool.ErrQueueFull) {
+			// 队列达 75% 高水位：任务保持 pending（已入库），加入溢出列表由 drain 稍后回灌
+			e.spillTask(task)
+			return nil
+		}
+		// 提交失败，回滚内存去重表和数据库状态
+		e.dedupCache.Delete(task.Unique())
 		record.Error += err.Error() + "\n"
 		record.Status = models.TaskStatusFailed
 		e.db.Save(&record)
@@ -503,6 +635,69 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	return nil
 }
 
+// spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。
+func (e *Engine) spillTask(task *Task) {
+	e.spillMu.Lock()
+	e.spilled[task.Stage] = append(e.spilled[task.Stage], task)
+	e.spillMu.Unlock()
+}
+
+// startDrain 启动后台回灌协程：定期把溢出列表中的任务重新入队。
+func (e *Engine) startDrain() {
+	interval := e.cfg.Crawler.DrainInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-ticker.C:
+				e.drainSpilled()
+			}
+		}
+	}()
+}
+
+// drainSpilled 把溢出列表中队列已有空间的任务重新入队；仍满则继续留在列表。
+func (e *Engine) drainSpilled() {
+	e.spillMu.Lock()
+	if len(e.spilled) == 0 {
+		e.spillMu.Unlock()
+		return
+	}
+	all := e.spilled
+	e.spilled = make(map[string][]*Task)
+	e.spillMu.Unlock()
+
+	for stage, tasks := range all {
+		info := e.stages[stage]
+		if info == nil || info.workerPool == nil {
+			continue
+		}
+		for _, task := range tasks {
+			var record models.CrawlerTask
+			err := e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record).Error
+			if err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					// 瞬态错误：重新加入溢出列表，下轮重试
+					e.spillTask(task)
+				}
+				continue
+			}
+			if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
+				continue // 已终态，无需再入队
+			}
+			if err := e.submitToPool(task, record); err != nil {
+				e.loggerSet.Engine.Errorf("drain spilled task %d: %s", task.ID, err.Error())
+			}
+		}
+	}
+}
+
 // SubmitTasks 批量提交任务：一次性批量入库（减少 DB 往返），再逐个入队。
 func (e *Engine) SubmitTasks(tasks []*Task) error {
 	if len(tasks) == 0 {
@@ -517,26 +712,38 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		}
 	}
 
-	// 去重与 repeatable 处理，收集需入库/入队的任务
+	// 两阶段去重与 repeatable 处理，收集需入库/入队的任务
 	var toInsert []*Task
 	var toProcess []*Task
 	for _, t := range tasks {
-		if t.Repeatable {
-			e.repeatTasks.Store(t.Unique(), t)
-		}
-		if _, exist := e.activeTasks.Load(t.Unique()); exist {
+		key := t.Unique()
+		if e.dedupCache.Get(key) {
 			if !t.Repeatable {
 				continue // 去重命中：跳过
 			}
 			var record models.CrawlerTask
-			e.db.Model(&models.CrawlerTask{}).
-				Where("url = ?", t.URL).
-				Where("stage = ?", t.Stage).
-				First(&record)
+			if err := e.findTaskRecord(t, &record); err != nil {
+				return e.logSubmitError(t, fmt.Errorf("load repeat task record: %w", err))
+			}
 			t.ID = int(record.ID)
-		}
-		if t.ID == 0 {
-			toInsert = append(toInsert, t)
+		} else {
+			var record models.CrawlerTask
+			err := e.findTaskRecord(t, &record)
+			switch {
+			case err == nil:
+				// DB 命中：复用已有记录
+				e.dedupCache.Add(key)
+				t.ID = int(record.ID)
+				if !t.Repeatable {
+					continue
+				}
+			case errors.Is(err, gorm.ErrRecordNotFound):
+				if t.ID == 0 {
+					toInsert = append(toInsert, t)
+				}
+			default:
+				return e.logSubmitError(t, fmt.Errorf("query task dedup: %w", err))
+			}
 		}
 		toProcess = append(toProcess, t)
 	}
@@ -560,7 +767,7 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 	// 逐个入队（含延迟投递）
 	var errs []error
 	for _, t := range toProcess {
-		e.activeTasks.Store(t.Unique(), true)
+		e.dedupCache.Add(t.Unique())
 		var record models.CrawlerTask
 		e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
 		if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
@@ -597,8 +804,8 @@ func (e *Engine) ReSubmitTask(task *Task) error {
 	task.ID = int(record.ID)
 	info := e.stages[task.Stage]
 	if err := info.workerPool.Submit(task); err != nil {
-		// 提交失败，回滚内存 map 和数据库状态
-		e.activeTasks.Delete(task.Unique())
+		// 提交失败，回滚内存去重表和数据库状态
+		e.dedupCache.Delete(task.Unique())
 		record.Error += err.Error() + "\n"
 		record.Status = models.TaskStatusFailed
 		e.db.Save(&record)
@@ -669,12 +876,7 @@ func (e *Engine) GetStageStats() map[string]StageStats {
 
 // DelActiveTask 从去重任务列表中删除任务
 func (e *Engine) DelActiveTask(task *Task) {
-	e.activeTasks.Delete(task.Unique())
-}
-
-// GetRepeatTasks 获取轮询任务列表
-func (e *Engine) GetRepeatTasks() *sync.Map {
-	return &e.repeatTasks
+	e.dedupCache.Delete(task.Unique())
 }
 
 // loadActiveTasks 启动时把「进行中」任务（pending/processing）与全部轮询任务加载进内存去重表，
@@ -691,6 +893,6 @@ func (e *Engine) loadActiveTasks() {
 	}
 	for _, t := range tasks {
 		task := Task{URL: t.URL, Stage: t.Stage, IdempotencyKey: t.IdempotencyKey}
-		e.activeTasks.Store(task.Unique(), true)
+		e.dedupCache.Add(task.Unique())
 	}
 }

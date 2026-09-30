@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -61,7 +62,8 @@ type Config struct {
 
 // Client fetches server-rendered HTML without creating browser instances.
 type Client struct {
-	httpClient *http.Client
+	mu         sync.RWMutex
+	httpClient *http.Client // 不含 Timeout，超时用 context 逐请求控制，支持运行期热更
 	config     Config
 }
 
@@ -81,6 +83,19 @@ type Document struct {
 
 // NewClient creates a static HTML client.
 func NewClient(cfg Config) *Client {
+	applyConfigDefaults(&cfg)
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = proxyFunc(cfg.ProxyManager)
+
+	return &Client{
+		httpClient: &http.Client{Transport: transport},
+		config:     cfg,
+	}
+}
+
+// applyConfigDefaults 为零值字段填充默认值。
+func applyConfigDefaults(cfg *Config) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = defaultTimeout
 	}
@@ -93,22 +108,23 @@ func NewClient(cfg Config) *Client {
 	if cfg.Headers == nil {
 		cfg.Headers = make(map[string]string)
 	}
+}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = proxyFunc(cfg.ProxyManager)
-
-	return &Client{
-		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   cfg.Timeout,
-		},
-		config: cfg,
-	}
+// SetConfig 运行期更新请求配置（timeout/max_body_size/user_agent/headers），用于 OA 后台热更。
+// 传入的 Headers 归 Client 所有，调用方随后不应再修改该 map。
+func (c *Client) SetConfig(cfg Config) {
+	applyConfigDefaults(&cfg)
+	c.mu.Lock()
+	c.config = cfg
+	c.mu.Unlock()
 }
 
 // SetProxyManager changes the proxy source used by subsequent requests.
 func (c *Client) SetProxyManager(manager *proxy.Manager) {
+	c.mu.Lock()
 	c.config.ProxyManager = manager
+	c.mu.Unlock()
+
 	transport, ok := c.httpClient.Transport.(*http.Transport)
 	if !ok {
 		return
@@ -122,12 +138,23 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 		return nil, fmt.Errorf("url is empty")
 	}
 
+	c.mu.RLock()
+	cfg := c.config
+	c.mu.RUnlock()
+
+	// 逐请求超时，支持 SetConfig 热更 timeout
+	if cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
+		defer cancel()
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create html request: %w", err)
 	}
-	req.Header.Set("User-Agent", c.config.UserAgent)
-	for key, value := range c.config.Headers {
+	req.Header.Set("User-Agent", cfg.UserAgent)
+	for key, value := range cfg.Headers {
 		req.Header.Set(key, value)
 	}
 
@@ -141,12 +168,12 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 		return nil, fmt.Errorf("fetch html: unexpected status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, c.config.MaxBodySize+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, cfg.MaxBodySize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read html response: %w", err)
 	}
-	if int64(len(body)) > c.config.MaxBodySize {
-		return nil, fmt.Errorf("html response exceeds %d bytes", c.config.MaxBodySize)
+	if int64(len(body)) > cfg.MaxBodySize {
+		return nil, fmt.Errorf("html response exceeds %d bytes", cfg.MaxBodySize)
 	}
 
 	document, err := goquery.NewDocumentFromReader(bytes.NewReader(body))

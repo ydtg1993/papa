@@ -27,6 +27,7 @@ Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一
 其余列（`status` / `retry` / `error` / `repeat` 等）是框架运行态，由引擎自动维护，**业务不要直接读写**。
 
 - 内置唯一约束 `(stage, url)`：同一个 URL 在一个阶段只会有一条记录。
+- **`IdempotencyKey` 是「软约束」**：任务可以自定义 `IdempotencyKey`（`papa.Task{ IdempotencyKey: "..." }`）作为去重键，但数据库唯一索引只建在 `(stage, url)` 上，幂等键去重只靠内存缓存。缓存满被淘汰后，**同幂等键、不同 URL 的任务可能重复入库**。约定：使用 `IdempotencyKey` 时，保证同一幂等键始终对应同一 `(stage, url)`；否则其去重是「尽力而为」而非强一致。
 - 业务**不直接碰 model**，而是通过结果 API 读写（见第 2 节）。
 
 ### 1.2 业务内容结构（你自己的 `models` 包，`papa new` 已生成）
@@ -253,7 +254,7 @@ type Episode struct {
 app, err := papa.New(papa.WithModels(&models.Episode{}))
 ```
 
-如果还想在监控后台「数据浏览」里分页/搜索这张表，把上面的 `WithModels` 换成 `papa.WithBrowsableModels(papa.ModelDef{Key: "episode", Label: "剧集", Model: &models.Episode{}})` 即可（同样在 dev 环境自动迁移）。详见 [README.md](./README.md) 的「数据浏览 API」一节。
+如果还想在监控后台「数据浏览」里分页/搜索这张表，把上面的 `WithModels` 换成 `papa.WithBrowsableModels(papa.ModelDef{Key: "episode", Label: "剧集", Model: &models.Episode{}})` 即可（同样在 dev 环境自动迁移）。详见 [MONITOR.md](./MONITOR.md) 的「数据浏览 API」。
 
 ---
 
@@ -288,7 +289,7 @@ engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
 1. **结果 API 帮你序列化**：`SaveResult` / `SaveContent` 内部自动 `json.Marshal`，`GetResult` 自动 `json.Unmarshal`，业务不用再碰 `datatypes.JSON` / `json.Marshal`。
 2. **写库只写自己的 `task.ID`**：子任务各自写各自记录，不要越界改别人的任务。
 3. **改 JSON 里的嵌套字段要「读-改-写」**：`content` 是整列 JSON，没有嵌套路径更新，改 `Downloads` 这类内层字段必须整列读出来改完写回。
-4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`（dev 环境自动迁移，生产迁移要另外走正式流程）。若要后台浏览/搜索该表，用 `WithBrowsableModels`（见 [README.md](./README.md)「数据浏览 API」）。
+4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`（dev 环境自动迁移，生产迁移要另外走正式流程）。若要后台浏览/搜索该表，用 `WithBrowsableModels`（见 [MONITOR.md](./MONITOR.md)「数据浏览 API」）。
 5. **并发写同一记录**：detail 派发多个 video 子任务时，多个子任务可能同时回写父任务的 `Downloads`，会丢更新。需要的话对父任务加锁或串行回写（简单做法：用数据库事务或 `gorm` 的 `clause.Locking`）。
 6. **Content 空值 / nil map**：确保传给 `SaveResult` / `SaveContent` 的结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
 7. **字段命名**：JSON tag 用下划线风格，和现有 `cover_url` / `series_info` 一致，避免和别处拼写不一致。

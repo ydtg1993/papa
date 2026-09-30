@@ -79,9 +79,9 @@ func (e *Engine) requeueFailedTask(t *models.CrawlerTask) bool {
 		Repeatable:     t.Repeatable == models.RepeatableYes,
 		IdempotencyKey: t.IdempotencyKey,
 	}
-	e.activeTasks.Store(task.Unique(), true)
+	e.dedupCache.Add(task.Unique())
 	if err := info.workerPool.Submit(task); err != nil {
-		e.activeTasks.Delete(task.Unique())
+		e.dedupCache.Delete(task.Unique())
 		e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
 		return false
 	}

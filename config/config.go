@@ -1,22 +1,25 @@
 package config
 
 import (
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/spf13/viper"
+	"os"
 	"time"
+
+	"github.com/go-viper/mapstructure/v2"
+	yaml "go.yaml.in/yaml/v3"
 )
 
 type Config struct {
-	App        AppConfig        `mapstructure:"app"`
-	Log        LogConfig        `mapstructure:"log"`
-	Crawler    CrawlerConfig    `mapstructure:"crawler"`
-	Browser    BrowserConfig    `mapstructure:"browser"`
-	HTML       HTMLConfig       `mapstructure:"html"`
-	Proxy      ProxyConfig      `mapstructure:"proxy"`
-	DB         DBConfig         `mapstructure:"db"`
-	Server     ServerConfig     `mapstructure:"server"`
-	Scheduler  SchedulerConfig  `mapstructure:"scheduler"`
-	ErrorQueue ErrorQueueConfig `mapstructure:"error_queue"`
+	App          AppConfig          `mapstructure:"app"`
+	Log          LogConfig          `mapstructure:"log"`
+	Crawler      CrawlerConfig      `mapstructure:"crawler"`
+	Browser      BrowserConfig      `mapstructure:"browser"`
+	HTML         HTMLConfig         `mapstructure:"html"`
+	Proxy        ProxyConfig        `mapstructure:"proxy"`
+	DB           DBConfig           `mapstructure:"db"`
+	Server       ServerConfig       `mapstructure:"server"`
+	Scheduler    SchedulerConfig    `mapstructure:"scheduler"`
+	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
+	RecoverQueue RecoverQueueConfig `mapstructure:"recover_queue"`
 }
 
 // ErrorQueueConfig 失败任务错误队列处理配置
@@ -25,6 +28,14 @@ type ErrorQueueConfig struct {
 	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量
 	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 不自动轮询，仅手动触发
 	MaxRetry    int           `mapstructure:"max_retry"`    // 单个失败任务最多再处理代数；0 = 不限
+}
+
+// RecoverQueueConfig 中断恢复队列处理配置（主程序重启后立即恢复卡死的 pending/processing 任务）
+type RecoverQueueConfig struct {
+	Enabled     bool          `mapstructure:"enabled"`      // 是否启用中断恢复队列
+	WorkerCount int           `mapstructure:"worker_count"` // 并发恢复数量
+	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 仅启动时+手动触发
+	Timeout     time.Duration `mapstructure:"timeout"`      // 任务卡住多久算卡死（updated_at 早于 now-timeout）；0 = 默认 6h
 }
 
 // AppConfig 环境基础配置
@@ -42,8 +53,11 @@ type LogConfig struct {
 }
 
 type CrawlerConfig struct {
-	Target string                 `mapstructure:"target"` //爬虫目标网站域
-	Stages map[string]StageConfig `mapstructure:"stages"` //阶段配置 例如:目录页 详情页 内容页...
+	Target         string                 `mapstructure:"target"`           //爬虫目标网站域
+	Stages         map[string]StageConfig `mapstructure:"stages"`           //阶段配置 例如:目录页 详情页 内容页...
+	DedupCacheSize int                    `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+	QueueWatermark float64                `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
+	DrainInterval  time.Duration          `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
 }
 
 type StageConfig struct {
@@ -65,7 +79,6 @@ type BrowserConfig struct {
 	DirectSize  int               `mapstructure:"direct_pool_size"` //强制直连浏览器数量（不经过代理）
 	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"`    //浏览器生命周期
 	Headless    bool              `mapstructure:"headless"`         //无头模式
-	DisableGpu  bool              `mapstructure:"disable_gpu"`
 	NoSandbox   bool              `mapstructure:"no_sandbox"`
 	Leakless    bool              `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
 	BrowserPath string            `mapstructure:"browser_path"`
@@ -108,31 +121,37 @@ type ServerConfig struct {
 	MonitorDirs   map[string]string `mapstructure:"monitor_dirs"`   // 监控页展示的业务目录占用，name->path
 }
 
+// SchedulerConfig 定时任务调度器配置。
+// 内置 job 已移除：业务定时任务通过 app.RegisterCronJob 注册（见 docs），框架级恢复/失败重试走 recover_queue / error_queue。
 type SchedulerConfig struct {
-	Enabled  bool        `mapstructure:"enabled"`
-	Timezone string      `mapstructure:"timezone"`
-	Jobs     []JobConfig `mapstructure:"jobs"`
-}
-
-type JobConfig struct {
-	Name     string            `mapstructure:"name"`
-	Type     string            `mapstructure:"type"`     // "catalog" or "recover"
-	Schedule string            `mapstructure:"schedule"` // cron 表达式
-	Args     map[string]string `mapstructure:"args"`     // 可选参数
+	Timezone string `mapstructure:"timezone"` // cron 时区
 }
 
 func Load(path string) (*Config, error) {
-	viper.SetConfigFile(path)
-	if err := viper.ReadInConfig(); err != nil {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// 用 yaml.v3 解析为 map（保留 key 大小写），再交给 mapstructure 解码，
+	// 避免 viper 将 header key 转小写导致 "User-Agent" 等请求头失效。
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
 	var cfg Config
-	// 组合默认 hook（时长/切片）与 TextUnmarshaller hook，使 DurationRange 支持 "10s-30s"。
-	if err := viper.Unmarshal(&cfg, viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
-		mapstructure.TextUnmarshallerHookFunc(),
-		mapstructure.StringToTimeDurationHookFunc(),
-		mapstructure.StringToSliceHookFunc(","),
-	))); err != nil {
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		Result: &cfg,
+		// 组合默认 hook（时长/切片）与 TextUnmarshaller hook，使 DurationRange 支持 "10s-30s"。
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.TextUnmarshallerHookFunc(),
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+		),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(raw); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

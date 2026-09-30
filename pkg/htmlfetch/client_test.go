@@ -157,3 +157,37 @@ func TestClientPerRequestProxyToggle(t *testing.T) {
 		t.Fatalf("direct Text(p) = %q, %t, want direct", got, ok)
 	}
 }
+
+func TestClientSetConfigHotReload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(r.Header.Get("User-Agent") + "|" + r.Header.Get("X-Test")))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		Timeout:   time.Second,
+		UserAgent: "agent-1",
+		Headers:   map[string]string{"X-Test": "v1"},
+	})
+	page, err := client.Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if page.HTML != "agent-1|v1" {
+		t.Fatalf("initial body = %q, want agent-1|v1", page.HTML)
+	}
+
+	client.SetConfig(Config{
+		Timeout:   time.Second,
+		UserAgent: "agent-2",
+		Headers:   map[string]string{"X-Test": "v2"},
+	})
+	page, err = client.Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if page.HTML != "agent-2|v2" {
+		t.Fatalf("after SetConfig body = %q, want agent-2|v2", page.HTML)
+	}
+}

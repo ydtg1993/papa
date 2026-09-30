@@ -35,6 +35,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "html", "rod", "diff", "select":
+		if err := runDebugCmd(os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(1)
@@ -46,6 +51,15 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  papa new <project-name> [--replace <local-papa-path>]")
 	fmt.Fprintln(os.Stderr, "    生成一个新爬虫项目骨架")
 	fmt.Fprintln(os.Stderr, "    --replace  在 go.mod 加 replace 指向本地 papa 仓库（本地验证用，无需先发布）")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  papa html <url> [flags]   静态 HTML 抓取")
+	fmt.Fprintln(os.Stderr, "  papa rod  <url> [flags]   浏览器渲染后抓取")
+	fmt.Fprintln(os.Stderr, "  papa diff <url> [flags]   对比 html 与 rod 抓取结果")
+	fmt.Fprintln(os.Stderr, "  papa select <css> <url|文件> [flags]  选择器测试")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  通用 flags: -c/--config, --proxy, --timeout, --ua, --header k=v, --json, -o/--output")
+	fmt.Fprintln(os.Stderr, "  输出形态: --links, --text, --select <css>")
+	fmt.Fprintln(os.Stderr, "  rod 专属: --screenshot <file>, --full-page, --wait <duration>")
 }
 
 func runNew(name string, args []string) error {
