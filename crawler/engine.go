@@ -56,8 +56,9 @@ type Engine struct {
 
 	configChanged chan struct{} // 运行期配置变更信号（唤醒动态 ticker 重新读生效配置）
 
-	errorQueueMu  sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
-	repeatQueueMu sync.Mutex // 串行化周期轮询队列处理，避免自动+手动并发重复投递
+	errorQueueMu   sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
+	recoverQueueMu sync.Mutex // 串行化中断恢复队列处理，避免自动+手动并发重复投递
+	repeatQueueMu  sync.Mutex // 串行化周期轮询队列处理，避免自动+手动并发重复投递
 
 	proxy     *proxy.Manager       // 代理管理器中间件
 	m3u8      *m3u8.Downloader     // m3u8下载器

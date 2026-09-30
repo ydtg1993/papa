@@ -10,6 +10,9 @@ import (
 // ProcessRecoverQueue 查询「卡死」的 pending/processing 任务（updated_at 早于 now-timeout）并重新投递，
 // 返回实际恢复的数量。供启动时、定时轮询、OA 后台手动触发复用。
 func (e *Engine) ProcessRecoverQueue() (int, error) {
+	e.recoverQueueMu.Lock()
+	defer e.recoverQueueMu.Unlock()
+
 	cfg := e.recoverQueueConfig()
 	timeout := cfg.Timeout
 	if timeout <= 0 {
