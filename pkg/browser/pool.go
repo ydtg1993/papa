@@ -34,6 +34,7 @@ type PoolConfig struct {
 	ProxyManager   *proxy.Manager //代理管理器
 	Headless       bool
 	NoSandbox      bool
+	Leakless       bool
 	BrowserPath    string            // 浏览器可执行文件路径，为空则使用系统默认
 	Flags          map[string]string // 浏览器启动参数，如 "disable-gpu": "", "window-size": "1920,1080"
 	DefaultDevice  *devices.Device   // 可选：全局设备模拟
@@ -84,7 +85,8 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	l := launcher.New().
 		Headless(p.cfg.Headless).
-		NoSandbox(p.cfg.NoSandbox)
+		NoSandbox(p.cfg.NoSandbox).
+		Leakless(p.cfg.Leakless)
 	// 如果配置了浏览器路径，则使用指定路径
 	if p.cfg.BrowserPath != "" {
 		l = l.Bin(p.cfg.BrowserPath)

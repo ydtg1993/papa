@@ -67,6 +67,7 @@ type BrowserConfig struct {
 	Headless    bool              `mapstructure:"headless"`         //无头模式
 	DisableGpu  bool              `mapstructure:"disable_gpu"`
 	NoSandbox   bool              `mapstructure:"no_sandbox"`
+	Leakless    bool              `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
 	BrowserPath string            `mapstructure:"browser_path"`
 	Headers     map[string]string `mapstructure:"headers"` //默认请求头
 }

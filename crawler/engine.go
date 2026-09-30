@@ -280,6 +280,7 @@ func (e *Engine) SetBrowserPool() {
 		MaxIdleTime:    e.cfg.Browser.MaxIdleTime,
 		Headless:       e.cfg.Browser.Headless,
 		NoSandbox:      e.cfg.Browser.NoSandbox,
+		Leakless:       e.cfg.Browser.Leakless,
 		BrowserPath:    e.cfg.Browser.BrowserPath,
 		Flags:          map[string]string{},
 		DefaultHeaders: headers,
