@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-框架内置一个 HTTP 监控后台（`server.enabled` + `server.monitor`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、数据浏览、设置、动态配置、队列手动触发与日志导出。
+框架内置一个 HTTP 监控后台（`server.enabled` + `server.monitor`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、数据浏览、设置、动态配置与日志导出。
 
 ## 1. 鉴权（密钥 + 白名单）
 
@@ -62,13 +62,48 @@ app, err := papa.New(
 
 热更只写内存，关停时落盘到 `configs/runtime.yaml`，重启后叠加生效（详见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 
-## 5. 队列手动触发
+## 5. 队列治理
+
+「队列治理」模块展示 `error_queue` / `recover_queue` / `repeat_queue` 三个后台治理队列的运行情况，并可逐个手动触发：
+
+| 列 | 含义 |
+| --- | --- |
+| 状态 | `运行中`（附带本轮已执行时长）/ `空闲` / `已停用`（`*.enabled=false`）；有上次执行错误时鼠标悬停可见 |
+| 上次执行 | 上次执行完成距今多久（悬停看绝对时间）· 上次执行耗时 |
+| 处理量 | 空闲时=上次处理数，运行中=本轮已处理数；副行显示累计处理数 |
+| 待处理 | 当前排队待处理的任务数（低频采样，副行显示采样时间） |
+| 操作 | 立即执行一次该队列 |
+
+手动触发的 HTTP 接口（等价于页面上的「立即执行」）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/errorqueue/process` | 手动触发失败任务重投；返回 `{"status":"ok","processed":N}` |
 | POST | `/api/recoverqueue/process` | 手动触发卡死任务恢复；返回 `{"status":"ok","recovered":N}` |
 | POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投已完成的 repeatable 任务）；返回 `{"status":"ok","repolled":N}` |
+
+数据来源分两类，均**不实时**，且不占用监控页刷新路径：
+
+- 运行状态/耗时/处理量：引擎内存计数，随队列执行即时更新。
+- 待处理积压：`COUNT` 查询，由后台按 `server.queue_sample_interval`（默认 `1m`）低频采样；每轮队列执行结束也会立即补采一次。采样频率越低，DB 压力越小。
+- 采样仅在 `server.monitor=true` 时启动。
+
+对应的 `/api/monitor` 响应字段：
+
+```jsonc
+"queues": {
+  "error_queue": {
+    "name": "error_queue", "enabled": true, "running": false, "runs": 12,
+    "started_at": "...", "last_finish_at": "...", "last_duration": 4000000000,
+    "last_processed": 37, "run_processed": 0, "total_processed": 421,
+    "backlog": 128, "backlog_at": "...", "last_error": ""
+  },
+  "recover_queue": { /* ... */ },
+  "repeat_queue":  { /* ... */ }
+}
+```
+
+`last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
 
 ## 6. 日志导出
 
@@ -89,3 +124,6 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 | `queue_spill_backlog` | 当前待回灌的溢出任务数（>0 说明队列持续满） |
 | `recover_total` | 累计恢复任务数（recover_queue） |
 | `error_retry_total` | 累计失败重投任务数（error_queue） |
+| `repeat_repoll_total` | 累计周期轮询重投任务数（repeat_queue） |
+
+> 这三个累计值同时也是「队列治理」模块「处理量」的累计数，同一份引擎内存计数，不会重复统计。

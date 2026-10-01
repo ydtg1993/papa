@@ -7,20 +7,31 @@ import (
 	"gorm.io/gorm"
 )
 
-// ProcessErrorQueue 查询失败任务并重新投递到各自阶段，返回实际重新投递的数量。
-func (e *Engine) ProcessErrorQueue() (int, error) {
-	e.errorQueueMu.Lock()
-	defer e.errorQueueMu.Unlock()
-
+// errorQueueQuery 失败任务的查询条件：status=failed，配置了上限时再处理代数未超 max_retry。
+func (e *Engine) errorQueueQuery() func() *gorm.DB {
 	cfg := e.errorQueueConfig()
-	query := func() *gorm.DB {
+	return func() *gorm.DB {
 		q := e.db.Where("status = ?", models.TaskStatusFailed)
 		if cfg.MaxRetry > 0 {
 			q = q.Where("reprocess < ?", cfg.MaxRetry)
 		}
 		return q
 	}
-	return e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueFailedTask)
+}
+
+// ProcessErrorQueue 查询失败任务并重新投递到各自阶段，返回实际重新投递的数量。
+func (e *Engine) ProcessErrorQueue() (int, error) {
+	e.errorQueueMu.Lock()
+	defer e.errorQueueMu.Unlock()
+
+	cfg := e.errorQueueConfig()
+	query := e.errorQueueQuery()
+	e.beginQueueRun(QueueError)
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueFailedTask)
+	e.endQueueRun(QueueError, n, err)
+	// 本轮到点即采样一次积压，监控页无需等下一轮采样周期
+	e.sampleQueueBacklogOne(QueueError, query)
+	return n, err
 }
 
 // requeueFailedTask 将单条失败任务重置为 pending 并重新投递到其阶段工作池。

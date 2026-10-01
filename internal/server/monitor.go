@@ -34,20 +34,21 @@ type MonitorGetter func() map[string]crawler.StageStats
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	AuthKey             string                            // 初始访问密钥，空=不校验
-	AuthKeyFile         string                            // 密钥文件路径（重新生成时持久化到此文件）
-	Whitelist           []string                          // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile       string                            // 白名单持久化文件路径（动态更新时写回）
-	Metrics             func() map[string]any             // 业务自定义数据快照（可空）
-	SysInfo             *sysinfo.Collector                // 系统指标采集器（可空）
-	DataAdmin           *dataadmin.Registry               // 通用数据浏览注册表（可空）
-	LogDir              string                            // 日志目录（导出用）
-	OnShutdown          func()                            // 优雅退出回调
-	ProcessErrorQueue   func() (int, error)               // 错误队列手动触发回调（可空）
-	ProcessRecoverQueue func() (int, error)               // 中断恢复队列手动触发回调（可空）
-	ProcessRepeatQueue  func() (int, error)               // 周期轮询队列手动触发回调（可空）
-	ConfigGet           func() *config.RuntimeConfig      // 返回当前运行期覆盖层（可空）
-	ConfigSet           func(*config.RuntimeConfig) error // 应用运行期覆盖层（可空）
+	AuthKey             string                              // 初始访问密钥，空=不校验
+	AuthKeyFile         string                              // 密钥文件路径（重新生成时持久化到此文件）
+	Whitelist           []string                            // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile       string                              // 白名单持久化文件路径（动态更新时写回）
+	Metrics             func() map[string]any               // 业务自定义数据快照（可空）
+	QueueStats          func() map[string]crawler.QueueStat // 治理队列运行快照（可空）
+	SysInfo             *sysinfo.Collector                  // 系统指标采集器（可空）
+	DataAdmin           *dataadmin.Registry                 // 通用数据浏览注册表（可空）
+	LogDir              string                              // 日志目录（导出用）
+	OnShutdown          func()                              // 优雅退出回调
+	ProcessErrorQueue   func() (int, error)                 // 错误队列手动触发回调（可空）
+	ProcessRecoverQueue func() (int, error)                 // 中断恢复队列手动触发回调（可空）
+	ProcessRepeatQueue  func() (int, error)                 // 周期轮询队列手动触发回调（可空）
+	ConfigGet           func() *config.RuntimeConfig        // 返回当前运行期覆盖层（可空）
+	ConfigSet           func(*config.RuntimeConfig) error   // 应用运行期覆盖层（可空）
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -209,6 +210,9 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"stages": s.stageData(),
 		"custom": s.customData(),
+	}
+	if s.cfg.QueueStats != nil {
+		resp["queues"] = s.cfg.QueueStats()
 	}
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()

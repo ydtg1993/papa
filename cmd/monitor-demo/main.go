@@ -52,6 +52,7 @@ func main() {
 
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
 		Metrics:    metrics,
+		QueueStats: fakeQueueStats,
 		SysInfo:    sc,
 		LogDir:     "logs",
 		OnShutdown: func() { stop() },
@@ -95,6 +96,30 @@ func fakeStageStats() map[string]crawler.StageStats {
 				3: {WorkerID: 3, TotalTasks: 2, FailedTasks: 0, TotalTime: 74546000, MaxTime: 45605400, MinTime: 28940600},
 			},
 			Queue: crawler.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
+		},
+	}
+}
+
+// fakeQueueStats 治理队列假数据：覆盖「运行中 / 空闲待执行 / 已停用且有错误」三种状态。
+func fakeQueueStats() map[string]crawler.QueueStat {
+	now := time.Now()
+	return map[string]crawler.QueueStat{
+		crawler.QueueError: {
+			Name: crawler.QueueError, Enabled: true, Runs: 12,
+			StartedAt: now.Add(-2 * time.Minute), LastFinishAt: now.Add(-90 * time.Second),
+			LastDuration: 4 * time.Second, LastProcessed: 37, TotalProcessed: 421,
+			Backlog: 128, BacklogAt: now.Add(-20 * time.Second),
+		},
+		crawler.QueueRecover: {
+			Name: crawler.QueueRecover, Enabled: true, Running: true, Runs: 5,
+			StartedAt: now.Add(-45 * time.Second), LastFinishAt: now.Add(-time.Hour),
+			LastDuration: 9 * time.Second, LastProcessed: 12, RunProcessed: 340, TotalProcessed: 88,
+			BacklogAt: now.Add(-20 * time.Second),
+		},
+		crawler.QueueRepeat: {
+			Name: crawler.QueueRepeat, Runs: 0,
+			Backlog: 2048, BacklogAt: now.Add(-20 * time.Second),
+			LastError: "submit task 991: queue full",
 		},
 	}
 }

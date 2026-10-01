@@ -252,6 +252,13 @@ details summary { cursor: pointer; font-weight: 700; }
     letter-spacing: .5px; color: #111; background: var(--primary);
 }
 .badge.ok { background: var(--green); }
+.badge.running { background: var(--orange); }
+.badge.warn { background: var(--orange); cursor: help; }
+.badge.off { background: var(--muted-fill); color: var(--muted-foreground); }
+
+/* 队列治理表：单行不折行，窄屏由 .table-wrap 横向滚动 */
+.qtable th, .qtable td { white-space: nowrap; }
+.qtable td .muted { font-size: 11px; font-weight: 400; }
 
 /* ---- Buttons & Inputs ---- */
 .btn {

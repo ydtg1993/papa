@@ -22,7 +22,7 @@
 
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
-    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', tasks: '任务', data: '数据浏览', custom: '自定义数据', settings: '设置' };
+    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tasks: '任务', data: '数据浏览', custom: '自定义数据', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
@@ -138,6 +138,80 @@
                 + wrows + '</table></div></div></div>';
         }).join('');
     }
+    /* ---- 治理队列（error/recover/repeat） ---- */
+    var QUEUE_META = {
+        error_queue: { label: '错误队列', desc: '失败任务重投', url: '/api/errorqueue/process', key: 'processed', done: '已重新投递' },
+        recover_queue: { label: '恢复队列', desc: '卡死任务恢复', url: '/api/recoverqueue/process', key: 'recovered', done: '已恢复' },
+        repeat_queue: { label: '轮询队列', desc: '周期任务重投', url: '/api/repeatqueue/process', key: 'repolled', done: '已重投' }
+    };
+    function timeValid(d) { return !isNaN(d.getTime()) && d.getFullYear() >= 2000; }
+    function agoSeconds(iso) {
+        var d = new Date(iso);
+        return (!iso || !timeValid(d)) ? null : Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    }
+    function fmtSpan(sec) {
+        if (sec < 60) return sec + 's';
+        if (sec < 3600) return Math.floor(sec / 60) + 'm' + (sec % 60) + 's';
+        return Math.floor(sec / 3600) + 'h' + Math.floor((sec % 3600) / 60) + 'm';
+    }
+    function fmtAgo(iso) {
+        var s = agoSeconds(iso);
+        if (s === null) return '从未';
+        if (s < 60) return s + ' 秒前';
+        if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+        if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+        return Math.floor(s / 86400) + ' 天前';
+    }
+    function absTime(iso) {
+        var d = new Date(iso);
+        return (!iso || !timeValid(d)) ? '从未' : d.toLocaleString();
+    }
+    function queueStatus(q) {
+        var title = q.last_error ? ' title="上次错误：' + esc(q.last_error) + '"' : '';
+        if (q.running) {
+            var s = agoSeconds(q.started_at);
+            return '<span class="badge running"' + title + '>运行中</span>'
+                + '<div class="muted">已执行 ' + (s === null ? '-' : fmtSpan(s)) + '</div>';
+        }
+        if (!q.enabled) return '<span class="badge off"' + title + '>已停用</span>';
+        return '<span class="badge ok"' + title + '>空闲</span>';
+    }
+    function renderQueues(queues) {
+        var el = document.getElementById('queue-gov');
+        var data = queues || {};
+        el.innerHTML = '<table class="qtable"><thead><tr>'
+            + '<th>队列</th><th>状态</th><th>上次执行</th><th>处理量</th><th>待处理</th><th>操作</th>'
+            + '</tr></thead><tbody>'
+            + Object.keys(QUEUE_META).map(function (name) {
+                var m = QUEUE_META[name];
+                var q = data[name] || {};
+                var ran = q.runs > 0;
+                var backlog = q.backlog || 0;
+                return '<tr>'
+                    + '<td><b>' + esc(m.label) + '</b><div class="muted">' + esc(name) + ' · ' + esc(m.desc) + '</div></td>'
+                    + '<td>' + queueStatus(q) + '</td>'
+                    + '<td title="完成于 ' + esc(absTime(q.last_finish_at)) + '">' + esc(fmtAgo(q.last_finish_at))
+                    + '<div class="muted">' + (ran ? ('耗时 ' + fmtDuration(q.last_duration)) : '尚未执行') + '</div></td>'
+                    + '<td>' + (q.running ? (q.run_processed || 0) : (ran ? q.last_processed : 0))
+                    + '<div class="muted">' + (q.running ? '本轮已处理' : '上次处理') + ' · 累计 ' + (q.total_processed || 0) + '</div></td>'
+                    + '<td>' + (backlog > 0 ? '<span class="badge warn">' + backlog + '</span>' : '0')
+                    + '<div class="muted">' + esc(fmtAgo(q.backlog_at)) + '采样</div></td>'
+                    + '<td><button class="btn" style="margin-top:0" onclick="triggerQueue(\'' + esc(name) + '\')">立即执行</button></td>'
+                    + '</tr>';
+            }).join('')
+            + '</tbody></table>';
+    }
+    async function triggerQueue(name) {
+        var m = QUEUE_META[name];
+        if (!m) return;
+        var el = document.getElementById('queue-gov-msg');
+        el.textContent = m.label + '处理中...';
+        var resp = await apiPost(m.url, {});
+        if (!resp || !resp.ok) { el.textContent = m.label + '处理失败'; return; }
+        var data = await resp.json();
+        el.textContent = m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务';
+        fetchData();
+    }
     function renderCustom(custom) {
         var el = document.getElementById('custom');
         var keys = Object.keys(custom || {});
@@ -159,6 +233,7 @@
         renderDirs(data.system && data.system.dirs);
         renderQueueSummary(data.stages);
         renderQueue(data.stages);
+        renderQueues(data.queues);
         renderCustom(data.custom);
         renderStageOptions(data.stages);
     }
@@ -233,16 +308,6 @@
         if (!confirm('确定要优雅退出爬虫进程吗？')) return;
         document.getElementById('shutdown-msg').textContent = '正在关闭...';
         await apiPost('/api/settings/shutdown', {});
-    }
-    async function processErrorQueue() {
-        document.getElementById('errorqueue-msg').textContent = '处理中...';
-        var resp = await apiPost('/api/errorqueue/process', {});
-        if (!resp || !resp.ok) {
-            document.getElementById('errorqueue-msg').textContent = '处理失败';
-            return;
-        }
-        var data = await resp.json();
-        document.getElementById('errorqueue-msg').textContent = '已重新投递 ' + data.processed + ' 个失败任务';
     }
 
     /* ============ 日志 ============ */

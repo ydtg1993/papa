@@ -7,6 +7,20 @@ import (
 	"gorm.io/gorm"
 )
 
+// recoverQueueQuery 卡死任务的查询条件：pending/processing 且 updated_at 早于 now-timeout。
+func (e *Engine) recoverQueueQuery() func() *gorm.DB {
+	cfg := e.recoverQueueConfig()
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 6 * time.Hour
+	}
+	cutoff := time.Now().Add(-timeout)
+	return func() *gorm.DB {
+		return e.db.Where("(status = ? OR status = ?) AND updated_at < ?",
+			models.TaskStatusPending, models.TaskStatusProcessing, cutoff)
+	}
+}
+
 // ProcessRecoverQueue 查询「卡死」的 pending/processing 任务（updated_at 早于 now-timeout）并重新投递，
 // 返回实际恢复的数量。供启动时、定时轮询、OA 后台手动触发复用。
 func (e *Engine) ProcessRecoverQueue() (int, error) {
@@ -14,17 +28,12 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 	defer e.recoverQueueMu.Unlock()
 
 	cfg := e.recoverQueueConfig()
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = 6 * time.Hour
-	}
-	cutoff := time.Now().Add(-timeout)
-
-	query := func() *gorm.DB {
-		return e.db.Where("(status = ? OR status = ?) AND updated_at < ?",
-			models.TaskStatusPending, models.TaskStatusProcessing, cutoff)
-	}
-	return e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	query := e.recoverQueueQuery()
+	e.beginQueueRun(QueueRecover)
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	e.endQueueRun(QueueRecover, n, err)
+	e.sampleQueueBacklogOne(QueueRecover, query)
+	return n, err
 }
 
 // requeueRecoverTask 将单条卡死任务重置为 pending 并重新投递；提交失败则标 failed。

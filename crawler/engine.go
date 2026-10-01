@@ -44,11 +44,15 @@ type Engine struct {
 	appliedPoolSize   int // 已应用的代理池大小，用于判断运行期是否需要 resize
 	appliedDirectSize int // 已应用的直连池大小
 
-	spillMu           sync.Mutex
-	spilled           map[string][]*Task // stage -> 高水位溢出的待回灌任务
-	spilledCount      atomic.Int64       // 累计溢出任务数（监控埋点）
-	recoveredCount    atomic.Int64       // 累计恢复任务数（recover_queue）
-	errorRetriedCount atomic.Int64       // 累计失败重投任务数（error_queue）
+	spillMu             sync.Mutex
+	spilled             map[string][]*Task // stage -> 高水位溢出的待回灌任务
+	spilledCount        atomic.Int64       // 累计溢出任务数（监控埋点）
+	recoveredCount      atomic.Int64       // 累计恢复任务数（recover_queue）
+	errorRetriedCount   atomic.Int64       // 累计失败重投任务数（error_queue）
+	repeatRepolledCount atomic.Int64       // 累计周期轮询重投任务数（repeat_queue）
+
+	queueRuns     map[string]*queueRunState // 三个治理队列的运行快照（监控页读取）
+	queueCounters map[string]*atomic.Int64  // 队列名 -> 累计重新投递计数
 
 	delayMu   sync.Mutex // 保护 delayHeap
 	delayHeap delayHeap  // 延迟投递最小堆
@@ -143,8 +147,14 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		delayCh:       make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
 		spilled:       make(map[string][]*Task),
+		queueRuns:     newQueueRuns(),
 	}
 	engine.runtime.Store(&config.RuntimeConfig{})
+	engine.queueCounters = map[string]*atomic.Int64{
+		QueueError:   &engine.errorRetriedCount,
+		QueueRecover: &engine.recoveredCount,
+		QueueRepeat:  &engine.repeatRepolledCount,
+	}
 	engine.loadActiveTasks()
 	go engine.delayDispatcher()
 	return engine
@@ -277,6 +287,7 @@ func (e *Engine) GetMetrics() map[string]any {
 	base["queue_spill_backlog"] = e.spillBacklog()
 	base["recover_total"] = e.recoveredCount.Load()
 	base["error_retry_total"] = e.errorRetriedCount.Load()
+	base["repeat_repoll_total"] = e.repeatRepolledCount.Load()
 	return base
 }
 
@@ -547,6 +558,10 @@ func (e *Engine) ApplyRegisterStage() {
 	e.startRecoverQueue()
 	// 启动周期轮询队列（repeatable 任务的定时重跑）
 	e.startRepeatQueue()
+	// 监控开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
+	if e.cfg.Server.Monitor {
+		e.startQueueSampler()
+	}
 }
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。

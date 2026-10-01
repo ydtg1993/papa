@@ -130,6 +130,8 @@ type ServerConfig struct {
 	Whitelist     []string          `mapstructure:"whitelist"`      // 来源 IP/CIDR 白名单（回退默认），空=不限制
 	WhitelistFile string            `mapstructure:"whitelist_file"` // 白名单持久化文件路径，优先于 whitelist
 	MonitorDirs   map[string]string `mapstructure:"monitor_dirs"`   // 监控页展示的业务目录占用，name->path
+	// 治理队列（error/recover/repeat）积压数的采样间隔；<=0 用默认 1m。监控页只读内存快照，仅采样时查库。
+	QueueSampleInterval time.Duration `mapstructure:"queue_sample_interval"`
 }
 
 // SchedulerConfig 定时任务调度器配置。

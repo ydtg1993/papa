@@ -91,6 +91,7 @@
 | `auth_key` / `auth_key_file` | string | 访问密钥；文件优先 |
 | `whitelist` / `whitelist_file` | []string | 来源 IP/CIDR 白名单；文件优先 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
+| `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
 
 ### scheduler —— 定时任务（详见 [SCHEDULER.md](./SCHEDULER.md)）
 

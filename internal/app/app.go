@@ -357,6 +357,7 @@ func (a *App) httpServer(ctx context.Context) {
 			Whitelist:           whitelist,
 			WhitelistFile:       cfg.WhitelistFile,
 			Metrics:             a.Engine.GetMetrics,
+			QueueStats:          a.Engine.GetQueueStats,
 			SysInfo:             a.sysInfo,
 			DataAdmin:           a.dataAdmin,
 			LogDir:              a.Config.Log.Dir,
