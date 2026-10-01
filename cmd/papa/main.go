@@ -60,6 +60,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  通用 flags: -c/--config, --proxy, --timeout, --ua, --header k=v, --json, -o/--output")
 	fmt.Fprintln(os.Stderr, "  输出形态: --links, --text, --select <css>")
 	fmt.Fprintln(os.Stderr, "  rod 专属: --screenshot <file>, --full-page, --wait <duration>")
+	fmt.Fprintln(os.Stderr, "            --act <动作>:<参数>  可重复，按序执行；支持 scroll/click/input/hover/wait/eval")
+	fmt.Fprintln(os.Stderr, "            --show             有头浏览器+人工操作，回车后导出结果；--devtools 附带开 DevTools")
 }
 
 func runNew(name string, args []string) error {

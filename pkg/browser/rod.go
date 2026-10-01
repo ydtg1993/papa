@@ -91,6 +91,9 @@ type PageOptions struct {
 	// FetchOnce 专用：是否截图 / 是否整页截图（配合 Screenshot）
 	Screenshot bool
 	FullPage   bool
+	// FetchOnce 专用：导航与 Wait 结束后的自定义交互（CLI 的 --act / --show 用）。
+	// 返回后 FetchOnce 才读取 HTML/标题/截图，因此结果反映交互后的页面状态。
+	Interact func(ctx context.Context, page *rod.Page) error
 }
 
 // FetchResult 一次抓取的结果快照（供 CLI 调试排查使用）。
@@ -170,6 +173,12 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(opts.Wait):
+		}
+	}
+
+	if opts.Interact != nil {
+		if err := opts.Interact(ctx, page); err != nil {
+			return nil, fmt.Errorf("interact: %w", err)
 		}
 	}
 

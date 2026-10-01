@@ -57,8 +57,79 @@ go install ./cmd/papa
 | `--screenshot <file>` | 保存 PNG 截图 |
 | `--full-page` | 整页截图（配合 `--screenshot`） |
 | `--wait <duration>` | 加载完成后额外等待，暴露懒加载/异步渲染内容 |
+| `--act <动作>:<参数>` | 页面动作，可重复，按序执行（见下） |
+| `--show` | 有头浏览器 + 人工操作，回车后导出结果 |
+| `--devtools` | 同 `--show`，并自动打开 DevTools |
 
 > `rod` 的 headless 取自 `config.browser.headless`；**无配置文件时默认 headless**（不弹窗）。
+> `--show` / `--devtools` 强制有头。
+
+### `--act` 动作
+
+静态抓取永远只能拿到首屏。涉及下拉加载、点「加载更多」、切 Tab 的页面，用 `--act` 把交互写进命令：
+
+| 动作 | 说明 |
+| --- | --- |
+| `scroll:bottom` | 滚到文档底部 |
+| `scroll:top` | 回到顶部 |
+| `scroll:<N>` | 向下滚 N 屏（`scroll:3`） |
+| `scroll:<css>` | 滚动到该元素可见 |
+| `click:<css>` | 点击元素（自动先滚入视口） |
+| `input:<css>=<文本>` | 清空并输入文本 |
+| `hover:<css>` | 悬停 |
+| `wait:<duration>` | 固定等待（`wait:2s`） |
+| `wait:<css>` | 等到元素出现 |
+| `eval:<js>` | 在页面上下文执行任意 JS，返回值打到 stderr（`eval => ...`） |
+
+> `wait:` 的参数能解析成时长就是等待，否则按 CSS 选择器处理——合法选择器不可能是合法时长，不会歧义。
+>
+> `eval:` 收的是**表达式或语句**（`document.title`、`document.title='x'`、`document.querySelectorAll('.item').length` 都行），
+> 不是函数——内部会包一层 `eval()` 求值，返回值打到 stderr。页面 CSP 禁止 `eval` 时会报错。
+>
+> `--timeout`（默认 30s）同时作用于导航与**每个动作**（等元素、点击等），动作卡住不会无限等待。
+
+**每个动作结束后会自动等页面稳定**（DOM 不再变化、网络不再请求，最多等 5 秒，超时只告警不中断），
+避免下拉完立刻取值拿到半截数据。有些页面（轮播、时钟）永不静止，这时每个动作会固定耗满 5 秒，
+可在动作后补 `--act wait:2s` 并接受告警。
+
+`--act` 顺序执行，任一动作失败立即报错退出（不会静默跳过），并带上是第几个动作失败。
+
+**无限滚动的页面**一次 `scroll:bottom` 往往只加载一屏，重复写多次；`scroll:3` 也行：
+
+```bash
+# 下拉三次触发懒加载，再取所有条目标题
+papa rod "https://example.com/list" \
+  --act scroll:bottom --act wait:1s --act scroll:bottom --act wait:1s --act scroll:bottom \
+  --select ".item-title"
+
+# 点「加载更多」按钮两次
+papa rod "https://example.com/list" --act click:.load-more --act wait:.item:nth-child(21)
+
+# 搜索框输入后查询
+papa rod "https://example.com" --act input:#kw=火影 --act click:.search-btn --act wait:.result
+
+# 页面上滚到某个区块并截图
+papa rod "https://example.com" --act scroll:#comments --screenshot comments.png
+
+# 直接取值：看列表实际渲染了多少条
+papa rod "https://example.com/list" --act scroll:bottom --act "eval:document.querySelectorAll('.item').length"
+```
+
+### `--show` 人工操作
+
+调反爬、验证「到底要点哪里」时，最省事的是让浏览器开着、自己点，点完再导出：
+
+```bash
+papa rod "https://example.com/detail/1" --show --select ".episode-list"
+papa rod "https://example.com" --devtools --screenshot page.png
+```
+
+流程：打开有头浏览器 → 你在窗口里操作（下拉、点击、登录都可以）→ 回终端按回车 →
+命令按 `--select` / `--text` / `--links` / `--screenshot` 导出**当前**页面状态。
+
+`--show` 可与 `--act` 组合：先自动跑一遍动作，再交给你手动补充。
+
+> stdin 不是终端（管道、重定向）时不会等待回车，直接导出，避免脚本里卡住。
 
 ## 5. JSON 输出结构
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
@@ -39,6 +40,9 @@ type debugFlags struct {
 	screenshot string
 	fullPage   bool
 	wait       string
+	acts       []string
+	show       bool
+	devtools   bool
 }
 
 // parseDebugArgs 解析调试子命令参数，支持 flag 位于位置参数之前或之后。
@@ -132,6 +136,18 @@ func parseDebugArgs(args []string) (debugFlags, []string, error) {
 			df.wait = v
 		case strings.HasPrefix(a, "--wait="):
 			df.wait = strings.TrimPrefix(a, "--wait=")
+		case a == "--act":
+			v, err := takeVal(&i, a)
+			if err != nil {
+				return df, nil, err
+			}
+			df.acts = append(df.acts, v)
+		case strings.HasPrefix(a, "--act="):
+			df.acts = append(df.acts, strings.TrimPrefix(a, "--act="))
+		case a == "--show":
+			df.show = true
+		case a == "--devtools":
+			df.devtools = true
 		default:
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return df, nil, fmt.Errorf("unknown flag: %s", a)
@@ -279,14 +295,28 @@ func runHTML(rawURL string, df debugFlags) error {
 	return emitResult(out, page.HTML, page.URL.String(), df)
 }
 
-// runRod 浏览器渲染后抓取（rod）。
+// runRod 浏览器渲染后抓取（rod）。--act 顺序执行页面动作，--show 交还人工操作后再导出。
 func runRod(rawURL string, df debugFlags) error {
 	cfg, loaded := loadOptionalConfig(df.config)
 	headers := mergeHeaders(cfg.Browser.Headers, df.headers)
 
+	// 解析动作序列：语法错误在开浏览器之前就报出来
+	acts, err := parseActs(df.acts)
+	if err != nil {
+		return err
+	}
+
 	headless := cfg.Browser.Headless
 	if !loaded {
 		headless = true
+	}
+	if df.show || df.devtools {
+		headless = false
+	}
+
+	flags := map[string]string{}
+	if df.devtools {
+		flags["auto-open-devtools-for-tabs"] = ""
 	}
 
 	var pm *proxy.Manager
@@ -302,7 +332,7 @@ func runRod(rawURL string, df debugFlags) error {
 		NoSandbox:      cfg.Browser.NoSandbox,
 		Leakless:       cfg.Browser.Leakless,
 		BrowserPath:    cfg.Browser.BrowserPath,
-		Flags:          map[string]string{},
+		Flags:          flags,
 		DefaultHeaders: headers,
 		ProxyManager:   pm,
 	})
@@ -318,12 +348,22 @@ func runRod(rawURL string, df debugFlags) error {
 	}
 	defer pool.Put(b)
 
+	actTimeout := parseTimeout(df.timeout, actDefaultTimeout)
 	start := time.Now()
 	res, err := b.FetchOnce(ctx, rawURL, browser.PageOptions{
 		Timeout:    parseTimeout(df.timeout, 0),
 		Wait:       parseTimeout(df.wait, 0),
 		Screenshot: df.screenshot != "",
 		FullPage:   df.fullPage,
+		Interact: func(_ context.Context, page *rod.Page) error {
+			if err := runActs(page, acts, actTimeout, os.Stderr); err != nil {
+				return err
+			}
+			if df.show || df.devtools {
+				return waitEnter()
+			}
+			return nil
+		},
 	})
 	elapsed := time.Since(start)
 	if err != nil {
