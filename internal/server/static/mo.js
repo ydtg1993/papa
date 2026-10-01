@@ -1,6 +1,7 @@
 /**
  * Papa Monitor — 前台逻辑
- * 由 mo.js 重构而来：保留主题切换，加入监控后台的取数/渲染/设置/数据浏览逻辑。
+ * 由 mo.js 重构而来：保留主题切换，加入监控后台的取数/渲染/设置逻辑；
+ * 表格页由 oao 组件（github.com/ydtg1993/oao）渲染，本文件只负责菜单与装配。
  * 顶层函数/变量需保持全局，供 template.html 的内联 onclick 调用。
  */
 'use strict';
@@ -22,7 +23,7 @@
 
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
-    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tasks: '任务', data: '数据浏览', custom: '自定义数据', settings: '设置' };
+    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tables: '数据', custom: '自定义数据', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
@@ -50,16 +51,187 @@
         });
         document.getElementById('moduleTitle').textContent = MODULE_TITLES[name];
         if (name === 'settings') { fetchSettings(); fetchLogs(); }
-        else if (name === 'data') { loadDataModels(); }
-        else if (name === 'tasks') { loadTasks(); }
     }
 
-    /* ============ 格式化 ============ */
+    /* ============ 表格（oao 组件） ============ */
+    /** 打开某张表：切到表格模块、点亮对应菜单项，再让 oao 渲染 */
+    async function openTable(key, label, btn) {
+        switchModule('tables');
+        document.getElementById('moduleTitle').textContent = label || '数据';
+        if (btn) {
+            // switchModule 会按 data-module 清空高亮，这里把当前表重新点亮
+            document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+        }
+        try {
+            await Oao.render(document.getElementById('oao-view'), key);
+        } catch (e) {
+            document.getElementById('oao-view').innerHTML =
+                '<div class="empty">表格加载失败：' + esc(e.message) + '</div>';
+        }
+    }
+
+    /** 按 Group 分组渲染侧边栏的动态菜单 */
+    async function renderTableNav() {
+        var nav = document.getElementById('oao-nav');
+        var tables;
+        try { tables = await Oao.list(true); }
+        catch (e) { nav.innerHTML = ''; return; }
+
+        var groups = [];
+        tables.forEach(function (t) {
+            var g = t.group || 'General';
+            if (groups.indexOf(g) === -1) groups.push(g);
+        });
+        nav.innerHTML = groups.map(function (g) {
+            return '<div class="nav-section">' + esc(g) + '</div>'
+                + tables.filter(function (t) { return (t.group || 'General') === g; })
+                    .map(function (t) {
+                        return '<button class="nav-item" data-oao="' + esc(t.key) + '">' + esc(t.label) + '</button>';
+                    }).join('');
+        }).join('');
+
+        nav.querySelectorAll('.nav-item').forEach(function (b) {
+            b.onclick = function () { openTable(b.dataset.oao, b.textContent, b); };
+        });
+    }
+
+    /* ============ UI 基础组件（阶段 0） ============ */
+
+    /** Toast 右下角浮层反馈；容器挂在 body 上，不受模块重绘影响 */
+    var Toast = (function () {
+        var box = null;
+        function ensure() {
+            if (!box) {
+                box = document.createElement('div');
+                box.className = 'toasts';
+                document.body.appendChild(box);
+            }
+            return box;
+        }
+        return {
+            show: function (msg, type, ms) {
+                var el = document.createElement('div');
+                el.className = 'toast ' + (type || 'info');
+                el.textContent = msg;            // textContent：消息内容不解析 HTML
+                ensure().appendChild(el);
+                setTimeout(function () { el.remove(); }, ms || 3200);
+            },
+            ok: function (msg, ms) { this.show(msg, 'ok', ms); },
+            err: function (msg, ms) { this.show(msg, 'err', ms); },
+            info: function (msg, ms) { this.show(msg, 'info', ms); }
+        };
+    })();
+
+    /**
+     * Dialog 模态弹窗。open 返回 Promise：
+     *   - 点击某个按钮 -> resolve(该按钮的 value)
+     *   - 点遮罩 / 按 Esc / 点取消 -> resolve(null)
+     * 用法：Dialog.alert({...})、Dialog.confirm({...}) 是常用封装。
+     */
+    var Dialog = (function () {
+        var mask = null, elTitle = null, elBody = null, elActions = null;
+        var settle = null;   // 当前 Promise 的 resolve
+
+        function ensure() {
+            if (mask) return;
+            mask = document.createElement('div');
+            mask.className = 'dlg-mask';
+            mask.innerHTML = '<div class="dlg" role="dialog" aria-modal="true">'
+                + '<h3></h3><div class="dlg-body"></div><div class="dlg-actions"></div></div>';
+            mask.addEventListener('mousedown', function (e) { if (e.target === mask) close(null); });
+            document.body.appendChild(mask);
+            elTitle = mask.querySelector('h3');
+            elBody = mask.querySelector('.dlg-body');
+            elActions = mask.querySelector('.dlg-actions');
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && mask.classList.contains('open')) close(null);
+            });
+        }
+
+        function close(value) {
+            if (!mask || !mask.classList.contains('open')) return;
+            mask.classList.remove('open');
+            var done = settle;
+            settle = null;
+            if (done) done(value);
+        }
+
+        function open(opts) {
+            ensure();
+            opts = opts || {};
+            mask.querySelector('.dlg').classList.toggle('danger', !!opts.danger);
+            elTitle.textContent = opts.title || '提示';
+            elBody.innerHTML = opts.body || '';        // 调用方负责转义
+            elActions.innerHTML = '';
+            var actions = opts.actions || [{ label: '知道了', value: 'ok' }];
+            actions.forEach(function (a) {
+                var b = document.createElement('button');
+                b.className = 'btn' + (a.tone === 'danger' ? ' danger' : '');
+                b.textContent = a.label;
+                b.onclick = function () { close(a.value); };
+                elActions.appendChild(b);
+            });
+            mask.classList.add('open');
+            var first = elActions.querySelector('.btn');
+            if (first) first.focus();
+            return new Promise(function (resolve) { settle = resolve; });
+        }
+
+        return {
+            open: open,
+            /** alert 只有一个「知道了」按钮，resolve(true) */
+            alert: function (opts) {
+                var actions = [{ label: (opts && opts.okLabel) || '知道了', value: true }];
+                return open(Object.assign({}, opts, { actions: actions }));
+            },
+            /** confirm 确认/取消，resolve 布尔 */
+            confirm: function (opts) {
+                opts = opts || {};
+                return open({
+                    title: opts.title || '请确认',
+                    body: opts.body || '',
+                    danger: opts.danger,
+                    actions: [
+                        { label: opts.cancelLabel || '取消', value: false },
+                        { label: opts.okLabel || '确定', value: true, tone: opts.danger ? 'danger' : '' }
+                    ]
+                }).then(function (v) { return v === true; });
+            },
+            close: function () { close(null); }
+        };
+    })();
+
+    /** skeleton 生成 n 行占位，用于表格加载态 */
+    function skeletonRows(cols, n) {
+        var html = '';
+        for (var i = 0; i < n; i++) {
+            html += '<tr class="skel-row">';
+            for (var c = 0; c < cols; c++) html += '<td><span class="skel"></span></td>';
+            html += '</tr>';
+        }
+        return html;
+    }
+
+
+    /** showSkeleton 表格加载占位；cols 不传则沿用当前表头列数 */
+    function showSkeleton(id, cols) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var n = cols || el.querySelectorAll('thead th').length || 6;
+        el.innerHTML = '<table><tbody>' + skeletonRows(n, 5) + '</tbody></table>';
+    }
     function esc(s) {
         return String(s).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
         });
     }
+    /** tipAttr 生成 data-tip 属性（内容已转义），用于超长内容悬停查看全文 */
+    function tipAttr(text) {
+        var s = (text === null || text === undefined) ? '' : String(text);
+        return s ? ' data-tip="' + esc(s) + '"' : '';
+    }
+    /* ============ 格式化 ============ */
     function fmtDuration(ns) {
         if (ns == null || isNaN(ns)) return '-';
         if (ns < 1e6) return (ns / 1e3).toFixed(2) + 'µs';
@@ -207,9 +379,13 @@
         var el = document.getElementById('queue-gov-msg');
         el.textContent = m.label + '处理中...';
         var resp = await apiPost(m.url, {});
-        if (!resp || !resp.ok) { el.textContent = m.label + '处理失败'; return; }
+        el.textContent = '';
+        if (!resp || !resp.ok) {
+            Toast.err(m.label + '处理失败');
+            return;
+        }
         var data = await resp.json();
-        el.textContent = m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务';
+        Toast.ok(m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务');
         fetchData();
     }
     function renderCustom(custom) {
@@ -220,14 +396,6 @@
             return '<div class="row"><div class="k">' + esc(k) + '</div><div class="v">' + esc(jsonVal(custom[k])) + '</div></div>';
         }).join('');
     }
-    function renderStageOptions(stages) {
-        var sel = document.getElementById('task-stage');
-        var cur = sel.value;
-        var names = Object.keys(stages || {});
-        sel.innerHTML = '<option value="">全部阶段</option>'
-            + names.map(function (n) { return '<option value="' + esc(n) + '">' + esc(n) + '</option>'; }).join('');
-        if (cur) sel.value = cur;
-    }
     function renderAll(data) {
         renderSystem(data.system);
         renderDirs(data.system && data.system.dirs);
@@ -235,7 +403,6 @@
         renderQueue(data.stages);
         renderQueues(data.queues);
         renderCustom(data.custom);
-        renderStageOptions(data.stages);
     }
 
     /* ============ 取数 ============ */
@@ -293,21 +460,37 @@
     async function saveWhitelist() {
         var lines = document.getElementById('wl-input').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
         var resp = await apiPost('/api/settings/whitelist', { whitelist: lines });
-        document.getElementById('wl-msg').textContent = resp && resp.ok ? '已保存' : '保存失败';
+        document.getElementById('wl-msg').textContent = resp && resp.ok ? '已保存' : '';
+        if (resp && resp.ok) Toast.ok('白名单已保存');
+        else Toast.err('白名单保存失败');
     }
     async function regenSecret() {
+        var ok = await Dialog.confirm({
+            title: '重新生成密钥',
+            body: '<p>当前登录态会立即切换到新密钥，旧密钥失效。</p><p>未配置密钥文件时，重启后新密钥也会丢失。</p>',
+            danger: true, okLabel: '生成'
+        });
+        if (!ok) return;
         var resp = await apiPost('/api/settings/secret', {});
-        if (!resp || !resp.ok) return;
+        if (!resp || !resp.ok) { Toast.err('生成密钥失败'); return; }
         var data = await resp.json();
         saveKey(data.key);
         var box = document.getElementById('secret-result');
         box.classList.remove('hidden');
         box.innerHTML = '新密钥：<br><b>' + esc(data.key) + '</b><br><br>已自动更新登录态；请妥善保存，未配置密钥文件时重启会失效。';
+        Toast.ok('已生成新密钥');
     }
     async function doShutdown() {
-        if (!confirm('确定要优雅退出爬虫进程吗？')) return;
+        var ok = await Dialog.confirm({
+            title: '优雅退出',
+            body: '<p>确定要优雅退出爬虫进程吗？</p><p>引擎会等待在途任务结束，随后关闭浏览器池与数据库连接。</p>',
+            danger: true, okLabel: '退出'
+        });
+        if (!ok) return;
         document.getElementById('shutdown-msg').textContent = '正在关闭...';
-        await apiPost('/api/settings/shutdown', {});
+        var resp = await apiPost('/api/settings/shutdown', {});
+        if (resp && resp.ok) Toast.info('已触发优雅退出');
+        else Toast.err('退出请求失败');
     }
 
     /* ============ 日志 ============ */
@@ -356,157 +539,18 @@
     async function downloadLog(name) { await downloadFile('/api/logs/download?file=' + encodeURIComponent(name)); }
     async function downloadLogs() { await downloadFile('/api/logs/download'); }
 
-    /* ============ 数据浏览 / 任务 ============ */
-    var DataBrowser = { model: null, mode: 'data', page: 1, size: 20, search: '', sort: '', filter: {} };
-
-    function dataQ() {
-        var q = '/api/data/' + encodeURIComponent(DataBrowser.model)
-            + '?page=' + DataBrowser.page + '&size=' + DataBrowser.size;
-        if (DataBrowser.search) q += '&search=' + encodeURIComponent(DataBrowser.search);
-        if (DataBrowser.sort) q += '&sort=' + encodeURIComponent(DataBrowser.sort);
-        for (var k in DataBrowser.filter) {
-            var v = DataBrowser.filter[k];
-            if (v !== '' && v !== null && v !== undefined) q += '&filter[' + encodeURIComponent(k) + ']=' + encodeURIComponent(v);
-        }
-        return q;
-    }
-    function cellHtml(v, kind) {
-        if (v === null || v === undefined) return '<span class="muted">-</span>';
-        if (kind === 'bool') return v ? '<span class="badge ok">true</span>' : '<span class="badge">false</span>';
-        if (kind === 'json') return '<code class="jsoncell">' + esc(String(v).slice(0, 120)) + '</code>';
-        return esc(String(v));
-    }
-    function renderTableHtml(cols, rows, opts) {
-        opts = opts || {};
-        var html = '<table><thead><tr>';
-        cols.forEach(function (c) {
-            var arrow = (opts.sort === c.name) ? ' ▲' : ((opts.sort === '-' + c.name) ? ' ▼' : '');
-            html += c.sortable
-                ? '<th class="sortable" data-sort="' + esc(c.name) + '">' + esc(c.label) + arrow + '</th>'
-                : '<th>' + esc(c.label) + '</th>';
-        });
-        html += '</tr></thead><tbody>';
-        if (rows.length === 0) html += '<tr><td colspan="' + cols.length + '" class="muted">无数据</td></tr>';
-        rows.forEach(function (row) {
-            html += '<tr>';
-            cols.forEach(function (c) {
-                var v = row[c.name];
-                html += '<td>' + (opts.cellRenderer ? opts.cellRenderer(c, v) : cellHtml(v, c.kind)) + '</td>';
-            });
-            html += '</tr>';
-        });
-        html += '</tbody></table>';
-        return html;
-    }
-    function renderPager(id, total, page, size) {
-        var pages = Math.max(1, Math.ceil(total / size));
-        document.getElementById(id).innerHTML =
-            '<span>共 ' + total + ' 条</span>'
-            + '<button class="pg" ' + (page <= 1 ? 'disabled' : '') + ' onclick="pageGo(' + (page - 1) + ')">上一页</button>'
-            + '<span>第 ' + page + ' / ' + pages + ' 页</span>'
-            + '<button class="pg" ' + (page >= pages ? 'disabled' : '') + ' onclick="pageGo(' + (page + 1) + ')">下一页</button>';
-    }
-    function pageGo(p) {
-        DataBrowser.page = p;
-        if (DataBrowser.mode === 'task') loadTasks(); else loadDataBrowser();
-    }
-    function sortBy(col) {
-        DataBrowser.sort = (DataBrowser.sort === col) ? ('-' + col) : col;
-        DataBrowser.page = 1;
-        if (DataBrowser.mode === 'task') loadTasks(); else loadDataBrowser();
-    }
-    async function loadDataModels() {
-        var resp = await apiFetch('/api/data/models');
-        if (!resp) return;
-        var data = await resp.json();
-        var sel = document.getElementById('data-model-select');
-        sel.innerHTML = '';
-        (data.models || []).forEach(function (m) {
-            var o = document.createElement('option');
-            o.value = m.key; o.textContent = m.label + '（' + m.table + '）';
-            sel.appendChild(o);
-        });
-        if (sel.options.length) {
-            DataBrowser.mode = 'data';
-            DataBrowser.model = sel.value;
-            loadDataBrowser();
-        }
-    }
-    function onDataModelChange() {
-        DataBrowser.mode = 'data';
-        DataBrowser.model = document.getElementById('data-model-select').value;
-        DataBrowser.page = 1; DataBrowser.sort = ''; DataBrowser.filter = {};
-        document.getElementById('data-search').value = '';
-        loadDataBrowser();
-    }
-    async function loadDataBrowser() {
-        DataBrowser.mode = 'data';
-        DataBrowser.search = document.getElementById('data-search').value;
-        DataBrowser.filter = {};
-        document.querySelectorAll('#data-filters input[data-col]').forEach(function (inp) {
-            if (inp.value.trim() !== '') DataBrowser.filter[inp.getAttribute('data-col')] = inp.value.trim();
-        });
-        var resp = await apiFetch(dataQ());
-        if (!resp) return;
-        var data = await resp.json();
-        var cols = data.columns || [];
-        renderDataFilters(cols);
-        document.getElementById('data-table').innerHTML = renderTableHtml(cols, data.rows, { sort: DataBrowser.sort });
-        renderPager('data-pager', data.total, data.page, data.size);
-    }
-    function renderDataFilters(cols) {
-        var el = document.getElementById('data-filters');
-        var fs = cols.filter(function (c) { return c.filterable; });
-        if (fs.length === 0) { el.innerHTML = ''; return; }
-        el.innerHTML = fs.map(function (c) {
-            return '<div class="f"><span>' + esc(c.label) + '</span>'
-                + '<input data-col="' + esc(c.name) + '" placeholder="筛选"></div>';
-        }).join('');
-    }
-    var TASK_STATUS = { 0: ['待处理', 'queued'], 1: ['处理中', 'running'], 2: ['成功', 'done'], 3: ['失败', 'failed'] };
-    function taskCell(c, v) {
-        if (c.name === 'status') {
-            var m = TASK_STATUS[String(v)] || [String(v), ''];
-            return '<span class="badge ' + (m[1] === 'done' ? 'ok' : '') + '">' + m[0] + '</span>';
-        }
-        if (c.name === 'error') {
-            if (v === null || v === undefined || v === '') return '<span class="muted">-</span>';
-            return '<details><summary>查看错误</summary><pre class="errtext">' + esc(String(v)) + '</pre></details>';
-        }
-        return cellHtml(v, c.kind);
-    }
-    async function loadTasks() {
-        DataBrowser.mode = 'task';
-        DataBrowser.model = 'task';
-        if (!DataBrowser.sort) DataBrowser.sort = '-updated_at';
-        DataBrowser.filter = {};
-        var stage = document.getElementById('task-stage').value;
-        var status = document.getElementById('task-status').value;
-        if (stage) DataBrowser.filter['stage'] = stage;
-        if (status !== '') DataBrowser.filter['status'] = status;
-        DataBrowser.search = document.getElementById('task-search').value;
-        var resp = await apiFetch(dataQ());
-        if (!resp) return;
-        var data = await resp.json();
-        var cols = data.columns || [];
-        document.getElementById('task-table').innerHTML = renderTableHtml(cols, data.rows, { sort: DataBrowser.sort, cellRenderer: taskCell });
-        renderPager('task-pager', data.total, data.page, data.size);
-    }
-
     /* ============ 启动 ============ */
     document.getElementById('key').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitKey(); });
-    document.getElementById('data-table').addEventListener('click', function (e) {
-        var th = e.target.closest('th[data-sort]');
-        if (!th) return;
-        DataBrowser.mode = 'data';
-        sortBy(th.getAttribute('data-sort'));
-    });
-    document.getElementById('task-table').addEventListener('click', function (e) {
-        var th = e.target.closest('th[data-sort]');
-        if (!th) return;
-        DataBrowser.mode = 'task';
-        sortBy(th.getAttribute('data-sort'));
+
+    // oao 表格组件：复用同一套访问密钥；接口前缀与静态资源由 papa 挂载
+    Oao.init({
+        base: '/api/oao',
+        headers: function () {
+            var key = loadKey();
+            return key ? { 'Authorization': 'Bearer ' + key } : {};
+        }
     });
 
     fetchData();
+    renderTableNav();
     setInterval(fetchData, 3000);

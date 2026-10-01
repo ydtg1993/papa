@@ -3,13 +3,14 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Papa Admin</title>
+    <title>Papa Monitor</title>
     <link rel="stylesheet" href="/static/mo.css">
+    <link rel="stylesheet" href="/static/oao/oao.css">
 </head>
 <body>
 <div id="login">
     <div class="box">
-        <h1>PAPA ADMIN</h1>
+        <h1>PAPA MONITOR</h1>
         <p>输入访问密钥以登录监控后台</p>
         <input id="key" type="password" placeholder="访问密钥" autocomplete="off">
         <button class="btn" onclick="submitKey()">登录</button>
@@ -25,9 +26,8 @@
             <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">Dashboard</button>
             <button class="nav-item" data-module="queue" onclick="switchModule('queue')">任务队列</button>
             <button class="nav-item" data-module="queues" onclick="switchModule('queues')">队列治理</button>
-            <button class="nav-item" data-module="tasks" onclick="switchModule('tasks')">任务</button>
+            <div id="oao-nav"></div>
             <div class="nav-section">General</div>
-            <button class="nav-item" data-module="data" onclick="switchModule('data')">数据浏览</button>
             <button class="nav-item" data-module="custom" onclick="switchModule('custom')">自定义数据</button>
             <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
         </nav>
@@ -75,42 +75,8 @@
             </section>
         </div>
 
-        <div class="module" id="mod-tasks">
-            <section>
-                <h2>任务明细</h2>
-                <div class="card">
-                    <div class="toolbar">
-                        <select id="task-stage" onchange="DataBrowser.page=1;loadTasks()"><option value="">全部阶段</option></select>
-                        <select id="task-status" onchange="DataBrowser.page=1;loadTasks()">
-                            <option value="">全部状态</option>
-                            <option value="0">待处理</option>
-                            <option value="1">处理中</option>
-                            <option value="2">成功</option>
-                            <option value="3">失败</option>
-                        </select>
-                        <input id="task-search" placeholder="搜索 URL / 标题" onkeydown="if(event.key==='Enter'){DataBrowser.page=1;loadTasks();}">
-                        <button class="btn" style="margin-top:0" onclick="DataBrowser.page=1;loadTasks()">查询</button>
-                    </div>
-                    <div class="table-wrap" id="task-table"></div>
-                    <div class="pager" id="task-pager"></div>
-                </div>
-            </section>
-        </div>
-
-        <div class="module" id="mod-data">
-            <section>
-                <h2>数据浏览</h2>
-                <div class="card">
-                    <div class="toolbar">
-                        <select id="data-model-select" onchange="onDataModelChange()"></select>
-                        <input id="data-search" placeholder="搜索（模糊匹配字符串列）" onkeydown="if(event.key==='Enter'){DataBrowser.page=1;loadDataBrowser();}">
-                        <button class="btn" style="margin-top:0" onclick="DataBrowser.page=1;loadDataBrowser()">查询</button>
-                    </div>
-                    <div class="filters" id="data-filters"></div>
-                    <div class="table-wrap" id="data-table"></div>
-                    <div class="pager" id="data-pager"></div>
-                </div>
-            </section>
+        <div class="module" id="mod-tables">
+            <div id="oao-view"></div>
         </div>
 
         <div class="module" id="mod-custom">
@@ -157,6 +123,7 @@
     </main>
 </div>
 
+<script src="/static/oao/oao.js"></script>
 <script src="/static/mo.js"></script>
 </body>
 </html>

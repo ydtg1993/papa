@@ -254,7 +254,8 @@ type Episode struct {
 app, err := papa.New(papa.WithModels(&models.Episode{}))
 ```
 
-如果还想在监控后台「数据浏览」里分页/搜索这张表，把上面的 `WithModels` 换成 `papa.WithBrowsableModels(papa.ModelDef{Key: "episode", Label: "剧集", Model: &models.Episode{}})` 即可（同样在 dev 环境自动迁移）。详见 [MONITOR.md](./MONITOR.md) 的「数据浏览 API」。
+如果还想在监控后台里分页/筛选这张表，用 `app.UseTables` 注册一个表格页（声明列怎么显示，
+数据由业务实现 `oao.Source` 提供）。详见 [MONITOR.md](./MONITOR.md) 的「表格页」。
 
 ---
 
@@ -289,7 +290,7 @@ engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
 1. **结果 API 帮你序列化**：`SaveResult` / `SaveContent` 内部自动 `json.Marshal`，`GetResult` 自动 `json.Unmarshal`，业务不用再碰 `datatypes.JSON` / `json.Marshal`。
 2. **写库只写自己的 `task.ID`**：子任务各自写各自记录，不要越界改别人的任务。
 3. **改 JSON 里的嵌套字段要「读-改-写」**：`content` 是整列 JSON，没有嵌套路径更新，改 `Downloads` 这类内层字段必须整列读出来改完写回。
-4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`（dev 环境自动迁移，生产迁移要另外走正式流程）。若要后台浏览/搜索该表，用 `WithBrowsableModels`（见 [MONITOR.md](./MONITOR.md)「数据浏览 API」）。
+4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`（dev 环境自动迁移，生产迁移要另外走正式流程）。若要后台浏览/筛选该表，用 `app.UseTables` 注册表格页（见 [MONITOR.md](./MONITOR.md)「表格页」）。
 5. **并发写同一记录**：detail 派发多个 video 子任务时，多个子任务可能同时回写父任务的 `Downloads`，会丢更新。需要的话对父任务加锁或串行回写（简单做法：用数据库事务或 `gorm` 的 `clause.Locking`）。
 6. **Content 空值 / nil map**：确保传给 `SaveResult` / `SaveContent` 的结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
 7. **字段命名**：JSON tag 用下划线风格，和现有 `cover_url` / `series_info` 一致，避免和别处拼写不一致。

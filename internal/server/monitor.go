@@ -19,7 +19,6 @@ import (
 
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/internal/dataadmin"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
 )
 
@@ -41,7 +40,6 @@ type MonitorConfig struct {
 	Metrics             func() map[string]any               // 业务自定义数据快照（可空）
 	QueueStats          func() map[string]crawler.QueueStat // 治理队列运行快照（可空）
 	SysInfo             *sysinfo.Collector                  // 系统指标采集器（可空）
-	DataAdmin           *dataadmin.Registry                 // 通用数据浏览注册表（可空）
 	LogDir              string                              // 日志目录（导出用）
 	OnShutdown          func()                              // 优雅退出回调
 	ProcessErrorQueue   func() (int, error)                 // 错误队列手动触发回调（可空）
@@ -127,8 +125,6 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
-	mux.HandleFunc("/api/data/models", s.wrap(s.dataModelsHandler))
-	mux.HandleFunc("/api/data/{model}", s.wrap(s.dataListHandler))
 }
 
 // wrap 包装处理器：先 IP 白名单，再密钥校验（仅 /api/ 数据接口）
@@ -145,6 +141,14 @@ func (s *Monitor) wrap(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// Auth 把同一套「白名单 + 密钥」校验暴露成 http.Handler 中间件，
+// 供挂在同一 mux 上的外部组件（如 oao 表格）复用，避免业务侧接口绕过鉴权。
+func (s *Monitor) Auth(next http.Handler) http.Handler {
+	return s.wrap(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ipAllowed 校验来源 IP 是否在白名单内；白名单为空则放行
@@ -559,6 +563,9 @@ func noCache(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// NoCache 导出 noCache，供宿主挂载其它静态资源（如 oao 组件）时复用。
+func NoCache(next http.Handler) http.Handler { return noCache(next) }
 
 // writeJSON 统一写 JSON 响应
 func writeJSON(w http.ResponseWriter, v any) {

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/internal/dataadmin"
 )
 
 // testLogger 静默日志，仅把 Errorf 转发到测试输出，便于排查。
@@ -56,21 +55,6 @@ func fakeStageStats() map[string]crawler.StageStats {
 	}
 }
 
-type fakeUser struct {
-	ID   uint `gorm:"primarykey"`
-	Name string
-	Age  int
-	VIP  bool
-	At   time.Time
-}
-
-type fakeOrder struct {
-	ID     uint `gorm:"primarykey"`
-	UserID uint
-	Amount float64
-	Status string
-}
-
 // fakeMetricsSnapshot 造一批业务自定义指标快照。
 func fakeMetricsSnapshot() map[string]any {
 	return map[string]any{
@@ -87,16 +71,11 @@ func fakeMetricsSnapshot() map[string]any {
 func newFakeMonitor(t *testing.T) *Monitor {
 	t.Helper()
 
-	reg := dataadmin.New(nil)
-	_ = reg.Register("users", "用户", &fakeUser{})
-	_ = reg.Register("orders", "订单", &fakeOrder{})
-
 	return NewMonitor(
 		fakeStageStats,
 		testLogger{t: t},
 		MonitorConfig{
-			Metrics:   fakeMetricsSnapshot,
-			DataAdmin: reg,
+			Metrics: fakeMetricsSnapshot,
 		},
 	)
 }
@@ -413,37 +392,6 @@ func TestLogsDownloadHandler(t *testing.T) {
 	}
 }
 
-func TestDataModels(t *testing.T) {
-	// 未启用 DataAdmin
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
-	if rr := serve(m, http.MethodGet, "/api/data/models", nil); rr.Code != http.StatusNotFound {
-		t.Errorf("nil dataadmin status = %d, want 404", rr.Code)
-	}
-
-	// 启用后列出模型
-	m2 := newFakeMonitor(t)
-	rr := serve(m2, http.MethodGet, "/api/data/models", nil)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-	}
-	models := decodeJSON(t, rr)["models"].([]any)
-	if len(models) != 2 {
-		t.Fatalf("models count = %d, want 2", len(models))
-	}
-}
-
-func TestDataList(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
-	if rr := serve(m, http.MethodGet, "/api/data/users", nil); rr.Code != http.StatusNotFound {
-		t.Errorf("nil dataadmin list status = %d, want 404", rr.Code)
-	}
-
-	m2 := newFakeMonitor(t)
-	if rr := serve(m2, http.MethodGet, "/api/data/nope", nil); rr.Code != http.StatusNotFound {
-		t.Errorf("unknown model status = %d, want 404", rr.Code)
-	}
-}
-
 func TestHTMLHandler(t *testing.T) {
 	m := newFakeMonitor(t)
 	rr := serve(m, http.MethodGet, "/monitor", nil)
@@ -503,23 +451,6 @@ func TestExtractKey(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/monitor?key=qk", nil)
 	if extractKey(req) != "qk" {
 		t.Error("query key not extracted")
-	}
-}
-
-func TestParseFilter(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/data/users?filter[age]=30&filter[name]=bob&page=1", nil)
-	f := parseFilter(req)
-	if f["age"] != "30" || f["name"] != "bob" {
-		t.Errorf("filter = %v", f)
-	}
-	if _, ok := f["page"]; ok {
-		t.Error("non-filter query should be ignored")
-	}
-}
-
-func TestAtoiDefault(t *testing.T) {
-	if atoiDefault("", 5) != 5 || atoiDefault("x", 5) != 5 || atoiDefault("42", 5) != 42 {
-		t.Error("atoiDefault behavior wrong")
 	}
 }
 

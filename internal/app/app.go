@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"github.com/ydtg1993/oao"
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/internal/dataadmin"
 	"github.com/ydtg1993/papa/v2/internal/database"
 	"github.com/ydtg1993/papa/v2/internal/scheduler"
 	"github.com/ydtg1993/papa/v2/internal/server"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
+	"github.com/ydtg1993/papa/v2/internal/tasksource"
 	"github.com/ydtg1993/papa/v2/models"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
@@ -32,14 +33,13 @@ type App struct {
 	BrowserPool *browser.Pool
 	Engine      *crawler.Engine
 
-	configPath      string
-	runtimePath     string
-	extraModels     []any
-	browsableModels []ModelDef
-	sysInfo         *sysinfo.Collector
-	dataAdmin       *dataadmin.Registry
-	cancel          context.CancelFunc
-	customJobs      []cronJob // 业务注册的自定义定时任务
+	configPath  string
+	runtimePath string
+	extraModels []any
+	tables      []oao.Table
+	sysInfo     *sysinfo.Collector
+	cancel      context.CancelFunc
+	customJobs  []cronJob // 业务注册的自定义定时任务
 }
 
 // cronJob 业务注册的自定义定时任务。
@@ -47,13 +47,6 @@ type cronJob struct {
 	name     string
 	schedule string
 	fn       func()
-}
-
-// ModelDef 一个可浏览模型的登记信息（供监控后台数据浏览）
-type ModelDef struct {
-	Key   string // URL 安全标识
-	Label string // 展示名，空则用 Key
-	Model any    // 结构体指针
 }
 
 // Option 应用初始化选项
@@ -75,12 +68,12 @@ func WithModels(models ...any) Option {
 	}
 }
 
-// WithBrowsableModels 登记可浏览模型（监控后台数据浏览；dev 环境一并自动迁移）
-func WithBrowsableModels(defs ...ModelDef) Option {
-	return func(a *App) error {
-		a.browsableModels = append(a.browsableModels, defs...)
-		return nil
-	}
+// UseTables 注册监控后台的表格页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
+// 表格声明与数据来源见组件库 github.com/ydtg1993/oao：业务声明"显示什么、
+// 怎么显示"并实现 oao.Source 提供数据，框架不碰数据层。
+// 放在 New 之后是为了能用 app.DB 构造 Source。
+func (a *App) UseTables(tables ...oao.Table) {
+	a.tables = append(a.tables, tables...)
 }
 
 // NewApp 统一初始化所有组件，并完成依赖注入
@@ -125,11 +118,6 @@ func NewApp(opts ...Option) (*App, error) {
 	if cfg.App.Env == "dev" {
 		allModels := []any{&models.CrawlerTask{}}
 		allModels = append(allModels, a.extraModels...)
-		for _, def := range a.browsableModels {
-			if def.Model != nil {
-				allModels = append(allModels, def.Model)
-			}
-		}
 		if err := database.AutoMigrate(db, allModels...); err != nil {
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
@@ -149,25 +137,10 @@ func NewApp(opts ...Option) (*App, error) {
 		return nil, fmt.Errorf("apply runtime config: %w", err)
 	}
 
-	// 6. 数据浏览注册表（监控后台通用数据浏览）
-	dataAdmin := dataadmin.New(db)
-	if err := dataAdmin.Register("task", "任务", &models.CrawlerTask{}); err != nil {
-		return nil, fmt.Errorf("register task model: %w", err)
-	}
-	for _, def := range a.browsableModels {
-		if def.Model == nil || def.Key == "" {
-			continue
-		}
-		if err := dataAdmin.Register(def.Key, def.Label, def.Model); err != nil {
-			return nil, fmt.Errorf("register model %s: %w", def.Key, err)
-		}
-	}
-
 	a.Config = cfg
 	a.Logger = &loggerSet
 	a.DB = db
 	a.Engine = engine
-	a.dataAdmin = dataAdmin
 	a.runtimePath = runtimePath
 	return a, nil
 }
@@ -359,7 +332,6 @@ func (a *App) httpServer(ctx context.Context) {
 			Metrics:             a.Engine.GetMetrics,
 			QueueStats:          a.Engine.GetQueueStats,
 			SysInfo:             a.sysInfo,
-			DataAdmin:           a.dataAdmin,
 			LogDir:              a.Config.Log.Dir,
 			OnShutdown:          a.Shutdown,
 			ProcessErrorQueue:   a.Engine.ProcessErrorQueue,
@@ -369,6 +341,26 @@ func (a *App) httpServer(ctx context.Context) {
 			ConfigSet:           a.Engine.ApplyRuntimeConfig,
 		})
 		mon.Register(mux)
+
+		// 表格组件：内置「任务」表 + 业务用 WithTables 注册的表。
+		// 它不碰数据层，只把请求转给各自的 Source。
+		tables := append([]oao.Table{tasksource.Table(a.DB)}, a.tables...)
+		o, err := oao.New(oao.Config{
+			Tables: tables,
+			Logger: a.Logger.Sys,
+			Auth:   mon.Auth, // 复用监控后台的白名单 + 密钥校验
+		})
+		if err != nil {
+			a.Logger.Sys.Errorf("init table component: %s", err.Error())
+		} else {
+			o.Mount(mux)
+			if sub, err := o.StaticFS(); err == nil {
+				mux.Handle("/static/oao/", http.StripPrefix("/static/oao/",
+					server.NoCache(http.FileServer(http.FS(sub)))))
+			} else {
+				a.Logger.Sys.Errorf("oao static fs: %s", err.Error())
+			}
+		}
 	}
 
 	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: mux}

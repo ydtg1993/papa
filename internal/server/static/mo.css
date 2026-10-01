@@ -234,6 +234,7 @@ th {
     background: var(--secondary); color: var(--secondary-fg);
     font-family: var(--font-display); font-weight: 700; text-transform: uppercase;
     font-size: 11px; letter-spacing: 1px;
+    white-space: nowrap; /* 表头不折行（"重试" 被拆成竖排很难看） */
 }
 td { font-family: var(--font-mono); }
 tbody tr:nth-child(even) td { background: var(--zebra); }
@@ -250,6 +251,7 @@ details summary { cursor: pointer; font-weight: 700; }
     display: inline-block; padding: 2px 9px; border: 2px solid var(--border-color);
     font-family: var(--font-display); font-size: 11px; font-weight: 700; text-transform: uppercase;
     letter-spacing: .5px; color: #111; background: var(--primary);
+    white-space: nowrap; /* 徽章文字不折行（"处理中" 被拆成竖排很难看） */
 }
 .badge.ok { background: var(--green); }
 .badge.running { background: var(--orange); }
@@ -349,3 +351,117 @@ textarea { width: 100%; font-family: var(--font-mono); resize: vertical; }
     .sidebar nav { flex-direction: row; flex-wrap: wrap; }
     .side-status { margin-top: 0; }
 }
+
+/* ============================================================
+   UI 基础组件（阶段 0）
+   对照 neobrutalism：Dialog / AlertDialog / Toast / Tooltip /
+   Skeleton / Spinner / Checkbox / Field / Badge tone
+   ============================================================ */
+
+/* ---- Dialog / AlertDialog ---- */
+.dlg-mask {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(17, 17, 17, .45);
+    display: none; align-items: center; justify-content: center; padding: 24px;
+}
+.dlg-mask.open { display: flex; }
+.dlg {
+    background: var(--card); border: var(--border-width) solid var(--border-color);
+    box-shadow: 8px 8px 0 0 var(--shadow-color);
+    width: 100%; max-width: 560px; max-height: 85vh; overflow: auto;
+    padding: 20px;
+}
+.dlg h3 {
+    margin: 0 0 14px; font-family: var(--font-display); font-size: 16px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .5px;
+    display: inline-block; background: var(--primary); color: #111;
+    border: 2px solid var(--border-color); box-shadow: 3px 3px 0 0 var(--shadow-color);
+    padding: 4px 12px;
+}
+.dlg.danger h3 { background: var(--destructive); color: #fff; }
+.dlg-body { font-size: 14px; line-height: 1.6; }
+.dlg-body p { margin: 0 0 10px; }
+.dlg-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+.dlg-actions .btn { margin-top: 0; }
+
+/* ---- Toast ---- */
+.toasts {
+    position: fixed; right: 20px; bottom: 20px; z-index: 300;
+    display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+    pointer-events: none;
+}
+.toast {
+    pointer-events: auto;
+    border: 2px solid var(--border-color); box-shadow: 4px 4px 0 0 var(--shadow-color);
+    background: var(--card); color: #111;
+    padding: 10px 14px; font-size: 13px; font-weight: 700; max-width: 360px;
+    font-family: var(--font-body);
+}
+.toast.ok { background: var(--green); }
+.toast.err { background: var(--destructive); color: #fff; }
+.toast.info { background: var(--primary); }
+
+/* ---- Tooltip（hover 显示 data-tip 内容，用于截断后的完整值） ---- */
+[data-tip] { position: relative; cursor: help; }
+[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 400;
+    background: var(--secondary); color: var(--secondary-fg);
+    border: 2px solid var(--border-color); box-shadow: 3px 3px 0 0 var(--shadow-color);
+    padding: 6px 10px; font-size: 12px; font-weight: 600; font-family: var(--font-mono);
+    white-space: pre-wrap; word-break: break-all; max-width: 420px; width: max-content;
+}
+
+/* ---- Skeleton / Spinner ---- */
+.skel {
+    display: inline-block; height: 12px; width: 100%;
+    background: var(--muted-fill); border: 2px solid var(--border-color);
+    animation: skel-pulse 1.2s ease-in-out infinite;
+}
+@keyframes skel-pulse { 50% { opacity: .4; } }
+.skel-row td { padding: 10px; }
+.spinner {
+    display: inline-block; width: 14px; height: 14px; vertical-align: -2px;
+    background: var(--primary); border: 2px solid var(--border-color);
+    animation: spinner-turn 1s steps(4, end) infinite;
+}
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+
+/* ---- Checkbox ---- */
+input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 18px; height: 18px; padding: 0; margin: 0;
+    border: 2px solid var(--border-color); box-shadow: 2px 2px 0 0 var(--shadow-color);
+    background: var(--card); cursor: pointer; vertical-align: middle; flex-shrink: 0;
+}
+input[type="checkbox"]:checked { background: var(--primary); }
+input[type="checkbox"]:checked::after {
+    content: '✓'; display: block; text-align: center; line-height: 14px;
+    font-size: 14px; font-weight: 900; color: #111;
+}
+input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
+
+/* ---- Field（label + 控件 + 帮助/错误） ---- */
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field > label {
+    font-family: var(--font-display); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .5px;
+}
+/* 星号排除 checkbox/radio：它们要保持自身尺寸，不能被撑满整行 */
+.field input:not([type="checkbox"]):not([type="radio"]),
+.field select, .field textarea { width: 100%; box-sizing: border-box; }
+.field .help { font-size: 12px; color: var(--muted-foreground); }
+.field .error { font-size: 12px; color: var(--destructive); font-weight: 700; }
+/* 复选框行：控件与文字并排 */
+.field-check { display: flex; align-items: center; gap: 8px; }
+.field-check label {
+    font-family: var(--font-body); font-size: 13px; font-weight: 600;
+    text-transform: none; letter-spacing: 0; cursor: pointer;
+}
+
+/* ---- Badge tone 补充 ---- */
+.badge.err { background: var(--destructive); color: #fff; }
+.badge.info { background: var(--blue); }
+
+/* 深色下加深遮罩，让弹窗面板从背景里跳出来 */
+[data-theme="dark"] .dlg-mask { background: rgba(0, 0, 0, .68); }

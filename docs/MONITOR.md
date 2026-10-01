@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-框架内置一个 HTTP 监控后台（`server.enabled` + `server.monitor`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、数据浏览、设置、动态配置与日志导出。
+框架内置一个 HTTP 监控后台（`server.enabled` + `server.monitor`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、表格页、设置、动态配置与日志导出。
 
 ## 1. 鉴权（密钥 + 白名单）
 
@@ -27,29 +27,60 @@
 | POST | `/api/settings/secret` | 重新生成密钥并写回 `auth_key_file`；返回 `{"key":"<新密钥>"}` |
 | POST | `/api/settings/shutdown` | 触发优雅退出 |
 
-## 3. 数据浏览 API（通用 model 浏览）
+## 3. 表格页（oao 组件）
 
-把业务 model 登记进 OA（代码层 `papa.WithBrowsableModels`），即可在「数据浏览」模块分页/搜索/筛选/排序查看：
+后台的表格页由独立组件 [github.com/ydtg1993/oao](https://github.com/ydtg1993/oao) 渲染。
+**组件是纯展示层，不碰数据层**：业务声明"显示什么、怎么显示"，并实现 `oao.Source` 提供数据。
 
 ```go
-app, err := papa.New(
-    papa.WithBrowsableModels(
-        papa.ModelDef{Key: "episode", Label: "剧集", Model: &models.Episode{}},
-    ),
-)
+app, err := papa.New(papa.WithModels(&models.Episode{}))
+
+// 在 New 之后、Run 之前注册（这样能用 app.DB 构造 Source）
+app.UseTables(oao.Table{
+    Key: "episode", Label: "剧集", Group: "业务",
+    Source:  myEpisodeSource,          // 业务实现，负责查库/调接口
+    Columns: []oao.Column{
+        {Field: "id", Kind: oao.KindNumber, Width: "70px"},
+        {Field: "title", Label: "标题"},
+        {Field: "downloaded", Label: "已下载", Kind: oao.KindBool},
+        {Field: "cover", Label: "封面", Render: oao.RenderImage, Size: 56},
+        {Field: "remark", Label: "备注", Render: oao.RenderInput, MaxLen: 30},
+    },
+    Filters: []oao.Filter{
+        {Field: "title", Label: "标题", Op: oao.OpLike},
+        {Field: "downloaded", Label: "已下载", Kind: oao.KindBool, Op: oao.OpIn},
+    },
+    DefaultSort: "-id",
+})
 ```
+
+数据源只需实现一个方法：
+
+```go
+type Source interface {
+    List(ctx context.Context, q oao.Query) (rows []map[string]any, total int64, err error)
+}
+```
+
+`Query` 是组件把 HTTP 参数规范化后的结果（`Page/Size/Search/Sort/Filter`），
+筛选算子（`In` 用 `"a,b,c"`、`Between` 用 `"a..b"`）由业务自己解释 —— 组件只透传。
+参考实现看 `internal/tasksource`（内置「任务」表）或 hg2 的 `tablesource`。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/data/models` | 列出可浏览模型及列元数据 |
-| GET | `/api/data/:model` | 分页列表；query：`page`、`size`（默认 20 上限 200）、`search`、`sort`（`col`/`-col`）、`filter[col]=val` |
+| GET | `{prefix}/tables` | 列出已注册的表格及列/筛选元数据（侧边栏菜单用） |
+| GET | `{prefix}/{table}` | 分页数据；query：`page`、`size`（默认取表声明，上限 200）、`search`、`sort`（`col`/`-col`）、`filter[col]=val` |
 
-示例：`/api/data/episode?page=1&size=20&search=火影&sort=-id&filter[downloaded]=true`
+`prefix` 默认 `/api/oao`；静态资源挂在 `/static/oao/`。两者都必须过监控后台的白名单 + 密钥校验（组件复用宿主注入的中间件）。
 
-- `ModelDef.Key`：URL 安全标识（字母/数字/下划线/连字符），别用中文或空格。
-- 列能力由 GORM schema 自动判定：字符串列可 LIKE 搜索，数字/bool/时间可排序+等值筛选，JSON 只读。
-- `WithBrowsableModels` 的模型在 `app.env: dev` 时自动迁移建表，无需再写 `WithModels`。
-- 只读，无写端点；列名走白名单校验，非法列被忽略。
+- **列怎么显示**：`Render` 可选 `text`（省略号 + 悬停看全文）/ `input`（只读输入框，
+  长度可控、横向滚动看全，**不是编辑**）/ `link` / `image` / `enum`（彩色标签）/ `time` / `json` / `custom`。
+  留空按 `Kind` 推断。
+- **哪些能筛**：只声明需要的字段，未声明的字段不可筛；列名与排序同样走白名单，杜绝注入。
+- **菜单自动出现**：按 `Group` 分组渲染到侧边栏，注册即出现，前端无需改代码。
+- **刷新策略**：表格页只在用户操作（筛选/排序/翻页）时刷新，不参与 Dashboard 的 3 秒轮询。
+
+内置的「任务」表（`internal/tasksource`）展示的就是 `crawler_task`，可作为完整示例。
 
 ## 4. 动态配置 API
 
