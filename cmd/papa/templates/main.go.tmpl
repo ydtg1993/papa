@@ -40,7 +40,32 @@ func main() {
 			}
 		})
 
-	// 4. 优雅关闭
+	// 4. 可选：注册自己的后台表格页（声明式 —— 写 Go，不写前端）。
+	//    内置的「任务」表（crawler_task）框架已自动注册，监控后台 /monitor 里直接能看；
+	//    下面是再加一张自己的表。数据由你实现 oao.Source 提供：怎么过滤、怎么排序、
+	//    查库还是调接口，全由你决定（组件只在中间做声明与转发）。
+	//
+	// app.UseTables(oao.Table{
+	//     Key: "detail", Label: "详情", Group: "数据",
+	//     Source: mySource, // 实现 List(ctx, oao.Query) (rows []map[string]any, total int64, err error)
+	//     Columns: []oao.Column{
+	//         {Field: "id", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
+	//         {Field: "url", Render: oao.RenderLink, Href: "{url}", NewTab: true},
+	//         {Field: "status", Kind: oao.KindNumber, Render: oao.RenderEnum,
+	//          Enum: map[string]string{"0": "待处理", "2": "成功"},
+	//          Tone: map[string]string{"0": "info", "2": "ok"}},
+	//     },
+	//     Filters: []oao.Filter{
+	//         {Field: "url", Op: oao.OpPrefix},  // 前缀匹配，能走索引；OpLike 是前后通配
+	//         {Field: "status", Kind: oao.KindNumber, Op: oao.OpIn},
+	//     },
+	//     DefaultSort: "-id",
+	// })
+	//
+	// 要写操作（编辑/删除/自定义）就给这张表声明 Actions，接法与示例见
+	// docs/MONITOR.md 的「表格页（oao 组件）」。
+
+	// 5. 优雅关闭
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

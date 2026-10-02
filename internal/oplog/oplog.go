@@ -84,6 +84,9 @@ func Table(db *gorm.DB) oao.Table {
 		Filters: []oao.Filter{
 			{Field: "table", Label: "表格"},
 			{Field: "action", Label: "动作"},
+			{Field: "ok", Label: "结果", Kind: oao.KindBool, Op: oao.OpIn,
+				Options: map[string]string{"true": "成功", "false": "失败"}},
+			{Field: "created_at", Label: "时间", Kind: oao.KindTime, Op: oao.OpBetween},
 		},
 		DefaultSort: "-id",
 		PageSize:    20,

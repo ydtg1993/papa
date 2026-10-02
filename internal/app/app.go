@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/sirupsen/logrus"
@@ -38,6 +39,9 @@ type App struct {
 	runtimePath string
 	extraModels []any
 	tables      []oao.Table
+	pages       []Page   // 业务注册的自定义页
+	extraJS     []string // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
+	extraCSS    []string // UseCSS 注入的样式，拼成 /static/custom.css
 	sysInfo     *sysinfo.Collector
 	cancel      context.CancelFunc
 	customJobs  []cronJob // 业务注册的自定义定时任务
@@ -75,6 +79,140 @@ func WithModels(models ...any) Option {
 // 放在 New 之后是为了能用 app.DB 构造 Source。
 func (a *App) UseTables(tables ...oao.Table) {
 	a.tables = append(a.tables, tables...)
+}
+
+// Page 一个自定义后台页：清单进侧边栏，渲染由 Script 提供。
+// Script 是**受信任代码**，在里面调 Papa.page(Key, fn) 注册渲染函数：
+//
+//	app.UsePage(papa.Page{
+//	    Key: "review", Label: "审核", Group: "业务",
+//	    Script: `Papa.page("review", function (el, meta) {
+//	        el.innerHTML = "<h2>" + esc(meta.label) + "</h2>";   // Toast/Dialog/apiFetch 等都是全局可用的
+//	    });`,
+//	})
+type Page struct {
+	Key    string // 菜单与 DOM 标识：字母、数字、下划线、连字符
+	Label  string // 菜单文案，留空用 Key
+	Group  string // 侧边栏分组，留空归 "General"
+	Script string // 受信任 JS，必须调 Papa.page(Key, fn) 注册渲染
+}
+
+// UsePage 注册一个自定义页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
+// 声明有问题直接 panic：与 RegisterStage 同风格，启动即失败，别等点了菜单才发现。
+func (a *App) UsePage(p Page) {
+	if !validPageKey(p.Key) {
+		panic(fmt.Errorf("invalid page key %q: 只允许字母、数字、下划线、连字符", p.Key))
+	}
+	for _, x := range a.pages {
+		if x.Key == p.Key {
+			panic(fmt.Errorf("duplicate page key %q", p.Key))
+		}
+	}
+	if strings.TrimSpace(p.Script) == "" {
+		panic(fmt.Errorf("page %q: Script 为空 —— 里面要调 Papa.page(%q, fn) 注册渲染", p.Key, p.Key))
+	}
+	a.pages = append(a.pages, p)
+	a.extraJS = append(a.extraJS, p.Script)
+}
+
+// UseScript 往后台页注入一段受信任 JS（拼进 /static/custom.js）。
+// 它能用的全局件见 docs/MONITOR.md：Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 等。
+//
+// 注意：注入内容与 mo.js / oao.js 一样走**免鉴权**静态路由（浏览器标签没法带自定义头），
+// 所以别把密钥、令牌之类写进去 —— 数据接口仍在白名单 + 密钥后面。
+func (a *App) UseScript(js string) {
+	if strings.TrimSpace(js) == "" {
+		return
+	}
+	a.extraJS = append(a.extraJS, js)
+}
+
+// UseScriptFile 读一个 .js 文件注入；读不到直接 panic（部署问题，不静默）。
+func (a *App) UseScriptFile(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		panic(fmt.Errorf("UseScriptFile %s: %w", path, err))
+	}
+	a.UseScript(string(b))
+}
+
+// UseCSS 注入一段样式（拼进 /static/custom.css）。它在 mo.css / oao.css 之后加载，可以覆盖。
+func (a *App) UseCSS(css string) {
+	if strings.TrimSpace(css) == "" {
+		return
+	}
+	a.extraCSS = append(a.extraCSS, css)
+}
+
+// UseCSSFile 读一个 .css 文件注入；读不到直接 panic。
+func (a *App) UseCSSFile(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		panic(fmt.Errorf("UseCSSFile %s: %w", path, err))
+	}
+	a.UseCSS(string(b))
+}
+
+// validPageKey 页面 key 会进 DOM 与菜单标识，限制成 URL/DOM 安全字符（与 oao 的表 key 同一套规则）。
+func validPageKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// mountCustomRoutes 挂自定义页与注入的三条路由（在监控后台的装配里调用）。
+//
+//   - 清单走 /api/pages，和白名单 + 密钥一起校验（菜单是数据）；
+//   - 脚本/样式走 /static/，与 oao.js 同一条**免鉴权**静态路由 —— 浏览器 <script src>/<link>
+//     没法带自定义头，而注入内容按"非机密"对待（见 UseScript 注释）。
+//
+// 三条路由**无条件注册**（没有内容时返回空体 / 空清单），这样 template.html 里的两个标签是静态的，
+// 宿主没注入东西也不会 404。抽成独立方法是为了能在没有数据库时单测（完整装配需要 MySQL）。
+func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
+	pageList := make([]map[string]string, 0, len(a.pages))
+	for _, p := range a.pages {
+		label, group := p.Label, p.Group
+		if label == "" {
+			label = p.Key
+		}
+		if group == "" {
+			group = "General"
+		}
+		pageList = append(pageList, map[string]string{"key": p.Key, "label": label, "group": group})
+	}
+	jsBody := strings.Join(a.extraJS, "\n;\n")
+	cssBody := strings.Join(a.extraCSS, "\n")
+
+	mux.Handle("/static/custom.js", server.NoCache(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		_, _ = w.Write([]byte(jsBody))
+	})))
+	mux.Handle("/static/custom.css", server.NoCache(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		_, _ = w.Write([]byte(cssBody))
+	})))
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"pages": pageList})
+	})
+	if wrap != nil {
+		mux.Handle("/api/pages", wrap(handler))
+	} else {
+		mux.Handle("/api/pages", handler)
+	}
 }
 
 // NewApp 统一初始化所有组件，并完成依赖注入
@@ -348,7 +486,7 @@ func (a *App) httpServer(ctx context.Context) {
 
 		// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
 		// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
-		tables := append([]oao.Table{tasksource.Table(a.DB)}, a.tables...)
+		tables := append([]oao.Table{tasksource.Table(a.DB, a.Engine)}, a.tables...)
 		cfgOao := oao.Config{
 			Tables: tables,
 			Logger: a.Logger.Sys,
@@ -372,6 +510,9 @@ func (a *App) httpServer(ctx context.Context) {
 				a.Logger.Sys.Errorf("oao static fs: %s", err.Error())
 			}
 		}
+
+		// 自定义页与注入（阶段 3 的逃生舱）
+		a.mountCustomRoutes(mux, mon.Auth)
 	}
 
 	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: mux}

@@ -149,11 +149,12 @@ a { color: var(--foreground); }
 .theme-toggle:hover { transform: translate(-2px, -2px); box-shadow: 5px 5px 0 0 var(--shadow-color); }
 .theme-toggle:active { transform: translate(3px, 3px); box-shadow: none; }
 
-.content { flex: 1; padding: 26px 28px 60px; overflow: auto; min-width: 0; min-height: 0; }
+.content { display: flex; flex-direction: column; flex: 1; padding: 26px 28px 60px; overflow: auto; min-width: 0; min-height: 0; }
 .content-top {
     display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
     padding: 4px 0 18px; margin-bottom: 24px;
     border-bottom: 2px solid var(--border-color);
+    flex: 0 0 auto;
 }
 .content-top h1 {
     margin: 0; font-family: var(--font-display); font-size: 30px; font-weight: 900;
@@ -163,7 +164,18 @@ a { color: var(--foreground); }
 
 /* ---- Module ---- */
 .module { display: none; }
-.module.active { display: block; }
+/* 普通模块按内容高度、不伸缩，超出仍由 .content 滚（行为与之前的 block 流一致） */
+.module.active { display: block; flex: 0 0 auto; }
+
+/* 表格模块要吃掉内容区的剩余高度，oao 的 .oao-view{flex:1;min-height:0} 才能生效：
+   表格区域在内部双向滚（表头吸顶），筛选栏与分页器留在视野里，而不是把整页撑长。
+   宿主容器没有确定高度时，组件会退回"自然高度"——就是这里在给它定高。 */
+#mod-tables.active { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+#oao-view { display: flex; flex: 1 1 auto; min-height: 0; }
+/* 表格比容器宽时该由组件自己的滚动容器消化：flex 项的 min-width 默认是 auto，
+   会被表格的固有宽度顶大、把整个内容区撑宽（组件只放了 min-height，没放 min-width）。
+   链上两个 flex 项都要放开：#oao-view 里的 .oao-view（行向 flex 项）与 .table-wrap（列向 flex 项）。 */
+#oao-view .oao-view, #oao-view .table-wrap { min-width: 0; }
 section { margin-bottom: 30px; }
 section > h2 {
     font-family: var(--font-display); font-size: 14px; font-weight: 700;

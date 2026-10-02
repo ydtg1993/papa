@@ -80,6 +80,10 @@ func applyFilter(db *gorm.DB, f oao.FilterValue) *gorm.DB {
 	case oao.OpLike:
 		return db.Where(col+" LIKE ?", "%"+f.Raw()+"%")
 
+	case oao.OpPrefix:
+		// 前缀匹配：只有后通配，能走索引（OpLike 前后都通配，用不上索引）
+		return db.Where(col+" LIKE ?", f.String()+"%")
+
 	case oao.OpIn:
 		if f.Kind() == oao.KindNumber {
 			if vals := f.IntList(); len(vals) > 0 {

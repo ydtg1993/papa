@@ -465,6 +465,15 @@ func (e *Engine) ApplyRegisterStage() {
 		e.stages[stage].workerPool = pool
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
+			// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
+			// 也让三个后台动作的状态守卫成立。拿不到行说明运营已经动过它（标失败/删除），跳过。
+			claimed, err := e.claimTask(task)
+			if err != nil {
+				e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
+			} else if !claimed {
+				e.loggerSet.Engine.Warnf("task %d 已被运营改动（不再是待处理），跳过执行", task.ID)
+				return nil
+			}
 			// 重试FetchHandler
 			var lastErr error
 			for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
@@ -624,6 +633,17 @@ func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) error {
 // submitToPool 将任务提交到对应阶段工作池，并更新数据库状态。
 func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	info := e.stages[task.Stage]
+
+	// 先落库再入队：「已入队 ⇒ 行里是 pending」必须是不变量。
+	// worker 取到任务时会以 status=待处理 为条件认领（claimTask），
+	// 如果这里先入队后落库，中间那个窗口里取到任务的 worker（repeatable 重跑时
+	// 行里还是"成功"）会被误判成"已被运营改动"而跳过执行。
+	if task.Repeatable && task.ID != 0 {
+		record.Repeat += 1
+	}
+	record.Status = models.TaskStatusPending
+	e.db.Save(record)
+
 	if err := info.workerPool.Submit(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			// 队列达 75% 高水位：任务保持 pending（已入库），加入溢出列表由 drain 稍后回灌
@@ -638,15 +658,23 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 		e.db.Save(&record)
 		return err
 	}
-	if task.Repeatable && task.ID != 0 {
-		//状态修改 repeat+1
-		record.Repeat += 1
-		record.Status = models.TaskStatusPending
-	} else {
-		record.Status = models.TaskStatusPending
-	}
-	e.db.Save(record)
 	return nil
+}
+
+// claimTask 把任务从「待处理」认领为「处理中」，成功才允许执行。
+// 条件更新而非先读再写：运营在它被 worker 取走之前标了失败（或删了行）时，
+// 这里拿不到行，任务就不再执行 —— 这正是「标失败」对排队中任务的拦截力。
+// 返回 (是否认领成功, 错误)：DB 抖动不当成"认领失败"，由调用方记日志后继续执行，
+// 免得一次抖动让任务永远没人跑。
+func (e *Engine) claimTask(task *Task) (bool, error) {
+	if task.ID == 0 {
+		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
+	}
+	res := claimScope(e.db, uint(task.ID)).Update("status", models.TaskStatusProcessing)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
 }
 
 // spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。

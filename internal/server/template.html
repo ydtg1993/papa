@@ -6,6 +6,8 @@
     <title>Papa Monitor</title>
     <link rel="stylesheet" href="/static/mo.css">
     <link rel="stylesheet" href="/static/oao/oao.css">
+    <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
+    <link rel="stylesheet" href="/static/custom.css">
 </head>
 <body>
 <div id="login">
@@ -27,6 +29,7 @@
             <button class="nav-item" data-module="queue" onclick="switchModule('queue')">任务队列</button>
             <button class="nav-item" data-module="queues" onclick="switchModule('queues')">队列治理</button>
             <div id="oao-nav"></div>
+            <div id="page-nav"></div>
             <div class="nav-section">General</div>
             <button class="nav-item" data-module="custom" onclick="switchModule('custom')">自定义数据</button>
             <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
@@ -79,6 +82,10 @@
             <div id="oao-view"></div>
         </div>
 
+        <div class="module" id="mod-pages">
+            <div id="page-view"></div>
+        </div>
+
         <div class="module" id="mod-custom">
             <section>
                 <h2>自定义数据</h2>
@@ -125,5 +132,8 @@
 
 <script src="/static/oao/oao.js"></script>
 <script src="/static/mo.js"></script>
+<!-- 业务注入的脚本（app.UsePage 的 Script / app.UseScript）：必须在 mo.js 之后 ——
+     页脚本要调 mo.js 定义的 Papa.page 注册渲染函数。 -->
+<script src="/static/custom.js"></script>
 </body>
 </html>

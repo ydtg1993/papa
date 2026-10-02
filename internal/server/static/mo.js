@@ -23,7 +23,7 @@
 
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
-    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tables: '数据', custom: '自定义数据', settings: '设置' };
+    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tables: '数据', pages: '自定义页', custom: '自定义数据', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
@@ -36,7 +36,9 @@
         document.getElementById('key').focus();
     }
     function hideLogin() { document.getElementById('login').classList.add('hidden'); }
-    function submitKey() { saveKey(document.getElementById('key').value); fetchData(); }
+    // 输密钥后除了拉数据，也要重建两个动态菜单 —— 否则首次访问输完密钥，
+    // 侧边栏的表格页与自定义页都是空的，要手动刷新才出来
+    function submitKey() { saveKey(document.getElementById('key').value); fetchData(); renderTableNav(); renderPageNav(); }
     function setStatus(ok, text) {
         document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
         document.getElementById('statusText').textContent = text;
@@ -93,6 +95,76 @@
 
         nav.querySelectorAll('.nav-item').forEach(function (b) {
             b.onclick = function () { openTable(b.dataset.oao, b.textContent, b); };
+        });
+    }
+
+    /* ============ 自定义页（业务用 app.UsePage 注册） ============ */
+    /**
+     * 页脚本用它注册渲染函数 —— app.UsePage 的 Script 里写：
+     *   Papa.page('review', function (el, meta) { el.innerHTML = '…'; });
+     * el 是 #page-view；Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 都是全局可用的。
+     */
+    var Papa = (function () {
+        var renderers = {};
+        return {
+            page: function (key, fn) {
+                if (typeof fn === 'function') renderers[key] = fn;
+            },
+            has: function (key) { return typeof renderers[key] === 'function'; },
+            /** 调用某页的渲染函数；没注册返回 false */
+            render: function (key, el, meta) {
+                var fn = renderers[key];
+                if (typeof fn !== 'function') return false;
+                fn(el, meta || {});
+                return true;
+            },
+        };
+    })();
+
+    /** 打开某个自定义页：切到 pages 模块、点亮菜单项，再交给页脚本渲染 */
+    function openPage(key, label, btn) {
+        switchModule('pages');
+        var title = document.getElementById('moduleTitle');
+        if (title) title.textContent = label || '自定义页';
+        if (btn) {
+            // switchModule 会按 data-module 清空高亮，这里把当前项重新点亮
+            document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+        }
+        var view = document.getElementById('page-view');
+        view.innerHTML = '';
+        if (!Papa.render(key, view, { key: key, label: label })) {
+            view.innerHTML = '<div class="empty">页面 ' + esc(key)
+                + ' 没有注册渲染函数：检查 app.UsePage 的 Script 里是否调了 Papa.page("'
+                + esc(key) + '", fn)</div>';
+        }
+    }
+
+    /** 按 Group 分组渲染自定义页菜单（清单来自 /api/pages） */
+    async function renderPageNav() {
+        var nav = document.getElementById('page-nav');
+        if (!nav) return;
+        var resp = await apiFetch('/api/pages');
+        if (!resp) { nav.innerHTML = ''; return; }
+        var pages = [];
+        try { pages = (await resp.json()).pages || []; } catch (e) { pages = []; }
+        if (!pages.length) { nav.innerHTML = ''; return; }
+
+        var groups = [];
+        pages.forEach(function (p) {
+            var g = p.group || 'General';
+            if (groups.indexOf(g) === -1) groups.push(g);
+        });
+        nav.innerHTML = groups.map(function (g) {
+            return '<div class="nav-section">' + esc(g) + '</div>'
+                + pages.filter(function (p) { return (p.group || 'General') === g; })
+                    .map(function (p) {
+                        return '<button class="nav-item" data-page="' + esc(p.key) + '">' + esc(p.label) + '</button>';
+                    }).join('');
+        }).join('');
+
+        nav.querySelectorAll('.nav-item').forEach(function (b) {
+            b.onclick = function () { openPage(b.dataset.page, b.textContent, b); };
         });
     }
 
@@ -548,9 +620,18 @@
         headers: function () {
             var key = loadKey();
             return key ? { 'Authorization': 'Bearer ' + key } : {};
+        },
+        // 密钥失效时和其它接口保持一致：清掉旧密钥、弹登录，而不是只在表格区留一行错误
+        // （返回 false 表示没换成新凭据，组件就把 401 如实抛出来）
+        onUnauthorized: function () {
+            clearKey();
+            setStatus(false, '需要密钥');
+            showLogin(true);
+            return false;
         }
     });
 
     fetchData();
     renderTableNav();
+    renderPageNav();
     setInterval(fetchData, 3000);
