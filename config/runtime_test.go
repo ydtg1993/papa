@@ -10,13 +10,11 @@ import (
 func TestRuntimeConfigRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.yaml")
 
-	poolSize := 5
 	maxIdle := Duration{Duration: 10 * time.Minute}
 	timeout := Duration{Duration: 20 * time.Second}
 	maxBody := int64(2048)
 	rt := &RuntimeConfig{
 		Browser: RuntimeBrowserConfig{
-			PoolSize:    &poolSize,
 			MaxIdleTime: &maxIdle,
 			Headers:     map[string]string{"User-Agent": "custom-ua"},
 		},
@@ -34,9 +32,6 @@ func TestRuntimeConfigRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.Browser.PoolSize == nil || *loaded.Browser.PoolSize != 5 {
-		t.Fatalf("pool_size mismatch: %+v", loaded.Browser.PoolSize)
-	}
 	if loaded.Browser.MaxIdleTime == nil || loaded.Browser.MaxIdleTime.Duration != 10*time.Minute {
 		t.Fatalf("max_idle_time mismatch: %+v", loaded.Browser.MaxIdleTime)
 	}
@@ -50,11 +45,24 @@ func TestRuntimeConfigRoundtrip(t *testing.T) {
 		t.Fatalf("html max_body_size mismatch: %+v", loaded.HTML.MaxBodySize)
 	}
 	// 未覆盖字段应为 nil
-	if loaded.Browser.DirectSize != nil {
-		t.Fatalf("direct_pool_size should be nil, got %+v", loaded.Browser.DirectSize)
-	}
 	if loaded.HTML.Headers != nil {
 		t.Fatalf("html headers should be nil, got %+v", loaded.HTML.Headers)
+	}
+}
+
+// 老 runtime.yaml 里遗留的 pool_size 不属于热更字段，读取时应被忽略而不是报错。
+func TestLoadRuntimeIgnoresLegacyPoolSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	data := []byte("browser:\n  pool_size: 9\n  direct_pool_size: 2\n  max_idle_time: 3m\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rt, err := LoadRuntime(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if rt.Browser.MaxIdleTime == nil || rt.Browser.MaxIdleTime.Duration != 3*time.Minute {
+		t.Fatalf("max_idle_time should still load: %+v", rt.Browser.MaxIdleTime)
 	}
 }
 
@@ -85,8 +93,8 @@ func TestLoadRuntimeMissing(t *testing.T) {
 
 func TestSaveRuntimeEmptyRemovesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.yaml")
-	poolSize := 3
-	if err := SaveRuntime(path, &RuntimeConfig{Browser: RuntimeBrowserConfig{PoolSize: &poolSize}}); err != nil {
+	maxIdle := Duration{Duration: time.Minute}
+	if err := SaveRuntime(path, &RuntimeConfig{Browser: RuntimeBrowserConfig{MaxIdleTime: &maxIdle}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {

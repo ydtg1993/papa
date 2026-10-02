@@ -2,6 +2,8 @@ package tasksource
 
 import (
 	"github.com/ydtg1993/oao"
+	"github.com/ydtg1993/papa/v2/internal/gormsource"
+	"github.com/ydtg1993/papa/v2/models"
 	"gorm.io/gorm"
 )
 
@@ -24,9 +26,13 @@ var taskStatusTone = map[string]string{
 func Table(db *gorm.DB) oao.Table {
 	return oao.Table{
 		Key: "task", Label: "任务", Group: "数据",
-		Source: New(db),
+		Source: gormsource.New(gormsource.Config{
+			DB:     db,
+			Model:  &models.CrawlerTask{},
+			Search: []string{"url", "title", "error"},
+		}),
 		Columns: []oao.Column{
-			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px"},
+			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
 			{Field: "stage", Label: "阶段"},
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}"},
 			{Field: "title", Label: "标题"},
@@ -36,7 +42,8 @@ func Table(db *gorm.DB) oao.Table {
 			{Field: "reprocess", Label: "重投", Kind: oao.KindNumber, Width: "70px"},
 			{Field: "repeat", Label: "轮询", Kind: oao.KindNumber, Width: "70px"},
 			{Field: "error", Label: "错误", Render: oao.RenderInput, MaxLen: 40},
-			{Field: "updated_at", Label: "更新时间", Kind: oao.KindTime},
+			{Field: "created_at", Label: "创建时间", Kind: oao.KindTime, NoEdit: true},
+			{Field: "updated_at", Label: "更新时间", Kind: oao.KindTime, NoEdit: true},
 		},
 		Filters: []oao.Filter{
 			{Field: "url", Label: "URL", Op: oao.OpLike},

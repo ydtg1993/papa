@@ -168,7 +168,7 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 | **HTMLFetch（优先）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
 | **Rod 浏览器** | `engine.GetBrowserPool().Get(ctx)` | JS 渲染、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | 静态页面；此时浏览器成本高且占用浏览器池 |
 
-HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`，并保证 `browser.pool_size` 不小于并发使用浏览器的 worker 数量。
+HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`，并保证 `browser.pool_size`（浏览器并发上限，按需创建）不小于并发使用浏览器的 worker 数量。
 
 ### 3.1 HTMLFetch：静态目录页的完整方式
 
@@ -613,7 +613,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 ## 8. 常见坑
 
 1. **`GetStage()` 与 config 不一致** → `RegisterStage` 直接 panic。写完先核对两边字符串。
-2. **浏览器池耗尽**：浏览器池 `pool_size` 要 ≥ 各 stage `worker_count` 之和（config 注释里也写了），否则 worker 会阻塞在 `pool.Get`。
+2. **浏览器池耗尽**：`browser.pool_size`（浏览器并发上限）要 ≥ 各 stage `worker_count` 之和，否则 worker 会阻塞在 `pool.Get`。
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.DownloadOptions{Referer: ...}` 传详情页 URL。
 4. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。
 5. **相对链接**：`href`/`src` 可能是相对路径，用 `page.Info().URL` 拼成绝对 URL 再提交任务。

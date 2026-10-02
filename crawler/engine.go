@@ -41,9 +41,6 @@ type Engine struct {
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
 	dedupCache  *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
-	appliedPoolSize   int // 已应用的代理池大小，用于判断运行期是否需要 resize
-	appliedDirectSize int // 已应用的直连池大小
-
 	spillMu             sync.Mutex
 	spilled             map[string][]*Task // stage -> 高水位溢出的待回灌任务
 	spilledCount        atomic.Int64       // 累计溢出任务数（监控埋点）
@@ -315,8 +312,8 @@ func (e *Engine) SetBrowserPool() {
 		return
 	}
 	pool, err := browser.NewPool(browser.PoolConfig{
-		Size:           e.browserPoolSize(),
-		DirectSize:     e.browserDirectSize(),
+		Size:           e.cfg.Browser.PoolSize,
+		DirectSize:     e.cfg.Browser.DirectSize,
 		MaxIdleTime:    e.browserMaxIdle(),
 		Headless:       e.cfg.Browser.Headless,
 		NoSandbox:      e.cfg.Browser.NoSandbox,
@@ -330,8 +327,6 @@ func (e *Engine) SetBrowserPool() {
 		panic(fmt.Errorf("new browser pool: %s", err.Error()))
 	}
 	e.browserPool = pool
-	e.appliedPoolSize = e.browserPoolSize()
-	e.appliedDirectSize = e.browserDirectSize()
 }
 
 // GetBrowserPool 获取浏览器池
@@ -375,24 +370,6 @@ func (e *Engine) browserMaxIdle() time.Duration {
 	return e.cfg.Browser.MaxIdleTime
 }
 
-// browserPoolSize 返回生效的代理池大小。
-func (e *Engine) browserPoolSize() int {
-	rt := e.runtime.Load()
-	if rt.Browser.PoolSize != nil {
-		return *rt.Browser.PoolSize
-	}
-	return e.cfg.Browser.PoolSize
-}
-
-// browserDirectSize 返回生效的直连池大小。
-func (e *Engine) browserDirectSize() int {
-	rt := e.runtime.Load()
-	if rt.Browser.DirectSize != nil {
-		return *rt.Browser.DirectSize
-	}
-	return e.cfg.Browser.DirectSize
-}
-
 // htmlConfig 计算生效的静态 HTML 客户端配置（基础 + 运行期覆盖）。
 func (e *Engine) htmlConfig() htmlfetch.Config {
 	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.HTML.Headers))
@@ -422,7 +399,7 @@ func (e *Engine) htmlConfig() htmlfetch.Config {
 	}
 }
 
-// ApplyRuntimeConfig 应用运行期动态配置：tunable 字段原地热更，pool_size/direct_pool_size 触发双池切换。
+// ApplyRuntimeConfig 应用运行期动态配置：仅 tunable 字段原地热更（池大小需重启）。
 func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
 	if rt == nil {
 		rt = &config.RuntimeConfig{}
@@ -432,16 +409,6 @@ func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
 	if e.browserPool != nil {
 		e.browserPool.SetHeaders(e.browserHeaders())
 		e.browserPool.SetMaxIdleTime(e.browserMaxIdle())
-
-		poolSize := e.browserPoolSize()
-		directSize := e.browserDirectSize()
-		if poolSize != e.appliedPoolSize || directSize != e.appliedDirectSize {
-			if err := e.browserPool.Resize(poolSize, directSize); err != nil {
-				return fmt.Errorf("resize browser pool: %w", err)
-			}
-			e.appliedPoolSize = poolSize
-			e.appliedDirectSize = directSize
-		}
 	}
 
 	if e.htmlClient != nil {

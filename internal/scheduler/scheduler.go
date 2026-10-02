@@ -7,6 +7,9 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v2/crawler"
 	"time"
+	// 内嵌时区库：alpine/distroless/scratch 等基础镜像不带 /usr/share/zoneinfo，
+	// 不引入则 LoadLocation("Asia/Shanghai") 必失败，容器内启动即崩。
+	_ "time/tzdata"
 )
 
 type Scheduler struct {

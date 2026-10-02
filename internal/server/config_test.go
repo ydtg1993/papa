@@ -10,9 +10,9 @@ import (
 )
 
 func TestConfigHandler(t *testing.T) {
-	poolSize := 5
+	maxIdle := config.Duration{Duration: 3 * time.Minute}
 	current := &config.RuntimeConfig{
-		Browser: config.RuntimeBrowserConfig{PoolSize: &poolSize},
+		Browser: config.RuntimeBrowserConfig{MaxIdleTime: &maxIdle},
 	}
 	var applied *config.RuntimeConfig
 	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
@@ -37,23 +37,23 @@ func TestConfigHandler(t *testing.T) {
 	if !ok {
 		t.Fatalf("overrides.browser missing: %+v", overrides)
 	}
-	if browser["pool_size"] != float64(5) {
-		t.Fatalf("pool_size = %v, want 5", browser["pool_size"])
+	if browser["max_idle_time"] != "3m0s" {
+		t.Fatalf("max_idle_time = %v, want 3m0s", browser["max_idle_time"])
 	}
 	if _, ok := v["restart_only_fields"]; !ok {
 		t.Fatalf("restart_only_fields missing: %+v", v)
 	}
 
 	// PUT 合法：解析时长字符串 + 数值
-	rr = serve(m, http.MethodPut, "/api/config", strings.NewReader(`{"browser":{"pool_size":7,"max_idle_time":"10m"}}`))
+	rr = serve(m, http.MethodPut, "/api/config", strings.NewReader(`{"browser":{"max_idle_time":"10m"},"error_queue":{"worker_count":2}}`))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	if applied == nil || applied.Browser.PoolSize == nil || *applied.Browser.PoolSize != 7 {
-		t.Fatalf("applied pool_size = %+v, want 7", applied)
-	}
-	if applied.Browser.MaxIdleTime == nil || applied.Browser.MaxIdleTime.Duration != 10*time.Minute {
+	if applied == nil || applied.Browser.MaxIdleTime == nil || applied.Browser.MaxIdleTime.Duration != 10*time.Minute {
 		t.Fatalf("applied max_idle_time = %+v, want 10m", applied)
+	}
+	if applied.ErrorQueue.WorkerCount == nil || *applied.ErrorQueue.WorkerCount != 2 {
+		t.Fatalf("applied error_queue.worker_count = %+v, want 2", applied.ErrorQueue.WorkerCount)
 	}
 
 	// PUT 拒绝重启字段（unknown field）
@@ -62,9 +62,9 @@ func TestConfigHandler(t *testing.T) {
 		t.Fatalf("restart field status = %d, want 400, body=%s", rr.Code, rr.Body.String())
 	}
 
-	// PUT 拒绝负数池大小
-	rr = serve(m, http.MethodPut, "/api/config", strings.NewReader(`{"browser":{"pool_size":-1}}`))
+	// 池大小已非热更字段：传了同样按 unknown field 拒绝
+	rr = serve(m, http.MethodPut, "/api/config", strings.NewReader(`{"browser":{"pool_size":7}}`))
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("negative pool_size status = %d, want 400", rr.Code)
+		t.Fatalf("pool_size status = %d, want 400", rr.Code)
 	}
 }

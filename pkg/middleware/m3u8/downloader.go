@@ -38,7 +38,6 @@ type Downloader struct {
 
 type cachedKey struct {
 	key []byte
-	iv  []byte
 }
 
 // labor 每个下载任务的私有数据（并发安全）
@@ -161,6 +160,9 @@ type SegmentInfo struct {
 	URL   string
 	Range string
 	Index int // 0-based 索引
+	// MediaSeq 媒体序号 = EXT-X-MEDIA-SEQUENCE + Index。
+	// 密钥标签不带 IV 时，HLS 规定用它作为片段的 IV（RFC 8216 §5.2），逐片段不同
+	MediaSeq int64
 }
 
 // KeyInfo 密钥信息
@@ -532,7 +534,7 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 
 		// 解密（如果需要）
 		if keyInfo != nil {
-			key, iv, err := d.prepareKey(ctx, keyInfo, seg.Index, opts)
+			key, iv, err := d.prepareKey(ctx, keyInfo, seg.MediaSeq, opts)
 			if err != nil {
 				lastErr = err
 				continue
@@ -666,16 +668,9 @@ func (d *Downloader) downloadSegment(ctx context.Context, url string, opts *Down
 	return d.doRequest(ctx, url, "", opts)
 }
 
-func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, segmentIndex int, opts *DownloadOptions) (key, iv []byte, err error) {
-	cacheKey := keyInfo.URL + "|" + keyInfo.IV
-	if cached, ok := d.keyCache.Load(cacheKey); ok {
-		k := cached.(*cachedKey)
-		return k.key, k.iv, nil
-	}
-	keyData, err := d.doRequest(ctx, keyInfo.URL, "", opts)
-	if err != nil {
-		return nil, nil, err
-	}
+// prepareKey 取回解密用的密钥与 IV。mediaSeq 是该片段的媒体序号，仅在密钥标签不带 IV 时用于推导 IV。
+func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, mediaSeq int64, opts *DownloadOptions) (key, iv []byte, err error) {
+	// IV 每次现算，不进缓存：隐式 IV 由媒体序号推导，逐片段不同
 	var ivData []byte
 	if keyInfo.IV != "" {
 		ivData, err = d.parseIV(keyInfo.IV)
@@ -684,9 +679,17 @@ func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, segmentIn
 		}
 	} else {
 		ivData = make([]byte, 16)
-		binary.BigEndian.PutUint64(ivData[8:], uint64(segmentIndex))
+		binary.BigEndian.PutUint64(ivData[8:], uint64(mediaSeq))
 	}
-	d.keyCache.Store(keyInfo.URL+"|"+keyInfo.IV, &cachedKey{key: keyData, iv: ivData})
+	// 缓存只放密钥本身（同一 URI 的所有片段共用一把），IV 随片段返回
+	if cached, ok := d.keyCache.Load(keyInfo.URL); ok {
+		return cached.(*cachedKey).key, ivData, nil
+	}
+	keyData, err := d.doRequest(ctx, keyInfo.URL, "", opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	d.keyCache.Store(keyInfo.URL, &cachedKey{key: keyData})
 	return keyData, ivData, nil
 }
 
@@ -736,6 +739,7 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 	var segmentKeys []*KeyInfo
 	var currentKey *KeyInfo
 	segmentIndex := 0
+	var mediaSequence int64
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -743,6 +747,13 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 			continue
 		}
 		switch {
+		case strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"):
+			v, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-MEDIA-SEQUENCE:")), 10, 64)
+			if err != nil {
+				// 解析不出来就无法推导隐式 IV，硬报错，避免解出垃圾数据还不自知
+				return nil, nil, nil, fmt.Errorf("invalid EXT-X-MEDIA-SEQUENCE %q: %w", line, err)
+			}
+			mediaSequence = v
 		case strings.HasPrefix(line, "#EXT-X-MAP:"):
 			initSegment = d.parseMapTag(line, baseURL)
 		case strings.HasPrefix(line, "#EXT-X-KEY:"):
@@ -753,7 +764,7 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 				urlLine := strings.TrimSpace(scanner.Text())
 				if !strings.HasPrefix(urlLine, "#") {
 					segURL := d.resolveURL(urlLine, baseURL)
-					segments = append(segments, &SegmentInfo{URL: segURL, Range: byteRange, Index: segmentIndex})
+					segments = append(segments, &SegmentInfo{URL: segURL, Range: byteRange, Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)})
 					segmentKeys = append(segmentKeys, currentKey)
 					segmentIndex++
 				}
@@ -762,7 +773,7 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 			// 其他标签忽略
 		default:
 			segURL := d.resolveURL(line, baseURL)
-			segments = append(segments, &SegmentInfo{URL: segURL, Index: segmentIndex})
+			segments = append(segments, &SegmentInfo{URL: segURL, Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)})
 			segmentKeys = append(segmentKeys, currentKey)
 			segmentIndex++
 		}

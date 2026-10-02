@@ -34,7 +34,7 @@ cd mycrawler && go mod tidy && go run .
 ## 注意事项
 
 - 遵守目标网站 robots.txt 与法律法规，合理设置抓取频率。
-- 生产环境建议 `headless: true`，按负载调 `pool_size` / 数据库连接池。
+- 生产环境建议 `headless: true`，按负载调 `pool_size`（浏览器并发上限，改需重启）/ 数据库连接池。
 - 自动合并 MP4 需系统安装 ffmpeg。
 
 ## License

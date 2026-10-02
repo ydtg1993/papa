@@ -38,8 +38,8 @@
 | 键 | 类型 | 热更 | 说明 |
 | --- | --- | --- | --- |
 | `enable` | bool | ❌ | 是否启用浏览器池 |
-| `pool_size` | int | ✅ | 代理浏览器实例数 |
-| `direct_pool_size` | int | ✅ | 强制直连浏览器实例数（不走代理） |
+| `pool_size` | int | ❌ | 代理浏览器**并发上限**（按需创建，非常驻实例数） |
+| `direct_pool_size` | int | ❌ | 强制直连浏览器并发上限（不走代理） |
 | `max_idle_time` | duration | ✅ | 空闲回收阈值，`0`=不回收 |
 | `headless` | bool | ❌ | 无头模式 |
 | `no_sandbox` | bool | ❌ | 关闭 Chromium sandbox |
@@ -92,6 +92,7 @@
 | `whitelist` / `whitelist_file` | []string | 来源 IP/CIDR 白名单；文件优先 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
+| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败），并多出一张只读的「操作日志」表格页；关闭时不建表、不写库 |
 
 ### scheduler —— 定时任务（详见 [SCHEDULER.md](./SCHEDULER.md)）
 
@@ -136,7 +137,7 @@
 ## 3. 运行期热更（OA 后台）
 
 - 可热更字段（`PUT /api/config`，改后即时生效）：
-  - 浏览器/HTML：`browser.pool_size` / `direct_pool_size` / `max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
+  - 浏览器/HTML：`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
   - 三个队列（`error_queue` / `recover_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`、`recover_queue.timeout`。
-- 需重启字段：`browser.enable/headless/no_sandbox/leakless/browser_path`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`。
+- 需重启字段：`browser.enable/headless/no_sandbox/leakless/browser_path/`**`pool_size`/`direct_pool_size`**、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`。
 - 持久化：热更只写内存；关停时把「被改字段」写成 `configs/runtime.yaml` 覆盖层，下次启动叠加回 `config.yaml`。

@@ -9,6 +9,7 @@ import (
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
 	"github.com/ydtg1993/papa/v2/internal/database"
+	"github.com/ydtg1993/papa/v2/internal/oplog"
 	"github.com/ydtg1993/papa/v2/internal/scheduler"
 	"github.com/ydtg1993/papa/v2/internal/server"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
@@ -117,6 +118,9 @@ func NewApp(opts ...Option) (*App, error) {
 	// 4. 自动迁移（开发环境）
 	if cfg.App.Env == "dev" {
 		allModels := []any{&models.CrawlerTask{}}
+		if cfg.Server.OperationLog {
+			allModels = append(allModels, &models.OperationLog{})
+		}
 		allModels = append(allModels, a.extraModels...)
 		if err := database.AutoMigrate(db, allModels...); err != nil {
 			return nil, fmt.Errorf("migrate db: %w", err)
@@ -342,14 +346,21 @@ func (a *App) httpServer(ctx context.Context) {
 		})
 		mon.Register(mux)
 
-		// 表格组件：内置「任务」表 + 业务用 WithTables 注册的表。
-		// 它不碰数据层，只把请求转给各自的 Source。
+		// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
+		// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
 		tables := append([]oao.Table{tasksource.Table(a.DB)}, a.tables...)
-		o, err := oao.New(oao.Config{
+		cfgOao := oao.Config{
 			Tables: tables,
 			Logger: a.Logger.Sys,
 			Auth:   mon.Auth, // 复用监控后台的白名单 + 密钥校验
-		})
+		}
+		if cfg.OperationLog {
+			rec := oplog.New(a.DB, a.Logger.Sys)
+			cfgOao.OnAction = rec.Record
+			tables = append(tables, oplog.Table(a.DB))
+			cfgOao.Tables = tables
+		}
+		o, err := oao.New(cfgOao)
 		if err != nil {
 			a.Logger.Sys.Errorf("init table component: %s", err.Error())
 		} else {

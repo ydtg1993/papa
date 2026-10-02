@@ -84,7 +84,7 @@ type Source interface {
 
 ## 4. 动态配置 API
 
-运行期热更爬虫参数（`browser.pool_size` / `max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers` 等）：
+运行期热更爬虫参数（`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers` 等；浏览器池大小 `pool_size` / `direct_pool_size` 需重启）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

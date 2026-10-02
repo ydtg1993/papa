@@ -35,7 +35,11 @@ func (f *countingFactory) count() int {
 
 // newTestPool 构建一个懒创建、工厂可注入的测试池。
 func newTestPool(size, directSize int, factory func(bool) (*Browser, error)) *Pool {
-	p := &Pool{cfg: PoolConfig{Size: size, DirectSize: directSize}}
+	p := &Pool{
+		cfg:      PoolConfig{Size: size, DirectSize: directSize},
+		browsers: make(chan *Browser, size),
+		direct:   make(chan *Browser, directSize),
+	}
 	if factory != nil {
 		p.newBrowserFn = factory
 	} else {
@@ -43,7 +47,7 @@ func newTestPool(size, directSize int, factory func(bool) (*Browser, error)) *Po
 	}
 	h := map[string]string{}
 	p.headers.Store(&h)
-	p.active.Store(p.newCore(size, directSize))
+	p.cond = sync.NewCond(&p.mu)
 	return p
 }
 
@@ -52,7 +56,7 @@ func TestPoolLazyCreation(t *testing.T) {
 	p := newTestPool(2, 0, f.new)
 
 	if f.count() != 0 {
-		t.Fatalf("newCore created %d browsers, want 0 (lazy)", f.count())
+		t.Fatalf("pool created %d browsers, want 0 (lazy)", f.count())
 	}
 
 	b, err := p.Get(context.Background())
@@ -172,26 +176,25 @@ func TestPoolIdleReapOnGet(t *testing.T) {
 
 func TestPoolReapChannel(t *testing.T) {
 	p := newTestPool(2, 0, nil)
-	core := p.active.Load()
 
 	stale := testBrowser(true, true)
 	stale.lastUsed = time.Now().Add(-time.Minute)
 	fresh := testBrowser(true, true)
 	fresh.lastUsed = time.Now()
 
-	core.browsers <- stale
-	core.browsers <- fresh
-	core.proxyAlive.Store(2)
+	p.browsers <- stale
+	p.browsers <- fresh
+	p.proxyAlive.Store(2)
 
-	core.reapChannel(core.browsers, &core.proxyAlive, time.Second)
+	p.reapChannel(p.browsers, &p.proxyAlive, time.Second)
 
-	if core.proxyAlive.Load() != 1 {
-		t.Fatalf("after reap, alive=%d, want 1", core.proxyAlive.Load())
+	if p.proxyAlive.Load() != 1 {
+		t.Fatalf("after reap, alive=%d, want 1", p.proxyAlive.Load())
 	}
-	if len(core.browsers) != 1 {
-		t.Fatalf("after reap, idle=%d, want 1", len(core.browsers))
+	if len(p.browsers) != 1 {
+		t.Fatalf("after reap, idle=%d, want 1", len(p.browsers))
 	}
-	got := <-core.browsers
+	got := <-p.browsers
 	if got != fresh {
 		t.Fatal("expected the fresh browser to be kept, stale one reaped")
 	}
@@ -221,42 +224,13 @@ func TestPoolGetDirectCreatesDirectBrowser(t *testing.T) {
 	}
 }
 
-func TestPoolResize(t *testing.T) {
+// 容量已满时阻塞在 cond.Wait 的 Get，应被别人 Put 归还唤醒并复用那个实例（单池的唤醒路径）。
+func TestPoolBlockedGetWakesOnPut(t *testing.T) {
 	f := &countingFactory{}
 	p := newTestPool(1, 0, f.new)
 
-	b, err := p.Get(context.Background())
+	b1, err := p.Get(context.Background())
 	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := p.Resize(2, 0); err != nil {
-		t.Fatal(err)
-	}
-	newCore := p.active.Load()
-	if cap(newCore.browsers) != 2 {
-		t.Fatalf("new core size=%d, want 2", cap(newCore.browsers))
-	}
-
-	// 归还旧浏览器 → 旧 core 已排空，直接回收
-	if err := p.Put(b); err != nil {
-		t.Fatal(err)
-	}
-
-	b2, err := p.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b2 == nil {
-		t.Fatal("got nil browser from new core")
-	}
-}
-
-func TestPoolGetWokenOnRetire(t *testing.T) {
-	f := &countingFactory{}
-	p := newTestPool(1, 0, f.new)
-
-	if _, err := p.Get(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -269,16 +243,10 @@ func TestPoolGetWokenOnRetire(t *testing.T) {
 		b, err := p.Get(context.Background())
 		ch <- result{b, err}
 	}()
+	// 让第二个 Get 走到容量判断并睡到 cond 上（此后再归还才会走广播唤醒，而不是快路径取空闲）
+	time.Sleep(20 * time.Millisecond)
 
-	oldCore := p.active.Load()
-	waitFor(t, func() bool {
-		oldCore.mu.Lock()
-		defer oldCore.mu.Unlock()
-		return oldCore.refs == 1
-	}, "blocked Get to acquire ref")
-
-	// 扩容 → 旧核退休，唤醒阻塞的 Get 重试新核
-	if err := p.Resize(2, 0); err != nil {
+	if err := p.Put(b1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -287,16 +255,20 @@ func TestPoolGetWokenOnRetire(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("blocked Get error = %v", r.err)
 		}
-		if r.b == nil {
-			t.Fatal("blocked Get got nil browser")
+		if r.b != b1 {
+			t.Fatal("blocked Get should reuse the returned browser")
+		}
+		if f.count() != 1 {
+			t.Fatalf("created %d browsers, want 1 (上限内复用，不得超建)", f.count())
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("blocked Get was not woken by resize")
+		t.Fatal("blocked Get was not woken by Put")
 	}
+	p.Close()
 }
 
 func TestPoolSetHeadersAndMaxIdle(t *testing.T) {
-	p := &Pool{}
+	p := newTestPool(1, 1, nil)
 	initial := map[string]string{"User-Agent": "ua-1"}
 	p.headers.Store(&initial)
 	p.maxIdle.Store(int64(time.Second))
@@ -324,16 +296,34 @@ func TestNewPoolRejectsNegativeSize(t *testing.T) {
 	}
 }
 
-func waitFor(t *testing.T, cond func() bool, what string) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if cond() {
-			return
+// Close 时必须唤醒阻塞在 cond.Wait 的 Get（返回错误而非永久挂住），且其后的 Put 不得 panic。
+func TestPoolCloseWakesBlockedGet(t *testing.T) {
+	p := newTestPool(1, 0, nil)
+	b, err := p.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Get(context.Background())
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // 让第二个 Get 睡到 cond 上
+
+	p.Close()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("blocked Get should return an error after Close")
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for %s", what)
-		}
-		time.Sleep(2 * time.Millisecond)
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocked Get was not woken by Close")
+	}
+
+	// Close 后归还：直接回收并报错，不能向已关闭通道发送
+	if err := p.Put(b); err == nil {
+		t.Fatal("Put after Close should return an error")
 	}
 }

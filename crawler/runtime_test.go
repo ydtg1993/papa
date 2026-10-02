@@ -24,26 +24,16 @@ func TestEngineRuntimeGetters(t *testing.T) {
 	e.runtime.Store(&config.RuntimeConfig{})
 
 	// 无覆盖：回退基础配置
-	if got := e.browserPoolSize(); got != 3 {
-		t.Fatalf("browserPoolSize = %d, want 3", got)
-	}
-	if got := e.browserDirectSize(); got != 1 {
-		t.Fatalf("browserDirectSize = %d, want 1", got)
-	}
 	if got := e.browserMaxIdle(); got != 5*time.Minute {
 		t.Fatalf("browserMaxIdle = %v, want 5m", got)
 	}
 
 	// 覆盖层生效
-	poolSize := 7
-	directSize := 2
 	maxIdle := config.Duration{Duration: 10 * time.Minute}
 	timeout := config.Duration{Duration: 30 * time.Second}
 	maxBody := int64(4096)
 	e.runtime.Store(&config.RuntimeConfig{
 		Browser: config.RuntimeBrowserConfig{
-			PoolSize:    &poolSize,
-			DirectSize:  &directSize,
 			MaxIdleTime: &maxIdle,
 			Headers:     map[string]string{"User-Agent": "overlay-ua", "X-Overlay": "2"},
 		},
@@ -54,12 +44,6 @@ func TestEngineRuntimeGetters(t *testing.T) {
 		},
 	})
 
-	if got := e.browserPoolSize(); got != 7 {
-		t.Fatalf("browserPoolSize = %d, want 7", got)
-	}
-	if got := e.browserDirectSize(); got != 2 {
-		t.Fatalf("browserDirectSize = %d, want 2", got)
-	}
 	if got := e.browserMaxIdle(); got != 10*time.Minute {
 		t.Fatalf("browserMaxIdle = %v, want 10m", got)
 	}
@@ -96,14 +80,14 @@ func TestApplyRuntimeConfigNilComponents(t *testing.T) {
 	e := &Engine{cfg: &config.Config{}}
 	e.runtime.Store(&config.RuntimeConfig{})
 
-	poolSize := 4
+	maxIdle := config.Duration{Duration: 2 * time.Minute}
 	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{
-		Browser: config.RuntimeBrowserConfig{PoolSize: &poolSize},
+		Browser: config.RuntimeBrowserConfig{MaxIdleTime: &maxIdle},
 	}); err != nil {
 		t.Fatalf("ApplyRuntimeConfig: %v", err)
 	}
-	got := e.GetRuntimeConfig().Browser.PoolSize
-	if got == nil || *got != 4 {
-		t.Fatalf("runtime pool_size = %+v, want 4", got)
+	got := e.GetRuntimeConfig().Browser.MaxIdleTime
+	if got == nil || got.Duration != 2*time.Minute {
+		t.Fatalf("runtime max_idle_time = %+v, want 2m", got)
 	}
 }

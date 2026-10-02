@@ -365,3 +365,75 @@ func TestProgressCallback(t *testing.T) {
 		t.Errorf("total size = %d, want %d", totalSize, len(content))
 	}
 }
+
+// 测试单线程下载遇到连接中断（body 短于声明的 Content-Length）时必须报错，不能当成功
+func TestDownloadTruncatedSingleThread(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("0123456789")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			// 不支持 Range → 走 downloadSingle 降级路径
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		// 只写一半就返回：服务端会提前断开，客户端读到 unexpected EOF
+		_, _ = w.Write(content[:len(content)/2])
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempOut
+	cfg.ResumeStateDir = tempState
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL, "trunc", "half.bin", nil)
+	if result.Error == nil {
+		t.Fatalf("expected error for truncated body, got success (size=%d)", result.Size)
+	}
+}
+
+// 测试分片返回的字节数少于请求范围（短 206）时必须报错，避免合并出空洞文件
+func TestDownloadShortChunkFails(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := make([]byte, 100)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		var start, end int
+		if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		w.WriteHeader(http.StatusPartialContent)
+		// 故意少回一半字节，但响应本身是完整的（无 Content-Length 冲突）
+		half := max((end-start+1)/2, 1)
+		_, _ = w.Write(content[start : start+half])
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempOut
+	cfg.ResumeStateDir = tempState
+	cfg.ChunkSize = 10
+	cfg.MaxConcurrent = 2
+	cfg.MaxRetries = 0 // 不重试，保持用例快速
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL, "short", "chunked.bin", nil)
+	if result.Error == nil {
+		t.Fatal("expected error for short chunk, got success")
+	}
+	if _, err := os.Stat(filepath.Join(tempOut, "short", "chunked.bin")); err == nil {
+		t.Error("merged output should not be produced when a chunk is short")
+	}
+}

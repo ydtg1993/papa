@@ -21,7 +21,7 @@ type Browser struct {
 	useCount int64              // 已使用次数（原子操作）
 	lastUsed time.Time          // 最后使用时间
 	mu       sync.Mutex
-	core     *poolCore // 归属内核：Put 路由 + 读取池共享的默认请求头
+	pool     *Pool // 归属池：Put 路由 + 读取池共享的默认请求头
 	// 从池配置中继承的默认值（固定，不可热更）
 	defaultDevice  *devices.Device
 	defaultCookies []*proto.NetworkCookieParam
@@ -224,7 +224,7 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 
 	// 2. 合并请求头（默认头来自池的共享可热更配置）
 	headers := make(map[string]string)
-	for k, v := range b.core.pool.headersSnapshot() {
+	for k, v := range b.pool.headersSnapshot() {
 		headers[k] = v
 	}
 	for k, v := range opts.Headers {

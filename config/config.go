@@ -86,8 +86,8 @@ type RetryConfig struct {
 // BrowserConfig chromedp浏览器池配置
 type BrowserConfig struct {
 	Enable      bool              `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
-	PoolSize    int               `mapstructure:"pool_size"`        //唤起浏览器数量
-	DirectSize  int               `mapstructure:"direct_pool_size"` //强制直连浏览器数量（不经过代理）
+	PoolSize    int               `mapstructure:"pool_size"`        //浏览器并发上限（按需创建，非常驻数量；改需重启）
+	DirectSize  int               `mapstructure:"direct_pool_size"` //强制直连浏览器并发上限（不经过代理）
 	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"`    //浏览器生命周期
 	Headless    bool              `mapstructure:"headless"`         //无头模式
 	NoSandbox   bool              `mapstructure:"no_sandbox"`
@@ -132,6 +132,9 @@ type ServerConfig struct {
 	MonitorDirs   map[string]string `mapstructure:"monitor_dirs"`   // 监控页展示的业务目录占用，name->path
 	// 治理队列（error/recover/repeat）积压数的采样间隔；<=0 用默认 1m。监控页只读内存快照，仅采样时查库。
 	QueueSampleInterval time.Duration `mapstructure:"queue_sample_interval"`
+	// 操作日志：开启后后台所有增删改操作写入 crawler_operation_log 表（含失败）。
+	// 关闭时不建表、不写库。
+	OperationLog bool `mapstructure:"operation_log"`
 }
 
 // SchedulerConfig 定时任务调度器配置。

@@ -394,7 +394,7 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 
 // hotReloadableFields 可热更字段（供后台 UI 标注）。
 var hotReloadableFields = []string{
-	"browser.pool_size", "browser.direct_pool_size", "browser.max_idle_time", "browser.headers",
+	"browser.max_idle_time", "browser.headers",
 	"html.timeout", "html.max_body_size", "html.headers",
 	"error_queue.enabled", "error_queue.interval", "error_queue.worker_count", "error_queue.max_retry", "error_queue.batch_size",
 	"recover_queue.enabled", "recover_queue.interval", "recover_queue.worker_count", "recover_queue.timeout", "recover_queue.batch_size",
@@ -442,14 +442,6 @@ func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
 	var rt config.RuntimeConfig
 	if err := dec.Decode(&rt); err != nil {
 		http.Error(w, "invalid config: "+err.Error()+" (仅支持热更字段)", http.StatusBadRequest)
-		return
-	}
-	if rt.Browser.PoolSize != nil && *rt.Browser.PoolSize < 0 {
-		http.Error(w, "browser.pool_size 必须 >= 0", http.StatusBadRequest)
-		return
-	}
-	if rt.Browser.DirectSize != nil && *rt.Browser.DirectSize < 0 {
-		http.Error(w, "browser.direct_pool_size 必须 >= 0", http.StatusBadRequest)
 		return
 	}
 	for name, v := range map[string]*int{

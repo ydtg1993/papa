@@ -1,7 +1,12 @@
 package m3u8
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/binary"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -318,5 +323,182 @@ seg.ts
 	wg.Wait()
 	if err1 != nil || err2 != nil {
 		t.Errorf("errors: %s, %s", err1.Error(), err2.Error())
+	}
+}
+
+// ivForSeq 隐式 IV：媒体序号按 128 位大端整数编码（HLS 规范）
+func ivForSeq(seq int64) []byte {
+	iv := make([]byte, 16)
+	binary.BigEndian.PutUint64(iv[8:], uint64(seq))
+	return iv
+}
+
+// encryptAES128CBC 测试辅助：PKCS#7 填充后 AES-128-CBC 加密
+func encryptAES128CBC(t *testing.T, plaintext, key, iv []byte) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padLen := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padded := append(append([]byte{}, plaintext...), bytes.Repeat([]byte{byte(padLen)}, padLen)...)
+	out := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(out, padded)
+	return out
+}
+
+// 隐式 IV 的密钥标签下，每个片段必须用自己的媒体序号推导 IV。
+// 回归点：IV 曾跟着密钥一起缓存，导致除首个片段外全部用首个片段的 IV 解密 → 解出垃圾。
+func TestDownloadImplicitIVPerSegment(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	// 媒体序号从 7 起：IV 既不等于 0 也不等于片段下标，两条错误路径都能覆盖
+	const mediaSequence = 7
+	plainSegments := [][]byte{
+		[]byte("SEGMENT-ONE-PLAIN"),
+		[]byte("SEGMENT-TWO-PLAIN"),
+		[]byte("SEGMENT-THREE-PLAIN"),
+	}
+	cipherSegments := make([][]byte, len(plainSegments))
+	for i, p := range plainSegments {
+		cipherSegments[i] = encryptAES128CBC(t, p, key, ivForSeq(mediaSequence+int64(i)))
+	}
+
+	mux := http.NewServeMux()
+	playlist := fmt.Sprintf(`#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:%d
+#EXT-X-KEY:METHOD=AES-128,URI="key.bin"
+#EXTINF:1.0,
+segment1.ts
+#EXTINF:1.0,
+segment2.ts
+#EXTINF:1.0,
+segment3.ts
+`, mediaSequence)
+	mux.HandleFunc("/playlist.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(playlist))
+	})
+	var keyHits int
+	mux.HandleFunc("/key.bin", func(w http.ResponseWriter, r *http.Request) {
+		keyHits++
+		w.Write(key)
+	})
+	for i := range cipherSegments {
+		data := cipherSegments[i]
+		mux.HandleFunc(fmt.Sprintf("/segment%d.ts", i+1), func(w http.ResponseWriter, r *http.Request) {
+			w.Write(data)
+		})
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.AutoMerge = false // 避免调用 ffmpeg
+	cfg.MaxConcurrent = 1
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL+"/playlist.m3u8", "enc", "out.ts", nil)
+	if result.Error != nil {
+		t.Fatalf("download failed: %s", result.Error.Error())
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.OutputDir, "enc", "out.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := bytes.Join(plainSegments, nil)
+	if !bytes.Equal(data, expected) {
+		t.Errorf("decrypted content mismatch:\n got %q\nwant %q", data, expected)
+	}
+	if keyHits != 1 {
+		t.Errorf("key fetched %d times, want 1 (密钥应被缓存，只有 IV 需要逐片段现算)", keyHits)
+	}
+}
+
+// prepareKey：隐式 IV 逐片段不同，显式 IV 则所有片段共用同一个
+func TestPrepareKeyIV(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(key)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	d := NewDownloader(cfg)
+	ctx := context.Background()
+
+	// 隐式 IV：IV 由媒体序号推导，不能因为命中密钥缓存就返回首个片段的 IV
+	implicit := &KeyInfo{URL: server.URL + "/key.bin"}
+	_, iv0, err := d.prepareKey(ctx, implicit, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, iv5, err := d.prepareKey(ctx, implicit, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(iv0, ivForSeq(0)) {
+		t.Errorf("iv(seq=0) = %x, want %x", iv0, ivForSeq(0))
+	}
+	if !bytes.Equal(iv5, ivForSeq(5)) {
+		t.Errorf("iv(seq=5) = %x, want %x (命中缓存后仍须按本片段序号推导)", iv5, ivForSeq(5))
+	}
+
+	// 显式 IV：与媒体序号无关
+	explicit := &KeyInfo{URL: server.URL + "/key.bin", IV: "0x000102030405060708090a0b0c0d0e0f"}
+	_, e1, err := d.prepareKey(ctx, explicit, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, e2, err := d.prepareKey(ctx, explicit, 9, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(e1, e2) {
+		t.Errorf("explicit IV should not depend on media seq: %x vs %x", e1, e2)
+	}
+}
+
+// EXT-X-MEDIA-SEQUENCE 解析进 MediaSeq；解析失败必须报错而不是当作 0
+func TestParseMediaSequence(t *testing.T) {
+	d := &Downloader{}
+	playlist := `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:100
+#EXTINF:1.0,
+a.ts
+#EXTINF:1.0,
+b.ts
+`
+	_, segs, _, err := d.parsePlaylistEnhancedWithIndex(playlist, "https://example.com/path/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 2 {
+		t.Fatalf("expected 2 segments, got %d", len(segs))
+	}
+	if segs[0].Index != 0 || segs[0].MediaSeq != 100 {
+		t.Errorf("seg0: Index=%d MediaSeq=%d, want 0/100", segs[0].Index, segs[0].MediaSeq)
+	}
+	if segs[1].Index != 1 || segs[1].MediaSeq != 101 {
+		t.Errorf("seg1: Index=%d MediaSeq=%d, want 1/101", segs[1].Index, segs[1].MediaSeq)
+	}
+
+	// 缺省时媒体序号从 0 起
+	_, segs, _, err = d.parsePlaylistEnhancedWithIndex("#EXTM3U\n#EXTINF:1.0,\na.ts\n", "https://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if segs[0].MediaSeq != 0 {
+		t.Errorf("default MediaSeq = %d, want 0", segs[0].MediaSeq)
+	}
+
+	bad := "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:abc\n#EXTINF:1.0,\na.ts\n"
+	if _, _, _, err := d.parsePlaylistEnhancedWithIndex(bad, "https://example.com/"); err == nil {
+		t.Error("expected error for malformed EXT-X-MEDIA-SEQUENCE, got nil")
 	}
 }

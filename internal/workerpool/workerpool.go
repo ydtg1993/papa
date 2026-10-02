@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v2/internal/msgqueue"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +21,8 @@ type WorkerPool[T Tasker] struct {
 	watermark  float64 // 队列高水位比例(0-1)，达到后 Submit 返回 ErrQueueFull
 	wg         sync.WaitGroup
 	stopOnce   sync.Once
-	stopped    atomic.Bool
+	mu         sync.RWMutex // 保护 stopped 与 taskQueue 的关闭，见 Submit/Stop
+	stopped    bool
 	cancel     context.CancelFunc
 	submitted  atomic.Int64                 // 已提交的任务总数
 	completed  atomic.Int64                 // 已完成的任务数
@@ -68,7 +70,7 @@ func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, h
 		StartTime: start,
 	})
 
-	err := handler(ctx, task)
+	err := p.runHandler(ctx, task, handler)
 
 	p.trackQueue.SendActivity(Activity{
 		Type:      ActivityTaskEnd,
@@ -88,9 +90,26 @@ func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, h
 	}
 }
 
+// runHandler 执行 handler，并把 panic 转成 error 返回。
+// 单条任务 panic 不能逃出 worker goroutine：那会直接崩掉进程，即使外层补 recover，
+// worker 的 for range 也已经断了，该阶段会永久少一个 worker。转成 error 后按普通失败计数、上报。
+func (p *WorkerPool[T]) runHandler(ctx context.Context, task T, handler TaskHandler[T]) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return handler(ctx, task)
+}
+
 // Submit 提交任务，若已停止则拒绝；达到 75% 高水位时返回 ErrQueueFull 由上层溢出。
 func (p *WorkerPool[T]) Submit(task T) error {
-	if p.stopped.Load() {
+	// 读锁覆盖「判断 stopped + 发送」整段：Stop 置位并 close 时持写锁，两者互斥。
+	// 只在锁外判断再发送的话，中间会被 Stop 的 close 插进来 → 向已关闭 channel 发送 panic。
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if p.stopped {
 		err := fmt.Errorf("worker pool already stopped,failed to submit task: %+v", task)
 		p.trackQueue.SendError(err)
 		return err
@@ -111,8 +130,10 @@ func (p *WorkerPool[T]) Submit(task T) error {
 // Stop 优雅停止：不再接受新任务，等待所有 worker 完成（超时强制退出）
 func (p *WorkerPool[T]) Stop(timeout time.Duration) {
 	p.stopOnce.Do(func() {
-		p.stopped.Store(true)
-		close(p.taskQueue) // 不再接收新任务
+		p.mu.Lock()
+		p.stopped = true
+		close(p.taskQueue) // 不再接收新任务；与 Submit 的发送互斥
+		p.mu.Unlock()
 		done := make(chan struct{})
 		go func() {
 			p.wg.Wait()

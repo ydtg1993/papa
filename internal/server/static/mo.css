@@ -87,7 +87,7 @@
 /* ---- Reset & Base ---- */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { font-size: 16px; }
-html, body { height: 100%; }
+html, body { height: 100%; overflow: hidden; } /* 整页不滚，滚动都收在内部容器 */
 body {
     font-family: var(--font-body);
     font-weight: 500;
@@ -104,12 +104,13 @@ a { color: var(--foreground); }
 ::-webkit-scrollbar-thumb { background: var(--primary); border: 2px solid var(--border-color); }
 
 /* ---- Layout ---- */
-.shell { display: flex; flex: 1; min-width: 0; }
+.shell { display: flex; height: 100dvh; min-width: 0; overflow: hidden; }
 
 .sidebar {
-    width: 230px; min-height: 100vh; background: var(--sidebar-bg); color: var(--foreground);
+    width: 230px; background: var(--sidebar-bg); color: var(--foreground);
     display: flex; flex-direction: column; flex-shrink: 0; padding: 20px 14px;
     border-right: 2px solid var(--border-color);
+    overflow-y: auto; /* 菜单长了侧边栏自己滚 */
 }
 .brand {
     font-family: var(--font-display); font-size: 20px; font-weight: 900;
@@ -148,7 +149,7 @@ a { color: var(--foreground); }
 .theme-toggle:hover { transform: translate(-2px, -2px); box-shadow: 5px 5px 0 0 var(--shadow-color); }
 .theme-toggle:active { transform: translate(3px, 3px); box-shadow: none; }
 
-.content { flex: 1; padding: 26px 28px 60px; overflow-x: hidden; min-width: 0; }
+.content { flex: 1; padding: 26px 28px 60px; overflow: auto; min-width: 0; min-height: 0; }
 .content-top {
     display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
     padding: 4px 0 18px; margin-bottom: 24px;
@@ -465,3 +466,36 @@ input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
 
 /* 深色下加深遮罩，让弹窗面板从背景里跳出来 */
 [data-theme="dark"] .dlg-mask { background: rgba(0, 0, 0, .68); }
+
+/* ============================================================
+   滚动条：默认隐形，鼠标移到容器上才显形 —— 能拖，但不占视觉
+   ============================================================ */
+.sidebar, .content, .table-wrap, .dlg {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;   /* Firefox：默认透明 */
+}
+.sidebar:hover, .content:hover, .table-wrap:hover, .dlg:hover {
+    scrollbar-color: var(--border-color) transparent;
+}
+.sidebar::-webkit-scrollbar,
+.content::-webkit-scrollbar,
+.table-wrap::-webkit-scrollbar,
+.dlg::-webkit-scrollbar { width: 10px; height: 10px; }
+.sidebar::-webkit-scrollbar-track,
+.content::-webkit-scrollbar-track,
+.table-wrap::-webkit-scrollbar-track,
+.dlg::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb,
+.content::-webkit-scrollbar-thumb,
+.table-wrap::-webkit-scrollbar-thumb,
+.dlg::-webkit-scrollbar-thumb {
+    background: transparent; border: 2px solid transparent; background-clip: padding-box;
+}
+.sidebar:hover::-webkit-scrollbar-thumb,
+.content:hover::-webkit-scrollbar-thumb,
+.table-wrap:hover::-webkit-scrollbar-thumb,
+.dlg:hover::-webkit-scrollbar-thumb {
+    background: var(--border-color); border: 2px solid transparent; background-clip: padding-box;
+}
+.sidebar::-webkit-scrollbar-corner,
+.content::-webkit-scrollbar-corner { background: transparent; }

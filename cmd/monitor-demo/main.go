@@ -226,29 +226,49 @@ func matchRow(r map[string]any, q oao.Query) bool {
 }
 
 func sortRows(rows []map[string]any, sortKey string) {
-	if sortKey == "" {
-		return
+	parts := strings.Split(sortKey, ",")
+	// 从优先级最低的键开始排：稳定排序保证后一轮不打乱前一轮
+	for i := len(parts) - 1; i >= 0; i-- {
+		key := strings.TrimSpace(parts[i])
+		if key == "" {
+			continue
+		}
+		desc := strings.HasPrefix(key, "-")
+		name := strings.TrimPrefix(key, "-")
+		sort.SliceStable(rows, func(a, b int) bool {
+			c := compareCell(rows[a][name], rows[b][name])
+			if desc {
+				return c > 0
+			}
+			return c < 0
+		})
 	}
-	desc := strings.HasPrefix(sortKey, "-")
-	name := strings.TrimPrefix(sortKey, "-")
-	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i][name], rows[j][name]
-		var less bool
-		switch x := a.(type) {
-		case int:
-			y, _ := b.(int)
-			less = x < y
-		case time.Time:
-			y, _ := b.(time.Time)
-			less = x.Before(y)
-		default:
-			less = fmt.Sprint(a) < fmt.Sprint(b)
+}
+
+// compareCell 比大小；演示用，真项目里这活交给数据库。
+func compareCell(a, b any) int {
+	switch x := a.(type) {
+	case int:
+		y, _ := b.(int)
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
 		}
-		if desc {
-			return !less && fmt.Sprint(a) != fmt.Sprint(b)
+		return 0
+	case time.Time:
+		y, _ := b.(time.Time)
+		switch {
+		case x.Before(y):
+			return -1
+		case x.After(y):
+			return 1
 		}
-		return less
-	})
+		return 0
+	default:
+		return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
+	}
 }
 
 // fakeTaskTable 内置「任务」表的样子，用来验证动态菜单与各种渲染器。

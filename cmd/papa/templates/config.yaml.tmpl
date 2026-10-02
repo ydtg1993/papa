@@ -18,9 +18,11 @@ crawler:
         backoff: "30s"
 
 # 浏览器自动化池配置
+# 浏览器按需创建：pool_size / direct_pool_size 是并发上限，不是常驻实例数，
+# 空闲超过 max_idle_time 的实例会被后台回收。
 # 运行期热更（OA 后台 /api/config 可改，重启后叠加 runtime.yaml 覆盖层）：
-#   pool_size / direct_pool_size / max_idle_time / headers
-# 其余字段（headless / no_sandbox / leakless / browser_path / enable）需重启生效。
+#   max_idle_time / headers
+# 其余字段（pool_size / direct_pool_size / headless / no_sandbox / leakless / browser_path / enable）需重启生效。
 browser:
   enable: true
   pool_size: 3
@@ -81,6 +83,7 @@ server:
     downloads: "./downloads"
     logs: "./logs"
   queue_sample_interval: "1m"     # 治理队列积压(待处理)采样间隔；监控页只读内存快照，采样时才查库，调大可降低 DB 压力
+  operation_log: false            # 操作日志：开启后后台所有增删改写入 crawler_operation_log 表（含失败），并多出「操作日志」表格页；关闭则不建表不写库
 
 # 定时任务调度器配置
 # 定时任务调度器：业务定时任务通过 app.RegisterCronJob 注册（框架不再内置 job）

@@ -390,6 +390,7 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 			lastErr = fmt.Errorf("unexpected status: %d", resp.StatusCode)
 			continue
 		}
+		expectSize := end - start + 1
 		tmpPath := destFile + ".tmp"
 		out, err := os.Create(tmpPath)
 		if err != nil {
@@ -397,9 +398,15 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 			lastErr = err
 			continue
 		}
-		_, err = io.Copy(out, resp.Body)
-		_ = out.Close()
+		written, err := io.Copy(out, resp.Body)
 		_ = resp.Body.Close()
+		if err == nil && written != expectSize {
+			// 短 206：服务端只回了部分字节，当失败重试，否则合并出空洞文件
+			err = fmt.Errorf("short body: got %d bytes, want %d", written, expectSize)
+		}
+		if cerr := out.Close(); err == nil {
+			err = cerr // 磁盘写失败只在 Close 时暴露
+		}
 		if err != nil {
 			lastErr = err
 			continue
@@ -450,15 +457,27 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			_, _ = file.Write(buf[:n])
+			if _, werr := file.Write(buf[:n]); werr != nil {
+				return &DownloadResult{Error: fmt.Errorf("write %s: %w", absOutput, werr)}
+			}
 			written += int64(n)
 			if cfgGlobal.OnProgress != nil {
 				cfgGlobal.OnProgress(written, total)
 			}
 		}
-		if readErr != nil {
+		if readErr == io.EOF {
 			break
 		}
+		if readErr != nil {
+			return &DownloadResult{Error: fmt.Errorf("read body: %w", readErr)}
+		}
+	}
+	// defer Close 只兜提前返回的路径，正常路径在此显式关闭以拿到落盘错误（磁盘满/NFS 回写失败）
+	if err := file.Close(); err != nil {
+		return &DownloadResult{Error: fmt.Errorf("close %s: %w", absOutput, err)}
+	}
+	if total > 0 && written != total {
+		return &DownloadResult{Error: fmt.Errorf("truncated download: got %d bytes, want %d", written, total)}
 	}
 	return &DownloadResult{
 		OutputFile: relOutput,

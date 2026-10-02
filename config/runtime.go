@@ -62,10 +62,8 @@ type RuntimeConfig struct {
 	RepeatQueue  RuntimeRepeatQueueConfig  `yaml:"repeat_queue,omitempty" json:"repeat_queue,omitzero"`
 }
 
-// RuntimeBrowserConfig 浏览器池运行期覆盖项。
+// RuntimeBrowserConfig 浏览器池运行期覆盖项。池大小不在此列：它是启动时读的上限，改需重启。
 type RuntimeBrowserConfig struct {
-	PoolSize    *int              `yaml:"pool_size,omitempty" json:"pool_size,omitempty"`
-	DirectSize  *int              `yaml:"direct_pool_size,omitempty" json:"direct_pool_size,omitempty"`
 	MaxIdleTime *Duration         `yaml:"max_idle_time,omitempty" json:"max_idle_time,omitempty"`
 	Headers     map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
@@ -111,7 +109,7 @@ func (rt *RuntimeConfig) IsZero() bool {
 
 // IsZero 报告浏览器覆盖项是否为空。
 func (b RuntimeBrowserConfig) IsZero() bool {
-	return b.PoolSize == nil && b.DirectSize == nil && b.MaxIdleTime == nil && len(b.Headers) == 0
+	return b.MaxIdleTime == nil && len(b.Headers) == 0
 }
 
 // IsZero 报告 HTML 覆盖项是否为空。
