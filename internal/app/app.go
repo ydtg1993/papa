@@ -9,12 +9,14 @@ import (
 	"github.com/ydtg1993/oao"
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/internal/auth"
 	"github.com/ydtg1993/papa/v2/internal/database"
 	"github.com/ydtg1993/papa/v2/internal/oplog"
 	"github.com/ydtg1993/papa/v2/internal/scheduler"
 	"github.com/ydtg1993/papa/v2/internal/server"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
 	"github.com/ydtg1993/papa/v2/internal/tasksource"
+	"github.com/ydtg1993/papa/v2/internal/tokenadmin"
 	"github.com/ydtg1993/papa/v2/models"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
@@ -169,6 +171,15 @@ func validPageKey(s string) bool {
 	return true
 }
 
+// operatorOf 从操作事件带的请求里取「操作人」：身份是鉴权中间件（internal/auth）解析访问令牌后
+// 写进请求上下文的。宿主自己构造事件时 Req 可能为 nil —— 那就记空，不影响审计写库。
+func operatorOf(ev oao.ActionEvent) string {
+	if ev.Req == nil {
+		return ""
+	}
+	return auth.OperatorFrom(ev.Req.Context())
+}
+
 // mountCustomRoutes 挂自定义页与注入的三条路由（在监控后台的装配里调用）。
 //
 //   - 清单走 /api/pages，和白名单 + 密钥一起校验（菜单是数据）；
@@ -255,7 +266,8 @@ func NewApp(opts ...Option) (*App, error) {
 
 	// 4. 自动迁移（开发环境）
 	if cfg.App.Env == "dev" {
-		allModels := []any{&models.CrawlerTask{}}
+		// 访问令牌表与审计表一样，是框架自己要用的，不依赖业务开关
+		allModels := []any{&models.CrawlerTask{}, &models.AccessToken{}}
 		if cfg.Server.OperationLog {
 			allModels = append(allModels, &models.OperationLog{})
 		}
@@ -407,20 +419,6 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	}
 }
 
-// resolveAuthKey 解析监控访问密钥：优先读 auth_key_file，读不到则回退到内联 auth_key
-func (a *App) resolveAuthKey(cfg config.ServerConfig) string {
-	if cfg.AuthKeyFile != "" {
-		if b, err := os.ReadFile(cfg.AuthKeyFile); err == nil {
-			if key := strings.TrimSpace(string(b)); key != "" {
-				return key
-			}
-		} else {
-			a.Logger.Sys.Errorf("read auth key file %s: %s", cfg.AuthKeyFile, err.Error())
-		}
-	}
-	return cfg.AuthKey
-}
-
 // resolveWhitelist 解析白名单：优先读 whitelist_file（文件存在即采用，即使为空），读不到回退内联 whitelist
 func (a *App) resolveWhitelist(cfg config.ServerConfig) []string {
 	if cfg.WhitelistFile != "" {
@@ -464,11 +462,11 @@ func (a *App) httpServer(ctx context.Context) {
 			a.sysInfo = sysinfo.NewCollector(2*time.Second, cfg.MonitorDirs)
 			a.sysInfo.Start(ctx)
 		}
-		authKey := a.resolveAuthKey(cfg)
 		whitelist := a.resolveWhitelist(cfg)
+		// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
+		auth.WarnIfNoToken(a.DB, a.Logger.Sys)
 		mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-			AuthKey:             authKey,
-			AuthKeyFile:         cfg.AuthKeyFile,
+			VerifyToken:         auth.Verifier(a.DB, a.Logger.Sys),
 			Whitelist:           whitelist,
 			WhitelistFile:       cfg.WhitelistFile,
 			Metrics:             a.Engine.GetMetrics,
@@ -484,19 +482,23 @@ func (a *App) httpServer(ctx context.Context) {
 		})
 		mon.Register(mux)
 
+		// 操作日志：开启时，oao 表格页的动作与后台自带的「访问令牌」页都往这里记。
+		var rec *oplog.Recorder
+		if cfg.OperationLog {
+			rec = oplog.New(a.DB, a.Logger.Sys)
+		}
+
 		// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
 		// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
 		tables := append([]oao.Table{tasksource.Table(a.DB, a.Engine)}, a.tables...)
 		cfgOao := oao.Config{
 			Tables: tables,
 			Logger: a.Logger.Sys,
-			Auth:   mon.Auth, // 复用监控后台的白名单 + 密钥校验
+			Auth:   mon.Auth, // 复用监控后台的白名单 + 令牌校验
 		}
-		if cfg.OperationLog {
-			rec := oplog.New(a.DB, a.Logger.Sys)
-			cfgOao.OnAction = rec.Record
-			tables = append(tables, oplog.Table(a.DB))
-			cfgOao.Tables = tables
+		if rec != nil {
+			cfgOao.OnAction = func(ev oao.ActionEvent) { rec.Record(ev, operatorOf(ev)) }
+			cfgOao.Tables = append(tables, oplog.Table(a.DB))
 		}
 		o, err := oao.New(cfgOao)
 		if err != nil {
@@ -510,6 +512,25 @@ func (a *App) httpServer(ctx context.Context) {
 				a.Logger.Sys.Errorf("oao static fs: %s", err.Error())
 			}
 		}
+
+		// 「访问令牌」页是后台自带的模块，不走表格组件 —— 它要「新增」，
+		// 而表格组件的动作只回 {"status":"ok"}，没法把服务端生成的明文令牌交给操作人。
+		// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 internal/tokenadmin）。
+		var tokenHook tokenadmin.Hook
+		if rec != nil {
+			tokenHook = func(ev tokenadmin.Event) {
+				rec.RecordEvent(oplog.Event{
+					Table: ev.Table, Action: ev.Action,
+					RowID:    strconv.FormatUint(uint64(ev.ID), 10),
+					Values:   ev.Values,
+					Err:      ev.Err,
+					IP:       ev.IP,
+					Operator: auth.OperatorFrom(ev.Req.Context()),
+					At:       ev.At,
+				})
+			}
+		}
+		tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
 
 		// 自定义页与注入（阶段 3 的逃生舱）
 		a.mountCustomRoutes(mux, mon.Auth)

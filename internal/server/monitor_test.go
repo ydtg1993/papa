@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/internal/auth"
 )
 
 // testLogger 静默日志，仅把 Errorf 转发到测试输出，便于排查。
@@ -161,7 +162,20 @@ func TestAPIMonitor(t *testing.T) {
 }
 
 func TestAuth(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{AuthKey: "s3cret"})
+	// 令牌校验由宿主注入；这里用桩，既能离线覆盖分支，也验证「操作人进了上下文」
+	var gotOperator string
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		VerifyToken: func(r *http.Request) (string, bool) {
+			switch auth.Extract(r) {
+			case "good":
+				return "张三", true
+			case "disabled":
+				return "", false
+			default:
+				return "", false
+			}
+		},
+	})
 
 	cases := []struct {
 		name   string
@@ -169,17 +183,22 @@ func TestAuth(t *testing.T) {
 		header map[string]string
 		want   int
 	}{
-		{"no key", "/api/monitor", nil, http.StatusUnauthorized},
-		{"wrong key", "/api/monitor", map[string]string{"X-Auth-Key": "nope"}, http.StatusUnauthorized},
-		{"bearer", "/api/monitor", map[string]string{"Authorization": "Bearer s3cret"}, http.StatusOK},
-		{"x-auth-key", "/api/monitor", map[string]string{"X-Auth-Key": "s3cret"}, http.StatusOK},
-		{"query key", "/api/monitor?key=s3cret", nil, http.StatusOK},
-		{"html no auth", "/monitor", nil, http.StatusOK},
+		{"没有令牌", "/api/monitor", nil, http.StatusUnauthorized},
+		{"令牌不对", "/api/monitor", map[string]string{"X-Auth-Key": "nope"}, http.StatusUnauthorized},
+		{"令牌被停用", "/api/monitor", map[string]string{"X-Auth-Key": "disabled"}, http.StatusUnauthorized},
+		{"bearer", "/api/monitor", map[string]string{"Authorization": "Bearer good"}, http.StatusOK},
+		{"x-auth-key", "/api/monitor", map[string]string{"X-Auth-Key": "good"}, http.StatusOK},
+		{"query 不再被接受", "/api/monitor?key=good", nil, http.StatusUnauthorized},
+		{"HTML 只查 IP，不要令牌", "/monitor", nil, http.StatusOK},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			mux := http.NewServeMux()
 			m.Register(mux)
+			mux.HandleFunc("/api/whoami", m.wrap(func(w http.ResponseWriter, r *http.Request) {
+				gotOperator = auth.OperatorFrom(r.Context())
+				w.WriteHeader(http.StatusOK)
+			}))
 			req := httptest.NewRequest(http.MethodGet, c.target, nil)
 			for k, v := range c.header {
 				req.Header.Set(k, v)
@@ -190,6 +209,55 @@ func TestAuth(t *testing.T) {
 				t.Errorf("status = %d, want %d", rr.Code, c.want)
 			}
 		})
+	}
+
+	// 校验通过时，操作人必须进到请求上下文（操作日志靠它记人）
+	mux := http.NewServeMux()
+	m.Register(mux)
+	mux.HandleFunc("/api/whoami", m.wrap(func(w http.ResponseWriter, r *http.Request) {
+		gotOperator = auth.OperatorFrom(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	if gotOperator != "张三" {
+		t.Fatalf("上下文里的操作人 = %q, want 张三", gotOperator)
+	}
+}
+
+// 带凭据的接口响应不许被缓存：令牌停用/删除后，代理里那份旧 200 还能被重放出来。
+// （浏览器自己不会缓存带 Authorization 的响应，但中间代理会 —— 所以显式写死，不靠实现细节。）
+func TestAPIResponsesNotCached(t *testing.T) {
+	ok := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		VerifyToken: func(r *http.Request) (string, bool) { return "张三", true },
+	})
+	deny := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		VerifyToken: func(r *http.Request) (string, bool) { return "", false },
+	})
+
+	for _, m := range []*Monitor{ok, deny} {
+		mux := http.NewServeMux()
+		m.Register(mux)
+		for _, target := range []string{"/api/monitor", "/api/settings", "/api/logs"} {
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, target, nil))
+			if cc := rr.Header().Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("%s（%d）的 Cache-Control = %q，want no-store", target, rr.Code, cc)
+			}
+		}
+	}
+}
+
+// 没注入校验器（未配置凭据）时 /api/* 放行 —— 与"没配任何凭据"同义
+func TestAuthNoVerifier(t *testing.T) {
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+	mux := http.NewServeMux()
+	m.Register(mux)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/monitor", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 }
 
@@ -258,53 +326,6 @@ func TestWhitelistHandler(t *testing.T) {
 	mux.ServeHTTP(rr4, req)
 	if rr4.Code != http.StatusForbidden {
 		t.Errorf("after update non-whitelisted ip status = %d, want 403", rr4.Code)
-	}
-}
-
-func TestSecretHandler(t *testing.T) {
-	dir := t.TempDir()
-	kf := filepath.Join(dir, "secret.txt")
-
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{AuthKeyFile: kf})
-	mux := http.NewServeMux()
-	m.Register(mux)
-
-	// 生成前无密钥，接口开放
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/monitor", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("before secret status = %d, want 200", rr.Code)
-	}
-
-	// 重新生成密钥
-	rr2 := httptest.NewRecorder()
-	mux.ServeHTTP(rr2, httptest.NewRequest(http.MethodPost, "/api/settings/secret", nil))
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("POST secret status = %d, body=%s", rr2.Code, rr2.Body.String())
-	}
-	key := decodeJSON(t, rr2)["key"].(string)
-	if len(key) != 64 {
-		t.Errorf("secret length = %d, want 64", len(key))
-	}
-	if b, err := os.ReadFile(kf); err != nil {
-		t.Fatalf("read secret file: %v", err)
-	} else if !strings.Contains(string(b), key) {
-		t.Errorf("secret file content = %q, want contains %q", string(b), key)
-	}
-
-	// 生成后需新密钥访问
-	rr3 := httptest.NewRecorder()
-	mux.ServeHTTP(rr3, httptest.NewRequest(http.MethodGet, "/api/monitor", nil))
-	if rr3.Code != http.StatusUnauthorized {
-		t.Errorf("after secret no key status = %d, want 401", rr3.Code)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
-	req.Header.Set("X-Auth-Key", key)
-	rr4 := httptest.NewRecorder()
-	mux.ServeHTTP(rr4, req)
-	if rr4.Code != http.StatusOK {
-		t.Errorf("after secret with key status = %d, want 200", rr4.Code)
 	}
 }
 
@@ -433,27 +454,6 @@ func TestParseWhitelist(t *testing.T) {
 	}
 }
 
-func TestExtractKey(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
-	if extractKey(req) != "" {
-		t.Error("empty key should be empty")
-	}
-	req.Header.Set("Authorization", "Bearer tok")
-	if extractKey(req) != "tok" {
-		t.Error("bearer key not extracted")
-	}
-	req.Header.Del("Authorization")
-	req.Header.Set("X-Auth-Key", "xk")
-	if extractKey(req) != "xk" {
-		t.Error("x-auth-key not extracted")
-	}
-	req.Header.Del("X-Auth-Key")
-	req = httptest.NewRequest(http.MethodGet, "/api/monitor?key=qk", nil)
-	if extractKey(req) != "qk" {
-		t.Error("query key not extracted")
-	}
-}
-
 func TestClientIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "1.2.3.4:5678"
@@ -466,17 +466,6 @@ func TestClientIP(t *testing.T) {
 	}
 }
 
-func TestGenerateSecret(t *testing.T) {
-	s, err := generateSecret()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(s) != 64 {
-		t.Errorf("secret length = %d, want 64", len(s))
-	}
-}
-
-// TestMonitorDemoJSON 把完整假数据接口输出落盘并打印，方便直观查看效果。
 func TestMonitorDemoJSON(t *testing.T) {
 	m := newFakeMonitor(t)
 	rr := serve(m, http.MethodGet, "/api/monitor", nil)

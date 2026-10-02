@@ -23,7 +23,7 @@
 
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
-    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tables: '数据', pages: '自定义页', custom: '自定义数据', settings: '设置' };
+    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tables: '数据', pages: '自定义页', custom: '自定义数据', tokens: '访问令牌', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
@@ -31,14 +31,16 @@
     function clearKey() { localStorage.removeItem(KEY_STORAGE); }
 
     function showLogin(showErr) {
-        document.getElementById('login').classList.remove('hidden');
+        // 可见性挂在 <html> 的 need-login 上（不是遮罩自己的 .hidden）：这样 <head> 里的
+        // 内联脚本能在第一帧之前就把状态定好，刷新时不会闪一下登录框
+        document.documentElement.classList.add('need-login');
         document.getElementById('err').style.display = showErr ? 'block' : 'none';
         document.getElementById('key').focus();
     }
-    function hideLogin() { document.getElementById('login').classList.add('hidden'); }
+    function hideLogin() { document.documentElement.classList.remove('need-login'); }
     // 输密钥后除了拉数据，也要重建两个动态菜单 —— 否则首次访问输完密钥，
     // 侧边栏的表格页与自定义页都是空的，要手动刷新才出来
-    function submitKey() { saveKey(document.getElementById('key').value); fetchData(); renderTableNav(); renderPageNav(); }
+    function submitKey() { saveKey(document.getElementById('key').value); fetchData(); renderNav(); }
     function setStatus(ok, text) {
         document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
         document.getElementById('statusText').textContent = text;
@@ -53,6 +55,7 @@
         });
         document.getElementById('moduleTitle').textContent = MODULE_TITLES[name];
         if (name === 'settings') { fetchSettings(); fetchLogs(); }
+        if (name === 'tokens') { fetchTokens(); }
     }
 
     /* ============ 表格（oao 组件） ============ */
@@ -74,27 +77,58 @@
     }
 
     /** 按 Group 分组渲染侧边栏的动态菜单 */
-    async function renderTableNav() {
+    /**
+     * 内置表格页的固定菜单：这些表的菜单项写在 template.html 的侧边栏里
+     * （框架自带功能，不该混在业务表格的分组里），动态分组里就不重复出。
+     * key → 按钮 id；按钮在表没注册时藏起来（比如没开 operation_log）。
+     */
+    var BUILTIN_TABLES = { operation_log: 'nav-oplog' };
+
+    /** 侧边栏动态菜单：表格页与自定义页**合并**，按 group 首次出现的顺序分组
+     *  （与 oao 的 mount 同一约定 —— 分开渲染会让同名的组裂成两段） */
+    async function renderNav() {
         var nav = document.getElementById('oao-nav');
-        var tables;
-        try { tables = await Oao.list(true); }
-        catch (e) { nav.innerHTML = ''; return; }
+        if (!nav) return;
+
+        var tables = [];
+        try { tables = (await Oao.list(true)) || []; } catch (e) { tables = []; }
+        var pages = [];
+        var resp = await apiFetch('/api/pages');
+        if (resp) {
+            try { pages = (await resp.json()).pages || []; } catch (e) { pages = []; }
+        }
+
+        // 固定菜单项：注册了就显示（标题也以表声明为准，省得两处各写一遍），没注册就藏
+        Object.keys(BUILTIN_TABLES).forEach(function (key) {
+            var btn = document.getElementById(BUILTIN_TABLES[key]);
+            if (!btn) return;
+            var t = tables.filter(function (x) { return x.key === key; })[0];
+            if (t) btn.textContent = t.label;
+            btn.classList.toggle('hidden', !t);
+        });
+
+        var items = tables.filter(function (t) { return !BUILTIN_TABLES[t.key]; })
+            .map(function (t) { return { key: t.key, label: t.label, group: t.group, page: false }; })
+            .concat(pages.map(function (p) { return { key: p.key, label: p.label, group: p.group, page: true }; }));
+        if (!items.length) { nav.innerHTML = ''; return; }
 
         var groups = [];
-        tables.forEach(function (t) {
-            var g = t.group || 'General';
+        items.forEach(function (it) {
+            var g = it.group || 'General';
             if (groups.indexOf(g) === -1) groups.push(g);
         });
         nav.innerHTML = groups.map(function (g) {
             return '<div class="nav-section">' + esc(g) + '</div>'
-                + tables.filter(function (t) { return (t.group || 'General') === g; })
-                    .map(function (t) {
-                        return '<button class="nav-item" data-oao="' + esc(t.key) + '">' + esc(t.label) + '</button>';
+                + items.filter(function (it) { return (it.group || 'General') === g; })
+                    .map(function (it) {
+                        var attr = it.page ? 'data-page' : 'data-oao';
+                        return '<button class="nav-item" ' + attr + '="' + esc(it.key) + '">' + esc(it.label) + '</button>';
                     }).join('');
         }).join('');
 
         nav.querySelectorAll('.nav-item').forEach(function (b) {
-            b.onclick = function () { openTable(b.dataset.oao, b.textContent, b); };
+            if (b.dataset.page) b.onclick = function () { openPage(b.dataset.page, b.textContent, b); };
+            else b.onclick = function () { openTable(b.dataset.oao, b.textContent, b); };
         });
     }
 
@@ -138,34 +172,6 @@
                 + ' 没有注册渲染函数：检查 app.UsePage 的 Script 里是否调了 Papa.page("'
                 + esc(key) + '", fn)</div>';
         }
-    }
-
-    /** 按 Group 分组渲染自定义页菜单（清单来自 /api/pages） */
-    async function renderPageNav() {
-        var nav = document.getElementById('page-nav');
-        if (!nav) return;
-        var resp = await apiFetch('/api/pages');
-        if (!resp) { nav.innerHTML = ''; return; }
-        var pages = [];
-        try { pages = (await resp.json()).pages || []; } catch (e) { pages = []; }
-        if (!pages.length) { nav.innerHTML = ''; return; }
-
-        var groups = [];
-        pages.forEach(function (p) {
-            var g = p.group || 'General';
-            if (groups.indexOf(g) === -1) groups.push(g);
-        });
-        nav.innerHTML = groups.map(function (g) {
-            return '<div class="nav-section">' + esc(g) + '</div>'
-                + pages.filter(function (p) { return (p.group || 'General') === g; })
-                    .map(function (p) {
-                        return '<button class="nav-item" data-page="' + esc(p.key) + '">' + esc(p.label) + '</button>';
-                    }).join('');
-        }).join('');
-
-        nav.querySelectorAll('.nav-item').forEach(function (b) {
-            b.onclick = function () { openPage(b.dataset.page, b.textContent, b); };
-        });
     }
 
     /* ============ UI 基础组件（阶段 0） ============ */
@@ -241,7 +247,11 @@
                 var b = document.createElement('button');
                 b.className = 'btn' + (a.tone === 'danger' ? ' danger' : '');
                 b.textContent = a.label;
-                b.onclick = function () { close(a.value); };
+                b.onclick = function () {
+                    // 表单类弹窗用 onClick 先校验：返回 false 表示"先别关"（关闭会清掉表单）
+                    if (a.onClick && a.onClick() === false) return;
+                    close(a.value);
+                };
                 elActions.appendChild(b);
             });
             mask.classList.add('open');
@@ -525,9 +535,6 @@
         document.getElementById('wl-file-info').textContent = data.whitelist_file
             ? ('持久化文件：' + data.whitelist_file + (data.has_whitelist_file ? '（已存在）' : '（首次保存时创建）'))
             : '未配置 whitelist_file：改动仅本次运行有效';
-        document.getElementById('secret-file-info').textContent = data.auth_key_file
-            ? ('密钥文件：' + data.auth_key_file + (data.has_secret_file ? '（已存在）' : '（不存在）'))
-            : '未配置密钥文件：重新生成的密钥仅本次运行有效';
     }
     async function saveWhitelist() {
         var lines = document.getElementById('wl-input').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
@@ -536,21 +543,178 @@
         if (resp && resp.ok) Toast.ok('白名单已保存');
         else Toast.err('白名单保存失败');
     }
-    async function regenSecret() {
+    /* ============ 访问令牌 ============ */
+    /**
+     * 这一页是后台自带的模块，不是 oao 表格页：表格组件的动作只回 {"status":"ok"}、不回数据，
+     * 而「新增」必须把服务端生成的明文令牌交给操作人看一次（库里只存 sha256，过后无从显示）。
+     */
+    async function fetchTokens() {
+        var el = document.getElementById('token-table');
+        if (!el) return;
+        el.innerHTML = '<table><tbody>' + skeletonRows(7, 3) + '</tbody></table>';
+        var resp = await apiFetch('/api/tokens');
+        if (!resp) { el.innerHTML = '<div class="empty">读取失败，请稍后重试</div>'; return; }
+        var data = await resp.json();
+        renderTokens(data.tokens || []);
+    }
+
+    function renderTokens(rows) {
+        var el = document.getElementById('token-table');
+        if (!rows.length) {
+            el.innerHTML = '<div class="empty">还没有任何访问令牌 —— 此时 /api/* 对白名单内的来源完全开放。'
+                + '点上面的「新增令牌」建一把。</div>';
+            return;
+        }
+        var html = '<table><thead><tr><th>ID</th><th>操作人</th><th>状态</th><th>备注</th>'
+            + '<th>创建时间</th><th>更新时间</th><th>操作</th></tr></thead><tbody>';
+        rows.forEach(function (t) {
+            html += '<tr>'
+                + '<td>' + t.id + '</td>'
+                + '<td>' + esc(t.operator) + '</td>'
+                + '<td>' + (t.enabled
+                    ? '<span class="badge ok">启用中</span>'
+                    : '<span class="badge off">已停用</span>') + '</td>'
+                + '<td>' + esc(t.note || '') + '</td>'
+                + '<td>' + fmtTime(t.created_at) + '</td>'
+                + '<td>' + fmtTime(t.updated_at) + '</td>'
+                + '<td><div class="row-actions">'
+                + (t.enabled
+                    ? '<button class="btn" data-token-off="' + t.id + '">停用</button>'
+                    : '<button class="btn" data-token-on="' + t.id + '">启用</button>')
+                + '<button class="btn danger" data-token-del="' + t.id + '">删除</button>'
+                + '</div></td></tr>';
+        });
+        el.innerHTML = html + '</tbody></table>';
+
+        el.querySelectorAll('[data-token-off]').forEach(function (b) {
+            b.onclick = function () { setTokenEnabled(Number(b.dataset.tokenOff), false); };
+        });
+        el.querySelectorAll('[data-token-on]').forEach(function (b) {
+            b.onclick = function () { setTokenEnabled(Number(b.dataset.tokenOn), true); };
+        });
+        el.querySelectorAll('[data-token-del]').forEach(function (b) {
+            b.onclick = function () { removeToken(Number(b.dataset.tokenDel)); };
+        });
+    }
+
+    /** 后端给的是 RFC3339（带纳秒），浏览器 Date 只认到毫秒：多出来的小数位先截掉 */
+    function fmtTime(s) {
+        if (!s) return '';
+        var d = new Date(String(s).replace(/(\.\d{3})\d+/, '$1'));
+        return isNaN(d.getTime()) ? String(s) : d.toLocaleString();
+    }
+
+    /** 新增：表单 → 服务端生成 → 弹窗把明文显示一次 */
+    async function openNewToken() {
+        var p = Dialog.open({
+            title: '新增访问令牌',
+            body: '<div class="field"><label for="tk-operator">操作人</label>'
+                + '<input id="tk-operator" placeholder="谁用这把令牌，比如 张三" autocomplete="off"></div>'
+                + '<div class="field"><label for="tk-note">备注</label>'
+                + '<input id="tk-note" placeholder="可选，比如 运维机" autocomplete="off"></div>'
+                + '<div class="hint">令牌由服务端生成，<b>只显示这一次</b>；库里只存 sha256，过后找不回来。</div>'
+                + '<div class="errtext" id="tk-err"></div>',
+            actions: [
+                { label: '取消', value: null },
+                {
+                    label: '创建', value: 'ok',
+                    onClick: function () {
+                        if (!document.getElementById('tk-operator').value.trim()) {
+                            document.getElementById('tk-err').textContent = '操作人不能为空';
+                            document.getElementById('tk-operator').focus();
+                            return false; // 别关，让用户补上
+                        }
+                        return true;
+                    }
+                }
+            ]
+        });
+        var operator = document.getElementById('tk-operator');
+        var note = document.getElementById('tk-note');
+
+        if (await p !== 'ok') return;
+        var data = await tokenWrite('/api/tokens', { operator: operator.value, note: note.value });
+        if (!data || !data.token) return;
+
+        var token = data.token;
+        await Dialog.open({
+            title: '令牌（只显示这一次）',
+            body: '<p>给「' + esc(operator.value.trim()) + '」的访问令牌：</p>'
+                + '<div class="secret-box">' + esc(token) + '</div>'
+                + '<p class="hint">请立刻存好：库里只有 sha256，关掉这个窗口就再也看不到明文了。</p>',
+            actions: [
+                { label: '复制', value: 'copy', onClick: function () { copyText(token); return false; } },
+                { label: '我已存好', value: null }
+            ]
+        });
+        fetchTokens();
+    }
+
+    async function setTokenEnabled(id, enabled) {
+        if (!enabled) {
+            var ok = await Dialog.confirm({
+                title: '停用访问令牌',
+                body: '<p>停用后这把令牌立刻失效（可以再启用）。</p>'
+                    + '<p>如果它是最后一把启用中的令牌，后台将对所有人拒绝，'
+                    + '那种情况只能用 <code>papa token add</code> 救回来。</p>',
+                danger: true, okLabel: '停用'
+            });
+            if (!ok) return;
+        }
+        if (!await tokenWrite('/api/tokens/enabled', { id: id, enabled: enabled })) return;
+        Toast.ok(enabled ? '已启用' : '已停用');
+        fetchTokens();
+    }
+
+    async function removeToken(id) {
         var ok = await Dialog.confirm({
-            title: '重新生成密钥',
-            body: '<p>当前登录态会立即切换到新密钥，旧密钥失效。</p><p>未配置密钥文件时，重启后新密钥也会丢失。</p>',
-            danger: true, okLabel: '生成'
+            title: '删除访问令牌',
+            body: '<p>删除后无法恢复（这条令牌与它的哈希一起删掉）。</p><p>只是暂时不用的话，改用「停用」。</p>',
+            danger: true, okLabel: '删除'
         });
         if (!ok) return;
-        var resp = await apiPost('/api/settings/secret', {});
-        if (!resp || !resp.ok) { Toast.err('生成密钥失败'); return; }
-        var data = await resp.json();
-        saveKey(data.key);
-        var box = document.getElementById('secret-result');
-        box.classList.remove('hidden');
-        box.innerHTML = '新密钥：<br><b>' + esc(data.key) + '</b><br><br>已自动更新登录态；请妥善保存，未配置密钥文件时重启会失效。';
-        Toast.ok('已生成新密钥');
+        if (!await tokenWrite('/api/tokens/remove', { id: id })) return;
+        Toast.ok('已删除');
+        fetchTokens();
+    }
+
+    /**
+     * 令牌页的写操作。刻意不用 apiPost：那个"失败即 null"会吞掉服务端的话术，
+     * 而这里的失败原因要让人看见（"操作人不能为空"、"该令牌状态已变，请刷新后重试"）。
+     */
+    async function tokenWrite(url, body) {
+        var headers = { 'Content-Type': 'application/json' };
+        var key = loadKey();
+        if (key) headers['Authorization'] = 'Bearer ' + key;
+        var resp;
+        try { resp = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body || {}) }); }
+        catch (e) { Toast.err('连接失败'); return null; }
+        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
+        var data = {};
+        try { data = await resp.json(); } catch (e) { /* 没 body 也能报状态码 */ }
+        if (!resp.ok) { Toast.err(data.error || ('操作失败 HTTP ' + resp.status)); return null; }
+        return data;
+    }
+
+    /** 复制到剪贴板；明文令牌是长串随机字符，靠手抄容易错一位 */
+    function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(
+                function () { Toast.ok('已复制到剪贴板'); },
+                function () { Toast.err('复制失败，请手动选中'); });
+            return;
+        }
+        // 非安全上下文（http + 局域网 IP）拿不到 navigator.clipboard，退回选中 + execCommand
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        if (ok) Toast.ok('已复制到剪贴板'); else Toast.err('复制失败，请手动选中');
     }
     async function doShutdown() {
         var ok = await Dialog.confirm({
@@ -631,7 +795,10 @@
         }
     });
 
+    // 有本地凭据就直接进（遮罩的状态 <head> 的内联脚本已经在首帧前定好了，这里兜底：
+    // 万一那段脚本没了，也不会变成"没凭据却不弹登录框"）；没凭据则弹出并聚焦输入框
+    if (loadKey()) hideLogin(); else showLogin(false);
+
     fetchData();
-    renderTableNav();
-    renderPageNav();
+    renderNav();
     setInterval(fetchData, 3000);

@@ -88,11 +88,11 @@
 | `enabled` | bool | 是否开启 HTTP 服务 |
 | `port` | int | 监听端口 |
 | `monitor` | bool | 是否挂载监控页/API |
-| `auth_key` / `auth_key_file` | string | 访问密钥；文件优先 |
 | `whitelist` / `whitelist_file` | []string | 来源 IP/CIDR 白名单；文件优先 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
-| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败），并多出一张只读的「操作日志」表格页；关闭时不建表、不写库 |
+| （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人），不再用配置里的单密钥；用 `papa token add --operator <名字>` 创建 |
+| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
 
 ### scheduler —— 定时任务（详见 [SCHEDULER.md](./SCHEDULER.md)）
 

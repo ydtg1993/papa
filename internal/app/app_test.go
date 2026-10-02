@@ -5,6 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+
+	"github.com/ydtg1993/oao"
+	"github.com/ydtg1993/papa/v2/internal/auth"
 	"strings"
 	"testing"
 )
@@ -152,4 +155,22 @@ func getBody(t *testing.T, url string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// 审计记人的胶水：操作人来自鉴权中间件写进请求上下文的身份；
+// 宿主自己构造的事件没有请求（Req == nil），记空即可，不能让写库出错。
+func TestOperatorOf(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/oao/t/action/go", nil)
+	req = req.WithContext(auth.WithOperator(req.Context(), "张三"))
+	if got := operatorOf(oao.ActionEvent{Req: req}); got != "张三" {
+		t.Fatalf("operatorOf = %q, want 张三", got)
+	}
+	if got := operatorOf(oao.ActionEvent{}); got != "" {
+		t.Fatalf("没有请求时应记空，得到 %q", got)
+	}
+	// 请求在、但中间件没写身份（比如 /monitor 这类只查 IP 的路径）也记空
+	plain := httptest.NewRequest(http.MethodPost, "/api/oao/t/action/go", nil)
+	if got := operatorOf(oao.ActionEvent{Req: plain}); got != "" {
+		t.Fatalf("请求里没有身份时应记空，得到 %q", got)
+	}
 }

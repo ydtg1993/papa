@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +33,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "token":
+		if err := runTokenCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "html", "rod", "diff", "select":
 		if err := runDebugCmd(os.Args[1], os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -51,6 +54,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  papa new <project-name> [--replace <local-papa-path>]")
 	fmt.Fprintln(os.Stderr, "    生成一个新爬虫项目骨架")
 	fmt.Fprintln(os.Stderr, "    --replace  在 go.mod 加 replace 指向本地 papa 仓库（本地验证用，无需先发布）")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  papa token add --operator <名字>   创建一把后台访问令牌（明文只打印一次）")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa html <url> [flags]   静态 HTML 抓取")
 	fmt.Fprintln(os.Stderr, "  papa rod  <url> [flags]   浏览器渲染后抓取")
@@ -130,32 +135,15 @@ func runNew(name string, args []string) error {
 		return err
 	}
 
-	// 生成监控后台访问密钥文件，供 config.yaml 的 server.auth_key_file 引用
-	secret, err := generateSecret()
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(name, "configs", "secret"), []byte(secret+"\n"), 0o600); err != nil {
-		return err
-	}
-
 	// 生成白名单持久化文件，供 config.yaml 的 server.whitelist_file 引用
 	if err := os.WriteFile(filepath.Join(name, "configs", "whitelist"), []byte("# 每行一个 IP 或 CIDR，留空 = 不限制\n"), 0o600); err != nil {
 		return err
 	}
 
 	fmt.Printf("project %q generated.\n", name)
-	fmt.Printf("next: cd %s && go mod tidy && go run .\n", name)
+	fmt.Printf("next: cd %s && go mod tidy\n", name)
+	fmt.Printf("      登录后台要先建访问令牌：papa token add --operator <名字>\n")
 	return nil
-}
-
-// generateSecret 生成 32 字节随机密钥的十六进制串
-func generateSecret() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }
 
 func appendReplace(goModPath, replacePath string) error {

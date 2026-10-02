@@ -2,9 +2,7 @@ package server
 
 import (
 	"archive/zip"
-	"crypto/rand"
 	"embed"
-	"encoding/hex"
 	"encoding/json"
 	"html/template"
 	"io"
@@ -19,6 +17,7 @@ import (
 
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/internal/auth"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
 )
 
@@ -33,8 +32,10 @@ type MonitorGetter func() map[string]crawler.StageStats
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	AuthKey             string                              // 初始访问密钥，空=不校验
-	AuthKeyFile         string                              // 密钥文件路径（重新生成时持久化到此文件）
+	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
+	// 由宿主注入（papa 用 internal/auth 的库表实现），本包不认识令牌怎么存 ——
+	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
+	VerifyToken         func(r *http.Request) (operator string, ok bool)
 	Whitelist           []string                            // 初始 IP/CIDR 白名单，空=不限制
 	WhitelistFile       string                              // 白名单持久化文件路径（动态更新时写回）
 	Metrics             func() map[string]any               // 业务自定义数据快照（可空）
@@ -59,7 +60,6 @@ type Monitor struct {
 	parseErr  error
 
 	mu        sync.RWMutex
-	authKey   string
 	whitelist []*net.IPNet
 }
 
@@ -76,7 +76,6 @@ func NewMonitor(getter MonitorGetter, logger Logger, cfg MonitorConfig) *Monitor
 		getter:    getter,
 		logger:    logger,
 		cfg:       cfg,
-		authKey:   cfg.AuthKey,
 		whitelist: parseWhitelist(cfg.Whitelist, logger),
 	}
 }
@@ -117,7 +116,6 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/monitor", s.wrap(s.apiHandler))
 	mux.HandleFunc("/api/settings", s.wrap(s.settingsHandler))
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
-	mux.HandleFunc("/api/settings/secret", s.wrap(s.secretHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
 	mux.HandleFunc("/api/recoverqueue/process", s.wrap(s.recoverQueueProcessHandler))
@@ -127,23 +125,32 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
 }
 
-// wrap 包装处理器：先 IP 白名单，再密钥校验（仅 /api/ 数据接口）
+// wrap 包装处理器：先 IP 白名单，再令牌校验（仅 /api/ 数据接口）。
+// 校验通过时把「操作人」放进请求上下文，操作日志据此记人。
 func (s *Monitor) wrap(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.ipAllowed(r) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") && !s.authOK(r) {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			// 带凭据的数据响应不许任何缓存留存：令牌被停用/删除后，代理（或浏览器）里那份
+			// 旧 200 还能被原样重放出来。浏览器自己不会缓存带 Authorization 的响应，
+			// 但中间代理会 —— 这里把它明确掉，不靠实现细节。
+			w.Header().Set("Cache-Control", "no-store")
+			operator, ok := s.authOK(r)
+			if !ok {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			r = r.WithContext(auth.WithOperator(r.Context(), operator))
 		}
 		next(w, r)
 	}
 }
 
-// Auth 把同一套「白名单 + 密钥」校验暴露成 http.Handler 中间件，
+// Auth 把同一套「白名单 + 令牌」校验暴露成 http.Handler 中间件，
 // 供挂在同一 mux 上的外部组件（如 oao 表格）复用，避免业务侧接口绕过鉴权。
 func (s *Monitor) Auth(next http.Handler) http.Handler {
 	return s.wrap(func(w http.ResponseWriter, r *http.Request) {
@@ -178,27 +185,13 @@ func clientIP(r *http.Request) net.IP {
 	return net.ParseIP(host)
 }
 
-// authOK 校验密钥；密钥为空则放行
-func (s *Monitor) authOK(r *http.Request) bool {
-	s.mu.RLock()
-	key := s.authKey
-	s.mu.RUnlock()
-	if key == "" {
-		return true
+// authOK 校验访问令牌，返回（操作人, 是否通过）。
+// 没注入校验器（未配置凭据）时放行 —— 与"没配任何凭据"同义。
+func (s *Monitor) authOK(r *http.Request) (operator string, ok bool) {
+	if s.cfg.VerifyToken == nil {
+		return "", true
 	}
-	k := extractKey(r)
-	return k != "" && k == key
-}
-
-// extractKey 从 Authorization: Bearer / X-Auth-Key / ?key= 提取密钥
-func extractKey(r *http.Request) string {
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-	}
-	if h := r.Header.Get("X-Auth-Key"); h != "" {
-		return h
-	}
-	return r.URL.Query().Get("key")
+	return s.cfg.VerifyToken(r)
 }
 
 // loadTemplate 加载 HTML 模板（懒加载，线程安全）
@@ -265,8 +258,6 @@ func (s *Monitor) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"whitelist":          wl,
 		"whitelist_file":     s.cfg.WhitelistFile,
 		"has_whitelist_file": s.cfg.WhitelistFile != "" && fileExists(s.cfg.WhitelistFile),
-		"auth_key_file":      s.cfg.AuthKeyFile,
-		"has_secret_file":    s.cfg.AuthKeyFile != "" && fileExists(s.cfg.AuthKeyFile),
 		"log_dir":            s.cfg.LogDir,
 	})
 }
@@ -297,30 +288,6 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 	s.whitelist = parsed
 	s.mu.Unlock()
 	writeJSON(w, map[string]any{"status": "ok", "whitelist": body.Whitelist})
-}
-
-// secretHandler 重新生成密钥并持久化到密钥文件
-func (s *Monitor) secretHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	key, err := generateSecret()
-	if err != nil {
-		http.Error(w, "generate secret failed", http.StatusInternalServerError)
-		return
-	}
-	if s.cfg.AuthKeyFile != "" {
-		if err := os.WriteFile(s.cfg.AuthKeyFile, []byte(key+"\n"), 0o600); err != nil {
-			s.logger.Errorf("write secret file %s: %s", s.cfg.AuthKeyFile, err.Error())
-			http.Error(w, "write secret file failed", http.StatusInternalServerError)
-			return
-		}
-	}
-	s.mu.Lock()
-	s.authKey = key
-	s.mu.Unlock()
-	writeJSON(w, map[string]any{"key": key})
 }
 
 // shutdownHandler 触发优雅退出（稍延迟以便响应刷出）
@@ -537,15 +504,6 @@ func zipLogs(w http.ResponseWriter, dir string) {
 		_ = src.Close()
 		return nil
 	})
-}
-
-// generateSecret 生成 32 字节随机密钥的十六进制串
-func generateSecret() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }
 
 // noCache 禁止静态资源被浏览器缓存，改样式后无需手动清缓存即可看到。

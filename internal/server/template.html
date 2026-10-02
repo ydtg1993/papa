@@ -4,6 +4,18 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Papa Monitor</title>
+    <!-- 首帧之前就定好「主题」与「登录遮罩显不显示」。
+         这两件事 mo.js 也会做，但它在 </body> 前、还要等外部脚本加载完 —— 那之前浏览器
+         已经能画第一帧了：深色用户会闪一下白底，有凭据的人每次刷新会闪一下登录框。
+         内联在这里（样式表之前）就不会。键名与 mo.js 的 themeKey / KEY_STORAGE 保持一致。 -->
+    <script>
+        (function () {
+            var d = document.documentElement;
+            var theme = localStorage.getItem('papa-theme');
+            if (theme) d.setAttribute('data-theme', theme);
+            if (!localStorage.getItem('papa_monitor_key')) d.classList.add('need-login');
+        })();
+    </script>
     <link rel="stylesheet" href="/static/mo.css">
     <link rel="stylesheet" href="/static/oao/oao.css">
     <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
@@ -29,9 +41,12 @@
             <button class="nav-item" data-module="queue" onclick="switchModule('queue')">任务队列</button>
             <button class="nav-item" data-module="queues" onclick="switchModule('queues')">队列治理</button>
             <div id="oao-nav"></div>
-            <div id="page-nav"></div>
             <div class="nav-section">General</div>
             <button class="nav-item" data-module="custom" onclick="switchModule('custom')">自定义数据</button>
+            <!-- 内置表格页：菜单固定在这里（不跟业务表格挤在一起），渲染仍交给表格组件。
+                 开启 server.operation_log 才注册这张表，没注册时这个按钮由 renderNav 藏起来。 -->
+            <button class="nav-item hidden" id="nav-oplog" onclick="openTable('operation_log', this.textContent, this)">操作日志</button>
+            <button class="nav-item" data-module="tokens" onclick="switchModule('tokens')">访问令牌</button>
             <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
         </nav>
         <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
@@ -86,6 +101,22 @@
             <div id="page-view"></div>
         </div>
 
+        <div class="module" id="mod-tokens">
+            <section>
+                <h2>访问令牌</h2>
+                <div class="card">
+                    <p class="hint">每条令牌属于一个操作人：登录后用它的写操作都会记下「谁干的」（操作日志页的「操作人」列）。
+                        令牌只存 sha256，<b>明文只在创建时显示这一次</b>，过后找不回来。</p>
+                    <p class="hint">表里一条都没有时，/api/* 对白名单内的来源完全开放（启动日志会警告）；
+                        有令牌但全被停用则会拒绝所有人 —— 那种情况只能靠 <code>papa token add</code> 补一把。</p>
+                    <div class="toolbar">
+                        <button class="btn" onclick="openNewToken()">新增令牌</button>
+                    </div>
+                    <div class="table-wrap" id="token-table"></div>
+                </div>
+            </section>
+        </div>
+
         <div class="module" id="mod-custom">
             <section>
                 <h2>自定义数据</h2>
@@ -102,14 +133,6 @@
                     <textarea id="wl-input" rows="5" placeholder="127.0.0.1&#10;10.0.0.0/8"></textarea>
                     <button class="btn" onclick="saveWhitelist()">保存白名单</button>
                     <div class="hint" id="wl-msg"></div>
-                </div>
-            </section>
-            <section>
-                <h2>登录密钥</h2>
-                <div class="card">
-                    <p class="hint" id="secret-file-info"></p>
-                    <button class="btn danger" onclick="regenSecret()">重新生成密钥</button>
-                    <div class="secret-box hidden" id="secret-result"></div>
                 </div>
             </section>
             <section>

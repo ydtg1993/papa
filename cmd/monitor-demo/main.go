@@ -55,12 +55,16 @@ func main() {
 		}
 	}
 
+	// 访问令牌：内存存储，登录校验与「访问令牌」页共用它（后台新建的令牌当场就能登录）
+	tokens := newDemoTokens()
+
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
-		Metrics:    metrics,
-		QueueStats: fakeQueueStats,
-		SysInfo:    sc,
-		LogDir:     "logs",
-		OnShutdown: func() { stop() },
+		VerifyToken: tokens.verify,
+		Metrics:     metrics,
+		QueueStats:  fakeQueueStats,
+		SysInfo:     sc,
+		LogDir:      "logs",
+		OnShutdown:  func() { stop() },
 	})
 
 	mux := http.NewServeMux()
@@ -71,7 +75,11 @@ func main() {
 	o, err := oao.New(oao.Config{
 		Logger: stdLogger{},
 		Auth:   mon.Auth,
-		Tables: []oao.Table{fakeTaskTable(), fakeStageTable()},
+		Tables: []oao.Table{
+			fakeTaskTable(), fakeStageTable(),
+			fakeOrderTable(), // 4 个动作 → 看「更多 ▾」折叠
+			fakeOplogTable(), // 「操作日志」页，看「操作人」列
+		},
 	})
 	if err != nil {
 		log.Fatalf("init oao: %v", err)
@@ -84,8 +92,16 @@ func main() {
 	mux.Handle("/static/oao/", http.StripPrefix("/static/oao/",
 		server.NoCache(http.FileServer(http.FS(static)))))
 
+	// 「访问令牌」是后台自带的模块（不是 oao 表格页），接口单独挂
+	tokens.register(mux, mon)
+
+	demoCustomPage(mux, mon)
+
 	addr := ":9090"
-	log.Printf("监控演示已启动，浏览器打开 http://localhost%s/monitor（Ctrl+C 退出）", addr)
+	log.Printf("监控演示已启动：http://localhost%s/monitor（Ctrl+C 退出）", addr)
+	log.Printf("  登录令牌：%s（登录框里填它；在「访问令牌」页新建的令牌也能登录）", demoToken)
+	log.Printf("  值得看：侧边栏 General 下的「访问令牌」（新增 → 明文只显示一次 → 拿它登录）")
+	log.Printf("  以及「演示」分组：订单（4 个动作 → 更多 ▾）/ 操作日志（操作人列）/ 审核（自定义页）")
 	go func() { _ = http.ListenAndServe(addr, mux) }()
 	<-ctx.Done()
 	log.Println("bye")

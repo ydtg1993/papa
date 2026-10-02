@@ -75,8 +75,9 @@ server:
   enabled: true
   port: 9090
   monitor: true
-  auth_key: ""                    # 内联密钥（优先级低于 auth_key_file）；两者都空则不校验
-  auth_key_file: "configs/secret" # 密钥文件路径，papa new 已自动生成 configs/secret
+  # 后台访问令牌存在 crawler_access_token 表里（多条，每条属于一个操作人），不再用配置里的单密钥。
+  # 建令牌：papa token add --operator <名字>（明文只打印一次，库里只存 sha256）。
+  # 停用/删除去后台的「访问令牌」页。注意：一条令牌都没有时 /api/* 对白名单内的来源完全开放（启动会警告）。
   whitelist: []                   # 回退白名单（仅当 whitelist_file 不存在时生效）
   whitelist_file: "configs/whitelist" # 白名单持久化文件（设置页动态改白名单会写回此文件）
   monitor_dirs:                   # 监控页展示的业务目录占用（name: path）

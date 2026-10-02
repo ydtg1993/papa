@@ -9,28 +9,84 @@
 
 框架内置一个 HTTP 监控后台（`server.enabled` + `server.monitor`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、表格页、设置、动态配置与日志导出。
 
-## 1. 鉴权（密钥 + 白名单）
+## 1. 鉴权（访问令牌 + 白名单）
 
 所有 `/api/` 接口都过两道校验：
 
-1. **IP/CIDR 白名单**（`server.whitelist` / `whitelist_file`），空 = 不限制。
-2. **访问密钥**（`server.auth_key` / `auth_key_file`），空 = 不校验。请求带 `Authorization: Bearer <key>`，或 `X-Auth-Key: <key>`，或 `?key=<key>`。
+1. **IP/CIDR 白名单**（`server.whitelist` / `whitelist_file`），空 = 不限制；`/monitor` 页面本身只查这一道。
+2. **访问令牌**：请求带 `Authorization: Bearer <令牌>`，或 `X-Auth-Key: <令牌>`。
+   **不再支持 `?key=`**（凭据进 URL 会落进浏览器历史与访问日志）。
 
-`papa new` 已自动生成 `configs/secret`（密钥）和 `configs/whitelist`（白名单文件，每行一个 IP/CIDR，`#` 注释）。
+### 令牌存在库里，一条属于一个操作人
+
+凭据不再是配置里的单个 `auth_key`，而是 **`crawler_access_token`** 表里的多条令牌：
+
+| 字段 | 说明 |
+| --- | --- |
+| `operator` | 令牌归属的人 —— 操作日志据此记「谁干的」 |
+| `token_hash` | `sha256(令牌)`，唯一索引；**库里不存明文** |
+| `enabled` | 停用而不删 |
+| `note` | 备注（哪台机器/哪个人） |
+
+**创建令牌**两条路，明文都只出现一次，务必当场存好：
+
+- 后台 **General →「访问令牌」页**（在「设置」上方）的**「新增令牌」**：填操作人（必填）与备注，
+  服务端生成后弹窗显示明文，带「复制」按钮。
+- 命令行 **`papa token add --operator 张三 --note "运维机"`**。
+
+**管理令牌**：同一页可以看列表、**停用/启用**、**删除**（停用启用带状态条件，重复点击只有一次生效，
+第二次会提示"该令牌状态已变，请刷新后重试"）。页面**不显示令牌本身**——库里只有哈希。
+
+> 为什么 CLI 还留着：令牌**全部被停用**时 `/api/*` 一律拒绝，后台自己也就进不去了，
+> 只能用 `papa token add` 从机器上补一把救回来。
+
+**几条要记住的行为**：
+
+- 令牌表**一条都没有**时：`/api/*` 对白名单内的来源**完全开放**（等同"还没配凭据"），启动时会打一条醒目警告。
+- 令牌**都被停用**时：`/api/*` 对所有人**拒绝**（fail closed）—— 不会因为"停用最后一条"把后台悄悄敞开。
+- **停用了自己正在用的那把，当前会话立刻失效**（下一个请求就 401、弹回登录页）—— 这符合"停用立即生效"的语义，
+  不是 bug；要给对方换令牌时先建新的、让对方登录后再停旧的。
+- 查询数据库出错时同样拒绝并记日志。
+- 登录界面没有变化：还是那个遮罩，只是服务端从"比字符串"换成了"查令牌表"。
+
+令牌页的写操作（新增/停用/启用/删除）和表格页的动作一样**记进操作日志**（开启 `server.operation_log` 时），
+所以「谁给谁建了令牌、谁停用了谁」都查得到。审计里记的是操作人与备注，**不含明文令牌**。
+
+> 生产环境升级：`crawler_access_token` 表需要在正式迁移流程里建（dev 环境自动迁移已包含）。
+> 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
 ## 2. 设置 API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/settings` | 返回白名单、密钥/白名单文件路径与是否存在、日志目录 |
+| GET | `/api/settings` | 返回白名单、白名单文件路径与是否存在、日志目录 |
 | POST | `/api/settings/whitelist` | 更新白名单并持久化到 `whitelist_file`；body `{"whitelist": ["127.0.0.1","10.0.0.0/8"]}` |
-| POST | `/api/settings/secret` | 重新生成密钥并写回 `auth_key_file`；返回 `{"key":"<新密钥>"}` |
 | POST | `/api/settings/shutdown` | 触发优雅退出 |
+
+### 访问令牌 API（「访问令牌」页用）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/tokens` | 列表：`{"tokens":[{"id","operator","enabled","note","created_at","updated_at"}]}` —— **不含哈希与明文** |
+| POST | `/api/tokens` | 新增：body `{"operator":"张三","note":"运维机"}` → `{"id":4,"token":"<明文，只此一次>"}`；操作人为空返回 400 |
+| POST | `/api/tokens/enabled` | 停用/启用：body `{"id":4,"enabled":false}`；状态已被别人改过返回 409 |
+| POST | `/api/tokens/remove` | 删除：body `{"id":4}`；不存在返回 404 |
+
+这几条同样过白名单 + 令牌校验；出错回 `{"error":"..."}`，前端把这句话原样显示给用户。
 
 ## 3. 表格页（oao 组件）
 
 后台的表格页由独立组件 [github.com/ydtg1993/oao](https://github.com/ydtg1993/oao) 渲染。
 **组件是纯展示层，不碰数据层**：业务声明"显示什么、怎么显示"，并实现 `oao.Source` 提供数据。
+
+> **例外**：「访问令牌」页**不是**表格页。它要「新增」并把服务端生成的明文令牌交给操作人看一次，
+> 而表格组件的动作只回 `{"status":"ok"}`、不回数据（组件不给"动作返回数据"这个口子）。
+> 所以这一页是后台自带的原生模块：`/api/tokens` 三条接口 + `mo.js` 里自己渲染的表格，接口在 `internal/tokenadmin`。
+
+> **内置表格页的菜单位置**：框架自带的表格页（目前只有开启 `server.operation_log` 后的「操作日志」）
+> 菜单固定在侧边栏 General 分组（「访问令牌」上方），**不跟业务表格挤在同一个分组**——
+> 映射写在 `mo.js` 的 `BUILTIN_TABLES`（表 key → 按钮 id）。表没注册时按钮自动隐藏，
+> 不会留一个点了报错的死菜单项。
 
 ```go
 app, err := papa.New(papa.WithModels(&models.Episode{}))
