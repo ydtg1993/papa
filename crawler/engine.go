@@ -399,12 +399,14 @@ func (e *Engine) htmlConfig() htmlfetch.Config {
 	}
 }
 
-// ApplyRuntimeConfig 应用运行期动态配置：仅 tunable 字段原地热更（池大小需重启）。
+// ApplyRuntimeConfig 应用运行期动态配置：只 tunable 字段原地热更（池大小需重启）。
+//
+// 传进来的是一份**增量**，按字段合并进当前覆盖层（见 config.RuntimeConfig.Merge）：
+// 没提到的字段保持原样。整体替换的话，只提交 html.timeout 就会把之前设的
+// browser.headers、各队列的 interval 悄无声息地清掉。
 func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
-	if rt == nil {
-		rt = &config.RuntimeConfig{}
-	}
-	e.runtime.Store(rt)
+	merged := e.runtime.Load().Merge(rt)
+	e.runtime.Store(merged)
 
 	if e.browserPool != nil {
 		e.browserPool.SetHeaders(e.browserHeaders())
@@ -832,25 +834,26 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		toProcess = append(toProcess, t)
 	}
 
-	// 批量入库（单条多行 INSERT）
+	// 批量入库（单条多行 INSERT），失败退到逐条
+	var conflicted map[string]struct{}
 	if len(toInsert) > 0 {
-		records := make([]models.CrawlerTask, 0, len(toInsert))
-		for _, t := range toInsert {
-			records = append(records, t.toModel())
-		}
-		if err := e.db.Create(&records).Error; err != nil {
+		var err error
+		conflicted, err = e.insertTasks(toInsert)
+		if err != nil {
 			err = fmt.Errorf("insert crawler tasks: %w", err)
 			e.loggerSet.Engine.Errorf("submit tasks failed: %v", err)
 			return err
-		}
-		for i, t := range toInsert {
-			t.ID = int(records[i].ID)
 		}
 	}
 
 	// 逐个入队（含延迟投递）
 	var errs []error
 	for _, t := range toProcess {
+		// 并发撞车的那几条：库里那行已经被另一路入库并入队了，别再入一次（与 SubmitTask 同一处理）
+		if _, hit := conflicted[t.Unique()]; hit {
+			e.dedupCache.Add(t.Unique())
+			continue
+		}
 		e.dedupCache.Add(t.Unique())
 		var record models.CrawlerTask
 		e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
@@ -867,6 +870,53 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// insertTasks 批量入库并回填 ID，返回其中「撞了唯一索引、复用了库里已有行」的那些任务的去重键。
+//
+// 快路径就是一条多行 INSERT —— SubmitTasks 本来就是冲着减少 DB 往返来的。
+//
+// 但**一行冲突不该让整批（可能上万条）一条都进不去**，而且还直接返回错误、连队列都没进，
+// 业务看到的是一整批任务凭空消失。所以批量失败就退到逐条插。
+//
+// 这里不去分辨"批量失败是不是因为重复键"：逐条那条路自己会分辨 —— 插不进去就按唯一索引
+// `idx_stage_url` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
+// 把同样的 stage|url 写进去了），回填它的 ID、记进返回的集合；查不到说明插入是真的失败了，
+// 原样把插入的那个错报出去（它比"没查到"更有信息量）。
+// 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
+func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
+	records := make([]models.CrawlerTask, 0, len(tasks))
+	for _, t := range tasks {
+		records = append(records, t.toModel())
+	}
+
+	if err := e.db.Create(&records).Error; err == nil {
+		for i, t := range tasks {
+			t.ID = int(records[i].ID)
+		}
+		return nil, nil
+	}
+
+	e.loggerSet.Engine.Warnf("batch insert failed, falling back to per-row insert (%d tasks)", len(tasks))
+	conflicted := make(map[string]struct{})
+	for _, t := range tasks {
+		rec := t.toModel()
+		ierr := e.db.Create(&rec).Error
+		if ierr == nil {
+			t.ID = int(rec.ID)
+			continue
+		}
+		// 按 (stage, url) 回查 —— 唯一索引就是这个，所以冲突只可能落在它上面。
+		// 不复用 findTaskRecord：它优先按 IdempotencyKey 查，而那不是唯一索引，可能捞回另一行。
+		var existed models.CrawlerTask
+		if serr := e.db.Select("id").Where("url = ? AND stage = ?", t.URL, t.Stage).
+			First(&existed).Error; serr != nil {
+			return nil, fmt.Errorf("insert task %q: %w", t.URL, ierr)
+		}
+		t.ID = int(existed.ID)
+		conflicted[t.Unique()] = struct{}{}
+	}
+	return conflicted, nil
 }
 
 // ReSubmitTask 已入库的非轮询任务进行重提交任务

@@ -122,3 +122,77 @@ repeat_queue:
 		t.Fatalf("crawler.trace = %+v, want enabled + retention 168h", cfg.Crawler.Trace)
 	}
 }
+
+// db.log_level 写错了要在启动前报清楚，不能静默当默认值用。
+func TestLoadRejectsBadSQLLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte("app:\n  env: prod\ndb:\n  log_level: verbose\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("非法的 db.log_level 应当报错")
+	}
+
+	// 合法的四种 + 留空都要能过
+	for _, lvl := range []string{"", "silent", "error", "warn", "info"} {
+		body := "app:\n  env: prod\n"
+		if lvl != "" {
+			body += "db:\n  log_level: " + lvl + "\n"
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(p); err != nil {
+			t.Fatalf("log_level=%q 应当合法：%v", lvl, err)
+		}
+	}
+}
+
+// SQL 日志级别：显式优先，没配按环境推。
+func TestSQLLogLevelResolution(t *testing.T) {
+	dev := &Config{}
+	dev.App.Env = "dev"
+	if got := dev.SQLLogLevel(); got != "info" {
+		t.Fatalf("dev 默认 = %q, want info", got)
+	}
+	if dev.SQLHideParams() {
+		t.Fatal("dev 不该隐参数值")
+	}
+
+	prod := &Config{}
+	prod.App.Env = "prod"
+	if got := prod.SQLLogLevel(); got != "warn" {
+		t.Fatalf("prod 默认 = %q, want warn", got)
+	}
+	if !prod.SQLHideParams() {
+		t.Fatal("非 dev 必须隐参数值")
+	}
+
+	prod.DB.LogLevel = "silent"
+	if got := prod.SQLLogLevel(); got != "silent" {
+		t.Fatalf("显式配了应当优先，实得 %q", got)
+	}
+}
+
+// HTTP 超时：0 补默认，但 write 的 0 是"不限"—— 日志打包下载可能传很久，给它设上限等于掐断在途下载。
+func TestHTTPTimeoutDefaults(t *testing.T) {
+	var s ServerConfig
+	readHeader, read, write, idle, shutdown := s.HTTPTimeouts()
+	if readHeader != 10*time.Second || read != 30*time.Second || idle != 60*time.Second || shutdown != 10*time.Second {
+		t.Fatalf("默认值不对：%v/%v/%v/%v", readHeader, read, idle, shutdown)
+	}
+	if write != 0 {
+		t.Fatalf("write 的 0 必须保持「不限」，实得 %v", write)
+	}
+
+	s = ServerConfig{
+		ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 4 * time.Second,
+		WriteTimeout: 5 * time.Second, IdleTimeout: 6 * time.Second, ShutdownTimeout: 7 * time.Second,
+	}
+	readHeader, read, write, idle, shutdown = s.HTTPTimeouts()
+	if readHeader != 3*time.Second || read != 4*time.Second || write != 5*time.Second ||
+		idle != 6*time.Second || shutdown != 7*time.Second {
+		t.Fatalf("显式配了应当原样生效：%v/%v/%v/%v/%v", readHeader, read, write, idle, shutdown)
+	}
+}

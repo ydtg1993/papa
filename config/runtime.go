@@ -101,6 +101,90 @@ type RuntimeRepeatQueueConfig struct {
 	BatchSize   *int      `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
 }
 
+// Merge 把 next 里**显式给出**的字段并进当前覆盖层，返回新的覆盖层。
+// 不修改接收者也不修改 next；返回的结构与入参共享那几个映射，按只读对待（与本包既有约定一致）。
+//
+// 为什么需要它：`PUT /api/config` 原来是直接整体替换（`Store(rt)`）—— 只提交一个
+// `html.timeout` 就会把之前设的 `browser.headers`、各队列的 `interval` 全清掉，
+// 而操作人从响应上完全看不出来。PUT 的语义应当是「改我提到的字段」。
+//
+// 「显式给出」怎么判断：**标量看指针**（nil = 没提），**映射看 nil 与空 map**（nil = 没提，
+// `{}` = 显式把这组覆盖清空）。
+//
+// 注意标量没有「清除」这一说 —— JSON 里 null 与字段缺失解出来都是 nil，分不开。
+// 想让它回落成基础配置的值，直接把它设成那个值就行：覆盖层里会多留一条，行为一致。
+func (rt *RuntimeConfig) Merge(next *RuntimeConfig) *RuntimeConfig {
+	if rt == nil {
+		rt = &RuntimeConfig{}
+	}
+	if next == nil {
+		next = &RuntimeConfig{}
+	}
+	out := *rt
+
+	if next.Browser.MaxIdleTime != nil {
+		out.Browser.MaxIdleTime = next.Browser.MaxIdleTime
+	}
+	if next.Browser.Headers != nil {
+		out.Browser.Headers = next.Browser.Headers
+	}
+	if next.HTML.Timeout != nil {
+		out.HTML.Timeout = next.HTML.Timeout
+	}
+	if next.HTML.MaxBodySize != nil {
+		out.HTML.MaxBodySize = next.HTML.MaxBodySize
+	}
+	if next.HTML.Headers != nil {
+		out.HTML.Headers = next.HTML.Headers
+	}
+
+	if next.ErrorQueue.Enabled != nil {
+		out.ErrorQueue.Enabled = next.ErrorQueue.Enabled
+	}
+	if next.ErrorQueue.WorkerCount != nil {
+		out.ErrorQueue.WorkerCount = next.ErrorQueue.WorkerCount
+	}
+	if next.ErrorQueue.MaxRetry != nil {
+		out.ErrorQueue.MaxRetry = next.ErrorQueue.MaxRetry
+	}
+	if next.ErrorQueue.Interval != nil {
+		out.ErrorQueue.Interval = next.ErrorQueue.Interval
+	}
+	if next.ErrorQueue.BatchSize != nil {
+		out.ErrorQueue.BatchSize = next.ErrorQueue.BatchSize
+	}
+
+	if next.RecoverQueue.Enabled != nil {
+		out.RecoverQueue.Enabled = next.RecoverQueue.Enabled
+	}
+	if next.RecoverQueue.WorkerCount != nil {
+		out.RecoverQueue.WorkerCount = next.RecoverQueue.WorkerCount
+	}
+	if next.RecoverQueue.Interval != nil {
+		out.RecoverQueue.Interval = next.RecoverQueue.Interval
+	}
+	if next.RecoverQueue.Timeout != nil {
+		out.RecoverQueue.Timeout = next.RecoverQueue.Timeout
+	}
+	if next.RecoverQueue.BatchSize != nil {
+		out.RecoverQueue.BatchSize = next.RecoverQueue.BatchSize
+	}
+
+	if next.RepeatQueue.Enabled != nil {
+		out.RepeatQueue.Enabled = next.RepeatQueue.Enabled
+	}
+	if next.RepeatQueue.WorkerCount != nil {
+		out.RepeatQueue.WorkerCount = next.RepeatQueue.WorkerCount
+	}
+	if next.RepeatQueue.Interval != nil {
+		out.RepeatQueue.Interval = next.RepeatQueue.Interval
+	}
+	if next.RepeatQueue.BatchSize != nil {
+		out.RepeatQueue.BatchSize = next.RepeatQueue.BatchSize
+	}
+	return &out
+}
+
 // IsZero 报告是否有任何覆盖；供 SaveRuntime 判断是否落盘及 yaml omitempty 使用。
 func (rt *RuntimeConfig) IsZero() bool {
 	return rt == nil || (rt.Browser.IsZero() && rt.HTML.IsZero() &&

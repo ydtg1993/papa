@@ -91,3 +91,32 @@ func TestApplyRuntimeConfigNilComponents(t *testing.T) {
 		t.Fatalf("runtime max_idle_time = %+v, want 2m", got)
 	}
 }
+
+// ApplyRuntimeConfig 接的是**增量**，不是整份覆盖层：只提交一个字段，不能把之前设的别的清掉。
+// （PUT /api/config 每次都只带操作人改的那几个字段，整体替换会让"改一个字段"变成"重置其余全部"。）
+func TestApplyRuntimeConfigMergesDelta(t *testing.T) {
+	e := &Engine{cfg: &config.Config{}}
+	e.runtime.Store(&config.RuntimeConfig{})
+
+	maxIdle := config.Duration{Duration: 10 * time.Minute}
+	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{
+		Browser: config.RuntimeBrowserConfig{MaxIdleTime: &maxIdle},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	timeout := config.Duration{Duration: 30 * time.Second}
+	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{
+		HTML: config.RuntimeHTMLConfig{Timeout: &timeout},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := e.GetRuntimeConfig()
+	if rt.Browser.MaxIdleTime == nil || rt.Browser.MaxIdleTime.Duration != 10*time.Minute {
+		t.Fatalf("第二次提交不该清掉第一次设的 browser.max_idle_time：%+v", rt.Browser)
+	}
+	if rt.HTML.Timeout == nil || rt.HTML.Timeout.Duration != 30*time.Second {
+		t.Fatalf("第二次提交的 html.timeout 应生效：%+v", rt.HTML)
+	}
+}

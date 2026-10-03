@@ -126,6 +126,37 @@ func Verifier(db *gorm.DB, log Logger) func(r *http.Request) (string, bool) {
 	}
 }
 
+// Confirmer 造一个「要求调用方把令牌重新输一遍」的校验闭包，给关停这类高危操作做二次确认用。
+//
+// 语义与 Verifier 保持一致（否则会出现"能进后台却关不掉"的死角）：
+//   - 表里一条令牌都没有 = 还没配凭据 → 放行（启动时 WarnIfNoToken 已经喊过）；
+//   - 配过就必须要一个对的。
+//
+// **这不是新的安全边界**：调用方手里本来就有能过中间件的令牌。它的作用是让"关停"这个动作
+// 必须由人再确认一次（误点、开着页面走开都不至于把服务停掉），顺带把操作人记下来。
+func Confirmer(db *gorm.DB, log Logger) func(token string) (operator string, ok bool) {
+	return func(token string) (string, bool) {
+		total, err := CountAll(db)
+		if err != nil {
+			if log != nil {
+				log.Errorf("统计访问令牌失败: %s", err.Error())
+			}
+			return "", false // 查库出错 → fail closed
+		}
+		if total == 0 {
+			return "", true
+		}
+		op, ok, err := Verify(db, strings.TrimSpace(token))
+		if err != nil {
+			if log != nil {
+				log.Errorf("校验访问令牌失败: %s", err.Error())
+			}
+			return "", false
+		}
+		return op, ok
+	}
+}
+
 // WarnIfNoToken 启动时调用：表里一条令牌都没有就喊一声。
 // 这是首次部署的正常状态（不是配置写错），所以只警告不 panic；但必须显眼。
 func WarnIfNoToken(db *gorm.DB, log Logger) {

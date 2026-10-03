@@ -73,7 +73,7 @@ func runTokenCmd(args []string) error {
 	if !ok {
 		return fmt.Errorf("读不到配置（用 -c 指定 configs/config.yaml，或设 PAPA_CONFIG）")
 	}
-	db, err := database.NewDB(cfg.DB)
+	db, err := database.NewDB(cfg)
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}

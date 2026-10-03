@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -28,6 +29,7 @@ type fakeTaskDB struct {
 	row      fakeRow  // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
 	noRows   bool     // true 时 SELECT 返回空结果集（模拟行不存在）
 	affected int64    // UPDATE 的 RowsAffected，用来模拟条件没匹配上
+	failNext int      // 让接下来的 N 次写失败（模拟批量插入撞唯一索引等）
 	execs    []string // 执行过的写语句
 	args     [][]driver.Value
 	queries  []string
@@ -98,6 +100,13 @@ func (f *fakeTaskDB) writtenArgs_hasError(s string) bool {
 	return strings.Contains(f.writtenArgs(), s)
 }
 
+// readSQL 返回执行过的读语句（SELECT），用来断言回查条件。
+func (f *fakeTaskDB) readSQL() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.queries, "\n")
+}
+
 func (f *fakeTaskDB) written() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -108,6 +117,10 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execs = append(f.execs, q)
+	if f.failNext > 0 {
+		f.failNext--
+		return nil, errors.New("fake: duplicate entry")
+	}
 	vals := make([]driver.Value, len(args))
 	for i, a := range args {
 		vals[i] = a.Value

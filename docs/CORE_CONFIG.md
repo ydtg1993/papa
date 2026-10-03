@@ -10,6 +10,7 @@
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
 - 运行期覆盖：`configs/runtime.yaml`（与 config.yaml 同目录）。OA 后台改配置只写内存，**关停时**把被改字段落盘到这里，重启后叠加生效；运行期**不碰 config.yaml**。
+- `PUT /api/config` 收的是**增量**：只改 body 里提到的字段，没提到的保持原样（映射给 `{}` 表示清空那组覆盖）。详见 [MONITOR.md](./MONITOR.md) 第 5 节。
 
 ## 1. 完整配置项参考
 
@@ -73,6 +74,7 @@
 | `dsn` | string | 数据源名称 |
 | `max_idle_conns` / `max_open_conns` | int | 空闲/最大连接数 |
 | `conn_max_lifetime` / `conn_max_idle_time` | duration | 连接最大生命周期 / 空闲最大存活 |
+| `log_level` | string | SQL 日志级别：`silent`/`error`/`warn`/`info`；**留空按 `app.env` 推**（`dev`=info，其它=warn）。非 dev 还会隐掉日志里的参数值（渲染成 `?`）—— 每条 SQL 连着参数值进日志会随「日志导出」外泄；调试要看值就把 `env` 设成 `dev` |
 
 ### log —— 日志
 
@@ -95,6 +97,11 @@
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
 | （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人），不再用配置里的单密钥；用 `papa token add --operator <名字>` 创建 |
 | `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
+| `read_header_timeout` | duration | `10s` | 只发请求头不发送体的慢连接会被掐掉 |
+| `read_timeout` | duration | `30s` | 读完整请求（含 body）的上限 |
+| `write_timeout` | duration | `0`（不限） | **默认不限**：日志打包下载可能传很久，设上限等于掐断在途下载；要限制再显式配 |
+| `idle_timeout` | duration | `60s` | keep-alive 空闲连接的上限 |
+| `shutdown_timeout` | duration | `10s` | 优雅退出时等在途请求（如日志下载）跑完的上限，超时才强制断开 |
 
 ### scheduler —— 定时任务（详见 [SCHEDULER.md](./SCHEDULER.md)）
 

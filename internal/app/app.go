@@ -45,6 +45,7 @@ type App struct {
 	extraJS     []string // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
 	extraCSS    []string // UseCSS 注入的样式，拼成 /static/custom.css
 	sysInfo     *sysinfo.Collector
+	httpSrv     *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
 	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
 	cancel      context.CancelFunc
 	customJobs  []cronJob // 业务注册的自定义定时任务
@@ -260,7 +261,7 @@ func NewApp(opts ...Option) (*App, error) {
 	})
 
 	// 3. 初始化数据库
-	db, err := database.NewDB(cfg.DB)
+	db, err := database.NewDB(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
@@ -371,6 +372,9 @@ func (a *App) Run(ctx context.Context) {
 	//触发结束任务 清理资源
 	<-runCtx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
+	// 顺序要紧：先把 HTTP 停下来、等在途请求（比如日志下载）跑完，再动引擎和数据库。
+	// 反过来的话，正在下载日志的请求会在读到大半时被关掉的连接 / 关掉的库打断。
+	a.shutdownHTTP()
 	a.Engine.Stop(5 * time.Second)
 	// 审计队列先排空再关库：反过来的话最后几条（包括"优雅退出"这条操作本身）写不进去，
 	// 只能落到日志文件里。写失败不阻塞响应是常态，但关停这一下要给它一个收尾的机会。
@@ -497,6 +501,7 @@ func (a *App) httpServer(ctx context.Context) {
 			ConfigGet:           a.Engine.GetRuntimeConfig,
 			ConfigSet:           a.Engine.ApplyRuntimeConfig,
 			TaskTrace:           a.Engine.ListTrace,
+			VerifyTokenValue:    auth.Confirmer(a.DB, a.Logger.Sys),
 		})
 		mon.Register(mux)
 
@@ -555,17 +560,40 @@ func (a *App) httpServer(ctx context.Context) {
 		a.mountCustomRoutes(mux, mon.Auth)
 	}
 
-	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: mux}
+	readHeader, read, write, idle, _ := cfg.HTTPTimeouts()
+	srv := &http.Server{
+		Addr:              ":" + strconv.Itoa(cfg.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: readHeader,
+		ReadTimeout:       read,
+		WriteTimeout:      write, // 默认 0 = 不限：日志下载不能被掐
+		IdleTimeout:       idle,
+	}
+	a.httpSrv = srv
 	a.Logger.Sys.Infof("http server starting on :%d (monitor=%t)", cfg.Port, cfg.Monitor)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.Logger.Sys.Errorf("http server failed: %s", err.Error())
 		}
 	}()
-	go func() {
-		<-ctx.Done()
-		_ = srv.Close()
-	}()
+	// 这里**不再**自己关服务：关停要排在「等在途请求跑完 → 停引擎 → 关库」这条链的最前面，
+	// 顺序在 Run 里统一走（见 shutdownHTTP）。原来在这里 `<-ctx.Done(); srv.Close()`
+	// 会和引擎/数据库的收尾并发，把在途的日志下载直接掐断 —— 与"优雅退出"的说法不符。
+}
+
+// shutdownHTTP 优雅停下 HTTP 服务：不再接新请求，等在途的跑完（最多 ShutdownTimeout）。
+// 超时就强制 Close，别把关停卡死。
+func (a *App) shutdownHTTP() {
+	if a.httpSrv == nil {
+		return
+	}
+	_, _, _, _, timeout := a.Config.Server.HTTPTimeouts()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := a.httpSrv.Shutdown(ctx); err != nil {
+		a.Logger.Sys.Errorf("http server shutdown: %s（超时，强制关闭）", err.Error())
+		_ = a.httpSrv.Close()
+	}
 }
 
 // 任务计划

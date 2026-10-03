@@ -52,7 +52,7 @@ func NewWorkerPool[T Tasker](workers, queueSize int, watermark float64) *WorkerP
 		workers:     workers,
 		watermark:   watermark,
 		stopCh:      make(chan struct{}),
-		trackQueue:  msgqueue.NewMsgQueue[Activity](10),
+		trackQueue:  msgqueue.NewMsgQueue[Activity](100),
 	}
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -127,6 +128,45 @@ type DBConfig struct {
 	MaxOpenConns    int           `mapstructure:"max_open_conns"`     // 最大打开连接数
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`  // 连接最大生命周期
 	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"` // 空闲连接最大存活时间
+	// LogLevel 是 SQL 日志级别：silent / error / warn / info。
+	// **留空按环境推**：dev 打 info（本地要调 SQL），其它一律 warn ——
+	// 每条 SQL 连同它的参数值进日志就等于把业务数据带出去，而日志能从 OA 后台导出。
+	LogLevel string `mapstructure:"log_level"`
+}
+
+// SQL 日志级别名。
+const (
+	SQLLogSilent = "silent"
+	SQLLogError  = "error"
+	SQLLogWarn   = "warn"
+	SQLLogInfo   = "info"
+)
+
+// validSQLLogLevel 报告级别名是否合法（空串合法，表示"按环境推"）。
+func validSQLLogLevel(name string) bool {
+	switch name {
+	case "", SQLLogSilent, SQLLogError, SQLLogWarn, SQLLogInfo:
+		return true
+	}
+	return false
+}
+
+// SQLLogLevel 返回生效的 SQL 日志级别名：显式配了 db.log_level 就用它，没配按环境推。
+func (c *Config) SQLLogLevel() string {
+	if c.DB.LogLevel != "" {
+		return c.DB.LogLevel
+	}
+	if c.App.Env == "dev" {
+		return SQLLogInfo
+	}
+	return SQLLogWarn
+}
+
+// SQLHideParams 报告 SQL 日志里要不要隐掉参数值。
+// 非 dev 一律隐：即便只打慢查询，那行 SQL 也带着参数值。
+// 调试要看具体值就把 env 设成 dev。
+func (c *Config) SQLHideParams() bool {
+	return c.App.Env != "dev"
 }
 
 // ServerConfig 统一 HTTP 服务(监控页面)
@@ -142,6 +182,43 @@ type ServerConfig struct {
 	// 操作日志：开启后后台所有增删改操作写入 crawler_operation_log 表（含失败）。
 	// 关闭时不建表、不写库。
 	OperationLog bool `mapstructure:"operation_log"`
+	// HTTP 服务的超时。<=0 用默认值（写超时除外，见下）。
+	// ReadHeaderTimeout 挡慢连接（只发头不发送体的那种）；IdleTimeout 管 keep-alive 空闲连接。
+	ReadHeaderTimeout time.Duration `mapstructure:"read_header_timeout"` // 默认 10s
+	ReadTimeout       time.Duration `mapstructure:"read_timeout"`        // 默认 30s
+	IdleTimeout       time.Duration `mapstructure:"idle_timeout"`        // 默认 60s
+	// WriteTimeout **默认 0 = 不限**：日志打包下载可能传很久，给它设一个上限等于把在途下载掐断 ——
+	// 那正是「优雅关停」要避免的事。确实要限制再显式配。
+	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	// ShutdownTimeout 优雅关停时等在途请求（比如日志下载）跑完的上限；<=0 用默认 10s。
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+}
+
+// HTTP 服务超时的默认值。
+const (
+	defaultReadHeaderTimeout = 10 * time.Second
+	defaultReadTimeout       = 30 * time.Second
+	defaultIdleTimeout       = 60 * time.Second
+	defaultShutdownTimeout   = 10 * time.Second
+)
+
+// HTTPTimeouts 返回生效的 HTTP 超时（基础配置里的 0 在这里补成默认值）。
+func (s ServerConfig) HTTPTimeouts() (readHeader, read, write, idle, shutdown time.Duration) {
+	readHeader, read, idle, shutdown = s.ReadHeaderTimeout, s.ReadTimeout, s.IdleTimeout, s.ShutdownTimeout
+	if readHeader <= 0 {
+		readHeader = defaultReadHeaderTimeout
+	}
+	if read <= 0 {
+		read = defaultReadTimeout
+	}
+	if idle <= 0 {
+		idle = defaultIdleTimeout
+	}
+	if shutdown <= 0 {
+		shutdown = defaultShutdownTimeout
+	}
+	// write 不补默认：0 就是"不限"，这是刻意的（见字段注释）
+	return readHeader, read, s.WriteTimeout, idle, shutdown
 }
 
 // SchedulerConfig 定时任务调度器配置。
@@ -176,6 +253,11 @@ func Load(path string) (*Config, error) {
 	}
 	if err := decoder.Decode(raw); err != nil {
 		return nil, err
+	}
+	// 拼错一个级别名不该在运行时被静默当成默认值 —— 启动前就报出来
+	if !validSQLLogLevel(cfg.DB.LogLevel) {
+		return nil, fmt.Errorf("db.log_level 只能是 %s / %s / %s / %s（留空表示按 app.env 推），实得 %q",
+			SQLLogSilent, SQLLogError, SQLLogWarn, SQLLogInfo, cfg.DB.LogLevel)
 	}
 	return &cfg, nil
 }

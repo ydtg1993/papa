@@ -66,6 +66,9 @@ db:
   max_open_conns: 100
   conn_max_lifetime: 1h
   conn_max_idle_time: 10m
+  # SQL 日志级别：silent / error / warn / info；留空则按 app.env 推（dev=info，其它=warn）。
+  # 非 dev 还会把日志里的参数值隐掉（渲染成 ?）—— 每条 SQL 连着参数值进日志会随「日志导出」外泄。
+  # log_level: "info"
 
 # 日志配置
 log:
@@ -91,6 +94,12 @@ server:
     logs: "./logs"
   queue_sample_interval: "1m"     # 治理队列积压(待处理)采样间隔；监控页只读内存快照，采样时才查库，调大可降低 DB 压力
   operation_log: false            # 操作日志：开启后后台所有增删改写入 crawler_operation_log 表（含失败），并多出「操作日志」表格页；关闭则不建表不写库
+  # HTTP 超时。write_timeout 默认 0 = 不限，是有意的：日志打包下载可能传很久，给它设上限
+  # 等于把在途下载掐断 —— 那正是「优雅退出」要避免的。要限制再显式配。
+  read_header_timeout: "10s"      # 挡慢连接（只发头不发送体）
+  read_timeout: "30s"
+  idle_timeout: "60s"
+  shutdown_timeout: "10s"         # 优雅退出时等在途请求（如日志下载）跑完的上限
 
 # 定时任务调度器配置
 # 定时任务调度器：业务定时任务通过 app.RegisterCronJob 注册（框架不再内置 job）

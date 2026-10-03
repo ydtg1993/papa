@@ -60,11 +60,13 @@ func main() {
 
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
 		VerifyToken: tokens.verify,
-		Metrics:     metrics,
-		QueueStats:  fakeQueueStats,
-		SysInfo:     sc,
-		LogDir:      "logs",
-		OnShutdown:  func() { stop() },
+		// 关停要求把令牌再输一遍（与 internal/app 的装配一致）
+		VerifyTokenValue: tokens.confirm,
+		Metrics:          metrics,
+		QueueStats:       fakeQueueStats,
+		SysInfo:          sc,
+		LogDir:           "logs",
+		OnShutdown:       func() { stop() },
 	})
 
 	mux := http.NewServeMux()

@@ -50,6 +50,9 @@ type MonitorConfig struct {
 	ConfigGet           func() *config.RuntimeConfig              // 返回当前运行期覆盖层（可空）
 	ConfigSet           func(*config.RuntimeConfig) error         // 应用运行期覆盖层（可空）
 	TaskTrace           func(id int) ([]crawler.TraceStep, error) // 单任务步骤追踪（可空）
+	// VerifyTokenValue 单独校验一个**令牌值**（不是请求头），给关停这类高危操作做二次确认用：
+	// 调用方要把自己的令牌放进请求体再输一遍。nil 表示不支持关停（该接口直接 404）。
+	VerifyTokenValue func(token string) (operator string, ok bool)
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -294,15 +297,41 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // shutdownHandler 触发优雅退出（稍延迟以便响应刷出）
+// shutdownHandler 优雅退出。
+//
+// 这是**高危操作**：要求调用方在请求体里把自己的访问令牌再输一遍（`{"token":"..."}`）。
+// 中间件那道校验只证明"这个浏览器带着有效凭据"，这里要的是"人在场"——
+// 误点、开着后台页面走开都不至于把服务停掉。（它不构成新的安全边界：令牌本来就是同一个，
+// 作用是确认动作 + 记下操作人。）
 func (s *Monitor) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, map[string]any{"status": "shutting down"})
-	if s.cfg.OnShutdown != nil {
-		time.AfterFunc(500*time.Millisecond, s.cfg.OnShutdown)
+	if s.cfg.OnShutdown == nil || s.cfg.VerifyTokenValue == nil {
+		http.Error(w, "shutdown not configured", http.StatusNotFound)
+		return
 	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+		http.Error(w, "请求体不是合法 JSON", http.StatusBadRequest)
+		return
+	}
+	operator, ok := s.cfg.VerifyTokenValue(body.Token)
+	if !ok {
+		s.logger.Errorf("拒绝关停：令牌校验不通过（来源 %s）", clientIP(r))
+		http.Error(w, "访问令牌不正确", http.StatusForbidden)
+		return
+	}
+	if operator != "" {
+		s.logger.Errorf("收到优雅退出请求，操作人 %s（来源 %s）", operator, clientIP(r))
+	} else {
+		s.logger.Errorf("收到优雅退出请求（未配令牌，来源 %s）", clientIP(r))
+	}
+	writeJSON(w, map[string]any{"status": "shutting down"})
+	time.AfterFunc(500*time.Millisecond, s.cfg.OnShutdown)
 }
 
 // errorQueueProcessHandler 手动触发失败任务错误队列处理

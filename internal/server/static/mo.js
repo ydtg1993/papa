@@ -716,17 +716,58 @@
         document.body.removeChild(ta);
         if (ok) Toast.ok('已复制到剪贴板'); else Toast.err('复制失败，请手动选中');
     }
-    async function doShutdown() {
-        var ok = await Dialog.confirm({
+    // 关停是高危操作：要人在场，所以让操作人把自己的访问令牌再输一遍。
+    // 服务端会拿它去查令牌表（`/api/settings/shutdown` 的 body 里带 token），输错返回 403。
+    // 用 Dialog.open 而不是 confirm —— 需要一个输入框，并且要在点「退出」时校验非空。
+    function askShutdownToken() {
+        var typed = '';
+        return Dialog.open({
             title: '优雅退出',
-            body: '<p>确定要优雅退出爬虫进程吗？</p><p>引擎会等待在途任务结束，随后关闭浏览器池与数据库连接。</p>',
-            danger: true, okLabel: '退出'
-        });
-        if (!ok) return;
+            body: '<p>确定要优雅退出爬虫进程吗？</p>'
+                + '<p>引擎会等待在途任务结束，随后关闭浏览器池与数据库连接。</p>'
+                + '<p class="hint">为避免误触，请填写你自己的访问令牌确认身份。</p>'
+                + '<input class="input" id="shutdown-token" type="password" autocomplete="off" placeholder="访问令牌">',
+            actions: [
+                { label: '取消', value: false },
+                {
+                    label: '退出', tone: 'danger', value: true,
+                    onClick: function () {
+                        var el = document.getElementById('shutdown-token');
+                        typed = el ? el.value.trim() : '';
+                        if (!typed) { Toast.err('请填写访问令牌'); return false; } // false = 先别关，留着输入框
+                        return true;
+                    }
+                }
+            ]
+        }).then(function (ok) { return ok ? typed : ''; });
+    }
+
+    async function doShutdown() {
+        var token = await askShutdownToken();
+        if (!token) return;
+
         document.getElementById('shutdown-msg').textContent = '正在关闭...';
-        var resp = await apiPost('/api/settings/shutdown', {});
-        if (resp && resp.ok) Toast.info('已触发优雅退出');
-        else Toast.err('退出请求失败');
+        // 不用 apiPost：它把非 2xx 一律吞成 null，而这里正需要把服务端那句"访问令牌不正确"显示出来
+        var resp;
+        try {
+            var headers = { 'Content-Type': 'application/json' };
+            var key = loadKey();
+            if (key) headers['Authorization'] = 'Bearer ' + key;
+            resp = await fetch('/api/settings/shutdown', {
+                method: 'POST', headers: headers, body: JSON.stringify({ token: token })
+            });
+        } catch (e) {
+            Toast.err('连接失败');
+            return;
+        }
+        if (resp.ok) {
+            Toast.info('已触发优雅退出');
+            return;
+        }
+        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return; }
+        var msg = '';
+        try { msg = (await resp.text()).trim(); } catch (e) { msg = ''; }
+        Toast.err(msg || ('退出请求失败（HTTP ' + resp.status + '）'));
     }
 
     /* ============ 日志 ============ */
