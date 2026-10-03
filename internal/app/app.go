@@ -45,6 +45,7 @@ type App struct {
 	extraJS     []string // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
 	extraCSS    []string // UseCSS 注入的样式，拼成 /static/custom.css
 	sysInfo     *sysinfo.Collector
+	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
 	cancel      context.CancelFunc
 	customJobs  []cronJob // 业务注册的自定义定时任务
 }
@@ -371,6 +372,11 @@ func (a *App) Run(ctx context.Context) {
 	<-runCtx.Done()
 	a.Logger.Sys.Info("shutdown signal received, stopping engine...")
 	a.Engine.Stop(5 * time.Second)
+	// 审计队列先排空再关库：反过来的话最后几条（包括"优雅退出"这条操作本身）写不进去，
+	// 只能落到日志文件里。写失败不阻塞响应是常态，但关停这一下要给它一个收尾的机会。
+	if a.oplog != nil {
+		a.oplog.Close(3 * time.Second)
+	}
 	if a.Engine.GetBrowserPool() != nil {
 		a.Engine.GetBrowserPool().Close()
 	}
@@ -498,6 +504,7 @@ func (a *App) httpServer(ctx context.Context) {
 		var rec *oplog.Recorder
 		if cfg.OperationLog {
 			rec = oplog.New(a.DB, a.Logger.Sys)
+			a.oplog = rec
 		}
 
 		// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。

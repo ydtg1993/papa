@@ -63,6 +63,8 @@ func (e *Engine) requeueFailedTask(t *models.CrawlerTask) bool {
 	if err := e.submitTo(info, task); err != nil {
 		e.dedupCache.Delete(task.Unique())
 		e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
+		// 上面刚把这行重置成 pending，失败不管的话它就再也没人捞了（本队列只捞 failed）
+		e.markRequeueFailed(QueueError, t.ID, err)
 		return false
 	}
 	e.errorRetriedCount.Add(1)

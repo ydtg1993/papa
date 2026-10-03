@@ -497,7 +497,8 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 
 // downloadSegmentToFile 下载单个片段并写入文件（支持重试、解密、限速）
 func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo, keyInfo *KeyInfo, limiter *RateLimiter, destPath string, opts *DownloadOptions) error {
-	// 如果文件已存在且大小 > 0，直接跳过（片段级续传）
+	// 如果文件已存在且大小 > 0，直接跳过（片段级续传）。
+	// 「非空即完整」成立的前提是下面那句写入走"临时文件 + 改名"（见那里的注释）。
 	if info, err := os.Stat(destPath); err == nil && info.Size() > 0 {
 		d.trackQueue.SendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
 		return nil
@@ -551,8 +552,18 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 			return err
 		}
 
-		// 写入临时文件
-		if err := os.WriteFile(destPath, data, 0644); err != nil {
+		// 先写临时文件再改名，让 destPath 上只可能出现**完整**的分片。
+		// 直接写 destPath 的话，进程被杀或写失败会留下一个非空的半截分片，
+		// 而上面那句"已存在且 size>0 就跳过"会把它当成下好的 → 静默合并出损坏的媒体。
+		// （短读本身不用在这儿管：doRequest 的 io.ReadAll 配上 net/http 的
+		//   Content-Length 校验已经把"少收了几字节"变成了错误。）
+		tmpPath := destPath + ".tmp"
+		if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := os.Rename(tmpPath, destPath); err != nil {
+			_ = os.Remove(tmpPath)
 			lastErr = err
 			continue
 		}

@@ -572,3 +572,92 @@ func TestDownloadBadIVDoesNotPanic(t *testing.T) {
 		t.Fatalf("错误信息里应说清是 IV 长度问题，实得：%v", res.Error)
 	}
 }
+
+// 限速：要发的字节数超过"桶大小"时不能直接失败。
+//
+// 回归点：rate.Limiter.WaitN 对 n > burst 是**立即报错**（"exceeds limiter's burst"），
+// 而这里的桶大小取的是一秒的额度 —— HLS 片段动辄几百 KB，于是限速一开、稍大的片段必失败，
+// 这个功能实际等于不可用。修法是按 burst 分批等：速率不变，任意大小都能过。
+func TestRateLimiterHandlesPayloadLargerThanBurst(t *testing.T) {
+	rl := NewRateLimiter(1) // 1 KB/s → burst = 1024 字节
+
+	// 小于桶大小：桶里本来就有额度，应当立刻通过
+	if err := rl.Wait(context.Background(), 512); err != nil {
+		t.Fatalf("不大于 burst 应当立刻通过：%v", err)
+	}
+
+	// 远大于桶大小：应当"等"到 ctx 超时，而不是立刻甩一句 burst 错
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := rl.Wait(ctx, 8192) // 8 倍 burst
+	if err == nil {
+		t.Fatal("额度不够时应当等到 ctx 超时，不能无声通过")
+	}
+	if strings.Contains(err.Error(), "burst") {
+		t.Fatalf("n 超过桶大小不该直接失败：%v", err)
+	}
+}
+
+// 分片写入必须经过中转：写失败时 destPath 上不能出现半成品。
+//
+// 回归点：原来直接写 destPath，进程被杀或写失败会留下**非空的半截分片**，
+// 而"已存在且 size>0 就跳过"会把它当成下好的 → 静默合并出损坏的媒体。
+func TestSegmentWriteIsAtomicOnFailure(t *testing.T) {
+	payload := []byte("0123456789abcdef")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.MaxRetries = 0
+	d := NewDownloader(cfg)
+
+	dir := tempDir(t)
+	dest := filepath.Join(dir, "segment_00000.ts")
+	// 把中转路径占成一个目录 → 写入必定失败（Windows 与 Unix 都不允许往目录里写）
+	if err := os.Mkdir(dest+".tmp", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	seg := &SegmentInfo{Index: 0, URL: server.URL + "/seg.ts"}
+	if err := d.downloadSegmentToFile(context.Background(), seg, nil, nil, dest, nil); err == nil {
+		t.Fatal("写入失败时应当返回错误")
+	}
+	if _, statErr := os.Stat(dest); statErr == nil {
+		t.Fatal("写入失败后 destPath 上不该出现半成品 —— 它下一轮会被当成『已下载』跳过")
+	}
+}
+
+// 成功路径：内容完整，且不留下中转文件。
+func TestSegmentWriteSucceedsWithoutResidue(t *testing.T) {
+	payload := []byte("0123456789abcdef")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	d := NewDownloader(cfg)
+
+	dir := tempDir(t)
+	dest := filepath.Join(dir, "segment_00000.ts")
+	seg := &SegmentInfo{Index: 0, URL: server.URL + "/seg.ts"}
+	if err := d.downloadSegmentToFile(context.Background(), seg, nil, nil, dest, nil); err != nil {
+		t.Fatalf("下载应当成功：%v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("destPath 内容 = %q, want %q", got, payload)
+	}
+	if _, err := os.Stat(dest + ".tmp"); err == nil {
+		t.Fatal("成功之后不该留下中转文件")
+	}
+}

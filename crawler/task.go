@@ -69,28 +69,27 @@ func (t *Task) Insert(db *gorm.DB) error {
 	return nil
 }
 
+// UpdateStatus 写入任务状态；status 为 failed 时把错误追加到 error 列。
+//
+// **只更新 status / error 两列，不整行 Save**：worker 标状态和业务回写结果是两条并发的路
+// （`SaveResult` / `SaveContent` 也是按列写的），整行写会把这里读到的旧快照盖回去 ——
+// 业务刚写进 content 的内容就这么没了。追加错误同理，走 SQL 的 CONCAT，不把行读出来拼。
+//
+// 返回值是「这条语句执行成功了」，**不是**「行存在」—— 原来返回 false 表示行不见了，
+// 但没有任何调用方用它判存在性，别依赖它。也正因为不需要判存在性，这里少了一次 SELECT。
 func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bool {
 	if t.ID == 0 {
 		return false
 	}
-	var record models.CrawlerTask
-	db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
-	if record.ID <= 0 {
-		return false
-	}
+	updates := map[string]any{"status": status}
 	if status == models.TaskStatusFailed {
 		var errMsg string
 		if err != nil {
 			errMsg = err.Error()
 		}
-		record.Status = status
-		record.Error += errMsg + "\n"
-		db.Save(&record)
-		return true
+		updates["error"] = gorm.Expr("CONCAT(COALESCE(error, ''), ?)", errMsg+"\n")
 	}
-	record.Status = status
-	db.Save(&record)
-	return true
+	return db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(updates).Error == nil
 }
 
 func (t *Task) Unique() string {

@@ -49,6 +49,8 @@ func (e *Engine) requeueRepeatTask(t *models.CrawlerTask) bool {
 	task.UpdateStatus(e.db, models.TaskStatusPending, nil)
 	if err := e.SubmitTask(task); err != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: submit task %d: %s", t.ID, err.Error())
+		// SubmitTask 内部（submitToPool）已经失败标过 failed 了，这一句管的是它提前返回的那些路
+		e.markRequeueFailed(QueueRepeat, t.ID, err)
 		return false
 	}
 	e.repeatRepolledCount.Add(1)

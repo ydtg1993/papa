@@ -2,6 +2,9 @@ package oplog
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ydtg1993/oao"
@@ -11,20 +14,69 @@ import (
 	"gorm.io/gorm"
 )
 
-// Recorder 把 oao 的操作事件写进 crawler_operation_log。
-// 它只关心"记没记下来"，写失败只记日志，不影响业务操作本身。
+// oplogQueueSize 异步队列容量。写库跟不上时宁可把记录降到日志文件，也不反压业务响应。
+const oplogQueueSize = 1024
+
+// Logger 只要一个 Errorf —— 避免为一个日志接口把宿主拉进来。
+// 它也是审计的"备选落地"：这条日志走 loggers 的文件输出（lumberjack）。
+type Logger interface {
+	Errorf(format string, args ...any)
+}
+
+// Recorder 把 oao 的操作事件**异步**写进 crawler_operation_log。
+//
+// 为什么要异步：审计是每次后台增删改都要写一条的，同步写意味着业务操作得等一次 INSERT，
+// 库一慢就直接拖慢后台响应。
+//
+// 代价是不能丢，所以有两条兜底：库写失败、或队列堵了（说明写库跟不上）时，记录会
+// **落到日志文件**里 —— 落成一行 JSON，日后能捞回来补录。关停时必须 Close：
+// 否则退出瞬间那几条（包括"优雅退出"这条操作本身）就没了。
 type Recorder struct {
 	db  *gorm.DB
-	log interface {
-		Errorf(format string, args ...any)
+	log Logger
+
+	// mu 与 workerpool 同一套路：把「查 closed + 发送」和「置位 + close」互斥，
+	// 否则关停瞬间正在发送的那条会撞上 close(ch) 直接 panic。
+	mu      sync.RWMutex
+	ch      chan models.OperationLog
+	closed  bool
+	drained chan struct{}
+
+	dropped atomic.Int64 // 累计因队列满而降到日志的条数
+}
+
+// New 创建记录器并启动消费协程。
+func New(db *gorm.DB, logger Logger) *Recorder {
+	r := &Recorder{
+		db:      db,
+		log:     logger,
+		ch:      make(chan models.OperationLog, oplogQueueSize),
+		drained: make(chan struct{}),
+	}
+	go r.consume()
+	return r
+}
+
+// consume 单协程消费：库里一条条写，慢也只慢这个协程，不挡业务响应。
+func (r *Recorder) consume() {
+	defer close(r.drained)
+	for rec := range r.ch {
+		if err := r.db.Create(&rec).Error; err != nil {
+			r.fallback(rec, "写库失败: "+err.Error())
+		}
 	}
 }
 
-// New 创建记录器。
-func New(db *gorm.DB, logger interface {
-	Errorf(format string, args ...any)
-}) *Recorder {
-	return &Recorder{db: db, log: logger}
+// fallback 把审计记录落到日志文件。
+// 这是"备选落地"：库写不进去（或队列堵了）时，审计至少还有一份可追的副本；
+// 落成 JSON 是为了日后能捞回来补录。
+func (r *Recorder) fallback(rec models.OperationLog, cause string) {
+	b, err := json.Marshal(rec)
+	if err != nil {
+		r.log.Errorf("审计记录丢失（连序列化都失败了：%s）：%+v", err.Error(), rec)
+		return
+	}
+	r.log.Errorf("审计记录未入库（%s），已落到日志文件：%s", cause, b)
 }
 
 // Event 一次后台写操作。有两类生产者：oao 表格页的动作（经 Record 适配），
@@ -49,12 +101,41 @@ func (r *Recorder) Record(ev oao.ActionEvent, operator string) {
 	})
 }
 
-// RecordEvent 记一次写操作；写失败只记日志，不影响业务操作本身。
+// RecordEvent 记一次写操作。**不阻塞**：入队即可返回，落库由消费协程做；
+// 已关停或队列满时直接落到日志文件，绝不让审计反过来卡住业务操作。
 func (r *Recorder) RecordEvent(ev Event) {
 	rec := newRecord(ev)
-	if err := r.db.Create(&rec).Error; err != nil {
-		// 审计写失败不能反过来影响业务操作，只记日志
-		r.log.Errorf("write operation log: %s", err.Error())
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		r.fallback(rec, "记录器已停止")
+		return
+	}
+	select {
+	case r.ch <- rec:
+	default:
+		r.fallback(rec, fmt.Sprintf("队列已满（容量 %d，已累计降到日志 %d 条），写库跟不上",
+			cap(r.ch), r.dropped.Add(1)))
+	}
+}
+
+// Close 停止接收新记录，把队列里剩下的写完（最多等 timeout）。
+// 必须在关数据库之前调，否则排空时写不进去。
+func (r *Recorder) Close(timeout time.Duration) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
+	close(r.ch)
+	r.mu.Unlock()
+
+	select {
+	case <-r.drained:
+	case <-time.After(timeout):
+		r.log.Errorf("审计队列排空超时，还有 %d 条未落库", len(r.ch))
 	}
 }
 

@@ -23,8 +23,20 @@ func NewRateLimiter(rateKB int) *RateLimiter {
 }
 
 func (r *RateLimiter) Wait(ctx context.Context, n int) error {
-	if r == nil || r.limiter == nil {
+	if r == nil || r.limiter == nil || n <= 0 {
 		return nil
 	}
-	return r.limiter.WaitN(ctx, n)
+	// 必须分批等：rate.Limiter.WaitN 在 n 大于桶大小（burst）时**直接返回错误**
+	// （"exceeds limiter's burst"），而这里桶大小取的是一秒的额度 —— HLS 片段动辄几百 KB，
+	// 于是限速一开、稍大的片段必失败，功能等于不可用。
+	// 按 burst 分批等，速率不变，任意大小的片段都能过。
+	burst := r.limiter.Burst()
+	for n > 0 {
+		step := min(n, burst)
+		if err := r.limiter.WaitN(ctx, step); err != nil {
+			return err
+		}
+		n -= step
+	}
+	return nil
 }

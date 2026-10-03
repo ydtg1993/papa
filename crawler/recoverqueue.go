@@ -56,11 +56,7 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 	task.UpdateStatus(e.db, models.TaskStatusPending, nil)
 	if err := e.SubmitTask(task); err != nil {
 		e.loggerSet.Engine.Errorf("recover queue: submit task %d: %s", t.ID, err.Error())
-		e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-			"retry":  gorm.Expr("retry + 1"),
-			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", "RecoverQueue 恢复任务提交失败\n"),
-		})
+		e.markRequeueFailed(QueueRecover, t.ID, err)
 		return false
 	}
 	e.recoveredCount.Add(1)

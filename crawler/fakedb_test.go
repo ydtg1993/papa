@@ -93,6 +93,11 @@ func (f *fakeTaskDB) writtenArgs() string {
 	return strings.Join(parts, " ")
 }
 
+// hasArg 判断某个绑定参数里出现过 s（测试里用来确认追加内容真的传进了 SQL）。
+func (f *fakeTaskDB) writtenArgs_hasError(s string) bool {
+	return strings.Contains(f.writtenArgs(), s)
+}
+
 func (f *fakeTaskDB) written() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
