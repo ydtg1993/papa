@@ -16,6 +16,7 @@ type stubActions struct {
 	retryErr  error
 	failErr   error
 	deleteErr error
+	urgentErr error
 	gotID     []uint
 	gotVer    []int    // RetryTask 收到的版本号
 	gotReason []string // MarkTaskFailed 收到的原因
@@ -38,6 +39,11 @@ func (s *stubActions) DeleteTask(id uint) error {
 	return s.deleteErr
 }
 
+func (s *stubActions) UrgentTask(id uint) error {
+	s.gotID = append(s.gotID, id)
+	return s.urgentErr
+}
+
 // buildTable 走一遍组件注册，顺带验证声明能被 oao 校验通过。
 func buildTable(t *testing.T, acts TaskActions) *oao.TableInfo {
 	t.Helper()
@@ -52,7 +58,7 @@ func buildTable(t *testing.T, acts TaskActions) *oao.TableInfo {
 	return ts[0]
 }
 
-// 三个操作与新增列/筛选都必须声明出来。
+// 四个操作与新增列/筛选都必须声明出来。
 func TestTableDeclaration(t *testing.T) {
 	info := buildTable(t, &stubActions{})
 
@@ -69,6 +75,7 @@ func TestTableDeclaration(t *testing.T) {
 		tone       oao.Tone
 	}{
 		{"retry", "重投", oao.ToneInfo},
+		{"urgent", "加急", oao.ToneInfo},
 		{"fail", "标失败", oao.ToneWarn},
 		{"remove", "删除", oao.ToneErr},
 	} {
@@ -84,12 +91,27 @@ func TestTableDeclaration(t *testing.T) {
 		}
 	}
 
+	// 「追踪」是只读入口：要有（前端脚本靠它取任务 id），但不该有二次确认 —— 它不改任何东西
+	trace, ok := byKey["trace"]
+	if !ok {
+		t.Fatalf("action %q missing: %+v", "trace", info.Actions)
+	}
+	if trace.Label != "追踪" || trace.Tone != oao.ToneInfo {
+		t.Errorf("追踪动作 = %q/%q, want 追踪/%q", trace.Label, trace.Tone, oao.ToneInfo)
+	}
+	if trace.Confirm != "" {
+		t.Errorf("追踪是只读入口，不该有二次确认：%q", trace.Confirm)
+	}
+
 	cols := make(map[string]oao.ColumnInfo, len(info.Columns))
 	for _, c := range info.Columns {
 		cols[c.Name] = c
 	}
 	if c, ok := cols["repeatable"]; !ok || c.Kind != oao.KindBool {
 		t.Errorf("repeatable 列应为 KindBool: %+v", cols["repeatable"])
+	}
+	if c, ok := cols["urgent"]; !ok || c.Kind != oao.KindBool {
+		t.Errorf("urgent 列应为 KindBool: %+v", cols["urgent"])
 	}
 	if c, ok := cols["pid"]; !ok || !c.NoEdit {
 		t.Errorf("pid 列应存在且 NoEdit: %+v", cols["pid"])
@@ -142,6 +164,10 @@ func TestActionHandlerErrorMapping(t *testing.T) {
 		{"标失败成功", &stubActions{}, "fail", "7", nil, reason, 0},
 		{"标失败原因空", &stubActions{}, "fail", "7", nil, map[string]any{"reason": "   "}, http.StatusBadRequest},
 		{"标失败但任务已结束", &stubActions{failErr: crawler.ErrTaskTerminal}, "fail", "7", nil, reason, http.StatusConflict},
+		{"加急成功", &stubActions{}, "urgent", "7", nil, nil, 0},
+		{"重复加急或被取走", &stubActions{urgentErr: crawler.ErrTaskUrgent}, "urgent", "7", nil, nil, http.StatusConflict},
+		{"已结束的任务不能加急", &stubActions{urgentErr: crawler.ErrTaskFinished}, "urgent", "7", nil, nil, http.StatusConflict},
+		{"加急时阶段未注册", &stubActions{urgentErr: crawler.ErrStageNotRegistered}, "urgent", "7", nil, nil, http.StatusConflict},
 		{"删除处理中的行", &stubActions{deleteErr: crawler.ErrTaskProcessing}, "remove", "7", nil, nil, http.StatusConflict},
 		{"无效 ID", &stubActions{}, "retry", "abc", ver, nil, http.StatusBadRequest},
 		{"ID 为 0", &stubActions{}, "retry", "0", ver, nil, http.StatusBadRequest},
@@ -181,6 +207,26 @@ func TestActionHandlerErrorMapping(t *testing.T) {
 				t.Errorf("入参非法时不该调用后端：%v", tc.stub.gotID)
 			}
 		})
+	}
+}
+
+// 「追踪」动作在服务端不碰后端：oao 的动作带不回数据，展示由 /static/trace.js 嗅探请求后自己拉接口。
+// 这里只需要它校验 id、并把非法 id 挡在组件那层。
+func TestTraceActionOnlyValidatesID(t *testing.T) {
+	acts := &stubActions{}
+	h := handlerFor(t, acts, "trace")
+
+	if err := h(context.Background(), oao.ActionRequest{ID: "7"}); err != nil {
+		t.Fatalf("合法 id 不该报错：%v", err)
+	}
+	if len(acts.gotID) != 0 {
+		t.Fatalf("追踪动作不该调用 TaskActions 上的任何写操作，实得 %v", acts.gotID)
+	}
+
+	err := h(context.Background(), oao.ActionRequest{ID: "abc"})
+	var ae *oao.ActionError
+	if !errors.As(err, &ae) || ae.Status != http.StatusBadRequest {
+		t.Fatalf("非法 id 应返回 400，实得 %v", err)
 	}
 }
 

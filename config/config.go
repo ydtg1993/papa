@@ -69,6 +69,15 @@ type CrawlerConfig struct {
 	DedupCacheSize int                    `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
 	QueueWatermark float64                `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
 	DrainInterval  time.Duration          `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
+	Trace          TraceConfig            `mapstructure:"trace"`            //单任务步骤追踪
+}
+
+// TraceConfig 单任务步骤追踪配置。
+// 开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表；
+// 关闭时不建表、不写库，task.Trace 为 nil（调用是安全的 no-op）。
+type TraceConfig struct {
+	Enabled   bool          `mapstructure:"enabled"`   // 是否开启步骤追踪（默认 false）
+	Retention time.Duration `mapstructure:"retention"` // 步骤记录保留期；0/未写 = 默认 7 天，负数 = 不自动清理
 }
 
 type StageConfig struct {

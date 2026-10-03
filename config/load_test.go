@@ -31,6 +31,9 @@ html:
 crawler:
   queue_watermark: 0.5
   drain_interval: "5s"
+  trace:
+    enabled: true
+    retention: "168h"
   stages:
     catalog:
       worker_count: 2
@@ -114,5 +117,8 @@ repeat_queue:
 	}
 	if cfg.Crawler.DrainInterval != 5*time.Second {
 		t.Fatalf("drain_interval = %v, want 5s", cfg.Crawler.DrainInterval)
+	}
+	if !cfg.Crawler.Trace.Enabled || cfg.Crawler.Trace.Retention != 168*time.Hour {
+		t.Fatalf("crawler.trace = %+v, want enabled + retention 168h", cfg.Crawler.Trace)
 	}
 }

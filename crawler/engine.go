@@ -466,12 +466,13 @@ func (e *Engine) ApplyRegisterStage() {
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
 			// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
-			// 也让三个后台动作的状态守卫成立。拿不到行说明运营已经动过它（标失败/删除），跳过。
+			// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
+			// 运营已经动过它（标失败/删除），或同一行的另一份副本（后台「加急」会另投一份）先认领了。
 			claimed, err := e.claimTask(task)
 			if err != nil {
 				e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
 			} else if !claimed {
-				e.loggerSet.Engine.Warnf("task %d 已被运营改动（不再是待处理），跳过执行", task.ID)
+				e.loggerSet.Engine.Warnf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
 				return nil
 			}
 			// 重试FetchHandler
@@ -480,7 +481,7 @@ func (e *Engine) ApplyRegisterStage() {
 				if attempt > 0 {
 					task.IncRetry(e.db)
 				}
-				err := stageInfo.fetcher.FetchHandler(ctx, task, e)
+				err := e.runAttempt(ctx, stageInfo.fetcher, task, attempt)
 				if err == nil {
 					task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
 					if !task.Repeatable {
@@ -534,10 +535,37 @@ func (e *Engine) ApplyRegisterStage() {
 	e.startRecoverQueue()
 	// 启动周期轮询队列（repeatable 任务的定时重跑）
 	e.startRepeatQueue()
+	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
+	e.startTraceCleanup()
 	// 监控开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
 	if e.cfg.Server.Monitor {
 		e.startQueueSampler()
 	}
+}
+
+// runAttempt 执行一次 FetchHandler，并负责这一次尝试的步骤追踪：
+// 挂记录器 → 跑 handler → 记下结局 → 落库。
+//
+// 落库放在 defer 里，所以 panic 展开时也会执行 —— 闭包这一层的 defer 先于 workerpool
+// 的 recover 跑，panic 之前已上报的步骤因此不会丢；panic 路径上 setResult 没被调用，
+// flush 按失败处理、data 保留，正好是排查现场要看的。
+// 这里**不 recover**：panic 继续抛给 workerpool，它那边的 debug.Stack() 与 failed
+// 计数才是既有行为，重新 panic 反而会丢掉 handler 的栈帧。
+func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
+	tr := e.newTrace(task, attempt)
+	task.Trace = tr
+	defer tr.finish() // finish 幂等，正常返回与 panic 展开都走这里
+
+	// 加急记在 trace 的第一步，事后还能看出"这条曾经加急跑过"：
+	// claimTask 认领时会把 urgent 列归零（加急是「排队位置」的概念，跑过一次即完成使命），
+	// 那张表上就再也看不出它加急过了。只记第一次尝试 —— 同一次执行里的后续重试不是新的加急。
+	if attempt == 0 && task.Urgent {
+		tr.Step(traceUrgentStep, nil)
+	}
+
+	err := fetcher.FetchHandler(ctx, task, e)
+	tr.setResult(err)
+	return err
 }
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
@@ -644,7 +672,7 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	record.Status = models.TaskStatusPending
 	e.db.Save(record)
 
-	if err := info.workerPool.Submit(task); err != nil {
+	if err := e.submitTo(info, task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			// 队列达 75% 高水位：任务保持 pending（已入库），加入溢出列表由 drain 稍后回灌
 			e.spilledCount.Add(1)
@@ -664,17 +692,31 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 // claimTask 把任务从「待处理」认领为「处理中」，成功才允许执行。
 // 条件更新而非先读再写：运营在它被 worker 取走之前标了失败（或删了行）时，
 // 这里拿不到行，任务就不再执行 —— 这正是「标失败」对排队中任务的拦截力。
+// 顺带把 urgent 归零：加急是「排队位置」的概念，跑过一次就完成使命，
+// 不清的话失败重投会让加急任务越积越多、快车道被老任务长期占住。
 // 返回 (是否认领成功, 错误)：DB 抖动不当成"认领失败"，由调用方记日志后继续执行，
 // 免得一次抖动让任务永远没人跑。
 func (e *Engine) claimTask(task *Task) (bool, error) {
 	if task.ID == 0 {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
-	res := claimScope(e.db, uint(task.ID)).Update("status", models.TaskStatusProcessing)
+	res := claimScope(e.db, uint(task.ID)).Updates(map[string]any{
+		"status": models.TaskStatusProcessing,
+		"urgent": false,
+	})
 	if res.Error != nil {
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+// submitTo 按任务的加急标记选队列：加急走快车道，其余走常规队列。
+// 池子本身不认识优先级（Tasker 接口只有 Unique），路由决定留在这里。
+func (e *Engine) submitTo(info *stageInfo, task *Task) error {
+	if task.Urgent {
+		return info.workerPool.SubmitUrgent(task)
+	}
+	return info.workerPool.Submit(task)
 }
 
 // spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。
@@ -845,7 +887,7 @@ func (e *Engine) ReSubmitTask(task *Task) error {
 	}
 	task.ID = int(record.ID)
 	info := e.stages[task.Stage]
-	if err := info.workerPool.Submit(task); err != nil {
+	if err := e.submitTo(info, task); err != nil {
 		// 提交失败，回滚内存去重表和数据库状态
 		e.dedupCache.Delete(task.Unique())
 		record.Error += err.Error() + "\n"

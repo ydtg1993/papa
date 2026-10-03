@@ -55,14 +55,49 @@ type Task struct {
     IdempotencyKey string            // 自定义幂等键，空则回退 stage|url
     NotBefore      time.Time         // 延迟投递：最早可执行时间
     Delay          time.Duration     // 延迟投递：相对现在的延迟
+    Urgent         bool              // 加急：投到所属阶段的快车道，插到排队任务前面
+    Trace          *Trace            // 本次执行的步骤记录器，由引擎挂上；关闭时是 nil（调用安全）
 }
 ```
 
 - `Meta` 承载业务键（`series_id`/`episode_id` 等），**不要**再把它们拼进 URL 或用 `hg2:series:123` 之类的 scheme；handler 里直接读 `task.Meta["series_id"]`。
 - `IdempotencyKey` 自定义去重键（如「标准化分类 URL + 页码」），空值回退到默认的 `stage|url`。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
+- `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面。适合"怀疑某条有问题、想单独跑一遍看着它跑"的探测任务（`&papa.Task{URL: u, Stage: "detail", Urgent: true}`）。注意它只省**排队**时间 —— 该阶段 worker 全在忙的时候，插队也快不了；worker 认领后 `urgent` 列自动归零，是一次性的。
+- `Trace` 是**本次执行的步骤记录器**，由引擎在调用 `FetchHandler` 前挂上（见 1.3）。你只管调它的方法，不用判空。
 
-### 1.3 Engine 暴露的能力
+### 1.3 步骤追踪（`task.Trace`）
+
+想知道「这条任务跑到哪一步、哪一步挂了、那一步采到了什么」时，在 handler 里按步骤上报：
+
+```go
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+	doc, finalURL, err := engine.FetchRendered(ctx, task.URL, ".detail-box")
+	if err != nil {
+		task.Trace.Fail("渲染详情页", err, map[string]string{"url": task.URL})
+		return err
+	}
+	task.Trace.Step("渲染详情页", map[string]string{"final_url": finalURL})
+
+	detail, err := parseDetail(doc)
+	if err != nil {
+		task.Trace.Fail("解析字段", err, doc.Text()) // 挂掉的现场数据在这里带上
+		return err
+	}
+	task.Trace.Step("解析字段", detail)
+
+	return engine.SaveResult(task.ID, detail.Title, detail)
+}
+```
+
+- **调用时机**：`Step` 表示「这一步已经做完了」，所以耗时 = 距上一个 `Step`（首步距本次尝试开始）的间隔；`Fail` 记一个失败的步骤。
+- **`data` 只在失败的尝试里落库**：成功的尝试（绝大多数）一条 `data` 都不写，写入量按失败率走。传 `nil` 也完全可以，只留步骤骨架。
+- **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
+- **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。
+- 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
+- **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
+
+### 1.4 Engine 暴露的能力
 
 fetcher 里通过 `engine` 参数能拿到的东西：
 
@@ -81,7 +116,7 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
 
-### 1.4 写结果到数据库
+### 1.5 写结果到数据库
 
 任务表由框架内置（`crawler_tasks`），结果字段是 `title` 和 `content`（JSON）。fetcher 不直接碰表，而是通过引擎的结果 API 落库：
 
@@ -105,7 +140,7 @@ err := engine.SaveResult(task.ID, content.Title, content)
 | `engine.SaveContent(task.ID, content)` | 只写 `content`，保留已有 `title`（回写已有结果用） |
 | `engine.GetResult(task.ID, &out)` | 读回 `content` 并反序列化到 `out` |
 
-### 1.5 派发子任务（阶段串联）
+### 1.6 派发子任务（阶段串联）
 
 列表页抓到详情 URL 后，把详情页作为**子任务**提交到下一个 stage：
 

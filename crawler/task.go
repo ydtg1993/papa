@@ -19,6 +19,11 @@ type Task struct {
 	IdempotencyKey string            // 自定义幂等键，为空时回退 Stage|URL
 	NotBefore      time.Time         // 延迟投递：最早可执行时间
 	Delay          time.Duration     // 延迟投递：相对当前时间的延迟
+	Urgent         bool              // 加急：投到所属阶段的快车道，插到常规队列前面
+
+	// Trace 本次尝试的步骤记录器，由 worker 在调用 FetchHandler 前挂上。
+	// 追踪未开启时为 nil，Step/Fail 是安全的 no-op。handler 无需判空。
+	Trace *Trace
 }
 
 // deliverAt 返回任务的延迟投递时间；无延迟时返回零值 time.Time。
@@ -50,6 +55,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		Stage:          t.Stage,
 		IdempotencyKey: t.IdempotencyKey,
 		Repeatable:     repeat,
+		Urgent:         t.Urgent,
 		Status:         models.TaskStatusPending,
 	}
 }

@@ -27,6 +27,8 @@
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限（旧行为），`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
 | `queue_watermark` | float | `0.75` | 队列高水位比例（0-1），达到后新任务溢出到 DB 待回灌，避免满队列丢任务 |
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
+| `trace.enabled` | bool | `false` | 单任务步骤追踪：开启后 handler 可用 `task.Trace.Step/Fail` 上报步骤，写入 `crawler_task_trace` 表。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `stages.<name>.worker_count` | int | — | 该阶段 worker 并发数 |
 | `stages.<name>.queue_size` | int | — | 该阶段任务队列缓冲大小 |
 | `stages.<name>.delay` | 时长/区间 | — | 任务间隔，固定 `"5m"` 或随机区间 `"10s-30s"` |

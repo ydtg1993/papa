@@ -16,6 +16,9 @@ func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 confi
 func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)
 	if err != nil {
+		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据，后台「追踪」里能直接看到。
+		// task.Trace 关闭时是 nil，这些调用都是安全的 no-op —— 不需要判空。
+		task.Trace.Fail("取浏览器实例", err, nil)
 		return err
 	}
 	defer engine.GetBrowserPool().Put(bw)
@@ -24,9 +27,12 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	defer page.Close()
 
 	if err := page.Context(ctx).Timeout(30 * time.Second).Navigate(task.URL); err != nil {
+		task.Trace.Fail("打开列表页", err, map[string]string{"url": task.URL})
 		return err
 	}
 	page.MustWaitLoad()
+	// Step 表示「这一步已经做完了」，耗时按距上一步的间隔算
+	task.Trace.Step("打开列表页", map[string]string{"url": task.URL})
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
 	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})

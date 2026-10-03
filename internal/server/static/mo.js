@@ -778,6 +778,10 @@
     /* ============ 启动 ============ */
     document.getElementById('key').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitKey(); });
 
+    // 表格动作的防重复提交由 oao 组件自己做（runAction 里的 inFlightActions，
+    // key 用「表 + 动作 + 主键」）—— v1.2.3 及以前没有，v1.2.4 起有。
+    // 宿主不用再包一层；服务端的条件更新始终是最终防线。
+
     // oao 表格组件：复用同一套访问密钥；接口前缀与静态资源由 papa 挂载
     Oao.init({
         base: '/api/oao',

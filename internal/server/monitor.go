@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,18 +37,19 @@ type MonitorConfig struct {
 	// 由宿主注入（papa 用 internal/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
 	VerifyToken         func(r *http.Request) (operator string, ok bool)
-	Whitelist           []string                            // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile       string                              // 白名单持久化文件路径（动态更新时写回）
-	Metrics             func() map[string]any               // 业务自定义数据快照（可空）
-	QueueStats          func() map[string]crawler.QueueStat // 治理队列运行快照（可空）
-	SysInfo             *sysinfo.Collector                  // 系统指标采集器（可空）
-	LogDir              string                              // 日志目录（导出用）
-	OnShutdown          func()                              // 优雅退出回调
-	ProcessErrorQueue   func() (int, error)                 // 错误队列手动触发回调（可空）
-	ProcessRecoverQueue func() (int, error)                 // 中断恢复队列手动触发回调（可空）
-	ProcessRepeatQueue  func() (int, error)                 // 周期轮询队列手动触发回调（可空）
-	ConfigGet           func() *config.RuntimeConfig        // 返回当前运行期覆盖层（可空）
-	ConfigSet           func(*config.RuntimeConfig) error   // 应用运行期覆盖层（可空）
+	Whitelist           []string                                  // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile       string                                    // 白名单持久化文件路径（动态更新时写回）
+	Metrics             func() map[string]any                     // 业务自定义数据快照（可空）
+	QueueStats          func() map[string]crawler.QueueStat       // 治理队列运行快照（可空）
+	SysInfo             *sysinfo.Collector                        // 系统指标采集器（可空）
+	LogDir              string                                    // 日志目录（导出用）
+	OnShutdown          func()                                    // 优雅退出回调
+	ProcessErrorQueue   func() (int, error)                       // 错误队列手动触发回调（可空）
+	ProcessRecoverQueue func() (int, error)                       // 中断恢复队列手动触发回调（可空）
+	ProcessRepeatQueue  func() (int, error)                       // 周期轮询队列手动触发回调（可空）
+	ConfigGet           func() *config.RuntimeConfig              // 返回当前运行期覆盖层（可空）
+	ConfigSet           func(*config.RuntimeConfig) error         // 应用运行期覆盖层（可空）
+	TaskTrace           func(id int) ([]crawler.TraceStep, error) // 单任务步骤追踪（可空）
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -121,6 +123,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/recoverqueue/process", s.wrap(s.recoverQueueProcessHandler))
 	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
 	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
+	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
 }
@@ -357,6 +360,31 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, map[string]any{"status": "ok", "repolled": count})
+}
+
+// taskTraceHandler 返回一条任务的步骤追踪时间线（按尝试、步骤排序）。
+func (s *Monitor) taskTraceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.TaskTrace == nil {
+		http.Error(w, "task trace not configured", http.StatusNotFound)
+		return
+	}
+	id, err := strconv.Atoi(r.URL.Query().Get("id"))
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid task id", http.StatusBadRequest)
+		return
+	}
+	steps, err := s.cfg.TaskTrace(id)
+	if err != nil {
+		// 业务原因（如追踪开关没开）原样回给前端，抽屉里直接显示这句话
+		s.logger.Errorf("load task trace %d: %s", id, err.Error())
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"task_id": id, "steps": steps})
 }
 
 // hotReloadableFields 可热更字段（供后台 UI 标注）。

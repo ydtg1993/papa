@@ -8,6 +8,12 @@ crawler:
   dedup_cache_size: 0          # 内存去重表最大条目数：0=不限(旧行为)；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
   queue_watermark: 0.75        # 队列高水位比例(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
+  # 单任务步骤追踪：开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表。
+  # 后台任务表的「追踪」动作按「第 N 次尝试」展示时间线；只有失败的尝试才写 data。
+  # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。生产环境需手工建表（dev 自动迁移）。
+  trace:
+    enabled: false             # 是否开启步骤追踪
+    retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
   stages:                      # 爬取阶段配置
     catalog:                   # 阶段名需与 fetcher.GetStage() 返回一致
       worker_count: 1

@@ -155,6 +155,9 @@
 
 <script src="/static/oao/oao.js"></script>
 <script src="/static/mo.js"></script>
+<!-- 任务步骤追踪抽屉：嗅探 oao 的「追踪」动作请求取任务 id，再拉 /api/task/trace。
+     必须在 mo.js 之后（用它的 Dialog / esc / loadKey 等全局件）。 -->
+<script src="/static/trace.js"></script>
 <!-- 业务注入的脚本（app.UsePage 的 Script / app.UseScript）：必须在 mo.js 之后 ——
      页脚本要调 mo.js 定义的 Papa.page 注册渲染函数。 -->
 <script src="/static/custom.js"></script>

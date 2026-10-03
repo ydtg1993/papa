@@ -271,10 +271,21 @@ func NewApp(opts ...Option) (*App, error) {
 		if cfg.Server.OperationLog {
 			allModels = append(allModels, &models.OperationLog{})
 		}
+		if cfg.Crawler.Trace.Enabled {
+			allModels = append(allModels, &models.TaskTrace{})
+		}
 		allModels = append(allModels, a.extraModels...)
 		if err := database.AutoMigrate(db, allModels...); err != nil {
 			return nil, fmt.Errorf("migrate db: %w", err)
 		}
+	}
+
+	// 4.1 步骤追踪开着但表不存在 = 每次尝试写库都失败。生产不会自动迁移，所以这里必须显式喊一声，
+	// 不能重演审计表那种「开关看着是开的、实际什么都没记」的静默丢失。
+	if cfg.Crawler.Trace.Enabled && !db.Migrator().HasTable(&models.TaskTrace{}) {
+		loggerSet.Sys.Errorf("crawler.trace.enabled 已开启，但表 crawler_task_trace 不存在 —— " +
+			"步骤追踪不会写入任何数据。生产环境不做自动迁移，请手工建表（结构见 models.TaskTrace）；" +
+			"dev 环境重启即自动创建")
 	}
 
 	// 5. 创建爬虫引擎
@@ -479,6 +490,7 @@ func (a *App) httpServer(ctx context.Context) {
 			ProcessRepeatQueue:  a.Engine.RepollRepeatableTasks,
 			ConfigGet:           a.Engine.GetRuntimeConfig,
 			ConfigSet:           a.Engine.ApplyRuntimeConfig,
+			TaskTrace:           a.Engine.ListTrace,
 		})
 		mon.Register(mux)
 

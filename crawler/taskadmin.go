@@ -17,6 +17,8 @@ var (
 	ErrTaskProcessing     = errors.New("该任务正在处理中，请先标记失败或等它结束")
 	ErrTaskChanged        = errors.New("该行已被他人修改，请刷新后重试")
 	ErrStageNotRegistered = errors.New("该任务的阶段未注册")
+	ErrTaskUrgent         = errors.New("该任务已经加急过了，或已被取走，刷新后再看")
+	ErrTaskFinished       = errors.New("该任务已结束，加急没有意义（要重跑请用「重投」）")
 )
 
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
@@ -29,6 +31,13 @@ func claimScope(db *gorm.DB, id uint) *gorm.DB {
 func retryScope(db *gorm.DB, id uint, wasReprocess int) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
 		Where("id = ? AND status <> ? AND reprocess = ?", id, models.TaskStatusProcessing, wasReprocess)
+}
+
+// urgentScope 只对「还没加急过」的行生效，防手抖双击与两人同点（与 retryScope 用
+// reprocess 当版本号同一思路：纯整数、加急必 +1，不用 updated_at 那种带格式/时区坑的值）。
+func urgentScope(db *gorm.DB, id uint) *gorm.DB {
+	return db.Model(&models.CrawlerTask{}).
+		Where("id = ? AND urgent = ?", id, false)
 }
 
 func markFailedScope(db *gorm.DB, id uint) *gorm.DB {
@@ -90,10 +99,11 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 		URL:            t.URL,
 		Stage:          t.Stage,
 		Repeatable:     t.Repeatable == models.RepeatableYes,
+		Urgent:         t.Urgent,
 		IdempotencyKey: t.IdempotencyKey,
 	}
 	e.dedupCache.Add(task.Unique())
-	if err := info.workerPool.Submit(task); err != nil {
+	if err := e.submitTo(info, task); err != nil {
 		// 队列达高水位：与正常投递一致，溢出到 DB 由 drain 回灌，不算失败
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			e.spilledCount.Add(1)
@@ -116,6 +126,61 @@ func (e *Engine) whyRetryRejected(id uint) error {
 		return ErrTaskProcessing
 	}
 	return ErrTaskChanged
+}
+
+// UrgentTask 给一行「还没被取走」的任务加急：另投一份到所属阶段的快车道，插到常规队列前面。
+//
+// 条件更新 `WHERE id = ? AND urgent = 0` 当版本守卫（与 RetryTask 用 reprocess 同一思路）：
+// 手抖双击或两个人同时点时只有第一次能匹配上。
+//
+// 已知竞态（可接受）：这条任务本来就排在常规队列里时，池里会有同一行的两份副本，
+// 靠 claimTask 的条件更新仲裁 —— 谁先认领谁执行，另一份被跳过。窗口很小、后果自愈。
+func (e *Engine) UrgentTask(id uint) error {
+	t, err := e.loadTask(id)
+	if err != nil {
+		return err
+	}
+	if t.Status == models.TaskStatusProcessing {
+		return ErrTaskUrgent // 已经被 worker 取走了，快车道帮不上忙
+	}
+	if t.Status == models.TaskStatusSuccess || t.Status == models.TaskStatusFailed {
+		return ErrTaskFinished
+	}
+	info := e.stages[t.Stage]
+	if info == nil || info.workerPool == nil {
+		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
+	}
+
+	// 先落库再加急：这样后台「加急」列看得见，任务溢出回灌或进程重启后也还认得出它加急过。
+	res := urgentScope(e.db, id).Update("urgent", true)
+	if res.Error != nil {
+		return fmt.Errorf("mark task %d urgent: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrTaskUrgent
+	}
+
+	task := &Task{
+		ID:             int(t.ID),
+		PID:            int(t.PID),
+		URL:            t.URL,
+		Stage:          t.Stage,
+		Repeatable:     t.Repeatable == models.RepeatableYes,
+		Urgent:         true,
+		IdempotencyKey: t.IdempotencyKey,
+	}
+	e.dedupCache.Add(task.Unique())
+	if err := e.submitTo(info, task); err != nil {
+		// 与正常投递一致：队列满就溢出到 DB 由 drain 回灌，不算失败
+		if errors.Is(err, workerpool.ErrQueueFull) {
+			e.spilledCount.Add(1)
+			e.spillTask(task)
+			return nil
+		}
+		e.dedupCache.Delete(task.Unique())
+		return fmt.Errorf("submit urgent task %d: %w", id, err)
+	}
+	return nil
 }
 
 // MarkTaskFailed 把「还没结束」的任务标记为失败（待处理/处理中都算）。
