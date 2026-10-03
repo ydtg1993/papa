@@ -27,7 +27,10 @@ Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一
 其余列（`status` / `retry` / `error` / `repeat` 等）是框架运行态，由引擎自动维护，**业务不要直接读写**。
 
 - 内置唯一约束 `(stage, url)`：同一个 URL 在一个阶段只会有一条记录。
-- **`IdempotencyKey` 是「软约束」**：任务可以自定义 `IdempotencyKey`（`papa.Task{ IdempotencyKey: "..." }`）作为去重键，但数据库唯一索引只建在 `(stage, url)` 上，幂等键去重只靠内存缓存。缓存满被淘汰后，**同幂等键、不同 URL 的任务可能重复入库**。约定：使用 `IdempotencyKey` 时，保证同一幂等键始终对应同一 `(stage, url)`；否则其去重是「尽力而为」而非强一致。
+- **`IdempotencyKey` 是「软约束」**：任务可以自定义 `IdempotencyKey`（`papa.Task{ IdempotencyKey: "..." }`）作为去重键。提交时引擎会**按它查库**（`findTaskRecord` 优先用 `idempotency_key`、其次 `stage + url`），命中就复用已有记录、不重复入库；内存去重表只是前面的一道快取，被淘汰了也不影响正确性。
+  但数据库**唯一索引只建在 `(stage, url)` 上**，「同幂等键、不同 URL」这种组合它拦不住：两个这样的任务并发提交时，
+  两边查库都没查到、又都能插进去，就可能各留一行。约定：使用 `IdempotencyKey` 时保证同一幂等键始终对应同一 `(stage, url)`；
+  否则其去重是「尽力而为」而非强一致。
 - 业务**不直接碰 model**，而是通过结果 API 读写（见第 2 节）。
 
 ### 1.2 业务内容结构（你自己的 `models` 包，`papa new` 已生成）

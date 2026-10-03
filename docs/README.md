@@ -26,7 +26,7 @@ cd mycrawler && go mod tidy && go run .
 | 重启后捡回卡死任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动立即恢复、卡死判定 |
 | 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、自动重投已完成的轮询任务 |
 | 用监控后台 / 调它的 API | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/动态配置/队列/日志 API |
-| 排查「页面抓到了啥」/ 生成新项目 | [CLI.md](./CLI.md) | `papa new` 脚手架 + `html`/`rod`/`diff`/`select` 调试命令 |
+| 排查「页面抓到了啥」/ 生成新项目 / 建令牌 | [CLI.md](./CLI.md) | `papa new` 脚手架、`html`/`rod`/`diff`/`select` 调试命令、`token add` |
 | 构建 / 测试 / 竞态检测（Makefile） | [DEVELOPMENT.md](./DEVELOPMENT.md) | make 目标、Windows 怎么跑、race 前置条件 |
 
 > 新手上手顺序：本页 → [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) → [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)，其余按需查。

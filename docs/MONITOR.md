@@ -17,6 +17,9 @@
 2. **访问令牌**：请求带 `Authorization: Bearer <令牌>`，或 `X-Auth-Key: <令牌>`。
    **不再支持 `?key=`**（凭据进 URL 会落进浏览器历史与访问日志）。
 
+`/api/*` 的响应一律带 `Cache-Control: no-store`：带凭据的数据（仪表盘、日志下载、白名单……）
+不该被中间代理缓存 —— 否则令牌停用/删除之后，那份旧的 200 还能被重放出来。
+
 ### 令牌存在库里，一条属于一个操作人
 
 凭据不再是配置里的单个 `auth_key`，而是 **`crawler_access_token`** 表里的多条令牌：
@@ -56,6 +59,10 @@
 令牌页的写操作（新增/停用/启用/删除）和表格页的动作一样**记进操作日志**（开启 `server.operation_log` 时），
 所以「谁给谁建了令牌、谁停用了谁」都查得到。审计里记的是操作人与备注，**不含明文令牌**。
 
+> 写入是**异步**的（后台队列，不占业务响应）：写库失败、或队列堵了（写库跟不上）时，
+> 那条记录会**落到日志文件**里（一行 JSON，可捞回来补录），既不丢审计也不反压业务。
+> 关停时会先把队列排空再关数据库。
+
 > 生产环境升级：`crawler_access_token` 表需要在正式迁移流程里建（dev 环境自动迁移已包含）。
 > 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
@@ -65,7 +72,7 @@
 | --- | --- | --- |
 | GET | `/api/settings` | 返回白名单、白名单文件路径与是否存在、日志目录 |
 | POST | `/api/settings/whitelist` | 更新白名单并持久化到 `whitelist_file`；body `{"whitelist": ["127.0.0.1","10.0.0.0/8"]}` |
-| POST | `/api/settings/shutdown` | 触发优雅退出 |
+| POST | `/api/settings/shutdown` | 触发优雅退出。**body 必须带 `{"token":"..."}`**（要求操作人重新输一遍自己的访问令牌），校验不过返回 403 且不关停；宿主没注入校验器时该接口返回 404 |
 
 ### 访问令牌 API（「访问令牌」页用）
 
@@ -151,8 +158,8 @@ Actions: []oao.Action{
 
 动作声明得多了也不会撑行：**超过 3 个时前两个平铺、其余自动收进「更多 ▾」**（面板支持键盘与点外部关闭）。
 
-内置「任务」表（`internal/tasksource`）就带三个动作：**重投**、**标失败**（必填原因）、**删除**——
-它同时是动作如何接线的参考实现：三个动作都走 `crawler.Engine` 的条件更新，
+内置「任务」表（`internal/tasksource`）是动作如何接线的参考实现，它带了五个动作（见下表）——
+写操作都走 `crawler.Engine` 的条件更新，
 `url` 列用 `NewTab: true` 在新标签页打开。成功与失败都会调 `Config.OnAction`，papa 用它写操作日志
 （见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`，不开就不记）。
 
@@ -274,7 +281,7 @@ app.UseCSSFile("assets/admin.css")
 
 ## 5. 动态配置 API
 
-运行期热更爬虫参数（`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers` 等；浏览器池大小 `pool_size` / `direct_pool_size` 需重启）：
+运行期热更爬虫参数。**哪些字段能热更、哪些需要重启，以 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 3 节的清单为准**（这里只讲接口语义，不重复维护一份字段表）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

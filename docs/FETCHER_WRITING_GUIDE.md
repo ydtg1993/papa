@@ -3,7 +3,7 @@
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
-> 不涉及声明式策略（那是 `AI_CRAWL_STRATEGY_PLAN.md` 的终态，尚未实现）。
+> 不涉及声明式策略（那类东西尚未实现）。
 >
 > 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
@@ -93,7 +93,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 - **调用时机**：`Step` 表示「这一步已经做完了」，所以耗时 = 距上一个 `Step`（首步距本次尝试开始）的间隔；`Fail` 记一个失败的步骤。
 - **`data` 只在失败的尝试里落库**：成功的尝试（绝大多数）一条 `data` 都不写，写入量按失败率走。传 `nil` 也完全可以，只留步骤骨架。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
-- **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。
+- **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
 
@@ -112,7 +112,9 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.Upsert(record, conflictCols, updateCols)` | 冲突更新并回填主键（替代手写 `clause.OnConflict` + `if ID==0` 查回） |
 | `engine.GetConfig()` | 全局配置 |
 | `engine.SubmitTask(&papa.Task{...})` | 派发子任务（列表页 → 详情页） |
-| `engine.SubmitTasks([]*papa.Task{...})` | 批量派发子任务（事务化入库，减少 DB 往返） |
+| `engine.SubmitTasks([]*papa.Task{...})` | 批量派发子任务（一次多行 INSERT，减少 DB 往返；撞唯一索引时自动降级为逐条并跳过冲突行，不会让整批失败） |
+| `engine.GetStageStats()` | 各阶段的统计快照（监控页读的就是它） |
+| `engine.RecordMetric(key, value)` | 写一条业务自定义监控数据，监控页的「自定义数据」模块展示 |
 | `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
 
@@ -393,8 +395,9 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
             URL:   detailURL,
             Stage: "detail",
         }); err != nil {
-            // 去重导致的重复提交报错可忽略
-            _ = err
+            // 去重命中不会走到这里 —— SubmitTask 返回 nil（视为成功）；
+            // 真返回 error 说明是别的提交问题，别吞掉
+            return err
         }
         _ = title
     }
@@ -578,40 +581,51 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 package fetcher
 
 import (
-    "context"
-    "time"
+	"context"
+	"time"
 
-    "github.com/ydtg1993/papa/v2"
+	"github.com/ydtg1993/papa/v2"
 )
 
-type FetchXxx struct{}
+// FetchCatalog 阶段一：抓取目录/列表页。
+// 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
+type FetchCatalog struct{}
 
-func (f *FetchXxx) GetStage() string { return "xxx" }
+func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 config.yaml 的 crawler.stages 的 key 一致
 
-func (f *FetchXxx) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
-    bw, err := engine.GetBrowserPool().Get(ctx)
-    if err != nil {
-        return err
-    }
-    defer engine.GetBrowserPool().Put(bw)
+func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+	bw, err := engine.GetBrowserPool().Get(ctx)
+	if err != nil {
+		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据，后台「追踪」里能直接看到。
+		// task.Trace 关闭时是 nil，这些调用都是安全的 no-op —— 不需要判空。
+		task.Trace.Fail("取浏览器实例", err, nil)
+		return err
+	}
+	defer engine.GetBrowserPool().Put(bw)
 
-    page := bw.Browser.MustPage("")
-    defer page.Close()
+	page := bw.Browser.MustPage("")
+	defer page.Close()
 
-    if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
-        return err
-    }
-    page.MustWaitLoad()
+	if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
+		task.Trace.Fail("打开列表页", err, map[string]string{"url": task.URL})
+		return err
+	}
+	page.MustWaitLoad()
+	// Step 表示「这一步已经做完了」，耗时按距上一步的间隔算
+	task.Trace.Step("打开列表页", map[string]string{"url": task.URL})
 
-    // 你的抓取逻辑
+	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
+	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})
 
-    return nil
+	return nil
 }
 ```
 
+> `task.Trace.*` 是**框架的步骤上报接口**（见 1.3），关掉追踪时是 no-op —— 写新 fetcher 时照抄即可。
+
 配套三处改动：
-1. `config.yaml` 的 `crawler.stages` 加 `xxx:`（worker_count / queue_size / delay / retry）。
-2. `main.go` 里 `app.RegisterStage(&fetcher.FetchXxx{}, nil)`。
+1. `config.yaml` 的 `crawler.stages` 加 `catalog:`（worker_count / queue_size / delay / retry）。
+2. `main.go` 里 `app.RegisterStage(&fetcher.FetchCatalog{}, nil)`。
 3. 若用下载器，`main.go` 里先 `SetM3U8` / `SetFiledown`（要在 `RegisterStage` 之前）。
 
 ---
@@ -639,7 +653,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
    - 定时轮询：业务用 `app.RegisterCronJob("repeat_daily", "0 0 8 * * *", func(){ app.Engine.RepollRepeatableTasks() })` 注册，每日重跑 `repeatable: true` 的轮询任务；
    - 中断恢复：`recover_queue` 配置开启后，启动时立即 + `interval` 定时恢复卡死的 pending/processing 任务。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 与 [SCHEDULER.md](./SCHEDULER.md)。
 
-4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（OA「设置 → 错误队列处理」/ `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
 **看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.monitor: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
 

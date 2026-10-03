@@ -30,6 +30,10 @@ repeat_queue:
 ## 3. 语义：只重投「已完成」的
 
 `repeat_queue` 只重投 `status = success / failed` 的 repeatable 任务，**不碰还在 pending/processing 的**——后者由 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 兜底（超时才恢复）。这样避免「上一轮还没处理完，这一轮又入队」的双入队。
+重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
+（`crawler.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
+于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
+
 
 ## 4. 与业务 cron 的分工
 

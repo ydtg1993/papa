@@ -70,7 +70,7 @@
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `driver` | string | `mysql` 等 |
+| `driver` | string | **只实现了 `mysql`**；其它值启动即报 `unsupported driver` |
 | `dsn` | string | 数据源名称 |
 | `max_idle_conns` / `max_open_conns` | int | 空闲/最大连接数 |
 | `conn_max_lifetime` / `conn_max_idle_time` | duration | 连接最大生命周期 / 空闲最大存活 |
@@ -148,5 +148,5 @@
 - 可热更字段（`PUT /api/config`，改后即时生效）：
   - 浏览器/HTML：`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
   - 三个队列（`error_queue` / `recover_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`、`recover_queue.timeout`。
-- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`。
+- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.trace.*`（`RuntimeConfig` 里没有 trace，改只能重启）。
 - 持久化：热更只写内存；关停时把「被改字段」写成 `configs/runtime.yaml` 覆盖层，下次启动叠加回 `config.yaml`。

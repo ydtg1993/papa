@@ -30,7 +30,11 @@ error_queue:
 
 ## 3. 再处理代数上限（防无限重试）
 
-每次重新投递会把这个任务的 `reprocess + 1`（同时 `retry` 清零）。`max_retry > 0` 时，`reprocess >= max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。
+每次重新投递会把这个任务的 `reprocess + 1`（同时 `retry` 清零）。
+重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
+（`crawler.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
+于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
+`max_retry > 0` 时，`reprocess >= max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。
 
 ## 4. 与错误分类配合
 

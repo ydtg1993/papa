@@ -32,6 +32,10 @@ recover_queue:
 ## 3. 判定逻辑
 
 恢复的条件是：`status IN (pending, processing)` 且 `updated_at < now - timeout`。即「卡了超过 `timeout` 还没动静」的任务才会被捡回；刚提交、仍在正常处理中的任务不受影响。
+重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
+（`crawler.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
+于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
+
 
 ## 4. 与 error_queue 的分工
 

@@ -26,6 +26,7 @@ go install ./cmd/papa
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
+| `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 
 ## 2. 通用 flags（html / rod / diff 共用）
 
@@ -86,7 +87,9 @@ go install ./cmd/papa
 > `eval:` 收的是**表达式或语句**（`document.title`、`document.title='x'`、`document.querySelectorAll('.item').length` 都行），
 > 不是函数——内部会包一层 `eval()` 求值，返回值打到 stderr。页面 CSP 禁止 `eval` 时会报错。
 >
-> `--timeout`（默认 30s）同时作用于导航与**每个动作**（等元素、点击等），动作卡住不会无限等待。
+> `--timeout` 同时作用于导航与**每个动作**（等元素、点击等），动作卡住不会无限等待。
+> **不传时两者默认值不同**：导航 30s、单个动作 15s（`cmd/papa/act.go` 的 `actDefaultTimeout`）——
+> 传了 `--timeout` 就统一按它来。
 
 **每个动作结束后会自动等页面稳定**（DOM 不再变化、网络不再请求，最多等 5 秒，超时只告警不中断），
 避免下拉完立刻取值拿到半截数据。有些页面（轮播、时钟）永不静止，这时每个动作会固定耗满 5 秒，
@@ -198,6 +201,8 @@ papa rod "https://example.com" --proxy --ua "Mozilla/5.0 ..." --json
 ## 7. 说明
 
 - **零配置**：不指定 `--config` 且无 `configs/config.yaml` 时也能跑，用内置默认请求头；`rod` 默认 headless。
-- **退出码**：0 = 成功，1 = 抓取失败或非 2xx，便于脚本串联。
+- **退出码**：0 = 成功，1 = 抓取失败，便于脚本串联。
+  **注意 `rod` 对非 2xx 不算失败**：浏览器能打开 404 页面，它只把状态码记进 JSON 的 `status` 字段，
+  进程仍退 0；`html` / `select`（走 htmlfetch）对非 2xx 会报错退 1。要在脚本里判状态码，读 JSON 的 `status`。
 - **`--header` 格式**：`--header "User-Agent=xxx"`（`key=value`），可多次传入。
 - **`-o` 与 `--json`**：`-o` 把 HTML 落盘；带 `--json` 时 JSON 走 stdout、HTML 落盘。
