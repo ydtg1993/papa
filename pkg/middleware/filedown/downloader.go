@@ -340,9 +340,11 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 			result.Error = fmt.Errorf("write at %d: %w", start, err)
 			return result
 		}
-		if !cfgGlobal.KeepSegmentsAfterMerge {
-			_ = os.Remove(tempFile)
-		}
+		// 注意：这里**不要**顺手删已合并的分片。
+		// 合并中途失败时，状态文件仍然写着"所有分片都下好了"，续传会跳过下载直接进合并 ——
+		// 要是这轮已经把前几个分片删了，那次合并就会报 open temp file ... no such file，
+		// 从此这个任务永久失败，只能人工去删状态文件。
+		// 分片统一由下面的 RemoveAll(tempDir) 在**合并全部成功之后**清掉。
 	}
 	if !cfgGlobal.KeepSegmentsAfterMerge {
 		_ = os.RemoveAll(tempDir)

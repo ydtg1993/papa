@@ -117,7 +117,13 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 		return nil, err
 	}
 
-	browser := rod.New().ControlURL(url).MustConnect()
+	// 不用 MustConnect：连不上时它会 panic，而这里是在业务 goroutine 里取浏览器，
+	// 该返回错误而不是把整个流程炸掉。连不上还要把刚拉起来的 Chrome 收掉，否则进程泄漏。
+	browser := rod.New().ControlURL(url)
+	if err := browser.Connect(); err != nil {
+		l.Kill()
+		return nil, fmt.Errorf("connect browser: %w", err)
+	}
 	return &Browser{
 		Browser:        browser,
 		launcher:       l,
@@ -168,6 +174,13 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 				return nil, fmt.Errorf("browser pool closed")
 			}
 			if b = p.usable(b, alive, maxIdle); b == nil {
+				// usable 关掉了一个死掉/超时空闲的实例并扣了 alive —— 那是"槽位空出来了"，
+				// 得叫一声，否则可能有个已入睡的 Get 一直等不到人叫它。
+				//
+				// 触发很窄，写下来免得被当成多余代码删掉：实例是活的才能进池（put 会判 IsAlive），
+				// 所以它只能在「put 广播 → 抢到的那个 Get 睡回去 → 实例随即死掉」这条缝里
+				// 变成死实例；此时若接着这次新建又失败，槽位就一直空着，直到下一次 put / Close。
+				p.broadcast()
 				continue
 			}
 			b.markUsed()
@@ -219,6 +232,18 @@ func (p *Pool) usable(b *Browser, alive *atomic.Int64, maxIdle time.Duration) *B
 	return b
 }
 
+// broadcast 唤醒所有阻塞在 get 里的调用方。
+//
+// 约定：**凡是会改变「还有没有空闲槽位」的状态变化，都要经它叫一声** ——
+// 睡在 cond.Wait 上的 Get 只有被广播才会重新检查条件。
+// 目前会改变条件的是：归还（put）、关闭池（Close）、空闲回收（reapChannel）、
+// 以及取到死实例后把它关掉（get 的快路径，usable 扣掉 alive 那一下）。
+func (p *Pool) broadcast() {
+	p.mu.Lock()
+	p.cond.Broadcast()
+	p.mu.Unlock()
+}
+
 // Put 将浏览器实例归还池中
 func (p *Pool) Put(b *Browser) error {
 	if b == nil {
@@ -260,9 +285,7 @@ func (p *Pool) put(b *Browser) error {
 		p.decAlive(b)
 	}
 
-	p.mu.Lock()
-	p.cond.Broadcast()
-	p.mu.Unlock()
+	p.broadcast()
 	return nil
 }
 

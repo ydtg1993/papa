@@ -115,3 +115,58 @@ func TestOpPrefixReachesSQL(t *testing.T) {
 		t.Fatalf("OpEq 应生成等值条件：\n%s", sql)
 	}
 }
+
+// 筛选/搜索拼的列名必须带反引号。回归点：内置「操作日志」表有一个叫 `table` 的列，
+// 而 table 是 MySQL 保留字 —— 裸拼进 SQL 是语法错，整页 500（排序那条一直有引号，这两条漏了）。
+func TestFilterAndSearchColumnsAreQuoted(t *testing.T) {
+	lg := &captureLogger{}
+	db := dryDB(t, lg)
+	o, err := oao.New(oao.Config{Tables: []oao.Table{{
+		Key:    "oplog",
+		Source: New(Config{DB: db, Model: &models.OperationLog{}, Search: []string{"table", "action"}}),
+		Columns: []oao.Column{
+			{Field: "id", Kind: oao.KindNumber}, {Field: "table"}, {Field: "action"}, {Field: "ok", Kind: oao.KindBool},
+		},
+		Filters: []oao.Filter{
+			{Field: "table", Op: oao.OpEq},
+			{Field: "action", Op: oao.OpLike},
+			{Field: "ok", Kind: oao.KindBool, Op: oao.OpIn,
+				Options: map[string]string{"true": "成功", "false": "失败"}},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("oao.New: %v", err)
+	}
+	mux := http.NewServeMux()
+	o.Mount(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/oao/oplog?search=task&filter[table]=crawler_task&filter[action]=edit&filter[ok]=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	sql := lg.all()
+	// 1) 列名一律带反引号（保留字 table 才拼得进去）
+	for _, want := range []string{"`table` LIKE", "`action` LIKE", "`table` ="} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("SQL 里缺少带引号的 %q：\n%s", want, sql)
+		}
+	}
+	// 2) 别再有裸列名
+	for _, bad := range []string{"WHERE table ", "AND table ", " table LIKE", " action LIKE"} {
+		if strings.Contains(sql, bad) {
+			t.Fatalf("列名没加反引号（%q）：\n%s", bad, sql)
+		}
+	}
+	// 3) bool 的 IN 必须是布尔字面量，不能是字符串 —— 否则「成功」筛出失败行
+	if !strings.Contains(sql, "`ok` IN (true)") {
+		t.Fatalf("bool 的 OpIn 应渲染成 `ok` IN (true)：\n%s", sql)
+	}
+	if strings.Contains(sql, "'true'") {
+		t.Fatalf("bool 不该以字符串形式进 SQL：\n%s", sql)
+	}
+}

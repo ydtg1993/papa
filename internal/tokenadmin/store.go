@@ -26,6 +26,7 @@ var (
 	ErrNotFound         = errors.New("令牌不存在")
 	ErrChanged          = errors.New("该令牌状态已变，请刷新后重试")
 	ErrOperatorRequired = errors.New("操作人不能为空")
+	ErrLastToken        = errors.New("这是最后一条令牌，删掉后台就只剩 IP 白名单了；请先新增一条，或改用「停用」")
 )
 
 // Token 一行令牌 —— **不含哈希**，页面与接口都不该看到它。
@@ -63,9 +64,19 @@ func enabledScope(db *gorm.DB, id uint, to bool) *gorm.DB {
 	return db.Model(&models.AccessToken{}).Where("id = ? AND enabled = ?", id, !to)
 }
 
-// deleteScope 删除按主键；抽出来的理由同上。
+// deleteScope 删除一把令牌，**守卫：必须还存在别的令牌**。
+//
+// 为什么：auth 把「令牌表一条都没有」当成「还没配凭据」→ 放行。于是删掉最后一条，
+// 后台就从 fail-closed 变成只剩 IP 白名单 —— 而**停用**最后一条是拒绝，删除却敞开，
+// 这个不对称就是要修的 bug。拦住删除这一侧，"表是空的"才重新只意味着"从来没配过"。
+//
+// 守卫写在语句里而不是"先 Count 再删"：两个管理员同时删掉最后两条时，
+// 非原子的先查再删会双双过关，而那正是这条要防的场景。
+// （MySQL 不允许在 DELETE 的子查询里直接读同一张表，套一层派生表绕开 1093。）
 func deleteScope(db *gorm.DB, id uint) *gorm.DB {
-	return db.Where("id = ?", id)
+	tbl := models.AccessToken{}.TableName()
+	return db.Where("id = ? AND EXISTS (SELECT 1 FROM (SELECT 1 FROM "+tbl+" WHERE id <> ? LIMIT 1) AS other)",
+		id, id)
 }
 
 // tokenColumns 只取页面需要的列 —— 哈希不进内存、更不会顺着接口出去。
@@ -115,14 +126,16 @@ func (s *DBStore) SetEnabled(id uint, enabled bool) error {
 	return nil
 }
 
-// Delete 删除一把令牌（行还在就算成功；不存在返回 ErrNotFound）。
+// Delete 删除一把令牌。行还在就算成功；不存在返回 ErrNotFound；
+// **它是最后一条时返回 ErrLastToken**（见 deleteScope 的说明）。
 func (s *DBStore) Delete(id uint) error {
 	res := deleteScope(s.db, id).Delete(&models.AccessToken{})
 	if res.Error != nil {
 		return fmt.Errorf("delete token %d: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return ErrNotFound
+		// 没删到只有两种可能：行不存在，或它是最后一条被守卫拦下
+		return s.whyRejected(id, ErrLastToken)
 	}
 	return nil
 }

@@ -157,15 +157,26 @@ func TestSetEnabledAndRepeatRejected(t *testing.T) {
 func TestRemove(t *testing.T) {
 	store, mux, _ := newTestAPI()
 	store.Seed("tok-1", "张三", "")
+	store.Seed("tok-2", "李四", "")
 
-	if w := do(t, mux, http.MethodPost, "/api/tokens/remove", `{"id":1}`); w.Code != http.StatusOK {
+	if w := do(t, mux, http.MethodPost, "/api/tokens/remove", `{"id":2}`); w.Code != http.StatusOK {
 		t.Fatalf("删除应成功，得到 %d：%s", w.Code, w.Body.String())
 	}
-	if rows, _ := store.List(); len(rows) != 0 {
-		t.Errorf("删完应没有行：%+v", rows)
+	if rows, _ := store.List(); len(rows) != 1 {
+		t.Errorf("删一把后应剩 1 行：%+v", rows)
 	}
-	if w := do(t, mux, http.MethodPost, "/api/tokens/remove", `{"id":1}`); w.Code != http.StatusNotFound {
-		t.Fatalf("删不存在的令牌应返回 404，得到 %d", w.Code)
+
+	// 最后一条不能删：表归零会让 auth 把"一条都没有"当成"还没配凭据"→ 后台只剩 IP 白名单
+	w := do(t, mux, http.MethodPost, "/api/tokens/remove", `{"id":1}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("删最后一条应返回 409，得到 %d：%s", w.Code, w.Body.String())
+	}
+	if rows, _ := store.List(); len(rows) != 1 {
+		t.Errorf("被拒之后不该少行：%+v", rows)
+	}
+
+	if w := do(t, mux, http.MethodPost, "/api/tokens/remove", `{"id":99}`); w.Code != http.StatusNotFound {
+		t.Errorf("删不存在的令牌应返回 404，得到 %d", w.Code)
 	}
 	if w := do(t, mux, http.MethodPost, "/api/tokens/enabled", `{"id":0,"enabled":true}`); w.Code != http.StatusBadRequest {
 		t.Errorf("缺 ID 应返回 400，得到 %d：%s", w.Code, w.Body.String())

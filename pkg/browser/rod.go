@@ -111,12 +111,18 @@ func (b *Browser) NewPage(ctx context.Context, url string) (*rod.Page, error) {
 	return b.NewPageWithOptions(ctx, url, PageOptions{})
 }
 
-// NewPageWithOptions 创建页面并应用自定义配置
-func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageOptions) (*rod.Page, error) {
-	page, err := b.newPageBase(opts)
+// NewPageWithOptions 创建页面并应用自定义配置。
+// 失败时**必须把页面收掉** —— 页面挂在池化浏览器上，漏一个就少一个标签页。
+func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageOptions) (page *rod.Page, err error) {
+	page, err = b.newPageBase(opts)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = page.Close()
+		}
+	}()
 
 	timeout := opts.Timeout
 	if timeout == 0 {
@@ -135,11 +141,17 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 
 // FetchOnce 抓取单个页面并返回渲染后快照，用于 CLI 调试（papa rod / diff）。
 // 相比 NewPageWithOptions，额外采集主文档响应状态码与 MIME 类型，并支持截图。
-func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (*FetchResult, error) {
+// 失败时同样要把页面收掉（见 NewPageWithOptions）。
+func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (res *FetchResult, err error) {
 	page, err := b.newPageBase(opts)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			_ = page.Close()
+		}
+	}()
 	page = page.Context(ctx)
 
 	timeout := opts.Timeout
@@ -192,7 +204,7 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 	}
 
 	navMu.Lock()
-	res := &FetchResult{
+	res = &FetchResult{
 		FinalURL:    info.URL,
 		Status:      status,
 		Title:       info.Title,
@@ -212,14 +224,24 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 }
 
 // newPageBase 创建空白页面并应用设备模拟、请求头、Cookies（导航前的公共准备逻辑）。
+// 任何一步失败都先把刚建的页面关掉再返回 —— 调用方拿到 nil 就没法关了。
 func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
-	page := b.Browser.MustPage("")
+	page, err := b.Browser.Page(proto.TargetCreateTarget{})
+	if err != nil {
+		return nil, fmt.Errorf("open page: %w", err)
+	}
 
 	// 1. 设备模拟（优先使用 opts.Device，否则使用默认设备）
-	if opts.Device != nil {
-		page.MustEmulate(*opts.Device)
+	if device := opts.Device; device != nil {
+		if err := page.Emulate(*device); err != nil {
+			_ = page.Close()
+			return nil, fmt.Errorf("emulate device: %w", err)
+		}
 	} else if b.defaultDevice != nil {
-		page.MustEmulate(*b.defaultDevice)
+		if err := page.Emulate(*b.defaultDevice); err != nil {
+			_ = page.Close()
+			return nil, fmt.Errorf("emulate device: %w", err)
+		}
 	}
 
 	// 2. 合并请求头（默认头来自池的共享可热更配置）
@@ -237,6 +259,7 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 			headerArgs = append(headerArgs, k, v)
 		}
 		if _, err := page.SetExtraHeaders(headerArgs); err != nil {
+			_ = page.Close()
 			return nil, fmt.Errorf("set extra headers: %w", err)
 		}
 	}
@@ -247,6 +270,7 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 	cookies = append(cookies, opts.Cookies...)
 	if len(cookies) > 0 {
 		if err := page.SetCookies(cookies); err != nil {
+			_ = page.Close()
 			return nil, fmt.Errorf("set cookies: %w", err)
 		}
 	}

@@ -437,3 +437,59 @@ func TestDownloadShortChunkFails(t *testing.T) {
 		t.Error("merged output should not be produced when a chunk is short")
 	}
 }
+
+// 合并中途失败不能把已合并的分片删掉。
+//
+// 回归点：合并循环里每合完一个分片就 os.Remove 它，而失败时状态文件仍然写着"所有分片都下好了"。
+// 下次续传会跳过下载直接进合并，于是报 open temp file ... no such file —— 这个任务从此永久失败，
+// 只能人工去删状态文件。分片应当只在**整轮合并成功之后**统一清掉。
+func TestMergeFailureKeepsSegments(t *testing.T) {
+	content := make([]byte, 100) // 100 字节 / 分片 10 字节 = 10 个分片
+	for i := range content {
+		content[i] = byte(i)
+	}
+	server := mockServer(content, true)
+	defer server.Close()
+
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	cfg := &Config{
+		OutputDir:      tempOut,
+		ResumeStateDir: tempState,
+		MaxConcurrent:  2,
+		ChunkSize:      10,
+		EnableResume:   true,
+		SaveBatchSize:  1,
+	}
+	d := NewDownloader(cfg)
+
+	// 造一份"前两个分片已下好"的续传状态，其中**第二个分片的文件故意不存在**，
+	// 这样合并会在第二个分片上失败 —— 正好能看出第一个分片有没有被提前删掉。
+	la := &labor{url: server.URL, outputDir: "d", filename: "f.bin"}
+	segDir := filepath.Join(tempState, "segments", la.outputDir, la.filename)
+	if err := os.MkdirAll(segDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(segDir, fmt.Sprintf("chunk_%020d.tmp", int64(0)))
+	if err := os.WriteFile(first, content[:10], 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.saveResumeState(la, &ResumeState{
+		URL: la.url, OutputFile: la.filename, TotalSize: int64(len(content)), ChunkSize: 10,
+		Completed: []int64{0, 10},
+		TempFiles: []string{first, filepath.Join(segDir, fmt.Sprintf("chunk_%020d.tmp", int64(10)))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := d.Download(context.Background(), server.URL, la.outputDir, la.filename)
+	if res.Error == nil {
+		t.Fatalf("第二个分片缺失，合并应当失败；实得 %+v", res)
+	}
+	if !strings.Contains(res.Error.Error(), "open temp file") {
+		t.Fatalf("应当报在合并阶段，实得：%v", res.Error)
+	}
+	if _, err := os.Stat(first); err != nil {
+		t.Fatalf("合并失败后第一个分片必须还在（否则续传永远好不了）：%v", err)
+	}
+}

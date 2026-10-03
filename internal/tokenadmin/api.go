@@ -161,6 +161,8 @@ func (a *API) failBody(w http.ResponseWriter, r *http.Request, err error, action
 		status = http.StatusConflict
 	case errors.Is(err, ErrOperatorRequired):
 		status = http.StatusBadRequest
+	case errors.Is(err, ErrLastToken):
+		status = http.StatusConflict
 	}
 	if status == http.StatusInternalServerError && a.log != nil {
 		a.log.Errorf("tokenadmin: %s %s (%s): %s", r.Method, r.URL.Path, action, err.Error())

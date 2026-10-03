@@ -44,7 +44,7 @@ func (s *Source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64
 			clauses := make([]string, 0, len(s.cfg.Search))
 			args := make([]any, 0, len(s.cfg.Search))
 			for _, c := range s.cfg.Search {
-				clauses = append(clauses, c+" LIKE ?")
+				clauses = append(clauses, quote(c)+" LIKE ?")
 				args = append(args, like)
 			}
 			db = db.Where(strings.Join(clauses, " OR "), args...)
@@ -73,9 +73,32 @@ func (s *Source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64
 	return rows, total, nil
 }
 
+// quote 给列名套反引号。列名来自表格声明而不是 HTTP，但**不加引号照样会炸**：
+// 内置「操作日志」表就有一个叫 `table` 的列，而 table 是 MySQL 保留字 ——
+// 裸拼进 SQL 就是语法错，整页 500（排序那条一直在加引号，筛选/搜索这两条漏了）。
+func quote(col string) string { return "`" + col + "`" }
+
+// boolList 把 OpIn 的值逐项归一成 bool（gorm 会把 []bool 渲染成 true/false 字面量，
+// MySQL 拿它跟 tinyint 比是对的）。
+//
+// 认的写法与 oao 的 FilterValue.Bool() 保持一致；认不出的项跳过（与 IntList 对 Atoi
+// 失败的宽容度一致），全认不出就当没填这个筛选。
+func boolList(f oao.FilterValue) []bool {
+	var out []bool
+	for _, p := range f.List() {
+		switch strings.ToLower(p) {
+		case "1", "true", "yes":
+			out = append(out, true)
+		case "0", "false", "no":
+			out = append(out, false)
+		}
+	}
+	return out
+}
+
 // applyFilter 按声明里的算子拼一条条件。字段名来自表格声明（不是 HTTP），可以安全拼进 SQL。
 func applyFilter(db *gorm.DB, f oao.FilterValue) *gorm.DB {
-	col := f.Field()
+	col := quote(f.Field())
 	switch f.Op() {
 	case oao.OpLike:
 		return db.Where(col+" LIKE ?", "%"+f.Raw()+"%")
@@ -87,6 +110,14 @@ func applyFilter(db *gorm.DB, f oao.FilterValue) *gorm.DB {
 	case oao.OpIn:
 		if f.Kind() == oao.KindNumber {
 			if vals := f.IntList(); len(vals) > 0 {
+				return db.Where(col+" IN ?", vals)
+			}
+			return db
+		}
+		if f.Kind() == oao.KindBool {
+			// bool 列在 MySQL 里是 tinyint，把 "true" 直接塞进 IN 会被转成 0 ——
+			// 跟拿 'abc' 跟数值比是同一个道理，于是「成功」筛出一堆失败行。
+			if vals := boolList(f); len(vals) > 0 {
 				return db.Where(col+" IN ?", vals)
 			}
 			return db

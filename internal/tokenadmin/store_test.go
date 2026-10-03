@@ -68,3 +68,42 @@ func TestStoreCreateRejectsEmptyOperator(t *testing.T) {
 		}
 	}
 }
+
+// 删除的守卫必须写在语句里：删这一条的前提是"还存在别的令牌"。
+// 否则把最后一条删掉 → 表归零 → auth 把"一条都没有"当成"还没配凭据"→ 后台只剩 IP 白名单。
+// （停用最后一条是拒绝，删除却敞开，这就是要修的不对称。）
+func TestDeleteScopeRefusesLastToken(t *testing.T) {
+	sql := dryDB(t).ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return deleteScope(tx, 7).Delete(&models.AccessToken{})
+	})
+	for _, want := range []string{"DELETE", "id = 7", "EXISTS", "id <> 7"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("删除 SQL 缺少 %q：\n%s", want, sql)
+		}
+	}
+}
+
+// 同一个约束在内存实现上也要成立（接口层测试用它跑）。
+func TestMemStoreRefusesLastToken(t *testing.T) {
+	m := NewMemStore()
+	first := m.Seed("tok-a", "甲", "")
+	second := m.Seed("tok-b", "乙", "")
+
+	if err := m.Delete(second); err != nil {
+		t.Fatalf("删第二把应当成功：%v", err)
+	}
+	if err := m.Delete(first); !errors.Is(err, ErrLastToken) {
+		t.Fatalf("删最后一把 = %v, want ErrLastToken", err)
+	}
+	// 被拒之后那一条必须还在
+	rows, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("被拒后应仍剩 1 条，实得 %d 条", len(rows))
+	}
+	if err := m.Delete(999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("删不存在的行 = %v, want ErrNotFound", err)
+	}
+}

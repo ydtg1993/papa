@@ -93,11 +93,15 @@ func (m *MemStore) SetEnabled(id uint, enabled bool) error {
 }
 
 // Delete 删除一把令牌。
+// Delete 删除一把令牌；与 DBStore 同一份约束：**不许把最后一条删掉**（见 deleteScope）。
 func (m *MemStore) Delete(id uint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := range m.rows {
 		if m.rows[i].ID == id {
+			if len(m.rows) == 1 {
+				return ErrLastToken
+			}
 			m.rows = append(m.rows[:i], m.rows[i+1:]...)
 			return nil
 		}
