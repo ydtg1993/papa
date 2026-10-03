@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-框架内置一个 HTTP 监控后台（`server.enabled` + `server.monitor`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、表格页、设置、动态配置与日志导出。
+框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、表格页、设置、动态配置与日志导出。
 
 ## 1. 鉴权（访问令牌 + 白名单）
 
@@ -318,8 +318,8 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 几条约定：
 
-- **必须在 `Run` 之前注册**（路由在 `Run` 时挂载），且要求 `server.enabled` 与 `server.monitor`
-  都开着。注册了却没挂上**不会静默**：启动会打一条醒目错误日志说明有 N 组路由没生效。
+- **必须在 `Run` 之前注册**（路由在 `Run` 时挂载），且要求 `server.enabled: true`。
+  注册了却没挂上**不会静默**：启动会打一条醒目错误日志说明有 N 组路由没生效。
 - 回调传 `nil` 直接 panic（与 `UsePage` / `RegisterStage` 同风格：声明有问题启动即失败）。
 - pattern 与现有路由冲突时是 `http.ServeMux` 的 panic（挂在同一个 mux 上），不会悄悄覆盖。
 - 路径以 `/api/` 开头的业务路由走的是同一道 `Monitor.Auth`，`Cache-Control: no-store`
@@ -393,7 +393,7 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 
 - 运行状态/耗时/处理量：引擎内存计数，随队列执行即时更新。
 - 待处理积压：`COUNT` 查询，由后台按 `server.queue_sample_interval`（默认 `1m`）低频采样；每轮队列执行结束也会立即补采一次。采样频率越低，DB 压力越小。
-- 采样仅在 `server.monitor=true` 时启动。
+- 采样仅在 `server.enabled: true` 时启动。
 
 对应的 `/api/monitor` 响应字段：
 

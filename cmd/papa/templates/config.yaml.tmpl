@@ -12,7 +12,7 @@ crawler:
   # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。
   # 开启后记得再跑一次 `papa migrate` 建 crawler_task_trace。
   trace:
-    enabled: false             # 是否开启步骤追踪
+    enabled: true              # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
   stages:                      # 爬取阶段配置
     catalog:                   # 阶段名需与 fetcher.GetStage() 返回一致
@@ -79,11 +79,10 @@ log:
   compress: true
   local_time: true
 
-# 统一 HTTP 服务配置（监控页面）
+# 统一 HTTP 服务配置（监控后台）
 server:
-  enabled: true
+  enabled: true                  # 开则挂载整个监控后台（/monitor + /api/* + 表格页 + 自定义页 + UseRouter 的路由）；关则服务完全不监听
   port: 9090
-  monitor: true
   # 后台访问令牌存在 crawler_access_token 表里（多条，每条属于一个操作人），不再用配置里的单密钥。
   # 建令牌：papa token add --operator <名字>（明文只打印一次，库里只存 sha256）。
   # 停用/删除去后台的「访问令牌」页。注意：一条令牌都没有时 /api/* 对白名单内的来源完全开放（启动会警告）。
@@ -93,7 +92,7 @@ server:
     downloads: "./downloads"
     logs: "./logs"
   queue_sample_interval: "1m"     # 治理队列积压(待处理)采样间隔；监控页只读内存快照，采样时才查库，调大可降低 DB 压力
-  operation_log: false            # 操作日志：开启后后台所有增删改写入 crawler_operation_log 表（含失败），并多出「操作日志」表格页；关闭则不建表不写库
+  operation_log: true             # 操作日志：开启后后台所有增删改写入 crawler_operation_log 表（含失败），并多出「操作日志」表格页；关闭则不建表不写库
   # HTTP 超时。write_timeout 默认 0 = 不限，是有意的：日志打包下载可能传很久，给它设上限
   # 等于把在途下载掐断 —— 那正是「优雅退出」要避免的。要限制再显式配。
   read_header_timeout: "10s"      # 挡慢连接（只发头不发送体）

@@ -655,7 +655,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 
 4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
-**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.monitor: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
+**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
 
 ---
 

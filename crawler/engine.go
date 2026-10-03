@@ -521,8 +521,8 @@ func (e *Engine) ApplyRegisterStage() {
 		if stageInfo.submitFunc != nil {
 			stageInfo.submitFunc(e)
 		}
-		// 监控页面开启时，为该阶段创建统计器并启动
-		if e.cfg.Server.Monitor {
+		// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
+		if e.cfg.Server.Enabled {
 			stats := track.NewStatsQueue(pool)
 			stats.Start(e.ctx)
 			e.setStatsQueue(stage, stats)
@@ -539,8 +539,8 @@ func (e *Engine) ApplyRegisterStage() {
 	e.startRepeatQueue()
 	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
 	e.startTraceCleanup()
-	// 监控开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
-	if e.cfg.Server.Monitor {
+	// HTTP 服务开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
+	if e.cfg.Server.Enabled {
 		e.startQueueSampler()
 	}
 }

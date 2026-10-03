@@ -106,7 +106,7 @@ func (a *App) UseTables(tables ...oao.Table) {
 //	})
 //
 // 这些路由默认和后台内置接口一样过「IP 白名单 + 访问令牌」；必须对外公开的（webhook / OAuth 回调）
-// 用 r.NoAuth() 显式声明。路由在后台（server.monitor）开启时才挂载 —— 关掉时不会静默：
+// 用 r.NoAuth() 显式声明。路由在 HTTP 服务（server.enabled）开启时才挂载 —— 关掉时不会静默：
 // 启动会打一条醒目错误日志说明它们没生效。
 //
 // fn 为 nil 直接 panic：与 UsePage / RegisterStage 同风格，声明有问题启动即失败。
@@ -506,104 +506,104 @@ func readWhitelistFile(path string) []string {
 	return out
 }
 
-// httpServer 启动统一 HTTP 服务（监控页面）
+// httpServer 启动统一 HTTP 服务（监控后台）
 func (a *App) httpServer(ctx context.Context) {
 	cfg := a.Config.Server
 	if !cfg.Enabled {
-		a.warnRoutesUnmounted("后台 HTTP 服务未启用（server.enabled=false）")
+		// 服务没起来 = 后台的内容（表格页 / 自定义页 / 自定义路由）一个都不会挂载。
+		// 不能静默：「代码写了、开关没开、什么都不报」是最难查的一类问题（同「表不存在」那条日志）。
+		if len(a.routers) > 0 {
+			a.Logger.Sys.Errorf("已注册 %d 组自定义路由，但 HTTP 服务未启用（server.enabled=false）—— 这些路由不会挂载", len(a.routers))
+		}
 		return
 	}
 
 	mux := http.NewServeMux()
-	if cfg.Monitor {
-		getter := func() map[string]crawler.StageStats {
-			return a.Engine.GetStageStats()
-		}
-		if a.sysInfo == nil {
-			a.sysInfo = sysinfo.NewCollector(2*time.Second, cfg.MonitorDirs)
-			a.sysInfo.Start(ctx)
-		}
-		whitelist := a.resolveWhitelist(cfg)
-		// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
-		auth.WarnIfNoToken(a.DB, a.Logger.Sys)
-		mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-			VerifyToken:         auth.Verifier(a.DB, a.Logger.Sys),
-			Whitelist:           whitelist,
-			WhitelistFile:       cfg.WhitelistFile,
-			Metrics:             a.Engine.GetMetrics,
-			QueueStats:          a.Engine.GetQueueStats,
-			SysInfo:             a.sysInfo,
-			LogDir:              a.Config.Log.Dir,
-			OnShutdown:          a.Shutdown,
-			ProcessErrorQueue:   a.Engine.ProcessErrorQueue,
-			ProcessRecoverQueue: a.Engine.ProcessRecoverQueue,
-			ProcessRepeatQueue:  a.Engine.RepollRepeatableTasks,
-			ConfigGet:           a.Engine.GetRuntimeConfig,
-			ConfigSet:           a.Engine.ApplyRuntimeConfig,
-			TaskTrace:           a.Engine.ListTrace,
-			VerifyTokenValue:    auth.Confirmer(a.DB, a.Logger.Sys),
-		})
-		mon.Register(mux)
 
-		// 操作日志：开启时，oao 表格页的动作与后台自带的「访问令牌」页都往这里记。
-		var rec *oplog.Recorder
-		if cfg.OperationLog {
-			rec = oplog.New(a.DB, a.Logger.Sys)
-			a.oplog = rec
-		}
+	getter := func() map[string]crawler.StageStats {
+		return a.Engine.GetStageStats()
+	}
+	if a.sysInfo == nil {
+		a.sysInfo = sysinfo.NewCollector(2*time.Second, cfg.MonitorDirs)
+		a.sysInfo.Start(ctx)
+	}
+	whitelist := a.resolveWhitelist(cfg)
+	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
+	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
+	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
+		VerifyToken:         auth.Verifier(a.DB, a.Logger.Sys),
+		Whitelist:           whitelist,
+		WhitelistFile:       cfg.WhitelistFile,
+		Metrics:             a.Engine.GetMetrics,
+		QueueStats:          a.Engine.GetQueueStats,
+		SysInfo:             a.sysInfo,
+		LogDir:              a.Config.Log.Dir,
+		OnShutdown:          a.Shutdown,
+		ProcessErrorQueue:   a.Engine.ProcessErrorQueue,
+		ProcessRecoverQueue: a.Engine.ProcessRecoverQueue,
+		ProcessRepeatQueue:  a.Engine.RepollRepeatableTasks,
+		ConfigGet:           a.Engine.GetRuntimeConfig,
+		ConfigSet:           a.Engine.ApplyRuntimeConfig,
+		TaskTrace:           a.Engine.ListTrace,
+		VerifyTokenValue:    auth.Confirmer(a.DB, a.Logger.Sys),
+	})
+	mon.Register(mux)
 
-		// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
-		// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
-		tables := append([]oao.Table{tasksource.Table(a.DB, a.Engine)}, a.tables...)
-		cfgOao := oao.Config{
-			Tables: tables,
-			Logger: a.Logger.Sys,
-			Auth:   mon.Auth, // 复用监控后台的白名单 + 令牌校验
-		}
-		if rec != nil {
-			cfgOao.OnAction = func(ev oao.ActionEvent) { rec.Record(ev, operatorOf(ev)) }
-			cfgOao.Tables = append(tables, oplog.Table(a.DB))
-		}
-		o, err := oao.New(cfgOao)
-		if err != nil {
-			a.Logger.Sys.Errorf("init table component: %s", err.Error())
+	// 操作日志：开启时，oao 表格页的动作与后台自带的「访问令牌」页都往这里记。
+	var rec *oplog.Recorder
+	if cfg.OperationLog {
+		rec = oplog.New(a.DB, a.Logger.Sys)
+		a.oplog = rec
+	}
+
+	// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
+	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
+	tables := append([]oao.Table{tasksource.Table(a.DB, a.Engine)}, a.tables...)
+	cfgOao := oao.Config{
+		Tables: tables,
+		Logger: a.Logger.Sys,
+		Auth:   mon.Auth, // 复用监控后台的白名单 + 令牌校验
+	}
+	if rec != nil {
+		cfgOao.OnAction = func(ev oao.ActionEvent) { rec.Record(ev, operatorOf(ev)) }
+		cfgOao.Tables = append(tables, oplog.Table(a.DB))
+	}
+	o, err := oao.New(cfgOao)
+	if err != nil {
+		a.Logger.Sys.Errorf("init table component: %s", err.Error())
+	} else {
+		o.Mount(mux)
+		if sub, err := o.StaticFS(); err == nil {
+			mux.Handle("/static/oao/", http.StripPrefix("/static/oao/",
+				server.NoCache(http.FileServer(http.FS(sub)))))
 		} else {
-			o.Mount(mux)
-			if sub, err := o.StaticFS(); err == nil {
-				mux.Handle("/static/oao/", http.StripPrefix("/static/oao/",
-					server.NoCache(http.FileServer(http.FS(sub)))))
-			} else {
-				a.Logger.Sys.Errorf("oao static fs: %s", err.Error())
-			}
+			a.Logger.Sys.Errorf("oao static fs: %s", err.Error())
 		}
+	}
 
-		// 「访问令牌」页是后台自带的模块，不走表格组件 —— 它要「新增」，
-		// 而表格组件的动作只回 {"status":"ok"}，没法把服务端生成的明文令牌交给操作人。
-		// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 internal/tokenadmin）。
-		var tokenHook tokenadmin.Hook
-		if rec != nil {
-			tokenHook = func(ev tokenadmin.Event) {
-				rec.RecordEvent(oplog.Event{
-					Table: ev.Table, Action: ev.Action,
-					RowID:    strconv.FormatUint(uint64(ev.ID), 10),
-					Values:   ev.Values,
-					Err:      ev.Err,
-					IP:       ev.IP,
-					Operator: auth.OperatorFrom(ev.Req.Context()),
-					At:       ev.At,
-				})
-			}
+	// 「访问令牌」页是后台自带的模块，不走表格组件 —— 它要「新增」，
+	// 而表格组件的动作只回 {"status":"ok"}，没法把服务端生成的明文令牌交给操作人。
+	// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 internal/tokenadmin）。
+	var tokenHook tokenadmin.Hook
+	if rec != nil {
+		tokenHook = func(ev tokenadmin.Event) {
+			rec.RecordEvent(oplog.Event{
+				Table: ev.Table, Action: ev.Action,
+				RowID:    strconv.FormatUint(uint64(ev.ID), 10),
+				Values:   ev.Values,
+				Err:      ev.Err,
+				IP:       ev.IP,
+				Operator: auth.OperatorFrom(ev.Req.Context()),
+				At:       ev.At,
+			})
 		}
-		tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
+	}
+	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
 
-		// 自定义页与注入（阶段 3 的逃生舱）
-		a.mountCustomRoutes(mux, mon.Auth)
-		// 业务自定义路由（UseRouter）：默认套上和上面同一道鉴权，NoAuth() 的组除外
-		a.mountRouters(mux, mon.Auth)
-	}
-	if !cfg.Monitor {
-		a.warnRoutesUnmounted("监控后台未启用（server.monitor=false）")
-	}
+	// 自定义页与注入（阶段 3 的逃生舱）
+	a.mountCustomRoutes(mux, mon.Auth)
+	// 业务自定义路由（UseRouter）：默认套上和上面同一道鉴权，NoAuth() 的组除外
+	a.mountRouters(mux, mon.Auth)
 
 	readHeader, read, write, idle, _ := cfg.HTTPTimeouts()
 	srv := &http.Server{
@@ -615,7 +615,7 @@ func (a *App) httpServer(ctx context.Context) {
 		IdleTimeout:       idle,
 	}
 	a.httpSrv = srv
-	a.Logger.Sys.Infof("http server starting on :%d (monitor=%t)", cfg.Port, cfg.Monitor)
+	a.Logger.Sys.Infof("http server starting on :%d", cfg.Port)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			a.Logger.Sys.Errorf("http server failed: %s", err.Error())
@@ -624,16 +624,6 @@ func (a *App) httpServer(ctx context.Context) {
 	// 这里**不再**自己关服务：关停要排在「等在途请求跑完 → 停引擎 → 关库」这条链的最前面，
 	// 顺序在 Run 里统一走（见 shutdownHTTP）。原来在这里 `<-ctx.Done(); srv.Close()`
 	// 会和引擎/数据库的收尾并发，把在途的日志下载直接掐断 —— 与"优雅退出"的说法不符。
-}
-
-// warnRoutesUnmounted 业务用 UseRouter 注册了路由、但后台服务没开 —— 这些路由不会挂载。
-// 不能静默：「代码写了、开关没开、什么都不报」是最难查的一类问题（同「表不存在」那条日志）。
-func (a *App) warnRoutesUnmounted(reason string) {
-	if len(a.routers) == 0 {
-		return
-	}
-	a.Logger.Sys.Errorf("已注册 %d 组自定义路由，但%s —— 这些路由不会挂载；要启用请检查 configs/config.yaml 的 server.enabled / server.monitor",
-		len(a.routers), reason)
 }
 
 // shutdownHTTP 优雅停下 HTTP 服务：不再接新请求，等在途的跑完（最多 ShutdownTimeout）。

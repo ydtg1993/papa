@@ -88,9 +88,8 @@
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `enabled` | bool | 是否开启 HTTP 服务 |
+| `enabled` | bool | 是否开启统一 HTTP 服务。开则挂载整个监控后台（`/monitor` + `/api/*` + 表格页 + 自定义页 + `UseRouter` 注册的路由）；关则**服务完全不监听**，上面这些一律不挂载。原来还有一个 `monitor` 子开关，但它唯一的效果是「起了 HTTP 服务却什么都不挂」（所有路径 404），已移除 |
 | `port` | int | 监听端口 |
-| `monitor` | bool | 是否挂载监控页/API |
 | `whitelist` / `whitelist_file` | []string | 来源 IP/CIDR 白名单；文件优先 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |

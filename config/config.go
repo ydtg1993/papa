@@ -170,9 +170,11 @@ func (c *Config) SQLHideParams() bool {
 
 // ServerConfig 统一 HTTP 服务(监控页面)
 type ServerConfig struct {
-	Enabled       bool              `mapstructure:"enabled"`        // 是否开启 HTTP 服务
+	// Enabled 是否开启统一 HTTP 服务。开则挂载监控后台（/monitor + /api/* + 表格页 + 自定义页 +
+	// 业务用 UseRouter 注册的路由）；关则整个服务不监听，上面这些一律不挂载（启动会打错误日志）。
+	// 原来还有一个 monitor 子开关，但它唯一的效果是「起了服务却什么都不挂」，已移除。
+	Enabled       bool              `mapstructure:"enabled"`
 	Port          int               `mapstructure:"port"`           // 监听端口，如 9090
-	Monitor       bool              `mapstructure:"monitor"`        // 是否挂载监控页面/API(/monitor /api/monitor)
 	Whitelist     []string          `mapstructure:"whitelist"`      // 来源 IP/CIDR 白名单（回退默认），空=不限制
 	WhitelistFile string            `mapstructure:"whitelist_file"` // 白名单持久化文件路径，优先于 whitelist
 	MonitorDirs   map[string]string `mapstructure:"monitor_dirs"`   // 监控页展示的业务目录占用，name->path
