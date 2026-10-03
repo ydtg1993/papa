@@ -1,0 +1,35 @@
+package monitor
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/ydtg1993/papa/v2"
+)
+
+// AccessLog 记一条访问日志（方法 / 路径 / 状态 / 耗时）。
+//
+// 它套在后台鉴权**之内** —— 白名单或令牌没过的请求根本进不来，不会被记进业务日志。
+// 要加别的中间件照抄这个形状：func(app *papa.App) papa.Middleware。
+func AccessLog(app *papa.App) papa.Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, r)
+			app.Logger.Sys.Infof("monitor %s %s %d %s",
+				r.Method, r.URL.Path, rec.status, time.Since(start).Round(time.Millisecond))
+		})
+	}
+}
+
+// statusRecorder 记下 handler 实际写出的状态码：没显式调 WriteHeader 时是 200。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}

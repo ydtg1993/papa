@@ -1,0 +1,35 @@
+// Package model 是 monitor 的数据层：gorm 模型与它们到后台表格页的声明。
+package model
+
+import (
+	"github.com/ydtg1993/oao"
+	"gorm.io/gorm"
+)
+
+// Models 返回需要建表的 gorm 模型 —— make migrate（即 `go run . -migrate`）时和框架表一起建。
+//
+// 脚手架还没有业务表（models/content.go 是写进 content 列的 JSON 结构，不是表），所以这里是空的。
+// 加一张自己的表：在项目 models 包里定义带 gorm 标签的结构，再登记进来：
+//
+//	func Models() []any { return []any{&models.Episode{}} }
+func Models() []any { return nil }
+
+// Tables 返回要显示在后台侧边栏的表格页。数据由你实现 oao.Source 提供 ——
+// 怎么过滤、怎么排序、查库还是调接口，全由你决定（组件只在中间做声明与转发）。
+//
+// 列 / 筛选 / 动作的完整字段见项目 docs/MONITOR.md 的「表格页（oao 组件）」。
+// 示例（有表之后再解开，Source 照抄一个现成的改）：
+//
+//	func Tables(db *gorm.DB) []oao.Table {
+//		episode := oao.Table{
+//			Key: "episode", Label: "分集", Group: "业务",
+//			Source: mySource{db: db},
+//			Columns: []oao.Column{
+//				{Field: "id", Kind: oao.KindNumber, Width: "70px"},
+//				{Field: "title", Label: "标题"},
+//			},
+//			DefaultSort: "-id",
+//		}
+//		return []oao.Table{episode}
+//	}
+func Tables(db *gorm.DB) []oao.Table { return nil }

@@ -1,0 +1,27 @@
+// Package controller 是 monitor 的控制层：自定义页调用的 JSON 接口、表格动作的 Handler。
+package controller
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+)
+
+// Ping 最小示例：GET /api/demo/ping → {"pong": true, "at": "<服务端时间>"}。
+// 自定义页 demo 会调它（见 monitor/view）。
+//
+// 需要 app 里的东西（DB / Engine / Logger）时，把 handler 写成闭包再交给路由：
+//
+//	func EpisodeList(app *papa.App) http.HandlerFunc {
+//		return func(w http.ResponseWriter, r *http.Request) {
+//			// ... app.DB ...
+//		}
+//	}
+//	// router.go 里：g.Get("/episodes", controller.EpisodeList(app))
+func Ping(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"pong": true,
+		"at":   time.Now().Format(time.RFC3339),
+	})
+}

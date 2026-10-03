@@ -1,0 +1,30 @@
+// Package view 是 monitor 的视图层：自定义页与注入的 JS/CSS。
+package view
+
+import "github.com/ydtg1993/papa/v2"
+
+// Register 注册自定义页与注入内容。
+//
+// 一页 = 侧边栏一个菜单项 + 一段渲染脚本；脚本加载后调 Papa.page(key, fn) 注册渲染函数，
+// 里面可以直接用后台的全局件：Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 等
+// （清单见项目 docs/MONITOR.md 的「自定义页与注入」）。
+//
+// 注意：注入的 JS/CSS 走**免鉴权**静态路由（浏览器标签带不了自定义请求头），别把密钥写进来；
+// 数据接口仍在白名单 + 令牌后面（页脚本里的 apiFetch / apiPost 会自动带凭据）。
+func Register(app *papa.App) {
+	app.UseCSS(`.demo-badge { color: var(--primary); }`)
+
+	app.UsePage(papa.Page{
+		Key: "demo", Label: "示例页", Group: "业务",
+		Script: `
+			Papa.page("demo", function (el, meta) {
+				el.innerHTML = '<h2>' + esc(meta.label) + '</h2><p class="demo-badge">加载中…</p>';
+				var line = el.querySelector(".demo-badge");
+				apiFetch("/api/demo/ping").then(function (r) { return r.json(); }).then(function (d) {
+					line.textContent = "服务端时间：" + d.at;
+				}).catch(function (e) {
+					line.textContent = "接口调用失败：" + e;
+				});
+			});`,
+	})
+}

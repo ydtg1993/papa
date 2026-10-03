@@ -40,9 +40,10 @@ type App struct {
 	runtimePath string
 	extraModels []any
 	tables      []oao.Table
-	pages       []Page   // 业务注册的自定义页
-	extraJS     []string // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
-	extraCSS    []string // UseCSS 注入的样式，拼成 /static/custom.css
+	pages       []Page          // 业务注册的自定义页
+	routers     []func(*Router) // 业务注册的自定义路由组（UseRouter）
+	extraJS     []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
+	extraCSS    []string        // UseCSS 注入的样式，拼成 /static/custom.css
 	sysInfo     *sysinfo.Collector
 	httpSrv     *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
 	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
@@ -77,12 +78,43 @@ func WithModels(models ...any) Option {
 	}
 }
 
+// UseModels 追加需要建表的业务模型，与 WithModels 等价，区别是可以在 New 之后调用。
+// 存在的理由：`papa new` 生成的 monitor 包在一个入口里登记模型，而那时 App 已经建好了。
+// 与 Migrate 的关系不变 —— Migrate 读的就是这份清单，所以必须在迁移之前调用。
+func (a *App) UseModels(models ...any) {
+	a.extraModels = append(a.extraModels, models...)
+}
+
 // UseTables 注册监控后台的表格页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
 // 表格声明与数据来源见组件库 github.com/ydtg1993/oao：业务声明"显示什么、
 // 怎么显示"并实现 oao.Source 提供数据，框架不碰数据层。
 // 放在 New 之后是为了能用 app.DB 构造 Source。
 func (a *App) UseTables(tables ...oao.Table) {
 	a.tables = append(a.tables, tables...)
+}
+
+// UseRouter 注册一组挂在后台服务上的业务路由（须在 Run 之前调用 —— 路由在 Run 时挂载）。
+//
+// 回调里用 Router 声明路径、方法与中间件，handler 就是一个普通的 http.HandlerFunc：
+//
+//	app.UseRouter(func(r *papa.Router) {
+//	    r.Use(myLogging)                        // 业务中间件，注册顺序正序执行
+//	    r.Group("/api/review", func(g *papa.Router) {
+//	        g.Get("/list", listHandler)         // GET /api/review/list
+//	        g.Post("/approve", approveHandler)  // POST /api/review/approve
+//	    })
+//	})
+//
+// 这些路由默认和后台内置接口一样过「IP 白名单 + 访问令牌」；必须对外公开的（webhook / OAuth 回调）
+// 用 r.NoAuth() 显式声明。路由在后台（server.monitor）开启时才挂载 —— 关掉时不会静默：
+// 启动会打一条醒目错误日志说明它们没生效。
+//
+// fn 为 nil 直接 panic：与 UsePage / RegisterStage 同风格，声明有问题启动即失败。
+func (a *App) UseRouter(fn func(*Router)) {
+	if fn == nil {
+		panic(fmt.Errorf("UseRouter: 回调为 nil —— 里面要用 Router 声明路由"))
+	}
+	a.routers = append(a.routers, fn)
 }
 
 // Page 一个自定义后台页：清单进侧边栏，渲染由 Script 提供。
@@ -190,7 +222,7 @@ func operatorOf(ev oao.ActionEvent) string {
 //
 // 三条路由**无条件注册**（没有内容时返回空体 / 空清单），这样 template.html 里的两个标签是静态的，
 // 宿主没注入东西也不会 404。抽成独立方法是为了能在没有数据库时单测（完整装配需要 MySQL）。
-func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
+func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap Middleware) {
 	pageList := make([]map[string]string, 0, len(a.pages))
 	for _, p := range a.pages {
 		label, group := p.Label, p.Group
@@ -225,6 +257,15 @@ func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap func(http.Handler) http
 		mux.Handle("/api/pages", wrap(handler))
 	} else {
 		mux.Handle("/api/pages", handler)
+	}
+}
+
+// mountRouters 把业务用 UseRouter 注册的路由组挂到后台 mux 上（在监控后台的装配里调用）。
+// guard 是后台那套「白名单 + 令牌」中间件，Router 默认给每条业务路由套上，NoAuth() 的组除外。
+// 与 mountCustomRoutes 一样抽成独立方法，好在没有数据库时单测。
+func (a *App) mountRouters(mux *http.ServeMux, guard Middleware) {
+	for _, fn := range a.routers {
+		fn(newRouter(mux, guard))
 	}
 }
 
@@ -469,6 +510,7 @@ func readWhitelistFile(path string) []string {
 func (a *App) httpServer(ctx context.Context) {
 	cfg := a.Config.Server
 	if !cfg.Enabled {
+		a.warnRoutesUnmounted("后台 HTTP 服务未启用（server.enabled=false）")
 		return
 	}
 
@@ -556,6 +598,11 @@ func (a *App) httpServer(ctx context.Context) {
 
 		// 自定义页与注入（阶段 3 的逃生舱）
 		a.mountCustomRoutes(mux, mon.Auth)
+		// 业务自定义路由（UseRouter）：默认套上和上面同一道鉴权，NoAuth() 的组除外
+		a.mountRouters(mux, mon.Auth)
+	}
+	if !cfg.Monitor {
+		a.warnRoutesUnmounted("监控后台未启用（server.monitor=false）")
 	}
 
 	readHeader, read, write, idle, _ := cfg.HTTPTimeouts()
@@ -577,6 +624,16 @@ func (a *App) httpServer(ctx context.Context) {
 	// 这里**不再**自己关服务：关停要排在「等在途请求跑完 → 停引擎 → 关库」这条链的最前面，
 	// 顺序在 Run 里统一走（见 shutdownHTTP）。原来在这里 `<-ctx.Done(); srv.Close()`
 	// 会和引擎/数据库的收尾并发，把在途的日志下载直接掐断 —— 与"优雅退出"的说法不符。
+}
+
+// warnRoutesUnmounted 业务用 UseRouter 注册了路由、但后台服务没开 —— 这些路由不会挂载。
+// 不能静默：「代码写了、开关没开、什么都不报」是最难查的一类问题（同「表不存在」那条日志）。
+func (a *App) warnRoutesUnmounted(reason string) {
+	if len(a.routers) == 0 {
+		return
+	}
+	a.Logger.Sys.Errorf("已注册 %d 组自定义路由，但%s —— 这些路由不会挂载；要启用请检查 configs/config.yaml 的 server.enabled / server.monitor",
+		len(a.routers), reason)
 }
 
 // shutdownHTTP 优雅停下 HTTP 服务：不再接新请求，等在途的跑完（最多 ShutdownTimeout）。

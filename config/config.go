@@ -65,7 +65,6 @@ type LogConfig struct {
 }
 
 type CrawlerConfig struct {
-	Target         string                 `mapstructure:"target"`           //爬虫目标网站域
 	Stages         map[string]StageConfig `mapstructure:"stages"`           //阶段配置 例如:目录页 详情页 内容页...
 	DedupCacheSize int                    `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
 	QueueWatermark float64                `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75

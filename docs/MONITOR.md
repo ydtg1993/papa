@@ -279,7 +279,57 @@ app.UseCSSFile("assets/admin.css")
 >
 > 声明有问题（Key 非法 / 重复 / Script 为空 / 注入文件读不到）会在启动时 **panic**，不会等到点了菜单才发现。
 
-## 5. 动态配置 API
+## 5. 自定义路由与中间件（Go handler）
+
+表格页与自定义页覆盖不到的场景（自定义看板的后端接口、审核动作、对接外部系统的回调），
+可以直接往后台挂自己的 **Go HTTP handler**，并串上自己的中间件：
+
+```go
+app.UseRouter(func(r *papa.Router) {
+    r.Use(accessLog)                       // 中间件：注册顺序正序执行，只对之后注册的路由生效
+    r.Group("/api/review", func(g *papa.Router) {
+        g.Get("/list", listHandler)        // GET  /api/review/list
+        g.Post("/approve", approveHandler) // POST /api/review/approve
+    })
+    r.Handle("PATCH /api/review/note", noteHandler) // 其余方法用 Handle；pattern 是 Go 1.22 的 ServeMux 语法
+})
+```
+
+| 方法 | 说明 |
+| --- | --- |
+| `Use(mw ...Middleware)` | 追加中间件（`func(http.Handler) http.Handler`），正序执行，只影响之后注册的路由 |
+| `Group(prefix, fn)` | 子路由组：前缀相加、继承父组中间件 |
+| `Get/Post/Put/Delete(pattern, h)` | 常用方法的快捷方式 |
+| `Handle(pattern, h)` | 任意方法；pattern 可带方法前缀（`"PATCH /api/x"`） |
+| `NoAuth()` | 返回一个**不带后台鉴权**的组视图（见下） |
+
+**鉴权默认开着**：业务路由和后台内置接口一样过「IP 白名单 + 访问令牌」，自定义页里用
+`apiFetch` / `apiPost` 调它会自动带上凭据。后台鉴权套在**最外层** —— 白名单/令牌没过的请求
+根本不会进你的中间件，所以日志、计数这类带副作用的中间件不会被未鉴权流量污染。
+
+**要对外公开的接口**（webhook、OAuth 回调、健康检查）用 `r.NoAuth()` 显式声明：
+
+```go
+r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带令牌的来源也开放
+```
+
+它是有意为之的逃生舱 —— 默认松掉鉴权才是危险的，所以要求明确写出来。`NoAuth()` 返回的是副本，
+不影响原组；在子组上调用时前缀照旧生效。
+
+几条约定：
+
+- **必须在 `Run` 之前注册**（路由在 `Run` 时挂载），且要求 `server.enabled` 与 `server.monitor`
+  都开着。注册了却没挂上**不会静默**：启动会打一条醒目错误日志说明有 N 组路由没生效。
+- 回调传 `nil` 直接 panic（与 `UsePage` / `RegisterStage` 同风格：声明有问题启动即失败）。
+- pattern 与现有路由冲突时是 `http.ServeMux` 的 panic（挂在同一个 mux 上），不会悄悄覆盖。
+- 路径以 `/api/` 开头的业务路由走的是同一道 `Monitor.Auth`，`Cache-Control: no-store`
+  由它统一加上；`NoAuth()` 的路由没有这层，需要的话自己在 handler 里设置。
+
+`papa new` 生成的工程把这套东西放在 `monitor/` 包里分层：`router.go` 声明路由与中间件、
+`controller/` 放 handler、`middleware.go` 放中间件、`model/` 放模型与表格页、`view/` 放自定义页。
+`main.go` 只需要 `monitor.Register(app)` 一行，各层分工见每个文件顶部的包注释。
+
+## 6. 动态配置 API
 
 运行期热更爬虫参数。**哪些字段能热更、哪些需要重启，以 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 3 节的清单为准**（这里只讲接口语义，不重复维护一份字段表）：
 
@@ -319,7 +369,7 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 —— 它**不是新的安全边界**：这个令牌和中间件校验用的是同一个，调用方本来就持有。
 （库里一条令牌都没配时放行，与中间件的语义一致，否则"还没配凭据"的部署会关不掉服务。）
 
-## 6. 队列治理
+## 7. 队列治理
 
 「队列治理」模块展示 `error_queue` / `recover_queue` / `repeat_queue` 三个后台治理队列的运行情况，并可逐个手动触发：
 
@@ -362,14 +412,14 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 
 `last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
 
-## 7. 日志导出
+## 8. 日志导出
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/logs` | 列出日志目录文件 |
 | GET | `/api/logs/download` | 下载日志；`?file=name` 下载单个，缺省打包全部为 zip |
 
-## 8. 业务自定义数据展示
+## 9. 业务自定义数据展示
 
 fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据」模块实时展示（配合 `engine.GetMetrics()` 读快照）。
 

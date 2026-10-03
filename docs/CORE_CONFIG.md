@@ -10,7 +10,7 @@
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
 - 运行期覆盖：`configs/runtime.yaml`（与 config.yaml 同目录）。OA 后台改配置只写内存，**关停时**把被改字段落盘到这里，重启后叠加生效；运行期**不碰 config.yaml**。
-- `PUT /api/config` 收的是**增量**：只改 body 里提到的字段，没提到的保持原样（映射给 `{}` 表示清空那组覆盖）。详见 [MONITOR.md](./MONITOR.md) 第 5 节。
+- `PUT /api/config` 收的是**增量**：只改 body 里提到的字段，没提到的保持原样（映射给 `{}` 表示清空那组覆盖）。详见 [MONITOR.md](./MONITOR.md) 第 6 节。
 
 ## 1. 完整配置项参考
 
@@ -24,7 +24,6 @@
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `target` | string | — | 起始目标站域（main.go 里拼起始 URL 用） |
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限（旧行为），`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
 | `queue_watermark` | float | `0.75` | 队列高水位比例（0-1），达到后新任务溢出到 DB 待回灌，避免满队列丢任务 |
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |

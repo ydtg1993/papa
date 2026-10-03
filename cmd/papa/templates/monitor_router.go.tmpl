@@ -1,0 +1,28 @@
+package monitor
+
+import (
+	"github.com/ydtg1993/papa/v2"
+	"{{.Module}}/monitor/controller"
+)
+
+// Routes 声明后台上的自定义路由。
+//
+// 这些路由默认和后台内置接口一样过「IP 白名单 + 访问令牌」—— 自定义页里用 apiFetch/apiPost 调用
+// 会自动带上凭据。必须由外部调用的接口（webhook / OAuth 回调）用 r.NoAuth() 显式开放。
+//
+// pattern 用的是标准库 Go 1.22 的 ServeMux 语法：Get/Post/Put/Delete 是快捷方式，
+// 其余方法用 r.Handle("PATCH /x", h)。
+func Routes(app *papa.App) {
+	app.UseRouter(func(r *papa.Router) {
+		// 中间件按注册顺序正序执行，只对之后注册的路由生效。
+		r.Use(AccessLog(app))
+
+		// 分组 = 路径前缀 + 继承的中间件
+		r.Group("/api/demo", func(g *papa.Router) {
+			g.Get("/ping", controller.Ping) // GET /api/demo/ping
+		})
+
+		// 对外公开（不走白名单 + 令牌）—— 明确写出来才允许：
+		// r.NoAuth().Post("/webhook/demo", controller.Webhook)
+	})
+}

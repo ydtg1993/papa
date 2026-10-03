@@ -14,6 +14,16 @@ type App = app.App
 // Option 应用初始化选项，传给 New。
 type Option = app.Option
 
+// Router 业务后台路由表，在 App.UseRouter 的回调里声明路径、方法与中间件。
+type Router = app.Router
+
+// Middleware 一个 HTTP 中间件：func(http.Handler) http.Handler。
+// 业务中间件与后台鉴权（框架注入的那个）是同一个类型，可以串成一条链。
+type Middleware = app.Middleware
+
+// Page 一个自定义后台页，传给 App.UsePage。
+type Page = app.Page
+
 // WithConfigPath 指定配置文件路径（缺省读 PAPA_CONFIG 环境变量，再回退 configs/config.yaml）。
 var WithConfigPath = app.WithConfigPath
 

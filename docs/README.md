@@ -14,13 +14,15 @@ cd mycrawler && go mod tidy
 2. **`papa migrate` 建表** —— 在项目目录下跑，它自己读 `configs/config.yaml`。
    之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled`）都要**再跑一次**，那两张表跟着开关走。
 3. 写 fetcher（实现 `papa.Fetcher`），在 `main.go` 里注册阶段、提交起始任务、调 `Run`。
-4. `go run .`
+4. 后台（`/monitor`）要加模型 / 表格页 / 自定义页 / 自己的接口，改 `monitor/` 包 ——
+   `main.go` 只有 `monitor.Register(app)` 一行（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
+5. `go run .`
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
 `AutoMigrate` 只增不减（加表 / 加列 / 加索引，不删列也不改类型），重复跑幂等，随便跑。
 
 > **你项目里加了 gorm 模型之后，改用 `make migrate`**（脚手架 Makefile 里有这个目标）。
-> 区别在于 `papa migrate` 是独立的 CLI，看不到你用 `papa.WithModels` 注册的模型，只建框架自带的表；
+> 区别在于 `papa migrate` 是独立的 CLI，看不到你在 `main.go` / `monitor/model` 里注册的模型，只建框架自带的表；
 > `make migrate` 跑的是你自己项目的 `main`（`go run . -migrate` → `App.Migrate()`），两边都建。
 > 脚手架刚生成的项目没有业务表（`models/content.go` 是写进 `content` 列的 JSON 结构，不是表），
 > 所以起步阶段两条命令等价。细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
@@ -38,7 +40,7 @@ cd mycrawler && go mod tidy
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |
 | 重启后捡回卡死任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动立即恢复、卡死判定 |
 | 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、自动重投已完成的轮询任务 |
-| 用监控后台 / 调它的 API | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/动态配置/队列/日志 API |
+| 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/自定义页/自定义路由与中间件/动态配置/队列/日志 API |
 | 排查「页面抓到了啥」/ 生成新项目 / 建令牌 | [CLI.md](./CLI.md) | `papa new` 脚手架、`html`/`rod`/`diff`/`select` 调试命令、`token add` |
 | 构建 / 测试 / 竞态检测（Makefile） | [DEVELOPMENT.md](./DEVELOPMENT.md) | make 目标、Windows 怎么跑、race 前置条件 |
 

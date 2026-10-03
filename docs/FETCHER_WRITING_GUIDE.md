@@ -12,7 +12,7 @@
 ## 0. 一句话工作流
 
 ```text
-papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / config / docker / docs / Makefile / logs）
+papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / monitor / config / docker / docs / Makefile / logs）
   -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v2）
   -> 在 config.yaml 加 stage、在 main.go 注册 fetcher，并在注册回调里提交起始 URL
   -> 任务被 worker 池调度执行，结果通过结果 API 写入 crawler_tasks 表
@@ -575,7 +575,7 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ## 6. 最小可跑骨架（脚手架已生成）
 
-`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models/content.go / configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
+`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models/content.go / monitor（后台分层：模型、控制器、视图、路由与中间件）/ configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
 
 ```go
 package fetcher
@@ -640,7 +640,7 @@ Papa 没有 MCP 了，任务驱动靠四处：
 app.RegisterStage(&fetcher.FetchCatalog{},
     func(engine *papa.Engine) {
         engine.SubmitTask(&papa.Task{
-            URL:        app.Config.Crawler.Target + "classify?type=rexue",
+            URL:        "https://example.com/classify?type=rexue", // 起始 URL 直接写在这里
             Stage:      "catalog",
             Repeatable: true,
         })

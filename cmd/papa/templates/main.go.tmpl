@@ -9,22 +9,27 @@ import (
 
 	"github.com/ydtg1993/papa/v2"
 	"{{.Module}}/fetcher"
+	"{{.Module}}/monitor"
 )
 
 func main() {
 	// 1. 创建应用容器（默认读 configs/config.yaml）
-	//    自定义配置路径或注册模型：
-	//    papa.New(papa.WithConfigPath("configs/config.yaml"), papa.WithModels(&models.YourModel{}))
+	//    自定义配置路径：papa.New(papa.WithConfigPath("configs/config.yaml"))
+	//    注册模型也可以走这里（papa.WithModels(...)），不过脚手架统一在 monitor/model 里登记。
 	app, err := papa.New()
 	if err != nil {
 		panic(fmt.Sprintf("init app failed: %s", err.Error()))
 	}
 
-	// 1.1 建表：`go run . -migrate`（Makefile 里是 `make migrate`）。
-	//     框架自带的表（按配置开关）+ 你用 papa.WithModels 注册的模型一起建；
+	// 1.1 后台接入：模型 / 表格页 / 自定义页 / 自定义路由与中间件都在 monitor 包里分层声明，
+	//     这里一行接起。要加东西去改 monitor/ 下的对应层，别往 main 里堆。
+	monitor.Register(app)
+
+	// 1.2 建表：`go run . -migrate`（Makefile 里是 `make migrate`）。
+	//     框架自带的表（按配置开关）+ monitor/model 里登记的模型一起建；
 	//     AutoMigrate 只增不减、可重复跑，所以本地和上线前都可以随便跑。
 	//     启动时**不会**自动迁移 —— 新开的开关（server.operation_log / crawler.trace.enabled）
-	//     也要重跑一次才会建出对应的表。
+	//     也要重跑一次才会建出对应的表。必须在 monitor.Register 之后：模型清单在那里登记。
 	if len(os.Args) > 1 && os.Args[1] == "-migrate" {
 		if err := app.Migrate(); err != nil {
 			panic(fmt.Sprintf("migrate failed: %s", err.Error()))
@@ -42,8 +47,11 @@ func main() {
 	app.RegisterStage(&fetcher.FetchCatalog{},
 		func(engine *papa.Engine) {
 			if err := engine.SubmitTask(&papa.Task{
-				PID:  0,
-				URL:  app.Config.Crawler.Target, // 起始 URL，改成你的目标站
+				PID: 0,
+				// 起始 URL：改成你的目标站。任务里放什么都行（列表页、详情页、API 地址……），
+				// 一个阶段也不限于一个站点 —— 多个站点/多种策略就多提交几条，
+				// 或者在这里循环你自己的「分类 → 入口 URL」映射。
+				URL:   "https://example.com/list",
 				Stage: "catalog",
 				// Repeatable: true = 该任务会被「周期轮询」（定时重新抓取、发现新内容），
 				// 由 configs/config.yaml 的 repeat_queue 驱动（enabled + interval）。
@@ -54,32 +62,7 @@ func main() {
 			}
 		})
 
-	// 4. 可选：注册自己的后台表格页（声明式 —— 写 Go，不写前端）。
-	//    内置的「任务」表（crawler_task）框架已自动注册，监控后台 /monitor 里直接能看；
-	//    下面是再加一张自己的表。数据由你实现 oao.Source 提供：怎么过滤、怎么排序、
-	//    查库还是调接口，全由你决定（组件只在中间做声明与转发）。
-	//
-	// app.UseTables(oao.Table{
-	//     Key: "detail", Label: "详情", Group: "数据",
-	//     Source: mySource, // 实现 List(ctx, oao.Query) (rows []map[string]any, total int64, err error)
-	//     Columns: []oao.Column{
-	//         {Field: "id", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
-	//         {Field: "url", Render: oao.RenderLink, Href: "{url}", NewTab: true},
-	//         {Field: "status", Kind: oao.KindNumber, Render: oao.RenderEnum,
-	//          Enum: map[string]string{"0": "待处理", "2": "成功"},
-	//          Tone: map[string]string{"0": "info", "2": "ok"}},
-	//     },
-	//     Filters: []oao.Filter{
-	//         {Field: "url", Op: oao.OpPrefix},  // 前缀匹配，能走索引；OpLike 是前后通配
-	//         {Field: "status", Kind: oao.KindNumber, Op: oao.OpIn},
-	//     },
-	//     DefaultSort: "-id",
-	// })
-	//
-	// 要写操作（编辑/删除/自定义）就给这张表声明 Actions，接法与示例见
-	// docs/MONITOR.md 的「表格页（oao 组件）」。
-
-	// 5. 优雅关闭
+	// 4. 优雅关闭
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

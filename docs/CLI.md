@@ -21,7 +21,7 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架 |
+| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含 `monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节） |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
