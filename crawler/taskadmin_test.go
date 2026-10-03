@@ -53,13 +53,15 @@ func TestAdminScopesCarryConditions(t *testing.T) {
 			[]string{"UPDATE", "id = 7", "status = 0", "urgent"},
 		},
 		{
-			"加急：版本守卫，只对还没加急过的行生效",
+			// status 守卫不能少：否则 SELECT 与 UPDATE 之间被 claimTask 认领（它恰好把 urgent
+			// 清成 0）时这里照样命中，把 urgent=1 留在一条已在跑、再没人清的行上。
+			"加急：版本守卫 = 还是待处理 + 还没加急过",
 			func() string {
 				return db.ToSQL(func(tx *gorm.DB) *gorm.DB {
 					return urgentScope(tx, 7).Update("urgent", true)
 				})
 			},
-			[]string{"UPDATE", "id = 7", "urgent = false"},
+			[]string{"UPDATE", "id = 7", "status = 0", "urgent = false"},
 		},
 		{
 			"重投：排除处理中 + reprocess 版本条件",
@@ -145,8 +147,8 @@ func TestUrgentTaskHappyPath(t *testing.T) {
 		t.Fatalf("应先条件更新 urgent 列，实得：\n%s", sql)
 	}
 	// 版本守卫写在**语句**里（不是"先查再写"），重复点击只有第一次能匹配上
-	if !strings.Contains(sql, "WHERE id = ? AND urgent = ?") {
-		t.Fatalf("条件更新应把 urgent 守卫写进 WHERE，实得：\n%s", sql)
+	if !strings.Contains(sql, "WHERE id = ? AND status = ? AND urgent = ?") {
+		t.Fatalf("条件更新应把 status/urgent 守卫写进 WHERE，实得：\n%s", sql)
 	}
 	// 绑定参数里同时有要写的 true 和当守卫的 false
 	args := f.writtenArgs()

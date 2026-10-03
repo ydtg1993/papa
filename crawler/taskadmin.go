@@ -33,11 +33,18 @@ func retryScope(db *gorm.DB, id uint, wasReprocess int) *gorm.DB {
 		Where("id = ? AND status <> ? AND reprocess = ?", id, models.TaskStatusProcessing, wasReprocess)
 }
 
-// urgentScope 只对「还没加急过」的行生效，防手抖双击与两人同点（与 retryScope 用
-// reprocess 当版本号同一思路：纯整数、加急必 +1，不用 updated_at 那种带格式/时区坑的值）。
+// urgentScope 只对「还没加急过、且还没被取走」的行生效，防手抖双击与两人同点
+// （与 retryScope 用 reprocess 当版本号同一思路：纯整数、加急必 +1，
+// 不用 updated_at 那种带格式/时区坑的值）。
+//
+// **status 守卫不能少**：UrgentTask 开头那次 loadTask 只是快照，这一行可能在
+// SELECT 与 UPDATE 之间被 worker 认领 —— 而 claimTask 认领时恰好把 urgent 清成 0，
+// 只写 `urgent = false` 的话这里照样命中，于是把 urgent=1 留在一个已经在跑（甚至已结束）
+// 的行上，且再没有任何路径会清掉它；之后 error_queue / 后台「重投」还会读这个陈旧标记，
+// 让一次无关的重投莫名其妙插队。带上 status 后这种竞态落回 RowsAffected=0 → ErrTaskUrgent。
 func urgentScope(db *gorm.DB, id uint) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND urgent = ?", id, false)
+		Where("id = ? AND status = ? AND urgent = ?", id, models.TaskStatusPending, false)
 }
 
 func markFailedScope(db *gorm.DB, id uint) *gorm.DB {

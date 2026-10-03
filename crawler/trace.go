@@ -252,10 +252,17 @@ func (e *Engine) startTraceCleanup() {
 }
 
 // cleanupTrace 按批删除 created_at 早于 now-retention 的记录，直到一轮删不满一批为止。
+// 每批之间看一眼 ctx：积压极大时这一轮会连删很多批，Engine.Stop 得能打断它。
 func (e *Engine) cleanupTrace(retention time.Duration) {
 	cutoff := time.Now().Add(-retention)
 	var total int64
 	for {
+		select {
+		case <-e.ctx.Done():
+			e.loggerSet.DB.Infof("trace cleanup: interrupted after deleting %d rows", total)
+			return
+		default:
+		}
 		res := e.db.Where("created_at < ?", cutoff).Limit(traceDeleteBatch).Delete(&models.TaskTrace{})
 		if res.Error != nil {
 			e.loggerSet.DB.Errorf("trace cleanup: %s", res.Error.Error())

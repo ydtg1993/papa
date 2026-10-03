@@ -699,6 +699,12 @@ func (d *Downloader) decryptAES128CBC(ciphertext, key, iv []byte) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	// crypto 边界上的兜底：cipher.NewCBCDecrypter 对非 16 字节的 IV 直接 panic。
+	// 今天 IV 只有 prepareKey 一个来源、且已在 parseIV 校验过，这条到不了；
+	// 放在这里是因为函数名就承诺「接受任意 iv」，将来多一个调用点时不该把 panic 带进来。
+	if len(iv) != aes.BlockSize {
+		return nil, fmt.Errorf("invalid IV length: got %d bytes, want %d", len(iv), aes.BlockSize)
+	}
 	if len(ciphertext)%aes.BlockSize != 0 {
 		return nil, fmt.Errorf("ciphertext not multiple of block size")
 	}
@@ -723,12 +729,24 @@ func (d *Downloader) decryptAES128CBC(ciphertext, key, iv []byte) ([]byte, error
 	return plaintext[:len(plaintext)-paddingLen], nil
 }
 
+// parseIV 解析 #EXT-X-KEY 里的显式 IV。
+//
+// **长度必须在这里挡住**：IV 来自远端播放列表，而下游的 cipher.NewCBCDecrypter 对
+// 非 16 字节的 IV 是直接 panic（不是返回 error），且调用发生在下载 goroutine 里、
+// 全包没有 recover —— 放过去就是整个进程崩。RFC 8216 要求 IV 恰好 16 字节。
 func (d *Downloader) parseIV(ivStr string) ([]byte, error) {
 	ivStr = strings.TrimPrefix(ivStr, "0x")
 	if len(ivStr)%2 != 0 {
 		ivStr = "0" + ivStr
 	}
-	return hex.DecodeString(ivStr)
+	iv, err := hex.DecodeString(ivStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid IV %q: %w", ivStr, err)
+	}
+	if len(iv) != aes.BlockSize {
+		return nil, fmt.Errorf("invalid IV length: got %d bytes, want %d", len(iv), aes.BlockSize)
+	}
+	return iv, nil
 }
 
 // parsePlaylistEnhancedWithIndex 解析 M3U8，为每个片段分配索引

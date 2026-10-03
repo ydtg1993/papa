@@ -502,3 +502,73 @@ b.ts
 		t.Error("expected error for malformed EXT-X-MEDIA-SEQUENCE, got nil")
 	}
 }
+
+// 显式 IV 的长度是输入校验边界：cipher.NewCBCDecrypter 对非 16 字节的 IV 直接 panic，
+// 而 IV 来自远端播放列表 —— 非法输入必须在这里变成 error，不能带进 crypto/cipher。
+func TestParseIVValidatesLength(t *testing.T) {
+	d := &Downloader{}
+	cases := []struct {
+		name    string
+		iv      string
+		wantErr bool
+	}{
+		{"标准 16 字节", "0x000102030405060708090a0b0c0d0e0f", false},
+		{"不带 0x 前缀", "000102030405060708090a0b0c0d0e0f", false},
+		{"奇数长度补零后正好 16 字节", "0x" + strings.Repeat("ab", 15) + "a", false},
+		{"太短：IV=0x0102", "0x0102", true},
+		{"奇数长度、补零后仍不足", "0x010", true},
+		{"太长：32 字节", "0x" + strings.Repeat("ab", 32), true},
+		{"空 IV", "0x", true},
+		{"非法 hex", "0xzz", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			iv, err := d.parseIV(tc.iv)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseIV(%q) = %x, want error", tc.iv, iv)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseIV(%q) = %v", tc.iv, err)
+			}
+			if len(iv) != aes.BlockSize {
+				t.Fatalf("iv 长度 = %d, want %d", len(iv), aes.BlockSize)
+			}
+		})
+	}
+}
+
+// 端到端：播放列表里写一个非 16 字节的 IV，下载必须返回 error 而不是把进程打崩。
+func TestDownloadBadIVDoesNotPanic(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	payload := []byte("0123456789abcdef")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/key.bin"):
+			w.Write(key)
+		case strings.HasSuffix(r.URL.Path, ".ts"):
+			w.Write(payload)
+		default:
+			w.Write([]byte("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n" +
+				`#EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x0102` + "\n" +
+				"#EXTINF:1.0,\nseg0.ts\n#EXT-X-ENDLIST\n"))
+		}
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.MaxRetries = 1 // 别在重试上耗时间，只验证「报错而不是崩」
+	d := NewDownloader(cfg)
+
+	res := d.Download(context.Background(), server.URL+"/playlist.m3u8", "", "video.ts", nil)
+	if res == nil || res.Error == nil {
+		t.Fatalf("非 16 字节的 IV 应当失败，实得 %+v", res)
+	}
+	if !strings.Contains(res.Error.Error(), "invalid IV length") {
+		t.Fatalf("错误信息里应说清是 IV 长度问题，实得：%v", res.Error)
+	}
+}

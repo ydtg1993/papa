@@ -32,8 +32,10 @@ type TaskTrace struct {
 	Message string         `gorm:"type:text;comment:错误信息(失败时)"`
 	Data    datatypes.JSON `gorm:"type:json;comment:该步采集到的数据(仅失败的尝试)"`
 
-	Duration  time.Duration `gorm:"comment:该步耗时"`
-	CreatedAt time.Time     `gorm:"autoCreateTime;comment:创建时间"`
+	Duration time.Duration `gorm:"comment:该步耗时"`
+	// CreatedAt 建索引是为了保留期清理：清理按 created_at 范围删、并按批循环，
+	// 没有这个索引每次批量都是一次全表扫描（量越大扫得越多）。
+	CreatedAt time.Time `gorm:"autoCreateTime;index;comment:创建时间"`
 }
 
 // TableName 指定表名，避免 GORM 复数化规则带来的意外。

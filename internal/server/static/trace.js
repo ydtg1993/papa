@@ -32,7 +32,7 @@ var TRACE_ACTION_PATH = '/task/action/trace';
     function sniffTraceID(input, init) {
         try {
             var url = typeof input === 'string' ? input : (input && input.url) || '';
-            if (url.indexOf(TRACE_ACTION_PATH) !== url.length - TRACE_ACTION_PATH.length) return null;
+            if (!url.endsWith(TRACE_ACTION_PATH)) return null;
             var method = (init && init.method) || (input && input.method) || 'GET';
             if (String(method).toUpperCase() !== 'POST') return null;
             var body = init && init.body;
