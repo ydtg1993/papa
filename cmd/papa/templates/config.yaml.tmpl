@@ -1,6 +1,6 @@
 # 应用基础配置
 app:
-  env: dev                     # 运行环境：dev(开发,自动迁移) / prod(生产)
+  env: dev                     # 运行环境：dev / prod。只影响 SQL 日志详略，建表一律走 `papa migrate`
 
 # 爬虫核心配置
 crawler:
@@ -10,7 +10,8 @@ crawler:
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
   # 单任务步骤追踪：开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表。
   # 后台任务表的「追踪」动作按「第 N 次尝试」展示时间线；只有失败的尝试才写 data。
-  # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。生产环境需手工建表（dev 自动迁移）。
+  # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。
+  # 开启后记得再跑一次 `papa migrate` 建 crawler_task_trace。
   trace:
     enabled: false             # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理

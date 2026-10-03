@@ -63,7 +63,7 @@
 > 那条记录会**落到日志文件**里（一行 JSON，可捞回来补录），既不丢审计也不反压业务。
 > 关停时会先把队列排空再关数据库。
 
-> 生产环境升级：`crawler_access_token` 表需要在正式迁移流程里建（dev 环境自动迁移已包含）。
+> 升级时表要自己建 —— 跑一次迁移（脚手架项目里是 `make migrate`，独立用 CLI 是 `papa migrate`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节）。
 > 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
 ## 2. 设置 API
@@ -235,7 +235,7 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 步骤追踪需要在配置里显式开启（`crawler.trace.enabled`，见 [CORE_CONFIG.md](./CORE_CONFIG.md)），
 handler 侧的用法见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.3。
 **未开启时点「追踪」不会白屏**，抽屉里会直接显示「步骤追踪未开启」。
-生产环境需要手工建 `crawler_task_trace` 表（框架只在 `env: dev` 自动迁移）；开关开着但表不存在时，
+要先跑一次迁移把 `crawler_task_trace` 建出来（脚手架项目里是 `make migrate`，CLI 是 `papa migrate`）；开关开着但表不存在时，
 启动会打一条醒目的错误日志，不会静默丢数据。
 
 ## 4. 自定义页与注入（逃生舱）

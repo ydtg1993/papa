@@ -1,6 +1,7 @@
 package database
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ydtg1993/papa/v2/config"
@@ -58,6 +59,52 @@ func TestParseSQLLogLevel(t *testing.T) {
 	} {
 		if got := parseSQLLogLevel(name); got != want {
 			t.Errorf("parseSQLLogLevel(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// 框架自有表的清单：两张总是建，另两张跟着开关走。
+// 这份清单同时喂给 App.Migrate()（脚手架的 `make migrate`）和 CLI 的 `papa migrate` —— 它错了两边一起错。
+func TestFrameworkModelsFollowsSwitches(t *testing.T) {
+	names := func(cfg *config.Config) []string {
+		var out []string
+		for _, m := range FrameworkModels(cfg) {
+			out = append(out, m.Name)
+		}
+		return out
+	}
+
+	c := &config.Config{}
+	if got := names(c); !reflect.DeepEqual(got, []string{"crawler_tasks", "crawler_access_token"}) {
+		t.Fatalf("开关都关着时的清单 = %v", got)
+	}
+
+	c.Server.OperationLog = true
+	if got := names(c); !reflect.DeepEqual(got, []string{
+		"crawler_tasks", "crawler_access_token", "crawler_operation_log",
+	}) {
+		t.Fatalf("开审计后的清单 = %v", got)
+	}
+
+	c.Crawler.Trace.Enabled = true
+	if got := names(c); !reflect.DeepEqual(got, []string{
+		"crawler_tasks", "crawler_access_token", "crawler_operation_log", "crawler_task_trace",
+	}) {
+		t.Fatalf("两个开关都开后的清单 = %v", got)
+	}
+
+	// 清单里的名字是给人看的提示（`papa migrate` 会打印它），必须和模型的实际表名一致；
+	// CrawlerTask 例外 —— 它没实现 TableName，表名靠复数化规则推成 crawler_tasks。
+	for _, m := range FrameworkModels(c) {
+		if m.Name == "crawler_tasks" {
+			continue
+		}
+		tn, ok := m.Value.(interface{ TableName() string })
+		if !ok {
+			t.Fatalf("%s：模型没实现 TableName，清单里的名字就成了唯一来源，容易写飘", m.Name)
+		}
+		if tn.TableName() != m.Name {
+			t.Fatalf("表名对不上：清单写 %s，模型的实际表名是 %s", m.Name, tn.TableName())
 		}
 	}
 }

@@ -77,9 +77,10 @@ func runTokenCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
-	// 首次部署时令牌表可能还没建；AutoMigrate 是增量的，顺手建一下省一轮手工迁移
-	if err := database.AutoMigrate(db, &models.AccessToken{}); err != nil {
-		return fmt.Errorf("建表 crawler_access_token 失败: %w", err)
+	// 建表统一走 `papa migrate`，这里不再顺手建 —— 多一条隐式迁移路径，就多一个
+	// 「生产上从来没跑过正式迁移」的机会：这次只补了令牌表，另外三张照样是缺的。
+	if !db.Migrator().HasTable(&models.AccessToken{}) {
+		return fmt.Errorf("表 crawler_access_token 不存在，先跑一次 `papa migrate` 建表")
 	}
 
 	token, _, err := tokenadmin.NewStore(db).Create(operator, note)

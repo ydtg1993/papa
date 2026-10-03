@@ -26,6 +26,7 @@ go install ./cmd/papa
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
+| `papa migrate [-c <配置路径>]` | 建/补框架自带的表（生产环境用），详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 
 ## 2. 通用 flags（html / rod / diff 共用）

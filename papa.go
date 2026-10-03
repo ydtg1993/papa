@@ -17,7 +17,8 @@ type Option = app.Option
 // WithConfigPath 指定配置文件路径（缺省读 PAPA_CONFIG 环境变量，再回退 configs/config.yaml）。
 var WithConfigPath = app.WithConfigPath
 
-// WithModels 追加需要自动迁移的用户模型（框架默认迁移 CrawlerTask）。
+// WithModels 追加需要建表的业务模型；框架自带的表不用登记。
+// 它们会在 App.Migrate()（脚手架里的 `make migrate`）时一起建。
 var WithModels = app.WithModels
 
 // Fetcher 爬虫业务逻辑接口。

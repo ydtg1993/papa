@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -17,6 +18,19 @@ func main() {
 	app, err := papa.New()
 	if err != nil {
 		panic(fmt.Sprintf("init app failed: %s", err.Error()))
+	}
+
+	// 1.1 建表：`go run . -migrate`（Makefile 里是 `make migrate`）。
+	//     框架自带的表（按配置开关）+ 你用 papa.WithModels 注册的模型一起建；
+	//     AutoMigrate 只增不减、可重复跑，所以本地和上线前都可以随便跑。
+	//     启动时**不会**自动迁移 —— 新开的开关（server.operation_log / crawler.trace.enabled）
+	//     也要重跑一次才会建出对应的表。
+	if len(os.Args) > 1 && os.Args[1] == "-migrate" {
+		if err := app.Migrate(); err != nil {
+			panic(fmt.Sprintf("migrate failed: %s", err.Error()))
+		}
+		fmt.Println("表已就绪。")
+		return
 	}
 
 	// 2. 可选：设置中间件（代理 / m3u8 / 文件下载器），需在 RegisterStage 之前

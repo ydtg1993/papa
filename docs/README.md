@@ -7,10 +7,23 @@
 ```bash
 go install github.com/ydtg1993/papa/v2/cmd/papa@latest
 papa new mycrawler --replace /path/to/papa   # 或外部 go run github.com/ydtg1993/papa/v2/cmd/papa@latest new mycrawler
-cd mycrawler && go mod tidy && go run .
+cd mycrawler && go mod tidy
 ```
 
-三步：改 `configs/config.yaml`（`app.env: dev` 自动建表）→ 写 fetcher（实现 `papa.Fetcher`）→ `main.go` 注册阶段 + 提交起始任务 + `Run`。
+1. 把 `configs/config.yaml` 的 `db.dsn` 指向你的 MySQL。
+2. **`papa migrate` 建表** —— 在项目目录下跑，它自己读 `configs/config.yaml`。
+   之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled`）都要**再跑一次**，那两张表跟着开关走。
+3. 写 fetcher（实现 `papa.Fetcher`），在 `main.go` 里注册阶段、提交起始任务、调 `Run`。
+4. `go run .`
+
+启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
+`AutoMigrate` 只增不减（加表 / 加列 / 加索引，不删列也不改类型），重复跑幂等，随便跑。
+
+> **你项目里加了 gorm 模型之后，改用 `make migrate`**（脚手架 Makefile 里有这个目标）。
+> 区别在于 `papa migrate` 是独立的 CLI，看不到你用 `papa.WithModels` 注册的模型，只建框架自带的表；
+> `make migrate` 跑的是你自己项目的 `main`（`go run . -migrate` → `App.Migrate()`），两边都建。
+> 脚手架刚生成的项目没有业务表（`models/content.go` 是写进 `content` 列的 JSON 结构，不是表），
+> 所以起步阶段两条命令等价。细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 
 ## 阅读路径
 

@@ -293,7 +293,7 @@ engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
 1. **结果 API 帮你序列化**：`SaveResult` / `SaveContent` 内部自动 `json.Marshal`，`GetResult` 自动 `json.Unmarshal`，业务不用再碰 `datatypes.JSON` / `json.Marshal`。
 2. **写库只写自己的 `task.ID`**：子任务各自写各自记录，不要越界改别人的任务。
 3. **改 JSON 里的嵌套字段要「读-改-写」**：`content` 是整列 JSON，没有嵌套路径更新，改 `Downloads` 这类内层字段必须整列读出来改完写回。
-4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`（dev 环境自动迁移，生产迁移要另外走正式流程）。若要后台浏览/筛选该表，用 `app.UseTables` 注册表格页（见 [MONITOR.md](./MONITOR.md)「表格页」）。
+4. **新增独立表记得注册迁移**：`papa.New(papa.WithModels(&models.YourModel{}))`。这些模型会被 `App.Migrate()` 一起建 —— 脚手架里就是 `make migrate`。注意 CLI 那条 `papa migrate` 建不了业务自己的表（命令行拿不到 `WithModels`），它只管框架自带的。若要后台浏览/筛选该表，用 `app.UseTables` 注册表格页（见 [MONITOR.md](./MONITOR.md)「表格页」）。
 5. **并发写同一记录**：detail 派发多个 video 子任务时，多个子任务可能同时回写父任务的 `Downloads`，会丢更新。需要的话对父任务加锁或串行回写（简单做法：用数据库事务或 `gorm` 的 `clause.Locking`）。
 6. **Content 空值 / nil map**：确保传给 `SaveResult` / `SaveContent` 的结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
 7. **字段命名**：JSON tag 用下划线风格，和现有 `cover_url` / `series_info` 一致，避免和别处拼写不一致。

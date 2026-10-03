@@ -17,7 +17,6 @@ import (
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
 	"github.com/ydtg1993/papa/v2/internal/tasksource"
 	"github.com/ydtg1993/papa/v2/internal/tokenadmin"
-	"github.com/ydtg1993/papa/v2/models"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
 	"github.com/ydtg1993/papa/v2/pkg/middleware"
@@ -69,7 +68,8 @@ func WithConfigPath(path string) Option {
 	}
 }
 
-// WithModels 追加需要自动迁移的用户模型（框架默认迁移 CrawlerTask）
+// WithModels 追加需要建表的业务模型。框架自带的表（CrawlerTask 等）不用你登记，
+// 清单在 database.FrameworkModels 里。这些模型会在 App.Migrate()（`make migrate`）时一起建。
 func WithModels(models ...any) Option {
 	return func(a *App) error {
 		a.extraModels = append(a.extraModels, models...)
@@ -266,28 +266,17 @@ func NewApp(opts ...Option) (*App, error) {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 
-	// 4. 自动迁移（开发环境）
-	if cfg.App.Env == "dev" {
-		// 访问令牌表与审计表一样，是框架自己要用的，不依赖业务开关
-		allModels := []any{&models.CrawlerTask{}, &models.AccessToken{}}
-		if cfg.Server.OperationLog {
-			allModels = append(allModels, &models.OperationLog{})
-		}
-		if cfg.Crawler.Trace.Enabled {
-			allModels = append(allModels, &models.TaskTrace{})
-		}
-		allModels = append(allModels, a.extraModels...)
-		if err := database.AutoMigrate(db, allModels...); err != nil {
-			return nil, fmt.Errorf("migrate db: %w", err)
-		}
-	}
+	// 4. 建表不在这里做。迁移只有一条路：显式跑一次（`papa migrate`，或项目里 `make migrate`
+	//    走 App.Migrate）。原来 dev 会随启动自动迁一次 —— 那让"迁移"变成一件不用学的事，
+	//    而生产上没人会想起来跑它；两边跑同一件事，才谈得上"dev 练过的就是生产要做的"。
+	//    这里只检查：该有的表在不在。
 
-	// 4.1 步骤追踪开着但表不存在 = 每次尝试写库都失败。生产不会自动迁移，所以这里必须显式喊一声，
-	// 不能重演审计表那种「开关看着是开的、实际什么都没记」的静默丢失。
-	if cfg.Crawler.Trace.Enabled && !db.Migrator().HasTable(&models.TaskTrace{}) {
-		loggerSet.Sys.Errorf("crawler.trace.enabled 已开启，但表 crawler_task_trace 不存在 —— " +
-			"步骤追踪不会写入任何数据。生产环境不做自动迁移，请手工建表（结构见 models.TaskTrace）；" +
-			"dev 环境重启即自动创建")
+	// 4.1 表不在 = 对应功能看着启用、实际什么都写不进去。必须显式喊一声 ——
+	// 审计表那条「开关开着、实际什么都没记」的静默丢失就是这么来的。
+	for _, m := range database.FrameworkModels(cfg) {
+		if !db.Migrator().HasTable(m.Value) {
+			loggerSet.Sys.Errorf("表 %s 不存在 —— 相关功能不会写入任何数据。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）", m.Name)
+		}
 	}
 
 	// 5. 创建爬虫引擎
@@ -310,6 +299,15 @@ func NewApp(opts ...Option) (*App, error) {
 	a.Engine = engine
 	a.runtimePath = runtimePath
 	return a, nil
+}
+
+// Migrate 建 / 补表：框架自带的（按配置开关）+ 用 papa.WithModels 注册的业务模型。
+//
+// 迁移只有这一条路 —— 启动时不自动迁。`papa new` 生成的 main.go 把它接在 `-migrate` 参数上
+// （Makefile 里就是 `make migrate`），于是"建表"是显式的一步，dev 和生产跑的是同一件事。
+// AutoMigrate 只增不减、幂等，重复跑是安全的。
+func (a *App) Migrate() error {
+	return database.Migrate(a.DB, a.Config, a.extraModels...)
 }
 
 // RegisterStage 注册爬虫业务阶段流程

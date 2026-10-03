@@ -18,7 +18,7 @@
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `env` | string | `dev`（自动迁移表结构）/ `prod` |
+| `env` | string | `dev` / `prod`。只影响 SQL 日志（dev 打 info 且带参数值；见 `db.log_level`），不再影响建表 |
 
 ### crawler —— 爬虫核心
 
@@ -137,6 +137,28 @@
 | `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
 | `interval` | duration | 轮询间隔；`0`=不自动轮询，仅手动触发 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+
+## 2. 建表 / 迁移
+
+**只有一条路：显式跑一次。启动时不会自动迁移。**
+
+- 脚手架生成的项目：`make migrate`（跑 `go run . -migrate` → `App.Migrate()`）。
+  它建**框架自带的表 + 你用 `papa.WithModels` 注册的业务模型**。
+- 不涉及业务模型、或没走脚手架：`papa migrate [-c configs/config.yaml]`。
+  它只建框架自带的表（命令行拿不到 `WithModels`），会先打印将要确保存在的表。
+
+**`AutoMigrate` 只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 —— 生产上执行是安全的。
+真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工写迁移。
+
+框架自带的表：`crawler_tasks`、`crawler_access_token` 总是建；
+`crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）
+跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则那张表不会建出来。
+
+**业务自己的表只有 `App.Migrate()` 能建**：那些模型是通过 `papa.WithModels` 在业务 `main.go`
+里注册的，命令行那条 `papa migrate` 拿不到它们。所以脚手架把 `App.Migrate()` 接在了 `-migrate`
+参数上（Makefile 里就是 `make migrate`）—— 用脚手架就别去记两条命令。
+
+> 启动时会检查"该有的表在不在"，缺了打醒目的错误日志 —— 免得出现「开关看着是开的、实际什么都没写进去」。
 
 ## 2. 时长格式
 
