@@ -9,15 +9,26 @@
 
 Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一张 `crawler_tasks` 表，用 `stage` 列区分阶段，抓到的结构化内容以 JSON 塞进 `content` 列。你要做的是：**把页面提取成 Go 结构体，序列化后写回对应任务的 `content`（和 `title`）列**。
 
-> 框架只内置一张 `crawler_tasks` 任务表（业务通过结果 API 读写，不直接碰 model）。业务内容结构（`DetailContent` 等）由 `papa new` 生成在**你自己的 `models` 包**里。
+> 框架一共内置 4 张表，业务要写的只有 `crawler_tasks` 一张（后三张是后台自用，见 §1）。业务的内容结构（写进 `content` 列的 JSON）由你自己在项目的 `models` 包里按需定义 —— 脚手架不预置示例。
 
 ---
 
 ## 1. 读懂现状：已有哪些模型
 
-### 1.1 任务表 `crawler_tasks`（框架内置）
+框架一共内置 4 张表，**只有第一张是业务要写的**，其余三张是后台自用（业务通过结果 API 或 `task.Trace` 间接用，不直接读写表）：
 
-框架内置一张 `crawler_tasks` 任务表，业务关心的只有两个落地列：
+| 表 | 用途 | 业务碰不碰 |
+| --- | --- | --- |
+| `crawler_tasks` | 任务与抓取结果 —— `title` / `content` 两列就是落地点 | **是**（`engine.SaveResult` / `SaveContent` / `Upsert`） |
+| `crawler_access_token` | 后台访问令牌（`papa token add` 或后台「访问令牌」页维护） | 否 |
+| `crawler_operation_log` | 后台操作审计，开关 `server.operation_log` | 否 |
+| `crawler_task_trace` | 任务步骤追踪，开关 `crawler.trace.enabled`（handler 里 `task.Trace.Step` 上报） | 否 |
+
+后三张跟着开关走，建表与开关的对应关系见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。本手册不展开它们（业务不碰）—— 各有归属：访问令牌见 [MONITOR.md](./MONITOR.md) 第 1 节（含字段表）、操作日志见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`、步骤追踪见 [MONITOR.md](./MONITOR.md) 第 3 节的「追踪」抽屉。
+
+### 1.1 任务表 `crawler_tasks`（业务唯一要写的一张）
+
+业务关心的只有两个落地列：
 
 | 列 | 说明 |
 | --- | --- |
@@ -33,41 +44,80 @@ Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一
   否则其去重是「尽力而为」而非强一致。
 - 业务**不直接碰 model**，而是通过结果 API 读写（见第 2 节）。
 
-### 1.2 业务内容结构（你自己的 `models` 包，`papa new` 已生成）
+### 1.2 业务内容结构（你自己在 `models` 包里定义）
 
-脚手架生成的 `models/content.go` 是**极简起点**，字段如下（加字段只影响 `content` 里的 JSON，不影响表结构）：
+下面是一个**更完整的动漫示例**，把这些结构写进你的 `models/` 包即可：
 
-```go
-type DetailContent struct {
-    Title string   `json:"title"`
-    Cover string   `json:"cover"`
-    Tags  []string `json:"tags"`
+```models/comic.go
+package models
+
+import "time"
+
+// ComicContent 动漫/漫画详情页内容
+type ComicContent struct {
+	ID        int       `json:"id"`         // 主键 ID
+	SourceURL string    `json:"source_url"` // 来源页面 URL
+	Cover     string    `json:"cover"`      // 封面本地化地址
+	CoverURL  string    `json:"cover_url"`  // 封面原始 URL
+	Title     string    `json:"title"`      // 标题
+	Author    string    `json:"author"`     // 作者
+	Tags      []string  `json:"tags"`       // 标签
+	Category  string    `json:"category"`   // 分类
+	CreatedAt time.Time `json:"created_at"` // 创建时间
+	UpdatedAt time.Time `json:"updated_at"` // 更新时间
+}
+
+// TableName 指定表名
+func (ComicContent) TableName() string {
+	return "comic_contents"
 }
 ```
 
-下面是一个**更完整的动漫示例**，你可以把这些结构写进 `models/content.go` 按需使用：
+```models/chapter.go
+package models
 
-```go
-// 动漫详情页内容
-type DetailContent struct {
-    Cover         string        `json:"cover"`      // 封面本地化地址
-    CoverURL      string        `json:"cover_url"`  // 封面原始 URL
-    Title         string        `json:"title"`
-    Author        string        `json:"author"`
-    Tags          []string      `json:"tags"`
-    SeriesContent `json:"series_info"`              // 剧集列表
+import "time"
+
+// ChapterContent 动漫/漫画章节内容
+type ChapterContent struct {
+	ID              int               `json:"id"`               // 主键 ID
+	ComicID         int               `json:"comic_id"`         // 所属漫画 ID（外键）
+	SourceURL       string            `json:"source_url"`       // 章节来源 URL
+	Title           string            `json:"title"`            // 章节标题
+	Order           int               `json:"order"`            // 章节序号（用于排序）
+	Images          map[string]string `json:"images"`           // 序号 -> 图片原始 URL
+	DownloadsImages map[string]string `json:"download_images"`  // 序号 -> 已下载图片本地路径
+	ImageCount      int               `json:"image_count"`      // 图片总数
+	DownloadedCount int               `json:"downloaded_count"` // 已下载数量
+	Status          int               `json:"status"`           // 状态: 0-未开始 1-下载中 2-已完成 3-失败
+	CreatedAt       time.Time         `json:"created_at"`       // 创建时间
+	UpdatedAt       time.Time         `json:"updated_at"`       // 更新时间
 }
 
-// 剧集列表
-type SeriesContent struct {
-    Series    map[string]string `json:"series"`   // 标题 -> 剧集 URL
-    Downloads map[string]bool   `json:"download"` // 剧集 URL -> 是否已下载
+// TableName 指定表名
+func (ChapterContent) TableName() string {
+	return "chapter_contents"
 }
 
-// 视频资源（m3u8）
-type VideoContent struct {
-    Dir    string `json:"dir"`    // 本地输出目录/路径
-    Source string `json:"source"` // m3u8 地址
+// 章节状态常量
+const (
+	ChapterStatusPending    = 0 // 未开始
+	ChapterStatusDownloading = 1 // 下载中
+	ChapterStatusCompleted  = 2 // 已完成
+	ChapterStatusFailed     = 3 // 失败
+)
+
+// Progress 返回下载进度（0.0 ~ 1.0）
+func (c *ChapterContent) Progress() float64 {
+	if c.ImageCount == 0 {
+		return 0
+	}
+	return float64(c.DownloadedCount) / float64(c.ImageCount)
+}
+
+// IsCompleted 判断章节是否下载完成
+func (c *ChapterContent) IsCompleted() bool {
+	return c.Status == ChapterStatusCompleted && c.DownloadedCount >= c.ImageCount
 }
 ```
 
@@ -75,11 +125,11 @@ type VideoContent struct {
 
 | 阶段 | 抓什么 | 落地结构 |
 | --- | --- | --- |
-| `catalog` | 分类目录页：标题 + 链接 | 通常只派发子任务，也可写一个列表结构 |
-| `detail` | 详情页：封面/标题/作者/标签/剧集列表 | `DetailContent`（含 `SeriesContent`） |
-| `video` | 视频页：m3u8 地址 + 本地文件 | `VideoContent` |
+| `catalog` | 分类目录页：漫画标题 + 详情页链接 | 通常只派发子任务，也可写一个列表结构 |
+| `detail` | 详情页：封面/标题/作者/标签/章节列表 | ComicContent（含 ChapterItem 列表） |
+| `video` | 章节页：每页图片 URL + 本地文件 | ChapterContent（含 ImageItem 列表） |
 
-> 剧集列表的 `Series` 用 `map[标题]url` 存，天然去重；`Downloads` 用 `map[url]bool` 记录下载进度，配合断点续传用。
+> 视频场景是 catalog → detail → video（播放页 m3u8）； 漫画场景对应的是 catalog → detail → chapter（章节页多张图片）， 因为漫画一个章节通常有几十张图，不是单一媒体流。
 
 ---
 
@@ -115,7 +165,8 @@ fetcher 里只调 `models.SaveDetail(engine, task.ID, content)`。
 适合：内容要被**按列查询 / 关联 / 统计**（例如「查所有已下载的剧集」「按作者聚合」），而不是塞在一个 JSON 里。
 
 做法：
-1. 定义模型：`models/xxx.go`（你自己的 models 包）
+1. 定义模型：**一张表一个文件** —— `models/episode.go`、`models/series.go`……（`models/models.go`
+   只放建表清单，不堆表结构）
 2. 注册迁移：脚手架项目里是加进根 `models` 包的 `Models()` 清单（`make migrate` 时一起建）；
    不用脚手架的话就是 `papa.New(papa.WithModels(&models.YourNewTable{}))`，或在 New 之后 `app.UseModels(...)`
 3. fetcher 里 `db.Create(&models.YourNewTable{...})`
@@ -218,7 +269,7 @@ func markDownloaded(engine *papa.Engine, detailTaskID int, seriesURL string) err
 
 ### 4.1 优先复用，其次扩展
 
-- 先看脚手架生成的 `models/content.go` 里的结构是否够用；不够就**加字段**或**定义新结构**，都只影响 `content` 里的 JSON，不用改表结构。
+- 内容结构没有框架预置版本 —— 在 `models` 包里按页面需要**加字段**或**定义新结构**，都只影响 `content` 里的 JSON，不用改表结构。
 - 字段命名用 `json` tag 明确序列化名（下划线风格，和现有保持一致）。
 
 ### 4.2 自定义一个内容结构（示例：目录页留档）
@@ -241,6 +292,8 @@ fetcher 里序列化写入即可，和 `DetailContent` 完全一样的写法。
 
 ### 4.3 真要建独立表（路径 C）
 
+**一张表一个文件** —— 比如 `models/episode.go`：
+
 ```go
 // models/episode.go（你自己的 models 包）
 type Episode struct {
@@ -252,11 +305,8 @@ type Episode struct {
 }
 ```
 
-然后在 `main.go`：
-
-```go
-app, err := papa.New(papa.WithModels(&models.Episode{}))
-```
+再登记进建表清单：脚手架项目里是加到 `models/models.go` 的 `Models()`
+（`make migrate` 时一起建）；不用脚手架则是 `papa.New(papa.WithModels(&models.Episode{}))`。
 
 如果还想在监控后台里分页/筛选这张表，用 `app.UseTables` 注册一个表格页（声明列怎么显示，
 数据由业务实现 `oao.Source` 提供）。详见 [MONITOR.md](./MONITOR.md) 的「表格页」。
@@ -307,6 +357,6 @@ engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
 | 问题 | 答案 |
 | --- | --- |
 | 结果写哪张表 | `crawler_tasks` 表的 `content`（JSON）+ `title` 列（通过 `engine.SaveResult` / `SaveContent`） |
-| 用什么结构 | 复用脚手架 `models/content.go` 里的结构，或自定义 struct |
+| 用什么结构 | 自己在 `models` 包里定义的 struct（序列化进 `content` 列） |
 | 写在哪 | 默认直接写 `FetchHandler`；复用/复杂了再抽 repository；要按列查询才建独立表 |
 | 建表要不要迁移 | 是，`papa.New(papa.WithModels(...))` 里注册（dev 环境） |

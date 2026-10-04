@@ -1,20 +1,32 @@
-// Package models 是业务的数据层：写进任务 content 列的 JSON 结构（content.go）
-// 与带 gorm 标签的表模型（在本文件登记建表清单）。
+// Package models 是业务的数据层。它放在项目根目录、和 fetcher 同级 —— 因为爬虫业务与
+// 后台服务都要用它，不能挂在某一个之下。
 //
-// 它在项目根目录、和 fetcher 同级 —— 因为爬虫业务与后台服务都要用这些模型，
-// 所以不能挂在某一个之下。查询 / 写入逻辑可以再加 repo.go 之类的文件放本包，
+// 这个包里有两类东西，别混。
+//
+// 一类是写进任务 content 列的 JSON 结构（默认的落地方式）：抓到的内容序列化后由
+// engine.SaveResult(taskID, title, content) 写进 crawler_tasks 的 content 列。字段随便
+// 增删，只影响那份 JSON，不动表结构 —— 所以**不要加 gorm tag**：
+//
+//	type DetailContent struct {
+//		Title string   `json:"title"`
+//		Cover string   `json:"cover"`
+//		Tags  []string `json:"tags"`
+//	}
+//
+// 另一类是真正的 gorm 表模型：内容要按列查询 / 关联 / 统计时才建，在下面 Models() 里登记。
+//
+// 摆放约定：**一张表一个文件**（models/episode.go、models/series.go……），本文件只放包注释
+// 与下面那份建表清单 —— 别把表结构堆进这里。查询 / 写入逻辑同理，另开 repo.go 之类的文件，
 // 但别把 SQL 撒进 fetcher。
 package models
 
-// Models 返回需要建表的 gorm 模型 —— make migrate（即 `go run . -migrate`）时和框架表一起建。
+// Models 返回需要建表的 gorm 模型 —— make migrate（或在项目目录里跑 `papa migrate`，
+// 它会转交到项目自己的迁移）时和框架表一起建。
 //
-// 脚手架还没有业务表（content.go 是写进 content 列的 JSON 结构，不是表），所以这里是空的。
-// 加一张表：在本包定义带 gorm 标签的结构，再登记进来：
+// 脚手架还没有业务表，所以这里是空的（上面那类 content 列的结构不是表）。
+// 加一张表：新建 models/<表名>.go 定义带 gorm 标签的结构，再登记到这里：
 //
-//	func Models() []any { return []any{&Episode{}} }
+//	func Models() []any { return []any{&Episode{}, &Series{}} }
 //
-// 注意表名靠 gorm 的复数化规则推（Episode → episodes），要固定表名就给结构加 TableName()。
-//
-// 建表：`make migrate`，或在项目目录里跑 `papa migrate`（它会转交到项目自己的迁移，
-// 等价于 make migrate）。清单就是下面这个函数返回的东西。
+// 表名靠 gorm 的复数化规则推（Episode → episodes），要固定表名就给结构加 TableName()。
 func Models() []any { return nil }

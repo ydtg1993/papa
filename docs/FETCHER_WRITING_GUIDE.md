@@ -128,7 +128,7 @@ import (
     "yourproject/models" // 你的项目 models 包，papa new 已生成
 )
 
-content := models.DetailContent{ Title: "xxx", Cover: "https://..." } // 你的自定义结构（字段见 models/content.go，按需扩展）
+content := models.DetailContent{ Title: "xxx", Cover: "https://..." } // 你自己的结构，定义在 models 包里
 err := engine.SaveResult(task.ID, content.Title, content)
 ```
 
@@ -445,7 +445,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
     content := models.DetailContent{
         Title: title,
         Cover: deref(coverURL),
-        // ... 其他字段按需扩展（在 models/content.go 里加）
+        // ... 其他字段按需扩展
     }
     return engine.SaveResult(task.ID, title, content)
 }
@@ -540,7 +540,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
         return res.Error
     }
 
-    // 4. 写库（记录 m3u8 地址和本地输出；VideoContent 是你在 models/content.go 里自定义的结构）
+    // 4. 写库（记录 m3u8 地址和本地输出；VideoContent 是你在 models 包里自定义的结构）
     content := models.VideoContent{ Dir: res.OutputFile, Source: url }
     return engine.SaveContent(task.ID, content)
 }
@@ -575,7 +575,7 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ## 6. 最小可跑骨架（脚手架已生成）
 
-`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（content.go 的 JSON 结构 + models.go 的建表清单）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
+`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（建表清单 models.go）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
 
 ```go
 package fetcher

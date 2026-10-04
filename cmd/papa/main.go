@@ -112,7 +112,6 @@ func runNew(name string, args []string) error {
 		{"main.go.tmpl", "main.go"},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
 		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},
-		{"content.go.tmpl", filepath.Join("models", "content.go")},
 		{"models_models.go.tmpl", filepath.Join("models", "models.go")},
 		{"monitor_register.go.tmpl", filepath.Join("monitor", "register.go")},
 		{"monitor_router.go.tmpl", filepath.Join("monitor", "router.go")},
