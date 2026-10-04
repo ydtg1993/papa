@@ -33,9 +33,9 @@ func FrameworkModels(cfg *config.Config) []Model {
 	return out
 }
 
-// Migrate 建/补框架自带的表，外加业务传进来的 extra（业务自己的模型框架不认识，
-// 命令行那条 `papa migrate` 自然也建不了它们 —— 业务得自己拿着模型跑 AutoMigrate，
-// 或者照这个函数自己列一遍）。
+// Migrate 建/补框架自带的表，外加业务传进来的 extra（业务自己的模型框架不认识 ——
+// 业务得自己拿着模型跑 AutoMigrate，也就是项目自己的 `-migrate` 入口；CLI 那条
+// `papa migrate` 在业务项目里会转交给它）。
 //
 // AutoMigrate **只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 ——
 // 所以生产上跑它是安全的。真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工迁移。

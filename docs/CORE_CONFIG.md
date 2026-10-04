@@ -140,10 +140,19 @@
 
 **只有一条路：显式跑一次。启动时不会自动迁移。**
 
-- 脚手架生成的项目：`make migrate`（跑 `go run . -migrate` → `App.Migrate()`）。
-  它建**框架自带的表 + 你用 `papa.WithModels` 注册的业务模型**。
-- 不涉及业务模型、或没走脚手架：`papa migrate [-c configs/config.yaml]`。
-  它只建框架自带的表（命令行拿不到 `WithModels`），会先打印将要确保存在的表。
+- 业务项目（脚手架生成的，或任何 `go.mod` 依赖 papa 的项目）：`papa migrate` 会自动**转交**
+  项目自己的迁移入口（`go run . -migrate` → `App.Migrate()`），建**框架自带的表 +
+  你用 `papa.WithModels` 注册的业务模型**。Makefile 里的 `make migrate` 是同一件事。
+- 不在业务项目里（或就在 papa 仓库里）：`papa migrate [-c configs/config.yaml]` 只建框架
+  自带的表，会先打印将要确保存在的表。
+
+**为什么业务项目要转交**：CLI 是独立编译的进程，业务注册的模型是业务模块里的 Go 类型，
+它拿不到 —— 只有项目自己的进程里有。判据是当前目录的 `go.mod` 依赖了 papa（业务项目必然
+直接 import 它，或本地 `replace` 它）。
+
+**转交的前提是项目自己的 main 认识 `-migrate`**：脚手架生成的 `main.go` 把 `App.Migrate()`
+接在这个参数上（Makefile 里是 `make migrate`）。自己写 main 的话记得照做 —— 否则
+`papa migrate` 转交过去，就等于把你的爬虫直接启动了。
 
 **`AutoMigrate` 只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 —— 生产上执行是安全的。
 真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工写迁移。
@@ -152,9 +161,9 @@
 `crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则那张表不会建出来。
 
-**业务自己的表只有 `App.Migrate()` 能建**：那些模型是通过 `papa.WithModels` 在业务 `main.go`
-里注册的，命令行那条 `papa migrate` 拿不到它们。所以脚手架把 `App.Migrate()` 接在了 `-migrate`
-参数上（Makefile 里就是 `make migrate`）—— 用脚手架就别去记两条命令。
+**业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是根 `models`
+包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。
+用脚手架就别去记两条命令 —— `papa migrate` 与 `make migrate` 等价。
 
 > 启动时会检查"该有的表在不在"，缺了打醒目的错误日志 —— 免得出现「开关看着是开的、实际什么都没写进去」。
 

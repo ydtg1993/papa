@@ -575,7 +575,7 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ## 6. 最小可跑骨架（脚手架已生成）
 
-`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models/content.go / monitor（后台分层：模型、控制器、视图、路由与中间件）/ configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
+`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（content.go 的 JSON 结构 + models.go 的建表清单）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
 
 ```go
 package fetcher

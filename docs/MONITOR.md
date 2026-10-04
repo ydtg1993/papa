@@ -63,7 +63,8 @@
 > 那条记录会**落到日志文件**里（一行 JSON，可捞回来补录），既不丢审计也不反压业务。
 > 关停时会先把队列排空再关数据库。
 
-> 升级时表要自己建 —— 跑一次迁移（脚手架项目里是 `make migrate`，独立用 CLI 是 `papa migrate`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节）。
+> 升级时表要自己建 —— 跑一次迁移（脚手架项目里 `make migrate` 与 `papa migrate` 等价，
+> 独立用 CLI 是 `papa migrate`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节）。
 > 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
 ## 2. 设置 API
@@ -235,7 +236,7 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 步骤追踪需要在配置里显式开启（`crawler.trace.enabled`，见 [CORE_CONFIG.md](./CORE_CONFIG.md)），
 handler 侧的用法见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.3。
 **未开启时点「追踪」不会白屏**，抽屉里会直接显示「步骤追踪未开启」。
-要先跑一次迁移把 `crawler_task_trace` 建出来（脚手架项目里是 `make migrate`，CLI 是 `papa migrate`）；开关开着但表不存在时，
+要先跑一次迁移把 `crawler_task_trace` 建出来（脚手架项目里 `make migrate` 与 `papa migrate` 等价）；开关开着但表不存在时，
 启动会打一条醒目的错误日志，不会静默丢数据。
 
 ## 4. 自定义页与注入（逃生舱）
@@ -326,8 +327,9 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
   由它统一加上；`NoAuth()` 的路由没有这层，需要的话自己在 handler 里设置。
 
 `papa new` 生成的工程把这套东西放在 `monitor/` 包里分层：`router.go` 声明路由与中间件、
-`controller/` 放 handler、`middleware.go` 放中间件、`model/` 放模型与表格页、`view/` 放自定义页。
-`main.go` 只需要 `monitor.Register(app)` 一行，各层分工见每个文件顶部的包注释。
+`controller/` 放 handler、`middleware.go` 放中间件、`tables.go` 放表格页、`view/` 放自定义页。
+表模型不在这层 —— 和 `fetcher/` 同级放在项目根的 `models` 包（建表清单 `models.Models()`），
+爬虫业务与后台服务共用。`main.go` 只需要 `monitor.Register(app)` 一行，各层分工见每个文件顶部的包注释。
 
 ## 6. 动态配置 API
 

@@ -1,25 +1,28 @@
-// Package monitor 是业务接入后台的唯一边界：模型、表格页、自定义页、自定义路由与中间件
+// Package monitor 是业务接入后台的唯一边界：表格页、自定义页、自定义路由与中间件
 // 都在这层声明，main.go 只调一次 Register。
 //
 // 分层：
 //
-//	model/      数据层：gorm 模型（迁移）与它们到后台表格页的声明
+//	tables.go   展示层：把根目录 models 包里的表，声明成后台表格页
 //	controller/ 控制层：HTTP handler（自定义页调用的 JSON 接口、表格动作）
 //	view/       视图层：自定义页（UsePage）与注入的 JS/CSS
 //	router.go   路由表：把 controller 挂到路径上，装配中间件
+//
+// 表模型（gorm struct 与建表清单）不在 monitor 里 —— 它们和 fetcher 同级放在项目根的
+// models 包，爬虫业务与后台服务共用。这里只管「怎么展示 / 怎么调用」。
 package monitor
 
 import (
 	"github.com/ydtg1993/papa/v2"
-	"{{.Module}}/monitor/model"
+	"{{.Module}}/models"
 	"{{.Module}}/monitor/view"
 )
 
 // Register 在 papa.New 之后、调 Run（或 Migrate）之前调用一次，把 monitor 各层接进后台。
 // 放在 New 之后是为了能用 app.DB 构造数据源。
 func Register(app *papa.App) {
-	app.UseModels(model.Models()...)       // 建表清单：make migrate 时和框架表一起建
-	app.UseTables(model.Tables(app.DB)...) // 后台表格页（侧边栏按 Group 自动出菜单）
-	view.Register(app)                     // 自定义页与注入的 JS/CSS
-	Routes(app)                            // 自定义路由与中间件
+	app.UseModels(models.Models()...) // 建表清单：make migrate 时和框架表一起建
+	app.UseTables(Tables(app.DB)...)  // 后台表格页（侧边栏按 Group 自动出菜单）
+	view.Register(app)                // 自定义页与注入的 JS/CSS
+	Routes(app)                       // 自定义路由与中间件
 }

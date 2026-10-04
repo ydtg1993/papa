@@ -15,21 +15,23 @@ import (
 func main() {
 	// 1. 创建应用容器（默认读 configs/config.yaml）
 	//    自定义配置路径：papa.New(papa.WithConfigPath("configs/config.yaml"))
-	//    注册模型也可以走这里（papa.WithModels(...)），不过脚手架统一在 monitor/model 里登记。
+	//    注册模型也可以走这里（papa.WithModels(...)），不过脚手架统一在根 models 包里登记。
 	app, err := papa.New()
 	if err != nil {
 		panic(fmt.Sprintf("init app failed: %s", err.Error()))
 	}
 
-	// 1.1 后台接入：模型 / 表格页 / 自定义页 / 自定义路由与中间件都在 monitor 包里分层声明，
-	//     这里一行接起。要加东西去改 monitor/ 下的对应层，别往 main 里堆。
+	// 1.1 后台接入：表模型在根 models 包（models.Models），表格页 / 自定义页 / 路由与中间件
+	//     在 monitor 包里分层声明，这里一行接起。要加东西去改对应层的文件，别往 main 里堆。
 	monitor.Register(app)
 
-	// 1.2 建表：`go run . -migrate`（Makefile 里是 `make migrate`）。
-	//     框架自带的表（按配置开关）+ monitor/model 里登记的模型一起建；
+	// 1.2 建表：`go run . -migrate`（Makefile 里是 `make migrate`；在项目目录里跑
+	//     `papa migrate` 也会转交到这里）。
+	//     框架自带的表（按配置开关）+ 根 models 包里登记的模型一起建；
 	//     AutoMigrate 只增不减、可重复跑，所以本地和上线前都可以随便跑。
 	//     启动时**不会**自动迁移 —— 新开的开关（server.operation_log / crawler.trace.enabled）
-	//     也要重跑一次才会建出对应的表。必须在 monitor.Register 之后：模型清单在那里登记。
+	//     也要重跑一次才会建出对应的表。必须在 monitor.Register 之后：建表清单在那里登记
+	//     （register.go 里的 models.Models()）。
 	if len(os.Args) > 1 && os.Args[1] == "-migrate" {
 		if err := app.Migrate(); err != nil {
 			panic(fmt.Sprintf("migrate failed: %s", err.Error()))

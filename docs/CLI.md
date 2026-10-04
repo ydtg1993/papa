@@ -21,12 +21,12 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含 `monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节） |
+| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含根 `models/` 数据层与 `monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节） |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
-| `papa migrate [-c <配置路径>]` | 建/补框架自带的表（生产环境用），详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
+| `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 
 ## 2. 通用 flags（html / rod / diff 共用）

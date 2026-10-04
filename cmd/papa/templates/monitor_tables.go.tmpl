@@ -1,0 +1,28 @@
+package monitor
+
+import (
+	"github.com/ydtg1993/oao"
+	"gorm.io/gorm"
+)
+
+// Tables 返回要显示在后台侧边栏的表格页 —— 这是「数据展示层」，只声明怎么展示，
+// 表模型不在这里：它们和 fetcher 同级放在项目根的 models 包里（建表清单见 models.Models）。
+// 数据由你实现 oao.Source 提供 —— 怎么过滤、怎么排序、查库还是调接口，全由你决定
+// （组件只在中间做声明与转发）。
+//
+// 列 / 筛选 / 动作的完整字段见项目 docs/MONITOR.md 的「表格页（oao 组件）」。
+// 示例（有表之后再解开，Source 照抄一个现成的改）：
+//
+//	func Tables(db *gorm.DB) []oao.Table {
+//		episode := oao.Table{
+//			Key: "episode", Label: "分集", Group: "业务",
+//			Source: mySource{db: db},
+//			Columns: []oao.Column{
+//				{Field: "id", Kind: oao.KindNumber, Width: "70px"},
+//				{Field: "title", Label: "标题"},
+//			},
+//			DefaultSort: "-id",
+//		}
+//		return []oao.Table{episode}
+//	}
+func Tables(db *gorm.DB) []oao.Table { return nil }

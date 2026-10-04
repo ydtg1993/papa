@@ -11,21 +11,23 @@ cd mycrawler && go mod tidy
 ```
 
 1. 把 `configs/config.yaml` 的 `db.dsn` 指向你的 MySQL。
-2. **`papa migrate` 建表** —— 在项目目录下跑，它自己读 `configs/config.yaml`。
+2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
+   项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
    之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled`）都要**再跑一次**，那两张表跟着开关走。
 3. 写 fetcher（实现 `papa.Fetcher`），在 `main.go` 里注册阶段、提交起始任务、调 `Run`。
-4. 后台（`/monitor`）要加模型 / 表格页 / 自定义页 / 自己的接口，改 `monitor/` 包 ——
+4. 加数据模型写根目录 `models/` 包（`models/models.go` 里登记建表清单）；后台（`/monitor`）
+   要加表格页 / 自定义页 / 自己的接口，改 `monitor/` 包 ——
    `main.go` 只有 `monitor.Register(app)` 一行（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
 5. `go run .`
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
 `AutoMigrate` 只增不减（加表 / 加列 / 加索引，不删列也不改类型），重复跑幂等，随便跑。
 
-> **你项目里加了 gorm 模型之后，改用 `make migrate`**（脚手架 Makefile 里有这个目标）。
-> 区别在于 `papa migrate` 是独立的 CLI，看不到你在 `main.go` / `monitor/model` 里注册的模型，只建框架自带的表；
-> `make migrate` 跑的是你自己项目的 `main`（`go run . -migrate` → `App.Migrate()`），两边都建。
+> **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
+> `main.go` / `models.Models()` 里注册的模型，所以它在业务项目里会把迁移**转交**给项目自己
+> （`go run . -migrate` → `App.Migrate()`），两边都建。不在业务项目里跑时它只建框架自带的表。
 > 脚手架刚生成的项目没有业务表（`models/content.go` 是写进 `content` 列的 JSON 结构，不是表），
-> 所以起步阶段两条命令等价。细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+> 所以起步阶段两条命令等价。判据与细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 
 ## 阅读路径
 

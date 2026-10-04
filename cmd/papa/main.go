@@ -61,7 +61,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "    --replace  在 go.mod 加 replace 指向本地 papa 仓库（本地验证用，无需先发布）")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa migrate [-c configs/config.yaml]")
-	fmt.Fprintln(os.Stderr, "    建/补框架自带的表（启动时不会自动迁移；业务模型见你项目的 Makefile migrate）")
+	fmt.Fprintln(os.Stderr, "    建/补表。在业务项目目录里跑会转交 `go run . -migrate`（连业务模型一起建）；")
+	fmt.Fprintln(os.Stderr, "    其余情况只建框架自带的表。启动时不会自动迁移")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa token add --operator <名字>   创建一把后台访问令牌（明文只打印一次）")
 	fmt.Fprintln(os.Stderr, "")
@@ -112,11 +113,12 @@ func runNew(name string, args []string) error {
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
 		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},
 		{"content.go.tmpl", filepath.Join("models", "content.go")},
+		{"models_models.go.tmpl", filepath.Join("models", "models.go")},
 		{"monitor_register.go.tmpl", filepath.Join("monitor", "register.go")},
 		{"monitor_router.go.tmpl", filepath.Join("monitor", "router.go")},
 		{"monitor_middleware.go.tmpl", filepath.Join("monitor", "middleware.go")},
+		{"monitor_tables.go.tmpl", filepath.Join("monitor", "tables.go")},
 		{"monitor_controller_ping.go.tmpl", filepath.Join("monitor", "controller", "ping.go")},
-		{"monitor_model.go.tmpl", filepath.Join("monitor", "model", "model.go")},
 		{"monitor_view.go.tmpl", filepath.Join("monitor", "view", "view.go")},
 		{"Dockerfile.tmpl", filepath.Join("docker", "Dockerfile")},
 		{"docker-compose.yml.tmpl", filepath.Join("docker", "docker-compose.yml")},
@@ -156,7 +158,7 @@ func runNew(name string, args []string) error {
 
 	fmt.Printf("project %q generated.\n", name)
 	fmt.Printf("next: cd %s && go mod tidy\n", name)
-	fmt.Printf("      建表：papa migrate（项目里加了 gorm 模型之后改用 make migrate）\n")
+	fmt.Printf("      建表：papa migrate（在项目目录里跑，会连业务模型一起建；等价于 make migrate）\n")
 	fmt.Printf("      要建令牌得先有表；后台登录：papa token add --operator <名字>\n")
 	return nil
 }

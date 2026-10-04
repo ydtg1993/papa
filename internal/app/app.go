@@ -79,7 +79,8 @@ func WithModels(models ...any) Option {
 }
 
 // UseModels 追加需要建表的业务模型，与 WithModels 等价，区别是可以在 New 之后调用。
-// 存在的理由：`papa new` 生成的 monitor 包在一个入口里登记模型，而那时 App 已经建好了。
+// 存在的理由：`papa new` 生成的项目在 monitor.Register(app) 里统一登记（清单来自根 models 包的
+// Models()），那时 App 已经建好了。
 // 与 Migrate 的关系不变 —— Migrate 读的就是这份清单，所以必须在迁移之前调用。
 func (a *App) UseModels(models ...any) {
 	a.extraModels = append(a.extraModels, models...)
