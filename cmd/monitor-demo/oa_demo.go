@@ -2,8 +2,8 @@ package main
 
 // 后台预览用的假数据（不接 MySQL）：把这几轮新做的东西都摆出来看效果。
 //
-// 真实现分别在：访问令牌 internal/tokenadmin（内存版见 token_demo.go）、
-// 操作日志 internal/oplog、动作接线 internal/tasksource；
+// 真实现分别在：访问令牌 admin/tokenadmin（内存版见 token_demo.go）、
+// 操作日志 admin/oplog、动作接线 admin/tasksource；
 // 这里只是内存数据替身，**别当参考实现看**。
 
 import (
@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v2/internal/auth"
-	"github.com/ydtg1993/papa/v2/internal/server"
+	"github.com/ydtg1993/papa/v2/admin/auth"
+	"github.com/ydtg1993/papa/v2/admin/server"
 )
 
 // 演示用的动作：点了就成功，不碰任何数据。
@@ -67,7 +67,7 @@ func fakeOrderTable() oao.Table {
 	}
 }
 
-// fakeOplogTable 「操作日志」页，重点看「操作人」列（真实现 internal/oplog.Table）。
+// fakeOplogTable 「操作日志」页，重点看「操作人」列（真实现 admin/oplog.Table）。
 func fakeOplogTable() oao.Table {
 	ops := []string{"张三", "李四", "王五", ""}
 	actions := []string{"retry", "fail", "remove", "disable"}

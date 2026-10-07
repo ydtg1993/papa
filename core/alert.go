@@ -1,7 +1,7 @@
 // Package core 汇集**跨包流动的纯值类型**：告警事件、任务错误上下文、监控快照 DTO。
 //
 // 它是一个**零依赖叶子包** —— 只 import 标准库。存在的理由很具体：
-// internal/server 与 pkg/notify 只需要这几个 struct，却因为它们在 crawler 包里，
+// admin/server 与 pkg/notify 只需要这几个 struct，却因为它们在 engine 包里，
 // 不得不把整个引擎（连同 rod、m3u8、ffmpeg 下载器）拖进自己的依赖集。
 //
 // 边界在哪：**引擎自己的类型不在这里**。Engine / Task / Trace / Fetcher 与引擎强耦合

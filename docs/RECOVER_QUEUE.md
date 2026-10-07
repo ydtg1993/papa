@@ -47,7 +47,7 @@ recover_queue:
 - **重复投递是安全的**：worker 认领走的是条件更新（`pending → processing`），两份里只有一份能认领成功，
   另一份拿到 0 行直接跳过。
 - 重新投递失败（阶段没注册、提交出错）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
-  （`crawler.Engine.markRequeueFailed`）。
+  （`engine.Engine.markRequeueFailed`）。
 
 ## 4. 触发方式
 
@@ -72,4 +72,4 @@ recover_queue:
 
 这是硬要求，不是优化：被恢复的行会从 `processing` 变成 `pending`，**依然满足**「未到终态」——
 分页若靠「重新查同一批」，它会原地打转、永远跑不完（启动恢复再也回不来）。
-见 `crawler/batch.go` 的 `processInBatches` 与回归测试 `TestProcessInBatchesUsesKeysetCursor`。
+见 `engine/batch.go` 的 `processInBatches` 与回归测试 `TestProcessInBatchesUsesKeysetCursor`。

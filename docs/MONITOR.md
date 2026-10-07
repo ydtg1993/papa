@@ -93,7 +93,7 @@
 
 > **例外**：「访问令牌」页**不是**表格页。它要「新增」并把服务端生成的明文令牌交给操作人看一次，
 > 而表格组件的动作只回 `{"status":"ok"}`、不回数据（组件不给"动作返回数据"这个口子）。
-> 所以这一页是后台自带的原生模块：`/api/tokens` 三条接口 + `mo.js` 里自己渲染的表格，接口在 `internal/tokenadmin`。
+> 所以这一页是后台自带的原生模块：`/api/tokens` 三条接口 + `mo.js` 里自己渲染的表格，接口在 `admin/tokenadmin`。
 
 > **内置表格页的菜单位置**：框架自带的表格页（目前只有开启 `server.operation_log` 后的「操作日志」）
 > 菜单固定在侧边栏 General 分组（「访问令牌」上方），**不跟业务表格挤在同一个分组**——
@@ -159,8 +159,8 @@ Actions: []oao.Action{
 
 动作声明得多了也不会撑行：**超过 3 个时前两个平铺、其余自动收进「更多 ▾」**（面板支持键盘与点外部关闭）。
 
-内置「任务」表（`internal/tasksource`）是动作如何接线的参考实现，它带了五个动作（见下表）——
-写操作都走 `crawler.Engine` 的条件更新，
+内置「任务」表（`admin/tasksource`）是动作如何接线的参考实现，它带了五个动作（见下表）——
+写操作都走 `engine.Engine` 的条件更新，
 `url` 列用 `NewTab: true` 在新标签页打开。成功与失败都会调 `Config.OnAction`，papa 用它写操作日志
 （见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`，不开就不记）。
 
@@ -174,9 +174,9 @@ type Source interface {
 
 `Query` 是组件把 HTTP 参数规范化后的结果（`Page/Size/Search/Sort/Filter`），
 筛选算子（`In` 用 `"a,b,c"`、`Between` 用 `"a..b"`）由业务自己解释 —— 组件只透传。
-papa 的 `internal/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（前后通配，用不上索引），
+papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（前后通配，用不上索引），
 `OpPrefix` → `LIKE '值%'`（只有后通配，能走索引），`OpEq`/`OpIn`/`OpBetween`/`OpGt`/`OpLt` 各对应同名条件。
-参考实现看 `internal/tasksource`（内置「任务」表）或 hg2 的 `tablesource`。
+参考实现看 `admin/tasksource`（内置「任务」表）或 hg2 的 `tablesource`。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -193,7 +193,7 @@ papa 的 `internal/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`
 - **菜单自动出现**：按 `Group` 分组渲染到侧边栏，注册即出现，前端无需改代码。
 - **刷新策略**：表格页只在用户操作（筛选/排序/翻页）时刷新，不参与 Dashboard 的 3 秒轮询。
 
-内置的「任务」表（`internal/tasksource`）展示的就是 `crawler_task`，可作为完整示例。
+内置的「任务」表（`admin/tasksource`）展示的就是 `crawler_task`，可作为完整示例。
 它带四个写操作加一个只读入口（组件超过 3 个动作时只平铺前两个，其余收进「更多 ▾」）：
 
 | 动作 | 位置 | 说明 |

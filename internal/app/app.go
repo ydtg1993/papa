@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/oao"
+	"github.com/ydtg1993/papa/v2/admin/auth"
+	"github.com/ydtg1993/papa/v2/admin/oplog"
+	"github.com/ydtg1993/papa/v2/admin/scheduler"
+	"github.com/ydtg1993/papa/v2/admin/server"
+	"github.com/ydtg1993/papa/v2/admin/sysinfo"
+	"github.com/ydtg1993/papa/v2/admin/tasksource"
+	"github.com/ydtg1993/papa/v2/admin/tokenadmin"
 	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/internal/auth"
+	"github.com/ydtg1993/papa/v2/engine"
 	"github.com/ydtg1993/papa/v2/internal/database"
-	"github.com/ydtg1993/papa/v2/internal/oplog"
-	"github.com/ydtg1993/papa/v2/internal/scheduler"
-	"github.com/ydtg1993/papa/v2/internal/server"
-	"github.com/ydtg1993/papa/v2/internal/sysinfo"
-	"github.com/ydtg1993/papa/v2/internal/tasksource"
-	"github.com/ydtg1993/papa/v2/internal/tokenadmin"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
 	"github.com/ydtg1993/papa/v2/pkg/middleware"
@@ -34,7 +34,7 @@ type App struct {
 	Logger      *loggers.LoggerSet // 自定义一个结构，包含各类logger
 	DB          *gorm.DB
 	BrowserPool *browser.Pool
-	Engine      *crawler.Engine
+	Engine      *engine.Engine
 
 	configPath  string
 	runtimePath string
@@ -206,7 +206,7 @@ func validPageKey(s string) bool {
 	return true
 }
 
-// operatorOf 从操作事件带的请求里取「操作人」：身份是鉴权中间件（internal/auth）解析访问令牌后
+// operatorOf 从操作事件带的请求里取「操作人」：身份是鉴权中间件（admin/auth）解析访问令牌后
 // 写进请求上下文的。宿主自己构造事件时 Req 可能为 nil —— 那就记空，不影响审计写库。
 func operatorOf(ev oao.ActionEvent) string {
 	if ev.Req == nil {
@@ -322,7 +322,9 @@ func NewApp(opts ...Option) (*App, error) {
 	}
 
 	// 5. 创建爬虫引擎
-	engine := crawler.NewEngine(db, cfg, &loggerSet)
+	// 局部变量叫 eng 而不是 engine：包名已经是 engine，`engine := engine.NewEngine(...)`
+	// 虽然合法（RHS 在声明语句结束前仍解析到包），但读起来像自己给自己赋值。
+	eng := engine.NewEngine(db, cfg, &loggerSet)
 
 	// 5.1 加载运行期覆盖（runtime.yaml）并应用到引擎；文件缺失视为空覆盖
 	runtimePath := filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
@@ -331,14 +333,14 @@ func NewApp(opts ...Option) (*App, error) {
 		loggerSet.Sys.Errorf("load runtime config %s: %s", runtimePath, err.Error())
 		runtimeCfg = &config.RuntimeConfig{}
 	}
-	if err := engine.ApplyRuntimeConfig(runtimeCfg); err != nil {
+	if err := eng.ApplyRuntimeConfig(runtimeCfg); err != nil {
 		return nil, fmt.Errorf("apply runtime config: %w", err)
 	}
 
 	a.Config = cfg
 	a.Logger = &loggerSet
 	a.DB = db
-	a.Engine = engine
+	a.Engine = eng
 	a.runtimePath = runtimePath
 	return a, nil
 }
@@ -353,7 +355,7 @@ func (a *App) Migrate() error {
 }
 
 // RegisterStage 注册爬虫业务阶段流程
-func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawler.Engine)) {
+func (a *App) RegisterStage(fetcher engine.Fetcher, subFunc func(eng *engine.Engine)) {
 	stage := fetcher.GetStage()
 	// 从配置中读取 stage 配置
 	cfg, ok := a.Config.Crawler.Stages[stage]
@@ -373,7 +375,7 @@ func (a *App) RegisterStage(fetcher crawler.Fetcher, subFunc func(engine *crawle
 		cfg.Delay = config.DurationRange{Min: time.Minute, Max: time.Minute}
 	}
 
-	a.Engine.AddStage(stage, crawler.StageConfig{
+	a.Engine.AddStage(stage, engine.StageConfig{
 		MaxAttempts: cfg.Retry.MaxAttempts,
 		Backoff:     cfg.Retry.Backoff,
 		WorkerCount: cfg.WorkerCount,
@@ -538,7 +540,7 @@ func (a *App) httpServer(ctx context.Context) {
 
 	mux := http.NewServeMux()
 
-	getter := func() map[string]crawler.StageStats {
+	getter := func() map[string]engine.StageStats {
 		return a.Engine.GetStageStats()
 	}
 	if a.sysInfo == nil {
@@ -617,7 +619,7 @@ func (a *App) httpServer(ctx context.Context) {
 
 	// 「访问令牌」页是后台自带的模块，不走表格组件 —— 它要「新增」，
 	// 而表格组件的动作只回 {"status":"ok"}，没法把服务端生成的明文令牌交给操作人。
-	// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 internal/tokenadmin）。
+	// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 admin/tokenadmin）。
 	var tokenHook tokenadmin.Hook
 	if rec != nil {
 		tokenHook = func(ev tokenadmin.Event) {

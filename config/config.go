@@ -40,7 +40,7 @@ type ErrorQueueConfig struct {
 // 原来的「运行中按 updated_at 超时判卡死」（`timeout` + `interval` 两个配置项）整个删掉了：
 //   - 那个启发式会**误伤长任务** —— 下整部剧跑过 timeout 就被当成卡死重投，与仍在跑的 worker 撞车写同一行；
 //   - 而它本来要解的「意外中断」，在启动这一刻是**确定**的：进程刚起，processing 全是孤儿，
-//     不需要靠时间推测。反过来说，按超时筛还会漏掉崩溃前刚认领的那批（见 crawler/recoverqueue.go）。
+//     不需要靠时间推测。反过来说，按超时筛还会漏掉崩溃前刚认领的那批（见 engine/recoverqueue.go）。
 //
 // 运行期真正的卡死应该靠给外部调用设超时解决（htmlfetch 与 rod 都有 timeout），不是靠事后扫库。
 type RecoverQueueConfig struct {

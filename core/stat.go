@@ -3,7 +3,7 @@ package core
 import "time"
 
 // 本文件是各处的**监控快照 DTO**：引擎往外吐的只读纯值类型。
-// 抽到这里是为了让 internal/server 不必 import 引擎包（见包注释）。
+// 抽到这里是为了让 admin/server 不必 import 引擎包（见包注释）。
 
 // StageStats 阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
 type StageStats struct {

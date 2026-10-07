@@ -1,7 +1,7 @@
 package main
 
-// 后台「访问令牌」页的演示：真实现是 internal/tokenadmin 的 DBStore（crawler_access_token 表）
-// + internal/auth 的库表校验；这里换成内存存储，好让不接 MySQL 也能把整页走通。
+// 后台「访问令牌」页的演示：真实现是 admin/tokenadmin 的 DBStore（crawler_access_token 表）
+// + admin/auth 的库表校验；这里换成内存存储，好让不接 MySQL 也能把整页走通。
 //
 // 关键一点：**登录校验也查这个 store** —— 所以在后台新建一把令牌后，可以当场拿它登录，
 // 而不是只能看着列表变化。
@@ -11,9 +11,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/ydtg1993/papa/v2/internal/auth"
-	"github.com/ydtg1993/papa/v2/internal/server"
-	"github.com/ydtg1993/papa/v2/internal/tokenadmin"
+	"github.com/ydtg1993/papa/v2/admin/auth"
+	"github.com/ydtg1993/papa/v2/admin/server"
+	"github.com/ydtg1993/papa/v2/admin/tokenadmin"
 )
 
 // demoToken 演示用的固定令牌；登录框里填它（后台新建的令牌同样能登录）。
@@ -31,7 +31,7 @@ func newDemoTokens() *demoTokens {
 	return &demoTokens{store: s}
 }
 
-// verify 顶替真实现里的库表校验（internal/auth.Verify），查的是内存里的令牌。
+// verify 顶替真实现里的库表校验（admin/auth.Verify），查的是内存里的令牌。
 func (d *demoTokens) verify(r *http.Request) (string, bool) {
 	return d.store.Verify(auth.Extract(r))
 }

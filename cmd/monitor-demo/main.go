@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
+	"github.com/ydtg1993/papa/v2/admin/server"
+	"github.com/ydtg1993/papa/v2/admin/sysinfo"
 	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/crawler"
-	"github.com/ydtg1993/papa/v2/internal/server"
-	"github.com/ydtg1993/papa/v2/internal/sysinfo"
+	"github.com/ydtg1993/papa/v2/engine"
 )
 
 type stdLogger struct{}
@@ -146,14 +146,14 @@ func fakeStageStats() map[string]core.StageStats {
 func fakeQueueStats() map[string]core.QueueStat {
 	now := time.Now()
 	return map[string]core.QueueStat{
-		crawler.QueueError: {
-			Name: crawler.QueueError, Enabled: true, Runs: 12,
+		engine.QueueError: {
+			Name: engine.QueueError, Enabled: true, Runs: 12,
 			StartedAt: now.Add(-2 * time.Minute), LastFinishAt: now.Add(-90 * time.Second),
 			LastDuration: 4 * time.Second, LastProcessed: 37, TotalProcessed: 421,
 			Backlog: 128, BacklogAt: now.Add(-20 * time.Second),
 		},
-		crawler.QueueRepeat: {
-			Name: crawler.QueueRepeat, Runs: 0,
+		engine.QueueRepeat: {
+			Name: engine.QueueRepeat, Runs: 0,
 			Backlog: 2048, BacklogAt: now.Add(-20 * time.Second),
 			LastError: "submit task 991: queue full",
 		},

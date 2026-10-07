@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ydtg1993/papa/v2/admin/tokenadmin"
 	"github.com/ydtg1993/papa/v2/internal/database"
-	"github.com/ydtg1993/papa/v2/internal/tokenadmin"
 	"github.com/ydtg1993/papa/v2/models"
 )
 

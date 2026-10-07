@@ -28,7 +28,7 @@ type TaskTrace struct {
 
 	Step    string         `gorm:"type:varchar(100);comment:步骤名"`
 	Status  TraceStatus    `gorm:"comment:0:成功 1:失败"`
-	Kind    string         `gorm:"type:varchar(50);comment:错误分类(失败时，同 crawler.ErrorKind)"`
+	Kind    string         `gorm:"type:varchar(50);comment:错误分类(失败时，同 engine.ErrorKind)"`
 	Message string         `gorm:"type:text;comment:错误信息(失败时)"`
 	Data    datatypes.JSON `gorm:"type:json;comment:该步采集到的数据(仅失败的尝试)"`
 
