@@ -17,9 +17,8 @@ func newStatsEngine(t *testing.T) *Engine {
 		queueRuns: newQueueRuns(),
 	}
 	e.queueCounters = map[string]*atomic.Int64{
-		QueueError:   &e.errorRetriedCount,
-		QueueRecover: &e.recoveredCount,
-		QueueRepeat:  &e.repeatRepolledCount,
+		QueueError:  &e.errorRetriedCount,
+		QueueRepeat: &e.repeatRepolledCount,
 	}
 	e.runtime.Store(&config.RuntimeConfig{})
 	return e
@@ -126,10 +125,12 @@ func TestQueueStatsEnabledFollowsConfig(t *testing.T) {
 	}
 }
 
-// TestQueueStatsAllQueuesReported 三个队列都应出现在快照里，界面不会漏显示。
+// TestQueueStatsAllQueuesReported 该出现在快照里的队列一个都不能漏（界面按它渲染）。
+// recover_queue 不在其中：它只在启动跑一次，没有周期、没有积压可看，面板上也不该留按钮 ——
+// 运行期点它会连正在跑的 processing 任务一起重投（见 ProcessRecoverQueue）。
 func TestQueueStatsAllQueuesReported(t *testing.T) {
 	got := newStatsEngine(t).GetQueueStats()
-	for _, name := range []string{QueueError, QueueRecover, QueueRepeat} {
+	for _, name := range []string{QueueError, QueueRepeat} {
 		s, ok := got[name]
 		if !ok {
 			t.Fatalf("queue %s missing from snapshot", name)
@@ -138,8 +139,11 @@ func TestQueueStatsAllQueuesReported(t *testing.T) {
 			t.Fatalf("queue %s: Name=%q", name, s.Name)
 		}
 	}
-	if len(got) != 3 {
-		t.Fatalf("snapshot has %d queues, want 3", len(got))
+	if len(got) != 2 {
+		t.Fatalf("snapshot has %d queues, want 2: %v", len(got), got)
+	}
+	if _, ok := got[recoverQueueName]; ok {
+		t.Fatal("recover_queue 不该出现在监控快照里：它不是运行期队列")
 	}
 }
 

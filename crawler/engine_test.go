@@ -1,8 +1,10 @@
 package crawler
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ydtg1993/papa/v2/internal/workerpool"
 )
@@ -94,4 +96,58 @@ func TestInsertTasksReportsConflictingRow(t *testing.T) {
 			t.Fatalf("回查应带 %s 条件：\n%s", want, read)
 		}
 	}
+}
+
+// 排空成功时 drained=true、stats 为空 —— 调用方据此照常关库、关浏览器池。
+func TestEngineStopReportsDrained(t *testing.T) {
+	f := newFakeTaskDB()
+	e, pool := urgentEngine(t, f)
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+	pool.Start(context.Background(), func(context.Context, *Task) error { return nil })
+
+	drained, stats := e.Stop(5 * time.Second)
+	if !drained {
+		t.Fatalf("空队列应当排空，stats = %+v", stats)
+	}
+	if len(stats) != 0 {
+		t.Fatalf("排空时不该有存留阶段：%+v", stats)
+	}
+}
+
+// 超时未排空时，必须报出**是哪个阶段**、还有多少条没跑完：
+// app.Run 拿 drained=false 跳过 sqlDB.Close()，靠的就是这个信号；报错了就等于又把库关了。
+func TestEngineStopReportsUnfinishedStage(t *testing.T) {
+	f := newFakeTaskDB()
+	e, pool := urgentEngine(t, f)
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	pool.Start(context.Background(), func(context.Context, *Task) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	})
+	if err := pool.Submit(&Task{ID: 7, URL: "https://example.com", Stage: "stub"}); err != nil {
+		t.Fatalf("submit = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker 没有取到任务")
+	}
+
+	drained, stats := e.Stop(50 * time.Millisecond)
+	if drained {
+		t.Fatal("handler 还卡着，不该报 drained")
+	}
+	got, ok := stats["stub"]
+	if !ok {
+		t.Fatalf("应当报出卡住的阶段 stub，实得 %+v", stats)
+	}
+	if got.Unfinished != 1 {
+		t.Fatalf("stub.Unfinished = %d, want 1（%+v）", got.Unfinished, got)
+	}
+
+	close(release)
 }

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/internal/auth"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
 )
@@ -29,27 +29,26 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 // MonitorGetter 定义获取所有阶段统计快照的函数类型
-type MonitorGetter func() map[string]crawler.StageStats
+type MonitorGetter func() map[string]core.StageStats
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
 	// 由宿主注入（papa 用 internal/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
-	VerifyToken         func(r *http.Request) (operator string, ok bool)
-	Whitelist           []string                                  // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile       string                                    // 白名单持久化文件路径（动态更新时写回）
-	Metrics             func() map[string]any                     // 业务自定义数据快照（可空）
-	QueueStats          func() map[string]crawler.QueueStat       // 治理队列运行快照（可空）
-	SysInfo             *sysinfo.Collector                        // 系统指标采集器（可空）
-	LogDir              string                                    // 日志目录（导出用）
-	OnShutdown          func()                                    // 优雅退出回调
-	ProcessErrorQueue   func() (int, error)                       // 错误队列手动触发回调（可空）
-	ProcessRecoverQueue func() (int, error)                       // 中断恢复队列手动触发回调（可空）
-	ProcessRepeatQueue  func() (int, error)                       // 周期轮询队列手动触发回调（可空）
-	ConfigGet           func() *config.RuntimeConfig              // 返回当前运行期覆盖层（可空）
-	ConfigSet           func(*config.RuntimeConfig) error         // 应用运行期覆盖层（可空）
-	TaskTrace           func(id int) ([]crawler.TraceStep, error) // 单任务步骤追踪（可空）
+	VerifyToken        func(r *http.Request) (operator string, ok bool)
+	Whitelist          []string                               // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile      string                                 // 白名单持久化文件路径（动态更新时写回）
+	Metrics            func() map[string]any                  // 业务自定义数据快照（可空）
+	QueueStats         func() map[string]core.QueueStat       // 治理队列运行快照（可空）
+	SysInfo            *sysinfo.Collector                     // 系统指标采集器（可空）
+	LogDir             string                                 // 日志目录（导出用）
+	OnShutdown         func()                                 // 优雅退出回调
+	ProcessErrorQueue  func() (int, error)                    // 错误队列手动触发回调（可空）
+	ProcessRepeatQueue func() (int, error)                    // 周期轮询队列手动触发回调（可空）
+	ConfigGet          func() *config.RuntimeConfig           // 返回当前运行期覆盖层（可空）
+	ConfigSet          func(*config.RuntimeConfig) error      // 应用运行期覆盖层（可空）
+	TaskTrace          func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
 	// VerifyTokenValue 单独校验一个**令牌值**（不是请求头），给关停这类高危操作做二次确认用：
 	// 调用方要把自己的令牌放进请求体再输一遍。nil 表示不支持关停（该接口直接 404）。
 	VerifyTokenValue func(token string) (operator string, ok bool)
@@ -123,7 +122,6 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
-	mux.HandleFunc("/api/recoverqueue/process", s.wrap(s.recoverQueueProcessHandler))
 	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
 	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
@@ -353,25 +351,6 @@ func (s *Monitor) errorQueueProcessHandler(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, map[string]any{"status": "ok", "processed": count})
 }
 
-// recoverQueueProcessHandler 手动触发中断恢复队列处理
-func (s *Monitor) recoverQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.ProcessRecoverQueue == nil {
-		http.Error(w, "recover queue not configured", http.StatusNotFound)
-		return
-	}
-	count, err := s.cfg.ProcessRecoverQueue()
-	if err != nil {
-		s.logger.Errorf("process recover queue: %s", err.Error())
-		http.Error(w, "process recover queue failed", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]any{"status": "ok", "recovered": count})
-}
-
 // repeatQueueProcessHandler 手动触发周期轮询队列处理
 func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -421,7 +400,7 @@ var hotReloadableFields = []string{
 	"browser.max_idle_time", "browser.headers",
 	"html.timeout", "html.max_body_size", "html.headers",
 	"error_queue.enabled", "error_queue.interval", "error_queue.worker_count", "error_queue.max_retry", "error_queue.batch_size",
-	"recover_queue.enabled", "recover_queue.interval", "recover_queue.worker_count", "recover_queue.timeout", "recover_queue.batch_size",
+	"recover_queue.enabled", "recover_queue.worker_count", "recover_queue.batch_size",
 	"repeat_queue.enabled", "repeat_queue.interval", "repeat_queue.worker_count", "repeat_queue.batch_size",
 }
 
@@ -429,7 +408,7 @@ var hotReloadableFields = []string{
 var restartOnlyFields = []string{
 	"browser.enable", "browser.headless", "browser.no_sandbox", "browser.leakless", "browser.browser_path",
 	"proxy.api_url", "proxy.refresh_interval",
-	"crawler.stages", "crawler.dedup_cache_size",
+	"core.stages", "core.dedup_cache_size",
 }
 
 // configHandler 查询/更新运行期动态配置。
@@ -481,10 +460,6 @@ func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, name+" 必须 >= 0", http.StatusBadRequest)
 			return
 		}
-	}
-	if rt.RecoverQueue.Timeout != nil && rt.RecoverQueue.Timeout.Duration < 0 {
-		http.Error(w, "recover_queue.timeout 必须 >= 0", http.StatusBadRequest)
-		return
 	}
 	if err := s.cfg.ConfigSet(&rt); err != nil {
 		s.logger.Errorf("apply config: %s", err.Error())

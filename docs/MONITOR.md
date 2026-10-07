@@ -373,7 +373,11 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 
 ## 7. 队列治理
 
-「队列治理」模块展示 `error_queue` / `recover_queue` / `repeat_queue` 三个后台治理队列的运行情况，并可逐个手动触发：
+「队列治理」模块展示 `error_queue` / `repeat_queue` 两个后台治理队列的运行情况，并可逐个手动触发：
+
+> `recover_queue` **不在这个面板上**：它只在进程启动那一刻跑一次，没有周期、没有积压可看，
+> 也就没有「立即执行一次」的意义 —— 运行期点它会把正在跑的 `processing` 任务一起重投。
+> 见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
 
 | 列 | 含义 |
 | --- | --- |
@@ -388,7 +392,6 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/errorqueue/process` | 手动触发失败任务重投；返回 `{"status":"ok","processed":N}` |
-| POST | `/api/recoverqueue/process` | 手动触发卡死任务恢复；返回 `{"status":"ok","recovered":N}` |
 | POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投已完成的 repeatable 任务）；返回 `{"status":"ok","repolled":N}` |
 
 数据来源分两类，均**不实时**，且不占用监控页刷新路径：
@@ -407,7 +410,6 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
     "last_processed": 37, "run_processed": 0, "total_processed": 421,
     "backlog": 128, "backlog_at": "...", "last_error": ""
   },
-  "recover_queue": { /* ... */ },
   "repeat_queue":  { /* ... */ }
 }
 ```
@@ -431,8 +433,9 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 | --- | --- |
 | `queue_spilled` | 累计溢出任务数（队列达高水位被回灌 DB 的次数） |
 | `queue_spill_backlog` | 当前待回灌的溢出任务数（>0 说明队列持续满） |
-| `recover_total` | 累计恢复任务数（recover_queue） |
+| `recover_total` | 累计启动恢复的任务数（`recover_queue`，只在启动跑一次） |
 | `error_retry_total` | 累计失败重投任务数（error_queue） |
 | `repeat_repoll_total` | 累计周期轮询重投任务数（repeat_queue） |
 
-> 这三个累计值同时也是「队列治理」模块「处理量」的累计数，同一份引擎内存计数，不会重复统计。
+> `error_retry_total` / `repeat_repoll_total` 同时也是「队列治理」模块「处理量」的累计数，
+> 同一份引擎内存计数，不会重复统计；`recover_total` 只在启动恢复时累加，面板上没有对应项。

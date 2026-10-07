@@ -316,3 +316,63 @@ func TestSubmitUrgentStopConcurrent(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+// Stop 必须如实报出「还有多少条没跑完」—— 调用方靠它决定要不要接着关数据库/浏览器池。
+// 报成 0 会让上层以为排空了，然后把库关掉，在途任务剩下的写入全废。
+func TestStopReportsInFlightOnTimeout(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+
+	p := NewWorkerPool[*testTask](2, 8, 1)
+	p.Start(context.Background(), func(context.Context, *testTask) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	})
+
+	for i := 0; i < 2; i++ {
+		if err := p.Submit(&testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
+			t.Fatalf("submit %d = %v", i, err)
+		}
+	}
+	// 等两个 worker 真的进到 handler，别让 Stop 发生在任务被取走之前
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker 没有取到任务")
+		}
+	}
+
+	drained, inFlight := p.Stop(50 * time.Millisecond)
+	if drained {
+		t.Fatal("handler 还卡着，Stop 却报了 drained")
+	}
+	if inFlight != 2 {
+		t.Fatalf("inFlight = %d, want 2", inFlight)
+	}
+
+	close(release) // 放行，别把 worker 永久挂着
+}
+
+// 排空成功报 drained=true、inFlight=0；**重复调用返回首次的结果**（stopOnce 只跑一次），
+// 而不是零值 —— 否则第二次调用方会误以为没排空，进而跳过本该做的关库。
+func TestStopReportsDrainedAndIsIdempotent(t *testing.T) {
+	done := make(chan struct{}, 1)
+	p := NewWorkerPool[*testTask](1, 4, 1)
+	p.Start(context.Background(), func(context.Context, *testTask) error {
+		done <- struct{}{}
+		return nil
+	})
+	if err := p.Submit(&testTask{url: "t"}); err != nil {
+		t.Fatalf("submit = %v", err)
+	}
+	<-done
+
+	if drained, inFlight := p.Stop(5 * time.Second); !drained || inFlight != 0 {
+		t.Fatalf("Stop = (%v, %d), want (true, 0)", drained, inFlight)
+	}
+	if drained, inFlight := p.Stop(5 * time.Second); !drained || inFlight != 0 {
+		t.Fatalf("第二次 Stop = (%v, %d), want (true, 0)", drained, inFlight)
+	}
+}

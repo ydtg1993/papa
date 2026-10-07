@@ -7,6 +7,7 @@ crawler:
   dedup_cache_size: 0          # 内存去重表最大条目数：0=不限(旧行为)；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
   queue_watermark: 0.75        # 队列高水位比例(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
+  stop_timeout: "5s"           # 优雅退出时等各阶段 worker 排空队列的上限；超时则跳过关库/关浏览器池，让在途写入能落盘
   # 单任务步骤追踪：开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表。
   # 后台任务表的「追踪」动作按「第 N 次尝试」展示时间线；只有失败的尝试才写 data。
   # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。
@@ -113,13 +114,14 @@ error_queue:
   max_retry: 3            # 单个失败任务最多再处理代数；0 = 不限
   batch_size: 100        # 每批查询处理的任务数；0 = 默认 100（分页流式，避免海量失败任务一次性全量加载）
 
-# 中断恢复队列（主程序重启后立即恢复卡死的 pending/processing 任务，也可定时/手动触发）
+# 启动恢复：进程重启时把上次中断留下的「未到终态」任务（pending/processing）全部重新入队。
+# 只在**启动时跑一次**。进程刚起，所有 processing 都是孤儿 —— 这是确定的，不需要按 updated_at
+# 超时去猜（那个启发式既会漏掉崩溃前刚认领的，又会把跑得久的任务误判成卡死、与在跑的 worker 撞车）。
+# 所以这里没有 interval / timeout：详见 docs/RECOVER_QUEUE.md
 recover_queue:
-  enabled: true           # 是否启用；启用后启动时立即恢复一次
-  worker_count: 1         # 并发恢复数量
-  interval: "3h"         # 自动轮询间隔；0 = 仅启动时 + OA 后台手动触发
-  timeout: "2h"           # 任务卡住多久算卡死（updated_at 早于 now-timeout）
-  batch_size: 100        # 每批查询处理的任务数；0 = 默认 100（分页流式，避免海量卡死任务一次性全量加载）
+  enabled: true           # 是否启用；启用后启动时恢复一次
+  worker_count: 1         # 并发重新入队的数量
+  batch_size: 100         # 每批查询处理的任务数；0 = 默认 100（分页流式）
 
 # 周期轮询队列（配合 main.go 里 Repeatable: true 的任务：定时重投「已完成」的 repeatable 任务，实现周期轮询）
 repeat_queue:

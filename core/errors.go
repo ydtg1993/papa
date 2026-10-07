@@ -1,4 +1,4 @@
-package crawler
+package core
 
 import "errors"
 

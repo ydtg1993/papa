@@ -8,31 +8,19 @@ import (
 )
 
 // 治理队列名称，同时作为监控快照的 key。
+// 只有这两个是**运行期持续跑**的队列，所以只有它们进监控面板。
 const (
-	QueueError   = "error_queue"
-	QueueRecover = "recover_queue"
-	QueueRepeat  = "repeat_queue"
+	QueueError  = "error_queue"
+	QueueRepeat = "repeat_queue"
 )
+
+// recoverQueueName 启动恢复在日志与错误信息里的标识。
+// 它不再是监控面板上的「队列」—— 恢复只在启动那一刻发生一次，没有周期、没有积压可看 ——
+// 但重新投递失败时仍要写清是哪条路写的（见 markRequeueFailed）。
+const recoverQueueName = "recover_queue"
 
 // defaultQueueSampleInterval 积压采样的默认间隔。
 const defaultQueueSampleInterval = time.Minute
-
-// QueueStat 单个治理队列的运行快照（纯值类型，供监控页读取，不暴露内部实现）。
-type QueueStat struct {
-	Name           string        `json:"name"`
-	Enabled        bool          `json:"enabled"`         // 是否启用自动轮询
-	Running        bool          `json:"running"`         // 本轮是否正在执行
-	Runs           int64         `json:"runs"`            // 累计执行次数
-	StartedAt      time.Time     `json:"started_at"`      // 本轮开始时间（Running 时有意义）
-	LastFinishAt   time.Time     `json:"last_finish_at"`  // 上次执行完成时间
-	LastDuration   time.Duration `json:"last_duration"`   // 上次执行耗时
-	LastProcessed  int           `json:"last_processed"`  // 上次实际重新投递的任务数
-	RunProcessed   int64         `json:"run_processed"`   // 本轮已重新投递的任务数（Running 时递增）
-	TotalProcessed int64         `json:"total_processed"` // 累计重新投递的任务数
-	Backlog        int           `json:"backlog"`         // 待处理积压数（最近一次采样值）
-	BacklogAt      time.Time     `json:"backlog_at"`      // 积压采样时间
-	LastError      string        `json:"last_error"`      // 上次执行错误，空=正常
-}
 
 // queueRunState 队列运行期状态：快照 + 本轮起点计数。
 type queueRunState struct {
@@ -41,12 +29,11 @@ type queueRunState struct {
 	atStart int64 // 本轮开始时的累计处理数，用于推算本轮进度
 }
 
-// newQueueRuns 构造三个治理队列的运行状态表。
+// newQueueRuns 构造治理队列的运行状态表。
 func newQueueRuns() map[string]*queueRunState {
 	return map[string]*queueRunState{
-		QueueError:   {},
-		QueueRecover: {},
-		QueueRepeat:  {},
+		QueueError:  {},
+		QueueRepeat: {},
 	}
 }
 
@@ -100,7 +87,7 @@ func (e *Engine) setQueueBacklog(name string, backlog int) {
 	st.mu.Unlock()
 }
 
-// GetQueueStats 返回三个治理队列的运行快照（只读内存，不查库，供监控页高频拉取）。
+// GetQueueStats 返回各治理队列的运行快照（只读内存，不查库，供监控页高频拉取）。
 func (e *Engine) GetQueueStats() map[string]QueueStat {
 	out := make(map[string]QueueStat, len(e.queueRuns))
 	for name, st := range e.queueRuns {
@@ -131,24 +118,21 @@ func (e *Engine) queueEnabled(name string) bool {
 	switch name {
 	case QueueError:
 		return e.errorQueueConfig().Enabled
-	case QueueRecover:
-		return e.recoverQueueConfig().Enabled
 	case QueueRepeat:
 		return e.repeatQueueConfig().Enabled
 	}
 	return false
 }
 
-// queueQueries 返回三个队列各自的「待处理」条件构造器。
+// queueQueries 返回各队列自己的「待处理」条件构造器。
 func (e *Engine) queueQueries() map[string]func() *gorm.DB {
 	return map[string]func() *gorm.DB{
-		QueueError:   e.errorQueueQuery(),
-		QueueRecover: e.recoverQueueQuery(),
-		QueueRepeat:  e.repeatQueueQuery(),
+		QueueError:  e.errorQueueQuery(),
+		QueueRepeat: e.repeatQueueQuery(),
 	}
 }
 
-// sampleQueueBacklog 采样三个队列的待处理积压数（各一次 COUNT），写入快照。
+// sampleQueueBacklog 采样各队列的待处理积压数（各一次 COUNT），写入快照。
 func (e *Engine) sampleQueueBacklog() {
 	for name, query := range e.queueQueries() {
 		e.sampleQueueBacklogOne(name, query)
@@ -166,7 +150,7 @@ func (e *Engine) sampleQueueBacklogOne(name string, query func() *gorm.DB) {
 	e.setQueueBacklog(name, int(n))
 }
 
-// startQueueSampler 后台低频采样三个队列的积压数（COUNT 查询）。
+// startQueueSampler 后台低频采样各队列的积压数（COUNT 查询）。
 // 监控页刷新只读内存快照，采样间隔由 server.queue_sample_interval 控制（默认 1m）。
 func (e *Engine) startQueueSampler() {
 	interval := e.cfg.Server.QueueSampleInterval

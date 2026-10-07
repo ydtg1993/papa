@@ -167,19 +167,6 @@ func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 	return newTrace(e.db, e.loggerSet.DB, task.ID, attempt)
 }
 
-// TraceStep 一条步骤记录的快照（纯值类型，供监控后台读取，不暴露内部实现）。
-type TraceStep struct {
-	Attempt   int           `json:"attempt"`
-	Seq       int           `json:"seq"`
-	Step      string        `json:"step"`
-	Status    string        `json:"status"` // ok / failed
-	Kind      string        `json:"kind"`
-	Message   string        `json:"message"`
-	Data      string        `json:"data"` // 原始 JSON 文本，前端自行格式化
-	Duration  time.Duration `json:"duration"`
-	CreatedAt time.Time     `json:"created_at"`
-}
-
 // ListTrace 返回一条任务的全部步骤记录，按（尝试、步骤）排序。供监控后台的「追踪」抽屉读取。
 func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) {
 	if !e.traceEnabled() {

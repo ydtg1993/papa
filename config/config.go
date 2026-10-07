@@ -33,13 +33,20 @@ type ErrorQueueConfig struct {
 	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 
-// RecoverQueueConfig 中断恢复队列处理配置（主程序重启后立即恢复卡死的 pending/processing 任务）
+// RecoverQueueConfig 启动恢复配置。
+//
+// 它现在只做一件事：**进程启动时把「未到终态」的任务（pending/processing）全部重新入队**。
+//
+// 原来的「运行中按 updated_at 超时判卡死」（`timeout` + `interval` 两个配置项）整个删掉了：
+//   - 那个启发式会**误伤长任务** —— 下整部剧跑过 timeout 就被当成卡死重投，与仍在跑的 worker 撞车写同一行；
+//   - 而它本来要解的「意外中断」，在启动这一刻是**确定**的：进程刚起，processing 全是孤儿，
+//     不需要靠时间推测。反过来说，按超时筛还会漏掉崩溃前刚认领的那批（见 crawler/recoverqueue.go）。
+//
+// 运行期真正的卡死应该靠给外部调用设超时解决（htmlfetch 与 rod 都有 timeout），不是靠事后扫库。
 type RecoverQueueConfig struct {
-	Enabled     bool          `mapstructure:"enabled"`      // 是否启用中断恢复队列
-	WorkerCount int           `mapstructure:"worker_count"` // 并发恢复数量
-	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 仅启动时+手动触发
-	Timeout     time.Duration `mapstructure:"timeout"`      // 任务卡住多久算卡死（updated_at 早于 now-timeout）；0 = 默认 6h
-	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
+	Enabled     bool `mapstructure:"enabled"`      // 是否启用启动恢复（关掉则启动时不捞）
+	WorkerCount int  `mapstructure:"worker_count"` // 并发重新入队的数量
+	BatchSize   int  `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 
 // RepeatQueueConfig 周期轮询队列处理配置（定时重新投递「已完成」的 repeatable 任务，实现周期轮询）
@@ -69,7 +76,22 @@ type CrawlerConfig struct {
 	DedupCacheSize int                    `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
 	QueueWatermark float64                `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
 	DrainInterval  time.Duration          `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
+	StopTimeout    time.Duration          `mapstructure:"stop_timeout"`     //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
 	Trace          TraceConfig            `mapstructure:"trace"`            //单任务步骤追踪
+}
+
+// defaultStopTimeout 引擎关停时等各阶段 worker 排空队列的默认上限。
+const defaultStopTimeout = 5 * time.Second
+
+// StopTimeoutOrDefault 返回生效的引擎关停排空上限（配置里的 0/负值在这里补成默认 5s）。
+//
+// 它和 server.shutdown_timeout 是两件事：那个等的是**在途 HTTP 请求**（比如日志打包下载），
+// 这个等的是 **worker 把队列里的存量任务跑完**。两者互不相干，各有各的调用点。
+func (c CrawlerConfig) StopTimeoutOrDefault() time.Duration {
+	if c.StopTimeout <= 0 {
+		return defaultStopTimeout
+	}
+	return c.StopTimeout
 }
 
 // TraceConfig 单任务步骤追踪配置。
@@ -224,6 +246,7 @@ func (s ServerConfig) HTTPTimeouts() (readHeader, read, write, idle, shutdown ti
 
 // SchedulerConfig 定时任务调度器配置。
 // 内置 job 已移除：业务定时任务通过 app.RegisterCronJob 注册（见 docs），框架级恢复/失败重试走 recover_queue / error_queue。
+// 注：recover_queue 现在只在**启动时**跑一次（见 RecoverQueueConfig），不再有定时轮询。
 type SchedulerConfig struct {
 	Timezone string `mapstructure:"timezone"` // cron 时区
 }

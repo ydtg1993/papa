@@ -1,7 +1,7 @@
 # Papa 错误队列处理手册
 
 > 面向：任务重试耗尽进入 `failed` 后，怎么把它重新投递回阶段重跑，以及如何防止永久坏任务无限空转。
-> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（卡死任务恢复，两者按状态分工）。
+> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复，两者按状态分工）。
 
 ---
 
@@ -50,6 +50,6 @@ error_queue:
 | 机制 | 目标状态 | 语义 |
 | --- | --- | --- |
 | `error_queue` | `failed` | 重跑「明确失败」的任务 |
-| `recover_queue` | `pending` / `processing`（超时） | 救「卡死」的任务 |
+| `recover_queue` | `pending` / `processing` | 启动时把中断留下的任务全部捡回来（**只在启动跑一次**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） |
 
 两者按状态互斥，不会同时盯上同一个任务。

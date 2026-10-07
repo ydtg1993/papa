@@ -415,17 +415,33 @@ func (a *App) Run(ctx context.Context) {
 	// 顺序要紧：先把 HTTP 停下来、等在途请求（比如日志下载）跑完，再动引擎和数据库。
 	// 反过来的话，正在下载日志的请求会在读到大半时被关掉的连接 / 关掉的库打断。
 	a.shutdownHTTP()
-	a.Engine.Stop(5 * time.Second)
+
+	// 引擎排空：Engine.Stop 内部先 e.cancel()，再等各阶段 worker 把队列跑完（上限 crawler.stop_timeout）。
+	// 各阶段是并发等的，所以这里最多等一个 stopTimeout。
+	stopTimeout := a.Config.Crawler.StopTimeoutOrDefault()
+	drained, stopStats := a.Engine.Stop(stopTimeout)
+	if !drained {
+		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务在跑 %+v —— 跳过关库与浏览器池关闭，让在途写入完成", stopTimeout, stopStats)
+	}
+
 	// 审计队列先排空再关库：反过来的话最后几条（包括"优雅退出"这条操作本身）写不进去，
 	// 只能落到日志文件里。写失败不阻塞响应是常态，但关停这一下要给它一个收尾的机会。
 	if a.oplog != nil {
 		a.oplog.Close(3 * time.Second)
 	}
-	if a.Engine.GetBrowserPool() != nil {
-		a.Engine.GetBrowserPool().Close()
-	}
-	if sqlDB, err := a.DB.DB(); err == nil {
-		_ = sqlDB.Close()
+
+	// 没排空时**不关**浏览器池和数据库：pool.Stop 超时后返回，但 Go 杀不掉 goroutine，
+	// worker 还在跑 —— 它们可能正持着浏览器、正要把结果写回 DB。这会儿关掉，
+	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
+	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
+	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
+	if drained {
+		if a.Engine.GetBrowserPool() != nil {
+			a.Engine.GetBrowserPool().Close()
+		}
+		if sqlDB, err := a.DB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
 	}
 	// 关停时把运行期覆盖层落盘（delta 写回 runtime.yaml，重启后叠加生效）
 	if a.runtimePath != "" {
@@ -532,21 +548,20 @@ func (a *App) httpServer(ctx context.Context) {
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		VerifyToken:         auth.Verifier(a.DB, a.Logger.Sys),
-		Whitelist:           whitelist,
-		WhitelistFile:       cfg.WhitelistFile,
-		Metrics:             a.Engine.GetMetrics,
-		QueueStats:          a.Engine.GetQueueStats,
-		SysInfo:             a.sysInfo,
-		LogDir:              a.Config.Log.Dir,
-		OnShutdown:          a.Shutdown,
-		ProcessErrorQueue:   a.Engine.ProcessErrorQueue,
-		ProcessRecoverQueue: a.Engine.ProcessRecoverQueue,
-		ProcessRepeatQueue:  a.Engine.RepollRepeatableTasks,
-		ConfigGet:           a.Engine.GetRuntimeConfig,
-		ConfigSet:           a.Engine.ApplyRuntimeConfig,
-		TaskTrace:           a.Engine.ListTrace,
-		VerifyTokenValue:    auth.Confirmer(a.DB, a.Logger.Sys),
+		VerifyToken:        auth.Verifier(a.DB, a.Logger.Sys),
+		Whitelist:          whitelist,
+		WhitelistFile:      cfg.WhitelistFile,
+		Metrics:            a.Engine.GetMetrics,
+		QueueStats:         a.Engine.GetQueueStats,
+		SysInfo:            a.sysInfo,
+		LogDir:             a.Config.Log.Dir,
+		OnShutdown:         a.Shutdown,
+		ProcessErrorQueue:  a.Engine.ProcessErrorQueue,
+		ProcessRepeatQueue: a.Engine.RepollRepeatableTasks,
+		ConfigGet:          a.Engine.GetRuntimeConfig,
+		ConfigSet:          a.Engine.ApplyRuntimeConfig,
+		TaskTrace:          a.Engine.ListTrace,
+		VerifyTokenValue:   auth.Confirmer(a.DB, a.Logger.Sys),
 	})
 	mon.Register(mux)
 

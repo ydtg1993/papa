@@ -54,7 +54,7 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		trackQueue: msgqueue.NewMsgQueue[any](10),
+		trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
 		labors:     make(map[string]*labor),
 	}
 }

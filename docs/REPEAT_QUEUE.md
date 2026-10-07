@@ -1,13 +1,13 @@
 # Papa 周期轮询队列手册
 
 > 面向：想让标记了 `Repeatable: true` 的任务（如 catalog 目录页）被周期性地重新抓取、发现新内容。
-> 配套：[SCHEDULER.md](./SCHEDULER.md)（业务自定义 cron）、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（卡死任务恢复）。
+> 配套：[SCHEDULER.md](./SCHEDULER.md)（业务自定义 cron）、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复）。
 
 ---
 
 ## 0. 一句话
 
-框架内置一个「周期轮询队列」`repeat_queue`：按 `interval` 定时把**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。走的是与 error_queue / recover_queue 同构的分页 + 并发队列。
+框架内置一个「周期轮询队列」`repeat_queue`：按 `interval` 定时把**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
 
 ## 1. 配置
 
@@ -29,7 +29,7 @@ repeat_queue:
 
 ## 3. 语义：只重投「已完成」的
 
-`repeat_queue` 只重投 `status = success / failed` 的 repeatable 任务，**不碰还在 pending/processing 的**——后者由 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 兜底（超时才恢复）。这样避免「上一轮还没处理完，这一轮又入队」的双入队。
+`repeat_queue` 只重投 `status = success / failed` 的 repeatable 任务，**不碰还在 pending/processing 的**——后者由 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 在**启动时**兜底。这样避免「上一轮还没处理完，这一轮又入队」的双入队。
 重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
 （`crawler.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
 于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。

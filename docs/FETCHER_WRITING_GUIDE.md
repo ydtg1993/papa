@@ -651,7 +651,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 
 3. **定时重抓 / 恢复失败**：
    - 定时轮询：业务用 `app.RegisterCronJob("repeat_daily", "0 0 8 * * *", func(){ app.Engine.RepollRepeatableTasks() })` 注册，每日重跑 `repeatable: true` 的轮询任务；
-   - 中断恢复：`recover_queue` 配置开启后，启动时立即 + `interval` 定时恢复卡死的 pending/processing 任务。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 与 [SCHEDULER.md](./SCHEDULER.md)。
+   - 中断恢复：`recover_queue` 配置开启后，**启动时**把「未到终态」（pending/processing）的任务全部重新入队 —— 进程刚起，这些就是上次中断留下的孤儿，不用按时间猜。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 与 [SCHEDULER.md](./SCHEDULER.md)。
 
 4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 

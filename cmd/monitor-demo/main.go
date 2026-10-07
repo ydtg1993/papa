@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/crawler"
 	"github.com/ydtg1993/papa/v2/internal/server"
 	"github.com/ydtg1993/papa/v2/internal/sysinfo"
@@ -41,7 +42,7 @@ func main() {
 	sc.Start(ctx)
 
 	// 阶段统计假数据
-	getter := func() map[string]crawler.StageStats { return fakeStageStats() }
+	getter := func() map[string]core.StageStats { return fakeStageStats() }
 
 	// 业务自定义指标假数据
 	metrics := func() map[string]any {
@@ -109,53 +110,47 @@ func main() {
 	log.Println("bye")
 }
 
-func fakeStageStats() map[string]crawler.StageStats {
-	return map[string]crawler.StageStats{
+func fakeStageStats() map[string]core.StageStats {
+	return map[string]core.StageStats{
 		"catalog": {
-			Global: crawler.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
-			Workers: map[int]crawler.WorkerStat{
+			Global: core.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
+			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 3, FailedTasks: 0, TotalTime: 39456100, MaxTime: 19010900, MinTime: 8489000},
 				1: {WorkerID: 1, TotalTasks: 3, FailedTasks: 0, TotalTime: 30861700, MaxTime: 15401900, MinTime: 6222500},
 				2: {WorkerID: 2, TotalTasks: 2, FailedTasks: 1, TotalTime: 28637200, MaxTime: 22137200, MinTime: 6500000},
 			},
-			Queue: crawler.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
+			Queue: core.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
 		},
 		"detail": {
-			Global: crawler.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
-			Workers: map[int]crawler.WorkerStat{
+			Global: core.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
+			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 0, TotalTime: 70649100, MaxTime: 40192700, MinTime: 30456400},
 				1: {WorkerID: 1, TotalTasks: 4, FailedTasks: 0, TotalTime: 79244200, MaxTime: 33409100, MinTime: 7538800},
 			},
-			Queue: crawler.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
+			Queue: core.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
 		},
 		"video": {
-			Global: crawler.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
-			Workers: map[int]crawler.WorkerStat{
+			Global: core.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
+			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 1, TotalTime: 106798900, MaxTime: 56096300, MinTime: 50702600},
 				1: {WorkerID: 1, TotalTasks: 3, FailedTasks: 1, TotalTime: 71555400, MaxTime: 35336700, MinTime: 15549000},
 				2: {WorkerID: 2, TotalTasks: 3, FailedTasks: 0, TotalTime: 112815500, MaxTime: 60246100, MinTime: 10220500},
 				3: {WorkerID: 3, TotalTasks: 2, FailedTasks: 0, TotalTime: 74546000, MaxTime: 45605400, MinTime: 28940600},
 			},
-			Queue: crawler.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
+			Queue: core.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
 		},
 	}
 }
 
 // fakeQueueStats 治理队列假数据：覆盖「运行中 / 空闲待执行 / 已停用且有错误」三种状态。
-func fakeQueueStats() map[string]crawler.QueueStat {
+func fakeQueueStats() map[string]core.QueueStat {
 	now := time.Now()
-	return map[string]crawler.QueueStat{
+	return map[string]core.QueueStat{
 		crawler.QueueError: {
 			Name: crawler.QueueError, Enabled: true, Runs: 12,
 			StartedAt: now.Add(-2 * time.Minute), LastFinishAt: now.Add(-90 * time.Second),
 			LastDuration: 4 * time.Second, LastProcessed: 37, TotalProcessed: 421,
 			Backlog: 128, BacklogAt: now.Add(-20 * time.Second),
-		},
-		crawler.QueueRecover: {
-			Name: crawler.QueueRecover, Enabled: true, Running: true, Runs: 5,
-			StartedAt: now.Add(-45 * time.Second), LastFinishAt: now.Add(-time.Hour),
-			LastDuration: 9 * time.Second, LastProcessed: 12, RunProcessed: 340, TotalProcessed: 88,
-			BacklogAt: now.Add(-20 * time.Second),
 		},
 		crawler.QueueRepeat: {
 			Name: crawler.QueueRepeat, Runs: 0,

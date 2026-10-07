@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/core"
 )
 
 // Webhook 通过 HTTP POST 将告警事件以 JSON 发送到指定 URL（可接钉钉/webhook 网关）。
@@ -23,7 +23,7 @@ func NewWebhook(url string) *Webhook {
 }
 
 // Notify 发送告警事件到 webhook URL。
-func (w *Webhook) Notify(ctx context.Context, event crawler.AlertEvent) error {
+func (w *Webhook) Notify(ctx context.Context, event core.AlertEvent) error {
 	if w.URL == "" {
 		return fmt.Errorf("webhook url is empty")
 	}

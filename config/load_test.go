@@ -31,6 +31,7 @@ html:
 crawler:
   queue_watermark: 0.5
   drain_interval: "5s"
+  stop_timeout: "8s"
   trace:
     enabled: true
     retention: "168h"
@@ -48,8 +49,6 @@ error_queue:
 recover_queue:
   enabled: true
   worker_count: 2
-  interval: "10m"
-  timeout: "6h"
   batch_size: 500
 repeat_queue:
   enabled: true
@@ -98,10 +97,6 @@ repeat_queue:
 	if !cfg.RecoverQueue.Enabled || cfg.RecoverQueue.WorkerCount != 2 {
 		t.Fatalf("recover_queue = %+v, want enabled + worker_count 2", cfg.RecoverQueue)
 	}
-	if cfg.RecoverQueue.Interval != 10*time.Minute || cfg.RecoverQueue.Timeout != 6*time.Hour {
-		t.Fatalf("recover_queue interval/timeout = %v/%v, want 10m/6h",
-			cfg.RecoverQueue.Interval, cfg.RecoverQueue.Timeout)
-	}
 	if cfg.RecoverQueue.BatchSize != 500 {
 		t.Fatalf("recover_queue.batch_size = %v, want 500", cfg.RecoverQueue.BatchSize)
 	}
@@ -117,6 +112,13 @@ repeat_queue:
 	}
 	if cfg.Crawler.DrainInterval != 5*time.Second {
 		t.Fatalf("drain_interval = %v, want 5s", cfg.Crawler.DrainInterval)
+	}
+	// stop_timeout：配了就用配的；没配（0）回退默认 5s —— 存量业务项目的 config.yaml 里没有这个键
+	if cfg.Crawler.StopTimeout != 8*time.Second {
+		t.Fatalf("stop_timeout = %v, want 8s", cfg.Crawler.StopTimeout)
+	}
+	if got := (CrawlerConfig{}).StopTimeoutOrDefault(); got != 5*time.Second {
+		t.Fatalf("空的 stop_timeout 应回退默认 5s，实得 %v", got)
 	}
 	if !cfg.Crawler.Trace.Enabled || cfg.Crawler.Trace.Retention != 168*time.Hour {
 		t.Fatalf("crawler.trace = %+v, want enabled + retention 168h", cfg.Crawler.Trace)

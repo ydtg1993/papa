@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/internal/auth"
 )
 
@@ -25,34 +25,34 @@ func (l testLogger) Infof(format string, args ...any)  {}
 func (l testLogger) Errorf(format string, args ...any) { l.t.Logf(format, args...) }
 
 // fakeStageStats 直接构造各阶段统计快照（纯值假数据，确定性且无并发）。
-func fakeStageStats() map[string]crawler.StageStats {
-	return map[string]crawler.StageStats{
+func fakeStageStats() map[string]core.StageStats {
+	return map[string]core.StageStats{
 		"catalog": {
-			Global: crawler.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
-			Workers: map[int]crawler.WorkerStat{
+			Global: core.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
+			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 3, FailedTasks: 0, TotalTime: 39456100, MaxTime: 19010900, MinTime: 8489000},
 				1: {WorkerID: 1, TotalTasks: 3, FailedTasks: 0, TotalTime: 30861700, MaxTime: 15401900, MinTime: 6222500},
 				2: {WorkerID: 2, TotalTasks: 2, FailedTasks: 1, TotalTime: 28637200, MaxTime: 22137200, MinTime: 6500000},
 			},
-			Queue: crawler.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
+			Queue: core.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
 		},
 		"detail": {
-			Global: crawler.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
-			Workers: map[int]crawler.WorkerStat{
+			Global: core.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
+			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 0, TotalTime: 70649100, MaxTime: 40192700, MinTime: 30456400},
 				1: {WorkerID: 1, TotalTasks: 4, FailedTasks: 0, TotalTime: 79244200, MaxTime: 33409100, MinTime: 7538800},
 			},
-			Queue: crawler.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
+			Queue: core.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
 		},
 		"video": {
-			Global: crawler.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
-			Workers: map[int]crawler.WorkerStat{
+			Global: core.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
+			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 1, TotalTime: 106798900, MaxTime: 56096300, MinTime: 50702600},
 				1: {WorkerID: 1, TotalTasks: 3, FailedTasks: 1, TotalTime: 71555400, MaxTime: 35336700, MinTime: 15549000},
 				2: {WorkerID: 2, TotalTasks: 3, FailedTasks: 0, TotalTime: 112815500, MaxTime: 60246100, MinTime: 10220500},
 				3: {WorkerID: 3, TotalTasks: 2, FailedTasks: 0, TotalTime: 74546000, MaxTime: 45605400, MinTime: 28940600},
 			},
-			Queue: crawler.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
+			Queue: core.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
 		},
 	}
 }
@@ -101,8 +101,8 @@ func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	return v
 }
 
-func emptyGetter() map[string]crawler.StageStats {
-	return map[string]crawler.StageStats{}
+func emptyGetter() map[string]core.StageStats {
+	return map[string]core.StageStats{}
 }
 
 func TestAPIMonitor(t *testing.T) {
@@ -554,12 +554,12 @@ func TestMonitorDemoJSON(t *testing.T) {
 // 步骤追踪接口：非法 id 挡在解析层、未配置返回 404、业务错误（如追踪开关没开）
 // 原样带给前端而不是被吞成 500 —— 抽屉里要能显示那句「步骤追踪未开启」。
 func TestTaskTraceHandler(t *testing.T) {
-	steps := []crawler.TraceStep{
+	steps := []core.TraceStep{
 		{Attempt: 0, Seq: 0, Step: "打开列表页", Status: "ok", Duration: 12 * time.Millisecond},
 		{Attempt: 0, Seq: 1, Step: "解析详情", Status: "failed", Kind: "no-retry", Message: "selector not found"},
 	}
 	withTrace := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{
-		TaskTrace: func(id int) ([]crawler.TraceStep, error) {
+		TaskTrace: func(id int) ([]core.TraceStep, error) {
 			if id != 7 {
 				t.Errorf("handler 透传的 id = %d, want 7", id)
 			}
@@ -592,8 +592,8 @@ func TestTaskTraceHandler(t *testing.T) {
 	// 业务原因（追踪未开启）要原样回给前端，不能糊成 500
 	t.Run("业务错误原样带回", func(t *testing.T) {
 		m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{
-			TaskTrace: func(int) ([]crawler.TraceStep, error) {
-				return nil, errors.New("步骤追踪未开启（crawler.trace.enabled）")
+			TaskTrace: func(int) ([]core.TraceStep, error) {
+				return nil, errors.New("步骤追踪未开启（core.trace.enabled）")
 			},
 		})
 		rr := serve(m, http.MethodGet, "/api/task/trace?id=7", nil)

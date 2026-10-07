@@ -392,10 +392,9 @@
                 + wrows + '</table></div></div></div>';
         }).join('');
     }
-    /* ---- 治理队列（error/recover/repeat） ---- */
+    /* ---- 治理队列（error/repeat） ---- */
     var QUEUE_META = {
         error_queue: { label: '错误队列', desc: '失败任务重投', url: '/api/errorqueue/process', key: 'processed', done: '已重新投递' },
-        recover_queue: { label: '恢复队列', desc: '卡死任务恢复', url: '/api/recoverqueue/process', key: 'recovered', done: '已恢复' },
         repeat_queue: { label: '轮询队列', desc: '周期任务重投', url: '/api/repeatqueue/process', key: 'repolled', done: '已重投' }
     };
     function timeValid(d) { return !isNaN(d.getTime()) && d.getFullYear() >= 2000; }

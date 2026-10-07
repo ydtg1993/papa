@@ -24,7 +24,7 @@ func (e *Engine) errorQueueConfig() config.ErrorQueueConfig {
 	return cfg
 }
 
-// recoverQueueConfig 返回中断恢复队列的生效配置（基础配置 + 运行期覆盖）。
+// recoverQueueConfig 返回启动恢复的生效配置（基础配置 + 运行期覆盖）。
 func (e *Engine) recoverQueueConfig() config.RecoverQueueConfig {
 	cfg := e.cfg.RecoverQueue
 	rt := e.runtime.Load()
@@ -33,12 +33,6 @@ func (e *Engine) recoverQueueConfig() config.RecoverQueueConfig {
 	}
 	if rt.RecoverQueue.WorkerCount != nil {
 		cfg.WorkerCount = *rt.RecoverQueue.WorkerCount
-	}
-	if rt.RecoverQueue.Interval != nil {
-		cfg.Interval = rt.RecoverQueue.Interval.Duration
-	}
-	if rt.RecoverQueue.Timeout != nil {
-		cfg.Timeout = rt.RecoverQueue.Timeout.Duration
 	}
 	if rt.RecoverQueue.BatchSize != nil {
 		cfg.BatchSize = *rt.RecoverQueue.BatchSize

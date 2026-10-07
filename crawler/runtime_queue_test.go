@@ -14,8 +14,7 @@ func TestEngineQueueConfigGetters(t *testing.T) {
 			WorkerCount: 2, MaxRetry: 3, BatchSize: 1000,
 		},
 		RecoverQueue: config.RecoverQueueConfig{
-			Enabled: true, Interval: 10 * time.Minute,
-			WorkerCount: 2, Timeout: 6 * time.Hour, BatchSize: 1000,
+			Enabled: true, WorkerCount: 2, BatchSize: 1000,
 		},
 		RepeatQueue: config.RepeatQueueConfig{
 			Enabled: true, Interval: 10 * time.Minute,
@@ -28,7 +27,7 @@ func TestEngineQueueConfigGetters(t *testing.T) {
 	if got := e.errorQueueConfig(); !got.Enabled || got.Interval != 10*time.Minute || got.WorkerCount != 2 || got.MaxRetry != 3 || got.BatchSize != 1000 {
 		t.Fatalf("errorQueueConfig base = %+v", got)
 	}
-	if got := e.recoverQueueConfig(); !got.Enabled || got.Interval != 10*time.Minute || got.WorkerCount != 2 || got.Timeout != 6*time.Hour || got.BatchSize != 1000 {
+	if got := e.recoverQueueConfig(); !got.Enabled || got.WorkerCount != 2 || got.BatchSize != 1000 {
 		t.Fatalf("recoverQueueConfig base = %+v", got)
 	}
 	if got := e.repeatQueueConfig(); !got.Enabled || got.Interval != 10*time.Minute || got.WorkerCount != 2 || got.BatchSize != 1000 {
@@ -40,9 +39,7 @@ func TestEngineQueueConfigGetters(t *testing.T) {
 	eint := config.Duration{Duration: 3 * time.Minute}
 	ew, em, eb := 5, 7, 500
 	roff := false
-	rint := config.Duration{Duration: 4 * time.Minute}
 	rw, rb := 3, 300
-	rto := config.Duration{Duration: 2 * time.Hour}
 	poff := true
 	pint := config.Duration{Duration: 5 * time.Minute}
 	pw, pb := 4, 200
@@ -52,8 +49,7 @@ func TestEngineQueueConfigGetters(t *testing.T) {
 			WorkerCount: &ew, MaxRetry: &em, BatchSize: &eb,
 		},
 		RecoverQueue: config.RuntimeRecoverQueueConfig{
-			Enabled: &roff, Interval: &rint,
-			WorkerCount: &rw, Timeout: &rto, BatchSize: &rb,
+			Enabled: &roff, WorkerCount: &rw, BatchSize: &rb,
 		},
 		RepeatQueue: config.RuntimeRepeatQueueConfig{
 			Enabled: &poff, Interval: &pint,
@@ -64,7 +60,7 @@ func TestEngineQueueConfigGetters(t *testing.T) {
 	if got := e.errorQueueConfig(); got.Enabled || got.Interval != 3*time.Minute || got.WorkerCount != 5 || got.MaxRetry != 7 || got.BatchSize != 500 {
 		t.Fatalf("errorQueueConfig overlay = %+v", got)
 	}
-	if got := e.recoverQueueConfig(); got.Enabled || got.Interval != 4*time.Minute || got.WorkerCount != 3 || got.Timeout != 2*time.Hour || got.BatchSize != 300 {
+	if got := e.recoverQueueConfig(); got.Enabled || got.WorkerCount != 3 || got.BatchSize != 300 {
 		t.Fatalf("recoverQueueConfig overlay = %+v", got)
 	}
 	if got := e.repeatQueueConfig(); !got.Enabled || got.Interval != 5*time.Minute || got.WorkerCount != 4 || got.BatchSize != 200 {

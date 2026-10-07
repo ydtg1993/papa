@@ -27,6 +27,7 @@
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限（旧行为），`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
 | `queue_watermark` | float | `0.75` | 队列高水位比例（0-1），达到后新任务溢出到 DB 待回灌，避免满队列丢任务 |
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
+| `stop_timeout` | duration | `5s` | 优雅退出时等各阶段 worker 把队列跑完的上限（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：开启后 handler 可用 `task.Trace.Step/Fail` 上报步骤，写入 `crawler_task_trace` 表。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `stages.<name>.worker_count` | int | — | 该阶段 worker 并发数 |
@@ -117,14 +118,12 @@
 | `max_retry` | int | 单个任务最多再处理代数；`0`=不限 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
-### recover_queue —— 中断恢复队列（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
+### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `enabled` | bool | 是否启用；启用后启动即恢复一次 |
-| `worker_count` | int | 并发恢复数 |
-| `interval` | duration | 自动轮询间隔；`0`=仅启动时+手动 |
-| `timeout` | duration | 任务卡住多久算卡死 |
+| `enabled` | bool | 是否启用；启用后**启动时**恢复一次 |
+| `worker_count` | int | 并发重新入队的数量 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
@@ -176,6 +175,6 @@
 
 - 可热更字段（`PUT /api/config`，改后即时生效）：
   - 浏览器/HTML：`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
-  - 三个队列（`error_queue` / `recover_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`、`recover_queue.timeout`。
-- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.trace.*`（`RuntimeConfig` 里没有 trace，改只能重启）。
+  - 两个队列（`error_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`；`recover_queue` 只剩 `enabled` / `worker_count` / `batch_size`（它只在启动跑一次，没有 `interval` / `timeout` 可调）。
+- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.stop_timeout`、`crawler.trace.*`（`RuntimeConfig` 里没有 trace，改只能重启）。
 - 持久化：热更只写内存；关停时把「被改字段」写成 `configs/runtime.yaml` 覆盖层，下次启动叠加回 `config.yaml`。

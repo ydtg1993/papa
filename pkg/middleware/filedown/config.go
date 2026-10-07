@@ -16,6 +16,7 @@ type Config struct {
 	EnableResume           bool                          // 是否启用断点续传，默认 true
 	SaveBatchSize          int                           // 每下载多少个分片保存一次状态，默认 5
 	KeepSegmentsAfterMerge bool                          // 合并后是否保留临时分片文件，默认 false
+	QueueSize              int                           // 系统消息队列（活动/错误上报）容量，默认 100
 	OnProgress             func(downloaded, total int64) // 进度回调
 }
 
@@ -32,5 +33,6 @@ func DefaultConfig() *Config {
 		EnableResume:           true,
 		SaveBatchSize:          5,
 		KeepSegmentsAfterMerge: false,
+		QueueSize:              100,
 	}
 }

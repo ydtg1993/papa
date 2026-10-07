@@ -30,6 +30,7 @@ type WorkerPool[T Tasker] struct {
 	watermark   float64 // 队列高水位比例(0-1)，达到后 Submit 返回 ErrQueueFull
 	wg          sync.WaitGroup
 	stopOnce    sync.Once
+	stopRes     stopResult    // Stop 的结局；stopOnce 跑完后才有效，供重复调用返回同一份
 	stopCh      chan struct{} // 停机信号；队列不 close，worker 靠它退出
 	mu          sync.RWMutex  // 保护 stopped，并与 Submit 的发送互斥，见 Submit/Stop
 	stopped     bool
@@ -206,8 +207,24 @@ func (p *WorkerPool[T]) submitLocked(task T) error {
 	}
 }
 
-// Stop 优雅停止：不再接受新任务，等待所有 worker 把两条队列的存量跑完（超时强制退出）。
-func (p *WorkerPool[T]) Stop(timeout time.Duration) {
+// stopResult 一次 Stop 的结局快照。存进池子里是为了让重复调用 Stop（stopOnce 只跑一次）
+// 也拿到同一份结果，而不是零值。
+type stopResult struct {
+	drained  bool
+	inFlight int
+}
+
+// Stop 优雅停止：不再接受新任务，等待所有 worker 把两条队列的存量跑完。
+//
+// 返回 drained 表示是否在 timeout 内排空。没排空时 inFlight 是那一刻**尚未完成**的任务数
+// （= 提交过但既没完成也没失败，含仍排在队列里、一次都没被取走的）。
+//
+// 这个返回值是给调用方做关停决策用的：超时返回后 worker goroutine **还活着**（Go 杀不掉它），
+// 这时候急着关数据库/关浏览器池，会让它们剩下的每一次写入都撞 "sql: database is closed" ——
+// 等于把「让在途任务跑完」这件事又亲手掐断。
+//
+// 重复调用返回首次的结果。
+func (p *WorkerPool[T]) Stop(timeout time.Duration) (drained bool, inFlight int) {
 	p.stopOnce.Do(func() {
 		p.mu.Lock()
 		p.stopped = true
@@ -220,11 +237,14 @@ func (p *WorkerPool[T]) Stop(timeout time.Duration) {
 		}()
 		select {
 		case <-done:
-			p.trackQueue.SendError(fmt.Errorf("all workers finished gracefully"))
+			p.stopRes = stopResult{drained: true}
 		case <-time.After(timeout):
-			p.trackQueue.SendError(fmt.Errorf("graceful stop timeout"))
+			p.stopRes = stopResult{
+				inFlight: int(p.submitted.Load() - p.completed.Load() - p.failed.Load()),
+			}
 		}
 	})
+	return p.stopRes.drained, p.stopRes.inFlight
 }
 
 // Stats 返回当前池的统计信息。queueLen 是两条队列长度之和。

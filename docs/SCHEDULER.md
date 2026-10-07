@@ -2,6 +2,7 @@
 
 > 面向：想在业务层注册自己的定时任务（对账、清理、指定时刻的轮询等）。
 > 背景：框架**不再内置** `repeat` / `recover` 定时 job。周期轮询 repeatable 任务推荐用框架级 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)（interval 定时）；需要 cron 语义或自定义任务时用本文的 `RegisterCronJob`。框架级恢复/失败重试走 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) / [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+> 注：`recover_queue` 现在**只在启动跑一次**，没有 interval —— 它不再是个定时 job。
 
 ---
 
@@ -67,7 +68,7 @@ app.Run(ctx)
 | --- | --- | --- |
 | `engine.RepollRepeatableTasks()` | 重新投递「已完成」的 repeatable 任务（success/failed） | `(投递数, error)` |
 | `engine.ProcessErrorQueue()` | 手动触发失败任务重投 | `(投递数, error)` |
-| `engine.ProcessRecoverQueue()` | 手动触发卡死任务恢复 | `(恢复数, error)` |
+| `engine.ProcessRecoverQueue()` | 把「未到终态」的任务重新入队（**只该在启动时调**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） | `(恢复数, error)` |
 
 ## 4. 与其它机制的分工
 
@@ -77,4 +78,4 @@ app.Run(ctx)
 | 周期轮询 repeatable（interval 定时） | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | interval + 手动 |
 | 周期轮询 repeatable（cron 语义） | `RegisterCronJob` + `RepollRepeatableTasks` | 自定 cron |
 | 失败任务重试 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | interval + 手动 |
-| 卡死任务恢复 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | 启动时 + interval + 手动 |
+| 中断恢复 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | **仅启动时**（跑一次；无 interval、无手动入口） |

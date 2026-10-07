@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/crawler"
+	"github.com/ydtg1993/papa/v2/core"
 )
 
 func TestWebhookNotify(t *testing.T) {
-	var got crawler.AlertEvent
+	var got core.AlertEvent
 	var method string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method = r.Method
@@ -20,9 +20,9 @@ func TestWebhookNotify(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	event := crawler.AlertEvent{
-		Level: crawler.AlertError,
-		TaskError: crawler.TaskError{
+	event := core.AlertEvent{
+		Level: core.AlertError,
+		TaskError: core.TaskError{
 			Stage: "detail", TaskID: 3, URL: "http://x", Retry: 2, Kind: "structure", Message: "boom",
 		},
 	}
@@ -32,7 +32,7 @@ func TestWebhookNotify(t *testing.T) {
 	if method != http.MethodPost {
 		t.Fatalf("method = %s", method)
 	}
-	if got.Level != crawler.AlertError || got.Stage != "detail" || got.TaskID != 3 || got.Kind != "structure" {
+	if got.Level != core.AlertError || got.Stage != "detail" || got.TaskID != 3 || got.Kind != "structure" {
 		t.Fatalf("unexpected event: %+v", got)
 	}
 }
@@ -42,13 +42,13 @@ func TestWebhookErrorStatus(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	if err := NewWebhook(srv.URL).Notify(context.Background(), crawler.AlertEvent{}); err == nil {
+	if err := NewWebhook(srv.URL).Notify(context.Background(), core.AlertEvent{}); err == nil {
 		t.Fatal("expected error for 500 status")
 	}
 }
 
 func TestWebhookEmptyURL(t *testing.T) {
-	if err := (&Webhook{}).Notify(context.Background(), crawler.AlertEvent{}); err == nil {
+	if err := (&Webhook{}).Notify(context.Background(), core.AlertEvent{}); err == nil {
 		t.Fatal("expected error for empty url")
 	}
 }

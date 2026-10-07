@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,10 +35,20 @@ type fakeTaskDB struct {
 	execs    []string // 执行过的写语句
 	args     [][]driver.Value
 	queries  []string
+
+	// rows 多行结果集（测分页用）。非 nil 时取代 row：按 `id > ?` 过滤后返回全部。
+	// **只实现 `id > ?` 这一个条件** —— 够验分页游标，不是通用 SQL 引擎。
+	rows []fakeRow
+	// maxQueries > 0 时，第 maxQueries+1 次 SELECT 直接报错。给可能死循环的用例兜底：
+	// 否则测试是挂住（超时才失败），而不是干脆地报出来。
+	maxQueries int
 }
 
 // fakeRow 一行 crawler_task 的值；某列缺席即为 NULL。
 type fakeRow map[string]driver.Value
+
+// limitRe 匹配 gorm 内联渲染的 LIMIT；多行模式下据此截断结果集。
+var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 
 // fakeTaskColumns 是 models.CrawlerTask 的全列，顺序任意 —— gorm 按列名映射。
 var fakeTaskColumns = []string{
@@ -58,6 +70,16 @@ func newFakeTaskDB() *fakeTaskDB {
 			"created_at": now, "updated_at": now,
 		},
 	}
+}
+
+// rowWithID 复制「一行待处理任务」并把 id 换掉，用来造多行结果集。
+func (f *fakeTaskDB) rowWithID(id int64) fakeRow {
+	out := make(fakeRow, len(f.row))
+	for k, v := range f.row {
+		out[k] = v
+	}
+	out["id"] = id
+	return out
 }
 
 // openFakeTaskDB 把假库接进 gorm。SkipDefaultTransaction 是为了不让 gorm 包事务
@@ -129,7 +151,16 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 	return fakeResult{affected: f.affected}, nil
 }
 
-func (f *fakeTaskDB) query(q string) (driver.Rows, error) {
+// rowValues 把一行按 fakeTaskColumns 摊成 driver.Value 切片。
+func rowValues(r fakeRow) []driver.Value {
+	vals := make([]driver.Value, len(fakeTaskColumns))
+	for i, c := range fakeTaskColumns {
+		vals[i] = r[c]
+	}
+	return vals
+}
+
+func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = append(f.queries, q)
@@ -137,14 +168,62 @@ func (f *fakeTaskDB) query(q string) (driver.Rows, error) {
 	if !strings.Contains(q, "crawler_tasks") {
 		return nil, fmt.Errorf("fakeTaskDB 只认 crawler_tasks，收到：%s", q)
 	}
-	if f.noRows {
-		return &fakeRows{cols: fakeTaskColumns}, nil // 一行都没有 → gorm 回 ErrRecordNotFound
+	if f.maxQueries > 0 && len(f.queries) > f.maxQueries {
+		return nil, fmt.Errorf("fakeTaskDB: SELECT 已执行 %d 次，超过上限 %d（被测逻辑可能在死循环）",
+			len(f.queries), f.maxQueries)
 	}
-	vals := make([]driver.Value, len(fakeTaskColumns))
-	for i, c := range fakeTaskColumns {
-		vals[i] = f.row[c]
+	if f.rows == nil {
+		if f.noRows {
+			return &fakeRows{cols: fakeTaskColumns}, nil // 一行都没有 → gorm 回 ErrRecordNotFound
+		}
+		return &fakeRows{cols: fakeTaskColumns, all: [][]driver.Value{rowValues(f.row)}}, nil
 	}
-	return &fakeRows{cols: fakeTaskColumns, vals: vals}, nil
+
+	// 参数按 SQL 里 `?` 的出现顺序绑定：`status IN (?,?)` → `id > ?`（若有）→ `LIMIT ?`（若有）。
+	// LIMIT 在本仓库的 gorm 下是**绑定**的（`LIMIT ?`）而且总在最后一个，所以先把它摘掉，
+	// 剩下的尾参数才是 keyset 游标 —— 直接取 `args[len-1]` 会拿到 limit。
+	argN := len(args)
+	limit := -1
+	if strings.Contains(strings.ToUpper(q), "LIMIT ?") && argN > 0 {
+		if v, ok := asInt64(args[argN-1].Value); ok {
+			limit = int(v)
+		}
+		argN--
+	}
+	var lastID int64
+	if strings.Contains(q, "id > ?") && argN > 0 {
+		if v, ok := asInt64(args[argN-1].Value); ok {
+			lastID = v
+		}
+	}
+	out := &fakeRows{cols: fakeTaskColumns}
+	for _, r := range f.rows {
+		if id, _ := r["id"].(int64); id > lastID {
+			out.all = append(out.all, rowValues(r))
+		}
+	}
+	// 不照 LIMIT 截断的话，一批就把所有行都返回了 —— 分页根本没被走到，测试会假通过。
+	// 内联写法（`LIMIT 1`）也认，免得换个 gorm 版本就静默失效。
+	if limit < 0 {
+		if m := limitRe.FindStringSubmatch(q); m != nil {
+			limit, _ = strconv.Atoi(m[1])
+		}
+	}
+	if limit >= 0 && limit < len(out.all) {
+		out.all = out.all[:limit]
+	}
+	return out, nil
+}
+
+// asInt64 把绑定参数当整数取（驱动层会把 uint 归一成 int64）。
+func asInt64(v driver.Value) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
 }
 
 /* ---------- 最小 database/sql/driver 实现 ---------- */
@@ -170,8 +249,8 @@ func (c *fakeConn) ExecContext(_ context.Context, q string, args []driver.NamedV
 	return c.f.exec(q, args)
 }
 
-func (c *fakeConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
-	return c.f.query(q)
+func (c *fakeConn) QueryContext(_ context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	return c.f.query(q, args)
 }
 
 type fakeResult struct{ affected int64 }
@@ -181,18 +260,18 @@ func (r fakeResult) RowsAffected() (int64, error) { return r.affected, nil }
 
 type fakeRows struct {
 	cols []string
-	vals []driver.Value // nil 表示"一行都没有"
-	sent bool
+	all  [][]driver.Value // 空（nil）= 一行都没有
+	idx  int
 }
 
 func (r *fakeRows) Columns() []string { return r.cols }
 func (r *fakeRows) Close() error      { return nil }
 
 func (r *fakeRows) Next(dest []driver.Value) error {
-	if r.vals == nil || r.sent {
+	if r.idx >= len(r.all) {
 		return io.EOF
 	}
-	r.sent = true
-	copy(dest, r.vals)
+	copy(dest, r.all[r.idx])
+	r.idx++
 	return nil
 }

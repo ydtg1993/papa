@@ -84,13 +84,12 @@ type RuntimeErrorQueueConfig struct {
 	BatchSize   *int      `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
 }
 
-// RuntimeRecoverQueueConfig 中断恢复队列运行期覆盖项。
+// RuntimeRecoverQueueConfig 启动恢复的运行期覆盖项。
+// 没有 interval / timeout：恢复只发生在启动那一刻，运行期没有「下次什么时候跑」可调。
 type RuntimeRecoverQueueConfig struct {
-	Enabled     *bool     `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	WorkerCount *int      `yaml:"worker_count,omitempty" json:"worker_count,omitempty"`
-	Interval    *Duration `yaml:"interval,omitempty" json:"interval,omitempty"`
-	Timeout     *Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	BatchSize   *int      `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
+	Enabled     *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	WorkerCount *int  `yaml:"worker_count,omitempty" json:"worker_count,omitempty"`
+	BatchSize   *int  `yaml:"batch_size,omitempty" json:"batch_size,omitempty"`
 }
 
 // RuntimeRepeatQueueConfig 周期轮询队列运行期覆盖项。
@@ -160,12 +159,6 @@ func (rt *RuntimeConfig) Merge(next *RuntimeConfig) *RuntimeConfig {
 	if next.RecoverQueue.WorkerCount != nil {
 		out.RecoverQueue.WorkerCount = next.RecoverQueue.WorkerCount
 	}
-	if next.RecoverQueue.Interval != nil {
-		out.RecoverQueue.Interval = next.RecoverQueue.Interval
-	}
-	if next.RecoverQueue.Timeout != nil {
-		out.RecoverQueue.Timeout = next.RecoverQueue.Timeout
-	}
 	if next.RecoverQueue.BatchSize != nil {
 		out.RecoverQueue.BatchSize = next.RecoverQueue.BatchSize
 	}
@@ -206,9 +199,9 @@ func (q RuntimeErrorQueueConfig) IsZero() bool {
 	return q.Enabled == nil && q.WorkerCount == nil && q.MaxRetry == nil && q.Interval == nil && q.BatchSize == nil
 }
 
-// IsZero 报告中断恢复队列覆盖项是否为空。
+// IsZero 报告启动恢复覆盖项是否为空。
 func (q RuntimeRecoverQueueConfig) IsZero() bool {
-	return q.Enabled == nil && q.WorkerCount == nil && q.Interval == nil && q.Timeout == nil && q.BatchSize == nil
+	return q.Enabled == nil && q.WorkerCount == nil && q.BatchSize == nil
 }
 
 // IsZero 报告周期轮询队列覆盖项是否为空。

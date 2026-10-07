@@ -3,6 +3,8 @@ package crawler
 import (
 	"container/list"
 	"sync"
+
+	"github.com/ydtg1993/papa/v2/models"
 )
 
 // dedupCache 有界 LRU 去重缓存。key 为任务去重键（Task.Unique()），value 恒为占位。
@@ -79,4 +81,27 @@ func (c *dedupCache) evictOldestLocked() {
 	e := el.Value.(*dedupEntry)
 	c.lru.Remove(el)
 	delete(c.entries, e.key)
+}
+
+// DelActiveTask 从去重任务列表中删除任务
+func (e *Engine) DelActiveTask(task *Task) {
+	e.dedupCache.Delete(task.Unique())
+}
+
+// loadActiveTasks 启动时把「进行中」任务（pending/processing）与全部轮询任务加载进内存去重表，
+// 避免全表加载导致内存随历史任务无限增长；已完成任务由 DB 唯一索引兜底去重。
+func (e *Engine) loadActiveTasks() {
+	var tasks []models.CrawlerTask
+	err := e.db.Where("status IN ? OR repeatable = ?",
+		[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing},
+		models.RepeatableYes).
+		Find(&tasks).Error
+	if err != nil {
+		e.loggerSet.DB.Errorf("load active tasks failed: %s", err.Error())
+		return
+	}
+	for _, t := range tasks {
+		task := Task{URL: t.URL, Stage: t.Stage, IdempotencyKey: t.IdempotencyKey}
+		e.dedupCache.Add(task.Unique())
+	}
 }

@@ -31,6 +31,8 @@ type Config struct {
 	MergeOutputExt         string // 合并后的扩展名，默认 ".mp4"
 	KeepSegmentsAfterMerge bool   // 合并后是否保留原始 TS 文件，默认 false
 	FfmpegPath             string // ffmpeg 可执行文件路径，留空则自动查找 PATH
+	// 系统消息队列（活动/错误上报）容量，默认 100
+	QueueSize int
 }
 
 // DownloadOptions 单次下载的请求级配置
@@ -55,5 +57,6 @@ func DefaultConfig() *Config {
 		ResumeStateDir: "./downloads/.resume",
 		AutoMerge:      true,
 		MergeOutputExt: ".mp4",
+		QueueSize:      100,
 	}
 }
