@@ -421,7 +421,8 @@ func (a *App) Run(ctx context.Context) {
 	stopTimeout := a.Config.Crawler.StopTimeoutOrDefault()
 	drained, stopStats := a.Engine.Stop(stopTimeout)
 	if !drained {
-		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务在跑 %+v —— 跳过关库与浏览器池关闭，让在途写入完成", stopTimeout, stopStats)
+		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 跳过关库与浏览器池关闭，让在途写入完成；"+
+			"留在库里的 pending 任务下次启动的启动恢复会重新入队", stopTimeout, stopStats)
 	}
 
 	// 审计队列先排空再关库：反过来的话最后几条（包括"优雅退出"这条操作本身）写不进去，
@@ -547,6 +548,15 @@ func (a *App) httpServer(ctx context.Context) {
 	whitelist := a.resolveWhitelist(cfg)
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
+
+	// 操作日志：开启时，oao 表格页的动作、后台自带的「访问令牌」页、以及熔断放行都往这里记。
+	// 它得**先于** MonitorConfig 构造 —— 熔断放行的 OnBreakerResume 回调要闭包住这个 rec。
+	var rec *oplog.Recorder
+	if cfg.OperationLog {
+		rec = oplog.New(a.DB, a.Logger.Sys)
+		a.oplog = rec
+	}
+
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
 		VerifyToken:        auth.Verifier(a.DB, a.Logger.Sys),
 		Whitelist:          whitelist,
@@ -562,15 +572,23 @@ func (a *App) httpServer(ctx context.Context) {
 		ConfigSet:          a.Engine.ApplyRuntimeConfig,
 		TaskTrace:          a.Engine.ListTrace,
 		VerifyTokenValue:   auth.Confirmer(a.DB, a.Logger.Sys),
+		BreakerStatus:      a.Engine.BreakerStatus,
+		ResumeBreaker:      a.Engine.ResumeCrawling,
+		OnBreakerResume: func(operator string) {
+			// 放行是**人在场的干预**：熔断停了整条抓取线，谁在什么时候放的行必须查得到
+			if rec == nil {
+				return
+			}
+			rec.RecordEvent(oplog.Event{
+				Table:    "breaker",
+				Action:   "resume",
+				Values:   map[string]any{"note": "手动放行被熔断闸住的抓取"},
+				Operator: operator,
+				At:       time.Now(),
+			})
+		},
 	})
 	mon.Register(mux)
-
-	// 操作日志：开启时，oao 表格页的动作与后台自带的「访问令牌」页都往这里记。
-	var rec *oplog.Recorder
-	if cfg.OperationLog {
-		rec = oplog.New(a.DB, a.Logger.Sys)
-		a.oplog = rec
-	}
 
 	// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
 	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。

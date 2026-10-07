@@ -78,6 +78,42 @@ type CrawlerConfig struct {
 	DrainInterval  time.Duration          `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
 	StopTimeout    time.Duration          `mapstructure:"stop_timeout"`     //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
 	Trace          TraceConfig            `mapstructure:"trace"`            //单任务步骤追踪
+	Breaker        BreakerConfig          `mapstructure:"breaker"`          //熔断闸门
+}
+
+// BreakerConfig 熔断闸门：窗口内**终态失败**数达到阈值，就把所有阶段的 worker 一起闸住
+// （不再取任何任务），等人处理完再从后台手动放行（`POST /api/breaker/resume`）。
+//
+// 只数终态失败（重试耗尽 / 不可重试），**不数每次尝试失败** —— 否则一个任务重试 3 次会记 3 次，
+// 几个烂 URL 就能把窗口灌满、熔断误触发，把整个爬虫停掉。
+//
+// 暂停状态**不跨重启**：进程重启即恢复运行（起进程本身就是一次人工介入）。
+type BreakerConfig struct {
+	Enabled   bool          `mapstructure:"enabled"`   //是否启用熔断闸门（默认 false）
+	Window    time.Duration `mapstructure:"window"`    //统计窗口；<=0 用默认 5m
+	Threshold int           `mapstructure:"threshold"` //窗口内终态失败数达到它即暂停；<=0 用默认 50
+}
+
+// 熔断的默认值。
+const (
+	defaultBreakerWindow    = 5 * time.Minute
+	defaultBreakerThreshold = 50
+)
+
+// WindowOrDefault 返回生效的统计窗口。
+func (b BreakerConfig) WindowOrDefault() time.Duration {
+	if b.Window <= 0 {
+		return defaultBreakerWindow
+	}
+	return b.Window
+}
+
+// ThresholdOrDefault 返回生效的失败数阈值。
+func (b BreakerConfig) ThresholdOrDefault() int {
+	if b.Threshold <= 0 {
+		return defaultBreakerThreshold
+	}
+	return b.Threshold
 }
 
 // defaultStopTimeout 引擎关停时等各阶段 worker 排空队列的默认上限。

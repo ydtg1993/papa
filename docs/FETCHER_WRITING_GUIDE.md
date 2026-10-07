@@ -701,6 +701,7 @@ app.RegisterStage(&fetcher.FetchCatalog{},
 - `engine.SubmitTask(&papa.Task{...})` 派发单个子任务；`engine.SubmitTasks([]*papa.Task{...})` 批量派发。
 - `papa.WrapNoRetry(err)` / `papa.WrapNoRetryKind(kind, err)` 标记不可重试错误。
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
-- `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。
+- `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
+- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()` / `engine.BreakerStatus()`：手动闸住/放行抓取、读熔断状态。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。

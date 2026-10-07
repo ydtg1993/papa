@@ -18,6 +18,9 @@ type (
 	// 错误分类
 	NoRetryError = core.NoRetryError
 
+	// 熔断
+	BreakerStatus = core.BreakerStatus
+
 	// 监控快照 DTO
 	StageStats  = core.StageStats
 	GlobalStats = core.GlobalStats
@@ -30,9 +33,10 @@ type (
 
 // 告警级别常量。
 const (
-	AlertInfo  = core.AlertInfo
-	AlertWarn  = core.AlertWarn
-	AlertError = core.AlertError
+	AlertInfo     = core.AlertInfo
+	AlertWarn     = core.AlertWarn
+	AlertError    = core.AlertError
+	AlertCritical = core.AlertCritical
 )
 
 // 错误辅助函数。

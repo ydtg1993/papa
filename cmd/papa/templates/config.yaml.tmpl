@@ -15,6 +15,14 @@ crawler:
   trace:
     enabled: true              # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
+  # 熔断闸门：窗口内**终态失败**数（任务重试耗尽或不可重试，不是每次 attempt）达到阈值，
+  # 就把所有阶段的 worker 一起闸住、不再取任何任务，并发一条 critical 告警。
+  # 处理完后从后台 Dashboard 顶部横幅的「恢复抓取」按钮放行（POST /api/breaker/resume）。
+  # 暂停**不跨重启**：进程重启即恢复运行。详见 docs/CORE_CONFIG.md
+  breaker:
+    enabled: true              # 是否启用（默认 false）
+    window: "5m"               # 统计窗口
+    threshold: 50              # 窗口内终态失败数达到它即暂停
   stages:                      # 爬取阶段配置
     catalog:                   # 阶段名需与 fetcher.GetStage() 返回一致
       worker_count: 1

@@ -49,6 +49,12 @@ type MonitorConfig struct {
 	ConfigGet          func() *config.RuntimeConfig           // 返回当前运行期覆盖层（可空）
 	ConfigSet          func(*config.RuntimeConfig) error      // 应用运行期覆盖层（可空）
 	TaskTrace          func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
+	// BreakerStatus 熔断闸门的状态快照（可空；也随 /api/monitor 一起返回）。
+	BreakerStatus func() core.BreakerStatus
+	// ResumeBreaker 手动放行被闸住的抓取；返回是否真的从暂停态切了回来（本来在跑就是 false）。
+	ResumeBreaker func() bool
+	// OnBreakerResume 放行成功后的回调，宿主拿它记操作日志（人在场的干预必须留痕）；可空。
+	OnBreakerResume func(operator string)
 	// VerifyTokenValue 单独校验一个**令牌值**（不是请求头），给关停这类高危操作做二次确认用：
 	// 调用方要把自己的令牌放进请求体再输一遍。nil 表示不支持关停（该接口直接 404）。
 	VerifyTokenValue func(token string) (operator string, ok bool)
@@ -123,6 +129,8 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
 	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
+	mux.HandleFunc("/api/breaker", s.wrap(s.breakerHandler))
+	mux.HandleFunc("/api/breaker/resume", s.wrap(s.breakerResumeHandler))
 	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
@@ -214,6 +222,11 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.cfg.QueueStats != nil {
 		resp["queues"] = s.cfg.QueueStats()
+	}
+	// 熔断状态跟着 /api/monitor 一起回：前端每轮刷新只发一个请求就能画出横幅，
+	// 不必再单开一条轮询。单独的 GET /api/breaker 留给脚本/外部系统。
+	if s.cfg.BreakerStatus != nil {
+		resp["breaker"] = s.cfg.BreakerStatus()
 	}
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()
@@ -368,6 +381,45 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, map[string]any{"status": "ok", "repolled": count})
+}
+
+// breakerHandler 读熔断闸门的状态。写操作见 breakerResumeHandler。
+func (s *Monitor) breakerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.BreakerStatus == nil {
+		http.Error(w, "breaker not configured", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, s.cfg.BreakerStatus())
+}
+
+// breakerResumeHandler 手动放行被熔断闸住的抓取。
+//
+// 这是**人在场的干预**，所以成功了要记进操作日志（OnBreakerResume 回调，宿主接到 oplog）。
+// 已经是运行态时返回 resumed=false 而不是报错 —— 「重复点击恢复」不该看起来像失败，
+// 但也不能回一个含糊的 ok 让调用方以为是自己放行的。
+func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.ResumeBreaker == nil {
+		http.Error(w, "breaker not configured", http.StatusNotFound)
+		return
+	}
+	if !s.cfg.ResumeBreaker() {
+		writeJSON(w, map[string]any{"status": "ok", "resumed": false, "note": "当前不在暂停态"})
+		return
+	}
+	operator := auth.OperatorFrom(r.Context())
+	if s.cfg.OnBreakerResume != nil {
+		s.cfg.OnBreakerResume(operator)
+	}
+	s.logger.Infof("熔断已手动放行（操作人 %q），爬虫恢复取任务", operator)
+	writeJSON(w, map[string]any{"status": "ok", "resumed": true})
 }
 
 // taskTraceHandler 返回一条任务的步骤追踪时间线（按尝试、步骤排序）。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/internal/breaker"
 	"github.com/ydtg1993/papa/v2/internal/database"
 	"github.com/ydtg1993/papa/v2/internal/metrics"
 	"github.com/ydtg1993/papa/v2/internal/track"
@@ -62,6 +63,7 @@ type Engine struct {
 	filedown  *filedown.Downloader // 文件下载器
 	metrics   *metrics.Registry    // 业务自定义监控数据注册表
 	notifiers []Notifier           // 告警通知器，任务最终失败时触发
+	breaker   *breaker.Breaker     // 熔断闸门：窗口内终态失败超阈值就闸住所有阶段的 worker
 }
 
 // stageInfo 内部阶段信息
@@ -107,6 +109,13 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		queueRuns:     newQueueRuns(),
 	}
 	engine.runtime.Store(&config.RuntimeConfig{})
+	// 熔断器：计数走 RecordFailure（终态失败），触发时回调发一条 AlertCritical。
+	// 把 engine 自己传进去是为了复用同一套 Notifier —— 业务不用再接一套告警通道。
+	engine.breaker = breaker.New(breaker.Config{
+		Enabled:   cfg.Crawler.Breaker.Enabled,
+		Window:    cfg.Crawler.Breaker.WindowOrDefault(),
+		Threshold: cfg.Crawler.Breaker.ThresholdOrDefault(),
+	}, engine.notifyBreakerTrip)
 	engine.queueCounters = map[string]*atomic.Int64{
 		QueueError:  &engine.errorRetriedCount,
 		QueueRepeat: &engine.repeatRepolledCount,
@@ -232,6 +241,15 @@ func (e *Engine) SetFiledown(f *filedown.Downloader) {
 func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
+
+// ResumeCrawling 放行被熔断闸住的抓取。本来就没闸住返回 false。
+func (e *Engine) ResumeCrawling() bool { return e.breaker.Resume() }
+
+// PauseCrawling 手动闸住抓取（后台/业务都可用）。已在暂停态返回 false。
+func (e *Engine) PauseCrawling(reason string) bool { return e.breaker.Pause(reason) }
+
+// BreakerStatus 返回熔断闸门的当前状态快照。
+func (e *Engine) BreakerStatus() BreakerStatus { return e.breaker.Status() }
 
 // Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
 //

@@ -64,6 +64,24 @@ type QueueStat struct {
 	LastError      string        `json:"last_error"`      // 上次执行错误，空=正常
 }
 
+// BreakerStatus 熔断闸门的当前状态（纯值，供监控后台读取）。
+//
+// 字段分两类：**配置**（Window / Threshold，来自 config）、**现场**（其余）。
+// InWindow 是实时值，Paused 之后仍在变（窗口会滑走）；Failures / Stage / Reason 是
+// **触发那一刻**的快照，不会随后续滑动而改写 —— 排查时要看的是"当时为什么断的"。
+type BreakerStatus struct {
+	Enabled   bool          `json:"enabled"`
+	Window    time.Duration `json:"window"`
+	Threshold int           `json:"threshold"`
+	InWindow  int           `json:"in_window"` // 当前窗口内的终态失败数（实时）
+	Paused    bool          `json:"paused"`
+	PausedAt  time.Time     `json:"paused_at"`
+	ResumedAt time.Time     `json:"resumed_at"`
+	Reason    string        `json:"reason"`
+	Stage     string        `json:"stage"`    // 触发时哪个阶段在失败
+	Failures  int           `json:"failures"` // 触发那一刻窗口内的失败数
+}
+
 // TraceStep 一条步骤记录的快照（纯值类型，供监控后台读取，不暴露内部实现）。
 type TraceStep struct {
 	Attempt   int           `json:"attempt"`

@@ -18,6 +18,9 @@ const (
 	AlertInfo AlertLevel = iota
 	AlertWarn
 	AlertError
+	// AlertCritical 需要人介入的那种：比如熔断已把整个爬虫闸住。比 AlertError（单个任务失败）高一级，
+	// 好让 webhook 那边能单独路由（钉钉 @全体之类）。
+	AlertCritical
 )
 
 func (l AlertLevel) String() string {
@@ -28,6 +31,8 @@ func (l AlertLevel) String() string {
 		return "warn"
 	case AlertError:
 		return "error"
+	case AlertCritical:
+		return "critical"
 	}
 	return "unknown"
 }

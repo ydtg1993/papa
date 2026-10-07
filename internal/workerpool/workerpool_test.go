@@ -376,3 +376,129 @@ func TestStopReportsDrainedAndIsIdempotent(t *testing.T) {
 		t.Fatalf("第二次 Stop = (%v, %d), want (true, 0)", drained, inFlight)
 	}
 }
+
+// fakeGate 测试用闸门。池子只认 Gate 接口，这里不必拖进真的熔断器 ——
+// 熔断器自己的闸门语义在 internal/breaker 里测。
+type fakeGate struct {
+	mu     sync.Mutex
+	paused bool
+	ch     chan struct{}
+}
+
+func newFakeGate() *fakeGate { return &fakeGate{ch: make(chan struct{})} }
+
+func (g *fakeGate) Wait(stop <-chan struct{}) bool {
+	g.mu.Lock()
+	if !g.paused {
+		g.mu.Unlock()
+		return true
+	}
+	ch := g.ch
+	g.mu.Unlock()
+	select {
+	case <-ch:
+		return true
+	case <-stop:
+		return false
+	}
+}
+
+func (g *fakeGate) Pause() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.paused {
+		return
+	}
+	g.paused = true
+	g.ch = make(chan struct{}) // 换新的，理由同 breaker
+}
+
+func (g *fakeGate) Resume() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.paused {
+		return
+	}
+	g.paused = false
+	close(g.ch)
+}
+
+// 闸门合上时 worker **一条都不消费**：队列原封不动，放行后接着跑。
+//
+// 这是「熔断暂停」能不能成立的关键。另两个候选都不行：
+//   - 卡 Submit：队列里已经躺着的那几条会先跑完才停得下来，"暂停"就不是暂停了；
+//   - 卡 claimTask：任务已经被从 channel 取走了，闸住就得塞回去 —— 塞不回去。
+func TestGateBlocksWorkersFromConsuming(t *testing.T) {
+	gate := newFakeGate()
+	gate.Pause()
+
+	p := NewWorkerPool[*testTask](1, 8, 1)
+	p.SetGate(gate)
+
+	ran := make(chan string, 8)
+	p.Start(context.Background(), func(_ context.Context, task *testTask) error {
+		ran <- task.url
+		return nil
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := p.Submit(&testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
+			t.Fatalf("submit %d = %v", i, err)
+		}
+	}
+
+	select {
+	case url := <-ran:
+		t.Fatalf("闸住时不该执行任何任务，却跑了 %s", url)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if main, urgent := p.QueueDepths(); main+urgent != 3 {
+		t.Fatalf("闸住时队列应原封不动躺着 3 条，实得 %d", main+urgent)
+	}
+
+	gate.Resume()
+	for i := 0; i < 3; i++ {
+		select {
+		case <-ran:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("放行后只跑了 %d 条", i)
+		}
+	}
+	p.Stop(time.Second)
+}
+
+// 暂停中停机**照旧排空** —— 闸门只管运行期「要不要取下一个任务」，停机不在它的职责里。
+//
+// 这里一度反着写过（暂停中不排空，理由是"别把积压打出去"），后来拆掉了：那是**错配**。
+// 熔断的暂停不跨重启，重启后启动恢复会把同一批 pending 原样捞回来重跑 ——
+// 净效果为零，只是把洪峰从停机挪到启动，还多绕一趟 DB。写成反向用例是把结论钉住，
+// 免得以后有人又觉得"暂停时不排空"更合理。
+func TestStopWhilePausedStillDrains(t *testing.T) {
+	gate := newFakeGate()
+	gate.Pause()
+
+	p := NewWorkerPool[*testTask](1, 8, 1)
+	p.SetGate(gate)
+
+	ran := make(chan string, 8)
+	p.Start(context.Background(), func(_ context.Context, task *testTask) error {
+		ran <- task.url
+		return nil
+	})
+	for i := 0; i < 3; i++ {
+		_ = p.Submit(&testTask{url: "t"})
+	}
+
+	if drained, inFlight := p.Stop(5 * time.Second); !drained || inFlight != 0 {
+		t.Fatalf("Stop = (%v, %d), want (true, 0)：停机不看闸门，队列应当排空", drained, inFlight)
+	}
+
+	close(ran)
+	n := 0
+	for range ran {
+		n++
+	}
+	if n != 3 {
+		t.Fatalf("排空了 %d 条, want 3", n)
+	}
+}

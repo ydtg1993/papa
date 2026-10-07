@@ -47,6 +47,10 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 		"kind":    te.Kind,
 	}).Errorf("task failed: %s", te.Message)
 
+	// 熔断计数。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
+	// 按 attempt 数会把一个烂 URL 记 3 次，阈值会被噪声灌满。见 breaker.RecordFailure。
+	e.breaker.RecordFailure(task.Stage)
+
 	notifiers := e.getNotifiers()
 	if len(notifiers) == 0 {
 		return
@@ -63,11 +67,43 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 	}
 }
 
+// notifyBreakerTrip 熔断触发时的回调：打醒目日志 + 发一条 AlertCritical 告警。
+//
+// 走的是与任务失败**同一个** Notifier 通道，业务不用再接一套告警 ——
+// 区别只在 level（critical 比 error 高一级），webhook 那边可以据此单独路由（钉钉 @全体之类）。
+func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
+	e.loggerSet.Engine.Errorf(
+		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败 ≥ 阈值 %d）—— 已闸住所有阶段的 worker，"+
+			"处理完后调 POST /api/breaker/resume（后台 Dashboard 上也有按钮）放行",
+		st.Reason, st.Stage, st.Window, st.Failures, st.Threshold)
+
+	notifiers := e.getNotifiers()
+	if len(notifiers) == 0 {
+		return
+	}
+	event := AlertEvent{
+		Level: AlertCritical,
+		TaskError: TaskError{
+			Stage:   st.Stage,
+			Kind:    "circuit-breaker",
+			Message: st.Reason,
+		},
+	}
+	for _, n := range notifiers {
+		if err := n.Notify(e.ctx, event); err != nil {
+			e.loggerSet.Engine.Errorf("notify breaker trip failed: %s", err.Error())
+		}
+	}
+}
+
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
 	for stage, stageInfo := range e.stages {
 		cfg := stageInfo.config
 		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
+		// 同一把闸门给所有阶段的池子 —— 熔断是「全任务暂停」，不是按阶段各停各的。
+		// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
+		pool.SetGate(e.breaker)
 		e.stages[stage].workerPool = pool
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {

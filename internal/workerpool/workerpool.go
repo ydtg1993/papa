@@ -35,6 +35,7 @@ type WorkerPool[T Tasker] struct {
 	mu          sync.RWMutex  // 保护 stopped，并与 Submit 的发送互斥，见 Submit/Stop
 	stopped     bool
 	cancel      context.CancelFunc
+	gate        Gate                         // 暂停闸门；nil = 不设闸（老行为）。须在 Start 之前 SetGate
 	submitted   atomic.Int64                 // 已提交的任务总数
 	completed   atomic.Int64                 // 已完成的任务数
 	failed      atomic.Int64                 // 失败的任务数（可选）
@@ -73,6 +74,43 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 	}
 }
 
+// Gate 暂停闸门。worker 在每次取任务前探一次；nil 表示不设闸（既有行为）。
+//
+// 闸门为什么放在**取任务循环顶部**，另外两个候选为什么不行：
+//   - 卡 Submit：队列里已经躺着的那几百条会先跑完才停得下来，慢；而且调用方会把
+//     "入队失败"翻译成"溢出到 DB"，语义混淆（任务被标成溢出，其实是被闸住了）。
+//   - 卡 claimTask：那时任务已经被 worker 从 channel 里取走了，闸住就得把它塞回去 ——
+//     channel 塞不回去（可能已满，塞回去还会打乱顺序）。
+//
+// 放在循环顶部则：队列原封不动（一条不丢）、在途任务自然跑完（不腰斩）、恢复瞬时
+// （就是放行而已）、claimTask 完全不用改。队列长度也停在原地，后台能直接看到"积压 N 条"。
+//
+// **职责边界：只管运行期「要不要取下一个任务」，不管停机。** 收到停机信号后 worker
+// 照旧把队列排空（见 drainAndExit）—— 停机是人为的、明确的终止，与"别再去打目标站"
+// 是两回事。这里一度加过「暂停中不排空」，但那是**错配**的：熔断的暂停不跨重启，
+// 重启后启动恢复会把同一批 pending 原样捞回来重跑，净效果为零，只多绕一趟 DB。
+type Gate interface {
+	// Wait 阻塞到放行或 stop 关闭；返回 true 表示继续干活，false 表示该停机了。
+	//
+	// 只有一个方法是有意的：池子问闸门的问题只有这一个。闸门的"现在是不是暂停态"
+	// 归闸门自己（比如 breaker.Status()）或后台去过问，池子不需要知道 ——
+	// 需要它的时候（暂停中不排空）才会有 Paused() 进来，而那条路已经拆了。
+	Wait(stop <-chan struct{}) bool
+}
+
+// SetGate 设置暂停闸门。**必须在 Start 之前调用** —— worker 直接读这个字段，Start 之后再改就是数据竞争。
+func (p *WorkerPool[T]) SetGate(g Gate) {
+	p.gate = g
+}
+
+// waitGate 探一次闸门。没设闸或已放行返回 true。
+func (p *WorkerPool[T]) waitGate() bool {
+	if p.gate == nil {
+		return true
+	}
+	return p.gate.Wait(p.stopCh)
+}
+
 // run 单个 worker 的取任务循环。快车道优先：循环顶部先非阻塞看一眼快车道，
 // 只要它非空就一定先取它 —— 不能写成双 case 的 select，Go 在多路同时就绪时是**随机**选，
 // 那样快车道会退化成"另一条车道"。
@@ -82,6 +120,13 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 // 两条队列里的存量任务被丢掉（比旧的 range 语义严格更差）。
 func (p *WorkerPool[T]) run(ctx context.Context, workerID int, handler TaskHandler[T]) {
 	for {
+		// 闸门优先于取任务：被闸住时一条都不消费，队列原封不动躺着。
+		// stopCh 的优先级也天然对 —— Wait 里 select 的就是它，停机不会被暂停挡住。
+		if !p.waitGate() {
+			p.drainAndExit(ctx, workerID, handler)
+			return
+		}
+
 		select {
 		case task := <-p.urgentQueue:
 			p.processTask(ctx, workerID, task, handler)
@@ -105,6 +150,9 @@ func (p *WorkerPool[T]) run(ctx context.Context, workerID int, handler TaskHandl
 //
 // 判定"空"时不会再有任务落进来：Submit/SubmitUrgent 全程持 RLock 完成"查 stopped + 发送"，
 // Stop 取写锁后才置 stopped 并 close(stopCh)，两者互斥 —— close(stopCh) 之后不可能再有发送成功。
+//
+// **不看闸门**：闸门管的是运行期「要不要取下一个任务」，停机是人为的、明确的终止，
+// 不在它的职责里（理由见 Gate 的注释）。
 func (p *WorkerPool[T]) drainAndExit(ctx context.Context, workerID int, handler TaskHandler[T]) {
 	for {
 		select {
@@ -216,12 +264,12 @@ type stopResult struct {
 
 // Stop 优雅停止：不再接受新任务，等待所有 worker 把两条队列的存量跑完。
 //
-// 返回 drained 表示是否在 timeout 内排空。没排空时 inFlight 是那一刻**尚未完成**的任务数
-// （= 提交过但既没完成也没失败，含仍排在队列里、一次都没被取走的）。
+// 返回 drained 表示是否**真的没有没跑完的任务**（判据是 submitted-completed-failed == 0）。
+// 没排空时 inFlight 是那一刻尚未完成的任务数（含仍排在队列里、一次都没被取走的）。
 //
-// 这个返回值是给调用方做关停决策用的：超时返回后 worker goroutine **还活着**（Go 杀不掉它），
-// 这时候急着关数据库/关浏览器池，会让它们剩下的每一次写入都撞 "sql: database is closed" ——
-// 等于把「让在途任务跑完」这件事又亲手掐断。
+// 这个返回值是给调用方做关停决策用的：只有 inFlight == 0 时才能确定没有任务正在持着
+// 数据库连接/浏览器，这时候关库、关浏览器池才是安全的。反过来说，急着关会让在途任务
+// 剩下的每一次写入都撞 "sql: database is closed" —— 等于把「让在途任务跑完」又亲手掐断。
 //
 // 重复调用返回首次的结果。
 func (p *WorkerPool[T]) Stop(timeout time.Duration) (drained bool, inFlight int) {
@@ -237,12 +285,13 @@ func (p *WorkerPool[T]) Stop(timeout time.Duration) (drained bool, inFlight int)
 		}()
 		select {
 		case <-done:
-			p.stopRes = stopResult{drained: true}
 		case <-time.After(timeout):
-			p.stopRes = stopResult{
-				inFlight: int(p.submitted.Load() - p.completed.Load() - p.failed.Load()),
-			}
 		}
+		// drained 的判据是「还有没有没跑完的任务」，而不是「worker 退没退出」——
+		// 上层拿它决定能不能关库/关浏览器池，那取决于前者。超时那一刻 worker 还在跑，
+		// 两个判据才会分家。
+		inFlight := int(p.submitted.Load() - p.completed.Load() - p.failed.Load())
+		p.stopRes = stopResult{drained: inFlight == 0, inFlight: inFlight}
 	})
 	return p.stopRes.drained, p.stopRes.inFlight
 }

@@ -24,9 +24,10 @@ type AlertLevel = core.AlertLevel
 
 // 告警级别常量。
 const (
-	AlertInfo  = core.AlertInfo
-	AlertWarn  = core.AlertWarn
-	AlertError = core.AlertError
+	AlertInfo     = core.AlertInfo
+	AlertWarn     = core.AlertWarn
+	AlertError    = core.AlertError
+	AlertCritical = core.AlertCritical
 )
 
 // WrapNoRetry 将错误标记为不可重试。

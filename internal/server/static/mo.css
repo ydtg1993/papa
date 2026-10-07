@@ -550,3 +550,17 @@ input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
 }
 .sidebar::-webkit-scrollbar-corner,
 .content::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---- 熔断横幅（整页顶部，暂停时由 mo.js 显形） ---- */
+.breaker-banner {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    margin: 0 0 18px; padding: 14px 18px;
+    background: var(--destructive); color: #fff;
+    border: 2px solid var(--border-color);
+    box-shadow: 6px 6px 0 0 var(--shadow-color);
+    font-size: 14px; line-height: 1.5;
+}
+/* [hidden] 是 UA 的 display:none，但上面那条 display:flex 会盖掉它 —— 得显式再声明一次 */
+.breaker-banner[hidden] { display: none; }
+.breaker-banner .breaker-text { flex: 1 1 320px; font-family: var(--font-mono); }
+.breaker-banner .btn { flex: 0 0 auto; background: #fff; color: var(--destructive); }

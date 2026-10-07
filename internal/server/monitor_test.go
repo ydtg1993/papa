@@ -625,3 +625,93 @@ func TestTaskTraceHandler(t *testing.T) {
 		}
 	})
 }
+
+// 熔断闸门的两个后台接口。放行是**人在场的干预**（熔断停了整条抓取线），
+// 所以除了状态对不对，还要钉住"操作人确实被传给了宿主去记操作日志"。
+func TestBreakerEndpoints(t *testing.T) {
+	paused := true
+	var resumedBy []string
+
+	newMon := func() *Monitor {
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+			BreakerStatus: func() core.BreakerStatus {
+				return core.BreakerStatus{
+					Enabled: true, Paused: paused, PausedAt: time.Now(),
+					Reason: "窗口内终态失败数达到阈值", Stage: "catalog",
+					Failures: 50, Threshold: 50, Window: 5 * time.Minute, InWindow: 12,
+				}
+			},
+			ResumeBreaker: func() bool {
+				if !paused {
+					return false
+				}
+				paused = false
+				return true
+			},
+			OnBreakerResume: func(operator string) { resumedBy = append(resumedBy, operator) },
+		})
+	}
+
+	t.Run("GET 返回状态快照", func(t *testing.T) {
+		rr := serve(newMon(), http.MethodGet, "/api/breaker", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		body := decodeJSON(t, rr)
+		if body["paused"] != true || body["stage"] != "catalog" {
+			t.Fatalf("body = %v", body)
+		}
+		if body["in_window"] != float64(12) {
+			t.Fatalf("in_window = %v, want 12（实时值，和触发快照的 failures 不是一回事）", body["in_window"])
+		}
+	})
+
+	t.Run("状态也随 /api/monitor 一起返回", func(t *testing.T) {
+		rr := serve(newMon(), http.MethodGet, "/api/monitor", nil)
+		body := decodeJSON(t, rr)
+		b, ok := body["breaker"].(map[string]any)
+		if !ok {
+			t.Fatalf("monitor 响应里应带 breaker，实得 %v", body["breaker"])
+		}
+		if b["paused"] != true {
+			t.Fatalf("breaker = %v", b)
+		}
+	})
+
+	t.Run("放行：resumed=true 且回调收到操作人", func(t *testing.T) {
+		paused, resumedBy = true, nil
+		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if got := decodeJSON(t, rr)["resumed"]; got != true {
+			t.Fatalf("resumed = %v, want true", got)
+		}
+		// 测试请求没走鉴权中间件，所以操作人是空串 —— 这里要的是"回调被调了一次"，
+		// 真实部署里 auth 中间件已经把身份写进 ctx（见 TestAPIMonitor 的鉴权用例）。
+		if len(resumedBy) != 1 {
+			t.Fatalf("OnBreakerResume 调了 %d 次, want 1", len(resumedBy))
+		}
+	})
+
+	t.Run("本来就没暂停：resumed=false 而不是报错", func(t *testing.T) {
+		paused, resumedBy = false, nil
+		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200（重复点击恢复不该看起来像失败）", rr.Code)
+		}
+		body := decodeJSON(t, rr)
+		if body["resumed"] != false {
+			t.Fatalf("resumed = %v, want false", body["resumed"])
+		}
+		if len(resumedBy) != 0 {
+			t.Fatal("没真的放行就不该记操作日志")
+		}
+	})
+
+	t.Run("GET 不接受写方法", func(t *testing.T) {
+		if rr := serve(newMon(), http.MethodPost, "/api/breaker", nil); rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rr.Code)
+		}
+	})
+}

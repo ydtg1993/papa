@@ -484,6 +484,36 @@
         renderQueue(data.stages);
         renderQueues(data.queues);
         renderCustom(data.custom);
+        renderBreaker(data.breaker);
+    }
+
+    /* ---- 熔断横幅 ---- */
+    // 暂停时整页顶部显形 + 一个手动放行按钮；没暂停就藏起来。
+    // 状态跟着 /api/monitor 每轮刷新一起来（不额外发请求），所以别的标签页里触发的熔断也能看到。
+    function renderBreaker(b) {
+        var el = document.getElementById('breaker-banner');
+        if (!el) return;
+        if (!b || !b.paused) { el.hidden = true; return; }
+
+        var at = b.paused_at ? new Date(b.paused_at) : null;
+        var when = (at && timeValid(at)) ? at.toLocaleString() : '';
+        document.getElementById('breaker-text').textContent =
+            '抓取已暂停（熔断）：' + (b.reason || '') +
+            (b.stage ? '｜阶段 ' + b.stage : '') +
+            '｜' + fmtSpan(b.window / 1e9) + ' 窗口内 ' + (b.failures || 0) + ' 次终态失败，阈值 ' + (b.threshold || 0) +
+            (when ? '｜暂停于 ' + when : '') +
+            '。处理完后点右侧按钮恢复。';
+        el.hidden = false;
+    }
+    async function resumeCrawling() {
+        var resp = await apiPost('/api/breaker/resume', {});
+        if (!resp || !resp.ok) { Toast.err('恢复失败'); return; }
+        var data = null;
+        try { data = await resp.json(); } catch (e) { /* 拿不到 body 不影响放行结果 */ }
+        // resumed=false 说明本来就没闸住（比如另一个人先点了）—— 说清楚，别报个含糊的成功
+        if (data && data.resumed === false) Toast.info('当前不在暂停态');
+        else Toast.ok('已恢复抓取');
+        fetchData();
     }
 
     /* ============ 取数 ============ */
