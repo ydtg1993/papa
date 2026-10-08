@@ -91,14 +91,11 @@ type CrawlerConfig struct {
 type BreakerConfig struct {
 	Enabled   bool          `mapstructure:"enabled"`   //是否启用熔断闸门（默认 false）
 	Window    time.Duration `mapstructure:"window"`    //统计窗口；<=0 用默认 5m
-	Threshold int           `mapstructure:"threshold"` //窗口内终态失败数达到它即暂停；<=0 用默认 50
+	Threshold int           `mapstructure:"threshold"` //窗口内终态失败数达到它即暂停；enabled=true 时必填且 > 0，否则启动 panic
 }
 
-// 熔断的默认值。
-const (
-	defaultBreakerWindow    = 5 * time.Minute
-	defaultBreakerThreshold = 50
-)
+// defaultBreakerWindow 未配置窗口时的默认值。
+const defaultBreakerWindow = 5 * time.Minute
 
 // WindowOrDefault 返回生效的统计窗口。
 func (b BreakerConfig) WindowOrDefault() time.Duration {
@@ -108,13 +105,9 @@ func (b BreakerConfig) WindowOrDefault() time.Duration {
 	return b.Window
 }
 
-// ThresholdOrDefault 返回生效的失败数阈值。
-func (b BreakerConfig) ThresholdOrDefault() int {
-	if b.Threshold <= 0 {
-		return defaultBreakerThreshold
-	}
-	return b.Threshold
-}
+// 阈值**故意没有** OrDefault：它是"启用时必填"的项，enabled=true 却没给正阈值由
+// breaker.New 直接 panic（调用点在 engine.NewEngine，即启动时）。
+// 兜一个默认值只会让人以为开着、数的却是另一回事。
 
 // defaultStopTimeout 引擎关停时等各阶段 worker 排空队列的默认上限。
 const defaultStopTimeout = 5 * time.Second

@@ -370,3 +370,94 @@ func TestAddStageOnlyRegisters(t *testing.T) {
 		t.Fatalf("阶段信息不对：%+v", info)
 	}
 }
+
+/* ---------- 成功后的「任务间隔延迟」与停机 ---------- */
+
+// 停机不能被"任务跑完之后那段间隔延迟"拖住。
+//
+// 回归点：那段延迟原来是裸的 `<-time.After(cfg.Delay.Random())`，而模板里
+// catalog 的 `delay: "5m"`、`stop_timeout: "5s"` —— 任务其实早就跑完了
+// （状态已落库、去重表已清），worker 却还抱着并发位在睡，于是：
+//
+//	Engine.Stop 每次都等满 timeout → drained=false → app.Run 打出
+//	「引擎未在 5s 内排空，仍有任务未跑完」并**跳过关库与浏览器池关闭**。
+//
+// 现在改成 select ctx.Done，与 20 行外重试退避那段的写法一致。
+func TestStopIsNotBlockedByPostSuccessDelay(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true
+	e := newTestEngine(t, f)
+
+	fetcher := &recordingFetcher{stage: "stub"}
+	e.AddStage("stub", StageConfig{
+		MaxAttempts: 1, WorkerCount: 1, QueueSize: 8,
+		// 模板里的量级：catalog 的 delay 就是 5m
+		Delay: config.DurationRange{Min: 5 * time.Minute, Max: 5 * time.Minute},
+	}, fetcher, nil)
+	e.ApplyRegisterStage()
+
+	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+		t.Fatalf("SubmitTask = %v", err)
+	}
+	fetcher.waitCalls(t, 1)
+	time.Sleep(80 * time.Millisecond) // 让它进入成功后那段延迟
+
+	start := time.Now()
+	drained, stats := e.Stop(2 * time.Second)
+	elapsed := time.Since(start)
+
+	if !drained {
+		t.Fatalf("任务已成功落库，排空不该被延迟拖住：stats=%+v", stats)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("Stop 应当立刻返回，实耗 %v（说明延迟仍不可打断）", elapsed)
+	}
+}
+
+// 反过来钉住：没人停机时那段延迟照旧生效、照旧占着 worker。
+// 「可打断」不等于「可以省掉」—— 它的存在意义就是让两次抓取之间隔开，
+// 否则防反爬的那层意图就静默消失了。
+func TestPostSuccessDelayStillRateLimits(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true
+	e := newTestEngine(t, f)
+
+	fetcher := &recordingFetcher{stage: "stub"}
+	e.AddStage("stub", StageConfig{
+		MaxAttempts: 1, WorkerCount: 1, QueueSize: 8,
+		Delay: config.DurationRange{Min: 500 * time.Millisecond, Max: 500 * time.Millisecond},
+	}, fetcher, nil)
+	e.ApplyRegisterStage()
+
+	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+		t.Fatalf("SubmitTask = %v", err)
+	}
+	fetcher.waitCalls(t, 1)
+
+	// 假库上抓取本身是瞬时的，所以此刻 worker 必然已经在延迟里
+	info := e.stages["stub"]
+	time.Sleep(150 * time.Millisecond)
+	if _, _, _, inProgress, _ := info.workerPool.Stats(); inProgress != 1 {
+		t.Fatalf("延迟期间该任务应仍占着 worker，实得 inProgress=%d", inProgress)
+	}
+	if got := len(fetcher.calls()); got != 1 {
+		t.Fatalf("延迟期间不该开始下一次抓取，实得 %d 次", got)
+	}
+
+	// 延迟走完自然收工
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, _, _, inProgress, _ := info.workerPool.Stats(); inProgress == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("延迟结束后应当收工")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	drained, stats := e.Stop(2 * time.Second)
+	if !drained {
+		t.Fatalf("应当排空：%+v", stats)
+	}
+}

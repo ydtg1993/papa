@@ -493,3 +493,65 @@ func TestMergeFailureKeepsSegments(t *testing.T) {
 		t.Fatalf("合并失败后第一个分片必须还在（否则续传永远好不了）：%v", err)
 	}
 }
+
+// MaxConcurrent 为 0 时不能让下载卡死。
+//
+// 回归点：并发上限原来是直接 `make(chan struct{}, cfgGlobal.MaxConcurrent)` —— 0 就是
+// **无缓冲**通道，第一个 goroutine 永久阻塞在 `sem <- struct{}{}`，wg.Wait() 再也不返回：
+// 不报错、不退出、一条日志都没有，业务看到的就是"下载卡死"。负数则直接 panic
+// （make(chan, -1)）。
+//
+// NewDownloader 只在 cfg == nil 时补默认值（DefaultConfig 里是 4），
+// 所以"自己拼了一份 Config 但漏了/填错这个字段"必然踩到 —— 而 Config 的字段注释写着
+// "默认 4"，更容易让人以为不填就没事。
+func TestDownloadDoesNotHangOnNonPositiveConcurrency(t *testing.T) {
+	content := []byte("abcdefghijklmnopqrstuvwxyz1234567890")
+
+	for _, concurrency := range []int{0, -1} {
+		t.Run(fmt.Sprintf("MaxConcurrent=%d", concurrency), func(t *testing.T) {
+			tempOut := tempDir(t)
+			tempState := tempDir(t)
+			server := mockServer(content, true)
+			defer server.Close()
+
+			cfg := &Config{
+				OutputDir:      tempOut,
+				ResumeStateDir: tempState,
+				MaxConcurrent:  concurrency,
+				ChunkSize:      10, // 与并发无关，这里必须给正数（ChunkSize=0 是另一条已知问题）
+				EnableResume:   true,
+				SaveBatchSize:  2,
+			}
+			d := NewDownloader(cfg)
+
+			// 下载放 goroutine：卡住时靠超时把测试**干脆地**判失败，而不是挂到 go test 的全局超时
+			done := make(chan *DownloadResult, 1)
+			go func() {
+				done <- d.Download(context.Background(), server.URL, "subdir", "zero.txt", nil)
+			}()
+
+			select {
+			case result := <-done:
+				if result.Error != nil {
+					t.Fatalf("下载应当成功：%v", result.Error)
+				}
+				if result.Size != int64(len(content)) {
+					t.Fatalf("Size = %d, want %d", result.Size, len(content))
+				}
+				got, err := os.ReadFile(filepath.Join(tempOut, "subdir", "zero.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != string(content) {
+					t.Fatalf("文件内容 = %q, want %q（分片顺序不能乱）", got, content)
+				}
+				// 状态文件应当被清掉
+				if stateFiles, _ := filepath.Glob(filepath.Join(tempState, "subdir", "*.json")); len(stateFiles) != 0 {
+					t.Fatalf("状态文件没清理：%+v", stateFiles)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("MaxConcurrent=%d 时下载卡死了：信号量无缓冲，wg.Wait() 永不返回", concurrency)
+			}
+		})
+	}
+}

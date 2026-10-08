@@ -661,3 +661,75 @@ func TestSegmentWriteSucceedsWithoutResidue(t *testing.T) {
 		t.Fatal("成功之后不该留下中转文件")
 	}
 }
+
+// MaxConcurrent 为 0 时不能让下载卡死。
+//
+// 回归点：并发上限原来是直接 `make(chan struct{}, cfg.MaxConcurrent)` —— 0 就是**无缓冲**通道，
+// 第一个 goroutine 永久阻塞在 `sem <- struct{}{}`，wg.Wait() 再也不返回：
+// 不报错、不退出、一条日志都没有，业务看到的就是"下载卡死"。
+// NewDownloader 只在 cfg == nil 时补默认值（DefaultConfig 里是 5），
+// 所以"自己拼了一份 Config 但漏了/填错这个字段"必然踩到。
+//
+// 这里连负数一起验：make(chan, -1) 会直接 panic。
+func TestDownloadDoesNotHangOnNonPositiveConcurrency(t *testing.T) {
+	for _, concurrency := range []int{0, -1} {
+		t.Run(fmt.Sprintf("MaxConcurrent=%d", concurrency), func(t *testing.T) {
+			segments := [][]byte{[]byte("SEG-0"), []byte("SEG-1"), []byte("SEG-2")}
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/playlist.m3u8", func(w http.ResponseWriter, r *http.Request) {
+				var b strings.Builder
+				b.WriteString("#EXTM3U\n#EXT-X-TARGETDURATION:2\n")
+				for i := range segments {
+					fmt.Fprintf(&b, "#EXTINF:1.0,\nsegment%d.ts\n", i)
+				}
+				_, _ = w.Write([]byte(b.String()))
+			})
+			for i, body := range segments {
+				content := body
+				mux.HandleFunc(fmt.Sprintf("/segment%d.ts", i), func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write(content)
+				})
+			}
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			cfg := DefaultConfig()
+			cfg.OutputDir = tempDir(t)
+			cfg.ResumeStateDir = tempDir(t)
+			cfg.AutoMerge = false // 避免调用 ffmpeg
+			cfg.MaxConcurrent = concurrency
+
+			d := NewDownloader(cfg)
+
+			// 下载放 goroutine：卡住时靠超时把测试**干脆地**判失败，而不是挂到 go test 的全局超时
+			done := make(chan *DownloadResult, 1)
+			go func() {
+				done <- d.Download(context.Background(), server.URL+"/playlist.m3u8", "out", "zero.ts", nil)
+			}()
+
+			select {
+			case result := <-done:
+				if result.Error != nil {
+					t.Fatalf("下载应当成功：%v", result.Error)
+				}
+				if result.Segments != len(segments) {
+					t.Fatalf("Segments = %d, want %d", result.Segments, len(segments))
+				}
+				got, err := os.ReadFile(filepath.Join(cfg.OutputDir, "out", "zero.ts"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var want []byte
+				for _, s := range segments {
+					want = append(want, s...)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("拼接结果 = %q, want %q（顺序不能乱）", got, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("MaxConcurrent=%d 时下载卡死了：信号量无缓冲，wg.Wait() 永不返回", concurrency)
+			}
+		})
+	}
+}

@@ -240,7 +240,13 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 
 	// 并发下载
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, cfgGlobal.MaxConcurrent)
+	// 并发上限兜底为 1：这个 channel 是当信号量用的，MaxConcurrent 为 0（或负数）时
+	// make(chan struct{}, 0) 是**无缓冲**通道，第一个 goroutine 就会永久阻塞在
+	// `sem <- struct{}{}` 上，wg.Wait() 再也不返回 —— 表现为"下载卡死"：
+	// 不报错、不退出、也没有任何日志。负数则直接 panic。
+	// 写 1 至少让它一块块串行跑完。（同下面 saveBatchSize 的处理方式：
+	// 只补"会卡死/崩"的那一类，不动"分块大小"这种业务语义字段。）
+	sem := make(chan struct{}, max(cfgGlobal.MaxConcurrent, 1))
 	var downloadErr error
 	var errMu sync.Mutex
 	var downloaded atomic.Int64

@@ -8,9 +8,12 @@ import (
 )
 
 // repeatQueueQuery 周期轮询的查询条件：已完成（success/failed）的 repeatable 任务。
+//
+// Model 不能省 —— 理由同 errorQueueQuery：`sampleQueueBacklogOne` 的 `Count(&n)`
+// 推不出表名，没有 Model 就会静默把积压数永远留成 0。
 func (e *Engine) repeatQueueQuery() func() *gorm.DB {
 	return func() *gorm.DB {
-		return e.db.Where("repeatable = ? AND status IN ?",
+		return e.db.Model(&models.CrawlerTask{}).Where("repeatable = ? AND status IN ?",
 			models.RepeatableYes,
 			[]models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed})
 	}

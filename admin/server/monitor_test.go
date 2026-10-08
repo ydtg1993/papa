@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,11 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/papa/v2/admin/auth"
+	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/core"
 )
 
@@ -714,4 +717,94 @@ func TestBreakerEndpoints(t *testing.T) {
 			t.Fatalf("status = %d, want 405", rr.Code)
 		}
 	})
+}
+
+// 后台收 JSON 的那两个接口必须给请求体设上限。
+//
+// 回归点：`json.NewDecoder(r.Body)` 会把一个没写完的 JSON（比如永远不闭合的数组）
+// 一路读下去 —— 不设限就是任人喂内存。这条路径在鉴权后面，但"要令牌"不等于"不用管"。
+//
+// 这里故意用**合法的、只是超长**的 JSON：证明拦住它的是上限，不是"解析不了"。
+func TestAdminJSONHandlersRejectOversizedBody(t *testing.T) {
+	oversized := func(key string) string {
+		return `{"` + key + `":["` + strings.Repeat("a", maxAdminBody) + `"]}`
+	}
+
+	t.Run("whitelist 超限：400 且不落盘", func(t *testing.T) {
+		dir := t.TempDir()
+		wf := filepath.Join(dir, "whitelist.txt")
+		original := "10.0.0.0/8\n"
+		if err := os.WriteFile(wf, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{WhitelistFile: wf})
+		rr := serve(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(oversized("whitelist")))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400（body %d 字节）", rr.Code, rr.Body.Len())
+		}
+
+		// 关键：解析失败不能把白名单改成半截 —— 文件必须还是原样
+		got, err := os.ReadFile(wf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != original {
+			t.Fatalf("超限的请求不该改动白名单文件：%q", got)
+		}
+	})
+
+	t.Run("config 超限：400 且不下发", func(t *testing.T) {
+		applied := 0
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+			ConfigGet: func() *config.RuntimeConfig { return &config.RuntimeConfig{} },
+			ConfigSet: func(*config.RuntimeConfig) error {
+				applied++
+				return nil
+			},
+		})
+
+		rr := serve(m, http.MethodPut, "/api/config", strings.NewReader(oversized("html")))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400（body %d 字节）", rr.Code, rr.Body.Len())
+		}
+		if applied != 0 {
+			t.Fatalf("超限时不该调用 ConfigSet，实调 %d 次", applied)
+		}
+	})
+}
+
+// 反过来钉住上限没有小到误伤：一份接近上限、但仍能装下的白名单要照常生效。
+// （64KB 约合 3000 条 IP/CIDR，这里放 1000 条。）
+func TestWhitelistHandlerAcceptsLargeButBoundedBody(t *testing.T) {
+	const entries = 1000
+	list := make([]string, 0, entries)
+	for i := 0; i < entries; i++ {
+		list = append(list, "10.0.1."+strconv.Itoa(i%256))
+	}
+	body, err := json.Marshal(map[string]any{"whitelist": list})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= maxAdminBody {
+		t.Fatalf("前置条件：这份 body 应当在上限之内（%d >= %d）", len(body), maxAdminBody)
+	}
+
+	dir := t.TempDir()
+	wf := filepath.Join(dir, "whitelist.txt")
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{WhitelistFile: wf})
+
+	rr := serve(m, http.MethodPost, "/api/settings/whitelist", bytes.NewReader(body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200（body %d 字节）", rr.Code, rr.Body.Len())
+	}
+
+	got, err := os.ReadFile(wf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Count(strings.TrimRight(string(got), "\n"), "\n") + 1
+	if lines != entries {
+		t.Fatalf("落盘条数 = %d, want %d", lines, entries)
+	}
 }

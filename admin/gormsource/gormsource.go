@@ -6,6 +6,7 @@ package gormsource
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/ydtg1993/oao"
@@ -136,6 +137,13 @@ func applyFilter(db *gorm.DB, f oao.FilterValue) *gorm.DB {
 			}
 			return db.Where(col+" >= ? AND "+col+" < ?", from, end)
 		}
+		if f.Kind() == oao.KindNumber {
+			lo, hi, ok := intRange(f)
+			if !ok {
+				return db
+			}
+			return db.Where(col+" BETWEEN ? AND ?", lo, hi)
+		}
 		lo, hi, ok := f.Range()
 		if !ok {
 			return db
@@ -143,9 +151,21 @@ func applyFilter(db *gorm.DB, f oao.FilterValue) *gorm.DB {
 		return db.Where(col+" BETWEEN ? AND ?", lo, hi)
 
 	case oao.OpGt:
+		if f.Kind() == oao.KindNumber {
+			if n, ok := f.Int(); ok {
+				return db.Where(col+" > ?", n)
+			}
+			return db
+		}
 		return db.Where(col+" > ?", f.Raw())
 
 	case oao.OpLt:
+		if f.Kind() == oao.KindNumber {
+			if n, ok := f.Int(); ok {
+				return db.Where(col+" < ?", n)
+			}
+			return db
+		}
 		return db.Where(col+" < ?", f.Raw())
 
 	default: // OpEq
@@ -163,4 +183,28 @@ func applyFilter(db *gorm.DB, f oao.FilterValue) *gorm.DB {
 		}
 		return db.Where(col+" = ?", f.Raw())
 	}
+}
+
+// intRange 把区间两端解析成整数（Between + 数值列用）。
+//
+// 为什么不像以前那样直接把 Range() 的字符串绑上去：那会让数值列跟**字符串字面量**比较
+// （“ `id` BETWEEN '10' AND '20' “、“ `retry` < '3' “），正确性全靠 MySQL 把常量隐式转成数值。
+// 常量转换不影响索引使用，但那是"碰巧对"—— 同一份代码换到不做隐式转换的库（或开了严格模式/换列类型）
+// 就会静默给出错的结果。统一按声明里的 Kind 解析，与 OpEq / OpIn 的数字分支同一套语义。
+//
+// 解析失败的宽容度与 IntList 一致：认不出就 ok=false，调用方丢掉这条条件（不报错整页 500）。
+func intRange(f oao.FilterValue) (lo, hi int, ok bool) {
+	rawLo, rawHi, ok := f.Range()
+	if !ok {
+		return 0, 0, false
+	}
+	lo, err := strconv.Atoi(strings.TrimSpace(rawLo))
+	if err != nil {
+		return 0, 0, false
+	}
+	hi, err = strconv.Atoi(strings.TrimSpace(rawHi))
+	if err != nil {
+		return 0, 0, false
+	}
+	return lo, hi, true
 }

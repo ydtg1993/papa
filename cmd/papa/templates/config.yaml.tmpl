@@ -22,7 +22,7 @@ crawler:
   breaker:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
-    threshold: 50              # 窗口内终态失败数达到它即暂停
+    threshold: 50              # 窗口内终态失败数达到它即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
   stages:                      # 爬取阶段配置
     catalog:                   # 阶段名需与 fetcher.GetStage() 返回一致
       worker_count: 1

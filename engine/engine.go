@@ -114,7 +114,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 	engine.breaker = breaker.New(breaker.Config{
 		Enabled:   cfg.Crawler.Breaker.Enabled,
 		Window:    cfg.Crawler.Breaker.WindowOrDefault(),
-		Threshold: cfg.Crawler.Breaker.ThresholdOrDefault(),
+		Threshold: cfg.Crawler.Breaker.Threshold,
 	}, engine.notifyBreakerTrip)
 	engine.queueCounters = map[string]*atomic.Int64{
 		QueueError:  &engine.errorRetriedCount,

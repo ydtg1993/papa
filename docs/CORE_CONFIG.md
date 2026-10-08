@@ -32,7 +32,7 @@
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | 熔断闸门总开关。开启后窗口内**终态失败**数达阈值就把**所有阶段**的 worker 一起闸住 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
-| `breaker.threshold` | int | `50` | 窗口内终态失败数达到它即暂停 |
+| `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在**启动时 panic**（判据在 `breaker.New`，调用点是 `engine.NewEngine`）。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 | `stages.<name>.worker_count` | int | — | 该阶段 worker 并发数 |
 | `stages.<name>.queue_size` | int | — | 该阶段任务队列缓冲大小 |
 | `stages.<name>.delay` | 时长/区间 | — | 任务间隔，固定 `"5m"` 或随机区间 `"10s-30s"` |

@@ -86,14 +86,22 @@ func TestApplyFilterRendersEveryOperator(t *testing.T) {
 		"`status` IN (0,1)",
 		"`repeatable` IN (true)",
 		"`pid` = 7",
-		// 数值区间的两端走的是字符串绑定（Range/IntList 给的就是字符串）：
-		// MySQL 会把常量转成数值再比，索引照用，所以这里按实际渲染形态断言。
-		"`retry` < '3'",
-		"`reprocess` > '5'",
-		"`id` BETWEEN '10' AND '20'",
+		// 数值一律以**字面量**绑定：声明里写了 KindNumber 就按整数解析，
+		// 不能像以前那样把 Range()/Raw() 的字符串直接绑上去让 MySQL 隐式转换。
+		"`retry` < 3",
+		"`reprocess` > 5",
+		"`id` BETWEEN 10 AND 20",
 	} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("SQL 里缺少 %q：\n%s", want, sql)
+		}
+	}
+
+	// 反向钉住：数值条件里**不许**出现带引号的数字字面量。
+	// 这些串在生成的 SQL 里不会由别处产生（LIKE 的 pattern、两端的日期字面量都不是这个形态）。
+	for _, quoted := range []string{"'10'", "'20'", "'3'", "'5'", "'7'"} {
+		if strings.Contains(sql, quoted) {
+			t.Errorf("数值被当字符串绑定了（出现 %s）：\n%s", quoted, sql)
 		}
 	}
 
@@ -118,6 +126,10 @@ func TestApplyFilterDropsUnparsableValues(t *testing.T) {
 		{"number 等值给非数字", "filter[pid]=abc", "`pid`"},
 		{"number IN 给非数字", "filter[status]=abc", "`status`"},
 		{"number BETWEEN 没给区间", "filter[id]=5", "`id`"},
+		{"number BETWEEN 两端非数字", "filter[id]=abc..def", "`id`"},
+		{"number BETWEEN 只有一端是数字", "filter[id]=10..def", "`id`"},
+		{"number 大于给非数字", "filter[reprocess]=abc", "`reprocess`"},
+		{"number 小于给非数字", "filter[retry]=abc", "`retry`"},
 		{"time BETWEEN 给的不是日期区间", "filter[created_at]=notadate", "`created_at`"},
 		{"bool IN 给认不出的词", "filter[repeatable]=maybe", "`repeatable`"},
 		{"bool 等值给认不出的词", "filter[repeat]=maybe", "`repeat`"},
@@ -223,5 +235,38 @@ func TestSearchWithoutDeclaredColumnsIsIgnored(t *testing.T) {
 	sql := querySQL(t, table, "search=kw", lg)
 	if strings.Contains(sql, "LIKE") {
 		t.Fatalf("没声明可搜列时不该生成 LIKE：\n%s", sql)
+	}
+}
+
+// 非数值列的大小/区间比较保持字符串语义 —— 按 Kind 分流，不能一刀切全转成整数。
+// （现仓库里没有这样的声明，但分流写错了会在业务第一次这么声明时静默变味。）
+func TestComparisonKeepsStringSemanticsForNonNumberKinds(t *testing.T) {
+	// 一个字段只能声明一次（oao 按字段名建表），所以每种算子分两次请求。
+	for _, c := range []struct {
+		name  string
+		op    oao.Op
+		query string
+		want  string
+	}{
+		{"大于", oao.OpGt, "filter[title]=abc", "`title` > 'abc'"},
+		{"小于", oao.OpLt, "filter[title]=abc", "`title` < 'abc'"},
+		{"区间", oao.OpBetween, "filter[title]=a..z", "`title` BETWEEN 'a' AND 'z'"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			lg := &captureLogger{}
+			db := dryDB(t, lg)
+			table := oao.Table{
+				Key:     "task",
+				Source:  New(Config{DB: db, Model: &models.CrawlerTask{}}),
+				Columns: []oao.Column{{Field: "id", Kind: oao.KindNumber}, {Field: "title"}},
+				// 没写 Kind = 字符串列
+				Filters: []oao.Filter{{Field: "title", Op: c.op}},
+			}
+
+			sql := querySQL(t, table, c.query, lg)
+			if !strings.Contains(sql, c.want) {
+				t.Fatalf("应保持字符串绑定（%s）：\n%s", c.want, sql)
+			}
+		})
 	}
 }

@@ -225,28 +225,20 @@ func TestRuntimeConfigMergeDoesNotMutate(t *testing.T) {
 
 /* ---------- 各默认值 helper ---------- */
 
-// 熔断：窗口/阈值没配（或配成非正）时补默认值。
-// 阈值 <= 0 在 breaker 里被解释成"只统计不熔断"，所以这里的默认值尤其要紧。
-func TestBreakerConfigOrDefaults(t *testing.T) {
+// 熔断窗口：没配（或配成非正）时补默认 5m。
+//
+// 阈值**没有对应的 helper** —— 它没有默认值：enabled=true 却没给正阈值是非法配置，
+// 由 breaker.New 直接 panic（见 internal/breaker 的 TestEnabledWithoutThresholdPanics）。
+func TestBreakerWindowOrDefault(t *testing.T) {
 	var zero BreakerConfig
 	if got := zero.WindowOrDefault(); got != 5*time.Minute {
 		t.Fatalf("默认窗口 = %v, want 5m", got)
 	}
-	if got := zero.ThresholdOrDefault(); got != 50 {
-		t.Fatalf("默认阈值 = %d, want 50", got)
-	}
-
-	neg := BreakerConfig{Window: -time.Second, Threshold: -1}
-	if got := neg.WindowOrDefault(); got != 5*time.Minute {
+	if got := (BreakerConfig{Window: -time.Second}).WindowOrDefault(); got != 5*time.Minute {
 		t.Fatalf("负窗口应回退默认：%v", got)
 	}
-	if got := neg.ThresholdOrDefault(); got != 50 {
-		t.Fatalf("负阈值应回退默认：%d", got)
-	}
-
-	set := BreakerConfig{Window: time.Minute, Threshold: 3}
-	if set.WindowOrDefault() != time.Minute || set.ThresholdOrDefault() != 3 {
-		t.Fatalf("显式配置不该被覆盖：%+v", set)
+	if got := (BreakerConfig{Window: time.Minute}).WindowOrDefault(); got != time.Minute {
+		t.Fatalf("显式配置不该被覆盖：%v", got)
 	}
 }
 

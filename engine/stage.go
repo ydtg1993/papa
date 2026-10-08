@@ -129,7 +129,16 @@ func (e *Engine) ApplyRegisterStage() {
 					if !task.Repeatable {
 						e.DelActiveTask(task)
 					}
-					<-time.After(cfg.Delay.Random())
+					// 任务间隔延迟：让 worker 在两次抓取之间歇一下，别把目标站打急。
+					// **必须可被 ctx 打断** —— 任务到这里已经成功、状态也已经落库，
+					// 再让 worker 抱着这个并发位睡满一个 delay（模板里 catalog 是 5m），
+					// 只会让 Engine.Stop（默认只等 stop_timeout=5s）报"未排空"、
+					// 连带跳过 app.Run 里的关库收尾。停机时直接跳过这段休息。
+					// 与下面重试退避那段同一个写法（Engine.Stop 的注释承诺的就是这个）。
+					select {
+					case <-ctx.Done():
+					case <-time.After(cfg.Delay.Random()):
+					}
 					return nil
 				}
 				// 不可重试的错误：直接标 failed，不再空转重试

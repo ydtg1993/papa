@@ -279,6 +279,14 @@ func (s *Monitor) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxAdminBody 后台几个收 JSON 的接口的请求体上限。
+//
+// 它们的 body 都只是几个短字段（白名单数组 / 运行期覆盖层），但**必须有个头**：
+// `json.Decoder` 会把一个没写完的 JSON（比如一个永远不闭合的数组）一路读下去，
+// 不设限就是任人喂内存 —— 这条路径还在鉴权后面，但那是"要令牌"，不是"不用管"。
+// 64KB 约合 3000 条 IP/CIDR，给足余量。
+const maxAdminBody = 64 << 10
+
 // whitelistHandler 动态更新 IP/CIDR 白名单并持久化到 whitelist_file
 func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -288,7 +296,8 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Whitelist []string `json:"whitelist"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// 超限会以解码错误的形式浮上来（http.MaxBytesError），与"body 不是合法 JSON"合并成同一个 400
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBody)).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
@@ -492,7 +501,7 @@ func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "config not available", http.StatusNotFound)
 		return
 	}
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBody))
 	dec.DisallowUnknownFields()
 	var rt config.RuntimeConfig
 	if err := dec.Decode(&rt); err != nil {

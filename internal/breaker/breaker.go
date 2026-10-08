@@ -10,6 +10,7 @@
 package breaker
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,7 +28,7 @@ const defaultWindow = 5 * time.Minute
 type Config struct {
 	Enabled   bool
 	Window    time.Duration // <= 0 用默认 5m
-	Threshold int           // <= 0 视为「不熔断」（只统计）
+	Threshold int           // 启用时必填且必须 > 0，否则 New 直接 panic
 }
 
 // Breaker 熔断器：滑动窗口计数 + 一道暂停闸门。
@@ -62,15 +63,30 @@ type Breaker struct {
 }
 
 // New 构造熔断器。onTrip 在**自动触发**时回调一次（可为 nil），宿主用它发告警。
+//
+// **启用熔断却不给正阈值是非法配置，直接 panic** —— 判据与 App.RegisterStage 对 stage
+// 配置那几行同一路数。这里不兜默认值：threshold <= 0 时"多少条才算熔断"没有答案，
+// 补一个数（原来补的是 50）只会让人以为开着、数的却是另一回事。
+// 调用点在 engine.NewEngine，所以这是**启动时**失败，不是跑到某条任务才炸。
 func New(cfg Config, onTrip func(core.BreakerStatus)) *Breaker {
+	if cfg.Enabled && cfg.Threshold <= 0 {
+		panic(fmt.Errorf("crawler.breaker.enabled=true 时 threshold 必须 > 0（没写与写 <= 0 都算没给），实得 %d；"+
+			"要关掉熔断请把 enabled 改成 false", cfg.Threshold))
+	}
 	if cfg.Window <= 0 {
 		cfg.Window = defaultWindow
 	}
 	return &Breaker{
-		enabled:     cfg.Enabled,
-		threshold:   cfg.Threshold,
-		window:      cfg.Window,
-		bucketWidth: cfg.Window / bucketCount,
+		enabled:   cfg.Enabled,
+		threshold: cfg.Threshold,
+		window:    cfg.Window,
+		// 桶宽至少 1ns：add 与 sumLocked 都拿它做除数（now().UnixNano() / bucketWidth），
+		// 而 window/bucketCount 是整数纳秒除法 —— window < bucketCount(60ns) 时结果是 0，整数除零。
+		// 两个除零点的症状还不同，这是它难查的原因：add 走 RecordFailure，在 worker 的 handler
+		// 调用栈里，被 workerpool 的 runHandler 接住 → 表现成"每个任务都失败"；sumLocked 走
+		// Status()，在 HTTP handler 里，被 net/http 接住 → 后台熔断那块读不出来。都不崩进程。
+		// 只兜"会崩"这一档，不动 window 的语义（配 10ns 还是 10ns，只是桶宽不再为 0）。
+		bucketWidth: max(cfg.Window/bucketCount, time.Nanosecond),
 		now:         time.Now,
 		resumeCh:    make(chan struct{}),
 		onTrip:      onTrip,
@@ -89,7 +105,7 @@ func (b *Breaker) RecordFailure(stage string) bool {
 		return false
 	}
 	n := b.add(1)
-	if b.threshold <= 0 || n < b.threshold {
+	if n < b.threshold { // 走到这里 threshold 必然 > 0（New 已校验）
 		return false
 	}
 	if !b.pause("窗口内终态失败数达到阈值", stage, n) {

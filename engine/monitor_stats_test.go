@@ -85,17 +85,15 @@ func TestGetStageStatsEmpty(t *testing.T) {
 /* ---------- 积压采样 ---------- */
 
 // 采样结果落到快照上，并记下采样时刻（监控页据此判断这个数字新不新）。
+//
+// query 用的是**真的** errorQueueQuery（不是手搭一个带 Model 的替身）——
+// 这一步就是这条链路的回归覆盖：构造器少带 Model 的话，这里的 Count 会直接报错、积压留成 0。
 func TestSampleQueueBacklogOneRecordsValue(t *testing.T) {
 	f := newFakeTaskDB()
 	f.count = 42
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	// 注意：query 里必须自带 Model —— 这就是下面那个已知缺陷的边界，
-	// 见 TestQueueQueriesHaveNoTableForCount 的说明。
-	query := func() *gorm.DB {
-		return e.db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusFailed)
-	}
-	e.sampleQueueBacklogOne(QueueError, query)
+	e.sampleQueueBacklogOne(QueueError, e.errorQueueQuery())
 
 	st := e.GetQueueStats()[QueueError]
 	if st.Backlog != 42 {
@@ -103,6 +101,25 @@ func TestSampleQueueBacklogOneRecordsValue(t *testing.T) {
 	}
 	if st.BacklogAt.IsZero() {
 		t.Fatal("应记下采样时刻")
+	}
+}
+
+// 一轮采样覆盖两个队列，且都拿到真值。
+func TestSampleQueueBacklogWritesBothQueues(t *testing.T) {
+	f := newFakeTaskDB()
+	f.count = 7
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+
+	e.sampleQueueBacklog()
+
+	stats := e.GetQueueStats()
+	for _, name := range []string{QueueError, QueueRepeat} {
+		if got := stats[name].Backlog; got != 7 {
+			t.Errorf("%s 的积压 = %d, want 7", name, got)
+		}
+		if stats[name].BacklogAt.IsZero() {
+			t.Errorf("%s 没记下采样时刻", name)
+		}
 	}
 }
 
@@ -141,44 +158,52 @@ func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 		}
 	}
 
-	qs[QueueError]().Model(&models.CrawlerTask{}).Find(&[]models.CrawlerTask{})
+	qs[QueueError]().Find(&[]models.CrawlerTask{})
 	if read := f.readSQL(); !containsRaw(read, "status = ?") {
 		t.Fatalf("error_queue 的积压查询条件不对：\n%s", read)
 	}
 
-	qs[QueueRepeat]().Model(&models.CrawlerTask{}).Find(&[]models.CrawlerTask{})
+	qs[QueueRepeat]().Find(&[]models.CrawlerTask{})
 	if read := f.readSQL(); !containsRaw(read, "repeatable = ?") {
 		t.Fatalf("repeat_queue 的积压查询条件不对：\n%s", read)
 	}
 }
 
-// errorQueueQuery / repeatQueueQuery 返回的是「只带 WHERE、不带表名」的构造器 ——
-// 这是它们的既定契约：Find 会用切片元素类型补上表名。
+// 两个队列的积压构造器都要能**直接 Count**。
 //
-// 但 sampleQueueBacklogOne 走的是 Count(&n)，而 gorm 的 Count 推不出表名，
-// 会直接返回 "Table not set"。也就是说：**治理队列的积压数现在恒为 0，
-// 且每轮采样都会往日志里写一条 warning**。
-// 这条用例把「无表名时 Count 必然失败」这个前提钉住，免得有人以为是测试环境的怪现象。
-func TestQueueQueryWithoutModelCannotCount(t *testing.T) {
+// 回归点：`sampleQueueBacklogOne` 走的是 `Count(&n)`，而 gorm 的 Count
+// **推不出表名**（`Find(&slice)` 能，靠元素类型）。曾经这两个构造器只拼 WHERE 没带 Model，
+// 结果是 —— 治理队列的积压数**恒为 0**、`backlog_at` 恒为零值，且每轮采样
+// （默认 1 分钟一轮）都往 engine.log 写一条 "Table not set" 的 WARN，把真错误淹掉。
+//
+// 这条用例直接对构造器 Count，所以能独立于采样协程把这个契约钉住。
+func TestQueueQueriesCanBeCountedDirectly(t *testing.T) {
 	f := newFakeTaskDB()
+	f.count = 42
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	var n int64
-	err := e.errorQueueQuery()().Count(&n).Error
-	if err == nil {
-		t.Fatal("没有表名时 Count 不该成功 —— 若这里通过了，说明 gorm 行为变了，请顺手把积压采样修好")
-	}
-	if !containsRaw(err.Error(), "Table not set") {
-		t.Fatalf("错误信息变了：%v", err)
+	for _, c := range []struct {
+		name  string
+		query func() *gorm.DB
+	}{
+		{QueueError, e.errorQueueQuery()},
+		{QueueRepeat, e.repeatQueueQuery()},
+	} {
+		var n int64
+		if err := c.query().Count(&n).Error; err != nil {
+			t.Fatalf("%s 的构造器应当能直接 Count（漏了 Model 就会 Table not set）：%v", c.name, err)
+		}
+		if n != 42 {
+			t.Fatalf("%s count = %d, want 42", c.name, n)
+		}
 	}
 
-	// 补上 Model 就能查通 —— 这正是修法
-	f.count = 42
-	if err := e.errorQueueQuery()().Model(&models.CrawlerTask{}).Count(&n).Error; err != nil {
-		t.Fatalf("补上 Model 后应当能查：%v", err)
-	}
-	if n != 42 {
-		t.Fatalf("count = %d, want 42", n)
+	// 用真实构造器跑一遍采样：积压数必须是查询回来的值，而不是 0
+	e.sampleQueueBacklog()
+	for _, name := range []string{QueueError, QueueRepeat} {
+		if got := e.GetQueueStats()[name].Backlog; got != 42 {
+			t.Fatalf("%s 采样后的积压 = %d, want 42", name, got)
+		}
 	}
 }
 
@@ -201,13 +226,44 @@ func TestQueueEnabledUnknownName(t *testing.T) {
 
 // 采样协程要起得来、也要能停 —— 它内部那次 COUNT 目前必然失败（见上），
 // 所以这里只钉"不 panic、停机干净、间隔用了配置值"。
-func TestStartQueueSamplerRunsAndStops(t *testing.T) {
+// 采样协程的端到端：起来先采一轮（页面第一眼就有数），之后按配置间隔重复。
+//
+// 这条在修复"构造器漏了 Model"之前**必然失败** —— 那时 Count 报 Table not set，
+// 积压数会永远停在 0，而这条盯的正是"后台上的数字真的是查回来的"。
+func TestStartQueueSamplerSamplesImmediately(t *testing.T) {
 	f := newFakeTaskDB()
+	f.count = 5
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e.cfg.Server.QueueSampleInterval = 5 * time.Millisecond
+	e.cfg.Server.QueueSampleInterval = 10 * time.Millisecond
 
 	e.startQueueSampler()
-	time.Sleep(40 * time.Millisecond)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for e.GetQueueStats()[QueueError].Backlog != 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("采样协程没跑起来：%+v", e.GetQueueStats()[QueueError])
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, name := range []string{QueueError, QueueRepeat} {
+		st := e.GetQueueStats()[name]
+		if st.Backlog != 5 {
+			t.Errorf("%s 的积压 = %d, want 5", name, st.Backlog)
+		}
+		if st.BacklogAt.IsZero() {
+			t.Errorf("%s 没记下采样时刻", name)
+		}
+	}
+
+	// 间隔真的生效：10ms 一轮，说明按期重复采而不是只采一次
+	first := e.GetQueueStats()[QueueError].BacklogAt
+	deadline = time.Now().Add(3 * time.Second)
+	for !e.GetQueueStats()[QueueError].BacklogAt.After(first) {
+		if time.Now().After(deadline) {
+			t.Fatal("采样没有按期重复")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	e.cancel()
 	time.Sleep(40 * time.Millisecond) // 取消后协程应干净退出（不该 panic / 不该卡住）

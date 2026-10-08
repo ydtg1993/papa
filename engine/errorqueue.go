@@ -8,10 +8,15 @@ import (
 )
 
 // errorQueueQuery 失败任务的查询条件：status=failed，配置了上限时再处理代数未超 max_retry。
+//
+// **必须带上 Model**：这个构造器有两个消费方 —— `processInBatches` 的 `Find(&tasks)`
+// （切片元素类型能推出表名，带不带都行）和 `sampleQueueBacklogOne` 的 `Count(&n)`
+// （**gorm 的 Count 推不出表名**，没有 Model 就直接报 "Table not set"）。
+// 漏掉 Model 的后果不是报错，而是积压数恒为 0 + 每轮采样往日志写一条 WARN。
 func (e *Engine) errorQueueQuery() func() *gorm.DB {
 	cfg := e.errorQueueConfig()
 	return func() *gorm.DB {
-		q := e.db.Where("status = ?", models.TaskStatusFailed)
+		q := e.db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusFailed)
 		if cfg.MaxRetry > 0 {
 			q = q.Where("reprocess < ?", cfg.MaxRetry)
 		}
