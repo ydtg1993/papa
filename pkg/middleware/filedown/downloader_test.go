@@ -555,3 +555,37 @@ func TestDownloadDoesNotHangOnNonPositiveConcurrency(t *testing.T) {
 		})
 	}
 }
+
+// 分片重试的退避必须能被 ctx 打断（与 engine/stage.go 里那段同一个问题）。
+// 回归点：改之前是裸的 time.Sleep；而 Engine.Stop 只等 crawler.stop_timeout（模板 5s），
+// 退避最多睡 10s —— 睡满的话 Stop 会报"未排空"，并连带跳过关库与关浏览器池的收尾
+// （那两件事正是在 drained=false 时故意不做的）。
+func TestChunkRetryBackoffIsInterruptible(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // 每次尝试都失败，逼出退避
+	}))
+	defer srv.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = t.TempDir()
+	d := NewDownloader(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		// 第 1 次退避 = 1<<1 = 2s，够测了
+		done <- d.downloadChunkToFile(ctx, srv.URL, 0, 9, filepath.Join(cfg.OutputDir, "chunk.part"), &requestConfig{})
+	}()
+
+	time.Sleep(300 * time.Millisecond) // 等第一次尝试失败、进入退避
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("取消 ctx 后应当以错误结束")
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("取消 ctx 后仍在睡退避 —— 退避没接 ctx")
+	}
+}

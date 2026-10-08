@@ -97,7 +97,14 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 			if sleepTime > 10*time.Second {
 				sleepTime = 10 * time.Second
 			}
-			time.Sleep(sleepTime)
+			// 退避要能被 ctx 打断：Engine.Stop 只等 crawler.stop_timeout（模板 5s），
+			// 而这里最多睡 10s —— 卡住的话 Stop 会报"未排空"，并连带跳过关库与关浏览器池的收尾
+			// （那两件事正是在 drained=false 时故意不做的）。与 engine/stage.go 的退避同一写法。
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(sleepTime):
+			}
 			d.trackQueue.SendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
 		}
 
@@ -521,7 +528,14 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 			if sleepTime > 10*time.Second {
 				sleepTime = 10 * time.Second
 			}
-			time.Sleep(sleepTime)
+			// 退避要能被 ctx 打断：Engine.Stop 只等 crawler.stop_timeout（模板 5s），
+			// 而这里最多睡 10s —— 卡住的话 Stop 会报"未排空"，并连带跳过关库与关浏览器池的收尾
+			// （那两件事正是在 drained=false 时故意不做的）。与 engine/stage.go 的退避同一写法。
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(sleepTime):
+			}
 			d.trackQueue.SendError(fmt.Errorf("retry segment %d (attempt %d)", seg.Index, attempt))
 		}
 

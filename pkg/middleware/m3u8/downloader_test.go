@@ -733,3 +733,35 @@ func TestDownloadDoesNotHangOnNonPositiveConcurrency(t *testing.T) {
 		})
 	}
 }
+
+// 同上一条（filedown）：doRequest 的重试退避要能被 ctx 打断。
+func TestRetryBackoffIsInterruptible(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError) // 每次尝试都失败，逼出退避
+	}))
+	defer srv.Close()
+
+	cfg := DefaultConfig()
+	cfg.MaxRetries = 3
+	cfg.RetryInterval = 3 // 第 1 次退避 = 3s
+	d := NewDownloader(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.doRequest(ctx, srv.URL, "", nil)
+		done <- err
+	}()
+
+	time.Sleep(300 * time.Millisecond) // 等第一次尝试失败、进入退避
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("取消 ctx 后应当以错误结束")
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("取消 ctx 后仍在睡退避 —— 退避没接 ctx")
+	}
+}
