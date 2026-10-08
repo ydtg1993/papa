@@ -499,6 +499,22 @@ func (a *App) mdMsgListener(ctx context.Context) {
 	}
 }
 
+// warnIfOpenToAll 生效白名单为空时喊一声。
+//
+// 空白名单是**合法**配置（脚手架生成的 whitelist 文件初始就只有一行注释），但必须说出来：
+// 它和"配了却没生效"从行为上分不出来 —— 而后者正是"后台怎么谁都能打开"这类排查里
+// 最难想到的方向。按 Error 级打，与 auth.WarnIfNoToken 一个路数（一个是来源那道门，
+// 一个是凭据那道门，两道都空就是完全开放）。
+//
+// 抽成独立函数是为了能离线断言这条警告确实会发 —— 它的调用点在 httpServer 里，那一步要真库真端口。
+func warnIfOpenToAll(log *logrus.Logger, whitelist []string) {
+	if len(whitelist) > 0 {
+		return
+	}
+	log.Errorf("警告：生效的来源 IP 白名单为空 —— /monitor 与 /api/* 对**任何来源**开放" +
+		"（第二道门是访问令牌）；要限制来源，往 server.whitelist_file 或 server.whitelist 里写 IP/CIDR")
+}
+
 // resolveWhitelist 解析白名单：优先读 whitelist_file（文件存在即采用，即使为空），读不到回退内联 whitelist
 func (a *App) resolveWhitelist(cfg config.ServerConfig) []string {
 	if cfg.WhitelistFile != "" {
@@ -548,6 +564,7 @@ func (a *App) httpServer(ctx context.Context) {
 		a.sysInfo.Start(ctx)
 	}
 	whitelist := a.resolveWhitelist(cfg)
+	warnIfOpenToAll(a.Logger.Sys, whitelist)
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
 

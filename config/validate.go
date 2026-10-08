@@ -226,13 +226,17 @@ func checkUnusedKeys(unused []string) error {
 	if len(unused) == 0 {
 		return nil
 	}
-	quoted := make([]string, 0, len(unused))
-	for _, k := range unused {
+	// 排序后再报：unused 来自 mapstructure，而它是走 yaml 解出来的 map ——
+	// 顺序本来就不稳定，多条未知键时同一条命令每次报出来的次序都不一样。
+	sorted := append([]string(nil), unused...)
+	sort.Strings(sorted)
+	quoted := make([]string, 0, len(sorted))
+	for _, k := range sorted {
 		quoted = append(quoted, fmt.Sprintf("%q", k))
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "  未知配置键：%s", strings.Join(quoted, "、"))
-	if hint := suggestKeys(unused); hint != "" {
+	if hint := suggestKeys(sorted); hint != "" {
 		b.WriteString("\n" + hint)
 	}
 	b.WriteString("\n  这些键会被静默忽略、写进去的值不生效 —— 所以直接拒绝启动。")
@@ -243,19 +247,24 @@ func checkUnusedKeys(unused []string) error {
 // suggestKeys 给未知键找最接近的合法键（编辑距离 <= 2），治「拼错一个字母」。
 // 合法键集合由 Config 结构体反射得出 —— 手抄一份必然漂移。
 func suggestKeys(unused []string) string {
-	valid := validKeys()
+	valid := validKeys() // 已按字典序排好，下面的遍历顺序必须确定 —— 见下
 	byLeaf := make(map[string]string, len(valid))
+	leaves := make([]string, 0, len(valid))
 	for _, v := range valid {
 		leaf := leafOf(v)
 		if _, dup := byLeaf[leaf]; !dup {
 			byLeaf[leaf] = v
+			leaves = append(leaves, leaf)
 		}
 	}
 	var lines []string
 	for _, bad := range unused {
 		leaf := leafOf(bad)
 		best, bestDist := "", 3 // 只认距离 <= 2
-		for cand := range byLeaf {
+		// **遍历切片而不是 map**：这里是"取距离最小的那个"，而 map 的遍历顺序是随机的 ——
+		// 两个候选距离相同时谁赢就随机（`crawler.d` 距离 `dsn` 与 `dir` 都是 2），
+		// 于是同一条命令每次跑出来的提示都不一样，测试也可能偶发红。
+		for _, cand := range leaves {
 			if d := editDistance(leaf, cand); d < bestDist {
 				best, bestDist = cand, d
 			}
@@ -370,17 +379,21 @@ func ValidateRuntime(rt *RuntimeConfig) error {
 	if v := rt.HTML.MaxBodySize; v != nil && (*v < htmlMaxBodyMin || *v > htmlMaxBodyMax) {
 		return fmt.Errorf("html.max_body_size 必须在 %d..%d 字节之间（实得 %d）", htmlMaxBodyMin, htmlMaxBodyMax, *v)
 	}
-	for name, v := range map[string]*int{
-		"error_queue.worker_count":   rt.ErrorQueue.WorkerCount,
-		"error_queue.max_retry":      rt.ErrorQueue.MaxRetry,
-		"error_queue.batch_size":     rt.ErrorQueue.BatchSize,
-		"recover_queue.worker_count": rt.RecoverQueue.WorkerCount,
-		"recover_queue.batch_size":   rt.RecoverQueue.BatchSize,
-		"repeat_queue.worker_count":  rt.RepeatQueue.WorkerCount,
-		"repeat_queue.batch_size":    rt.RepeatQueue.BatchSize,
+	// 用切片而不是 map：多条同时越界时，报哪一条必须是确定的（map 遍历顺序随机）
+	for _, f := range []struct {
+		name string
+		v    *int
+	}{
+		{"error_queue.worker_count", rt.ErrorQueue.WorkerCount},
+		{"error_queue.max_retry", rt.ErrorQueue.MaxRetry},
+		{"error_queue.batch_size", rt.ErrorQueue.BatchSize},
+		{"recover_queue.worker_count", rt.RecoverQueue.WorkerCount},
+		{"recover_queue.batch_size", rt.RecoverQueue.BatchSize},
+		{"repeat_queue.worker_count", rt.RepeatQueue.WorkerCount},
+		{"repeat_queue.batch_size", rt.RepeatQueue.BatchSize},
 	} {
-		if v != nil && *v < 0 {
-			return fmt.Errorf("%s 必须 >= 0（实得 %d）", name, *v)
+		if f.v != nil && *f.v < 0 {
+			return fmt.Errorf("%s 必须 >= 0（实得 %d）", f.name, *f.v)
 		}
 	}
 	return nil
