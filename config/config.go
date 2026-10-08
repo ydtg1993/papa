@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"time"
 
@@ -292,8 +291,12 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var cfg Config
+	var md mapstructure.Metadata
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		Result: &cfg,
+		// 接上 Metadata 才拿得到 Unused —— 即「文件里有、结构体里没有」的键路径。
+		// 它是「拼错一个键名，值悄悄不生效」的唯一线索，见 Validate。
+		Metadata: &md,
 		// 组合默认 hook（时长/切片）与 TextUnmarshaller hook，使 DurationRange 支持 "10s-30s"。
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			mapstructure.TextUnmarshallerHookFunc(),
@@ -307,10 +310,9 @@ func Load(path string) (*Config, error) {
 	if err := decoder.Decode(raw); err != nil {
 		return nil, err
 	}
-	// 拼错一个级别名不该在运行时被静默当成默认值 —— 启动前就报出来
-	if !validSQLLogLevel(cfg.DB.LogLevel) {
-		return nil, fmt.Errorf("db.log_level 只能是 %s / %s / %s / %s（留空表示按 app.env 推），实得 %q",
-			SQLLogSilent, SQLLogError, SQLLogWarn, SQLLogInfo, cfg.DB.LogLevel)
-	}
+	// 键名与值域统一在这一层校验；越界**直接 panic**（判据与 App.RegisterStage、
+	// internal/breaker.New 一致：非法配置该在启动时炸掉，而不是等跑到某条任务上
+	// 静默变成另一种行为）。原来那条 db.log_level 检查也搬进了同一张表。
+	Validate(&cfg, md.Unused)
 	return &cfg, nil
 }

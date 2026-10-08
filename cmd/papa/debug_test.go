@@ -148,7 +148,7 @@ func TestLoadOptionalConfigMissingFile(t *testing.T) {
 
 func TestLoadOptionalConfigFromPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("html:\n  timeout: 7s\n  headers:\n    X-Cfg: from-file\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("log:\n  dir: ./logs\ndb:\n  max_idle_conns: 10\n  max_open_conns: 100\nhtml:\n  timeout: 7s\n  headers:\n    X-Cfg: from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, ok := loadOptionalConfig(path)

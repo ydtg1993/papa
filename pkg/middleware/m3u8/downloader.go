@@ -151,7 +151,23 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 			continue
 		}
 
-		data, err := io.ReadAll(resp.Body)
+		// 读之前先定一个上界，而不是无脑 ReadAll —— 远端返回超大（或干脆不结束）的响应时，
+		// ReadAll 会一路吃内存直到 OOM。上界是**推出来的**，不是拍的魔数：
+		//   - 带 Range 的请求：期望长度就写在 Range 里（`bytes=start-end` → `end-start+1`）
+		//   - 不带 Range：用响应自己声明的 Content-Length（多给的一律算异常）
+		// 两者都推不出来（chunked 又没有 Range）时退回无界读 —— 那种情况没有任何可依据的数字，
+		// 宁可保持原样，也不凭空定一个"分片最大多少"（那是替业务做决定）。
+		// 注意：**只有上界**。少收字节由 net/http 拿 Content-Length 校验，不用在这儿管。
+		limit := int64(-1)
+		if rangeHeader != "" {
+			if n, ok := rangeLength(rangeHeader); ok {
+				limit = n
+			}
+		}
+		if limit < 0 && resp.ContentLength > 0 {
+			limit = resp.ContentLength
+		}
+		data, err := readCapped(resp.Body, limit)
 		resp.Body.Close()
 		if err != nil {
 			lastErr = err
@@ -160,6 +176,42 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 		return data, nil
 	}
 	return nil, fmt.Errorf("failed after %d retries: %w", d.config.MaxRetries, lastErr)
+}
+
+// rangeLength 从 `bytes=start-end` 解析出这一段期望的字节数；格式不认识时 ok=false。
+// 它给 doRequest 提供一个**推出来的**上界，省得为"一个分片最大多少"定一个魔数。
+func rangeLength(h string) (int64, bool) {
+	s, ok := strings.CutPrefix(h, "bytes=")
+	if !ok {
+		return 0, false
+	}
+	lo, hi, ok := strings.Cut(s, "-")
+	if !ok {
+		return 0, false
+	}
+	start, err1 := strconv.ParseInt(strings.TrimSpace(lo), 10, 64)
+	end, err2 := strconv.ParseInt(strings.TrimSpace(hi), 10, 64)
+	if err1 != nil || err2 != nil || end < start {
+		return 0, false
+	}
+	return end - start + 1, true
+}
+
+// readCapped 读响应体，最多 limit 字节；limit < 0 表示无界。
+// 超上界**报错而不是截断** —— 截断会静默产出一个坏分片，那正是这一档最忌讳的失败形态。
+func readCapped(r io.Reader, limit int64) ([]byte, error) {
+	if limit < 0 {
+		return io.ReadAll(r)
+	}
+	// 多读一个字节：读满 limit+1 就说明对方给的比声明的还多，不用把剩下的全吃进来
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("响应体超过 %d 字节（Range 区间或 Content-Length 声明的长度）", limit)
+	}
+	return data, nil
 }
 
 // SegmentInfo 片段信息

@@ -340,7 +340,7 @@ func TestNewAppReportsDatabaseFailure(t *testing.T) {
 func TestNewAppRejectsUnsupportedDriver(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("db:\n  driver: postgres\n  dsn: x\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("log:\n  dir: ./logs\ndb:\n  driver: postgres\n  dsn: x\n  max_idle_conns: 10\n  max_open_conns: 100\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

@@ -508,19 +508,12 @@ func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid config: "+err.Error()+" (仅支持热更字段)", http.StatusBadRequest)
 		return
 	}
-	for name, v := range map[string]*int{
-		"error_queue.worker_count":   rt.ErrorQueue.WorkerCount,
-		"error_queue.max_retry":      rt.ErrorQueue.MaxRetry,
-		"error_queue.batch_size":     rt.ErrorQueue.BatchSize,
-		"recover_queue.worker_count": rt.RecoverQueue.WorkerCount,
-		"recover_queue.batch_size":   rt.RecoverQueue.BatchSize,
-		"repeat_queue.worker_count":  rt.RepeatQueue.WorkerCount,
-		"repeat_queue.batch_size":    rt.RepeatQueue.BatchSize,
-	} {
-		if v != nil && *v < 0 {
-			http.Error(w, name+" 必须 >= 0", http.StatusBadRequest)
-			return
-		}
+	// 运行期覆盖层的值域判据收在 config.ValidateRuntime 里（原先这里是就地一个 map 检查，
+	// 规则散在 HTTP 层；搬到 config 之后 engine.ApplyRuntimeConfig 也调同一个函数，
+	// 程序化调用绕不过去）。校验不过回 400 —— 是调用方的输入错，不是服务端故障。
+	if err := config.ValidateRuntime(&rt); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	if err := s.cfg.ConfigSet(&rt); err != nil {
 		s.logger.Errorf("apply config: %s", err.Error())

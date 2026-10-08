@@ -188,6 +188,12 @@ func (e *Engine) GetResult(taskID int, out any) error {
 // 没提到的字段保持原样。整体替换的话，只提交 html.timeout 就会把之前设的
 // browser.headers、各队列的 interval 悄无声息地清掉。
 func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
+	// 先校验再合并：**这条路绕过 config.Load**（LoadRuntime 只 yaml.Unmarshal、
+	// PUT /api/config 只 Merge + Store），不在这里拦就没人拦了 ——
+	// 一个 max_body_size: 0 能让每次抓取都失败，而配置文件那边的校验看不见它。
+	if err := config.ValidateRuntime(rt); err != nil {
+		return err
+	}
 	merged := e.runtime.Load().Merge(rt)
 	e.runtime.Store(merged)
 

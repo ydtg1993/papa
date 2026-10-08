@@ -15,6 +15,11 @@ func TestLoadConfig(t *testing.T) {
 	content := `
 app:
   env: dev
+log:
+  dir: ./logs
+db:
+  max_idle_conns: 10
+  max_open_conns: 100
 browser:
   enable: true
   pool_size: 3
@@ -126,25 +131,19 @@ repeat_queue:
 }
 
 // db.log_level 写错了要在启动前报清楚，不能静默当默认值用。
-func TestLoadRejectsBadSQLLogLevel(t *testing.T) {
+func TestLoadPanicsOnBadSQLLogLevel(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(p, []byte("app:\n  env: prod\ndb:\n  log_level: verbose\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(p); err == nil {
-		t.Fatal("非法的 db.log_level 应当报错")
-	}
+	// 三个必填键都得在：log.dir + 两个连接池键（理由见 validate_test.go 的 TestRequiredKeys）
+	base := "log:\n  dir: ./logs\ndb:\n  max_idle_conns: 10\n  max_open_conns: 100\n  log_level: "
+
+	// 非法的级别名要在启动前炸掉（进校验层之后形态从「返回 error」变成「panic」）
+	writeFile(t, p, base+"verbose")
+	assertPanicNamesKey(t, "db.log_level", func() { Load(p) })
 
 	// 合法的四种 + 留空都要能过
 	for _, lvl := range []string{"", "silent", "error", "warn", "info"} {
-		body := "app:\n  env: prod\n"
-		if lvl != "" {
-			body += "db:\n  log_level: " + lvl + "\n"
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, p, base+lvl)
 		if _, err := Load(p); err != nil {
 			t.Fatalf("log_level=%q 应当合法：%v", lvl, err)
 		}

@@ -14,6 +14,17 @@
 
 ## 1. 完整配置项参考
 
+> **配置校验层**：启动时（`config.Load`）校验两件事，**不符合直接 panic** —— 不返回错误、也不静默降级。
+>
+> | 校验 | 行为 |
+> | --- | --- |
+> | **键名**：文件里有、结构体里没有的键 | **一律拒绝启动**，并尝试给出「是不是想写 X」。**没有降级开关** —— 静默忽略未知键是最贵的一种配置错误（它伪装成「配置生效了」） |
+> | **值域**：已声明字段的合法范围 | 越界即 panic，报错点名键路径与为什么 |
+>
+> 判据表在 `config/validate.go` 的 `rules`，一条一行；`TestRuleKeysExistInStruct` 钉住每个键都真实存在于结构体（防止表里写一个永远不会触发的假键）。**这一层只管 `config.yaml`** —— 各库自己收到的 Go 结构体零值（`filedown.ChunkSize`、`htmlfetch.MaxBodySize` 那类）不在这里，判据归各自的构造函数。
+>
+> 每条规则都区分三态：**没写**（用默认值，合法）／写了且合法／写了但越界。唯一的例外是 `log.dir` —— 它没有「没写也合法」那一态（空串会去写文件系统根），见下。
+
 ### app —— 环境
 
 | 键 | 类型 | 说明 |
@@ -59,7 +70,7 @@
 | --- | --- | --- | --- |
 | `enable` | bool | ❌ | 是否启用静态 HTML 客户端 |
 | `timeout` | duration | ✅ | 请求超时 |
-| `max_body_size` | int64 | ✅ | 响应体大小上限（字节） |
+| `max_body_size` | int64 | ✅ | 响应体大小上限（字节）。**`enable: true` 时必填**，`102400..67108864`（100KB..64MB）。下界挡的是**单位混淆** —— 隔壁 `log.max_size` 的单位是 MB，这里写 `10` 意思是 10 字节，于是每次抓取都报「页面太大」；上界 64MB 在模板值（10MB）之上，只防笔误。热更时同样校验，越界回 400 |
 | `headers` | map | ✅ | 额外请求头 |
 
 ### proxy —— 代理管理器
@@ -75,7 +86,8 @@
 | --- | --- | --- |
 | `driver` | string | **只实现了 `mysql`**；其它值启动即报 `unsupported driver` |
 | `dsn` | string | 数据源名称 |
-| `max_idle_conns` / `max_open_conns` | int | 空闲/最大连接数 |
+| `max_idle_conns` | int | 空闲连接数上限。**必填**，`1..100`；且**不得大于 `max_open_conns`**（Go 会把超出的静默压到 `max_open_conns`，你写的那个数不生效） |
+| `max_open_conns` | int | 最大连接数上限。**必填**，`1..100`。**不写或写 0 会被拒**：`database/sql` 把 0 当成「不限」，而配置的零值也是 0 —— 两者是同一个数、分不开，不拦的话漏配就是静默打满 MySQL。上界 100 是政策值（模板给的就是 10 / 100），要开更多改 `config/validate.go` 的 `dbPoolMax` |
 | `conn_max_lifetime` / `conn_max_idle_time` | duration | 连接最大生命周期 / 空闲最大存活 |
 | `log_level` | string | SQL 日志级别：`silent`/`error`/`warn`/`info`；**留空按 `app.env` 推**（`dev`=info，其它=warn）。非 dev 还会隐掉日志里的参数值（渲染成 `?`）—— 每条 SQL 连着参数值进日志会随「日志导出」外泄；调试要看值就把 `env` 设成 `dev` |
 
@@ -83,7 +95,7 @@
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `dir` | string | 日志目录 |
+| `dir` | string | 日志目录。**必填** —— 空串会拼出**文件系统根 / 当前盘根**下的 `sys.log`：要么因为没权限而静默一条日志都没有，要么把日志散在盘根 |
 | `max_size` | int | 单文件大小上限（MB） |
 | `max_days` / `max_backups` | int | 保留天数 / 备份数 |
 | `compress` / `local_time` | bool | 是否压缩 / 本地时间 |
@@ -179,6 +191,10 @@
 - 可热更字段（`PUT /api/config`，改后即时生效）：
   - 浏览器/HTML：`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
   - 两个队列（`error_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`；`recover_queue` 只剩 `enabled` / `worker_count` / `batch_size`（它只在启动跑一次，没有 `interval` / `timeout` 可调）。
+> 热更的值**同样要过校验**（`config.ValidateRuntime`）—— 这条路绕过 `config.Load`，
+> 不单独校验的话，一个 `html.max_body_size: 0` 能在不重启的情况下让每一次抓取都失败，
+> 而配置文件的校验完全看不见它。越界回 **400**（不是 500：那是调用方的输入错），且不下发。
+
 - 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.stop_timeout`、`crawler.trace.*`、`crawler.breaker.*`（`RuntimeConfig` 里没有 trace / breaker，改只能重启）。
 
 > **熔断的「暂停」状态也不跨重启**：进程重启即恢复运行 —— 起进程本身就是一次人工介入。

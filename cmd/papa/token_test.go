@@ -108,7 +108,8 @@ func TestRunTokenCmdHonoursPAPACONFIGEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	path := dir + string(os.PathSeparator) + "from-env.yaml"
-	if err := os.WriteFile(path, []byte("db:\n  driver: sqlite\n"), 0o600); err != nil {
+	// log.dir 与两个连接池键都是必填的（校验层会拦），所以夹具也得带上
+	if err := os.WriteFile(path, []byte("log:\n  dir: ./logs\ndb:\n  driver: sqlite\n  max_idle_conns: 10\n  max_open_conns: 100\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PAPA_CONFIG", path)
