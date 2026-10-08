@@ -295,36 +295,65 @@ func TestConcurrentSameFile(t *testing.T) {
 	}
 }
 
-// 测试取消下载时临时文件被清理
-func TestCancelCleansTemp(t *testing.T) {
+// 取消下载要**及时退出** —— 这条用例的价值全在"取消是不是真的能打断挂住的下载"。
+//
+// 所以服务端**故意不返回响应体**（只有客户端取消才会解开那个 handler）：
+//   - 下载器接 ctx → 取消后请求报错、Download 迅速返回 ✓
+//   - 不接 ctx → 它会一直等下去，5s 的看门狗抓出来 ✗
+//
+// 最初这版用的是 mockServer + 50MB 文件，那是**假的**：本地 50MB 在 300ms 内就跑完了，
+// `cancel()` 是个空操作，不接 ctx 也照样过；而且原来那句 `<-done` 没有上限，
+// 真挂住只能等 Go 自己 10 分钟超时。临时分片的清理是尽力而为，只记不断言。
+func TestCancelReturnsPromptly(t *testing.T) {
+	// release 是**收尾兜底**：handler 卡在"等客户端取消"上，而 httptest.Server.Close()
+	// 会等未完成的请求 —— 用例一旦失败（取消没生效），没人取消那个请求，
+	// Close 就会跟着一起挂住，报出来的是一句超时而不是本用例的那句 Fatal。
+	// 用 t.Cleanup（而不是 defer）是顺序要求：它在测试函数的 defer 之后跑，
+	// 所以 t.Fatal 之后仍会先 close(release) 放掉 handler，再 srv.Close()。
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", "52428800") // 50MB，够分几片
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		select {
+		case <-r.Context().Done(): // 正常路径：客户端取消，请求结束
+		case <-release: // 兜底路径：用例失败时放行，别把 Close 拖住
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+
 	tempOut := tempDir(t)
 	tempState := tempDir(t)
-	content := make([]byte, 50*1024*1024) // 50MB 大文件，确保分片下载耗时
-	server := mockServer(content, true)
-	defer server.Close()
-
-	cfg := &Config{
+	downloader := NewDownloader(&Config{
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  2,
-		ChunkSize:      10 * 1024 * 1024, // 10MB
+		ChunkSize:      10 * 1024 * 1024,
 		EnableResume:   true,
-	}
-	downloader := NewDownloader(cfg)
+	})
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		downloader.Download(ctx, server.URL, "cancel", "bigfile.bin", nil)
+		downloader.Download(ctx, srv.URL, "cancel", "bigfile.bin", nil)
 	}()
-	time.Sleep(300 * time.Millisecond)
+
+	time.Sleep(300 * time.Millisecond) // 等它进到分片下载（此时每个请求都在等响应体）
 	cancel()
-	<-done
-	// 检查临时目录是否被清理（可能残留，但应尽量清理）
-	tempSegments := filepath.Join(tempState, "segments", "cancel", "bigfile.bin")
-	if _, err := os.Stat(tempSegments); err == nil {
-		// 如果取消时部分临时文件未清理，可以接受，但最好是清理了
-		t.Log("temp segments may still exist, not critical")
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("取消之后 Download 没在 5s 内返回 —— 取消路径没接 ctx")
+	}
+
+	// 清理是尽力而为，不作断言（断言了会偶发红，红了又会被当成噪声关掉）
+	if _, err := os.Stat(filepath.Join(tempState, "segments", "cancel", "bigfile.bin")); err == nil {
+		t.Log("temp segments may still exist（尽力而为的清理，不作断言）")
 	}
 }
 

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -290,15 +291,26 @@ func TestScheduleStartsAndStops(t *testing.T) {
 
 // 非法的 cron 表达式只记日志，不 panic —— 一个写错的任务不该把整个应用拦在启动阶段。
 func TestScheduleLogsBadSpecAndKeepsGoing(t *testing.T) {
+	// 用能抓输出的 logger：这条用例的名字就承诺了"把这条坏 spec 记下来"，
+	// 而原来的 loggerStub 是 io.Discard —— 断言不了任何东西，只有"不该 panic"。
+	var buf bytes.Buffer
+	log := logrus.New()
+	log.SetOutput(&buf)
+	log.SetLevel(logrus.ErrorLevel)
+
 	a := &App{
 		Config: &config.Config{Scheduler: config.SchedulerConfig{Timezone: "UTC"}},
-		Logger: &loggers.LoggerSet{Scheduler: loggersStub()},
+		Logger: &loggers.LoggerSet{Scheduler: log},
 	}
 	a.RegisterCronJob("bad", "这不是 cron", func() {})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a.schedule(ctx) // 不该 panic
+	a.schedule(ctx) // 不该 panic，也不该因为一条坏 spec 就整体不跑
+
+	if got := buf.String(); !strings.Contains(got, "failed to add custom job bad") {
+		t.Fatalf("应当把这条坏 spec 连同任务名记下来，实得日志：%q", got)
+	}
 }
 
 /* ---------- NewApp 的失败路径 ---------- */
