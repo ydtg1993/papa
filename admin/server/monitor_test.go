@@ -191,6 +191,7 @@ func TestAuth(t *testing.T) {
 		{"令牌不对", "/api/monitor", map[string]string{"X-Auth-Key": "nope"}, http.StatusUnauthorized},
 		{"令牌被停用", "/api/monitor", map[string]string{"X-Auth-Key": "disabled"}, http.StatusUnauthorized},
 		{"bearer", "/api/monitor", map[string]string{"Authorization": "Bearer good"}, http.StatusOK},
+		{"bearer 小写方案名（RFC 7235 里同样合法）", "/api/monitor", map[string]string{"Authorization": "bearer good"}, http.StatusOK},
 		{"x-auth-key", "/api/monitor", map[string]string{"X-Auth-Key": "good"}, http.StatusOK},
 		{"query 不再被接受", "/api/monitor?key=good", nil, http.StatusUnauthorized},
 		{"HTML 只查 IP，不要令牌", "/monitor", nil, http.StatusOK},

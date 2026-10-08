@@ -186,9 +186,20 @@ func WarnIfNoToken(db *gorm.DB, log Logger) {
 // Extract 从请求里取令牌：`Authorization: Bearer <token>`，其次 `X-Auth-Key`。
 //
 // **刻意不看 `?key=`** —— URL 里的凭据会落进浏览器历史、代理与访问日志。
+//
+// 方案名按 **RFC 7235 做大小写不敏感**比较：`Bearer` / `bearer` / `BEARER` 都是合法的，
+// 而这里原来用的是 `strings.HasPrefix(h, "Bearer ")` —— 客户端写小写会拿到一个
+// 莫名其妙的 401（凭据明明是对的）。
+//
+// **令牌本身仍然是逐字节精确匹配**，不做大小写归一：它是密钥，不是标识符；
+// 而且生成侧是 `hex.EncodeToString`，给出来的本来就是全小写 —— 没有"统一小写"这回事，
+// 真要归一反而埋雷（哪天 `NewToken` 换成混合大小写，入库哈希与校验哈希就会对不上）。
 func Extract(r *http.Request) string {
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	if h := r.Header.Get("Authorization"); h != "" {
+		// 只按空格切一次：方案名与凭据之间按规范是 1*SP
+		if scheme, rest, ok := strings.Cut(h, " "); ok && strings.EqualFold(scheme, "bearer") {
+			return strings.TrimSpace(rest)
+		}
 	}
 	return strings.TrimSpace(r.Header.Get("X-Auth-Key"))
 }

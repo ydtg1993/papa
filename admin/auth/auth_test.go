@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -45,19 +44,35 @@ func TestHash(t *testing.T) {
 
 func TestExtract(t *testing.T) {
 	cases := []struct {
-		name string
-		req  *http.Request
-		want string
+		name  string
+		auth  string
+		xAuth string
+		want  string
 	}{
-		{"Bearer", httptest.NewRequest("GET", "/api/x", nil).WithContext(context.Background()), "tok"},
-		{"X-Auth-Key", httptest.NewRequest("GET", "/api/x", nil), "tok"},
-		{"什么都没有", httptest.NewRequest("GET", "/api/x", nil), ""},
+		{"Bearer（规范写法）", "Bearer tok", "", "tok"},
+		{"bearer 全小写（RFC 7235 里同样合法）", "bearer tok", "", "tok"},
+		{"BEARER 全大写", "BEARER tok", "", "tok"},
+		{"bEaReR 混合", "bEaReR tok", "", "tok"},
+		{"凭据两侧多余空格", "Bearer   tok  ", "", "tok"},
+		{"方案名与凭据之间没有空格", "Bearertok", "", ""},
+		{"只有方案名、没有凭据", "Bearer", "", ""},
+		{"别的方案", "Basic dXNlcjpwYXNz", "", ""},
+		{"Authorization 为空时回退 X-Auth-Key", "", " tok ", "tok"},
+		{"两个都给时优先 Authorization", "Bearer from-header", "from-x-auth", "from-header"},
+		{"什么都没有", "", "", ""},
+		// 令牌**不做大小写归一**：它是密钥，逐字节精确匹配（生成侧本来就是全小写 hex）
+		{"令牌大小写原样带出", "Bearer TOK", "", "TOK"},
 	}
-	cases[0].req.Header.Set("Authorization", "Bearer tok")
-	cases[1].req.Header.Set("X-Auth-Key", " tok ")
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := Extract(c.req); got != c.want {
+			req := httptest.NewRequest("GET", "/api/x", nil)
+			if c.auth != "" {
+				req.Header.Set("Authorization", c.auth)
+			}
+			if c.xAuth != "" {
+				req.Header.Set("X-Auth-Key", c.xAuth)
+			}
+			if got := Extract(req); got != c.want {
 				t.Fatalf("Extract = %q, want %q", got, c.want)
 			}
 		})
@@ -67,6 +82,24 @@ func TestExtract(t *testing.T) {
 	withQuery := httptest.NewRequest("GET", "/api/x?key=tok", nil)
 	if got := Extract(withQuery); got != "" {
 		t.Fatalf("Extract 不该认 ?key=，得到 %q", got)
+	}
+}
+
+// 生成的令牌是 hex，**本来就全小写** —— 这条钉住它，免得有人以为"要统一小写"
+// 而去给校验侧加一层 ToLower（那会在 NewToken 换编码时静默把校验打坏）。
+func TestNewTokenIsLowercaseHex(t *testing.T) {
+	tok, err := NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tok) != 64 {
+		t.Fatalf("长度 = %d, want 64", len(tok))
+	}
+	if tok != strings.ToLower(tok) {
+		t.Fatalf("令牌应当已经是全小写：%q", tok)
+	}
+	if strings.Trim(tok, "0123456789abcdef") != "" {
+		t.Fatalf("令牌应当是纯 hex 字符：%q", tok)
 	}
 }
 

@@ -14,7 +14,7 @@
 所有 `/api/` 接口都过两道校验：
 
 1. **IP/CIDR 白名单**（`server.whitelist` / `whitelist_file`），空 = 不限制；`/monitor` 页面本身只查这一道。
-2. **访问令牌**：请求带 `Authorization: Bearer <令牌>`，或 `X-Auth-Key: <令牌>`。
+2. **访问令牌**：请求带 `Authorization: Bearer <令牌>`，或 `X-Auth-Key: <令牌>`。方案名按 RFC 7235 **大小写不敏感**（`bearer` / `BEARER` 也收）；令牌本身逐字节精确匹配，不做大小写归一。
    **不再支持 `?key=`**（凭据进 URL 会落进浏览器历史与访问日志）。
 
 `/api/*` 的响应一律带 `Cache-Control: no-store`：带凭据的数据（仪表盘、日志下载、白名单……）
