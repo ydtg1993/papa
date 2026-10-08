@@ -42,6 +42,37 @@ type fakeTaskDB struct {
 	// maxQueries > 0 时，第 maxQueries+1 次 SELECT 直接报错。给可能死循环的用例兜底：
 	// 否则测试是挂住（超时才失败），而不是干脆地报出来。
 	maxQueries int
+	// onQuery 在每次 SELECT 之前被调用，参数是"这是第几次查询"（从 1 起）。
+	// 用来模拟"第一次查不到、写失败之后又查到了"这类跨调用的状态变化
+	// —— 比如 SubmitTask 插入撞唯一索引后回查那一段，没有钩子就摆不出来。
+	onQuery func(n int)
+	// failQueries > 0 时，接下来的 N 次 SELECT 直接报错（模拟库抖动）。
+	// 与 failNext（写失败）对称：读路径的容错也要能离线演出来。
+	failQueries int
+	// onExec 在每次写之前被调用，参数是"这是第几次写"（从 1 起）。
+	// 给"按批删除直到删不满一批"这类多轮写入用：中途改 affected 才能让它停下来。
+	onExec func(n int)
+
+	// traceRows 是 crawler_task_trace 的结果集（nil = 一张空表）。
+	// 追踪是独立一张表，而 ListTrace 要的是真行，所以假库也认它。
+	traceRows []fakeRow
+	// count 是 COUNT(*) 查询的返回值（默认 0）。治理队列的积压采样走它 ——
+	// 那条路要的是单列结果集，和 crawler_tasks 的整行结果集不是一回事。
+	count int64
+}
+
+// fakeTraceColumns 是 models.TaskTrace 的全列，顺序任意 —— gorm 按列名映射。
+var fakeTraceColumns = []string{
+	"id", "task_id", "attempt", "seq", "step", "status", "kind", "message", "data", "duration", "created_at",
+}
+
+// traceRow 造一条步骤记录。
+func traceRow(id, taskID int64, attempt, seq int, step string, status int64, data []byte) fakeRow {
+	return fakeRow{
+		"id": id, "task_id": taskID, "attempt": int64(attempt), "seq": int64(seq),
+		"step": step, "status": status, "kind": "", "message": "",
+		"data": data, "duration": int64(3 * time.Millisecond), "created_at": time.Now(),
+	}
 }
 
 // fakeRow 一行 crawler_task 的值；某列缺席即为 NULL。
@@ -139,6 +170,9 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execs = append(f.execs, q)
+	if f.onExec != nil {
+		f.onExec(len(f.execs))
+	}
 	if f.failNext > 0 {
 		f.failNext--
 		return nil, errors.New("fake: duplicate entry")
@@ -152,9 +186,12 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 }
 
 // rowValues 把一行按 fakeTaskColumns 摊成 driver.Value 切片。
-func rowValues(r fakeRow) []driver.Value {
-	vals := make([]driver.Value, len(fakeTaskColumns))
-	for i, c := range fakeTaskColumns {
+func rowValues(r fakeRow) []driver.Value { return rowValuesOf(fakeTaskColumns, r) }
+
+// rowValuesOf 按给定列名摊平一行；缺席的列即 NULL。
+func rowValuesOf(cols []string, r fakeRow) []driver.Value {
+	vals := make([]driver.Value, len(cols))
+	for i, c := range cols {
 		vals[i] = r[c]
 	}
 	return vals
@@ -164,9 +201,26 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queries = append(f.queries, q)
+	if f.onQuery != nil {
+		f.onQuery(len(f.queries))
+	}
+	if f.failQueries > 0 {
+		f.failQueries--
+		return nil, errors.New("fake: connection reset by peer")
+	}
 
+	if strings.Contains(q, "crawler_task_trace") {
+		out := &fakeRows{cols: fakeTraceColumns}
+		for _, r := range f.traceRows {
+			out.all = append(out.all, rowValuesOf(fakeTraceColumns, r))
+		}
+		return out, nil
+	}
+	if strings.Contains(strings.ToUpper(q), "COUNT(") {
+		return &fakeRows{cols: []string{"count(*)"}, all: [][]driver.Value{{f.count}}}, nil
+	}
 	if !strings.Contains(q, "crawler_tasks") {
-		return nil, fmt.Errorf("fakeTaskDB 只认 crawler_tasks，收到：%s", q)
+		return nil, fmt.Errorf("fakeTaskDB 只认 crawler_tasks / crawler_task_trace，收到：%s", q)
 	}
 	if f.maxQueries > 0 && len(f.queries) > f.maxQueries {
 		return nil, fmt.Errorf("fakeTaskDB: SELECT 已执行 %d 次，超过上限 %d（被测逻辑可能在死循环）",
