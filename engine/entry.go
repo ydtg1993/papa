@@ -4,9 +4,10 @@ package engine
 //
 // 起因：阶段原来只能在 main.go 里一个个注册（fetcher 值 + 入口回调各占一段），
 // 阶段一多 main.go 就变成一堆装配代码。
-// 更好的形状是**阶段清单单独一个文件**（脚手架生成的 `configs/stage.go`），main.go 只剩一行：
+// 更好的形状是**站点与阶段声明各站一个文件**（脚手架生成的 `configs/sites/<站名>.go`），
+// main.go 只剩一行：
 //
-//	app.RegisterStages(configs.All()...)
+//	app.RegisterSites(papa.Sites()...)
 //
 // 那样的话"这个阶段的入口任务是什么"就不该再由 main.go 传进来 —— 让 fetcher 自己实现这个接口：
 // 它是这个阶段自己的事，和 `GetStage()` 一样属于阶段的自述。

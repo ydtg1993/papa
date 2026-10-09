@@ -13,7 +13,6 @@ import (
 //
 // 参数不放 configs/config.yaml 的原因：一个阶段的存在本来就离不开代码（必须有个 fetcher），
 // 参数再放另一份文件，等于加一个阶段要改两处、想看全貌要翻两个地方。
-// 那个文件里**不再有 crawler.stages 段**（旧配置里的要整段删掉，留着会被"未知配置键"拦下）。
 func {{.SiteFunc}}() papa.SiteSpec {
 	site := papa.SiteSpec{
 		Key:     "{{.Module}}",          // 站点键：熔断 scope、日志/监控维度、任务的 site 列

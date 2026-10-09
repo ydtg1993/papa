@@ -644,7 +644,7 @@ import (
 // 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
 type FetchCatalog struct{}
 
-func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 config.yaml 的 crawler.stages 的 key 一致
+func (f *FetchCatalog) GetStage() string { return "catalog" } // 阶段名，全程序唯一（多站带站点前缀）
 
 func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)

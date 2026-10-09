@@ -35,9 +35,8 @@ crawler:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
     threshold: 50              # 窗口内终态失败数达到它即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
-  # 阶段的声明在 configs/stage.go（Go 里一份写全：并发、队列、间隔、重试、要不要投入口、
-  # 属于哪个站、熔断阈值）—— 配置里不再有 stages 段，它就是"加一个阶段改两个文件"里的另一个文件。
-  # 升级提示：旧配置里的 crawler.stages 段要**整段删掉**，留着会被"未知配置键"拦下（那是故意的）。
+  # 阶段不在这里配：声明在 configs/sites/<站名>.go（Go 里一份写全：并发、队列、间隔、重试、
+  # 要不要投入口、属于哪个站、熔断阈值）。详见 docs/FETCHER_WRITING_GUIDE.md 7.2
 
 # 浏览器自动化池配置
 # 浏览器按需创建：pool_size / direct_pool_size 是并发上限，不是常驻实例数，
@@ -144,24 +143,3 @@ repeat_queue:
   worker_count: 1         # 并发重新投递 repeatable 任务的数量
   interval: "2h"         # 轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
   batch_size: 100        # 每批查询处理的任务数；0 = 默认 100（分页流式）
-
-# 业务自己的配置段：框架不解析、不校验这里的键名，原样透出给 App。
-# 爬虫之外的配置（封面目录、归档模式、站点特有开关……）写在这里，别塞进 crawler/html 那几个段
-# —— 那些段的未知键会直接拒绝启动（那条规则是有意的：拼错的键名不该静默失效）。
-#
-#   business:
-#     covers:
-#       dir: ./covers
-#       size: 300
-#
-# 取用（按 struct 取会校验业务段内部的未知键，拼错当场报错）：
-#
-#   type CoversConfig struct {
-#       Dir  string `mapstructure:"dir"`
-#       Size int    `mapstructure:"size"`
-#   }
-#   var covers CoversConfig
-#   if err := app.Config.BusinessSection("covers", &covers); err != nil { panic(err) }
-#
-# 也可以直接读 app.Config.Business（map[string]any），用于键名由业务动态决定的自由结构。
-# 注意：这一段只作用于 config.yaml，热更覆盖层（runtime.yaml）里写它不生效，改配置要重启。
