@@ -256,7 +256,13 @@ return engine.SaveResult(task.ID, title, content)
 视频阶段产出 m3u8 地址和本地文件：
 
 ```go
-content := models.VideoContent{ Dir: res.OutputFile, Source: m3u8URL }
+// res.OutputFile 是**相对下载器 OutputDir** 的路径 —— 落库/展示要拼上基准，别当成绝对路径
+//（库里记什么、后台按哪个目录展示，都以 OutputDir 为准；两个下载器都有 OutputDir()）。
+dl := engine.GetM3U8()
+content := models.VideoContent{
+    Dir:    filepath.Join(dl.OutputDir(), res.OutputFile),
+    Source: m3u8URL,
+}
 engine.SaveContent(task.ID, content)
 
 // 回写父任务(detail)的下载标记：读-改-写

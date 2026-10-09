@@ -29,6 +29,31 @@ go install ./cmd/papa
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 
+### `papa new` 生成什么
+
+```
+mycrawler/
+  main.go                  装配：monitor.Register → （可选）SetProxy/SetM3U8/SetFiledown → RegisterSites(papa.Sites()...) → Run
+  configs/
+    config.yaml            配置（先把 db.dsn 指向你的库）
+    whitelist              后台来源白名单（全注释＝不限制，启动会警告）
+    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Entries / Headers + 每个阶段的
+                            worker_count / queue_size / delay / retry / AutoStart
+  fetcher/                 抓取实现（一个阶段一个 fetcher；加站点时按站点分包）
+  models/                  业务表模型 + 建表清单（models.go）
+  monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）
+  docs/                    这套手册的副本（离线可查）
+  docker/ · Makefile · logs/ · .gitignore
+```
+
+三句要点：
+
+- **加一个站 = 加一个 `configs/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
+  `papa.Sites()` 收集，`main.go` 不用动（阶段名跨站要唯一，约定带站点前缀）。
+- **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
+  yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
+- 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
+
 ## 2. 通用 flags（html / rod / diff 共用）
 
 | Flag | 说明 |

@@ -60,7 +60,8 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 ```
 papa.go · task.go · errors.go   门面：全是 type/var 别名，没有实现
-core/                           零依赖叶子包：跨包流动的纯值（告警 / 错误分类 / 监控快照 DTO）
+core/                           零依赖叶子包：跨包流动的纯值 + 不依赖任何内部包的纯函数
+                                （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定）
 config/                          配置结构 + 运行期覆盖层（纯数据，不依赖任何内部包）
 engine/                          引擎：Task · Trace · Fetcher · Engine
   engine.go    结构体 + 生命周期 + 依赖注入 + 结果读写
@@ -71,6 +72,11 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   dedup.go     内存去重表 + 活跃任务装载
   stats.go     监控快照
   fetch.go     浏览器池 / 静态 HTML 客户端
+  archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
+  entry.go     阶段入口（fetcher 可选实现 SubmitEntries，框架启动时调）
+  restricted.go 受限页判定（站点词表从 task.Site 取）
+  deps.go      阶段依赖声明（NeedsFiledown / NeedsM3U8 的启动期校验）
+  queuestats.go 三条治理队列的积压快照
   alias.go     给 core 里的值类型留的别名（见文末）
   recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用

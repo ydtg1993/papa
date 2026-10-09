@@ -42,11 +42,11 @@
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限（旧行为），`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
+| `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限，`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
 | `queue_watermark` | float | `0.75` | 队列高水位比例（0-1），达到后新任务溢出到 DB 待回灌，避免满队列丢任务 |
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
 | `stop_timeout` | duration | `5s` | 优雅退出时等各阶段 worker 把队列跑完的上限（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
-| `trace.enabled` | bool | `false` | 单任务步骤追踪：开启后 handler 可用 `task.Trace.Step/Fail` 上报步骤，写入 `crawler_task_trace` 表。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补两条：「任务失败」（失败尝试的**原因**，带分类与消息）与「归档页面」（带文件名，抽屉里可直接下载）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | 熔断闸门总开关。开启后窗口内**终态失败**数达阈值就把**所有阶段**的 worker 一起闸住 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
@@ -124,7 +124,7 @@
 | `whitelist` / `whitelist_file` | []string | 来源 IP/CIDR 白名单；文件优先 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
-| （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人），不再用配置里的单密钥；用 `papa token add --operator <名字>` 创建 |
+| （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人）；用 `papa token add --operator <名字>` 创建 |
 | `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
 | `read_header_timeout` | duration | `10s` | 只发请求头不发送体的慢连接会被掐掉 |
 | `read_timeout` | duration | `30s` | 读完整请求（含 body）的上限 |
@@ -184,7 +184,9 @@ crawler:
 - **两条抓取路径都覆盖**：`FetchHTML`（静态）与 `FetchRendered`（浏览器渲染）。后者的原始 HTML 本来就是 `page.HTML()` 读出来的（解析文档必须付的代价），登记不额外花 CDP 调用；它拿不到状态码与 Content-Type，元信息里留 0/空。
 - 保留期清理每小时巡检一次（与 trace 的清理同频），按文件修改时间删，`ctx` 取消即收工。
 
-> 后台没有内置"打开归档页"的入口（框架不知道你的目录怎么暴露）：要么直接看文件系统，要么按业务路由自己挂一个（`monitor/router.go` 的 `Routes(app)` 是给这个用的位置）。
+> **后台能直接把那一页拿走**：「追踪」抽屉里带「下载这一页」按钮，走 `GET /api/task/page?file=<相对路径>` ——
+> 服务端按 `archive.dir` 解析、拒绝 `..` 与绝对路径，回的是**文件本身**（`Content-Disposition: attachment`）
+> 而不是内联渲染，拿去本地对着真实页面改选择器最省事。要按自己的路由暴露归档目录，用 `monitor/router.go` 的 `Routes(app)`。
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
@@ -265,12 +267,12 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 > 启动时会检查"该有的表在不在"，缺了打醒目的错误日志 —— 免得出现「开关看着是开的、实际什么都没写进去」。
 
-## 2. 时长格式
+## 3. 时长格式
 
 - 标准 Go 时长字符串：`"500ms"` / `"5s"` / `"10m"` / `"6h"`。
 - 阶段 `delay` 额外支持区间：`"10s-30s"` 表示在该区间内随机取一个间隔（反爬更隐蔽）。
 
-## 3. 运行期热更（OA 后台）
+## 4. 运行期热更（OA 后台）
 
 - 可热更字段（`PUT /api/config`，改后即时生效）：
   - 浏览器/HTML：`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
