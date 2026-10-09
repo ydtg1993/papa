@@ -91,7 +91,7 @@ func TestInsertTasksReportsConflictingRow(t *testing.T) {
 	// 回查必须按 (stage, url) —— 唯一索引就是这个。
 	// 不能复用 findTaskRecord：它优先按 IdempotencyKey 查，而那列不是唯一索引，可能捞回另一行。
 	read := f.readSQL()
-	for _, want := range []string{"url = ?", "stage = ?"} {
+	for _, want := range []string{"url_hash = ?", "stage = ?"} {
 		if !strings.Contains(read, want) {
 			t.Fatalf("回查应带 %s 条件：\n%s", want, read)
 		}

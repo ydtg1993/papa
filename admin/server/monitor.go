@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"embed"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,25 +39,30 @@ type MonitorConfig struct {
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
 	// 由宿主注入（papa 用 admin/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
-	VerifyToken        func(r *http.Request) (operator string, ok bool)
-	Whitelist          []string                               // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile      string                                 // 白名单持久化文件路径（动态更新时写回）
-	Metrics            func() map[string]any                  // 业务自定义数据快照（可空）
-	QueueStats         func() map[string]core.QueueStat       // 治理队列运行快照（可空）
-	SysInfo            *sysinfo.Collector                     // 系统指标采集器（可空）
-	LogDir             string                                 // 日志目录（导出用）
+	VerifyToken   func(r *http.Request) (operator string, ok bool)
+	Whitelist     []string                         // 初始 IP/CIDR 白名单，空=不限制
+	WhitelistFile string                           // 白名单持久化文件路径（动态更新时写回）
+	Metrics       func() map[string]any            // 业务自定义数据快照（可空）
+	QueueStats    func() map[string]core.QueueStat // 治理队列运行快照（可空）
+	SysInfo       *sysinfo.Collector               // 系统指标采集器（可空）
+	LogDir        string                           // 日志目录（导出用）
+	// ArchiveDir 页面归档根目录（可空 = 归档没开）。后台「追踪」抽屉里那条"归档页面"步骤
+	// 据此提供**下载**：`GET /api/task/page?file=<相对路径>`（原始 HTML，拿去本地分析）。
+	ArchiveDir         string
 	OnShutdown         func()                                 // 优雅退出回调
 	ProcessErrorQueue  func() (int, error)                    // 错误队列手动触发回调（可空）
 	ProcessRepeatQueue func() (int, error)                    // 周期轮询队列手动触发回调（可空）
 	ConfigGet          func() *config.RuntimeConfig           // 返回当前运行期覆盖层（可空）
 	ConfigSet          func(*config.RuntimeConfig) error      // 应用运行期覆盖层（可空）
 	TaskTrace          func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
-	// BreakerStatus 熔断闸门的状态快照（可空；也随 /api/monitor 一起返回）。
-	BreakerStatus func() core.BreakerStatus
-	// ResumeBreaker 手动放行被闸住的抓取；返回是否真的从暂停态切了回来（本来在跑就是 false）。
-	ResumeBreaker func() bool
+	// BreakerStatuses 各 scope（站点）的熔断状态快照：key 是站点 Key，"" 是默认 scope。
+	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
+	BreakerStatuses func() map[string]core.BreakerStatus
+	// ResumeBreaker 放行**某个 scope**（site 为空 = 默认 scope）；返回是否真的从暂停态切了回来
+	//（本来在跑就是 false）。要知道有哪些 scope，看 BreakerStatuses 的键。
+	ResumeBreaker func(site string) bool
 	// OnBreakerResume 放行成功后的回调，宿主拿它记操作日志（人在场的干预必须留痕）；可空。
-	OnBreakerResume func(operator string)
+	OnBreakerResume func(operator, site string)
 	// VerifyTokenValue 单独校验一个**令牌值**（不是请求头），给关停这类高危操作做二次确认用：
 	// 调用方要把自己的令牌放进请求体再输一遍。nil 表示不支持关停（该接口直接 404）。
 	VerifyTokenValue func(token string) (operator string, ok bool)
@@ -135,6 +143,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
+	mux.HandleFunc("/api/task/page", s.wrap(s.taskPageHandler))
 }
 
 // wrap 包装处理器：先 IP 白名单，再令牌校验（仅 /api/ 数据接口）。
@@ -225,8 +234,10 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// 熔断状态跟着 /api/monitor 一起回：前端每轮刷新只发一个请求就能画出横幅，
 	// 不必再单开一条轮询。单独的 GET /api/breaker 留给脚本/外部系统。
-	if s.cfg.BreakerStatus != nil {
-		resp["breaker"] = s.cfg.BreakerStatus()
+	if s.cfg.BreakerStatuses != nil {
+		// 是**数组**不是单个对象：多站时每个 scope 一把闸门，后台要能逐站看、逐站放行。
+		// 顺序固定（默认 scope 在前，其余按站点名字典序），前端就不用再排。
+		resp["breakers"] = sortedBreakerStatuses(s.cfg.BreakerStatuses())
 	}
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()
@@ -392,17 +403,38 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, map[string]any{"status": "ok", "repolled": count})
 }
 
-// breakerHandler 读熔断闸门的状态。写操作见 breakerResumeHandler。
+// sortedBreakerStatuses 把各 scope 的状态排成稳定顺序：默认 scope（""）在前，其余按站点名。
+func sortedBreakerStatuses(all map[string]core.BreakerStatus) []core.BreakerStatus {
+	sites := make([]string, 0, len(all))
+	for site := range all {
+		sites = append(sites, site)
+	}
+	sort.Slice(sites, func(i, j int) bool {
+		if (sites[i] == "") != (sites[j] == "") {
+			return sites[i] == "" // 默认 scope 永远排第一
+		}
+		return sites[i] < sites[j]
+	})
+	out := make([]core.BreakerStatus, 0, len(sites))
+	for _, site := range sites {
+		st := all[site]
+		st.Site = site // 键就是站点，别让调用方再从 map 键去猜
+		out = append(out, st)
+	}
+	return out
+}
+
+// breakerHandler 读各 scope 的熔断状态。写操作见 breakerResumeHandler。
 func (s *Monitor) breakerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.BreakerStatus == nil {
+	if s.cfg.BreakerStatuses == nil {
 		http.Error(w, "breaker not configured", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, s.cfg.BreakerStatus())
+	writeJSON(w, map[string]any{"breakers": sortedBreakerStatuses(s.cfg.BreakerStatuses())})
 }
 
 // breakerResumeHandler 手动放行被熔断闸住的抓取。
@@ -415,20 +447,79 @@ func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.ResumeBreaker == nil {
+	if s.cfg.ResumeBreaker == nil || s.cfg.BreakerStatuses == nil {
 		http.Error(w, "breaker not configured", http.StatusNotFound)
 		return
 	}
-	if !s.cfg.ResumeBreaker() {
+
+	// 要放行哪个 scope：`?scope=xxx` 或请求体 `{"scope":"xxx"}`；都不给 = **全部**。
+	// 多站时"全部"是横幅上那个「恢复抓取」，单站时与以前完全一样。
+	scope, ok := breakerScopeParam(r)
+	if !ok {
+		http.Error(w, "bad request: scope must be a string", http.StatusBadRequest)
+		return
+	}
+	known := s.cfg.BreakerStatuses()
+	if scope != "" {
+		if _, exists := known[scope]; !exists {
+			http.Error(w, "unknown scope: "+scope, http.StatusBadRequest)
+			return
+		}
+	}
+
+	targets := []string{scope}
+	if scope == "" {
+		targets = targets[:0]
+		for site := range known {
+			targets = append(targets, site)
+		}
+		sort.Strings(targets)
+	}
+	resumed := make([]string, 0, len(targets))
+	for _, site := range targets {
+		if s.cfg.ResumeBreaker(site) {
+			resumed = append(resumed, site)
+		}
+	}
+	if len(resumed) == 0 {
 		writeJSON(w, map[string]any{"status": "ok", "resumed": false, "note": "当前不在暂停态"})
 		return
 	}
 	operator := auth.OperatorFrom(r.Context())
-	if s.cfg.OnBreakerResume != nil {
-		s.cfg.OnBreakerResume(operator)
+	for _, site := range resumed {
+		if s.cfg.OnBreakerResume != nil {
+			s.cfg.OnBreakerResume(operator, site)
+		}
 	}
-	s.logger.Infof("熔断已手动放行（操作人 %q），爬虫恢复取任务", operator)
-	writeJSON(w, map[string]any{"status": "ok", "resumed": true})
+	s.logger.Infof("熔断已手动放行（操作人 %q，scope=%q），恢复取任务", operator, strings.Join(resumed, ","))
+	// resumed 仍是**布尔**（前端/脚本靠它区分"本来就没暂停"）；放行了哪些 scope 在 resumed_scopes 里。
+	writeJSON(w, map[string]any{"status": "ok", "resumed": true, "resumed_scopes": resumed})
+}
+
+// breakerScopeParam 取要放行的 scope：先看 `?scope=`，再看请求体 `{"scope":"…"}`；都不给 = 空串（全部）。
+// 给了但不是字符串 → ok=false（调用方回 400，别静默当成"全部"）。
+func breakerScopeParam(r *http.Request) (scope string, ok bool) {
+	if v := r.URL.Query().Get("scope"); v != "" {
+		return v, true
+	}
+	if r.Body == nil {
+		return "", true
+	}
+	var body struct {
+		Scope *string `json:"scope"`
+	}
+	// 空请求体是合法的（"全部放行"）：先看一眼有没有内容，避免把 io.EOF 当解析失败。
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
+	if err := dec.Decode(&body); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", true
+		}
+		return "", false
+	}
+	if body.Scope == nil {
+		return "", true
+	}
+	return *body.Scope, true
 }
 
 // taskTraceHandler 返回一条任务的步骤追踪时间线（按尝试、步骤排序）。
@@ -528,6 +619,69 @@ type logFile struct {
 	Name    string    `json:"name"`
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"mod_time"`
+}
+
+// taskPageHandler 下载一个归档页面（`GET /api/task/page?file=<相对路径>`）。
+//
+// 给的是**文件本身**（`Content-Disposition: attachment`）而不是内联渲染 —— 拿下去本地分析
+// （对着真实页面写选择器）比在浏览器里看更实用，也省掉"注入 base 标签才能长回原样"那套。
+func (s *Monitor) taskPageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.ArchiveDir == "" {
+		http.Error(w, "页面归档未开启（crawler.archive.enabled）", http.StatusNotFound)
+		return
+	}
+	rel := r.URL.Query().Get("file")
+	abs, err := resolveArchivedFile(s.cfg.ArchiveDir, rel)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(abs)+"\"")
+	_, _ = w.Write(b)
+}
+
+// resolveArchivedFile 把一个**相对路径**解析到归档根目录下的绝对路径；越界一律拒绝。
+//
+// 两道判据：先按路径语义清洗（拒绝绝对路径与 `..`），再确认解析结果确实落在根之下
+// （防大小写/分隔符之类的意外）。归档目录里的文件名由框架生成，但路径是**从请求里来的** ——
+// 那是不可信输入，这里不靠"文件名不含 .."这种假设。
+func resolveArchivedFile(root, rel string) (string, error) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return "", fmt.Errorf("缺少 file 参数")
+	}
+	if strings.ContainsRune(rel, 0) {
+		return "", fmt.Errorf("file 参数非法")
+	}
+	// 明确拒掉"看起来就是绝对路径"的输入：Windows 上 `filepath.IsAbs("\etc\passwd")` 是 **false**
+	//（没有盘符不算绝对路径），光靠 IsAbs 会把它当相对路径拼进根目录 —— 拼进去虽然仍在根下，
+	// 但那种输入本来就不该被接受。带盘符的（`C:…`）同理。
+	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") ||
+		(len(rel) >= 2 && rel[1] == ':') {
+		return "", fmt.Errorf("file 参数越界")
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(rel))
+	// `huangguo/..` 清洗完是 `.`（指到根目录本身）—— 那不是文件，也别让它再往下走。
+	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("file 参数越界")
+	}
+	abs := filepath.Join(root, cleaned)
+	inside, err := filepath.Rel(root, abs)
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("file 参数越界")
+	}
+	return abs, nil
 }
 
 // logsListHandler 列出日志目录下的文件

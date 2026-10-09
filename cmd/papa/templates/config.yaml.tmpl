@@ -16,6 +16,17 @@ crawler:
   trace:
     enabled: true              # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
+  # 页面归档：把**失败那一刻抓到的那一页**原样落到本地文件（原始字节，不做再序列化 ——
+  # goquery 重新序列化会丢掉 <noscript> 里的回退标签，而那正是选择器坏掉时最该看的）。
+  # 由 engine.FetchHTML 自动登记、本次尝试结束时按结局落盘，handler 不用写任何代码；
+  # 归档后 trace 里会多一条「归档页面」步骤，指向文件（后台「追踪」抽屉里能连起来）。
+  # 路径：{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html（+ 同名 .json 记状态码/最终 URL）
+  archive:
+    enabled: false             # 默认关。排查选择器/登录墙/地区限制时打开
+    dir: "./logs/fetcher-html" # 归档根目录（enabled=true 时必填，没写会启动 panic）
+    mode: failure              # failure = 只在失败的尝试落（默认，写入量按失败率走）；always = 每次都落
+    retention: "168h"          # 保留期（默认 7 天，与 trace 对齐）；负数 = 不自动清理
+    max_file_mb: 8             # 单页上限（MB）；超了不归档并记 WARN
   # 熔断闸门：窗口内**终态失败**数（任务重试耗尽或不可重试，不是每次 attempt）达到阈值，
   # 就把所有阶段的 worker 一起闸住、不再取任何任务，并发一条 critical 告警。
   # 处理完后从后台 Dashboard 顶部横幅的「恢复抓取」按钮放行（POST /api/breaker/resume）。
@@ -24,14 +35,9 @@ crawler:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
     threshold: 50              # 窗口内终态失败数达到它即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
-  stages:                      # 爬取阶段配置
-    catalog:                   # 阶段名需与 fetcher.GetStage() 返回一致
-      worker_count: 1
-      queue_size: 20
-      delay: "5m"              # 任务间隔延迟：固定 "5m" 或随机区间 "10s-30s"
-      retry:
-        max_attempts: 3
-        backoff: "30s"
+  # 阶段的声明在 configs/stage.go（Go 里一份写全：并发、队列、间隔、重试、要不要投入口、
+  # 属于哪个站、熔断阈值）—— 配置里不再有 stages 段，它就是"加一个阶段改两个文件"里的另一个文件。
+  # 升级提示：旧配置里的 crawler.stages 段要**整段删掉**，留着会被"未知配置键"拦下（那是故意的）。
 
 # 浏览器自动化池配置
 # 浏览器按需创建：pool_size / direct_pool_size 是并发上限，不是常驻实例数，

@@ -216,3 +216,31 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 		t.Fatal("任务没进队列")
 	}
 }
+
+// 站点归属随行落库，也在重建路径上还原 —— 和 Meta 同一套机制（P0 的 taskFromRecord 是唯一入口）。
+//
+// 站点由**目标阶段**决定：调用方投任务时不用自己写 site，引擎按"这个阶段属于哪个站"补上；
+// 于是跨站派发（A 站的 catalog 投给 B 站的 detail）自然落到 B 站，不需要业务传参。
+func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true // 全新任务：走 INSERT
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e.stages["stub"] = &stageInfo{workerPool: e.stages["stub"].workerPool, config: StageConfig{Site: "huangguo"}}
+
+	task := &Task{Stage: "stub", URL: "https://example.com/1"}
+	if err := e.SubmitTask(task); err != nil {
+		t.Fatalf("SubmitTask = %v", err)
+	}
+	if task.Site != "huangguo" {
+		t.Fatalf("站点应当由目标阶段补上，实得 %q", task.Site)
+	}
+	if !strings.Contains(f.writtenArgs(), "huangguo") {
+		t.Fatalf("站点应随任务落库：%s", f.writtenArgs())
+	}
+
+	// 重建（恢复/重投/后台动作都走这一条）要把站点带回来
+	got := e.taskFromRecord(&models.CrawlerTask{ID: 7, Stage: "stub", Site: "huangguo"})
+	if got.Site != "huangguo" {
+		t.Fatalf("重建出来的任务丢了站点：%q", got.Site)
+	}
+}

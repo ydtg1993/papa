@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/internal/track"
 	"github.com/ydtg1993/papa/v2/internal/workerpool"
 	"github.com/ydtg1993/papa/v2/models"
@@ -34,6 +35,7 @@ func (e *Engine) getNotifiers() []Notifier {
 func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 	te := TaskError{
 		Stage:   task.Stage,
+		Site:    task.Site,
 		TaskID:  task.ID,
 		URL:     task.URL,
 		Retry:   task.Retry,
@@ -42,6 +44,7 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 	}
 	e.loggerSet.Engine.WithFields(logrus.Fields{
 		"stage":   te.Stage,
+		"site":    te.Site,
 		"task_id": te.TaskID,
 		"url":     te.URL,
 		"retry":   te.Retry,
@@ -50,7 +53,8 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 
 	// 熔断计数。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
 	// 按 attempt 数会把一个烂 URL 记 3 次，阈值会被噪声灌满。见 breaker.RecordFailure。
-	e.breaker.RecordFailure(task.Stage)
+	// **记在该阶段所属站点的闸门上**：多站时站点 A 的失败不该把站点 B 一起闸住。
+	e.breakerFor(e.siteOf(task.Stage)).RecordFailure(task.Stage)
 
 	notifiers := e.getNotifiers()
 	if len(notifiers) == 0 {
@@ -86,6 +90,7 @@ func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
 		Level: AlertCritical,
 		TaskError: TaskError{
 			Stage:   st.Stage,
+			Site:    st.Site,
 			Kind:    "circuit-breaker",
 			Message: st.Reason,
 		},
@@ -113,9 +118,12 @@ func (e *Engine) stageNames() []string {
 
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
+	// 阶段的存在性只有一个来源：**注册进来的 e.stages**（配置里不再声明阶段，见 App.RegisterSites）。
+	// 于是"配置声明了、代码没实现"这一类不同源的问题在结构上不存在了；未注册的阶段在提交时
+	// 由 submitToPool 报 ErrStageNotRegistered。
 	names := e.stageNames()
 
-	// 第零趟：依赖接线校验。声明了要用下载器却没接线，就在**启动这一刻**炸掉 ——
+	// 第零趟之二：依赖接线校验。声明了要用下载器却没接线，就在**启动这一刻**炸掉 ——
 	// 不然那句话要等第一条任务跑到那一步才出现，失败的是任务、不是启动（见 deps.go）。
 	for _, stage := range names {
 		e.checkStageDeps(stage, e.stages[stage].fetcher)
@@ -126,9 +134,10 @@ func (e *Engine) ApplyRegisterStage() {
 		stageInfo := e.stages[stage]
 		cfg := stageInfo.config
 		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
-		// 同一把闸门给所有阶段的池子 —— 熔断是「全任务暂停」，不是按阶段各停各的。
+		// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管；未归属站点的阶段落在默认 scope、
+		// 用 crawler.breaker 那把。单站项目 = 一个隐式 scope = 一把闸门，与之前完全一致。
 		// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
-		pool.SetGate(e.breaker)
+		pool.SetGate(e.breakerFor(stageInfo.config.Site))
 		e.stages[stage].workerPool = pool
 		// 启动 worker pool
 		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
@@ -203,12 +212,14 @@ func (e *Engine) ApplyRegisterStage() {
 		}
 	}
 
-	// 第二趟：池子都建好、也都启动了，这时才跑各阶段的 submitFunc。
+	// 第二趟：池子都建好、也都启动了，这时才跑各阶段的入口任务。
 	//
-	// **必须两趟**：submitFunc 最自然的写法就是"投一批起始任务"，而它可以投给**任意**阶段。
+	// **必须两趟**：入口回调最自然的写法就是"投一批起始任务"，而它可以投给**任意**阶段。
 	// 一趟遍历（边建池边跑回调）时，后面的池子还没建，`submitTo` 就是 nil 解引用 panic
-	// （Go 的 map 遍历顺序随机，所以表现为"有时崩、有时不崩"）。触发前提是"回调投给别的阶段"，
-	// 脚手架与文档里的单阶段投自己碰不到 —— 但代价是启动期崩溃且报错为空，两趟的成本是零。
+	//（Go 的 map 遍历顺序随机，所以表现为"有时崩、有时不崩"）。
+	//
+	// 引擎在这里**不做策略判断**：有回调就跑（要不要接入口回调，由声明层决定 —— 见
+	// App.RegisterSites 的 AutoStart）。
 	for _, stage := range names {
 		if fn := e.stages[stage].submitFunc; fn != nil {
 			fn(e)
@@ -225,24 +236,52 @@ func (e *Engine) ApplyRegisterStage() {
 	e.startRepeatQueue()
 	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
 	e.startTraceCleanup()
+	// 启动页面归档的保留期清理（归档未开启时不启动）
+	e.startArchiveCleanup()
 	// HTTP 服务开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
 	if e.cfg.Server.Enabled {
 		e.startQueueSampler()
 	}
 }
 
-// runAttempt 执行一次 FetchHandler，并负责这一次尝试的步骤追踪：
-// 挂记录器 → 跑 handler → 记下结局 → 落库。
+// runAttempt 执行一次 FetchHandler，并负责这一次尝试的步骤追踪与页面归档：
+// 挂记录器 → 跑 handler → 记下结局 → 落盘（归档）/落库（trace）。
 //
-// 落库放在 defer 里，所以 panic 展开时也会执行 —— 闭包这一层的 defer 先于 workerpool
+// 两件事都放在 defer 里，所以 panic 展开时也会执行 —— 闭包这一层的 defer 先于 workerpool
 // 的 recover 跑，panic 之前已上报的步骤因此不会丢；panic 路径上 setResult 没被调用，
-// flush 按失败处理、data 保留，正好是排查现场要看的。
-// 这里**不 recover**：panic 继续抛给 workerpool，它那边的 debug.Stack() 与 failed
-// 计数才是既有行为，重新 panic 反而会丢掉 handler 的栈帧。
-func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
+// trace 按失败处理（data 保留）、归档也按失败落盘，正好是排查现场要看的。
+//
+// 这里 recover 一次**只是为了拿"是不是 panic"这个信号**（panic 时命名返回值 err 还是 nil），
+// 拿到之后原样抛回去：workerpool 那头的 debug.Stack() 与 failed 计数才是既有行为，
+// 吞掉 panic 或者重新造一个都会丢掉 handler 的栈帧。
+func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) (err error) {
 	tr := e.newTrace(task, attempt)
 	task.Trace = tr
 	defer tr.finish() // finish 幂等，正常返回与 panic 展开都走这里
+
+	// 归档缓冲（未开归档时是 nil，所有方法都 nil 安全）。这个 defer 注册在 tr.finish 之后，
+	// 于是**先**执行（LIFO）——"这次归档了哪些文件"因此能作为一条步骤写进还没落库的 trace。
+	ar := e.newArchiveBuffer(task, attempt)
+	defer func() {
+		r := recover()
+		if files := ar.finish(r != nil || err != nil); len(files) > 0 {
+			// OA 追踪抽屉里"失败"与"那一页"的连接点：光有文件、不知道属于哪条任务等于没留。
+			// 注意这条步骤的 data 也受 trace 的既有策略约束（只有失败的尝试才保留 data）——
+			// `always` 模式下成功的尝试里，步骤名还在但文件名会被剥掉；那种情况按
+			// `{dir}/{stage}/task-{id}-try-{retry}-*` 在目录里找同一次尝试的文件即可。
+			tr.Step(archiveTraceStep, map[string]any{"files": files})
+		}
+		if r != nil {
+			panic(r)
+		}
+	}()
+	// 缓冲挂在 ctx 上：FetchHTML 只拿得到 ctx，这是它知道"这一页属于哪次尝试"的唯一途径
+	ctx = withArchive(ctx, ar)
+	// 站点请求头也挂在 ctx 上：这个站的任务抓任何页面都自动带上它的 UA/Cookie/Referer，
+	// handler 不用写代码；要对单次请求再改，用 `papa.WithHeaders(ctx, …)` 叠加（它只会覆盖给到的键）。
+	if h := e.siteHeaders(task.Site); len(h) > 0 {
+		ctx = core.WithHeaders(ctx, h)
+	}
 
 	// 加急记在 trace 的第一步，事后还能看出"这条曾经加急跑过"：
 	// claimTask 认领时会把 urgent 列归零（加急是「排队位置」的概念，跑过一次即完成使命），
@@ -251,7 +290,7 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 		tr.Step(traceUrgentStep, nil)
 	}
 
-	err := fetcher.FetchHandler(ctx, task, e)
+	err = fetcher.FetchHandler(ctx, task, e)
 	tr.setResult(err)
 	return err
 }

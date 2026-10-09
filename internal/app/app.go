@@ -15,6 +15,7 @@ import (
 	"github.com/ydtg1993/papa/v2/admin/tasksource"
 	"github.com/ydtg1993/papa/v2/admin/tokenadmin"
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/engine"
 	"github.com/ydtg1993/papa/v2/internal/database"
 	"github.com/ydtg1993/papa/v2/pkg/browser"
@@ -48,7 +49,8 @@ type App struct {
 	httpSrv     *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
 	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
 	cancel      context.CancelFunc
-	customJobs  []cronJob // 业务注册的自定义定时任务
+	customJobs  []cronJob            // 业务注册的自定义定时任务
+	sites       map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
 }
 
 // cronJob 业务注册的自定义定时任务。
@@ -272,7 +274,7 @@ func (a *App) mountRouters(mux *http.ServeMux, guard Middleware) {
 
 // NewApp 统一初始化所有组件，并完成依赖注入
 func NewApp(opts ...Option) (*App, error) {
-	a := &App{}
+	a := &App{sites: make(map[string]core.Site)}
 	for _, opt := range opts {
 		if err := opt(a); err != nil {
 			return nil, err
@@ -352,36 +354,6 @@ func NewApp(opts ...Option) (*App, error) {
 // AutoMigrate 只增不减、幂等，重复跑是安全的。
 func (a *App) Migrate() error {
 	return database.Migrate(a.DB, a.Config, a.extraModels...)
-}
-
-// RegisterStage 注册爬虫业务阶段流程
-func (a *App) RegisterStage(fetcher engine.Fetcher, subFunc func(eng *engine.Engine)) {
-	stage := fetcher.GetStage()
-	// 从配置中读取 stage 配置
-	cfg, ok := a.Config.Crawler.Stages[stage]
-	if ok != true {
-		panic(fmt.Errorf("invalid crawler stage: %s", stage))
-	}
-	if cfg.WorkerCount <= 0 || cfg.QueueSize <= 0 {
-		panic(fmt.Errorf("stage %s: WorkerCount and QueueSize must be positive", stage))
-	}
-	if cfg.Retry.MaxAttempts <= 0 {
-		cfg.Retry.MaxAttempts = 3
-	}
-	if cfg.Retry.Backoff <= 0 {
-		cfg.Retry.Backoff = time.Second
-	}
-	if cfg.Delay.Min <= 0 {
-		cfg.Delay = config.DurationRange{Min: time.Minute, Max: time.Minute}
-	}
-
-	a.Engine.AddStage(stage, engine.StageConfig{
-		MaxAttempts: cfg.Retry.MaxAttempts,
-		Backoff:     cfg.Retry.Backoff,
-		WorkerCount: cfg.WorkerCount,
-		QueueSize:   cfg.QueueSize,
-		Delay:       cfg.Delay,
-	}, fetcher, subFunc)
 }
 
 // RegisterCronJob 注册一个业务自定义定时任务（cron 表达式，支持秒级，如 "0 3 * * * *"）。
@@ -584,6 +556,7 @@ func (a *App) httpServer(ctx context.Context) {
 		QueueStats:         a.Engine.GetQueueStats,
 		SysInfo:            a.sysInfo,
 		LogDir:             a.Config.Log.Dir,
+		ArchiveDir:         a.Engine.ArchiveDir(),
 		OnShutdown:         a.Shutdown,
 		ProcessErrorQueue:  a.Engine.ProcessErrorQueue,
 		ProcessRepeatQueue: a.Engine.RepollRepeatableTasks,
@@ -591,17 +564,20 @@ func (a *App) httpServer(ctx context.Context) {
 		ConfigSet:          a.Engine.ApplyRuntimeConfig,
 		TaskTrace:          a.Engine.ListTrace,
 		VerifyTokenValue:   auth.Confirmer(a.DB, a.Logger.Sys),
-		BreakerStatus:      a.Engine.BreakerStatus,
-		ResumeBreaker:      a.Engine.ResumeCrawling,
-		OnBreakerResume: func(operator string) {
+		BreakerStatuses:    a.Engine.BreakerStatuses,
+		ResumeBreaker:      a.Engine.ResumeSite,
+		OnBreakerResume: func(operator, site string) {
 			// 放行是**人在场的干预**：熔断停了整条抓取线，谁在什么时候放的行必须查得到
 			if rec == nil {
 				return
 			}
 			rec.RecordEvent(oplog.Event{
-				Table:    "breaker",
-				Action:   "resume",
-				Values:   map[string]any{"note": "手动放行被熔断闸住的抓取"},
+				Table:  "breaker",
+				Action: "resume",
+				Values: map[string]any{
+					"note":  "手动放行被熔断闸住的抓取",
+					"scope": site, // 空 = 默认 scope；多站时看得出放的是哪个站
+				},
 				Operator: operator,
 				At:       time.Now(),
 			})

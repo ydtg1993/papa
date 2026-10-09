@@ -83,13 +83,13 @@ type LogConfig struct {
 }
 
 type CrawlerConfig struct {
-	Stages         map[string]StageConfig `mapstructure:"stages"`           //阶段配置 例如:目录页 详情页 内容页...
-	DedupCacheSize int                    `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-	QueueWatermark float64                `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
-	DrainInterval  time.Duration          `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
-	StopTimeout    time.Duration          `mapstructure:"stop_timeout"`     //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
-	Trace          TraceConfig            `mapstructure:"trace"`            //单任务步骤追踪
-	Breaker        BreakerConfig          `mapstructure:"breaker"`          //熔断闸门
+	DedupCacheSize int           `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+	QueueWatermark float64       `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
+	DrainInterval  time.Duration `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
+	StopTimeout    time.Duration `mapstructure:"stop_timeout"`     //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
+	Trace          TraceConfig   `mapstructure:"trace"`            //单任务步骤追踪
+	Breaker        BreakerConfig `mapstructure:"breaker"`          //熔断闸门
+	Archive        ArchiveConfig `mapstructure:"archive"`          //页面归档：失败时把那一页的原样 HTML 落到本地文件
 }
 
 // BreakerConfig 熔断闸门：窗口内**终态失败**数达到阈值，就把所有阶段的 worker 一起闸住
@@ -142,12 +142,32 @@ type TraceConfig struct {
 	Retention time.Duration `mapstructure:"retention"` // 步骤记录保留期；0/未写 = 默认 7 天，负数 = 不自动清理
 }
 
-type StageConfig struct {
-	WorkerCount int           `mapstructure:"worker_count"` //worker pool池分配并发数
-	QueueSize   int           `mapstructure:"queue_size"`   //任务队列长度
-	Delay       DurationRange `mapstructure:"delay"`        // 任务间隔时间 防止被反爬拦截，支持 "10s" 或 "10s-30s"
-	Retry       RetryConfig   `mapstructure:"retry"`        //重试
+// ArchiveConfig 页面归档：把「失败那一刻抓到的那一页」原样落到本地文件。
+//
+// 为什么是文件而不是 DB 的 content 列：**原始字节**才是证据 —— goquery 把文档重新序列化一遍
+// 会丢掉 `<noscript>` 里的回退标签（延迟渲染的封面正是藏在里面），而那恰恰是选择器坏掉时
+// 最需要看的东西。文件还能直接用浏览器打开、看它到底长什么样。
+//
+// 归档由 `FetchHTML` 自动完成：handler 不用写任何代码，抓到的页面先登记在本次尝试的缓冲里，
+// 尝试结束（含 panic）时按结局决定落不落盘，并在 trace 里留一条指向文件的步骤。
+type ArchiveConfig struct {
+	Enabled bool   `mapstructure:"enabled"` // 是否开启（默认 false）
+	Dir     string `mapstructure:"dir"`     // 归档根目录，如 logs/fetcher-html（**必填**，见校验层）
+	// Mode 落盘时机：failure = 只在失败的尝试落（默认，写入量按失败率走，与 trace「只在失败尝试写 data」同构）；
+	// always = 每次尝试都落（排查期开，一天几万个文件很正常）。
+	Mode      string        `mapstructure:"mode"`
+	Retention time.Duration `mapstructure:"retention"`   // 保留期；0/未写 = 默认 7 天（与 trace 对齐），负数 = 不自动清理
+	MaxFileMB int           `mapstructure:"max_file_mb"` // 单页上限（MB）；0/未写 = 默认 8；超了不归档并 WARN
 }
+
+// crawler.archive.mode 的两个取值（校验层认这两个，别处一律按 failure 处理）。
+const (
+	ArchiveModeFailure = "failure" // 只在失败的尝试落盘（默认）
+	ArchiveModeAlways  = "always"  // 每次尝试都落盘（排查期用）
+)
+
+// StageConfig 已随"阶段参数搬进 Go 声明"一起移除（见 internal/app/spec.go 的 StageSpec）——
+// 配置里不再有 crawler.stages 段。这一段留个记号，免得从旧版本升级的人找不到东西。
 
 type RetryConfig struct {
 	MaxAttempts int           `mapstructure:"max_attempts"` //最大尝试次数（含首次执行）

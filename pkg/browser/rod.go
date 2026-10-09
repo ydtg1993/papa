@@ -83,11 +83,14 @@ func (b *Browser) IsAlive() bool {
 
 // PageOptions 创建页面时的可选配置
 type PageOptions struct {
-	Device  *devices.Device             // 设备模拟，覆盖默认值
-	Headers map[string]string           // 额外请求头，会合并默认头
-	Cookies []*proto.NetworkCookieParam // 额外 Cookies，会追加到默认 Cookies
-	Timeout time.Duration               // 导航超时，默认 30 秒
-	Wait    time.Duration               // FetchOnce：WaitLoad 后额外等待再抓取快照
+	Device  *devices.Device   // 设备模拟，覆盖默认值
+	Headers map[string]string // 额外请求头，会合并默认头
+	// RemoveHeaders 从最终请求头里删掉这些键（含池的默认头）——"这次不要那个头"用；
+	// 单独一条是因为 rod 的默认头是在内部先合并的，光靠 Headers 给空值删不掉。
+	RemoveHeaders []string
+	Cookies       []*proto.NetworkCookieParam // 额外 Cookies，会追加到默认 Cookies
+	Timeout       time.Duration               // 导航超时，默认 30 秒
+	Wait          time.Duration               // FetchOnce：WaitLoad 后额外等待再抓取快照
 	// FetchOnce 专用：是否截图 / 是否整页截图（配合 Screenshot）
 	Screenshot bool
 	FullPage   bool
@@ -251,6 +254,9 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 	}
 	for k, v := range opts.Headers {
 		headers[k] = v
+	}
+	for _, k := range opts.RemoveHeaders {
+		delete(headers, k)
 	}
 	if len(headers) > 0 {
 		// SetExtraHeaders 接受一个字符串切片，元素按 key, value, key, value 的顺序交替

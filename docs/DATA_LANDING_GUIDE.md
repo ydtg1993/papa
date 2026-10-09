@@ -41,14 +41,23 @@ Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一
 
 其余列（`status` / `retry` / `error` / `repeat` 等）是框架运行态，由引擎自动维护，**业务不要直接读写**。
 
+> `site` 列记任务属于哪个站（`SiteSpec.Key`）——多站同进程时，后台任务表可以按它筛，
+> 熔断、日志、监控也都按它分维度。它是**引擎按目标阶段自动填的**（阶段属于哪个站），业务不用传参；
+> 老行是空的（那时还没有这个概念）。
+>
 > 其中 `meta` 列值得单说一句：它由 `Task.Meta`（业务键）落库，业务同样是给 `papa.Task` 赋值、不直接写列，
 > 但它**不是**临时状态 —— 恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份，
 > 所以在后台或 SQL 客户端里能直接看出「这条任务是哪条业务行的」。详见
 > [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2。
 
-- 内置唯一约束 `(stage, url)`：同一个 URL 在一个阶段只会有一条记录。
+- 内置唯一约束建在 **`(url_hash, stage)`** 上（`url_hash` 是 URL 的 sha256，64 位十六进制）：
+  同一个 URL 在一个阶段只会有一条记录。用哈希而不是整串 URL，是因为**长 URL 整串进不了唯一索引** ——
+  InnoDB 的键长上限是 3072 字节（utf8mb4 下 ≈768 字符），带一串 query 的 URL 很容易更长，
+  以前 `url` 是 `varchar(500)`，超了要么入库报错、要么被截断。现在 `url` 是 `text`（不限长），
+  `url_hash` 由 `BeforeCreate` 自动填（老库跑一次 `papa migrate` 会回填，用 MySQL 的 `SHA2(url,256)`，
+  与 Go 侧 `models.UrlHash` 同一个值）。
 - **`IdempotencyKey` 是「软约束」**：任务可以自定义 `IdempotencyKey`（`papa.Task{ IdempotencyKey: "..." }`）作为去重键。提交时引擎会**按它查库**（`findTaskRecord` 优先用 `idempotency_key`、其次 `stage + url`），命中就复用已有记录、不重复入库；内存去重表只是前面的一道快取，被淘汰了也不影响正确性。
-  但数据库**唯一索引只建在 `(stage, url)` 上**，「同幂等键、不同 URL」这种组合它拦不住：两个这样的任务并发提交时，
+  但数据库**唯一索引只建在 `(url_hash, stage)` 上**，「同幂等键、不同 URL」这种组合它拦不住：两个这样的任务并发提交时，
   两边查库都没查到、又都能插进去，就可能各留一行。约定：使用 `IdempotencyKey` 时保证同一幂等键始终对应同一 `(stage, url)`；
   否则其去重是「尽力而为」而非强一致。
 - 业务**不直接碰 model**，而是通过结果 API 读写（见第 2 节）。

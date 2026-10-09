@@ -719,3 +719,98 @@ func TestDownloadResultCarriesContentType(t *testing.T) {
 		})
 	}
 }
+
+// 逐下载指定出口：同一个代理地址复用同一个客户端（连接池不白扔），不同地址互不影响。
+func TestDownloadOptionsProxySelectsClient(t *testing.T) {
+	d := NewDownloader(DefaultConfig())
+
+	plain := d.buildRequestConfig(nil)
+	if d.clientOf(plain) != d.client {
+		t.Fatal("没指定代理就该用下载器默认的客户端")
+	}
+
+	cfg := d.buildRequestConfig(&DownloadOptions{Proxy: "http://1.2.3.4:8080"})
+	client := d.clientOf(cfg)
+	if client == d.client {
+		t.Fatal("指定了代理就该换个客户端")
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil {
+		t.Fatalf("客户端应当带代理 transport，实得 %#v", client.Transport)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	u, err := tr.Proxy(req)
+	if err != nil || u == nil || u.String() != "http://1.2.3.4:8080" {
+		t.Fatalf("transport 应当把请求路由到指定代理，实得 %v %v", u, err)
+	}
+	// 同一个地址复用
+	if again := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://1.2.3.4:8080"})); again != client {
+		t.Fatal("同一个代理地址应当复用客户端")
+	}
+	// 另一个地址是另一个客户端
+	if other := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://5.6.7.8:3128"})); other == client {
+		t.Fatal("不同代理地址不该共用客户端")
+	}
+	// 地址写错：回落默认客户端 + 错误通道留痕（别静默变成直连）
+	bad := d.buildRequestConfig(&DownloadOptions{Proxy: "://坏地址"})
+	if d.clientOf(bad) != d.client {
+		t.Fatal("地址解析不出来时应回落默认客户端")
+	}
+	select {
+	case err := <-d.GetErrors():
+		if !strings.Contains(err.Error(), "parse proxy URL") {
+			t.Fatalf("错误通道上应留痕，实得 %v", err)
+		}
+	default:
+		t.Fatal("代理地址解析失败应当在错误通道留痕")
+	}
+}
+
+// Direct：小文件直下 —— 一次 GET 落盘，**不先发 HEAD**，也不走分片机器。
+func TestDownloadOptionsDirectSkipsHeadAndChunks(t *testing.T) {
+	content := []byte("small image bytes")
+	var heads, gets int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			heads++
+			w.Header().Set("Accept-Ranges", "bytes") // 就算支持分片，Direct 也不该走那条路
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			return
+		}
+		gets++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.ChunkSize = 4 // 默认路径会切成 5 个分片；Direct 应当只有 1 个 GET
+	downloader := NewDownloader(cfg)
+
+	res := downloader.Download(context.Background(), server.URL, "subdir", "cover.img", &DownloadOptions{Direct: true})
+	if res.Error != nil {
+		t.Fatalf("download failed: %v", res.Error)
+	}
+	if heads != 0 {
+		t.Fatalf("Direct 不该先发 HEAD，实得 %d 次", heads)
+	}
+	if gets != 1 {
+		t.Fatalf("Direct 应当只有一次 GET，实得 %d 次", gets)
+	}
+	if res.Size != int64(len(content)) {
+		t.Fatalf("Size = %d, want %d", res.Size, len(content))
+	}
+	// 走的是单线程那条路：Content-Type 取自那次 GET
+	if res.ContentType == "" {
+		t.Fatal("Direct 应当把响应声明的 Content-Type 带出来")
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.OutputDir, res.OutputFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Fatalf("文件内容 = %q, want %q", data, content)
+	}
+}

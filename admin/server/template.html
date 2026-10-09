@@ -59,12 +59,10 @@
             <div class="refresh" id="refreshTime"></div>
         </header>
 
-        <!-- 熔断横幅：暂停时由 mo.js 显形，整页顶部一条（在任何模块之上，切到哪个页都看得到）。
-             平时 hidden，不占位。按钮走 POST /api/breaker/resume。 -->
-        <div class="breaker-banner" id="breaker-banner" hidden>
-            <span class="breaker-text" id="breaker-text"></span>
-            <button class="btn" onclick="resumeCrawling()">恢复抓取</button>
-        </div>
+        <!-- 熔断横幅：有 scope 被闸住时由 mo.js 逐行渲染（多站时每站一行、各带自己的「恢复」），
+             整页顶部一条（在任何模块之上，切到哪个页都看得到）。平时 hidden，不占位。
+             放行走 POST /api/breaker/resume（点名 scope，或不点名 = 全部）。 -->
+        <div class="breaker-banner" id="breaker-banner" hidden></div>
 
         <div class="module active" id="mod-dashboard">
             <section>

@@ -19,7 +19,6 @@ import (
 func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]) *Engine {
 	t.Helper()
 	cfg := &config.Config{}
-	cfg.Crawler.Stages = map[string]config.StageConfig{"stub": {WorkerCount: 1, QueueSize: 8}}
 
 	e := &Engine{
 		db:            openFakeTaskDB(t, f),
@@ -551,7 +550,7 @@ func TestReSubmitTaskEnqueuesExistingRecord(t *testing.T) {
 	}
 	// 回查必须按 url + stage（与唯一索引一致）
 	read := f.readSQL()
-	for _, want := range []string{"url = ?", "stage = ?"} {
+	for _, want := range []string{"url_hash = ?", "stage = ?"} {
 		if !strings.Contains(read, want) {
 			t.Fatalf("回查应带 %s 条件：\n%s", want, read)
 		}

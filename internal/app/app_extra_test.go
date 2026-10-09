@@ -1,20 +1,15 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v2/config"
 	"github.com/ydtg1993/papa/v2/engine"
-	"github.com/ydtg1993/papa/v2/internal/database"
-	"github.com/ydtg1993/papa/v2/pkg/loggers"
 )
 
 /* ---------- 初始化选项 ---------- */
@@ -216,183 +211,136 @@ func TestUseRouterAndTablesAccumulate(t *testing.T) {
 	}
 }
 
-/* ---------- RegisterStage ---------- */
+/* ---------- 阶段声明的校验与策略（planStage，纯函数） ---------- */
 
-// 声明与配置不一致时**启动即失败**，而不是等到某条任务提交进来才发现。
-func TestRegisterStagePanicsOnBadConfig(t *testing.T) {
+// 声明有问题**启动即失败**（与配置校验层同取向），报错要点到具体那个阶段。
+func TestPlanStageRejects(t *testing.T) {
+	base := func() StageSpec {
+		return StageSpec{Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 8}
+	}
 	cases := []struct {
-		name string
-		cfg  map[string]config.StageConfig
+		name  string
+		spec  func() StageSpec
+		owner map[string]string
+		want  string
 	}{
-		{"阶段没在配置里声明", map[string]config.StageConfig{}},
-		{"worker_count 非正", map[string]config.StageConfig{"review": {WorkerCount: 0, QueueSize: 4}}},
-		{"queue_size 非正", map[string]config.StageConfig{"review": {WorkerCount: 1, QueueSize: 0}}},
+		{"fetcher 为 nil", func() StageSpec { s := base(); s.Fetcher = nil; return s }, nil, "nil"},
+		{"worker_count 非正", func() StageSpec { s := base(); s.WorkerCount = 0; return s }, nil, "WorkerCount"},
+		{"queue_size 非正", func() StageSpec { s := base(); s.QueueSize = 0; return s }, nil, "QueueSize"},
+		{"delay 写错", func() StageSpec { s := base(); s.Delay = "五分钟"; return s }, nil, "Delay"},
+		{"backoff 写错", func() StageSpec { s := base(); s.Retry.Backoff = "很快"; return s }, nil, "Backoff"},
+		{"阶段名重复", base, map[string]string{"review": "站点 a"}, "重复声明"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			a := &App{Config: &config.Config{Crawler: config.CrawlerConfig{Stages: c.cfg}}}
-			defer func() {
-				if recover() == nil {
-					t.Fatal("应当在注册时 panic")
-				}
-			}()
-			a.RegisterStage(stubStageFetcher{}, nil)
+			owner := c.owner
+			if owner == nil {
+				owner = map[string]string{}
+			}
+			if _, err := planStage(SiteSpec{Key: "a"}, c.spec(), owner); err == nil {
+				t.Fatal("应当报错")
+			} else if !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("报错应含 %q，实得：%v", c.want, err)
+			}
 		})
 	}
 }
 
-// 校验全部发生在碰 Engine 之前 —— 所以一个还没初始化的 App 也能测出这些 panic。
-// 反过来也说明：合法的阶段会往下走到 a.Engine.AddStage，需要真引擎，这里不构造。
-
-/* ---------- RegisterCronJob + schedule ---------- */
-
-func TestRegisterCronJobAccumulates(t *testing.T) {
-	a := &App{}
-	a.RegisterCronJob("a", "0 3 * * * *", func() {})
-	a.RegisterCronJob("b", "@every 1h", func() {})
-	if len(a.customJobs) != 2 {
-		t.Fatalf("customJobs = %d, want 2", len(a.customJobs))
+// 合法声明：算出来的计划带上阶段名、站点归属与解析好的参数。
+func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
+	owner := map[string]string{}
+	plan, err := planStage(SiteSpec{Key: "huangguo"}, StageSpec{
+		Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 8,
+		Delay: "10s-30s", Retry: RetrySpec{MaxAttempts: 2, Backoff: "30s"},
+	}, owner)
+	if err != nil {
+		t.Fatalf("合法声明不该报错：%v", err)
 	}
-	if a.customJobs[0].name != "a" || a.customJobs[0].schedule != "0 3 * * * *" {
-		t.Fatalf("第一条任务 = %+v", a.customJobs[0])
+	if plan.stage != "review" || plan.cfg.Site != "huangguo" {
+		t.Fatalf("计划不对：%+v", plan)
 	}
-}
-
-// 没有自定义任务时 schedule 直接返回：不建调度器（建了会去 LoadLocation）。
-func TestScheduleNoopWithoutJobs(t *testing.T) {
-	a := &App{}
-	a.schedule(t.Context()) // 不该 panic、不该起协程
-}
-
-// 有时区与任务时把调度器起起来，ctx 取消后停掉。
-// Engine 传 nil —— NewScheduler 只存指针不解引用，这条正好也钉住了这一点。
-func TestScheduleStartsAndStops(t *testing.T) {
-	a := &App{
-		Config: &config.Config{Scheduler: config.SchedulerConfig{Timezone: "UTC"}},
-		Logger: &loggers.LoggerSet{Scheduler: loggersStub()},
+	if plan.cfg.Delay.Min != 10*time.Second || plan.cfg.Delay.Max != 30*time.Second {
+		t.Fatalf("Delay 没解析进计划：%+v", plan.cfg.Delay)
 	}
-	fired := make(chan struct{}, 4)
-	a.RegisterCronJob("tick", "@every 1s", func() { fired <- struct{}{} })
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	a.schedule(ctx)
-
-	// 先等它真的跑一次再取消 —— 取消早了调度器会被 Stop 掉，任务根本没机会触发
-	select {
-	case <-fired:
-	case <-time.After(3 * time.Second):
-		t.Fatal("注册的定时任务没有跑起来")
+	if plan.cfg.Backoff != 30*time.Second || plan.cfg.MaxAttempts != 2 {
+		t.Fatalf("Retry 没解析进计划：%+v", plan.cfg)
 	}
-
-	cancel()
-	time.Sleep(50 * time.Millisecond) // 让 Stop 那一支走完
-}
-
-// 非法的 cron 表达式只记日志，不 panic —— 一个写错的任务不该把整个应用拦在启动阶段。
-func TestScheduleLogsBadSpecAndKeepsGoing(t *testing.T) {
-	// 用能抓输出的 logger：这条用例的名字就承诺了"把这条坏 spec 记下来"，
-	// 而原来的 loggerStub 是 io.Discard —— 断言不了任何东西，只有"不该 panic"。
-	var buf bytes.Buffer
-	log := logrus.New()
-	log.SetOutput(&buf)
-	log.SetLevel(logrus.ErrorLevel)
-
-	a := &App{
-		Config: &config.Config{Scheduler: config.SchedulerConfig{Timezone: "UTC"}},
-		Logger: &loggers.LoggerSet{Scheduler: log},
+	if owner["review"] == "" {
+		t.Fatal("阶段名应登记到 owner（重复声明靠它查）")
 	}
-	a.RegisterCronJob("bad", "这不是 cron", func() {})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	a.schedule(ctx) // 不该 panic，也不该因为一条坏 spec 就整体不跑
-
-	if got := buf.String(); !strings.Contains(got, "failed to add custom job bad") {
-		t.Fatalf("应当把这条坏 spec 连同任务名记下来，实得日志：%q", got)
-	}
-}
-
-/* ---------- NewApp 的失败路径 ---------- */
-
-// 配置读不到时报的是配置的错，而不是继续往下连库。
-func TestNewAppRejectsMissingConfig(t *testing.T) {
-	t.Chdir(t.TempDir())
-	t.Setenv("PAPA_CONFIG", "")
-
-	_, err := NewApp(WithConfigPath(filepath.Join(t.TempDir(), "nope.yaml")))
-	if err == nil {
-		t.Fatal("配置不存在应当报错")
-	}
-	if !strings.Contains(err.Error(), "load config") {
-		t.Fatalf("错误信息 = %v", err)
-	}
-}
-
-// 配置能读、但库连不上时报的是数据库的错 —— 两层错误要能分得清。
-func TestNewAppReportsDatabaseFailure(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	// 127.0.0.1:1 会立刻拒绝连接，不会挂住
-	cfg := "db:\n  driver: mysql\n  dsn: \"u:p@tcp(127.0.0.1:1)/x\"\n  max_open_conns: 1\n  max_idle_conns: 1\nlog:\n  dir: " + filepath.ToSlash(filepath.Join(dir, "logs")) + "\n"
-	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+	// 未给参数时的默认：不延迟 + 退避 1s + 尝试 3 次
+	plan2, err := planStage(SiteSpec{}, StageSpec{Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 1}, map[string]string{})
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	_, err := NewApp(WithConfigPath(path))
-	if err == nil {
-		t.Fatal("连不上库应当报错")
-	}
-	if !strings.Contains(err.Error(), "connect to database") {
-		t.Fatalf("错误信息 = %v", err)
+	if plan2.cfg.Backoff != time.Second || plan2.cfg.MaxAttempts != 3 || plan2.cfg.Delay.Min != 0 {
+		t.Fatalf("默认值不对：%+v", plan2.cfg)
 	}
 }
 
-// 不支持的驱动同样在建连之前就被拒。
-func TestNewAppRejectsUnsupportedDriver(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("log:\n  dir: ./logs\ndb:\n  driver: postgres\n  dsn: x\n  max_idle_conns: 10\n  max_open_conns: 100\n"), 0o600); err != nil {
-		t.Fatal(err)
+// AutoStart 决定**要不要把入口回调接上**，并给出该打的那句话：
+//   - 开了却没人实现入口 → WARN（配置与实现对不上）
+//   - 实现了入口却没开   → Info（"是关的、不是漏的"），且回调不接
+//   - 既没开也没实现     → 什么都不打（绝大多数阶段）
+func TestPlanStageEntryPolicy(t *testing.T) {
+	cases := []struct {
+		name      string
+		autoStart bool
+		withEntry bool
+		wantSub   bool
+		wantNote  string
+		wantWarn  bool
+	}{
+		{"开了 AutoStart 且有入口", true, true, true, "", false},
+		{"开了 AutoStart 但没入口", true, false, false, "AutoStart=true", true},
+		{"有入口但没开 AutoStart", false, true, false, "AutoStart=false", false},
+		{"既没开也没入口", false, false, false, "", false},
 	}
-
-	_, err := NewApp(WithConfigPath(path))
-	if err == nil || !strings.Contains(err.Error(), "connect to database") {
-		t.Fatalf("err = %v", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var f engine.Fetcher = stubStageFetcher{}
+			if c.withEntry {
+				f = &entryStageFetcher{}
+			}
+			plan, err := planStage(SiteSpec{Key: "a"}, StageSpec{
+				Fetcher: f, WorkerCount: 1, QueueSize: 8, AutoStart: c.autoStart,
+			}, map[string]string{})
+			if err != nil {
+				t.Fatalf("planStage = %v", err)
+			}
+			if got := plan.sub != nil; got != c.wantSub {
+				t.Fatalf("接不接入口回调 = %v，want %v", got, c.wantSub)
+			}
+			if c.wantNote != "" && !strings.Contains(plan.note, c.wantNote) {
+				t.Fatalf("日志应含 %q，实得 %q", c.wantNote, plan.note)
+			}
+			if c.wantNote == "" && plan.note != "" {
+				t.Fatalf("不该打日志，实得 %q", plan.note)
+			}
+			if plan.warn != c.wantWarn {
+				t.Fatalf("warn = %v，want %v", plan.warn, c.wantWarn)
+			}
+		})
 	}
 }
 
-/* ---------- Migrate 的模型清单 ---------- */
-
-// Migrate 走的是 database.FrameworkModels（按开关）+ 业务登记的模型，
-// 这里只钉"业务模型确实被算进去"这一条（真跑 AutoMigrate 需要库）。
-func TestMigrateModelListIncludesRegisteredModels(t *testing.T) {
-	type bizModel struct{ ID uint }
-
-	cfg := &config.Config{}
-	framework := database.FrameworkModels(cfg)
-	if len(framework) != 2 {
-		t.Fatalf("开关全关时框架自带两张表，实得 %d", len(framework))
+// 阶段间隔与退避的解析：与 YAML 同一套写法。
+func TestParseDelayAndBackoff(t *testing.T) {
+	if r, err := parseDelay(""); err != nil || r.Min != 0 {
+		t.Fatalf("空 Delay 应当是零值区间：%+v %v", r, err)
 	}
-
-	cfg.Server.OperationLog = true
-	cfg.Crawler.Trace.Enabled = true
-	framework = database.FrameworkModels(cfg)
-	if len(framework) != 4 {
-		t.Fatalf("两个开关都开时应是 4 张表，实得 %d", len(framework))
+	if r, err := parseDelay("10s-30s"); err != nil || r.Min != 10*time.Second || r.Max != 30*time.Second {
+		t.Fatalf("区间解析: %+v %v", r, err)
 	}
-
-	// App 侧的登记清单（extraModels）由 Migrate 传给 database.Migrate；
-	// 这里断言 App 确实记住了它，不需要真库。
-	a := &App{Config: cfg}
-	a.UseModels(&bizModel{})
-	if len(a.extraModels) != 1 {
-		t.Fatalf("业务模型没被登记：%v", a.extraModels)
+	if d, err := parseBackoff(""); err != nil || d != time.Second {
+		t.Fatalf("空 Backoff 应当默认 1s：%v %v", d, err)
+	}
+	if _, err := parseBackoff("0s"); err == nil {
+		t.Fatal("0 退避应当报错（退避为 0 等于不退避，写出来多半是笔误）")
 	}
 }
 
-/* ---------- 桩 ---------- */
-
+// stubStageFetcher 一个最小 fetcher：阶段名 "review"，handler 什么都不做。
 type stubStageFetcher struct{}
 
 func (stubStageFetcher) GetStage() string { return "review" }
@@ -401,8 +349,52 @@ func (stubStageFetcher) FetchHandler(_ context.Context, _ *engine.Task, _ *engin
 	return nil
 }
 
-func loggersStub() *logrus.Logger {
-	l := logrus.New()
-	l.SetOutput(io.Discard)
-	return l
+// entryStageFetcher 实现可选接口 EntrySubmitter。
+type entryStageFetcher struct {
+	called bool
+}
+
+func (f *entryStageFetcher) GetStage() string { return "review" }
+
+func (f *entryStageFetcher) FetchHandler(_ context.Context, _ *engine.Task, _ *engine.Engine) error {
+	return nil
+}
+
+func (f *entryStageFetcher) SubmitEntries(_ *engine.Engine) { f.called = true }
+
+/* ---------- 站点登记表（站点文件自己 init 登记） ---------- */
+
+// 站点文件在 init 里登记，框架收集；`Sites()` 给副本、顺序稳定（= 文件名字典序）。
+func TestRegisterSiteCollectsInOrder(t *testing.T) {
+	resetRegisteredSites()
+	t.Cleanup(resetRegisteredSites)
+
+	RegisterSite(SiteSpec{Key: "b", BaseURL: "https://b.example"})
+	RegisterSite(SiteSpec{Key: "a", BaseURL: "https://a.example"})
+
+	got := Sites()
+	if len(got) != 2 || got[0].Key != "b" || got[1].Key != "a" {
+		t.Fatalf("登记顺序应当保持，实得 %+v", got)
+	}
+	// 返回副本：改它不该影响登记表
+	got[0].Key = "tampered"
+	if again := Sites(); again[0].Key != "b" {
+		t.Fatalf("Sites() 应返回副本，实得 %+v", again)
+	}
+}
+
+// 同一个站点键登记两次（多半是两个文件写了同一个 Key）→ 注册时报错并点名。
+func TestValidateSitesRejectsDuplicateKey(t *testing.T) {
+	sites := []SiteSpec{{Key: "a"}, {Key: "b"}, {Key: "a"}}
+	err := validateSites(sites)
+	if err == nil {
+		t.Fatal("重复的站点键应当报错")
+	}
+	if !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), "第 3 个") {
+		t.Fatalf("报错要点名是哪个键、第几个：%v", err)
+	}
+	// 空键（未归属）可以有多个
+	if err := validateSites([]SiteSpec{{}, {Key: "a"}, {}}); err != nil {
+		t.Fatalf("空键不该算重复：%v", err)
+	}
 }

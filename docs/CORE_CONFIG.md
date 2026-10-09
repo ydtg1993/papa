@@ -35,6 +35,11 @@
 
 ### crawler —— 爬虫核心
 
+> **阶段参数不在这个文件里**：`worker_count` / `queue_size` / `delay` / `retry` / 入口开关 /
+> 站点归属都在 `configs/sites/<站名>.go` 里一份写全（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）——
+> 一个阶段的存在本来就离不开代码（必须有个 fetcher），参数再放另一份文件等于加一个阶段要改两处。
+> 配置里留着的 `crawler.stages` 段会被"未知配置键"拦下（**故意的**，见下面的校验层说明）。
+
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限（旧行为），`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
@@ -46,11 +51,10 @@
 | `breaker.enabled` | bool | `false` | 熔断闸门总开关。开启后窗口内**终态失败**数达阈值就把**所有阶段**的 worker 一起闸住 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
 | `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在**启动时 panic**（判据在 `breaker.New`，调用点是 `engine.NewEngine`）。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
-| `stages.<name>.worker_count` | int | — | 该阶段 worker 并发数 |
-| `stages.<name>.queue_size` | int | — | 该阶段任务队列缓冲大小 |
-| `stages.<name>.delay` | 时长/区间 | — | 任务间隔，固定 `"5m"` 或随机区间 `"10s-30s"` |
-| `stages.<name>.retry.max_attempts` | int | `3` | 最大尝试次数（含首次） |
-| `stages.<name>.retry.backoff` | duration | `1s` | 重试退避基数（指数递增） |
+
+> **熔断按站点分组**：这一节配的是**默认值**（默认 scope = 未归属站点的阶段）；每个站点可以在
+> `configs/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（含 `Enabled: false`
+> 单独关掉某一站）。多站时站点 A 被墙不会把站点 B 一起闸住。
 
 ### browser —— 浏览器池（Rod）
 
@@ -64,7 +68,7 @@
 | `no_sandbox` | bool | ❌ | 关闭 Chromium sandbox |
 | `leakless` | bool | ❌ | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
 | `browser_path` | string | ❌ | Chrome 可执行文件路径，空则用默认 Chromium |
-| `headers` | map | ✅ | 默认请求头（与内置默认头合并，同名覆盖） |
+| `headers` | map | ✅ | 默认请求头（与内置默认头合并，同名覆盖）。可被**站点级**（`configs/sites/<站名>.go` 的 `Headers`）与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖；站点级写空值表示删掉那个头 |
 
 ### html —— 静态 HTML 客户端
 
@@ -73,7 +77,7 @@
 | `enable` | bool | ❌ | 是否启用静态 HTML 客户端 |
 | `timeout` | duration | ✅ | 请求超时 |
 | `max_body_size` | int64 | ✅ | 响应体大小上限（字节）。**`enable: true` 时必填**，`102400..67108864`（100KB..64MB）。下界挡的是**单位混淆** —— 隔壁 `log.max_size` 的单位是 MB，这里写 `10` 意思是 10 字节，于是每次抓取都报「页面太大」；上界 64MB 在模板值（10MB）之上，只防笔误。热更时同样校验，越界回 400 |
-| `headers` | map | ✅ | 额外请求头 |
+| `headers` | map | ✅ | 额外请求头。同样可被站点级 `Headers` 与 `papa.WithHeaders` 覆盖（站点级写空值 = 删） |
 
 ### proxy —— 代理管理器
 
@@ -81,6 +85,13 @@
 | --- | --- | --- |
 | `api_url` | string | 代理服务 API 地址 |
 | `refresh_interval` | duration | 代理列表刷新间隔 |
+
+### proxy —— 代理管理器（详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 本节）
+
+> 这一节配的是**代理池**（`api_url` 拉列表 + 定时刷新）。**用不用、用哪一个**由 fetcher 决定：
+> `engine.NextProxy()` 取一个，`papa.WithProxyURL(ctx, addr)` 传给一次静态抓取，
+> `filedown.DownloadOptions{Proxy: addr}` / `m3u8.DownloadOptions{Proxy: addr}` 传给一次下载。
+> 浏览器渲染那条**不支持**逐请求地址（Chrome 限制），只有"走池 / 直连"两档。
 
 ### db —— 数据库
 
@@ -134,6 +145,44 @@
 | `interval` | duration | 自动轮询间隔；`0`=仅手动 |
 | `max_retry` | int | 单个任务最多再处理代数；`0`=不限 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+
+### archive —— 页面归档（失败时留下那一页）
+
+```yaml
+crawler:
+  archive:
+    enabled: true
+    dir: "./logs/fetcher-html"
+    mode: failure        # failure（默认）/ always
+    retention: "168h"    # 默认 7 天；负数 = 永久保留
+    max_file_mb: 8       # 默认 8
+```
+
+| 键 | 说明 |
+| --- | --- |
+| `enabled` | 是否开启；默认 `false` |
+| `dir` | 归档根目录。**开启时必填**（空串会拼成"文件系统根"下的 `{stage}/…`，见校验层） |
+| `mode` | `failure`（默认）= 只在**失败**的尝试落盘，写入量按失败率走（与 trace「只在失败尝试写 data」同构）；`always` = 每次尝试都落（排查期开，一天几万个文件很正常） |
+| `retention` | 保留期；`0`/未写 = 默认 7 天（与 trace 对齐），**负数 = 永久保留** |
+| `max_file_mb` | 单页上限（**MB**）；`0`/未写 = 8；超了不归档并记一条 WARN |
+
+**它做什么**：把「失败那一刻抓到的那一页」原样落到
+
+```
+{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html   ← 原始字节，可直接用浏览器打开
+{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.json   ← 状态码 / 最终 URL / 字节数 / 时间
+```
+
+- **不用写任何代码**：`engine.FetchHTML` 抓到的页面自动登记进"本次尝试"的缓冲，尝试结束（**含 panic**）时按结局决定落不落盘。业务只管照常 `FetchHTML`。
+- **必须是原始字节**：goquery 把文档重新序列化一遍会丢掉 `<noscript>` 里的回退标签 —— 延迟渲染的封面正藏在里面，而那恰恰是选择器坏掉时最该看的东西。所以落的是 `page.HTML`，不是 `doc.Html()`。
+- **文件名带 `try`**（= `crawler_tasks.retry`）：同一任务重试 3 次不会互相覆盖，"第一次是登录墙、第三次正常"这种关键信息才留得住。
+- **trace 里连得起来**：归档后引擎会补一条 `归档页面` 步骤，data 里就是文件名 —— 后台「追踪」抽屉里"失败"与"那一页"是同一条线索。
+  （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{stage}/task-{id}-try-{retry}-*` 在目录里找即可。）
+- **写盘失败不影响任务**：归档是排查辅助，写不进去只记 WARN（磁盘满、目录只读都不该让任务失败）。
+- **两条抓取路径都覆盖**：`FetchHTML`（静态）与 `FetchRendered`（浏览器渲染）。后者的原始 HTML 本来就是 `page.HTML()` 读出来的（解析文档必须付的代价），登记不额外花 CDP 调用；它拿不到状态码与 Content-Type，元信息里留 0/空。
+- 保留期清理每小时巡检一次（与 trace 的清理同频），按文件修改时间删，`ctx` 取消即收工。
+
+> 后台没有内置"打开归档页"的入口（框架不知道你的目录怎么暴露）：要么直接看文件系统，要么按业务路由自己挂一个（`monitor/router.go` 的 `Routes(app)` 是给这个用的位置）。
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 

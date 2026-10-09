@@ -1,0 +1,50 @@
+package sites
+
+import (
+	"github.com/ydtg1993/papa/v2"
+	"{{.Module}}/fetcher"
+)
+
+// 本站的声明：并发、队列、间隔、重试、要不要投入口、熔断阈值都在这里一份写全。
+//
+// **加一个站**：复制这个文件改名（如 siteb.go），改 Key / BaseURL / 阶段参数即可 ——
+// 框架自己收集（下面的 init），没有汇总清单要维护。阶段名要能区分（约定带站点前缀，
+// 如 hgd_catalog / siteb_catalog）—— 重复的站点键或阶段名都会在启动时报错并点出来。
+//
+// 参数不放 configs/config.yaml 的原因：一个阶段的存在本来就离不开代码（必须有个 fetcher），
+// 参数再放另一份文件，等于加一个阶段要改两处、想看全貌要翻两个地方。
+// 那个文件里**不再有 crawler.stages 段**（旧配置里的要整段删掉，留着会被"未知配置键"拦下）。
+func {{.SiteFunc}}() papa.SiteSpec {
+	site := papa.SiteSpec{
+		Key:     "{{.Module}}",          // 站点键：熔断 scope、日志/监控维度、任务的 site 列
+		BaseURL: "https://example.com/", // 站点根地址；框架不拿它当限制，方便 handler 取用
+		// 本站的请求头：这个站的任务抓任何页面都自动带上（静态与浏览器两条路都认），
+		// 同键覆盖 html.headers / browser.headers；空值 = 删掉那个头（比如不想要默认 UA）。
+		// 多站要"各站一套 UA/Cookie"就靠它；单次请求还能 `papa.WithHeaders(ctx, …)` 再覆盖。
+		// Headers: map[string]string{
+		//     "User-Agent": "Mozilla/5.0 (…自定义…)",
+		//     "Referer":    "https://example.com/",
+		// },
+		// 本站自己的"受限页"文案（追加到 htmlfetch.RestrictedReason 的默认词表之后）：
+		// RestrictedKeywords: []string{"安全验证", "请稍后再试"},
+		// Breaker: &papa.BreakerSpec{Enabled: true, Threshold: 100, Window: "5m"}, // 本站自己的熔断阈值；不写=用 crawler.breaker
+
+		Stages: []papa.StageSpec{
+			{
+				Fetcher:     &fetcher.FetchCatalog{}, // 阶段名 = 它的 GetStage()（"catalog"）
+				WorkerCount: 1,
+				QueueSize:   20,
+				Delay:       "5m",                                  // "5m" 或随机区间 "10s-30s"；空 = 不延迟
+				Retry:       papa.RetrySpec{MaxAttempts: 3, Backoff: "30s"},
+				AutoStart:   true, // 启动时投本阶段的入口任务（SubmitEntries 在 fetcher 自己身上）
+			},
+
+			// 加一个阶段：写一个 fetcher（GetStage 返回阶段名），然后在这里加一段（参数写全）。
+		},
+	}
+	return site
+}
+
+// 登记：框架自己收集，项目不用手写汇总清单（加一个站 = 加一个文件）。
+// 顺序按文件名，稳定可复现。
+func init() { papa.RegisterSite({{.SiteFunc}}()) }

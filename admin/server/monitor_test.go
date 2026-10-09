@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -632,74 +633,124 @@ func TestTaskTraceHandler(t *testing.T) {
 
 // 熔断闸门的两个后台接口。放行是**人在场的干预**（熔断停了整条抓取线），
 // 所以除了状态对不对，还要钉住"操作人确实被传给了宿主去记操作日志"。
+//
+// 多站之后每个 scope 一把闸门：状态是**列表**（默认 scope 排第一），放行可以点名某个 scope，
+// 不点名 = 全部放行（后台横幅上那个「恢复抓取」）。
 func TestBreakerEndpoints(t *testing.T) {
-	paused := true
+	paused := map[string]bool{"": true, "siteb": false} // 默认 scope 被闸住，siteb 正常
 	var resumedBy []string
 
+	status := func(site string) core.BreakerStatus {
+		return core.BreakerStatus{
+			Enabled: true, Site: site, Paused: paused[site], PausedAt: time.Now(),
+			Reason: "窗口内终态失败数达到阈值", Stage: site + "-catalog",
+			Failures: 50, Threshold: 50, Window: 5 * time.Minute, InWindow: 12,
+		}
+	}
 	newMon := func() *Monitor {
 		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
-			BreakerStatus: func() core.BreakerStatus {
-				return core.BreakerStatus{
-					Enabled: true, Paused: paused, PausedAt: time.Now(),
-					Reason: "窗口内终态失败数达到阈值", Stage: "catalog",
-					Failures: 50, Threshold: 50, Window: 5 * time.Minute, InWindow: 12,
-				}
+			BreakerStatuses: func() map[string]core.BreakerStatus {
+				return map[string]core.BreakerStatus{"": status(""), "siteb": status("siteb")}
 			},
-			ResumeBreaker: func() bool {
-				if !paused {
+			ResumeBreaker: func(site string) bool {
+				if !paused[site] {
 					return false
 				}
-				paused = false
+				paused[site] = false
 				return true
 			},
-			OnBreakerResume: func(operator string) { resumedBy = append(resumedBy, operator) },
+			OnBreakerResume: func(operator, site string) {
+				resumedBy = append(resumedBy, operator+"@"+site)
+			},
 		})
 	}
+	reset := func() {
+		paused = map[string]bool{"": true, "siteb": false}
+		resumedBy = nil
+	}
 
-	t.Run("GET 返回状态快照", func(t *testing.T) {
+	t.Run("GET 返回各 scope 的状态，默认 scope 排第一", func(t *testing.T) {
+		reset()
 		rr := serve(newMon(), http.MethodGet, "/api/breaker", nil)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 		}
 		body := decodeJSON(t, rr)
-		if body["paused"] != true || body["stage"] != "catalog" {
-			t.Fatalf("body = %v", body)
+		list, ok := body["breakers"].([]any)
+		if !ok || len(list) != 2 {
+			t.Fatalf("breakers = %v", body["breakers"])
 		}
-		if body["in_window"] != float64(12) {
-			t.Fatalf("in_window = %v, want 12（实时值，和触发快照的 failures 不是一回事）", body["in_window"])
+		first, _ := list[0].(map[string]any)
+		if first["site"] != "" || first["paused"] != true || first["stage"] != "-catalog" {
+			t.Fatalf("第一条应当是默认 scope：%v", first)
+		}
+		if first["in_window"] != float64(12) {
+			t.Fatalf("in_window = %v, want 12（实时值，和触发快照的 failures 不是一回事）", first["in_window"])
+		}
+		second, _ := list[1].(map[string]any)
+		if second["site"] != "siteb" || second["paused"] != false {
+			t.Fatalf("第二条应当是 siteb：%v", second)
 		}
 	})
 
 	t.Run("状态也随 /api/monitor 一起返回", func(t *testing.T) {
+		reset()
 		rr := serve(newMon(), http.MethodGet, "/api/monitor", nil)
 		body := decodeJSON(t, rr)
-		b, ok := body["breaker"].(map[string]any)
-		if !ok {
-			t.Fatalf("monitor 响应里应带 breaker，实得 %v", body["breaker"])
-		}
-		if b["paused"] != true {
-			t.Fatalf("breaker = %v", b)
+		list, ok := body["breakers"].([]any)
+		if !ok || len(list) != 2 {
+			t.Fatalf("monitor 响应里应带 breakers 数组，实得 %v", body["breakers"])
 		}
 	})
 
-	t.Run("放行：resumed=true 且回调收到操作人", func(t *testing.T) {
-		paused, resumedBy = true, nil
+	t.Run("不点名 = 全部放行，回调逐 scope 收到操作人", func(t *testing.T) {
+		reset()
 		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume", nil)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 		}
-		if got := decodeJSON(t, rr)["resumed"]; got != true {
-			t.Fatalf("resumed = %v, want true", got)
+		body := decodeJSON(t, rr)
+		if body["resumed"] != true {
+			t.Fatalf("resumed = %v, want true", body["resumed"])
 		}
-		// 测试请求没走鉴权中间件，所以操作人是空串 —— 这里要的是"回调被调了一次"，
-		// 真实部署里 auth 中间件已经把身份写进 ctx（见 TestAPIMonitor 的鉴权用例）。
-		if len(resumedBy) != 1 {
-			t.Fatalf("OnBreakerResume 调了 %d 次, want 1", len(resumedBy))
+		if scopes, _ := body["resumed_scopes"].([]any); len(scopes) != 1 || scopes[0] != "" {
+			t.Fatalf("resumed_scopes = %v，应当只有被闸住的默认 scope", body["resumed_scopes"])
+		}
+		// 测试请求没走鉴权中间件，所以操作人是空串 —— 这里要的是"回调被调了一次、且带上了 scope"。
+		if len(resumedBy) != 1 || resumedBy[0] != "@" {
+			t.Fatalf("OnBreakerResume 收到 %v，want [@]（操作人@scope）", resumedBy)
+		}
+	})
+
+	t.Run("点名 scope 只放行那一个", func(t *testing.T) {
+		reset()
+		paused["siteb"] = true // 两个都被闸住
+		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume?scope=siteb", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if scopes, _ := decodeJSON(t, rr)["resumed_scopes"].([]any); len(scopes) != 1 || scopes[0] != "siteb" {
+			t.Fatalf("resumed_scopes = %v，应当只有 siteb", scopes)
+		}
+		if !paused[""] {
+			t.Fatal("默认 scope 不该被顺手放行")
+		}
+	})
+
+	t.Run("未知 scope：400 而不是静默放行全部", func(t *testing.T) {
+		reset()
+		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume?scope=ghost", nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rr.Code)
+		}
+		if !paused[""] {
+			t.Fatal("报错时不该把默认 scope 放行了")
 		}
 	})
 
 	t.Run("本来就没暂停：resumed=false 而不是报错", func(t *testing.T) {
-		paused, resumedBy = false, nil
+		reset()
+		paused[""] = false
 		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume", nil)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200（重复点击恢复不该看起来像失败）", rr.Code)
@@ -807,5 +858,83 @@ func TestWhitelistHandlerAcceptsLargeButBoundedBody(t *testing.T) {
 	lines := strings.Count(strings.TrimRight(string(got), "\n"), "\n") + 1
 	if lines != entries {
 		t.Fatalf("落盘条数 = %d, want %d", lines, entries)
+	}
+}
+
+// 归档页面的下载接口：给的就是文件本身（拿去本地分析），路径是**不可信输入**，越界一律拒。
+func TestTaskPageEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	rel := "huangguo/task-7-try-0-abc12345.html"
+	const body = "<html><body>archived page</body></html>"
+	if err := os.MkdirAll(filepath.Join(dir, "huangguo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newMon := func(archiveDir string) *Monitor {
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ArchiveDir: archiveDir})
+	}
+
+	t.Run("正常下载：附件形式、内容原样", func(t *testing.T) {
+		rr := serve(newMon(dir), http.MethodGet, "/api/task/page?file="+url.QueryEscape(rel), nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if rr.Body.String() != body {
+			t.Fatalf("body = %q", rr.Body.String())
+		}
+		if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+			t.Fatalf("应当是附件下载，实得 %q", cd)
+		}
+	})
+
+	t.Run("路径越界一律拒", func(t *testing.T) {
+		for _, bad := range []string{"../secret", "/etc/passwd", "huangguo/../../x", "", "huangguo/.."} {
+			rr := serve(newMon(dir), http.MethodGet, "/api/task/page?file="+url.QueryEscape(bad), nil)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("file=%q 应当 400，实得 %d", bad, rr.Code)
+			}
+		}
+	})
+
+	t.Run("归档没开：404", func(t *testing.T) {
+		rr := serve(newMon(""), http.MethodGet, "/api/task/page?file="+url.QueryEscape(rel), nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rr.Code)
+		}
+	})
+
+	t.Run("文件不在（过期被清了）：404", func(t *testing.T) {
+		rr := serve(newMon(dir), http.MethodGet, "/api/task/page?file=huangguo/task-9-try-0-deadbeef.html", nil)
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rr.Code)
+		}
+	})
+
+	t.Run("不接受写方法", func(t *testing.T) {
+		if rr := serve(newMon(dir), http.MethodPost, "/api/task/page?file="+url.QueryEscape(rel), nil); rr.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rr.Code)
+		}
+	})
+}
+
+// resolveArchivedFile 的两道判据：路径语义清洗 + 解析后必须仍在根下。
+func TestResolveArchivedFile(t *testing.T) {
+	root := filepath.Join("tmp", "archive")
+	ok := []struct{ rel, want string }{
+		{"huangguo/task-1-try-0-aaaaaaaa.html", filepath.Join(root, "huangguo", "task-1-try-0-aaaaaaaa.html")},
+		{"huangguo/./task-1-try-0-aaaaaaaa.html", filepath.Join(root, "huangguo", "task-1-try-0-aaaaaaaa.html")},
+	}
+	for _, c := range ok {
+		got, err := resolveArchivedFile(root, c.rel)
+		if err != nil || got != c.want {
+			t.Fatalf("resolve(%q) = %q, %v; want %q", c.rel, got, err, c.want)
+		}
+	}
+	for _, bad := range []string{"", "..", "../x", "a/../../x", "/abs/path", "a\x00b"} {
+		if _, err := resolveArchivedFile(root, bad); err == nil {
+			t.Fatalf("resolve(%q) 应当报错", bad)
+		}
 	}
 }

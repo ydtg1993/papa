@@ -28,12 +28,15 @@ import (
 
 // Downloader 全局下载器（线程安全）
 type Downloader struct {
-	config     *Config
-	client     *http.Client
-	trackQueue *msgqueue.MsgQueue[any] // 系统消息队列
-	keyCache   sync.Map                // 密钥缓存: key -> *cachedKey
-	labors     map[string]*labor       // 任务专用锁管理
-	laborMu    sync.RWMutex            // 保护 labors map
+	config *Config
+	client *http.Client
+	// proxyClients 按代理地址缓存的客户端（逐下载指定出口时用）；proxyMu 保护它。
+	proxyMu      sync.Mutex
+	proxyClients map[string]*http.Client
+	trackQueue   *msgqueue.MsgQueue[any] // 系统消息队列
+	keyCache     sync.Map                // 密钥缓存: key -> *cachedKey
+	labors       map[string]*labor       // 任务专用锁管理
+	laborMu      sync.RWMutex            // 保护 labors map
 }
 
 type cachedKey struct {
@@ -77,6 +80,30 @@ func (d *Downloader) SetClient(client *http.Client) {
 // GetErrors 获取错误通道（全局）
 func (d *Downloader) GetErrors() <-chan error {
 	return d.trackQueue.Errors()
+}
+
+// clientFor 返回本次下载该用的 HTTP 客户端：没指定代理就是下载器那个；
+// 指定了就用走该代理的客户端（按地址缓存，连接池不白扔）。
+func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
+	if opts == nil || opts.Proxy == "" {
+		return d.client
+	}
+	d.proxyMu.Lock()
+	defer d.proxyMu.Unlock()
+	if c, ok := d.proxyClients[opts.Proxy]; ok {
+		return c
+	}
+	proxyURL, err := neturl.Parse(opts.Proxy)
+	if err != nil {
+		d.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", opts.Proxy, err))
+		return d.client
+	}
+	if d.proxyClients == nil {
+		d.proxyClients = make(map[string]*http.Client)
+	}
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	d.proxyClients[opts.Proxy] = c
+	return c
 }
 
 // doRequest 执行 HTTP 请求，支持重试
@@ -134,7 +161,7 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 		}
 		// 防止服务器返回压缩数据导致解密失败
 		req.Header.Set("Accept-Encoding", "identity")
-		resp, err := d.client.Do(req)
+		resp, err := d.clientFor(opts).Do(req)
 		if err != nil {
 			lastErr = err
 			continue

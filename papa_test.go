@@ -2,6 +2,7 @@ package papa_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ydtg1993/papa/v2"
@@ -38,4 +39,23 @@ func TestFacadeAPI(t *testing.T) {
 
 	// New 的签名：func(...papa.Option) (*papa.App, error)
 	var _ func(...papa.Option) (*papa.App, error) = papa.New
+}
+
+// 与业务既有的写法一致：命中受限页后返回**不可重试**的 access_restricted 错误，
+// 消息里带上命中的那句话（排查时"为什么判它是受限页"一眼可见）。
+func TestRestrictedPageErrorIsNoRetry(t *testing.T) {
+	err := papa.RestrictedPageError("catalog", "https://example.com/list", "captcha")
+	if papa.Retryable(err) {
+		t.Fatal("受限页不该重试（重试只会再撞一次同样的页面）")
+	}
+	if got := papa.ErrorKind(err); got != "access_restricted" {
+		t.Fatalf("分类 = %q, want access_restricted", got)
+	}
+	if !strings.Contains(err.Error(), "captcha") || !strings.Contains(err.Error(), "catalog") {
+		t.Fatalf("消息里应带阶段与命中的那句话：%v", err)
+	}
+	// reason 为空也照常工作（业务只想标一下"被拦了"，没做判据）
+	if err := papa.RestrictedPageError("detail", "u", ""); err == nil || papa.Retryable(err) {
+		t.Fatalf("reason 为空也该是不可重试的错误，实得 %v", err)
+	}
 }

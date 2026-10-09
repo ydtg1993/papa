@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 )
 
@@ -24,8 +25,10 @@ const (
 // proxyModeKey 标记单次请求的代理模式
 type proxyModeKey struct{}
 
-// WithProxy 指定本次请求是否走代理：true 走代理，false 强制直连。
+// WithProxy 指定本次请求是否走代理：true 走代理池，false 强制直连。
 // 未设置时默认行为：配置了代理管理器则走代理，否则直连。
+//
+// 要指定**具体哪个**出口，用 `core.WithProxyURL(ctx, addr)`（它比这个开关更具体，优先于它）。
 func WithProxy(ctx context.Context, use bool) context.Context {
 	return context.WithValue(ctx, proxyModeKey{}, use)
 }
@@ -33,6 +36,14 @@ func WithProxy(ctx context.Context, use bool) context.Context {
 // proxyFunc 返回 http.Transport.Proxy 使用的函数，按请求上下文决定是否走代理
 func proxyFunc(manager *proxy.Manager) func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
+		// 显式指定的出口最优先（`core.WithProxyURL`）：比"用不用代理池"更具体
+		if addr := core.ProxyURLFrom(req.Context()); addr != "" {
+			proxyURL, err := url.Parse(addr)
+			if err != nil {
+				return nil, fmt.Errorf("parse proxy URL %q: %w", addr, err)
+			}
+			return proxyURL, nil
+		}
 		if use, ok := req.Context().Value(proxyModeKey{}).(bool); ok && !use {
 			return nil, nil
 		}
@@ -144,6 +155,15 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 	}
 	req.Header.Set("User-Agent", cfg.UserAgent)
 	for key, value := range cfg.Headers {
+		req.Header.Set(key, value)
+	}
+	// 逐请求覆盖（`core.WithHeaders`，站点级 + 单次请求两层）：同键覆盖，空值表示删掉那个头。
+	// 放在配置之后 —— 越靠近这次请求的越优先。
+	for key, value := range core.HeadersFrom(ctx) {
+		if value == "" {
+			req.Header.Del(key)
+			continue
+		}
 		req.Header.Set(key, value)
 	}
 

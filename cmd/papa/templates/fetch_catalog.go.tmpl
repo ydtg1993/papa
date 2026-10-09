@@ -11,7 +11,28 @@ import (
 // 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
 type FetchCatalog struct{}
 
-func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 config.yaml 的 crawler.stages 的 key 一致
+func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 configs/config.yaml 的 crawler.stages 的 key 一致
+
+// SubmitEntries 入口任务：本阶段"注册即投一批起始任务"。实现这个方法就够了 ——
+// 框架在启动时自动调它（那时**所有**阶段的池子都已建好，所以这里能往任意阶段投）。
+// 不需要起始任务就删掉这个方法（阶段照常跑，只是没人往里投任务）。
+func (f *FetchCatalog) SubmitEntries(engine *papa.Engine) {
+	if err := engine.SubmitTask(&papa.Task{
+		PID: 0,
+		// 起始 URL：改成你的目标站。任务里放什么都行（列表页、详情页、API 地址……），
+		// 一个阶段也不限于一个站点 —— 多个站点/多种策略就多提交几条，
+		// 或者在这里循环你自己的「分类 → 入口 URL」映射。
+		URL:   "https://example.com/list",
+		Stage: "catalog",
+		// Repeatable: true = 该任务会被「周期轮询」（定时重新抓取、发现新内容），
+		// 由 configs/config.yaml 的 repeat_queue 驱动（enabled + interval）。
+		// 不需要周期轮询就删掉这一行，或把 repeat_queue.enabled 设为 false。
+		Repeatable: true,
+	}); err != nil {
+		// SubmitTask 自带结构化日志；这里只补一句"入口没投进去"，然后就此打住。
+		engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
+	}
+}
 
 func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)

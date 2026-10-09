@@ -135,8 +135,35 @@ var TRACE_ACTION_PATH = '/task/action/trace';
             html += '<details class="trace-data"><summary>采集到的数据</summary>'
                 + '<pre>' + esc(prettyJSON(s.data)) + '</pre></details>';
         }
+        // 引擎写的「归档页面」步骤：data.files 是这次尝试留下的现场文件 ——
+        // 给每个文件一个下载按钮（拿下去本地对着真实页面写选择器，比在浏览器里看更实用）。
+        var files = archivedFiles(s);
+        if (files.length) {
+            html += '<div class="trace-files">' + files.map(function (f) {
+                return '<button class="btn" data-file="' + esc(f) + '"'
+                    + ' onclick="traceDownloadPage(this.dataset.file)">下载这一页</button>';
+            }).join('') + '</div>';
+        }
         return html + '</li>';
     }
+
+    /** 这一步是不是「归档页面」，是就返回它记下的文件相对路径列表。 */
+    function archivedFiles(s) {
+        if (!s.data) return [];
+        try {
+            var d = JSON.parse(s.data);
+            return Array.isArray(d && d.files) ? d.files : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    // 走 mo.js 的 downloadFile（它带令牌、并按 Content-Disposition 定文件名）。
+    // 挂在 window 上是因为本文件是 IIFE，而按钮是 innerHTML 里的内联 onclick。
+    window.traceDownloadPage = async function (rel) {
+        if (!rel) return;
+        await downloadFile('/api/task/page?file=' + encodeURIComponent(rel));
+    };
 
     /** Go 的 time.Duration 在 JSON 里是纳秒整数。 */
     function fmtDuration(ns) {

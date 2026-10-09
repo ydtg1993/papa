@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/internal/breaker"
 	"github.com/ydtg1993/papa/v2/internal/database"
 	"github.com/ydtg1993/papa/v2/internal/metrics"
@@ -64,7 +65,49 @@ type Engine struct {
 	filedown  *filedown.Downloader // 文件下载器
 	metrics   *metrics.Registry    // 业务自定义监控数据注册表
 	notifiers []Notifier           // 告警通知器，任务最终失败时触发
-	breaker   *breaker.Breaker     // 熔断闸门：窗口内终态失败超阈值就闸住所有阶段的 worker
+	// 熔断闸门。**按站点分组**：一台闸门管一个站点的（该站所有阶段的）worker；
+	// 默认 scope（未归属站点的阶段）就是 breaker 这一把 —— 单站项目的行为与之前完全一致。
+	// 多站时站点 A 被墙不会再把站点 B 一起闸住（见 SetSiteBreaker / breakerFor）。
+	breaker     *breaker.Breaker
+	breakerMu   sync.Mutex
+	siteBreaker map[string]*breaker.Breaker
+	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
+	// 框架只把它当标签，不做任何限制（见 core.Site 的注释）。
+	sites map[string]core.Site
+}
+
+// SetSite 登记一份站点声明快照（App.RegisterSites 调）。key 为空时忽略。
+func (e *Engine) SetSite(s core.Site) {
+	if s.Key == "" {
+		return
+	}
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	if e.sites == nil { // 手工构造的 Engine（测试 / 业务自己拼）没有这一步初始化
+		e.sites = make(map[string]core.Site)
+	}
+	e.sites[s.Key] = s
+}
+
+// siteHeaders 取某个站点的请求头（没有返回 nil）。
+func (e *Engine) siteHeaders(site string) map[string]string {
+	if site == "" {
+		return nil
+	}
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	return e.sites[site].Headers
+}
+
+// Site 取某个站点的声明快照。handler 里典型用法：
+//
+//	site, _ := engine.Site(task.Site)   // task.Site 随行落库，重投之后照样认得出站点
+//	abs := site.BaseURL + rel
+func (e *Engine) Site(key string) (core.Site, bool) {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	s, ok := e.sites[key]
+	return s, ok
 }
 
 // stageInfo 内部阶段信息
@@ -82,6 +125,10 @@ type StageConfig struct {
 	Delay       config.DurationRange // 任务间隔延迟，支持随机区间
 	WorkerCount int                  // WorkerCount 该阶段专用的 worker 数量
 	QueueSize   int                  // QueueSize 该阶段的任务队列缓冲大小
+
+	// Site 本阶段所属站点（`SiteSpec.Key`）。**空 = 未归属**，落在"默认 scope"上 ——
+	// 熔断用它分组、任务表用它记归属（`crawler_tasks.site`）、监控与日志也按它分维度。
+	Site string
 }
 
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
@@ -110,6 +157,8 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		queueRuns:     newQueueRuns(),
 	}
 	engine.runtime.Store(&config.RuntimeConfig{})
+	engine.siteBreaker = make(map[string]*breaker.Breaker)
+	engine.sites = make(map[string]core.Site)
 	// 熔断器：计数走 RecordFailure（终态失败），触发时回调发一条 AlertCritical。
 	// 把 engine 自己传进去是为了复用同一套 Notifier —— 业务不用再接一套告警通道。
 	engine.breaker = breaker.New(breaker.Config{
@@ -269,14 +318,129 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
 
-// ResumeCrawling 放行被熔断闸住的抓取。本来就没闸住返回 false。
-func (e *Engine) ResumeCrawling() bool { return e.breaker.Resume() }
+// SetSiteBreaker 为一个站点单独配一把熔断闸门（覆盖 crawler.breaker 那份默认值）。
+//
+// 必须在 ApplyRegisterStage 之前调用（池子在那一刻就把闸门绑好了，之后再设换不回来）——
+// App.RegisterSites 会按 SiteSpec 逐个调它。site 为空是非法参数（那正是"默认 scope"，
+// 它用 crawler.breaker 那把，不需要也不允许单独配）。
+func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
+	if site == "" {
+		return
+	}
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	if e.siteBreaker == nil {
+		e.siteBreaker = make(map[string]*breaker.Breaker)
+	}
+	// 回调里补上站点：告警文案与后台都要能看出"是哪个站被闸住了"（只带阶段名不够）
+	e.siteBreaker[site] = breaker.New(cfg, func(st BreakerStatus) {
+		st.Site = site
+		e.notifyBreakerTrip(st)
+	})
+}
 
-// PauseCrawling 手动闸住抓取（后台/业务都可用）。已在暂停态返回 false。
-func (e *Engine) PauseCrawling(reason string) bool { return e.breaker.Pause(reason) }
+// breakerFor 取某个站点（scope）的熔断闸门；site 为空或没单独配过 → 用默认那把。
+func (e *Engine) breakerFor(site string) *breaker.Breaker {
+	if site == "" {
+		return e.breaker
+	}
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	if b, ok := e.siteBreaker[site]; ok {
+		return b
+	}
+	return e.breaker
+}
 
-// BreakerStatus 返回熔断闸门的当前状态快照。
+// ResumeCrawling 放行**所有** scope 的熔断闸门（默认 scope + 各站点），返回是否真的放行了至少一个。
+// 单站项目与以前完全一致；多站时这就是后台横幅上那个「恢复抓取」。
+func (e *Engine) ResumeCrawling() bool {
+	resumed := e.breaker.Resume()
+	e.breakerMu.Lock()
+	sites := make([]*breaker.Breaker, 0, len(e.siteBreaker))
+	for _, b := range e.siteBreaker {
+		sites = append(sites, b)
+	}
+	e.breakerMu.Unlock()
+	for _, b := range sites {
+		if b.Resume() {
+			resumed = true
+		}
+	}
+	return resumed
+}
+
+// ResumeSite 放行某个站点（scope）的闸门；site 为空 = 默认 scope。
+// 没有这把闸门（该站没单独配过、也没有默认 scope）时返回 false。
+func (e *Engine) ResumeSite(site string) bool {
+	b := e.siteBreakerOf(site)
+	return b != nil && b.Resume()
+}
+
+// PauseSite 手动暂停某个站点（scope）的闸门；site 为空 = 默认 scope。
+// 没有这把闸门时返回 false（后台据此回 400：那个 scope 不存在）。
+func (e *Engine) PauseSite(site, reason string) bool {
+	b := e.siteBreakerOf(site)
+	return b != nil && b.Pause(reason)
+}
+
+// siteBreakerOf 取某个 scope 的闸门对象；不存在的返回 nil（与 breakerFor 的"回落默认"不同 ——
+// 手动干预要能区分"这个 scope 不存在"，静默作用到默认那把会很意外）。
+func (e *Engine) siteBreakerOf(site string) *breaker.Breaker {
+	if site == "" {
+		return e.breaker
+	}
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	return e.siteBreaker[site]
+}
+
+// PauseCrawling 手动闸住抓取（后台/业务都可用）：**所有** scope 一起闸，返回是否真的切到暂停态。
+func (e *Engine) PauseCrawling(reason string) bool {
+	paused := e.breaker.Pause(reason)
+	e.breakerMu.Lock()
+	sites := make([]*breaker.Breaker, 0, len(e.siteBreaker))
+	for _, b := range e.siteBreaker {
+		sites = append(sites, b)
+	}
+	e.breakerMu.Unlock()
+	for _, b := range sites {
+		if b.Pause(reason) {
+			paused = true
+		}
+	}
+	return paused
+}
+
+// BreakerStatus 返回**默认 scope**（未归属站点的阶段）的熔断状态快照。
+// 多站时要看全部，用 BreakerStatuses。
 func (e *Engine) BreakerStatus() BreakerStatus { return e.breaker.Status() }
+
+// BreakerStatuses 返回各 scope（站点）的熔断状态快照：key 是站点 Key，"" 是默认 scope。
+//
+// 只列出**真的有闸门**的 scope：单独配过的站点，加上默认那把（如果启用了熔断）。
+func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
+	out := make(map[string]BreakerStatus)
+	if e.breaker.Enabled() {
+		out[""] = e.breaker.Status() // Site 留空 = 默认 scope
+	}
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	for site, b := range e.siteBreaker {
+		st := b.Status()
+		st.Site = site
+		out[site] = st
+	}
+	return out
+}
+
+// siteOf 取某个阶段所属的站点 Key（未注册或未归属返回空串 = 默认 scope）。
+func (e *Engine) siteOf(stage string) string {
+	if info := e.stages[stage]; info != nil {
+		return info.config.Site
+	}
+	return ""
+}
 
 // Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
 //

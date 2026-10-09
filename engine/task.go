@@ -16,6 +16,7 @@ type Task struct {
 	URL            string // 要打开的 URL
 	Retry          int
 	Stage          string // 阶段标识，如 "catalog", "detail", "video"
+	Site           string // 所属站点（SiteSpec.Key）；空 = 未归属。随行落库，供后台按站点筛/排障
 	Repeatable     bool
 	Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
 	IdempotencyKey string            // 自定义幂等键，为空时回退 Stage|URL
@@ -55,6 +56,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		PID:            uint(t.PID),
 		URL:            t.URL,
 		Stage:          t.Stage,
+		Site:           t.Site,
 		IdempotencyKey: t.IdempotencyKey,
 		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
@@ -104,6 +106,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		PID:            int(t.PID),
 		URL:            t.URL,
 		Stage:          t.Stage,
+		Site:           t.Site,
 		Retry:          t.Retry,
 		Repeatable:     t.Repeatable == models.RepeatableYes,
 		Urgent:         t.Urgent,

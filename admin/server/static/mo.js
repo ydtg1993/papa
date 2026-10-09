@@ -487,32 +487,48 @@
         renderBreaker(data.breaker);
     }
 
-    /* ---- 熔断横幅 ---- */
-    // 暂停时整页顶部显形 + 一个手动放行按钮；没暂停就藏起来。
-    // 状态跟着 /api/monitor 每轮刷新一起来（不额外发请求），所以别的标签页里触发的熔断也能看到。
-    function renderBreaker(b) {
+    /* ---- 熔断横幅（多站时逐 scope 一行） ---- */
+    // 每个站点一把闸门（引擎按 scope 分组）：哪一站被闸住、为什么、什么时候，以及**只放行那一站**的按钮；
+    // 两个以上被闸住时额外给一个「全部恢复」。状态跟着 /api/monitor 每轮刷新一起来（不额外发请求），
+    // 所以别的标签页 / 别的操作人触发的熔断也能看到。
+    function renderBreaker(list) {
         var el = document.getElementById('breaker-banner');
         if (!el) return;
-        if (!b || !b.paused) { el.hidden = true; return; }
+        var paused = (list || []).filter(function (b) { return b && b.paused; });
+        if (!paused.length) { el.hidden = true; el.innerHTML = ''; return; }
 
-        var at = b.paused_at ? new Date(b.paused_at) : null;
-        var when = (at && timeValid(at)) ? at.toLocaleString() : '';
-        document.getElementById('breaker-text').textContent =
-            '抓取已暂停（熔断）：' + (b.reason || '') +
-            (b.stage ? '｜阶段 ' + b.stage : '') +
-            '｜' + fmtSpan(b.window / 1e9) + ' 窗口内 ' + (b.failures || 0) + ' 次终态失败，阈值 ' + (b.threshold || 0) +
-            (when ? '｜暂停于 ' + when : '') +
-            '。处理完后点右侧按钮恢复。';
+        var html = paused.map(function (b) {
+            var at = b.paused_at ? new Date(b.paused_at) : null;
+            var when = (at && timeValid(at)) ? at.toLocaleString() : '';
+            var where = b.site ? ('站点 ' + b.site) : '默认 scope';
+            return '<div class="breaker-row">' +
+                '<span class="breaker-text">抓取已暂停（熔断）｜' + esc(where) +
+                (b.stage ? '｜阶段 ' + esc(b.stage) : '') +
+                '｜' + esc(fmtSpan(b.window / 1e9)) + ' 窗口内 ' + (b.failures || 0) +
+                ' 次终态失败，阈值 ' + (b.threshold || 0) +
+                (when ? '｜暂停于 ' + esc(when) : '') +
+                '。处理完后点右侧按钮恢复。</span>' +
+                '<button class="btn" data-scope="' + esc(b.site || '') +
+                '" onclick="resumeCrawling(this.dataset.scope)">恢复</button>' +
+                '</div>';
+        }).join('');
+        if (paused.length > 1) {
+            html += '<div class="breaker-row"><span class="breaker-text">共 ' + paused.length +
+                ' 个 scope 被闸住</span>' +
+                '<button class="btn" onclick="resumeCrawling()">全部恢复</button></div>';
+        }
+        el.innerHTML = html; // 每一段都过了 esc()
         el.hidden = false;
     }
-    async function resumeCrawling() {
-        var resp = await apiPost('/api/breaker/resume', {});
+    // scope 省略 = 全部放行（多站时后台横幅上的「全部恢复」）。
+    async function resumeCrawling(scope) {
+        var resp = await apiPost('/api/breaker/resume', scope ? { scope: scope } : {});
         if (!resp || !resp.ok) { Toast.err('恢复失败'); return; }
         var data = null;
         try { data = await resp.json(); } catch (e) { /* 拿不到 body 不影响放行结果 */ }
         // resumed=false 说明本来就没闸住（比如另一个人先点了）—— 说清楚，别报个含糊的成功
         if (data && data.resumed === false) Toast.info('当前不在暂停态');
-        else Toast.ok('已恢复抓取');
+        else Toast.ok(scope ? ('已恢复 ' + scope) : '已恢复抓取');
         fetchData();
     }
 

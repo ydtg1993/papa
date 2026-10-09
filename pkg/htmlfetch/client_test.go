@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 )
 
@@ -251,5 +252,115 @@ func TestBodyTooLargeIsNotAStatusError(t *testing.T) {
 	// 文案同样保持原样
 	if err.Error() != "html response exceeds 404 bytes" {
 		t.Fatalf("文案变了：%q", err.Error())
+	}
+}
+
+// 逐请求头（`core.WithHeaders`）：同键覆盖配置里的、空值删掉配置里的，其余照旧。
+func TestFetchAppliesPerRequestHeaders(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		_, _ = w.Write([]byte(`<html><body>ok</body></html>`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		Timeout:   time.Second,
+		UserAgent: "cfg-ua",
+		Headers:   map[string]string{"X-From-Config": "1", "X-Gone": "yes", "X-Kept": "keep"},
+	})
+	ctx := core.WithHeaders(context.Background(), map[string]string{
+		"User-Agent":    "req-ua",
+		"X-From-Config": "2",
+		"X-Gone":        "",
+	})
+	if _, err := client.Fetch(ctx, server.URL); err != nil {
+		t.Fatalf("Fetch = %v", err)
+	}
+
+	if v := got.Get("User-Agent"); v != "req-ua" {
+		t.Fatalf("User-Agent = %q，逐请求应当覆盖配置里的", v)
+	}
+	if v := got.Get("X-From-Config"); v != "2" {
+		t.Fatalf("X-From-Config = %q，应当被逐请求覆盖", v)
+	}
+	if _, ok := got["X-Gone"]; ok {
+		t.Fatalf("空值应当把配置里的头删掉，实得 %v", got)
+	}
+	if v := got.Get("X-Kept"); v != "keep" {
+		t.Fatalf("没提到的头要留着，实得 %q", v)
+	}
+}
+
+// 显式出口（`core.WithProxyURL`）优先于"用不用代理池"那个开关：出口由调用方决定。
+func TestProxyURLOverridesManager(t *testing.T) {
+	proxyFn := proxyFunc(nil) // nil manager = 没配代理池
+
+	// 只有"强制直连"开关：返回 nil（直连）
+	direct := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	direct = direct.WithContext(WithProxy(direct.Context(), false))
+	if u, err := proxyFn(direct); err != nil || u != nil {
+		t.Fatalf("直连应当返回 nil，实得 %v %v", u, err)
+	}
+
+	// 显式地址：即使开关说直连，也走指定的出口（它更具体）
+	withURL := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	withURL = withURL.WithContext(core.WithProxyURL(WithProxy(withURL.Context(), false), "http://1.2.3.4:8080"))
+	u, err := proxyFn(withURL)
+	if err != nil {
+		t.Fatalf("解析显式代理地址：%v", err)
+	}
+	if u == nil || u.String() != "http://1.2.3.4:8080" {
+		t.Fatalf("应当用显式指定的出口，实得 %v", u)
+	}
+
+	// 地址写错：报错而不是静默直连
+	bad := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	bad = bad.WithContext(core.WithProxyURL(bad.Context(), "://坏地址"))
+	if _, err := proxyFn(bad); err == nil {
+		t.Fatal("地址解析不出来时应当报错（静默直连会让请求从别的出口出去）")
+	}
+}
+
+// 受限页判据：默认词表扫**可见正文 + 标题**，外加业务追加的本站文案。
+func TestRestrictedReason(t *testing.T) {
+	cases := []struct {
+		name  string
+		html  string
+		extra []string
+		want  string
+	}{
+		{"正文里的 captcha", `<html><body><p>Please complete the CAPTCHA to continue</p></body></html>`, nil, "captcha"},
+		{"中文验证码", `<html><body><div>请填写验证码后继续</div></body></html>`, nil, "验证码"},
+		{"只有标题命中（Cloudflare 拦截页正文很空）", `<html><head><title>Just a moment...</title></head><body></body></html>`, nil, "just a moment"},
+		{"业务追加的本站文案", `<html><body>安全验证中，请稍候</body></html>`, []string{"安全验证"}, "安全验证"},
+		{"正常页面不误判", `<html><body><h1>某剧集</h1><p>第 1 集</p></body></html>`, nil, ""},
+		// 关键：**内联脚本**里有 captcha 字面量（埋点/第三方 SDK 常见），那不是页面对人说的话
+		{"内联脚本里的 captcha 不算", `<html><body><script>var t="captcha";</script><p>正常正文</p></body></html>`, nil, ""},
+		// 同理：样式表里的字面量也不算
+		{"style 里的字面量不算", `<html><body><style>.captcha{}</style><p>正常正文</p></body></html>`, nil, ""},
+		{"nil 安全", "", nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var page *Page
+			if c.html == "" {
+				page = nil // nil 安全
+			} else {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					_, _ = w.Write([]byte(c.html))
+				}))
+				defer server.Close()
+				p, err := NewClient(Config{Timeout: time.Second}).Fetch(context.Background(), server.URL)
+				if err != nil {
+					t.Fatalf("Fetch = %v", err)
+				}
+				page = p
+			}
+			if got := RestrictedReason(page, c.extra...); got != c.want {
+				t.Fatalf("RestrictedReason = %q, want %q", got, c.want)
+			}
+		})
 	}
 }

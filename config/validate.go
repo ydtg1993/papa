@@ -110,28 +110,6 @@ var rules = []rule{
 		return nil
 	}},
 
-	{"crawler.stages.*.worker_count", func(c *Config) error {
-		return eachStage(c, func(name string, st StageConfig) error {
-			if st.WorkerCount <= 0 {
-				return fmt.Errorf("  阶段 %q 的 worker_count 必须 > 0（实得 %d）——\n"+
-					"  为 0 时池子里没有 worker，任务会静静躺在队列里（监控页看着「排队中 N」，永不执行）",
-					name, st.WorkerCount)
-			}
-			return nil
-		})
-	}},
-
-	{"crawler.stages.*.queue_size", func(c *Config) error {
-		return eachStage(c, func(name string, st StageConfig) error {
-			if st.QueueSize <= 0 {
-				return fmt.Errorf("  阶段 %q 的 queue_size 必须 > 0（实得 %d）——\n"+
-					"  为 0 时队列无缓冲，高水位判据 len >= cap*watermark 恒真，每次提交都会溢出到 DB",
-					name, st.QueueSize)
-			}
-			return nil
-		})
-	}},
-
 	{"html.max_body_size", func(c *Config) error {
 		if !c.HTML.Enable {
 			return nil // 静态抓取关着时这个值用不上（htmlConfig 只在 enable 时才跑）
@@ -166,6 +144,41 @@ var rules = []rule{
 		}
 		return nil
 	}},
+
+	{"crawler.archive.dir", func(c *Config) error {
+		if !c.Crawler.Archive.Enabled {
+			return nil // 没开归档就用不上这个目录
+		}
+		if strings.TrimSpace(c.Crawler.Archive.Dir) == "" {
+			return fmt.Errorf("  开了归档就必须给目录（archive.dir）——\n" +
+				"  空串会拼成「文件系统根 / 当前盘根」下的 {stage}/…：要么没权限、一个文件也写不出来，\n" +
+				"  要么把归档散在盘根。给一个目录，如 ./logs/fetcher-html")
+		}
+		return nil
+	}},
+
+	{"crawler.archive.mode", func(c *Config) error {
+		m := c.Crawler.Archive.Mode
+		if m == "" || m == ArchiveModeFailure || m == ArchiveModeAlways {
+			return nil // 留空 = failure
+		}
+		return fmt.Errorf("  只能是 %q（默认：只在失败的尝试落盘）或 %q（每次尝试都落，排查期用），实得 %q",
+			ArchiveModeFailure, ArchiveModeAlways, m)
+	}},
+
+	{"crawler.archive.max_file_mb", func(c *Config) error {
+		v := c.Crawler.Archive.MaxFileMB
+		if v == 0 {
+			return nil // 未写 = 默认 8MB
+		}
+		if v < archiveMaxFileMinMB || v > archiveMaxFileMaxMB {
+			return fmt.Errorf("  必须在 %d..%d 之间（实得 %d）——\n"+
+				"  这一项的单位是 **MB**（不是字节）：写 8 是「8MB 以内才归档」，而 1 就已经比"+
+				"绝大多数页面大了；上界 %d 只挡把字节数写进来的那种笔误",
+				archiveMaxFileMinMB, archiveMaxFileMaxMB, v, archiveMaxFileMaxMB)
+		}
+		return nil
+	}},
 }
 
 // 连接池两键允许的区间。**下界 1 才是真正起作用的那半**：配置的零值 0 与
@@ -186,6 +199,11 @@ const (
 	dbPoolMax = 100
 )
 
+const (
+	archiveMaxFileMinMB = 1
+	archiveMaxFileMaxMB = 1024
+)
+
 // inPoolRange 报告连接池取值是否在允许区间内。
 func inPoolRange(v int) error {
 	if v < dbPoolMin || v > dbPoolMax {
@@ -193,21 +211,6 @@ func inPoolRange(v int) error {
 			"  这两键是**必填**：漏写与写 0 都算没给，而 database/sql 把 0 当成「不限」（或「不保留空闲连接」），\n"+
 			"  配置的零值也是 0，两者分不开 —— 不拦的话漏配就是静默打满 MySQL",
 			dbPoolMin, dbPoolMax, v)
-	}
-	return nil
-}
-
-// eachStage 按阶段名字典序遍历（报错信息要稳定 —— map 的遍历顺序是随机的）。
-func eachStage(c *Config, check func(name string, st StageConfig) error) error {
-	names := make([]string, 0, len(c.Crawler.Stages))
-	for n := range c.Crawler.Stages {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		if err := check(n, c.Crawler.Stages[n]); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -310,10 +313,9 @@ func validKeys() []string {
 			}
 			switch {
 			case f.Type.Kind() == reflect.Map:
+				// 现在框架里只有 map[string]any / map[string]string 这类"叶子 map"
+				//（business、各 headers）—— 再往下走的键不该被当配置键管辖。
 				out = append(out, path+"[]")
-				if f.Type.Elem().Kind() == reflect.Struct {
-					walk(f.Type.Elem(), path+"[]")
-				}
 			case f.Type.Kind() == reflect.Struct && hasMapstructureTags(f.Type):
 				walk(f.Type, path)
 			default:

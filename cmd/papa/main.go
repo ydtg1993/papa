@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +18,30 @@ var tmplFS embed.FS
 
 type scaffoldData struct {
 	Module string
+	// SiteFunc 站点声明函数名（configs/sites/<模块名>.go 里的 `func xxx() papa.SiteSpec`）。
+	// 模块名可能带连字符/大写，这里归一成合法标识符。
+	SiteFunc string
+}
+
+// sanitizeIdent 把模块名归一成合法的 Go 标识符（只用于脚手架生成的函数名）。
+func sanitizeIdent(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			out = append(out, r)
+		default:
+			out = append(out, '_')
+		}
+	}
+	id := string(out)
+	if id == "" {
+		return "site"
+	}
+	if id[0] >= '0' && id[0] <= '9' {
+		return "site" + id
+	}
+	return id
 }
 
 func main() {
@@ -101,7 +127,7 @@ func runNew(name string, args []string) error {
 		replacePath = filepath.ToSlash(replacePath) // 兼容 Windows 反斜杠路径
 	}
 
-	data := scaffoldData{Module: name}
+	data := scaffoldData{Module: name, SiteFunc: sanitizeIdent(name)}
 
 	files := []struct {
 		tmpl string
@@ -111,6 +137,7 @@ func runNew(name string, args []string) error {
 		{"gitignore.tmpl", ".gitignore"},
 		{"main.go.tmpl", "main.go"},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
+		{"configs_sites_site.go.tmpl", filepath.Join("configs", "sites", "{{.Module}}.go")},
 		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},
 		{"models_models.go.tmpl", filepath.Join("models", "models.go")},
 		{"monitor_register.go.tmpl", filepath.Join("monitor", "register.go")},
@@ -125,7 +152,11 @@ func runNew(name string, args []string) error {
 	}
 
 	for _, f := range files {
-		if err := render(f.tmpl, filepath.Join(name, f.dest), data); err != nil {
+		dest, err := renderStr(f.dest, data) // 文件名也走一遍模板（configs/sites/<模块名>.go）
+		if err != nil {
+			return err
+		}
+		if err := render(f.tmpl, filepath.Join(name, dest), data); err != nil {
 			return err
 		}
 	}
@@ -172,6 +203,19 @@ func appendReplace(goModPath, replacePath string) error {
 	return err
 }
 
+// renderStr 渲染一段（用于带 {{.Module}} 的文件名）。
+func renderStr(s string, data scaffoldData) (string, error) {
+	t, err := template.New("str").Parse(s)
+	if err != nil {
+		return "", err
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 func render(tmplName, dest string, data scaffoldData) error {
 	tmpl, err := template.ParseFS(tmplFS, "templates/"+tmplName)
 	if err != nil {
@@ -185,6 +229,21 @@ func render(tmplName, dest string, data scaffoldData) error {
 		return err
 	}
 	defer f.Close()
+
+	// 模板里的注释对齐不可能手写准，生成时过一遍 gofmt：脚手架产物是用户照抄的范本，
+	// 出来就该是格式正确的（go/format 在进程内，没有外部依赖）。
+	if strings.HasSuffix(dest, ".go") {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return err
+		}
+		src, err := format.Source(buf.Bytes())
+		if err != nil {
+			return fmt.Errorf("生成的 %s 不是合法 Go（模板改坏了？）：%w", dest, err)
+		}
+		_, err = f.Write(src)
+		return err
+	}
 	return tmpl.Execute(f, data)
 }
 

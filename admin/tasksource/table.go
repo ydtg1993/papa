@@ -53,6 +53,7 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
 			{Field: "pid", Label: "父任务", Kind: oao.KindNumber, Width: "80px", NoEdit: true},
 			{Field: "stage", Label: "阶段"},
+			{Field: "site", Label: "站点", Width: "90px"}, // 多站时按站点分：熔断、日志、任务都按它
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}", NewTab: true},
 			{Field: "title", Label: "标题"},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
@@ -69,6 +70,7 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 		Filters: []oao.Filter{
 			{Field: "url", Label: "URL", Op: oao.OpLike},
 			{Field: "stage", Label: "阶段", Op: oao.OpEq},
+			{Field: "site", Label: "站点", Op: oao.OpEq},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Op: oao.OpIn, Options: taskStatusEnum},
 			{Field: "retry", Label: "重试次数 >", Kind: oao.KindNumber, Op: oao.OpGt},

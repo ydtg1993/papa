@@ -40,6 +40,12 @@ func FrameworkModels(cfg *config.Config) []Model {
 // AutoMigrate **只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 ——
 // 所以生产上跑它是安全的。真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工迁移。
 func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
+	// 先跑那几步 AutoMigrate 做不了的显式迁移（删旧索引、改列类型、回填、建新索引）——
+	// 它们各自先查 information_schema 判断要不要做，可重复跑。见 migrate_taskurl.go。
+	if err := migrateTaskURLHash(db); err != nil {
+		return err
+	}
+
 	all := make([]any, 0, 8)
 	for _, m := range FrameworkModels(cfg) {
 		all = append(all, m.Value)

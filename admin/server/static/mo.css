@@ -437,6 +437,9 @@ html.need-login #login { display: flex; }
 }
 .trace-data { margin-top: 6px; }
 .trace-data summary { cursor: pointer; font-size: 12px; color: var(--muted-foreground); }
+/* 归档步骤的下载按钮：现场文件拿下去本地分析（见 trace.js 的 «下载这一页»） */
+.trace-files { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.trace-files .btn { padding: 4px 10px; font-size: 12px; }
 
 /* ---- Toast ---- */
 .toasts {
@@ -555,7 +558,7 @@ input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
 
 /* ---- 熔断横幅（整页顶部，暂停时由 mo.js 显形） ---- */
 .breaker-banner {
-    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    display: block;
     margin: 0 0 18px; padding: 14px 18px;
     background: var(--destructive); color: #fff;
     border: 2px solid var(--border-color);
@@ -564,5 +567,8 @@ input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
 }
 /* [hidden] 是 UA 的 display:none，但上面那条 display:flex 会盖掉它 —— 得显式再声明一次 */
 .breaker-banner[hidden] { display: none; }
+/* 每个被闸住的 scope 一行；站点多时逐行排开，各自带一个「恢复」 */
+.breaker-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.breaker-row + .breaker-row { margin-top: 10px; }
 .breaker-banner .breaker-text { flex: 1 1 320px; font-family: var(--font-mono); }
 .breaker-banner .btn { flex: 0 0 auto; background: #fff; color: var(--destructive); }

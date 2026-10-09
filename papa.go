@@ -7,6 +7,7 @@ package papa
 
 import (
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/internal/app"
 )
 
@@ -26,8 +27,54 @@ type Middleware = app.Middleware
 // Page 一个自定义后台页，传给 App.UsePage。
 type Page = app.Page
 
+// SiteSpec 站点声明（Key / BaseURL / 熔断阈值 / 阶段清单），传给 App.RegisterSites。
+type SiteSpec = app.SiteSpec
+
+// StageSpec 一个阶段的完整声明：fetcher + 并发/队列/间隔/重试/入口开关。
+type StageSpec = app.StageSpec
+
+// RetrySpec 重试声明（MaxAttempts / Backoff）。
+type RetrySpec = app.RetrySpec
+
+// BreakerSpec 站点自己的熔断阈值（覆盖 crawler.breaker 的默认值）。
+type BreakerSpec = app.BreakerSpec
+
+// Site 站点声明的快照（engine.Site(key) 返回它：BaseURL 等）。
+type Site = core.Site
+
 // Config 全局配置。
 type Config = config.Config
+
+// RegisterSite 登记一个站点声明（**在站点文件的 init() 里调**）：
+//
+//	// configs/sites/huangguo.go
+//	func init() { papa.RegisterSite(huangguo()) }
+//
+// 框架自己收集，项目不用手写汇总清单 —— 加一个站 = 加一个文件。
+// main.go 只需一行匿名导入（`_ "yourmod/configs/sites"`）让这些 init 跑起来，
+// 再把收集到的交给 App：`app.RegisterSites(papa.Sites()...)`。
+var RegisterSite = app.RegisterSite
+
+// Sites 返回框架收集到的全部站点声明（顺序 = 文件名字典序）。传给 `App.RegisterSites`。
+var Sites = app.Sites
+
+// WithHeaders 给这次抓取（及其派生 ctx 上的后续抓取）带上/覆盖请求头，静态与浏览器两条路都认：
+//
+//	doc, finalURL, err := engine.FetchRendered(papa.WithHeaders(ctx, map[string]string{
+//	    "Referer": "https://example.com/list",
+//	}), url, ".detail")
+//
+// 同键覆盖，值空串 = 删掉那个头；它是**叠加**的 —— 站点级（SiteSpec.Headers）已挂在 ctx 上时，
+// 这里只覆盖你给的键。优先级：框架默认 < 全局 headers 配置 < 站点 headers < 逐请求。
+var WithHeaders = core.WithHeaders
+
+// WithProxyURL 指定这次抓取走**哪个**代理（如 "http://1.2.3.4:8080"）；空串 = 不指定。
+//
+//	page, err := engine.FetchHTML(papa.WithProxyURL(ctx, engine.NextProxy()), url)
+//
+// 比 `htmlfetch.WithProxy(ctx, use)` 更具体，优先于它；**浏览器路径不支持**逐请求代理地址
+// （代理是浏览器实例级设置），传了会明确报错而不是静默忽略。
+var WithProxyURL = core.WithProxyURL
 
 // WithConfigPath 指定配置文件路径（缺省读 PAPA_CONFIG 环境变量，再回退 configs/config.yaml）
 var WithConfigPath = app.WithConfigPath

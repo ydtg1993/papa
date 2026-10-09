@@ -123,18 +123,25 @@ func TestRuleBoundaries(t *testing.T) {
 			bad:    baseConfig + "proxy:\n  api_url: http://example.com/proxies\n  refresh_interval: 0s\n",
 		},
 		{
-			name:   "crawler.stages.worker_count",
-			key:    "crawler.stages.*.worker_count",
-			absent: baseConfig, // 一个阶段都不声明，合法
-			ok:     baseConfig + "crawler:\n  stages:\n    catalog:\n      worker_count: 2\n      queue_size: 20\n",
-			bad:    baseConfig + "crawler:\n  stages:\n    catalog:\n      worker_count: 0\n      queue_size: 20\n",
+			name:   "crawler.archive.dir",
+			key:    "crawler.archive.dir",
+			absent: baseConfig, // 没开归档，用不上目录
+			ok:     baseConfig + "crawler:\n  archive:\n    enabled: true\n    dir: ./logs/fetcher-html\n",
+			bad:    baseConfig + "crawler:\n  archive:\n    enabled: true\n",
 		},
 		{
-			name:   "crawler.stages.queue_size",
-			key:    "crawler.stages.*.queue_size",
-			absent: baseConfig,
-			ok:     baseConfig + "crawler:\n  stages:\n    catalog:\n      worker_count: 1\n      queue_size: 20\n",
-			bad:    baseConfig + "crawler:\n  stages:\n    catalog:\n      worker_count: 1\n      queue_size: 0\n",
+			name:   "crawler.archive.mode",
+			key:    "crawler.archive.mode",
+			absent: baseConfig, // 留空 = failure
+			ok:     baseConfig + "crawler:\n  archive:\n    mode: always\n",
+			bad:    baseConfig + "crawler:\n  archive:\n    mode: sometimes\n",
+		},
+		{
+			name:   "crawler.archive.max_file_mb",
+			key:    "crawler.archive.max_file_mb",
+			absent: baseConfig, // 留空 = 8MB
+			ok:     baseConfig + "crawler:\n  archive:\n    max_file_mb: 8\n",
+			bad:    baseConfig + "crawler:\n  archive:\n    max_file_mb: 8192\n",
 		},
 		{
 			name:   "db.log_level",
@@ -257,18 +264,6 @@ func TestUnknownKeyRejectsStartup(t *testing.T) {
 	}
 }
 
-// 嵌套在 map 里的未知键（阶段配置）同样要被抓到，且带上完整路径。
-func TestUnknownKeyNestedInMap(t *testing.T) {
-	msg := panicOn(t, baseConfig+"crawler:\n  stages:\n    catalog:\n      worker_count: 1\n      queue_size: 20\n      wroker_count: 9\n")
-	if !strings.Contains(msg, "crawler.stages[catalog].wroker_count") {
-		t.Fatalf("应报出完整路径，实得：\n%s", msg)
-	}
-	// 拼错一个字母要给"是不是想写 X"—— 这也是它和一句冷冰冰的"未知键"的区别
-	if !strings.Contains(msg, "worker_count") {
-		t.Fatalf("应当提示正确的键名，实得：\n%s", msg)
-	}
-}
-
 // 升级后残留的旧键（server.monitor / crawler.target / browser.pool_size 那几次）
 // 落在这里，没有"长得像"的键可建议 —— 那就只报键名，不硬凑。
 func TestUnknownRemovedKeyHasNoBogusSuggestion(t *testing.T) {
@@ -314,9 +309,7 @@ func TestValidKeysShapes(t *testing.T) {
 		"app.env",
 		"log.dir",
 		"crawler.breaker.window",
-		"crawler.stages[].worker_count", // map 的值展开
-		"browser.headers[]",             // map 的叶子
-		"crawler.stages[].delay",        // DurationRange 没有 tag，必须当叶子
+		"browser.headers[]", // map 的叶子
 		"server.port",
 		"db.log_level",
 	} {

@@ -9,7 +9,7 @@ import (
 
 // dedupCache 有界 LRU 去重缓存。key 为任务去重键（Task.Unique()），value 恒为占位。
 // 容量 <= 0 表示不限制（保持旧行为）；>0 时超出容量淘汰最久未使用的条目，
-// 被淘汰条目的去重由 DB 唯一索引（idx_stage_url）兜底。
+// 被淘汰条目的去重由 DB 唯一索引（idx_stage_url_hash）兜底。
 type dedupCache struct {
 	mu      sync.Mutex
 	cap     int

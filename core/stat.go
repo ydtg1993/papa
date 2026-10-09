@@ -78,8 +78,11 @@ type BreakerStatus struct {
 	PausedAt  time.Time     `json:"paused_at"`
 	ResumedAt time.Time     `json:"resumed_at"`
 	Reason    string        `json:"reason"`
-	Stage     string        `json:"stage"`    // 触发时哪个阶段在失败
-	Failures  int           `json:"failures"` // 触发那一刻窗口内的失败数
+	// Site 哪个站点（SiteSpec.Key）触发的；空 = 默认 scope（未归属站点的阶段）。
+	// 多站时告警与后台都靠它区分，不再只有一句"全任务暂停"。
+	Site     string `json:"site"`
+	Stage    string `json:"stage"`    // 触发时哪个阶段在失败
+	Failures int    `json:"failures"` // 触发那一刻窗口内的失败数
 }
 
 // TraceStep 一条步骤记录的快照（纯值类型，供监控后台读取，不暴露内部实现）。

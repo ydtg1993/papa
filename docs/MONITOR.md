@@ -448,53 +448,45 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 ## 10. 熔断暂停
 
 熔断触发时（或业务自己调了 `engine.PauseCrawling`），**整页顶部**出一条红色横幅 ——
-它在所有模块之上，切到哪个页都看得到 —— 右侧一个「恢复抓取」按钮。
-横幅状态跟着 `/api/monitor` 每轮刷新一起来（不额外发请求），所以别的标签页里触发的熔断，
-这边几秒内也能看到。
+它在所有模块之上，切到哪个页都看得到。横幅状态跟着 `/api/monitor` 每轮刷新一起来
+（不额外发请求），所以别的标签页里触发的熔断，这边几秒内也能看到。
+
+**多站时每个站点是一把独立的闸门**（`SiteSpec.Breaker`，见 FETCHER_WRITING_GUIDE.md 7.2），
+横幅**逐站一行**：每行写清是哪一站（`site` 为空 = 默认 scope）、哪个阶段、窗口内多少次终态失败、
+暂停于何时，并各带一个「恢复」按钮（只放行那一站）；两个以上被闸住时额外给一个「全部恢复」。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/breaker` | 熔断状态快照（与 `/api/monitor` 里的 `breaker` 字段是同一份东西） |
-| POST | `/api/breaker/resume` | 手动放行；返回 `{"status":"ok","resumed":true\|false}` |
+| GET | `/api/breaker` | 各 scope 的状态：`{"breakers":[...]}`（默认 scope 排第一，其余按站点名字典序） |
+| POST | `/api/breaker/resume` | 放行。**不点名 = 全部**；点名：`?scope=siteb` 或请求体 `{"scope":"siteb"}`。未知 scope 回 **400**（不静默放行全部） |
 
 `resumed=false` 表示**当前本来就不在暂停态**（比如另一个人先点了），这不是错误 ——
 重复点击恢复不该看起来像失败，但也不能回一个含糊的 ok 让调用方以为是自己放行的。
+放行了哪些 scope 在 `resumed_scopes` 里。
 
 放行是**人在场的干预**（熔断停的是整条抓取线），所以成功后会写一条操作日志
-（`Table: breaker` / `Action: resume`，带操作人）—— 前提是开了 `server.operation_log`。
+（`Table: breaker` / `Action: resume`，带操作人与 `scope`）—— 前提是开了 `server.operation_log`。
 
-`breaker` 字段：
+`/api/monitor` 里的 `breakers` 数组（每项就是下面这个对象；`site` 是这个 scope 的站点键）：
 
 ```jsonc
-"breaker": {
-  "enabled": true,
-  "window": 300000000000,   // duration 是纳秒
-  "threshold": 50,
-  "in_window": 12,          // 实时值：当前窗口内的终态失败数
-  "paused": true,
-  "paused_at": "...",
-  "resumed_at": "...",
-  "reason": "窗口内终态失败数达到阈值",
-  "stage": "catalog",       // 触发时哪个阶段在失败
-  "failures": 50            // 触发那一刻的值
-}
+"breakers": [
+  {
+    "enabled": true,
+    "site": "",             // 空 = 默认 scope（未归属站点的阶段）
+    "window": 300000000000, // duration 是纳秒
+    "threshold": 50,
+    "in_window": 12,        // 实时值：当前窗口内的终态失败数
+    "paused": true,
+    "paused_at": "...",
+    "resumed_at": "...",
+    "reason": "窗口内终态失败数达到阈值",
+    "stage": "hgd_catalog",
+    "failures": 50
+  }
+]
 ```
 
-> `in_window` 与 `failures` 是两个东西：前者**实时**，窗口滑走后会掉下来；后者是**触发那一刻**
-> 的快照，永远不动 —— 排查时要看的是"当时为什么断的"，不是"现在还剩几条"。
+另一处能看出站点的是**告警**：任务终态失败与熔断触发都走同一套 `Notifier`，事件里带
+`site`（`papa.TaskError.Site`）—— webhook 那头可以据此路由（@对应的负责人）。
 
-暂停时的行为（这几条是设计的一部分，不是副作用）：
-
-- **在途任务自然跑完**，不腰斩。
-- **队列原封不动**（一条不丢），恢复是瞬时的 —— worker 停在取任务循环顶部，不消费队列。
-- **停机照旧排空**：闸门只管运行期"要不要取下一个任务"，**不管停机** —— 收到退出信号后
-  仍会把队列跑完。这里一度反着写过（暂停中不排空，理由是"别把积压打出去"），后来拆掉了，
-  因为那是**错配**：熔断的暂停不跨重启，重启后[启动恢复](./RECOVER_QUEUE.md)会把同一批
-  `pending` 原样捞回来重跑 —— 净效果为零，只是把洪峰从停机挪到启动、还多绕一趟 DB。
-  只有**持久型 Gate**（比如写死在配置里的维护窗口）才需要那条逻辑。
-- **不跨重启**：进程重启即恢复运行 —— 起进程本身就是一次人工介入，**重启 = 自愿放行**，
-  队列里积压的任务该跑的照跑（走的就是启动恢复那条路）。
-
-熔断触发时还会发一条 `AlertCritical` 告警，走的是和任务失败**同一个** `Notifier` 通道
-（`engine.AddNotifier`），业务不用再接一套；级别比 `AlertError` 高一级，
-webhook 那边可以据此单独路由（钉钉 @全体之类）。

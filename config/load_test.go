@@ -40,14 +40,6 @@ crawler:
   trace:
     enabled: true
     retention: "168h"
-  stages:
-    catalog:
-      worker_count: 2
-      queue_size: 10
-      delay: "10s-30s"
-      retry:
-        max_attempts: 3
-        backoff: "30s"
 error_queue:
   interval: "10m"
   batch_size: 500
@@ -85,14 +77,8 @@ repeat_queue:
 	if cfg.HTML.Headers["User-Agent"] != "html-ua" {
 		t.Fatalf("html headers 大小写丢失: %+v", cfg.HTML.Headers)
 	}
-	// DurationRange 与 time.Duration
-	stage := cfg.Crawler.Stages["catalog"]
-	if stage.Delay.Min != 10*time.Second || stage.Delay.Max != 30*time.Second {
-		t.Fatalf("delay = %+v, want 10s-30s", stage.Delay)
-	}
-	if stage.Retry.Backoff != 30*time.Second {
-		t.Fatalf("backoff = %v, want 30s", stage.Retry.Backoff)
-	}
+	// 注意：阶段参数已搬进 Go 声明（`configs/stage.go` 的 StageSpec），配置里不再有 crawler.stages 段；
+	// 那套 "10s-30s" 区间的解析由 duration_test.go 直接覆盖 config.ParseDurationRange。
 	if cfg.ErrorQueue.Interval != 10*time.Minute {
 		t.Fatalf("error_queue.interval = %v, want 10m", cfg.ErrorQueue.Interval)
 	}

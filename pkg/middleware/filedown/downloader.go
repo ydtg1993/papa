@@ -24,11 +24,14 @@ import (
 
 // Downloader 文件下载器（并发安全）
 type Downloader struct {
-	config     *Config
-	client     *http.Client
-	trackQueue *msgqueue.MsgQueue[any]
-	labors     map[string]*labor
-	laborMu    sync.RWMutex
+	config *Config
+	client *http.Client
+	// proxyClients 按代理地址缓存的客户端（逐下载指定出口时用）；proxyMu 保护它。
+	proxyMu      sync.Mutex
+	proxyClients map[string]*http.Client
+	trackQueue   *msgqueue.MsgQueue[any]
+	labors       map[string]*labor
+	laborMu      sync.RWMutex
 }
 
 // labor 每个下载任务的私有数据
@@ -75,6 +78,15 @@ type DownloadOptions struct {
 	Referer   string
 	Cookie    string
 	Headers   map[string]string
+	// Proxy 本次下载走哪个代理（如 "http://1.2.3.4:8080"）；空 = 用下载器默认的客户端。
+	// 出口由调用方决定：`engine.NextProxy()` 取一个，或站点自己的固定出口。
+	// 同一个地址的客户端会复用（连接池不白扔）。
+	Proxy string
+	// Direct 直接下载：跳过 HEAD 探测与分片/续传那套机器，一次 GET 落盘。
+	// 封面这类几十~几百 KB 的小文件用它可以省掉一次往返（也就不会再有"分片 1/1"这种过程）。
+	// 代价：拿不到 HEAD 上的 Content-Disposition 与 Content-Length，也没有断点续传
+	//（大文件、会断的下载还是走默认的分片路径）。
+	Direct bool
 }
 
 // DownloadResult 下载结果
@@ -194,6 +206,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 	defer la.execMu.Unlock()
 
 	cfgGlobal := d.config
+
+	// 直接下载（`DownloadOptions.Direct`）：不探测、不分片。给封面这类小文件用 ——
+	// 省掉一次 HEAD 往返，也就不必为"一个 GET 就够"的文件去走分片+续传那套机器。
+	if cfg.direct {
+		return d.downloadSingle(ctx, la, cfg, probe{})
+	}
 
 	// HEAD 探测
 	p := d.headFile(ctx, la.url, cfg)
@@ -406,7 +424,7 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 		}
 		d.applyHeadersToReq(req, cfg)
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-		resp, err := d.client.Do(req)
+		resp, err := d.clientOf(cfg).Do(req)
 		if err != nil {
 			lastErr = err
 			continue
@@ -459,7 +477,7 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 		return &DownloadResult{Error: err}
 	}
 	d.applyHeadersToReq(req, cfg)
-	resp, err := d.client.Do(req)
+	resp, err := d.clientOf(cfg).Do(req)
 	if err != nil {
 		return &DownloadResult{Error: err}
 	}
@@ -533,7 +551,7 @@ func (d *Downloader) headFile(ctx context.Context, fileURL string, cfg *requestC
 		return probe{}
 	}
 	d.applyHeadersToReq(req, cfg)
-	resp, err := d.client.Do(req)
+	resp, err := d.clientOf(cfg).Do(req)
 	if err != nil || resp.StatusCode >= 400 {
 		if resp != nil {
 			_ = resp.Body.Close()
@@ -569,6 +587,7 @@ func (d *Downloader) applyHeadersToReq(req *http.Request, cfg *requestConfig) {
 func (d *Downloader) buildRequestConfig(opts *DownloadOptions) *requestConfig {
 	cfg := &requestConfig{
 		headers: make(map[string]string),
+		client:  d.client,
 	}
 	if opts == nil {
 		return cfg
@@ -579,7 +598,48 @@ func (d *Downloader) buildRequestConfig(opts *DownloadOptions) *requestConfig {
 	for k, v := range opts.Headers {
 		cfg.headers[k] = v
 	}
+	if opts.Proxy != "" {
+		cfg.client = d.clientForProxy(opts.Proxy)
+	}
+	cfg.direct = opts.Direct
 	return cfg
+}
+
+// clientOf 取本次下载该用的客户端：配置里解析过就用它，否则回落到下载器默认那个。
+// 收成一处是为了让"手拼的 requestConfig"（测试、或包内新调用点漏了 buildRequestConfig）
+// 不至于在 d.client.Do 上崩掉。
+func (d *Downloader) clientOf(cfg *requestConfig) *http.Client {
+	if cfg != nil && cfg.client != nil {
+		return cfg.client
+	}
+	return d.client
+}
+
+// clientForProxy 返回走指定代理的 HTTP 客户端；同一个地址复用同一个（连接池不白扔）。
+//
+// 代理地址来自调用方（fetcher），所以数量由业务决定 —— 这里不做上限，也不清理。
+// 地址解析不出来时返回默认客户端并记一条错误：让这次下载走直连总比整个失败好，
+// 但错误通道上留痕（"代理配错了"不该静默变成"直连"）。
+func (d *Downloader) clientForProxy(addr string) *http.Client {
+	d.proxyMu.Lock()
+	defer d.proxyMu.Unlock()
+	if c, ok := d.proxyClients[addr]; ok {
+		return c
+	}
+	proxyURL, err := url.Parse(addr)
+	if err != nil {
+		d.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", addr, err))
+		return d.client
+	}
+	if d.proxyClients == nil {
+		d.proxyClients = make(map[string]*http.Client)
+	}
+	c := &http.Client{
+		Timeout:   d.config.Timeout,
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+	}
+	d.proxyClients[addr] = c
+	return c
 }
 
 // requestConfig 单次请求配置
@@ -588,6 +648,10 @@ type requestConfig struct {
 	referer   string
 	cookie    string
 	headers   map[string]string
+	direct    bool
+	// client 本次下载用的 HTTP 客户端：默认是下载器那个，带 Proxy 时换成走该代理的
+	//（按地址缓存，见 clientForProxy）。
+	client *http.Client
 }
 
 // genFileName 生成文件名

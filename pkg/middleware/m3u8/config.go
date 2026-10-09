@@ -41,6 +41,9 @@ type DownloadOptions struct {
 	Referer   string            // 自定义 Referer
 	Cookie    string            // 自定义 Cookie
 	Headers   map[string]string // 额外 Headers
+	// Proxy 本次下载走哪个代理（如 "http://1.2.3.4:8080"）；空 = 用下载器默认的客户端。
+	// 出口由调用方决定：`engine.NextProxy()` 取一个，或站点自己的固定出口。
+	Proxy string
 }
 
 // DefaultConfig 返回默认配置（适合大多数场景）

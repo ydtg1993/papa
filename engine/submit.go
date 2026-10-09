@@ -21,14 +21,18 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
 		return e.logSubmitError(task, fmt.Errorf("task stage or url is empty: %+v", task))
 	}
-	if _, ok := e.cfg.Crawler.Stages[task.Stage]; !ok {
-		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s", task.Stage))
+	if info := e.stages[task.Stage]; info == nil {
+		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage))
+	} else if task.Site == "" {
+		// 站点归属由**目标阶段**决定（阶段属于哪个站），调用方不用自己写；
+		// 显式给了 site 就尊重它（比如跨站派发的特殊场景）。
+		task.Site = info.config.Site
 	}
 
 	key := task.Unique()
 	var record models.CrawlerTask
 
-	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_stage_url 兜底）
+	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_stage_url_hash 兜底）
 	if e.dedupCache.Get(key) {
 		if !task.Repeatable {
 			return nil // 去重命中：视为成功，无需重复处理
@@ -73,13 +77,14 @@ func (e *Engine) SubmitTask(task *Task) error {
 }
 
 // findTaskRecord 按去重键查找已存在的任务记录；未找到返回 gorm.ErrRecordNotFound。
-// 幂等键优先，否则回退 stage+url（与 DB 唯一索引 idx_stage_url 一致）。
+// 幂等键优先，否则回退 stage+url_hash（与 DB 唯一索引 idx_stage_url_hash 一致 ——
+// 唯一索引建在 URL 的 sha256 上，因为长 URL 不能整串进索引）。
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
 	q := e.db.Model(&models.CrawlerTask{})
 	if task.IdempotencyKey != "" {
 		q = q.Where("idempotency_key = ?", task.IdempotencyKey)
 	} else {
-		q = q.Where("url = ? AND stage = ?", task.URL, task.Stage)
+		q = q.Where("url_hash = ? AND stage = ?", models.UrlHash(task.URL), task.Stage)
 	}
 	return q.First(record).Error
 }
@@ -123,6 +128,10 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	// 谁也看不出来它和库里的不一致）。
 	if len(task.Meta) > 0 {
 		record.Meta = metaToJSON(task.Meta)
+	}
+	// 站点同理：行是这条任务的记录，重投路径全靠它认出"这条属于哪个站"
+	if task.Site != "" {
+		record.Site = task.Site
 	}
 	record.Status = models.TaskStatusPending
 	e.db.Save(record)
@@ -183,8 +192,10 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		if t.Stage == "" || t.URL == "" {
 			return e.logSubmitError(t, fmt.Errorf("task stage or url is empty: %+v", t))
 		}
-		if _, ok := e.cfg.Crawler.Stages[t.Stage]; !ok {
-			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s", t.Stage))
+		if info := e.stages[t.Stage]; info == nil {
+			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", t.Stage))
+		} else if t.Site == "" {
+			t.Site = info.config.Site
 		}
 	}
 
@@ -270,7 +281,7 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 // 业务看到的是一整批任务凭空消失。所以批量失败就退到逐条插。
 //
 // 这里不去分辨"批量失败是不是因为重复键"：逐条那条路自己会分辨 —— 插不进去就按唯一索引
-// `idx_stage_url` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
+// `idx_stage_url_hash` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
 // 把同样的 stage|url 写进去了），回填它的 ID、记进返回的集合；查不到说明插入是真的失败了，
 // 原样把插入的那个错报出去（它比"没查到"更有信息量）。
 // 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
@@ -299,7 +310,7 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
 		// 按 (stage, url) 回查 —— 唯一索引就是这个，所以冲突只可能落在它上面。
 		// 不复用 findTaskRecord：它优先按 IdempotencyKey 查，而那不是唯一索引，可能捞回另一行。
 		var existed models.CrawlerTask
-		if serr := e.db.Select("id").Where("url = ? AND stage = ?", t.URL, t.Stage).
+		if serr := e.db.Select("id").Where("url_hash = ? AND stage = ?", models.UrlHash(t.URL), t.Stage).
 			First(&existed).Error; serr != nil {
 			return nil, fmt.Errorf("insert task %q: %w", t.URL, ierr)
 		}
@@ -314,12 +325,16 @@ func (e *Engine) ReSubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" {
 		return e.logSubmitError(task, fmt.Errorf("task stage or url is empty: %+v", task))
 	}
-	if _, ok := e.cfg.Crawler.Stages[task.Stage]; !ok {
-		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s", task.Stage))
+	if info := e.stages[task.Stage]; info == nil {
+		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage))
+	} else if task.Site == "" {
+		// 站点归属由**目标阶段**决定（阶段属于哪个站），调用方不用自己写；
+		// 显式给了 site 就尊重它（比如跨站派发的特殊场景）。
+		task.Site = info.config.Site
 	}
 	var record models.CrawlerTask
 	e.db.Model(&models.CrawlerTask{}).
-		Where("url = ?", task.URL).
+		Where("url_hash = ?", models.UrlHash(task.URL)).
 		Where("stage = ?", task.Stage).
 		First(&record)
 	if record.ID == 0 {

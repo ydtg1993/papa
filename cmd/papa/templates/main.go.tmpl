@@ -8,7 +8,9 @@ import (
 	"syscall"
 
 	"github.com/ydtg1993/papa/v2"
-	"{{.Module}}/fetcher"
+	// 匿名导入：让 configs/sites 里各站点文件的 init() 跑起来（它们自己登记到框架）。
+	// 加一个站 = 加一个文件，这里和 main 都不用改。
+	_ "{{.Module}}/configs/sites"
 	"{{.Module}}/monitor"
 )
 
@@ -45,24 +47,10 @@ func main() {
 	// app.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))
 	// app.Engine.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))
 
-	// 3. 注册爬虫阶段；回调里提交起始任务
-	app.RegisterStage(&fetcher.FetchCatalog{},
-		func(engine *papa.Engine) {
-			if err := engine.SubmitTask(&papa.Task{
-				PID: 0,
-				// 起始 URL：改成你的目标站。任务里放什么都行（列表页、详情页、API 地址……），
-				// 一个阶段也不限于一个站点 —— 多个站点/多种策略就多提交几条，
-				// 或者在这里循环你自己的「分类 → 入口 URL」映射。
-				URL:   "https://example.com/list",
-				Stage: "catalog",
-				// Repeatable: true = 该任务会被「周期轮询」（定时重新抓取、发现新内容），
-				// 由 configs/config.yaml 的 repeat_queue 驱动（enabled + interval）。
-				// 不需要周期轮询就删掉这一行，或把 repeat_queue.enabled 设为 false。
-				Repeatable: true,
-			}); err != nil {
-				app.Logger.Engine.Errorf("submit initial task: %s", err.Error())
-			}
-		})
+	// 3. 注册站点与阶段：站点在 configs/sites/ 下一站一个文件（自己登记），框架把它们收在
+	//    papa.Sites() 里 —— 加一个站只加文件，main 不用动。并发/队列/间隔/重试/要不要投入口/
+	//    熔断阈值都在各站的声明里；起始任务由 fetcher 自己的 SubmitEntries 提交。
+	app.RegisterSites(papa.Sites()...)
 
 	// 4. 优雅关闭
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

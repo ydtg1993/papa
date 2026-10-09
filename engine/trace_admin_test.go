@@ -218,7 +218,6 @@ func TestRunAttemptWritesStepsThroughFinish(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
 	cfg := &config.Config{}
-	cfg.Crawler.Stages = map[string]config.StageConfig{"stub": {WorkerCount: 1, QueueSize: 8}}
 	cfg.Crawler.Trace.Enabled = true
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	t.Cleanup(e.cancel)

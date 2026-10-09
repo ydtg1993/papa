@@ -36,12 +36,15 @@ type Fetcher interface {
 ```
 
 - `GetStage()` 返回的字符串**必须**等于 `config.yaml` 里 `crawler.stages` 的一个 key，否则 `RegisterStage` 会 panic。
-- **可选**：fetcher 还可以实现两个接口声明"本阶段要用下载器"，让框架在**启动时**替你校验接线（没接线直接 panic，而不是等第一条任务跑到那一步才报一句 `file downloader is not configured`）：
+- **可选**：fetcher 还可以实现三个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
   ```go
+  // 声明本阶段要用下载器 → 框架在启动时校验接线（没接直接 panic，而不是等第一条任务跑到那一步）
   func (f *FetchVideo) NeedsFiledown() bool { return true } // 会调 engine.GetFiledown()
   func (f *FetchVideo) NeedsM3U8() bool     { return true } // 会调 engine.GetM3U8()
+
+  // 入口任务："注册即投一批起始任务" → 框架在启动时自动调（那时所有阶段的池子都已建好）
+  func (f *FetchCatalog) SubmitEntries(engine *papa.Engine) { /* engine.SubmitTask(...) */ }
   ```
-  不实现也不影响运行 —— 那只意味着接线错了要晚很多才发现。
 - `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
 - 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
 - 用 `engine.FetchHTML` 抓静态页时，**判失败原因别看错误文本**：非 2xx 是 `*htmlfetch.StatusError`（`htmlfetch.StatusCode(err)` 直接取码），响应体超 `html.max_body_size` 是 `*htmlfetch.BodyTooLargeError`。文本匹配会误伤 —— 把 `max_body_size` 配成 `4040000` 时，"html response exceeds 4040000 bytes" 里就带着 `404`，一个该重试的错误会被判成"不可重试的 not_found"。
@@ -275,10 +278,30 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
 **最小验证集**：
 
 1. `Find` 的结果数量必须大于零；零个节点常表示页面改版、被反爬页替换或内容改为前端渲染，应返回 error 重试并检查响应 HTML。
+   **被反爬拦下**有现成的判据（不用每个项目自己写一份）：
+   ```go
+   page, err := engine.FetchHTML(ctx, task.URL)
+   if err != nil { return err }
+   if reason := htmlfetch.RestrictedReason(page, site.RestrictedKeywords...); reason != "" {
+       return papa.RestrictedPageError("catalog", page.URL.String(), reason) // 不可重试，分类 access_restricted
+   }
+   ```
+   默认词表扫**可见正文 + 标题**（captcha / verify you are human / access denied / 访问受限 / 验证码 /
+   Cloudflare 的 checking your browser · just a moment / Google 的 unusual traffic），业务可用
+   `SiteSpec.RestrictedKeywords` 追加本站文案。它**不扫整段 HTML** —— 内联脚本与 style 里的
+   `captcha` 字面量很常见，扫原始 HTML 会把好页面判成受限页（`RestrictedReason` 内部先摘掉 script/style）。
+   词表刻意**宁少勿多**：命中之后通常返回不可重试错误、任务直接判死，假阳性的代价是任务白死。
+   拿不准就先只观察：`task.Trace.Warn("疑似受限页", nil, map[string]string{"marker": reason})`。
 2. 每一项的标题和 `href` 都必须非空；出现一个残缺条目就返回 error，避免把不完整目录标记为成功。
 3. 用 `page.URL.Parse(href)` 将相对地址解析为绝对 URL，不能通过字符串拼接当前页面 URL。
 4. 需要时再校验域名、路径前缀、ID 格式或条目数下限，确保选中的不是导航链接。
 5. 将列表快照写入当前 `catalog` 任务；只有已在 `config.yaml` 和 `main.go` 注册 `detail` stage 时，才为通过校验的链接调用 `engine.SubmitTask`。
+
+> **失败时自动留现场**：开了 `crawler.archive`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
+> `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
+> `{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html`，并在后台「追踪」里多一条 `归档页面` 步骤指向它。
+> **handler 一行代码都不用改** —— 排查"选择器为什么没匹配上"时，直接打开那个文件看它到底长什么样。
+> 落的是**原始字节**（不是 goquery 再序列化的结果），所以 `<noscript>` 里的延迟渲染回退标签也在。
 
 ### 3.2 Rod：动态页面或浏览器交互方式
 
@@ -594,7 +617,15 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 
 ## 6. 最小可跑骨架（脚手架已生成）
 
-`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（建表清单 models.go）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。生成后的 fetcher 长这样：
+`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（建表清单 models.go）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ **configs/sites/（一站一个文件 + 注册表）** / configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。
+
+其中 main.go 的阶段注册只有一行（声明在 `configs/sites/<站名>.go`）：
+
+```go
+app.RegisterSites(sites.All()...)
+```
+
+生成后的 fetcher 长这样（`SubmitEntries` 是入口任务，见 7.1）：
 
 ```go
 package fetcher
@@ -653,21 +684,93 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 Papa 没有 MCP 了，任务驱动靠四处：
 
-1. **初始任务**：在 `main.go` 的 `RegisterStage(fetcher, subFunc)` 第二个回调里手动提交，例如：
+1. **初始任务**：让 fetcher 自己实现 `SubmitEntries(*papa.Engine)`（见 1.1 的可选接口），框架在启动时自动调它：
 
 ```go
-app.RegisterStage(&fetcher.FetchCatalog{},
-    func(engine *papa.Engine) {
-        engine.SubmitTask(&papa.Task{
-            URL:        "https://example.com/classify?type=rexue", // 起始 URL 直接写在这里
-            Stage:      "catalog",
-            Repeatable: true,
-        })
-    })
+// fetcher/fetch_catalog.go
+func (f *FetchCatalog) SubmitEntries(engine *papa.Engine) {
+    if err := engine.SubmitTask(&papa.Task{
+        URL:        "https://example.com/classify?type=rexue", // 起始 URL 写在这儿
+        Stage:      "catalog",
+        Repeatable: true,
+    }); err != nil {
+        engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
+    }
+}
 ```
 
-> 回调在**所有阶段的池子都建好之后**才跑，所以它可以往任意阶段投递（不限于自己这个阶段）：
-> 比如把多个站点的入口分别交给各自的阶段。回调按阶段名字典序执行，启动期提交顺序是稳定的。
+> 它跑在**所有阶段的池子都建好之后**，所以可以往任意阶段投递（不限于自己这个阶段）：
+> 比如把多个站点的入口分别交给各自的阶段。调用顺序按阶段名字典序，启动期提交顺序是稳定的。
+>
+> **要不要投、由声明说了算**：`StageSpec.AutoStart`（`true` = 启动时投）。排查时只想跑某个阶段
+>（不想让入口阶段又跑一遍）就把它设成 `false` —— 它只管启动时投不投入口，阶段本身照常跑。
+> 实现了入口却没开 AutoStart 会打一条 Info（"是关的、不是漏的"）。
+>
+> **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（并发/队列/间隔/重试/入口开关/
+> 站点归属/熔断阈值都在那一处，`configs/sites/sites.go` 只做汇总），`main.go` 只要一行 `app.RegisterSites(sites.All()...)`。
+> 加阶段 = 写 fetcher + 在 `Sites()` 里加一段。阶段名取自 `GetStage()`，重名**启动就报错**；
+> 多站时阶段名要能区分（约定带站点前缀，如 `hgd_catalog` / `siteb_catalog`）。
+
+### 7.2 多站：一站一个文件（框架自己收集）
+
+一站一个文件放进 `configs/sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
+框架把它们收在 `papa.Sites()` 里，**项目里没有汇总清单要维护**：
+
+```
+configs/
+  config.yaml
+  whitelist
+  sites/
+    huangguo.go             // 一站一份：Key/BaseURL/Breaker/Stages + func init() { papa.RegisterSite(huangguo()) }
+    huangguo2.go            // 加一个站 = 加一个文件（改 Key/BaseURL/阶段参数）
+```
+
+```go
+// main.go
+import (
+    _ "yourmod/configs/sites"   // 匿名导入：让各站点文件的 init 跑起来（它们自己登记）
+)
+app.RegisterSites(papa.Sites()...)
+```
+
+`configs/` 根目录仍只放数据（config.yaml / whitelist），Go 包单独一层。
+**框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型；为什么必须"文件自己登记"：
+Go 没有"枚举一个包里有哪些函数/类型"的能力（反射只能从值倒推名字），所以"框架自动发现"只有
+代码生成或代码自登记两条路，这里选后者（零构建步骤、可 grep，也是 `database/sql` 驱动那套标准做法）。
+登记顺序 = **文件名字典序**（Go 规范：同包 init 按文件名执行），稳定可复现；站点键/阶段名重复都会在启动时报错。
+
+main.go 仍然一行：`app.RegisterSites(sites.All()...)`。**框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型，怎么组织是你项目的事。
+
+三条要注意的：
+
+- **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
+- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明与 fetcher 放 `sites/`（或 `targets/`）。
+- **fetcher 持有自己那一站的站点值**（`type Catalog struct{ site *Site }`），handler 里就没有站点字面量了；`GetStage()` 用同一份键拼阶段名，一处改处处跟着。
+
+已按站切开的东西：每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一把熔断闸门**（后台横幅逐站一行、可逐站放行）、任务表 `site` 列（引擎按目标阶段自动填，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+
+**请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
+同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
+`engine.FetchHTML(papa.WithHeaders(ctx, map[string]string{...}), url)` 再覆盖（叠加，只覆盖给到的键）。
+优先级：框架默认 < 全局 headers 配置 < 站点 headers < 逐请求。
+站点还有一项 `RestrictedKeywords`：本站自己的"受限页"文案，追加到上面那个默认词表之后。
+
+**代理：出口由 fetcher 随用随取**，框架不替业务决定 —— 与 `GetFiledown()` / `GetM3U8()` 那套"按需取"一致：
+
+```go
+// 取一个（配了 proxy.api_url 就是那个池子；没配/池子空 → 返回空串）
+if addr := engine.NextProxy(); addr != "" {
+    page, err = engine.FetchHTML(papa.WithProxyURL(ctx, addr), url)   // 静态：显式出口
+}
+res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.DownloadOptions{
+    Proxy: engine.NextProxy(),   // 下载器：逐次下载指定出口（同一地址复用客户端）
+})
+```
+
+`core.WithProxyURL` 比 `htmlfetch.WithProxy(ctx, use)`（走池/直连）更具体，优先于它。
+**浏览器路径不支持逐请求代理地址** —— 代理是浏览器实例级设置（启动参数），Chrome 不提供逐请求改路由，
+所以传了会**明确报错**（而不是静默直连、让人以为走了代理）；要按站换出口就用池上那套（proxied / direct 两类实例）
+或一站一进程。
 
 2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
 

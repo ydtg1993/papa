@@ -98,10 +98,18 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		t.Fatalf("脚手架产出的配置框架读不了：%v", err)
 	}
 
-	// 模板里声明了 catalog 阶段，fetcher 模板也用这个 stage —— 两边必须一致，
-	// 否则 RegisterStage 会 panic（"invalid crawler stage"）。
-	if _, ok := cfg.Crawler.Stages["catalog"]; !ok {
-		t.Fatalf("配置里没有 catalog 阶段：%+v", cfg.Crawler.Stages)
+	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
+	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 configs/sites/<站名>.go 声明。
+	siteSpec := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
+	if !strings.Contains(siteSpec, "fetcher.FetchCatalog{}") {
+		t.Errorf("configs/sites/demo.go 里应当列出 catalog 阶段")
+	}
+	// 站点文件自己在 init 里登记（框架收集），项目里没有需要手写的汇总清单
+	if !strings.Contains(siteSpec, "papa.RegisterSite(") {
+		t.Errorf("configs/sites/demo.go 应当在 init 里自登记")
+	}
+	if _, err := os.Stat(filepath.Join("demo", "configs", "sites", "sites.go")); err == nil {
+		t.Errorf("不该再生成 sites.go 汇总清单（各站点文件自己登记）")
 	}
 	fetcher := readFile(t, filepath.Join("demo", "fetcher", "fetch_catalog.go"))
 	if !strings.Contains(fetcher, `"catalog"`) {

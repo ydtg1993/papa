@@ -1,6 +1,8 @@
 package models
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"gorm.io/datatypes"
@@ -24,10 +26,16 @@ const (
 )
 
 type CrawlerTask struct {
-	ID             uint   `gorm:"primarykey;comment:任务ID"`
-	PID            uint   `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
-	Stage          string `gorm:"type:varchar(50);not null;index;uniqueIndex:idx_stage_url,priority:2;comment:所属阶段(例如catalog/detail等)"`
-	URL            string `gorm:"type:varchar(500);not null;uniqueIndex:idx_stage_url,priority:1;comment:任务URL"`
+	ID    uint   `gorm:"primarykey;comment:任务ID"`
+	PID   uint   `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
+	Stage string `gorm:"type:varchar(50);not null;index;uniqueIndex:idx_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等)"`
+	Site  string `gorm:"type:varchar(64);index;comment:所属站点(站点声明的 Key)；空=未归属"`
+	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
+	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
+	URL string `gorm:"type:text;not null;comment:任务URL"`
+	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage) 上 ——
+	// 与 URL 长度无关。由 BeforeCreate 自动填（任何创建路径都覆盖），老库由 `papa migrate` 回填。
+	URLHash        string `gorm:"type:char(64);not null;uniqueIndex:idx_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
 	IdempotencyKey string `gorm:"type:varchar(500);index;comment:自定义幂等键，空则回退 stage|url"`
 	// Meta 业务键（如 series_id/episode_id），与 URL 解耦。**随行落库** ——
 	// 恢复/轮询/错误队列/后台重投这几条「从行重建 Task」的路都按它还原任务身份，
@@ -52,5 +60,19 @@ func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
 	if t.Content == nil || len(t.Content) == 0 {
 		t.Content = datatypes.JSON("{}")
 	}
+	// URL 的哈希在这里统一补上：任何创建路径（含业务直接 Create 这个模型）都覆盖到，
+	// 不会出现"唯一索引上是一串空串"这种撞车。
+	if t.URLHash == "" && t.URL != "" {
+		t.URLHash = UrlHash(t.URL)
+	}
 	return nil
+}
+
+// UrlHash URL 的 sha256 十六进制（小写，64 字符）—— 唯一索引用它，长 URL 建不了整串索引。
+//
+// 与 MySQL 的 `SHA2(url, 256)` 输出一致（同样是十六进制小写），所以迁移里的回填 SQL 和
+// Go 侧算出来的是同一个值。
+func UrlHash(url string) string {
+	sum := sha256.Sum256([]byte(url))
+	return hex.EncodeToString(sum[:])
 }

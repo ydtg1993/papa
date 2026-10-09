@@ -83,7 +83,7 @@ var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 
 // fakeTaskColumns 是 models.CrawlerTask 的全列，顺序任意 —— gorm 按列名映射。
 var fakeTaskColumns = []string{
-	"id", "pid", "stage", "url", "idempotency_key", "meta", "title", "content",
+	"id", "pid", "stage", "site", "url", "url_hash", "idempotency_key", "meta", "title", "content",
 	"retry", "status", "repeatable", "repeat", "reprocess", "urgent", "error",
 	"created_at", "updated_at",
 }
@@ -94,7 +94,8 @@ func newFakeTaskDB() *fakeTaskDB {
 	return &fakeTaskDB{
 		affected: 1,
 		row: fakeRow{
-			"id": int64(7), "pid": int64(0), "stage": "stub", "url": "https://example.com",
+			"id": int64(7), "pid": int64(0), "stage": "stub", "site": "", "url": "https://example.com",
+			"url_hash":        models.UrlHash("https://example.com"),
 			"idempotency_key": "", "meta": []byte("{}"), "title": "", "content": []byte("{}"),
 			"retry": int64(0), "status": int64(models.TaskStatusPending), "repeatable": int64(0),
 			"repeat": int64(0), "reprocess": int64(0), "urgent": false, "error": "",

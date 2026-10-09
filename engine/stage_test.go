@@ -234,7 +234,7 @@ func testLoggerSet() *loggers.LoggerSet {
 func newTestEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	t.Helper()
 	cfg := &config.Config{}
-	cfg.Crawler.Stages = map[string]config.StageConfig{"stub": {WorkerCount: 1, QueueSize: 8}}
+	// 阶段不在配置里了（参数搬进 Go 声明）：这个引擎的 "stub" 阶段由各用例自己 AddStage。
 	cfg.Crawler.DrainInterval = time.Hour
 	cfg.Crawler.Trace.Enabled = false
 
@@ -492,10 +492,6 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	f.noRows = true // 起始任务都是全新的，走 INSERT
 
 	cfg := &config.Config{}
-	cfg.Crawler.Stages = map[string]config.StageConfig{
-		"a": {WorkerCount: 1, QueueSize: 8},
-		"b": {WorkerCount: 1, QueueSize: 8},
-	}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	t.Cleanup(e.cancel)
@@ -629,7 +625,6 @@ func stageDepEngine(t *testing.T) *Engine {
 	t.Helper()
 	f := newFakeTaskDB()
 	cfg := &config.Config{}
-	cfg.Crawler.Stages = map[string]config.StageConfig{"stub": {WorkerCount: 1, QueueSize: 8}}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	t.Cleanup(e.cancel)
@@ -675,4 +670,97 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("最后一次尝试失败后 %v 内没有落 failed —— 说明还在白等退避", backoff/2)
+}
+
+// 熔断按 scope（站点）分组：每站一把闸门，各停各的；不点名就是**全部**（后台那个「恢复抓取」）。
+func TestBreakerScopesAreIndependent(t *testing.T) {
+	f := newFakeTaskDB()
+	cfg := &config.Config{}
+	cfg.Crawler.DrainInterval = time.Hour
+	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
+	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	t.Cleanup(e.cancel)
+
+	// 站点 a 单开一把（阈值不同），站点 b 不单配 → 用默认那把（但 b 有自己的 scope 名）
+	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 10})
+	e.SetSiteBreaker("b", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 50})
+
+	// 三个 scope 都要在状态里（默认 + a + b）
+	sts := e.BreakerStatuses()
+	for _, site := range []string{"", "a", "b"} {
+		if _, ok := sts[site]; !ok {
+			t.Fatalf("状态里应有 scope %q，实得 %v", site, sts)
+		}
+	}
+	if sts["a"].Threshold != 10 || sts["b"].Threshold != 50 {
+		t.Fatalf("各 scope 的阈值应各用各的：a=%d b=%d", sts["a"].Threshold, sts["b"].Threshold)
+	}
+	if sts["a"].Site != "a" {
+		t.Fatalf("状态里应带上站点：%q", sts["a"].Site)
+	}
+
+	// 只闸住 a：默认 scope 与 b 照常跑
+	if !e.PauseSite("a", "站点 a 被墙") {
+		t.Fatal("PauseSite(a) 应当成功")
+	}
+	sts = e.BreakerStatuses()
+	if !sts["a"].Paused || sts[""].Paused || sts["b"].Paused {
+		t.Fatalf("只该闸住 a：%+v", sts)
+	}
+	// 点名放行 a
+	if !e.ResumeSite("a") {
+		t.Fatal("ResumeSite(a) 应当成功")
+	}
+	if e.BreakerStatuses()["a"].Paused {
+		t.Fatal("a 应当已放行")
+	}
+	// 不存在的 scope：不静默作用到默认那把
+	if e.PauseSite("ghost", "x") || e.ResumeSite("ghost") {
+		t.Fatal("不存在的 scope 应当返回 false（后台据此回 400）")
+	}
+	// 全部：三个一起闸住、一起放行
+	if !e.PauseCrawling("手动") {
+		t.Fatal("PauseCrawling 应当成功")
+	}
+	sts = e.BreakerStatuses()
+	if !sts[""].Paused || !sts["a"].Paused || !sts["b"].Paused {
+		t.Fatalf("PauseCrawling 应当闸住所有 scope：%+v", sts)
+	}
+	if !e.ResumeCrawling() {
+		t.Fatal("ResumeCrawling 应当成功")
+	}
+	sts = e.BreakerStatuses()
+	if sts[""].Paused || sts["a"].Paused || sts["b"].Paused {
+		t.Fatalf("ResumeCrawling 应当放行所有 scope：%+v", sts)
+	}
+}
+
+// 触发时回调要带上站点：告警文案不能只有一句"全任务暂停"，得知道是哪个站（多站时这是唯一的区分）。
+func TestBreakerTripCarriesSite(t *testing.T) {
+	f := newFakeTaskDB()
+	cfg := &config.Config{}
+	cfg.Crawler.DrainInterval = time.Hour
+	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
+	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	t.Cleanup(e.cancel)
+	e.ctx = context.Background()
+
+	n := &recordingNotifier{}
+	e.AddNotifier(n)
+	e.SetSiteBreaker("siteb", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 1})
+
+	// 直接驱动那把小闸门（阈值 1）：它触发时会走 engine 的告警回调
+	b := e.siteBreakerOf("siteb")
+	if b == nil {
+		t.Fatal("站点 siteb 应当有自己的闸门")
+	}
+	b.RecordFailure("siteb_catalog")
+
+	events := n.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("应发 1 条告警，实得 %d", len(events))
+	}
+	if events[0].Site != "siteb" || events[0].Stage != "siteb_catalog" {
+		t.Fatalf("告警里应带站点与阶段：%+v", events[0].TaskError)
+	}
 }
