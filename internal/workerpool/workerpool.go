@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ydtg1993/papa/v2/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/internal/msgqueue"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"

@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/admin/auth"
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/admin/auth"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 // testLogger 静默日志，仅把 Errorf 转发到测试输出，便于排查。

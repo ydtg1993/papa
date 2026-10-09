@@ -13,7 +13,7 @@
 
 ```text
 papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / monitor / config / docker / docs / Makefile / logs）
-  -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v2）
+  -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v3）
   -> 在 config.yaml 加 stage、在 main.go 注册 fetcher，并在注册回调里提交起始 URL
   -> 任务被 worker 池调度执行，结果通过结果 API 写入 crawler_tasks 表
 ```
@@ -26,7 +26,7 @@ papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetch
 
 ### 1.1 Fetcher 接口
 
-框架对外是一个门面包 `github.com/ydtg1993/papa/v2`，fetcher 只需 import 它：
+框架对外是一个门面包 `github.com/ydtg1993/papa/v3`，fetcher 只需 import 它：
 
 ```go
 type Fetcher interface {
@@ -147,7 +147,7 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 ```go
 import (
-    "github.com/ydtg1993/papa/v2"
+    "github.com/ydtg1993/papa/v3"
     "yourproject/models" // 你的项目 models 包，papa new 已生成
 )
 
@@ -394,7 +394,7 @@ import (
     "time"
 
     "github.com/go-rod/rod"
-    "github.com/ydtg1993/papa/v2"
+    "github.com/ydtg1993/papa/v3"
 )
 
 type FetchCatalog struct{}
@@ -470,7 +470,7 @@ import (
     "context"
     "time"
 
-    "github.com/ydtg1993/papa/v2"
+    "github.com/ydtg1993/papa/v3"
     "yourproject/models"
 )
 
@@ -532,8 +532,8 @@ import (
     "time"
 
     "github.com/go-rod/rod/lib/proto"
-    "github.com/ydtg1993/papa/v2"
-    "github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
+    "github.com/ydtg1993/papa/v3"
+    "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
     "yourproject/models"
 )
 
@@ -605,7 +605,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
 ### 4.2 下载器接线（main.go）
 
 ```go
-import "github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
+import "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 
 cfg := m3u8.DefaultConfig()
 cfg.OutputDir = "./downloads/video"      // 输出目录
@@ -620,7 +620,7 @@ m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限�
 不需要浏览器、直接下载文件（图片、附件等）时用 `filedown`：
 
 ```go
-import "github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
+import "github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
 
 dl := engine.GetFiledown()
 // OptionsFromRequest：站点级 + 逐请求头、显式代理一起带上（同 m3u8，下载器自己不读 ctx）
@@ -666,7 +666,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ydtg1993/papa/v2"
+	"github.com/ydtg1993/papa/v3"
 )
 
 // FetchCatalog 阶段一：抓取目录/列表页。

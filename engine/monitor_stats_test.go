@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/internal/track"
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/internal/track"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/gorm"
 )
 

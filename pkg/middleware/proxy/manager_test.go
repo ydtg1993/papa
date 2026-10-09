@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/internal/msgqueue"
 )
 
 // 没配 api_url 时不建连接、不起刷新协程，Next 返回空串 ——

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 // bucketCount 滑动窗口切成多少个等宽桶。求和时只算还在窗口内的桶，所以窗口是「近似」的，

@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/internal/metrics"
+	"github.com/ydtg1993/papa/v3/internal/metrics"
 )
 
 func TestEngineQueueMetrics(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v3/config"
 )
 
 // newStatsEngine 构造只带队列监控所需字段的引擎，避免依赖 DB。

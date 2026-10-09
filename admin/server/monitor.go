@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/admin/auth"
-	"github.com/ydtg1993/papa/v2/admin/sysinfo"
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/admin/auth"
+	"github.com/ydtg1993/papa/v3/admin/sysinfo"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 //go:embed template.html

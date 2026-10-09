@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ydtg1993/papa/v2/internal/database"
+	"github.com/ydtg1993/papa/v3/internal/database"
 )
 
 // papaModule 是框架自己的 module 路径 —— 用来区分「在业务项目里」和「在 papa 仓库里」。
-const papaModule = "github.com/ydtg1993/papa/v2"
+const papaModule = "github.com/ydtg1993/papa/v3"
 
 const migrateUsage = `usage: papa migrate [-c configs/config.yaml]
 

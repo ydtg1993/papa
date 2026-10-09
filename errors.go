@@ -1,7 +1,7 @@
 package papa
 
 import (
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 // 本文件是**错误与告警门面**。

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v3/config"
 )
 
 // 热更那条入口单独校验：它绕过 config.Load（LoadRuntime 只 yaml.Unmarshal，

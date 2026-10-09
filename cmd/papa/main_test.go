@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v3/config"
 )
 
 // 脚手架是用户照抄的范本：文件清单、目录结构、配置能否被框架真读进来，
@@ -54,7 +54,7 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	if strings.Contains(mainGo, "{{") {
 		t.Errorf("main.go 里还有未替换的模板占位：\n%s", mainGo)
 	}
-	if !strings.Contains(mainGo, "github.com/ydtg1993/papa/v2") {
+	if !strings.Contains(mainGo, "github.com/ydtg1993/papa/v3") {
 		t.Errorf("main.go 没 import 框架包：\n%s", mainGo)
 	}
 	// 迁移入口必须接上：建表只有这一条路，脚手架不接用户就无从建表
@@ -174,7 +174,7 @@ func TestRunNewAppendsReplaceDirective(t *testing.T) {
 	}
 
 	gomod := readFile(t, filepath.Join("demo", "go.mod"))
-	if !strings.Contains(gomod, "replace github.com/ydtg1993/papa/v2 => E:/repo/papa") {
+	if !strings.Contains(gomod, "replace github.com/ydtg1993/papa/v3 => E:/repo/papa") {
 		t.Fatalf("go.mod 里没有正确的 replace 指令：\n%s", gomod)
 	}
 

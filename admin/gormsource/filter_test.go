@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 // allOpsTable 一份把各算子都声明齐的表格：声明驱动意味着"没声明就进不来"，

@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/ydtg1993/papa/v2/core"
+import "github.com/ydtg1993/papa/v3/core"
 
 // 本文件是**阶段入口**的声明方式。
 //

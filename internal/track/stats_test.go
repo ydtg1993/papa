@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
 )
 
 type fakeTask struct{ key string }

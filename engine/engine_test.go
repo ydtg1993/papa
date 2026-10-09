@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
 )
 
 // 加急是一等字段：submitTo 是唯一的投递入口，四条投递路径（正常提交 / 重提交 /

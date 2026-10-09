@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )

@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/internal/track"
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/internal/track"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 // AddNotifier 注册告警通知器；任务最终失败时触发 Notify。

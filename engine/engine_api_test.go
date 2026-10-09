@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
-	"github.com/ydtg1993/papa/v2/pkg/loggers"
-	"github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
-	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 	"gorm.io/gorm"
 )
 

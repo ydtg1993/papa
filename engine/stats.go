@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v2/internal/track"
+	"github.com/ydtg1993/papa/v3/internal/track"
 )
 
 // RecordMetric 写入一条业务自定义监控数据，供监控页展示

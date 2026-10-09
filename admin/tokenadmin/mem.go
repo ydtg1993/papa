@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/admin/auth"
+	"github.com/ydtg1993/papa/v3/admin/auth"
 )
 
 // MemStore 内存实现：给 cmd/monitor-demo（不接 MySQL 的后台预览）和测试用。

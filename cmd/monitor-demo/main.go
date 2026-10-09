@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v2/admin/server"
-	"github.com/ydtg1993/papa/v2/admin/sysinfo"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/engine"
+	"github.com/ydtg1993/papa/v3/admin/server"
+	"github.com/ydtg1993/papa/v3/admin/sysinfo"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/engine"
 )
 
 type stdLogger struct{}

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 /* ---------- 高水位溢出与回灌 ---------- */

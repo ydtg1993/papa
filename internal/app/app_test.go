@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v2/admin/auth"
+	"github.com/ydtg1993/papa/v3/admin/auth"
 	"strings"
 	"testing"
 )

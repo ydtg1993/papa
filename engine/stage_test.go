@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/internal/breaker"
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
-	"github.com/ydtg1993/papa/v2/pkg/loggers"
-	"github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/internal/breaker"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
 // recordingNotifier 记下收到的告警事件，并可注入发送失败。

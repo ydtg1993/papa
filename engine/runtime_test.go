@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v3/config"
 )
 
 func TestEngineRuntimeGetters(t *testing.T) {

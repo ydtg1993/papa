@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
 // RestrictedError 判断这一页是不是"被反爬拦下了"：命中就返回标准的 access_restricted 错误

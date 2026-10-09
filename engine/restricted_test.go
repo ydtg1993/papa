@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
 // 站点自己的受限页文案由框架从 `task.Site` 取 —— 调用点不必在每个 fetch 处记着传一遍

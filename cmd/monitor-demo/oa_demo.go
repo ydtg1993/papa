@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v2/admin/auth"
-	"github.com/ydtg1993/papa/v2/admin/server"
+	"github.com/ydtg1993/papa/v3/admin/auth"
+	"github.com/ydtg1993/papa/v3/admin/server"
 )
 
 // 演示用的动作：点了就成功，不碰任何数据。

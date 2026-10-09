@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/ydtg1993/papa/v2/core"
+import "github.com/ydtg1993/papa/v3/core"
 
 // 跨包流动的纯值类型统一搬到了 core（零依赖叶子包，见那里的包注释），这里做一次**别名转发**：
 // 直接 import papa/v2/engine 的老代码继续可用，抽包这一步对调用方零感知。

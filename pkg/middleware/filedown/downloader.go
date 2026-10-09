@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/internal/msgqueue"
-	"github.com/ydtg1993/papa/v2/pkg/middleware"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/pkg/middleware"
 )
 
 // Downloader 文件下载器（并发安全）

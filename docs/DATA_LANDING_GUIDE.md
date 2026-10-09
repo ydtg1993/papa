@@ -218,7 +218,7 @@ engine.SubmitTask(&papa.Task{ PID: task.ID, URL: detailURL, Stage: "detail" })
 
 ```go
 import (
-    "github.com/ydtg1993/papa/v2"
+    "github.com/ydtg1993/papa/v3"
     "yourproject/models"
 )
 
@@ -341,7 +341,7 @@ type Episode struct {
 
 ```go
 import (
-    "github.com/ydtg1993/papa/v2"
+    "github.com/ydtg1993/papa/v3"
 )
 
 // 写 content + title（最常用）

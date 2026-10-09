@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/internal/workerpool"
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 // retryEngineWithNilPool 造一个「阶段注册了但没走 ApplyRegisterStage」的引擎：

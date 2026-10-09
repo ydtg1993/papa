@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ydtg1993/papa/v2/admin/tokenadmin"
-	"github.com/ydtg1993/papa/v2/internal/database"
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/admin/tokenadmin"
+	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 // runTokenCmd 处理 `papa token ...`。

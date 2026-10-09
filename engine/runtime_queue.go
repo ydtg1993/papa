@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/ydtg1993/papa/v2/config"
+import "github.com/ydtg1993/papa/v3/config"
 
 // errorQueueConfig 返回错误队列的生效配置（基础配置 + 运行期覆盖）。
 func (e *Engine) errorQueueConfig() config.ErrorQueueConfig {

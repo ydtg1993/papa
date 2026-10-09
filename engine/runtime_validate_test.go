@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v3/config"
 )
 
 // ApplyRuntimeConfig 是配置层的"腰"：HTTP 那条路（PUT /api/config）在 handler 里先校验一次，

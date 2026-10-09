@@ -4,7 +4,7 @@ import (
 	"container/list"
 	"sync"
 
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 // dedupCache 有界 LRU 去重缓存。key 为任务去重键（Task.Unique()），value 恒为占位。

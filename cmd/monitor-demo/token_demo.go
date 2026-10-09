@@ -11,9 +11,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/ydtg1993/papa/v2/admin/auth"
-	"github.com/ydtg1993/papa/v2/admin/server"
-	"github.com/ydtg1993/papa/v2/admin/tokenadmin"
+	"github.com/ydtg1993/papa/v3/admin/auth"
+	"github.com/ydtg1993/papa/v3/admin/server"
+	"github.com/ydtg1993/papa/v3/admin/tokenadmin"
 )
 
 // demoToken 演示用的固定令牌；登录框里填它（后台新建的令牌同样能登录）。

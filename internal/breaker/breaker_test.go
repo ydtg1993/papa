@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 // newTest 造一个时钟可控的熔断器 —— 窗口滑动全靠时间，用真 sleep 测会又慢又脆。

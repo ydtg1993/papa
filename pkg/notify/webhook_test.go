@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 func TestWebhookNotify(t *testing.T) {

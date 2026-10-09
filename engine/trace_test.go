@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/models"
-	"github.com/ydtg1993/papa/v2/pkg/loggers"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/loggers"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
 // 本文件是**页面归档**：把「失败那一刻抓到的那一页」原样落到本地文件。

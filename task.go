@@ -1,6 +1,6 @@
 package papa
 
-import "github.com/ydtg1993/papa/v2/engine"
+import "github.com/ydtg1993/papa/v3/engine"
 
 // 本文件是**任务与引擎门面**：写 fetcher 要用到的全部类型。
 

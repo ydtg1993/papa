@@ -3,7 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/ydtg1993/papa/v2/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/internal/msgqueue"
 	"net/http"
 	"sync"
 	"sync/atomic"

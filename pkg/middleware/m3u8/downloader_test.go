@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 // 测试辅助：创建临时目录并自动清理

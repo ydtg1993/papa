@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/core"
+	"github.com/ydtg1993/papa/v3/core"
 )
 
 // Config M3U8 下载器全局配置

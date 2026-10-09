@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/engine"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/engine"
 )
 
 /* ---------- 初始化选项 ---------- */

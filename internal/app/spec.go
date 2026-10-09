@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/engine"
-	"github.com/ydtg1993/papa/v2/internal/breaker"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/engine"
+	"github.com/ydtg1993/papa/v3/internal/breaker"
 )
 
 // 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `configs/sites/<站名>.go`），

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/ydtg1993/papa/v2/core"
-	"github.com/ydtg1993/papa/v2/pkg/browser"
-	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
 // splitHeaderOverride 把逐请求头拆成"要设的"与"要删的"（空值 = 删）——两条抓取路径共用这套语义。

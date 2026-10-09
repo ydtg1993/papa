@@ -4,7 +4,7 @@ import (
 	"container/heap"
 	"time"
 
-	"github.com/ydtg1993/papa/v2/models"
+	"github.com/ydtg1993/papa/v3/models"
 )
 
 // delayedTask 延迟投递队列中的一个待投递任务。

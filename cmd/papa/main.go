@@ -10,7 +10,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/ydtg1993/papa/v2/docs"
+	"github.com/ydtg1993/papa/v3/docs"
 )
 
 //go:embed templates/*
@@ -199,7 +199,7 @@ func appendReplace(goModPath, replacePath string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "\nreplace github.com/ydtg1993/papa/v2 => %s\n", replacePath)
+	_, err = fmt.Fprintf(f, "\nreplace github.com/ydtg1993/papa/v3 => %s\n", replacePath)
 	return err
 }
 

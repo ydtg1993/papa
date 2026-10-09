@@ -12,10 +12,10 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/go-rod/rod"
-	"github.com/ydtg1993/papa/v2/config"
-	"github.com/ydtg1993/papa/v2/pkg/browser"
-	"github.com/ydtg1993/papa/v2/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 )
 
 // cliDefaultHeaders 零配置时的默认请求头，与引擎内置默认头保持一致。
