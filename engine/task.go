@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"time"
@@ -77,11 +78,17 @@ func metaToJSON(m map[string]string) datatypes.JSON {
 	return datatypes.JSON(b)
 }
 
-// metaFromJSON 解出 meta 列；空列、`null`、空对象都返回 nil。
+// metaFromJSON 解出 meta 列；空列（NULL / 空串）、`null`、空对象都返回 nil。
 //
-// 解不出来只可能是人工改过库（这一列只有 toModel 一处写）—— 不静默：按无 Meta 继续，
-// 但留一条 Warn。否则 handler 报的是"缺少 series_id"这类业务语义的错，排查方向全在业务侧。
+// **空列不算"解不出来"**：老行从来没写过 Meta，不带 Meta 的任务也是合法的 —— 它们占绝大多数，
+// 每次恢复/重投都刷一条 Warn 只会把日志淹掉（实测：启动恢复一次就为几条老行各刷一条）。
+//
+// 真正的坏值只可能来自框架之外（这一列只有 toModel 一处写）—— 那才不静默：按无 Meta 继续，
+// 但留一条 Warn，否则 handler 报的是"缺少 series_id"这类业务语义的错，排查方向全在业务侧。
 func (e *Engine) metaFromJSON(raw datatypes.JSON) map[string]string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
 	var m map[string]string
 	if err := json.Unmarshal(raw, &m); err != nil {
 		e.loggerSet.Engine.Warnf("task meta 列解不出来（按无 Meta 继续）：%s（原值 %s）", err.Error(), string(raw))

@@ -30,6 +30,11 @@ type SiteSpec struct {
 	// BaseURL 站点根地址。框架不拿它当限制，只是方便 handler 取用
 	//（`engine.Site(task.Site)` → BaseURL）。
 	BaseURL string
+	// Entries 本站的入口路由表：key → 相对 BaseURL 的路径（或绝对地址），如
+	// `{"漫画": "category/comic/"}`。框架**不解析它**，只是原样带进 core.Site ——
+	// `SubmitEntries(engine, site)` 用它投入口任务，handler 用它反推任务的 key。
+	// 换站时它与 BaseURL 一起改，fetcher 里就没有站点常量了（有副本就会漂）。
+	Entries map[string]string
 	// Headers 本站的请求头（UA / Referer / Cookie / Accept-Language…）：这个站的任务抓任何页面
 	// 都自动带上（静态抓取与浏览器渲染都认），**同键覆盖** `html.headers` / `browser.headers`；
 	// 值为空串 = 删掉那个头。handler 里还能对单次请求 `papa.WithHeaders(ctx, …)` 再覆盖。
@@ -80,28 +85,38 @@ func (a *App) RegisterSites(sites ...SiteSpec) {
 		panic(err)
 	}
 	owner := make(map[string]string, len(sites)) // 阶段名 → 已声明的站点，用来查重
-	for i, site := range sites {
+	for i, spec := range sites {
+		site := spec.snapshot() // 声明 → 框架内部流通的快照，一处转换
 		if site.Key != "" {
-			a.sites[site.Key] = core.Site{
-				Key: site.Key, BaseURL: site.BaseURL,
-				Headers: site.Headers, RestrictedKeywords: site.RestrictedKeywords,
-			}
-			a.Engine.SetSite(a.sites[site.Key])
+			a.sites[site.Key] = site
+			a.Engine.SetSite(site)
 		}
-		if site.Breaker != nil {
-			cfg, err := site.Breaker.toConfig(a.Config.Crawler.Breaker)
+		if spec.Breaker != nil {
+			cfg, err := spec.Breaker.toConfig(a.Config.Crawler.Breaker)
 			if err != nil {
 				panic(fmt.Errorf("站点 %q 的熔断配置: %w", site.Key, err))
 			}
 			a.Engine.SetSiteBreaker(site.Key, cfg)
 		}
-		for j, st := range site.Stages {
+		for j, st := range spec.Stages {
 			plan, err := planStage(site, st, owner)
 			if err != nil {
 				panic(fmt.Errorf("%s 的第 %d 个阶段: %w", siteLabel(site, i), j+1, err))
 			}
 			a.applyStagePlan(plan)
 		}
+	}
+}
+
+// snapshot 把站点声明压成框架内部流通的快照（core.Site）：引擎侧、告警、入口回调都读它。
+// **加字段就改这里**，别在 RegisterSites 里另抄一份 —— 抄的那份不会跟着声明走。
+func (s SiteSpec) snapshot() core.Site {
+	return core.Site{
+		Key:                s.Key,
+		BaseURL:            s.BaseURL,
+		Entries:            s.Entries,
+		Headers:            s.Headers,
+		RestrictedKeywords: s.RestrictedKeywords,
 	}
 }
 
@@ -119,7 +134,7 @@ type stagePlan struct {
 }
 
 // planStage 校验一条阶段声明并算出落地计划；**纯函数**（不碰 Engine）。
-func planStage(site SiteSpec, st StageSpec, owner map[string]string) (stagePlan, error) {
+func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan, error) {
 	var plan stagePlan
 	if st.Fetcher == nil {
 		return plan, fmt.Errorf("fetcher 为 nil")
@@ -152,7 +167,7 @@ func planStage(site SiteSpec, st StageSpec, owner map[string]string) (stagePlan,
 	}
 	owner[stage] = siteLabel(site, 0)
 
-	sub := entryFunc(st.Fetcher)
+	sub := entryFunc(st.Fetcher, site)
 	plan = stagePlan{
 		stage:   stage,
 		fetcher: st.Fetcher,
@@ -191,13 +206,14 @@ func (a *App) applyStagePlan(plan stagePlan) {
 	a.Logger.Engine.Info(plan.note)
 }
 
-// entryFunc 从 fetcher 上取入口回调：实现了 EntrySubmitter 就用它，否则没有入口（nil）。
-// 于是"这个阶段有没有起始任务"只由 fetcher 自己说了算，声明处不用（也不该）再写一遍。
-func entryFunc(f engine.Fetcher) func(*engine.Engine) {
-	if es, ok := f.(engine.EntrySubmitter); ok {
-		return es.SubmitEntries
+// entryFunc 从 fetcher 上取入口回调：实现了 EntrySubmitter 就用它（把本站声明的快照一并交给它），
+// 否则没有入口（nil）。于是"这个阶段有没有起始任务"只由 fetcher 自己说了算，声明处不用（也不该）再写一遍。
+func entryFunc(f engine.Fetcher, site core.Site) func(*engine.Engine) {
+	es, ok := f.(engine.EntrySubmitter)
+	if !ok {
+		return nil
 	}
-	return nil
+	return func(e *engine.Engine) { es.SubmitEntries(e, site) }
 }
 
 // Site 取某个站点的声明（BaseURL 等）。handler 里通常用 `engine.Site(task.Site)`。
@@ -206,7 +222,7 @@ func (a *App) Site(key string) (core.Site, bool) {
 	return s, ok
 }
 
-func siteLabel(site SiteSpec, idx int) string {
+func siteLabel(site core.Site, idx int) string {
 	if site.Key != "" {
 		return "站点 " + site.Key
 	}

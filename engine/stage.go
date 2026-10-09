@@ -271,8 +271,14 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 			// `{dir}/{stage}/task-{id}-try-{retry}-*` 在目录里找同一次尝试的文件即可。
 			tr.Step(archiveTraceStep, map[string]any{"files": files})
 		}
-		if r != nil {
-			panic(r)
+		// 失败原因写进 trace：handler 返回错误、或直接 panic，都在这里落一条带分类与消息的
+		// 步骤。放在归档步骤之后 —— 现场在前、"为什么死"在后，读起来就是这次尝试的顺序。
+		switch {
+		case r != nil:
+			tr.Fail(failureTraceStep, fmt.Errorf("panic: %v", r), nil)
+			panic(r) // 原样抛回：workerpool 那头的栈与计数是既有行为
+		case err != nil:
+			tr.Fail(failureTraceStep, err, nil)
 		}
 	}()
 	// 缓冲挂在 ctx 上：FetchHTML 只拿得到 ctx，这是它知道"这一页属于哪次尝试"的唯一途径

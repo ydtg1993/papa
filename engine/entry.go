@@ -1,5 +1,7 @@
 package engine
 
+import "github.com/ydtg1993/papa/v2/core"
+
 // 本文件是**阶段入口**的声明方式。
 //
 // 起因：阶段原来只能在 main.go 里一个个注册（fetcher 值 + 入口回调各占一段），
@@ -17,7 +19,11 @@ package engine
 // 引擎在 ApplyRegisterStage 的第二趟调用它 —— 那时**所有**阶段的池子都已建好，
 // 所以入口任务可以投给任意阶段，不必只在"自己这个阶段"上打转。
 //
+// site 是本阶段的**站点声明快照**（`SiteSpec` 压成的 `core.Site`：BaseURL / Entries / Headers…）。
+// 站点值声明在 `configs/sites/<站名>.go` 一处，框架把它交到这里 —— fetcher 里不必再存副本：
+// 存了就会漂（地址改了、入口表改了，fetcher 那份不会跟着变）。
+//
 //	nil 回调、没实现这个接口、或实现返回后什么也不投：都是合法的，阶段照常跑（只是没有起始任务）。
 type EntrySubmitter interface {
-	SubmitEntries(engine *Engine)
+	SubmitEntries(engine *Engine, site core.Site)
 }

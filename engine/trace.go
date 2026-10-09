@@ -22,6 +22,10 @@ const (
 	maxTraceSteps = 500
 	// traceUrgentStep 加急任务在 trace 里记的步骤名（引擎在第一次尝试时写，见 runAttempt）。
 	traceUrgentStep = "加急执行"
+	// failureTraceStep 失败尝试在 trace 里记的最后一步（引擎在 runAttempt 里写，带错误分类与消息）。
+	// 没有它，抽屉里就只剩"前几步 ✔"，这次为什么死得去翻引擎日志 —— 而"为什么失败"
+	// 恰恰是点开追踪最想知道的事。
+	failureTraceStep = "任务失败"
 )
 
 // Trace 一次尝试（一次 FetchHandler 调用）的步骤记录器。

@@ -43,7 +43,8 @@ type Fetcher interface {
   func (f *FetchVideo) NeedsM3U8() bool     { return true } // 会调 engine.GetM3U8()
 
   // 入口任务："注册即投一批起始任务" → 框架在启动时自动调（那时所有阶段的池子都已建好）
-  func (f *FetchCatalog) SubmitEntries(engine *papa.Engine) { /* engine.SubmitTask(...) */ }
+  // site = 本站声明快照（SiteSpec → core.Site）：BaseURL / Entries / Headers 都在里面
+  func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) { /* engine.SubmitTask(...) */ }
   ```
 - `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
 - 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
@@ -714,17 +715,24 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 Papa 没有 MCP 了，任务驱动靠四处：
 
-1. **初始任务**：让 fetcher 自己实现 `SubmitEntries(*papa.Engine)`（见 1.1 的可选接口），框架在启动时自动调它：
+1. **初始任务**：让 fetcher 自己实现 `SubmitEntries(*papa.Engine, papa.Site)`（见 1.1 的可选接口），框架在启动时自动调它，
+   并把**本站声明的快照**一并交过来 —— 入口地址用 `site.BaseURL` 拼、入口表用 `site.Entries` 遍历：
 
 ```go
-// fetcher/fetch_catalog.go
-func (f *FetchCatalog) SubmitEntries(engine *papa.Engine) {
-    if err := engine.SubmitTask(&papa.Task{
-        URL:        "https://example.com/classify?type=rexue", // 起始 URL 写在这儿
-        Stage:      "catalog",
-        Repeatable: true,
-    }); err != nil {
-        engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
+// fetcher/<站点>/fetch_catalog.go
+func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
+    for key, route := range site.Entries { // Entries 声明在 configs/sites/<站名>.go
+        url := strings.TrimRight(site.BaseURL, "/") + "/" + strings.TrimLeft(route, "/")
+        if err := engine.SubmitTask(&papa.Task{
+            URL:            url,
+            Stage:          "catalog",
+            Meta:           map[string]string{"category_key": key},
+            IdempotencyKey: "catalog:" + key + ":" + url,
+            Repeatable:     true,
+        }); err != nil {
+            engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
+            return
+        }
     }
 }
 ```
@@ -774,8 +782,12 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 三条要注意的：
 
 - **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
-- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明与 fetcher 放 `sites/`（或 `targets/`）。
-- **fetcher 持有自己那一站的站点值**（`type Catalog struct{ site *Site }`），handler 里就没有站点字面量了；`GetStage()` 用同一份键拼阶段名，一处改处处跟着。
+- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`，fetcher 放 `fetcher/<站点>/`（一站一个包，与声明文件一一对应）。
+- **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：
+  handler 里 `site, _ := engine.Site(task.Site)` → `site.BaseURL` / `site.Entries`；
+  入口任务里框架直接把快照交给 `SubmitEntries(engine, site)`。
+  存副本（`type Catalog struct{ base string }` 或包级常量）就会漂 —— 声明里改了地址/入口表，
+  副本不跟着变，而漂了不报错，只表现为"本站链接被判成站外"或"入口少投一类"。
 
 已按站切开的东西：每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一把熔断闸门**（后台横幅逐站一行、可逐站放行）、任务表 `site` 列（引擎按目标阶段自动填，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
@@ -784,6 +796,9 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 `engine.FetchHTML(papa.WithHeaders(ctx, map[string]string{...}), url)` 再覆盖（叠加，只覆盖给到的键）。
 优先级：框架默认 < 全局 headers 配置 < 站点 headers < 逐请求。
 站点还有一项 `RestrictedKeywords`：本站自己的"受限页"文案，追加到上面那个默认词表之后。
+**入口路由表写在 `SiteSpec.Entries`**（key → 相对 BaseURL 的路径）：框架不解析它，只是原样带进
+`core.Site`，给 `SubmitEntries` 投入口任务、给 handler 反推任务的 key —— 于是"要抓哪些分类"
+也只在声明文件里写一次。
 
 **代理：出口由 fetcher 随用随取**，框架不替业务决定 —— 与 `GetFiledown()` / `GetM3U8()` 那套"按需取"一致：
 

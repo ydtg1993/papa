@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v2/config"
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/engine"
 )
 
@@ -237,7 +238,7 @@ func TestPlanStageRejects(t *testing.T) {
 			if owner == nil {
 				owner = map[string]string{}
 			}
-			if _, err := planStage(SiteSpec{Key: "a"}, c.spec(), owner); err == nil {
+			if _, err := planStage(SiteSpec{Key: "a"}.snapshot(), c.spec(), owner); err == nil {
 				t.Fatal("应当报错")
 			} else if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("报错应含 %q，实得：%v", c.want, err)
@@ -249,7 +250,7 @@ func TestPlanStageRejects(t *testing.T) {
 // 合法声明：算出来的计划带上阶段名、站点归属与解析好的参数。
 func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
 	owner := map[string]string{}
-	plan, err := planStage(SiteSpec{Key: "huangguo"}, StageSpec{
+	plan, err := planStage(SiteSpec{Key: "huangguo"}.snapshot(), StageSpec{
 		Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 8,
 		Delay: "10s-30s", Retry: RetrySpec{MaxAttempts: 2, Backoff: "30s"},
 	}, owner)
@@ -269,7 +270,7 @@ func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
 		t.Fatal("阶段名应登记到 owner（重复声明靠它查）")
 	}
 	// 未给参数时的默认：不延迟 + 退避 1s + 尝试 3 次
-	plan2, err := planStage(SiteSpec{}, StageSpec{Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 1}, map[string]string{})
+	plan2, err := planStage(SiteSpec{}.snapshot(), StageSpec{Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 1}, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +303,7 @@ func TestPlanStageEntryPolicy(t *testing.T) {
 			if c.withEntry {
 				f = &entryStageFetcher{}
 			}
-			plan, err := planStage(SiteSpec{Key: "a"}, StageSpec{
+			plan, err := planStage(SiteSpec{Key: "a"}.snapshot(), StageSpec{
 				Fetcher: f, WorkerCount: 1, QueueSize: 8, AutoStart: c.autoStart,
 			}, map[string]string{})
 			if err != nil {
@@ -350,8 +351,10 @@ func (stubStageFetcher) FetchHandler(_ context.Context, _ *engine.Task, _ *engin
 }
 
 // entryStageFetcher 实现可选接口 EntrySubmitter。
+// site 记下框架交过来的那份站点声明快照（BaseURL / Entries 该在这儿，而不是 fetcher 自己存）。
 type entryStageFetcher struct {
 	called bool
+	site   core.Site
 }
 
 func (f *entryStageFetcher) GetStage() string { return "review" }
@@ -360,7 +363,10 @@ func (f *entryStageFetcher) FetchHandler(_ context.Context, _ *engine.Task, _ *e
 	return nil
 }
 
-func (f *entryStageFetcher) SubmitEntries(_ *engine.Engine) { f.called = true }
+func (f *entryStageFetcher) SubmitEntries(_ *engine.Engine, site core.Site) {
+	f.called = true
+	f.site = site
+}
 
 /* ---------- 站点登记表（站点文件自己 init 登记） ---------- */
 
