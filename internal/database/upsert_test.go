@@ -41,6 +41,10 @@ type stubDB struct {
 	args    [][]driver.Value
 	queries []string
 
+	// queryFn 非 nil 时接管查询：按 (语句, 参数) 返回结果集。
+	// 迁移那套守卫查询全靠它 —— 它们形状相同（COUNT(*) / DATA_TYPE），只有参数能区分问的是哪张表/哪个列。
+	queryFn func(q string, args []driver.Value) (cols []string, rows [][]driver.Value)
+
 	lastInsertID int64 // 0 表示"冲突更新路径"（gorm 回填不到主键）
 	affected     int64
 	row          []driver.Value // 回查时返回的那一行（nil = 空结果集）
@@ -114,12 +118,16 @@ func (s *stubDB) exec(q string, args []driver.NamedValue) (driver.Result, error)
 	return stubResult{lastID: s.lastInsertID, affected: s.affected}, nil
 }
 
-func (s *stubDB) query(q string, _ []driver.NamedValue) (driver.Rows, error) {
+func (s *stubDB) query(q string, args []driver.Value) (driver.Rows, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.queries = append(s.queries, q)
 	if s.failQuery {
 		return nil, errors.New("stub: read failed")
+	}
+	if s.queryFn != nil {
+		cols, all := s.queryFn(q, args)
+		return &stubRows{cols: cols, all: all}, nil
 	}
 	rows := &stubRows{cols: upsertColumns}
 	if s.row != nil {
@@ -149,8 +157,12 @@ func (c *stubConn) ExecContext(_ context.Context, q string, args []driver.NamedV
 	return c.s.exec(q, args)
 }
 
-func (c *stubConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
-	return c.s.query(q, nil)
+func (c *stubConn) QueryContext(_ context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	vals := make([]driver.Value, len(args))
+	for i, a := range args {
+		vals[i] = a.Value
+	}
+	return c.s.query(q, vals)
 }
 
 type stubResult struct {

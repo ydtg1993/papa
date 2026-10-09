@@ -42,7 +42,7 @@ func main() {
 		return
 	}
 
-	// 2. 可选：设置中间件（代理 / m3u8 / 文件下载器），需在 RegisterStage 之前
+	// 2. 可选：设置中间件（代理 / m3u8 / 文件下载器），需在 RegisterSites 之前
 	// app.Engine.SetProxy(proxy.NewManager(app.Config.Proxy.APIURL, 8*time.Minute))
 	// app.Engine.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))
 	// app.Engine.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))

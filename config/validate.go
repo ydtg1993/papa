@@ -31,7 +31,7 @@ const breakerMinWindow = 60 * time.Nanosecond
 
 // Validate 校验一份配置。**不符合直接 panic。**
 //
-// 为什么是 panic 而不是返回 error：判据与 App.RegisterStage 对 stage 配置那几行、
+// 为什么是 panic 而不是返回 error：判据与 App.RegisterSites 对阶段声明那几行、
 // internal/breaker.New 对 threshold 那条一致 —— 非法配置该在**启动时**炸掉，
 // 而不是等跑到某条任务上才变成另一种行为。
 //
@@ -284,7 +284,7 @@ func suggestKeys(unused []string) string {
 	return strings.Join(lines, "\n")
 }
 
-// leafOf 取键路径的最后一段：crawler.stages[catalog].wroker_count → wroker_count。
+// leafOf 取键路径的最后一段：business[covers].dr → dr。
 func leafOf(path string) string {
 	if i := strings.LastIndex(path, "."); i >= 0 {
 		return path[i+1:]
@@ -292,7 +292,7 @@ func leafOf(path string) string {
 	return path
 }
 
-// validKeys 反射出 Config 里所有合法的键路径。map 字段写成 crawler.stages[].worker_count
+// validKeys 反射出 Config 里所有合法的键路径。map 字段写成 business[]（叶子 map 不再往下展开）
 // 这种带 [] 的形式 —— 与 mapstructure 报出来的路径写法对齐。
 //
 // 没有 mapstructure tag 的结构体字段（比如 DurationRange）当作**叶子**处理，

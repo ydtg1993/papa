@@ -77,7 +77,7 @@ repeat_queue:
 	if cfg.HTML.Headers["User-Agent"] != "html-ua" {
 		t.Fatalf("html headers 大小写丢失: %+v", cfg.HTML.Headers)
 	}
-	// 注意：阶段参数已搬进 Go 声明（`configs/stage.go` 的 StageSpec），配置里不再有 crawler.stages 段；
+	// 注意：阶段参数已搬进 Go 声明（`configs/sites/<站名>.go` 的 StageSpec），配置里不再有 crawler.stages 段；
 	// 那套 "10s-30s" 区间的解析由 duration_test.go 直接覆盖 config.ParseDurationRange。
 	if cfg.ErrorQueue.Interval != 10*time.Minute {
 		t.Fatalf("error_queue.interval = %v, want 10m", cfg.ErrorQueue.Interval)

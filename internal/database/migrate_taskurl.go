@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -109,13 +110,44 @@ func ensureURLIsText(db *gorm.DB, table string) error {
 //
 // 哈希算法与 Go 侧（models.UrlHash）必须一致：都是 sha256 的十六进制小写 —— MySQL 的 SHA2(x,256)
 // 正好就是这个形式（小写、无前缀），所以两边算出来是同一个值，迁移回填过的行与新建的行能对上。
+//
+// **两步都带守卫**：已经迁移过的库上一条语句都不发。不然每次 `papa migrate` 都要来一遍
+// 全表 UPDATE + 一次 MODIFY —— 后者在大表上等于重建表，代价很大（而 migrate 是每次升级都会跑的）。
 func backfillURLHash(db *gorm.DB, table string) error {
-	if err := db.Exec(fmt.Sprintf(
-		"UPDATE `%s` SET `url_hash` = SHA2(`url`, 256) WHERE `url_hash` IS NULL OR `url_hash` = ''", table)).Error; err != nil {
+	missing, err := rowsMissingURLHash(db, table)
+	if err != nil {
 		return err
+	}
+	if missing > 0 {
+		if err := db.Exec(fmt.Sprintf(
+			"UPDATE `%s` SET `url_hash` = SHA2(`url`, 256) WHERE `url_hash` IS NULL OR `url_hash` = ''", table)).Error; err != nil {
+			return err
+		}
+	}
+	nullable, err := isNullable(db, table, "url_hash")
+	if err != nil {
+		return err
+	}
+	if !nullable {
+		return nil // 已经是 NOT NULL 了，别再去 MODIFY（那会重建表）
 	}
 	return db.Exec(fmt.Sprintf(
 		"ALTER TABLE `%s` MODIFY `url_hash` char(64) NOT NULL COMMENT 'URL的sha256(长URL建不了整串唯一索引)'", table)).Error
+}
+
+func rowsMissingURLHash(db *gorm.DB, table string) (int64, error) {
+	var n int64
+	err := db.Raw(fmt.Sprintf(
+		"SELECT COUNT(*) FROM `%s` WHERE `url_hash` IS NULL OR `url_hash` = ''", table)).Scan(&n).Error
+	return n, err
+}
+
+func isNullable(db *gorm.DB, table, column string) (bool, error) {
+	var v string
+	err := db.Raw(`SELECT IS_NULLABLE FROM information_schema.columns
+	               WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+		table, column).Scan(&v).Error
+	return strings.EqualFold(v, "YES"), err
 }
 
 func createUniqueIndexIfMissing(db *gorm.DB, table, index, columns string) error {

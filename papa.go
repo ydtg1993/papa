@@ -1,5 +1,5 @@
 // Package papa 是一个可复用的爬虫框架。
-// 在 main.go 中 import 本包，用 New 创建应用、RegisterStage 注册各阶段 fetcher 即可运行。
+// 在 main.go 中 import 本包，用 New 创建应用、RegisterSites 注册站点与阶段即可运行。
 //
 // 本文件是**应用门面**：App 及其初始化选项、后台扩展点（表格页 / 自定义页 / 路由）。
 // 任务与引擎见 task.go，错误与告警见 errors.go。

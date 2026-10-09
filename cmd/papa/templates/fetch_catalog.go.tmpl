@@ -11,7 +11,9 @@ import (
 // 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
 type FetchCatalog struct{}
 
-func (f *FetchCatalog) GetStage() string { return "catalog" } // 必须与 configs/config.yaml 的 crawler.stages 的 key 一致
+// GetStage 返回阶段名；它在整个程序里必须唯一（多站就带站点前缀，如 hgd_catalog）。
+// 重名会在启动时报错并点出来。
+func (f *FetchCatalog) GetStage() string { return "catalog" }
 
 // SubmitEntries 入口任务：本阶段"注册即投一批起始任务"。实现这个方法就够了 ——
 // 框架在启动时自动调它（那时**所有**阶段的池子都已建好，所以这里能往任意阶段投）。

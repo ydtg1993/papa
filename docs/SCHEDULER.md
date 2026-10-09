@@ -18,7 +18,7 @@ app.RegisterCronJob("名字", "0 0 8 * * *", func() { /* 业务逻辑 */ })
 
 ```go
 app, err := papa.New()
-// ... RegisterStage ...
+// ... RegisterSites ...
 
 // 每天 08:00 轮询所有 repeatable 任务
 app.RegisterCronJob("repeat_daily", "0 0 8 * * *", func() {

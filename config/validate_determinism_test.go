@@ -10,9 +10,9 @@ import (
 // 于是同一条命令每次跑出来的提示都不一样，测试也可能偶发红。
 func TestSuggestKeysIsDeterministic(t *testing.T) {
 	for _, bad := range []string{
-		"crawler.d",                            // 叶子 d：dsn 与 dir 并列距离 2
-		"crawler.targt",                        // 没有相近的键，应当稳定地给不出建议
-		"crawler.stages[catalog].wroker_count", // 嵌套 map 里的拼写错误
+		"crawler.d",           // 叶子 d：dsn 与 dir 并列距离 2
+		"crawler.targt",       // 没有相近的键，应当稳定地给不出建议
+		"business[covers].dr", // 业务段里的拼写错误（框架不认它的语义，但报错路径要稳定）
 	} {
 		first := suggestKeys([]string{bad})
 		for i := 0; i < 50; i++ {

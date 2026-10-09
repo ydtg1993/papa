@@ -43,10 +43,6 @@ type labor struct {
 	resumeMu  sync.Mutex // 保护 resumeState 的修改
 }
 
-func (l *labor) getUniqueKey() string {
-	return l.url + "|" + l.outputDir + "|" + l.filename
-}
-
 // NewDownloader 创建下载器
 func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {

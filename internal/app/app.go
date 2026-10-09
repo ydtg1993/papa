@@ -112,7 +112,7 @@ func (a *App) UseTables(tables ...oao.Table) {
 // 用 r.NoAuth() 显式声明。路由在 HTTP 服务（server.enabled）开启时才挂载 —— 关掉时不会静默：
 // 启动会打一条醒目错误日志说明它们没生效。
 //
-// fn 为 nil 直接 panic：与 UsePage / RegisterStage 同风格，声明有问题启动即失败。
+// fn 为 nil 直接 panic：与 UsePage / RegisterSites 同风格，声明有问题启动即失败。
 func (a *App) UseRouter(fn func(*Router)) {
 	if fn == nil {
 		panic(fmt.Errorf("UseRouter: 回调为 nil —— 里面要用 Router 声明路由"))
@@ -137,7 +137,7 @@ type Page struct {
 }
 
 // UsePage 注册一个自定义页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
-// 声明有问题直接 panic：与 RegisterStage 同风格，启动即失败，别等点了菜单才发现。
+// 声明有问题直接 panic：与 RegisterSites 同风格，启动即失败，别等点了菜单才发现。
 func (a *App) UsePage(p Page) {
 	if !validPageKey(p.Key) {
 		panic(fmt.Errorf("invalid page key %q: 只允许字母、数字、下划线、连字符", p.Key))

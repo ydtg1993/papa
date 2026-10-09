@@ -64,7 +64,7 @@ type Breaker struct {
 
 // New 构造熔断器。onTrip 在**自动触发**时回调一次（可为 nil），宿主用它发告警。
 //
-// **启用熔断却不给正阈值是非法配置，直接 panic** —— 判据与 App.RegisterStage 对 stage
+// **启用熔断却不给正阈值是非法配置，直接 panic** —— 判据与 App.RegisterSites 对阶段
 // 配置那几行同一路数。这里不兜默认值：threshold <= 0 时"多少条才算熔断"没有答案，
 // 补一个数（原来补的是 50）只会让人以为开着、数的却是另一回事。
 // 调用点在 engine.NewEngine，所以这是**启动时**失败，不是跑到某条任务才炸。

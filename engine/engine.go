@@ -288,7 +288,8 @@ func (e *Engine) GetRuntimeConfig() *config.RuntimeConfig {
 	return e.runtime.Load()
 }
 
-// SetProxy 设置代理 需要在RegisterStage之前设置
+// SetProxy 设置代理。必须在 ApplyRegisterStage（App.RegisterSites 会走到）之前
+// —— 池子/客户端在那一刻就把实例绑好了，之后再设换不回来。
 func (e *Engine) SetProxy(proxy *proxy.Manager) {
 	e.proxy = proxy
 }
@@ -298,7 +299,7 @@ func (e *Engine) GetProxy() *proxy.Manager {
 	return e.proxy
 }
 
-// SetM3U8 设置m3u8下载器 需要在RegisterStage之前设置
+// SetM3U8 设置 m3u8 下载器。必须在 ApplyRegisterStage 之前（见 SetProxy 的说明）。
 func (e *Engine) SetM3U8(m3u *m3u8.Downloader) {
 	e.m3u8 = m3u
 }
@@ -308,7 +309,7 @@ func (e *Engine) GetM3U8() *m3u8.Downloader {
 	return e.m3u8
 }
 
-// SetFiledown 设置文件下载器 需要在RegisterStage之前设置
+// SetFiledown 设置文件下载器。必须在 ApplyRegisterStage 之前（见 SetProxy 的说明）。
 func (e *Engine) SetFiledown(f *filedown.Downloader) {
 	e.filedown = f
 }

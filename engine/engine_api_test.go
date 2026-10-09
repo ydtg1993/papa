@@ -18,7 +18,7 @@ import (
 
 /* ---------- 门面 getter / setter ---------- */
 
-// 引擎是业务的唯一入口：这些 setter 必须在 RegisterStage 之前可用，
+// 引擎是业务的唯一入口：这些 setter 必须在 ApplyRegisterStage 之前可用，
 // 且 getter 返回的就是同一个对象（业务会拿回去自己用）。
 func TestEngineAccessorsRoundTrip(t *testing.T) {
 	f := newFakeTaskDB()

@@ -25,7 +25,7 @@ type NeedsM3U8 interface{ NeedsM3U8() bool }
 // checkStageDeps 校验一个阶段的依赖是否都已接线；不满足直接 panic（启动期，fail fast）。
 //
 // 报错里写清"怎么改"：这一条几乎总是"忘了在 ApplyRegisterStage 之前调 SetXxx"，
-// 而 RegisterStage 的调用顺序在 main.go 里一眼能看见。
+// 而 RegisterSites 的调用顺序在 main.go 里一眼能看见。
 func (e *Engine) checkStageDeps(stage string, f Fetcher) {
 	if d, ok := f.(NeedsFiledown); ok && d.NeedsFiledown() && e.GetFiledown() == nil {
 		panic(fmt.Errorf("阶段 %s 声明依赖文件下载器（NeedsFiledown() 返回 true），但没有接线："+

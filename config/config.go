@@ -342,7 +342,7 @@ func Load(path string) (*Config, error) {
 	if err := decoder.Decode(raw); err != nil {
 		return nil, err
 	}
-	// 键名与值域统一在这一层校验；越界**直接 panic**（判据与 App.RegisterStage、
+	// 键名与值域统一在这一层校验；越界**直接 panic**（判据与 App.RegisterSites、
 	// internal/breaker.New 一致：非法配置该在启动时炸掉，而不是等跑到某条任务上
 	// 静默变成另一种行为）。原来那条 db.log_level 检查也搬进了同一张表。
 	Validate(&cfg, md.Unused)

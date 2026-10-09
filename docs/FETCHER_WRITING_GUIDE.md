@@ -35,7 +35,7 @@ type Fetcher interface {
 }
 ```
 
-- `GetStage()` 返回的字符串**必须**等于 `config.yaml` 里 `crawler.stages` 的一个 key，否则 `RegisterStage` 会 panic。
+- `GetStage()` 返回阶段名，它在**整个程序里必须唯一**（多站就带站点前缀，如 `hgd_catalog`）。重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `configs/sites/<站名>.go` 的声明里（见 7.2）。
 - **可选**：fetcher 还可以实现三个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
   ```go
   // 声明本阶段要用下载器 → 框架在启动时校验接线（没接直接 panic，而不是等第一条任务跑到那一步）
@@ -343,33 +343,36 @@ if len(items) == 0 {
 
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
-> 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段——加一个 stage、一个 fetcher、一次 `RegisterStage` 即可。
+> 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段 —— 写第二个 fetcher，在 `configs/sites/<站名>.go` 里加一段 `StageSpec` 即可（main.go 不用动）。
 
 典型例子：目录页要点「展开分类」下拉、滚动到底部触发懒加载，才能拿到所有文档的标题和链接。
 
-### 3.1 config.yaml 加两个 stage
-
-```yaml
-crawler:
-  stages:
-    catalog:            # 列表页阶段
-      worker_count: 1
-      queue_size: 20
-      delay: "5m"
-      retry: { max_attempts: 3, backoff: "30s" }
-    detail:             # 详情页阶段
-      worker_count: 3
-      queue_size: 500
-      delay: "3m"
-      retry: { max_attempts: 3, backoff: "30s" }
-```
-
-### 3.2 main.go 注册
+### 3.1 在站点声明里加两个阶段
 
 ```go
-app.RegisterStage(&fetcher.FetchCatalog{}, nil)
-app.RegisterStage(&fetcher.FetchDetail{}, nil)
+// configs/sites/mysite.go
+Stages: []papa.StageSpec{
+    {
+        Fetcher:     &fetcher.FetchCatalog{}, // 列表页阶段
+        WorkerCount: 1,
+        QueueSize:   20,
+        Delay:       "5m",
+        Retry:       papa.RetrySpec{MaxAttempts: 3, Backoff: "30s"},
+        AutoStart:   true,
+    },
+    {
+        Fetcher:     &fetcher.FetchDetail{}, // 详情页阶段
+        WorkerCount: 3,
+        QueueSize:   500,
+        Delay:       "3m",
+        Retry:       papa.RetrySpec{MaxAttempts: 3, Backoff: "30s"},
+    },
+},
 ```
+
+### 3.2 main.go
+
+不用动 —— 各站点文件在自己的 `init()` 里登记，框架用 `papa.Sites()` 收集（见 7.2）。
 
 ### 3.3 catalog fetcher（列表页：点下拉 + 滚动 + 派发）
 
@@ -622,7 +625,7 @@ res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filed
 其中 main.go 的阶段注册只有一行（声明在 `configs/sites/<站名>.go`）：
 
 ```go
-app.RegisterSites(sites.All()...)
+app.RegisterSites(papa.Sites()...)
 ```
 
 生成后的 fetcher 长这样（`SubmitEntries` 是入口任务，见 7.1）：
@@ -673,10 +676,9 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 > `task.Trace.*` 是**框架的步骤上报接口**（见 1.3），关掉追踪时是 no-op —— 写新 fetcher 时照抄即可。
 
-配套三处改动：
-1. `config.yaml` 的 `crawler.stages` 加 `catalog:`（worker_count / queue_size / delay / retry）。
-2. `main.go` 里 `app.RegisterStage(&fetcher.FetchCatalog{}, nil)`。
-3. 若用下载器，`main.go` 里先 `SetM3U8` / `SetFiledown`（要在 `RegisterStage` 之前）。
+配套两处改动：
+1. `configs/sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / 要不要 AutoStart）。
+2. 若用下载器，`main.go` 里先 `SetM3U8` / `SetFiledown`（要在 `RegisterSites` 之前 —— 池子在那时就把实例绑好了）。
 
 ---
 
@@ -707,7 +709,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine) {
 > 实现了入口却没开 AutoStart 会打一条 Info（"是关的、不是漏的"）。
 >
 > **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（并发/队列/间隔/重试/入口开关/
-> 站点归属/熔断阈值都在那一处，`configs/sites/sites.go` 只做汇总），`main.go` 只要一行 `app.RegisterSites(sites.All()...)`。
+> 站点归属/熔断阈值都在那一处，`configs/sites/sites.go` 只做汇总），`main.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
 > 加阶段 = 写 fetcher + 在 `Sites()` 里加一段。阶段名取自 `GetStage()`，重名**启动就报错**；
 > 多站时阶段名要能区分（约定带站点前缀，如 `hgd_catalog` / `siteb_catalog`）。
 
@@ -739,7 +741,7 @@ Go 没有"枚举一个包里有哪些函数/类型"的能力（反射只能从�
 代码生成或代码自登记两条路，这里选后者（零构建步骤、可 grep，也是 `database/sql` 驱动那套标准做法）。
 登记顺序 = **文件名字典序**（Go 规范：同包 init 按文件名执行），稳定可复现；站点键/阶段名重复都会在启动时报错。
 
-main.go 仍然一行：`app.RegisterSites(sites.All()...)`。**框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型，怎么组织是你项目的事。
+main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型，怎么组织是你项目的事。
 
 三条要注意的：
 
@@ -786,7 +788,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 ## 8. 常见坑
 
-1. **`GetStage()` 与 config 不一致** → `RegisterStage` 直接 panic。写完先核对两边字符串。
+1. **阶段名重复** → `RegisterSites` 直接 panic 并点出是哪两个站声明了同一个名字。多站一律带站点前缀（`hgd_catalog` / `siteb_catalog`），别靠"能区分"碰运气。
 2. **浏览器池耗尽**：`browser.pool_size`（浏览器并发上限）要 ≥ 各 stage `worker_count` 之和，否则 worker 会阻塞在 `pool.Get`。
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.DownloadOptions{Referer: ...}` 传详情页 URL。
 4. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。

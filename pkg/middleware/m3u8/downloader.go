@@ -52,10 +52,6 @@ type labor struct {
 	execMu   sync.Mutex
 }
 
-func (l *labor) getUniqueKey() string {
-	return l.source + "|" + l.outDir + "|" + l.filename
-}
-
 // NewDownloader 创建下载器（全局共享实例）
 func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {

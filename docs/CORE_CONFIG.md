@@ -277,7 +277,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 > 不单独校验的话，一个 `html.max_body_size: 0` 能在不重启的情况下让每一次抓取都失败，
 > 而配置文件的校验完全看不见它。越界回 **400**（不是 500：那是调用方的输入错），且不下发。
 
-- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.stages.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.stop_timeout`、`crawler.trace.*`、`crawler.breaker.*`（`RuntimeConfig` 里没有 trace / breaker，改只能重启）。
+- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.stop_timeout`、`crawler.trace.*`、`crawler.breaker.*`（`RuntimeConfig` 里没有 trace / breaker，改只能重启）。
 
 > **熔断的「暂停」状态也不跨重启**：进程重启即恢复运行 —— 起进程本身就是一次人工介入。
 > 所以没有任何"暂停"字段需要持久化，`configs/runtime.yaml` 里也不会出现它。

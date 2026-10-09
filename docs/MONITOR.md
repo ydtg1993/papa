@@ -326,7 +326,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 - **必须在 `Run` 之前注册**（路由在 `Run` 时挂载），且要求 `server.enabled: true`。
   注册了却没挂上**不会静默**：启动会打一条醒目错误日志说明有 N 组路由没生效。
-- 回调传 `nil` 直接 panic（与 `UsePage` / `RegisterStage` 同风格：声明有问题启动即失败）。
+- 回调传 `nil` 直接 panic（与 `UsePage` / `RegisterSites` 同风格：声明有问题启动即失败）。
 - pattern 与现有路由冲突时是 `http.ServeMux` 的 panic（挂在同一个 mux 上），不会悄悄覆盖。
 - 路径以 `/api/` 开头的业务路由走的是同一道 `Monitor.Auth`，`Cache-Control: no-store`
   由它统一加上；`NoAuth()` 的路由没有这层，需要的话自己在 handler 里设置。

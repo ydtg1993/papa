@@ -2,8 +2,8 @@ package engine
 
 // 本文件是**阶段入口**的声明方式。
 //
-// 起因：阶段原来只能这样注册 —— `app.RegisterStage(&fetcher.FetchCatalog{}, func(eng *Engine){…})`，
-// 一个阶段在 main.go 里占一段（fetcher 值 + 入口回调），阶段一多 main.go 就变成一堆装配代码。
+// 起因：阶段原来只能在 main.go 里一个个注册（fetcher 值 + 入口回调各占一段），
+// 阶段一多 main.go 就变成一堆装配代码。
 // 更好的形状是**阶段清单单独一个文件**（脚手架生成的 `configs/stage.go`），main.go 只剩一行：
 //
 //	app.RegisterStages(configs.All()...)
