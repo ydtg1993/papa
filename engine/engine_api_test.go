@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -432,3 +434,44 @@ type crawlerTaskStub struct {
 }
 
 func (crawlerTaskStub) TableName() string { return "crawler_tasks" }
+
+// content 列里不该出现 `<` 这类 HTML 转义。
+//
+// 业务存进 content 的常常就是一段 HTML（页面片段、页面快照、带 `<a>` 的富文本），
+// 转义之后在库里、后台表格里、SQL 客户端里都是一堆 `<`，等于"存了但看不了一眼"。
+// json.Unmarshal 把两种写法还原成同一个字符串，所以改这个**不影响已经落库的老数据**（见下）。
+func TestSaveResultDoesNotHTMLEscapeContent(t *testing.T) {
+	f := newFakeTaskDB()
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+
+	const snippet = `<div class="poster">a & b</div>`
+	if err := e.SaveResult(7, "标题", map[string]string{"html": snippet}); err != nil {
+		t.Fatalf("SaveResult = %v", err)
+	}
+
+	args := f.writtenArgs()
+	// JSON 层该转义的照旧（双引号写成 \"，那是 JSON 本身的要求），这里只看 HTML 的那几个字符
+	// 有没有被一起转掉 —— 所以用不带引号的片段来对，免得把 JSON 的引号转义也算进来。
+	for _, raw := range []string{`<div class=`, `>a & b<`, `</div>`} {
+		if !strings.Contains(args, raw) {
+			t.Fatalf("落库的应是原样的片段，参数里缺少 %s：%s", raw, args)
+		}
+	}
+	// 反面：默认的 json.Marshal 会把它们写成反斜杠转义（`backslash-u003c` 那种形态），那正是要避免的。
+	// 拿它的输出来比，比在断言里手写转义序列可靠 —— 手写的转义序列很容易被各种工具还原成原文。
+	if escaped, _ := json.Marshal(map[string]string{"html": snippet}); strings.Contains(args, string(escaped)) {
+		t.Fatalf("content 落库的是 json.Marshal 的 HTML 转义形态：%s", args)
+	}
+
+	// 老数据是转义形态（旧版 SaveResult 留下的），照样读得回来 —— 转义只是 JSON 的一种写法，
+	// 反序列化后是同一个字符串。这里直接用 json.Marshal 造出那份老数据。
+	old, _ := json.Marshal(map[string]string{"html": "<div>"})
+	f.row["content"] = old
+	var back map[string]string
+	if err := e.GetResult(7, &back); err != nil {
+		t.Fatalf("GetResult = %v", err)
+	}
+	if back["html"] != "<div>" {
+		t.Fatalf("转义形态应能原样还原，实得 %q", back["html"])
+	}
+}

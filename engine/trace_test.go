@@ -417,3 +417,51 @@ func TestRunAttemptUrgentMarkerOnlyOnFirstAttempt(t *testing.T) {
 		t.Fatalf("加急标记应只出现 1 次（第一次尝试），实得 %d 次：\n%s", n, pool.all())
 	}
 }
+
+// Warn 是非致命档：记下"这一步降级了"，但不碰尝试的结局。
+//
+// 典型场景是附带产物（封面、附件）：任务本身成功了，用 Fail 语义不对
+// （那会把"任务失败了"的信号发出去），可"这次没拿到封面"必须留下痕迹。
+func TestTraceWarnRecordsWithoutFailing(t *testing.T) {
+	tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+	tr.Step("解析详情", map[string]string{"title": "t"})
+	tr.Warn("下载封面", errors.New("封面 404"), map[string]string{"cover_url": "u"})
+	tr.setResult(nil) // handler 返回 nil：任务成功
+
+	records := tr.flush()
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2（Step + Warn；setResult 不产生步骤）", len(records))
+	}
+	warn := records[1]
+	if warn.Status != models.TraceWarn {
+		t.Fatalf("Warn 应写成 TraceWarn 档，实得 %d", warn.Status)
+	}
+	if warn.Message == "" || warn.Kind == "" {
+		t.Fatalf("警告步也要带信息与分类：%+v", warn)
+	}
+	if warn.Step != "下载封面" {
+		t.Fatalf("步骤名 = %q", warn.Step)
+	}
+}
+
+// 成功尝试里，非致命步骤的 data **保留**（其余步骤照旧剥离）。
+//
+// 这是唯一一处例外，理由是它没有第二次机会：warn 记的正是"任务成功了、但这一步降级了"，
+// 下一个成功的尝试里它照样只是 warn —— 剥掉就等于把 warn 的 payload 永远丢掉。
+func TestTraceWarnKeepsDataOnSuccessfulAttempt(t *testing.T) {
+	tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+	tr.Step("解析详情", map[string]string{"title": "t"})
+	tr.Warn("下载封面", errors.New("boom"), map[string]string{"cover_url": "u"})
+	tr.setResult(nil)
+
+	records := tr.flush()
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want 2", len(records))
+	}
+	if len(records[0].Data) != 0 {
+		t.Fatalf("普通步骤在成功尝试里仍应剥离 data，实得 %s", records[0].Data)
+	}
+	if !strings.Contains(string(records[1].Data), "cover_url") {
+		t.Fatalf("非致命步骤的 data 应保留，实得 %q", string(records[1].Data))
+	}
+}

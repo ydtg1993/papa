@@ -86,8 +86,16 @@ func (m *Manager) refreshProxies() {
 		list = append(list, "http://"+p["host"]+":"+p["port"])
 	}
 	m.proxies = list
+	empty := len(list) == 0
 	m.mu.Unlock()
-	m.trackQueue.SendError(fmt.Errorf("updated proxies: %d available", len(m.proxies)))
+
+	// 只报「拉到了但一条可用都没有」：出口会全部变成直连，目标站可能因此封 IP，
+	// 而这件事在别处看不出来（Next 只是返回空串）—— 这是需要人看的情况。
+	// 非空不报：每轮刷新（默认 8 分钟）写一条 "N available" 是把正常当异常，
+	// 而错误通道那端按 Error 级别落盘（App.mdMsgListener），正常运行的日志里会一直有 ERROR。
+	if empty {
+		m.trackQueue.SendError(fmt.Errorf("proxy API 返回空列表：本进程将直连，不走代理"))
+	}
 }
 
 // startRefresh 定时刷新

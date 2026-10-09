@@ -21,6 +21,18 @@ type Config struct {
 	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
 	RecoverQueue RecoverQueueConfig `mapstructure:"recover_queue"`
 	RepeatQueue  RepeatQueueConfig  `mapstructure:"repeat_queue"`
+	// Business 业务自己的配置段：框架**不解析、不校验**，原样透出给 App（`app.Config.Business`）。
+	//
+	// 存在的理由是「未知键一律拒绝启动」那条规则（见 Validate）—— 它是对的（拼错的键名不该静默失效），
+	// 但副作用是业务没法在同一个 config.yaml 里放自己的配置：`covers.dir`、`archive.mode` 这类
+	// 都写不进去，只能另开一个文件自己解析、塞环境变量或写死成代码常量。
+	// 这一段就是给它们的位子：框架不认它的语义，写什么键都不管。
+	//
+	// 要按 struct 取（推荐）用 BusinessSection —— 那份解码会**校验业务段内部的未知键**，
+	// 于是"拼错键名静默失效"这件事在业务段里也不会发生。要完全自由的 JSON 结构就直接读这个 map。
+	//
+	// 只作用于 config.yaml：热更覆盖层（runtime.yaml）里写 business 不生效，改它要重启。
+	Business map[string]any `mapstructure:"business"`
 }
 
 // ErrorQueueConfig 失败任务错误队列处理配置

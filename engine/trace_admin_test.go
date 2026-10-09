@@ -52,6 +52,7 @@ func TestListTraceMapsRows(t *testing.T) {
 		traceRow(1, 7, 0, 0, "打开页面", int64(models.TraceOK), []byte(`{"url":"a"}`)),
 		traceRow(2, 7, 0, 1, "解析列表", int64(models.TraceFailed), nil),
 		traceRow(3, 7, 1, 0, "打开页面", int64(models.TraceOK), nil),
+		traceRow(4, 7, 1, 1, "下载封面", int64(models.TraceWarn), []byte(`{"cover_url":"u"}`)),
 	}
 	e := traceDBEngine(t, f)
 
@@ -59,8 +60,8 @@ func TestListTraceMapsRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTrace = %v", err)
 	}
-	if len(steps) != 3 {
-		t.Fatalf("应返回 3 步，实得 %d", len(steps))
+	if len(steps) != 4 {
+		t.Fatalf("应返回 4 步，实得 %d", len(steps))
 	}
 	if steps[0].Step != "打开页面" || steps[0].Status != "ok" || steps[0].Attempt != 0 || steps[0].Seq != 0 {
 		t.Fatalf("第一步 = %+v", steps[0])
@@ -76,6 +77,13 @@ func TestListTraceMapsRows(t *testing.T) {
 	}
 	if steps[2].Attempt != 1 {
 		t.Fatalf("重试那次的步骤 attempt 应为 1：%+v", steps[2])
+	}
+	// 非致命档翻成 warn（不是 failed）：后台因此能把它和"真的失败了"分开显示
+	if steps[3].Status != "warn" {
+		t.Fatalf("警告步骤的 status 应翻成 warn：%+v", steps[3])
+	}
+	if got := string(steps[3].Data); got != `{"cover_url":"u"}` {
+		t.Fatalf("警告步的 data 应原样透出：%q", got)
 	}
 
 	// 查询要按 task_id 过滤、按 attempt,seq 排序、并带上限

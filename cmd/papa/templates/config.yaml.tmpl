@@ -8,7 +8,8 @@ crawler:
   queue_watermark: 0.75        # 队列高水位比例(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
   stop_timeout: "5s"           # 优雅退出时等各阶段 worker 排空队列的上限；超时则跳过关库/关浏览器池，让在途写入能落盘
-  # 单任务步骤追踪：开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表。
+  # 单任务步骤追踪：开启后 handler 可用 task.Trace.Step/Fail/Warn 上报步骤，写入 crawler_task_trace 表。
+  # Warn 是非致命档（封面没下下来这类：任务成功了、但要留痕），不影响任务终态。
   # 后台任务表的「追踪」动作按「第 N 次尝试」展示时间线；只有失败的尝试才写 data。
   # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。
   # 开启后记得再跑一次 `papa migrate` 建 crawler_task_trace。
@@ -137,3 +138,24 @@ repeat_queue:
   worker_count: 1         # 并发重新投递 repeatable 任务的数量
   interval: "2h"         # 轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
   batch_size: 100        # 每批查询处理的任务数；0 = 默认 100（分页流式）
+
+# 业务自己的配置段：框架不解析、不校验这里的键名，原样透出给 App。
+# 爬虫之外的配置（封面目录、归档模式、站点特有开关……）写在这里，别塞进 crawler/html 那几个段
+# —— 那些段的未知键会直接拒绝启动（那条规则是有意的：拼错的键名不该静默失效）。
+#
+#   business:
+#     covers:
+#       dir: ./covers
+#       size: 300
+#
+# 取用（按 struct 取会校验业务段内部的未知键，拼错当场报错）：
+#
+#   type CoversConfig struct {
+#       Dir  string `mapstructure:"dir"`
+#       Size int    `mapstructure:"size"`
+#   }
+#   var covers CoversConfig
+#   if err := app.Config.BusinessSection("covers", &covers); err != nil { panic(err) }
+#
+# 也可以直接读 app.Config.Business（map[string]any），用于键名由业务动态决定的自由结构。
+# 注意：这一段只作用于 config.yaml，热更覆盖层（runtime.yaml）里写它不生效，改配置要重启。

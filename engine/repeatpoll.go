@@ -41,14 +41,9 @@ func (e *Engine) requeueRepeatTask(t *models.CrawlerTask) bool {
 		e.loggerSet.Engine.Warnf("repeat queue: stage %s not registered, skip task %d", t.Stage, t.ID)
 		return false
 	}
-	task := &Task{
-		ID:             int(t.ID),
-		PID:            int(t.PID),
-		URL:            t.URL,
-		Stage:          t.Stage,
-		Repeatable:     true,
-		IdempotencyKey: t.IdempotencyKey,
-	}
+	// Repeatable 显式置真：本队列捞出来的行本来就该是可轮询的，写死比照抄行上的值更少一层怀疑。
+	task := e.taskFromRecord(t)
+	task.Repeatable = true
 	task.UpdateStatus(e.db, models.TaskStatusPending, nil)
 	if err := e.SubmitTask(task); err != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: submit task %d: %s", t.ID, err.Error())

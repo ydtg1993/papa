@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -75,6 +74,27 @@ func (t *Trace) Fail(name string, err error, data any) {
 	t.append(name, models.TraceFailed, kind, msg, data)
 }
 
+// Warn 记录一个**非致命**的步骤：出了点事，但不该把任务判失败。
+//
+// 典型场景是"附带产物"：封面下载失败、附件没抓到、某个可选字段没解析出来 ——
+// 任务本身是成功的（用 Fail 语义不对，那会把"任务失败了"的信号发出去，还会带上错误分类），
+// 但"这次没拿到封面"必须留下痕迹，否则它只存在于业务自己的日志里，后台追踪上看不见。
+//
+// **不影响任务终态**：引擎只看 FetchHandler 的返回值，warn 只写进 trace。
+// err 可为 nil（只想标一下"这一步有降级"），data 可为 nil。
+func (t *Trace) Warn(name string, err error, data any) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var msg, kind string
+	if err != nil {
+		msg, kind = err.Error(), ErrorKind(err)
+	}
+	t.append(name, models.TraceWarn, kind, msg, data)
+}
+
 // append 追加一个步骤；调用方需已持锁。
 func (t *Trace) append(name string, status models.TraceStatus, kind, msg string, data any) {
 	now := time.Now()
@@ -91,10 +111,11 @@ func (t *Trace) append(name string, status models.TraceStatus, kind, msg string,
 	t.lastAt = now
 	if data != nil {
 		// 序列化失败不静默丢：写一条可读的标记进去，免得排查时以为 handler 没上报 data。
-		if b, err := json.Marshal(data); err == nil {
+		// 与 content 列同一条约定：JSON 列不做 HTML 转义，否则步骤里的 HTML 片段是一片 <。
+		if b, err := marshalNoHTMLEscape(data); err == nil {
 			rec.Data = datatypes.JSON(b)
 		} else {
-			marker, _ := json.Marshal(map[string]string{"_marshal_error": err.Error()})
+			marker, _ := marshalNoHTMLEscape(map[string]string{"_marshal_error": err.Error()})
 			rec.Data = datatypes.JSON(marker)
 		}
 	}
@@ -130,6 +151,13 @@ func (t *Trace) flush() []models.TaskTrace {
 	t.steps = nil
 	if t.succeed {
 		for i := range records {
+			// 例外：非致命步骤的 data **保留**。它记的正是"任务成功了、但这一步降级了"这件事，
+			// 而这条信息没有第二次机会 —— 下一个成功的尝试里它照样只是 warn，不会变成一次
+			// 失败的尝试来把 data 带上（剥掉它等于把 warn 的 payload 永远丢掉）。
+			// 量不成问题：warn 按定义是异常，不是每步都有。
+			if records[i].Status == models.TraceWarn {
+				continue
+			}
 			records[i].Data = nil
 		}
 	}
@@ -183,8 +211,11 @@ func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) {
 	out := make([]TraceStep, 0, len(rows))
 	for _, r := range rows {
 		status := "ok"
-		if r.Status == models.TraceFailed {
+		switch r.Status {
+		case models.TraceFailed:
 			status = "failed"
+		case models.TraceWarn:
+			status = "warn"
 		}
 		out = append(out, TraceStep{
 			Attempt:   r.Attempt,

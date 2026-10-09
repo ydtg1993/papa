@@ -62,7 +62,8 @@ func TestStatusEnumValues(t *testing.T) {
 	if RepeatableNo != 0 || RepeatableYes != 1 {
 		t.Fatalf("RepeatableStatus 取值变了：no=%d yes=%d", RepeatableNo, RepeatableYes)
 	}
-	if TraceOK != 0 || TraceFailed != 1 {
-		t.Fatalf("TraceStatus 取值变了：ok=%d failed=%d", TraceOK, TraceFailed)
+	// TraceWarn 是**追加**在末尾的：老行里的 0/1 含义不能变（改中间那个就得洗数据）
+	if TraceOK != 0 || TraceFailed != 1 || TraceWarn != 2 {
+		t.Fatalf("TraceStatus 取值变了：ok=%d failed=%d warn=%d", TraceOK, TraceFailed, TraceWarn)
 	}
 }

@@ -355,7 +355,8 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	if strings.Contains(playlist, "#EXT-X-STREAM-INF") {
 		bestURL, err := d.selectBestStream(playlist, baseURL)
 		if err == nil {
-			d.trackQueue.SendError(fmt.Errorf("选择最高码率流: %s", bestURL))
+			// 选流结果不进错误通道：那是"这次下载做了什么选择"，不是错误 ——
+			// 每下载一个文件写一行 ERROR，正常运行的日志就被这类正常事件填满了。
 			playlist, baseURL, err = d.fetchPlaylist(ctx, bestURL, opts)
 			if err != nil {
 				result.Error = fmt.Errorf("fetch best stream: %w", err)
@@ -504,7 +505,6 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 			if cfg.OnProgress != nil {
 				cfg.OnProgress(int(newCompleted), totalSegments, index+1, segSize, atomic.LoadInt64(&totalBytes))
 			}
-			d.trackQueue.SendError(fmt.Errorf("片段 %d/%d 完成", newCompleted, totalSegments))
 		}(idx, segInfo)
 	}
 	wg.Wait()

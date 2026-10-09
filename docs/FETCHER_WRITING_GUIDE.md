@@ -36,8 +36,20 @@ type Fetcher interface {
 ```
 
 - `GetStage()` 返回的字符串**必须**等于 `config.yaml` 里 `crawler.stages` 的一个 key，否则 `RegisterStage` 会 panic。
+- **可选**：fetcher 还可以实现两个接口声明"本阶段要用下载器"，让框架在**启动时**替你校验接线（没接线直接 panic，而不是等第一条任务跑到那一步才报一句 `file downloader is not configured`）：
+  ```go
+  func (f *FetchVideo) NeedsFiledown() bool { return true } // 会调 engine.GetFiledown()
+  func (f *FetchVideo) NeedsM3U8() bool     { return true } // 会调 engine.GetM3U8()
+  ```
+  不实现也不影响运行 —— 那只意味着接线错了要晚很多才发现。
 - `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
 - 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
+- 用 `engine.FetchHTML` 抓静态页时，**判失败原因别看错误文本**：非 2xx 是 `*htmlfetch.StatusError`（`htmlfetch.StatusCode(err)` 直接取码），响应体超 `html.max_body_size` 是 `*htmlfetch.BodyTooLargeError`。文本匹配会误伤 —— 把 `max_body_size` 配成 `4040000` 时，"html response exceeds 4040000 bytes" 里就带着 `404`，一个该重试的错误会被判成"不可重试的 not_found"。
+  ```go
+  if code, ok := htmlfetch.StatusCode(err); ok && (code == 404 || code == 410) {
+      return papa.WrapNoRetryKind("not-found", err)
+  }
+  ```
 - **不要**在 fetcher 里自己调 `task.UpdateStatus`，状态由引擎自动维护；你只负责提取结果并写库。
 - **日志由框架兜底**：`FetchHandler` 返回的 error 会由引擎结构化记入日志并触发告警（`stage/task_id/url/retry/kind`），你**不需要**再自己拼日志。同样，`engine.SubmitTask` / `SubmitTasks` 的提交类错误（非法 stage、入库失败、入队失败）框架也会自动记录——你只需在返回值上做控制流判断（要不要继续、要不要 abort），不用再记一遍。
 
@@ -61,6 +73,9 @@ type Task struct {
 ```
 
 - `Meta` 承载业务键（`series_id`/`episode_id` 等），**不要**再把它们拼进 URL 或用 `hg2:series:123` 之类的 scheme；handler 里直接读 `task.Meta["series_id"]`。
+  **它会随行落库**（`crawler_tasks.meta`，json 列）：恢复队列（进程重启）、轮询队列、错误队列重投、后台「重投 / 加急」这几条「从行重建任务」的路都会把它读回来，handler 不必再自己按 URL 回查业务表。
+  两边不一致时以**这一列**为准 —— 提交时带了非空 `Meta` 就刷新它，带空 `Meta` 的提交不动它（重投路径自己就是照着库里那份读的）。
+  它与 `IdempotencyKey` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
 - `IdempotencyKey` 自定义去重键（如「标准化分类 URL + 页码」），空值回退到默认的 `stage|url`。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
 - `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面。适合"怀疑某条有问题、想单独跑一遍看着它跑"的探测任务（`&papa.Task{URL: u, Stage: "detail", Urgent: true}`）。注意它只省**排队**时间 —— 该阶段 worker 全在忙的时候，插队也快不了；worker 认领后 `urgent` 列自动归零，是一次性的。
@@ -90,8 +105,12 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 }
 ```
 
-- **调用时机**：`Step` 表示「这一步已经做完了」，所以耗时 = 距上一个 `Step`（首步距本次尝试开始）的间隔；`Fail` 记一个失败的步骤。
+- **三档，选错档会让后台误报**：
+  - `Step(name, data)` —— 这一步做完了，耗时 = 距上一个 `Step`（首步距本次尝试开始）的间隔；
+  - `Fail(name, err, data)` —— 这一步失败了，带上错误分类与现场数据；
+  - `Warn(name, err, data)` —— **非致命**：出了点事，但不该把任务判失败。典型是附带产物 —— 封面没下下来、附件缺了、某个可选字段没解析出来，而任务本身是成功的（用 `Fail` 会把"任务失败了"的信号发出去）。它**不影响任务终态**，只写进追踪，后台用橙色和红色的失败步骤分开显示。
 - **`data` 只在失败的尝试里落库**：成功的尝试（绝大多数）一条 `data` 都不写，写入量按失败率走。传 `nil` 也完全可以，只留步骤骨架。
+  **例外**：`Warn` 步骤的 `data` 在成功的尝试里也保留 —— 它记的正是"任务成功了、但这一步降级了"，而下一次成功的尝试里它照样只是 warn，剥掉就等于把这条唯一的线索永远丢掉（warn 按定义是异常，量不成问题）。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
@@ -646,6 +665,9 @@ app.RegisterStage(&fetcher.FetchCatalog{},
         })
     })
 ```
+
+> 回调在**所有阶段的池子都建好之后**才跑，所以它可以往任意阶段投递（不限于自己这个阶段）：
+> 比如把多个站点的入口分别交给各自的阶段。回调按阶段名字典序执行，启动期提交顺序是稳定的。
 
 2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
 

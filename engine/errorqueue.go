@@ -55,15 +55,8 @@ func (e *Engine) requeueFailedTask(t *models.CrawlerTask) bool {
 		return false
 	}
 
-	task := &Task{
-		ID:             int(t.ID),
-		PID:            int(t.PID),
-		URL:            t.URL,
-		Stage:          t.Stage,
-		Repeatable:     t.Repeatable == models.RepeatableYes,
-		Urgent:         t.Urgent,
-		IdempotencyKey: t.IdempotencyKey,
-	}
+	task := e.taskFromRecord(t)
+	task.Retry = 0 // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitTo(info, task); err != nil {
 		e.dedupCache.Delete(task.Unique())

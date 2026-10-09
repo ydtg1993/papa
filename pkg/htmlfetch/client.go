@@ -154,7 +154,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("fetch html: unexpected status %d", resp.StatusCode)
+		return nil, &StatusError{Code: resp.StatusCode}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, cfg.MaxBodySize+1))
@@ -162,7 +162,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 		return nil, fmt.Errorf("read html response: %w", err)
 	}
 	if int64(len(body)) > cfg.MaxBodySize {
-		return nil, fmt.Errorf("html response exceeds %d bytes", cfg.MaxBodySize)
+		return nil, &BodyTooLargeError{MaxBodySize: cfg.MaxBodySize}
 	}
 
 	document, err := goquery.NewDocumentFromReader(bytes.NewReader(body))

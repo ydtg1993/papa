@@ -618,3 +618,104 @@ func TestChunkRetryBackoffIsInterruptible(t *testing.T) {
 		t.Fatal("取消 ctx 后仍在睡退避 —— 退避没接 ctx")
 	}
 }
+
+// 成功的下载不该往错误通道写任何东西 —— 尤其不能拿它传进度。
+//
+// 回归点：分片循环里每完成一个分片就 `SendError("分片 x/y 完成")`，而错误通道那端按
+// **Error 级别**落盘（`internal/app` 的 mdMsgListener）—— 于是"成功"被写成了 ERROR：
+// 实测下 11 张封面就是 11 行 `level=error`，而且业务侧关不掉（只要用 filedown 就有）。
+// 进度本来就有 `OnProgress` 这个通道，不该借错误通道。
+func TestSuccessfulDownloadKeepsErrorChannelQuiet(t *testing.T) {
+	tempOut := tempDir(t)
+	tempState := tempDir(t)
+	content := []byte("abcdefghijklmnopqrstuvwxyz1234567890") // 36 字节 / 10 = 4 个分片
+	server := mockServer(content, true)
+	defer server.Close()
+
+	var progress int
+	cfg := &Config{
+		OutputDir: tempOut, ResumeStateDir: tempState,
+		MaxConcurrent: 2, ChunkSize: 10, EnableResume: true, SaveBatchSize: 2,
+		QueueSize:  100, // 装得下所有分片的消息，免得"满即丢"把这条用例测糊
+		OnProgress: func(int64, int64) { progress++ },
+	}
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL, "subdir", "test.txt", nil)
+	if result.Error != nil {
+		t.Fatalf("download failed: %s", result.Error.Error())
+	}
+	if progress == 0 {
+		t.Fatal("进度回调没被调用 —— 那这条用例根本没覆盖到分片循环")
+	}
+
+	select {
+	case err := <-downloader.GetErrors():
+		t.Fatalf("成功的下载不该往错误通道写东西，实得：%v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// ContentType 要从响应里带出来：URL 的后缀在图片代理那种场景下并不可信
+// （源图 webp、按 Accept 协商后返回 jpeg，照后缀存就是"后缀与内容不符"）。
+// 两条路都要带：分片下载（取自 HEAD 探测）与单线程降级（取自那一次 GET）。
+func TestDownloadResultCarriesContentType(t *testing.T) {
+	content := []byte("abcdefghijklmnopqrstuvwxyz1234567890")
+
+	for _, tc := range []struct {
+		name         string
+		supportRange bool
+	}{
+		{"分片", true},
+		{"单线程", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "image/webp")
+				if r.Method == "HEAD" {
+					if tc.supportRange {
+						w.Header().Set("Accept-Ranges", "bytes")
+					}
+					w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				if tc.supportRange && r.Header.Get("Range") != "" {
+					var start, end int
+					if _, err := fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-%d", &start, &end); err != nil {
+						w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+						return
+					}
+					if end >= len(content) {
+						end = len(content) - 1
+					}
+					w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+					w.WriteHeader(http.StatusPartialContent)
+					_, _ = w.Write(content[start : end+1])
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(content)
+			}))
+			defer server.Close()
+
+			cfg := DefaultConfig()
+			cfg.OutputDir = tempDir(t)
+			cfg.ResumeStateDir = tempDir(t)
+			cfg.ChunkSize = 10
+			cfg.MaxConcurrent = 2
+			downloader := NewDownloader(cfg)
+
+			result := downloader.Download(context.Background(), server.URL, "subdir", "cover.img", nil)
+			if result.Error != nil {
+				t.Fatalf("download failed: %v", result.Error)
+			}
+			if result.ContentType != "image/webp" {
+				t.Fatalf("ContentType = %q, want image/webp（调用方要靠它核对后缀）", result.ContentType)
+			}
+			if result.Size != int64(len(content)) {
+				t.Fatalf("Size = %d, want %d", result.Size, len(content))
+			}
+		})
+	}
+}

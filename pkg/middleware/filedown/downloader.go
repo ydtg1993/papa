@@ -81,7 +81,14 @@ type DownloadOptions struct {
 type DownloadResult struct {
 	OutputFile string // 相对于 OutputDir 的路径
 	Size       int64
-	Error      error
+	// ContentType 响应声明的类型（分片下载取自 HEAD 探测，单线程下载取自那一次 GET）。
+	//
+	// 为什么要带出来：文件名得调用方自己从 URL 猜，而站点常用图片代理
+	//（`/image?url=<编码后的原图>`），它按 `Accept` 协商输出格式 —— 源图是 webp、
+	// 只声明 `image/*` 就返回 jpeg，照 URL 后缀存下来就是"后缀与内容不符"。
+	// 拿这个值（或下载后按文件头嗅探）复核一下，再决定落盘的后缀。
+	ContentType string
+	Error       error
 }
 
 // ResumeState 断点续传状态
@@ -186,14 +193,16 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 	la.execMu.Lock()
 	defer la.execMu.Unlock()
 
-	result := &DownloadResult{}
 	cfgGlobal := d.config
 
 	// HEAD 探测
-	totalSize, supportRange, contentDisposition := d.headFile(ctx, la.url, cfg)
-	if totalSize <= 0 || !supportRange {
-		return d.downloadSingle(ctx, la, cfg, contentDisposition)
+	p := d.headFile(ctx, la.url, cfg)
+	if p.TotalSize <= 0 || !p.SupportRange {
+		return d.downloadSingle(ctx, la, cfg, p)
 	}
+
+	result := &DownloadResult{ContentType: p.ContentType}
+	totalSize := p.TotalSize
 
 	relOutput := filepath.Join(la.outputDir, la.filename)
 	absOutput := filepath.Join(cfgGlobal.OutputDir, relOutput)
@@ -302,10 +311,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 					d.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
 				}
 			}
+			// 进度只走 OnProgress，别改回错误通道：那端（App.mdMsgListener）按 Error 级别落盘，
+			// 拿它传进度等于把"成功"写成 ERROR —— 下 11 张封面就是 11 行 level=error，
+			// 把真错误稀释掉，而且业务侧关不掉（只要用 filedown 就有）。
 			if cfgGlobal.OnProgress != nil {
 				cfgGlobal.OnProgress(downloaded.Load(), totalSize)
 			}
-			d.trackQueue.SendError(fmt.Errorf("分片 %d/%d 完成", newCompleted, totalChunks))
 		}(start)
 	}
 	wg.Wait()
@@ -436,7 +447,7 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 }
 
 // downloadSingle 降级单线程下载
-func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *requestConfig, contentDisposition string) *DownloadResult {
+func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *requestConfig, p probe) *DownloadResult {
 	cfgGlobal := d.config
 	relOutput := filepath.Join(la.outputDir, la.filename)
 	absOutput := filepath.Join(cfgGlobal.OutputDir, relOutput)
@@ -494,17 +505,32 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 	if total > 0 && written != total {
 		return &DownloadResult{Error: fmt.Errorf("truncated download: got %d bytes, want %d", written, total)}
 	}
+	// 这条路上真正拿到字节的是这次 GET，所以优先用它声明的类型；
+	// GET 没给（少见）才回落到 HEAD 那份 —— 同一个 URL、同一套请求头，问出来的东西一样。
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = p.ContentType
+	}
 	return &DownloadResult{
-		OutputFile: relOutput,
-		Size:       written,
+		OutputFile:  relOutput,
+		Size:        written,
+		ContentType: contentType,
 	}
 }
 
+// probe 是 HEAD 探测的结果：下载前先问一次大小、是否支持 Range、以及响应声明的类型。
+type probe struct {
+	TotalSize          int64
+	SupportRange       bool
+	ContentDisposition string
+	ContentType        string
+}
+
 // headFile 发送 HEAD 请求
-func (d *Downloader) headFile(ctx context.Context, fileURL string, cfg *requestConfig) (int64, bool, string) {
+func (d *Downloader) headFile(ctx context.Context, fileURL string, cfg *requestConfig) probe {
 	req, err := http.NewRequestWithContext(ctx, "HEAD", fileURL, nil)
 	if err != nil {
-		return 0, false, ""
+		return probe{}
 	}
 	d.applyHeadersToReq(req, cfg)
 	resp, err := d.client.Do(req)
@@ -512,13 +538,15 @@ func (d *Downloader) headFile(ctx context.Context, fileURL string, cfg *requestC
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
-		return 0, false, ""
+		return probe{}
 	}
 	defer resp.Body.Close()
-	totalSize := resp.ContentLength
-	supportRange := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
-	contentDisposition := resp.Header.Get("Content-Disposition")
-	return totalSize, supportRange, contentDisposition
+	return probe{
+		TotalSize:          resp.ContentLength,
+		SupportRange:       strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes"),
+		ContentDisposition: resp.Header.Get("Content-Disposition"),
+		ContentType:        resp.Header.Get("Content-Type"),
+	}
 }
 
 // applyHeadersToReq 应用请求头

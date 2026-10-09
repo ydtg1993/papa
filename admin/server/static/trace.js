@@ -117,14 +117,18 @@ var TRACE_ACTION_PATH = '/task/action/trace';
 
     function renderStep(s) {
         var failed = s.status === 'failed';
+        var warn = s.status === 'warn';
         var meta = fmtDuration(s.duration);
-        if (failed && s.kind) meta += (meta ? ' · ' : '') + s.kind;
-        var html = '<li class="trace-step' + (failed ? ' trace-step-failed' : '') + '">'
+        // 失败与警告都带上错误分类（kind），成功步骤没有
+        if ((failed || warn) && s.kind) meta += (meta ? ' · ' : '') + s.kind;
+        var cls = failed ? ' trace-step-failed' : (warn ? ' trace-step-warn' : '');
+        var html = '<li class="trace-step' + cls + '">'
             + '<div class="trace-step-head">'
             + '<span class="trace-step-name">' + esc(s.step) + '</span>'
             + (meta ? '<span class="trace-step-meta">' + esc(meta) + '</span>' : '')
             + '</div>';
-        if (failed && s.message) {
+        // 警告的 message 同样要显示：它就是"这一步降级在哪"的答案（任务本身是成功的）
+        if ((failed || warn) && s.message) {
             html += '<pre class="trace-msg">' + esc(s.message) + '</pre>';
         }
         if (s.data) {

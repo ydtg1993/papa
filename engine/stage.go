@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -96,9 +97,33 @@ func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
 	}
 }
 
+// stageNames 按名字排序返回已注册的阶段名。
+//
+// 建池与跑 submitFunc 都按这个顺序（而不是 map 遍历顺序）：启动期的副作用是**看得见**的
+// —— 起始任务入库的顺序决定它们的 ID，统计器注册的顺序决定后台阶段的排列。map 顺序随机，
+// 每次重启都不一样，排查"为什么这次启动多了两条任务"时就成了噪声源。
+func (e *Engine) stageNames() []string {
+	names := make([]string, 0, len(e.stages))
+	for name := range e.stages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
-	for stage, stageInfo := range e.stages {
+	names := e.stageNames()
+
+	// 第零趟：依赖接线校验。声明了要用下载器却没接线，就在**启动这一刻**炸掉 ——
+	// 不然那句话要等第一条任务跑到那一步才出现，失败的是任务、不是启动（见 deps.go）。
+	for _, stage := range names {
+		e.checkStageDeps(stage, e.stages[stage].fetcher)
+	}
+
+	// 第一趟：把**所有**阶段的工作池建起来并启动。
+	for _, stage := range names {
+		stageInfo := e.stages[stage]
 		cfg := stageInfo.config
 		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
 		// 同一把闸门给所有阶段的池子 —— 熔断是「全任务暂停」，不是按阶段各停各的。
@@ -121,6 +146,15 @@ func (e *Engine) ApplyRegisterStage() {
 			var lastErr error
 			for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
 				if attempt > 0 {
+					// 退避放在**下一次尝试之前**（与 m3u8 / filedown 的退避同一写法）。
+					// 它不能写在上一轮的末尾：那样最后一次尝试失败之后还要再睡满一个周期才落 failed，
+					// 而那时已经不会再试了 —— worker 只是抱着一个并发位白等
+					//（3 次尝试、30s 退避就是 120s；实测一个注定失败的 detail 任务从认领到终态 210s）。
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
+					}
 					task.IncRetry(e.db)
 				}
 				err := e.runAttempt(ctx, stageInfo.fetcher, task, attempt)
@@ -134,7 +168,7 @@ func (e *Engine) ApplyRegisterStage() {
 					// 再让 worker 抱着这个并发位睡满一个 delay（模板里 catalog 是 5m），
 					// 只会让 Engine.Stop（默认只等 stop_timeout=5s）报"未排空"、
 					// 连带跳过 app.Run 里的关库收尾。停机时直接跳过这段休息。
-					// 与下面重试退避那段同一个写法（Engine.Stop 的注释承诺的就是这个）。
+					// 与上面重试退避那段同一个写法（Engine.Stop 的注释承诺的就是这个）。
 					select {
 					case <-ctx.Done():
 					case <-time.After(cfg.Delay.Random()):
@@ -151,12 +185,6 @@ func (e *Engine) ApplyRegisterStage() {
 					return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
 				}
 				lastErr = err
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(cfg.Backoff * (1 << uint(attempt))):
-					continue
-				}
 			}
 			// 所有重试失败：记录错误并更新状态为 failed
 			task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
@@ -166,10 +194,6 @@ func (e *Engine) ApplyRegisterStage() {
 			}
 			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
 		})
-		// 检查提交任务
-		if stageInfo.submitFunc != nil {
-			stageInfo.submitFunc(e)
-		}
 		// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
 		if e.cfg.Server.Enabled {
 			stats := track.NewStatsQueue(pool)
@@ -178,6 +202,19 @@ func (e *Engine) ApplyRegisterStage() {
 			e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
 		}
 	}
+
+	// 第二趟：池子都建好、也都启动了，这时才跑各阶段的 submitFunc。
+	//
+	// **必须两趟**：submitFunc 最自然的写法就是"投一批起始任务"，而它可以投给**任意**阶段。
+	// 一趟遍历（边建池边跑回调）时，后面的池子还没建，`submitTo` 就是 nil 解引用 panic
+	// （Go 的 map 遍历顺序随机，所以表现为"有时崩、有时不崩"）。触发前提是"回调投给别的阶段"，
+	// 脚手架与文档里的单阶段投自己碰不到 —— 但代价是启动期崩溃且报错为空，两趟的成本是零。
+	for _, stage := range names {
+		if fn := e.stages[stage].submitFunc; fn != nil {
+			fn(e)
+		}
+	}
+
 	// 启动高水位溢出任务的回灌协程
 	e.startDrain()
 	// 启动错误队列后台自动轮询（未配置 interval 则不启动，仅手动触发）

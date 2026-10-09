@@ -43,15 +43,31 @@ func TestNewManagerFetchesAndRotates(t *testing.T) {
 		}
 	}
 
-	// 成功也会往错误通道发一条"可用 N 条"的提示 —— 钉住它，免得日后被当成噪声删掉，
-	// 那会让"代理表拉到了但内容为空"这种问题失去唯一的现场。
+	// 成功拉到**非空**代理表不写错误通道：每轮刷新（默认 8 分钟）写一条 "N available"
+	// 是把正常当异常 —— 错误通道那端按 Error 级别落盘，正常运行的日志里会一直有 ERROR。
 	select {
 	case err := <-m.GetErrors():
-		if !strings.Contains(err.Error(), "2 available") {
-			t.Fatalf("成功路径的提示 = %q", err.Error())
+		t.Fatalf("成功拉取非空代理表不该写错误通道，实得：%v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// 「拉到了但一条可用都没有」要留痕：这是"代理配了却没生效"唯一的现场 ——
+// 出口会全部变成直连，目标站可能因此封 IP，而这件事在别处看不出来（Next 只是返回空串）。
+func TestRefreshProxiesEmptyListWarns(t *testing.T) {
+	srv := proxyServer(t, nil)
+	m := NewManager(srv.URL, time.Hour)
+
+	if got := m.Next(); got != "" {
+		t.Fatalf("空代理表时 Next = %q, want 空串", got)
+	}
+	select {
+	case err := <-m.GetErrors():
+		if !strings.Contains(err.Error(), "空列表") {
+			t.Fatalf("空列表的提示 = %q", err.Error())
 		}
 	case <-time.After(time.Second):
-		t.Fatal("拉取成功后应在消息通道留一条提示")
+		t.Fatal("拉到空代理表应留痕")
 	}
 }
 

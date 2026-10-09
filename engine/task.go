@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/ydtg1993/papa/v2/models"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -54,9 +56,59 @@ func (t *Task) toModel() models.CrawlerTask {
 		URL:            t.URL,
 		Stage:          t.Stage,
 		IdempotencyKey: t.IdempotencyKey,
+		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
 		Urgent:         t.Urgent,
 		Status:         models.TaskStatusPending,
+	}
+}
+
+// metaToJSON 把业务键序列化成 meta 列的值；空 Meta 落 NULL（不是 `null` 这个字面量）。
+//
+// map[string]string 编不出来失败的情形（没有 chan/func/NaN 这类值），故忽略错误。
+// 走 marshalNoHTMLEscape 与 content / trace 的 JSON 列保持一致（业务键里也可能带 & 或 <>）。
+func metaToJSON(m map[string]string) datatypes.JSON {
+	if len(m) == 0 {
+		return nil
+	}
+	b, _ := marshalNoHTMLEscape(m)
+	return datatypes.JSON(b)
+}
+
+// metaFromJSON 解出 meta 列；空列、`null`、空对象都返回 nil。
+//
+// 解不出来只可能是人工改过库（这一列只有 toModel 一处写）—— 不静默：按无 Meta 继续，
+// 但留一条 Warn。否则 handler 报的是"缺少 series_id"这类业务语义的错，排查方向全在业务侧。
+func (e *Engine) metaFromJSON(raw datatypes.JSON) map[string]string {
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		e.loggerSet.Engine.Warnf("task meta 列解不出来（按无 Meta 继续）：%s（原值 %s）", err.Error(), string(raw))
+		return nil
+	}
+	return m
+}
+
+// taskFromRecord 把一行任务还原成内存里的 Task —— **「行 → Task」唯一的入口**。
+//
+// 恢复队列、轮询队列、错误队列、后台「重投」、后台「加急」五条路都走它。收成一个函数的原因：
+// 这五处原来各写一遍字段字面量，于是每加一个属于「这条任务」的字段就漏一遍 ——
+// `Meta` 就是这么丢的（库里有 URL、有幂等键，唯独业务键没落库也没读回来，
+// 进程重启后恢复出来的任务全成了"没有业务身份"的空壳）。
+// 以后再往 Task 上挂这种字段，加在这里一处即可。
+//
+// 与它语义不同的那几项由调用方拿到之后再改（见各调用点）：`Repeatable`/`Urgent` 按需要覆盖，
+// 行里 retry 刚被归零的那两条路要把内存副本跟上。这里不塞分支 —— 重建的字段是确定的。
+func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
+	return &Task{
+		ID:             int(t.ID),
+		PID:            int(t.PID),
+		URL:            t.URL,
+		Stage:          t.Stage,
+		Retry:          t.Retry,
+		Repeatable:     t.Repeatable == models.RepeatableYes,
+		Urgent:         t.Urgent,
+		IdempotencyKey: t.IdempotencyKey,
+		Meta:           e.metaFromJSON(t.Meta),
 	}
 }
 

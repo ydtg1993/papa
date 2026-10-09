@@ -35,7 +35,16 @@ Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一
 | `title` | 页面标题（string） |
 | `content` | 结构化内容（JSON，本质 `[]byte`），存什么结构由**每个 stage 自己决定** |
 
+> `content` 里存 HTML 片段也没问题：写库时**不做 HTML 转义**（`<` `>` `&` 原样落库），
+> 所以在后台表格里、SQL 客户端里都能直接看。老数据里可能有 `<` 这种转义写法
+> （升级前的行为），读回来是同一个字符串，不影响。
+
 其余列（`status` / `retry` / `error` / `repeat` 等）是框架运行态，由引擎自动维护，**业务不要直接读写**。
+
+> 其中 `meta` 列值得单说一句：它由 `Task.Meta`（业务键）落库，业务同样是给 `papa.Task` 赋值、不直接写列，
+> 但它**不是**临时状态 —— 恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份，
+> 所以在后台或 SQL 客户端里能直接看出「这条任务是哪条业务行的」。详见
+> [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2。
 
 - 内置唯一约束 `(stage, url)`：同一个 URL 在一个阶段只会有一条记录。
 - **`IdempotencyKey` 是「软约束」**：任务可以自定义 `IdempotencyKey`（`papa.Task{ IdempotencyKey: "..." }`）作为去重键。提交时引擎会**按它查库**（`findTaskRecord` 优先用 `idempotency_key`、其次 `stage + url`），命中就复用已有记录、不重复入库；内存去重表只是前面的一道快取，被淘汰了也不影响正确性。

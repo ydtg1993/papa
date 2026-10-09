@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"github.com/ydtg1993/papa/v2/config"
@@ -145,9 +146,29 @@ func (e *Engine) GetConfig() *config.Config {
 	return e.cfg
 }
 
+// marshalNoHTMLEscape 序列化要写进 JSON 列的值，**关掉 Go 默认的 HTML 转义**。
+//
+// 默认的 `json.Marshal` 把 `<` `>` `&` 写成 `<` `>` `&`，而业务存进这些列的
+// 常常就是一段 HTML（页面片段、快照、富文本）—— 落在库里、后台表格里、SQL 客户端里
+// 就是一堆 `<`，"存进去、肉眼扫一眼"这件事直接被劝退。
+//
+// 转义与否只是 JSON 的两种写法，`json.Unmarshal` 还原出的是同一个字符串 ——
+// 所以改这个既不动老数据、也不影响读回（老行里的 `<` 照样读得出来）。
+//
+// 用 Encoder 而不是 Marshal：只有 Encoder 有 SetEscapeHTML。它会**多写一个换行**，去掉。
+func marshalNoHTMLEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 // SaveResult 写任务结果：title 写入 title 列，content 序列化为 JSON 写入 content 列。
 func (e *Engine) SaveResult(taskID int, title string, content any) error {
-	b, err := json.Marshal(content)
+	b, err := marshalNoHTMLEscape(content)
 	if err != nil {
 		return err
 	}
@@ -161,7 +182,7 @@ func (e *Engine) SaveResult(taskID int, title string, content any) error {
 
 // SaveContent 仅更新 content 列（保留 title），用于回写已有任务的结果。
 func (e *Engine) SaveContent(taskID int, content any) error {
-	b, err := json.Marshal(content)
+	b, err := marshalNoHTMLEscape(content)
 	if err != nil {
 		return err
 	}

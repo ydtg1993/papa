@@ -87,7 +87,7 @@ type TraceStep struct {
 	Attempt   int           `json:"attempt"`
 	Seq       int           `json:"seq"`
 	Step      string        `json:"step"`
-	Status    string        `json:"status"` // ok / failed
+	Status    string        `json:"status"` // ok / warn / failed（warn = 非致命，见 engine.Trace.Warn）
 	Kind      string        `json:"kind"`
 	Message   string        `json:"message"`
 	Data      string        `json:"data"` // 原始 JSON 文本，前端自行格式化

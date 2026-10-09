@@ -3,6 +3,7 @@ package htmlfetch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -189,5 +190,66 @@ func TestClientSetConfigHotReload(t *testing.T) {
 	}
 	if page.HTML != "agent-2|v2" {
 		t.Fatalf("after SetConfig body = %q, want agent-2|v2", page.HTML)
+	}
+}
+
+// 非 2xx 要有类型，业务才不用去匹配错误文本（文本匹配会把 4040000 这种数字读成 404）。
+// 文案**保持不变** —— 这次只是多给一条路，不逼着已经写了匹配的代码立刻改。
+func TestFetchStatusErrorIsTyped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{Timeout: time.Second})
+	_, err := client.Fetch(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("404 应当报错")
+	}
+
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("应能取出 *StatusError，实得 %T：%v", err, err)
+	}
+	if se.Code != http.StatusNotFound {
+		t.Fatalf("Code = %d, want 404", se.Code)
+	}
+	if code, ok := StatusCode(err); !ok || code != http.StatusNotFound {
+		t.Fatalf("StatusCode = (%d, %t)，want (404, true)", code, ok)
+	}
+	if err.Error() != "fetch html: unexpected status 404" {
+		t.Fatalf("文案变了（老代码可能依赖它）：%q", err.Error())
+	}
+}
+
+// 响应体超限是**另一个**类型，不是状态码错误 —— 这条用例钉的正是"文本匹配会误伤"那个场景：
+// max_body_size 配成 404 时，报错文本里就带着 "404"，按 strings.Contains 判 not_found 会误判。
+func TestBodyTooLargeIsNotAStatusError(t *testing.T) {
+	body := strings.Repeat("x", 405)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{MaxBodySize: 404})
+	_, err := client.Fetch(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("超出 max_body_size 应当报错")
+	}
+
+	if code, ok := StatusCode(err); ok {
+		t.Fatalf("响应体超限不是状态码错误，却取出了 %d", code)
+	}
+	var tooLarge *BodyTooLargeError
+	if !errors.As(err, &tooLarge) || tooLarge.MaxBodySize != 404 {
+		t.Fatalf("应能取出 *BodyTooLargeError/Max=404，实得 %T：%v", err, err)
+	}
+	// 这条用例的前提：报错文本里确实带着 "404"（所以文本匹配才会误伤）
+	if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("前提不成立，文本里应含 404：%q", err.Error())
+	}
+	// 文案同样保持原样
+	if err.Error() != "html response exceeds 404 bytes" {
+		t.Fatalf("文案变了：%q", err.Error())
 	}
 }

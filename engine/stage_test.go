@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"github.com/ydtg1993/papa/v2/internal/breaker"
 	"github.com/ydtg1993/papa/v2/internal/workerpool"
 	"github.com/ydtg1993/papa/v2/pkg/loggers"
+	"github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v2/pkg/middleware/m3u8"
 )
 
 // recordingNotifier 记下收到的告警事件，并可注入发送失败。
@@ -171,8 +174,9 @@ type recordingFetcher struct {
 	stage string
 	err   error
 
-	mu  sync.Mutex
-	got []string
+	mu    sync.Mutex
+	got   []string
+	times []time.Time // 每次调用的时刻，与 got 一一对应（验证退避节奏用）
 }
 
 func (s *recordingFetcher) GetStage() string { return s.stage }
@@ -180,6 +184,7 @@ func (s *recordingFetcher) GetStage() string { return s.stage }
 func (s *recordingFetcher) FetchHandler(_ context.Context, task *Task, _ *Engine) error {
 	s.mu.Lock()
 	s.got = append(s.got, task.URL)
+	s.times = append(s.times, time.Now())
 	s.mu.Unlock()
 	return s.err
 }
@@ -190,9 +195,23 @@ func (s *recordingFetcher) calls() []string {
 	return append([]string(nil), s.got...)
 }
 
+// callsAt 返回各次调用的时刻（与 calls 一一对应）。
+func (s *recordingFetcher) callsAt() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.times...)
+}
+
 func (s *recordingFetcher) waitCalls(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	s.waitCallsWithin(t, n, 3*time.Second)
+}
+
+// waitCallsWithin 同上，但等待上限自己定 —— 用例把 stage 的 backoff 配得比 3s 还大时，
+// 默认那个上限就成了"正好卡在截止线上"的偶发失败（实测：backoff 3s 的用例每几轮红一次）。
+func (s *recordingFetcher) waitCallsWithin(t *testing.T, n int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for len(s.calls()) < n {
 		if time.Now().After(deadline) {
 			t.Fatalf("等不到第 %d 次调用，实得 %v", n, s.calls())
@@ -460,4 +479,200 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	if !drained {
 		t.Fatalf("应当排空：%+v", stats)
 	}
+}
+
+// 一个阶段的 submitFunc 向**别的**阶段投任务是允许的 —— 池子必须全部建好、再跑回调。
+//
+// 回归点：原来是一趟遍历（边建池边跑回调），回调投给"还没建池"的那个阶段就是
+// `info.workerPool.Submit` 的 nil 解引用 panic，而且崩不崩取决于 map 的遍历顺序。
+// 这里两个阶段的回调**互相**投递，无论谁先被遍历到都躲不过 —— 顺序随机也能稳定复现。
+// （脚手架和文档里的单个阶段投自己，所以模板路径碰不到它；跨阶段派发才是触发前提。）
+func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true // 起始任务都是全新的，走 INSERT
+
+	cfg := &config.Config{}
+	cfg.Crawler.Stages = map[string]config.StageConfig{
+		"a": {WorkerCount: 1, QueueSize: 8},
+		"b": {WorkerCount: 1, QueueSize: 8},
+	}
+	cfg.Crawler.DrainInterval = time.Hour
+	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	t.Cleanup(e.cancel)
+
+	stageCfg := StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
+	fetcherA := &recordingFetcher{stage: "a"}
+	fetcherB := &recordingFetcher{stage: "b"}
+
+	var submitErrs []error
+	e.AddStage("a", stageCfg, fetcherA, func(eng *Engine) {
+		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "b", URL: "https://example.com/init-b"}))
+	})
+	e.AddStage("b", stageCfg, fetcherB, func(eng *Engine) {
+		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "a", URL: "https://example.com/init-a"}))
+	})
+
+	e.ApplyRegisterStage() // 原来这里会 panic
+
+	for _, err := range submitErrs {
+		if err != nil {
+			t.Fatalf("跨阶段投递不该失败：%v", err)
+		}
+	}
+	// 两条起始任务都要真的跑到各自的 handler 上（证明投进了**对**的池子）
+	fetcherB.waitCalls(t, 1)
+	if got := fetcherB.calls()[0]; got != "https://example.com/init-b" {
+		t.Fatalf("b 阶段收到 %q，want a 的回调投的那条", got)
+	}
+	fetcherA.waitCalls(t, 1)
+	if got := fetcherA.calls()[0]; got != "https://example.com/init-a" {
+		t.Fatalf("a 阶段收到 %q，want b 的回调投的那条", got)
+	}
+}
+
+// 池子还没建就提交（AddStage 之后、ApplyRegisterStage 之前）要报错，不是 nil 解引用 panic。
+// 判据与 spill.go / taskadmin.go 一致：这一类都算「阶段不可用」，后台能翻成 409。
+func TestSubmitBeforeApplyRegisterStageFails(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true // 全新任务：否则会先命中 SubmitTask 的去重（"库里已有"直接 return nil），走不到池子那一步
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+	// 把池子摘掉，模拟"注册了但还没走到 ApplyRegisterStage"
+	e.stages["stub"].workerPool = nil
+
+	err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"})
+	if err == nil {
+		t.Fatal("池子没建时应报错，而不是 panic")
+	}
+	if !errors.Is(err, ErrStageNotRegistered) {
+		t.Fatalf("错误应当是 ErrStageNotRegistered，实得：%v", err)
+	}
+}
+
+// needsDownloaders 声明依赖下载器（可选接口），用来验证启动期的接线校验。
+type needsDownloaders struct {
+	recordingFetcher
+	filedown bool
+	m3u8     bool
+}
+
+func (s *needsDownloaders) NeedsFiledown() bool { return s.filedown }
+func (s *needsDownloaders) NeedsM3U8() bool     { return s.m3u8 }
+
+// assertPanicsContains 断言 f() panic 且信息里含 want（启动期的校验都是 panic：与配置校验层同取向）。
+func assertPanicsContains(t *testing.T, want string, f func()) {
+	t.Helper()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("应当 panic（想看到 %q）", want)
+		}
+		if !strings.Contains(fmt.Sprint(r), want) {
+			t.Fatalf("panic 信息里缺 %q，实得：%v", want, r)
+		}
+	}()
+	f()
+}
+
+// 声明了依赖下载器却没接线：**启动时**就炸掉，而不是等第一条任务跑到那一步 ——
+// 那时失败的是任务、不是启动，报出来的是一句离得很远的 "file downloader is configured"。
+// 报错里要写清怎么改（几乎总是"忘了在 ApplyRegisterStage 之前调 SetXxx"）。
+func TestApplyRegisterStageRejectsUnwiredDownloader(t *testing.T) {
+	cases := []struct {
+		name     string
+		fetcher  Fetcher
+		wire     func(*Engine)
+		wantWord string
+	}{
+		{
+			name:     "声明了文件下载器但没接线",
+			fetcher:  &needsDownloaders{recordingFetcher: recordingFetcher{stage: "stub"}, filedown: true},
+			wantWord: "SetFiledown",
+		},
+		{
+			name:     "声明了 m3u8 但没接线",
+			fetcher:  &needsDownloaders{recordingFetcher: recordingFetcher{stage: "stub"}, m3u8: true},
+			wantWord: "SetM3U8",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assertPanicsContains(t, c.wantWord, func() {
+				e := stageDepEngine(t)
+				e.AddStage("stub", stageDepCfg, c.fetcher, nil)
+				e.ApplyRegisterStage()
+			})
+		})
+	}
+}
+
+// 接了线、或压根没声明，都不该炸 —— 校验是给"声明了却没接线"这一种情况用的。
+func TestApplyRegisterStageAcceptsWiredOrUndeclared(t *testing.T) {
+	t.Run("接了线", func(t *testing.T) {
+		e := stageDepEngine(t)
+		e.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))
+		e.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))
+		e.AddStage("stub", stageDepCfg, &needsDownloaders{recordingFetcher: recordingFetcher{stage: "stub"}, filedown: true, m3u8: true}, nil)
+		e.ApplyRegisterStage()
+	})
+	t.Run("没声明", func(t *testing.T) {
+		e := stageDepEngine(t)
+		e.AddStage("stub", stageDepCfg, &recordingFetcher{stage: "stub"}, nil)
+		e.ApplyRegisterStage()
+	})
+}
+
+var stageDepCfg = StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
+
+// stageDepEngine 造一个只声明 stub 阶段的引擎（依赖校验用例的公共脚手架）。
+func stageDepEngine(t *testing.T) *Engine {
+	t.Helper()
+	f := newFakeTaskDB()
+	cfg := &config.Config{}
+	cfg.Crawler.Stages = map[string]config.StageConfig{"stub": {WorkerCount: 1, QueueSize: 8}}
+	cfg.Crawler.DrainInterval = time.Hour
+	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	t.Cleanup(e.cancel)
+	return e
+}
+
+// 重试的退避只发生在**两次尝试之间**：最后一次尝试失败之后要立刻落 failed，不能再等一个周期。
+//
+// 回归点：退避原来写在每一轮的**末尾**，于是最后一次失败之后还要睡满 backoff<<(N-1) ——
+// 3 次尝试、30s 退避就是 120s，期间 worker 抱着一个并发位空等。实测（huangguo 真实环境）：
+// 一个注定失败的 detail 任务从认领到落 failed 正好 210s = 30+60+120；episode 阶段只配
+// 1 个 worker，等于把整个阶段堵 3.5 分钟。m3u8 / filedown 的退避写在每轮**开头**，本就没有这个问题。
+func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true
+	e := newTestEngine(t, f)
+
+	const backoff = 3 * time.Second
+	fetcher := &recordingFetcher{stage: "stub", err: errors.New("boom")} // 每次尝试都失败
+	e.AddStage("stub", StageConfig{
+		MaxAttempts: 2, WorkerCount: 1, QueueSize: 8, Backoff: backoff, Delay: config.DurationRange{},
+	}, fetcher, nil)
+	e.ApplyRegisterStage()
+
+	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+		t.Fatalf("SubmitTask = %v", err)
+	}
+	// 上限给足：这个用例的 backoff 就是 3s，用默认的 3s 上限会正好卡在截止线上
+	fetcher.waitCallsWithin(t, 2, 15*time.Second)
+
+	// ① 两次尝试之间仍然要退避（别把退避本身一起改没了）
+	times := fetcher.callsAt()
+	if gap := times[1].Sub(times[0]); gap < backoff {
+		t.Fatalf("两次尝试之间应等满一个退避（%v），实得 %v", backoff, gap)
+	}
+
+	// ② 最后一次失败之后不该再等：终态马上落库（老行为要再等 backoff<<1 = 6s）
+	deadline := time.Now().Add(backoff / 2)
+	for time.Now().Before(deadline) {
+		if f.writtenArgs_hasError("boom") { // 落 failed 时会把原因写进 error 列
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("最后一次尝试失败后 %v 内没有落 failed —— 说明还在白等退避", backoff/2)
 }

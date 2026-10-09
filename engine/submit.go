@@ -103,8 +103,12 @@ func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) error {
 // submitToPool 将任务提交到对应阶段工作池，并更新数据库状态。
 func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	info := e.stages[task.Stage]
-	if info == nil {
-		return fmt.Errorf("invalid stage ,task: %+v", task)
+	// 两种"阶段不可用"合并成一类报出去：配置里声明了、代码没 AddStage（info 为 nil），
+	// 或注册了但还没走到 ApplyRegisterStage（池子没建）。判据与 spill.go / taskadmin.go 一致，
+	// 后台能据此翻成 409。**不能只判 info**：池子为 nil 时下面 `submitTo` 会 nil 解引用 panic，
+	// 而崩不崩取决于启动期 map 的遍历顺序 —— 报个清楚的错比随机崩溃强。
+	if info == nil || info.workerPool == nil {
+		return fmt.Errorf("%w: %s", ErrStageNotRegistered, task.Stage)
 	}
 	// 先落库再入队：「已入队 ⇒ 行里是 pending」必须是不变量。
 	// worker 取到任务时会以 status=待处理 为条件认领（claimTask），
@@ -112,6 +116,13 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	// 行里还是"成功"）会被误判成"已被运营改动"而跳过执行。
 	if task.Repeatable && task.ID != 0 {
 		record.Repeat += 1
+	}
+	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
+	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，
+	// 下一次重投就把任务带回旧的业务行上（SubmitTask/SubmitTasks 的 Meta 只是内存里的，
+	// 谁也看不出来它和库里的不一致）。
+	if len(task.Meta) > 0 {
+		record.Meta = metaToJSON(task.Meta)
 	}
 	record.Status = models.TaskStatusPending
 	e.db.Save(record)

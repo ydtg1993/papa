@@ -765,3 +765,56 @@ func TestRetryBackoffIsInterruptible(t *testing.T) {
 		t.Fatal("取消 ctx 后仍在睡退避 —— 退避没接 ctx")
 	}
 }
+
+// 与 filedown 同一条约定：成功的流程不写错误通道。
+// 这条走多码率主播放列表，一次覆盖两处 —— "选择最高码率流"（一次下载一行 ERROR）
+// 与"片段 x/y 完成"（每片段一行）。
+func TestSuccessfulDownloadKeepsErrorChannelQuiet(t *testing.T) {
+	mux := http.NewServeMux()
+	master := `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1280000
+low.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5120000
+high.m3u8
+`
+	media := `#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXTINF:1.0,
+segment1.ts
+#EXTINF:1.0,
+segment2.ts
+`
+	mux.HandleFunc("/master.m3u8", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(master)) })
+	for _, name := range []string{"/low.m3u8", "/high.m3u8"} {
+		mux.HandleFunc(name, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(media)) })
+	}
+	for _, name := range []string{"/segment1.ts", "/segment2.ts"} {
+		mux.HandleFunc(name, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("SEGMENT DATA")) })
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.AutoMerge = false // 避免调用 ffmpeg
+	cfg.MaxConcurrent = 1
+	cfg.EnableResume = true
+	cfg.SaveBatchSize = 1
+	cfg.QueueSize = 100
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL+"/master.m3u8", "subdir", "out.ts", nil)
+	if result.Error != nil {
+		t.Fatalf("download failed: %s", result.Error.Error())
+	}
+	if result.Segments != 2 {
+		t.Fatalf("Segments = %d, want 2", result.Segments)
+	}
+
+	select {
+	case err := <-downloader.GetErrors():
+		t.Fatalf("成功的下载不该往错误通道写东西，实得：%v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+}

@@ -24,6 +24,8 @@
 > 判据表在 `config/validate.go` 的 `rules`，一条一行；`TestRuleKeysExistInStruct` 钉住每个键都真实存在于结构体（防止表里写一个永远不会触发的假键）。**这一层只管 `config.yaml`** —— 各库自己收到的 Go 结构体零值（`filedown.ChunkSize`、`htmlfetch.MaxBodySize` 那类）不在这里，判据归各自的构造函数。
 >
 > 每条规则都区分三态：**没写**（用默认值，合法）／写了且合法／写了但越界。唯一的例外是 `log.dir` —— 它没有「没写也合法」那一态（空串会去写文件系统根），见下。
+>
+> 唯一的"不校验"的键是 **`business`**（见下）：框架不认它的语义，写什么键都不管 —— 那是留给业务自己的配置位，不是给框架配置的。
 
 ### app —— 环境
 
@@ -149,6 +151,37 @@
 | `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
 | `interval` | duration | 轮询间隔；`0`=不自动轮询，仅手动触发 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+
+### business —— 业务自己的配置段（框架不解析）
+
+爬虫之外的配置（封面目录、归档模式、站点特有开关……）写在 `business` 下面，框架**不解析、不校验**这一段的键名，原样透出给 App：
+
+```yaml
+business:
+  covers:
+    dir: ./covers
+    size: 300
+    interval: "5m"
+  archive: true
+```
+
+```go
+type CoversConfig struct {
+    Dir      string        `mapstructure:"dir"`
+    Size     int           `mapstructure:"size"`
+    Interval time.Duration `mapstructure:"interval"`
+}
+
+var covers CoversConfig
+// 解码走与框架配置同一套 hook：`"5m"` → time.Duration、`"a,b"` → []string
+if err := app.Config.BusinessSection("covers", &covers); err != nil {
+    panic(err) // 段没配、键名拼错、类型不对都在这里报出来
+}
+```
+
+- **为什么要有这一段**：「未知键一律拒绝启动」那条规则是对的（拼错的键名不该静默失效），但它的副作用是业务没法在同一个 `config.yaml` 里放自己的配置 —— `covers.dir` 这类写进去就是启动 panic，只能另开一个文件自己解析、塞环境变量或写死成常量。
+- **`BusinessSection` 仍然拒收业务段内部的未知键**（`ErrorUnused`）：框架不认业务键的语义，但"拼错了当没写"这件事不该发生在业务段里 —— `covers.dr` 会当场报错而不是留个零值。要完全自由的结构（键名由业务动态决定）就直接读 `app.Config.Business` 那个 map。
+- **只作用于 `config.yaml`**：热更覆盖层（`runtime.yaml`）里写 `business` 不生效，改它要重启。这一段的键也**不会**出现在后台「配置」页上。
 
 ## 2. 建表 / 迁移
 

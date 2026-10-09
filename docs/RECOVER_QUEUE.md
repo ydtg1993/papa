@@ -43,7 +43,10 @@ recover_queue:
 
 - `pending` 也要捞：它们可能是上次高水位溢出到 DB 的（溢出列表在内存里，随进程一起没了），
   也可能入库了但没来得及入队 —— 不捞就永远躺在「待处理」。
-- 重投走正常提交路径（`SubmitTask`），`Repeatable` / `Urgent` 照抄行上的值，不会在恢复时丢掉这两个属性。
+- 重投走正常提交路径（`SubmitTask`），`Repeatable` / `Urgent` / `Meta` 照抄行上的值，不会在恢复时丢掉这几个属性。
+  其中 `Meta`（业务键，见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2）是要害：
+  它是 handler 认业务行的依据，恢复出来的任务要是没带上，任务会以「结构错误」永久失败 ——
+  而这类失败通常不可重试，人工点「重投」也走同一条路。
 - **重复投递是安全的**：worker 认领走的是条件更新（`pending → processing`），两份里只有一份能认领成功，
   另一份拿到 0 行直接跳过。
 - 重新投递失败（阶段没注册、提交出错）时，这一行会被标成 `failed` 并把原因追加进 `error` 列

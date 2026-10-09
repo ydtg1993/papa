@@ -100,15 +100,8 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 		return e.whyRetryRejected(id)
 	}
 
-	task := &Task{
-		ID:             int(t.ID),
-		PID:            int(t.PID),
-		URL:            t.URL,
-		Stage:          t.Stage,
-		Repeatable:     t.Repeatable == models.RepeatableYes,
-		Urgent:         t.Urgent,
-		IdempotencyKey: t.IdempotencyKey,
-	}
+	task := e.taskFromRecord(t)
+	task.Retry = 0 // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitTo(info, task); err != nil {
 		// 队列达高水位：与正常投递一致，溢出到 DB 由 drain 回灌，不算失败
@@ -167,15 +160,9 @@ func (e *Engine) UrgentTask(id uint) error {
 		return ErrTaskUrgent
 	}
 
-	task := &Task{
-		ID:             int(t.ID),
-		PID:            int(t.PID),
-		URL:            t.URL,
-		Stage:          t.Stage,
-		Repeatable:     t.Repeatable == models.RepeatableYes,
-		Urgent:         true,
-		IdempotencyKey: t.IdempotencyKey,
-	}
+	// Urgent 必须显式置真：上面的条件更新改的是库里的行，这里读到的 t 是更新**之前**的快照。
+	task := e.taskFromRecord(t)
+	task.Urgent = true
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitTo(info, task); err != nil {
 		// 与正常投递一致：队列满就溢出到 DB 由 drain 回灌，不算失败
@@ -235,6 +222,7 @@ func (e *Engine) DeleteTask(id uint) error {
 		}
 		return ErrTaskProcessing
 	}
+	// 这里只需要算去重键（Unique 只认幂等键或 stage|url），不必把整行还原成 Task。
 	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, IdempotencyKey: t.IdempotencyKey})
 	return nil
 }

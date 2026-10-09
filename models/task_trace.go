@@ -12,6 +12,9 @@ type TraceStatus int
 const (
 	TraceOK     TraceStatus = iota // 步骤成功
 	TraceFailed                    // 步骤失败
+	// TraceWarn 非致命：出了点事，但不该把任务判失败（见 engine.Trace.Warn）。
+	// 值追加在末尾 —— 老行里的 0/1 含义不变。
+	TraceWarn
 )
 
 // TaskTrace 单任务的一次尝试里，一个步骤的记录。
@@ -27,9 +30,9 @@ type TaskTrace struct {
 	Seq     int  `gorm:"index:idx_task_attempt_seq,priority:3;comment:尝试内的步骤序号"`
 
 	Step    string         `gorm:"type:varchar(100);comment:步骤名"`
-	Status  TraceStatus    `gorm:"comment:0:成功 1:失败"`
-	Kind    string         `gorm:"type:varchar(50);comment:错误分类(失败时，同 engine.ErrorKind)"`
-	Message string         `gorm:"type:text;comment:错误信息(失败时)"`
+	Status  TraceStatus    `gorm:"comment:0:成功 1:失败 2:警告(非致命)"`
+	Kind    string         `gorm:"type:varchar(50);comment:错误分类(失败/警告时，同 engine.ErrorKind)"`
+	Message string         `gorm:"type:text;comment:错误信息(失败/警告时)"`
 	Data    datatypes.JSON `gorm:"type:json;comment:该步采集到的数据(仅失败的尝试)"`
 
 	Duration time.Duration `gorm:"comment:该步耗时"`
