@@ -4,46 +4,34 @@ app:
 
 # 爬虫核心配置
 crawler:
-  dedup_cache_size: 0          # 内存去重表最大条目数：0=不限(旧行为)；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-  queue_watermark: 0.75        # 队列高水位比例(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
+  dedup_cache_size: 0          # 内存去重表上限：0=不限；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+  queue_watermark: 0.75        # 队列高水位(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
-  stop_timeout: "5s"           # 优雅退出时等各阶段 worker 排空队列的上限；超时则跳过关库/关浏览器池，让在途写入能落盘
-  # 单任务步骤追踪：开启后 handler 可用 task.Trace.Step/Fail/Warn 上报步骤，写入 crawler_task_trace 表。
-  # Warn 是非致命档（封面没下下来这类：任务成功了、但要留痕），不影响任务终态。
-  # 后台任务表的「追踪」动作按「第 N 次尝试」展示时间线；只有失败的尝试才写 data。
-  # 关闭时 task.Trace 为 nil，handler 里的调用是安全的 no-op。
-  # 开启后记得再跑一次 `papa migrate` 建 crawler_task_trace。
+  stop_timeout: "5s"           # 优雅退出时等各阶段 worker 排空队列的上限；超时则跳过关库/关浏览器池，让在途写入落盘
+  # 单任务步骤追踪：task.Trace.Step/Fail/Warn（关 = 安全的 no-op）。开启后要再跑一次 `papa migrate` 建表。详见 docs/CORE_CONFIG.md
   trace:
     enabled: true              # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
-  # 页面归档：把**失败那一刻抓到的那一页**原样落到本地文件（原始字节，不做再序列化 ——
-  # goquery 重新序列化会丢掉 <noscript> 里的回退标签，而那正是选择器坏掉时最该看的）。
-  # 由 engine.FetchHTML 自动登记、本次尝试结束时按结局落盘，handler 不用写任何代码；
-  # 归档后 trace 里会多一条「归档页面」步骤，指向文件（后台「追踪」抽屉里能连起来）。
-  # 路径：{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html（+ 同名 .json 记状态码/最终 URL）
+  # 页面归档：**失败那一刻抓到的那一页**按原始字节落盘（不重新序列化，否则丢 <noscript> 回退标签）；
+  # 本次尝试结束自动写、handler 不用写代码，trace 里多一条「归档页面」步骤指向 {dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html。
   archive:
     enabled: false             # 默认关。排查选择器/登录墙/地区限制时打开
     dir: "./logs/fetcher-html" # 归档根目录（enabled=true 时必填，没写会启动 panic）
     mode: failure              # failure = 只在失败的尝试落（默认，写入量按失败率走）；always = 每次都落
     retention: "168h"          # 保留期（默认 7 天，与 trace 对齐）；负数 = 不自动清理
     max_file_mb: 8             # 单页上限（MB）；超了不归档并记 WARN
-  # 熔断闸门：窗口内**终态失败**数（任务重试耗尽或不可重试，不是每次 attempt）达到阈值，
-  # 就把所有阶段的 worker 一起闸住、不再取任何任务，并发一条 critical 告警。
-  # 处理完后从后台 Dashboard 顶部横幅的「恢复抓取」按钮放行（POST /api/breaker/resume）。
-  # 暂停**不跨重启**：进程重启即恢复运行。详见 docs/CORE_CONFIG.md
+  # 熔断闸门：窗口内**终态失败**数（重试耗尽或不可重试，不是每次 attempt）达阈值就把所有阶段的 worker 闸住，
+  # 并发一条 critical 告警；从后台 Dashboard 横幅的「恢复抓取」放行。暂停**不跨重启**。详见 docs/CORE_CONFIG.md
   breaker:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
-    threshold: 50              # 窗口内终态失败数达到它即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
-  # 阶段不在这里配：声明在 configs/sites/<站名>.go（Go 里一份写全：并发、队列、间隔、重试、
-  # 要不要投入口、属于哪个站、熔断阈值）。详见 docs/FETCHER_WRITING_GUIDE.md 7.2
+    threshold: 50              # 达阈值即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
+  # 阶段参数不在这里配：声明在 configs/sites/<站名>.go（Go 里一份写全）。详见 docs/FETCHER_WRITING_GUIDE.md 7.2
 
-# 浏览器自动化池配置
-# 浏览器按需创建：pool_size / direct_pool_size 是并发上限，不是常驻实例数，
-# 空闲超过 max_idle_time 的实例会被后台回收。
-# 运行期热更（OA 后台 /api/config 可改，重启后叠加 runtime.yaml 覆盖层）：
-#   max_idle_time / headers（headers 指下面那层**全局**默认头）
-# 其余字段（pool_size / direct_pool_size / headless / no_sandbox / leakless / browser_path / enable）需重启生效。
+# 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
+# 空闲超过 max_idle_time 的会被回收。
+# 运行期热更（OA 后台 /api/config，重启后叠加 runtime.yaml）：max_idle_time / headers（指下面的全局默认头）；
+# 其余字段需重启生效。
 browser:
   enable: true
   pool_size: 3
@@ -51,28 +39,23 @@ browser:
   max_idle_time: "5m"
   headless: false
   no_sandbox: false
-  browser_path: ""             # Chrome 可执行文件路径，空则用默认 Chromium
-  # 请求头不写在这里：写在 configs/sites/<站名>.go 的 Headers（站点级，抓取与下载都认，
-  # 且各站可以不一样）。这一层是**全局默认**，只放"与站点无关、所有站共用"的头，
-  # 它的独门好处是能被 OA 后台热更：
-  # headers:
-  #   Accept-Language: "zh-CN,zh;q=0.9"
+  browser_path: ""             # Chrome 可执行路径，空则用默认 Chromium
+  # 请求头写站点声明（configs/sites/<站名>.go 的 Headers，抓取与下载都认）；这里是**全局默认层**，
+  # 只放与站点无关的头，好处是能被 OA 后台热更：headers: {Accept-Language: "zh-CN,zh;q=0.9"}
 
-# 静态 HTML 抓取客户端配置
-# 运行期热更：timeout / max_body_size / headers（同 browser：那层是全局默认头）
+# 静态 HTML 抓取客户端。运行期热更：timeout / max_body_size / headers（同 browser：全局默认层）
 html:
   enable: true
   timeout: "15s"
-  max_body_size: 10485760
-  # 请求头同上：写在 configs/sites/<站名>.go 的 Headers 里。留空的话静态抓取用的是
-  # 框架自己的 UA（PapaStaticHTML/1.0）—— 真实站点多半会因此给你反爬页，别忘站点里那份。
+  max_body_size: 10485760      # enable=true 时必填，100KB..64MB
+  # 请求头同上（写站点声明）。不写的话静态抓取的 UA 是框架默认的 PapaStaticHTML/1.0 —— 真实站点多半会拦。
 
-# 代理管理器配置（未启用）
+# 代理管理器（未启用）
 proxy:
   api_url: ""
   refresh_interval: 500s
 
-# 数据库配置
+# 数据库
 db:
   driver: "mysql"
   dsn: "root:123456@tcp(127.0.0.1:3306)/crawler?charset=utf8mb4&parseTime=True&loc=Local"
@@ -80,11 +63,10 @@ db:
   max_open_conns: 100
   conn_max_lifetime: 1h
   conn_max_idle_time: 10m
-  # SQL 日志级别：silent / error / warn / info；留空则按 app.env 推（dev=info，其它=warn）。
-  # 非 dev 还会把日志里的参数值隐掉（渲染成 ?）—— 每条 SQL 连着参数值进日志会随「日志导出」外泄。
+  # SQL 日志级别：silent / error / warn / info；留空按 app.env 推（dev=info，其它=warn 且隐去参数值）。
   # log_level: "info"
 
-# 日志配置
+# 日志
 log:
   dir: "./logs"
   max_size: 10
@@ -93,52 +75,47 @@ log:
   compress: true
   local_time: true
 
-# 统一 HTTP 服务配置（监控后台）
+# 统一 HTTP 服务（监控后台）
 server:
-  enabled: true                  # 开则挂载整个监控后台（/monitor + /api/* + 表格页 + 自定义页 + UseRouter 的路由）；关则服务完全不监听
+  enabled: true                  # 开则挂载 /monitor + /api/* + 表格页 + 自定义页；关则完全不监听
   port: 9090
-  # 后台访问令牌存在 crawler_access_token 表里（多条，每条属于一个操作人），不再用配置里的单密钥。
-  # 建令牌：papa token add --operator <名字>（明文只打印一次，库里只存 sha256）。
-  # 停用/删除去后台的「访问令牌」页。注意：一条令牌都没有时 /api/* 对白名单内的来源完全开放（启动会警告）。
+  # 访问令牌在 crawler_access_token 表（一条令牌一个操作人）：papa token add --operator <名字>，
+  # 明文只打印一次、库里只存 sha256；一条都没有时 /api/* 对白名单内来源完全开放（启动会警告）。
   whitelist: []                   # 回退白名单（仅当 whitelist_file 不存在时生效）
   whitelist_file: "configs/whitelist" # 白名单持久化文件（设置页动态改白名单会写回此文件）
   monitor_dirs:                   # 监控页展示的业务目录占用（name: path）
     downloads: "./downloads"
     logs: "./logs"
-  queue_sample_interval: "1m"     # 治理队列积压(待处理)采样间隔；监控页只读内存快照，采样时才查库，调大可降低 DB 压力
-  operation_log: true             # 操作日志：开启后后台所有增删改写入 crawler_operation_log 表（含失败），并多出「操作日志」表格页；关闭则不建表不写库
-  # HTTP 超时。write_timeout 默认 0 = 不限，是有意的：日志打包下载可能传很久，给它设上限
-  # 等于把在途下载掐断 —— 那正是「优雅退出」要避免的。要限制再显式配。
+  queue_sample_interval: "1m"     # 队列积压采样间隔；监控页读内存快照，采样时才查库，调大可降 DB 压力
+  operation_log: true             # 后台增删改写 crawler_operation_log（含失败），并多出「操作日志」页
   read_header_timeout: "10s"      # 挡慢连接（只发头不发送体）
   read_timeout: "30s"
   idle_timeout: "60s"
-  shutdown_timeout: "10s"         # 优雅退出时等在途请求（如日志下载）跑完的上限
+  shutdown_timeout: "10s"         # 优雅退出时等在途请求（如日志打包下载）的上限
+  # write_timeout 默认 0 = 不限，这是有意的：给日志打包下载设上限等于掐断在途下载。
 
-# 定时任务调度器配置
-# 定时任务调度器：业务定时任务通过 app.RegisterCronJob 注册（框架不再内置 job）
+# 定时任务调度器（业务定时任务用 app.RegisterCronJob 注册）
 scheduler:
   timezone: "Asia/Shanghai"   # cron 时区
 
-# 错误队列处理（失败任务自动/手动重新投递）
+# 错误队列：失败任务的自动/手动重新投递
 error_queue:
-  enabled: true          # 是否启用错误队列处理
-  worker_count: 1         # 并发重新投递失败任务的数量
-  interval: "4h"         # 自动轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
-  max_retry: 3            # 单个失败任务最多再处理代数；0 = 不限
-  batch_size: 100        # 每批查询处理的任务数；0 = 默认 100（分页流式，避免海量失败任务一次性全量加载）
+  enabled: true          # 是否启用
+  worker_count: 1        # 并发重新投递的数量
+  interval: "4h"         # 自动轮询间隔；0 = 不自动轮询，仅后台手动触发
+  max_retry: 3           # 单条失败任务最多再处理几代；0 = 不限
+  batch_size: 100        # 每批处理条数；0 = 默认 100（分页流式，避免海量失败任务一次性全量加载）
 
-# 启动恢复：进程重启时把上次中断留下的「未到终态」任务（pending/processing）全部重新入队。
-# 只在**启动时跑一次**。进程刚起，所有 processing 都是孤儿 —— 这是确定的，不需要按 updated_at
-# 超时去猜（那个启发式既会漏掉崩溃前刚认领的，又会把跑得久的任务误判成卡死、与在跑的 worker 撞车）。
-# 所以这里没有 interval / timeout：详见 docs/RECOVER_QUEUE.md
+# 启动恢复：重启时把上次中断留下的「未到终态」任务（pending/processing）重新入队，**只在启动时跑一次**
+#（进程刚起，processing 全是孤儿 —— 这是确定的，不需要按 updated_at 超时去猜）。详见 docs/RECOVER_QUEUE.md
 recover_queue:
-  enabled: true           # 是否启用；启用后启动时恢复一次
-  worker_count: 1         # 并发重新入队的数量
-  batch_size: 100         # 每批查询处理的任务数；0 = 默认 100（分页流式）
+  enabled: true          # 是否启用
+  worker_count: 1        # 并发重新入队的数量
+  batch_size: 100        # 每批处理条数；0 = 默认 100
 
-# 周期轮询队列（配合 main.go 里 Repeatable: true 的任务：定时重投「已完成」的 repeatable 任务，实现周期轮询）
+# 周期轮询队列：定时重投「已完成」的 repeatable 任务（对应 task 上的 Repeatable: true）
 repeat_queue:
-  enabled: true           # 是否启用周期轮询 repeatable 任务
-  worker_count: 1         # 并发重新投递 repeatable 任务的数量
-  interval: "2h"         # 轮询间隔；0 = 不自动轮询，仅 OA 后台手动触发
-  batch_size: 100        # 每批查询处理的任务数；0 = 默认 100（分页流式）
+  enabled: true          # 是否启用
+  worker_count: 1        # 并发重新投递的数量
+  interval: "2h"         # 轮询间隔；0 = 不自动轮询，仅后台手动触发
+  batch_size: 100        # 每批处理条数；0 = 默认 100
