@@ -78,6 +78,15 @@ func (d *Downloader) GetErrors() <-chan error {
 	return d.trackQueue.Errors()
 }
 
+// OutputDir 返回配置里的输出根目录（DownloadResult.OutputFile 就是相对它的路径）。
+//
+// 为什么要有这个 getter：调用方把「相对路径」变成能落库、能在后台目录里看到的本地路径
+// （`filepath.Join(下载器.OutputDir(), result.OutputFile)`），这中间只能靠它 —— 若是自己再写一个
+// 常量去对齐 `Config.OutputDir`，两处一旦漂了**不报错**，只表现为「文件下下来了但记的路径指空」。
+func (d *Downloader) OutputDir() string {
+	return d.config.OutputDir
+}
+
 // clientFor 返回本次下载该用的 HTTP 客户端：没指定代理就是下载器那个；
 // 指定了就用走该代理的客户端（按地址缓存，连接池不白扔）。
 func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {

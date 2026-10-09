@@ -282,10 +282,14 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    ```go
    page, err := engine.FetchHTML(ctx, task.URL)
    if err != nil { return err }
-   if reason := htmlfetch.RestrictedReason(page, site.RestrictedKeywords...); reason != "" {
-       return papa.RestrictedPageError("catalog", page.URL.String(), reason) // 不可重试，分类 access_restricted
-   }
+   // 不可重试，分类 access_restricted；本站词表（SiteSpec.RestrictedKeywords）由框架从 task.Site 取
+   if err := engine.RestrictedError(task, page, "catalog"); err != nil { return err }
    ```
+   一步就够，不用自己 `engine.Site(task.Site)` 再传 `extra` —— 那条路**漏了不报错**，站点声明里写了
+   词表、调用点忘了传，判定只是静默地不生效。stage 传空串则用 `task.Stage`；同一个任务里抓了第二张
+   页面（如详情页里的播放页）就传个自己的名字。要自己判、或词表不来自站点声明时，仍可直接用
+   `htmlfetch.RestrictedReason(page, extra...)` + `papa.RestrictedPageError`。
+
    默认词表扫**可见正文 + 标题**（captcha / verify you are human / access denied / 访问受限 / 验证码 /
    Cloudflare 的 checking your browser · just a moment / Google 的 unusual traffic），业务可用
    `SiteSpec.RestrictedKeywords` 追加本站文案。它**不扫整段 HTML** —— 内联脚本与 style 里的
@@ -293,8 +297,12 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    词表刻意**宁少勿多**：命中之后通常返回不可重试错误、任务直接判死，假阳性的代价是任务白死。
    拿不准就先只观察：`task.Trace.Warn("疑似受限页", nil, map[string]string{"marker": reason})`。
 2. 每一项的标题和 `href` 都必须非空；出现一个残缺条目就返回 error，避免把不完整目录标记为成功。
-3. 用 `page.URL.Parse(href)` 将相对地址解析为绝对 URL，不能通过字符串拼接当前页面 URL。
-4. 需要时再校验域名、路径前缀、ID 格式或条目数下限，确保选中的不是导航链接。
+3. 相对地址用 `papa.ResolveURL(page.URL.String(), href)` 解析成绝对地址：只收 http/https
+   （`javascript:`、`mailto:` 这类"链接"进不了任务队列）、去掉 fragment、解析不出 host 当场报错。
+   **不要字符串拼接**当前页面 URL。
+4. 域名用 `papa.SameHost(base, u)`（apex 与 `www.` 算同一个 host）与 `papa.IsSubdomainOf(u, base)`
+   （按**点边界**比对 —— `evil-example.com` 不是 `example.com` 的子域，自己写 `strings.HasSuffix`
+   最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
 5. 将列表快照写入当前 `catalog` 任务；只有已在 `config.yaml` 和 `main.go` 注册 `detail` stage 时，才为通过校验的链接调用 `engine.SubmitTask`。
 
 > **失败时自动留现场**：开了 `crawler.archive`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
@@ -578,15 +586,17 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
     if dl == nil {
         return nil
     }
-    res := dl.Download(ctx, url, task.Stage, "video.ts", &m3u8.DownloadOptions{
-        Referer: task.URL, // 多数 m3u8 站点要求 referer
-    })
+    // OptionsFromRequest：把这次抓取上下文里的站点级/逐请求头与显式代理带进下载选项。
+    // 下载器**不读 ctx**（隐式继承会让人不知道请求上到底带了什么）—— 想用就显式这一步，
+    // 不想用就自己造一份 &m3u8.DownloadOptions{Referer: task.URL}（多数 m3u8 站点校验 referer）。
+    res := dl.Download(ctx, url, task.Stage, "video.ts", m3u8.OptionsFromRequest(ctx, task.URL))
     if res.Error != nil {
         return res.Error
     }
 
     // 4. 写库（记录 m3u8 地址和本地输出；VideoContent 是你在 models 包里自定义的结构）
-    content := models.VideoContent{ Dir: res.OutputFile, Source: url }
+    // res.OutputFile 是**相对** dl.OutputDir() 的路径，要落一个能直接指到文件的本地路径就拼起来。
+    content := models.VideoContent{ Dir: filepath.Join(dl.OutputDir(), res.OutputFile), Source: url }
     return engine.SaveContent(task.ID, content)
 }
 ```
@@ -611,10 +621,28 @@ m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限�
 ```go
 import "github.com/ydtg1993/papa/v2/pkg/middleware/filedown"
 
-res := engine.GetFiledown().Download(ctx, fileURL, "images", "cover.jpg", &filedown.DownloadOptions{
-    Referer: task.URL,
-})
+dl := engine.GetFiledown()
+// OptionsFromRequest：站点级 + 逐请求头、显式代理一起带上（同 m3u8，下载器自己不读 ctx）
+opts := filedown.OptionsFromRequest(ctx, task.URL)
+opts.Direct = true // 封面/附件这类几十~几百 KB 的文件：一次 GET 落盘，省掉 HEAD 探测与分片那套机器
+res := dl.Download(ctx, fileURL, "images", "cover.jpg", opts)
+if res.Error != nil {
+    return res.Error
+}
+
+// 本地路径 = 下载器的输出根 + 相对路径。**别自己再写一个常量去对齐 main.go 里的 OutputDir**：
+// 两处一旦漂了不报错，只表现为"文件下下来了，但库里记的路径指空"。
+localPath := filepath.Join(dl.OutputDir(), res.OutputFile)
 ```
+
+头里的空值表示删掉这个头（与抓取路径同一套语义）。
+
+注意 `OptionsFromRequest` **只带 ctx 上的两层**：站点级（`SiteSpec.Headers`）与逐请求（`papa.WithHeaders`）。
+全局的 `html.headers` / `browser.headers` 不在里面（那是抓取客户端的默认层）—— 要让下载跟抓取用同一套头
+（UA 尤其，图片/视频站常查），**把该键写进 `SiteSpec.Headers`**，两条路就都继承到了。
+
+`DownloadResult` 还带 `ContentType`（响应声明的类型）：站点用图片代理按 `Accept` 协商输出格式时
+（源图 webp、只声明 `image/*` 就回 jpeg），拿它或按文件头复核一下再决定落盘后缀，别让"叫 `.webp` 的 jpeg"进库。
 
 ---
 
@@ -790,7 +818,8 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 1. **阶段名重复** → `RegisterSites` 直接 panic 并点出是哪两个站声明了同一个名字。多站一律带站点前缀（`hgd_catalog` / `siteb_catalog`），别靠"能区分"碰运气。
 2. **浏览器池耗尽**：`browser.pool_size`（浏览器并发上限）要 ≥ 各 stage `worker_count` 之和，否则 worker 会阻塞在 `pool.Get`。
-3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.DownloadOptions{Referer: ...}` 传详情页 URL。
+3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.OptionsFromRequest(ctx, task.URL)` 一步带上（站点头/逐请求头/代理一起过来），或自己写 `m3u8.DownloadOptions{Referer: ...}`。
+3b. **下载器不继承抓取的头**：`SiteSpec.Headers` / `papa.WithHeaders` 只作用于**抓取**（静态 + 浏览器），下载（filedown / m3u8）要自己带 —— 用 `OptionsFromRequest(ctx, referer)`，它不会自动发生。
 4. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。
 5. **相对链接**：`href`/`src` 可能是相对路径，用 `page.Info().URL` 拼成绝对 URL 再提交任务。
 6. **重试语义**：fetcher 返回普通 error 会触发重试；对「确实失败、重试无意义」的（页面 404、缺字段、验证码拦截等），返回 `papa.WrapNoRetryKind("structure", err)`（或 `WrapNoRetry(err)`），引擎不重试、直接标 failed 并告警，别再「返回 nil 假装成功」。
@@ -812,10 +841,19 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 **静态 HTML（goquery）**
 - `engine.FetchHTML(ctx, url)` → `*htmlfetch.Page`；`page.Document.Text/Texts/Attr/Attrs/HTML(selector)`。
+- `page.Selection()`（= `page.Document.Selection()`）→ `*goquery.Selection`：要写复杂解析
+  （`Find(...).Each`、Children/Parent/Siblings…）就拿这个根节点。解析函数统一收 `*goquery.Selection`，
+  线上传 `page.Selection()`、测试传 `goquery.NewDocumentFromReader(...).Selection` —— 同一个类型，
+  不用为"框架的文档 vs 测试的文档"再包一层接口。
+- 链接与域名：`papa.ResolveURL(base, ref)` / `papa.SameHost(a, b)` / `papa.IsSubdomainOf(child, parent)`。
+- 受限页：`engine.RestrictedError(task, page, stage)`（站点词表自动带上，不可重试）。
 
 **下载器**
 - m3u8：`NewDownloader(cfg)` / `Download(ctx, url, outDir, outFile, opts...) → DownloadResult`。
 - filedown：`NewDownloader(cfg)` / `Download(ctx, url, outDir, fileName, opts...) → DownloadResult`。
+- 两个下载器都有 `Downloader.OutputDir()`：`DownloadResult.OutputFile` 是**相对**它的路径，落库的本地路径靠它拼。
+- 两个下载器都有 `OptionsFromRequest(ctx, referer)`：把抓取上下文里的站点级/逐请求头与显式代理转成下载选项
+  （下载器不读 ctx，用不用由你显式决定）；`filedown.DownloadOptions.Direct` 走单次 GET（小文件）。
 
 **数据库 / 结果落地**
 - `engine.SaveResult(task.ID, title, content)` 写 `title` + `content`。

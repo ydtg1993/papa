@@ -87,6 +87,11 @@ type Page struct {
 	Document    *Document
 }
 
+// Selection 是 `page.Document.Selection()` 的简写：解析函数只需要一个根 selection 时用它。
+func (p *Page) Selection() *goquery.Selection {
+	return p.Document.Selection()
+}
+
 // Document provides CSS selector queries against a parsed HTML document.
 type Document struct {
 	selection *goquery.Document
@@ -197,6 +202,17 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 		HTML:        string(body),
 		Document:    &Document{selection: document},
 	}, nil
+}
+
+// Selection 交出底层的 goquery 根 selection。
+//
+// 为什么要有它：Document 上只封了 Find/Text/Texts/Attr/Attrs/HTML 六个查询，写复杂一点的解析
+// （`Find(sel).Each(...)`、Children/Parent/Siblings、按节点顺序遍历……）就得拿到根节点。
+// 没有它，业务只能自己包一层接口来"既能接 Document、又能接测试里造的 goquery 文档" ——
+// 那层接口本身就是这个缺口的证据。有了它，解析函数统一收 `*goquery.Selection`：
+// 线上传 `page.Selection()`，测试里传 `goquery.NewDocumentFromReader(...).Selection`。
+func (d *Document) Selection() *goquery.Selection {
+	return d.selection.Selection
 }
 
 // Find returns all nodes matching selector.

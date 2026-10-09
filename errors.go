@@ -1,8 +1,6 @@
 package papa
 
 import (
-	"errors"
-
 	"github.com/ydtg1993/papa/v2/core"
 )
 
@@ -42,21 +40,14 @@ var WrapNoRetryKind = core.WrapNoRetryKind
 
 // RestrictedPageError 标准化的「这一页被反爬拦下了」错误：**不可重试**，分类 access_restricted。
 //
-//	page, err := engine.FetchHTML(ctx, url)
-//	if err != nil { return err }
-//	if reason := htmlfetch.RestrictedReason(page, site.RestrictedKeywords...); reason != "" {
-//	    return papa.RestrictedPageError("catalog", page.URL.String(), reason)
-//	}
+// **一般不用直接调它**：`engine.RestrictedError(task, page, stage)` 把站点词表（`task.Site`
+// 那份 `RestrictedKeywords`）一并处理了 ——
 //
-// reason 传 `htmlfetch.RestrictedReason` 的返回值（命中的那句话）—— 它会写进消息、日志与告警里，
-// 排查时"为什么判它是受限页"一眼可见。分类名与脚手架/文档里的既有约定一致（access_restricted）。
-func RestrictedPageError(stage, pageURL, reason string) error {
-	msg := stage + " page is access-restricted: " + pageURL
-	if reason != "" {
-		msg += "（命中：" + reason + "）"
-	}
-	return core.WrapNoRetryKind("access_restricted", errors.New(msg))
-}
+//	if err := engine.RestrictedError(task, page, "catalog"); err != nil { return err }
+//
+// 需要自己判、或词表不来自站点声明时才用它（reason 传 `htmlfetch.RestrictedReason` 的返回值，
+// 即命中的那句话，它会写进消息、日志与告警）。
+var RestrictedPageError = core.RestrictedPageError
 
 // Retryable 判断错误是否应重试。
 var Retryable = core.Retryable

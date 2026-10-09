@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v2/core"
 )
 
 // 测试辅助：创建临时目录并自动清理
@@ -816,5 +818,138 @@ segment2.ts
 	case err := <-downloader.GetErrors():
 		t.Fatalf("成功的下载不该往错误通道写东西，实得：%v", err)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// OutputDir() 是 DownloadResult.OutputFile 的基准：两者一拼就是那个文件（与 filedown 同一个约定，
+// `result.OutputFile` 里不带输出根目录）。调用方靠它把相对路径变成能落库的本地路径。
+func TestOutputDirGetterIsTheBaseOfOutputFile(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/playlist.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:1.0,\nsegment1.ts\n"))
+	})
+	mux.HandleFunc("/segment1.ts", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("SEGMENT1 DATA"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.AutoMerge = false // 避免调用 ffmpeg
+	cfg.MaxConcurrent = 1
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL+"/playlist.m3u8", "movies", "ep1.ts", nil)
+	if result.Error != nil {
+		t.Fatalf("download failed: %v", result.Error)
+	}
+
+	if got := downloader.OutputDir(); got != cfg.OutputDir {
+		t.Fatalf("OutputDir() = %q, want %q（配置里写了什么就返回什么）", got, cfg.OutputDir)
+	}
+	abs := filepath.Join(downloader.OutputDir(), result.OutputFile)
+	if _, err := os.Stat(abs); err != nil {
+		t.Fatalf("拼出来的路径 %q 读不到刚下的文件：%v", abs, err)
+	}
+}
+
+// 没传配置时走 DefaultConfig，getter 不能返回空串。
+func TestOutputDirGetterDefaultsWhenConfigNil(t *testing.T) {
+	if got, want := NewDownloader(nil).OutputDir(), DefaultConfig().OutputDir; got != want {
+		t.Fatalf("OutputDir() = %q, want %q", got, want)
+	}
+}
+
+// 下载器不读 ctx：抓取上下文要显式转成下载选项（与 filedown.OptionsFromRequest 同一个约定）。
+func TestOptionsFromRequestCarriesHeadersAndProxy(t *testing.T) {
+	ctx := core.WithHeaders(context.Background(), map[string]string{
+		"User-Agent": "ua-site",
+		"Cookie":     "sid=1",
+		"X-Drop":     "", // 空值 = 删掉这个头
+	})
+	ctx = core.WithProxyURL(ctx, "http://127.0.0.1:8080")
+
+	opts := OptionsFromRequest(ctx, "https://site.example/detail/1")
+	if opts.Referer != "https://site.example/detail/1" {
+		t.Fatalf("Referer = %q", opts.Referer)
+	}
+	if opts.Proxy != "http://127.0.0.1:8080" {
+		t.Fatalf("Proxy = %q，ctx 上指定了出口就该带上", opts.Proxy)
+	}
+	if opts.Headers["User-Agent"] != "ua-site" || opts.Headers["Cookie"] != "sid=1" {
+		t.Fatalf("ctx 上的头没带过来：%v", opts.Headers)
+	}
+	// 空值 = "删掉这个头"（与抓取路径同一套语义），不能变成发出去一个空头
+	if _, ok := opts.Headers["X-Drop"]; ok {
+		t.Fatalf("空值的头应当被删掉而不是留着：%v", opts.Headers)
+	}
+
+	// 头是副本：改选项不该影响 ctx 里那份
+	opts.Headers["User-Agent"] = "tampered"
+	if core.HeadersFrom(ctx)["User-Agent"] != "ua-site" {
+		t.Fatal("OptionsFromRequest 返回的头应当是副本")
+	}
+}
+
+// ctx 上什么都没有：只带 Referer；Headers 是**可写的空 map**而不是 nil ——
+// 调用方紧接着就要补自己的键（`opts.Headers["Accept"] = ...`），给 nil map 就是等着 panic。
+func TestOptionsFromRequestWithoutContext(t *testing.T) {
+	opts := OptionsFromRequest(context.Background(), "https://site.example/p")
+	if opts.Referer != "https://site.example/p" || opts.Proxy != "" {
+		t.Fatalf("空 ctx 应当只带 Referer：%+v", opts)
+	}
+	if opts.Headers == nil || len(opts.Headers) != 0 {
+		t.Fatalf("Headers 应当是非 nil 的空 map：%#v", opts.Headers)
+	}
+	opts.Headers["Accept"] = "image/webp" // 不该 panic
+	if len(core.HeadersFrom(context.Background())) != 0 {
+		t.Fatal("补键不该影响到 ctx")
+	}
+}
+
+// 端到端：头落到**分片请求**上（不是播放列表那一下），且来源页以参数为准 ——
+// 分片请求是先写 Referer 字段、后写 Headers map，ctx 里那个 Referer 会盖掉参数，
+// 所以 OptionsFromRequest 把它删掉了。
+func TestOptionsFromRequestReachesSegmentRequest(t *testing.T) {
+	var got http.Header
+	mux := http.NewServeMux()
+	mux.HandleFunc("/playlist.m3u8", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:1.0,\nsegment1.ts\n"))
+	})
+	mux.HandleFunc("/segment1.ts", func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Write([]byte("SEGMENT1 DATA"))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	cfg.AutoMerge = false
+	cfg.MaxConcurrent = 1
+
+	ctx := core.WithHeaders(context.Background(), map[string]string{
+		"User-Agent": "ua-site",
+		"Referer":    "https://ctx.example/",
+	})
+	opts := OptionsFromRequest(ctx, server.URL+"/detail/1")
+	res := NewDownloader(cfg).Download(ctx, server.URL+"/playlist.m3u8", "movies", "ep1.ts", opts)
+	if res.Error != nil {
+		t.Fatalf("download failed: %v", res.Error)
+	}
+	if got.Get("User-Agent") != "ua-site" {
+		t.Fatalf("分片请求上没带上 ctx 的 UA：%v", got)
+	}
+	if got.Get("Referer") != server.URL+"/detail/1" {
+		t.Fatalf("Referer = %q，参数里的来源页应当优先于 ctx 里那个", got.Get("Referer"))
+	}
+	// 顺带钉住：解密依赖的 Accept-Encoding 不受 ctx 影响
+	if got.Get("Accept-Encoding") != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", got.Get("Accept-Encoding"))
 	}
 }

@@ -42,7 +42,7 @@ crawler:
 # 浏览器按需创建：pool_size / direct_pool_size 是并发上限，不是常驻实例数，
 # 空闲超过 max_idle_time 的实例会被后台回收。
 # 运行期热更（OA 后台 /api/config 可改，重启后叠加 runtime.yaml 覆盖层）：
-#   max_idle_time / headers
+#   max_idle_time / headers（headers 指下面那层**全局**默认头）
 # 其余字段（pool_size / direct_pool_size / headless / no_sandbox / leakless / browser_path / enable）需重启生效。
 browser:
   enable: true
@@ -52,21 +52,20 @@ browser:
   headless: false
   no_sandbox: false
   browser_path: ""             # Chrome 可执行文件路径，空则用默认 Chromium
-  headers:
-    User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    Accept-Language: "zh-CN,zh;q=0.9,en;q=0.8"
+  # 请求头不写在这里：写在 configs/sites/<站名>.go 的 Headers（站点级，抓取与下载都认，
+  # 且各站可以不一样）。这一层是**全局默认**，只放"与站点无关、所有站共用"的头，
+  # 它的独门好处是能被 OA 后台热更：
+  # headers:
+  #   Accept-Language: "zh-CN,zh;q=0.9"
 
 # 静态 HTML 抓取客户端配置
-# 运行期热更：timeout / max_body_size / headers
+# 运行期热更：timeout / max_body_size / headers（同 browser：那层是全局默认头）
 html:
   enable: true
   timeout: "15s"
   max_body_size: 10485760
-  headers:
-    User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-    Accept-Language: "zh-CN,zh;q=0.9,en;q=0.8"
+  # 请求头同上：写在 configs/sites/<站名>.go 的 Headers 里。留空的话静态抓取用的是
+  # 框架自己的 UA（PapaStaticHTML/1.0）—— 真实站点多半会因此给你反爬页，别忘站点里那份。
 
 # 代理管理器配置（未启用）
 proxy:

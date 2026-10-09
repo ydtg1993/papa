@@ -76,6 +76,23 @@ var WithHeaders = core.WithHeaders
 // （代理是浏览器实例级设置），传了会明确报错而不是静默忽略。
 var WithProxyURL = core.WithProxyURL
 
+// ResolveURL 把页面上的相对地址按 base 解析成绝对地址：只收 http/https（`javascript:`、`mailto:` 进不了任务队列）、
+// 去掉 fragment（`/a#x` 与 `/a#y` 是同一页）、解析不出 host 就报错。
+//
+//	u, err := papa.ResolveURL(page.URL.String(), sel.AttrOr("href", ""))
+//	if err != nil { continue }                       // 残缺/非 http 链接跳过
+//	if !papa.SameHost(site.BaseURL, u) { continue }   // 只跟本站的链接
+var ResolveURL = core.ResolveURL
+
+// SameHost 判断两个地址（URL 或裸 host）是不是同一个 host：忽略大小写、端口、末尾的点，
+// 并把 `www.` 前缀视作同一个 host（apex 与 www 在爬虫里几乎总是同一个站）。
+var SameHost = core.SameHost
+
+// IsSubdomainOf 判断 child 是不是 parent 的**子域**，按点边界比对 ——
+// `evil-example.com` 不是 `example.com` 的子域。CDN 那类资源域名用它：
+// `SameHost(base, u) || IsSubdomainOf(u, base)`。
+var IsSubdomainOf = core.IsSubdomainOf
+
 // WithConfigPath 指定配置文件路径（缺省读 PAPA_CONFIG 环境变量，再回退 configs/config.yaml）
 var WithConfigPath = app.WithConfigPath
 

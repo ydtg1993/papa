@@ -68,7 +68,7 @@
 | `no_sandbox` | bool | ❌ | 关闭 Chromium sandbox |
 | `leakless` | bool | ❌ | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
 | `browser_path` | string | ❌ | Chrome 可执行文件路径，空则用默认 Chromium |
-| `headers` | map | ✅ | 默认请求头（与内置默认头合并，同名覆盖）。可被**站点级**（`configs/sites/<站名>.go` 的 `Headers`）与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖；站点级写空值表示删掉那个头 |
+| `headers` | map | ✅ | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `configs/sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用、还想热更"的头 |
 
 ### html —— 静态 HTML 客户端
 
@@ -77,7 +77,7 @@
 | `enable` | bool | ❌ | 是否启用静态 HTML 客户端 |
 | `timeout` | duration | ✅ | 请求超时 |
 | `max_body_size` | int64 | ✅ | 响应体大小上限（字节）。**`enable: true` 时必填**，`102400..67108864`（100KB..64MB）。下界挡的是**单位混淆** —— 隔壁 `log.max_size` 的单位是 MB，这里写 `10` 意思是 10 字节，于是每次抓取都报「页面太大」；上界 64MB 在模板值（10MB）之上，只防笔误。热更时同样校验，越界回 400 |
-| `headers` | map | ✅ | 额外请求头。同样可被站点级 `Headers` 与 `papa.WithHeaders` 覆盖（站点级写空值 = 删） |
+| `headers` | map | ✅ | 额外请求头，同上：**通常写在站点级 `Headers`**（抓取与下载都认），可被 `papa.WithHeaders` 覆盖（站点级写空值 = 删）。留空时静态抓取的 UA 是框架默认的 `PapaStaticHTML/1.0` |
 
 ### proxy —— 代理管理器
 
@@ -91,6 +91,8 @@
 > 这一节配的是**代理池**（`api_url` 拉列表 + 定时刷新）。**用不用、用哪一个**由 fetcher 决定：
 > `engine.NextProxy()` 取一个，`papa.WithProxyURL(ctx, addr)` 传给一次静态抓取，
 > `filedown.DownloadOptions{Proxy: addr}` / `m3u8.DownloadOptions{Proxy: addr}` 传给一次下载。
+> 若这次下载就该跟着任务的抓取出口走，用 `filedown.OptionsFromRequest(ctx, referer)` /
+> `m3u8.OptionsFromRequest(ctx, referer)` 一步拿到（它会把 ctx 上的显式代理与站点级/逐请求头一起填好）。
 > 浏览器渲染那条**不支持**逐请求地址（Chrome 限制），只有"走池 / 直连"两档。
 
 ### db —— 数据库

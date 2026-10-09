@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/internal/msgqueue"
 	"github.com/ydtg1993/papa/v2/pkg/middleware"
 )
@@ -68,6 +69,15 @@ func (d *Downloader) GetErrors() <-chan error {
 	return d.trackQueue.Errors()
 }
 
+// OutputDir 返回配置里的输出根目录（DownloadResult.OutputFile 就是相对它的路径）。
+//
+// 为什么要有这个 getter：调用方把「相对路径」变成能落库、能在后台目录里看到的本地路径
+// （`filepath.Join(下载器.OutputDir(), result.OutputFile)`），这中间只能靠它 —— 若是自己再写一个
+// 常量去对齐 `Config.OutputDir`，两处一旦漂了**不报错**，只表现为「文件下下来了但记的路径指空」。
+func (d *Downloader) OutputDir() string {
+	return d.config.OutputDir
+}
+
 // DownloadOptions 单次下载选项
 type DownloadOptions struct {
 	UserAgent string
@@ -83,6 +93,49 @@ type DownloadOptions struct {
 	// 代价：拿不到 HEAD 上的 Content-Disposition 与 Content-Length，也没有断点续传
 	//（大文件、会断的下载还是走默认的分片路径）。
 	Direct bool
+}
+
+// OptionsFromRequest 按这次任务的抓取上下文造一份下载选项：站点级 + 逐请求 headers、
+// 显式指定的代理都会带过来；referer 是下载要声明的来源页（封面/视频这类资源站点常查它防盗链）。
+//
+// 为什么要有它：抓取与下载打的是同一个站，往往要同一套头（UA / Cookie / Referer 少一个就被拒），
+// 但引擎的抓取上下文（站点 `SiteSpec.Headers`、`papa.WithHeaders`、`papa.WithProxyURL`）与
+// `DownloadOptions` 是两套东西，而**下载器不会自己去读 ctx** —— 隐式继承会让人不知道请求上到底带了什么。
+// 所以是显式的一步：想用就调它，不想用就自己造一份。
+//
+//	opts := filedown.OptionsFromRequest(ctx, page.URL.String())
+//	opts.Direct = true
+//	res := engine.GetFiledown().Download(ctx, coverURL, "covers/series", name, opts)
+//
+// 返回新对象，改它不影响 ctx。ctx 里既没有头也没有代理时，就是一份只带 Referer 的选项。
+// 头里的 `User-Agent`、`Cookie` 直接以 header 形式带过去；ctx 里若有 `Referer` 而这里也传了
+// referer，以**参数为准**（`applyHeadersToReq` 最后写 Referer）。
+//
+// `Headers` **总是可写**（没头时是空 map，不是 nil）：调用方常要再补自己的键
+// （`opts.Headers["Accept"] = "image/webp"`），给个 nil map 就是等着 panic。
+//
+// **它只带 ctx 上那两层**：站点级（`SiteSpec.Headers`，框架在任务入口挂上）与逐请求
+// （`papa.WithHeaders`）。config.yaml 里全局的 `html.headers` / `browser.headers` **不在其中** ——
+// 那是抓取客户端的默认层（还要支持热更），这里读不到。要让下载也跟抓取同一套头（UA 尤其），
+// 把该键写进 `SiteSpec.Headers`（站点声明，两条路都继承得到），或自己补在这个 map 上。
+func OptionsFromRequest(ctx context.Context, referer string) *DownloadOptions {
+	headers := core.HeadersFrom(ctx) // 返回的已经是副本；没有时是 nil
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	// 空值在抓取那边是"删掉这个头"（见 core.ApplyHeaders / splitHeaderOverride），
+	// 而下载器里 Set 一个空值会真的发出去一个空头（服务器往往据此判为异常请求）——
+	// 所以把空值就地删掉，让两边的语义一致。
+	for k, v := range headers {
+		if v == "" {
+			delete(headers, k)
+		}
+	}
+	return &DownloadOptions{
+		Referer: referer,
+		Proxy:   core.ProxyURLFrom(ctx),
+		Headers: headers,
+	}
 }
 
 // DownloadResult 下载结果

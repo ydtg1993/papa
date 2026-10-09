@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v2/core"
 )
 
 // 测试辅助：创建临时目录
@@ -812,5 +814,131 @@ func TestDownloadOptionsDirectSkipsHeadAndChunks(t *testing.T) {
 	}
 	if string(data) != string(content) {
 		t.Fatalf("文件内容 = %q, want %q", data, content)
+	}
+}
+
+// OutputDir() 是 DownloadResult.OutputFile 的基准：两者一拼就是那个文件。调用方要把
+// 「相对路径」变成能落库、能在后台目录里看到的本地路径，只能靠这个 getter —— 若自己再写一个
+// 常量去对齐 Config.OutputDir，两处漂了**不报错**，只表现为「文件下下来了但记的路径指空」。
+func TestOutputDirGetterIsTheBaseOfOutputFile(t *testing.T) {
+	content := []byte("cover-bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	downloader := NewDownloader(cfg)
+
+	result := downloader.Download(context.Background(), server.URL+"/cover.img", "covers/series", "abc123.img", &DownloadOptions{Direct: true})
+	if result.Error != nil {
+		t.Fatalf("download failed: %v", result.Error)
+	}
+
+	if got := downloader.OutputDir(); got != cfg.OutputDir {
+		t.Fatalf("OutputDir() = %q, want %q（配置里写了什么就返回什么）", got, cfg.OutputDir)
+	}
+	// OutputFile 是**相对** OutputDir 的：拼起来必须正好落在下载出来的那个文件上
+	abs := filepath.Join(downloader.OutputDir(), result.OutputFile)
+	if got, err := os.ReadFile(abs); err != nil || string(got) != string(content) {
+		t.Fatalf("拼出来的路径 %q 读不到刚下的内容（err=%v, got=%q）", abs, err, got)
+	}
+}
+
+// 没传配置时走 DefaultConfig（NewDownloader 自己补的），getter 不能返回空串 ——
+// 拼路径时让它变成空串等于把文件写到相对目录的根上去。
+func TestOutputDirGetterDefaultsWhenConfigNil(t *testing.T) {
+	if got, want := NewDownloader(nil).OutputDir(), DefaultConfig().OutputDir; got != want {
+		t.Fatalf("OutputDir() = %q, want %q", got, want)
+	}
+}
+
+// 下载器不读 ctx（隐式继承会让人不知道请求上到底带了什么）：抓取上下文要显式转成下载选项。
+// OptionsFromRequest 负责把站点级 / 逐请求头与显式代理带过来，其余（Direct、Accept 之类）留给自己补。
+func TestOptionsFromRequestCarriesHeadersAndProxy(t *testing.T) {
+	ctx := core.WithHeaders(context.Background(), map[string]string{
+		"User-Agent": "ua-site",
+		"Cookie":     "sid=1",
+		"X-Drop":     "", // 空值 = 删掉这个头
+	})
+	ctx = core.WithProxyURL(ctx, "http://127.0.0.1:8080")
+
+	opts := OptionsFromRequest(ctx, "https://site.example/detail/1")
+	if opts.Referer != "https://site.example/detail/1" {
+		t.Fatalf("Referer = %q", opts.Referer)
+	}
+	if opts.Proxy != "http://127.0.0.1:8080" {
+		t.Fatalf("Proxy = %q，ctx 上指定了出口就该带上", opts.Proxy)
+	}
+	if opts.Headers["User-Agent"] != "ua-site" || opts.Headers["Cookie"] != "sid=1" {
+		t.Fatalf("ctx 上的头没带过来：%v", opts.Headers)
+	}
+	// 空值 = "删掉这个头"（与抓取路径同一套语义），不能变成发出去一个空头
+	if _, ok := opts.Headers["X-Drop"]; ok {
+		t.Fatalf("空值的头应当被删掉而不是留着：%v", opts.Headers)
+	}
+
+	// 头是副本：改选项不该影响 ctx 里那份（否则下一个下载会莫名其妙换 UA）
+	opts.Headers["User-Agent"] = "tampered"
+	if core.HeadersFrom(ctx)["User-Agent"] != "ua-site" {
+		t.Fatal("OptionsFromRequest 返回的头应当是副本")
+	}
+}
+
+// ctx 上什么都没有：只带 Referer；Headers 是**可写的空 map**而不是 nil ——
+// 调用方紧接着就要补自己的键（`opts.Headers["Accept"] = ...`），给 nil map 就是等着 panic。
+func TestOptionsFromRequestWithoutContext(t *testing.T) {
+	opts := OptionsFromRequest(context.Background(), "https://site.example/p")
+	if opts.Referer != "https://site.example/p" || opts.Proxy != "" {
+		t.Fatalf("空 ctx 应当只带 Referer：%+v", opts)
+	}
+	if opts.Headers == nil || len(opts.Headers) != 0 {
+		t.Fatalf("Headers 应当是非 nil 的空 map：%#v", opts.Headers)
+	}
+	opts.Headers["Accept"] = "image/webp" // 不该 panic
+	if len(core.HeadersFrom(context.Background())) != 0 {
+		t.Fatal("补键不该影响到 ctx")
+	}
+}
+
+// 端到端：这些头真的落到下载请求上。ctx 里与参数里都有 Referer 时以**参数**为准
+// （下载的来源页是详情页，而不是抓取那一下的地址）。
+func TestOptionsFromRequestReachesTheRequest(t *testing.T) {
+	var got http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+
+	ctx := core.WithHeaders(context.Background(), map[string]string{
+		"User-Agent": "ua-site",
+		"Cookie":     "sid=1",
+		"Referer":    "https://ctx.example/",
+	})
+	opts := OptionsFromRequest(ctx, server.URL+"/detail/1")
+	opts.Direct = true
+
+	cfg := DefaultConfig()
+	cfg.OutputDir = tempDir(t)
+	cfg.ResumeStateDir = tempDir(t)
+	res := NewDownloader(cfg).Download(ctx, server.URL+"/cover.img", "covers", "a.img", opts)
+	if res.Error != nil {
+		t.Fatalf("download failed: %v", res.Error)
+	}
+	if got.Get("User-Agent") != "ua-site" || got.Get("Cookie") != "sid=1" {
+		t.Fatalf("请求上没有带上 ctx 的头：%v", got)
+	}
+	if got.Get("Referer") != server.URL+"/detail/1" {
+		t.Fatalf("Referer = %q，参数里的来源页应当优先于 ctx 里那个", got.Get("Referer"))
 	}
 }

@@ -98,6 +98,19 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		t.Fatalf("脚手架产出的配置框架读不了：%v", err)
 	}
 
+	// `.gitignore` 不能整目录忽略 configs/ —— configs/sites/<站名>.go 是站点与阶段声明（真代码），
+	// 被忽略掉的话新工程的骨架进不了版本库。回归点：v3.0.0 把声明搬进 configs/ 之后，
+	// 模板里的 `configs/` 那行就成了坑（实测生成物里它就那么写着）。
+	gitignore := readFile(t, filepath.Join("demo", ".gitignore"))
+	if !strings.Contains(gitignore, "configs/config.yaml") {
+		t.Errorf(".gitignore 应当忽略 configs/config.yaml：%s", gitignore)
+	}
+	for _, line := range strings.Split(gitignore, "\n") {
+		if strings.TrimSpace(line) == "configs/" {
+			t.Errorf(".gitignore 不该整目录忽略 configs/（configs/sites/*.go 是代码）：%s", gitignore)
+		}
+	}
+
 	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
 	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 configs/sites/<站名>.go 声明。
 	siteSpec := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
@@ -115,6 +128,20 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	if !strings.Contains(fetcher, `"catalog"`) {
 		t.Errorf("fetcher 模板的 GetStage() 与配置里的阶段名对不上：\n%s", fetcher)
 	}
+	// 请求头只写**一处**：站点声明。模板里再抄一份到 config.yaml 就是会静默失效的副本
+	//（站点级同键覆盖全局层），而脚手架是用户照抄的范本 —— 两处各写一份 UA 正是要杜绝的样子。
+	if !strings.Contains(siteSpec, "Headers: map[string]string{") {
+		t.Errorf("configs/sites/demo.go 应当把站点的请求头声明出来（脚手架产物要能直接对着真站跑）：\n%s", siteSpec)
+	}
+	if !strings.Contains(siteSpec, "User-Agent") {
+		t.Errorf("站点声明里应当给出 User-Agent（框架默认的 PapaStaticHTML/1.0 会被真实站点判为爬虫）：\n%s", siteSpec)
+	}
+	// 反面：config.yaml 里不该再出现一份 UA。全局那层仍在（注释里给了用法），
+	// 它留给"与站点无关、所有站共用、还想热更"的头。
+	if strings.Contains(readFile(t, filepath.Join("demo", "configs", "config.yaml")), "Mozilla/") {
+		t.Error("config.yaml 里不该再写一份 UA —— 请求头写在 configs/sites/<站名>.go 的 Headers 里")
+	}
+
 	// 配置里引用的白名单文件得真的存在，否则那条注释形同虚设
 	if cfg.Server.WhitelistFile == "" {
 		t.Error("server.whitelist_file 没配")

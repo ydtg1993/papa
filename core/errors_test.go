@@ -3,6 +3,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -113,3 +114,30 @@ type emptyKindErr struct{}
 
 func (emptyKindErr) Error() string { return "empty-kind" }
 func (emptyKindErr) Kind() string  { return "" }
+
+// 受限页错误的形状是**约定**：分类名 access_restricted 会写进告警与 ops 的过滤条件，
+// 消息里要能看到是哪一步、哪个 URL、命中的哪句话（排查时不用再去翻页面归档）。
+func TestRestrictedPageErrorMessageAndKind(t *testing.T) {
+	err := RestrictedPageError("catalog", "https://example.com/list?page=2", "验证码")
+	if err == nil {
+		t.Fatal("RestrictedPageError 不该返回 nil")
+	}
+	if Retryable(err) {
+		t.Fatal("受限页必须不可重试")
+	}
+	if kind := ErrorKind(err); kind != "access_restricted" {
+		t.Fatalf("分类 = %q, want access_restricted", kind)
+	}
+	msg := err.Error()
+	for _, want := range []string{"catalog", "https://example.com/list?page=2", "验证码"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("消息里缺 %q：%s", want, msg)
+		}
+	}
+
+	// 没给命中话术（自己判的情况）也要能出消息，不能出现空的"（命中：）"
+	msg = RestrictedPageError("detail", "https://example.com/a", "").Error()
+	if strings.Contains(msg, "命中") {
+		t.Fatalf("没有命中话术时不该出现那段：%s", msg)
+	}
+}

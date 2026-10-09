@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/ydtg1993/papa/v2/core"
 	"github.com/ydtg1993/papa/v2/pkg/middleware/proxy"
 )
@@ -362,5 +363,48 @@ func TestRestrictedReason(t *testing.T) {
 				t.Fatalf("RestrictedReason = %q, want %q", got, c.want)
 			}
 		})
+	}
+}
+
+// Selection 存在的理由：业务把解析函数统一写成收 `*goquery.Selection`，线上传页面、
+// 测试里传自己造的文档 —— 不用为"两种文档类型"再包一层接口。
+func TestSelectionServesBothPageAndTestDocument(t *testing.T) {
+	const body = `<html><body><ul><li data-id="1">A</li><li data-id="2">B</li></ul></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	// 一个只认 *goquery.Selection 的解析函数（业务里就是这个形状）
+	parse := func(root *goquery.Selection) []string {
+		ids := make([]string, 0)
+		root.Find("li").Each(func(_ int, li *goquery.Selection) {
+			if id, ok := li.Attr("data-id"); ok {
+				ids = append(ids, id)
+			}
+		})
+		return ids
+	}
+
+	client := NewClient(Config{Timeout: time.Second})
+	page, err := client.Fetch(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if got := parse(page.Selection()); len(got) != 2 || got[0] != "1" || got[1] != "2" {
+		t.Fatalf("从页面取到的 = %#v", got)
+	}
+	// page.Document.Selection() 与 page.Selection() 是同一个根
+	if page.Document.Selection() != page.Selection() {
+		t.Fatal("两个入口应当给出同一个根 selection")
+	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewDocumentFromReader: %v", err)
+	}
+	if got := parse(doc.Selection); len(got) != 2 {
+		t.Fatalf("从测试自造文档取到的 = %#v", got)
 	}
 }

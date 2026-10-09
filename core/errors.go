@@ -31,6 +31,19 @@ func wrapNoRetry(kind string, err error) error {
 	return &NoRetryError{Err: err, kind: kind}
 }
 
+// RestrictedPageError 标准化的「这一页被反爬拦下了」错误：**不可重试**，分类 access_restricted。
+//
+// reason 传 `htmlfetch.RestrictedReason` 的返回值（命中的那句话）—— 它会写进消息、日志与告警里，
+// 排查时"为什么判它是受限页"一眼可见。业务一般不用直接调：`engine.RestrictedError` 会把站点词表
+// （`SiteSpec.RestrictedKeywords`）一并处理掉。
+func RestrictedPageError(stage, pageURL, reason string) error {
+	msg := stage + " page is access-restricted: " + pageURL
+	if reason != "" {
+		msg += "（命中：" + reason + "）"
+	}
+	return WrapNoRetryKind("access_restricted", errors.New(msg))
+}
+
 // Retryable 判断 err 是否应重试：默认视为可重试；
 // 若 err 实现了 Retryable() bool，则以自身声明为准。
 func Retryable(err error) bool {
