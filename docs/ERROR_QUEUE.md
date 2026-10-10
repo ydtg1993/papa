@@ -38,7 +38,7 @@
 | 方式 | 说明 |
 | --- | --- |
 | 自动轮询 | `Enabled: &true` 且 `Interval` 不是 `"0"`，后台按间隔自动投递 |
-| 手动（OA） | `POST /api/errorqueue/process` |
+| 手动（OA） | 队列治理面板上**每站一行**的「立即执行」；或 `POST /api/errorqueue/process?site=<站点>`（只跑那一站；不带 = 所有站点各跑一遍） |
 | 手动（代码） | `engine.ProcessErrorQueue()` |
 
 ## 3. 再处理代数上限（防无限重试）

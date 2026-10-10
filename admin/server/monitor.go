@@ -49,9 +49,11 @@ type MonitorConfig struct {
 	LogDir        string                           // 日志目录（导出用）
 	// ArchiveDir 页面归档根目录（可空 = 归档没开）。后台「追踪」抽屉里那条"归档页面"步骤
 	// 据此提供**下载**：`GET /api/task/page?file=<相对路径>`（原始 HTML，拿去本地分析）。
-	ArchiveDir        string
-	OnShutdown        func()              // 优雅退出回调
-	ProcessErrorQueue func() (int, error) // 错误队列手动触发回调（可空）
+	ArchiveDir string
+	OnShutdown func() // 优雅退出回调
+	// ProcessErrorQueue 错误队列手动触发回调（可空）。site 为空 = 所有站点各跑一遍；
+	// 给了站点名 = 只跑那一站（站点名不认识时回调返回 engine.ErrUnknownSite → 400）。
+	ProcessErrorQueue func(site string) (int, error)
 	// ProcessRepeatQueue 周期轮询队列手动触发回调（可空）。site 为空 = 所有站点各跑一遍；
 	// 给了站点名 = 只跑那一站（站点名不认识时回调返回 engine.ErrUnknownSite → 400）。
 	ProcessRepeatQueue func(site string) (int, error)
@@ -380,9 +382,15 @@ func (s *Monitor) errorQueueProcessHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "error queue not configured", http.StatusNotFound)
 		return
 	}
-	count, err := s.cfg.ProcessErrorQueue()
+	// ?site= 只跑那一站（不认得的站名回 400）；不给 = 所有站点各跑一遍（向后兼容）
+	site := strings.TrimSpace(r.URL.Query().Get("site"))
+	count, err := s.cfg.ProcessErrorQueue(site)
 	if err != nil {
 		s.logger.Errorf("process error queue: %s", err.Error())
+		if errors.Is(err, engine.ErrUnknownSite) {
+			http.Error(w, "unknown site", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "process error queue failed", http.StatusInternalServerError)
 		return
 	}

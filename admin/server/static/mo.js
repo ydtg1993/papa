@@ -406,39 +406,41 @@
                 + wrows + '</table></div></div></div>';
         }).join('');
     }
-    /* ---- 治理队列（错误队列 + **每个站点一行**的轮询队列） ---- */
-    var QUEUE_META = {
-        error_queue: { label: '错误队列', desc: '失败任务重投', url: '/api/errorqueue/process', key: 'processed', done: '已重新投递' }
+    /* ---- 治理队列（错误队列 + 轮询队列，**两条都按站点各占一行**） ---- */
+    // 两条队列的命名是同一套：默认 scope 是历史名字（`error_queue` / `repeat_queue`），
+    // 命名站点是 `<队列>:<站点>`（站点那一行只处理该站的任务，所以行里要带上站点）。
+    var QUEUE_KINDS = {
+        error_queue: { label: '错误队列', desc: '失败任务重投', path: '/api/errorqueue/process', key: 'processed', done: '已重新投递' },
+        repeat_queue: { label: '轮询队列', desc: '周期任务重投', path: '/api/repeatqueue/process', key: 'repolled', done: '已重投' }
     };
-    // 轮询队列按站点拆：默认 scope 是 `repeat_queue`，命名站点是 `repeat_queue:<站点>`。
-    // 返回 null 表示这个 key 不是轮询队列；返回 '' 表示默认 scope。
-    function repeatQueueSite(name) {
-        if (name === 'repeat_queue') return '';
-        var prefix = 'repeat_queue:';
-        if (name.indexOf(prefix) === 0) return name.slice(prefix.length);
-        return null;
+    // parseQueue 拆出队列名里的"哪条队列 + 哪个站点"；不是治理队列返回 null
+    //（快照里还有别的键，认不出来就不往面板上放）。
+    function parseQueue(name) {
+        var base = name, site = '', i = name.indexOf(':');
+        if (i >= 0) { base = name.slice(0, i); site = name.slice(i + 1); }
+        var kind = QUEUE_KINDS[base];
+        return kind ? { kind: kind, base: base, site: site } : null;
     }
     function queueMeta(name) {
-        if (QUEUE_META[name]) return QUEUE_META[name];
-        var site = repeatQueueSite(name);
-        if (site === null) return null;
+        var p = parseQueue(name);
+        if (!p) return null;
         return {
-            label: site === '' ? '轮询队列（默认 scope）' : ('轮询队列 · 站点 ' + site),
-            desc: '周期任务重投',
-            url: '/api/repeatqueue/process' + (site === '' ? '' : '?site=' + encodeURIComponent(site)),
-            key: 'repolled', done: '已重投'
+            label: p.kind.label + (p.site === '' ? '（默认 scope）' : (' · 站点 ' + p.site)),
+            desc: p.kind.desc,
+            url: p.kind.path + (p.site === '' ? '' : '?site=' + encodeURIComponent(p.site)),
+            key: p.kind.key, done: p.kind.done
         };
     }
-    // 面板上的顺序：固定队列在前，轮询队列按"默认 scope → 站点名字典序"
+    // 面板上的顺序：错误队列在前、轮询队列在后（按队列名字典序），各自"默认 scope → 站点名字典序"
     function queueKeys(data) {
-        var names = Object.keys(data || {});
-        var repeats = names.filter(function (n) { return repeatQueueSite(n) !== null; });
-        repeats.sort(function (a, b) {
-            var sa = repeatQueueSite(a), sb = repeatQueueSite(b);
-            if (sa === '' || sb === '') return sa === '' ? -1 : 1;
-            return sa < sb ? -1 : (sa > sb ? 1 : 0);
+        var names = Object.keys(data || {}).filter(function (n) { return parseQueue(n) !== null; });
+        names.sort(function (a, b) {
+            var pa = parseQueue(a), pb = parseQueue(b);
+            if (pa.base !== pb.base) return pa.base < pb.base ? -1 : 1;
+            if (pa.site === '' || pb.site === '') return pa.site === '' ? -1 : 1;
+            return pa.site < pb.site ? -1 : (pa.site > pb.site ? 1 : 0);
         });
-        return Object.keys(QUEUE_META).concat(repeats);
+        return names;
     }
     function timeValid(d) { return !isNaN(d.getTime()) && d.getFullYear() >= 2000; }
     function agoSeconds(iso) {
@@ -531,8 +533,8 @@
     function siteLabel(key) { return key === '' ? '默认 scope' : key; }
 
     // siteView 按当前站点过滤阶段与队列（概览返回全部）。
-    // 队列那一侧靠队列名编码的站点（repeat_queue:<站点>）；error_queue 是全局的，
-    // 只在概览里出现。
+    // 队列那一侧靠队列名编码的站点（`<队列>:<站点>`）—— 错误队列与轮询队列**都是**按站点拆的，
+    // 两条都要跟着走（只认轮询队列的话，站点 Tab 下错误队列会整块消失）。
     function siteView(stages, queues) {
         if (currentSite === null) return { stages: stages, queues: queues };
         var outStages = {}, outQueues = {};
@@ -540,7 +542,8 @@
             if ((stages[name].site || '') === currentSite) outStages[name] = stages[name];
         });
         Object.keys(queues || {}).forEach(function (name) {
-            if (repeatQueueSite(name) === currentSite) outQueues[name] = queues[name];
+            var p = parseQueue(name);
+            if (p && p.site === currentSite) outQueues[name] = queues[name];
         });
         return { stages: outStages, queues: outQueues };
     }

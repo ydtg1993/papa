@@ -1,13 +1,13 @@
 # Papa 监控服务后台手册
 
-> 面向：看懂并用好 OA 监控后台——Dashboard、设置、表格页、动态配置、队列手动触发、日志导出。
+> 面向：看懂并用好 OA 监控后台——Dashboard、设置、表格页、站点 Tab、队列手动触发、熔断横幅、日志导出。
 > 配置项见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server` 段。
 
 ---
 
 ## 0. 一句话
 
-框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、表格页、设置、动态配置与日志导出。
+框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理（按站点）、站点 Tab 与概要、表格页、设置、熔断横幅与日志导出。
 
 > **多进程部署时注意**：Dashboard 上的**阶段概览**（排队数、在跑数、各 worker 状态）读的是
 > **本进程**的内存快照 —— 任务表是共享的，统计**不是**。跑多个进程（或容器多副本、多机器）时，
@@ -372,9 +372,13 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 > 也就没有「立即执行一次」的意义 —— 运行期点它会把正在跑的 `processing` 任务一起重投。
 > 见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
 
+两条队列的**默认 scope 行**（名字不带后缀的 `error_queue` / `repeat_queue`）永远在面板上，但**不跑** ——
+未归属（任务的 `site` 为空串）的任务没有站点声明可挂。它显示「已停用」是正常的，不是坏了。
+那一行的「立即执行」不带 `?site=`，语义是"所有站点各跑一遍"（与接口一致）。
+
 | 列 | 含义 |
 | --- | --- |
-| 状态 | `运行中`（附带本轮已执行时长）/ `空闲` / `已停用`（`*.enabled=false`）；有上次执行错误时鼠标悬停可见 |
+| 状态 | `运行中`（附带本轮已执行时长）/ `空闲` / `已停用`（这一站没声明这条队列，或声明里关了）；有上次执行错误时鼠标悬停可见 |
 | 上次执行 | 上次执行完成距今多久（悬停看绝对时间）· 上次执行耗时 |
 | 处理量 | 空闲时=上次处理数，运行中=本轮已处理数；副行显示累计处理数 |
 | 待处理 | 当前排队待处理的任务数（低频采样，副行显示采样时间） |
@@ -397,15 +401,17 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 ```jsonc
 "queues": {
-  "error_queue": {
-    "name": "error_queue", "enabled": true, "running": false, "runs": 12,
+  // 默认 scope 那两行（无后缀）永远在，但没有站点声明可挂 → 一直 enabled: false
+  "error_queue":  { "name": "error_queue",  "enabled": false, "running": false, "runs": 0, /* … */ },
+  "repeat_queue": { "name": "repeat_queue", "enabled": false, "running": false, "runs": 0, /* … */ },
+  // 命名站点：每站各占一行，enabled 取自该站声明里的 ErrorQueue / RepeatQueue
+  "error_queue:huangguo": {
+    "name": "error_queue:huangguo", "enabled": true, "running": false, "runs": 12,
     "started_at": "...", "last_finish_at": "...", "last_duration": 4000000000,
     "last_processed": 37, "run_processed": 0, "total_processed": 421,
     "backlog": 128, "backlog_at": "...", "last_error": ""
   },
-  "error_queue:huangguo": { /* 同上，name 是 "error_queue:huangguo" */ },
-  "repeat_queue":  { /* ... */ },
-  "repeat_queue:huangguo": { /* ... */ }
+  "repeat_queue:huangguo": { /* 同上，name 是 "repeat_queue:huangguo" */ }
 }
 ```
 

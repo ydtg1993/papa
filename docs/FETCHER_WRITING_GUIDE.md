@@ -752,10 +752,11 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 >（不想让入口阶段又跑一遍）就把它设成 `false` —— 它只管启动时投不投入口，阶段本身照常跑。
 > 实现了入口却没开 AutoStart 会打一条 Info（"是关的、不是漏的"）。
 >
-> **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（并发/队列/间隔/重试/入口开关/
-> 站点归属/熔断阈值都在那一处，`configs/sites/sites.go` 只做汇总），`main.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
-> 加阶段 = 写 fetcher + 在 `Sites()` 里加一段。阶段名取自 `GetStage()`，重名**启动就报错**；
-> 多站时阶段名要能区分（约定带站点前缀，如 `hgd_catalog` / `siteb_catalog`）。
+> **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（Key / BaseURL / Headers / 熔断阈值 /
+> 三个治理队列 / 每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**没有汇总清单** —— 文件自己在
+> `init()` 里登记），`main.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
+> 加阶段 = 写一个 fetcher（`GetStage()` 返回阶段名）+ 在这个站的文件里加一段 `StageSpec`。
+> 阶段名取自 `GetStage()`，重名**启动就报错**；多站时阶段名要能区分（约定带站点前缀，如 `hgd_catalog` / `siteb_catalog`）。
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
@@ -809,7 +810,12 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
   ```
   用不上的键**编译期就不存在**（`RecoverQueueSpec` 里根本没有 `Interval` 这个字段）—— 写错连编译都过不了。
 - **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
-- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`，fetcher 放 `fetcher/<站点>/`（一站一个包，与声明文件一一对应）。
+- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`；
+  fetcher 按站点分包（`fetcher/<站点>/`，与声明文件一一对应）—— 脚手架只有一个站时 `fetcher/` 就是那一层，
+  加第二个站时把它的 fetcher 收进自己的子包。
+- **"加一个站"不等于只复制一个声明文件**：阶段的存在离不开 fetcher，而**阶段名取自 `GetStage()`**
+  （不在声明文件里）。复制站点文件后，新站若还指向原来那个 fetcher，就是两个站声明了同一个阶段名 ——
+  启动直接 panic。副本要连带自己的 fetcher（新类型，或按站点分包），`GetStage()` 一并改成带站点前缀的名字。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：
   handler 里 `site, _ := engine.Site(task.Site)` → `site.BaseURL` / `site.Headers`；
   入口任务里框架把同一份快照交给 `SubmitEntries(engine, site)`。
