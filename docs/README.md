@@ -44,7 +44,7 @@ cd mycrawler && go mod tidy
 | 注册定时任务 / 写 cron | [SCHEDULER.md](./SCHEDULER.md) | RegisterCronJob、6 段 cron、RepollRepeatableTasks |
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |
 | 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动时把未到终态的任务全部重新入队 | 
-| 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、自动重投已完成的轮询任务 |
+| 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、到点才重投（周期可逐条定、后台可改） |
 | 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/自定义页/自定义路由与中间件/动态配置/队列/日志 API |
 | 排查「页面抓到了啥」/ 生成新项目 / 建令牌 | [CLI.md](./CLI.md) | `papa new` 脚手架、`html`/`rod`/`diff`/`select` 调试命令、`token add` |
 | 构建 / 测试 / 竞态检测（Makefile） | [DEVELOPMENT.md](./DEVELOPMENT.md) | make 目标、Windows 怎么跑、race 前置条件 |

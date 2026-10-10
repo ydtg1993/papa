@@ -12,13 +12,17 @@ import (
 )
 
 type Task struct {
-	ID             int    `json:"id"`  // 数据库记录 ID
-	PID            int    `json:"pid"` // 父级任务ID
-	URL            string // 要打开的 URL
-	Retry          int
-	Stage          string // 阶段标识，如 "catalog", "detail", "video"
-	Site           string // 所属站点（SiteSpec.Key）；空 = 未归属。随行落库，供后台按站点筛/排障
-	Repeatable     bool
+	ID         int    `json:"id"`  // 数据库记录 ID
+	PID        int    `json:"pid"` // 父级任务ID
+	URL        string // 要打开的 URL
+	Retry      int
+	Stage      string // 阶段标识，如 "catalog", "detail", "video"
+	Site       string // 所属站点（SiteSpec.Key）；空 = 未归属。随行落库，供后台按站点筛/排障
+	Repeatable bool
+	// RepeatInterval 这条任务的周期轮询周期；0 = 跟全局 repeat_queue.interval。
+	// **只在首次入库时播种**（见 toModel）：之后要改周期，用 `Engine.SetTaskRepeatInterval`
+	// 或后台的「设轮询周期」—— 免得每次启动重投入口任务时，代码里的值把运营改的盖掉。
+	RepeatInterval time.Duration
 	Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
 	IdempotencyKey string            // 自定义幂等键，为空时回退 Stage|URL
 	NotBefore      time.Time         // 延迟投递：最早可执行时间
@@ -61,6 +65,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		IdempotencyKey: t.IdempotencyKey,
 		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
+		RepeatInterval: int(t.RepeatInterval / time.Second), // 秒落库；0 = 跟全局
 		Urgent:         t.Urgent,
 		Status:         models.TaskStatusPending,
 	}
@@ -116,6 +121,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		Site:           t.Site,
 		Retry:          t.Retry,
 		Repeatable:     t.Repeatable == models.RepeatableYes,
+		RepeatInterval: time.Duration(t.RepeatInterval) * time.Second,
 		Urgent:         t.Urgent,
 		IdempotencyKey: t.IdempotencyKey,
 		Meta:           e.metaFromJSON(t.Meta),

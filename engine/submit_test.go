@@ -309,6 +309,63 @@ func TestSubmitTaskRollsBackOnSubmitFailure(t *testing.T) {
 	if !strings.Contains(f.writtenArgs(), "already stopped") {
 		t.Fatalf("失败原因应写进 error 列：%s", f.writtenArgs())
 	}
+	// 回滚也只写自己负责的列：整行写回会把运营在这期间改的 repeatable（后台「开/停轮询」）盖掉
+	if strings.Contains(f.written(), "`repeatable`") {
+		t.Fatalf("提交失败的回滚不该整行写回：\n%s", f.written())
+	}
+}
+
+/* ---------- 投递只写自己负责的列 ---------- */
+
+// 投递路径的 UPDATE 不得整行写回（原先的 e.db.Save(record) 会）：record 是更早 SELECT 出来的
+// 快照，延迟投递那条会把它压在 delayHeap 里直到 Delay 到点 —— 整行写回会把运营在这期间改的列
+// （repeatable / urgent / error…）静默盖回去。尤其 repeatable 现在由后台「开/停轮询」随时改，
+// 被盖回去就是"停轮询被数据面吃掉、队列永远继续轮询"。
+func TestSubmitToPoolWritesOnlyItsOwnColumns(t *testing.T) {
+	cases := []struct {
+		name           string
+		repeatable     bool
+		wantRepeatIncr bool
+	}{
+		{"普通任务：只标 pending", false, false},
+		{"轮询任务：顺带把轮询代数 +1", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			e := submitEngine(t, f, pool)
+
+			task := &Task{
+				ID: 7, Stage: "stub", URL: "https://example.com",
+				Repeatable: tc.repeatable, Site: "s1",
+				Meta: map[string]string{"series_id": "1"},
+			}
+			if err := e.SubmitTask(task); err != nil {
+				t.Fatalf("SubmitTask = %v", err)
+			}
+			sql := f.written()
+			// `` `repeat` `` 与 `` `repeatable` `` 不会互相误命中（尾引号），所以两条都要断言
+			for _, never := range []string{
+				"`repeatable`", "`url`", "`title`", "`content`", "`urgent`", "`error`",
+				// 周期与排期只由首次插入（toModel）与「设轮询周期」/「开轮询」写：
+				// 提交路径碰它们就等于把运营改的盖回去
+				"`repeat_interval`", "`next_repeat_at`", "`last_repeat_at`",
+			} {
+				if strings.Contains(sql, never) {
+					t.Fatalf("投递不该写 %s：\n%s", never, sql)
+				}
+			}
+			if got := strings.Contains(sql, "`repeat`"); got != tc.wantRepeatIncr {
+				t.Fatalf("repeat 自增 = %v, want %v：\n%s", got, tc.wantRepeatIncr, sql)
+			}
+			for _, want := range []string{"`status`", "`meta`", "`site`"} {
+				if !strings.Contains(sql, want) {
+					t.Fatalf("投递应写 %s：\n%s", want, sql)
+				}
+			}
+		})
+	}
 }
 
 /* ---------- 延迟投递 ---------- */
@@ -588,4 +645,26 @@ func statusName(s models.TaskStatus) string {
 		return "failed"
 	}
 	return "unknown"
+}
+
+// 新任务带了周期：只在这里（首次入库）播种，之后要改周期走 SetTaskRepeatInterval / 后台动作。
+func TestSubmitTaskSeedsRepeatInterval(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true // 库里还没有这一行 → 走 INSERT
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+
+	task := &Task{
+		Stage: "stub", URL: "https://example.com/series/1",
+		Repeatable: true, RepeatInterval: 10 * time.Minute,
+	}
+	if err := e.SubmitTask(task); err != nil {
+		t.Fatalf("SubmitTask = %v", err)
+	}
+	if !strings.Contains(f.written(), "`repeat_interval`") {
+		t.Fatalf("首次入库应播种 repeat_interval：\n%s", f.written())
+	}
+	if args := f.writtenArgs(); !strings.Contains(args, "600") {
+		t.Fatalf("周期应按秒落库（10m → 600）：%s", args)
+	}
 }

@@ -6,7 +6,12 @@ import "time"
 // getInterval 返回当前生效间隔（<=0 表示停用）；onTick 到点时执行。
 // 配置变更（ApplyRuntimeConfig 触发 configChanged 信号）会唤醒它重新读取间隔；
 // 只有间隔真正变化时才重建 ticker，避免无关变更（如改浏览器头）反复重置、饿死队列轮询。
-func (e *Engine) runDynamicTicker(getInterval func() time.Duration, onTick func()) {
+//
+// wake 是额外的"数据变了，重算间隔"通道（可传 nil，nil channel 永不触发）—— 队列的间隔是
+// **pull** 出来的：只在 tick 到点或收到信号时重算。轮询队列的节拍还取决于表里的数据
+// （最早一条到点），所以新提交一条任务、后台改了某条的周期、把它开起来，都得显式叫它一声，
+// 否则要等当前那次 sleep 到期（可能是全局的几小时）才被看见。
+func (e *Engine) runDynamicTicker(getInterval func() time.Duration, wake <-chan struct{}, onTick func()) {
 	go func() {
 		var ticker *time.Ticker
 		var tickerC <-chan time.Time
@@ -30,6 +35,8 @@ func (e *Engine) runDynamicTicker(getInterval func() time.Duration, onTick func(
 				select {
 				case <-e.ctx.Done():
 					return
+				case <-wake: // 数据变了：重新算间隔（可能是 0 = 仍然停用）
+					continue
 				case <-e.configChanged:
 					continue
 				}
@@ -48,6 +55,8 @@ func (e *Engine) runDynamicTicker(getInterval func() time.Duration, onTick func(
 				return
 			case <-tickerC:
 				onTick()
+			case <-wake:
+				continue
 			case <-e.configChanged:
 				continue
 			}

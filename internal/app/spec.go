@@ -30,11 +30,6 @@ type SiteSpec struct {
 	// BaseURL 站点根地址。框架不拿它当限制，只是方便 handler 取用
 	//（`engine.Site(task.Site)` → BaseURL）。
 	BaseURL string
-	// Entries 本站的入口路由表：key → 相对 BaseURL 的路径（或绝对地址），如
-	// `{"漫画": "category/comic/"}`。框架**不解析它**，只是原样带进 core.Site ——
-	// `SubmitEntries(engine, site)` 用它投入口任务，handler 用它反推任务的 key。
-	// 换站时它与 BaseURL 一起改，fetcher 里就没有站点常量了（有副本就会漂）。
-	Entries map[string]string
 	// Headers 本站的请求头（UA / Referer / Cookie / Accept-Language…）：这个站的任务抓任何页面
 	// 都自动带上（静态抓取与浏览器渲染都认），**同键覆盖** `html.headers` / `browser.headers`；
 	// 值为空串 = 删掉那个头。handler 里还能对单次请求 `papa.WithHeaders(ctx, …)` 再覆盖。
@@ -114,7 +109,6 @@ func (s SiteSpec) snapshot() core.Site {
 	return core.Site{
 		Key:                s.Key,
 		BaseURL:            s.BaseURL,
-		Entries:            s.Entries,
 		Headers:            s.Headers,
 		RestrictedKeywords: s.RestrictedKeywords,
 	}

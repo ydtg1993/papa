@@ -8,9 +8,6 @@ package core
 type Site struct {
 	Key     string `json:"key"`
 	BaseURL string `json:"base_url"`
-	// Entries 本站的入口路由表：key → 相对 BaseURL 的路径（或绝对地址），如
-	// `SubmitEntries(engine, site)` 拿它投入口任务，handler 拿它反推任务的 key。
-	Entries map[string]string `json:"entries,omitempty"`
 	// Headers 本站的请求头（UA / Referer / Cookie / Accept-Language…）。
 	// 引擎在跑这个站的任务时自动挂到 ctx 上（静态抓取与浏览器渲染都带上），
 	// handler 里还能用 `papa.WithHeaders(ctx, …)` 对单次请求再覆盖。

@@ -38,6 +38,12 @@ type TaskActions interface {
 	DeleteTask(id uint) error
 	// UrgentTask 把一行还没被取走的任务投到快车道；重复加急/已被取走返回 engine.ErrTaskUrgent。
 	UrgentTask(id uint) error
+	// SetTaskRepeatable 开/停这一行的周期轮询（只改标记，下一轮 scan 才生效）；
+	// 已经开着又开返回 engine.ErrTaskRepeatOn，已经停着又停返回 engine.ErrTaskRepeatOff。
+	SetTaskRepeatable(id uint, on bool) error
+	// SetTaskRepeatInterval 改这一行的轮询周期（秒；0 = 跟全局）。
+	// wasSeconds 是行快照里的旧值，当版本条件防重复提交；周期不合法返回 engine.ErrRepeatIntervalBad。
+	SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error
 }
 
 // Table 返回内置「任务」表格的声明。acts 为 nil 时不注册任何写操作，表格退化为只读。
@@ -62,6 +68,10 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "reprocess", Label: "重投", Kind: oao.KindNumber, Width: "70px"},
 			{Field: "repeatable", Label: "可轮询", Kind: oao.KindBool, Width: "90px"},
 			{Field: "repeat", Label: "轮询次数", Kind: oao.KindNumber, Width: "90px"},
+			// 周期与两个时刻：判据是 next_repeat_at（到点才重投），last_repeat_at 只是记录
+			{Field: "repeat_interval", Label: "轮询周期(秒)", Kind: oao.KindNumber, Width: "110px"},
+			{Field: "last_repeat_at", Label: "上次轮询", Kind: oao.KindTime, Width: "150px"},
+			{Field: "next_repeat_at", Label: "下次轮询", Kind: oao.KindTime, Width: "150px"},
 			{Field: "urgent", Label: "加急", Kind: oao.KindBool, Width: "80px"},
 			{Field: "error", Label: "错误", Render: oao.RenderInput, MaxLen: 40},
 			{Field: "created_at", Label: "创建时间", Kind: oao.KindTime, NoEdit: true},
@@ -89,7 +99,7 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 // 成败都由 Config.OnAction 记审计；「追踪」是个只读入口，服务端只校验 id，展示交给前端脚本。
 //
 // 顺序有讲究：oao 超过 3 个动作时只平铺前两个，其余收进「更多 ▾」。
-// 所以最常用的「重投」和只读排查入口「追踪」放前面，加急/标失败/删除收进更多里。
+// 所以最常用的「重投」和只读排查入口「追踪」放前面，加急/开轮询/停轮询/标失败/删除收进更多里。
 func taskActions(acts TaskActions) []oao.Action {
 	return []oao.Action{
 		{
@@ -132,6 +142,58 @@ func taskActions(acts TaskActions) []oao.Action {
 					return err
 				}
 				return toOaoError(acts.UrgentTask(id))
+			},
+		},
+		{
+			Key: "repeat_on", Label: "开轮询", Tone: oao.ToneInfo,
+			Confirm: "让该任务参与周期轮询？只改标记，下一轮扫描时才生效，不会立刻重跑一次。",
+			Handler: func(ctx context.Context, req oao.ActionRequest) error {
+				id, err := parseID(req)
+				if err != nil {
+					return err
+				}
+				// 方向写死在动作里，不看 req.Row —— 那是客户端回传的展示快照，
+				// 拿它决定"开还是停"等于把方向交给前端状态。
+				return toOaoError(acts.SetTaskRepeatable(id, true))
+			},
+		},
+		{
+			Key: "repeat_off", Label: "停轮询", Tone: oao.ToneInfo,
+			Confirm: "停掉该任务的周期轮询？只改标记，下一轮扫描时才生效；已经跑起来的这一轮不受影响。",
+			Handler: func(ctx context.Context, req oao.ActionRequest) error {
+				id, err := parseID(req)
+				if err != nil {
+					return err
+				}
+				return toOaoError(acts.SetTaskRepeatable(id, false))
+			},
+		},
+		{
+			Key: "repeat_interval", Label: "设轮询周期", Tone: oao.ToneInfo,
+			Confirm: "改这条任务的轮询周期？只改周期，不会立刻重跑一次（想立刻跑请用「重投」）。",
+			Form: []oao.Field{
+				{Name: "seconds", Label: "轮询周期（秒）", Kind: oao.KindNumber, Required: true,
+					Help: "600 = 10 分钟；0 = 跟全局 repeat_queue.interval；最小 10 秒"},
+			},
+			Handler: func(ctx context.Context, req oao.ActionRequest) error {
+				id, err := parseID(req)
+				if err != nil {
+					return err
+				}
+				// 版本条件：拿行快照里的旧周期，重复点击只有第一次能成功（同「重投」用 reprocess）
+				raw := req.RowString("repeat_interval")
+				if raw == "" {
+					return oao.Fail(http.StatusBadRequest, "缺少版本号 repeat_interval，无法防重复提交")
+				}
+				was, convErr := strconv.Atoi(raw)
+				if convErr != nil {
+					return oao.Fail(http.StatusBadRequest, "版本号 repeat_interval 不是整数：%q", raw)
+				}
+				seconds, ok := req.Int("seconds")
+				if !ok {
+					return oao.Fail(http.StatusBadRequest, "轮询周期（秒）必填，且必须是整数")
+				}
+				return toOaoError(acts.SetTaskRepeatInterval(id, was, seconds))
 			},
 		},
 		{
@@ -192,6 +254,12 @@ func toOaoError(err error) error {
 		return oao.Fail(http.StatusConflict, "该任务已经加急过了，或已被取走，刷新后再看")
 	case errors.Is(err, engine.ErrTaskFinished):
 		return oao.Fail(http.StatusConflict, "该任务已结束，加急没有意义（要重跑请用「重投」）")
+	case errors.Is(err, engine.ErrTaskRepeatOn):
+		return oao.Fail(http.StatusConflict, "该任务已经在轮询了，刷新页面后再看")
+	case errors.Is(err, engine.ErrTaskRepeatOff):
+		return oao.Fail(http.StatusConflict, "该任务本来就没在轮询，刷新页面后再看")
+	case errors.Is(err, engine.ErrRepeatIntervalBad):
+		return oao.Fail(http.StatusBadRequest, "%v", err)
 	default:
 		return err
 	}

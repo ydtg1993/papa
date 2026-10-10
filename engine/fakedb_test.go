@@ -59,6 +59,9 @@ type fakeTaskDB struct {
 	// count 是 COUNT(*) 查询的返回值（默认 0）。治理队列的积压采样走它 ——
 	// 那条路要的是单列结果集，和 crawler_tasks 的整行结果集不是一回事。
 	count int64
+	// minEpoch 是 MIN(UNIX_TIMESTAMP(...)) 查询的返回值（nil = NULL/没有可轮询的行）。
+	// 轮询队列的节拍（soonestRepeatIn）走它 —— 同样是单列结果集。
+	minEpoch *int64
 }
 
 // fakeTraceColumns 是 models.TaskTrace 的全列，顺序任意 —— gorm 按列名映射。
@@ -82,10 +85,32 @@ type fakeRow map[string]driver.Value
 var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 
 // fakeTaskColumns 是 models.CrawlerTask 的全列，顺序任意 —— gorm 按列名映射。
+// **必须与模型全列一致**：rowValuesOf 只按这个列表取值，漏了新列不报错，
+// 测试里 `f.row["新列"] = ...` 会被静默丢弃、断言照样"通过"。TestFakeTaskColumnsCoverModel 钉住它。
 var fakeTaskColumns = []string{
-	"id", "pid", "stage", "site", "url", "url_hash", "idempotency_key", "meta", "title", "content",
-	"retry", "status", "repeatable", "repeat", "reprocess", "urgent", "error",
-	"created_at", "updated_at",
+	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "meta", "title", "content",
+	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
+	"reprocess", "urgent", "error", "created_at", "updated_at",
+}
+
+// TestFakeTaskColumnsCoverModel 假库的列清单必须覆盖模型全列（见 fakeTaskColumns 的注释）。
+func TestFakeTaskColumnsCoverModel(t *testing.T) {
+	stmt := &gorm.Statement{DB: dryDB(t)}
+	if err := stmt.Parse(&models.CrawlerTask{}); err != nil {
+		t.Fatalf("parse model: %v", err)
+	}
+	got := make(map[string]bool, len(fakeTaskColumns))
+	for _, c := range fakeTaskColumns {
+		got[c] = true
+	}
+	for _, name := range stmt.Schema.DBNames {
+		if !got[name] {
+			t.Errorf("fakeTaskColumns 缺列 %q —— 测试里给这一列设值会被静默丢弃（假通过）", name)
+		}
+	}
+	if len(fakeTaskColumns) != len(stmt.Schema.DBNames) {
+		t.Errorf("fakeTaskColumns 有 %d 列，模型有 %d 列", len(fakeTaskColumns), len(stmt.Schema.DBNames))
+	}
 }
 
 // newFakeTaskDB 造一个放着「一行待处理、未加急任务」的假库。
@@ -94,11 +119,11 @@ func newFakeTaskDB() *fakeTaskDB {
 	return &fakeTaskDB{
 		affected: 1,
 		row: fakeRow{
-			"id": int64(7), "pid": int64(0), "stage": "stub", "site": "", "url": "https://example.com",
+			"id": int64(7), "p_id": int64(0), "stage": "stub", "site": "", "url": "https://example.com",
 			"url_hash":        models.UrlHash("https://example.com"),
 			"idempotency_key": "", "meta": []byte("{}"), "title": "", "content": []byte("{}"),
 			"retry": int64(0), "status": int64(models.TaskStatusPending), "repeatable": int64(0),
-			"repeat": int64(0), "reprocess": int64(0), "urgent": false, "error": "",
+			"repeat": int64(0), "repeat_interval": int64(0), "reprocess": int64(0), "urgent": false, "error": "",
 			"created_at": now, "updated_at": now,
 		},
 	}
@@ -219,6 +244,13 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	}
 	if strings.Contains(strings.ToUpper(q), "COUNT(") {
 		return &fakeRows{cols: []string{"count(*)"}, all: [][]driver.Value{{f.count}}}, nil
+	}
+	if strings.Contains(strings.ToUpper(q), "MIN(") {
+		var v driver.Value
+		if f.minEpoch != nil {
+			v = *f.minEpoch
+		}
+		return &fakeRows{cols: []string{"epoch"}, all: [][]driver.Value{{v}}}, nil
 	}
 	if !strings.Contains(q, "crawler_tasks") {
 		return nil, fmt.Errorf("fakeTaskDB 只认 crawler_tasks / crawler_task_trace，收到：%s", q)

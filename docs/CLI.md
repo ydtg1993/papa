@@ -37,7 +37,7 @@ mycrawler/
   configs/
     config.yaml            配置（先把 db.dsn 指向你的库）
     whitelist              后台来源白名单（全注释＝不限制，启动会警告）
-    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Entries / Headers + 每个阶段的
+    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers + 每个阶段的
                             worker_count / queue_size / delay / retry / AutoStart
   fetcher/                 抓取实现（一个阶段一个 fetcher；加站点时按站点分包）
   models/                  业务表模型 + 建表清单（models.go）

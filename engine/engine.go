@@ -55,6 +55,7 @@ type Engine struct {
 	delayCh   chan struct{}
 
 	configChanged chan struct{} // 运行期配置变更信号（唤醒动态 ticker 重新读生效配置）
+	repeatWake    chan struct{} // 轮询队列的"数据变了"信号（新提交/改周期/开轮询 → 重算扫描节拍）
 
 	errorQueueMu   sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
 	recoverQueueMu sync.Mutex // 串行化启动恢复，避免重复投递（ProcessRecoverQueue 是导出的，业务也可能调）
@@ -153,6 +154,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		metrics:       metrics.New(),
 		delayCh:       make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
+		repeatWake:    make(chan struct{}, 1),
 		spilled:       make(map[string][]*Task),
 		queueRuns:     newQueueRuns(),
 	}

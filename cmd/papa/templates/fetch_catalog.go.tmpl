@@ -20,19 +20,22 @@ func (f *FetchCatalog) GetStage() string { return "catalog" }
 // 框架在启动时自动调它（那时**所有**阶段的池子都已建好，所以这里能往任意阶段投）。
 // 不需要起始任务就删掉这个方法（阶段照常跑，只是没人往里投任务）。
 //
-// site 是本站声明（configs/sites/{{.Module}}.go）的快照：BaseURL / Entries 都在里面 ——
-// 站点值只声明一处，这里直接用，别在 fetcher 里再存一份常量（存了就会漂）。
+// site 是本站声明（configs/sites/{{.Module}}.go）的快照：BaseURL / Headers 都在里面 ——
+// 入口路由（"要抓哪些分类"）是本站业务逻辑，就写在这个文件里，不放站点声明。
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 	if err := engine.SubmitTask(&papa.Task{
 		PID: 0,
 		// 起始 URL：根地址取自站点声明。任务里放什么都行（列表页、详情页、API 地址……）；
-		// 想按「key → 路由」投多个入口，就在声明里写 Entries，然后在这里遍历 site.Entries。
+		// 分类多于一个时，在本文件顶部声明一张包级路由表（`var catalogRoutes = []struct{...}`），
+		// 在这里遍历它 —— 写法见 docs/FETCHER_WRITING_GUIDE.md「如何驱动任务」的初始任务示例。
 		URL:   strings.TrimRight(site.BaseURL, "/") + "/list",
 		Stage: "catalog",
-		// Repeatable: true = 该任务会被「周期轮询」（定时重新抓取、发现新内容），
-		// 由 configs/config.yaml 的 repeat_queue 驱动（enabled + interval）。
+		// Repeatable: true = 该任务会被「周期轮询」（到时重新抓取、发现新内容）。
+		// 周期由 RepeatInterval 定（下面那行，只给这一条任务；不写 = 跟 config.yaml 的 repeat_queue.interval）；
+		// 两者都只在首次入库时播种，之后用后台任务表的「开/停轮询」「设轮询周期」改。
 		// 不需要周期轮询就删掉这一行，或把 repeat_queue.enabled 设为 false。
 		Repeatable: true,
+		// RepeatInterval: 10 * time.Minute,
 	}); err != nil {
 		// SubmitTask 自带结构化日志；这里只补一句"入口没投进去"，然后就此打住。
 		engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())

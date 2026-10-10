@@ -96,6 +96,36 @@ func TestAdminScopesCarryConditions(t *testing.T) {
 			},
 			[]string{"DELETE", "id = 7", "status <> 1"},
 		},
+		{
+			// 这一列本身就是版本守卫：要开就必须现在关着（反之亦然），
+			// 重复点击影响 0 行 → 409，不需要先查再写。
+			"开轮询：守卫 = 现在关着，写入 1",
+			func() string {
+				return db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+					return setRepeatableScope(tx, 7, models.RepeatableNo).Update("repeatable", models.RepeatableYes)
+				})
+			},
+			[]string{"UPDATE", "id = 7", "repeatable = 0", "`repeatable`=1"},
+		},
+		{
+			"停轮询：守卫 = 现在开着，写入 0",
+			func() string {
+				return db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+					return setRepeatableScope(tx, 7, models.RepeatableYes).Update("repeatable", models.RepeatableNo)
+				})
+			},
+			[]string{"UPDATE", "id = 7", "repeatable = 1", "`repeatable`=0"},
+		},
+		{
+			// 改周期的版本号是"旧周期值"（行快照里带的那个），重复点击只有第一次能匹配上
+			"设轮询周期：守卫 = 旧周期值",
+			func() string {
+				return db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+					return setRepeatIntervalScope(tx, 7, 600).Update("repeat_interval", 60)
+				})
+			},
+			[]string{"UPDATE", "id = 7", "repeat_interval = 600", "`repeat_interval`=60"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -117,13 +147,16 @@ func urgentEngine(t *testing.T, f *fakeTaskDB) (*Engine, *workerpool.WorkerPool[
 	t.Helper()
 	db := openFakeTaskDB(t, f)
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	return &Engine{
+	e := &Engine{
 		db:         db,
 		loggerSet:  &loggers.LoggerSet{Engine: logrus.New(), DB: logrus.New()},
 		cfg:        &config.Config{},
 		stages:     map[string]*stageInfo{"stub": {workerPool: pool}},
 		dedupCache: newDedupCache(0),
-	}, pool
+	}
+	// 与 NewEngine 一致：运行期覆盖层总得有个零值，否则读它的路径（如 repeatQueueConfig）会 nil 解引用
+	e.runtime.Store(&config.RuntimeConfig{})
+	return e, pool
 }
 
 func TestUrgentTaskHappyPath(t *testing.T) {
@@ -254,5 +287,258 @@ func TestUrgentTaskSecondClickIsRejected(t *testing.T) {
 	// 两次点击只有第一次真的进了队列
 	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
 		t.Fatalf("队列里应有且只有 1 条，实得 main/urgent = %d/%d", main, urgent)
+	}
+}
+
+/* ---------- 后台「开 / 停轮询」 ---------- */
+
+// 开关只有一条语句：条件更新 repeatable 列（守卫写在语句里，不是先查再写），
+// 且**不**顺手重投 —— 想立刻跑一次用「重投」。
+func TestSetTaskRepeatableHappyPath(t *testing.T) {
+	cases := []struct {
+		name       string
+		on         bool
+		prep       func(*fakeTaskDB)
+		wantTarget int64 // SET 的目标值
+		wantGuard  int64 // WHERE 里的守卫值（要被换掉的那个旧值）
+	}{
+		{"开轮询：关 → 开", true, nil, int64(models.RepeatableYes), int64(models.RepeatableNo)},
+		{"停轮询：开 → 停", false, nil, int64(models.RepeatableNo), int64(models.RepeatableYes)},
+		{
+			// WHERE 里刻意没有 status 守卫：停轮询最常见的用法正是"这条还在跑，跑完这次别再轮询了"
+			"正在跑的行也停得掉",
+			false,
+			func(f *fakeTaskDB) { f.row["status"] = int64(models.TaskStatusProcessing) },
+			int64(models.RepeatableNo), int64(models.RepeatableYes),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			if tc.prep != nil {
+				tc.prep(f)
+			}
+			e, pool := urgentEngine(t, f)
+
+			if err := e.SetTaskRepeatable(7, tc.on); err != nil {
+				t.Fatalf("SetTaskRepeatable(7, %v) = %v, want nil", tc.on, err)
+			}
+			sql := f.written()
+			if !strings.Contains(sql, "UPDATE `crawler_tasks`") || !strings.Contains(sql, "`repeatable`") {
+				t.Fatalf("应条件更新 repeatable 列，实得：\n%s", sql)
+			}
+			if !strings.Contains(sql, "WHERE id = ? AND repeatable = ?") {
+				t.Fatalf("守卫应写在语句里（不是先查再写）：\n%s", sql)
+			}
+			// 「开轮询」= 排期置为现在（下一轮扫描就投它）；「停轮询」不碰排期
+			if got := strings.Contains(sql, "`next_repeat_at`"); got != tc.on {
+				t.Fatalf("next_repeat_at 写入 = %v, want %v（只在开轮询时置为现在）：\n%s", got, tc.on, sql)
+			}
+			// 方向：绑定参数里的整数就是 id / 目标值 / 守卫值（updated_at 是 time.Time，不在其中）
+			got := map[int64]int{}
+			for _, v := range f.args[0] {
+				if n, ok := v.(int64); ok {
+					got[n]++
+				}
+			}
+			want := map[int64]int{7: 1, tc.wantTarget: 1, tc.wantGuard: 1}
+			if len(got) != len(want) {
+				t.Fatalf("绑定参数里的整数 = %v, want %v", got, want)
+			}
+			for n, c := range want {
+				if got[n] != c {
+					t.Fatalf("绑定参数里的整数 = %v, want %v", got, want)
+				}
+			}
+			// 正常路径一条 SELECT 都不发 —— 钉死"不是先查再写"
+			if read := f.readSQL(); read != "" {
+				t.Fatalf("开关不该先查再写，实得 SELECT：\n%s", read)
+			}
+			// 只改标记，不投任务（开了也不立刻重跑一次）
+			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+				t.Fatalf("开关不该入队，实得 main/urgent = %d/%d", main, urgent)
+			}
+		})
+	}
+}
+
+// 被拒的四种情况：语句照发（带守卫）、0 行，然后冷路径回查把原因说清楚。
+// 注意它**不该**进 TestRejectedAdminOpsWriteNothing —— 那条断言"被拒时一条 SQL 都没发"，
+// 而这里的守卫正是写在语句里的（同 TestMarkTaskFailedTerminalGuardIsInStatement）。
+func TestSetTaskRepeatableRejections(t *testing.T) {
+	cases := []struct {
+		name string
+		on   bool
+		prep func(*fakeTaskDB)
+		want error
+	}{
+		{
+			"已经开着又开",
+			true,
+			func(f *fakeTaskDB) {
+				f.row["repeatable"] = int64(models.RepeatableYes)
+				f.affected = 0
+			},
+			ErrTaskRepeatOn,
+		},
+		{
+			"本来就没开又停",
+			false,
+			func(f *fakeTaskDB) {
+				f.row["repeatable"] = int64(models.RepeatableNo)
+				f.affected = 0
+			},
+			ErrTaskRepeatOff,
+		},
+		{
+			"行已被删掉",
+			true,
+			func(f *fakeTaskDB) { f.noRows = true; f.affected = 0 },
+			ErrTaskNotFound,
+		},
+		{
+			// 0 行、回查时这一列却是"守卫值"：说明有人在 UPDATE 与回查之间又改回去了
+			"并发下被改回相反值",
+			true,
+			func(f *fakeTaskDB) {
+				f.row["repeatable"] = int64(models.RepeatableNo)
+				f.affected = 0
+			},
+			ErrTaskChanged,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			tc.prep(f)
+			e, pool := urgentEngine(t, f)
+
+			err := e.SetTaskRepeatable(7, tc.on)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if sql := f.written(); !strings.Contains(sql, "WHERE id = ? AND repeatable = ?") {
+				t.Fatalf("守卫应写在语句里（被拒也不该是先查再写）：\n%s", sql)
+			}
+			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+				t.Fatalf("被拒的开关不该入队，实得 main/urgent = %d/%d", main, urgent)
+			}
+		})
+	}
+}
+
+// 「开轮询」不只是翻一列：排期置为"现在"（下一轮扫描就投它），并叫醒轮询队列重算节拍 ——
+// 节拍是 pull 出来的，不叫这一声，它要等当前那次 sleep 到期（可能是一整个全局 interval）。
+func TestSetTaskRepeatableWakesQueue(t *testing.T) {
+	f := newFakeTaskDB()
+	e, _ := urgentEngine(t, f)
+	e.repeatWake = make(chan struct{}, 1) // 手搓的 Engine 没建它，这里补上以便观察
+
+	if err := e.SetTaskRepeatable(7, true); err != nil {
+		t.Fatalf("SetTaskRepeatable(7, true) = %v", err)
+	}
+	select {
+	case <-e.repeatWake:
+	default:
+		t.Fatal("开轮询后应叫醒轮询队列重算节拍")
+	}
+}
+
+/* ---------- 后台「设轮询周期」 ---------- */
+
+// 一条语句改两列：周期本身 + 按新周期重算的下次到点（否则改短了还要按旧排期等）。
+func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
+	cases := []struct {
+		name    string
+		was     int
+		seconds int
+		global  time.Duration
+		eff     int64 // 写进 SQL 的有效周期秒数（0 = 跟全局 → 取全局值）
+	}{
+		{"设成 10 分钟", 0, 600, 2 * time.Hour, 600},
+		{"设成 0 = 跟全局", 600, 0, 2 * time.Hour, 7200},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			e, _ := urgentEngine(t, f)
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: tc.global}
+			e.repeatWake = make(chan struct{}, 1)
+
+			if err := e.SetTaskRepeatInterval(7, tc.was, tc.seconds); err != nil {
+				t.Fatalf("SetTaskRepeatInterval = %v", err)
+			}
+			sql := f.written()
+			if !strings.Contains(sql, "WHERE id = ? AND repeat_interval = ?") {
+				t.Fatalf("版本守卫应写在语句里（不是先查再写）：\n%s", sql)
+			}
+			for _, want := range []string{"`repeat_interval`", "`next_repeat_at`", "FROM_UNIXTIME", "last_repeat_at"} {
+				if !strings.Contains(sql, want) {
+					t.Fatalf("SQL 里缺少 %q：\n%s", want, sql)
+				}
+			}
+			// 绑定参数：id / 旧值 / 新周期 / 有效周期（都按整数比，不看顺序）
+			got := map[int64]int{}
+			for _, v := range f.args[0] {
+				if n, ok := v.(int64); ok {
+					got[n]++
+				}
+			}
+			want := map[int64]int{7: 1, int64(tc.was): 1, int64(tc.seconds): 1}
+			want[tc.eff]++
+			if len(got) != len(want) {
+				t.Fatalf("绑定参数里的整数 = %v, want %v", got, want)
+			}
+			for n, c := range want {
+				if got[n] != c {
+					t.Fatalf("绑定参数里的整数 = %v, want %v", got, want)
+				}
+			}
+			select {
+			case <-e.repeatWake:
+			default:
+				t.Fatal("改周期后应叫醒轮询队列重算节拍")
+			}
+		})
+	}
+}
+
+// 非法周期在写库之前就被挡下（不合法就别碰库），0 行与行不存在各有哨兵。
+func TestSetTaskRepeatIntervalRejections(t *testing.T) {
+	cases := []struct {
+		name    string
+		was     int
+		seconds int
+		prep    func(*fakeTaskDB)
+		want    error
+	}{
+		{"负数", 0, -1, nil, ErrRepeatIntervalBad},
+		{"小于最短刻度（minTick 内的静默取整不如直接拒）", 0, 5, nil, ErrRepeatIntervalBad},
+		{"行已被删掉", 0, 600, func(f *fakeTaskDB) { f.noRows = true; f.affected = 0 }, ErrTaskNotFound},
+		{"周期刚被改过（快照过期）", 0, 600, func(f *fakeTaskDB) { f.affected = 0 }, ErrTaskChanged},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			if tc.prep != nil {
+				tc.prep(f)
+			}
+			e, _ := urgentEngine(t, f)
+
+			err := e.SetTaskRepeatInterval(7, tc.was, tc.seconds)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			// 校验不通过的那两条：一条 SQL 都不该发
+			if errors.Is(err, ErrRepeatIntervalBad) {
+				if sql := f.written(); sql != "" {
+					t.Fatalf("非法周期不该写库：\n%s", sql)
+				}
+				return
+			}
+			if sql := f.written(); !strings.Contains(sql, "WHERE id = ? AND repeat_interval = ?") {
+				t.Fatalf("守卫应写在语句里（被拒也不该是先查再写）：\n%s", sql)
+			}
+		})
 	}
 }

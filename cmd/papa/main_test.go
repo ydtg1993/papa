@@ -114,6 +114,9 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
 	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 configs/sites/<站名>.go 声明。
 	siteSpec := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
+	if strings.Contains(siteSpec, "Entries: map[string]string") {
+		t.Errorf("生成的 SiteSpec 不应包含入口表 Entries 字段：\n%s", siteSpec)
+	}
 	if !strings.Contains(siteSpec, "fetcher.FetchCatalog{}") {
 		t.Errorf("configs/sites/demo.go 里应当列出 catalog 阶段")
 	}
@@ -125,6 +128,9 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		t.Errorf("不该再生成 sites.go 汇总清单（各站点文件自己登记）")
 	}
 	fetcher := readFile(t, filepath.Join("demo", "fetcher", "fetch_catalog.go"))
+	if strings.Contains(fetcher, "site.Entries") {
+		t.Errorf("生成的 fetcher 不应读取 site.Entries：\n%s", fetcher)
+	}
 	if !strings.Contains(fetcher, `"catalog"`) {
 		t.Errorf("fetcher 模板的 GetStage() 与配置里的阶段名对不上：\n%s", fetcher)
 	}

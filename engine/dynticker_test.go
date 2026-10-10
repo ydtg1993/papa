@@ -31,7 +31,7 @@ func waitTicks(t *testing.T, n *atomic.Int64, want int64) {
 func TestRunDynamicTickerDisabledInterval(t *testing.T) {
 	e, _ := dyntickerEngine(t)
 	var ticks atomic.Int64
-	e.runDynamicTicker(func() time.Duration { return 0 }, func() { ticks.Add(1) })
+	e.runDynamicTicker(func() time.Duration { return 0 }, nil, func() { ticks.Add(1) })
 
 	time.Sleep(80 * time.Millisecond)
 	if got := ticks.Load(); got != 0 {
@@ -54,7 +54,7 @@ func TestRunDynamicTickerStartsOnConfigChange(t *testing.T) {
 
 	e.runDynamicTicker(
 		func() time.Duration { return time.Duration(interval.Load()) },
-		func() { ticks.Add(1) },
+		nil /* 这两条队列没有"数据驱动"的间隔 */, func() { ticks.Add(1) },
 	)
 	time.Sleep(50 * time.Millisecond)
 	if got := ticks.Load(); got != 0 {
@@ -75,7 +75,7 @@ func TestRunDynamicTickerStopsWhenIntervalGoesAway(t *testing.T) {
 	interval.Store(int64(10 * time.Millisecond))
 	e.runDynamicTicker(
 		func() time.Duration { return time.Duration(interval.Load()) },
-		func() { ticks.Add(1) },
+		nil /* 这两条队列没有"数据驱动"的间隔 */, func() { ticks.Add(1) },
 	)
 	waitTicks(t, &ticks, 2)
 
@@ -100,7 +100,7 @@ func TestRunDynamicTickerFollowsIntervalChange(t *testing.T) {
 	interval.Store(int64(time.Hour)) // 基本不会到点
 	e.runDynamicTicker(
 		func() time.Duration { return time.Duration(interval.Load()) },
-		func() { ticks.Add(1) },
+		nil /* 这两条队列没有"数据驱动"的间隔 */, func() { ticks.Add(1) },
 	)
 	time.Sleep(50 * time.Millisecond)
 	if got := ticks.Load(); got != 0 {
@@ -116,7 +116,7 @@ func TestRunDynamicTickerFollowsIntervalChange(t *testing.T) {
 func TestRunDynamicTickerExitsOnCtxCancel(t *testing.T) {
 	e, cancel := dyntickerEngine(t)
 	var ticks atomic.Int64
-	e.runDynamicTicker(func() time.Duration { return 10 * time.Millisecond }, func() { ticks.Add(1) })
+	e.runDynamicTicker(func() time.Duration { return 10 * time.Millisecond }, nil, func() { ticks.Add(1) })
 	waitTicks(t, &ticks, 2)
 
 	cancel()
@@ -134,7 +134,7 @@ func TestRunDynamicTickerExitsWhileDisabled(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		e.runDynamicTicker(func() time.Duration { return 0 }, func() {})
+		e.runDynamicTicker(func() time.Duration { return 0 }, nil, func() {})
 	}()
 	time.Sleep(30 * time.Millisecond)
 	cancel()

@@ -67,6 +67,8 @@ app.Run(ctx)
 | 方法 | 作用 | 返回 |
 | --- | --- | --- |
 | `engine.RepollRepeatableTasks()` | 重新投递「已完成」的 repeatable 任务（success/failed） | `(投递数, error)` |
+| `engine.SetTaskRepeatable(id, on)` | 开/停**某一条**任务的周期轮询（只改标记，下一轮扫描生效） | `error` |
+| `engine.SetTaskRepeatInterval(id, was, seconds)` | 改**某一条**任务的轮询周期（秒，0 = 跟全局；`was` 是行快照里的旧值当版本守卫） | `error` |
 | `engine.ProcessErrorQueue()` | 手动触发失败任务重投 | `(投递数, error)` |
 | `engine.ProcessRecoverQueue()` | 把「未到终态」的任务重新入队（**只该在启动时调**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） | `(恢复数, error)` |
 
@@ -75,7 +77,7 @@ app.Run(ctx)
 | 能力 | 归属 | 触发方式 |
 | --- | --- | --- |
 | 业务自定义定时任务 | 本文（`RegisterCronJob`） | 自定 cron |
-| 周期轮询 repeatable（interval 定时） | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | interval + 手动 |
+| 周期轮询 repeatable（interval 定时） | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | 到点才投 + 手动 |
 | 周期轮询 repeatable（cron 语义） | `RegisterCronJob` + `RepollRepeatableTasks` | 自定 cron |
 | 失败任务重试 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | interval + 手动 |
 | 中断恢复 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | **仅启动时**（跑一次；无 interval、无手动入口） |

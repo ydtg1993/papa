@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
@@ -19,6 +20,9 @@ var (
 	ErrStageNotRegistered = errors.New("该任务的阶段未注册")
 	ErrTaskUrgent         = errors.New("该任务已经加急过了，或已被取走，刷新后再看")
 	ErrTaskFinished       = errors.New("该任务已结束，加急没有意义（要重跑请用「重投」）")
+	ErrTaskRepeatOn       = errors.New("该任务的周期轮询已经开着")
+	ErrTaskRepeatOff      = errors.New("该任务的周期轮询本来就没开")
+	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（跟全局），要么不小于 10 秒")
 )
 
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
@@ -55,6 +59,23 @@ func markFailedScope(db *gorm.DB, id uint) *gorm.DB {
 
 func deleteScope(db *gorm.DB, id uint) *gorm.DB {
 	return db.Where("id = ? AND status <> ?", id, models.TaskStatusProcessing)
+}
+
+// setRepeatableScope 开/停周期轮询的条件：这一列当前得是**要被换掉**的那个值
+// （要开就必须现在关着，要停就必须现在开着）—— 这一列本身就是版本守卫，
+// 手抖双击或两人同点时只有第一次能匹配上，与 retryScope 用 reprocess 当版本号同一思路。
+//
+// **WHERE 里刻意不带 status**（与 urgentScope 相反）：停轮询最常见的用法恰恰是
+// "这条正在跑，跑完这次别再轮询了"，带 status 守卫会把最该支持的那种情况挡掉。
+// 轮询开关与任务处在哪个状态无关 —— 它只决定"完成后要不要再被捞起来"。
+func setRepeatableScope(db *gorm.DB, id uint, was models.RepeatableStatus) *gorm.DB {
+	return db.Model(&models.CrawlerTask{}).Where("id = ? AND repeatable = ?", id, was)
+}
+
+// setRepeatIntervalScope 改轮询周期的条件：这一列当前得是**行快照里那个旧值**
+// （同 retryScope 用 reprocess 当版本号同一思路：重复点击只有第一次能匹配上）。
+func setRepeatIntervalScope(db *gorm.DB, id uint, wasSeconds int) *gorm.DB {
+	return db.Model(&models.CrawlerTask{}).Where("id = ? AND repeat_interval = ?", id, wasSeconds)
 }
 
 // loadTask 按 ID 取一行任务；不存在时返回 ErrTaskNotFound。
@@ -175,6 +196,87 @@ func (e *Engine) UrgentTask(id uint) error {
 		return fmt.Errorf("submit urgent task %d: %w", id, err)
 	}
 	return nil
+}
+
+// SetTaskRepeatable 运行期开/停一条任务的周期轮询：只改这一列，**不**顺手重投一次 ——
+// 开与停都在下一轮 repeat_queue 扫描时生效（想立刻跑一次用「重投」）。
+// 这一列原先只有首次插入时写（`Task.toModel`），所以"提交后再想改"没有任何路径。
+//
+// 刻意不先 loadTask：这里不需要快照里的任何字段（不像 UrgentTask 要拿 Stage/Status 做前置判断），
+// 影响 0 行时交给 whyRepeatRejected 冷路径再查一次，把原因说清楚。
+func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
+	want, was := models.RepeatableYes, models.RepeatableNo
+	if !on {
+		want, was = models.RepeatableNo, models.RepeatableYes
+	}
+	updates := map[string]any{"repeatable": want}
+	if on {
+		// 「开轮询」= 下一轮扫描就投它（REPEAT_QUEUE.md 第 3 节那句）：把排期直接置为"现在"。
+		// 不置的话，刚被停过又开的任务要白等一个周期；而从未排期过的行本来也是"NULL = 到点"。
+		updates["next_repeat_at"] = gorm.Expr("NOW()")
+	}
+	res := setRepeatableScope(e.db, id, was).Updates(updates)
+	if res.Error != nil {
+		return fmt.Errorf("set task %d repeatable=%v: %w", id, on, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return e.whyRepeatRejected(id, on)
+	}
+	if on {
+		e.wakeRepeatQueue() // 别让它等到当前那次 sleep 到期才被看见
+	}
+	return nil
+}
+
+// SetTaskRepeatInterval 改一条任务的轮询周期（秒；0 = 跟全局）。只改周期相关的列，不顺手重投
+// （想立刻跑一次用「重投」）。合法值：0，或 ≥ repeatMinTick（写入侧就挡住"设了 3 秒却按 10 秒跑"）。
+//
+// wasSeconds 是行快照里的旧值，当版本条件（同 RetryTask 用 reprocess）：手抖双击或两人同点时
+// 只有第一次能匹配上。改周期**连带重算 NextRepeatAt** —— 否则它还按旧周期排着（1h 改成 10m，
+// 却还要等 55 分钟）；基准取"上次轮询时刻"（不是 NOW()），所以改短之后可能立刻就该跑；
+// 从未轮询过（LastRepeatAt 为空）就从这一刻起算。
+func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
+	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
+		return ErrRepeatIntervalBad
+	}
+	eff := int64(seconds)
+	if eff == 0 {
+		eff = int64(e.repeatQueueConfig().Interval / time.Second) // 0 = 跟全局
+	}
+	res := setRepeatIntervalScope(e.db, id, wasSeconds).Updates(map[string]any{
+		"repeat_interval": seconds,
+		// 时间换算留在库里：写入端与判据端（next_repeat_at <= NOW()）用同一个时钟
+		"next_repeat_at": gorm.Expr(
+			"FROM_UNIXTIME(UNIX_TIMESTAMP(COALESCE(last_repeat_at, NOW())) + ?)", eff),
+	})
+	if res.Error != nil {
+		return fmt.Errorf("set task %d repeat_interval=%d: %w", id, seconds, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		if _, err := e.loadTask(id); err != nil {
+			return err // 行不存在
+		}
+		return ErrTaskChanged // 周期刚被改过（快照过期），刷新后再看
+	}
+	e.wakeRepeatQueue()
+	return nil
+}
+
+// whyRepeatRejected 条件更新影响 0 行时，再查一次把原因说清楚。
+func (e *Engine) whyRepeatRejected(id uint, on bool) error {
+	t, err := e.loadTask(id)
+	if err != nil {
+		return err // 行不存在
+	}
+	if now := t.Repeatable == models.RepeatableYes; now == on {
+		// 这一列已经是目标值：重复点击落在这儿
+		if on {
+			return ErrTaskRepeatOn
+		}
+		return ErrTaskRepeatOff
+	}
+	// 有人在中间改过又改回来 —— 这一方输了，与 whyRetryRejected 的兜底同一语义
+	return ErrTaskChanged
 }
 
 // MarkTaskFailed 把「还没结束」的任务标记为失败（待处理/处理中都算）。

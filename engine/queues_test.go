@@ -6,11 +6,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 // queueEngine 在 submitEngine 之上补齐治理队列需要的那几样：
@@ -285,8 +287,13 @@ func TestRepeatQueueQueryShape(t *testing.T) {
 	if !strings.Contains(read, "status IN") {
 		t.Fatalf("应限定 success/failed：\n%s", read)
 	}
+	// 判据是 next_repeat_at（到点才捞）。这条只钉 SQL 形态 —— 假库不按 WHERE 过滤，
+	// 真过滤在 MySQL 那边，能证它的是"重置语句写 next_repeat_at + 复投前再确认一次"那两条。
+	if !strings.Contains(read, "next_repeat_at") {
+		t.Fatalf("应按下次到点时间过滤：\n%s", read)
+	}
 	if strings.Contains(read, "updated_at") {
-		t.Fatalf("不该用 updated_at：\n%s", read)
+		t.Fatalf("不该用 updated_at（它被每次写都刷，算不出周期）：\n%s", read)
 	}
 }
 
@@ -324,6 +331,140 @@ func TestRequeueRepeatTaskSkipsUnregisteredStage(t *testing.T) {
 	}
 	if got := e.repeatRepolledCount.Load(); got != 0 {
 		t.Fatalf("跳过的不该计数，实得 %d", got)
+	}
+}
+
+// 重投前的条件重置：守卫与三个字段都写在语句里（假库不认 WHERE，只能钉 SQL 形态）。
+// 少了它，批次 SELECT 之后运营点的「停轮询」会被这一轮重投盖过去。
+func TestRepeatResetScopeCarriesConditions(t *testing.T) {
+	db := dryDB(t)
+	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return repeatResetScope(tx, 7).Updates(map[string]any{
+			"status":         models.TaskStatusPending,
+			"last_repeat_at": gorm.Expr("NOW()"),
+			"next_repeat_at": gorm.Expr(
+				"FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + COALESCE(NULLIF(repeat_interval, 0), ?))", int64(7200)),
+		})
+	})
+	for _, want := range []string{
+		"UPDATE", "id = 7", "repeatable = 1", "status IN",
+		"`status`=0",                                                  // 重置为待处理
+		"`last_repeat_at`=NOW()",                                      // 记录：上次轮询时刻
+		"FROM_UNIXTIME", "COALESCE(NULLIF(repeat_interval, 0), 7200)", // 判据：下次到点（0 = 跟全局 7200）
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("SQL 里缺少 %q：\n%s", want, sql)
+		}
+	}
+}
+
+// 节拍跟随"最早到点"：假库的 MIN 查询返回值就是"还差几秒"（真过滤在 SQL 层，这里验换算与钳位）。
+func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
+	epochIn := func(d time.Duration) *int64 {
+		v := time.Now().Add(d).Unix()
+		return &v
+	}
+	cases := []struct {
+		name    string
+		enabled bool
+		global  time.Duration
+		min     *int64 // 假库 MIN 的返回值；nil = NULL（没有可轮询的行）
+		failQ   bool
+		want    time.Duration
+	}{
+		{"总开关关着 → 0（仅手动）", false, time.Hour, nil, false, 0},
+		{"全局 interval = 0 → 0（仅手动）", true, 0, nil, false, 0},
+		{"没有可轮询的行 → 全局节拍", true, time.Hour, nil, false, time.Hour},
+		{"查库出错 → 全局节拍（库抖动别把队列搞停）", true, time.Hour, nil, true, time.Hour},
+		{"30 秒后到点 → 跟随它（比全局细）", true, time.Hour, epochIn(30 * time.Second), false, 30 * time.Second},
+		{"已经到点 → 钳到最短刻度（别空转）", true, time.Hour, epochIn(-time.Minute), false, repeatMinTick},
+		{"下一个到点比全局还远 → 用全局（最粗兜底）", true, time.Minute, epochIn(time.Hour), false, time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			f.minEpoch = tc.min
+			if tc.failQ {
+				f.failQueries = 1
+			}
+			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}
+
+			got := e.repeatTickInterval()
+			if diff := got - tc.want; diff > time.Second || diff < -time.Second {
+				t.Fatalf("repeatTickInterval = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// 行在批次 SELECT 之后已经不该被重投了（刚被「停轮询」，或已被「重投」/「删除」接手）：
+// 条件重置 0 行 → 跳过，不计数、不入队、也不标 failed —— 它不是"重投失败"。
+func TestRequeueRepeatTaskSkipsWhenStopped(t *testing.T) {
+	f := newFakeTaskDB()
+	f.affected = 0 // 重置匹配不到行
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := queueEngine(t, f, pool)
+
+	if e.requeueRepeatTask(actionRow(7, "stub")) {
+		t.Fatal("行已不再可轮询时应跳过")
+	}
+	if got := e.repeatRepolledCount.Load(); got != 0 {
+		t.Fatalf("跳过的不该计数，实得 %d", got)
+	}
+	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+		t.Fatalf("跳过的不该入队，实得 %d", main+urgent)
+	}
+	if sql := f.written(); !strings.Contains(sql, "repeatable = ?") {
+		t.Fatalf("重置语句里应带 repeatable 守卫：\n%s", sql)
+	}
+}
+
+// 运行期开关驱动的就是队列判断的那一列。假库既不按 WHERE 过滤、也不真执行 UPDATE
+// （单行模式恒返回那一行），所以"开着就会被捞到、停掉就不会"只能靠两条证据钉住：
+// ① 查询条件里必须有 repeatable（真正的过滤在 SQL 层）；
+// ② 重投前的条件重置在"已不可轮询"时 0 行 → 跳过。
+func TestRepeatableFlagDrivesPolling(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	e := queueEngine(t, f, pool)
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 1}
+
+	// ① 队列只捞 repeatable = 1 的终态行
+	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
+	if read := f.readSQL(); !strings.Contains(read, "repeatable = ?") || !strings.Contains(read, "status IN") {
+		t.Fatalf("轮询查询应按 repeatable + 终态过滤：\n%s", read)
+	}
+
+	// ② 「开轮询」只改这一列
+	if err := e.SetTaskRepeatable(7, true); err != nil {
+		t.Fatalf("SetTaskRepeatable(7, true) = %v", err)
+	}
+	if !strings.Contains(f.written(), "`repeatable`") {
+		t.Fatalf("开关应写 repeatable 列：\n%s", f.written())
+	}
+	// 假库不真按 SQL 改行，手工对齐"这一列已经落库"
+	f.row["repeatable"] = int64(models.RepeatableYes)
+
+	// 开着：下一轮扫到它并重投（假库那一行的 status 默认就是待处理，重投路径照常走）
+	if n, err := e.RepollRepeatableTasks(); err != nil || n != 1 {
+		t.Fatalf("RepollRepeatableTasks = %d, %v, want 1, nil", n, err)
+	}
+
+	// ③ 「停轮询」之后：重置匹配不到这一行 → 这一轮不再投它
+	if err := e.SetTaskRepeatable(7, false); err != nil {
+		t.Fatalf("SetTaskRepeatable(7, false) = %v", err)
+	}
+	f.mu.Lock()
+	f.affected = 0
+	f.row["repeatable"] = int64(models.RepeatableNo)
+	f.mu.Unlock()
+
+	if e.requeueRepeatTask(actionRow(7, "stub")) {
+		t.Fatal("停掉的轮询任务不该再被重投")
+	}
+	if got := e.repeatRepolledCount.Load(); got != 1 {
+		t.Fatalf("轮询重投计数 = %d, want 1（停掉的那次不该计数）", got)
 	}
 }
 

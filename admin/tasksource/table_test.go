@@ -13,13 +13,19 @@ import (
 
 // stubActions 记录调用并按预设返回错误，用来在没有数据库时测处理函数。
 type stubActions struct {
-	retryErr  error
-	failErr   error
-	deleteErr error
-	urgentErr error
-	gotID     []uint
-	gotVer    []int    // RetryTask 收到的版本号
-	gotReason []string // MarkTaskFailed 收到的原因
+	retryErr    error
+	failErr     error
+	deleteErr   error
+	urgentErr   error
+	repeatErr   error
+	intervalErr error
+	gotID       []uint
+	gotVer      []int    // RetryTask 收到的版本号
+	gotReason   []string // MarkTaskFailed 收到的原因
+	gotOn       []bool   // SetTaskRepeatable 收到的方向（开/停）
+	// SetTaskRepeatInterval 收到的旧周期（版本守卫）与新周期
+	gotWasInterval []int
+	gotInterval    []int
 }
 
 func (s *stubActions) RetryTask(id uint, was int) error {
@@ -44,6 +50,19 @@ func (s *stubActions) UrgentTask(id uint) error {
 	return s.urgentErr
 }
 
+func (s *stubActions) SetTaskRepeatable(id uint, on bool) error {
+	s.gotID = append(s.gotID, id)
+	s.gotOn = append(s.gotOn, on)
+	return s.repeatErr
+}
+
+func (s *stubActions) SetTaskRepeatInterval(id uint, was, seconds int) error {
+	s.gotID = append(s.gotID, id)
+	s.gotWasInterval = append(s.gotWasInterval, was)
+	s.gotInterval = append(s.gotInterval, seconds)
+	return s.intervalErr
+}
+
 // buildTable 走一遍组件注册，顺带验证声明能被 oao 校验通过。
 func buildTable(t *testing.T, acts TaskActions) *oao.TableInfo {
 	t.Helper()
@@ -58,12 +77,16 @@ func buildTable(t *testing.T, acts TaskActions) *oao.TableInfo {
 	return ts[0]
 }
 
-// 四个操作与新增列/筛选都必须声明出来。
+// 六个写操作 + 一个只读入口，与新增列/筛选都必须声明出来。
 func TestTableDeclaration(t *testing.T) {
 	info := buildTable(t, &stubActions{})
 
 	if info.Key != "task" || info.Group != "数据" {
 		t.Fatalf("key/group = %q/%q", info.Key, info.Group)
+	}
+	// 平铺位置是共识：oao 只平铺前两个动作，最常用的「重投」与只读排查入口「追踪」不能被挤走
+	if len(info.Actions) < 2 || info.Actions[0].Key != "retry" || info.Actions[1].Key != "trace" {
+		t.Fatalf("前两个动作应仍是 retry/trace：%+v", info.Actions)
 	}
 
 	byKey := make(map[string]oao.ActionInfo, len(info.Actions))
@@ -76,6 +99,9 @@ func TestTableDeclaration(t *testing.T) {
 	}{
 		{"retry", "重投", oao.ToneInfo},
 		{"urgent", "加急", oao.ToneInfo},
+		{"repeat_on", "开轮询", oao.ToneInfo},
+		{"repeat_off", "停轮询", oao.ToneInfo},
+		{"repeat_interval", "设轮询周期", oao.ToneInfo},
 		{"fail", "标失败", oao.ToneWarn},
 		{"remove", "删除", oao.ToneErr},
 	} {
@@ -89,6 +115,13 @@ func TestTableDeclaration(t *testing.T) {
 		if a.Confirm == "" {
 			t.Errorf("action %q 应有二次确认", want.key)
 		}
+	}
+
+	// 「设轮询周期」带一个必填的数字表单字段（本仓第一个 KindNumber 表单字段，之前只有 textarea）
+	iv := byKey["repeat_interval"]
+	if len(iv.Form) != 1 || iv.Form[0].Name != "seconds" ||
+		iv.Form[0].Kind != oao.KindNumber || !iv.Form[0].Required || iv.Form[0].Help == "" {
+		t.Errorf("设轮询周期应有必填的数字表单字段：%+v", iv.Form)
 	}
 
 	// 「追踪」是只读入口：要有（前端脚本靠它取任务 id），但不该有二次确认 —— 它不改任何东西
@@ -112,6 +145,15 @@ func TestTableDeclaration(t *testing.T) {
 	}
 	if c, ok := cols["urgent"]; !ok || c.Kind != oao.KindBool {
 		t.Errorf("urgent 列应为 KindBool: %+v", cols["urgent"])
+	}
+	// 周期相关的三列：周期是数字，两个时刻是时间
+	if c, ok := cols["repeat_interval"]; !ok || c.Kind != oao.KindNumber {
+		t.Errorf("repeat_interval 列应为 KindNumber: %+v", cols["repeat_interval"])
+	}
+	for _, f := range []string{"last_repeat_at", "next_repeat_at"} {
+		if c, ok := cols[f]; !ok || c.Kind != oao.KindTime {
+			t.Errorf("%s 列应为 KindTime: %+v", f, cols[f])
+		}
 	}
 	if c, ok := cols["pid"]; !ok || !c.NoEdit {
 		t.Errorf("pid 列应存在且 NoEdit: %+v", cols["pid"])
@@ -146,6 +188,9 @@ func TestTableReadOnlyWithoutActions(t *testing.T) {
 func TestActionHandlerErrorMapping(t *testing.T) {
 	ver := map[string]any{"reprocess": "3"}
 	reason := map[string]any{"reason": "内容违规"}
+	// 「设轮询周期」：行快照里的旧周期当版本号，表单里是新周期
+	ivRow := map[string]any{"repeat_interval": float64(0)}
+	ivValues := map[string]any{"seconds": float64(600)}
 	cases := []struct {
 		name   string
 		stub   *stubActions
@@ -168,6 +213,17 @@ func TestActionHandlerErrorMapping(t *testing.T) {
 		{"重复加急或被取走", &stubActions{urgentErr: engine.ErrTaskUrgent}, "urgent", "7", nil, nil, http.StatusConflict},
 		{"已结束的任务不能加急", &stubActions{urgentErr: engine.ErrTaskFinished}, "urgent", "7", nil, nil, http.StatusConflict},
 		{"加急时阶段未注册", &stubActions{urgentErr: engine.ErrStageNotRegistered}, "urgent", "7", nil, nil, http.StatusConflict},
+		{"开轮询成功", &stubActions{}, "repeat_on", "7", nil, nil, 0},
+		// 方向由动作写死，不看行快照：客户端把 repeatable 伪造成 false 也影响不了"开"
+		{"开轮询不看行快照", &stubActions{}, "repeat_on", "7", map[string]any{"repeatable": false}, nil, 0},
+		{"停轮询成功", &stubActions{}, "repeat_off", "7", nil, nil, 0},
+		{"重复开轮询", &stubActions{repeatErr: engine.ErrTaskRepeatOn}, "repeat_on", "7", nil, nil, http.StatusConflict},
+		{"重复停轮询", &stubActions{repeatErr: engine.ErrTaskRepeatOff}, "repeat_off", "7", nil, nil, http.StatusConflict},
+		{"开轮询时任务不存在", &stubActions{repeatErr: engine.ErrTaskNotFound}, "repeat_on", "7", nil, nil, http.StatusNotFound},
+		{"设轮询周期成功", &stubActions{}, "repeat_interval", "7", ivRow, ivValues, 0},
+		{"设轮询周期缺版本号", &stubActions{}, "repeat_interval", "7", nil, ivValues, http.StatusBadRequest},
+		{"设轮询周期版本号非整数", &stubActions{}, "repeat_interval", "7", map[string]any{"repeat_interval": "abc"}, ivValues, http.StatusBadRequest},
+		{"设轮询周期缺秒数", &stubActions{}, "repeat_interval", "7", ivRow, nil, http.StatusBadRequest},
 		{"删除处理中的行", &stubActions{deleteErr: engine.ErrTaskProcessing}, "remove", "7", nil, nil, http.StatusConflict},
 		{"无效 ID", &stubActions{}, "retry", "abc", ver, nil, http.StatusBadRequest},
 		{"ID 为 0", &stubActions{}, "retry", "0", ver, nil, http.StatusBadRequest},
@@ -189,6 +245,17 @@ func TestActionHandlerErrorMapping(t *testing.T) {
 				}
 				if tc.action == "fail" && !reflect.DeepEqual(tc.stub.gotReason, []string{"内容违规"}) {
 					t.Fatalf("标失败透传的原因 = %v", tc.stub.gotReason)
+				}
+				if tc.action == "repeat_on" && !reflect.DeepEqual(tc.stub.gotOn, []bool{true}) {
+					t.Fatalf("开轮询透传的方向 = %v, want [true]", tc.stub.gotOn)
+				}
+				if tc.action == "repeat_off" && !reflect.DeepEqual(tc.stub.gotOn, []bool{false}) {
+					t.Fatalf("停轮询透传的方向 = %v, want [false]", tc.stub.gotOn)
+				}
+				if tc.action == "repeat_interval" &&
+					(!reflect.DeepEqual(tc.stub.gotInterval, []int{600}) || !reflect.DeepEqual(tc.stub.gotWasInterval, []int{0})) {
+					t.Fatalf("设轮询周期透传的 = 旧 %v / 新 %v, want 旧 [0] / 新 [600]",
+						tc.stub.gotWasInterval, tc.stub.gotInterval)
 				}
 				return
 			}
@@ -227,6 +294,20 @@ func TestTraceActionOnlyValidatesID(t *testing.T) {
 	var ae *oao.ActionError
 	if !errors.As(err, &ae) || ae.Status != http.StatusBadRequest {
 		t.Fatalf("非法 id 应返回 400，实得 %v", err)
+	}
+}
+
+// 周期范围由引擎说了算（表这一层只挡"缺参数/非整数"）：引擎回的非法周期哨兵也要翻成 400 而不是 500。
+func TestRepeatIntervalBadMapsTo400(t *testing.T) {
+	err := handlerFor(t, &stubActions{intervalErr: engine.ErrRepeatIntervalBad}, "repeat_interval")(
+		context.Background(), oao.ActionRequest{
+			Table: "task", Action: "repeat_interval", ID: "7",
+			Row:    map[string]any{"repeat_interval": float64(0)},
+			Values: map[string]any{"seconds": float64(5)},
+		})
+	var ae *oao.ActionError
+	if !errors.As(err, &ae) || ae.Status != http.StatusBadRequest {
+		t.Fatalf("err = %v, want *oao.ActionError(400)", err)
 	}
 }
 

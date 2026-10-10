@@ -301,6 +301,9 @@ func TestRejectedAdminOpsWriteNothing(t *testing.T) {
 			func(f *fakeTaskDB) { f.noRows = true }},
 		{"删除：处理中的行", func(e *Engine) error { return e.DeleteTask(7) },
 			func(f *fakeTaskDB) { f.row["status"] = int64(models.TaskStatusProcessing) }},
+		// 周期范围在写库之前就被挡下：非法值不该碰库（与"条件没匹配上"是两回事，后者会发语句）
+		{"设轮询周期：非法值", func(e *Engine) error { return e.SetTaskRepeatInterval(7, 0, 5) },
+			func(f *fakeTaskDB) {}},
 	}
 	for _, op := range ops {
 		t.Run(op.name, func(t *testing.T) {

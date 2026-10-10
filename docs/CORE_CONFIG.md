@@ -202,8 +202,14 @@ crawler:
 | --- | --- | --- |
 | `enabled` | bool | 是否启用周期轮询 repeatable 任务 |
 | `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
-| `interval` | duration | 轮询间隔；`0`=不自动轮询，仅手动触发 |
+| `interval` | duration | **最粗兜底**的扫描间隔（每条任务可用 `repeat_interval` 定更细的周期，ticker 会自动提前到最早一条到点）；`0`=不自动轮询，仅手动触发 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+
+> 这一节管的是**队列**（多久扫一次、并发多少）；"**哪条任务**要轮询、**多久一次**"是任务行上的
+> `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
+> 播种（`repeat_interval` 为 0 = 跟这里的 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
+> 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
+>（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
 
 ### business —— 业务自己的配置段（框架不解析）
 

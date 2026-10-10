@@ -77,7 +77,7 @@ func (e *Engine) startErrorQueue() {
 			return 0
 		}
 		return cfg.Interval
-	}, func() {
+	}, nil /* 数据驱动的唤醒只有轮询队列用得上 */, func() {
 		if n, err := e.ProcessErrorQueue(); err != nil {
 			e.loggerSet.Engine.Errorf("error queue: auto process: %s", err.Error())
 		} else if n > 0 {

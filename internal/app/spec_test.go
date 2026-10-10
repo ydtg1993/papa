@@ -67,7 +67,6 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	a.RegisterSites(
 		SiteSpec{
 			Key: "a", BaseURL: "https://a.example/",
-			Entries:            map[string]string{"漫画": "category/comic/"},
 			Headers:            map[string]string{"User-Agent": "ua-a"},
 			RestrictedKeywords: []string{"安全验证"},
 			Breaker:            &BreakerSpec{Enabled: true, Threshold: 7, Window: "2m"},
@@ -113,9 +112,9 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	if !entry.called {
 		t.Fatal("AutoStart=true 的阶段应当在启动时投入口任务")
 	}
-	// 站点声明（BaseURL / Entries）也一并交给入口回调 —— fetcher 不必自己存副本。
+	// 站点声明（BaseURL / Headers）也一并交给入口回调 —— fetcher 不必自己存副本。
 	// 少了这一条，站点值就只能在 fetcher 里再写一份常量，改了会漂。
-	if entry.site.BaseURL != "https://a.example/" || entry.site.Entries["漫画"] != "category/comic/" {
+	if entry.site.BaseURL != "https://a.example/" || entry.site.Headers["User-Agent"] != "ua-a" {
 		t.Fatalf("入口回调拿到的站点快照不对：%+v", entry.site)
 	}
 }

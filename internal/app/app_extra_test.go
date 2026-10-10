@@ -351,7 +351,7 @@ func (stubStageFetcher) FetchHandler(_ context.Context, _ *engine.Task, _ *engin
 }
 
 // entryStageFetcher 实现可选接口 EntrySubmitter。
-// site 记下框架交过来的那份站点声明快照（BaseURL / Entries 该在这儿，而不是 fetcher 自己存）。
+// site 记下框架交过来的那份站点声明快照（BaseURL / Headers 该在这儿，而不是 fetcher 自己存）。
 type entryStageFetcher struct {
 	called bool
 	site   core.Site

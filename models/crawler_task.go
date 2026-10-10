@@ -44,10 +44,20 @@ type CrawlerTask struct {
 	Title      string           `gorm:"type:text;comment:页面标题"`
 	Content    datatypes.JSON   `gorm:"type:json;comment:页面提取内容"`
 	Retry      int              `gorm:"default:0;comment:错误重试次数"`
-	Status     TaskStatus       `gorm:"default:0;comment:0:待处理 1:处理中 2:成功 3:失败"`
-	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;comment:支持重试 0:不能 1:可以"`
+	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;comment:0:待处理 1:处理中 2:成功 3:失败"`
+	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
-	Reprocess  int              `gorm:"type:int(11);default:0;comment:失败任务被错误队列再处理的代数"`
+	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 跟全局 repeat_queue.interval。
+	// 只在首次入库时由 `Task.toModel` 播种；之后改它走 `Engine.SetTaskRepeatInterval`（后台「设轮询周期」动作）。
+	RepeatInterval int `gorm:"type:int(11);default:0;comment:轮询周期(秒)；0=跟全局 repeat_queue.interval"`
+	// NextRepeatAt 下次到点时间 —— 轮询队列判断"该不该重投"的**唯一**依据；NULL = 未排期（老行/从未轮询过）→ 算到点。
+	// 用指针而非 time.Time：零值时间会被 gorm 写成 0001-01-01，而 MySQL DATETIME 下限是 1000-01-01，
+	// 严格模式下直接报 1292（比 0000-00-00 更早失败）。索引 idx_repeat_due 见 Repeatable/Status 上的同名 tag。
+	NextRepeatAt *time.Time `gorm:"index:idx_repeat_due,priority:3;comment:下次轮询到点；NULL=未排期"`
+	// LastRepeatAt 上次被轮询队列**投递**的时间（只给后台看，不参与任何判断）：
+	// 周期被改过之后，它与 NextRepeatAt 不再互为简单加减，所以不是可以推导出来的副本。
+	LastRepeatAt *time.Time `gorm:"comment:上次被轮询投递的时间；NULL=从未"`
+	Reprocess    int        `gorm:"type:int(11);default:0;comment:失败任务被错误队列再处理的代数"`
 	// Urgent 加急：该任务投到所属阶段的快车道，插到常规队列前面。
 	// 它是「排队位置」的概念 —— worker 认领（置为处理中）时一并归零，跑过一次即完成使命。
 	Urgent    bool      `gorm:"type:tinyint(1);default:0;comment:加急 0:否 1:是"`

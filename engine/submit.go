@@ -119,22 +119,31 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	// worker 取到任务时会以 status=待处理 为条件认领（claimTask），
 	// 如果这里先入队后落库，中间那个窗口里取到任务的 worker（repeatable 重跑时
 	// 行里还是"成功"）会被误判成"已被运营改动"而跳过执行。
+	// 只写这个函数负责的那几列，不再整行 Save(record)：record 是更早 SELECT 出来的快照，
+	// 而**延迟投递**那条会把它存进 delayHeap、到点才走到这里（Delay 多长就旧多久）。
+	// 整行写回会把运营在这期间改的列（repeatable / urgent / error…）静默盖回去 ——
+	// 尤其是 repeatable：它现在可由后台「开/停轮询」随时改，被盖回去就是"控制面被数据面吃掉"。
+	updates := map[string]any{"status": models.TaskStatusPending}
 	if task.Repeatable && task.ID != 0 {
-		record.Repeat += 1
+		// 轮询代数交给 SQL 自增：读出来 +1 再写回，并发下会丢别人的增量
+		updates["repeat"] = gorm.Expr("repeat + 1")
 	}
 	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
 	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，
 	// 下一次重投就把任务带回旧的业务行上（SubmitTask/SubmitTasks 的 Meta 只是内存里的，
 	// 谁也看不出来它和库里的不一致）。
 	if len(task.Meta) > 0 {
-		record.Meta = metaToJSON(task.Meta)
+		updates["meta"] = metaToJSON(task.Meta)
 	}
 	// 站点同理：行是这条任务的记录，重投路径全靠它认出"这条属于哪个站"
 	if task.Site != "" {
-		record.Site = task.Site
+		updates["site"] = task.Site
 	}
-	record.Status = models.TaskStatusPending
-	e.db.Save(record)
+	e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(updates)
+	if task.RepeatInterval > 0 {
+		// 新播种了一条带周期的轮询任务：叫醒轮询队列重算扫描节拍，别让它等当前那次 sleep
+		e.wakeRepeatQueue()
+	}
 
 	if err := e.submitTo(info, task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
@@ -143,11 +152,12 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 			e.spillTask(task)
 			return nil
 		}
-		// 提交失败，回滚内存去重表和数据库状态
+		// 提交失败，回滚内存去重表和数据库状态（同样只写自己负责的列：错误用 SQL 追加，不读出再拼）
 		e.dedupCache.Delete(task.Unique())
-		record.Error += err.Error() + "\n"
-		record.Status = models.TaskStatusFailed
-		e.db.Save(&record)
+		e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(map[string]any{
+			"status": models.TaskStatusFailed,
+			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", err.Error()+"\n"),
+		})
 		return err
 	}
 	return nil
@@ -343,11 +353,12 @@ func (e *Engine) ReSubmitTask(task *Task) error {
 	task.ID = int(record.ID)
 	info := e.stages[task.Stage]
 	if err := e.submitTo(info, task); err != nil {
-		// 提交失败，回滚内存去重表和数据库状态
+		// 提交失败，回滚内存去重表和数据库状态（与 submitToPool 同形：只写自己负责的列）
 		e.dedupCache.Delete(task.Unique())
-		record.Error += err.Error() + "\n"
-		record.Status = models.TaskStatusFailed
-		e.db.Save(&record)
+		e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(map[string]any{
+			"status": models.TaskStatusFailed,
+			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", err.Error()+"\n"),
+		})
 		return e.logSubmitError(task, err)
 	}
 	return nil
