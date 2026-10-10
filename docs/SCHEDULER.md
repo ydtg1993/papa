@@ -68,7 +68,7 @@ app.Run(ctx)
 | --- | --- | --- |
 | `engine.RepollRepeatableTasks()` | 重新投递「已完成」的 repeatable 任务（success/failed） | `(投递数, error)` |
 | `engine.SetTaskRepeatable(id, on)` | 开/停**某一条**任务的周期轮询（只改标记，下一轮扫描生效） | `error` |
-| `engine.SetTaskRepeatInterval(id, was, seconds)` | 改**某一条**任务的轮询周期（秒，0 = 跟全局；`was` 是行快照里的旧值当版本守卫） | `error` |
+| `engine.SetTaskRepeatInterval(id, was, seconds)` | 改**某一条**任务的轮询周期（秒，0 = 用本站声明的周期；`was` 是行快照里的旧值当版本守卫） | `error` |
 | `engine.ProcessErrorQueue()` | 手动触发失败任务重投 | `(投递数, error)` |
 | `engine.ProcessRecoverQueue()` | 把「未到终态」的任务重新入队（**只该在启动时调**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） | `(恢复数, error)` |
 

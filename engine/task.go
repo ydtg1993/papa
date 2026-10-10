@@ -19,7 +19,7 @@ type Task struct {
 	Stage      string // 阶段标识，如 "catalog", "detail", "video"
 	Site       string // 所属站点（SiteSpec.Key）；空 = 未归属。随行落库，供后台按站点筛/排障
 	Repeatable bool
-	// RepeatInterval 这条任务的周期轮询周期；0 = 跟全局 repeat_queue.interval。
+	// RepeatInterval 这条任务的周期轮询周期；0 = 用本站 RepeatQueue 的 Interval。
 	// **只在首次入库时播种**（见 toModel）：之后要改周期，用 `Engine.SetTaskRepeatInterval`
 	// 或后台的「设轮询周期」—— 免得每次启动重投入口任务时，代码里的值把运营改的盖掉。
 	RepeatInterval time.Duration
@@ -65,7 +65,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		IdempotencyKey: t.IdempotencyKey,
 		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
-		RepeatInterval: int(t.RepeatInterval / time.Second), // 秒落库；0 = 跟全局
+		RepeatInterval: int(t.RepeatInterval / time.Second), // 秒落库；0 = 用本站声明的周期
 		Urgent:         t.Urgent,
 		Status:         models.TaskStatusPending,
 	}

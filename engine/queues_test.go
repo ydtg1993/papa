@@ -56,7 +56,7 @@ func setRows(f *fakeTaskDB, n int, stage string, status models.TaskStatus) {
 func TestErrorQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{MaxRetry: 3}
+	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{MaxRetry: 3}})
 
 	e.errorQueueQuery("")().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
@@ -82,7 +82,7 @@ func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 	setRows(f, 3, "stub", models.TaskStatusFailed)
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{BatchSize: 10, WorkerCount: 2}
+	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{BatchSize: 10, WorkerCount: 2}})
 
 	n, err := e.ProcessErrorQueue()
 	if err != nil {
@@ -246,7 +246,7 @@ func TestProcessRecoverQueueProcessesAllActive(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
 	// 站点级 enabled 是执行前的闸门（不写 = 跟全局）：这里显式开着
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	setSiteQueues(e, "", SiteQueues{Recover: config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
 
 	n, err := e.ProcessRecoverQueue()
 	if err != nil {
@@ -265,7 +265,7 @@ func TestStartRecoverQueueDisabled(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := queueEngine(t, f, pool)
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: false}
+	setSiteQueues(e, "", SiteQueues{Recover: config.RecoverQueueConfig{Enabled: false}})
 
 	e.startRecoverQueue()
 	if got := e.recoveredCount.Load(); got != 0 {
@@ -390,7 +390,7 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 				f.failQueries = 1
 			}
 			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}
+			setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}})
 
 			got := e.repeatTickInterval("")
 			if diff := got - tc.want; diff > time.Second || diff < -time.Second {
@@ -430,7 +430,7 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
 
 	// ① 队列只捞 repeatable = 1 的终态行
 	e.repeatQueueQuery("")().Find(&[]models.CrawlerTask{})
@@ -475,7 +475,7 @@ func TestRepollRepeatableTasksProcessesAll(t *testing.T) {
 	setRows(f, 2, "stub", models.TaskStatusSuccess)
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 2}
+	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 2}})
 
 	n, err := e.RepollRepeatableTasks()
 	if err != nil {

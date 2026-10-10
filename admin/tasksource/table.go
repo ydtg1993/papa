@@ -41,7 +41,7 @@ type TaskActions interface {
 	// SetTaskRepeatable 开/停这一行的周期轮询（只改标记，下一轮 scan 才生效）；
 	// 已经开着又开返回 engine.ErrTaskRepeatOn，已经停着又停返回 engine.ErrTaskRepeatOff。
 	SetTaskRepeatable(id uint, on bool) error
-	// SetTaskRepeatInterval 改这一行的轮询周期（秒；0 = 跟全局）。
+	// SetTaskRepeatInterval 改这一行的轮询周期（秒；0 = 用本站声明的周期）。
 	// wasSeconds 是行快照里的旧值，当版本条件防重复提交；周期不合法返回 engine.ErrRepeatIntervalBad。
 	SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error
 }
@@ -176,7 +176,7 @@ func taskActions(acts TaskActions) []oao.Action {
 			Confirm: "改这条任务的轮询周期？只改周期，不会立刻重跑一次（想立刻跑请用「重投」）。",
 			Form: []oao.Field{
 				{Name: "seconds", Label: "轮询周期（秒）", Kind: oao.KindNumber, Required: true,
-					Help: "600 = 10 分钟；0 = 跟全局 repeat_queue.interval；最小 10 秒"},
+					Help: "600 = 10 分钟；0 = 用本站 RepeatQueue 的 Interval；最小 10 秒"},
 			},
 			Handler: func(ctx context.Context, req oao.ActionRequest) error {
 				id, err := parseID(req)

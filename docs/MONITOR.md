@@ -201,7 +201,7 @@ papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（
 内置的「站点」表（`admin/sitesource`）展示 `crawler_sites`（引擎启动时按站点声明播种、跑起来按列回写统计），
 带三个动作：**「轮询任务」**（把该站可轮询的已完成任务**全投一遍，忽略周期**）、
 **「暂停自动轮询」**/「恢复自动轮询」（改 `auto_repeat`，条件更新当版本守卫；已经是目标值回 409；
-默认 scope 那行不允许改 —— 它只能靠全局 `repeat_queue.enabled`）。列里的 `base_url` / `stage_count` 是
+默认 scope 那行不允许改 —— 它没有站点声明（未归属的任务不参与治理队列））。列里的 `base_url` / `stage_count` 是
 启动时按声明抄的：**改声明要重启，直接改库不生效**。
 
 内置的「任务」表（`admin/tasksource`）展示的就是 `crawler_task`，可作为完整示例。
@@ -214,7 +214,7 @@ papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（
 | **加急** | 更多 ▾ | 把该任务投一份到所属阶段的**快车道**，插到排队任务前面执行。见下方说明 |
 | **开轮询** | 更多 ▾ | 让该任务参与周期轮询：只改 `repeatable` 标记并把「下次轮询」置为现在，下一轮扫描才生效；已经开着再点 → 409 |
 | **停轮询** | 更多 ▾ | 停掉该任务的周期轮询，已经跑起来的这一轮不受影响；已经停着再点 → 409 |
-| **设轮询周期** | 更多 ▾ | 弹表单填周期（秒，0 = 跟全局）；只改周期，不立刻重跑一次；带行快照版本守卫 |
+| **设轮询周期** | 更多 ▾ | 弹表单填周期（秒，0 = 用本站声明的周期）；只改周期，不立刻重跑一次；带行快照版本守卫 |
 | **标失败** | 更多 ▾ | 对非终态的行生效，必填原因写进任务的错误信息 |
 | **删除** | 更多 ▾ | 二次确认；「处理中」的行拒绝删除，请改用标失败 |
 
@@ -242,7 +242,7 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 （见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2）。
 
 **关于「开 / 停轮询 / 设轮询周期」**：某条任务**要不要周期性重跑**由任务行上的 `repeatable` 列决定、
-**多久一次**由 `repeat_interval`（秒，0 = 跟全局）决定 —— 粒度都是任务，不是阶段。
+**多久一次**由 `repeat_interval`（秒，0 = 用本站声明的周期）决定 —— 粒度都是任务，不是阶段。
 首次提交时由 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}` 播种，之后就用这三个动作改
 （业务里等价的入口是 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)`，
 见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。任务表上有对应的三列：**轮询周期(秒) / 上次轮询 / 下次轮询** ——

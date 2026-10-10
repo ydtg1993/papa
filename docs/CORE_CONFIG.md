@@ -139,19 +139,36 @@
 
 ### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)）
 
-| 键 | 类型 | 说明 |
-| --- | --- | --- |
-| `enabled` | bool | 是否启用 |
-| `worker_count` | int | 并发重新投递数 |
-| `interval` | duration | 自动轮询间隔；`0`=仅手动 |
-| `max_retry` | int | 单个任务最多再处理代数；`0`=不限 |
-| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+**不在 config.yaml 里**：三个治理队列都按站点写在 `configs/sites/<站名>.go` 的 `SiteSpec` 上
+（yaml 里再写 `error_queue:` 这类段会以「未知配置键」拒绝启动，并指路到这里）。
 
-> 错误队列**按站点拆**（后台一行一个站）：默认 scope 那条仍是 `error_queue`，命名站点是 `error_queue:<站点>`，
-> 各自的重投并发、累计计数与运行快照互不影响，后台与 `/api/errorqueue/process?site=` 都能单独触发。
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `Enabled` | `*bool` | **必写**（`nil` = 漏写 → 启动 panic）；`&false` = 本站不跑这条队列，其余字段可以不写 |
+| `WorkerCount` | int | 并发重新投递数；开着时必填且 `> 0` |
+| `Interval` | string | 自动轮询间隔（如 `"4h"`）；`"0"`=不自动，仅后台手动触发 |
+| `MaxRetry` | int | 单个任务最多再处理代数；`0`=不限 |
+| `BatchSize` | int | 每批查询处理的任务数；开着时必填且 `> 0`（分页流式） |
+
+```go
+	// configs/sites/<站名>.go（脚手架生成物里就是这几行）
+	ErrorQueue: &papa.ErrorQueueSpec{
+		Enabled:     &on,   // on := true —— Go 没有字面量取址
+		WorkerCount: 1,
+		Interval:    "4h",
+		MaxRetry:    3,
+		BatchSize:   100,
+	},
+	// 这一站不跑错误队列：只写一行
+	// ErrorQueue: &papa.ErrorQueueSpec{Enabled: &off},
+```
+
+> 错误队列**按站点跑**（后台一行一个站）：命名站点是 `error_queue:<站点>`；默认 scope 那条仍叫
+> `error_queue`，但它**不跑** —— 未归属（`site` 为空）的任务没有声明可挂（见 [DEVELOPMENT.md](./DEVELOPMENT.md) §7）。
+> 各站的重投并发、累计计数与运行快照互不影响，后台与 `/api/errorqueue/process?site=` 都能单独触发。
 >
-> **站点级覆盖**：`ErrorQueue: &papa.QueueSpec{Enabled: &off, WorkerCount: 2, Interval: "30m", MaxRetry: 3}`
->（不写 = 用上面这份）。见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+> `Enabled: &true` 时**每个字段都得写**，缺一项 / 值越界启动就报（与 `crawler.breaker` 的
+> 「enabled=true 时 threshold 必填」同一档）。
 
 ### archive —— 页面归档（失败时留下那一页）
 
@@ -195,33 +212,36 @@ crawler:
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
-| 键 | 类型 | 说明 |
-| --- | --- | --- |
-| `enabled` | bool | 是否启用；启用后**启动时**恢复一次 |
-| `worker_count` | int | 并发重新入队的数量 |
-| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+**不在 config.yaml 里**，写法同 `ErrorQueue`（`RecoverQueue: &papa.RecoverQueueSpec{...}`）：
 
-> **站点级覆盖**：`RecoverQueue: &papa.QueueSpec{...}`（它没有 `interval`，写了会报错）。
-> 某站 `Enabled: &false` 就是"这一站不做启动恢复"。
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `Enabled` | `*bool` | **必写**；`&false` = 这一站重启后不捡回中断的任务 |
+| `WorkerCount` | int | 并发重新入队的数量；开着时必填且 `> 0` |
+| `BatchSize` | int | 每批查询处理的任务数；开着时必填且 `> 0` |
+
+> 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `Interval` / `MaxRetry` ——
+> 这两个字段在这个类型上**根本不存在**（写错是编译期错误，不是启动报错）。
 
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
 
-| 键 | 类型 | 说明 |
+**不在 config.yaml 里**，写法同 `ErrorQueue`（`RepeatQueue: &papa.RepeatQueueSpec{...}`）：
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `enabled` | bool | 是否启用周期轮询 repeatable 任务 |
-| `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
-| `interval` | duration | **最粗兜底**的扫描间隔（每条任务可用 `repeat_interval` 定更细的周期，ticker 会自动提前到最早一条到点）；`0`=不自动轮询，仅手动触发 |
-| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
+| `Enabled` | `*bool` | **必写**；`&false` = 本站没有轮询队列 |
+| `WorkerCount` | int | 并发重新投递的数量；开着时必填且 `> 0` |
+| `Interval` | string | **最粗兜底**的扫描间隔（如 `"2h"`）；开着时必填且 `> 0` |
+| `BatchSize` | int | 每批查询处理的任务数；开着时必填且 `> 0` |
 
-> 轮询队列**按站点拆**（后台一行一个站），站点声明上还有一项 `AutoRepeat`（不写 = 自动；显式 false = 本站只在后台手动）。
-> 它与这里的 `enabled` 是**与**关系。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
-
-> **站点级覆盖**：`RepeatQueue: &papa.QueueSpec{...}` 覆盖 `worker_count` / `interval` / `batch_size`
->（**没有 `Enabled`** —— 站点级开关是 `AutoRepeat`，写了会报错）。
+> 轮询队列**按站点跑**（后台一行一个站）。它有两层开关，**是「与」关系**：
+> `RepeatQueue.Enabled` 是**声明层**的"这一站有没有这条队列"（改了要重启）；
+> `SiteSpec.AutoRepeat` 是**运营层**的"要不要自动跑"（落库 `crawler_sites.auto_repeat`，库为事实，
+> 后台「站点」页能随时开停、重启按库走）。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
 >
-> 这一节管的是**队列**（多久扫一次、并发多少）；"**哪条任务**要轮询、**多久一次**"是任务行上的
+> `Interval` 是"多久扫一次"的兜底；"**哪条任务**要轮询、**多久一次**"是任务行上的
 > `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
-> 播种（`repeat_interval` 为 0 = 跟这里的 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
+> 播种（`repeat_interval` 为 0 = 用本站的 `Interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
 > 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
 >（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
 

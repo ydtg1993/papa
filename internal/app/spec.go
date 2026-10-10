@@ -44,28 +44,66 @@ type SiteSpec struct {
 	// 显式写 `&false` = 本站只在后台手动触发（轮询队列那一行显示"已停用"，但两个手动入口都在）。
 	// 用指针而不是 bool，就是为了区分"没写"和"写了 false" —— 后者才是"我确实要关掉它"。
 	AutoRepeat *bool
-	// ErrorQueue / RecoverQueue / RepeatQueue 本站三个治理队列的参数：**不写 = 用 config.yaml 里
-	// 全局那一份**。写法见 QueueSpec；三段各自能写哪些键不一样，写错了启动就报（不静默忽略）。
-	// 注意：站点级 repeat 的"要不要自动轮询"是上面的 AutoRepeat，不在这里。
-	ErrorQueue   *QueueSpec
-	RecoverQueue *QueueSpec
-	RepeatQueue  *QueueSpec
+	// ErrorQueue / RecoverQueue / RepeatQueue 本站三个治理队列。**三条都得声明**：这一站不跑哪条，
+	// 就写 `Enabled: &false` 一行（见各自的 Spec 类型）。参数只在声明里 —— config.yaml 里没有这三段，
+	// 也没有"跟全局那份"这一层了；开了就得写全，缺一项 / 越界在 RegisterSites 时 panic 点名。
+	// 注意：repeat 的"要不要**自动**轮询"是上面的 AutoRepeat（运营层，库为事实），与这里的
+	// RepeatQueue.Enabled（声明层：这一站有没有这条队列）是「与」关系。
+	ErrorQueue   *ErrorQueueSpec
+	RecoverQueue *RecoverQueueSpec
+	RepeatQueue  *RepeatQueueSpec
 	Stages       []StageSpec
 }
 
-// QueueSpec 站点级的队列参数（覆盖全局 `error_queue` / `recover_queue` / `repeat_queue` 里对应的那份）。
+// 三个治理队列的声明。**三条都得写**（SiteSpec.ErrorQueue / RecoverQueue / RepeatQueue 为 nil
+// 就是漏了，RegisterSites 直接报并点名）；每条队列的字段也都得写全 —— 开了缺一项、值越界，同样启动就炸。
 //
-// **零值 = 用全局**；只有"要不要开"需要三态，所以它是指针（nil = 跟全局，&false = 明确关掉本站的
-// 这个队列）。三队列共用一个类型，用不上的键在 RegisterSites 里**直接报错** ——
-// 宁可启动就报，也别让写错的配置静默无效。
+// 与 crawler.breaker 同一套取向（`enabled=true` 时 threshold 必填且 > 0）：宁可启动报，也别让写错的
+// 配置静默变成另一种行为。**关掉只写一行**：`Enabled: &false` —— 关着的队列不看参数（同 breaker）。
 //
-// 改这些参数要**重启**：它们是启动时读一次（没有后台热更那回事了）。
-type QueueSpec struct {
-	Enabled     *bool  // nil = 跟全局；&false = 本站这个队列不自动跑（手动入口照旧）
-	WorkerCount int    // 0 = 跟全局：并发重新投递的数量
-	Interval    string // "" = 跟全局："4h" 这种；**recover_queue 没有这一项**
-	MaxRetry    int    // 0 = 跟全局：**只有 error_queue 有**（失败任务再处理代数上限）
-	BatchSize   int    // 0 = 跟全局：每批查询处理的任务数
+// 各自只有自己用得到的字段：写错字段是**编译期**错误（不再有"共用一个类型 + 用不上的键运行期报错"那套）。
+// 改这些参数要**重启**：声明是启动时读一次（没有后台热更那回事了）。
+
+// ErrorQueueSpec 本站错误队列：把 failed 的任务重投回各自的阶段（自动轮询 + 后台手动触发）。
+type ErrorQueueSpec struct {
+	// Enabled 本站要不要这条队列。**必须显式写**（nil = 漏写 → 启动报错）：用指针就是为了区分
+	// "没写"与"写了 false" —— 后者才是"我确实不跑它"。
+	Enabled *bool
+	// WorkerCount 并发重新投递的数量。开了必填且 > 0（为 0 时池子里没有 worker，任务会静静躺在队列里）。
+	WorkerCount int
+	// Interval 自动轮询间隔，如 "4h"（开了必填）；**"0" = 不自动轮询**，只留后台手动触发。
+	Interval string
+	// MaxRetry 单条任务最多再处理几代；**0 = 不限**（这是合法取值，不是"跟默认"）。
+	MaxRetry int
+	// BatchSize 每批查询处理的任务数，开了必填且 > 0（分页流式，别把海量失败任务一次性全量加载）。
+	BatchSize int
+}
+
+// RecoverQueueSpec 本站启动恢复：进程启动时把「未到终态」（pending/processing）的任务重新入队，
+// **只在启动跑一次**（没有周期、没有手动入口，见 docs/RECOVER_QUEUE.md）。
+type RecoverQueueSpec struct {
+	// Enabled 本站要不要启动恢复。**必须显式写**；&false = 这一站重启后不捡回中断的任务。
+	Enabled *bool
+	// WorkerCount 并发重新入队的数量，开了必填且 > 0。
+	WorkerCount int
+	// BatchSize 每批查询处理的任务数，开了必填且 > 0。
+	BatchSize int
+}
+
+// RepeatQueueSpec 本站周期轮询队列：把**到点的** repeatable 任务重投回各自阶段。
+//
+// 周期是**每条任务自己的**（`Task.RepeatInterval`，0 = 用本站的 Interval）；这里的 Interval 是
+// "最粗兜底"的扫描间隔。本站要不要**自动**跑还有一道运营层的闸门（SiteSpec.AutoRepeat，库为事实）。
+type RepeatQueueSpec struct {
+	// Enabled 本站要不要这条队列。**必须显式写**；&false = 这一站没有轮询队列。
+	Enabled *bool
+	// WorkerCount 并发重新投递的数量，开了必填且 > 0。
+	WorkerCount int
+	// Interval 最粗兜底的扫描间隔，开了必填且 **> 0**（ticker 会自动提前到最早一条到点）。
+	// "不自动跑"用 SiteSpec.AutoRepeat 关，别在这里写 "0"。
+	Interval string
+	// BatchSize 每批查询处理的任务数，开了必填且 > 0。
+	BatchSize int
 }
 
 // BreakerSpec 一个站点的熔断阈值（覆盖 crawler.breaker 的默认值）。
@@ -118,23 +156,25 @@ func (a *App) RegisterSites(sites ...SiteSpec) {
 			}
 			a.Engine.SetSiteBreaker(site.Key, cfg)
 		}
-		// 站点级的队列参数（不写 = 用全局那份）。默认 scope 没有站点声明可挂，
-		// 写了就是想让"全局那份"按站点生效 —— 直接报错说清楚，别静默忽略。
-		if spec.ErrorQueue != nil || spec.RecoverQueue != nil || spec.RepeatQueue != nil {
-			if site.Key == "" {
-				panic(fmt.Errorf("未归属（Key 为空）的站点声明不能配队列参数 —— 全局那一份就是它的配置"))
+		// 三个治理队列按站点声明（没有"全局那份"了）。**每条站点声明都得写全**（见那三个 Spec 类型）。
+		// 未归属（Key 为空）的声明没有站点行，三队列对它一律不跑 —— 写了就报，别静默忽略。
+		if site.Key == "" {
+			if spec.ErrorQueue != nil || spec.RecoverQueue != nil || spec.RepeatQueue != nil {
+				panic(fmt.Errorf("未归属（Key 为空）的站点声明不能配队列参数：三队列都按站点跑，" +
+					"未归属的任务没有队列 —— 要给它们治理，先给这一站一个 Key"))
 			}
-			errQ, err := spec.errorQueueConfig(a.Config.ErrorQueue)
+		} else {
+			errQ, err := spec.errorQueueConfig()
 			if err != nil {
-				panic(fmt.Errorf("站点 %q 的错误队列配置: %w", site.Key, err))
+				panic(fmt.Errorf("站点 %q 的错误队列: %w", site.Key, err))
 			}
-			recQ, err := spec.recoverQueueConfig(a.Config.RecoverQueue)
+			recQ, err := spec.recoverQueueConfig()
 			if err != nil {
-				panic(fmt.Errorf("站点 %q 的启动恢复配置: %w", site.Key, err))
+				panic(fmt.Errorf("站点 %q 的启动恢复: %w", site.Key, err))
 			}
-			repQ, err := spec.repeatQueueConfig(a.Config.RepeatQueue)
+			repQ, err := spec.repeatQueueConfig()
 			if err != nil {
-				panic(fmt.Errorf("站点 %q 的轮询队列配置: %w", site.Key, err))
+				panic(fmt.Errorf("站点 %q 的轮询队列: %w", site.Key, err))
 			}
 			a.Engine.SetSiteQueues(site.Key, engine.SiteQueues{Error: errQ, Recover: recQ, Repeat: repQ})
 		}
@@ -161,87 +201,127 @@ func (s SiteSpec) snapshot() core.Site {
 	}
 }
 
-// errorQueueConfig 把站点声明的错误队列参数套到全局那份上（不写 = 原样返回全局那份）。
-func (s SiteSpec) errorQueueConfig(def config.ErrorQueueConfig) (config.ErrorQueueConfig, error) {
-	out := def
-	if s.ErrorQueue == nil {
-		return out, nil
-	}
+// errQueueNotDeclared 三条队列漏声明时的报错（点名缺的是哪一条）。
+func errQueueNotDeclared(field string) error {
+	return fmt.Errorf("%s 没有声明 —— 三个治理队列都要写（ErrorQueue / RecoverQueue / RepeatQueue）；"+
+		"这一站不跑它就写 `%s: &papa.%sSpec{Enabled: &off}`", field, field, field)
+}
+
+// errQueueEnabledMissing Enabled 漏写时的报错：必须显式写 true / false —— 用指针就是为了让"没写"
+// 与"写了 false"分得开，漏写不能默认成任何一种。
+func errQueueEnabledMissing(field string) error {
+	return fmt.Errorf("%s.Enabled 必须显式写（true / false）", field)
+}
+
+// errorQueueConfig 把站点声明解析成引擎侧的生效值。声明不合法就报错（由 RegisterSites panic）。
+//
+// **关着的队列不看参数**（`Enabled: &false` 只写一行就够），与 crawler.breaker 同一档：
+// 开了才校验，缺一项 / 越界都当场报。
+func (s SiteSpec) errorQueueConfig() (config.ErrorQueueConfig, error) {
 	q := s.ErrorQueue
-	if q.Interval != "" {
-		d, err := time.ParseDuration(q.Interval)
-		if err != nil {
-			return out, fmt.Errorf("Interval 无法解析: %w", err)
-		}
-		out.Interval = d
+	if q == nil {
+		return config.ErrorQueueConfig{}, errQueueNotDeclared("ErrorQueue")
 	}
-	if q.Enabled != nil {
-		out.Enabled = *q.Enabled
+	if q.Enabled == nil {
+		return config.ErrorQueueConfig{}, errQueueEnabledMissing("ErrorQueue")
 	}
-	if q.WorkerCount != 0 {
-		out.WorkerCount = q.WorkerCount
+	if !*q.Enabled {
+		return config.ErrorQueueConfig{}, nil
 	}
-	if q.MaxRetry != 0 {
-		out.MaxRetry = q.MaxRetry
+	if q.WorkerCount <= 0 {
+		return config.ErrorQueueConfig{}, fmt.Errorf("ErrorQueue.WorkerCount 必须 > 0" +
+			"（为 0 时池子里没有 worker，失败任务会静静躺在队列里）")
 	}
-	if q.BatchSize != 0 {
-		out.BatchSize = q.BatchSize
+	if q.BatchSize <= 0 {
+		return config.ErrorQueueConfig{}, fmt.Errorf("ErrorQueue.BatchSize 必须 > 0（每批处理多少条；0 = 一条都不处理）")
 	}
-	return out, nil
+	if q.MaxRetry < 0 {
+		return config.ErrorQueueConfig{}, fmt.Errorf("ErrorQueue.MaxRetry 不能为负（0 = 不限代数）")
+	}
+	if q.Interval == "" {
+		return config.ErrorQueueConfig{}, fmt.Errorf(`ErrorQueue.Interval 必填："4h" 这种自动轮询间隔；` +
+			`"0" = 不自动轮询，仅后台手动触发`)
+	}
+	interval, err := time.ParseDuration(q.Interval)
+	if err != nil {
+		return config.ErrorQueueConfig{}, fmt.Errorf("ErrorQueue.Interval 无法解析: %w", err)
+	}
+	if interval < 0 {
+		return config.ErrorQueueConfig{}, fmt.Errorf(`ErrorQueue.Interval 不能为负（"0" = 不自动轮询，仅后台手动触发）`)
+	}
+	return config.ErrorQueueConfig{
+		Enabled:     true,
+		WorkerCount: q.WorkerCount,
+		Interval:    interval,
+		MaxRetry:    q.MaxRetry,
+		BatchSize:   q.BatchSize,
+	}, nil
 }
 
-// recoverQueueConfig 同上；启动恢复没有 interval（它只在启动跑一次），写了就报错。
-func (s SiteSpec) recoverQueueConfig(def config.RecoverQueueConfig) (config.RecoverQueueConfig, error) {
-	out := def
-	if s.RecoverQueue == nil {
-		return out, nil
-	}
+// recoverQueueConfig 同上；启动恢复没有 interval / max_retry 这两项 —— 类型上就不存在（编译期挡掉）。
+func (s SiteSpec) recoverQueueConfig() (config.RecoverQueueConfig, error) {
 	q := s.RecoverQueue
-	if q.Interval != "" {
-		return out, fmt.Errorf("Interval 对 recover_queue 无意义（它只在启动跑一次）")
+	if q == nil {
+		return config.RecoverQueueConfig{}, errQueueNotDeclared("RecoverQueue")
 	}
-	if q.MaxRetry != 0 {
-		return out, fmt.Errorf("MaxRetry 只对 error_queue 有意义")
+	if q.Enabled == nil {
+		return config.RecoverQueueConfig{}, errQueueEnabledMissing("RecoverQueue")
 	}
-	if q.Enabled != nil {
-		out.Enabled = *q.Enabled
+	if !*q.Enabled {
+		return config.RecoverQueueConfig{}, nil
 	}
-	if q.WorkerCount != 0 {
-		out.WorkerCount = q.WorkerCount
+	if q.WorkerCount <= 0 {
+		return config.RecoverQueueConfig{}, fmt.Errorf("RecoverQueue.WorkerCount 必须 > 0" +
+			"（为 0 时池子里没有 worker，恢复出来的任务会静静躺在队列里）")
 	}
-	if q.BatchSize != 0 {
-		out.BatchSize = q.BatchSize
+	if q.BatchSize <= 0 {
+		return config.RecoverQueueConfig{}, fmt.Errorf("RecoverQueue.BatchSize 必须 > 0（每批处理多少条；0 = 一条都不处理）")
 	}
-	return out, nil
+	return config.RecoverQueueConfig{
+		Enabled:     true,
+		WorkerCount: q.WorkerCount,
+		BatchSize:   q.BatchSize,
+	}, nil
 }
 
-// repeatQueueConfig 同上；站点级 repeat 的开关是 AutoRepeat，这里写 Enabled 就报错（同一件事两个开关）。
-func (s SiteSpec) repeatQueueConfig(def config.RepeatQueueConfig) (config.RepeatQueueConfig, error) {
-	out := def
-	if s.RepeatQueue == nil {
-		return out, nil
-	}
+// repeatQueueConfig 同上。Interval 必须 > 0：这里是"最粗兜底"的扫描节拍，"不自动跑"是
+// SiteSpec.AutoRepeat（运营层闸门，见 AutoRepeat 的注释）—— 同一件事不在这里再开一个开关。
+func (s SiteSpec) repeatQueueConfig() (config.RepeatQueueConfig, error) {
 	q := s.RepeatQueue
-	if q.Enabled != nil {
-		return out, fmt.Errorf("站点级 repeat 的开关是 SiteSpec.AutoRepeat，别在这里写 Enabled")
+	if q == nil {
+		return config.RepeatQueueConfig{}, errQueueNotDeclared("RepeatQueue")
 	}
-	if q.MaxRetry != 0 {
-		return out, fmt.Errorf("MaxRetry 只对 error_queue 有意义")
+	if q.Enabled == nil {
+		return config.RepeatQueueConfig{}, errQueueEnabledMissing("RepeatQueue")
 	}
-	if q.Interval != "" {
-		d, err := time.ParseDuration(q.Interval)
-		if err != nil {
-			return out, fmt.Errorf("Interval 无法解析: %w", err)
-		}
-		out.Interval = d
+	if !*q.Enabled {
+		return config.RepeatQueueConfig{}, nil
 	}
-	if q.WorkerCount != 0 {
-		out.WorkerCount = q.WorkerCount
+	if q.WorkerCount <= 0 {
+		return config.RepeatQueueConfig{}, fmt.Errorf("RepeatQueue.WorkerCount 必须 > 0" +
+			"（为 0 时池子里没有 worker，到点的任务会静静躺在队列里）")
 	}
-	if q.BatchSize != 0 {
-		out.BatchSize = q.BatchSize
+	if q.BatchSize <= 0 {
+		return config.RepeatQueueConfig{}, fmt.Errorf("RepeatQueue.BatchSize 必须 > 0（每批处理多少条；0 = 一条都不处理）")
 	}
-	return out, nil
+	if q.Interval == "" {
+		return config.RepeatQueueConfig{}, fmt.Errorf(`RepeatQueue.Interval 必填："2h" 这种最粗兜底的扫描间隔；` +
+			`不自动跑用 SiteSpec.AutoRepeat 关`)
+	}
+	interval, err := time.ParseDuration(q.Interval)
+	if err != nil {
+		return config.RepeatQueueConfig{}, fmt.Errorf("RepeatQueue.Interval 无法解析: %w", err)
+	}
+	if interval <= 0 {
+		return config.RepeatQueueConfig{}, fmt.Errorf(`RepeatQueue.Interval 必须 > 0；` +
+			`"不自动跑"用 SiteSpec.AutoRepeat 关，别在这里写 "0"`)
+	}
+	return config.RepeatQueueConfig{
+		Enabled:     true,
+		WorkerCount: q.WorkerCount,
+		Interval:    interval,
+		BatchSize:   q.BatchSize,
+	}, nil
 }
 
 // stagePlan 一条阶段声明的落地计划：校验通过后算出来的"要做的事"。

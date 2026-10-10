@@ -11,24 +11,33 @@
 
 ## 1. 配置
 
-> **站点级覆盖**：站点声明里写 `ErrorQueue: &papa.QueueSpec{Enabled: &off, WorkerCount: 2, Interval: "30m", MaxRetry: 3, BatchSize: 100}`
-> 就只对那个站生效（不写 = 用下面这份）。错误队列**按站点拆**（每站一条队列、各自一行、`?site=` 手动触发）。
-> 队列参数是**启动时读一次**：改完要重启（后台没有热更这回事了）。
+**不在 config.yaml 里**：三个治理队列都按站点写在 `configs/sites/<站名>.go` 的站点声明上
+（yaml 里再写 `error_queue:` 会被「未知配置键」拒掉，并指路到这里）。**每条站点声明都得写全**：
 
-```yaml
-error_queue:
-  enabled: false      # 是否启用错误队列处理
-  worker_count: 2     # 并发重新投递失败任务的数量
-  interval: "10m"     # 自动轮询间隔；0 = 不自动轮询，仅手动触发
-  max_retry: 3        # 单个失败任务最多再处理代数；0 = 不限
-  batch_size: 1000    # 每批查询处理的任务数；0 = 默认 1000（分页流式）
+```go
+	// configs/sites/<站名>.go
+	on := true // Go 没有字面量取址
+
+	ErrorQueue: &papa.ErrorQueueSpec{
+		Enabled:     &on,   // 必写；&off = 本站不跑错误队列（其余字段可以不写）
+		WorkerCount: 2,     // 并发重新投递失败任务的数量，> 0
+		Interval:    "10m", // 自动轮询间隔；"0" = 不自动，仅后台手动触发
+		MaxRetry:    3,     // 单个失败任务最多再处理代数；0 = 不限
+		BatchSize:   100,   // 每批查询处理的任务数，> 0（分页流式）
+	},
 ```
+
+> 开着（`Enabled: &true`）时**每个字段都得写**：缺一项 / 值越界启动就报（与 `crawler.breaker`
+> 「enabled=true 时 threshold 必填」同一档）。
+> 错误队列**按站点跑**：命名站点是 `error_queue:<站点>`，后台一行一个站，`/api/errorqueue/process?site=`
+> 可单触发；默认 scope 那条（`error_queue`）**不跑** —— 未归属（任务的 `site` 为空）的任务没有队列。
+> 队列参数是**启动时读一次**：改完要重启（后台没有热更这回事了）。
 
 ## 2. 触发方式
 
 | 方式 | 说明 |
 | --- | --- |
-| 自动轮询 | `enabled: true` 且 `interval` 非 0，后台按间隔自动投递 |
+| 自动轮询 | `Enabled: &true` 且 `Interval` 不是 `"0"`，后台按间隔自动投递 |
 | 手动（OA） | `POST /api/errorqueue/process` |
 | 手动（代码） | `engine.ProcessErrorQueue()` |
 

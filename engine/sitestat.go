@@ -65,7 +65,7 @@ func (e *Engine) seedSiteRows() {
 			Key:        key,
 			BaseURL:    site.BaseURL,
 			StageCount: e.stageCountOfSite(key),
-			// 默认 scope 没有站点声明：它只能靠全局 repeat_queue.enabled 关，这里恒 true
+			// 默认 scope 没有站点行：它的自动轮询恒开、后台也开停不了（那两个动作只认具名站点），这里恒 true
 			AutoRepeat: key == "" || site.AutoRepeat,
 		}
 		row, exists := existing[key]

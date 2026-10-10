@@ -56,7 +56,7 @@ type Engine struct {
 	siteStats map[string]core.SiteStat
 	siteMu    sync.RWMutex
 
-	// 队列配置按站点存：声明层解析好（全局那份 + 站点声明的覆盖）交进来，引擎按站点取
+	// 队列配置按站点存：声明层把站点声明里那三个治理队列解析好交进来，引擎按站点取
 	//（见 SetSiteQueues / errorQueueConfig(site)）。**没有运行期覆盖层** —— 改配置 = 改代码 + 重启。
 	siteQueues map[string]SiteQueues
 	queueCfgMu sync.RWMutex

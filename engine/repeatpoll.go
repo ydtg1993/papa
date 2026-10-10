@@ -181,7 +181,7 @@ func (e *Engine) repeatForceQueueQuery(site string) func() *gorm.DB {
 //     已经过期的（任务跑得比自己的周期还久）直接排除 —— 它跑完之前投不出去，
 //     让这种行参与只会把扫描钉在最短刻度上空转。
 //
-// 没有可轮询的行、或查库出错 → false，调用方退回全局节拍（DB 抖动不该让 ticker 崩，也不该刷日志）。
+// 没有可轮询的行、或查库出错 → false，调用方退回本站节拍（DB 抖动不该让 ticker 崩，也不该刷日志）。
 func (e *Engine) soonestRepeatIn(site string) (time.Duration, bool) {
 	var row struct{ Epoch *int64 }
 	err := e.repeatBaseQuery(site).
@@ -325,7 +325,7 @@ func (e *Engine) requeueRepeatTaskIn(site string, t *models.CrawlerTask) bool {
 
 // wakeRepeatQueue 让**某个站点**的轮询队列立刻重算扫描节拍：新提交了带周期的任务、后台改了某条
 // 的周期、或把某条「开轮询」之后调它。节拍是 pull 出来的（只在 tick 到点或收到信号时重算），
-// 不叫这一声就要等当前那次 sleep 到期 —— 可能是一整个全局 interval（比如 2 小时）。
+// 不叫这一声就要等当前那次 sleep 到期 —— 可能是一整个本站 interval（比如 2 小时）。
 //
 // 只叫本站，**不扇出**：每次唤醒都会让被叫到的队列跑一条 `soonestRepeatIn`（整表 MIN 聚合），
 // 而唤醒的触发源包括"批量提交带周期的任务"，扇出等于把这条查询放大成站点数倍。
@@ -345,10 +345,10 @@ func (e *Engine) wakeRepeatQueue(site string) {
 
 // repeatTickInterval 本站下一次扫描的节拍：0 = 不自动轮询（总开关关着，仅手动触发）。
 //
-// 节拍 = min(全局 interval, 离本站最早一条到点还差多久)，并钳进 [repeatMinTick, 全局 interval]：
-// 全局 interval 从"每条任务的周期"变成"最粗兜底" —— 任务自己定的 10 分钟就真是 10 分钟，
+// 节拍 = min(本站 interval, 离本站最早一条到点还差多久)，并钳进 [repeatMinTick, 本站 interval]：
+// 本站 interval 从"每条任务的周期"变成"最粗兜底" —— 任务自己定的 10 分钟就真是 10 分钟，
 // 而新提交的行、被改过周期的行最多等这么久被发现（等不到时由 wakeRepeatQueue 叫醒）。
-// 查不到数据（没有可轮询的行 / 库抖动）→ 退回全局节拍，DB 抖动不该让 ticker 崩。
+// 查不到数据（没有可轮询的行 / 库抖动）→ 退回本站节拍，DB 抖动不该让 ticker 崩。
 //
 // 这里**不看 `AutoRepeat`**：站点级开关是"要不要自动投"的闸门，放在 onTick 里判（见
 // startRepeatQueue）—— 若把它算成 0，ticker 会停掉、只能等下一次唤醒，而一次库/声明的

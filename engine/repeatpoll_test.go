@@ -109,7 +109,7 @@ func TestRepeatQueryShapePerSite(t *testing.T) {
 func TestRepollSiteQueuesKeepStatsApart(t *testing.T) {
 	f := newFakeTaskDB()
 	e := siteEngine(t, f)
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	setSiteQueues(e, "a", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
 
 	if n, err := e.RepollSiteRepeatableTasks("a"); err != nil || n != 1 {
 		t.Fatalf("RepollSiteRepeatableTasks(a) = %d, %v, want 1, nil", n, err)
@@ -136,7 +136,8 @@ func TestAutoRepeatGatesAutomaticButNotManual(t *testing.T) {
 	e := siteEngine(t, f)
 	// 站点 b 显式关掉自动轮询（在真实声明里就是 `AutoRepeat: &false`）
 	e.SetSite(core.Site{Key: "b"})
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	setSiteQueues(e, "a", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
+	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
 
 	if e.queueEnabled("repeat_queue:b") {
 		t.Fatal("关掉自动轮询的站，后台那一行应当是「已停用」")
@@ -170,7 +171,7 @@ func TestAutoRepeatGateStopsAutoTicks(t *testing.T) {
 	pool := e.stages["stub"].workerPool
 	pool.Start(e.ctx, func(context.Context, *Task) error { return nil })
 	e.SetSite(core.Site{Key: "b"}) // 显式关掉自动轮询
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}
+	setSiteQueues(e, "b", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}})
 	e.startRepeatQueue("b")
 
 	time.Sleep(80 * time.Millisecond)
@@ -196,7 +197,7 @@ func TestStopWaitsForTickers(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.stages["stub"].workerPool.Start(e.ctx, func(context.Context, *Task) error { return nil })
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}
+	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}})
 	e.ensureRepeatQueue("")
 	e.startRepeatQueue("")
 

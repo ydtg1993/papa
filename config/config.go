@@ -9,18 +9,18 @@ import (
 )
 
 type Config struct {
-	App          AppConfig          `mapstructure:"app"`
-	Log          LogConfig          `mapstructure:"log"`
-	Crawler      CrawlerConfig      `mapstructure:"crawler"`
-	Browser      BrowserConfig      `mapstructure:"browser"`
-	HTML         HTMLConfig         `mapstructure:"html"`
-	Proxy        ProxyConfig        `mapstructure:"proxy"`
-	DB           DBConfig           `mapstructure:"db"`
-	Server       ServerConfig       `mapstructure:"server"`
-	Scheduler    SchedulerConfig    `mapstructure:"scheduler"`
-	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
-	RecoverQueue RecoverQueueConfig `mapstructure:"recover_queue"`
-	RepeatQueue  RepeatQueueConfig  `mapstructure:"repeat_queue"`
+	App       AppConfig       `mapstructure:"app"`
+	Log       LogConfig       `mapstructure:"log"`
+	Crawler   CrawlerConfig   `mapstructure:"crawler"`
+	Browser   BrowserConfig   `mapstructure:"browser"`
+	HTML      HTMLConfig      `mapstructure:"html"`
+	Proxy     ProxyConfig     `mapstructure:"proxy"`
+	DB        DBConfig        `mapstructure:"db"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Scheduler SchedulerConfig `mapstructure:"scheduler"`
+	// 三个治理队列（error_queue / recover_queue / repeat_queue）**不在这里**：它们按站点声明
+	//（configs/sites/<站名>.go 的 SiteSpec.ErrorQueue / RecoverQueue / RepeatQueue）。
+	// 下面三个 *QueueConfig 只是引擎侧接手的**生效值**类型，不是 yaml 段。
 	// Business 业务自己的配置段：框架**不解析、不校验**，原样透出给 App（`app.Config.Business`）。
 	//
 	// 存在的理由是「未知键一律拒绝启动」那条规则（见 Validate）—— 它是对的（拼错的键名不该静默失效），
@@ -35,16 +35,20 @@ type Config struct {
 	Business map[string]any `mapstructure:"business"`
 }
 
-// ErrorQueueConfig 失败任务错误队列处理配置
+// ErrorQueueConfig 错误队列（失败任务重投）的**引擎侧生效值**：由站点声明解析而来
+// （`configs/sites/<站名>.go` 的 `SiteSpec.ErrorQueue`），config.yaml 里没有这一段。
+//
+// Enabled 的含义随之变成"**这一站声明了这条队列**"——没声明的站点是零值（不跑）。
 type ErrorQueueConfig struct {
-	Enabled     bool          `mapstructure:"enabled"`      // 是否启用错误队列处理
-	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量
-	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 不自动轮询，仅手动触发
-	MaxRetry    int           `mapstructure:"max_retry"`    // 单个失败任务最多再处理代数；0 = 不限
-	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
+	Enabled     bool          // 这一站有没有错误队列（声明里写 Enabled: &false 就是没有）
+	WorkerCount int           // 并发重新投递失败任务的数量（声明开启时必填 > 0）
+	Interval    time.Duration // 自动轮询间隔；0 = 不自动轮询，仅手动触发
+	MaxRetry    int           // 单个失败任务最多再处理代数；0 = 不限
+	BatchSize   int           // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 
-// RecoverQueueConfig 启动恢复配置。
+// RecoverQueueConfig 启动恢复的**引擎侧生效值**：由站点声明解析而来
+// （`configs/sites/<站名>.go` 的 `SiteSpec.RecoverQueue`），config.yaml 里没有这一段。
 //
 // 它现在只做一件事：**进程启动时把「未到终态」的任务（pending/processing）全部重新入队**。
 //
@@ -55,17 +59,22 @@ type ErrorQueueConfig struct {
 //
 // 运行期真正的卡死应该靠给外部调用设超时解决（htmlfetch 与 rod 都有 timeout），不是靠事后扫库。
 type RecoverQueueConfig struct {
-	Enabled     bool `mapstructure:"enabled"`      // 是否启用启动恢复（关掉则启动时不捞）
-	WorkerCount int  `mapstructure:"worker_count"` // 并发重新入队的数量
-	BatchSize   int  `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
+	Enabled     bool // 这一站有没有启动恢复（声明里写 Enabled: &false 就是没有）
+	WorkerCount int  // 并发重新入队的数量（声明开启时必填 > 0）
+	BatchSize   int  // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 
-// RepeatQueueConfig 周期轮询队列处理配置（定时重新投递「已完成」的 repeatable 任务，实现周期轮询）
+// RepeatQueueConfig 周期轮询队列的**引擎侧生效值**：由站点声明解析而来
+// （`configs/sites/<站名>.go` 的 `SiteSpec.RepeatQueue`），config.yaml 里没有这一段。
+//
+// 这里的 Enabled 是**声明层**的"这一站有没有这条队列"；"要不要**自动**跑"是另一层 ——
+// 站点声明上的 `AutoRepeat`（落库 `crawler_sites.auto_repeat`，库为事实、后台可运行期开停）。
+// 两者是「与」关系（见 engine/queuestats.go 的 queueEnabled）。
 type RepeatQueueConfig struct {
-	Enabled     bool          `mapstructure:"enabled"`      // 是否启用周期轮询 repeatable 任务
-	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递 repeatable 任务的数量
-	Interval    time.Duration `mapstructure:"interval"`     // 轮询间隔；0 = 不自动轮询，仅手动触发
-	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式）
+	Enabled     bool          // 这一站有没有轮询队列（声明里写 Enabled: &false 就是没有）
+	WorkerCount int           // 并发重新投递 repeatable 任务的数量（声明开启时必填 > 0）
+	Interval    time.Duration // 最粗兜底的扫描间隔（每条任务可用 repeat_interval 定更细的周期）
+	BatchSize   int           // 每批查询处理的任务数；0 = 默认 1000（分页流式）
 }
 
 // AppConfig 环境基础配置

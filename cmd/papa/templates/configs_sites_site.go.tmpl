@@ -14,22 +14,47 @@ import (
 // 参数不放 configs/config.yaml 的原因：一个阶段的存在本来就离不开代码（必须有个 fetcher），
 // 参数再放另一份文件，等于加一个阶段要改两处、想看全貌要翻两个地方。
 func {{.SiteFunc}}() papa.SiteSpec {
+	// Go 没有字面量取址：三个队列的 Enabled 与下面的 AutoRepeat 都是 *bool，先落在变量上再取地址。
+	on := true
+	// off := false // 要关掉某条队列（那一条只写 Enabled: &off 一行）或停掉自动轮询时用这个
+
 	site := papa.SiteSpec{
 		Key:     "{{.Module}}",          // 站点键：熔断 scope、日志/监控维度、任务的 site 列
 		BaseURL: "https://example.com/", // 站点根地址；框架不拿它当限制，方便 handler 取用
-		// 三个治理队列的参数按站点配（不写 = 用 config.yaml 里全局那份；改完要重启，没有热更）：
-		//  ErrorQueue:   &papa.QueueSpec{WorkerCount: 2, Interval: "30m", MaxRetry: 3},
-		//  RecoverQueue: &papa.QueueSpec{Enabled: &off},   // 这一站不做启动恢复
-		//  RepeatQueue:  &papa.QueueSpec{WorkerCount: 2, Interval: "1h"},
-		//（站点级 repeat 的开关是下面的 AutoRepeat，不是 QueueSpec.Enabled）
+		// 本站的三个治理队列：**三条都得写**（config.yaml 里没有这三段，也没有"跟 config.yaml 全局
+		// 那份"这一层了；改完要重启 —— 声明是 Go 代码，没有热更）。开了（Enabled: &on）就得写全，
+		// 缺一项 / 值越界启动就报（与 crawler.breaker「enabled=true 时 threshold 必填」同一档）；
+		// 本站不跑哪条，就只写一行 `ErrorQueue: &papa.ErrorQueueSpec{Enabled: &off}`。
+		ErrorQueue: &papa.ErrorQueueSpec{
+			Enabled:     &on,
+			WorkerCount: 1,     // 并发重新投递数，必须 > 0
+			Interval:    "4h",  // 自动轮询间隔；"0" = 不自动轮询，只留后台手动触发
+			MaxRetry:    3,     // 单条失败任务最多再处理几代；0 = 不限
+			BatchSize:   100,   // 每批处理条数，必须 > 0（分页流式）
+		},
+		// 启动恢复：重启时把上次中断留下的「未到终态」任务重新入队，**只在启动跑一次**
+		//（没有周期、没有后台手动入口）。详见 docs/RECOVER_QUEUE.md
+		RecoverQueue: &papa.RecoverQueueSpec{
+			Enabled:     &on,
+			WorkerCount: 1,
+			BatchSize:   100,
+		},
+		// 周期轮询：把**到点的** repeatable 任务重投回各自阶段。周期是**每条任务自己的**
+		//（task 上的 RepeatInterval，0 = 用这里的 Interval）；这里的 Interval 是"最粗兜底"的扫描间隔。
+		RepeatQueue: &papa.RepeatQueueSpec{
+			Enabled:     &on,
+			WorkerCount: 1,
+			Interval:    "2h",
+			BatchSize:   100,
+		},
 		// 入口路由表（"要抓哪些分类"）不在这里：它属于 fetcher 的站点逻辑，
 		// 写在 fetcher/fetch_catalog.go 的 SubmitEntries 旁边（见那里的包级路由表）。
-		// AutoRepeat 本站要不要**自动**周期轮询：不写 = 自动。显式关掉要取地址（Go 没有字面量取址）：
-		//	off := false
-		//	… AutoRepeat: &off
-		// 关掉之后那一站的轮询队列在后台显示「已停用」，但两个手动入口照旧可用：
-		//「轮询任务」（忽略周期、把该站可轮询任务全投一遍）与「立即执行」（只投到点的）。
-		// AutoRepeat: &off,
+		// AutoRepeat 本站要不要**自动**跑轮询队列（不写 = 自动）。它是**运营层**的闸门：落库
+		//（crawler_sites.auto_repeat）、后台「站点」页能随时开停、重启按库走 —— 与上面
+		// RepeatQueue.Enabled（声明层：有没有这条队列）是「与」关系。关掉之后后台显示「已停用」，
+		// 但两个手动入口照旧可用：「轮询任务」（忽略周期、把该站可轮询任务全投一遍）与
+		//「立即执行」（只投到点的）。
+		AutoRepeat: &on,
 
 		// 本站的请求头**写在这里**：这个站的任务抓任何页面都自动带上（静态与浏览器两条路都认），
 		// **下载也认**（fetcher 用 filedown.OptionsFromRequest(ctx, …) 带进下载选项）；

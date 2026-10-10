@@ -47,9 +47,9 @@ type CrawlerTask struct {
 	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;comment:0:待处理 1:处理中 2:成功 3:失败"`
 	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
-	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 跟全局 repeat_queue.interval。
+	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 用本站 RepeatQueue 的 Interval。
 	// 只在首次入库时由 `Task.toModel` 播种；之后改它走 `Engine.SetTaskRepeatInterval`（后台「设轮询周期」动作）。
-	RepeatInterval int `gorm:"type:int(11);default:0;comment:轮询周期(秒)；0=跟全局 repeat_queue.interval"`
+	RepeatInterval int `gorm:"type:int(11);default:0;comment:轮询周期(秒)；0=用本站RepeatQueue的Interval"`
 	// NextRepeatAt 下次到点时间 —— 轮询队列判断"该不该重投"的**唯一**依据；NULL = 未排期（老行/从未轮询过）→ 算到点。
 	// 用指针而非 time.Time：零值时间会被 gorm 写成 0001-01-01，而 MySQL DATETIME 下限是 1000-01-01，
 	// 严格模式下直接报 1292（比 0000-00-00 更早失败）。索引 idx_repeat_due 见 Repeatable/Status 上的同名 tag。

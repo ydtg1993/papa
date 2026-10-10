@@ -111,9 +111,26 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		}
 	}
 
+	// 三个治理队列也搬进了站点声明：config.yaml 里**不该再有那三段**（留着会被"未知配置键"拒掉 ——
+	// 上面的 Load 成功就是证明，见 config 包的 TestMovedQueueSectionsPointToSiteDeclaration）。
+	cfgText := readFile(t, filepath.Join("demo", "configs", "config.yaml"))
+	for _, key := range []string{"error_queue", "recover_queue", "repeat_queue"} {
+		for _, line := range strings.Split(cfgText, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), key+":") {
+				t.Errorf("config.yaml 里不该再有 %s 这一段（已搬进站点声明）：%s", key, strings.TrimSpace(line))
+			}
+		}
+	}
+
 	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
 	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 configs/sites/<站名>.go 声明。
 	siteSpec := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
+	// 三条队列都得写出来（这是用户照抄的范本）：少了哪条，注册时就是 panic
+	for _, want := range []string{"papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
+		if !strings.Contains(siteSpec, want) {
+			t.Errorf("configs/sites/demo.go 里应当有 %s 的声明（三条队列都得写）", want)
+		}
+	}
 	if strings.Contains(siteSpec, "Entries: map[string]string") {
 		t.Errorf("生成的 SiteSpec 不应包含入口表 Entries 字段：\n%s", siteSpec)
 	}

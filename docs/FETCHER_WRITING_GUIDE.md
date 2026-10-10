@@ -82,7 +82,7 @@ type Task struct {
   它与 `IdempotencyKey` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
 - `IdempotencyKey` 自定义去重键（如「标准化分类 URL + 页码」），空值回退到默认的 `stage|url`。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
-- `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 跟全局 `repeat_queue.interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
+- `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 用本站声明里 `RepeatQueue.Interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
 - `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面。适合"怀疑某条有问题、想单独跑一遍看着它跑"的探测任务（`&papa.Task{URL: u, Stage: "detail", Urgent: true}`）。注意它只省**排队**时间 —— 该阶段 worker 全在忙的时候，插队也快不了；worker 认领后 `urgent` 列自动归零，是一次性的。
 - `Trace` 是**本次执行的步骤记录器**，由引擎在调用 `FetchHandler` 前挂上（见 1.3）。你只管调它的方法，不用判空。
 
@@ -792,17 +792,22 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 - **要不要自动轮询，站点声明里一句话**：`AutoRepeat`（`*bool`）**不写 = 自动**；显式 `&false` 就是"这个站只在后台手动触发"
 （后台那一行显示「已停用」，但「立即执行」与全量重投照旧可用）。轮询队列本身也是**按站点拆**的 ——
 每个站在后台各占一行，互不影响。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
-- **三个治理队列的参数按站点配**（不写 = 用 `config.yaml` 里全局那份；改完要重启，没有热更）：
+- **三个治理队列只在站点声明里配**（`config.yaml` 里没有这三段，也没有"跟全局那份"这一层；
+  改完要重启，没有热更）。**三条都得写**：不跑哪条就写 `Enabled: &false` 一行：
   ```go
-  off := false
+  on, off := true, false   // Go 没有字面量取址，开关先落在变量上
+
   site := papa.SiteSpec{
-      ErrorQueue:   &papa.QueueSpec{WorkerCount: 2, Interval: "30m", MaxRetry: 3},
-      RecoverQueue: &papa.QueueSpec{Enabled: &off},        // 这一站不做启动恢复
-      RepeatQueue:  &papa.QueueSpec{WorkerCount: 2, Interval: "1h"},
-      // 注意：站点级 repeat 的开关是上面的 AutoRepeat，不是 QueueSpec.Enabled（写了会报错）
+      ErrorQueue: &papa.ErrorQueueSpec{
+          Enabled: &on, WorkerCount: 2, Interval: "30m", MaxRetry: 3, BatchSize: 100,
+      },
+      RecoverQueue: &papa.RecoverQueueSpec{Enabled: &off},   // 这一站不做启动恢复
+      RepeatQueue:  &papa.RepeatQueueSpec{Enabled: &on, WorkerCount: 2, Interval: "1h", BatchSize: 100},
+      // 注意：`Enabled: &false` 之外，**开着就必须写全**，缺一项 / 越界启动就报；
+      // repeat 的"要不要自动轮询"另有运营层的一道闸门（上面的 AutoRepeat，库为事实）。
   }
   ```
-  用不上的键写错会**启动就报**（比如 `recover_queue` 没有 `interval`），不静默忽略。
+  用不上的键**编译期就不存在**（`RecoverQueueSpec` 里根本没有 `Interval` 这个字段）—— 写错连编译都过不了。
 - **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`，fetcher 放 `fetcher/<站点>/`（一站一个包，与声明文件一一对应）。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：

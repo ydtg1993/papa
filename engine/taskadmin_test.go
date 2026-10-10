@@ -463,7 +463,7 @@ func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
 			e, _ := urgentEngine(t, f)
-			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: tc.global}
+			setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, Interval: tc.global}})
 			e.ensureRepeatQueue("") // 队列键得先备好，唤醒才有地方落
 			wake := e.repeatQueue(repeatQueueKey("")).wake
 

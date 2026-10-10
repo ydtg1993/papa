@@ -40,18 +40,6 @@ crawler:
   trace:
     enabled: true
     retention: "168h"
-error_queue:
-  interval: "10m"
-  batch_size: 500
-recover_queue:
-  enabled: true
-  worker_count: 2
-  batch_size: 500
-repeat_queue:
-  enabled: true
-  worker_count: 3
-  interval: "5m"
-  batch_size: 200
 `
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -79,25 +67,8 @@ repeat_queue:
 	}
 	// 注意：阶段参数已搬进 Go 声明（`configs/sites/<站名>.go` 的 StageSpec），配置里不再有 crawler.stages 段；
 	// 那套 "10s-30s" 区间的解析由 duration_test.go 直接覆盖 config.ParseDurationRange。
-	if cfg.ErrorQueue.Interval != 10*time.Minute {
-		t.Fatalf("error_queue.interval = %v, want 10m", cfg.ErrorQueue.Interval)
-	}
-	if cfg.ErrorQueue.BatchSize != 500 {
-		t.Fatalf("error_queue.batch_size = %v, want 500", cfg.ErrorQueue.BatchSize)
-	}
-	if !cfg.RecoverQueue.Enabled || cfg.RecoverQueue.WorkerCount != 2 {
-		t.Fatalf("recover_queue = %+v, want enabled + worker_count 2", cfg.RecoverQueue)
-	}
-	if cfg.RecoverQueue.BatchSize != 500 {
-		t.Fatalf("recover_queue.batch_size = %v, want 500", cfg.RecoverQueue.BatchSize)
-	}
-	if !cfg.RepeatQueue.Enabled || cfg.RepeatQueue.WorkerCount != 3 {
-		t.Fatalf("repeat_queue = %+v, want enabled + worker_count 3", cfg.RepeatQueue)
-	}
-	if cfg.RepeatQueue.Interval != 5*time.Minute || cfg.RepeatQueue.BatchSize != 200 {
-		t.Fatalf("repeat_queue interval/batch_size = %v/%v, want 5m/200",
-			cfg.RepeatQueue.Interval, cfg.RepeatQueue.BatchSize)
-	}
+	// 三个治理队列同理，也不在这里了（搬到站点声明）—— 它们出现在 config.yaml 里会被拒绝启动，
+	// 见 validate_test.go 的 TestMovedQueueSectionsPointToSiteDeclaration。
 	if cfg.Crawler.QueueWatermark != 0.5 {
 		t.Fatalf("queue_watermark = %v, want 0.5", cfg.Crawler.QueueWatermark)
 	}

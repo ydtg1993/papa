@@ -276,6 +276,25 @@ func TestUnknownRemovedKeyHasNoBogusSuggestion(t *testing.T) {
 	}
 }
 
+// 三个治理队列从 config.yaml 搬进了站点声明：老工程的 yaml 里若还留着这三段，
+// 报错要**指路**（suggestKeys 的编辑距离够不着 error_queue 这种名字，只能显式列出来）。
+func TestMovedQueueSectionsPointToSiteDeclaration(t *testing.T) {
+	msg := panicOn(t, baseConfig+"error_queue:\n  enabled: true\nrepeat_queue:\n  enabled: true\n")
+	for _, want := range []string{
+		"error_queue", "repeat_queue",
+		"已搬进站点声明", "configs/sites/<站名>.go",
+		"SiteSpec.ErrorQueue", "SiteSpec.RepeatQueue",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("panic 信息里缺 %q，实得：\n%s", want, msg)
+		}
+	}
+	// 只写了一段时不该把另外两段也报出来（报的是"文件里真有的键"）
+	if strings.Contains(msg, "recover_queue") {
+		t.Fatalf("配置里没写的段不该出现在报错里，实得：\n%s", msg)
+	}
+}
+
 // 降级开关在 **v2.7.0 拆掉了**（过渡期结束）。原来那句 `app.strict_config: false`
 // 现在自己就是一个**未知键** —— 想拿它关掉严格模式，只会更早地撞上严格模式本身。
 // 这条用例把"门没了"钉住：不靠文档说，而是它真的会 panic。

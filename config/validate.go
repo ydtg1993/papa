@@ -242,6 +242,9 @@ func checkUnusedKeys(unused []string) error {
 	if hint := suggestKeys(sorted); hint != "" {
 		b.WriteString("\n" + hint)
 	}
+	if hint := movedKeyHint(sorted); hint != "" {
+		b.WriteString("\n" + hint)
+	}
 	b.WriteString("\n  这些键会被静默忽略、写进去的值不生效 —— 所以直接拒绝启动。")
 	b.WriteString("\n  拼错了就改对；是从旧版本残留的就删掉（框架没有「静默忽略未知键」这一档）。")
 	return fmt.Errorf("config: 未知配置键\n%s", b.String())
@@ -281,6 +284,32 @@ func suggestKeys(unused []string) string {
 		return ""
 	}
 	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+// movedQueueKeys 三个治理队列从 config.yaml 搬到了站点声明：它们的值不是"拼错了"，而是不该
+// 再写在这个文件里。suggestKeys 那套编辑距离（<= 2）够不着这三个名字，只能显式列出来指路。
+var movedQueueKeys = map[string]string{
+	"error_queue":   "SiteSpec.ErrorQueue",
+	"recover_queue": "SiteSpec.RecoverQueue",
+	"repeat_queue":  "SiteSpec.RepeatQueue",
+}
+
+// movedKeyHint 给"搬了家"的旧键指路（没有这类键就返回空串）。
+//
+// unused 传进来时已按字典序排好（见 checkUnusedKeys），所以多条命中时的顺序稳定。
+func movedKeyHint(unused []string) string {
+	var lines []string
+	for _, k := range unused {
+		to, ok := movedQueueKeys[leafOf(k)]
+		if !ok {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %s → 已搬进站点声明：configs/sites/<站名>.go 的 %s", leafOf(k), to))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
 	return strings.Join(lines, "\n")
 }
 

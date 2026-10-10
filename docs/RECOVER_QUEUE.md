@@ -15,17 +15,21 @@
 
 ## 1. 配置
 
-> **站点级覆盖**：`RecoverQueue: &papa.QueueSpec{Enabled: &false}` = 这一站不做启动恢复。
-> 它**没有 `interval`**（只在启动跑一次），写了会报错。启动时逐站点按各自的配置恢复。
+**不在 config.yaml 里**：按站点写在 `configs/sites/<站名>.go` 的站点声明上（三队列都得写全，
+见 [CORE_CONFIG.md](./CORE_CONFIG.md)）：
 
-```yaml
-recover_queue:
-  enabled: true       # 启用后启动时恢复一次（默认 true）
-  worker_count: 2     # 并发重新入队的数量
-  batch_size: 1000    # 每批查询处理的任务数；0 = 默认 1000（分页流式）
+```go
+	RecoverQueue: &papa.RecoverQueueSpec{
+		Enabled:     &on,  // 必写；&off = 这一站不做启动恢复
+		WorkerCount: 2,    // 并发重新入队的数量，> 0
+		BatchSize:   100,  // 每批查询处理的任务数，> 0（分页流式）
+	},
 ```
 
-配置里**没有** `interval` 和 `timeout`，理由见下节。
+启动时逐站点按各自的声明恢复；未归属（任务的 `site` 为空）的任务没有声明可挂，**不恢复**。
+
+这个类型上**没有 `interval` / `max_retry`** —— 它只在启动跑一次，没有"多久跑一次"也
+没有"再处理代数"这回事，写错是**编译期**错误。配置里**没有** `interval` 和 `timeout`，理由见下节。
 
 ## 2. 为什么不按超时判「卡死」
 

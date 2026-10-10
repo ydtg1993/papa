@@ -37,8 +37,9 @@ mycrawler/
   configs/
     config.yaml            配置（先把 db.dsn 指向你的库）
     whitelist              后台来源白名单（全注释＝不限制，启动会警告）
-    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers + 每个阶段的
-                            worker_count / queue_size / delay / retry / AutoStart
+    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers / AutoRepeat
+                            + 三个治理队列（ErrorQueue / RecoverQueue / RepeatQueue）
+                            + 每个阶段的 worker_count / queue_size / delay / retry / AutoStart
   fetcher/                 抓取实现（一个阶段一个 fetcher；加站点时按站点分包）
   models/                  业务表模型 + 建表清单（models.go）
   monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）
@@ -52,6 +53,8 @@ mycrawler/
   `papa.Sites()` 收集，`main.go` 不用动（阶段名跨站要唯一，约定带站点前缀）。
 - **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
   yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
+- **三个治理队列（error_queue / recover_queue / repeat_queue）同样不在 `config.yaml` 里**：按站点声明，
+  三条都得写（不跑哪条就写 `Enabled: &false` 一行）；yaml 里留那三段会被"未知配置键"拦下并指路。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
 
 ## 2. 通用 flags（html / rod / diff 共用）

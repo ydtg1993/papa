@@ -24,8 +24,8 @@ var (
 	ErrTaskRepeatOff      = errors.New("该任务的周期轮询本来就没开")
 	ErrSiteAlreadyAuto    = errors.New("该站点已经在自动轮询了")
 	ErrSiteAlreadyManual  = errors.New("该站点本来就没在自动轮询")
-	ErrDefaultScopeNoAuto = errors.New("默认 scope 没有站点声明，它的自动轮询只能靠全局 repeat_queue.enabled")
-	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（跟全局），要么不小于 10 秒")
+	ErrDefaultScopeNoAuto = errors.New("默认 scope 没有站点行：它的自动轮询恒开（也开停不了 —— 后台那两个动作只认具名站点）")
+	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（用本站声明的周期），要么不小于 10 秒")
 )
 
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
@@ -233,7 +233,7 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 	return nil
 }
 
-// SetTaskRepeatInterval 改一条任务的轮询周期（秒；0 = 跟全局）。只改周期相关的列，不顺手重投
+// SetTaskRepeatInterval 改一条任务的轮询周期（秒；0 = 用本站声明的周期）。只改周期相关的列，不顺手重投
 // （想立刻跑一次用「重投」）。合法值：0，或 ≥ repeatMinTick（写入侧就挡住"设了 3 秒却按 10 秒跑"）。
 //
 // wasSeconds 是行快照里的旧值，当版本条件（同 RetryTask 用 reprocess）：手抖双击或两人同点时
@@ -244,7 +244,7 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
 	}
-	// 行的 site：0 = 跟全局时要取"该站生效的那份"周期，改完也要叫醒该站的队列
+	// 行的 site：0 = 用本站那份周期，改完也要叫醒该站的队列
 	site, err := e.taskSiteOf(id)
 	if err != nil {
 		return err

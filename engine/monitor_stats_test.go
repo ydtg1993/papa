@@ -220,7 +220,7 @@ func TestQueueEnabledUnknownName(t *testing.T) {
 	if e.queueEnabled(QueueError) {
 		t.Fatal("配置零值（关）时不该返回 true")
 	}
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{Enabled: true}
+	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{Enabled: true}})
 	if !e.queueEnabled(QueueError) {
 		t.Fatal("error_queue 开着时应返回 true")
 	}

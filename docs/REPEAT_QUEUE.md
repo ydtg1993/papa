@@ -7,25 +7,33 @@
 
 ## 0. 一句话
 
-框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 跟全局）；全局 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
+框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 用本站声明的 `Interval`）；站点声明里的 `Interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
 
 队列**按站点拆**：每个站点一条（后台一行一个站，见第 5 节），各自的锁/计数/运行快照/手动入口互不影响。
 
 ## 1. 配置
 
-> **站点级覆盖**：`RepeatQueue: &papa.QueueSpec{WorkerCount: 2, Interval: "1h", BatchSize: 200}`
-> 覆盖本站的并发 / 最粗兜底间隔 / 批大小（不写 = 用下面这份）。**没有 `Enabled` 这一项** ——
-> 站点级开关是 `AutoRepeat`（见第 5 节），写了会报错。改完要重启（没有热更了）。
+**不在 config.yaml 里**：三个治理队列都按站点写在 `configs/sites/<站名>.go` 的站点声明上
+（yaml 里再写 `repeat_queue:` 会被「未知配置键」拒掉，并指路到这里）。**每条站点声明都得写全**：
 
-```yaml
-repeat_queue:
-  enabled: true       # 是否启用周期轮询 repeatable 任务（总开关：false 时任务级周期也不生效）
-  worker_count: 2     # 并发重新投递 repeatable 任务的数量
-  interval: "10m"     # 最粗兜底的扫描间隔（每条任务可用 repeat_interval 定更细的周期）；0 = 不自动轮询，仅手动触发
-  batch_size: 1000    # 每批查询处理的任务数；0 = 默认 1000（分页流式）
+```go
+	// configs/sites/<站名>.go
+	on := true // Go 没有字面量取址
+
+	RepeatQueue: &papa.RepeatQueueSpec{
+		Enabled:     &on,   // 必写；&off = 本站没有这条队列（其余字段可以不写）
+		WorkerCount: 2,     // 并发重新投递 repeatable 任务的数量，> 0
+		Interval:    "10m", // 最粗兜底的扫描间隔，> 0（每条任务可用 repeat_interval 定更细的周期）
+		BatchSize:   100,   // 每批查询处理的任务数，> 0（分页流式）
+	},
 ```
 
-> `interval` 的语义是"**最多隔这么久扫一次**"：ticker 会自动提前到"最早一条到点"（见第 3 节），所以任务自己定的 10 分钟就真是 10 分钟，不会因为全局写着 2h 而被拖到 2h。它同时是"新提交/被改过的行最多等多久被发现"的上界。
+> `Interval` 的语义是"**最多隔这么久扫一次**"：ticker 会自动提前到"最早一条到点"（见第 3 节），
+> 所以任务自己定的 10 分钟就真是 10 分钟，不会因为站点写着 2h 而被拖到 2h。它同时是"新提交/被改过的行
+> 最多等多久被发现"的上界。
+>
+> **"不自动跑"有两层，是「与」关系**（见第 5 节）：声明层的 `RepeatQueue.Enabled`（有没有这条队列）
+> 与运营层的 `AutoRepeat`（要不要自动，库为事实、后台可开停）。
 
 ## 2. 触发方式
 
@@ -42,12 +50,12 @@ repeat_queue:
 
 **要不要轮询**：`repeatable` 是**任务行上的列**，粒度是任务、不是阶段 —— 同一个阶段里可以有的是轮询任务（分类页），有的是一次性任务（详情页）。它原先只有"提交那一刻"一个入口（`papa.Task{Repeatable: true}`，首次落库时写进这一列；已存在的行再提交不会更新它）。
 
-**多久一次**：`repeat_interval`（秒；**0 = 跟全局** `interval`）同样是任务行上的列，只在首次入库时由 `papa.Task{RepeatInterval: 10 * time.Minute}` 播种；之后用下面两条路改（提交不再覆盖它 —— 否则每次启动重投入口任务都会把运营改的周期冲掉）。
+**多久一次**：`repeat_interval`（秒；**0 = 用本站声明的** `Interval`）同样是任务行上的列，只在首次入库时由 `papa.Task{RepeatInterval: 10 * time.Minute}` 播种；之后用下面两条路改（提交不再覆盖它 —— 否则每次启动重投入口任务都会把运营改的周期冲掉）。
 
 | 做什么 | 后台任务表 | 代码 |
 | --- | --- | --- |
 | 开 / 停轮询 | 行内动作「开轮询」/「停轮询」 | `engine.SetTaskRepeatable(id, on)` |
-| 改周期 | 行内动作「设轮询周期」（秒，0 = 跟全局） | `engine.SetTaskRepeatInterval(id, wasSeconds, seconds)` |
+| 改周期 | 行内动作「设轮询周期」（秒，0 = 用本站声明的周期） | `engine.SetTaskRepeatInterval(id, wasSeconds, seconds)` |
 
 队列判断只看两列：`next_repeat_at`（下次到点，判据）与 `last_repeat_at`（上次轮询时刻，只作记录，后台看得见）。语义如下 —— 升级到这套列需要先跑一次 `papa migrate`（加三列 + 一个索引，见 CHANGELOG）：
 
@@ -59,7 +67,7 @@ repeat_queue:
 - **周期最小 10 秒**（`repeatMinTick`）：比它细会在写入侧被直接拒掉（返回"周期不合法"），不会静默按 10 秒跑。
 - **排期与时间比较都用库里的 `NOW()`**：写入端与判据端同一个时钟，不受应用/数据库时钟偏差影响。
 
-> **`repeat_queue.enabled=false` 或 `interval=0` 时，任务级周期也不生效** —— 总开关关掉就是"仅手动触发"，没有自动扫描这回事。这条最容易被误解，配 `interval` 时留意。
+> **`RepeatQueue.Enabled: &false`（这一站没有轮询队列）或 `AutoRepeat: &false`（运营层关掉自动）时，任务级周期也不生效** —— 关掉就是"仅手动触发"，没有自动扫描这回事。这条最容易被误解，配 `Interval` 时留意。
 >
 > **停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同一个 `stage|url` 再提交仍会被 `SubmitTask` 的去重命中分支静默吞掉（所有已完成任务都这样，与轮询无关）。想立刻再跑只能「重投」。
 >
@@ -78,10 +86,12 @@ repeat_queue:
 ## 5. 站点维度：每站一条队列 + 站点级开关
 
 轮询队列**按站点拆开**：后台「队列治理」里每个站点一行，队列名是 `repeat_queue:<站点 Key>`；
-默认 scope（任务的 `site` 为空串）那条仍是历史名字 `repeat_queue` —— 它**永远存在**：`crawler_tasks.site`
-是 v3.1 才有的列，更早入库的 repeatable 行是空串、只会在再次提交时补上，没有这条队列它们就没人管了。
+默认 scope（任务的 `site` 为空串）那条仍是历史名字 `repeat_queue`，它**在后台永远占一行**，但**不跑** ——
+未归属的任务没有站点声明可挂（`crawler_tasks.site` 是 v3.1 才有的列，更早入库的行是空串；
+要给它们治理，得先把它们归到某个站点键上）。
 
-站点声明（`configs/sites/<站名>.go`）上的 `AutoRepeat` 决定本站要不要**自动**轮询：
+本站"要不要**自动**轮询"是**运营层**的闸门：站点声明上的 `AutoRepeat`（它是新站点的**播种值**，
+之后**库为事实** —— `crawler_sites.auto_repeat`，后台「站点」页能随时开停、重启按库走）：
 
 ```go
 off := false
@@ -94,8 +104,9 @@ site := papa.SiteSpec{
 
 - **`false` = 本站不自动轮询**：那一行在后台显示「已停用」，但**两个手动入口照旧可用** ——
   面板上的「立即执行」（只投到点的）与 `engine.ForceRepollSiteRepeatableTasks`（忽略周期、全投一遍）。
-- 与全局 `repeat_queue.enabled` 是**与**关系：全局关掉时所有站点都不自动，只剩手动。
-- 默认 scope 没有站点声明，只能靠全局开关关。
+- 它与声明层的 `RepeatQueue.Enabled`（这一站**有没有**这条队列）是**与**关系：声明里就没这条队列，
+  `AutoRepeat` 也就无从谈起。
+- 默认 scope（未归属）**不跑**：它没有站点声明可挂，`AutoRepeat` 恒为自动那一层也就没意义。
 - 判定读的是**内存里的声明快照**（监控页每次刷新都会问"这队列开没开"，所以不查库）；ticker 照常走，
   只是到了那一跳先看闸门 —— 这样"状态读不到"不会把整站静默停成永久不轮询。
 

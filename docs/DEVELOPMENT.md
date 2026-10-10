@@ -138,7 +138,7 @@ pkg/notify ──► core
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |
-| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `AutoRepeat` / `Stages` | `internal/app/SiteSpec` |
+| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `AutoRepeat` / 三个治理队列（`ErrorQueue` / `RecoverQueue` / `RepeatQueue`）/ `Stages` | `internal/app/SiteSpec` |
 | 执行 | **每站每阶段一个 workerpool**（阶段名跨站唯一，所以"阶段"天然等于"站点+阶段"） | `engine.stage.go` 建池那一段 |
 | 执行 | 每站一把熔断闸门（默认 scope 用 `crawler.breaker` 那把） | `engine.SetSiteBreaker` / `breakerFor` |
 | 执行 | **每站一条周期轮询队列**（各自的锁、计数、ticker、手动入口） | `engine.repeatpoll.go`（队列名 `repeat_queue:<站点>`） |
@@ -158,15 +158,22 @@ pkg/notify ──► core
   按站点分流出口是业务自己的事（`papa.WithProxyURL`）。
 - **操作日志/访问令牌**：与站点无关（前者记的是后台动作，后者是后台的凭据）。
 
-### 按站点切的进度：刀 B 已切完，剩下的归刀 B2
+### 按站点切的进度：刀 B 已切完；`crawler` 那四项**有意**保持全局
 
-- ~~**`error_queue` / `recover_queue`**~~：已按站点拆（各自的键/锁/计数/ticker，查询带 `site = ?`），
-  后台每站一行。
-- ~~**站点级配置（三段队列）**~~：已搬进站点声明（`ErrorQueue` / `RecoverQueue` / `RepeatQueue`），
-  **后台热更整套取消**（`/api/config` 与 `runtime.yaml` 都没了：改配置 = 改代码 + 重启）。
-- **`crawler` 的四项仍读全局**：`queue_watermark`（`engine/stage.go` 建池那行）、
-  `archive.*`（`engine/archive.go`，含按站点分目录）、`trace.*`（`engine/trace.go`，含按站点开关与保留期）、
-  `dedup_cache_size`（`engine.NewEngine`，每站一份预算）—— 这四项是同一刀（B2）。
+- ~~**`error_queue` / `recover_queue` / `repeat_queue`**~~：已按站点拆（各自的键/锁/计数/ticker，
+  查询带 `site = ?`），后台每站一行。
+- ~~**三个治理队列的配置**~~：已**整段搬进站点声明**（`ErrorQueue` / `RecoverQueue` / `RepeatQueue`；
+  每条站点声明都得写全，不跑哪条就写 `Enabled: &false` 一行）。`config.yaml` 里再写 `error_queue:`
+  这类段会被「未知配置键」拒绝启动、并指路到声明文件。**后台热更整套取消**（`/api/config` 与
+  `runtime.yaml` 都没了：改配置 = 改站点声明 + 重启）。
+  **代价**：未归属（任务的 `site` 为空）的任务**不再有治理队列** —— 默认 scope 没有站点声明可挂，
+  错误重投 / 启动恢复 / 周期轮询对它一律不跑。老库里 `site = ''` 的行要治理，得先在数据侧给它们归站。
+- **`crawler` 的四项有意留在 `config.yaml`（定过的，不是待办）**：`queue_watermark`（`engine/stage.go`
+  建池那行）、`archive.*`（`engine/archive.go`，落盘路径按阶段分子目录 —— 阶段名跨站唯一，天然分站）、`trace.*`
+  （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
+  它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
+  而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
+  （原来这里记着"归刀 B2"—— 那一刀**不做了**。真要逐站调，改的是阶段参数 `StageSpec` 与站点声明上那几项。）
 - **`dedupCache` 是"按 key 分、预算共享"**：key 是 `stage|url`（阶段唯一 → 天然分站），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
   不影响正确性 —— 想每站一份预算就是"去重缓存按站点"那一项。
@@ -177,5 +184,6 @@ pkg/notify ──► core
 ### 新增东西时的判断规则
 
 一句话：**跟"某个站点的抓取"有关的按站点，跟"进程/服务本身"有关的不按站点。**
-并发、间隔、重试、请求头、出口、归档、去重这些东西，多站点项目早晚会想逐站调；
-停机怎么等、HTTP 服务开不开、日志写哪儿，一个进程只有一份答案。
+并发、间隔、重试、请求头、出口这些按站点（阶段参数 + 站点声明上那几项）；
+**队列水位 / 归档 / trace / 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
+—— 一个进程只有一份答案。要动这条边界，先问一句：这是"**这一站怎么抓**"，还是"**这个进程扛不扛得住**"。

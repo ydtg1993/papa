@@ -76,7 +76,7 @@ func TestRepollWritesSiteStats(t *testing.T) {
 	f := newFakeTaskDB()
 	e := siteEngine(t, f)
 	e.seedSiteRows()
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
 
 	if n, err := e.RepollSiteRepeatableTasks("a"); err != nil || n != 1 {
 		t.Fatalf("RepollSiteRepeatableTasks(a) = %d, %v", n, err)
