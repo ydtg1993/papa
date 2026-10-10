@@ -44,7 +44,28 @@ type SiteSpec struct {
 	// 显式写 `&false` = 本站只在后台手动触发（轮询队列那一行显示"已停用"，但两个手动入口都在）。
 	// 用指针而不是 bool，就是为了区分"没写"和"写了 false" —— 后者才是"我确实要关掉它"。
 	AutoRepeat *bool
-	Stages     []StageSpec
+	// ErrorQueue / RecoverQueue / RepeatQueue 本站三个治理队列的参数：**不写 = 用 config.yaml 里
+	// 全局那一份**。写法见 QueueSpec；三段各自能写哪些键不一样，写错了启动就报（不静默忽略）。
+	// 注意：站点级 repeat 的"要不要自动轮询"是上面的 AutoRepeat，不在这里。
+	ErrorQueue   *QueueSpec
+	RecoverQueue *QueueSpec
+	RepeatQueue  *QueueSpec
+	Stages       []StageSpec
+}
+
+// QueueSpec 站点级的队列参数（覆盖全局 `error_queue` / `recover_queue` / `repeat_queue` 里对应的那份）。
+//
+// **零值 = 用全局**；只有"要不要开"需要三态，所以它是指针（nil = 跟全局，&false = 明确关掉本站的
+// 这个队列）。三队列共用一个类型，用不上的键在 RegisterSites 里**直接报错** ——
+// 宁可启动就报，也别让写错的配置静默无效。
+//
+// 改这些参数要**重启**：它们是启动时读一次（没有后台热更那回事了）。
+type QueueSpec struct {
+	Enabled     *bool  // nil = 跟全局；&false = 本站这个队列不自动跑（手动入口照旧）
+	WorkerCount int    // 0 = 跟全局：并发重新投递的数量
+	Interval    string // "" = 跟全局："4h" 这种；**recover_queue 没有这一项**
+	MaxRetry    int    // 0 = 跟全局：**只有 error_queue 有**（失败任务再处理代数上限）
+	BatchSize   int    // 0 = 跟全局：每批查询处理的任务数
 }
 
 // BreakerSpec 一个站点的熔断阈值（覆盖 crawler.breaker 的默认值）。
@@ -97,6 +118,26 @@ func (a *App) RegisterSites(sites ...SiteSpec) {
 			}
 			a.Engine.SetSiteBreaker(site.Key, cfg)
 		}
+		// 站点级的队列参数（不写 = 用全局那份）。默认 scope 没有站点声明可挂，
+		// 写了就是想让"全局那份"按站点生效 —— 直接报错说清楚，别静默忽略。
+		if spec.ErrorQueue != nil || spec.RecoverQueue != nil || spec.RepeatQueue != nil {
+			if site.Key == "" {
+				panic(fmt.Errorf("未归属（Key 为空）的站点声明不能配队列参数 —— 全局那一份就是它的配置"))
+			}
+			errQ, err := spec.errorQueueConfig(a.Config.ErrorQueue)
+			if err != nil {
+				panic(fmt.Errorf("站点 %q 的错误队列配置: %w", site.Key, err))
+			}
+			recQ, err := spec.recoverQueueConfig(a.Config.RecoverQueue)
+			if err != nil {
+				panic(fmt.Errorf("站点 %q 的启动恢复配置: %w", site.Key, err))
+			}
+			repQ, err := spec.repeatQueueConfig(a.Config.RepeatQueue)
+			if err != nil {
+				panic(fmt.Errorf("站点 %q 的轮询队列配置: %w", site.Key, err))
+			}
+			a.Engine.SetSiteQueues(site.Key, engine.SiteQueues{Error: errQ, Recover: recQ, Repeat: repQ})
+		}
 		for j, st := range spec.Stages {
 			plan, err := planStage(site, st, owner)
 			if err != nil {
@@ -118,6 +159,89 @@ func (s SiteSpec) snapshot() core.Site {
 		// 指针只活在声明层：这里就把三态压成一个 bool（不写 = 自动）
 		AutoRepeat: s.AutoRepeat == nil || *s.AutoRepeat,
 	}
+}
+
+// errorQueueConfig 把站点声明的错误队列参数套到全局那份上（不写 = 原样返回全局那份）。
+func (s SiteSpec) errorQueueConfig(def config.ErrorQueueConfig) (config.ErrorQueueConfig, error) {
+	out := def
+	if s.ErrorQueue == nil {
+		return out, nil
+	}
+	q := s.ErrorQueue
+	if q.Interval != "" {
+		d, err := time.ParseDuration(q.Interval)
+		if err != nil {
+			return out, fmt.Errorf("Interval 无法解析: %w", err)
+		}
+		out.Interval = d
+	}
+	if q.Enabled != nil {
+		out.Enabled = *q.Enabled
+	}
+	if q.WorkerCount != 0 {
+		out.WorkerCount = q.WorkerCount
+	}
+	if q.MaxRetry != 0 {
+		out.MaxRetry = q.MaxRetry
+	}
+	if q.BatchSize != 0 {
+		out.BatchSize = q.BatchSize
+	}
+	return out, nil
+}
+
+// recoverQueueConfig 同上；启动恢复没有 interval（它只在启动跑一次），写了就报错。
+func (s SiteSpec) recoverQueueConfig(def config.RecoverQueueConfig) (config.RecoverQueueConfig, error) {
+	out := def
+	if s.RecoverQueue == nil {
+		return out, nil
+	}
+	q := s.RecoverQueue
+	if q.Interval != "" {
+		return out, fmt.Errorf("Interval 对 recover_queue 无意义（它只在启动跑一次）")
+	}
+	if q.MaxRetry != 0 {
+		return out, fmt.Errorf("MaxRetry 只对 error_queue 有意义")
+	}
+	if q.Enabled != nil {
+		out.Enabled = *q.Enabled
+	}
+	if q.WorkerCount != 0 {
+		out.WorkerCount = q.WorkerCount
+	}
+	if q.BatchSize != 0 {
+		out.BatchSize = q.BatchSize
+	}
+	return out, nil
+}
+
+// repeatQueueConfig 同上；站点级 repeat 的开关是 AutoRepeat，这里写 Enabled 就报错（同一件事两个开关）。
+func (s SiteSpec) repeatQueueConfig(def config.RepeatQueueConfig) (config.RepeatQueueConfig, error) {
+	out := def
+	if s.RepeatQueue == nil {
+		return out, nil
+	}
+	q := s.RepeatQueue
+	if q.Enabled != nil {
+		return out, fmt.Errorf("站点级 repeat 的开关是 SiteSpec.AutoRepeat，别在这里写 Enabled")
+	}
+	if q.MaxRetry != 0 {
+		return out, fmt.Errorf("MaxRetry 只对 error_queue 有意义")
+	}
+	if q.Interval != "" {
+		d, err := time.ParseDuration(q.Interval)
+		if err != nil {
+			return out, fmt.Errorf("Interval 无法解析: %w", err)
+		}
+		out.Interval = d
+	}
+	if q.WorkerCount != 0 {
+		out.WorkerCount = q.WorkerCount
+	}
+	if q.BatchSize != 0 {
+		out.BatchSize = q.BatchSize
+	}
+	return out, nil
 }
 
 // stagePlan 一条阶段声明的落地计划：校验通过后算出来的"要做的事"。

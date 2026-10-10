@@ -115,23 +115,27 @@ func (e *Engine) GetQueueStats() map[string]QueueStat {
 
 // queueEnabled 返回队列是否启用自动轮询（读生效配置，含运行期覆盖）。
 //
-// 周期轮询队列是**按站点**分的：那一行的开关 = 全局 `repeat_queue.enabled` **且** 本站
-// `AutoRepeat`（站点级只关得掉自己那一份）。站点名必须是登记过的 —— 不认识的名字一律 false，
-// 免得拼错的站名在后台多出一行"看起来开着"的假队列。
+// 两个治理队列都**按站点**分。开关的判据：
+//   - 错误队列那一行 = 该站生效配置的 `enabled`；
+//   - 轮询队列那一行 = 全局 `repeat_queue.enabled` **且** 本站 `AutoRepeat`（站点级只关得掉自己那份）。
+//
+// 站点名必须是登记过的 —— 不认识的名字一律 false，免得拼错的站名在后台多出一行"看起来开着"的假队列。
 func (e *Engine) queueEnabled(name string) bool {
-	switch name {
-	case QueueError:
-		return e.errorQueueConfig().Enabled
+	if site, ok := e.errorQueueSite(name); ok {
+		return e.errorQueueConfig(site).Enabled
 	}
 	if site, ok := e.repeatQueueSite(name); ok {
-		return e.repeatQueueConfig().Enabled && e.siteAutoRepeat(site)
+		return e.repeatQueueConfig(site).Enabled && e.siteAutoRepeat(site)
 	}
 	return false
 }
 
-// queueQueries 返回各队列自己的「待处理」条件构造器（每条固定队列 + 每个站点一条轮询队列）。
+// queueQueries 返回各队列自己的「待处理」条件构造器（每站一条错误队列 + 每站一条轮询队列）。
 func (e *Engine) queueQueries() map[string]func() *gorm.DB {
-	out := map[string]func() *gorm.DB{QueueError: e.errorQueueQuery()}
+	out := make(map[string]func() *gorm.DB, len(e.errorQueues)+len(e.repeatQueues))
+	for _, site := range e.errorQueueSites() {
+		out[errorQueueKey(site)] = e.errorQueueQuery(site)
+	}
 	for _, site := range e.repeatQueueSites() {
 		out[repeatQueueKey(site)] = e.repeatQueueQuery(site)
 	}

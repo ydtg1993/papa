@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"errors"
+
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/gorm"
 )
@@ -17,12 +19,14 @@ import (
 //
 // pending 也要捞：它们可能是上次高水位溢出到 DB 的（溢出列表在内存里，随进程一起没了），
 // 也可能入库了但没来得及入队 —— 不捞就永远躺在「待处理」。
-func (e *Engine) recoverQueueQuery() func() *gorm.DB {
+//
+// `site = ?` 单独一条 Where（恢复是按站点跑的，见 ProcessRecoverQueue）。
+func (e *Engine) recoverQueueQuery(site string) func() *gorm.DB {
 	return func() *gorm.DB {
 		return e.db.Where("status IN ?", []models.TaskStatus{
 			models.TaskStatusPending,
 			models.TaskStatusProcessing,
-		})
+		}).Where("site = ?", site)
 	}
 }
 
@@ -34,12 +38,34 @@ func (e *Engine) recoverQueueQuery() func() *gorm.DB {
 //
 // 重复投递 pending 是安全的：worker 认领走的是条件更新（pending → processing），
 // 两份里只有一份能认领成功，另一份拿到 0 行直接跳过。
+// 按站点跑（各自的 `enabled` / `worker_count` / `batch_size` 与 `site = ?` 查询）：
+// 某站声明里把 `RecoverQueue.Enabled` 设成 false，就是"这一站不做启动恢复"。
+// 全局那把锁护的是"整轮恢复"（启动那次与业务手动调它不会撞车）—— 站点之间不需要互斥，
+// 恢复本来就只在启动跑一次。
 func (e *Engine) ProcessRecoverQueue() (int, error) {
 	e.recoverQueueMu.Lock()
 	defer e.recoverQueueMu.Unlock()
 
-	cfg := e.recoverQueueConfig()
-	return e.processInBatches(e.recoverQueueQuery(), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	total := 0
+	var errs []error
+	for _, site := range e.siteKeys() {
+		n, err := e.processSiteRecoverQueue(site)
+		total += n
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return total, errors.Join(errs...)
+}
+
+// processSiteRecoverQueue 只恢复本站的「未到终态」任务（不导出：启动恢复没有手动入口，
+// 见 ProcessRecoverQueue 的注释）。
+func (e *Engine) processSiteRecoverQueue(site string) (int, error) {
+	cfg := e.recoverQueueConfig(site)
+	if !cfg.Enabled {
+		return 0, nil
+	}
+	return e.processInBatches(e.recoverQueueQuery(site), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
 }
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
@@ -69,7 +95,15 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 //
 // 没有定时轮询，也没有后台手动触发 —— 理由见 ProcessRecoverQueue。异步跑，不阻塞启动。
 func (e *Engine) startRecoverQueue() {
-	if !e.recoverQueueConfig().Enabled {
+	// 有没有站点要恢复：逐个站点看它自己的生效配置（全关着就不必起这个 goroutine）
+	anyEnabled := false
+	for _, site := range e.siteKeys() {
+		if e.recoverQueueConfig(site).Enabled {
+			anyEnabled = true
+			break
+		}
+	}
+	if !anyEnabled {
 		return
 	}
 	go func() {

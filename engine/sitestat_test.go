@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +142,42 @@ func TestStageStatsCarrySite(t *testing.T) {
 	got := e.GetStageStats()
 	if len(got) != 1 || got["stub"].Site != "a" {
 		t.Fatalf("阶段快照应带上站点：%+v", got)
+	}
+}
+
+// 站点级自动轮询开关（后台「站点」页那两个动作走它）：只改那一列 + 内存快照 + 叫醒该站队列；
+// 重复点 409；默认 scope 不允许（它只能靠全局开关）。
+func TestSetSiteAutoRepeat(t *testing.T) {
+	f := newFakeTaskDB()
+	f.siteRows = []fakeRow{siteRow("a", true)}
+	e := siteEngine(t, f)
+	e.seedSiteRows()
+
+	if err := e.SetSiteAutoRepeat("a", false); err != nil {
+		t.Fatalf("暂停自动轮询 = %v", err)
+	}
+	if got := e.GetSiteStats()["a"]; got.AutoRepeat {
+		t.Fatalf("内存快照应跟上：%+v", got)
+	}
+	if sql := f.written(); !strings.Contains(sql, "`auto_repeat`") {
+		t.Fatalf("站点表应记下这一列：\n%s", sql)
+	}
+	select {
+	case <-e.repeatQueue(repeatQueueKey("a")).wake:
+	default:
+		t.Fatal("改完应叫醒该站的轮询队列（闸门在 onTick 里判，不叫要等下一次 sleep）")
+	}
+
+	// 重复点：库里已经是关着 → 条件更新 0 行 → 409
+	f.mu.Lock()
+	f.affected = 0
+	f.mu.Unlock()
+	if err := e.SetSiteAutoRepeat("a", false); !errors.Is(err, ErrSiteAlreadyManual) {
+		t.Fatalf("重复暂停应报 ErrSiteAlreadyManual，实得 %v", err)
+	}
+
+	// 默认 scope 没有站点声明可挂
+	if err := e.SetSiteAutoRepeat("", true); !errors.Is(err, ErrDefaultScopeNoAuto) {
+		t.Fatalf("默认 scope 应报 ErrDefaultScopeNoAuto，实得 %v", err)
 	}
 }

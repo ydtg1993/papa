@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/admin/auth"
-	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 )
@@ -809,24 +808,6 @@ func TestAdminJSONHandlersRejectOversizedBody(t *testing.T) {
 		}
 	})
 
-	t.Run("config 超限：400 且不下发", func(t *testing.T) {
-		applied := 0
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
-			ConfigGet: func() *config.RuntimeConfig { return &config.RuntimeConfig{} },
-			ConfigSet: func(*config.RuntimeConfig) error {
-				applied++
-				return nil
-			},
-		})
-
-		rr := serve(m, http.MethodPut, "/api/config", strings.NewReader(oversized("html")))
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400（body %d 字节）", rr.Code, rr.Body.Len())
-		}
-		if applied != 0 {
-			t.Fatalf("超限时不该调用 ConfigSet，实调 %d 次", applied)
-		}
-	})
 }
 
 // 反过来钉住上限没有小到误伤：一份接近上限、但仍能装下的白名单要照常生效。

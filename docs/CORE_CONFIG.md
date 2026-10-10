@@ -1,6 +1,6 @@
 # Papa 爬虫核心配置手册
 
-> 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填、哪些能热更。
+> 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填。**全部改完要重启**（没有热更）。
 > 配套：本文是「配置字典」；各模块的行为语义见 [SCHEDULER.md](./SCHEDULER.md)、[ERROR_QUEUE.md](./ERROR_QUEUE.md)、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)、[MONITOR.md](./MONITOR.md)。
 
 ---
@@ -9,8 +9,9 @@
 
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
-- 运行期覆盖：`configs/runtime.yaml`（与 config.yaml 同目录）。OA 后台改配置只写内存，**关停时**把被改字段落盘到这里，重启后叠加生效；运行期**不碰 config.yaml**。
-- `PUT /api/config` 收的是**增量**：只改 body 里提到的字段，没提到的保持原样（映射给 `{}` 表示清空那组覆盖）。详见 [MONITOR.md](./MONITOR.md) 第 6 节。
+- **没有运行期热更**：改配置 = 改 `config.yaml` / 站点声明 + 重启。队列（三段）与 `crawler` 的那四项
+  还能按站点在声明里覆盖（见各节与 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节）。
+  老项目里的 `configs/runtime.yaml` 已经没人读写了，可以直接删。
 
 ## 1. 完整配置项参考
 
@@ -58,26 +59,26 @@
 
 ### browser —— 浏览器池（Rod）
 
-| 键 | 类型 | 热更 | 说明 |
-| --- | --- | --- | --- |
-| `enable` | bool | ❌ | 是否启用浏览器池 |
-| `pool_size` | int | ❌ | 代理浏览器**并发上限**（按需创建，非常驻实例数） |
-| `direct_pool_size` | int | ❌ | 强制直连浏览器并发上限（不走代理） |
-| `max_idle_time` | duration | ✅ | 空闲回收阈值，`0`=不回收 |
-| `headless` | bool | ❌ | 无头模式 |
-| `no_sandbox` | bool | ❌ | 关闭 Chromium sandbox |
-| `leakless` | bool | ❌ | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
-| `browser_path` | string | ❌ | Chrome 可执行文件路径，空则用默认 Chromium |
-| `headers` | map | ✅ | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `configs/sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用、还想热更"的头 |
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `enable` | bool | 是否启用浏览器池 |
+| `pool_size` | int | 代理浏览器**并发上限**（按需创建，非常驻实例数） |
+| `direct_pool_size` | int | 强制直连浏览器并发上限（不走代理） |
+| `max_idle_time` | duration | 空闲回收阈值，`0`=不回收 |
+| `headless` | bool | 无头模式 |
+| `no_sandbox` | bool | 关闭 Chromium sandbox |
+| `leakless` | bool | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
+| `browser_path` | string | Chrome 可执行文件路径，空则用默认 Chromium |
+| `headers` | map | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `configs/sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用"的头 |
 
 ### html —— 静态 HTML 客户端
 
-| 键 | 类型 | 热更 | 说明 |
-| --- | --- | --- | --- |
-| `enable` | bool | ❌ | 是否启用静态 HTML 客户端 |
-| `timeout` | duration | ✅ | 请求超时 |
-| `max_body_size` | int64 | ✅ | 响应体大小上限（字节）。**`enable: true` 时必填**，`102400..67108864`（100KB..64MB）。下界挡的是**单位混淆** —— 隔壁 `log.max_size` 的单位是 MB，这里写 `10` 意思是 10 字节，于是每次抓取都报「页面太大」；上界 64MB 在模板值（10MB）之上，只防笔误。热更时同样校验，越界回 400 |
-| `headers` | map | ✅ | 额外请求头，同上：**通常写在站点级 `Headers`**（抓取与下载都认），可被 `papa.WithHeaders` 覆盖（站点级写空值 = 删）。留空时静态抓取的 UA 是框架默认的 `PapaStaticHTML/1.0` |
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `enable` | bool | 是否启用静态 HTML 客户端 |
+| `timeout` | duration | 请求超时 |
+| `max_body_size` | int64 | 响应体大小上限（字节）。**`enable: true` 时必填**，`102400..67108864`（100KB..64MB）。下界挡的是**单位混淆** —— 隔壁 `log.max_size` 的单位是 MB，这里写 `10` 意思是 10 字节，于是每次抓取都报「页面太大」；上界 64MB 在模板值（10MB）之上，只防笔误。启动时校验，越界直接报错 |
+| `headers` | map | 额外请求头，同上：**通常写在站点级 `Headers`**（抓取与下载都认），可被 `papa.WithHeaders` 覆盖（站点级写空值 = 删）。留空时静态抓取的 UA 是框架默认的 `PapaStaticHTML/1.0` |
 
 ### proxy —— 代理管理器
 
@@ -85,8 +86,6 @@
 | --- | --- | --- |
 | `api_url` | string | 代理服务 API 地址 |
 | `refresh_interval` | duration | 代理列表刷新间隔 |
-
-### proxy —— 代理管理器（详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 本节）
 
 > 这一节配的是**代理池**（`api_url` 拉列表 + 定时刷新）。**用不用、用哪一个**由 fetcher 决定：
 > `engine.NextProxy()` 取一个，`papa.WithProxyURL(ctx, addr)` 传给一次静态抓取，
@@ -148,6 +147,12 @@
 | `max_retry` | int | 单个任务最多再处理代数；`0`=不限 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
+> 错误队列**按站点拆**（后台一行一个站）：默认 scope 那条仍是 `error_queue`，命名站点是 `error_queue:<站点>`，
+> 各自的重投并发、累计计数与运行快照互不影响，后台与 `/api/errorqueue/process?site=` 都能单独触发。
+>
+> **站点级覆盖**：`ErrorQueue: &papa.QueueSpec{Enabled: &off, WorkerCount: 2, Interval: "30m", MaxRetry: 3}`
+>（不写 = 用上面这份）。见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+
 ### archive —— 页面归档（失败时留下那一页）
 
 ```yaml
@@ -196,6 +201,9 @@ crawler:
 | `worker_count` | int | 并发重新入队的数量 |
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
+> **站点级覆盖**：`RecoverQueue: &papa.QueueSpec{...}`（它没有 `interval`，写了会报错）。
+> 某站 `Enabled: &false` 就是"这一站不做启动恢复"。
+
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
 
 | 键 | 类型 | 说明 |
@@ -203,11 +211,14 @@ crawler:
 | `enabled` | bool | 是否启用周期轮询 repeatable 任务 |
 | `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
 | `interval` | duration | **最粗兜底**的扫描间隔（每条任务可用 `repeat_interval` 定更细的周期，ticker 会自动提前到最早一条到点）；`0`=不自动轮询，仅手动触发 |
+| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
 > 轮询队列**按站点拆**（后台一行一个站），站点声明上还有一项 `AutoRepeat`（不写 = 自动；显式 false = 本站只在后台手动）。
 > 它与这里的 `enabled` 是**与**关系。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
-| `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
+> **站点级覆盖**：`RepeatQueue: &papa.QueueSpec{...}` 覆盖 `worker_count` / `interval` / `batch_size`
+>（**没有 `Enabled`** —— 站点级开关是 `AutoRepeat`，写了会报错）。
+>
 > 这一节管的是**队列**（多久扫一次、并发多少）；"**哪条任务**要轮询、**多久一次**"是任务行上的
 > `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
 > 播种（`repeat_interval` 为 0 = 跟这里的 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
@@ -250,7 +261,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 - **为什么要有这一段**：「未知键一律拒绝启动」那条规则是对的（拼错的键名不该静默失效），但它的副作用是业务没法在同一个 `config.yaml` 里放自己的配置 —— `covers.dir` 这类写进去就是启动 panic，只能另开一个文件自己解析、塞环境变量或写死成常量。
 - **`BusinessSection` 仍然拒收业务段内部的未知键**（`ErrorUnused`）：框架不认业务键的语义，但"拼错了当没写"这件事不该发生在业务段里 —— `covers.dr` 会当场报错而不是留个零值。要完全自由的结构（键名由业务动态决定）就直接读 `app.Config.Business` 那个 map。
-- **只作用于 `config.yaml`**：热更覆盖层（`runtime.yaml`）里写 `business` 不生效，改它要重启。这一段的键也**不会**出现在后台「配置」页上。
+- **只作用于 `config.yaml`**：业务段就得写在这个文件里（本来就是给业务放的），改完重启生效。框架的校验管不到它，后台也不展示。
 
 ## 2. 建表 / 迁移
 
@@ -287,18 +298,3 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 - 标准 Go 时长字符串：`"500ms"` / `"5s"` / `"10m"` / `"6h"`。
 - 阶段 `delay` 额外支持区间：`"10s-30s"` 表示在该区间内随机取一个间隔（反爬更隐蔽）。
-
-## 4. 运行期热更（OA 后台）
-
-- 可热更字段（`PUT /api/config`，改后即时生效）：
-  - 浏览器/HTML：`browser.max_idle_time` / `headers`，`html.timeout` / `max_body_size` / `headers`。
-  - 两个队列（`error_queue` / `repeat_queue`）的**全部字段**：`enabled` / `interval` / `worker_count` / `batch_size`，外加 `error_queue.max_retry`；`recover_queue` 只剩 `enabled` / `worker_count` / `batch_size`（它只在启动跑一次，没有 `interval` / `timeout` 可调）。
-> 热更的值**同样要过校验**（`config.ValidateRuntime`）—— 这条路绕过 `config.Load`，
-> 不单独校验的话，一个 `html.max_body_size: 0` 能在不重启的情况下让每一次抓取都失败，
-> 而配置文件的校验完全看不见它。越界回 **400**（不是 500：那是调用方的输入错），且不下发。
-
-- 需重启字段：`browser.enable` / `headless` / `no_sandbox` / `leakless` / `browser_path` / `pool_size` / `direct_pool_size`、`proxy.*`、`crawler.dedup_cache_size`、`crawler.queue_watermark`、`crawler.drain_interval`、`crawler.stop_timeout`、`crawler.trace.*`、`crawler.breaker.*`（`RuntimeConfig` 里没有 trace / breaker，改只能重启）。
-
-> **熔断的「暂停」状态也不跨重启**：进程重启即恢复运行 —— 起进程本身就是一次人工介入。
-> 所以没有任何"暂停"字段需要持久化，`configs/runtime.yaml` 里也不会出现它。
-- 持久化：热更只写内存；关停时把「被改字段」写成 `configs/runtime.yaml` 覆盖层，下次启动叠加回 `config.yaml`。

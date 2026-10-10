@@ -17,6 +17,11 @@ func {{.SiteFunc}}() papa.SiteSpec {
 	site := papa.SiteSpec{
 		Key:     "{{.Module}}",          // 站点键：熔断 scope、日志/监控维度、任务的 site 列
 		BaseURL: "https://example.com/", // 站点根地址；框架不拿它当限制，方便 handler 取用
+		// 三个治理队列的参数按站点配（不写 = 用 config.yaml 里全局那份；改完要重启，没有热更）：
+		//  ErrorQueue:   &papa.QueueSpec{WorkerCount: 2, Interval: "30m", MaxRetry: 3},
+		//  RecoverQueue: &papa.QueueSpec{Enabled: &off},   // 这一站不做启动恢复
+		//  RepeatQueue:  &papa.QueueSpec{WorkerCount: 2, Interval: "1h"},
+		//（站点级 repeat 的开关是下面的 AutoRepeat，不是 QueueSpec.Enabled）
 		// 入口路由表（"要抓哪些分类"）不在这里：它属于 fetcher 的站点逻辑，
 		// 写在 fetcher/fetch_catalog.go 的 SubmitEntries 旁边（见那里的包级路由表）。
 		// AutoRepeat 本站要不要**自动**周期轮询：不写 = 自动。显式关掉要取地址（Go 没有字面量取址）：

@@ -21,7 +21,6 @@ import (
 
 	"github.com/ydtg1993/papa/v3/admin/auth"
 	"github.com/ydtg1993/papa/v3/admin/sysinfo"
-	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 )
@@ -56,8 +55,6 @@ type MonitorConfig struct {
 	// ProcessRepeatQueue 周期轮询队列手动触发回调（可空）。site 为空 = 所有站点各跑一遍；
 	// 给了站点名 = 只跑那一站（站点名不认识时回调返回 engine.ErrUnknownSite → 400）。
 	ProcessRepeatQueue func(site string) (int, error)
-	ConfigGet          func() *config.RuntimeConfig           // 返回当前运行期覆盖层（可空）
-	ConfigSet          func(*config.RuntimeConfig) error      // 应用运行期覆盖层（可空）
 	TaskTrace          func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
 	// BreakerStatuses 各 scope（站点）的熔断状态快照：key 是站点 Key，"" 是默认 scope。
 	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
@@ -143,7 +140,6 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
 	mux.HandleFunc("/api/breaker", s.wrap(s.breakerHandler))
 	mux.HandleFunc("/api/breaker/resume", s.wrap(s.breakerResumeHandler))
-	mux.HandleFunc("/api/config", s.wrap(s.configHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
@@ -560,73 +556,6 @@ func (s *Monitor) taskTraceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"task_id": id, "steps": steps})
-}
-
-// hotReloadableFields 可热更字段（供后台 UI 标注）。
-var hotReloadableFields = []string{
-	"browser.max_idle_time", "browser.headers",
-	"html.timeout", "html.max_body_size", "html.headers",
-	"error_queue.enabled", "error_queue.interval", "error_queue.worker_count", "error_queue.max_retry", "error_queue.batch_size",
-	"recover_queue.enabled", "recover_queue.worker_count", "recover_queue.batch_size",
-	"repeat_queue.enabled", "repeat_queue.interval", "repeat_queue.worker_count", "repeat_queue.batch_size",
-}
-
-// restartOnlyFields 需重启才生效的字段（PUT 时会被拒绝）。
-var restartOnlyFields = []string{
-	"browser.enable", "browser.headless", "browser.no_sandbox", "browser.leakless", "browser.browser_path",
-	"proxy.api_url", "proxy.refresh_interval",
-	"core.stages", "core.dedup_cache_size",
-}
-
-// configHandler 查询/更新运行期动态配置。
-func (s *Monitor) configHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.configGet(w)
-	case http.MethodPut:
-		s.configPut(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (s *Monitor) configGet(w http.ResponseWriter) {
-	if s.cfg.ConfigGet == nil {
-		http.Error(w, "config not available", http.StatusNotFound)
-		return
-	}
-	writeJSON(w, map[string]any{
-		"overrides":           s.cfg.ConfigGet(),
-		"hot_fields":          hotReloadableFields,
-		"restart_only_fields": restartOnlyFields,
-	})
-}
-
-func (s *Monitor) configPut(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.ConfigSet == nil {
-		http.Error(w, "config not available", http.StatusNotFound)
-		return
-	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBody))
-	dec.DisallowUnknownFields()
-	var rt config.RuntimeConfig
-	if err := dec.Decode(&rt); err != nil {
-		http.Error(w, "invalid config: "+err.Error()+" (仅支持热更字段)", http.StatusBadRequest)
-		return
-	}
-	// 运行期覆盖层的值域判据收在 config.ValidateRuntime 里（原先这里是就地一个 map 检查，
-	// 规则散在 HTTP 层；搬到 config 之后 engine.ApplyRuntimeConfig 也调同一个函数，
-	// 程序化调用绕不过去）。校验不过回 400 —— 是调用方的输入错，不是服务端故障。
-	if err := config.ValidateRuntime(&rt); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.cfg.ConfigSet(&rt); err != nil {
-		s.logger.Errorf("apply config: %s", err.Error())
-		http.Error(w, "apply config failed", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]any{"status": "ok"})
 }
 
 // logFile 日志文件条目

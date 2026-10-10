@@ -135,7 +135,7 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 			return nil
 		}},
 		{"错误队列", func(e *Engine, row *models.CrawlerTask) error {
-			if !e.requeueFailedTask(row) {
+			if !e.requeueFailedTask("")(row) {
 				return errors.New("requeueFailedTask 返回 false")
 			}
 			return nil

@@ -242,7 +242,7 @@ func (e *Engine) repollRepeatQueue(site string, force bool) (int, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	cfg := e.repeatQueueConfig()
+	cfg := e.repeatQueueConfig(site)
 	query := e.repeatQueueQuery(site)
 	if force {
 		query = e.repeatForceQueueQuery(site)
@@ -299,7 +299,7 @@ func (e *Engine) requeueRepeatTaskIn(site string, t *models.CrawlerTask) bool {
 		// 写入端与判据端同一个时钟，不受应用与数据库时钟偏差影响。
 		"next_repeat_at": gorm.Expr(
 			"FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + COALESCE(NULLIF(repeat_interval, 0), ?))",
-			int64(e.repeatQueueConfig().Interval/time.Second)),
+			int64(e.repeatQueueConfig(site).Interval/time.Second)),
 	})
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
@@ -343,21 +343,6 @@ func (e *Engine) wakeRepeatQueue(site string) {
 	}
 }
 
-// wakeAllRepeatQueues 叫醒**所有**站点的轮询队列。给后台那两个人工动作（开/停轮询、设轮询周期）用：
-// 它们手里没有行的 site（那两条路刻意不先查库，见 taskadmin 的注释），而人工点击的频率极低 ——
-// 多叫几声只是让每个队列各重算一次节拍，代价可以忽略。
-//
-// 与 wakeRepeatQueue 的分工：**批量提交那条热路径必须精确叫**（一次批量提交可能几千条任务，
-// 扇出等于把"每站一次整表 MIN 聚合"放大成站点数倍）。
-func (e *Engine) wakeAllRepeatQueues() {
-	for _, st := range e.repeatQueues {
-		select {
-		case st.wake <- struct{}{}:
-		default:
-		}
-	}
-}
-
 // repeatTickInterval 本站下一次扫描的节拍：0 = 不自动轮询（总开关关着，仅手动触发）。
 //
 // 节拍 = min(全局 interval, 离本站最早一条到点还差多久)，并钳进 [repeatMinTick, 全局 interval]：
@@ -369,7 +354,7 @@ func (e *Engine) wakeAllRepeatQueues() {
 // startRepeatQueue）—— 若把它算成 0，ticker 会停掉、只能等下一次唤醒，而一次库/声明的
 // 抖动就可能让整站静默永久停轮询。
 func (e *Engine) repeatTickInterval(site string) time.Duration {
-	cfg := e.repeatQueueConfig()
+	cfg := e.repeatQueueConfig(site)
 	if !cfg.Enabled || cfg.Interval <= 0 {
 		return 0
 	}
@@ -386,7 +371,7 @@ func (e *Engine) repeatTickInterval(site string) time.Duration {
 	return d
 }
 
-// startRepeatQueues 每站起一个轮询 ticker（enabled/interval 运行期可热更）。
+// startRepeatQueues 每站起一个轮询 ticker（各自的 enabled/interval 取自该站的生效配置，启动时读一次）。
 func (e *Engine) startRepeatQueues() {
 	for _, site := range e.repeatQueueSites() {
 		e.startRepeatQueue(site)

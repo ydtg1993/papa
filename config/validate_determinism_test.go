@@ -45,19 +45,3 @@ func TestUnknownKeyMessageOrderIsStable(t *testing.T) {
 		t.Fatalf("应当按字典序报出，实得：\n%s", first)
 	}
 }
-
-// 多条同时越界时，报哪一条必须是确定的（原来用的是 map，遍历顺序随机）。
-func TestValidateRuntimeReportsFirstDeclaredField(t *testing.T) {
-	neg := -1
-	rt := &RuntimeConfig{
-		ErrorQueue:   RuntimeErrorQueueConfig{WorkerCount: &neg, MaxRetry: &neg, BatchSize: &neg},
-		RecoverQueue: RuntimeRecoverQueueConfig{WorkerCount: &neg},
-		RepeatQueue:  RuntimeRepeatQueueConfig{WorkerCount: &neg},
-	}
-	for i := 0; i < 50; i++ {
-		err := ValidateRuntime(rt)
-		if err == nil || !strings.Contains(err.Error(), "error_queue.worker_count") {
-			t.Fatalf("应当稳定地先报声明顺序里的第一条，实得 %v", err)
-		}
-	}
-}

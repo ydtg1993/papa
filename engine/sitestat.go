@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -143,6 +144,55 @@ func (e *Engine) writeSiteRepeatStats(site string, total int64, backlog int, run
 	}).Error; err != nil {
 		e.loggerSet.Engine.Warnf("save crawler_sites repeat stats for %q: %s", site, err.Error())
 	}
+}
+
+// SetSiteAutoRepeat 运行期开/停某站点的**自动轮询**（后台「站点」页的那两个动作走它）。
+//
+// 只改 `crawler_sites.auto_repeat` 这一列 + 内存快照，然后叫醒该站的轮询队列 —— 闸门在 onTick 里
+// 判（见 startRepeatQueue），所以"开"要叫这一声它才会立刻投，不然要等当前那次 sleep 到期。
+//
+// 默认 scope（Key 为空）**不允许**在这里改：它没有站点声明可挂，只能靠全局
+// `crawler.repeat_queue.enabled` —— 这条与"站点行只播种声明值"是同一套约定。
+func (e *Engine) SetSiteAutoRepeat(key string, on bool) error {
+	if key == "" {
+		return ErrDefaultScopeNoAuto
+	}
+	// 这一列当前值就是版本守卫（要开就必须现在关着，反之亦然）：重复点击 0 行
+	res := e.db.Model(&models.CrawlerSite{}).
+		Where("key = ? AND auto_repeat = ?", key, !on).
+		Update("auto_repeat", on)
+	if res.Error != nil {
+		return fmt.Errorf("set site %q auto_repeat=%v: %w", key, on, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return e.whySiteAutoRejected(key, on)
+	}
+
+	e.siteMu.Lock()
+	if stat, ok := e.siteStats[key]; ok {
+		stat.AutoRepeat = on
+		e.siteStats[key] = stat
+	}
+	e.siteMu.Unlock()
+	e.wakeRepeatQueue(key)
+	return nil
+}
+
+// whySiteAutoRejected 条件更新影响 0 行时，回查一次把原因说清楚。
+func (e *Engine) whySiteAutoRejected(key string, on bool) error {
+	e.siteMu.RLock()
+	stat, ok := e.siteStats[key]
+	e.siteMu.RUnlock()
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownSite, key)
+	}
+	if stat.AutoRepeat == on {
+		if on {
+			return ErrSiteAlreadyAuto
+		}
+		return ErrSiteAlreadyManual
+	}
+	return ErrTaskChanged // 有人同时把它改成了相反值，这一方输了
 }
 
 // writeSiteBreakerState 熔断暂停/恢复时写站点表（暂停时间 = 那一刻；恢复时清掉）。

@@ -787,11 +787,22 @@ Go 没有"枚举一个包里有哪些函数/类型"的能力（反射只能从�
 
 main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型，怎么组织是你项目的事。
 
-三条要注意的：
+要注意的：
 
 - **要不要自动轮询，站点声明里一句话**：`AutoRepeat`（`*bool`）**不写 = 自动**；显式 `&false` 就是"这个站只在后台手动触发"
 （后台那一行显示「已停用」，但「立即执行」与全量重投照旧可用）。轮询队列本身也是**按站点拆**的 ——
 每个站在后台各占一行，互不影响。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
+- **三个治理队列的参数按站点配**（不写 = 用 `config.yaml` 里全局那份；改完要重启，没有热更）：
+  ```go
+  off := false
+  site := papa.SiteSpec{
+      ErrorQueue:   &papa.QueueSpec{WorkerCount: 2, Interval: "30m", MaxRetry: 3},
+      RecoverQueue: &papa.QueueSpec{Enabled: &off},        // 这一站不做启动恢复
+      RepeatQueue:  &papa.QueueSpec{WorkerCount: 2, Interval: "1h"},
+      // 注意：站点级 repeat 的开关是上面的 AutoRepeat，不是 QueueSpec.Enabled（写了会报错）
+  }
+  ```
+  用不上的键写错会**启动就报**（比如 `recover_queue` 没有 `interval`），不静默忽略。
 - **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`，fetcher 放 `fetcher/<站点>/`（一站一个包，与声明文件一一对应）。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：
@@ -809,7 +820,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 `engine.FetchHTML(papa.WithHeaders(ctx, map[string]string{...}), url)` 再覆盖（叠加，只覆盖给到的键）。
 优先级：框架默认 < 全局 headers 配置 < 站点 headers < 逐请求。
 站点还有一项 `RestrictedKeywords`：本站自己的"受限页"文案，追加到上面那个默认词表之后。
-**入口路由表不归站点声明管**：`SiteSpec` 只有 Key / BaseURL / Headers / RestrictedKeywords / Breaker / Stages 六项，
+**入口路由表不归站点声明管**：`SiteSpec` 就是那十项（Key / BaseURL / Headers / RestrictedKeywords / Breaker / AutoRepeat / ErrorQueue / RecoverQueue / RepeatQueue / Stages），
 "要抓哪些分类"（key → 相对 BaseURL 的路径）写在 `fetcher/<站点>/fetch_catalog.go` 的包级变量里（例见 §7.1）。
 框架本来就不解析它 —— 站点声明里放一份，等于让框架背一个自己用不到的字段，而它还得和 handler 反推 key 的那张表
 保持一致（两处，漂了不报错）。

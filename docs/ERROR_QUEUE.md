@@ -11,6 +11,10 @@
 
 ## 1. 配置
 
+> **站点级覆盖**：站点声明里写 `ErrorQueue: &papa.QueueSpec{Enabled: &off, WorkerCount: 2, Interval: "30m", MaxRetry: 3, BatchSize: 100}`
+> 就只对那个站生效（不写 = 用下面这份）。错误队列**按站点拆**（每站一条队列、各自一行、`?site=` 手动触发）。
+> 队列参数是**启动时读一次**：改完要重启（后台没有热更这回事了）。
+
 ```yaml
 error_queue:
   enabled: false      # 是否启用错误队列处理

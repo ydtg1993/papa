@@ -13,6 +13,10 @@
 
 ## 1. 配置
 
+> **站点级覆盖**：`RepeatQueue: &papa.QueueSpec{WorkerCount: 2, Interval: "1h", BatchSize: 200}`
+> 覆盖本站的并发 / 最粗兜底间隔 / 批大小（不写 = 用下面这份）。**没有 `Enabled` 这一项** ——
+> 站点级开关是 `AutoRepeat`（见第 5 节），写了会报错。改完要重启（没有热更了）。
+
 ```yaml
 repeat_queue:
   enabled: true       # 是否启用周期轮询 repeatable 任务（总开关：false 时任务级周期也不生效）

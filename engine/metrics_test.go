@@ -14,7 +14,8 @@ func TestEngineQueueMetrics(t *testing.T) {
 	}
 	e.spilledCount.Store(10)
 	e.recoveredCount.Store(5)
-	e.errorRetriedCount.Store(3)
+	e.ensureErrorQueues()
+	e.errorQueue(errorQueueKey("")).retried.Store(3)
 	e.RecordMetric("custom", 42)
 
 	got := e.GetMetrics()

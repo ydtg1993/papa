@@ -4,8 +4,7 @@ import "time"
 
 // runDynamicTicker 运行一个间隔可动态调整的定时任务。
 // getInterval 返回当前生效间隔（<=0 表示停用）；onTick 到点时执行。
-// 配置变更（ApplyRuntimeConfig 触发 configChanged 信号）会唤醒它重新读取间隔；
-// 只有间隔真正变化时才重建 ticker，避免无关变更（如改浏览器头）反复重置、饿死队列轮询。
+// 只有间隔真正变化时才重建 ticker（避免无关唤醒反复重置、饿死队列轮询）。
 //
 // wake 是额外的"数据变了，重算间隔"通道（可传 nil，nil channel 永不触发）—— 队列的间隔是
 // **pull** 出来的：只在 tick 到点或收到信号时重算。轮询队列的节拍还取决于表里的数据
@@ -41,8 +40,6 @@ func (e *Engine) runDynamicTicker(getInterval func() time.Duration, wake <-chan 
 					return
 				case <-wake: // 数据变了：重新算间隔（可能是 0 = 仍然停用）
 					continue
-				case <-e.configChanged:
-					continue
 				}
 			}
 			// 只有间隔变化（或首次）才重建 ticker
@@ -60,8 +57,6 @@ func (e *Engine) runDynamicTicker(getInterval func() time.Duration, wake <-chan 
 			case <-tickerC:
 				onTick()
 			case <-wake:
-				continue
-			case <-e.configChanged:
 				continue
 			}
 		}

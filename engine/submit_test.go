@@ -21,16 +21,14 @@ func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task
 	cfg := &config.Config{}
 
 	e := &Engine{
-		db:            openFakeTaskDB(t, f),
-		loggerSet:     &loggers.LoggerSet{Engine: quietLogger(), DB: quietLogger()},
-		cfg:           cfg,
-		stages:        map[string]*stageInfo{"stub": {workerPool: pool}},
-		dedupCache:    newDedupCache(0),
-		spilled:       make(map[string][]*Task),
-		delayCh:       make(chan struct{}, 1),
-		configChanged: make(chan struct{}, 1),
+		db:         openFakeTaskDB(t, f),
+		loggerSet:  &loggers.LoggerSet{Engine: quietLogger(), DB: quietLogger()},
+		cfg:        cfg,
+		stages:     map[string]*stageInfo{"stub": {workerPool: pool}},
+		dedupCache: newDedupCache(0),
+		spilled:    make(map[string][]*Task),
+		delayCh:    make(chan struct{}, 1),
 	}
-	e.runtime.Store(&config.RuntimeConfig{})
 	return e
 }
 

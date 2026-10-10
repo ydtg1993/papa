@@ -31,7 +31,7 @@ type Config struct {
 	// 要按 struct 取（推荐）用 BusinessSection —— 那份解码会**校验业务段内部的未知键**，
 	// 于是"拼错键名静默失效"这件事在业务段里也不会发生。要完全自由的 JSON 结构就直接读这个 map。
 	//
-	// 只作用于 config.yaml：热更覆盖层（runtime.yaml）里写 business 不生效，改它要重启。
+	// 只作用于 config.yaml：业务段写在这个文件里，改完重启生效。
 	Business map[string]any `mapstructure:"business"`
 }
 

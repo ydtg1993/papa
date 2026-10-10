@@ -34,17 +34,15 @@ type Engine struct {
 	stages      map[string]*stageInfo
 	mu          sync.RWMutex
 	cfg         *config.Config
-	runtime     atomic.Pointer[config.RuntimeConfig] // 运行期动态配置覆盖层（delta）
 	browserPool *browser.Pool
 	htmlClient  *htmlfetch.Client
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
 	dedupCache  *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
-	spillMu           sync.Mutex
-	spilled           map[string][]*Task // stage -> 高水位溢出的待回灌任务
-	spilledCount      atomic.Int64       // 累计溢出任务数（监控埋点）
-	recoveredCount    atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
-	errorRetriedCount atomic.Int64       // 累计失败重投任务数（error_queue）
+	spillMu        sync.Mutex
+	spilled        map[string][]*Task // stage -> 高水位溢出的待回灌任务
+	spilledCount   atomic.Int64       // 累计溢出任务数（监控埋点）
+	recoveredCount atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
 
 	queueRuns     map[string]*queueRunState // 治理队列的运行快照（监控页读取）
 	queueCounters map[string]*atomic.Int64  // 队列名 -> 累计重新投递计数
@@ -53,12 +51,18 @@ type Engine struct {
 	delayHeap delayHeap  // 延迟投递最小堆
 	delayCh   chan struct{}
 
-	configChanged chan struct{} // 运行期配置变更信号（唤醒动态 ticker 重新读生效配置）
-
 	// siteStats 各站点的快照（站点信息 + 慢变统计）：启动播种时填，之后每次写库同步更新；
 	// 监控页读它（不查库）。库那一份在 crawler_sites 表（见 sitestat.go）。
 	siteStats map[string]core.SiteStat
 	siteMu    sync.RWMutex
+
+	// 队列配置按站点存：声明层解析好（全局那份 + 站点声明的覆盖）交进来，引擎按站点取
+	//（见 SetSiteQueues / errorQueueConfig(site)）。**没有运行期覆盖层** —— 改配置 = 改代码 + 重启。
+	siteQueues map[string]SiteQueues
+	queueCfgMu sync.RWMutex
+
+	// errorQueues 失败重投队列：**按站点拆**（同 repeatQueues）。
+	errorQueues map[string]*errorQueueState
 
 	// repeatQueues 周期轮询队列：**按站点拆**，一个站点（或默认 scope）一份运行态。
 	// 键在启动期由 ensureRepeatQueues 备齐，之后只读（运行期往里塞键会与 GetQueueStats
@@ -154,20 +158,18 @@ func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, sub
 func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &Engine{
-		ctx:           ctx,
-		cancel:        cancel,
-		stages:        make(map[string]*stageInfo),
-		dedupCache:    newDedupCache(cfg.Crawler.DedupCacheSize),
-		db:            db,
-		cfg:           cfg,
-		loggerSet:     loggerSet,
-		metrics:       metrics.New(),
-		delayCh:       make(chan struct{}, 1),
-		configChanged: make(chan struct{}, 1),
-		spilled:       make(map[string][]*Task),
-		queueRuns:     newQueueRuns(),
+		ctx:        ctx,
+		cancel:     cancel,
+		stages:     make(map[string]*stageInfo),
+		dedupCache: newDedupCache(cfg.Crawler.DedupCacheSize),
+		db:         db,
+		cfg:        cfg,
+		loggerSet:  loggerSet,
+		metrics:    metrics.New(),
+		delayCh:    make(chan struct{}, 1),
+		spilled:    make(map[string][]*Task),
+		queueRuns:  newQueueRuns(),
 	}
-	engine.runtime.Store(&config.RuntimeConfig{})
 	engine.siteBreaker = make(map[string]*breaker.Breaker)
 	engine.sites = make(map[string]core.Site)
 	// 熔断器：计数走 RecordFailure（终态失败），触发时回调发一条 AlertCritical。
@@ -177,11 +179,11 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		Window:    cfg.Crawler.Breaker.WindowOrDefault(),
 		Threshold: cfg.Crawler.Breaker.Threshold,
 	}, engine.notifyBreakerTrip)
-	engine.queueCounters = map[string]*atomic.Int64{
-		QueueError: &engine.errorRetriedCount,
-		// 周期轮询是**按站点**一份计数器（键在 ensureRepeatQueues 里备齐）
-	}
+	// 队列的累计计数**按站点**各一份（键在 ensureErrorQueues / ensureRepeatQueues 里备齐）
+	engine.queueCounters = make(map[string]*atomic.Int64)
+	engine.errorQueues = make(map[string]*errorQueueState)
 	engine.repeatQueues = make(map[string]*repeatQueueState)
+	engine.siteQueues = make(map[string]SiteQueues)
 	engine.loadActiveTasks()
 	go engine.delayDispatcher()
 	return engine
@@ -262,42 +264,6 @@ func (e *Engine) GetResult(taskID int, out any) error {
 		return nil
 	}
 	return json.Unmarshal(rec.Content, out)
-}
-
-// ApplyRuntimeConfig 应用运行期动态配置：只 tunable 字段原地热更（池大小需重启）。
-//
-// 传进来的是一份**增量**，按字段合并进当前覆盖层（见 config.RuntimeConfig.Merge）：
-// 没提到的字段保持原样。整体替换的话，只提交 html.timeout 就会把之前设的
-// browser.headers、各队列的 interval 悄无声息地清掉。
-func (e *Engine) ApplyRuntimeConfig(rt *config.RuntimeConfig) error {
-	// 先校验再合并：**这条路绕过 config.Load**（LoadRuntime 只 yaml.Unmarshal、
-	// PUT /api/config 只 Merge + Store），不在这里拦就没人拦了 ——
-	// 一个 max_body_size: 0 能让每次抓取都失败，而配置文件那边的校验看不见它。
-	if err := config.ValidateRuntime(rt); err != nil {
-		return err
-	}
-	merged := e.runtime.Load().Merge(rt)
-	e.runtime.Store(merged)
-
-	if e.browserPool != nil {
-		e.browserPool.SetHeaders(e.browserHeaders())
-		e.browserPool.SetMaxIdleTime(e.browserMaxIdle())
-	}
-
-	if e.htmlClient != nil {
-		e.htmlClient.SetConfig(e.htmlConfig())
-	}
-	// 通知动态 ticker 重新读取生效配置（队列 enabled/interval 等）
-	select {
-	case e.configChanged <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-// GetRuntimeConfig 返回当前运行期覆盖层（只读，调用方勿修改）。
-func (e *Engine) GetRuntimeConfig() *config.RuntimeConfig {
-	return e.runtime.Load()
 }
 
 // SetProxy 设置代理。必须在 ApplyRegisterStage（App.RegisterSites 会走到）之前

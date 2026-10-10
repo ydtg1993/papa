@@ -198,6 +198,12 @@ papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（
 - **菜单自动出现**：按 `Group` 分组渲染到侧边栏，注册即出现，前端无需改代码。
 - **刷新策略**：表格页只在用户操作（筛选/排序/翻页）时刷新，不参与 Dashboard 的 3 秒轮询。
 
+内置的「站点」表（`admin/sitesource`）展示 `crawler_sites`（引擎启动时按站点声明播种、跑起来按列回写统计），
+带三个动作：**「轮询任务」**（把该站可轮询的已完成任务**全投一遍，忽略周期**）、
+**「暂停自动轮询」**/「恢复自动轮询」（改 `auto_repeat`，条件更新当版本守卫；已经是目标值回 409；
+默认 scope 那行不允许改 —— 它只能靠全局 `repeat_queue.enabled`）。列里的 `base_url` / `stage_count` 是
+启动时按声明抄的：**改声明要重启，直接改库不生效**。
+
 内置的「任务」表（`admin/tasksource`）展示的就是 `crawler_task`，可作为完整示例。
 它带七个写操作加一个只读入口（组件超过 3 个动作时只平铺前两个，其余收进「更多 ▾」）：
 
@@ -356,50 +362,11 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 表模型不在这层 —— 和 `fetcher/` 同级放在项目根的 `models` 包（建表清单 `models.Models()`），
 爬虫业务与后台服务共用。`main.go` 只需要 `monitor.Register(app)` 一行，各层分工见每个文件顶部的包注释。
 
-## 6. 动态配置 API
+## 6. 队列治理
 
-运行期热更爬虫参数。**哪些字段能热更、哪些需要重启，以 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 4 节的清单为准**（这里只讲接口语义，不重复维护一份字段表）：
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/config` | 返回当前覆盖层 + 热更字段 / 需重启字段清单 |
-| PUT | `/api/config` | 应用运行期配置；body 只收热更字段，需重启字段返回 400 |
-
-### PUT 的合并语义：改你提到的字段
-
-PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的保持原样**：
-
-| body 里 | 效果 |
-| --- | --- |
-| 字段**缺失** | 保持当前覆盖值 |
-| 标量**给了值** | 覆盖该字段 |
-| 映射**缺失** | 保持当前覆盖的那组 |
-| 映射给 `{}` | **清空**这组覆盖 |
-| 映射**给了键** | **整组替换**（不是往旧 map 里逐个 merge） |
-| 整个 body 是 `{}` | 什么都不改 |
-
-> 早先这里是**整体替换**：只提交一个 `html.timeout`，会把之前设的 `browser.headers`、
-> 各队列的 `interval` 全清掉，而响应上看不出任何异常。
->
-> **标量没有「清除」这一说** —— JSON 里 `null` 和字段缺失解出来都是 nil，分不开。
-> 想让某个标量回落成 `config.yaml` 里的值，直接把它设成那个值即可（覆盖层里会多留一条，行为一致）。
-> 要彻底清空覆盖层，删掉 `configs/runtime.yaml` 再重启。
-
-热更只写内存，关停时落盘到 `configs/runtime.yaml`，重启后叠加生效（详见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
-
-### 优雅退出要求再输一遍令牌
-
-后台「优雅退出」是**高危操作**：点下去会弹一个要你填**自己的访问令牌**的框，服务端拿它去查令牌表，
-不对就返回 403 并且不关停。
-
-它的作用是**让人在场**（误点、开着页面走开都不至于把服务停掉），顺带把操作人记进日志
-—— 它**不是新的安全边界**：这个令牌和中间件校验用的是同一个，调用方本来就持有。
-（库里一条令牌都没配时放行，与中间件的语义一致，否则"还没配凭据"的部署会关不掉服务。）
-
-## 7. 队列治理
-
-「队列治理」模块展示 `error_queue` 与**每个站点一行**的轮询队列（`repeat_queue` / `repeat_queue:<站点>`）的运行情况，
-每行都能单独手动触发（只投该队列"到点的"）：
+「队列治理」模块展示**按站点拆开**的两个治理队列：错误队列（`error_queue` / `error_queue:<站点>`）与轮询队列
+（`repeat_queue` / `repeat_queue:<站点>`），**每站各占一行**，都能单独手动触发 —— 站点那一行只处理该站的任务
+（错误队列重投该站的失败任务，轮询队列只投该站"到点的"）：
 
 > `recover_queue` **不在这个面板上**：它只在进程启动那一刻跑一次，没有周期、没有积压可看，
 > 也就没有「立即执行一次」的意义 —— 运行期点它会把正在跑的 `processing` 任务一起重投。
@@ -417,7 +384,7 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/errorqueue/process` | 手动触发失败任务重投；返回 `{"status":"ok","processed":N}` |
+| POST | `/api/errorqueue/process` | 手动触发失败任务重投（`?site=<站点>` 只跑那一站，不带给所有站点各跑一遍，站点名不认识回 400）；返回 `{"status":"ok","processed":N}` |
 | POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投**到点的** repeatable 任务；想强制某一条立刻重跑用任务表的「重投」）。`?site=<站点>` 只跑那一站，不带给所有站点各跑一遍，站点名不认识回 400；返回 `{"status":"ok","repolled":N}` |
 
 数据来源分两类，均**不实时**，且不占用监控页刷新路径：
@@ -436,9 +403,16 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
     "last_processed": 37, "run_processed": 0, "total_processed": 421,
     "backlog": 128, "backlog_at": "...", "last_error": ""
   },
-  "repeat_queue":  { /* ... */ }
+  "error_queue:huangguo": { /* 同上，name 是 "error_queue:huangguo" */ },
+  "repeat_queue":  { /* ... */ },
+  "repeat_queue:huangguo": { /* ... */ }
 }
 ```
+
+站点一行的**参数**（`enabled` / `worker_count` / `interval` / …）取自该站在声明里的 `ErrorQueue` / `RepeatQueue`
+（见 [CORE_CONFIG.md](./CORE_CONFIG.md) 与 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md)）——
+站点那一行显示什么状态，就是它的生效配置说了算（站点把错误队列关掉 → 那行显示「已停用」）。
+没有 `site` 参数时错误队列**逐站点各跑一遍**（不是一次全局查询）。
 
 `last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
 
@@ -450,10 +424,10 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 | 面板 | 切到某个站点 tab 时 |
 | --- | --- |
 | 阶段/池子（仪表盘与「执行队列」） | 只显示**该站**的阶段（阶段快照里现在带 `site`） |
-| 队列治理 | 只显示该站的轮询队列（`repeat_queue:<站点>`）；`error_queue` 是全局的，只在概览里出现 |
+| 队列治理 | 只显示该站的两条队列（`error_queue:<站点>` 与 `repeat_queue:<站点>`）；概览里则每个站点各一行 |
 | 站点概要（tab 下面那行） | BaseURL / 阶段数 / 自动轮询开关 / 累计与待轮询数 / 上次轮询 / 熔断是否闸住 |
 | **熔断横幅** | **不过滤** —— 它是告警，切到哪个 tab 都显示全部被闸住的站 |
-| 任务表（表格页） | **吃不到这个 tab**：oao 的表格组件不支持预置筛选、也不读 URL 参数。在该站 tab 里给了提示：进任务表后用「站点」筛选选它 |
+| 任务表（表格页） | **跟着 tab 走**：切到某站再打开任务表，会带着 `site=<该站>` 的**预置筛选**打开（oao 的 `opts.filter`，筛选栏里填好、可改可清）；已开着表时切 tab 会按新站点重画。概览 → 不带筛选；「默认 scope」那档不预设（"site 为空"这个条件在 oao 的查询串里表达不出来）。**需要 oao ≥ v1.3.0**（带 `opts.filter` 的那版），老版本会静默忽略第三个参数 |
 
 > 站点概要与 `sites` 里的字段：`key / base_url / auto_repeat / stage_count / last_repeat_at /
 > repeat_total / repeat_backlog / last_repeat_error / breaker_paused / breaker_paused_at`。
@@ -470,14 +444,14 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 }
 ```
 
-## 8. 日志导出
+## 7. 日志导出
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/logs` | 列出日志目录文件 |
 | GET | `/api/logs/download` | 下载日志；`?file=name` 下载单个，缺省打包全部为 zip |
 
-## 9. 业务自定义数据展示
+## 8. 业务自定义数据展示
 
 fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据」模块实时展示（配合 `engine.GetMetrics()` 读快照）。
 
@@ -494,7 +468,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 > `error_retry_total` / `repeat_repoll_total` 同时也是「队列治理」模块「处理量」的累计数，
 > 同一份引擎内存计数，不会重复统计；`recover_total` 只在启动恢复时累加，面板上没有对应项。
 
-## 10. 熔断暂停
+## 9. 熔断暂停
 
 熔断触发时（或业务自己调了 `engine.PauseCrawling`），**整页顶部**出一条红色横幅 ——
 它在所有模块之上，切到哪个页都看得到。横幅状态跟着 `/api/monitor` 每轮刷新一起来

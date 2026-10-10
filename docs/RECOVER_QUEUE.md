@@ -15,6 +15,9 @@
 
 ## 1. 配置
 
+> **站点级覆盖**：`RecoverQueue: &papa.QueueSpec{Enabled: &false}` = 这一站不做启动恢复。
+> 它**没有 `interval`**（只在启动跑一次），写了会报错。启动时逐站点按各自的配置恢复。
+
 ```yaml
 recover_queue:
   enabled: true       # 启用后启动时恢复一次（默认 true）

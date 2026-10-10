@@ -21,8 +21,10 @@ func queueEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]
 	t.Helper()
 	e := submitEngine(t, f, pool)
 	e.queueRuns = newQueueRuns()
-	e.queueCounters = map[string]*atomic.Int64{QueueError: &e.errorRetriedCount}
-	e.ensureRepeatQueues() // 轮询队列按站点拆：默认 scope + 已登记的站点
+	e.queueCounters = make(map[string]*atomic.Int64)
+	// 两个治理队列都**按站点拆**：这里备齐默认 scope 那两份（键与计数器）
+	e.ensureErrorQueues()
+	e.ensureRepeatQueues()
 
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
@@ -56,7 +58,7 @@ func TestErrorQueueQueryShape(t *testing.T) {
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.cfg.ErrorQueue = config.ErrorQueueConfig{MaxRetry: 3}
 
-	e.errorQueueQuery()().Find(&[]models.CrawlerTask{})
+	e.errorQueueQuery("")().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
 	if !strings.Contains(read, "status = ?") {
 		t.Fatalf("应只捞 failed：\n%s", read)
@@ -68,7 +70,7 @@ func TestErrorQueueQueryShape(t *testing.T) {
 	// MaxRetry=0 表示不限代数 → 不带 reprocess 条件
 	f2 := newFakeTaskDB()
 	e2 := queueEngine(t, f2, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e2.errorQueueQuery()().Find(&[]models.CrawlerTask{})
+	e2.errorQueueQuery("")().Find(&[]models.CrawlerTask{})
 	if strings.Contains(f2.readSQL(), "reprocess < ?") {
 		t.Fatalf("max_retry=0 表示不限，不该有 reprocess 条件：\n%s", f2.readSQL())
 	}
@@ -89,7 +91,7 @@ func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 	if n != 3 {
 		t.Fatalf("应重投 3 条，实得 %d", n)
 	}
-	if got := e.errorRetriedCount.Load(); got != 3 {
+	if got := e.errorQueue(errorQueueKey("")).retried.Load(); got != 3 {
 		t.Fatalf("累计重投计数 = %d, want 3", got)
 	}
 	main, urgent := pool.QueueDepths()
@@ -126,7 +128,7 @@ func TestRequeueFailedTaskSkipsUnregisteredStage(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
-	if e.requeueFailedTask(row) {
+	if e.requeueFailedTask("")(row) {
 		t.Fatal("未注册的阶段应当跳过")
 	}
 	if got := f.written(); got != "" {
@@ -147,10 +149,10 @@ func TestRequeueFailedTaskMarksRowWhenSubmitFails(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "stub")
-	if e.requeueFailedTask(row) {
+	if e.requeueFailedTask("")(row) {
 		t.Fatal("投递失败应返回 false")
 	}
-	if got := e.errorRetriedCount.Load(); got != 0 {
+	if got := e.errorQueue(errorQueueKey("")).retried.Load(); got != 0 {
 		t.Fatalf("没投成功不该计数，实得 %d", got)
 	}
 
@@ -171,7 +173,7 @@ func TestRecoverQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.recoverQueueQuery()().Find(&[]models.CrawlerTask{})
+	e.recoverQueueQuery("")().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
 	if !strings.Contains(read, "status IN") {
 		t.Fatalf("应按 status IN (pending, processing) 捞：\n%s", read)
@@ -243,7 +245,8 @@ func TestProcessRecoverQueueProcessesAllActive(t *testing.T) {
 	setRows(f, 2, "stub", models.TaskStatusProcessing)
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{BatchSize: 10, WorkerCount: 1}
+	// 站点级 enabled 是执行前的闸门（不写 = 跟全局）：这里显式开着
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
 
 	n, err := e.ProcessRecoverQueue()
 	if err != nil {
@@ -488,28 +491,3 @@ func TestRepollRepeatableTasksProcessesAll(t *testing.T) {
 }
 
 /* ---------- 队列开关随配置走 ---------- */
-
-// 监控页上的 enabled 读的是**生效配置**（含运行期覆盖），
-// 否则改完 interval 页面还是显示旧状态。
-func TestQueueEnabledFollowsRuntimeOverride(t *testing.T) {
-	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{Enabled: false}
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: false}
-
-	on, off := true, false
-	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{
-		ErrorQueue:  config.RuntimeErrorQueueConfig{Enabled: &on},
-		RepeatQueue: config.RuntimeRepeatQueueConfig{Enabled: &off},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	stats := e.GetQueueStats()
-	if !stats[QueueError].Enabled {
-		t.Fatal("error_queue 的运行期覆盖没生效")
-	}
-	if stats[QueueRepeat].Enabled {
-		t.Fatal("repeat_queue 应保持关闭")
-	}
-}

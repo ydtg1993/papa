@@ -22,6 +22,9 @@ var (
 	ErrTaskFinished       = errors.New("该任务已结束，加急没有意义（要重跑请用「重投」）")
 	ErrTaskRepeatOn       = errors.New("该任务的周期轮询已经开着")
 	ErrTaskRepeatOff      = errors.New("该任务的周期轮询本来就没开")
+	ErrSiteAlreadyAuto    = errors.New("该站点已经在自动轮询了")
+	ErrSiteAlreadyManual  = errors.New("该站点本来就没在自动轮询")
+	ErrDefaultScopeNoAuto = errors.New("默认 scope 没有站点声明，它的自动轮询只能靠全局 repeat_queue.enabled")
 	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（跟全局），要么不小于 10 秒")
 )
 
@@ -202,8 +205,10 @@ func (e *Engine) UrgentTask(id uint) error {
 // 开与停都在下一轮 repeat_queue 扫描时生效（想立刻跑一次用「重投」）。
 // 这一列原先只有首次插入时写（`Task.toModel`），所以"提交后再想改"没有任何路径。
 //
-// 刻意不先 loadTask：这里不需要快照里的任何字段（不像 UrgentTask 要拿 Stage/Status 做前置判断），
-// 影响 0 行时交给 whyRepeatRejected 冷路径再查一次，把原因说清楚。
+// 判断条件全在那条 UPDATE 里（影响 0 行时交给 whyRepeatRejected 冷路径回查把原因说清楚），
+// 但**开轮询之后要叫醒"它所属站点"那条轮询队列** —— 那需要行上的 site，所以在这里多查一次
+// （一条主键 SELECT，只在人工点按钮时发生）。叫本站而不是扇出所有站：每条唤醒都会让被叫到的
+// 队列跑一次整表 MIN 聚合，扇出的代价随站点数增长。
 func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 	want, was := models.RepeatableYes, models.RepeatableNo
 	if !on {
@@ -223,9 +228,7 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 		return e.whyRepeatRejected(id, on)
 	}
 	if on {
-		// 别让它等到当前那次 sleep 到期才被看见。这里没有行的 site（上面刻意不先 loadTask），
-		// 所以叫醒所有站点队列 —— 人工点击的频率极低，多叫几声只多几次节拍重算。
-		e.wakeAllRepeatQueues()
+		e.wakeRepeatQueueOfTask(id)
 	}
 	return nil
 }
@@ -241,9 +244,14 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
 	}
+	// 行的 site：0 = 跟全局时要取"该站生效的那份"周期，改完也要叫醒该站的队列
+	site, err := e.taskSiteOf(id)
+	if err != nil {
+		return err
+	}
 	eff := int64(seconds)
 	if eff == 0 {
-		eff = int64(e.repeatQueueConfig().Interval / time.Second) // 0 = 跟全局
+		eff = int64(e.repeatQueueConfig(site).Interval / time.Second)
 	}
 	res := setRepeatIntervalScope(e.db, id, wasSeconds).Updates(map[string]any{
 		"repeat_interval": seconds,
@@ -260,8 +268,31 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 		}
 		return ErrTaskChanged // 周期刚被改过（快照过期），刷新后再看
 	}
-	e.wakeAllRepeatQueues()
+	e.wakeRepeatQueue(site)
 	return nil
+}
+
+// taskSiteOf 只取一行任务的 site（唤醒该站点的队列 / 取该站生效的轮询周期用）。
+func (e *Engine) taskSiteOf(id uint) (string, error) {
+	var t models.CrawlerTask
+	err := e.db.Model(&models.CrawlerTask{}).Select("site").First(&t, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", ErrTaskNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("load task %d site: %w", id, err)
+	}
+	return t.Site, nil
+}
+
+// wakeRepeatQueueOfTask 按任务行上的 site 叫醒那一条轮询队列；查不到行只记 Warn（不影响已经改完的写入）。
+func (e *Engine) wakeRepeatQueueOfTask(id uint) {
+	site, err := e.taskSiteOf(id)
+	if err != nil {
+		e.loggerSet.Engine.Warnf("wake repeat queue for task %d: %s", id, err.Error())
+		return
+	}
+	e.wakeRepeatQueue(site)
 }
 
 // whyRepeatRejected 条件更新影响 0 行时，再查一次把原因说清楚。

@@ -30,7 +30,7 @@ crawler:
 
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
 # 空闲超过 max_idle_time 的会被回收。
-# 运行期热更（OA 后台 /api/config，重启后叠加 runtime.yaml）：max_idle_time / headers（指下面的全局默认头）；
+# 这些是**全局默认**（改完要重启，没有热更）：max_idle_time / headers；
 # 其余字段需重启生效。
 browser:
   enable: true
@@ -41,9 +41,9 @@ browser:
   no_sandbox: false
   browser_path: ""             # Chrome 可执行路径，空则用默认 Chromium
   # 请求头写站点声明（configs/sites/<站名>.go 的 Headers，抓取与下载都认）；这里是**全局默认层**，
-  # 只放与站点无关的头，好处是能被 OA 后台热更：headers: {Accept-Language: "zh-CN,zh;q=0.9"}
+  # 只放与站点无关的头（多站共用的那一层）：headers: {Accept-Language: "zh-CN,zh;q=0.9"}
 
-# 静态 HTML 抓取客户端。运行期热更：timeout / max_body_size / headers（同 browser：全局默认层）
+# 静态 HTML 抓取客户端。这些是全局默认：timeout / max_body_size / headers（同 browser）
 html:
   enable: true
   timeout: "15s"
@@ -104,14 +104,14 @@ error_queue:
   worker_count: 1        # 并发重新投递的数量
   interval: "4h"         # 自动轮询间隔；0 = 不自动轮询，仅后台手动触发
   max_retry: 3           # 单条失败任务最多再处理几代；0 = 不限
-  batch_size: 100        # 每批处理条数；0 = 默认 100（分页流式，避免海量失败任务一次性全量加载）
+  batch_size: 100        # 每批处理条数；0 = 默认 1000（分页流式，避免海量失败任务一次性全量加载）
 
 # 启动恢复：重启时把上次中断留下的「未到终态」任务（pending/processing）重新入队，**只在启动时跑一次**
 #（进程刚起，processing 全是孤儿 —— 这是确定的，不需要按 updated_at 超时去猜）。详见 docs/RECOVER_QUEUE.md
 recover_queue:
   enabled: true          # 是否启用
   worker_count: 1        # 并发重新入队的数量
-  batch_size: 100        # 每批处理条数；0 = 默认 100
+  batch_size: 100        # 每批处理条数；0 = 默认 1000
 
 # 周期轮询队列：把「到点的」repeatable 任务重投回各自阶段（对应 task 上的 Repeatable: true）
 # 周期是**每条任务自己的**（task 上的 RepeatInterval，或后台任务表「设轮询周期」）；
@@ -120,4 +120,4 @@ repeat_queue:
   enabled: true          # 是否启用（总开关：false 时任务级周期也不生效）
   worker_count: 1        # 并发重新投递的数量
   interval: "2h"         # 最粗兜底的扫描间隔；0 = 不自动轮询，仅后台手动触发
-  batch_size: 100        # 每批处理条数；0 = 默认 100
+  batch_size: 100        # 每批处理条数；0 = 默认 1000

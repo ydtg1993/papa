@@ -11,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v3/admin/oplog"
 	"github.com/ydtg1993/papa/v3/admin/scheduler"
 	"github.com/ydtg1993/papa/v3/admin/server"
+	"github.com/ydtg1993/papa/v3/admin/sitesource"
 	"github.com/ydtg1993/papa/v3/admin/sysinfo"
 	"github.com/ydtg1993/papa/v3/admin/tasksource"
 	"github.com/ydtg1993/papa/v3/admin/tokenadmin"
@@ -24,7 +25,6 @@ import (
 	"gorm.io/gorm"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +38,6 @@ type App struct {
 	Engine      *engine.Engine
 
 	configPath  string
-	runtimePath string
 	extraModels []any
 	tables      []oao.Table
 	pages       []Page          // 业务注册的自定义页
@@ -328,22 +327,10 @@ func NewApp(opts ...Option) (*App, error) {
 	// 虽然合法（RHS 在声明语句结束前仍解析到包），但读起来像自己给自己赋值。
 	eng := engine.NewEngine(db, cfg, &loggerSet)
 
-	// 5.1 加载运行期覆盖（runtime.yaml）并应用到引擎；文件缺失视为空覆盖
-	runtimePath := filepath.Join(filepath.Dir(cfgPath), "runtime.yaml")
-	runtimeCfg, err := config.LoadRuntime(runtimePath)
-	if err != nil {
-		loggerSet.Sys.Errorf("load runtime config %s: %s", runtimePath, err.Error())
-		runtimeCfg = &config.RuntimeConfig{}
-	}
-	if err := eng.ApplyRuntimeConfig(runtimeCfg); err != nil {
-		return nil, fmt.Errorf("apply runtime config: %w", err)
-	}
-
 	a.Config = cfg
 	a.Logger = &loggerSet
 	a.DB = db
 	a.Engine = eng
-	a.runtimePath = runtimePath
 	return a, nil
 }
 
@@ -416,12 +403,6 @@ func (a *App) Run(ctx context.Context) {
 		}
 		if sqlDB, err := a.DB.DB(); err == nil {
 			_ = sqlDB.Close()
-		}
-	}
-	// 关停时把运行期覆盖层落盘（delta 写回 runtime.yaml，重启后叠加生效）
-	if a.runtimePath != "" {
-		if err := config.SaveRuntime(a.runtimePath, a.Engine.GetRuntimeConfig()); err != nil {
-			a.Logger.Sys.Errorf("save runtime config: %s", err.Error())
 		}
 	}
 	a.Logger.Sys.Info("shutdown completed")
@@ -567,8 +548,6 @@ func (a *App) httpServer(ctx context.Context) {
 			}
 			return a.Engine.RepollSiteRepeatableTasks(site)
 		},
-		ConfigGet:        a.Engine.GetRuntimeConfig,
-		ConfigSet:        a.Engine.ApplyRuntimeConfig,
 		TaskTrace:        a.Engine.ListTrace,
 		VerifyTokenValue: auth.Confirmer(a.DB, a.Logger.Sys),
 		BreakerStatuses:  a.Engine.BreakerStatuses,
@@ -594,7 +573,10 @@ func (a *App) httpServer(ctx context.Context) {
 
 	// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
 	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
-	tables := append([]oao.Table{tasksource.Table(a.DB, a.Engine)}, a.tables...)
+	tables := append([]oao.Table{
+		tasksource.Table(a.DB, a.Engine),
+		sitesource.Table(a.DB, a.Engine), // 站点信息 + 统计 + 两个动作（轮询任务 / 暂停·恢复自动轮询）
+	}, a.tables...)
 	cfgOao := oao.Config{
 		Tables: tables,
 		Logger: a.Logger.Sys,

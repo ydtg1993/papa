@@ -126,3 +126,56 @@ pkg/notify ──► core
 是**同一个类型**而不是可互转的两个）。它的来历是"抽 core 时不破坏 `crawler.StageStats`"——
 而 `crawler` → `engine` 这次改名本身已经是破坏性的，所以对**模块外**来说这个垫子基本失去意义；
 留着是因为模块内（`internal/app` 等）还在用，新代码请直接写 `core`。
+
+---
+
+## 7. 站点维度：哪些已按站点切、哪些还是全局
+
+多站点项目里最常问的一句是"这个配置/这个状态是按站点的，还是全局的？"。下面按**层**列清楚 ——
+改东西之前对着它看一眼，省得把一个本就是全局的东西硬塞进 `SiteSpec`（或者反过来以为某处已经分站了）。
+
+### 已按站点切
+
+| 层 | 是什么 | 在哪儿 |
+| --- | --- | --- |
+| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `AutoRepeat` / `Stages` | `internal/app/SiteSpec` |
+| 执行 | **每站每阶段一个 workerpool**（阶段名跨站唯一，所以"阶段"天然等于"站点+阶段"） | `engine.stage.go` 建池那一段 |
+| 执行 | 每站一把熔断闸门（默认 scope 用 `crawler.breaker` 那把） | `engine.SetSiteBreaker` / `breakerFor` |
+| 执行 | **每站一条周期轮询队列**（各自的锁、计数、ticker、手动入口） | `engine.repeatpoll.go`（队列名 `repeat_queue:<站点>`） |
+| 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
+| 统计 | 阶段快照带 `site`（后台的站点 Tab 靠它分组）；队列快照按队列名分站；熔断状态带 `Site` | `core.StageStats` / `core.QueueStat` / `core.BreakerStatus` |
+| 统计 | `crawler_sites` 站点表（启动按声明播种、轮询统计按列回写）+ 内存快照 | `models/crawler_site.go`、`engine/sitestat.go` |
+| 后台 | 顶部站点 Tab、每站一行轮询队列、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
+| 数据 | 任务的 `site` 列（引擎按目标阶段自动填，重投路径照抄回来） | `models/crawler_task.go`、`engine.submit.go` |
+
+### 全局，且**有意**如此（别想着分站）
+
+- **进程级**：`crawler.stop_timeout`（停机怎么等）、`crawler.drain_interval`（溢出回灌跳多久一次）、
+  `server.*`（HTTP 服务/白名单/采样间隔）、`db.*`、`log.*` —— 一个进程只有一份。
+- **客户端级**：`html.*` / `browser.*`（超时、体积上限、空闲回收、全局 headers）。站点要自己的头就用
+  `SiteSpec.Headers`（同键覆盖全局那层）；单次请求还能 `papa.WithHeaders`。
+- **代理出口**：框架只提供 `engine.NextProxy()` 这个"随用随取"，**不替业务决定**用哪个 ——
+  按站点分流出口是业务自己的事（`papa.WithProxyURL`）。
+- **操作日志/访问令牌**：与站点无关（前者记的是后台动作，后者是后台的凭据）。
+
+### 按站点切的进度：刀 B 已切完，剩下的归刀 B2
+
+- ~~**`error_queue` / `recover_queue`**~~：已按站点拆（各自的键/锁/计数/ticker，查询带 `site = ?`），
+  后台每站一行。
+- ~~**站点级配置（三段队列）**~~：已搬进站点声明（`ErrorQueue` / `RecoverQueue` / `RepeatQueue`），
+  **后台热更整套取消**（`/api/config` 与 `runtime.yaml` 都没了：改配置 = 改代码 + 重启）。
+- **`crawler` 的四项仍读全局**：`queue_watermark`（`engine/stage.go` 建池那行）、
+  `archive.*`（`engine/archive.go`，含按站点分目录）、`trace.*`（`engine/trace.go`，含按站点开关与保留期）、
+  `dedup_cache_size`（`engine.NewEngine`，每站一份预算）—— 这四项是同一刀（B2）。
+- **`dedupCache` 是"按 key 分、预算共享"**：key 是 `stage|url`（阶段唯一 → 天然分站），但只有**一个**
+  LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
+  不影响正确性 —— 想每站一份预算就是"去重缓存按站点"那一项。
+- ~~**任务表的预置筛选**~~：oao 已经加上了（`render`/`open` 的 `opts.filter`，见 oao README 的
+  「宿主预置筛选」），papa 侧也已接上（切站点 tab 打开任务表会带 `site=<该站>`）——
+  **前提是 oao ≥ v1.3.0**（papa 的 go.mod 已经升上去了），老版本会静默忽略第三个参数。
+
+### 新增东西时的判断规则
+
+一句话：**跟"某个站点的抓取"有关的按站点，跟"进程/服务本身"有关的不按站点。**
+并发、间隔、重试、请求头、出口、归档、去重这些东西，多站点项目早晚会想逐站调；
+停机怎么等、HTTP 服务开不开、日志写哪儿，一个进程只有一份答案。

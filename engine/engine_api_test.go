@@ -75,55 +75,6 @@ func TestEngineErrorsPerStage(t *testing.T) {
 	}
 }
 
-/* ---------- 运行期配置热更 ---------- */
-
-// ApplyRuntimeConfig 除了落覆盖层，还要给动态 ticker 发一次"配置变了"的信号 ——
-// 否则改了队列 interval 得等下一次重启才生效。
-func TestApplyRuntimeConfigSignalsTicker(t *testing.T) {
-	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	interval := config.Duration{Duration: time.Minute}
-	enabled := true
-	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{
-		ErrorQueue: config.RuntimeErrorQueueConfig{Enabled: &enabled, Interval: &interval},
-	}); err != nil {
-		t.Fatalf("ApplyRuntimeConfig = %v", err)
-	}
-
-	select {
-	case <-e.configChanged:
-	default:
-		t.Fatal("应当给 configChanged 发一次信号")
-	}
-
-	// 生效配置要真的读得到覆盖值
-	got := e.errorQueueConfig()
-	if !got.Enabled || got.Interval != time.Minute {
-		t.Fatalf("生效配置 = %+v", got)
-	}
-
-	// 信号是"非阻塞提醒"，连着来两次不该把调用方卡住
-	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{}); err != nil {
-		t.Fatalf("第二次 ApplyRuntimeConfig = %v", err)
-	}
-	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{}); err != nil {
-		t.Fatalf("第三次 ApplyRuntimeConfig 不该阻塞：%v", err)
-	}
-}
-
-// 浏览器池 / HTML 客户端没建时，热更那两句要跳过而不是解引用 nil。
-func TestApplyRuntimeConfigSkipsMissingComponents(t *testing.T) {
-	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	if e.browserPool != nil || e.htmlClient != nil {
-		t.Fatal("前置条件：组件都没建")
-	}
-	if err := e.ApplyRuntimeConfig(&config.RuntimeConfig{}); err != nil {
-		t.Fatalf("ApplyRuntimeConfig = %v", err)
-	}
-}
-
 /* ---------- 结果读写 ---------- */
 
 type resultPayload struct {
@@ -265,7 +216,6 @@ func TestUpsertInsertsAndBackfills(t *testing.T) {
 // 业务据此走"没配浏览器"的分支（FetchRendered 会给出明确错误而不是崩）。
 func TestSetPoolsSkippedWhenDisabled(t *testing.T) {
 	e := &Engine{cfg: &config.Config{}}
-	e.runtime.Store(&config.RuntimeConfig{})
 
 	e.SetBrowserPool()
 	e.SetHTMLClient()
@@ -284,7 +234,6 @@ func TestSetHTMLClientWhenEnabled(t *testing.T) {
 	cfg.HTML.Timeout = 5 * time.Second
 	cfg.HTML.MaxBodySize = 2048
 	e := &Engine{cfg: cfg}
-	e.runtime.Store(&config.RuntimeConfig{})
 
 	e.SetHTMLClient()
 	if e.GetHTMLClient() == nil {
@@ -300,7 +249,6 @@ func TestSetBrowserPoolWhenEnabled(t *testing.T) {
 	cfg.Browser.PoolSize = 1
 	cfg.Browser.MaxIdleTime = 0
 	e := &Engine{cfg: cfg}
-	e.runtime.Store(&config.RuntimeConfig{})
 
 	e.SetBrowserPool()
 	pool := e.GetBrowserPool()

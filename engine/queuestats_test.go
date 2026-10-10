@@ -16,10 +16,10 @@ func newStatsEngine(t *testing.T) *Engine {
 		cfg:       &config.Config{},
 		queueRuns: newQueueRuns(),
 	}
-	e.queueCounters = map[string]*atomic.Int64{QueueError: &e.errorRetriedCount}
-	e.ensureRepeatQueues() // 轮询队列按站点拆：默认 scope 这一份
+	e.queueCounters = make(map[string]*atomic.Int64)
+	e.ensureErrorQueues() // 两个治理队列都按站点拆：默认 scope 那两份
+	e.ensureRepeatQueues()
 
-	e.runtime.Store(&config.RuntimeConfig{})
 	return e
 }
 
@@ -71,7 +71,7 @@ func TestQueueStatsProgressAndTotal(t *testing.T) {
 	e := newStatsEngine(t)
 
 	// 累计计数：未运行时 total 直接取累计值，本轮进度为 0
-	e.errorRetriedCount.Store(10)
+	e.errorQueue(errorQueueKey("")).retried.Store(10)
 	got := e.GetQueueStats()[QueueError]
 	if got.TotalProcessed != 10 || got.RunProcessed != 0 {
 		t.Fatalf("idle: total=%d run=%d, want 10/0", got.TotalProcessed, got.RunProcessed)
@@ -79,7 +79,7 @@ func TestQueueStatsProgressAndTotal(t *testing.T) {
 
 	// 运行中：本轮进度 = 当前累计 - 本轮起点
 	e.beginQueueRun(QueueError)
-	e.errorRetriedCount.Store(25)
+	e.errorQueue(errorQueueKey("")).retried.Store(25)
 	got = e.GetQueueStats()[QueueError]
 	if got.TotalProcessed != 25 || got.RunProcessed != 15 {
 		t.Fatalf("running: total=%d run=%d, want 25/15", got.TotalProcessed, got.RunProcessed)
@@ -114,13 +114,10 @@ func TestQueueStatsEnabledFollowsConfig(t *testing.T) {
 		t.Fatal("error_queue should be enabled from base config")
 	}
 
-	// 运行期覆盖优先：关闭后快照同步反映
-	off := false
-	e.runtime.Store(&config.RuntimeConfig{
-		ErrorQueue: config.RuntimeErrorQueueConfig{Enabled: &off},
-	})
+	// 关掉基础配置：快照同步反映
+	e.cfg.ErrorQueue.Enabled = false
 	if got := e.GetQueueStats()[QueueError]; got.Enabled {
-		t.Fatal("error_queue should be disabled by runtime overlay")
+		t.Fatal("error_queue should be disabled from base config")
 	}
 }
 

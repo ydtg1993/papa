@@ -39,7 +39,6 @@ func archiveEngine(t *testing.T, mode string) (*Engine, *stubConnPool, string) {
 	e := &Engine{db: db, loggerSet: testLoggerSet(), cfg: &config.Config{}}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
-	e.runtime.Store(&config.RuntimeConfig{})
 
 	e.cfg.Crawler.Trace.Enabled = true
 	e.cfg.HTML = config.HTMLConfig{Enable: true, Timeout: 3 * time.Second, MaxBodySize: 4 << 20}

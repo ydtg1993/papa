@@ -224,6 +224,7 @@ func (e *Engine) ApplyRegisterStage() {
 	// 任务并唤醒队列，而**运行期往那几张 map 里塞键**会与监控接口的裸 range 撞成
 	// concurrent map read and map write（进程级 fatal）。所以键只在这儿建，之后只读。
 	e.ensureRepeatQueues()
+	e.ensureErrorQueues() // 失败重投队列也按站点拆（理由同上一行）
 	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
 	e.seedSiteRows()
 	for _, stage := range names {
@@ -234,8 +235,8 @@ func (e *Engine) ApplyRegisterStage() {
 
 	// 启动高水位溢出任务的回灌协程
 	e.startDrain()
-	// 启动错误队列后台自动轮询（未配置 interval 则不启动，仅手动触发）
-	e.startErrorQueue()
+	// 启动错误队列后台自动轮询（每站一个；某站配了 interval 才自动，否则仅手动触发）
+	e.startErrorQueues()
 	// 启动中断恢复队列（启用时启动即恢复一次 + 定时轮询）
 	e.startRecoverQueue()
 	// 启动周期轮询队列（每站一个：repeatable 任务的定时重跑）

@@ -175,47 +175,29 @@ func (e *Engine) SetHTMLClient() {
 	e.htmlClient = htmlfetch.NewClient(e.htmlConfig())
 }
 
-// browserHeaders 合并内置默认头、基础配置、运行期覆盖，返回生效的浏览器默认请求头（每次新建 map）。
+// browserHeaders 合并内置默认头与配置里的浏览器默认头（每次新建 map）。
 func (e *Engine) browserHeaders() map[string]string {
 	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.Browser.Headers))
 	maps.Copy(headers, defaultHeaders)
 	maps.Copy(headers, e.cfg.Browser.Headers)
-	maps.Copy(headers, e.runtime.Load().Browser.Headers)
 	return headers
 }
 
-// browserMaxIdle 返回生效的浏览器空闲回收阈值。
-func (e *Engine) browserMaxIdle() time.Duration {
-	rt := e.runtime.Load()
-	if rt.Browser.MaxIdleTime != nil {
-		return rt.Browser.MaxIdleTime.Duration
-	}
-	return e.cfg.Browser.MaxIdleTime
-}
+// browserMaxIdle 返回浏览器空闲回收阈值。
+func (e *Engine) browserMaxIdle() time.Duration { return e.cfg.Browser.MaxIdleTime }
 
-// htmlConfig 计算生效的静态 HTML 客户端配置（基础 + 运行期覆盖）。
+// htmlConfig 计算静态 HTML 客户端的配置（内置默认头 + 配置里的头）。
 func (e *Engine) htmlConfig() htmlfetch.Config {
 	headers := make(map[string]string, len(defaultHeaders)+len(e.cfg.HTML.Headers))
 	maps.Copy(headers, defaultHeaders)
 	maps.Copy(headers, e.cfg.HTML.Headers)
-	rt := e.runtime.Load()
-	maps.Copy(headers, rt.HTML.Headers)
 
 	userAgent := headers["User-Agent"]
 	delete(headers, "User-Agent")
 
-	timeout := e.cfg.HTML.Timeout
-	maxBody := e.cfg.HTML.MaxBodySize
-	if rt.HTML.Timeout != nil {
-		timeout = rt.HTML.Timeout.Duration
-	}
-	if rt.HTML.MaxBodySize != nil {
-		maxBody = *rt.HTML.MaxBodySize
-	}
-
 	return htmlfetch.Config{
-		Timeout:      timeout,
-		MaxBodySize:  maxBody,
+		Timeout:      e.cfg.HTML.Timeout,
+		MaxBodySize:  e.cfg.HTML.MaxBodySize,
 		UserAgent:    userAgent,
 		Headers:      headers,
 		ProxyManager: e.GetProxy(),

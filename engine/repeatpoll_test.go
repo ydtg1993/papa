@@ -23,6 +23,8 @@ func siteEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	// 要测"某站关掉自动"的用例自己再 SetSite 覆盖成 false。
 	e.SetSite(core.Site{Key: "a", AutoRepeat: true})
 	e.SetSite(core.Site{Key: "b", AutoRepeat: true})
+	// 两个治理队列都按站点拆：站点登记完再把它们的键备齐
+	e.ensureErrorQueues()
 	e.ensureRepeatQueues()
 	return e
 }

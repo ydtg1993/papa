@@ -21,7 +21,7 @@ func (e *Engine) GetMetrics() map[string]any {
 	base["queue_spilled"] = e.spilledCount.Load()
 	base["queue_spill_backlog"] = e.spillBacklog()
 	base["recover_total"] = e.recoveredCount.Load()
-	base["error_retry_total"] = e.errorRetriedCount.Load()
+	base["error_retry_total"] = e.errorRetriedTotal()
 	base["repeat_repoll_total"] = e.repeatRepolledTotal()
 	return base
 }

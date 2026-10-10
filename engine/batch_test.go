@@ -47,7 +47,7 @@ func TestRequeueFailureMarksTaskFailed(t *testing.T) {
 	pool.Stop(0) // 停掉的池：Submit 必然失败，且不是 ErrQueueFull（不会走溢出那条路）
 
 	row := &models.CrawlerTask{ID: 7, Stage: "stub", URL: "https://example.com"}
-	if e.requeueFailedTask(row) {
+	if e.requeueFailedTask("")(row) {
 		t.Fatal("投递必然失败，应返回 false")
 	}
 
@@ -91,7 +91,7 @@ func TestProcessInBatchesUsesKeysetCursor(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := make(map[uint]int)
-	n, err := e.processInBatches(e.recoverQueueQuery(), 1, 1, func(task *models.CrawlerTask) bool {
+	n, err := e.processInBatches(e.recoverQueueQuery(""), 1, 1, func(task *models.CrawlerTask) bool {
 		mu.Lock()
 		seen[task.ID]++
 		mu.Unlock()

@@ -59,9 +59,22 @@
     }
 
     /* ============ 表格（oao 组件） ============ */
+    var currentTable = null; // 当前打开的表 key（切站点 tab 时要按新站点重画它）
+
+    /**
+     * tableFilterOpts 让表格跟着**当前站点 tab** 走：切到某站再打开任务表，就带着 `site=<该站>` 的
+     * 预置筛选打开（oao 会把它填进筛选栏，用户能改能清）。概览与「默认 scope」都不预设 ——
+     * 前者本来就是看全部，后者的"site 为空"这个条件在 oao 的查询串里表达不出来（空值会被跳过）。
+     */
+    function tableFilterOpts() {
+        if (currentSite === null || currentSite === '') return { filter: {} };
+        return { filter: { site: currentSite } };
+    }
+
     /** 打开某张表：切到表格模块、点亮对应菜单项，再让 oao 渲染 */
     async function openTable(key, label, btn) {
         switchModule('tables');
+        currentTable = key;
         document.getElementById('moduleTitle').textContent = label || '数据';
         if (btn) {
             // switchModule 会按 data-module 清空高亮，这里把当前表重新点亮
@@ -69,7 +82,8 @@
             btn.classList.add('active');
         }
         try {
-            await Oao.render(document.getElementById('oao-view'), key);
+            // 第三个参数 = oao 的预置筛选（需要 oao ≥ 带 opts.filter 的那版；老版本会忽略它）
+            await Oao.render(document.getElementById('oao-view'), key, tableFilterOpts());
         } catch (e) {
             document.getElementById('oao-view').innerHTML =
                 '<div class="empty">表格加载失败：' + esc(e.message) + '</div>';
@@ -584,6 +598,10 @@
     function switchSite(site) {
         currentSite = site;
         if (lastData) renderAll(lastData); // 手上有快照就直接重画，不必等下一次轮询
+        // 正开着某张表时，也按新站点重画它 —— 切站点 tab 就该连表里的筛选一起跟着换
+        if (currentModule === 'tables' && currentTable) {
+            Oao.render(document.getElementById('oao-view'), currentTable, tableFilterOpts());
+        }
     }
 
     var lastData = null;

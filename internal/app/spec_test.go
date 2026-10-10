@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,5 +159,81 @@ func TestBreakerSpecToConfig(t *testing.T) {
 	// 窗口写错：报错（不是在运行期崩）
 	if _, err := (BreakerSpec{Enabled: true, Window: "两分钟"}).toConfig(def); err == nil {
 		t.Fatal("窗口解析失败应当报错")
+	}
+}
+
+// 站点级队列参数：不写 = 原样用全局那份；写了逐字段覆盖；**用不上的键直接报错**（不静默忽略）。
+func TestSiteQueueSpecToConfig(t *testing.T) {
+	defErr := config.ErrorQueueConfig{Enabled: true, WorkerCount: 3, Interval: 4 * time.Hour, MaxRetry: 5, BatchSize: 100}
+	defRec := config.RecoverQueueConfig{Enabled: true, WorkerCount: 2, BatchSize: 50}
+	defRep := config.RepeatQueueConfig{Enabled: true, WorkerCount: 1, Interval: 2 * time.Hour, BatchSize: 200}
+
+	// 不写 = 全局那份（原样返回，不改一个字段）
+	bare := SiteSpec{Key: "a"}
+	if got, err := bare.errorQueueConfig(defErr); err != nil || got != defErr {
+		t.Fatalf("不写错误队列参数时应原样用全局：%+v / %v", got, err)
+	}
+	if got, err := bare.recoverQueueConfig(defRec); err != nil || got != defRec {
+		t.Fatalf("不写启动恢复参数时应原样用全局：%+v / %v", got, err)
+	}
+	if got, err := bare.repeatQueueConfig(defRep); err != nil || got != defRep {
+		t.Fatalf("不写轮询队列参数时应原样用全局：%+v / %v", got, err)
+	}
+
+	// 写了 = 逐字段覆盖（没提到的键仍取全局那份）
+	off := false
+	full := SiteSpec{Key: "a", ErrorQueue: &QueueSpec{
+		Enabled: &off, WorkerCount: 9, Interval: "30m", MaxRetry: 1, BatchSize: 10,
+	}}
+	got, err := full.errorQueueConfig(defErr)
+	if err != nil {
+		t.Fatalf("errorQueueConfig = %v", err)
+	}
+	want := config.ErrorQueueConfig{Enabled: false, WorkerCount: 9, Interval: 30 * time.Minute, MaxRetry: 1, BatchSize: 10}
+	if got != want {
+		t.Fatalf("覆盖结果 = %+v, want %+v", got, want)
+	}
+	partial := SiteSpec{Key: "a", RepeatQueue: &QueueSpec{WorkerCount: 4, Interval: "45m"}}
+	if got, err := partial.repeatQueueConfig(defRep); err != nil ||
+		got.WorkerCount != 4 || got.Interval != 45*time.Minute || got.BatchSize != defRep.BatchSize || !got.Enabled {
+		t.Fatalf("只写两项时其余应取全局：%+v / %v", got, err)
+	}
+
+	// 用不上的键 / 解析不了的时长：启动就报
+	bad := []struct {
+		name string
+		run  func() error
+	}{
+		{"错误队列的 interval 解析不了", func() error {
+			_, err := SiteSpec{ErrorQueue: &QueueSpec{Interval: "nonsense"}}.errorQueueConfig(defErr)
+			return err
+		}},
+		{"轮询队列的 interval 解析不了", func() error {
+			_, err := SiteSpec{RepeatQueue: &QueueSpec{Interval: "nonsense"}}.repeatQueueConfig(defRep)
+			return err
+		}},
+		{"recover_queue 没有 interval", func() error {
+			_, err := SiteSpec{RecoverQueue: &QueueSpec{Interval: "1h"}}.recoverQueueConfig(defRec)
+			return err
+		}},
+		{"recover_queue 没有 max_retry", func() error {
+			_, err := SiteSpec{RecoverQueue: &QueueSpec{MaxRetry: 3}}.recoverQueueConfig(defRec)
+			return err
+		}},
+		{"站点级 repeat 的开关是 AutoRepeat", func() error {
+			on := true
+			_, err := SiteSpec{RepeatQueue: &QueueSpec{Enabled: &on}}.repeatQueueConfig(defRep)
+			return err
+		}},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(); err == nil {
+				t.Fatal("应当报错")
+			} else if !strings.Contains(err.Error(), "Interval") && !strings.Contains(err.Error(), "MaxRetry") &&
+				!strings.Contains(err.Error(), "AutoRepeat") {
+				t.Fatalf("报错要说清是哪一项：%v", err)
+			}
+		})
 	}
 }

@@ -155,7 +155,6 @@ func urgentEngine(t *testing.T, f *fakeTaskDB) (*Engine, *workerpool.WorkerPool[
 		dedupCache: newDedupCache(0),
 	}
 	// 与 NewEngine 一致：运行期覆盖层总得有个零值，否则读它的路径（如 repeatQueueConfig）会 nil 解引用
-	e.runtime.Store(&config.RuntimeConfig{})
 	return e, pool
 }
 
@@ -350,9 +349,10 @@ func TestSetTaskRepeatableHappyPath(t *testing.T) {
 					t.Fatalf("绑定参数里的整数 = %v, want %v", got, want)
 				}
 			}
-			// 正常路径一条 SELECT 都不发 —— 钉死"不是先查再写"
-			if read := f.readSQL(); read != "" {
-				t.Fatalf("开关不该先查再写，实得 SELECT：\n%s", read)
+			// 判断条件全写在那条 UPDATE 里（守卫断言在上面）；这里唯一允许的 SELECT 是
+			// 「取行的 site，好叫醒它所属站点的轮询队列」—— 只读一列、不参与任何判断。
+			if read := f.readSQL(); read != "" && !strings.Contains(read, "SELECT `site` FROM `crawler_tasks`") {
+				t.Fatalf("除了取 site，开关不该先查再写，实得 SELECT：\n%s", read)
 			}
 			// 只改标记，不投任务（开了也不立刻重跑一次）
 			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -535,6 +535,13 @@ func TestSetTaskRepeatIntervalRejections(t *testing.T) {
 			if errors.Is(err, ErrRepeatIntervalBad) {
 				if sql := f.written(); sql != "" {
 					t.Fatalf("非法周期不该写库：\n%s", sql)
+				}
+				return
+			}
+			// 行不存在：取 site 那一步就早退了（连 UPDATE 都不用发）
+			if errors.Is(err, ErrTaskNotFound) {
+				if sql := f.written(); sql != "" {
+					t.Fatalf("行不存在时不该写库：\n%s", sql)
 				}
 				return
 			}
