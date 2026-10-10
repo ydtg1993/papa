@@ -29,9 +29,9 @@ type TaskTrace struct {
 	Attempt int  `gorm:"index:idx_task_attempt_seq,priority:2;comment:第几次尝试(0起)"`
 	Seq     int  `gorm:"index:idx_task_attempt_seq,priority:3;comment:尝试内的步骤序号"`
 
-	Step    string         `gorm:"type:varchar(100);comment:步骤名"`
+	Step    string         `gorm:"type:varchar(128);comment:步骤名"`
 	Status  TraceStatus    `gorm:"comment:0:成功 1:失败 2:警告(非致命)"`
-	Kind    string         `gorm:"type:varchar(50);comment:错误分类(失败/警告时，同 engine.ErrorKind)"`
+	Kind    string         `gorm:"type:varchar(128);comment:错误分类(失败/警告时，同 engine.ErrorKind)"`
 	Message string         `gorm:"type:text;comment:错误信息(失败/警告时)"`
 	Data    datatypes.JSON `gorm:"type:json;comment:该步采集到的数据(仅失败的尝试)"`
 

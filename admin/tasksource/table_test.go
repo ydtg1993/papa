@@ -155,8 +155,12 @@ func TestTableDeclaration(t *testing.T) {
 			t.Errorf("%s 列应为 KindTime: %+v", f, cols[f])
 		}
 	}
-	if c, ok := cols["pid"]; !ok || !c.NoEdit {
-		t.Errorf("pid 列应存在且 NoEdit: %+v", cols["pid"])
+	// 列名要用数据库里的真实列名（gorm 给 PID 生成的是 p_id）：写 pid 的话这一列永远是空的
+	if c, ok := cols["p_id"]; !ok || !c.NoEdit {
+		t.Errorf("p_id 列应存在且 NoEdit: %+v", cols["p_id"])
+	}
+	if _, ok := cols["pid"]; ok {
+		t.Error("不该有 pid 列 —— 库里没有这个列名（gorm 生成的是 p_id），声明了也渲染不出值")
 	}
 
 	filters := make(map[string]oao.FilterInfo, len(info.Filters))

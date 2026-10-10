@@ -57,7 +57,10 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 		}),
 		Columns: []oao.Column{
 			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
-			{Field: "pid", Label: "父任务", Kind: oao.KindNumber, Width: "80px", NoEdit: true},
+			// 列名必须是**数据库里的真实列名**：行数据的键来自 `SELECT *` 的结果集，对不上就永远渲染成空。
+			// gorm 给 `CrawlerTask.PID` 生成的列名是 `p_id`（不是 `pid`）—— 这条约定由
+			// engine.TestFakeTaskColumnsCoverModel 与下面的声明用例一起钉住。
+			{Field: "p_id", Label: "父任务", Kind: oao.KindNumber, Width: "80px", NoEdit: true},
 			{Field: "stage", Label: "阶段"},
 			{Field: "site", Label: "站点", Width: "90px"}, // 多站时按站点分：熔断、日志、任务都按它
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}", NewTab: true},

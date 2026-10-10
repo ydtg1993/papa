@@ -8,9 +8,9 @@ import "time"
 // 代价是创建后只能看一次（`papa token add` 打印那一次）。
 type AccessToken struct {
 	ID       uint   `gorm:"primarykey"`
-	Operator string `gorm:"type:varchar(64);not null;index;comment:操作人（令牌归属）"`
+	Operator string `gorm:"type:varchar(128);not null;index;comment:操作人（令牌归属）"`
 	// TokenHash sha256(token) 的十六进制；唯一索引兼作校验路径
-	TokenHash string `gorm:"type:char(64);not null;uniqueIndex;comment:令牌哈希(sha256 hex)"`
+	TokenHash string `gorm:"type:char(128);not null;uniqueIndex;comment:令牌哈希(sha256 hex)"`
 	Enabled   bool   `gorm:"not null;default:true;index;comment:是否启用（停用而不删）"`
 	Note      string `gorm:"type:varchar(255);comment:备注（哪台机器/哪个人）"`
 
