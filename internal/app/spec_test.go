@@ -64,9 +64,10 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	}
 
 	entry := &entryStageFetcher{} // 阶段 review：实现了 SubmitEntries（入口任务）
+	noAuto := false               // 站点 a 显式关掉自动轮询（站点 b 不写 = 自动）
 	a.RegisterSites(
 		SiteSpec{
-			Key: "a", BaseURL: "https://a.example/",
+			Key: "a", BaseURL: "https://a.example/", AutoRepeat: &noAuto,
 			Headers:            map[string]string{"User-Agent": "ua-a"},
 			RestrictedKeywords: []string{"安全验证"},
 			Breaker:            &BreakerSpec{Enabled: true, Threshold: 7, Window: "2m"},
@@ -82,10 +83,16 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		},
 	)
 
-	// ① 站点快照：Key/BaseURL/站点级头/受限页文案
+	// ① 站点快照：Key/BaseURL/站点级头/受限页文案/是否自动轮询
 	got, ok := a.Site("a")
 	if !ok || got.BaseURL != "https://a.example/" || got.Headers["User-Agent"] != "ua-a" {
 		t.Fatalf("App.Site(a) = %+v", got)
+	}
+	if got.AutoRepeat {
+		t.Fatalf("声明里显式写了 AutoRepeat: false，快照应当是关的：%+v", got)
+	}
+	if b, ok := a.Site("b"); !ok || !b.AutoRepeat {
+		t.Fatalf("没写 AutoRepeat 的站点应当按自动处理：%+v", b)
 	}
 	if len(got.RestrictedKeywords) != 1 || got.RestrictedKeywords[0] != "安全验证" {
 		t.Fatalf("站点受限页文案没带上：%+v", got)

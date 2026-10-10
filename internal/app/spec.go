@@ -40,7 +40,11 @@ type SiteSpec struct {
 	RestrictedKeywords []string
 	// Breaker 本站的熔断阈值；nil = 用 crawler.breaker 那份默认。
 	Breaker *BreakerSpec
-	Stages  []StageSpec
+	// AutoRepeat 本站要不要**自动**周期轮询：**不写 = 自动**（与框架一直以来的行为一致），
+	// 显式写 `&false` = 本站只在后台手动触发（轮询队列那一行显示"已停用"，但两个手动入口都在）。
+	// 用指针而不是 bool，就是为了区分"没写"和"写了 false" —— 后者才是"我确实要关掉它"。
+	AutoRepeat *bool
+	Stages     []StageSpec
 }
 
 // BreakerSpec 一个站点的熔断阈值（覆盖 crawler.breaker 的默认值）。
@@ -111,6 +115,8 @@ func (s SiteSpec) snapshot() core.Site {
 		BaseURL:            s.BaseURL,
 		Headers:            s.Headers,
 		RestrictedKeywords: s.RestrictedKeywords,
+		// 指针只活在声明层：这里就把三态压成一个 bool（不写 = 自动）
+		AutoRepeat: s.AutoRepeat == nil || *s.AutoRepeat,
 	}
 }
 

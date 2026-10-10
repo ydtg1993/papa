@@ -21,10 +21,9 @@ func queueEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]
 	t.Helper()
 	e := submitEngine(t, f, pool)
 	e.queueRuns = newQueueRuns()
-	e.queueCounters = map[string]*atomic.Int64{
-		QueueError:  &e.errorRetriedCount,
-		QueueRepeat: &e.repeatRepolledCount,
-	}
+	e.queueCounters = map[string]*atomic.Int64{QueueError: &e.errorRetriedCount}
+	e.ensureRepeatQueues() // 轮询队列按站点拆：默认 scope + 已登记的站点
+
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
 	return e
@@ -279,7 +278,7 @@ func TestRepeatQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
+	e.repeatQueueQuery("")().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
 	if !strings.Contains(read, "repeatable = ?") {
 		t.Fatalf("应只捞 repeatable：\n%s", read)
@@ -305,10 +304,10 @@ func TestRequeueRepeatTaskResubmits(t *testing.T) {
 	row := actionRow(7, "stub")
 	row.Status = models.TaskStatusSuccess
 
-	if !e.requeueRepeatTask(row) {
+	if !e.requeueRepeatTask("")(row) {
 		t.Fatal("已注册的阶段应当重投成功")
 	}
-	if got := e.repeatRepolledCount.Load(); got != 1 {
+	if got := e.repeatRepolledTotal(); got != 1 {
 		t.Fatalf("轮询重投计数 = %d, want 1", got)
 	}
 	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
@@ -326,10 +325,10 @@ func TestRequeueRepeatTaskSkipsUnregisteredStage(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
-	if e.requeueRepeatTask(row) {
+	if e.requeueRepeatTask("")(row) {
 		t.Fatal("未注册的阶段应当跳过")
 	}
-	if got := e.repeatRepolledCount.Load(); got != 0 {
+	if got := e.repeatRepolledTotal(); got != 0 {
 		t.Fatalf("跳过的不该计数，实得 %d", got)
 	}
 }
@@ -339,7 +338,7 @@ func TestRequeueRepeatTaskSkipsUnregisteredStage(t *testing.T) {
 func TestRepeatResetScopeCarriesConditions(t *testing.T) {
 	db := dryDB(t)
 	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return repeatResetScope(tx, 7).Updates(map[string]any{
+		return repeatResetScope(tx, 7, "").Updates(map[string]any{
 			"status":         models.TaskStatusPending,
 			"last_repeat_at": gorm.Expr("NOW()"),
 			"next_repeat_at": gorm.Expr(
@@ -390,7 +389,7 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}
 
-			got := e.repeatTickInterval()
+			got := e.repeatTickInterval("")
 			if diff := got - tc.want; diff > time.Second || diff < -time.Second {
 				t.Fatalf("repeatTickInterval = %v, want %v", got, tc.want)
 			}
@@ -406,10 +405,10 @@ func TestRequeueRepeatTaskSkipsWhenStopped(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := queueEngine(t, f, pool)
 
-	if e.requeueRepeatTask(actionRow(7, "stub")) {
+	if e.requeueRepeatTask("")(actionRow(7, "stub")) {
 		t.Fatal("行已不再可轮询时应跳过")
 	}
-	if got := e.repeatRepolledCount.Load(); got != 0 {
+	if got := e.repeatRepolledTotal(); got != 0 {
 		t.Fatalf("跳过的不该计数，实得 %d", got)
 	}
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -428,10 +427,10 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 1}
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
 
 	// ① 队列只捞 repeatable = 1 的终态行
-	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
+	e.repeatQueueQuery("")().Find(&[]models.CrawlerTask{})
 	if read := f.readSQL(); !strings.Contains(read, "repeatable = ?") || !strings.Contains(read, "status IN") {
 		t.Fatalf("轮询查询应按 repeatable + 终态过滤：\n%s", read)
 	}
@@ -460,10 +459,10 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f.row["repeatable"] = int64(models.RepeatableNo)
 	f.mu.Unlock()
 
-	if e.requeueRepeatTask(actionRow(7, "stub")) {
+	if e.requeueRepeatTask("")(actionRow(7, "stub")) {
 		t.Fatal("停掉的轮询任务不该再被重投")
 	}
-	if got := e.repeatRepolledCount.Load(); got != 1 {
+	if got := e.repeatRepolledTotal(); got != 1 {
 		t.Fatalf("轮询重投计数 = %d, want 1（停掉的那次不该计数）", got)
 	}
 }

@@ -789,6 +789,9 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 
 三条要注意的：
 
+- **要不要自动轮询，站点声明里一句话**：`AutoRepeat`（`*bool`）**不写 = 自动**；显式 `&false` 就是"这个站只在后台手动触发"
+（后台那一行显示「已停用」，但「立即执行」与全量重投照旧可用）。轮询队列本身也是**按站点拆**的 ——
+每个站在后台各占一行，互不影响。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
 - **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`，fetcher 放 `fetcher/<站点>/`（一站一个包，与声明文件一一对应）。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：

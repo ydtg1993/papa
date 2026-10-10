@@ -129,7 +129,7 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 			return nil
 		}},
 		{"轮询队列", func(e *Engine, row *models.CrawlerTask) error {
-			if !e.requeueRepeatTask(row) {
+			if !e.requeueRepeatTask("")(row) {
 				return errors.New("requeueRepeatTask 返回 false")
 			}
 			return nil

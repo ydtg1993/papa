@@ -141,8 +141,10 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	}
 	e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(updates)
 	if task.RepeatInterval > 0 {
-		// 新播种了一条带周期的轮询任务：叫醒轮询队列重算扫描节拍，别让它等当前那次 sleep
-		e.wakeRepeatQueue()
+		// 新播种了一条带周期的轮询任务：叫醒**它所属站点**的轮询队列重算扫描节拍，别让它等
+		// 当前那次 sleep。精确叫（不扇出）：一次批量提交可能几千条任务，扇出会把
+		// "每站一次整表 MIN 聚合"放大成站点数倍。
+		e.wakeRepeatQueue(task.Site)
 	}
 
 	if err := e.submitTo(info, task); err != nil {

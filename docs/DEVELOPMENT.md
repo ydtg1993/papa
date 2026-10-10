@@ -70,13 +70,14 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   spill.go     高水位溢出与回灌
   batch.go     各治理队列共用的分页扫描（keyset 游标）
   dedup.go     内存去重表 + 活跃任务装载
+  sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
   stats.go     监控快照
   fetch.go     浏览器池 / 静态 HTML 客户端
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
   entry.go     阶段入口（fetcher 可选实现 SubmitEntries，框架启动时调）
   restricted.go 受限页判定（站点词表从 task.Site 取）
   deps.go      阶段依赖声明（NeedsFiledown / NeedsM3U8 的启动期校验）
-  queuestats.go 三条治理队列的积压快照
+  queuestats.go 三条治理队列的运行快照与积压（按站点拆）
   alias.go     给 core 里的值类型留的别名（见文末）
   recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用

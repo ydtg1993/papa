@@ -22,7 +22,7 @@ func (e *Engine) GetMetrics() map[string]any {
 	base["queue_spill_backlog"] = e.spillBacklog()
 	base["recover_total"] = e.recoveredCount.Load()
 	base["error_retry_total"] = e.errorRetriedCount.Load()
-	base["repeat_repoll_total"] = e.repeatRepolledCount.Load()
+	base["repeat_repoll_total"] = e.repeatRepolledTotal()
 	return base
 }
 
@@ -49,6 +49,7 @@ func (e *Engine) GetStageStats() map[string]StageStats {
 			workers[id] = WorkerStat(w)
 		}
 		out[stage] = StageStats{
+			Site:    e.siteOf(stage), // 阶段属于哪个站点（后台按站点分组就靠它）
 			Global:  GlobalStats(mon.GetGlobalStats()),
 			Workers: workers,
 			Queue: QueueStats{

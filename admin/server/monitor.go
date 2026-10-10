@@ -23,6 +23,7 @@ import (
 	"github.com/ydtg1993/papa/v3/admin/sysinfo"
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/engine"
 )
 
 //go:embed template.html
@@ -44,14 +45,17 @@ type MonitorConfig struct {
 	WhitelistFile string                           // 白名单持久化文件路径（动态更新时写回）
 	Metrics       func() map[string]any            // 业务自定义数据快照（可空）
 	QueueStats    func() map[string]core.QueueStat // 治理队列运行快照（可空）
+	SiteStats     func() map[string]core.SiteStat  // 站点维度快照（站点信息 + 慢变统计，可空）
 	SysInfo       *sysinfo.Collector               // 系统指标采集器（可空）
 	LogDir        string                           // 日志目录（导出用）
 	// ArchiveDir 页面归档根目录（可空 = 归档没开）。后台「追踪」抽屉里那条"归档页面"步骤
 	// 据此提供**下载**：`GET /api/task/page?file=<相对路径>`（原始 HTML，拿去本地分析）。
-	ArchiveDir         string
-	OnShutdown         func()                                 // 优雅退出回调
-	ProcessErrorQueue  func() (int, error)                    // 错误队列手动触发回调（可空）
-	ProcessRepeatQueue func() (int, error)                    // 周期轮询队列手动触发回调（可空）
+	ArchiveDir        string
+	OnShutdown        func()              // 优雅退出回调
+	ProcessErrorQueue func() (int, error) // 错误队列手动触发回调（可空）
+	// ProcessRepeatQueue 周期轮询队列手动触发回调（可空）。site 为空 = 所有站点各跑一遍；
+	// 给了站点名 = 只跑那一站（站点名不认识时回调返回 engine.ErrUnknownSite → 400）。
+	ProcessRepeatQueue func(site string) (int, error)
 	ConfigGet          func() *config.RuntimeConfig           // 返回当前运行期覆盖层（可空）
 	ConfigSet          func(*config.RuntimeConfig) error      // 应用运行期覆盖层（可空）
 	TaskTrace          func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
@@ -239,6 +243,9 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 		// 顺序固定（默认 scope 在前，其余按站点名字典序），前端就不用再排。
 		resp["breakers"] = sortedBreakerStatuses(s.cfg.BreakerStatuses())
 	}
+	if s.cfg.SiteStats != nil {
+		resp["sites"] = s.cfg.SiteStats()
+	}
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()
 	}
@@ -251,6 +258,8 @@ func (s *Monitor) stageData() map[string]any {
 	out := make(map[string]any, len(monitors))
 	for stage, ss := range monitors {
 		out[stage] = map[string]any{
+			// 阶段属于哪个站点（空串 = 默认 scope）：后台的站点 Tab 靠它把阶段分组
+			"site":    ss.Site,
 			"global":  ss.Global,
 			"workers": ss.Workers,
 			"queue": map[string]any{
@@ -394,9 +403,15 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "repeat queue not configured", http.StatusNotFound)
 		return
 	}
-	count, err := s.cfg.ProcessRepeatQueue()
+	// ?site= 只跑那一站（不认得的站名回 400）；不给 = 所有站点各跑一遍（向后兼容）
+	site := strings.TrimSpace(r.URL.Query().Get("site"))
+	count, err := s.cfg.ProcessRepeatQueue(site)
 	if err != nil {
 		s.logger.Errorf("process repeat queue: %s", err.Error())
+		if errors.Is(err, engine.ErrUnknownSite) {
+			http.Error(w, "unknown site", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "process repeat queue failed", http.StatusInternalServerError)
 		return
 	}

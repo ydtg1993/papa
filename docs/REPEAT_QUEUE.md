@@ -7,7 +7,9 @@
 
 ## 0. 一句话
 
-框架内置一个「周期轮询队列」`repeat_queue`：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 跟全局）；全局 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
+框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 跟全局）；全局 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
+
+队列**按站点拆**：每个站点一条（后台一行一个站，见第 5 节），各自的锁/计数/运行快照/手动入口互不影响。
 
 ## 1. 配置
 
@@ -25,9 +27,12 @@ repeat_queue:
 
 | 方式 | 说明 |
 | --- | --- |
-| 自动轮询 | `enabled: true` 且 `interval` 非 0，后台按"到点"投递（节拍自动跟随） |
-| 手动（OA） | `POST /api/repeatqueue/process` —— **也只扫到点的**，想强制某条立刻重跑用任务表的「重投」 |
-| 手动（代码） | `engine.RepollRepeatableTasks()`（同上，只看到点） |
+| 自动轮询 | `enabled: true` 且 `interval` 非 0，后台按"到点"投递（**每站一条队列**，节拍各自跟随本站最早到点） |
+| 手动（OA） | 队列治理面板上**每站一行**的「立即执行」；或 `POST /api/repeatqueue/process?site=<站点>`（**只扫本站到点的**） |
+| 手动（代码） | `engine.RepollSiteRepeatableTasks(site)`（只看到点）；`engine.RepollRepeatableTasks()`（所有站点各跑一遍，向后兼容） |
+| 手动（忽略周期） | `engine.ForceRepollSiteRepeatableTasks(site)`：把本站**所有可轮询的已完成任务**都投一遍（后台每个站的「轮询任务」总按钮走它，随「站点」页一起上） |
+
+> `POST /api/repeatqueue/process` **不带 `?site=`** = 所有站点各跑一遍（向后兼容业务 cron 的旧用法；站点多时耗时是 Σ 各站）。站点名不认识 → **400**。
 
 ## 3. 哪条任务、多久一次：都能运行期改
 
@@ -66,7 +71,38 @@ repeat_queue:
 于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
 
 
-## 5. 与业务 cron 的分工
+## 5. 站点维度：每站一条队列 + 站点级开关
+
+轮询队列**按站点拆开**：后台「队列治理」里每个站点一行，队列名是 `repeat_queue:<站点 Key>`；
+默认 scope（任务的 `site` 为空串）那条仍是历史名字 `repeat_queue` —— 它**永远存在**：`crawler_tasks.site`
+是 v3.1 才有的列，更早入库的 repeatable 行是空串、只会在再次提交时补上，没有这条队列它们就没人管了。
+
+站点声明（`configs/sites/<站名>.go`）上的 `AutoRepeat` 决定本站要不要**自动**轮询：
+
+```go
+off := false
+site := papa.SiteSpec{
+    Key:        "huangguo",
+    AutoRepeat: &off,   // 不写 = 自动（与框架一直以来的行为一致）；这里显式关掉
+    // …
+}
+```
+
+- **`false` = 本站不自动轮询**：那一行在后台显示「已停用」，但**两个手动入口照旧可用** ——
+  面板上的「立即执行」（只投到点的）与 `engine.ForceRepollSiteRepeatableTasks`（忽略周期、全投一遍）。
+- 与全局 `repeat_queue.enabled` 是**与**关系：全局关掉时所有站点都不自动，只剩手动。
+- 默认 scope 没有站点声明，只能靠全局开关关。
+- 判定读的是**内存里的声明快照**（监控页每次刷新都会问"这队列开没开"，所以不查库）；ticker 照常走，
+  只是到了那一跳先看闸门 —— 这样"状态读不到"不会把整站静默停成永久不轮询。
+
+### 统计落到站点表
+
+每站轮询跑完一轮，会把该站的统计按列写回 `crawler_sites`（`last_repeat_at` / `repeat_total` /
+`repeat_backlog` / `last_repeat_error`），同时更新内存快照（监控页 3 秒一刷读的是内存，不查库）。
+后台顶部那排**站点 Tab** 与站点概要就是读它；熔断暂停/恢复也会把 `breaker_paused` 写进去。
+`base_url` / `auto_repeat` / `stage_count` 是启动时按声明抄的 —— **改声明要重启，直接改库不生效**。
+
+## 6. 与业务 cron 的分工
 
 | 能力 | 归属 | 调度方式 |
 | --- | --- | --- |

@@ -16,4 +16,8 @@ type Site struct {
 	// RestrictedKeywords 本站自己的"受限页"文案（追加到框架默认词表之后），
 	// 交给 `htmlfetch.RestrictedReason(page, site.RestrictedKeywords...)` 用。
 	RestrictedKeywords []string `json:"restricted_keywords,omitempty"`
+	// AutoRepeat 本站是否参与**自动**周期轮询（`SiteSpec.AutoRepeat` 的生效值；声明不写 = true）。
+	// false 时本站的轮询队列不自动跑（后台那一行显示"已停用"），但**手动入口照旧可用** ——
+	// 到点的「立即执行」与忽略周期的「轮询任务」都还能点。见 docs/REPEAT_QUEUE.md。
+	AutoRepeat bool `json:"auto_repeat"`
 }

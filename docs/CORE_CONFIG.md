@@ -203,6 +203,9 @@ crawler:
 | `enabled` | bool | 是否启用周期轮询 repeatable 任务 |
 | `worker_count` | int | 并发重新投递 repeatable 任务的数量 |
 | `interval` | duration | **最粗兜底**的扫描间隔（每条任务可用 `repeat_interval` 定更细的周期，ticker 会自动提前到最早一条到点）；`0`=不自动轮询，仅手动触发 |
+
+> 轮询队列**按站点拆**（后台一行一个站），站点声明上还有一项 `AutoRepeat`（不写 = 自动；显式 false = 本站只在后台手动）。
+> 它与这里的 `enabled` 是**与**关系。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
 | `batch_size` | int | 每批查询处理的任务数；`0`=默认 1000（分页流式） |
 
 > 这一节管的是**队列**（多久扫一次、并发多少）；"**哪条任务**要轮询、**多久一次**"是任务行上的
@@ -210,6 +213,13 @@ crawler:
 > 播种（`repeat_interval` 为 0 = 跟这里的 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
 > 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
 >（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
+
+### crawler_sites —— 站点表（框架自建，不是配置）
+
+站点声明与运行统计的落库形态：一行一个站点（空 `key` 那行是**默认 scope**）。
+启动时按声明播种（行不存在才插入；已存在只刷新 `base_url` / `stage_count`，**不动 `auto_repeat`** ——
+库为事实），之后由引擎在"每站轮询跑完"与"熔断暂停/恢复"时按列更新统计。
+它是后台站点 Tab 与站点概要与 `papa migrate` 的产物；**不落 Headers**（里面有 UA/Cookie）。
 
 ### business —— 业务自己的配置段（框架不解析）
 

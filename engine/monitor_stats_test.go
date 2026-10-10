@@ -149,10 +149,15 @@ func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
 	qs := e.queueQueries()
-	if len(qs) != 2 {
-		t.Fatalf("应有两个队列的查询：%+v", qs)
+	// 错误队列 1 条 + 轮询队列**每站一条**（默认 scope 那份永远在）
+	if want := 1 + len(e.repeatQueueSites()); len(qs) != want {
+		t.Fatalf("应有 %d 个队列的查询（错误 + 每站轮询）：%+v", want, qs)
 	}
-	for _, name := range []string{QueueError, QueueRepeat} {
+	names := []string{QueueError}
+	for _, site := range e.repeatQueueSites() {
+		names = append(names, repeatQueueKey(site))
+	}
+	for _, name := range names {
 		if qs[name] == nil {
 			t.Fatalf("%s 没有查询构造器", name)
 		}
@@ -164,7 +169,8 @@ func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 	}
 
 	qs[QueueRepeat]().Find(&[]models.CrawlerTask{})
-	if read := f.readSQL(); !containsRaw(read, "repeatable = ?") {
+	read := f.readSQL()
+	if !containsRaw(read, "repeatable = ?") || !containsRaw(read, "site = ?") {
 		t.Fatalf("repeat_queue 的积压查询条件不对：\n%s", read)
 	}
 }
@@ -187,7 +193,7 @@ func TestQueueQueriesCanBeCountedDirectly(t *testing.T) {
 		query func() *gorm.DB
 	}{
 		{QueueError, e.errorQueueQuery()},
-		{QueueRepeat, e.repeatQueueQuery()},
+		{QueueRepeat, e.repeatQueueQuery("")},
 	} {
 		var n int64
 		if err := c.query().Count(&n).Error; err != nil {

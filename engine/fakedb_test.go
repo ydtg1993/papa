@@ -62,6 +62,9 @@ type fakeTaskDB struct {
 	// minEpoch 是 MIN(UNIX_TIMESTAMP(...)) 查询的返回值（nil = NULL/没有可轮询的行）。
 	// 轮询队列的节拍（soonestRepeatIn）走它 —— 同样是单列结果集。
 	minEpoch *int64
+
+	// siteRows 是 crawler_sites 的结果集（nil = 一行都没有 → 启动播种会 INSERT）。
+	siteRows []fakeRow
 }
 
 // fakeTraceColumns 是 models.TaskTrace 的全列，顺序任意 —— gorm 按列名映射。
@@ -91,6 +94,35 @@ var fakeTaskColumns = []string{
 	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "meta", "title", "content",
 	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
 	"reprocess", "urgent", "error", "created_at", "updated_at",
+}
+
+// fakeSiteColumns 是 models.CrawlerSite 的全列（同样由 TestFakeSiteColumnsCoverModel 钉住）。
+// `f.siteRows` 为 nil = 站点表一行都没有（播种会走 INSERT）。
+var fakeSiteColumns = []string{
+	"id", "key", "base_url", "auto_repeat", "stage_count",
+	"last_repeat_at", "repeat_total", "repeat_backlog", "last_repeat_error",
+	"breaker_paused", "breaker_paused_at", "created_at", "updated_at",
+}
+
+// TestFakeSiteColumnsCoverModel 同 fakeTaskColumns 那条：列清单必须覆盖模型全列，
+// 否则测试里给某列设值会被静默丢弃、断言照样"通过"。
+func TestFakeSiteColumnsCoverModel(t *testing.T) {
+	stmt := &gorm.Statement{DB: dryDB(t)}
+	if err := stmt.Parse(&models.CrawlerSite{}); err != nil {
+		t.Fatalf("parse model: %v", err)
+	}
+	got := make(map[string]bool, len(fakeSiteColumns))
+	for _, c := range fakeSiteColumns {
+		got[c] = true
+	}
+	for _, name := range stmt.Schema.DBNames {
+		if !got[name] {
+			t.Errorf("fakeSiteColumns 缺列 %q", name)
+		}
+	}
+	if len(fakeSiteColumns) != len(stmt.Schema.DBNames) {
+		t.Errorf("fakeSiteColumns 有 %d 列，模型有 %d 列", len(fakeSiteColumns), len(stmt.Schema.DBNames))
+	}
 }
 
 // TestFakeTaskColumnsCoverModel 假库的列清单必须覆盖模型全列（见 fakeTaskColumns 的注释）。
@@ -244,6 +276,13 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	}
 	if strings.Contains(strings.ToUpper(q), "COUNT(") {
 		return &fakeRows{cols: []string{"count(*)"}, all: [][]driver.Value{{f.count}}}, nil
+	}
+	if strings.Contains(q, "crawler_sites") {
+		out := &fakeRows{cols: fakeSiteColumns}
+		for _, r := range f.siteRows {
+			out.all = append(out.all, rowValuesOf(fakeSiteColumns, r))
+		}
+		return out, nil
 	}
 	if strings.Contains(strings.ToUpper(q), "MIN(") {
 		var v driver.Value

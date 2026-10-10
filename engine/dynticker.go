@@ -12,7 +12,11 @@ import "time"
 // （最早一条到点），所以新提交一条任务、后台改了某条的周期、把它开起来，都得显式叫它一声，
 // 否则要等当前那次 sleep 到期（可能是全局的几小时）才被看见。
 func (e *Engine) runDynamicTicker(getInterval func() time.Duration, wake <-chan struct{}, onTick func()) {
+	// 进等待组：Stop 要等 ticker 退出再返回。否则它可能在"某一轮队列执行的中途写库"，
+	// 而调用方看到 drained=true 就去关库，那些写入全部报 `sql: database is closed`。
+	e.tickerWG.Add(1)
 	go func() {
+		defer e.tickerWG.Done()
 		var ticker *time.Ticker
 		var tickerC <-chan time.Time
 		var tickerInterval time.Duration

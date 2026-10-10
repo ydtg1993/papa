@@ -398,7 +398,8 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 
 ## 7. 队列治理
 
-「队列治理」模块展示 `error_queue` / `repeat_queue` 两个后台治理队列的运行情况，并可逐个手动触发：
+「队列治理」模块展示 `error_queue` 与**每个站点一行**的轮询队列（`repeat_queue` / `repeat_queue:<站点>`）的运行情况，
+每行都能单独手动触发（只投该队列"到点的"）：
 
 > `recover_queue` **不在这个面板上**：它只在进程启动那一刻跑一次，没有周期、没有积压可看，
 > 也就没有「立即执行一次」的意义 —— 运行期点它会把正在跑的 `processing` 任务一起重投。
@@ -417,7 +418,7 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/errorqueue/process` | 手动触发失败任务重投；返回 `{"status":"ok","processed":N}` |
-| POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投**到点的** repeatable 任务；想强制某一条立刻重跑用任务表的「重投」）；返回 `{"status":"ok","repolled":N}` |
+| POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投**到点的** repeatable 任务；想强制某一条立刻重跑用任务表的「重投」）。`?site=<站点>` 只跑那一站，不带给所有站点各跑一遍，站点名不认识回 400；返回 `{"status":"ok","repolled":N}` |
 
 数据来源分两类，均**不实时**，且不占用监控页刷新路径：
 
@@ -440,6 +441,34 @@ PUT 收的是一份**增量**，按字段并进现有覆盖层，**没提到的�
 ```
 
 `last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
+
+### 站点 Tab：多站时按站点把面板分开
+
+多站点时，内容区顶部会多一排**站点 Tab**（「概览（全部）」+ 每个站点一个；数据来自 `/api/monitor` 的 `sites`，
+由声明启动时播种到 `crawler_sites` 表）：
+
+| 面板 | 切到某个站点 tab 时 |
+| --- | --- |
+| 阶段/池子（仪表盘与「执行队列」） | 只显示**该站**的阶段（阶段快照里现在带 `site`） |
+| 队列治理 | 只显示该站的轮询队列（`repeat_queue:<站点>`）；`error_queue` 是全局的，只在概览里出现 |
+| 站点概要（tab 下面那行） | BaseURL / 阶段数 / 自动轮询开关 / 累计与待轮询数 / 上次轮询 / 熔断是否闸住 |
+| **熔断横幅** | **不过滤** —— 它是告警，切到哪个 tab 都显示全部被闸住的站 |
+| 任务表（表格页） | **吃不到这个 tab**：oao 的表格组件不支持预置筛选、也不读 URL 参数。在该站 tab 里给了提示：进任务表后用「站点」筛选选它 |
+
+> 站点概要与 `sites` 里的字段：`key / base_url / auto_repeat / stage_count / last_repeat_at /
+> repeat_total / repeat_backlog / last_repeat_error / breaker_paused / breaker_paused_at`。
+> `base_url` 与 `auto_repeat` 是**启动时按声明抄的**（改声明要重启；直接改库不生效）。
+> 「每站每阶段的池子统计」是**实时**数字，不落库 —— 它就在 `stages` 快照里（带 `site`）。
+
+```jsonc
+"sites": {
+  "huangguo": {
+    "key": "huangguo", "base_url": "https://example.com/", "auto_repeat": true, "stage_count": 3,
+    "last_repeat_at": "...", "repeat_total": 128, "repeat_backlog": 4, "last_repeat_error": "",
+    "breaker_paused": false, "breaker_paused_at": "0001-01-01T00:00:00Z"
+  }
+}
+```
 
 ## 8. 日志导出
 

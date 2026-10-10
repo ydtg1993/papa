@@ -24,6 +24,7 @@
         "queue_len": 0,
         "submitted": 8
       },
+      "site": "",
       "workers": {
         "0": {
           "FailedTasks": 0,
@@ -67,6 +68,7 @@
         "queue_len": 0,
         "submitted": 6
       },
+      "site": "",
       "workers": {
         "0": {
           "FailedTasks": 0,
@@ -102,6 +104,7 @@
         "queue_len": 0,
         "submitted": 10
       },
+      "site": "",
       "workers": {
         "0": {
           "FailedTasks": 1,

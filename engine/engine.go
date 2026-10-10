@@ -40,12 +40,11 @@ type Engine struct {
 	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
 	dedupCache  *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
-	spillMu             sync.Mutex
-	spilled             map[string][]*Task // stage -> 高水位溢出的待回灌任务
-	spilledCount        atomic.Int64       // 累计溢出任务数（监控埋点）
-	recoveredCount      atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
-	errorRetriedCount   atomic.Int64       // 累计失败重投任务数（error_queue）
-	repeatRepolledCount atomic.Int64       // 累计周期轮询重投任务数（repeat_queue）
+	spillMu           sync.Mutex
+	spilled           map[string][]*Task // stage -> 高水位溢出的待回灌任务
+	spilledCount      atomic.Int64       // 累计溢出任务数（监控埋点）
+	recoveredCount    atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
+	errorRetriedCount atomic.Int64       // 累计失败重投任务数（error_queue）
 
 	queueRuns     map[string]*queueRunState // 治理队列的运行快照（监控页读取）
 	queueCounters map[string]*atomic.Int64  // 队列名 -> 累计重新投递计数
@@ -55,11 +54,22 @@ type Engine struct {
 	delayCh   chan struct{}
 
 	configChanged chan struct{} // 运行期配置变更信号（唤醒动态 ticker 重新读生效配置）
-	repeatWake    chan struct{} // 轮询队列的"数据变了"信号（新提交/改周期/开轮询 → 重算扫描节拍）
+
+	// siteStats 各站点的快照（站点信息 + 慢变统计）：启动播种时填，之后每次写库同步更新；
+	// 监控页读它（不查库）。库那一份在 crawler_sites 表（见 sitestat.go）。
+	siteStats map[string]core.SiteStat
+	siteMu    sync.RWMutex
+
+	// repeatQueues 周期轮询队列：**按站点拆**，一个站点（或默认 scope）一份运行态。
+	// 键在启动期由 ensureRepeatQueues 备齐，之后只读（运行期往里塞键会与 GetQueueStats
+	// 的裸 range 撞成 concurrent map read and map write —— 那是进程级 fatal）。
+	repeatQueues map[string]*repeatQueueState
 
 	errorQueueMu   sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
 	recoverQueueMu sync.Mutex // 串行化启动恢复，避免重复投递（ProcessRecoverQueue 是导出的，业务也可能调）
-	repeatQueueMu  sync.Mutex // 串行化周期轮询队列处理，避免自动+手动并发重复投递
+	// tickerWG 动态 ticker 的等待组：Stop 要等它们退出再返回，否则调用方看到 drained=true
+	// 就去关库，而在途的那一跳可能正在写库（`sql: database is closed`）。
+	tickerWG sync.WaitGroup
 
 	proxy     *proxy.Manager       // 代理管理器中间件
 	m3u8      *m3u8.Downloader     // m3u8下载器
@@ -154,7 +164,6 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		metrics:       metrics.New(),
 		delayCh:       make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
-		repeatWake:    make(chan struct{}, 1),
 		spilled:       make(map[string][]*Task),
 		queueRuns:     newQueueRuns(),
 	}
@@ -169,9 +178,10 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		Threshold: cfg.Crawler.Breaker.Threshold,
 	}, engine.notifyBreakerTrip)
 	engine.queueCounters = map[string]*atomic.Int64{
-		QueueError:  &engine.errorRetriedCount,
-		QueueRepeat: &engine.repeatRepolledCount,
+		QueueError: &engine.errorRetriedCount,
+		// 周期轮询是**按站点**一份计数器（键在 ensureRepeatQueues 里备齐）
 	}
+	engine.repeatQueues = make(map[string]*repeatQueueState)
 	engine.loadActiveTasks()
 	go engine.delayDispatcher()
 	return engine
@@ -377,14 +387,22 @@ func (e *Engine) ResumeCrawling() bool {
 // 没有这把闸门（该站没单独配过、也没有默认 scope）时返回 false。
 func (e *Engine) ResumeSite(site string) bool {
 	b := e.siteBreakerOf(site)
-	return b != nil && b.Resume()
+	if b == nil || !b.Resume() {
+		return false
+	}
+	e.writeSiteBreakerState(site, false)
+	return true
 }
 
 // PauseSite 手动暂停某个站点（scope）的闸门；site 为空 = 默认 scope。
 // 没有这把闸门时返回 false（后台据此回 400：那个 scope 不存在）。
 func (e *Engine) PauseSite(site, reason string) bool {
 	b := e.siteBreakerOf(site)
-	return b != nil && b.Pause(reason)
+	if b == nil || !b.Pause(reason) {
+		return false
+	}
+	e.writeSiteBreakerState(site, true)
+	return true
 }
 
 // siteBreakerOf 取某个 scope 的闸门对象；不存在的返回 nil（与 breakerFor 的"回落默认"不同 ——
@@ -447,8 +465,9 @@ func (e *Engine) siteOf(stage string) string {
 
 // Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
 //
-// 返回 drained 表示是否**所有**阶段都在 timeout 内排空；没排空时 stats 是那一刻的存留情况
-// （已排空的阶段不会出现在 map 里）。
+// 返回 drained 表示是否**所有**阶段与后台动态 ticker（错误/恢复/每站的轮询队列）都在 timeout
+// 内停下；没排空时 stats 是那一刻的存留情况（已排空的阶段不会出现在 map 里）。ticker 也算在内，
+// / 是因为它们同样会写库 —— 不等它们就关库，在途的那一跳会报 `sql: database is closed`。
 //
 // 各阶段的 timeout 是**并发**计的，所以总等待约等于一个 timeout，而不是「阶段数 × timeout」。
 //
@@ -482,6 +501,19 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	}
 	wg.Wait()
 	drained = len(stats) == 0
+	// 动态 ticker（错误/恢复/每站的轮询队列）也要等在途的那一跳跑完：它们同样会写库。
+	// 与阶段池共用同一个 timeout（并发计），等不到就如实说"没排空"。
+	tickersDone := make(chan struct{})
+	go func() {
+		e.tickerWG.Wait()
+		close(tickersDone)
+	}()
+	select {
+	case <-tickersDone:
+	case <-time.After(timeout):
+		drained = false
+		e.loggerSet.Engine.Warn("dynamic tickers still running after timeout")
+	}
 	if drained {
 		e.loggerSet.Engine.Info("all workers stopped")
 	}

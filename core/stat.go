@@ -7,6 +7,10 @@ import "time"
 
 // StageStats 阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
 type StageStats struct {
+	// Site 这个阶段属于哪个站点（站点声明的 Key；空串 = 默认 scope）。
+	// 池子与统计本来就是"每站每阶段"一份（阶段名跨站唯一，每站声明自己的 Stages）——
+	// 这个字段只是把站点维度带出来，让后台能按站点分组展示。
+	Site    string
 	Global  GlobalStats
 	Workers map[int]WorkerStat
 	Queue   QueueStats
@@ -39,6 +43,26 @@ type QueueStats struct {
 	Failed     int64
 	InProgress int64
 	QueueLen   int
+}
+
+// SiteStat 站点维度的快照：站点是谁 + 它攒下来的慢变统计（后台顶部站点 Tab 与「站点」页读它）。
+//
+// 与 StageStats 的分工：池子/队列那些**实时**数字在各自的快照里（`StageStats.Site` 与
+// `repeat_queue:<站点>` 队列名都带站点维度），这里不重复它们。
+// 时间用零值表示"从未"（前端 `fmtAgo` 会把 0001 年判成从未），与 QueueStat 同一约定。
+type SiteStat struct {
+	Key        string `json:"key"`
+	BaseURL    string `json:"base_url"`    // 启动时抄的：改声明要重启，直接改库不生效
+	AutoRepeat bool   `json:"auto_repeat"` // 是否自动轮询（库为事实）
+	StageCount int    `json:"stage_count"` // 阶段数
+
+	LastRepeatAt    time.Time `json:"last_repeat_at"`
+	RepeatTotal     int64     `json:"repeat_total"`
+	RepeatBacklog   int64     `json:"repeat_backlog"`
+	LastRepeatError string    `json:"last_repeat_error"` // 空 = 正常
+
+	BreakerPaused   bool      `json:"breaker_paused"`
+	BreakerPausedAt time.Time `json:"breaker_paused_at"`
 }
 
 // StopStats 关停超时那一刻，某个阶段的存留情况。

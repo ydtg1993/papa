@@ -432,13 +432,14 @@ func TestSetTaskRepeatableRejections(t *testing.T) {
 func TestSetTaskRepeatableWakesQueue(t *testing.T) {
 	f := newFakeTaskDB()
 	e, _ := urgentEngine(t, f)
-	e.repeatWake = make(chan struct{}, 1) // 手搓的 Engine 没建它，这里补上以便观察
+	e.ensureRepeatQueue("") // 手搓的 Engine 没备队列键，唤醒得有地方落
+	wake := e.repeatQueue(repeatQueueKey("")).wake
 
 	if err := e.SetTaskRepeatable(7, true); err != nil {
 		t.Fatalf("SetTaskRepeatable(7, true) = %v", err)
 	}
 	select {
-	case <-e.repeatWake:
+	case <-wake:
 	default:
 		t.Fatal("开轮询后应叫醒轮询队列重算节拍")
 	}
@@ -463,7 +464,8 @@ func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
 			f := newFakeTaskDB()
 			e, _ := urgentEngine(t, f)
 			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: tc.global}
-			e.repeatWake = make(chan struct{}, 1)
+			e.ensureRepeatQueue("") // 队列键得先备好，唤醒才有地方落
+			wake := e.repeatQueue(repeatQueueKey("")).wake
 
 			if err := e.SetTaskRepeatInterval(7, tc.was, tc.seconds); err != nil {
 				t.Fatalf("SetTaskRepeatInterval = %v", err)
@@ -495,7 +497,7 @@ func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
 				}
 			}
 			select {
-			case <-e.repeatWake:
+			case <-wake:
 			default:
 				t.Fatal("改周期后应叫醒轮询队列重算节拍")
 			}

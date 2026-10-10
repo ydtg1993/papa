@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +21,7 @@ import (
 	"github.com/ydtg1993/papa/v3/admin/auth"
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/engine"
 )
 
 // testLogger 静默日志，仅把 Errorf 转发到测试输出，便于排查。
@@ -935,6 +938,108 @@ func TestResolveArchivedFile(t *testing.T) {
 	for _, bad := range []string{"", "..", "../x", "a/../../x", "/abs/path", "a\x00b"} {
 		if _, err := resolveArchivedFile(root, bad); err == nil {
 			t.Fatalf("resolve(%q) 应当报错", bad)
+		}
+	}
+}
+
+// 轮询队列的手动触发：不带 ?site= 是"所有站点各跑一遍"（向后兼容），带站点则只跑那一站，
+// 站点名不认识 → 400（引擎回 engine.ErrUnknownSite）。
+func TestRepeatQueueProcessSiteParam(t *testing.T) {
+	var got []string
+	newMon := func() *Monitor {
+		got = nil
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+			ProcessRepeatQueue: func(site string) (int, error) {
+				got = append(got, site)
+				if site == "ghost" {
+					return 0, fmt.Errorf("%w: %q", engine.ErrUnknownSite, site)
+				}
+				return 3, nil
+			},
+		})
+	}
+
+	t.Run("不带 site = 所有站点", func(t *testing.T) {
+		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if len(got) != 1 || got[0] != "" {
+			t.Fatalf("回调收到的站点 = %v, want [\"\"]（空串 = 全部）", got)
+		}
+		if body := decodeJSON(t, rr); body["repolled"] != float64(3) {
+			t.Fatalf("repolled = %v", body["repolled"])
+		}
+	})
+
+	t.Run("带 site = 只跑那一站", func(t *testing.T) {
+		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=siteb", nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+		}
+		if len(got) != 1 || got[0] != "siteb" {
+			t.Fatalf("回调收到的站点 = %v, want [siteb]", got)
+		}
+	})
+
+	t.Run("站点名不认识 → 400", func(t *testing.T) {
+		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=ghost", nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// /api/monitor 要带上站点快照（后台的站点 Tab 与站点概要靠它）。键是 sites（复数），
+// 与 breakers 同一约定；没配回调时不该出现这个键（与 queues/system 一致）。
+func TestAPIMonitorCarriesSites(t *testing.T) {
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		SiteStats: func() map[string]core.SiteStat {
+			return map[string]core.SiteStat{
+				"":      {Key: "", AutoRepeat: true, StageCount: 1},
+				"siteb": {Key: "siteb", BaseURL: "https://b.example/", AutoRepeat: true, StageCount: 2, RepeatTotal: 9},
+			}
+		},
+	})
+	rr := serve(m, http.MethodGet, "/api/monitor", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSON(t, rr)
+	sites, ok := body["sites"].(map[string]any)
+	if !ok || len(sites) != 2 {
+		t.Fatalf("sites = %v", body["sites"])
+	}
+	b, _ := sites["siteb"].(map[string]any)
+	if b["base_url"] != "https://b.example/" || b["repeat_total"] != float64(9) || b["auto_repeat"] != true {
+		t.Fatalf("站点快照字段（snake_case）不对：%v", b)
+	}
+
+	// 没配 SiteStats 的宿主：这个键应当缺席（前端据此隐藏整排 tab）
+	plain := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+	if _, ok := decodeJSON(t, serve(plain, http.MethodGet, "/api/monitor", nil))["sites"]; ok {
+		t.Fatal("没配 SiteStats 时不该有 sites 键")
+	}
+}
+
+// 前端读的键名必须与服务端写的**一致**。回归点：熔断横幅曾经因为服务端写 "breakers"、
+// 前端读 "breaker"，一直拿不到数据、（list || []）把它吞成空数组，一个字都不报 ——
+// 多站熔断横幅其实从上线起就没显示过。前端没有测试框架，这里直接钉静态文件里的键名。
+func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
+	raw, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	js := string(raw)
+	for _, want := range []string{"data.stages", "data.queues", "data.breakers", "data.sites", "data.custom", "data.system"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("mo.js 里没读 %s —— 服务端写了这个键，前端却读别的名字就会静默失效", want)
+		}
+	}
+	// 单数那个是错的（服务端从来不发这个键）
+	for _, line := range strings.Split(js, "\n") {
+		if strings.Contains(line, "data.breaker ") || strings.Contains(line, "data.breaker)") || strings.Contains(line, "data.breaker;") {
+			t.Errorf("mo.js 读了不存在的 data.breaker（服务端发的是 data.breakers）：%s", strings.TrimSpace(line))
 		}
 	}
 }

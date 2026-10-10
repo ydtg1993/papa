@@ -23,6 +23,7 @@ func FrameworkModels(cfg *config.Config) []Model {
 	out := []Model{
 		{Name: "crawler_tasks", Value: &models.CrawlerTask{}},
 		{Name: "crawler_access_token", Value: &models.AccessToken{}},
+		{Name: "crawler_sites", Value: &models.CrawlerSite{}},
 	}
 	if cfg.Server.OperationLog {
 		out = append(out, Model{Name: "crawler_operation_log", Value: &models.OperationLog{}})

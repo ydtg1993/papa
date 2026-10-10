@@ -223,7 +223,9 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 		return e.whyRepeatRejected(id, on)
 	}
 	if on {
-		e.wakeRepeatQueue() // 别让它等到当前那次 sleep 到期才被看见
+		// 别让它等到当前那次 sleep 到期才被看见。这里没有行的 site（上面刻意不先 loadTask），
+		// 所以叫醒所有站点队列 —— 人工点击的频率极低，多叫几声只多几次节拍重算。
+		e.wakeAllRepeatQueues()
 	}
 	return nil
 }
@@ -258,7 +260,7 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 		}
 		return ErrTaskChanged // 周期刚被改过（快照过期），刷新后再看
 	}
-	e.wakeRepeatQueue()
+	e.wakeAllRepeatQueues()
 	return nil
 }
 

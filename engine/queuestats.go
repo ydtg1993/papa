@@ -114,22 +114,28 @@ func (e *Engine) GetQueueStats() map[string]QueueStat {
 }
 
 // queueEnabled 返回队列是否启用自动轮询（读生效配置，含运行期覆盖）。
+//
+// 周期轮询队列是**按站点**分的：那一行的开关 = 全局 `repeat_queue.enabled` **且** 本站
+// `AutoRepeat`（站点级只关得掉自己那一份）。站点名必须是登记过的 —— 不认识的名字一律 false，
+// 免得拼错的站名在后台多出一行"看起来开着"的假队列。
 func (e *Engine) queueEnabled(name string) bool {
 	switch name {
 	case QueueError:
 		return e.errorQueueConfig().Enabled
-	case QueueRepeat:
-		return e.repeatQueueConfig().Enabled
+	}
+	if site, ok := e.repeatQueueSite(name); ok {
+		return e.repeatQueueConfig().Enabled && e.siteAutoRepeat(site)
 	}
 	return false
 }
 
-// queueQueries 返回各队列自己的「待处理」条件构造器。
+// queueQueries 返回各队列自己的「待处理」条件构造器（每条固定队列 + 每个站点一条轮询队列）。
 func (e *Engine) queueQueries() map[string]func() *gorm.DB {
-	return map[string]func() *gorm.DB{
-		QueueError:  e.errorQueueQuery(),
-		QueueRepeat: e.repeatQueueQuery(),
+	out := map[string]func() *gorm.DB{QueueError: e.errorQueueQuery()}
+	for _, site := range e.repeatQueueSites() {
+		out[repeatQueueKey(site)] = e.repeatQueueQuery(site)
 	}
+	return out
 }
 
 // sampleQueueBacklog 采样各队列的待处理积压数（各一次 COUNT），写入快照。

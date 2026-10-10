@@ -392,11 +392,40 @@
                 + wrows + '</table></div></div></div>';
         }).join('');
     }
-    /* ---- 治理队列（error/repeat） ---- */
+    /* ---- 治理队列（错误队列 + **每个站点一行**的轮询队列） ---- */
     var QUEUE_META = {
-        error_queue: { label: '错误队列', desc: '失败任务重投', url: '/api/errorqueue/process', key: 'processed', done: '已重新投递' },
-        repeat_queue: { label: '轮询队列', desc: '周期任务重投', url: '/api/repeatqueue/process', key: 'repolled', done: '已重投' }
+        error_queue: { label: '错误队列', desc: '失败任务重投', url: '/api/errorqueue/process', key: 'processed', done: '已重新投递' }
     };
+    // 轮询队列按站点拆：默认 scope 是 `repeat_queue`，命名站点是 `repeat_queue:<站点>`。
+    // 返回 null 表示这个 key 不是轮询队列；返回 '' 表示默认 scope。
+    function repeatQueueSite(name) {
+        if (name === 'repeat_queue') return '';
+        var prefix = 'repeat_queue:';
+        if (name.indexOf(prefix) === 0) return name.slice(prefix.length);
+        return null;
+    }
+    function queueMeta(name) {
+        if (QUEUE_META[name]) return QUEUE_META[name];
+        var site = repeatQueueSite(name);
+        if (site === null) return null;
+        return {
+            label: site === '' ? '轮询队列（默认 scope）' : ('轮询队列 · 站点 ' + site),
+            desc: '周期任务重投',
+            url: '/api/repeatqueue/process' + (site === '' ? '' : '?site=' + encodeURIComponent(site)),
+            key: 'repolled', done: '已重投'
+        };
+    }
+    // 面板上的顺序：固定队列在前，轮询队列按"默认 scope → 站点名字典序"
+    function queueKeys(data) {
+        var names = Object.keys(data || {});
+        var repeats = names.filter(function (n) { return repeatQueueSite(n) !== null; });
+        repeats.sort(function (a, b) {
+            var sa = repeatQueueSite(a), sb = repeatQueueSite(b);
+            if (sa === '' || sb === '') return sa === '' ? -1 : 1;
+            return sa < sb ? -1 : (sa > sb ? 1 : 0);
+        });
+        return Object.keys(QUEUE_META).concat(repeats);
+    }
     function timeValid(d) { return !isNaN(d.getTime()) && d.getFullYear() >= 2000; }
     function agoSeconds(iso) {
         var d = new Date(iso);
@@ -435,8 +464,8 @@
         el.innerHTML = '<table class="qtable"><thead><tr>'
             + '<th>队列</th><th>状态</th><th>上次执行</th><th>处理量</th><th>待处理</th><th>操作</th>'
             + '</tr></thead><tbody>'
-            + Object.keys(QUEUE_META).map(function (name) {
-                var m = QUEUE_META[name];
+            + queueKeys(data).map(function (name) {
+                var m = queueMeta(name);
                 var q = data[name] || {};
                 var ran = q.runs > 0;
                 var backlog = q.backlog || 0;
@@ -449,13 +478,16 @@
                     + '<div class="muted">' + (q.running ? '本轮已处理' : '上次处理') + ' · 累计 ' + (q.total_processed || 0) + '</div></td>'
                     + '<td>' + (backlog > 0 ? '<span class="badge warn">' + backlog + '</span>' : '0')
                     + '<div class="muted">' + esc(fmtAgo(q.backlog_at)) + '采样</div></td>'
-                    + '<td><button class="btn" style="margin-top:0" onclick="triggerQueue(\'' + esc(name) + '\')">立即执行</button></td>'
+                    // 队列名现在是运行期才知道的（按站点拆），所以走 data-* + 从 dataset 取 ——
+                    // 与熔断那个「恢复」按钮同一套写法：内联属性里只有固定代码，运行期值不拼进 JS 字符串
+                    + '<td><button class="btn" style="margin-top:0" data-queue="' + esc(name)
+                    + '" onclick="triggerQueue(this.dataset.queue)">立即执行</button></td>'
                     + '</tr>';
             }).join('')
             + '</tbody></table>';
     }
     async function triggerQueue(name) {
-        var m = QUEUE_META[name];
+        var m = queueMeta(name);
         if (!m) return;
         var el = document.getElementById('queue-gov-msg');
         el.textContent = m.label + '处理中...';
@@ -477,14 +509,100 @@
             return '<div class="row"><div class="k">' + esc(k) + '</div><div class="v">' + esc(jsonVal(custom[k])) + '</div></div>';
         }).join('');
     }
+    /* ============ 站点 Tab（多站点时按站点把面板分开） ============ */
+    // currentSite：null = 概览（全部）；'' = 默认 scope（任务 site 为空串那一档）；其余 = 站点键。
+    // 用 null 当"全部"而不是 ''，就是为了能单独看"默认 scope"那一档。
+    var currentSite = null;
+
+    function siteLabel(key) { return key === '' ? '默认 scope' : key; }
+
+    // siteView 按当前站点过滤阶段与队列（概览返回全部）。
+    // 队列那一侧靠队列名编码的站点（repeat_queue:<站点>）；error_queue 是全局的，
+    // 只在概览里出现。
+    function siteView(stages, queues) {
+        if (currentSite === null) return { stages: stages, queues: queues };
+        var outStages = {}, outQueues = {};
+        Object.keys(stages || {}).forEach(function (name) {
+            if ((stages[name].site || '') === currentSite) outStages[name] = stages[name];
+        });
+        Object.keys(queues || {}).forEach(function (name) {
+            if (repeatQueueSite(name) === currentSite) outQueues[name] = queues[name];
+        });
+        return { stages: outStages, queues: outQueues };
+    }
+
+    function renderSiteTabs(data) {
+        var el = document.getElementById('site-tabs');
+        if (!el) return;
+        var sites = (data && data.sites) || {};
+        var keys = Object.keys(sites).sort(function (a, b) {
+            if (a === '' || b === '') return a === '' ? 1 : -1; // 默认 scope 排最后
+            return a < b ? -1 : (a > b ? 1 : 0);
+        });
+        if (keys.length === 0) { // 还没有站点快照（老引擎 / 没播种）：整排隐藏，不占位
+            el.hidden = true;
+            document.getElementById('site-meta').hidden = true;
+            return;
+        }
+        if (currentSite !== null && keys.indexOf(currentSite) < 0) currentSite = null; // 站点没了回概览
+        el.innerHTML = ['<button class="site-tab' + (currentSite === null ? ' active' : '') +
+            '" data-site="__all__">概览（全部）</button>'].concat(keys.map(function (k) {
+                return '<button class="site-tab' + (currentSite === k ? ' active' : '') +
+                    '" data-site="' + esc(k) + '">' + esc(siteLabel(k)) + '</button>';
+            })).join('');
+        // 与队列按钮同一套：data-* 带运行期值，内联属性里只有固定代码（站点名不拼进 JS 字符串）
+        el.querySelectorAll('.site-tab').forEach(function (b) {
+            b.onclick = function () { switchSite(b.dataset.site === '__all__' ? null : b.dataset.site); };
+        });
+        el.hidden = false;
+        renderSiteMeta(sites);
+    }
+
+    function renderSiteMeta(sites) {
+        var meta = document.getElementById('site-meta');
+        if (!meta) return;
+        var stat = currentSite === null ? null : sites[currentSite];
+        if (!stat) { meta.hidden = true; meta.innerHTML = ''; return; }
+        var parts = [
+            '<b>' + esc(siteLabel(stat.key)) + '</b>',
+            esc(stat.base_url || '—'),
+            (stat.stage_count || 0) + ' 个阶段',
+            stat.auto_repeat ? '自动轮询：开' : '自动轮询：<b>关</b>（只能手动触发）',
+            '累计轮询 ' + (stat.repeat_total || 0),
+            '待轮询 ' + (stat.repeat_backlog || 0),
+            '上次轮询 ' + esc(fmtAgo(stat.last_repeat_at)),
+            stat.breaker_paused
+                ? '<b>熔断已闸住</b>（' + esc(fmtAgo(stat.breaker_paused_at)) + '）'
+                : '熔断未闸住'
+        ];
+        if (stat.last_repeat_error) parts.push('最近错误：' + esc(stat.last_repeat_error));
+        parts.push('<span class="muted">任务表在左侧菜单，进去后用「站点」筛选看本站的任务</span>');
+        meta.innerHTML = parts.join(' ｜ ');
+        meta.hidden = false;
+    }
+
+    function switchSite(site) {
+        currentSite = site;
+        if (lastData) renderAll(lastData); // 手上有快照就直接重画，不必等下一次轮询
+    }
+
+    var lastData = null;
+
     function renderAll(data) {
+        lastData = data;
+        renderSiteTabs(data);
+        var view = siteView(data.stages, data.queues);
         renderSystem(data.system);
         renderDirs(data.system && data.system.dirs);
-        renderQueueSummary(data.stages);
-        renderQueue(data.stages);
-        renderQueues(data.queues);
+        renderQueueSummary(view.stages);
+        renderQueue(view.stages);
+        renderQueues(view.queues);
         renderCustom(data.custom);
-        renderBreaker(data.breaker);
+        // 键名是**复数**：服务端 monitor.go 写的是 resp["breakers"]（数组，每站一条）。
+        // 这里曾经写成 data.breaker，于是横幅永远拿不到数据、（list || []）把它吞成空数组，
+        // 一个字都不报 —— 多站熔断横幅其实一直没显示过。
+        // **不过滤**：横幅是告警，切到哪个站点 tab 都该看得见（切走了反而看不见出事的是哪个站）。
+        renderBreaker(data.breakers);
     }
 
     /* ---- 熔断横幅（多站时逐 scope 一行） ---- */

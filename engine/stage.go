@@ -220,6 +220,12 @@ func (e *Engine) ApplyRegisterStage() {
 	//
 	// 引擎在这里**不做策略判断**：有回调就跑（要不要接入口回调，由声明层决定 —— 见
 	// App.RegisterSites 的 AutoStart）。
+	// 轮询队列的运行态键先备齐（默认 scope + 每个登记过的站点）：入口回调里可能就提交带周期的
+	// 任务并唤醒队列，而**运行期往那几张 map 里塞键**会与监控接口的裸 range 撞成
+	// concurrent map read and map write（进程级 fatal）。所以键只在这儿建，之后只读。
+	e.ensureRepeatQueues()
+	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
+	e.seedSiteRows()
 	for _, stage := range names {
 		if fn := e.stages[stage].submitFunc; fn != nil {
 			fn(e)
@@ -232,8 +238,8 @@ func (e *Engine) ApplyRegisterStage() {
 	e.startErrorQueue()
 	// 启动中断恢复队列（启用时启动即恢复一次 + 定时轮询）
 	e.startRecoverQueue()
-	// 启动周期轮询队列（repeatable 任务的定时重跑）
-	e.startRepeatQueue()
+	// 启动周期轮询队列（每站一个：repeatable 任务的定时重跑）
+	e.startRepeatQueues()
 	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
 	e.startTraceCleanup()
 	// 启动页面归档的保留期清理（归档未开启时不启动）

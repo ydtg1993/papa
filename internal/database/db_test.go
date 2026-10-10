@@ -75,20 +75,20 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	}
 
 	c := &config.Config{}
-	if got := names(c); !reflect.DeepEqual(got, []string{"crawler_tasks", "crawler_access_token"}) {
+	if got := names(c); !reflect.DeepEqual(got, []string{"crawler_tasks", "crawler_access_token", "crawler_sites"}) {
 		t.Fatalf("开关都关着时的清单 = %v", got)
 	}
 
 	c.Server.OperationLog = true
 	if got := names(c); !reflect.DeepEqual(got, []string{
-		"crawler_tasks", "crawler_access_token", "crawler_operation_log",
+		"crawler_tasks", "crawler_access_token", "crawler_sites", "crawler_operation_log",
 	}) {
 		t.Fatalf("开审计后的清单 = %v", got)
 	}
 
 	c.Crawler.Trace.Enabled = true
 	if got := names(c); !reflect.DeepEqual(got, []string{
-		"crawler_tasks", "crawler_access_token", "crawler_operation_log", "crawler_task_trace",
+		"crawler_tasks", "crawler_access_token", "crawler_sites", "crawler_operation_log", "crawler_task_trace",
 	}) {
 		t.Fatalf("两个开关都开后的清单 = %v", got)
 	}

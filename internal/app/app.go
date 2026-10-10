@@ -549,23 +549,30 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		VerifyToken:        auth.Verifier(a.DB, a.Logger.Sys),
-		Whitelist:          whitelist,
-		WhitelistFile:      cfg.WhitelistFile,
-		Metrics:            a.Engine.GetMetrics,
-		QueueStats:         a.Engine.GetQueueStats,
-		SysInfo:            a.sysInfo,
-		LogDir:             a.Config.Log.Dir,
-		ArchiveDir:         a.Engine.ArchiveDir(),
-		OnShutdown:         a.Shutdown,
-		ProcessErrorQueue:  a.Engine.ProcessErrorQueue,
-		ProcessRepeatQueue: a.Engine.RepollRepeatableTasks,
-		ConfigGet:          a.Engine.GetRuntimeConfig,
-		ConfigSet:          a.Engine.ApplyRuntimeConfig,
-		TaskTrace:          a.Engine.ListTrace,
-		VerifyTokenValue:   auth.Confirmer(a.DB, a.Logger.Sys),
-		BreakerStatuses:    a.Engine.BreakerStatuses,
-		ResumeBreaker:      a.Engine.ResumeSite,
+		VerifyToken:       auth.Verifier(a.DB, a.Logger.Sys),
+		Whitelist:         whitelist,
+		WhitelistFile:     cfg.WhitelistFile,
+		Metrics:           a.Engine.GetMetrics,
+		QueueStats:        a.Engine.GetQueueStats,
+		SiteStats:         a.Engine.GetSiteStats,
+		SysInfo:           a.sysInfo,
+		LogDir:            a.Config.Log.Dir,
+		ArchiveDir:        a.Engine.ArchiveDir(),
+		OnShutdown:        a.Shutdown,
+		ProcessErrorQueue: a.Engine.ProcessErrorQueue,
+		// 不给 site = 所有站点各跑一遍（向后兼容业务 cron 的旧用法）；给了 = 只跑那一站
+		ProcessRepeatQueue: func(site string) (int, error) {
+			if site == "" {
+				return a.Engine.RepollRepeatableTasks()
+			}
+			return a.Engine.RepollSiteRepeatableTasks(site)
+		},
+		ConfigGet:        a.Engine.GetRuntimeConfig,
+		ConfigSet:        a.Engine.ApplyRuntimeConfig,
+		TaskTrace:        a.Engine.ListTrace,
+		VerifyTokenValue: auth.Confirmer(a.DB, a.Logger.Sys),
+		BreakerStatuses:  a.Engine.BreakerStatuses,
+		ResumeBreaker:    a.Engine.ResumeSite,
 		OnBreakerResume: func(operator, site string) {
 			// 放行是**人在场的干预**：熔断停了整条抓取线，谁在什么时候放的行必须查得到
 			if rec == nil {

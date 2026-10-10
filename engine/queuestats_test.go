@@ -16,10 +16,9 @@ func newStatsEngine(t *testing.T) *Engine {
 		cfg:       &config.Config{},
 		queueRuns: newQueueRuns(),
 	}
-	e.queueCounters = map[string]*atomic.Int64{
-		QueueError:  &e.errorRetriedCount,
-		QueueRepeat: &e.repeatRepolledCount,
-	}
+	e.queueCounters = map[string]*atomic.Int64{QueueError: &e.errorRetriedCount}
+	e.ensureRepeatQueues() // 轮询队列按站点拆：默认 scope 这一份
+
 	e.runtime.Store(&config.RuntimeConfig{})
 	return e
 }

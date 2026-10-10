@@ -64,6 +64,12 @@
              放行走 POST /api/breaker/resume（点名 scope，或不点名 = 全部）。 -->
         <div class="breaker-banner" id="breaker-banner" hidden></div>
 
+        <!-- 站点 Tab：多站点时按站点把各面板分开（「概览」= 全部；默认 scope 单独一档）。
+             数据来自 /api/monitor 的 sites（站点信息 + 慢变统计），由 mo.js 渲染。
+             **熔断横幅是例外**：它始终显示全部被闸住的站（告警不该被切走的 tab 藏起来）。 -->
+        <div class="site-tabs" id="site-tabs" hidden></div>
+        <div class="site-meta" id="site-meta" hidden></div>
+
         <div class="module active" id="mod-dashboard">
             <section>
                 <h2>系统负载</h2>
