@@ -7,6 +7,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/models"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -39,6 +40,12 @@ func (e *Engine) stageCountOfSite(site string) int {
 		}
 	}
 	return n
+}
+
+// siteKeyScope 定位某个站点行的条件。**`key` 是 MySQL 保留字**：裸写进 SQL 会被当成关键字，
+// 整条语句报 Error 1064（真库实测，见 engine/sqlshape_test.go）—— 引号只写在这一处，四个调用点共用。
+func siteKeyScope(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&models.CrawlerSite{}).Where("`key` = ?", key)
 }
 
 // seedSiteRows 启动期按声明把站点行备齐（单线程段调用，紧跟 ensureRepeatQueues）。
@@ -81,7 +88,7 @@ func (e *Engine) seedSiteRows() {
 			}
 		default:
 			stat.AutoRepeat = row.AutoRepeat // 库为事实：声明不再改它
-			if err := e.db.Model(&models.CrawlerSite{}).Where("key = ?", key).
+			if err := siteKeyScope(e.db, key).
 				Updates(map[string]any{"base_url": stat.BaseURL, "stage_count": stat.StageCount}).Error; err != nil {
 				e.loggerSet.Engine.Warnf("refresh crawler_sites row %q: %s", key, err.Error())
 			}
@@ -136,7 +143,7 @@ func (e *Engine) writeSiteRepeatStats(site string, total int64, backlog int, run
 		return // 站点表里没有这一行（没播种过 / 还没 migrate）：只更新内存那半边，别写库报错
 	}
 
-	if err := e.db.Model(&models.CrawlerSite{}).Where("key = ?", site).Updates(map[string]any{
+	if err := siteKeyScope(e.db, site).Updates(map[string]any{
 		"last_repeat_at":    now,
 		"repeat_total":      total,
 		"repeat_backlog":    backlog,
@@ -158,8 +165,8 @@ func (e *Engine) SetSiteAutoRepeat(key string, on bool) error {
 		return ErrDefaultScopeNoAuto
 	}
 	// 这一列当前值就是版本守卫（要开就必须现在关着，反之亦然）：重复点击 0 行
-	res := e.db.Model(&models.CrawlerSite{}).
-		Where("key = ? AND auto_repeat = ?", key, !on).
+	res := siteKeyScope(e.db, key).
+		Where("auto_repeat = ?", !on).
 		Update("auto_repeat", on)
 	if res.Error != nil {
 		return fmt.Errorf("set site %q auto_repeat=%v: %w", key, on, res.Error)
@@ -217,7 +224,7 @@ func (e *Engine) writeSiteBreakerState(site string, paused bool) {
 	if paused {
 		updates["breaker_paused_at"] = time.Now()
 	}
-	if err := e.db.Model(&models.CrawlerSite{}).Where("key = ?", site).Updates(updates).Error; err != nil {
+	if err := siteKeyScope(e.db, site).Updates(updates).Error; err != nil {
 		e.loggerSet.Engine.Warnf("save crawler_sites breaker state for %q: %s", site, err.Error())
 	}
 }

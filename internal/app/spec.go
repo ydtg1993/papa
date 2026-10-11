@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -138,54 +139,125 @@ type RetrySpec struct {
 
 // RegisterSites 注册站点与阶段。声明有问题**启动即失败**（与配置校验层同一个取向：
 // 该在启动时炸掉的东西，别等跑到某条任务上才变成另一种行为）。
+//
+// 校验与推导在 planSites 里**一次做完**（纯函数，不碰引擎），这里只负责落地。两个附带好处：
+// ① 有问题的声明**一个字节都不落地**（原来是一边注册一边炸，前面几个站已经进去了）；
+// ② 同一个推导给 CheckSites 用 —— "不起库先自查一遍"与"真启动"看到的是同一套判据，不会漂。
 func (a *App) RegisterSites(sites ...SiteSpec) {
-	if err := validateSites(sites); err != nil {
+	plans, err := planSites(a.Config, sites)
+	if err != nil {
 		panic(err)
 	}
-	owner := make(map[string]string, len(sites)) // 阶段名 → 已声明的站点，用来查重
-	for i, spec := range sites {
-		site := spec.snapshot() // 声明 → 框架内部流通的快照，一处转换
-		if site.Key != "" {
-			a.sites[site.Key] = site
-			a.Engine.SetSite(site)
+	for _, p := range plans {
+		if p.site.Key != "" {
+			a.sites[p.site.Key] = p.site
+			a.Engine.SetSite(p.site)
+			a.Engine.SetSiteQueues(p.site.Key, p.queues)
 		}
-		if spec.Breaker != nil {
-			cfg, err := spec.Breaker.toConfig(a.Config.Crawler.Breaker)
-			if err != nil {
-				panic(fmt.Errorf("站点 %q 的熔断配置: %w", site.Key, err))
-			}
-			a.Engine.SetSiteBreaker(site.Key, cfg)
+		if p.breaker != nil {
+			a.Engine.SetSiteBreaker(p.site.Key, *p.breaker)
 		}
-		// 三个治理队列按站点声明（没有"全局那份"了）。**每条站点声明都得写全**（见那三个 Spec 类型）。
-		// 未归属（Key 为空）的声明没有站点行，三队列对它一律不跑 —— 写了就报，别静默忽略。
-		if site.Key == "" {
-			if spec.ErrorQueue != nil || spec.RecoverQueue != nil || spec.RepeatQueue != nil {
-				panic(fmt.Errorf("未归属（Key 为空）的站点声明不能配队列参数：三队列都按站点跑，" +
-					"未归属的任务没有队列 —— 要给它们治理，先给这一站一个 Key"))
-			}
-		} else {
-			errQ, err := spec.errorQueueConfig()
-			if err != nil {
-				panic(fmt.Errorf("站点 %q 的错误队列: %w", site.Key, err))
-			}
-			recQ, err := spec.recoverQueueConfig()
-			if err != nil {
-				panic(fmt.Errorf("站点 %q 的启动恢复: %w", site.Key, err))
-			}
-			repQ, err := spec.repeatQueueConfig()
-			if err != nil {
-				panic(fmt.Errorf("站点 %q 的轮询队列: %w", site.Key, err))
-			}
-			a.Engine.SetSiteQueues(site.Key, engine.SiteQueues{Error: errQ, Recover: recQ, Repeat: repQ})
-		}
-		for j, st := range spec.Stages {
-			plan, err := planStage(site, st, owner)
-			if err != nil {
-				panic(fmt.Errorf("%s 的第 %d 个阶段: %w", siteLabel(site, i), j+1, err))
-			}
-			a.applyStagePlan(plan)
+		for _, sp := range p.stages {
+			a.applyStagePlan(sp)
 		}
 	}
+}
+
+// CheckSites 校验一批站点与阶段声明，**不连库、不建池、不改任何状态**：
+// 把 RegisterSites 会在启动时 panic 的那些问题**一次收集全**返回（nil = 都没问题）。
+//
+// 用途是"声明写完了先自查一遍"：真启动要连库、要建池，而这一步是纯推导 —— 阶段名重复、
+// 三个治理队列漏写 / 缺项、熔断阈值、Delay 与 Backoff 的写法，都能在这儿查出来。
+// cfg 提供全局默认（现在是 crawler.breaker 的默认阈值）；传 nil = 没有全局默认，只用声明里写的值。
+func CheckSites(cfg *config.Config, sites ...SiteSpec) error {
+	_, err := planSites(cfg, sites)
+	return err
+}
+
+// sitePlan 一份站点声明**推导出来的落地内容**（纯数据）：校验与策略都在推导里做完，
+// 落地那一步只照做。RegisterSites 与 CheckSites 共用它 —— 两边的判据不会漂。
+type sitePlan struct {
+	site    core.Site         // 声明快照（Key / BaseURL / Headers / …）
+	breaker *breaker.Config   // 本站的熔断阈值；nil = 用默认那把
+	queues  engine.SiteQueues // 三个治理队列的生效值（未归属的站点是零值：不跑）
+	stages  []stagePlan
+}
+
+// planSites 校验并推导一批声明；**把所有问题收集全**再一起返回（校验器要一次把话说全，
+// RegisterSites 拿到就 panic —— 等于"启动期一次性报全"，不用改一处跑一次）。
+func planSites(cfg *config.Config, sites []SiteSpec) ([]sitePlan, error) {
+	var errs []error
+	if err := validateSites(sites); err != nil {
+		errs = append(errs, err)
+	}
+	defBreaker := config.BreakerConfig{}
+	if cfg != nil {
+		defBreaker = cfg.Crawler.Breaker
+	}
+	owner := make(map[string]string, len(sites)) // 阶段名 → 已声明的站点，用来查重
+	plans := make([]sitePlan, 0, len(sites))
+	for i, spec := range sites {
+		plan, err := planSite(spec, i, defBreaker, owner)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		plans = append(plans, plan)
+	}
+	return plans, errors.Join(errs...)
+}
+
+// planSite 一份声明 → 落地内容。纯函数：不碰引擎、不碰库，默认值由参数给（index 只用于报错文案）。
+func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map[string]string) (sitePlan, error) {
+	var p sitePlan
+	var errs []error
+	p.site = spec.snapshot() // 声明 → 框架内部流通的快照，一处转换
+
+	if spec.Breaker != nil {
+		bc, err := spec.Breaker.toConfig(defBreaker)
+		if err == nil {
+			// 阈值那条规则与 breaker.New 共用（enabled=true 时必须 > 0）—— 原来只有真起引擎时才炸，
+			// 现在 CheckSites 也查得到。
+			err = breaker.Validate(bc)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("站点 %q 的熔断配置: %w", p.site.Key, err))
+		} else {
+			p.breaker = &bc
+		}
+	}
+
+	// 三个治理队列按站点声明（没有"全局那份"了）。**每条站点声明都得写全**（见那三个 Spec 类型）。
+	// 未归属（Key 为空）的声明没有站点行，三队列对它一律不跑 —— 写了就报，别静默忽略。
+	if p.site.Key == "" {
+		if spec.ErrorQueue != nil || spec.RecoverQueue != nil || spec.RepeatQueue != nil {
+			errs = append(errs, fmt.Errorf("未归属（Key 为空）的站点声明不能配队列参数：三队列都按站点跑，"+
+				"未归属的任务没有队列 —— 要给它们治理，先给这一站一个 Key"))
+		}
+	} else {
+		errQ, err := spec.errorQueueConfig()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("站点 %q 的错误队列: %w", p.site.Key, err))
+		}
+		recQ, err := spec.recoverQueueConfig()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("站点 %q 的启动恢复: %w", p.site.Key, err))
+		}
+		repQ, err := spec.repeatQueueConfig()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("站点 %q 的轮询队列: %w", p.site.Key, err))
+		}
+		p.queues = engine.SiteQueues{Error: errQ, Recover: recQ, Repeat: repQ}
+	}
+
+	for j, st := range spec.Stages {
+		sp, err := planStage(p.site, st, owner)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s 的第 %d 个阶段: %w", siteLabel(p.site, idx), j+1, err))
+			continue
+		}
+		p.stages = append(p.stages, sp)
+	}
+	return p, errors.Join(errs...)
 }
 
 // snapshot 把站点声明压成框架内部流通的快照（core.Site）：引擎侧、告警、入口回调都读它。

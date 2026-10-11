@@ -141,7 +141,8 @@ func TestNotifyBreakerTripEmitsCritical(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
-	e.ctx = context.Background()
+	// 不用重赋 e.ctx：NewEngine 已经建好可取消的 ctx，重赋会与 delayDispatcher
+	// 读同一个字段（data race），还会让 dispatcher 永不退出。
 
 	n := &recordingNotifier{}
 	e.AddNotifier(n)
@@ -743,7 +744,8 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	t.Cleanup(e.cancel)
-	e.ctx = context.Background()
+	// 不用重赋 e.ctx：NewEngine 已经建好可取消的 ctx，重赋会与 delayDispatcher
+	// 读同一个字段（data race），还会让 dispatcher 永不退出。
 
 	n := &recordingNotifier{}
 	e.AddNotifier(n)

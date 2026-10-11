@@ -62,6 +62,17 @@ type Breaker struct {
 	onTrip func(core.BreakerStatus)
 }
 
+// Validate 检查一份（默认值已填好的）配置是否合法：**New 会 panic 的那几条规则都在这儿**，
+// 差别只是返回 error 而不是 panic —— 给"不用起服务先验一遍声明"那种场景用（`papa check`）。
+// New 自己也调它，所以这条判据只有一份，不会两处漂。
+func Validate(cfg Config) error {
+	if cfg.Enabled && cfg.Threshold <= 0 {
+		return fmt.Errorf("crawler.breaker.enabled=true 时 threshold 必须 > 0（没写与写 <= 0 都算没给），实得 %d；"+
+			"要关掉熔断请把 enabled 改成 false", cfg.Threshold)
+	}
+	return nil
+}
+
 // New 构造熔断器。onTrip 在**自动触发**时回调一次（可为 nil），宿主用它发告警。
 //
 // **启用熔断却不给正阈值是非法配置，直接 panic** —— 判据与 App.RegisterSites 对阶段
@@ -69,9 +80,8 @@ type Breaker struct {
 // 补一个数（原来补的是 50）只会让人以为开着、数的却是另一回事。
 // 调用点在 engine.NewEngine，所以这是**启动时**失败，不是跑到某条任务才炸。
 func New(cfg Config, onTrip func(core.BreakerStatus)) *Breaker {
-	if cfg.Enabled && cfg.Threshold <= 0 {
-		panic(fmt.Errorf("crawler.breaker.enabled=true 时 threshold 必须 > 0（没写与写 <= 0 都算没给），实得 %d；"+
-			"要关掉熔断请把 enabled 改成 false", cfg.Threshold))
+	if err := Validate(cfg); err != nil {
+		panic(err)
 	}
 	if cfg.Window <= 0 {
 		cfg.Window = defaultWindow

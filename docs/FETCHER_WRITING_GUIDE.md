@@ -810,12 +810,15 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
   ```
   用不上的键**编译期就不存在**（`RecoverQueueSpec` 里根本没有 `Interval` 这个字段）—— 写错连编译都过不了。
 - **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
-- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`；
-  fetcher 按站点分包（`fetcher/<站点>/`，与声明文件一一对应）—— 脚手架只有一个站时 `fetcher/` 就是那一层，
-  加第二个站时把它的 fetcher 收进自己的子包。
+- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`。
+  fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
+  站点多了想按站点分包（`fetcher/<站点>/`，如 huangguo）也行。硬要求只有一条 ——
+  **阶段名（`GetStage()`）跨站唯一**，跟 fetcher 放哪儿无关。
 - **"加一个站"不等于只复制一个声明文件**：阶段的存在离不开 fetcher，而**阶段名取自 `GetStage()`**
   （不在声明文件里）。复制站点文件后，新站若还指向原来那个 fetcher，就是两个站声明了同一个阶段名 ——
   启动直接 panic。副本要连带自己的 fetcher（新类型，或按站点分包），`GetStage()` 一并改成带站点前缀的名字。
+- **声明写完先自查**：项目目录里跑一次 `papa check` —— **不用起库**就能把上面这几项（阶段名重复、
+  三个治理队列漏写/缺项、熔断阈值、Delay 与 Backoff 写法）一次报全。见 [CLI.md](./CLI.md)。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：
   handler 里 `site, _ := engine.Site(task.Site)` → `site.BaseURL` / `site.Headers`；
   入口任务里框架把同一份快照交给 `SubmitEntries(engine, site)`。

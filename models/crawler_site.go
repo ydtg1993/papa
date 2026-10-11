@@ -10,6 +10,8 @@ import "time"
 //
 // 与"每站每阶段的池子统计"分工：那些是**实时**数字，走内存快照（`core.StageStats.Site`）不落库；
 // 这里只放站点是谁 + 攒下来的慢变统计。
+// **列名 `key` 是 MySQL 保留字**：裸写进 SQL 会被当成关键字、整条语句报 Error 1064（真库实测），
+// 所以 raw SQL 里一律写 “ `key` “（见 engine/sitestat.go 的 siteKeyScope 与 engine/sqlshape_test.go）。
 type CrawlerSite struct {
 	ID         uint   `gorm:"primaryKey;comment:站点行 ID"`
 	Key        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_site_key;comment:站点键（站点声明的 Key）；空串=默认 scope"`

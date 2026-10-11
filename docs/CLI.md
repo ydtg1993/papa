@@ -27,6 +27,8 @@ go install ./cmd/papa
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
+| `papa check [目录] [-c <配置路径>]` | 校验站点与阶段声明（**不用起库**）：阶段名重复、三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
+| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/`）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 
 ### `papa new` 生成什么
@@ -40,7 +42,7 @@ mycrawler/
     sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers / AutoRepeat
                             + 三个治理队列（ErrorQueue / RecoverQueue / RepeatQueue）
                             + 每个阶段的 worker_count / queue_size / delay / retry / AutoStart
-  fetcher/                 抓取实现（一个阶段一个 fetcher；加站点时按站点分包）
+  fetcher/                 抓取实现（一个阶段一个 fetcher；想按站点分包也行，加站不必先分包）
   models/                  业务表模型 + 建表清单（models.go）
   monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）
   docs/                    这套手册的副本（离线可查）
@@ -56,6 +58,89 @@ mycrawler/
 - **三个治理队列（error_queue / recover_queue / repeat_queue）同样不在 `config.yaml` 里**：按站点声明，
   三条都得写（不跑哪条就写 `Enabled: &false` 一行）；yaml 里留那三段会被"未知配置键"拦下并指路。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
+
+### `papa check` 校验声明（不用起库）
+
+```bash
+papa check [目录] [-c <配置路径>]              # 目录默认当前目录；配置默认 <目录>/configs/config.yaml
+papa check [目录] --boot                       # 再往前一步：连库跑到 RegisterSites（不 Run）
+```
+
+站点与阶段声明是**项目自己的 Go 代码**（`configs/sites/*.go` 在 `init()` 里自登记），而框架那套
+「声明有问题启动即失败」的校验平时要连库、建池才跑得到。`papa check` 把这两件事解开：
+
+- 它在你项目里临时生成一个 **一次性校验程序**（`<目录>/.papa-check/main.go`），`go run` 一次，
+  跑完立刻删掉 —— 只有编译进项目才读得到那些声明（CLI 是另一个模块，看不见项目的包）；
+- 那个程序只调框架的**纯校验** `papa.CheckSites`，**不连库、不建池、不改任何状态**。
+
+查的是 `RegisterSites` 会在启动时 panic 的那些事，而且**一次报全**（不是报第一条就停）：
+
+```
+站点 "a" 的错误队列: ErrorQueue 没有声明 —— 三个治理队列都要写（ErrorQueue / RecoverQueue / RepeatQueue）…
+站点 "b" 的错误队列: ErrorQueue.Interval 无法解析: time: unknown unit " 小时" in duration "4 小时"
+站点 b 的第 1 个阶段: 阶段 "same" 重复声明（已在 站点 a 声明过）—— 多站时阶段名要能区分，约定带站点前缀…
+```
+
+> 它会顺带把 `config.yaml` 也读一遍（框架的键与值域校验，同样不用连库）；配置不在默认位置就 `-c` 指定。
+
+**`--boot`：连库把"注册那条链"也跑一遍。** 上面那版是纯校验（不碰库）；`--boot` 会在同一个一次性
+程序里接着走真的启动路径 —— `papa.New()`（读配置 + 连库 + 建引擎）→ `app.RegisterSites(papa.Sites()...)`，
+**到此为止**：不 `Run`，所以不投入口任务、不跑启动恢复、不开 HTTP 服务、也不抓任何页面。
+声明没问题、库也通，它才会打印：
+
+```
+✓ 注册通过：1 个站点、3 个阶段（连库跑的是启动路径前半段，没有 Run：不投入口任务、不跑启动恢复、不开 HTTP 服务、不抓任何页面）
+    huangguo：catalog / detail / episode
+```
+
+它同时校验"声明与引擎接线对得上"（每个声明的站点都得能在 `app.Engine.Site(key)` 里查到）。
+要连库，所以比不带 `--boot` 的那版多一层前提：库得连得上。
+>
+> 首次在**刚生成**的项目里跑，可能会提示先 `go mod tidy` —— 脚手架生成的 `go.mod` 本来就不带
+> `require`（那是 `tidy` 的事），校验程序要编译就得先把依赖落下来。
+
+### `papa upgrade` 升级已有项目
+
+```bash
+papa upgrade [目录] [--write]      # 目录默认当前目录
+```
+
+`papa new` 只管"从零生成"；已经落地的项目用它升级。**默认只报告不落盘**，加 `--write` 才写。
+
+它只做框架**有把握**的两件事：
+
+1. **刷新框架副本**：`docs/` 下那 11 份手册是生成时逐字复制的，以框架为准（按"新增 / 更新"写回）。
+   你自己加在 `docs/` 里的 `.md`、以及子目录（如 `docs/samples/`）只列出来，**不删不改**。
+   （比内容时忽略行尾：生成物在不同 git 配置下会是 CRLF，那不是"你改过"。）
+2. **几项不用起库的检查**：
+   - **`configs/config.yaml` 能不能被框架读** —— 升级最常见的坑就在这儿：旧版本留下的键现在会被
+     「未知配置键一律拒绝启动」拦下，而**报错自带"搬去哪儿"的指路**。这条不需要连数据库，
+     `papa upgrade` 直接把它跑一遍给你看（就是启动时那条 panic 的原文）。
+   - **`configs/sites/*.go` 的可疑点**（文本级提醒，不解析）：还在用改过名的类型、三个治理队列的声明没写全。
+
+**业务文件一律不碰**：`main.go` / `monitor/` / `models/` / `fetcher/` / `configs/sites/` / `config.yaml` /
+`go.mod` 都不会被覆盖 —— 生成物一旦落地就归项目所有，照模板覆盖等于抹掉你的改动。它们该改什么，
+报告最后给一张清单（含从 `go.mod` 读出的框架版本与 `replace` 目标）。
+
+例子（升到「队列参数搬进站点声明」那一版时，huangguo 的实际输出节选）：
+
+```
+【config.yaml】
+  读不了 —— 这就是启动时会 panic 的那条：
+    config: 未知配置键
+      未知配置键："error_queue"、"recover_queue"、"repeat_queue"
+      error_queue → 已搬进站点声明：configs/sites/<站名>.go 的 SiteSpec.ErrorQueue
+      ...
+【站点声明】
+  ！没看到 ErrorQueueSpec / RecoverQueueSpec / RepeatQueueSpec —— 三个治理队列**每条站点声明都要写**
+     （不跑哪条就写 Enabled: &false 一行），漏了启动就 panic；见 docs/CORE_CONFIG.md
+```
+
+> 框架版本还没发布时，`go.mod` 里用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>`
+> 先跑起来（`papa new --replace` 加的就是这行）；发布后改成 require 一个新版本号即可。
+>
+> 声明改完（尤其是三个治理队列那种"必写"的项）跑一次 **`papa check`**：它不用起库就能告诉你漏没漏，
+> 不必等下次启动才发现；要连库把启动路径也走一遍，就加 **`--boot`**。
 
 ## 2. 通用 flags（html / rod / diff 共用）
 

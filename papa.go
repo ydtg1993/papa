@@ -64,6 +64,12 @@ type Config = config.Config
 // 再把收集到的交给 App：`app.RegisterSites(papa.Sites()...)`。
 var RegisterSite = app.RegisterSite
 
+// CheckSites 校验一批站点与阶段声明，**不连库、不建池、不改任何状态**：把 RegisterSites 会在启动时
+// panic 的那些问题**一次收集全**返回（nil = 都没问题）。给"声明写完了先自查一遍"用（`papa check`）。
+//
+// cfg 提供全局默认（现在是 crawler.breaker 的默认阈值）；传 nil = 没有全局默认，只用声明里写的值。
+var CheckSites = app.CheckSites
+
 // Sites 返回框架收集到的全部站点声明（顺序 = 文件名字典序）。传给 `App.RegisterSites`。
 var Sites = app.Sites
 

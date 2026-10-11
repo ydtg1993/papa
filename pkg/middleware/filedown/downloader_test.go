@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -634,12 +635,13 @@ func TestSuccessfulDownloadKeepsErrorChannelQuiet(t *testing.T) {
 	server := mockServer(content, true)
 	defer server.Close()
 
-	var progress int
+	// OnProgress 是**并发回调**（MaxConcurrent=2）：计数必须用 atomic，`progress++` 在 -race 下就是竞态
+	var progress atomic.Int64
 	cfg := &Config{
 		OutputDir: tempOut, ResumeStateDir: tempState,
 		MaxConcurrent: 2, ChunkSize: 10, EnableResume: true, SaveBatchSize: 2,
 		QueueSize:  100, // 装得下所有分片的消息，免得"满即丢"把这条用例测糊
-		OnProgress: func(int64, int64) { progress++ },
+		OnProgress: func(int64, int64) { progress.Add(1) },
 	}
 	downloader := NewDownloader(cfg)
 
@@ -647,7 +649,7 @@ func TestSuccessfulDownloadKeepsErrorChannelQuiet(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("download failed: %s", result.Error.Error())
 	}
-	if progress == 0 {
+	if progress.Load() == 0 {
 		t.Fatal("进度回调没被调用 —— 那这条用例根本没覆盖到分片循环")
 	}
 

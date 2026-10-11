@@ -25,6 +25,8 @@ type Config struct {
 	RateKB int
 	// 进度回调函数（可选）
 	// 参数：已下载片段数，总片段数，当前片段索引（从1开始），当前片段大小（字节），累计已下载字节数
+	// OnProgress 进度回调。**可能并发调用**（分片并发下载时由多个 goroutine 各自回调），
+	// 回调自己得线程安全 —— 计数用 atomic。
 	OnProgress func(downloadedSegments, totalSegments int, currentSegment int, segmentSize, totalBytes int64)
 	// 并发下载保存数量
 	SaveBatchSize int

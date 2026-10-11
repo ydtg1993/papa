@@ -123,23 +123,7 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	// 而**延迟投递**那条会把它存进 delayHeap、到点才走到这里（Delay 多长就旧多久）。
 	// 整行写回会把运营在这期间改的列（repeatable / urgent / error…）静默盖回去 ——
 	// 尤其是 repeatable：它现在可由后台「开/停轮询」随时改，被盖回去就是"控制面被数据面吃掉"。
-	updates := map[string]any{"status": models.TaskStatusPending}
-	if task.Repeatable && task.ID != 0 {
-		// 轮询代数交给 SQL 自增：读出来 +1 再写回，并发下会丢别人的增量
-		updates["repeat"] = gorm.Expr("repeat + 1")
-	}
-	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
-	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，
-	// 下一次重投就把任务带回旧的业务行上（SubmitTask/SubmitTasks 的 Meta 只是内存里的，
-	// 谁也看不出来它和库里的不一致）。
-	if len(task.Meta) > 0 {
-		updates["meta"] = metaToJSON(task.Meta)
-	}
-	// 站点同理：行是这条任务的记录，重投路径全靠它认出"这条属于哪个站"
-	if task.Site != "" {
-		updates["site"] = task.Site
-	}
-	e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(updates)
+	e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(submitUpdates(task))
 	if task.RepeatInterval > 0 {
 		// 新播种了一条带周期的轮询任务：叫醒**它所属站点**的轮询队列重算扫描节拍，别让它等
 		// 当前那次 sleep。精确叫（不扇出）：一次批量提交可能几千条任务，扇出会把
@@ -188,6 +172,32 @@ func (e *Engine) claimTask(task *Task) (bool, error) {
 
 // submitTo 按任务的加急标记选队列：加急走快车道，其余走常规队列。
 // 池子本身不认识优先级（Tasker 接口只有 Unique），路由决定留在这里。
+// submitUpdates 一次提交要写回行里的列 —— **只写这个函数负责的那几列**（见 submitToPool 的注释）。
+//
+// 抽出来是为了能在**不连库**的前提下把拼出来的 SQL 渲染出来验（engine/sqlshape_test.go）：
+// `repeat` 是 MySQL 保留字，裸写进表达式会被当成 REPEAT() 函数调用、整条 UPDATE 报 1064 ——
+// 这个坑真踩过（v3.1.0 起，只有真库跑得出来，假库测试看不见）。
+func submitUpdates(task *Task) map[string]any {
+	updates := map[string]any{"status": models.TaskStatusPending}
+	if task.Repeatable && task.ID != 0 {
+		// 轮询代数交给 SQL 自增：读出来 +1 再写回，并发下会丢别人的增量。
+		// 列名必须加引号（`repeat` 是保留字，见函数注释）。
+		updates["repeat"] = gorm.Expr("`repeat` + 1")
+	}
+	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
+	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，
+	// 下一次重投就把任务带回旧的业务行上（SubmitTask/SubmitTasks 的 Meta 只是内存里的，
+	// 谁也看不出来它和库里的不一致）。
+	if len(task.Meta) > 0 {
+		updates["meta"] = metaToJSON(task.Meta)
+	}
+	// 站点同理：行是这条任务的记录，重投路径全靠它认出"这条属于哪个站"
+	if task.Site != "" {
+		updates["site"] = task.Site
+	}
+	return updates
+}
+
 func (e *Engine) submitTo(info *stageInfo, task *Task) error {
 	if task.Urgent {
 		return info.workerPool.SubmitUrgent(task)

@@ -22,6 +22,18 @@
 | `vet` | `go vet ./...` | 静态检查 |
 | `clean` | `rm -rf bin/` | 清理 |
 
+手写 SQL 有两条守卫（都在 `make test` 里跑）：
+
+- **`engine/sqlshape_test.go`**：用 gorm 的 **DryRun** 把生产路径那两条语句拼出来，断言列名带引号 ——
+  不连库（坑：要一起关 `SkipDefaultTransaction`，否则 gorm 的默认事务会先去连库）。
+- **`engine/sqlreserved_test.go`**：扫全仓**非测试** `.go`，找"裸写的保留字列名"。保留字读
+  `engine/testdata/mysql_reserved_words.txt`（导自 MySQL 的 `INFORMATION_SCHEMA.KEYWORDS`），
+  列名从 `database.FrameworkModels` 的 gorm schema 反射 —— 两者相交就是要引号的列
+  （今天是 `key` / `repeat` / `table` / `values`），加了新列自动覆盖。
+  为什么必须有它：`repeat`（v3.1.0 起）与 `key`（v3.2.0 起）都被裸写过，MySQL 直接 Error 1064
+  而且**静默**（调用处常常不判那条语句的错）—— 引擎测试跑的是假库、不解析 SQL，
+  这类错只能靠扫源码或真库跑一次才现形。详细来历见 CHANGELOG「修复 6」。
+
 ## 2. 业务项目（`papa new` 生成）
 
 生成的 `Makefile` 在框架基础上多几个目标：
