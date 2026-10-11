@@ -30,6 +30,9 @@ type Config struct {
 	OnProgress func(downloadedSegments, totalSegments int, currentSegment int, segmentSize, totalBytes int64)
 	// 并发下载保存数量
 	SaveBatchSize int
+	// OutputMode 产物形态（默认 OutputMerge = 合并成一个文件）。见 overlay.go 的 OutputMode。
+	// 逐次下载还能用 DownloadOptions.Output 再覆盖这一项。
+	OutputMode OutputMode
 	// 断点续传相关
 	ResumeStateDir         string // 状态文件存储目录，默认 "./downloads/.resume"
 	AutoMerge              bool   // 自动合并为 MP4，默认 true
@@ -49,6 +52,12 @@ type DownloadOptions struct {
 	// Proxy 本次下载走哪个代理（如 "http://1.2.3.4:8080"）；空 = 用下载器默认的客户端。
 	// 出口由调用方决定：`engine.NextProxy()` 取一个，或站点自己的固定出口。
 	Proxy string
+
+	// 以下三项**逐次覆盖**实例配置（nil = 用实例那份）：产物形态与它的两个细节。
+	// 与别处同一套指针语义：区分"没写"和"写了零值"。
+	Output       *OutputMode // 产物形态（合并 / 只留切片 / 只存播放列表）
+	MergeExt     *string     // 覆盖 MergeOutputExt（.mp4 / .mkv / .ts…）
+	KeepSegments *bool       // 覆盖 KeepSegmentsAfterMerge
 }
 
 // OptionsFromRequest 按这次任务的抓取上下文造一份下载选项：站点级 + 逐请求 headers、

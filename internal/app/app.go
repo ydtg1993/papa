@@ -360,6 +360,9 @@ func (a *App) Run(ctx context.Context) {
 	a.Engine.SetBrowserPool()
 	// 初始化静态 HTML 抓取客户端（读取请求头与代理配置）
 	a.Engine.SetHTMLClient()
+	// 下载器（文件 / m3u8）：框架按 DefaultConfig 备好**基座** —— 它们没有"全局那层配置面"，
+	// 要按站点/阶段各配一份写在声明里。必须在 ApplyRegisterStage 之前：两层覆盖是叠在基座上的。
+	a.Engine.InitDownloaders()
 	// 启用工作流和对应工作池
 	a.Engine.ApplyRegisterStage()
 

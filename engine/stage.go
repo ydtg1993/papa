@@ -225,6 +225,9 @@ func (e *Engine) ApplyRegisterStage() {
 	// concurrent map read and map write（进程级 fatal）。所以键只在这儿建，之后只读。
 	e.ensureRepeatQueues()
 	e.ensureErrorQueues() // 失败重投队列也按站点拆（理由同上一行）
+	// 下载器实例也先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一趟就起池子，
+	// 任务可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
+	e.resolveStageDownloads()
 	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
 	e.seedSiteRows()
 	for _, stage := range names {

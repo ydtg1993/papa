@@ -75,11 +75,19 @@ type Engine struct {
 	// 就去关库，而在途的那一跳可能正在写库（`sql: database is closed`）。
 	tickerWG sync.WaitGroup
 
-	proxy     *proxy.Manager       // 代理管理器中间件
-	m3u8      *m3u8.Downloader     // m3u8下载器
-	filedown  *filedown.Downloader // 文件下载器
-	metrics   *metrics.Registry    // 业务自定义监控数据注册表
-	notifiers []Notifier           // 告警通知器，任务最终失败时触发
+	proxy    *proxy.Manager       // 代理管理器中间件
+	m3u8     *m3u8.Downloader     // m3u8下载器（全局那份）
+	filedown *filedown.Downloader // 文件下载器（全局那份）
+	// 站点/阶段覆盖层与解析结果：启动期（ApplyRegisterStage → resolveStageDownloads）建好后**只读**
+	//（fetcher 的取用路径不带锁，与 repeatQueues / statsQueue 那几张 map 同一约定）。
+	downloadCfgMu   sync.RWMutex
+	siteDownloads   map[string]SiteDownloads // 站点层覆盖（声明给）
+	m3u8ByStage     map[string]*m3u8.Downloader
+	m3u8BySite      map[string]*m3u8.Downloader
+	filedownByStage map[string]*filedown.Downloader
+	filedownBySite  map[string]*filedown.Downloader
+	metrics         *metrics.Registry // 业务自定义监控数据注册表
+	notifiers       []Notifier        // 告警通知器，任务最终失败时触发
 	// 熔断闸门。**按站点分组**：一台闸门管一个站点的（该站所有阶段的）worker；
 	// 默认 scope（未归属站点的阶段）就是 breaker 这一把 —— 单站项目的行为与之前完全一致。
 	// 多站时站点 A 被墙不会再把站点 B 一起闸住（见 SetSiteBreaker / breakerFor）。
@@ -144,6 +152,12 @@ type StageConfig struct {
 	// Site 本阶段所属站点（`SiteSpec.Key`）。**空 = 未归属**，落在"默认 scope"上 ——
 	// 熔断用它分组、任务表用它记归属（`crawler_tasks.site`）、监控与日志也按它分维度。
 	Site string
+
+	// M3U8 / FileDown 本阶段的下载器**覆盖层**（nil = 不覆盖）：启动时叠在"站点那份 → 全局那份"之上，
+	// 解析出这一阶段该用的实例（见 engine/downloads.go）。fetcher 用 `M3U8ForTask(task)` /
+	// `FiledownForTask(task)` 取 —— 一行拿到"这一阶段该用的那个"，不会拿错站。
+	M3U8     *m3u8.Overlay
+	FileDown *filedown.Overlay
 }
 
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
@@ -277,22 +291,22 @@ func (e *Engine) GetProxy() *proxy.Manager {
 	return e.proxy
 }
 
-// SetM3U8 设置 m3u8 下载器。必须在 ApplyRegisterStage 之前（见 SetProxy 的说明）。
-func (e *Engine) SetM3U8(m3u *m3u8.Downloader) {
-	e.m3u8 = m3u
-}
+// 下载器**没有全局那一层配置面**（`SetM3U8` / `SetFiledown` 已删除）：
+//
+//   - 配置只写两处，见 engine/downloads.go —— 站点声明 `SiteSpec.M3U8` / `FileDown`、
+//     阶段声明 `StageSpec.M3U8` / `FileDown`（解析顺序：**阶段 > 站点**）；
+//   - 基座是框架按 `DefaultConfig()` 备好的那份（`GetM3U8` / `GetFiledown` 返回的就是它）；
+//   - fetcher 里取"这一阶段该用的那个"用 `M3U8ForTask(task)` / `FiledownForTask(task)`；
+//     要临时一份只给这次调用用，`.With(...)`；要完全独立的一份，`NewDownloader(&cfg)`。
 
-// GetM3U8 获取m3u8下载器
+// GetM3U8 获取 m3u8 下载器：**框架默认那份**（基座）。
+// 按站点/阶段配过的那一份要用 `M3U8ForTask(task)` / `M3U8ForStage(stage)` 取。
 func (e *Engine) GetM3U8() *m3u8.Downloader {
 	return e.m3u8
 }
 
-// SetFiledown 设置文件下载器。必须在 ApplyRegisterStage 之前（见 SetProxy 的说明）。
-func (e *Engine) SetFiledown(f *filedown.Downloader) {
-	e.filedown = f
-}
-
-// GetFiledown 获取文件下载器实例
+// GetFiledown 获取文件下载器：**框架默认那份**（基座）。
+// 按站点/阶段配过的那一份要用 `FiledownForTask(task)` / `FiledownForStage(stage)` 取。
 func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }

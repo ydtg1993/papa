@@ -35,7 +35,8 @@ go install ./cmd/papa
 
 ```
 mycrawler/
-  main.go                  装配：monitor.Register → （可选）SetProxy/SetM3U8/SetFiledown → RegisterSites(papa.Sites()...) → Run
+  main.go                  装配：monitor.Register → （可选）SetProxy → RegisterSites(papa.Sites()...) → Run
+                           （下载器不在这里配：框架按 DefaultConfig 备好基座，要各站/各阶段不同就写在站点声明里）
   configs/
     config.yaml            配置（先把 db.dsn 指向你的库）
     whitelist              后台来源白名单（全注释＝不限制，启动会警告）

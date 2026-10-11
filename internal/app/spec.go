@@ -10,6 +10,8 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
 // 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `configs/sites/<站名>.go`），
@@ -53,7 +55,14 @@ type SiteSpec struct {
 	ErrorQueue   *ErrorQueueSpec
 	RecoverQueue *RecoverQueueSpec
 	RepeatQueue  *RepeatQueueSpec
-	Stages       []StageSpec
+	// M3U8 / FileDown 本站的下载器覆盖层：本站所有阶段默认用这一份（阶段还能再各自叠一层）。
+	// nil = 不覆盖（用全局那份，即 main.go 里 SetM3U8/SetFiledown 给的）。**字段全是指针，
+	// 只写要改的那几项**：`M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments}`。
+	// 解析顺序一句话：**阶段 > 站点 > 全局**；fetcher 里要临时一份就 `M3U8ForTask(task).With(...)`，
+	// 要完全独立的一份就自己 `m3u8.NewDownloader(&cfg)`。
+	M3U8     *m3u8.Overlay
+	FileDown *filedown.Overlay
+	Stages   []StageSpec
 }
 
 // 三个治理队列的声明。**三条都得写**（SiteSpec.ErrorQueue / RecoverQueue / RepeatQueue 为 nil
@@ -126,6 +135,9 @@ type StageSpec struct {
 	// Delay 任务间隔："5m"（固定）或 "10s-30s"（随机区间）；空 = 不延迟。
 	Delay string
 	Retry RetrySpec
+	// M3U8 / FileDown 本阶段的下载器覆盖层（nil = 不覆盖）：比站点那层更细，赢了就用它。
+	M3U8     *m3u8.Overlay
+	FileDown *filedown.Overlay
 	// AutoStart 启动时投本阶段的入口任务（fetcher 实现 SubmitEntries 才有得投）。
 	// 显式写出来，"是关的、不是漏的"启动时会打一条 Info。
 	AutoStart bool
@@ -153,6 +165,7 @@ func (a *App) RegisterSites(sites ...SiteSpec) {
 			a.sites[p.site.Key] = p.site
 			a.Engine.SetSite(p.site)
 			a.Engine.SetSiteQueues(p.site.Key, p.queues)
+			a.Engine.SetSiteDownloads(p.site.Key, p.downloads)
 		}
 		if p.breaker != nil {
 			a.Engine.SetSiteBreaker(p.site.Key, *p.breaker)
@@ -174,13 +187,60 @@ func CheckSites(cfg *config.Config, sites ...SiteSpec) error {
 	return err
 }
 
+// DescribeDownloadOverlays 列出各站点/阶段**改过哪些下载器配置**（没写的层不出现在结果里）。
+//
+// 为什么要有：下载器有全局/站点/阶段三层声明 + fetcher 里还能随手 `.With()` 造临时实例 ——
+// 分层的代价就是"改一处要看几份声明"。`papa check` 把生效的那些项打出来，是唯一便宜的补偿
+// （真起服务时启动日志也会落一条同样的）。纯函数，不连库、不建实例。
+func DescribeDownloadOverlays(sites ...SiteSpec) []string {
+	var out []string
+	for _, spec := range sites {
+		name := spec.Key
+		if name == "" {
+			name = "（未命名 / 默认 scope）"
+		}
+		if line := overlayLine("站点 "+name, spec.M3U8, spec.FileDown); line != "" {
+			out = append(out, line)
+		}
+		for _, st := range spec.Stages {
+			if st.Fetcher == nil {
+				continue
+			}
+			if line := overlayLine("阶段 "+st.Fetcher.GetStage(), st.M3U8, st.FileDown); line != "" {
+				out = append(out, line)
+			}
+		}
+	}
+	return out
+}
+
+// overlayLine 把一层的覆盖项拼成一行；两项都没写就返回空串（调用方据此跳过）。
+func overlayLine(where string, m3u8Ov *m3u8.Overlay, fdOv *filedown.Overlay) string {
+	var parts []string
+	if m3u8Ov != nil {
+		if fields := m3u8Ov.Fields(); len(fields) > 0 {
+			parts = append(parts, "m3u8{"+strings.Join(fields, " ")+"}")
+		}
+	}
+	if fdOv != nil {
+		if fields := fdOv.Fields(); len(fields) > 0 {
+			parts = append(parts, "filedown{"+strings.Join(fields, " ")+"}")
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return where + ": " + strings.Join(parts, " ")
+}
+
 // sitePlan 一份站点声明**推导出来的落地内容**（纯数据）：校验与策略都在推导里做完，
 // 落地那一步只照做。RegisterSites 与 CheckSites 共用它 —— 两边的判据不会漂。
 type sitePlan struct {
-	site    core.Site         // 声明快照（Key / BaseURL / Headers / …）
-	breaker *breaker.Config   // 本站的熔断阈值；nil = 用默认那把
-	queues  engine.SiteQueues // 三个治理队列的生效值（未归属的站点是零值：不跑）
-	stages  []stagePlan
+	site      core.Site            // 声明快照（Key / BaseURL / Headers / …）
+	breaker   *breaker.Config      // 本站的熔断阈值；nil = 用默认那把
+	queues    engine.SiteQueues    // 三个治理队列的生效值（未归属的站点是零值：不跑）
+	downloads engine.SiteDownloads // 本站的下载器覆盖层（nil 字段 = 不覆盖）
+	stages    []stagePlan
 }
 
 // planSites 校验并推导一批声明；**把所有问题收集全**再一起返回（校验器要一次把话说全，
@@ -211,6 +271,8 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	var p sitePlan
 	var errs []error
 	p.site = spec.snapshot() // 声明 → 框架内部流通的快照，一处转换
+	// 下载器覆盖层原样交给引擎（解析时机在 ApplyRegisterStage：那时全局那份已经 Set 好了）
+	p.downloads = engine.SiteDownloads{M3U8: spec.M3U8, FileDown: spec.FileDown}
 
 	if spec.Breaker != nil {
 		bc, err := spec.Breaker.toConfig(defBreaker)
@@ -454,6 +516,8 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 			QueueSize:   st.QueueSize,
 			Delay:       delay,
 			Site:        site.Key,
+			M3U8:        st.M3U8,
+			FileDown:    st.FileDown,
 		},
 	}
 	switch {

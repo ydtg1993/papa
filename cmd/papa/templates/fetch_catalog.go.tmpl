@@ -3,7 +3,6 @@ package fetcher
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/ydtg1993/papa/v3"
 )
@@ -43,25 +42,25 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 }
 
 func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
-	bw, err := engine.GetBrowserPool().Get(ctx)
+	// 抓取方式：**默认就用静态客户端**。页面上有 JS、有交互都不改变这一点 —— 只要你要的节点在
+	// 抓回来的 HTML 里翻得到（哪怕它在 data-* 属性里、在 <noscript> 回退标记里），就走这条。
+	// 只有"数据必须等 JS 执行 / 点击 / 滚动 / 登录之后才产生，或必须监听网络请求才拿得到"时，
+	// 才改用 rod（`engine.FetchRendered` 或 `GetBrowserPool`）。判据与理由见
+	// docs/FETCHER_WRITING_GUIDE.md §3 —— 模板是照着抄的范本，所以这里默认给的就是那条默认路径。
+	page, err := engine.FetchHTML(ctx, task.URL)
 	if err != nil {
 		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据，后台「追踪」里能直接看到。
 		// task.Trace 关闭时是 nil，这些调用都是安全的 no-op —— 不需要判空。
-		task.Trace.Fail("取浏览器实例", err, nil)
+		task.Trace.Fail("抓取列表页", err, map[string]string{"url": task.URL})
 		return err
 	}
-	defer engine.GetBrowserPool().Put(bw)
-
-	page := bw.Browser.MustPage("")
-	defer page.Close()
-
-	if err := page.Context(ctx).Timeout(30 * time.Second).Navigate(task.URL); err != nil {
-		task.Trace.Fail("打开列表页", err, map[string]string{"url": task.URL})
-		return err
-	}
-	page.MustWaitLoad()
 	// Step 表示「这一步已经做完了」，耗时按距上一步的间隔算
-	task.Trace.Step("打开列表页", map[string]string{"url": task.URL})
+	task.Trace.Step("抓取列表页", map[string]string{"url": page.URL.String()})
+
+	// 站点特有的选择器写在这里（本站知识留在本站的 fetcher 包里）。选不到东西要当**结构错误**
+	// 报出去、别静默跳过 —— 站点改版与被反爬页替换，都表现为"选择器匹配 0 个"：
+	//   items := page.Selection().Find("article")
+	//   if items.Length() == 0 { return papa.WrapNoRetryKind("structure", fmt.Errorf("列表页没有条目：%s", page.URL)) }
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
 	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})

@@ -151,6 +151,15 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	if !strings.Contains(fetcher, `"catalog"`) {
 		t.Errorf("fetcher 模板的 GetStage() 与配置里的阶段名对不上：\n%s", fetcher)
 	}
+	// 抓取方式的**默认路径**：能用静态客户端就用它 —— 页面上有 JS、有交互都不改变这一点
+	//（只有"数据必须等 JS 执行 / 点击 / 滚动 / 登录，或必须监听网络请求才产生"时才上 rod）。
+	// 模板是用户照抄的范本，默认给浏览器等于把例外当常态。判据与理由见 FETCHER_WRITING_GUIDE.md §3。
+	if !strings.Contains(fetcher, "engine.FetchHTML(") {
+		t.Errorf("fetcher 模板应当默认用静态客户端（engine.FetchHTML）：%s", fetcher)
+	}
+	if strings.Contains(fetcher, "GetBrowserPool()") {
+		t.Errorf("fetcher 模板不该默认取浏览器实例（静态 HTML 拿不到目标数据时才用 rod）：%s", fetcher)
+	}
 	// 请求头只写**一处**：站点声明。模板里再抄一份到 config.yaml 就是会静默失效的副本
 	//（站点级同键覆盖全局层），而脚手架是用户照抄的范本 —— 两处各写一份 UA 正是要杜绝的样子。
 	if !strings.Contains(siteSpec, "Headers: map[string]string{") {

@@ -1,13 +1,17 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
 // CheckSites：不起库、不建池、不改状态，把启动时会 panic 的问题**一次收集全**（而不是报第一条就停）。
@@ -119,3 +123,43 @@ func TestRegisterSitesAppliesNothingWhenDeclarationIsBad(t *testing.T) {
 		t.Error("阶段同样不该被注册")
 	}
 }
+
+// 下载器覆盖的自查输出：只列**改过**的项，站点层与阶段层分开说 —— 四层覆盖 + 随手造实例之后，
+// "到底哪份生效"只能靠它一眼看清（`papa check` 会把这些行打出来）。
+func TestDescribeDownloadOverlaysListsOnlyOverrides(t *testing.T) {
+	dir := "./downloads/yeguodj"
+	concurrent := 3
+	mode := m3u8.OutputSegments
+	lines := DescribeDownloadOverlays(SiteSpec{
+		Key:      "yeguodj",
+		BaseURL:  "https://yeguodj.com/",
+		M3U8:     &m3u8.Overlay{OutputDir: &dir},
+		FileDown: &filedown.Overlay{MaxConcurrent: &concurrent},
+		Stages: []StageSpec{
+			{Fetcher: stageNamed{"ygd_catalog"}},                                     // 一句没覆盖 → 不出现在结果里
+			{Fetcher: stageNamed{"ygd_episode"}, M3U8: &m3u8.Overlay{Output: &mode}}, // 阶段层覆盖 → 单独一行
+		},
+	})
+	joined := strings.Join(lines, " | ")
+	for _, want := range []string{
+		"站点 yeguodj: m3u8{output_dir=./downloads/yeguodj} filedown{max_concurrent=3}",
+		"阶段 ygd_episode: m3u8{output=segments}",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("缺少 %q ｜ 实得：%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "ygd_catalog") {
+		t.Errorf("没覆盖的阶段不该出现：%s", joined)
+	}
+	if got := DescribeDownloadOverlays(SiteSpec{Key: "plain"}); len(got) != 0 {
+		t.Errorf("一句没覆盖的站点不该产出任何行：%v", got)
+	}
+}
+
+// stageNamed 一个只有阶段名的假 fetcher（自查输出只用到 GetStage）。
+type stageNamed struct{ name string }
+
+func (s stageNamed) GetStage() string { return s.name }
+
+func (s stageNamed) FetchHandler(context.Context, *engine.Task, *engine.Engine) error { return nil }

@@ -27,6 +27,18 @@ import (
 type Downloader struct {
 	config *Config
 	client *http.Client
+	st     *state
+}
+
+// state 一份实例的**可变内部状态**。抽出来只有一个目的：让 `With` 造出来的实例能**共用**它 ——
+// 于是"随用随生成、配置各不同"与下面两条保证可以同时成立：
+//
+//   - `labors`：同一个目标文件（键 = 源|目录|文件名）只对应一条 labor，labor 里的 execMu
+//     确保**同一任务不并发执行** —— 两条并发下载写同一个文件、同一份断点状态，就靠它挡；
+//   - `proxyClients`：每个代理一条连接池。
+//
+// 想要独立配置不必连这些也独立（用 With）；真要一座互不共享的孤岛，才用 NewDownloader。
+type state struct {
 	// proxyClients 按代理地址缓存的客户端（逐下载指定出口时用）；proxyMu 保护它。
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
@@ -54,8 +66,10 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
-		labors:     make(map[string]*labor),
+		st: &state{
+			trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
+			labors:     make(map[string]*labor),
+		},
 	}
 }
 
@@ -65,8 +79,28 @@ func (d *Downloader) SetClient(client *http.Client) {
 }
 
 // GetErrors 获取错误通道
+// With 在**本实例的配置**之上叠一层，返回一个**新实例**：配置是新的，`labors`/代理连接池/
+// 消息队列**共用同一份**（见 state 的注释）—— "随用随生成、配置互不干扰"，但不因此丢掉
+// "同一目标文件串行"与连接池复用。原实例一字不改。
+//
+//	fetcher 里临时一份：dl := engine.FiledownForTask(task).With(filedown.Overlay{OutputDir: &dir})
+//
+// 想要**完全隔离**的一份用 NewDownloader —— 代价是并发写同一个目标文件时，串行由你自己负责。
+func (d *Downloader) With(o Overlay) *Downloader {
+	cfg := o.Apply(*d.config)
+	return &Downloader{
+		config: &cfg,
+		client: &http.Client{Timeout: cfg.Timeout},
+		st:     d.st,
+	}
+}
+
+// Config 返回这份实例当前生效的配置（副本；改它不影响实例）。
+// 给自查用：`papa check` 与启动日志要把"这一层到底生效了什么"打出来。
+func (d *Downloader) Config() Config { return *d.config }
+
 func (d *Downloader) GetErrors() <-chan error {
-	return d.trackQueue.Errors()
+	return d.st.trackQueue.Errors()
 }
 
 // OutputDir 返回配置里的输出根目录（DownloadResult.OutputFile 就是相对它的路径）。
@@ -224,22 +258,22 @@ func (d *Downloader) Download(ctx context.Context, fileURL, outputDir, fileName 
 	}
 	outputDir, fileName = dir, file
 	key := fileURL + "|" + outputDir + "|" + fileName
-	d.laborMu.Lock()
-	l, exists := d.labors[key]
+	d.st.laborMu.Lock()
+	l, exists := d.st.labors[key]
 	if !exists {
 		l = &labor{
 			url:       fileURL,
 			outputDir: outputDir,
 			filename:  fileName,
 		}
-		d.labors[key] = l
+		d.st.labors[key] = l
 	}
-	d.laborMu.Unlock()
+	d.st.laborMu.Unlock()
 
 	defer func() {
-		d.laborMu.Lock()
-		delete(d.labors, key)
-		d.laborMu.Unlock()
+		d.st.laborMu.Lock()
+		delete(d.st.labors, key)
+		d.st.laborMu.Unlock()
 	}()
 	var opt *DownloadOptions
 	if len(opts) > 0 && opts[0] != nil {
@@ -284,12 +318,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		var err error
 		resumeState, err = d.loadResumeState(la)
 		if err != nil {
-			d.trackQueue.SendError(fmt.Errorf("load resume state failed: %w", err))
+			d.st.trackQueue.SendError(fmt.Errorf("load resume state failed: %w", err))
 			resumeState = nil
 		}
 	}
 	if resumeState != nil && (resumeState.TotalSize != totalSize || resumeState.ChunkSize != cfgGlobal.ChunkSize) {
-		d.trackQueue.SendError(fmt.Errorf("state mismatch, restart"))
+		d.st.trackQueue.SendError(fmt.Errorf("state mismatch, restart"))
 		resumeState = nil
 	}
 	if resumeState == nil {
@@ -375,7 +409,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 
 			if int(newCompleted)%saveBatchSize == 0 || int(newCompleted) == totalChunks {
 				if err := d.saveResumeState(la, resumeState); err != nil {
-					d.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
+					d.st.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
 				}
 			}
 			// 进度只走 OnProgress，别改回错误通道：那端（App.mdMsgListener）按 Error 级别落盘，
@@ -670,24 +704,28 @@ func (d *Downloader) clientOf(cfg *requestConfig) *http.Client {
 // 地址解析不出来时返回默认客户端并记一条错误：让这次下载走直连总比整个失败好，
 // 但错误通道上留痕（"代理配错了"不该静默变成"直连"）。
 func (d *Downloader) clientForProxy(addr string) *http.Client {
-	d.proxyMu.Lock()
-	defer d.proxyMu.Unlock()
-	if c, ok := d.proxyClients[addr]; ok {
+	d.st.proxyMu.Lock()
+	defer d.st.proxyMu.Unlock()
+	if c, ok := d.st.proxyClients[addr]; ok {
 		return c
 	}
 	proxyURL, err := url.Parse(addr)
 	if err != nil {
-		d.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", addr, err))
+		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", addr, err))
 		return d.client
 	}
-	if d.proxyClients == nil {
-		d.proxyClients = make(map[string]*http.Client)
+	if d.st.proxyClients == nil {
+		d.st.proxyClients = make(map[string]*http.Client)
 	}
+	// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
+	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
 	c := &http.Client{
 		Timeout:   d.config.Timeout,
-		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Transport: transport,
 	}
-	d.proxyClients[addr] = c
+	d.st.proxyClients[addr] = c
 	return c
 }
 

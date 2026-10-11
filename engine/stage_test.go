@@ -14,8 +14,6 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
 // recordingNotifier 记下收到的告警事件，并可注入发送失败。
@@ -546,16 +544,6 @@ func TestSubmitBeforeApplyRegisterStageFails(t *testing.T) {
 	}
 }
 
-// needsDownloaders 声明依赖下载器（可选接口），用来验证启动期的接线校验。
-type needsDownloaders struct {
-	recordingFetcher
-	filedown bool
-	m3u8     bool
-}
-
-func (s *needsDownloaders) NeedsFiledown() bool { return s.filedown }
-func (s *needsDownloaders) NeedsM3U8() bool     { return s.m3u8 }
-
 // assertPanicsContains 断言 f() panic 且信息里含 want（启动期的校验都是 panic：与配置校验层同取向）。
 func assertPanicsContains(t *testing.T, want string, f func()) {
 	t.Helper()
@@ -571,53 +559,28 @@ func assertPanicsContains(t *testing.T, want string, f func()) {
 	f()
 }
 
-// 声明了依赖下载器却没接线：**启动时**就炸掉，而不是等第一条任务跑到那一步 ——
-// 那时失败的是任务、不是启动，报出来的是一句离得很远的 "file downloader is configured"。
-// 报错里要写清怎么改（几乎总是"忘了在 ApplyRegisterStage 之前调 SetXxx"）。
-func TestApplyRegisterStageRejectsUnwiredDownloader(t *testing.T) {
-	cases := []struct {
-		name     string
-		fetcher  Fetcher
-		wire     func(*Engine)
-		wantWord string
-	}{
-		{
-			name:     "声明了文件下载器但没接线",
-			fetcher:  &needsDownloaders{recordingFetcher: recordingFetcher{stage: "stub"}, filedown: true},
-			wantWord: "SetFiledown",
-		},
-		{
-			name:     "声明了 m3u8 但没接线",
-			fetcher:  &needsDownloaders{recordingFetcher: recordingFetcher{stage: "stub"}, m3u8: true},
-			wantWord: "SetM3U8",
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			assertPanicsContains(t, c.wantWord, func() {
-				e := stageDepEngine(t)
-				e.AddStage("stub", stageDepCfg, c.fetcher, nil)
-				e.ApplyRegisterStage()
-			})
-		})
-	}
-}
-
 // 接了线、或压根没声明，都不该炸 —— 校验是给"声明了却没接线"这一种情况用的。
 func TestApplyRegisterStageAcceptsWiredOrUndeclared(t *testing.T) {
-	t.Run("接了线", func(t *testing.T) {
-		e := stageDepEngine(t)
-		e.SetFiledown(filedown.NewDownloader(filedown.DefaultConfig()))
-		e.SetM3U8(m3u8.NewDownloader(m3u8.DefaultConfig()))
-		e.AddStage("stub", stageDepCfg, &needsDownloaders{recordingFetcher: recordingFetcher{stage: "stub"}, filedown: true, m3u8: true}, nil)
-		e.ApplyRegisterStage()
-	})
-	t.Run("没声明", func(t *testing.T) {
+	t.Run("没声明任何依赖", func(t *testing.T) {
 		e := stageDepEngine(t)
 		e.AddStage("stub", stageDepCfg, &recordingFetcher{stage: "stub"}, nil)
 		e.ApplyRegisterStage()
 	})
+	t.Run("声明了下载器依赖的历史写法（钩子已删除，方法留着也不影响）", func(t *testing.T) {
+		// NeedsFiledown / NeedsM3U8 随"下载器只有站点/阶段两层"一起删了：框架一定备好基座，
+		// 那两条校验在结构上不可能触发。业务 fetcher 上残留的同名方法只是普通方法，不再被调用。
+		e := stageDepEngine(t)
+		e.AddStage("stub", stageDepCfg, &legacyNeedsDownloaders{recordingFetcher{stage: "stub"}}, nil)
+		e.ApplyRegisterStage()
+	})
 }
+
+// legacyNeedsDownloaders 模拟"老代码里还留着 NeedsFiledown/NeedsM3U8 方法"的 fetcher：
+// 那两个接口已经不存在了，方法留着不该有任何影响（不该 panic、也不该被别人当接口用）。
+type legacyNeedsDownloaders struct{ recordingFetcher }
+
+func (s *legacyNeedsDownloaders) NeedsFiledown() bool { return true }
+func (s *legacyNeedsDownloaders) NeedsM3U8() bool     { return true }
 
 var stageDepCfg = StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
 

@@ -9,6 +9,8 @@ import (
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/app"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
@@ -47,6 +49,33 @@ type ErrorQueueSpec = app.ErrorQueueSpec
 type RecoverQueueSpec = app.RecoverQueueSpec
 
 type RepeatQueueSpec = app.RepeatQueueSpec
+
+// M3U8Spec / FileDownSpec 下载器的**覆盖层**：站点声明（SiteSpec.M3U8 / FileDown）与阶段声明
+// （StageSpec.M3U8 / FileDown）用它，**字段全是指针，只写要改的那几项**：
+//
+//	M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments}
+//
+// 解析顺序：**阶段 > 站点 > 全局**（全局那份 = main.go 里 `SetM3U8` / `SetFiledown` 给的）。
+// fetcher 里要"这一阶段该用的那个"就 `engine.M3U8ForTask(task)`；要临时一份只给这次调用用，
+// 就 `.With(&papa.M3U8Spec{...})`（配置独立、内部状态共享）；要完全独立的一份，
+// 直接 `m3u8.NewDownloader(&cfg)` —— 三条路都在，框架不拦。
+type M3U8Spec = m3u8.Overlay
+
+// DescribeDownloadOverlays 列出各站点/阶段改过的下载器配置项（`papa check` 用它说清"到底哪份生效"）。
+func DescribeDownloadOverlays(sites ...SiteSpec) []string {
+	return app.DescribeDownloadOverlays(sites...)
+}
+
+type FileDownSpec = filedown.Overlay
+
+// OutputMode 产物形态（m3u8 下载器）：合并成一个文件 / 只留切片组 / 只存播放列表。
+type OutputMode = m3u8.OutputMode
+
+const (
+	OutputMerge    = m3u8.OutputMerge    // 默认：ffmpeg remux 成一个文件（扩展名由 MergeExt 决定）
+	OutputSegments = m3u8.OutputSegments // 不产出单文件，只留切片组（挪到 <OutputDir>/<file>/ 下）
+	OutputPlaylist = m3u8.OutputPlaylist // 只把 .m3u8 原文存下来，一个分片都不下
+)
 
 // Site 站点声明的快照（engine.Site(key) 返回它：BaseURL 等）。
 type Site = core.Site

@@ -30,6 +30,20 @@ import (
 type Downloader struct {
 	config *Config
 	client *http.Client
+	st     *state
+}
+
+// state 一份实例的**可变内部状态**。抽出来只有一个目的：让 `With` 造出来的实例能**共用**它 ——
+// 于是"随用随生成、配置各不同"与下面这三条保证可以同时成立：
+//
+//   - `labors`：同一个目标文件（键 = 源|目录|文件名）只对应一条 labor，labor 里的 execMu
+//     确保**同一任务不并发执行** —— 两条并发下载写同一个文件、同一份断点状态，就靠它挡；
+//   - `keyCache`：AES 密钥复用（同一条流的分片共用一把钥，不必每片取一次）；
+//   - `proxyClients`：每个代理一条连接池。
+//
+// 也就是说：**想要独立配置，不必（也不该）连这些也独立** —— 用 With；真要一座互不共享的孤岛，
+// 才用 NewDownloader（代价见它的注释）。
+type state struct {
 	// proxyClients 按代理地址缓存的客户端（逐下载指定出口时用）；proxyMu 保护它。
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
@@ -62,9 +76,10 @@ func NewDownloader(cfg *Config) *Downloader {
 		client: &http.Client{
 			Timeout: cfg.SegmentTimeout,
 		},
-		trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
-		keyCache:   sync.Map{},
-		labors:     make(map[string]*labor),
+		st: &state{
+			trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
+			labors:     make(map[string]*labor),
+		},
 	}
 }
 
@@ -73,9 +88,30 @@ func (d *Downloader) SetClient(client *http.Client) {
 	d.client = client
 }
 
+// With 在**本实例的配置**之上叠一层，返回一个**新实例**：配置是新的，`labors`/密钥缓存/
+// 代理连接池/消息队列**共用同一份**（见 state 的注释）—— "随用随生成、配置互不干扰"，但不会
+// 因此丢掉"同一目标文件串行"与缓存复用。原实例一字不改。
+//
+//	fetcher 里临时一份：dl := engine.M3U8ForTask(task).With(m3u8.Overlay{Output: ptr(m3u8.OutputPlaylist)})
+//
+// 想要**完全隔离**的一份（谁也不共享）用 NewDownloader —— 代价是并发写同一个目标文件时
+// 串行由你自己负责，缓存/连接池也各自一份。
+func (d *Downloader) With(o Overlay) *Downloader {
+	cfg := o.Apply(*d.config)
+	return &Downloader{
+		config: &cfg,
+		client: &http.Client{Timeout: cfg.SegmentTimeout},
+		st:     d.st,
+	}
+}
+
+// Config 返回这份实例当前生效的配置（副本；改它不影响实例）。
+// 给自查用：`papa check` 与启动日志要把"这一层到底生效了什么"打出来。
+func (d *Downloader) Config() Config { return *d.config }
+
 // GetErrors 获取错误通道（全局）
 func (d *Downloader) GetErrors() <-chan error {
-	return d.trackQueue.Errors()
+	return d.st.trackQueue.Errors()
 }
 
 // OutputDir 返回配置里的输出根目录（DownloadResult.OutputFile 就是相对它的路径）。
@@ -93,21 +129,25 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	if opts == nil || opts.Proxy == "" {
 		return d.client
 	}
-	d.proxyMu.Lock()
-	defer d.proxyMu.Unlock()
-	if c, ok := d.proxyClients[opts.Proxy]; ok {
+	d.st.proxyMu.Lock()
+	defer d.st.proxyMu.Unlock()
+	if c, ok := d.st.proxyClients[opts.Proxy]; ok {
 		return c
 	}
 	proxyURL, err := neturl.Parse(opts.Proxy)
 	if err != nil {
-		d.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", opts.Proxy, err))
+		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", opts.Proxy, err))
 		return d.client
 	}
-	if d.proxyClients == nil {
-		d.proxyClients = make(map[string]*http.Client)
+	if d.st.proxyClients == nil {
+		d.st.proxyClients = make(map[string]*http.Client)
 	}
-	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
-	d.proxyClients[opts.Proxy] = c
+	// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
+	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = http.ProxyURL(proxyURL)
+	c := &http.Client{Transport: transport}
+	d.st.proxyClients[opts.Proxy] = c
 	return c
 }
 
@@ -137,7 +177,7 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 				return nil, ctx.Err()
 			case <-time.After(sleepTime):
 			}
-			d.trackQueue.SendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
+			d.st.trackQueue.SendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -343,21 +383,21 @@ func (d *Downloader) Download(ctx context.Context, m3u8URL, outputDir, outputFil
 	}
 	outputDir, outputFile = dir, file
 	key := m3u8URL + "|" + outputDir + "|" + outputFile
-	d.laborMu.Lock()
-	l, exists := d.labors[key]
+	d.st.laborMu.Lock()
+	l, exists := d.st.labors[key]
 	if !exists {
 		l = &labor{
 			source:   m3u8URL,
 			outDir:   outputDir,
 			filename: outputFile,
 		}
-		d.labors[key] = l
+		d.st.labors[key] = l
 	}
-	d.laborMu.Unlock()
+	d.st.laborMu.Unlock()
 	defer func() {
-		d.laborMu.Lock()
-		delete(d.labors, key)
-		d.laborMu.Unlock()
+		d.st.laborMu.Lock()
+		delete(d.st.labors, key)
+		d.st.laborMu.Unlock()
 	}()
 	var opt *DownloadOptions
 	if len(opts) > 0 && opts[0] != nil {
@@ -371,6 +411,19 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	defer la.execMu.Unlock()
 	result := &DownloadResult{}
 	cfg := d.config
+	// 这一次生效的产物形态与它的两个细节：逐次 options 覆盖实例配置（nil = 用实例那份）
+	mode, mergeExt, keepSegments := cfg.OutputMode, cfg.MergeOutputExt, cfg.KeepSegmentsAfterMerge
+	if opts != nil {
+		if opts.Output != nil {
+			mode = *opts.Output
+		}
+		if opts.MergeExt != nil {
+			mergeExt = *opts.MergeExt
+		}
+		if opts.KeepSegments != nil {
+			keepSegments = *opts.KeepSegments
+		}
+	}
 	// 从 labor 中获取任务参数
 	m3u8URL := la.source
 	outputDir := la.outDir
@@ -397,6 +450,22 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 	}
 
+	// 2.5 只要播放列表：把选中的那份原文落盘就结束 —— 不下分片（断点状态也不碰）
+	if mode == OutputPlaylist {
+		outputPath := filepath.Join(cfg.OutputDir, outputDir, outputFile)
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+			result.Error = fmt.Errorf("mkdir output dir: %w", err)
+			return result
+		}
+		if err := os.WriteFile(outputPath, []byte(playlist), 0644); err != nil {
+			result.Error = fmt.Errorf("write playlist: %w", err)
+			return result
+		}
+		result.OutputFile = filepath.Join(outputDir, outputFile)
+		result.Size = int64(len(playlist))
+		return result
+	}
+
 	// 3. 解析（增强版，给片段加上索引）
 	initSegment, segments, segmentKeys, err := d.parsePlaylistEnhancedWithIndex(playlist, baseURL)
 	if err != nil {
@@ -421,13 +490,13 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	if cfg.EnableResume {
 		resumeState, err = d.loadResumeState(la)
 		if err != nil {
-			d.trackQueue.SendError(fmt.Errorf("load resume state failed: %w, will restart", err))
+			d.st.trackQueue.SendError(fmt.Errorf("load resume state failed: %w, will restart", err))
 			resumeState = nil
 		}
 	}
 	// 校验状态是否匹配
 	if resumeState != nil && resumeState.TotalSegments != totalSegments {
-		d.trackQueue.SendError(fmt.Errorf("segment count mismatch (state:%d, actual:%d), restart", resumeState.TotalSegments, totalSegments))
+		d.st.trackQueue.SendError(fmt.Errorf("segment count mismatch (state:%d, actual:%d), restart", resumeState.TotalSegments, totalSegments))
 		resumeState = nil
 	}
 
@@ -529,7 +598,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 			// 每 saveBatchSize 个片段保存一次状态
 			if int(newCompleted)%saveBatchSize == 0 || newCompleted == int32(totalSegments) {
 				if err := d.saveResumeState(la, resumeState); err != nil {
-					d.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
+					d.st.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
 				}
 			}
 
@@ -545,11 +614,29 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		return result
 	}
 
-	// 9. 所有片段下载完成，进行合并
+	// 9. 所有片段下载完成，按产物形态收尾
 	var finalOutput string
-	if cfg.AutoMerge {
+	if mode == OutputSegments {
+		// 只留切片组：把分片挪到 `<OutputDir>/<outputFile>/` 这个目录下（同一卷上是改名，几乎不花钱）。
+		// 分片此前落在断点状态目录里（ResumeStateDir/segments/…），直接留在那儿会让
+		// `DownloadResult.OutputFile` 违反"相对 OutputDir"那条契约（见 OutputDir() 的注释）。
+		finalOutput = outputPath
+		if err := os.MkdirAll(finalOutput, 0755); err != nil {
+			result.Error = fmt.Errorf("mkdir segments dir: %w", err)
+			return result
+		}
+		for _, f := range resumeState.SegmentFiles {
+			if f == "" {
+				continue
+			}
+			if err := os.Rename(f, filepath.Join(finalOutput, filepath.Base(f))); err != nil {
+				result.Error = fmt.Errorf("move segment %s: %w", f, err)
+				return result
+			}
+		}
+	} else if cfg.AutoMerge {
 		baseName := strings.TrimSuffix(outputPath, filepath.Ext(outputPath))
-		finalOutput = baseName + cfg.MergeOutputExt
+		finalOutput = baseName + mergeExt
 		if err := os.MkdirAll(filepath.Dir(finalOutput), 0755); err != nil {
 			result.Error = fmt.Errorf("mkdir final output dir: %w", err)
 			return result
@@ -566,8 +653,8 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 	}
 
-	// 10. 清理临时文件（根据配置）
-	if !cfg.KeepSegmentsAfterMerge {
+	// 10. 清理临时文件（根据配置；只留切片的那种形态，分片已经挪走了，这一步天然空转）
+	if !keepSegments && mode != OutputSegments {
 		for _, f := range resumeState.SegmentFiles {
 			_ = os.Remove(f)
 		}
@@ -581,9 +668,9 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	_ = d.cleanResumeState(la)
 
 	relOutput := filepath.Join(outputDir, outputFile)
-	if cfg.AutoMerge {
+	if mode == OutputMerge && cfg.AutoMerge {
 		baseName := strings.TrimSuffix(relOutput, filepath.Ext(relOutput))
-		relOutput = baseName + cfg.MergeOutputExt
+		relOutput = baseName + mergeExt
 	}
 	result.OutputFile = relOutput
 	result.Segments = totalSegments
@@ -596,7 +683,7 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 	// 如果文件已存在且大小 > 0，直接跳过（片段级续传）。
 	// 「非空即完整」成立的前提是下面那句写入走"临时文件 + 改名"（见那里的注释）。
 	if info, err := os.Stat(destPath); err == nil && info.Size() > 0 {
-		d.trackQueue.SendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
+		d.st.trackQueue.SendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
 		return nil
 	}
 
@@ -620,7 +707,7 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 				return ctx.Err()
 			case <-time.After(sleepTime):
 			}
-			d.trackQueue.SendError(fmt.Errorf("retry segment %d (attempt %d)", seg.Index, attempt))
+			d.st.trackQueue.SendError(fmt.Errorf("retry segment %d (attempt %d)", seg.Index, attempt))
 		}
 
 		// 下载原始数据
@@ -796,14 +883,14 @@ func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, mediaSeq 
 		binary.BigEndian.PutUint64(ivData[8:], uint64(mediaSeq))
 	}
 	// 缓存只放密钥本身（同一 URI 的所有片段共用一把），IV 随片段返回
-	if cached, ok := d.keyCache.Load(keyInfo.URL); ok {
+	if cached, ok := d.st.keyCache.Load(keyInfo.URL); ok {
 		return cached.(*cachedKey).key, ivData, nil
 	}
 	keyData, err := d.doRequest(ctx, keyInfo.URL, "", opts)
 	if err != nil {
 		return nil, nil, err
 	}
-	d.keyCache.Store(keyInfo.URL, &cachedKey{key: keyData})
+	d.st.keyCache.Store(keyInfo.URL, &cachedKey{key: keyData})
 	return keyData, ivData, nil
 }
 

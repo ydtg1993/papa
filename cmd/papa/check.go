@@ -58,6 +58,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	for _, line := range papa.DescribeDownloadOverlays(sites...) {
+		fmt.Println("  · 下载器覆盖 " + line + "（阶段 > 站点，其余项用框架默认那份）")
+	}
 	fmt.Println(fmt.Sprintf("✓ %d 个站点声明都合法（阶段名、三个治理队列、熔断阈值、Delay / Backoff 写法都查过）", len(sites)))
 }
 

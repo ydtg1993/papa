@@ -10,8 +10,6 @@ import (
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 	"gorm.io/gorm"
 )
@@ -39,20 +37,15 @@ func TestEngineAccessorsRoundTrip(t *testing.T) {
 	}
 
 	pm := proxy.NewManager("", time.Hour)
-	m3u := &m3u8.Downloader{}
-	fd := filedown.NewDownloader(nil)
 	e.SetProxy(pm)
-	e.SetM3U8(m3u)
-	e.SetFiledown(fd)
-
 	if e.GetProxy() != pm {
 		t.Fatal("SetProxy/GetProxy 不是同一个对象")
 	}
-	if e.GetM3U8() != m3u {
-		t.Fatal("SetM3U8/GetM3U8 不是同一个对象")
-	}
-	if e.GetFiledown() != fd {
-		t.Fatal("SetFiledown/GetFiledown 不是同一个对象")
+	// 下载器没有全局 setter（配置只写站点/阶段两层）：框架用 InitDownloaders 备好基座，
+	// GetM3U8/GetFiledown 返回的就是那一份。
+	e.InitDownloaders()
+	if e.GetM3U8() == nil || e.GetFiledown() == nil {
+		t.Fatal("InitDownloaders 之后两个下载器都该就绪")
 	}
 }
 

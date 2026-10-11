@@ -36,11 +36,13 @@ type Fetcher interface {
 ```
 
 - `GetStage()` 返回阶段名，它在**整个程序里必须唯一**（多站就带站点前缀，如 `hgd_catalog`）。重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `configs/sites/<站名>.go` 的声明里（见 7.2）。
-- **可选**：fetcher 还可以实现三个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
+- **可选**：fetcher 还可以实现四个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
   ```go
   // 声明本阶段要用下载器 → 框架在启动时校验接线（没接直接 panic，而不是等第一条任务跑到那一步）
   func (f *FetchVideo) NeedsFiledown() bool { return true } // 会调 engine.GetFiledown()
   func (f *FetchVideo) NeedsM3U8() bool     { return true } // 会调 engine.GetM3U8()
+  func (f *FetchVideo) NeedsBrowser() bool  { return true } // 会借浏览器（engine.GetBrowserPool / FetchRendered）
+                                                            // → 没开 config.yaml 的 browser.enable 就在启动时炸
 
   // 入口任务："注册即投一批起始任务" → 框架在启动时自动调（那时所有阶段的池子都已建好）
   // site = 本站声明快照（SiteSpec → core.Site）：BaseURL / Headers 都在里面
@@ -130,8 +132,8 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（Rod 封装） |
 | `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
-| `engine.GetM3U8()` | m3u8 下载器，需在 main.go 先 `SetM3U8` |
-| `engine.GetFiledown()` | 文件下载器，需先 `SetFiledown` |
+| `engine.M3U8ForTask(task)` / `M3U8ForStage(stage)` | m3u8 下载器：**阶段 > 站点 > 基座**，一行拿到"这一阶段该用的那个"（见 §4.4） |
+| `engine.GetM3U8()` / `GetFiledown()` | 基座那份（框架按 `DefaultConfig` 备好）—— 按站点/阶段配过的那份要用上面的 `For*` 取 |
 | `engine.GetDB()` | gorm 实例，用于写结果 / 查任务 |
 | `engine.Upsert(record, conflictCols, updateCols)` | 冲突更新并回填主键（替代手写 `clause.OnConflict` + `if ID==0` 查回） |
 | `engine.GetConfig()` | 全局配置 |
@@ -224,12 +226,32 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 
 先根据响应中的数据来源选策略，而不是默认启动浏览器：
 
+> **规则：能用 `engine.FetchHTML` 抓的页面，一律用它。** rod（浏览器）是**例外**，只在
+> "目标数据在静态 HTML 里根本不存在"时才上 —— 即必须等 JavaScript 执行、点击、滚动、登录，
+> 或者必须监听网络请求之后才产生的那类数据。
+>
+> 两条最容易搞反的：
+>
+> - **页面"有 JS"不等于"必须上浏览器"**：Vue / React / Nuxt 这类前端框架的页面，只要站点做了
+>   服务端渲染（首屏 HTML 里就有目标节点），照样用 HTMLFetch。抓回来的 HTML 里翻得到，就是静态路。
+> - **页面上有交互（点击展开、下拉加载、轮播）也不等于要用浏览器**：只要目标字段在 HTML 里已经存在
+>   （哪怕藏在 `data-*` 属性或 `<noscript>` 回退标记里），照样用 HTMLFetch。
+>
+> 判据只有一条，可执行：**把 `FetchHTML` 抓回来的 HTML 翻一遍，目标节点在不在。** 在 → HTMLFetch；
+> 不在 → 再看能不能直接从接口拿（不少站点的数据接口就是普通 HTTP，`FetchHTML` 一样能取）；都不行才上 rod。
+>
+> 为什么这么定：浏览器是重量级资源（真进程 + 内存 + 受 `browser.pool_size` 限制的池位 + 每页几秒），
+> 而静态路还能多拿到状态码、Content-Type 与**原始字节**（归档更完整、排查更容易，见 §3.1 末）；
+> 站点一多、量一大，"明明能静态却上了浏览器"会先把自己的并发位吃光 —— 那时表现为"整体变慢"，
+> 而不是报错，最难查。
+
 | 策略 | 入口 | 适用页面 | 节点获取方式 | 校验重点 | 不适用场景 |
 | --- | --- | --- | --- | --- | --- |
-| **HTMLFetch（优先）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
-| **Rod 浏览器** | `engine.GetBrowserPool().Get(ctx)` | JS 渲染、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | 静态页面；此时浏览器成本高且占用浏览器池 |
+| **HTMLFetch（默认，一律先用它）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
+| **Rod 浏览器（例外，静态拿不到才用）** | `engine.GetBrowserPool().Get(ctx)` | 数据必须经 JS 执行、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 才产生的页面 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | **静态 HTML 里已经拿得到目标数据的页面** —— 哪怕它有 JS、有交互（浏览器贵且占池位，见上面那条规则） |
 
 HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`，并保证 `browser.pool_size`（浏览器并发上限，按需创建）不小于并发使用浏览器的 worker 数量。
+（这两段说的是**配置层**的开关怎么开；**该不该用浏览器是策略问题**，判据是上面那条规则 —— 不是"把 `browser.enable` 打开就该用它"。）
 
 ### 3.1 HTMLFetch：静态目录页的完整方式
 
@@ -315,7 +337,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
 
 ### 3.2 Rod：动态页面或浏览器交互方式
 
-仅当原始 HTML 不含目标节点，或数据必须经 JavaScript、点击、滚动、登录或网络监听才能得到时使用 Rod。浏览器模式的核心是：导航完成后等待目标交互/渲染，随后对 DOM 做与 HTMLFetch 同等严格的节点和属性校验；不要只因一个页面“看起来像网页”就启动浏览器。
+仅当原始 HTML 不含目标节点，或数据必须经 JavaScript、点击、滚动、登录或网络监听才能得到时使用 Rod。**页面"有 JS"或"有交互"都不构成上浏览器的理由** —— 静态 HTML 里拿得到就仍用 HTMLFetch（判据见本节开头那条规则）。浏览器模式的核心是：导航完成后等待目标交互/渲染，随后对 DOM 做与 HTMLFetch 同等严格的节点和属性校验；不要只因一个页面“看起来像网页”就启动浏览器。
 
 ```go
 bw, err := engine.GetBrowserPool().Get(ctx)
@@ -583,7 +605,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
         return nil // 或返回 error 触发重试
     }
 
-    // 3. 交给 m3u8 下载器（main.go 里要先 SetM3U8）
+    // 3. 交给 m3u8 下载器（框架默认就有一份；按站点/阶段配过的话用 M3U8ForTask(task) 取，见 §4.4）
     dl := engine.GetM3U8()
     if dl == nil {
         return nil
@@ -608,10 +630,11 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
 ```go
 import "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 
-cfg := m3u8.DefaultConfig()
-cfg.OutputDir = "./downloads/video"      // 输出目录
-cfg.AutoMerge = false                    // 不转码，直接拼 TS（要 mp4 则保持 true 并装 ffmpeg）
-app.Engine.SetM3U8(m3u8.NewDownloader(cfg))
+// 站点声明里（configs/sites/<站>.go）—— 这就是全部的配置入口，没有"全局那层"：
+SiteSpec{ M3U8: &papa.M3U8Spec{
+    OutputDir: strPtr("./downloads/video"), // 输出目录
+    Output:    modePtr(papa.OutputSegments),// 只留切片组（默认是合并成 mp4，见 §4.4）
+} }
 ```
 
 m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
@@ -647,6 +670,38 @@ localPath := filepath.Join(dl.OutputDir(), res.OutputFile)
 （源图 webp、只声明 `image/*` 就回 jpeg），拿它或按文件头复核一下再决定落盘后缀，别让"叫 `.webp` 的 jpeg"进库。
 
 ---
+
+### 4.4 下载器配置：站点 / 阶段 / 随用随生成
+
+下载器（`m3u8` 与 `filedown`）**实例是唯一真值，声明只是"帮你自动建一份"**。配置**只有两层**（站点与阶段），基座是框架按 `DefaultConfig()` 备好的那份 —— **没有"全局那层配置"可写**（`SetM3U8` / `SetFiledown` 已删除）：要么在声明里按站点/阶段写清楚，要么在 fetcher 里自己造一份。
+
+```go
+// ① 站点级：本站所有阶段默认这一份（configs/sites/<站>.go）
+SiteSpec{ Key: "yeguodj",
+          M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments},
+          FileDown: &papa.FileDownSpec{MaxConcurrent: &n} }
+
+// ② 阶段级：比站点更细，赢了就用它（StageSpec 上同名字段）
+StageSpec{ Fetcher: &yeguodjfetcher.FetchEpisode{}, M3U8: &papa.M3U8Spec{Output: &papa.OutputPlaylist} }
+
+// ③ fetcher 里随用随生成：拿"这一阶段该用的那份"，叠一层只给这次调用用的改动
+dl := engine.M3U8ForTask(task)                       // 阶段 > 站点 > 基座，不会拿错站
+tmp := dl.With(m3u8.Overlay{MaxConcurrent: &n})      // 新配置，内部状态仍是同一份
+own := m3u8.NewDownloader(&myCfg)                    // 完全独立的一份（孤岛，代价自负）
+```
+
+解析顺序一句话：**阶段 > 站点 > 基座（框架默认那份）**；逐次下载还能用 `DownloadOptions`（头/Referer/代理 + `Output`/`MergeExt`/`KeepSegments`）再叠一层。`Overlay` 字段**全是指针 —— nil = 不覆盖**，只写要改的那几项。
+
+**`With` 与 `NewDownloader` 的区别（很重要）**：
+
+| | 配置 | 内部状态（同一目标文件的串行锁、密钥缓存、代理连接池、消息队列） |
+| --- | --- | --- |
+| `dl.With(overlay)` | 独立 | **共享** —— 所以"每个阶段一份配置"不会丢掉"两条并发下载写同一个文件被串行化"这条保证，也不丢缓存/连接池 |
+| `m3u8.NewDownloader(&cfg)` | 独立 | **独立** —— 真要一座谁也不共享的孤岛时才用；代价是并发写同一个目标文件时，串行由你自己负责 |
+
+**产物形态**（`m3u8`，`OutputMode`）：`OutputMerge`（默认，ffmpeg `-c copy` remux 到 `MergeExt`，`.mp4`/`.mkv`/`.ts` 都行）、`OutputSegments`（**只留切片组**，不产出单文件，切片挪到 `<OutputDir>/<file>/` 下）、`OutputPlaylist`（**只要清单**，把 `.m3u8` 原文存下来，一个分片都不下）。`filedown` 没有这一维（它就是下一个文件）。
+
+**"到底哪份生效"**：`papa check` 会把每站/每阶段**改过的项**打出来（只列改过的，没改的不打）；启动日志里也有同样一条。四层覆盖最容易变成"改一处要看几份声明"，这是唯一的便宜补偿。
 
 ## 6. 最小可跑骨架（脚手架已生成）
 
@@ -708,7 +763,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 配套两处改动：
 1. `configs/sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / 要不要 AutoStart）。
-2. 若用下载器，`main.go` 里先 `SetM3U8` / `SetFiledown`（要在 `RegisterSites` 之前 —— 池子在那时就把实例绑好了）。
+2. 若用下载器，**不用在 `main.go` 里接线**（框架按 `DefaultConfig` 备好基座）；要按站点/阶段各配一份就写在站点声明里（见 §4.4）。
 
 ---
 
@@ -896,7 +951,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `page.EachEvent(func(e *proto.NetworkRequestWillBeSent){...})()` 监听网络请求（挂上后返回 wait 函数）。
 
 **静态 HTML（goquery）**
-- `engine.FetchHTML(ctx, url)` → `*htmlfetch.Page`；`page.Document.Text/Texts/Attr/Attrs/HTML(selector)`。
+- `engine.FetchHTML(ctx, url)` → `*htmlfetch.Page`；`page.Document.Text/Texts/Attr/Attrs/HTML(selector)`。**默认路径**，见 §3 的规则。
 - `page.Selection()`（= `page.Document.Selection()`）→ `*goquery.Selection`：要写复杂解析
   （`Find(...).Each`、Children/Parent/Siblings…）就拿这个根节点。解析函数统一收 `*goquery.Selection`，
   线上传 `page.Selection()`、测试传 `goquery.NewDocumentFromReader(...).Selection` —— 同一个类型，
@@ -924,5 +979,5 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
 - `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()` / `engine.BreakerStatus()`：手动闸住/放行抓取、读熔断状态。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
-- `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。
+- `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。
