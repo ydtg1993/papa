@@ -223,3 +223,30 @@ func TestDownloadSegmentsModeKeepsSegmentDir(t *testing.T) {
 		t.Fatal("只留切片的形态不该产出单文件")
 	}
 }
+
+// 走代理的客户端必须和默认那份一样带 SegmentTimeout。
+//
+// 回归点：代理那份以前只设了 Transport（连接池调优），**没有 Timeout** —— 而 doRequest 用的是
+// 任务 ctx（没有逐请求 deadline），代理"接了 TCP 不回包"时 Do 永久阻塞：不报错、不重试，
+// worker 抱着并发位挂死。这条按"取到的客户端长什么样"钉住，不依赖真代理。
+func TestProxyClientInheritsSegmentTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SegmentTimeout = 7 * time.Second
+	dl := NewDownloader(cfg)
+
+	plain := dl.clientFor(&DownloadOptions{})
+	if plain.Timeout != 7*time.Second {
+		t.Fatalf("默认客户端 Timeout = %v, want 7s", plain.Timeout)
+	}
+	proxied := dl.clientFor(&DownloadOptions{Proxy: "http://127.0.0.1:9"})
+	if proxied == plain {
+		t.Fatal("指定了代理就该拿到另一份客户端")
+	}
+	if proxied.Timeout != 7*time.Second {
+		t.Fatalf("代理客户端 Timeout = %v, want 7s（否则代理挂住会把 worker 卡死）", proxied.Timeout)
+	}
+	// 同一个代理地址要复用同一份（连接池不白扔）
+	if again := dl.clientFor(&DownloadOptions{Proxy: "http://127.0.0.1:9"}); again != proxied {
+		t.Fatal("同一代理地址应当复用同一个客户端")
+	}
+}

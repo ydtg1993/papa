@@ -13,11 +13,16 @@ import "time"
 // **列名 `key` 是 MySQL 保留字**：裸写进 SQL 会被当成关键字、整条语句报 Error 1064（真库实测），
 // 所以 raw SQL 里一律写 “ `key` “（见 engine/sitestat.go 的 siteKeyScope 与 engine/sqlshape_test.go）。
 type CrawlerSite struct {
-	ID         uint   `gorm:"primaryKey;comment:站点行 ID"`
-	Key        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_site_key;comment:站点键（站点声明的 Key）；空串=默认 scope"`
-	BaseURL    string `gorm:"type:varchar(1024);comment:站点根地址（启动时抄的）"`
-	AutoRepeat bool   `gorm:"not null;default:true;comment:是否自动轮询（声明只播种，库为事实）"`
-	StageCount int    `gorm:"not null;default:0;comment:阶段数"`
+	ID      uint   `gorm:"primaryKey;comment:站点行 ID"`
+	Key     string `gorm:"type:varchar(128);not null;uniqueIndex:ux_site_key;comment:站点键（站点声明的 Key）；空串=默认 scope"`
+	BaseURL string `gorm:"type:varchar(1024);comment:站点根地址（启动时抄的）"`
+	// **别给这一列加 `default:true`**：gorm 遇到"带默认值的非指针字段 + 零值"时，会把零值
+	// **替换成默认值再写回结构体与库** —— 于是站点声明里显式写的 `AutoRepeat: &false`
+	// （= "本站只在后台手动触发"）会被静默写成 1，运营第二次启动时"库为事实"就把这一站
+	// 自动轮询开起来了，日志里一个字都没有。声明层的"不写 = 自动"是在 SiteSpec.snapshot()
+	// 里解析的（那里本来就给 true），不需要靠列默认值兜底。
+	AutoRepeat bool `gorm:"not null;comment:是否自动轮询（声明只播种，库为事实）"`
+	StageCount int  `gorm:"not null;default:0;comment:阶段数"`
 	// 轮询统计（轮询队列每跑完一轮，按列更新自己那几列）
 	LastRepeatAt    *time.Time `gorm:"comment:上次轮询队列执行时间"`
 	RepeatTotal     int64      `gorm:"not null;default:0;comment:累计轮询重投数"`

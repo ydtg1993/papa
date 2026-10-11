@@ -114,8 +114,10 @@ segment4.ts
 	if keys[2] == nil || keys[2].URL != "https://example.com/path/key.bin" || keys[2].IV != "0x1234567890abcdef1234567890abcdef" {
 		t.Errorf("segment3 key: %+v", keys[2])
 	}
-	// 检查 byte range
-	if segs[3].Range != "1024@0" {
+	// 检查 byte range：**换成 HTTP Range 的值**（`起-止`），不是播放列表里那串 `长度@起点`。
+	// 老写法把 `1024@0` 直接接在 `bytes=` 后面（`bytes=1024@0`）—— 不是合法 Range，
+	// 服务端一律忽略并回整个文件，静默产出错文件（见 parseByteRange 与 TestDownloadByteRangeSegments）。
+	if segs[3].Range != "0-1023" {
 		t.Errorf("segment4 range: %s", segs[3].Range)
 	}
 }

@@ -241,3 +241,55 @@ func TestMountRoutersNoop(t *testing.T) {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// Put / Delete 与 Get / Post 同一套（都是 Handle 的快捷方式）：方法前缀必须真的带上，
+// 否则会出现"注册成 PUT 却谁都能 GET 到"这种静默路由错误。
+func TestRouterPutDeleteForwarders(t *testing.T) {
+	a := &App{}
+	var seen []string
+	a.UseRouter(func(r *Router) {
+		r.Group("/api/thing", func(g *Router) {
+			g.Put("/one", func(http.ResponseWriter, *http.Request) { seen = append(seen, "put") })
+			g.Delete("/one", func(http.ResponseWriter, *http.Request) { seen = append(seen, "delete") })
+		})
+	})
+
+	mux := http.NewServeMux()
+	a.mountRouters(mux, func(next http.Handler) http.Handler { return next })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/thing/one", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(seen) != 1 || seen[0] != "put" {
+		t.Fatalf("PUT /api/thing/one → %d, seen=%v", resp.StatusCode, seen)
+	}
+
+	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/thing/one", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(seen) != 2 || seen[1] != "delete" {
+		t.Fatalf("DELETE /api/thing/one → %d, seen=%v", resp.StatusCode, seen)
+	}
+
+	// 反证：只注册了 PUT / DELETE，GET 就进不去（Go 1.22 的 mux 会回 405 而不是 404）
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/thing/one", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("只注册了 PUT/DELETE 时 GET 应当 405，实得 %d", resp.StatusCode)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("GET 不该打到处理函数上，seen=%v", seen)
+	}
+}

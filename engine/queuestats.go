@@ -167,7 +167,10 @@ func (e *Engine) startQueueSampler() {
 	if interval <= 0 {
 		interval = defaultQueueSampleInterval
 	}
+	// 进 tickerWG：采样要查库，关库时不该还在跑（见 spill.go 同处的说明）。
+	e.tickerWG.Add(1)
 	go func() {
+		defer e.tickerWG.Done()
 		e.sampleQueueBacklog()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

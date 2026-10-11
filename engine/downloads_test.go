@@ -78,12 +78,18 @@ func TestDownloadOverlayResolution(t *testing.T) {
 	if e.M3U8ForTask(nil) != base || e.M3U8ForStage("ghost") != base {
 		t.Fatal("取不到阶段时应当回落基座那份")
 	}
-	// 站点层单独一份（给只知道站点的调用方）
+	// 站点层单独一份（给只知道站点的调用方）—— m3u8 与 filedown 两边都要认
 	if got := e.M3U8ForSite("a").Config().OutputDir; got != siteDir {
 		t.Fatalf("M3U8ForSite 没生效：%q", got)
 	}
+	if got := e.FiledownForSite("a").Config().OutputDir; got != siteDir {
+		t.Fatalf("FiledownForSite 没生效：%q", got)
+	}
 	if e.M3U8ForSite("ghost") != base {
 		t.Fatal("站点没覆盖过时应当回落基座那份")
+	}
+	if e.FiledownForSite("ghost") != e.GetFiledown() {
+		t.Fatal("文件下载器同理（站点没覆盖过 → 基座那份）")
 	}
 }
 

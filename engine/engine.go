@@ -29,7 +29,10 @@ type Engine struct {
 	db        *gorm.DB
 	loggerSet *loggers.LoggerSet
 
-	ctx         context.Context
+	ctx context.Context
+	// startedAt 本进程启动时刻，只给启动恢复当截止用（见 recoverQueueQuery）：
+	// 「本进程启动之后被写过的行」= 本进程碰过的行 → 恢复不重投它们。
+	startedAt   time.Time
 	cancel      context.CancelFunc
 	stages      map[string]*stageInfo
 	mu          sync.RWMutex
@@ -172,8 +175,12 @@ func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, sub
 func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &Engine{
-		ctx:        ctx,
-		cancel:     cancel,
+		ctx:    ctx,
+		cancel: cancel,
+		// startedAt 本进程启动时刻：启动恢复（recover queue）拿它当截止 —— 见 recoverQueueQuery。
+		// 用应用时钟（time.Now）而不是库时钟，是因为 updated_at 也是 gorm 在应用侧写的
+		// （autoUpdateTime），两边同一个钟，不需要校时。
+		startedAt:  time.Now(),
 		stages:     make(map[string]*stageInfo),
 		dedupCache: newDedupCache(cfg.Crawler.DedupCacheSize),
 		db:         db,
@@ -199,7 +206,13 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 	engine.repeatQueues = make(map[string]*repeatQueueState)
 	engine.siteQueues = make(map[string]SiteQueues)
 	engine.loadActiveTasks()
-	go engine.delayDispatcher()
+	// 延迟投递 dispatcher 同样进 tickerWG：它到点时会写库（status=pending），
+	// Stop 要等它退出再返回（否则调用方关库时它可能正写到一半）。
+	engine.tickerWG.Add(1)
+	go func() {
+		defer engine.tickerWG.Done()
+		engine.delayDispatcher()
+	}()
 	return engine
 }
 
@@ -422,8 +435,12 @@ func (e *Engine) BreakerStatus() BreakerStatus { return e.breaker.Status() }
 // 只列出**真的有闸门**的 scope：单独配过的站点，加上默认那把（如果启用了熔断）。
 func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 	out := make(map[string]BreakerStatus)
-	if e.breaker.Enabled() {
-		out[""] = e.breaker.Status() // Site 留空 = 默认 scope
+	// 默认 scope：**启用**时列出来（它自动管着未归属站点的阶段）；没启用但**被手动暂停过**时
+	// 也得列出来 —— 后台的「恢复抓取」端点 targets 取自这张表，不列就等于"闸住了却既看不见、
+	// 也点不到恢复"，只能重启或让业务代码自己调 ResumeCrawling。
+	if st := e.breaker.Status(); e.breaker.Enabled() || st.Paused {
+		st.Site = "" // 留空 = 默认 scope
+		out[""] = st
 	}
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()

@@ -448,7 +448,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		// 使用 offset writer 流式复制
 		src, err := os.Open(tempFile)
 		if err != nil {
-			result.Error = fmt.Errorf("open temp file %s: %w", tempFile, err)
+			// 状态文件说这个分片下好了，文件却不在 —— 只可能是状态与磁盘对不上
+			// （进程在"删分片"与"清状态"之间被杀，见下面收尾处的注释）。
+			// 顺手把状态文件清掉：下一次跑从头重下，而不是每次都栽在这一步、
+			// 永久失败到只能人工去删状态文件。
+			_ = d.cleanResumeState(la)
+			result.Error = fmt.Errorf("open temp file %s: %w（已清掉断点状态，下次重跑会重新下载）", tempFile, err)
 			return result
 		}
 		offsetWriter := io.NewOffsetWriter(outFile, start)
@@ -460,14 +465,20 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		}
 		// 注意：这里**不要**顺手删已合并的分片。
 		// 合并中途失败时，状态文件仍然写着"所有分片都下好了"，续传会跳过下载直接进合并 ——
-		// 要是这轮已经把前几个分片删了，那次合并就会报 open temp file ... no such file，
-		// 从此这个任务永久失败，只能人工去删状态文件。
+		// 要是这轮已经把前几个分片删了，那次合并就会报 open temp file ... no such file。
 		// 分片统一由下面的 RemoveAll(tempDir) 在**合并全部成功之后**清掉。
 	}
+
+	// 收尾：**先清状态文件，再删分片 —— 顺序不能反。**
+	// 反过来（先删分片、后清状态）中间崩一次，留下的就是"状态说全下好了、分片已经删了"：
+	// 下次跑跳过所有下载直接进合并 → 撞 open temp file ... no such file →
+	// 失败在清理那一步之前返回 → 状态文件还在 → 这个任务**永久失败**，
+	// 只能人工去删 <ResumeStateDir>/<outputDir>/<hash>.json。
+	// 按现在这个顺序，最坏是"状态没了、分片还在"：重下一遍，多花点带宽，不会卡死。
+	_ = d.cleanResumeState(la)
 	if !cfgGlobal.KeepSegmentsAfterMerge {
 		_ = os.RemoveAll(tempDir)
 	}
-	_ = d.cleanResumeState(la)
 
 	result.OutputFile = relOutput
 	result.Size = totalSize

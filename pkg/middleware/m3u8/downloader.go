@@ -146,7 +146,11 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(proxyURL)
-	c := &http.Client{Transport: transport}
+	// **Timeout 不能省**：走代理这条路以前只设了 Transport，看起来"有连接池就够了"，但
+	// `doRequest` 只拿任务 ctx 建请求（没有逐请求 deadline）—— 代理"接了 TCP 却不回包"时
+	// `Do` 会永久阻塞：不报错、不重试，分片 goroutine 到不了 wg.Done()，worker 抱着并发位挂死。
+	// 非代理那份一直带 `Timeout: cfg.SegmentTimeout`，这里对齐它。
+	c := &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
 	d.st.proxyClients[opts.Proxy] = c
 	return c
 }
@@ -288,7 +292,12 @@ func readCapped(r io.Reader, limit int64) ([]byte, error) {
 
 // SegmentInfo 片段信息
 type SegmentInfo struct {
-	URL   string
+	URL string
+	// Range 交给 HTTP 的 Range 值（`<起>-<止>`，闭区间；空 = 整段下载），由 `#EXT-X-BYTERANGE`
+	// 解析而来。**不是**播放列表里那串原样的 `长度@起点` —— 老写法把它直接接在 `bytes=` 后面
+	// （`bytes=1024@0`），那不是合法的 HTTP Range：nginx 一类服务端当没看见、回整个文件
+	// （每个分片都拿到完整内容再拼起来，**静默产出错文件**），Go 的 http.ServeContent 则直接回 416
+	// （分片下载整体失败）。见 parseByteRange。
 	Range string
 	Index int // 0-based 索引
 	// MediaSeq 媒体序号 = EXT-X-MEDIA-SEQUENCE + Index。
@@ -368,6 +377,23 @@ func (d *Downloader) saveResumeState(la *labor, state *ResumeState) error {
 func (d *Downloader) cleanResumeState(la *labor) error {
 	statePath := d.getStateFilePath(la)
 	return os.Remove(statePath)
+}
+
+// firstMissingSegment 返回第一个不存在（或长度为 0）的分片文件路径；都在就返回空串。
+//
+// 空文件也算缺：segment 级续传的前提是"非空即完整"（见 downloadSegmentToFile 的注释），
+// 长度 0 的文件正是"上次写到一半就崩了"留下的残骸。
+func firstMissingSegment(files []string) string {
+	for _, f := range files {
+		if f == "" {
+			continue
+		}
+		info, err := os.Stat(f)
+		if err != nil || info.Size() == 0 {
+			return f
+		}
+	}
+	return ""
 }
 
 // ==================== 下载核心（支持断点续传、并发、合并） ====================
@@ -615,6 +641,16 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	}
 
 	// 9. 所有片段下载完成，按产物形态收尾
+	//
+	// 收尾前先确认分片文件**真在**：状态文件只记"哪些索引下完了"，并不保证文件还在
+	// （旧版本先删分片、后清状态文件，中间崩一次就留下"状态说全下好了、文件全没了"）。
+	// 缺文件时清掉状态文件再报错 —— 让下一次跑从头重下，而不是每次都在合并这一步撞同一个错，
+	// 直到人工去删状态文件为止。
+	if missing := firstMissingSegment(resumeState.SegmentFiles); missing != "" {
+		_ = d.cleanResumeState(la)
+		result.Error = fmt.Errorf("segment file missing: %s（已清掉断点状态，下次重跑会重新下载）", missing)
+		return result
+	}
 	var finalOutput string
 	if mode == OutputSegments {
 		// 只留切片组：把分片挪到 `<OutputDir>/<outputFile>/` 这个目录下（同一卷上是改名，几乎不花钱）。
@@ -653,7 +689,14 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 	}
 
-	// 10. 清理临时文件（根据配置；只留切片的那种形态，分片已经挪走了，这一步天然空转）
+	// 10. **先清状态文件，再删分片 —— 顺序不能反。**
+	// 反过来（先删分片、后清状态）中间崩一次，留下的就是"状态说全下好了、文件已经删了"：
+	// 下次跑跳过所有下载直接进合并 → 撞"文件不存在" → 失败在清理那一步之前返回 → 状态文件还在 →
+	// 这个任务**永久失败**，只能人工去删 <ResumeStateDir>/<outDir>/<hash>.json。
+	// 按现在这个顺序，最坏是"状态没了、分片还在"：重下一遍，多花点带宽，不会卡死。
+	_ = d.cleanResumeState(la)
+
+	// 11. 清理临时文件（根据配置；只留切片的那种形态，分片已经挪走了，这一步天然空转）
 	if !keepSegments && mode != OutputSegments {
 		for _, f := range resumeState.SegmentFiles {
 			_ = os.Remove(f)
@@ -663,9 +706,6 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 		_ = os.RemoveAll(tempDir)
 	}
-
-	// 11. 清理状态文件
-	_ = d.cleanResumeState(la)
 
 	relOutput := filepath.Join(outputDir, outputFile)
 	if mode == OutputMerge && cfg.AutoMerge {
@@ -950,6 +990,38 @@ func (d *Downloader) parseIV(ivStr string) ([]byte, error) {
 	return iv, nil
 }
 
+// byteRange 一段子区间的起止字节（闭区间，与 HTTP Range 同语义）。
+type byteRange struct{ start, end int64 }
+
+// String 给出直接能塞进 `Range:` 头的值。
+func (r byteRange) String() string { return fmt.Sprintf("%d-%d", r.start, r.end) }
+
+// parseByteRange 解析 `#EXT-X-BYTERANGE:<长度>[@<起点>]`（RFC 8216 §4.3.2.2）。
+//
+// prevEnd 是**同一资源**上一段子区间的末字节 + 1（没有上一段就传 0）—— 省略 @起点 时起点取它。
+// RFC 要求省略 @起点时前面必须还有同一资源的子区间；真遇上"整个列表第一段就省略"的，
+// 按 0 起算（资源从头开始，没有第二种读法），不为此拒掉整个播放列表。
+//
+// 为什么必须在这里换算成 `起-止`：老写法把 `长度@起点` 原样接在 `bytes=` 后面（`bytes=1024@0`），
+// 那不是合法的 HTTP Range 语法 —— 服务端要么当没看见、回整个文件（nginx），要么回 416
+// （Go 的 http.ServeContent）。前者静默产出错文件、全链路一句提示都没有，后者让分片下载整体失败；
+// 两种都不是"下到正确的字节"。
+func parseByteRange(spec string, prevEnd int64) (byteRange, error) {
+	lengthStr, offsetStr, hasOffset := strings.Cut(spec, "@")
+	length, err := strconv.ParseInt(strings.TrimSpace(lengthStr), 10, 64)
+	if err != nil || length <= 0 {
+		return byteRange{}, fmt.Errorf("invalid length %q", lengthStr)
+	}
+	start := prevEnd
+	if hasOffset {
+		start, err = strconv.ParseInt(strings.TrimSpace(offsetStr), 10, 64)
+		if err != nil || start < 0 {
+			return byteRange{}, fmt.Errorf("invalid offset %q", offsetStr)
+		}
+	}
+	return byteRange{start: start, end: start + length - 1}, nil
+}
+
 // parsePlaylistEnhancedWithIndex 解析 M3U8，为每个片段分配索引
 func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*SegmentInfo, []*SegmentInfo, []*KeyInfo, error) {
 	scanner := bufio.NewScanner(strings.NewReader(playlist))
@@ -959,6 +1031,9 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 	var currentKey *KeyInfo
 	segmentIndex := 0
 	var mediaSequence int64
+	// 子区间是"同一个媒体资源上的第几段"：省略 @起点 时，起点接着**同一 URL** 上一段的末尾
+	//（RFC 8216 §4.3.2.2）。键是解析后的分片 URL —— 换了资源就要从头算。
+	byteRangeEnd := make(map[string]int64)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -978,12 +1053,19 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 		case strings.HasPrefix(line, "#EXT-X-KEY:"):
 			currentKey = d.parseKeyTag(line, baseURL)
 		case strings.HasPrefix(line, "#EXT-X-BYTERANGE:"):
-			byteRange := strings.TrimPrefix(line, "#EXT-X-BYTERANGE:")
+			spec := strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-BYTERANGE:"))
 			if scanner.Scan() {
 				urlLine := strings.TrimSpace(scanner.Text())
 				if !strings.HasPrefix(urlLine, "#") {
 					segURL := d.resolveURL(urlLine, baseURL)
-					segments = append(segments, &SegmentInfo{URL: segURL, Range: byteRange, Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)})
+					rng, err := parseByteRange(spec, byteRangeEnd[segURL])
+					if err != nil {
+						// 解析不出来就硬报错：照老写法原样塞进 Range 头的话，请求会静默退化成
+						// "整段下载"，拼出来的文件是错的，而且没人会发现。
+						return nil, nil, nil, fmt.Errorf("invalid EXT-X-BYTERANGE %q: %w", spec, err)
+					}
+					byteRangeEnd[segURL] = rng.end + 1
+					segments = append(segments, &SegmentInfo{URL: segURL, Range: rng.String(), Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)})
 					segmentKeys = append(segmentKeys, currentKey)
 					segmentIndex++
 				}

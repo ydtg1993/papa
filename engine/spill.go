@@ -28,11 +28,12 @@ func (e *Engine) spillTask(task *Task) {
 
 // startDrain 启动后台回灌协程：定期把溢出列表中的任务重新入队。
 func (e *Engine) startDrain() {
-	interval := e.cfg.Crawler.DrainInterval
-	if interval <= 0 {
-		interval = 2 * time.Second
-	}
+	interval := e.drainInterval()
+	// 进 tickerWG：停止时要等这一跳跑完 —— 它中途写库，调用方看到 drained 就去关库的话，
+	// 那些写入会全部撞 "database is closed"（而且这条路径的错误本来就不检查，一行日志都没有）。
+	e.tickerWG.Add(1)
 	go func() {
+		defer e.tickerWG.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {

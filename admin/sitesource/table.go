@@ -52,8 +52,11 @@ func Table(db *gorm.DB, acts SiteActions) oao.Table {
 		},
 		Filters: []oao.Filter{
 			{Field: "key", Label: "站点键", Op: oao.OpLike},
-			{Field: "auto_repeat", Label: "自动轮询", Op: oao.OpEq},
-			{Field: "breaker_paused", Label: "熔断闸住", Op: oao.OpEq},
+			// **Kind 不能省**：不写是按字符串处理 —— 前端渲染成自由文本框（而不是「是/否」下拉），
+			// 输入 true/是 这类词会被 MySQL 隐式转成 0，于是筛「是」返回的是「否」的那一半。
+			// 与 Columns 里的同名列保持同一个 Kind。
+			{Field: "auto_repeat", Label: "自动轮询", Kind: oao.KindBool, Op: oao.OpEq},
+			{Field: "breaker_paused", Label: "熔断闸住", Kind: oao.KindBool, Op: oao.OpEq},
 		},
 		DefaultSort: "key",
 		PageSize:    50,

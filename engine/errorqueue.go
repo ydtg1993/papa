@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/gorm"
 )
@@ -182,8 +183,14 @@ func (e *Engine) requeueFailedTaskIn(site string, t *models.CrawlerTask) bool {
 	}
 	// 守卫拿**队列的**站点比对（不是行上那个）：批次 SELECT 与这次重置之间，运营可能把这一行
 	// 改到了别的站 —— 那时 0 行正好把它让给新站点的队列，而不是被本站再投一次。
+	//
+	// **`status` 守卫也不能省**（以前只有 id + site）：批次 SELECT 与这次重置之间，**轮询队列**
+	// 可能已经把这一行捞走并重投（一条 `repeatable + failed` 的行同时命中两个队列，两者各自有锁、
+	// 互不互斥）：那一份被 worker 认领、正在跑，而这次无条件 UPDATE 照样把它改回 pending 并再投一份
+	// → 同一行被两个 worker 并发执行。带上 status 之后：已经不是 failed 的行（正在跑 / 已终态）
+	// 匹配不上，0 行 → 跳过。与 repeatResetScope 同一套写法。
 	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND site = ?", t.ID, site).
+		Where("id = ? AND site = ? AND status = ?", t.ID, site, models.TaskStatusFailed).
 		Updates(map[string]any{
 			"status":    models.TaskStatusPending,
 			"retry":     0,
@@ -201,11 +208,23 @@ func (e *Engine) requeueFailedTaskIn(site string, t *models.CrawlerTask) bool {
 	task.Retry = 0 // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitTo(info, task); err != nil {
-		e.dedupCache.Delete(task.Unique())
-		e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
-		// 上面刚把这行重置成 pending，失败不管的话它就再也没人捞了（本队列只捞 failed）
-		e.markRequeueFailed(name, t.ID, err)
-		return false
+		if errors.Is(err, workerpool.ErrQueueFull) {
+			// 队列达高水位：**保持 pending**（上面刚重置过）、塞进溢出列表由 drain 每 2s 回灌 ——
+			// 与其它三条投递路径（submitToPool / RetryTask / UrgentTask）同一套处理。
+			// 以前这里直接 markRequeueFailed：行被标成 failed + `retry + 1`，而重置时**已经**把
+			// `reprocess + 1` 写进去了。队列自己的判据是 `reprocess < max_retry`（默认 3、间隔 4h），
+			// 而模板默认配置（阶段队列 20、错误队列 batch 100）下这批 100 条很快就会撞满水位、
+			// 整批拿到 ErrQueueFull —— 三轮之后这些行 `reprocess` 到顶，**永久不再被错误队列捞起**，
+			// 只能人工点「重投」。"失败任务自动重投"对它们静默失效。
+			e.spilledCount.Add(1)
+			e.spillTask(task)
+		} else {
+			e.dedupCache.Delete(task.Unique())
+			e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
+			// 上面刚把这行重置成 pending，失败不管的话它就再也没人捞了（本队列只捞 failed）
+			e.markRequeueFailed(name, t.ID, err)
+			return false
+		}
 	}
 	if st := e.errorQueue(name); st != nil {
 		st.retried.Add(1)

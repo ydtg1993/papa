@@ -108,6 +108,22 @@ func TestTableDeclaration(t *testing.T) {
 	if c, ok := cols["base_url"]; !ok || c.Render != oao.RenderLink {
 		t.Errorf("base_url 应当是可以点开的链接：%+v", cols["base_url"])
 	}
+
+	// 筛选的 Kind 也要写：不写按字符串处理，前端就是自由文本框，输入 true/是 会被 MySQL
+	// 隐式转成 0 —— 筛「是」返回「否」的那一半。两个 bool 筛选都钉住。
+	byFilter := make(map[string]oao.FilterInfo, len(info.Filters))
+	for _, f := range info.Filters {
+		byFilter[f.Name] = f // FilterInfo 的字段名是 Name（与 ColumnInfo 一致）
+	}
+	for _, name := range []string{"auto_repeat", "breaker_paused"} {
+		f, ok := byFilter[name]
+		if !ok {
+			t.Fatalf("缺筛选 %s：%+v", name, info.Filters)
+		}
+		if f.Kind != oao.KindBool {
+			t.Errorf("筛选 %s 应为 KindBool（否则前端是自由文本框，筛「是」会返回「否」）：%+v", name, f)
+		}
+	}
 }
 
 // acts 为 nil 时退化为只读：不注册任何写路由。

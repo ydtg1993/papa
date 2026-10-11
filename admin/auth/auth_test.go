@@ -174,9 +174,9 @@ func TestWarnIfNoToken(t *testing.T) {
 // 关停的二次确认：**表里一条令牌都没配时放行** —— 与中间件同一语义，
 // 否则"还没配凭据"的部署会出现"能进后台却关不掉服务"的死角（只能 Ctrl+C）。
 //
-// "配过之后必须给对的"那一支不由这里覆盖：DryRun 库造不出"表里有令牌"的查询结果。
-// HTTP 层的整个契约在 admin/server 的 TestShutdownHandlerRequiresToken 里，
-// 用桩函数覆盖了（错令牌 403 / 没带 403 / 对的放行 / 没配校验器 404）。
+// "配过之后必须给对的"那一支见 auth_db_test.go（用 internal/gormfake 造出"表里有令牌"的结果）；
+// HTTP 层的整个契约在 admin/server 的 TestShutdownHandlerRequiresToken 里用桩函数覆盖
+// （错令牌 403 / 没带 403 / 对的放行 / 没配校验器 404）。
 func TestConfirmerAllowsWhenNoTokenConfigured(t *testing.T) {
 	for _, tc := range []struct {
 		name string

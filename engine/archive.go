@@ -298,7 +298,10 @@ func (e *Engine) startArchiveCleanup() {
 		e.loggerSet.Engine.Infof("archive cleanup disabled: retention is negative (keep forever)")
 		return
 	}
+	// 进 tickerWG：清理要删文件、也可能写库，理由同 spill.go 那处。
+	e.tickerWG.Add(1)
 	go func() {
+		defer e.tickerWG.Done()
 		ticker := time.NewTicker(archiveCleanupInterval)
 		defer ticker.Stop()
 		for {

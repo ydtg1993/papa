@@ -259,7 +259,10 @@ func (e *Engine) startTraceCleanup() {
 		e.loggerSet.Engine.Infof("trace cleanup disabled: retention is negative (keep forever)")
 		return
 	}
+	// 进 tickerWG：清理要写库（按批 DELETE），理由同 spill.go 那处。
+	e.tickerWG.Add(1)
 	go func() {
+		defer e.tickerWG.Done()
 		ticker := time.NewTicker(traceCleanupInterval)
 		defer ticker.Stop()
 		for {

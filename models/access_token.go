@@ -12,8 +12,10 @@ type AccessToken struct {
 	// TokenHash sha256(token) 的**十六进制（小写，定长 64 字符）**；唯一索引兼作校验路径。
 	// 与 crawler_tasks.url_hash 同一套：定长列按真实长度写，别留一倍（索引键白白翻倍）。
 	TokenHash string `gorm:"type:char(64);not null;uniqueIndex;comment:令牌哈希(sha256 hex)"`
-	Enabled   bool   `gorm:"not null;default:true;index;comment:是否启用（停用而不删）"`
-	Note      string `gorm:"type:varchar(255);comment:备注（哪台机器/哪个人）"`
+	// 同 CrawlerSite.AutoRepeat：**不加 `default:true`** —— 那会让"显式写的 false"被 gorm
+	// 替换成 true（创建令牌这条路一直显式写 true，所以以前没暴露；但那是碰巧，不是保证）。
+	Enabled bool   `gorm:"not null;index;comment:是否启用（停用而不删）"`
+	Note    string `gorm:"type:varchar(255);comment:备注（哪台机器/哪个人）"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`

@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,15 +30,52 @@ type Browser struct {
 	// aliveOverride 测试钩子：非 nil 时 IsAlive 直接返回其值，跳过真实 CDP 探测。
 	// 仅同包测试使用，生产环境恒为 nil。
 	aliveOverride *bool
+
+	// cleanupTimeout 测试钩子：Close 里等 launcher 收尾的上限；<=0 用 browserCleanupTimeout。
+	// 只有测试会设它（真等 5 秒的用例太慢），生产路径一律走零值。
+	cleanupTimeout time.Duration
 }
 
-// Close 关闭浏览器
+// browserCleanupTimeout Close 里等进程收尾的上限（可被 Browser.cleanupTimeout 覆盖，测试用）。
+//
+// 为什么必须有上限：rod 的 `Launcher.Cleanup()` 是 `<-l.exit` —— **等到 Chrome 进程真的退出才返回**，
+// 而"进程活着但 CDP 不可达"（渲染进程卡死 / websocket 断）时 `Browser.Close()` 关不掉它，
+// 这一等就是永久。偏偏这条路是在 **持池锁** 时被调的（`pool.reapChannel` 第二段）：一次永久阻塞 =
+// 整个池（Put / Get / Close / Broadcast）死锁 + 优雅停机永不返回。
+const browserCleanupTimeout = 5 * time.Second
+
+// Close 关闭浏览器。顺序是**先杀进程、再有上限地等收尾**，不能反过来（见上面那个常量的注释）：
+//
+//	① `launcher.Kill()` —— rod 的 Cleanup 等的是"进程退出"，Kill 是让那个等待能结束的唯一手段；
+//	   顺带杀掉整棵进程组（Chrome 的子进程），这正是回收想要的"这个实例彻底没了"。
+//	   这一步也是让下面那句 `Browser.Close()` 能立刻返回的原因：进程没了，CDP 连接随即断开，
+//	   那次 `BrowserClose` 调用只会报个错（被丢掉），不会挂在那里等对面应答。
+//	② `launcher.Cleanup()` —— 进程死了它还会清 UserDataDir，正常是毫秒级；**但不无条件等**：
+//	   PID 拿不到时 Kill 什么都不做（rod 里 `l.PID() == 0` 直接 return），Cleanup 就还是那个永久等待。
+//	   到点就放弃等待、留一条日志：调用方可能正握着池锁，最坏留一个 goroutine，绝不把池与停机拖死。
 func (b *Browser) Close() {
+	if b.launcher != nil {
+		b.launcher.Kill()
+	}
 	if b.Browser != nil {
 		_ = b.Browser.Close()
 	}
-	if b.launcher != nil {
+	if b.launcher == nil {
+		return
+	}
+	timeout := b.cleanupTimeout
+	if timeout <= 0 {
+		timeout = browserCleanupTimeout
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 		b.launcher.Cleanup()
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		log.Printf("browser: launcher cleanup still running after %v, giving up waiting（进程可能仍在，PID 拿不到时 Kill 是空操作）", timeout)
 	}
 }
 
@@ -121,8 +159,14 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 	if err != nil {
 		return nil, err
 	}
+	// **`page != nil` 这个判断不能省**：下面几条失败路径写的是 `return nil, ...`，会把命名返回值
+	// page 置成 nil，而这个 defer 仍然会跑 —— `(*rod.Page)(nil).Close()` 里第一句就取
+	// `p.browser.targetsLock`，直接 nil 解引用 panic（rod.Close 不判 nil）。
+	// 触发条件很普通：DNS 失败、连接被拒、导航超时（默认 30s）。在 worker 里那会变成一个
+	// `panic: runtime error` 把真实原因（navigate: …）盖掉；在 worker 之外（业务 cron 直接调）
+	// 会把整个进程带走。
 	defer func() {
-		if err != nil {
+		if err != nil && page != nil {
 			_ = page.Close()
 		}
 	}()
