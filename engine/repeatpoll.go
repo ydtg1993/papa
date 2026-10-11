@@ -116,15 +116,27 @@ func (e *Engine) ensureRepeatQueues() {
 	}
 }
 
-// siteAutoRepeat 本站要不要**自动**轮询（内存镜像，不查库：`queueEnabled` 在监控刷新路径上，
-// 契约是"只读内存"）。默认 scope 恒 true —— 它没有站点声明，只能靠全局 `repeat_queue.enabled` 关。
-// 站点没登记时按 true 处理：宁可多跑一轮，也别让一次登记遗漏把整站轮询静默停掉。
+// siteAutoRepeat 本站要不要**自动**轮询。
+//
+// 读的是**生效值**（`e.siteStats`：启动按声明播种、之后库为事实，后台「站点」页可运行期开停），
+// 不是声明快照（`e.sites`）—— 声明那一份只是**种子**：运营点过「暂停自动轮询」、或者库里本来
+// 就是关的（重启按库走），闸门都得认。
+//
+// 这两份镜像以前各读各的（闸门读声明、动作写统计），症状非常隐蔽：后台显示已暂停、库里
+// `auto_repeat = 0`，**自动那一跳照跑**，重启也不按库走 —— 因为在此之前自动 tick 根本没跑起来过
+// （见 CHANGELOG「修复 9」的两条，一条掩着另一条），谁都没机会看见它。
+//
+// 纯内存、不查库：`queueEnabled` 在监控刷新路径上（3 秒一刷）。默认 scope 恒 true —— 它没有站点
+// 声明可挂，只能靠全局 `repeat_queue.enabled` 关。站点没登记时也按 true 处理：宁可多跑一轮，
+// 也别让一次登记遗漏把整站轮询静默停掉。
 func (e *Engine) siteAutoRepeat(site string) bool {
 	if site == "" {
 		return true
 	}
-	s, ok := e.Site(site)
-	return !ok || s.AutoRepeat
+	e.siteMu.RLock()
+	stat, ok := e.siteStats[site]
+	e.siteMu.RUnlock()
+	return !ok || stat.AutoRepeat
 }
 
 // repeatRepolledTotal 所有站点累计重投数之和（监控埋点 `repeat_repoll_total`）。
@@ -142,13 +154,19 @@ func (e *Engine) repeatRepolledTotal() int64 {
 //
 // `site = ?` **单独一个 Where**：到点条件里带 `OR`，而 gorm 只在"有多个表达式"时才给含
 // AND/OR 的子句自动加括号 —— 拼进同一个字符串会把优先级搞乱。
-func (e *Engine) repeatBaseQuery(site string) *gorm.DB {
-	return e.db.Model(&models.CrawlerTask{}).
-		Where("repeatable = ? AND status IN ?",
-			models.RepeatableYes,
-			[]models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed}).
+func (e *Engine) repeatBaseQuery(site string) *gorm.DB { return repeatBaseQueryOn(e.db, site) }
+
+// repeatBaseQueryOn 同上，但接显式的 *gorm.DB：让"不连库渲染 SQL"的测试能拼出同一条语句
+// （engine/repeatpoll_test.go 的 TestSoonestRepeatQueryCastsToSignedInt）。
+func repeatBaseQueryOn(db *gorm.DB, site string) *gorm.DB {
+	return db.Model(&models.CrawlerTask{}).
+		Where("repeatable = ? AND status IN ?", models.RepeatableYes, repeatDueStatuses).
 		Where("site = ?", site)
 }
+
+// repeatDueStatuses 可轮询的两个终态。抽成一份是因为它同时出现在上面这条底查询与下面的
+// soonest 聚合力里 —— 两处各写一份迟早会漂。
+var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed}
 
 // repeatQueueQuery 本站「到点」的可轮询任务。
 //
@@ -181,20 +199,44 @@ func (e *Engine) repeatForceQueueQuery(site string) func() *gorm.DB {
 //     已经过期的（任务跑得比自己的周期还久）直接排除 —— 它跑完之前投不出去，
 //     让这种行参与只会把扫描钉在最短刻度上空转。
 //
-// 没有可轮询的行、或查库出错 → false，调用方退回本站节拍（DB 抖动不该让 ticker 崩，也不该刷日志）。
+// 没有可轮询的行、或查库出错 → false，调用方退回本站节拍（DB 抖动不该让 ticker 崩；
+// 真出错会记一条 Warn，见下）。
 func (e *Engine) soonestRepeatIn(site string) (time.Duration, bool) {
 	var row struct{ Epoch *int64 }
-	err := e.repeatBaseQuery(site).
-		Select(`MIN(CASE
-			WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW()))
-			WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at)
-			ELSE NULL END) AS epoch`,
-			[]models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed}).
-		Scan(&row).Error
-	if err != nil || row.Epoch == nil {
+	// 出错记一条 Warn 再退回本站节拍：这里是**唯一**一处"算错了但看起来像正常"的地方 ——
+	// 下面那个 DECIMAL 的坑就被吞了整轮（一次唤醒最多一条，不是热路径，不构成刷屏）。
+	if err := soonestRepeatQueryOn(e.db, site).Scan(&row).Error; err != nil {
+		e.loggerSet.Engine.Warnf("soonest repeat in %q 查询失败，退回本站节拍：%s", site, err.Error())
+		return 0, false
+	}
+	// Epoch 为 NULL = 本站没有可轮询的行，正常情况，不记日志
+	if row.Epoch == nil {
 		return 0, false
 	}
 	return time.Until(time.Unix(*row.Epoch, 0)), true
+}
+
+// soonestRepeatSelect 「最早到点」那条聚合的表达式。
+//
+// **外面那层 CAST(... AS SIGNED) 不能省**：next_repeat_at 是 datetime(3)，而 MySQL 的
+// UNIX_TIMESTAMP(datetime(3)) 返回的是 **DECIMAL** —— 真库上回的是 "1791705102.000"（带小数位），
+// MIN() 之后 gorm 往 *int64 里扫直接报：
+//
+//	sql: Scan error on column index 0, name "epoch": converting driver.Value type
+//	[]uint8 ("1791705102.000") to a int64: invalid syntax
+//
+// 套一层 CAST 才是整数（同一条语句在真库上验过：原样 err≠nil、CAST 后 err=nil）。
+// 这坑**只有真库看得见**（假库不解析 SQL、DryRun 只拼不执行），而 soonestRepeatIn 又会把它吞成
+// ok=false，于是症状是"自动轮询永远按站点周期跑"：任务自己定的短周期、以及"刚开轮询 / 刚改周期"
+// 的唤醒全都不生效 —— 不报错、只是慢，后台还显示队列 enabled=true（真跑一次才发现）。
+const soonestRepeatSelect = `MIN(CAST(CASE
+			WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW()))
+			WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at)
+			ELSE NULL END AS SIGNED)) AS epoch`
+
+// soonestRepeatQueryOn 「最早到点」那条查询（同样抽出来是为了能在不连库的前提下渲染 SQL 验它）。
+func soonestRepeatQueryOn(db *gorm.DB, site string) *gorm.DB {
+	return repeatBaseQueryOn(db, site).Select(soonestRepeatSelect, repeatDueStatuses)
 }
 
 // RepollRepeatableTasks 把**每个站点**各跑一遍（向后兼容业务 cron 里的既有用法）。

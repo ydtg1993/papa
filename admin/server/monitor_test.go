@@ -1098,3 +1098,80 @@ func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
 		}
 	}
 }
+
+// 队列「立即执行」也要写审计：成功一条、失败（站点名不认识）也一条。
+// 口径与表格动作 / 令牌页 / 熔断放行一致 —— 那三处都在记，只有这两个端点一直没记，
+// 而它们同样会批量改数据（把到点的可轮询任务、失败任务重置并重投）。
+func TestQueueProcessWritesAuditEvent(t *testing.T) {
+	var events []QueueProcessEvent
+	newMon := func() *Monitor {
+		events = nil
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+			ProcessRepeatQueue: func(site string) (int, error) {
+				if site == "ghost" {
+					return 0, fmt.Errorf("%w: %q", engine.ErrUnknownSite, site)
+				}
+				return 7, nil
+			},
+			ProcessErrorQueue: func(string) (int, error) { return 5, nil },
+			OnQueueProcess:    func(ev QueueProcessEvent) { events = append(events, ev) },
+		})
+	}
+
+	t.Run("轮询队列成功", func(t *testing.T) {
+		serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=siteb", nil)
+		if len(events) != 1 {
+			t.Fatalf("审计事件 = %+v，want 恰好一条", events)
+		}
+		ev := events[0]
+		if ev.Queue != engine.QueueRepeat || ev.Site != "siteb" || ev.Processed != 7 || ev.Err != nil {
+			t.Fatalf("审计事件 = %+v", ev)
+		}
+		if ev.IP == "" {
+			t.Fatal("来源 IP 应当带上（与白名单同一取法）")
+		}
+		if ev.At.IsZero() {
+			t.Fatal("时间应当带上")
+		}
+	})
+
+	t.Run("错误队列成功", func(t *testing.T) {
+		serve(newMon(), http.MethodPost, "/api/errorqueue/process?site=siteb", nil)
+		if len(events) != 1 || events[0].Queue != engine.QueueError || events[0].Processed != 5 {
+			t.Fatalf("审计事件 = %+v", events)
+		}
+	})
+
+	t.Run("没带 ?site=：site 为空（那是「所有站点各跑一遍」）", func(t *testing.T) {
+		serve(newMon(), http.MethodPost, "/api/repeatqueue/process", nil)
+		if len(events) != 1 || events[0].Site != "" {
+			t.Fatalf("审计事件 = %+v，want site 为空", events)
+		}
+	})
+
+	t.Run("站点名不认识：失败了也要记", func(t *testing.T) {
+		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=ghost", nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rr.Code)
+		}
+		if len(events) != 1 || events[0].Err == nil {
+			t.Fatalf("失败的触发也要记一条（err 非空）：%+v", events)
+		}
+		if events[0].Site != "ghost" || events[0].Processed != 0 {
+			t.Fatalf("审计事件 = %+v", events[0])
+		}
+	})
+
+	t.Run("接口没配置（404）：没跑过就不该记", func(t *testing.T) {
+		events = nil
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+			OnQueueProcess: func(ev QueueProcessEvent) { events = append(events, ev) },
+		})
+		if rr := serve(m, http.MethodPost, "/api/repeatqueue/process", nil); rr.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rr.Code)
+		}
+		if len(events) != 0 {
+			t.Fatalf("压根没这条接口时不该记审计：%+v", events)
+		}
+	})
+}

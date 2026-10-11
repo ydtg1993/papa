@@ -159,6 +159,10 @@ func TestSetSiteAutoRepeat(t *testing.T) {
 	if got := e.GetSiteStats()["a"]; got.AutoRepeat {
 		t.Fatalf("内存快照应跟上：%+v", got)
 	}
+	if e.siteAutoRepeat("a") {
+		t.Fatal("闸门读的就是这份生效值：暂停之后自动那一跳必须真的停" +
+			"（以前它读声明快照，于是「暂停了但照旧自动跑」）")
+	}
 	if sql := f.written(); !strings.Contains(sql, "`auto_repeat`") {
 		t.Fatalf("站点表应记下这一列：\n%s", sql)
 	}

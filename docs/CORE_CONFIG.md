@@ -124,7 +124,7 @@
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
 | （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人）；用 `papa token add --operator <名字>` 创建 |
-| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
+| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌；表格动作、访问令牌页、队列「立即执行」、熔断放行四类都记），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
 | `read_header_timeout` | duration | `10s` | 只发请求头不发送体的慢连接会被掐掉 |
 | `read_timeout` | duration | `30s` | 读完整请求（含 body）的上限 |
 | `write_timeout` | duration | `0`（不限） | **默认不限**：日志打包下载可能传很久，设上限等于掐断在途下载；要限制再显式配 |

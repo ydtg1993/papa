@@ -554,6 +554,27 @@ func (a *App) httpServer(ctx context.Context) {
 			}
 			return a.Engine.RepollSiteRepeatableTasks(site)
 		},
+		// 队列「立即执行」也是人在场的干预（批量重置 + 重投），成败都写审计 ——
+		// 与上面熔断放行同一个理由，也与表格动作/令牌页保持一致。
+		OnQueueProcess: func(ev server.QueueProcessEvent) {
+			if rec == nil {
+				return
+			}
+			scope := ev.Site
+			if scope == "" {
+				scope = "所有站点（请求没带 ?site=）"
+			}
+			rec.RecordEvent(oplog.Event{
+				Table:    ev.Queue,
+				Action:   "process",
+				RowID:    ev.Site,
+				Values:   map[string]any{"processed": ev.Processed, "scope": scope},
+				Err:      ev.Err,
+				IP:       ev.IP,
+				Operator: ev.Operator,
+				At:       ev.At,
+			})
+		},
 		TaskTrace:        a.Engine.ListTrace,
 		VerifyTokenValue: auth.Confirmer(a.DB, a.Logger.Sys),
 		BreakerStatuses:  a.Engine.BreakerStatuses,

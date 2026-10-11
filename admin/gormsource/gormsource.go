@@ -59,13 +59,15 @@ func (s *Source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64
 	}
 
 	db := apply(s.cfg.DB.WithContext(ctx).Model(s.cfg.Model))
-	// 排序字段与顺序都来自声明 + 前端参数，已过白名单；支持多字段（按优先级）
+	// 排序字段与顺序都来自声明 + 前端参数，已过白名单；支持多字段（按优先级）。
+	// 列名一律走 quote() —— 它是本包**唯一**的加引号出口，别处手拼反引号会被
+	// sqlquote_test.go 的结构层守卫拦下（反引号字面量只许出现在 quote() 里）。
 	for _, sf := range q.SortFields() {
 		dir := "ASC"
 		if sf.Desc {
 			dir = "DESC"
 		}
-		db = db.Order("`" + sf.Field + "` " + dir)
+		db = db.Order(quote(sf.Field) + " " + dir)
 	}
 	rows := []map[string]any{}
 	if err := db.Offset((q.Page - 1) * q.Size).Limit(q.Size).Find(&rows).Error; err != nil {
@@ -77,6 +79,11 @@ func (s *Source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64
 // quote 给列名套反引号。列名来自表格声明而不是 HTTP，但**不加引号照样会炸**：
 // 内置「操作日志」表就有一个叫 `table` 的列，而 table 是 MySQL 保留字 ——
 // 裸拼进 SQL 就是语法错，整页 500（排序那条一直在加引号，筛选/搜索这两条漏了）。
+//
+// 这是本包**唯一**的加引号出口：筛选（applyFilter）、全局搜索、排序三处都调它。
+// 两条守护测试钉着这件事（sqlquote_test.go）—— 行为层扫全部声明面（列名只许带引号出现、
+// 绝不裸写），结构层扫源码（反引号字面量只许出现在这个函数里）。要新开一个拼列名的口子，
+// 请同时把那条口子加进行为层的扫描，别绕开这里。
 func quote(col string) string { return "`" + col + "`" }
 
 // boolList 把 OpIn 的值逐项归一成 bool（gorm 会把 []bool 渲染成 true/false 字面量，

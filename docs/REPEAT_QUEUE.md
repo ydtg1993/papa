@@ -40,7 +40,7 @@
 | 方式 | 说明 |
 | --- | --- |
 | 自动轮询 | `enabled: true` 且 `interval` 非 0，后台按"到点"投递（**每站一条队列**，节拍各自跟随本站最早到点） |
-| 手动（OA） | 队列治理面板上**每站一行**的「立即执行」；或 `POST /api/repeatqueue/process?site=<站点>`（**只扫本站到点的**） |
+| 手动（OA） | 队列治理面板上**每站一行**的「立即执行」；或 `POST /api/repeatqueue/process?site=<站点>`（**只扫本站到点的**）。每次触发都写一条操作日志（`server.operation_log` 开启时） |
 | 手动（代码） | `engine.RepollSiteRepeatableTasks(site)`（只看到点）；`engine.RepollRepeatableTasks()`（所有站点各跑一遍，向后兼容） |
 | 手动（忽略周期） | `engine.ForceRepollSiteRepeatableTasks(site)`：把本站**所有可轮询的已完成任务**都投一遍（后台每个站的「轮询任务」总按钮走它，随「站点」页一起上） |
 
