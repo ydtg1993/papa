@@ -8,6 +8,7 @@ crawler:
   queue_watermark: 0.75        # 队列高水位(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
   stop_timeout: "5s"           # 优雅退出时等各阶段 worker 排空队列的上限；超时则跳过关库/关浏览器池，让在途写入落盘
+  stage_idle_timeout: "0s"     # 阶段工作池连续空闲多久就回收（0=常驻不回收）；多站/长跑建议配，如 "10m"
   # 单任务步骤追踪：task.Trace.Step/Fail/Warn（关 = 安全的 no-op）。开启后要再跑一次 `papa migrate` 建表。详见 docs/CORE_CONFIG.md
   trace:
     enabled: true              # 是否开启步骤追踪
@@ -93,10 +94,6 @@ server:
   idle_timeout: "60s"
   shutdown_timeout: "10s"         # 优雅退出时等在途请求（如日志打包下载）的上限
   # write_timeout 默认 0 = 不限，这是有意的：给日志打包下载设上限等于掐断在途下载。
-
-# 定时任务调度器（业务定时任务用 app.RegisterCronJob 注册）
-scheduler:
-  timezone: "Asia/Shanghai"   # cron 时区
 
 # 三个治理队列（全局各一条，不再按站点拆）。没写哪一段 = 那条不跑；开了（enabled: true）就得写全，
 # 缺一项 / 值越界启动就报。详见 docs/CORE_CONFIG.md 的对应三节。

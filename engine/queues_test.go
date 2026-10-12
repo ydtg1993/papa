@@ -207,10 +207,10 @@ func TestRequeueRecoverTaskResubmits(t *testing.T) {
 	if got := e.recoveredCount.Load(); got != 1 {
 		t.Fatalf("恢复计数 = %d, want 1", got)
 	}
-	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
-		t.Fatalf("恢复的任务应入队，实得 %d", main+urgent)
+	if main, urgent := pool.QueueDepths(); urgent != 1 || main != 0 {
+		t.Fatalf("恢复的任务应走加急快车道，实得 main/urgent = %d/%d", main, urgent)
 	}
-	// 恢复要照抄行上的 Repeatable / Urgent，丢了会让轮询任务恢复后不再参与周期轮询
+	// 恢复的 Repeatable 照抄行上的值（丢了会让轮询任务恢复后不再参与周期轮询）；Urgent 显式置真
 	writes := f.written()
 	if !strings.Contains(writes, "`status`") {
 		t.Fatalf("应先把行重置为 pending：\n%s", writes)
@@ -615,7 +615,7 @@ func TestStopWaitsForBackgroundLoops(t *testing.T) {
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.cfg.Crawler.DrainInterval = 20 * time.Millisecond
 	// worker 要真起：池子里压着没跑完的任务时 Stop 不该报"排空"（那是另一条契约）
-	e.stages["stub"].workerPool.Start(e.ctx, func(context.Context, *Task) error { return nil })
+	e.pools.get("stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
 	// 塞一条溢出任务：回灌每一跳都会把它重新投一次（submitToPool 会写 status=pending）
 	e.spillTask(&Task{Stage: "stub", URL: "https://example.com/spilled"})
 	e.startDrain()

@@ -897,8 +897,8 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
 
 3. **定时重抓 / 恢复失败**：
-   - 定时轮询：业务用 `app.RegisterCronJob("repeat_daily", "0 0 8 * * *", func(){ app.Engine.RepollRepeatableTasks() })` 注册，每日重跑 `repeatable: true` 的轮询任务；
-   - 中断恢复：`recover_queue` 配置开启后，**启动时**把「未到终态」（pending/processing）的任务全部重新入队 —— 进程刚起，这些就是上次中断留下的孤儿，不用按时间猜。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 与 [SCHEDULER.md](./SCHEDULER.md)。
+   - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；
+   - 中断恢复：`recover_queue` 配置开启后，**启动时**把「未到终态」（pending/processing）的任务全部重新入队 —— 进程刚起，这些就是上次中断留下的孤儿，不用按时间猜。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
 
 4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 

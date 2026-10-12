@@ -9,15 +9,14 @@ import (
 )
 
 type Config struct {
-	App       AppConfig       `mapstructure:"app"`
-	Log       LogConfig       `mapstructure:"log"`
-	Crawler   CrawlerConfig   `mapstructure:"crawler"`
-	Browser   BrowserConfig   `mapstructure:"browser"`
-	HTML      HTMLConfig      `mapstructure:"html"`
-	Proxy     ProxyConfig     `mapstructure:"proxy"`
-	DB        DBConfig        `mapstructure:"db"`
-	Server    ServerConfig    `mapstructure:"server"`
-	Scheduler SchedulerConfig `mapstructure:"scheduler"`
+	App     AppConfig     `mapstructure:"app"`
+	Log     LogConfig     `mapstructure:"log"`
+	Crawler CrawlerConfig `mapstructure:"crawler"`
+	Browser BrowserConfig `mapstructure:"browser"`
+	HTML    HTMLConfig    `mapstructure:"html"`
+	Proxy   ProxyConfig   `mapstructure:"proxy"`
+	DB      DBConfig      `mapstructure:"db"`
+	Server  ServerConfig  `mapstructure:"server"`
 	// 三个治理队列都是**全局**一段：error_queue（失败重投，定期轮询）、recover_queue（启动恢复，
 	// 只在启动跑一次）、repeat_queue（周期轮询，定期轮询）。缺省（没写这段）= 那条队列不跑。
 	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
@@ -85,13 +84,14 @@ type LogConfig struct {
 }
 
 type CrawlerConfig struct {
-	DedupCacheSize int           `mapstructure:"dedup_cache_size"` //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-	QueueWatermark float64       `mapstructure:"queue_watermark"`  //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
-	DrainInterval  time.Duration `mapstructure:"drain_interval"`   //溢出任务回灌间隔；<=0 用默认 2s
-	StopTimeout    time.Duration `mapstructure:"stop_timeout"`     //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
-	Trace          TraceConfig   `mapstructure:"trace"`            //单任务步骤追踪
-	Breaker        BreakerConfig `mapstructure:"breaker"`          //熔断闸门
-	Archive        ArchiveConfig `mapstructure:"archive"`          //页面归档：失败时把那一页的原样 HTML 落到本地文件
+	DedupCacheSize   int           `mapstructure:"dedup_cache_size"`   //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+	QueueWatermark   float64       `mapstructure:"queue_watermark"`    //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
+	DrainInterval    time.Duration `mapstructure:"drain_interval"`     //溢出任务回灌间隔；<=0 用默认 2s
+	StopTimeout      time.Duration `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
+	StageIdleTimeout time.Duration `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
+	Trace            TraceConfig   `mapstructure:"trace"`              //单任务步骤追踪
+	Breaker          BreakerConfig `mapstructure:"breaker"`            //熔断闸门
+	Archive          ArchiveConfig `mapstructure:"archive"`            //页面归档：失败时把那一页的原样 HTML 落到本地文件
 }
 
 // BreakerConfig 熔断闸门：窗口内**终态失败**数达到阈值，就把所有阶段的 worker 一起闸住
@@ -304,13 +304,6 @@ func (s ServerConfig) HTTPTimeouts() (readHeader, read, write, idle, shutdown ti
 	}
 	// write 不补默认：0 就是"不限"，这是刻意的（见字段注释）
 	return readHeader, read, s.WriteTimeout, idle, shutdown
-}
-
-// SchedulerConfig 定时任务调度器配置。
-// 内置 job 已移除：业务定时任务通过 app.RegisterCronJob 注册（见 docs），框架级恢复/失败重试走 recover_queue / error_queue。
-// 注：recover_queue 现在只在**启动时**跑一次（见 RecoverQueueConfig），不再有定时轮询。
-type SchedulerConfig struct {
-	Timezone string `mapstructure:"timezone"` // cron 时区
 }
 
 func Load(path string) (*Config, error) {

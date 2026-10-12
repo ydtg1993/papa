@@ -74,7 +74,7 @@ func TestStageStatsCarrySite(t *testing.T) {
 	f := newFakeTaskDB()
 	e := siteEngine(t, f)
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e.stages["stub"] = &stageInfo{workerPool: pool, config: StageConfig{Site: "a"}}
+	e.stages["stub"] = &stageInfo{config: StageConfig{Site: "a"}}
 	e.setStatsQueue("stub", track.NewStatsQueue[*Task](pool))
 
 	got := e.GetStageStats()

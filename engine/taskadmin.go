@@ -103,8 +103,7 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	if err != nil {
 		return err
 	}
-	info := e.stages[t.Stage]
-	if info == nil || info.workerPool == nil {
+	if e.stages[t.Stage] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
@@ -124,7 +123,7 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	task := e.taskFromRecord(t)
 	task.Retry = 0 // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitTo(info, task); err != nil {
+	if err := e.submitToStage(task); err != nil {
 		// 队列达高水位：与正常投递一致，溢出到 DB 由 drain 回灌，不算失败
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			e.spilledCount.Add(1)
@@ -167,8 +166,7 @@ func (e *Engine) UrgentTask(id uint) error {
 	if t.Status == models.TaskStatusSuccess || t.Status == models.TaskStatusFailed {
 		return ErrTaskFinished
 	}
-	info := e.stages[t.Stage]
-	if info == nil || info.workerPool == nil {
+	if e.stages[t.Stage] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
@@ -185,7 +183,7 @@ func (e *Engine) UrgentTask(id uint) error {
 	task := e.taskFromRecord(t)
 	task.Urgent = true
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitTo(info, task); err != nil {
+	if err := e.submitToStage(task); err != nil {
 		// 与正常投递一致：队列满就溢出到 DB 由 drain 回灌，不算失败
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			e.spilledCount.Add(1)

@@ -106,7 +106,6 @@ admin/                          ★后台模块：**对外公开**，业务项�
   tasksource/   内置「任务」表，动作接线的参考实现
   gormsource/   配置驱动的 oao.Source，业务表格页直接复用
   sysinfo/      机器指标 / 目录占用采集
-  scheduler/    业务定时任务（RegisterCronJob 的落点）
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ metrics/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）

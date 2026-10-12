@@ -33,6 +33,8 @@ type StatsQueue[T workerpool.Tasker] struct {
 	mu          sync.RWMutex
 	workerStats map[int]*WorkerStat // key: workerID
 	globalStats GlobalStats
+	stopCh      chan struct{} // 独立停机信号：池被空闲回收时要停掉这条 goroutine（引擎 ctx 那时还没结束）
+	stopOnce    sync.Once
 }
 
 // NewStatsQueue 创建监控器
@@ -40,6 +42,7 @@ func NewStatsQueue[T workerpool.Tasker](pool *workerpool.WorkerPool[T]) *StatsQu
 	return &StatsQueue[T]{
 		WorkPool:    pool,
 		workerStats: make(map[int]*WorkerStat),
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -52,6 +55,8 @@ func (m *StatsQueue[T]) Start(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-m.stopCh:
+				return
 			case act, ok := <-activities:
 				if !ok {
 					// 通道已关闭，退出
@@ -61,6 +66,11 @@ func (m *StatsQueue[T]) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Stop 停掉监控 goroutine（池被空闲回收时配套调用；幂等）。
+func (m *StatsQueue[T]) Stop() {
+	m.stopOnce.Do(func() { close(m.stopCh) })
 }
 
 // processActivity 处理单个活动事件

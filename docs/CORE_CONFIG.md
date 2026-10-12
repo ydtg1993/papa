@@ -138,12 +138,6 @@
 | `idle_timeout` | duration | `60s` | keep-alive 空闲连接的上限 |
 | `shutdown_timeout` | duration | `10s` | 优雅退出时等在途请求（如日志下载）跑完的上限，超时才强制断开 |
 
-### scheduler —— 定时任务（详见 [SCHEDULER.md](./SCHEDULER.md)）
-
-| 键 | 类型 | 说明 |
-| --- | --- | --- |
-| `timezone` | string | cron 时区（默认 `Asia/Shanghai`） |
-
 ### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)）
 
 写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：

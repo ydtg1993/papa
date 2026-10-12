@@ -54,7 +54,8 @@ func TestEngineErrorsPerStage(t *testing.T) {
 	f := newFakeTaskDB()
 	poolA := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, poolA)
-	e.stages["second"] = &stageInfo{workerPool: workerpool.NewWorkerPool[*Task](1, 8, 1)}
+	e.stages["second"] = &stageInfo{}
+	e.pools.set("second", workerpool.NewWorkerPool[*Task](1, 8, 1))
 
 	chans := e.Errors()
 	if len(chans) != 2 {

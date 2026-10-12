@@ -10,15 +10,6 @@ import (
 	"github.com/ydtg1993/papa/v3/models"
 )
 
-// retryEngineWithNilPool 造一个「阶段注册了但没走 ApplyRegisterStage」的引擎：
-// 这时 e.stages 里有它、workerPool 却是 nil。
-func retryEngineWithNilPool(t *testing.T, f *fakeTaskDB) *Engine {
-	t.Helper()
-	e, _ := urgentEngine(t, f)
-	e.stages["stub"] = &stageInfo{}
-	return e
-}
-
 /* ---------- RetryTask ---------- */
 
 // 重投的语义与 error_queue 的单行重投一致：状态归 pending、重试次数归零、代次 +1。
@@ -70,12 +61,6 @@ func TestRetryTaskRejections(t *testing.T) {
 			ErrStageNotRegistered,
 		},
 		{
-			"阶段注册了但池子没建",
-			nil,
-			retryEngineWithNilPool,
-			ErrStageNotRegistered,
-		},
-		{
 			"条件更新没匹配上 + 正在处理中",
 			func(f *fakeTaskDB) {
 				f.affected = 0
@@ -115,7 +100,8 @@ func TestRetryTaskSpillsWhenQueueFull(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 水位 = 1 条
 	e, _ := urgentEngine(t, f)
-	e.stages["stub"] = &stageInfo{workerPool: pool}
+	e.stages["stub"] = &stageInfo{}
+	e.pools.set("stub", pool)
 	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
 
 	if err := pool.Submit(&Task{URL: "occupy", Stage: "stub"}); err != nil {
@@ -138,7 +124,8 @@ func TestRetryTaskReportsSubmitFailure(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	pool.Stop(0)
 	e, _ := urgentEngine(t, f)
-	e.stages["stub"] = &stageInfo{workerPool: pool}
+	e.stages["stub"] = &stageInfo{}
+	e.pools.set("stub", pool)
 	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
 
 	err := e.RetryTask(7, 0)
@@ -350,7 +337,8 @@ func TestUrgentTaskSpillsWhenQueueFull(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 常规水位 1 条、快车道水位 2 条
 	e, _ := urgentEngine(t, f)
-	e.stages["stub"] = &stageInfo{workerPool: pool}
+	e.stages["stub"] = &stageInfo{}
+	e.pools.set("stub", pool)
 	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
 
 	// 占满常规队列，再占满快车道
@@ -380,7 +368,8 @@ func TestUrgentTaskReportsSubmitFailure(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	pool.Stop(0)
 	e, _ := urgentEngine(t, f)
-	e.stages["stub"] = &stageInfo{workerPool: pool}
+	e.stages["stub"] = &stageInfo{}
+	e.pools.set("stub", pool)
 	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
 
 	err := e.UrgentTask(7)

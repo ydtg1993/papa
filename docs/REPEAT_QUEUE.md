@@ -75,11 +75,10 @@ repeat_queue:
 于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
 
 
-## 5. 与业务 cron 的分工
+## 5. 触发方式
 
 | 能力 | 归属 | 调度方式 |
 | --- | --- | --- |
-| 周期轮询 repeatable（推荐） | 本文 `repeat_queue` | 到点才投（节拍自动跟随最早到点） |
-| 业务自定义定时任务 / 指定时刻轮询 | [SCHEDULER.md](./SCHEDULER.md) 的 `RegisterCronJob` + `RepollRepeatableTasks` | cron（6 段秒级） |
+| 周期轮询 repeatable | 本文 `repeat_queue` | 到点才投（节拍自动跟随最早到点）；后台「立即执行」手动触发 |
 
-> 如果轮询需要「每天 08:00 整点」这种 cron 语义，用 `RegisterCronJob`；如果只要「每隔 N 分钟」，用 `repeat_queue`。
+> 框架不再内置 cron 语义（`RegisterCronJob` 已移除）。要「每隔 N 分钟」用 `repeat_queue`；要「每天 08:00 整点」这类指定时刻，业务自己起定时器调 `engine.RepollRepeatableTasks()`。

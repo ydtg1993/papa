@@ -57,8 +57,7 @@ func (e *Engine) requeueFailedTask() func(*models.CrawlerTask) bool {
 
 // requeueFailedTaskIn 单条重投的实体。
 func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
-	info := e.stages[t.Stage]
-	if info == nil {
+	if e.stages[t.Stage] == nil {
 		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", t.Stage, t.ID)
 		return false
 	}
@@ -84,7 +83,7 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	task := e.taskFromRecord(t)
 	task.Retry = 0 // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitTo(info, task); err != nil {
+	if err := e.submitToStage(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			// 队列达高水位：**保持 pending**（上面刚重置过）、塞进溢出列表由 drain 每 2s 回灌。
 			// 否则行被标成 failed + `retry + 1`，而重置时**已经**把 `reprocess + 1` 写进去了。

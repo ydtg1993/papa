@@ -9,7 +9,6 @@ import (
 	"github.com/ydtg1993/oao"
 	"github.com/ydtg1993/papa/v3/admin/auth"
 	"github.com/ydtg1993/papa/v3/admin/oplog"
-	"github.com/ydtg1993/papa/v3/admin/scheduler"
 	"github.com/ydtg1993/papa/v3/admin/server"
 	"github.com/ydtg1993/papa/v3/admin/sitesource"
 	"github.com/ydtg1993/papa/v3/admin/sysinfo"
@@ -48,15 +47,7 @@ type App struct {
 	httpSrv     *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
 	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
 	cancel      context.CancelFunc
-	customJobs  []cronJob            // 业务注册的自定义定时任务
 	sites       map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
-}
-
-// cronJob 业务注册的自定义定时任务。
-type cronJob struct {
-	name     string
-	schedule string
-	fn       func()
 }
 
 // Option 应用初始化选项
@@ -343,13 +334,6 @@ func (a *App) Migrate() error {
 	return database.Migrate(a.DB, a.Config, a.extraModels...)
 }
 
-// RegisterCronJob 注册一个业务自定义定时任务（cron 表达式，支持秒级，如 "0 3 * * * *"）。
-// 必须在 Run 之前调用；任务随框架生命周期一起启动与优雅停止。
-// fn 内可通过闭包访问 app 的 Engine/DB 等资源。
-func (a *App) RegisterCronJob(name, schedule string, fn func()) {
-	a.customJobs = append(a.customJobs, cronJob{name: name, schedule: schedule, fn: fn})
-}
-
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -366,8 +350,6 @@ func (a *App) Run(ctx context.Context) {
 	// 启用工作流和对应工作池
 	a.Engine.ApplyRegisterStage()
 
-	// 任务计划
-	a.schedule(runCtx)
 	// 监听c错误日志 中间件活动等队列消息
 	a.mdMsgListener(runCtx)
 	// 启动统一 HTTP 服务（监控页面）
@@ -670,22 +652,4 @@ func (a *App) shutdownHTTP() {
 		a.Logger.Sys.Errorf("http server shutdown: %s（超时，强制关闭）", err.Error())
 		_ = a.httpSrv.Close()
 	}
-}
-
-// 任务计划
-func (a *App) schedule(ctx context.Context) {
-	if len(a.customJobs) == 0 {
-		return
-	}
-	sched := scheduler.NewScheduler(a.Engine, a.Logger.Scheduler, a.Config.Scheduler.Timezone)
-	for _, job := range a.customJobs {
-		if err := sched.AddJob(job.name, job.schedule, job.fn); err != nil {
-			a.Logger.Scheduler.Errorf("failed to add custom job %s: %s", job.name, err.Error())
-		}
-	}
-	go sched.Start()
-	go func() {
-		<-ctx.Done()
-		sched.Stop()
-	}()
 }

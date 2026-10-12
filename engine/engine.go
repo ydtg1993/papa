@@ -32,9 +32,12 @@ type Engine struct {
 	ctx context.Context
 	// startedAt 本进程启动时刻，只给启动恢复当截止用（见 recoverQueueQuery）：
 	// 「本进程启动之后被写过的行」= 本进程碰过的行 → 恢复不重投它们。
-	startedAt   time.Time
-	cancel      context.CancelFunc
-	stages      map[string]*stageInfo
+	startedAt time.Time
+	cancel    context.CancelFunc
+	stages    map[string]*stageInfo
+	// pools 活池登记表：stage 名 -> 当前活着的池。投递/关停/错误通道都从它取池，
+	// 不再散落在 stageInfo.workerPool 上（那是裸指针，池一旦懒建/回收就会并发读写）。
+	pools       *poolRegistry
 	mu          sync.RWMutex
 	cfg         *config.Config
 	browserPool *browser.Pool
@@ -129,7 +132,6 @@ func (e *Engine) Site(key string) (core.Site, bool) {
 
 // stageInfo 内部阶段信息
 type stageInfo struct {
-	workerPool *workerpool.WorkerPool[*Task]
 	config     StageConfig
 	fetcher    Fetcher
 	submitFunc func(engine *Engine)
@@ -173,6 +175,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		// （autoUpdateTime），两边同一个钟，不需要校时。
 		startedAt:  time.Now(),
 		stages:     make(map[string]*stageInfo),
+		pools:      newPoolRegistry(),
 		dedupCache: newDedupCache(cfg.Crawler.DedupCacheSize),
 		db:         db,
 		cfg:        cfg,
@@ -470,12 +473,9 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		mu sync.Mutex
 	)
 	stats = make(map[string]StopStats)
-	for name, s := range e.stages {
-		// 阶段注册了但没走到 ApplyRegisterStage（池子还没建）时跳过 ——
-		// 关停这一步不该自己 panic 掉。
-		if s.workerPool == nil {
-			continue
-		}
+	// 遍历活池表（而不是 e.stages）：池子是懒建/回收的，e.stages 里「没建池」的阶段
+	// 不在表里，天然被跳过 —— 关停这一步不该自己 panic 掉。
+	for name, pool := range e.pools.snapshot() {
 		wg.Add(1)
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()
@@ -487,7 +487,7 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 			mu.Lock()
 			stats[stage] = StopStats{Unfinished: inFlight, Queued: main + urgent}
 			mu.Unlock()
-		}(name, s.workerPool)
+		}(name, pool)
 	}
 	wg.Wait()
 	drained = len(stats) == 0
@@ -512,8 +512,8 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 
 // Errors 返回work pool中的错误消息队列
 func (e *Engine) Errors() (errors []<-chan error) {
-	for _, s := range e.stages {
-		errors = append(errors, s.workerPool.Errors())
+	for _, pool := range e.pools.snapshot() {
+		errors = append(errors, pool.Errors())
 	}
 	return
 }

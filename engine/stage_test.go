@@ -253,13 +253,15 @@ func TestApplyRegisterStageRunsTaskEndToEnd(t *testing.T) {
 	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	info := e.stages["stub"]
-	if info.workerPool == nil {
-		t.Fatal("ApplyRegisterStage 应把阶段的工作池建起来")
+	if e.pools.get("stub") != nil {
+		t.Fatal("ApplyRegisterStage 不应建池（池子懒建，等第一条任务 submit 才建）")
 	}
 
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
+	}
+	if e.pools.get("stub") == nil {
+		t.Fatal("首次 submit 应懒建阶段的工作池")
 	}
 	fetcher.waitCalls(t, 1)
 
@@ -290,6 +292,7 @@ func TestStopSkipsStageWithoutPool(t *testing.T) {
 		cancel:    cancel,
 		loggerSet: &loggers.LoggerSet{Engine: quietLogger()},
 		stages:    map[string]*stageInfo{"never-applied": {}},
+		pools:     newPoolRegistry(),
 	}
 	drained, stats := e.Stop(time.Millisecond)
 	if !drained || len(stats) != 0 {
@@ -302,11 +305,13 @@ func TestStopWaitsStagesConcurrently(t *testing.T) {
 	e := &Engine{
 		loggerSet: &loggers.LoggerSet{Engine: quietLogger()},
 		stages:    map[string]*stageInfo{},
+		pools:     newPoolRegistry(),
 	}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	for _, name := range []string{"a", "b", "c"} {
 		pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-		e.stages[name] = &stageInfo{workerPool: pool}
+		e.stages[name] = &stageInfo{}
+		e.pools.set(name, pool)
 	}
 
 	start := time.Now()
@@ -373,7 +378,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 
 // AddStage 是纯登记：池子要等 ApplyRegisterStage 才建。
 func TestAddStageOnlyRegisters(t *testing.T) {
-	e := &Engine{stages: map[string]*stageInfo{}}
+	e := &Engine{stages: map[string]*stageInfo{}, pools: newPoolRegistry()}
 	fetcher := &recordingFetcher{stage: "stub"}
 	e.AddStage("stub", StageConfig{WorkerCount: 2, QueueSize: 4}, fetcher, nil)
 
@@ -381,7 +386,7 @@ func TestAddStageOnlyRegisters(t *testing.T) {
 	if !ok {
 		t.Fatal("阶段没登记上")
 	}
-	if info.workerPool != nil {
+	if e.pools.get("stub") != nil {
 		t.Fatal("登记阶段时不该建池子")
 	}
 	if info.fetcher != fetcher || info.config.WorkerCount != 2 {
@@ -453,9 +458,9 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	fetcher.waitCalls(t, 1)
 
 	// 假库上抓取本身是瞬时的，所以此刻 worker 必然已经在延迟里
-	info := e.stages["stub"]
+	pool := e.pools.get("stub")
 	time.Sleep(150 * time.Millisecond)
-	if _, _, _, inProgress, _ := info.workerPool.Stats(); inProgress != 1 {
+	if _, _, _, inProgress, _ := pool.Stats(); inProgress != 1 {
 		t.Fatalf("延迟期间该任务应仍占着 worker，实得 inProgress=%d", inProgress)
 	}
 	if got := len(fetcher.calls()); got != 1 {
@@ -465,7 +470,7 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	// 延迟走完自然收工
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, _, _, inProgress, _ := info.workerPool.Stats(); inProgress == 0 {
+		if _, _, _, inProgress, _ := pool.Stats(); inProgress == 0 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -525,23 +530,24 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	}
 }
 
-// 池子还没建就提交（AddStage 之后、ApplyRegisterStage 之前）要报错，不是 nil 解引用 panic。
-// 判据与 spill.go / taskadmin.go 一致：这一类都算「阶段不可用」，后台能翻成 409。
-func TestSubmitBeforeApplyRegisterStageFails(t *testing.T) {
+// 池子懒建：没建池就提交（AddStage 之后、ApplyRegisterStage 之前）不再报错，而是当场把池子建起来、
+// 让任务真跑起来 —— 不再是 nil 解引用 panic，也不是「阶段不可用」报错。
+func TestSubmitCreatesPoolLazily(t *testing.T) {
 	f := newFakeTaskDB()
-	f.noRows = true // 全新任务：否则会先命中 SubmitTask 的去重（"库里已有"直接 return nil），走不到池子那一步
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e := submitEngine(t, f, pool)
-	// 把池子摘掉，模拟"注册了但还没走到 ApplyRegisterStage"
-	e.stages["stub"].workerPool = nil
+	f.noRows = true // 全新任务：走 INSERT + 入队
+	e := newTestEngine(t, f)
 
-	err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"})
-	if err == nil {
-		t.Fatal("池子没建时应报错，而不是 panic")
+	fetcher := &recordingFetcher{stage: "stub"}
+	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
+	// 注意：不调 ApplyRegisterStage —— 池子该由首次 submit 懒建
+
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+		t.Fatalf("首次 submit 应懒建池子并成功，实得：%v", err)
 	}
-	if !errors.Is(err, ErrStageNotRegistered) {
-		t.Fatalf("错误应当是 ErrStageNotRegistered，实得：%v", err)
+	if e.pools.get("stub") == nil {
+		t.Fatal("首次 submit 后应有活池")
 	}
+	fetcher.waitCalls(t, 1) // 任务真的跑起来了
 }
 
 // assertPanicsContains 断言 f() panic 且信息里含 want（启动期的校验都是 panic：与配置校验层同取向）。

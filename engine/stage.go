@@ -116,6 +116,148 @@ func (e *Engine) stageNames() []string {
 	return names
 }
 
+// stageHandler 一个阶段 worker 的任务处理函数：认领 → 带重试地跑 handler → 落终态。
+// 从 ApplyRegisterStage 的第一趟提出来：池子懒建（首次 submit 才建），建的时候绑上同一个 handler。
+func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
+	cfg := info.config
+	return func(ctx context.Context, task *Task) error {
+		// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
+		// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
+		// 运营已经动过它（标失败/删除），或同一行的另一份副本（后台「加急」会另投一份）先认领了。
+		claimed, err := e.claimTask(task)
+		if err != nil {
+			e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
+		} else if !claimed {
+			e.loggerSet.Engine.Warnf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
+			return nil
+		}
+		// 重试FetchHandler
+		var lastErr error
+		for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
+			if attempt > 0 {
+				// 退避放在**下一次尝试之前**（与 m3u8 / filedown 的退避同一写法）。
+				// 它不能写在上一轮的末尾：那样最后一次尝试失败之后还要再睡满一个周期才落 failed，
+				// 而那时已经不会再试了 —— worker 只是抱着一个并发位白等
+				//（3 次尝试、30s 退避就是 120s；实测一个注定失败的 detail 任务从认领到终态 210s）。
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
+				}
+				task.IncRetry(e.db)
+			}
+			err := e.runAttempt(ctx, info.fetcher, task, attempt)
+			if err == nil {
+				task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
+				if !task.Repeatable {
+					e.DelActiveTask(task)
+				}
+				// 任务间隔延迟：让 worker 在两次抓取之间歇一下，别把目标站打急。
+				// **必须可被 ctx 打断** —— 任务到这里已经成功、状态也已经落库，
+				// 再让 worker 抱着这个并发位睡满一个 delay（模板里 catalog 是 5m），
+				// 只会让 Engine.Stop（默认只等 stop_timeout=5s）报"未排空"、
+				// 连带跳过 app.Run 里的关库收尾。停机时直接跳过这段休息。
+				// 与上面重试退避那段同一个写法（Engine.Stop 的注释承诺的就是这个）。
+				select {
+				case <-ctx.Done():
+				case <-time.After(cfg.Delay.Random()):
+				}
+				return nil
+			}
+			// 不可重试的错误：直接标 failed，不再空转重试
+			if !Retryable(err) {
+				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				e.notifyFailure(ctx, task, err)
+				if !task.Repeatable {
+					e.DelActiveTask(task)
+				}
+				return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
+			}
+			lastErr = err
+		}
+		// 所有重试失败：记录错误并更新状态为 failed
+		task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
+		e.notifyFailure(ctx, task, lastErr)
+		if !task.Repeatable {
+			e.DelActiveTask(task)
+		}
+		return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
+	}
+}
+
+// buildPool 建一个阶段的工作池并登记：建池 + 按站点绑闸门 + 起 worker + 建监控 stats。
+// 调用方须保证 stage 已注册。
+func (e *Engine) buildPool(stage string, info *stageInfo) *workerpool.WorkerPool[*Task] {
+	cfg := info.config
+	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
+	// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管；未归属站点的阶段落在默认 scope、
+	// 用 crawler.breaker 那把。单站项目 = 一个隐式 scope = 一把闸门，与之前完全一致。
+	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
+	pool.SetGate(e.breakerFor(cfg.Site))
+	pool.Start(e.ctx, e.stageHandler(info))
+	// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
+	if e.cfg.Server.Enabled {
+		stats := track.NewStatsQueue(pool)
+		stats.Start(e.ctx)
+		e.setStatsQueue(stage, stats)
+		e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
+	}
+	return pool
+}
+
+// getOrCreatePool 取某阶段的活池；没有就按 StageConfig 懒建一个并登记。阶段未注册返回 nil。
+// 每次都走 getOrCreate（而不是先 get 快路径）—— 要让 lastSubmit 在**每次投递**时刷新，
+// 空闲回收靠它判断池闲置了多久。
+func (e *Engine) getOrCreatePool(stage string) *workerpool.WorkerPool[*Task] {
+	info := e.stages[stage]
+	if info == nil {
+		return nil
+	}
+	return e.pools.getOrCreate(stage, func() *workerpool.WorkerPool[*Task] {
+		return e.buildPool(stage, info)
+	})
+}
+
+// removeStageStats 撤掉某阶段的监控统计器并停掉它的 goroutine（池被回收时配套清理）。
+func (e *Engine) removeStageStats(stage string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if stats, ok := e.statsQueue[stage]; ok {
+		stats.Stop()
+		delete(e.statsQueue, stage)
+	}
+}
+
+// startIdleReaper 启动空闲池回收协程：每隔 stage_idle_timeout/2 扫一遍，回收「超过 idle 没有
+// 新任务、且空着」的池。config 没配 stage_idle_timeout（<=0）就不起 —— 默认常驻，行为与之前一致。
+func (e *Engine) startIdleReaper() {
+	idle := e.cfg.Crawler.StageIdleTimeout
+	if idle <= 0 {
+		return
+	}
+	interval := idle / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	e.tickerWG.Add(1)
+	go func() {
+		defer e.tickerWG.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-ticker.C:
+				for _, stage := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
+					e.removeStageStats(stage)
+					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", stage)
+				}
+			}
+		}
+	}()
+}
+
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
 	// 阶段的存在性只有一个来源：**注册进来的 e.stages**（配置里不再声明阶段，见 App.RegisterSites）。
@@ -129,99 +271,13 @@ func (e *Engine) ApplyRegisterStage() {
 		e.checkStageDeps(stage, e.stages[stage].fetcher)
 	}
 
-	// 第一趟：把**所有**阶段的工作池建起来并启动。
-	for _, stage := range names {
-		stageInfo := e.stages[stage]
-		cfg := stageInfo.config
-		pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
-		// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管；未归属站点的阶段落在默认 scope、
-		// 用 crawler.breaker 那把。单站项目 = 一个隐式 scope = 一把闸门，与之前完全一致。
-		// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
-		pool.SetGate(e.breakerFor(stageInfo.config.Site))
-		e.stages[stage].workerPool = pool
-		// 启动 worker pool
-		pool.Start(e.ctx, func(ctx context.Context, task *Task) error {
-			// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
-			// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
-			// 运营已经动过它（标失败/删除），或同一行的另一份副本（后台「加急」会另投一份）先认领了。
-			claimed, err := e.claimTask(task)
-			if err != nil {
-				e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
-			} else if !claimed {
-				e.loggerSet.Engine.Warnf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
-				return nil
-			}
-			// 重试FetchHandler
-			var lastErr error
-			for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
-				if attempt > 0 {
-					// 退避放在**下一次尝试之前**（与 m3u8 / filedown 的退避同一写法）。
-					// 它不能写在上一轮的末尾：那样最后一次尝试失败之后还要再睡满一个周期才落 failed，
-					// 而那时已经不会再试了 —— worker 只是抱着一个并发位白等
-					//（3 次尝试、30s 退避就是 120s；实测一个注定失败的 detail 任务从认领到终态 210s）。
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
-					}
-					task.IncRetry(e.db)
-				}
-				err := e.runAttempt(ctx, stageInfo.fetcher, task, attempt)
-				if err == nil {
-					task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
-					if !task.Repeatable {
-						e.DelActiveTask(task)
-					}
-					// 任务间隔延迟：让 worker 在两次抓取之间歇一下，别把目标站打急。
-					// **必须可被 ctx 打断** —— 任务到这里已经成功、状态也已经落库，
-					// 再让 worker 抱着这个并发位睡满一个 delay（模板里 catalog 是 5m），
-					// 只会让 Engine.Stop（默认只等 stop_timeout=5s）报"未排空"、
-					// 连带跳过 app.Run 里的关库收尾。停机时直接跳过这段休息。
-					// 与上面重试退避那段同一个写法（Engine.Stop 的注释承诺的就是这个）。
-					select {
-					case <-ctx.Done():
-					case <-time.After(cfg.Delay.Random()):
-					}
-					return nil
-				}
-				// 不可重试的错误：直接标 failed，不再空转重试
-				if !Retryable(err) {
-					task.UpdateStatus(e.db, models.TaskStatusFailed, err)
-					e.notifyFailure(ctx, task, err)
-					if !task.Repeatable {
-						e.DelActiveTask(task)
-					}
-					return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
-				}
-				lastErr = err
-			}
-			// 所有重试失败：记录错误并更新状态为 failed
-			task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
-			e.notifyFailure(ctx, task, lastErr)
-			if !task.Repeatable {
-				e.DelActiveTask(task)
-			}
-			return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
-		})
-		// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
-		if e.cfg.Server.Enabled {
-			stats := track.NewStatsQueue(pool)
-			stats.Start(e.ctx)
-			e.setStatsQueue(stage, stats)
-			e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
-		}
-	}
-
-	// 第二趟：池子都建好、也都启动了，这时才跑各阶段的入口任务。
-	//
-	// **必须两趟**：入口回调最自然的写法就是"投一批起始任务"，而它可以投给**任意**阶段。
-	// 一趟遍历（边建池边跑回调）时，后面的池子还没建，`submitTo` 就是 nil 解引用 panic
-	//（Go 的 map 遍历顺序随机，所以表现为"有时崩、有时不崩"）。
+	// 池子**懒建**：不在这里全量建，等第一条任务 submit 时才建（getOrCreatePool）。于是入口回调
+	// 可以放心投给任意阶段 —— 投到谁、谁的池子在这一刻才起，不再有"后面的池子还没建"的 nil 解引用。
 	//
 	// 引擎在这里**不做策略判断**：有回调就跑（要不要接入口回调，由声明层决定 —— 见
 	// App.RegisterSites 的 AutoStart）。
-	// 下载器实例也先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一趟就起池子，
-	// 任务可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
+	// 下载器实例先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一条任务
+	// 可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
 	e.resolveStageDownloads()
 	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
 	e.seedSiteRows()
@@ -247,6 +303,8 @@ func (e *Engine) ApplyRegisterStage() {
 	if e.cfg.Server.Enabled {
 		e.startQueueSampler()
 	}
+	// 空闲池回收（没配 stage_idle_timeout 就是 no-op，池常驻）
+	e.startIdleReaper()
 }
 
 // runAttempt 执行一次 FetchHandler，并负责这一次尝试的步骤追踪与页面归档：

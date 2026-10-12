@@ -103,14 +103,6 @@ func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) error {
 
 // submitToPool 将任务提交到对应阶段工作池，并更新数据库状态。
 func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
-	info := e.stages[task.Stage]
-	// 两种"阶段不可用"合并成一类报出去：配置里声明了、代码没 AddStage（info 为 nil），
-	// 或注册了但还没走到 ApplyRegisterStage（池子没建）。判据与 spill.go / taskadmin.go 一致，
-	// 后台能据此翻成 409。**不能只判 info**：池子为 nil 时下面 `submitTo` 会 nil 解引用 panic，
-	// 而崩不崩取决于启动期 map 的遍历顺序 —— 报个清楚的错比随机崩溃强。
-	if info == nil || info.workerPool == nil {
-		return fmt.Errorf("%w: %s", ErrStageNotRegistered, task.Stage)
-	}
 	// 先落库再入队：「已入队 ⇒ 行里是 pending」必须是不变量。
 	// worker 取到任务时会以 status=待处理 为条件认领（claimTask），
 	// 如果这里先入队后落库，中间那个窗口里取到任务的 worker（repeatable 重跑时
@@ -125,7 +117,7 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 		e.wakeRepeatQueue()
 	}
 
-	if err := e.submitTo(info, task); err != nil {
+	if err := e.submitToStage(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			// 队列达 75% 高水位：任务保持 pending（已入库），加入溢出列表由 drain 稍后回灌
 			e.spilledCount.Add(1)
@@ -192,11 +184,17 @@ func submitUpdates(task *Task) map[string]any {
 	return updates
 }
 
-func (e *Engine) submitTo(info *stageInfo, task *Task) error {
-	if task.Urgent {
-		return info.workerPool.SubmitUrgent(task)
+// submitToStage 所有投递路径的收口：取活池（没有就懒建），按加急/常规路由。
+// 阶段未注册 → ErrStageNotRegistered（后台据此翻 409）。
+func (e *Engine) submitToStage(task *Task) error {
+	pool := e.getOrCreatePool(task.Stage)
+	if pool == nil {
+		return fmt.Errorf("%w: %s", ErrStageNotRegistered, task.Stage)
 	}
-	return info.workerPool.Submit(task)
+	if task.Urgent {
+		return pool.SubmitUrgent(task)
+	}
+	return pool.Submit(task)
 }
 
 // SubmitTasks 批量提交任务：一次性批量入库（减少 DB 往返），再逐个入队。
@@ -351,8 +349,7 @@ func (e *Engine) ReSubmitTask(task *Task) error {
 		return e.logSubmitError(task, fmt.Errorf("record not exists: %s", task.URL))
 	}
 	task.ID = int(record.ID)
-	info := e.stages[task.Stage]
-	if err := e.submitTo(info, task); err != nil {
+	if err := e.submitToStage(task); err != nil {
 		// 提交失败，回滚内存去重表和数据库状态（与 submitToPool 同形：只写自己负责的列）
 		e.dedupCache.Delete(task.Unique())
 		e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(map[string]any{

@@ -59,7 +59,7 @@ func TestRepeatQueryShape(t *testing.T) {
 func TestStopWaitsForTickers(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e.stages["stub"].workerPool.Start(e.ctx, func(context.Context, *Task) error { return nil })
+	e.pools.get("stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
 	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}
 	e.startRepeatQueue()
 

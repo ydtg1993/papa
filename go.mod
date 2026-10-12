@@ -6,7 +6,6 @@ require (
 	github.com/PuerkitoBio/goquery v1.10.2
 	github.com/go-rod/rod v0.116.2
 	github.com/go-viper/mapstructure/v2 v2.4.0
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/sirupsen/logrus v1.9.4
 	github.com/ydtg1993/oao v1.3.0

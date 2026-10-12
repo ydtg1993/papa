@@ -54,10 +54,12 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 		e.loggerSet.Engine.Warnf("recover queue: stage %s not registered, skip task %d", t.Stage, t.ID)
 		return false
 	}
-	// Repeatable / Urgent 照抄行上的值（taskFromRecord 已带），理由与兄弟函数 requeueFailedTask 一致：
-	// 丢了 Repeatable 会让轮询任务恢复后不再参与周期轮询，丢了 Urgent 则等于悄悄吃掉加急属性。
-	// 同样照抄行上的 Meta —— 那正是 handler 认业务行的依据，丢了任务就永久失败。
+	// Repeatable / Meta 照抄行上的值（taskFromRecord 已带）：丢了 Repeatable 会让轮询任务恢复后
+	// 不再参与周期轮询，丢了 Meta 任务就永久失败（handler 认业务行的依据）。
+	// Urgent **显式置真**：恢复的是上一轮没跑完的孤儿，插到队首先跑完、别和这一轮新投的入口任务抢。
+	// claimTask 认领时会把 urgent 归零，所以它只是「排队位置」，跑过一次即变普通。
 	task := e.taskFromRecord(t)
+	task.Urgent = true
 	// 剔除去重表暂存，再按「已入库重提交」路径重新入队。
 	// 不剔的话 SubmitTask 第一道 dedupCache.Get 命中、非轮询任务会直接 return nil —— 队列根本没进。
 	e.DelActiveTask(task)

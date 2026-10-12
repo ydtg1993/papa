@@ -151,9 +151,11 @@ func urgentEngine(t *testing.T, f *fakeTaskDB) (*Engine, *workerpool.WorkerPool[
 		db:         db,
 		loggerSet:  &loggers.LoggerSet{Engine: logrus.New(), DB: logrus.New()},
 		cfg:        &config.Config{},
-		stages:     map[string]*stageInfo{"stub": {workerPool: pool}},
+		stages:     map[string]*stageInfo{"stub": {}},
+		pools:      newPoolRegistry(),
 		dedupCache: newDedupCache(0),
 	}
+	e.pools.set("stub", pool)
 	// 与 NewEngine 一致：运行期覆盖层总得有个零值，否则读它的路径（如 repeatQueueConfig）会 nil 解引用
 	return e, pool
 }

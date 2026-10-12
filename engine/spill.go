@@ -59,8 +59,7 @@ func (e *Engine) drainSpilled() {
 	e.spillMu.Unlock()
 
 	for stage, tasks := range all {
-		info := e.stages[stage]
-		if info == nil || info.workerPool == nil {
+		if e.stages[stage] == nil {
 			continue
 		}
 		for _, task := range tasks {
