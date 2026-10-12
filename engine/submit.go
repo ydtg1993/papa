@@ -18,15 +18,11 @@ func (e *Engine) logSubmitError(task *Task, err error) error {
 
 // SubmitTask 任务提交
 func (e *Engine) SubmitTask(task *Task) error {
-	if task.Stage == "" || task.URL == "" {
-		return e.logSubmitError(task, fmt.Errorf("task stage or url is empty: %+v", task))
+	if task.Stage == "" || task.URL == "" || task.Site == "" {
+		return e.logSubmitError(task, fmt.Errorf("task stage or url or site is empty: %+v", task))
 	}
 	if info := e.stages[task.Stage]; info == nil {
 		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage))
-	} else if task.Site == "" {
-		// 站点归属由**目标阶段**决定（阶段属于哪个站），调用方不用自己写；
-		// 显式给了 site 就尊重它（比如跨站派发的特殊场景）。
-		task.Site = info.config.Site
 	}
 
 	key := task.Unique()
@@ -125,10 +121,8 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	// 尤其是 repeatable：它现在可由后台「开/停轮询」随时改，被盖回去就是"控制面被数据面吃掉"。
 	e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(submitUpdates(task))
 	if task.RepeatInterval > 0 {
-		// 新播种了一条带周期的轮询任务：叫醒**它所属站点**的轮询队列重算扫描节拍，别让它等
-		// 当前那次 sleep。精确叫（不扇出）：一次批量提交可能几千条任务，扇出会把
-		// "每站一次整表 MIN 聚合"放大成站点数倍。
-		e.wakeRepeatQueue(task.Site)
+		// 新播种了一条带周期的轮询任务：叫醒轮询队列重算扫描节拍，别让它等当前那次 sleep。
+		e.wakeRepeatQueue()
 	}
 
 	if err := e.submitTo(info, task); err != nil {
@@ -211,13 +205,11 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		return nil
 	}
 	for _, t := range tasks {
-		if t.Stage == "" || t.URL == "" {
-			return e.logSubmitError(t, fmt.Errorf("task stage or url is empty: %+v", t))
+		if t.Stage == "" || t.URL == "" || t.Site == "" {
+			return e.logSubmitError(t, fmt.Errorf("task stage or url or site is empty: %+v", t))
 		}
 		if info := e.stages[t.Stage]; info == nil {
 			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", t.Stage))
-		} else if t.Site == "" {
-			t.Site = info.config.Site
 		}
 	}
 
@@ -344,15 +336,11 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
 
 // ReSubmitTask 已入库的非轮询任务进行重提交任务
 func (e *Engine) ReSubmitTask(task *Task) error {
-	if task.Stage == "" || task.URL == "" {
-		return e.logSubmitError(task, fmt.Errorf("task stage or url is empty: %+v", task))
+	if task.Stage == "" || task.URL == "" || task.Site == "" {
+		return e.logSubmitError(task, fmt.Errorf("task stage or url or site is empty: %+v", task))
 	}
 	if info := e.stages[task.Stage]; info == nil {
 		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage))
-	} else if task.Site == "" {
-		// 站点归属由**目标阶段**决定（阶段属于哪个站），调用方不用自己写；
-		// 显式给了 site 就尊重它（比如跨站派发的特殊场景）。
-		task.Site = info.config.Site
 	}
 	var record models.CrawlerTask
 	e.db.Model(&models.CrawlerTask{}).

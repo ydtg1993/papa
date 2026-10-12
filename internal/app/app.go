@@ -533,45 +533,28 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		VerifyToken:   auth.Verifier(a.DB, a.Logger.Sys),
-		Whitelist:     whitelist,
-		WhitelistFile: cfg.WhitelistFile,
-		Metrics:       a.Engine.GetMetrics,
-		QueueStats:    a.Engine.GetQueueStats,
-		SiteStats:     a.Engine.GetSiteStats,
-		SysInfo:       a.sysInfo,
-		LogDir:        a.Config.Log.Dir,
-		ArchiveDir:    a.Engine.ArchiveDir(),
-		OnShutdown:    a.Shutdown,
-		// 不给 site = 所有站点各跑一遍（向后兼容业务 cron 的旧用法）；给了 = 只跑那一站
-		ProcessErrorQueue: func(site string) (int, error) {
-			if site == "" {
-				return a.Engine.ProcessErrorQueue()
-			}
-			return a.Engine.ProcessSiteErrorQueue(site)
-		},
-		// 不给 site = 所有站点各跑一遍（向后兼容业务 cron 的旧用法）；给了 = 只跑那一站
-		ProcessRepeatQueue: func(site string) (int, error) {
-			if site == "" {
-				return a.Engine.RepollRepeatableTasks()
-			}
-			return a.Engine.RepollSiteRepeatableTasks(site)
-		},
+		VerifyToken:        auth.Verifier(a.DB, a.Logger.Sys),
+		Whitelist:          whitelist,
+		WhitelistFile:      cfg.WhitelistFile,
+		Metrics:            a.Engine.GetMetrics,
+		QueueStats:         a.Engine.GetQueueStats,
+		SiteStats:          a.Engine.GetSiteStats,
+		SysInfo:            a.sysInfo,
+		LogDir:             a.Config.Log.Dir,
+		ArchiveDir:         a.Engine.ArchiveDir(),
+		OnShutdown:         a.Shutdown,
+		ProcessErrorQueue:  a.Engine.ProcessErrorQueue,
+		ProcessRepeatQueue: a.Engine.RepollRepeatableTasks,
 		// 队列「立即执行」也是人在场的干预（批量重置 + 重投），成败都写审计 ——
 		// 与上面熔断放行同一个理由，也与表格动作/令牌页保持一致。
 		OnQueueProcess: func(ev server.QueueProcessEvent) {
 			if rec == nil {
 				return
 			}
-			scope := ev.Site
-			if scope == "" {
-				scope = "所有站点（请求没带 ?site=）"
-			}
 			rec.RecordEvent(oplog.Event{
 				Table:    ev.Queue,
 				Action:   "process",
-				RowID:    ev.Site,
-				Values:   map[string]any{"processed": ev.Processed, "scope": scope},
+				Values:   map[string]any{"processed": ev.Processed},
 				Err:      ev.Err,
 				IP:       ev.IP,
 				Operator: ev.Operator,
@@ -605,7 +588,7 @@ func (a *App) httpServer(ctx context.Context) {
 	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
 	tables := append([]oao.Table{
 		tasksource.Table(a.DB, a.Engine),
-		sitesource.Table(a.DB, a.Engine), // 站点信息 + 统计 + 两个动作（轮询任务 / 暂停·恢复自动轮询）
+		sitesource.Table(a.DB), // 站点信息（只读：key/base_url/阶段数/熔断状态）
 	}, a.tables...)
 	cfgOao := oao.Config{
 		Tables: tables,

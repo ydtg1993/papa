@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"errors"
-
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/gorm"
 )
@@ -18,26 +16,14 @@ import (
 //     认领（claimTask）也会写它 —— 于是「本进程启动之后被写过的行」恰好就是「本进程碰过的行」，
 //     全部排除；而上一次运行留下的孤儿，updated_at 必然早于本次启动，照捞不误。不依赖任何时长猜测。
 //
-// **为什么非加不可**：`ApplyRegisterStage` 里 worker 池先起来、入口回调紧接着就投起始任务，
-// 那些任务毫秒内被认领成 processing（**正在本进程里跑**），而 `startRecoverQueue` 是在这之后才起的 ——
-// 没有这条截止，扫描会把它们连同"正在跑"一起捞出来重投：`requeueRecoverTask` 先把行改回 pending
-// （把认领守卫赖以生效的前提抹掉），第二份随即被另一个 worker 认领 → 同一行被并发执行两遍
-// （content 互相覆盖、文件重复下载、业务重复写库）。触发前提只是"那一阶段当时有空闲 worker"。
-//
-// 诚实说清**盖不住**的：多实例同时启动时，A 实例在 T1 起、B 在 T2(>T1) 起，A 在 (T1,T2) 之间认领的行
-// 落在 B 的截止之内 → B 仍会重投它们。这是恢复队列在多实例下的固有缺口（改动前也一样），
-// 要彻底解决得给行加"持有者/实例号"，不在这条谓词能表达的范围内。
-//
 // pending 也要捞：它们可能是上次高水位溢出到 DB 的（溢出列表在内存里，随进程一起没了），
 // 也可能入库了但没来得及入队 —— 不捞就永远躺在「待处理」。
-//
-// `site = ?` 单独一条 Where（恢复是按站点跑的，见 ProcessRecoverQueue）。
-func (e *Engine) recoverQueueQuery(site string) func() *gorm.DB {
+func (e *Engine) recoverQueueQuery() func() *gorm.DB {
 	return func() *gorm.DB {
 		return e.db.Where("status IN ?", []models.TaskStatus{
 			models.TaskStatusPending,
 			models.TaskStatusProcessing,
-		}).Where("site = ?", site).
+		}).
 			// 只看"本进程启动之前就写过的行"：本进程认领/改过的行 updated_at 更晚，自动排除。
 			Where("updated_at < ?", e.startedAt)
 	}
@@ -51,34 +37,15 @@ func (e *Engine) recoverQueueQuery(site string) func() *gorm.DB {
 //
 // 重复投递 pending 是安全的：worker 认领走的是条件更新（pending → processing），
 // 两份里只有一份能认领成功，另一份拿到 0 行直接跳过。
-// 按站点跑（各自的 `enabled` / `worker_count` / `batch_size` 与 `site = ?` 查询）：
-// 某站声明里把 `RecoverQueue.Enabled` 设成 false，就是"这一站不做启动恢复"。
-// 全局那把锁护的是"整轮恢复"（启动那次与业务手动调它不会撞车）—— 站点之间不需要互斥，
-// 恢复本来就只在启动跑一次。
 func (e *Engine) ProcessRecoverQueue() (int, error) {
 	e.recoverQueueMu.Lock()
 	defer e.recoverQueueMu.Unlock()
 
-	total := 0
-	var errs []error
-	for _, site := range e.siteKeys() {
-		n, err := e.processSiteRecoverQueue(site)
-		total += n
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return total, errors.Join(errs...)
-}
-
-// processSiteRecoverQueue 只恢复本站的「未到终态」任务（不导出：启动恢复没有手动入口，
-// 见 ProcessRecoverQueue 的注释）。
-func (e *Engine) processSiteRecoverQueue(site string) (int, error) {
-	cfg := e.recoverQueueConfig(site)
+	cfg := e.cfg.RecoverQueue
 	if !cfg.Enabled {
 		return 0, nil
 	}
-	return e.processInBatches(e.recoverQueueQuery(site), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	return e.processInBatches(e.recoverQueueQuery(), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
 }
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
@@ -97,12 +64,10 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 
 	// **条件重置**（照兄弟队列的写法：repeatResetScope / requeueFailedTaskIn 都查 RowsAffected）：
 	// 批次 SELECT 与这一句之间有窗口 —— 运营可能把这一行删了、标了失败，或任务自己跑完落了 success。
-	// 无条件 UPDATE（以前用的 task.UpdateStatus 就是 `WHERE id = ?`）会把这些行也翻回 pending：
-	// 删掉的行 UPDATE 影响 0 行、返回值还被忽略 → 后面 SubmitTask 走 Insert 把删掉的任务**重新插回来**；
-	// 已终态的行被翻回 pending 再跑一遍。0 行 = 这一行已经不该被恢复：跳过，不计数、也不标 failed
-	//（它不是"恢复失败"，是"轮不到它了"）。
+	// 无条件 UPDATE 会把这些行也翻回 pending：删掉的行重新插回来、已终态的行再跑一遍。
+	// 0 行 = 这一行已经不该被恢复：跳过，不计数、也不标 failed（它不是"恢复失败"，是"轮不到它了"）。
 	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND site = ? AND status IN ?", t.ID, t.Site, []models.TaskStatus{
+		Where("id = ? AND status IN ?", t.ID, []models.TaskStatus{
 			models.TaskStatusPending,
 			models.TaskStatusProcessing,
 		}).
@@ -128,15 +93,7 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 //
 // 没有定时轮询，也没有后台手动触发 —— 理由见 ProcessRecoverQueue。异步跑，不阻塞启动。
 func (e *Engine) startRecoverQueue() {
-	// 有没有站点要恢复：逐个站点看它自己的生效配置（全关着就不必起这个 goroutine）
-	anyEnabled := false
-	for _, site := range e.siteKeys() {
-		if e.recoverQueueConfig(site).Enabled {
-			anyEnabled = true
-			break
-		}
-	}
-	if !anyEnabled {
+	if !e.cfg.RecoverQueue.Enabled {
 		return
 	}
 	go func() {

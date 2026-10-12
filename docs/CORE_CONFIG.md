@@ -146,36 +146,21 @@
 
 ### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)）
 
-**不在 config.yaml 里**：三个治理队列都按站点写在 `configs/sites/<站名>.go` 的 `SiteSpec` 上
-（yaml 里再写 `error_queue:` 这类段会以「未知配置键」拒绝启动，并指路到这里）。
+写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `Enabled` | `*bool` | **必写**（`nil` = 漏写 → 启动 panic）；`&false` = 本站不跑这条队列，其余字段可以不写 |
-| `WorkerCount` | int | 并发重新投递数；开着时必填且 `> 0` |
-| `Interval` | string | 自动轮询间隔（如 `"4h"`）；`"0"`=不自动，仅后台手动触发 |
-| `MaxRetry` | int | 单个任务最多再处理代数；`0`=不限 |
-| `BatchSize` | int | 每批查询处理的任务数；开着时必填且 `> 0`（分页流式） |
-
-```go
-	// configs/sites/<站名>.go（脚手架生成物里就是这几行）
-	ErrorQueue: &papa.ErrorQueueSpec{
-		Enabled:     &on,   // on := true —— Go 没有字面量取址
-		WorkerCount: 1,
-		Interval:    "4h",
-		MaxRetry:    3,
-		BatchSize:   100,
-	},
-	// 这一站不跑错误队列：只写一行
-	// ErrorQueue: &papa.ErrorQueueSpec{Enabled: &off},
+```yaml
+error_queue:
+  enabled: true               # 失败任务重投；false / 不写 = 不跑
+  worker_count: 1             # 并发重新投递数；开启时必填 > 0
+  interval: "4h"              # 自动轮询间隔；"0" = 不自动，仅后台手动触发
+  max_retry: 3                # 单个任务最多再处理代数；0 = 不限
+  batch_size: 100             # 每批查询处理的任务数；开启时必填 > 0（分页流式）
 ```
 
-> 错误队列**按站点跑**（后台一行一个站）：命名站点是 `error_queue:<站点>`；默认 scope 那条仍叫
-> `error_queue`，但它**不跑** —— 未归属（`site` 为空）的任务没有声明可挂（见 [DEVELOPMENT.md](./DEVELOPMENT.md) §7）。
-> 各站的重投并发、累计计数与运行快照互不影响，后台与 `/api/errorqueue/process?site=` 都能单独触发。
->
-> `Enabled: &true` 时**每个字段都得写**，缺一项 / 值越界启动就报（与 `crawler.breaker` 的
-> 「enabled=true 时 threshold 必填」同一档）。
+> 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
+> 开着（`enabled: true`）时 `worker_count` / `batch_size` 必填 > 0、`max_retry` 不能为负、
+> `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker` 的
+> 「enabled=true 时 threshold 必填」同一档）。参数启动时读一次，改完要重启。
 
 ### archive —— 页面归档（失败时留下那一页）
 
@@ -219,44 +204,41 @@ crawler:
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
-**不在 config.yaml 里**，写法同 `ErrorQueue`（`RecoverQueue: &papa.RecoverQueueSpec{...}`）：
+写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `Enabled` | `*bool` | **必写**；`&false` = 这一站重启后不捡回中断的任务 |
-| `WorkerCount` | int | 并发重新入队的数量；开着时必填且 `> 0` |
-| `BatchSize` | int | 每批查询处理的任务数；开着时必填且 `> 0` |
+```yaml
+recover_queue:
+  enabled: true               # 启动恢复；false / 不写 = 不跑
+  worker_count: 1             # 并发重新入队的数量；开启时必填 > 0
+  batch_size: 100             # 每批查询处理的任务数；开启时必填 > 0
+```
 
-> 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `Interval` / `MaxRetry` ——
-> 这两个字段在这个类型上**根本不存在**（写错是编译期错误，不是启动报错）。
+> 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `interval` / `max_retry`。
 
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
 
-**不在 config.yaml 里**，写法同 `ErrorQueue`（`RepeatQueue: &papa.RepeatQueueSpec{...}`）：
+写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `Enabled` | `*bool` | **必写**；`&false` = 本站没有轮询队列 |
-| `WorkerCount` | int | 并发重新投递的数量；开着时必填且 `> 0` |
-| `Interval` | string | **最粗兜底**的扫描间隔（如 `"2h"`）；开着时必填且 `> 0` |
-| `BatchSize` | int | 每批查询处理的任务数；开着时必填且 `> 0` |
+```yaml
+repeat_queue:
+  enabled: true               # 周期轮询；false / 不写 = 不跑
+  worker_count: 1             # 并发重新投递的数量；开启时必填 > 0
+  interval: "2h"              # 最粗兜底的扫描间隔；开启时必填 > 0
+  batch_size: 100             # 每批查询处理的任务数；开启时必填 > 0
+```
 
-> 轮询队列**按站点跑**（后台一行一个站）。它有两层开关，**是「与」关系**：
-> `RepeatQueue.Enabled` 是**声明层**的"这一站有没有这条队列"（改了要重启）；
-> `SiteSpec.AutoRepeat` 是**运营层**的"要不要自动跑"（落库 `crawler_sites.auto_repeat`，库为事实，
-> 后台「站点」页能随时开停、重启按库走）。见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节。
->
-> `Interval` 是"多久扫一次"的兜底；"**哪条任务**要轮询、**多久一次**"是任务行上的
+> 轮询队列是**全局一条**（后台一行）。"要不要自动跑"只有一层：`enabled`（false 就是仅手动触发）。
+> `interval` 是"多久扫一次"的兜底；"**哪条任务**要轮询、**多久一次**"是任务行上的
 > `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
-> 播种（`repeat_interval` 为 0 = 用本站的 `Interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
+> 播种（`repeat_interval` 为 0 = 用全局 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
 > 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
 >（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
 
 ### crawler_sites —— 站点表（框架自建，不是配置）
 
 站点声明与运行统计的落库形态：一行一个站点（空 `key` 那行是**默认 scope**）。
-启动时按声明播种（行不存在才插入；已存在只刷新 `base_url` / `stage_count`，**不动 `auto_repeat`** ——
-库为事实），之后由引擎在"每站轮询跑完"与"熔断暂停/恢复"时按列更新统计。
+启动时按声明播种（行不存在才插入；已存在只刷新 `base_url` / `stage_count`），
+之后由引擎在"熔断暂停/恢复"时按列更新状态。
 它是后台站点 Tab 与站点概要与 `papa migrate` 的产物；**不落 Headers**（里面有 UA/Cookie）。
 
 ### business —— 业务自己的配置段（框架不解析）

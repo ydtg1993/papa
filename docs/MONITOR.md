@@ -67,8 +67,7 @@
 队列治理面板的「立即执行」（`POST /api/{error,repeat}queue/process`）与 Dashboard 熔断横幅的「恢复抓取」
 也**记进操作日志**（与令牌页同一处境：这三处是后台自带的原生接口、不走表格组件，但都会批量改数据 ——
 审计不该因为"这不是表格动作"就断档）。审计行里：`table` = 队列名（`repeat_queue` / `error_queue`）
-或 `breaker`，`action` = `process` / `resume`，`row_id` = 那一站（**空 = 请求没带 `?site=`，按"所有站点各跑一遍"跑的**），
-`values.processed` = 实际处理条数、`values.scope` = 站点或"所有站点"，失败原因在 `error` 列。
+或 `breaker`，`action` = `process` / `resume`，`values.processed` = 实际处理条数，失败原因在 `error` 列。
 
 > 写入是**异步**的（后台队列，不占业务响应）：写库失败、或队列堵了（写库跟不上）时，
 > 那条记录会**落到日志文件**里（一行 JSON，可捞回来补录），既不丢审计也不反压业务。
@@ -204,10 +203,8 @@ papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（
 - **菜单自动出现**：按 `Group` 分组渲染到侧边栏，注册即出现，前端无需改代码。
 - **刷新策略**：表格页只在用户操作（筛选/排序/翻页）时刷新，不参与 Dashboard 的 3 秒轮询。
 
-内置的「站点」表（`admin/sitesource`）展示 `crawler_sites`（引擎启动时按站点声明播种、跑起来按列回写统计），
-带三个动作：**「轮询任务」**（把该站可轮询的已完成任务**全投一遍，忽略周期**）、
-**「暂停自动轮询」**/「恢复自动轮询」（改 `auto_repeat`，条件更新当版本守卫；已经是目标值回 409；
-默认 scope 那行不允许改 —— 它没有站点声明（未归属的任务不参与治理队列））。列里的 `base_url` / `stage_count` 是
+内置的「站点」表（`admin/sitesource`）展示 `crawler_sites`（引擎启动时按站点声明播种、熔断状态按列回写），
+**只读**（原来的「轮询任务 / 暂停·恢复自动轮询」随按站点队列一起移除了）。列里的 `base_url` / `stage_count` 是
 启动时按声明抄的：**改声明要重启，直接改库不生效**。
 
 内置的「任务」表（`admin/tasksource`）展示的就是 `crawler_task`，可作为完整示例。
@@ -370,21 +367,16 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 ## 6. 队列治理
 
-「队列治理」模块展示**按站点拆开**的两个治理队列：错误队列（`error_queue` / `error_queue:<站点>`）与轮询队列
-（`repeat_queue` / `repeat_queue:<站点>`），**每站各占一行**，都能单独手动触发 —— 站点那一行只处理该站的任务
-（错误队列重投该站的失败任务，轮询队列只投该站"到点的"）：
+「队列治理」模块展示**两个全局治理队列**：错误队列（`error_queue`）与轮询队列（`repeat_queue`），
+**各占一行**，都能单独手动触发 —— 不再按站点拆（错误队列重投所有站点的失败任务，轮询队列投所有"到点的"）：
 
 > `recover_queue` **不在这个面板上**：它只在进程启动那一刻跑一次，没有周期、没有积压可看，
 > 也就没有「立即执行一次」的意义 —— 运行期点它会把正在跑的 `processing` 任务一起重投。
 > 见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
 
-两条队列的**默认 scope 行**（名字不带后缀的 `error_queue` / `repeat_queue`）永远在面板上，但**不跑** ——
-未归属（任务的 `site` 为空串）的任务没有站点声明可挂。它显示「已停用」是正常的，不是坏了。
-那一行的「立即执行」不带 `?site=`，语义是"所有站点各跑一遍"（与接口一致）。
-
 | 列 | 含义 |
 | --- | --- |
-| 状态 | `运行中`（附带本轮已执行时长）/ `空闲` / `已停用`（这一站没声明这条队列，或声明里关了）；有上次执行错误时鼠标悬停可见 |
+| 状态 | `运行中`（附带本轮已执行时长）/ `空闲` / `已停用`（配置里没写这段，或 `enabled: false`）；有上次执行错误时鼠标悬停可见 |
 | 上次执行 | 上次执行完成距今多久（悬停看绝对时间）· 上次执行耗时 |
 | 处理量 | 空闲时=上次处理数，运行中=本轮已处理数；副行显示累计处理数 |
 | 待处理 | 当前排队待处理的任务数（低频采样，副行显示采样时间） |
@@ -394,8 +386,8 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/errorqueue/process` | 手动触发失败任务重投（`?site=<站点>` 只跑那一站，不带给所有站点各跑一遍，站点名不认识回 400）；返回 `{"status":"ok","processed":N}` |
-| POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投**到点的** repeatable 任务；想强制某一条立刻重跑用任务表的「重投」）。`?site=<站点>` 只跑那一站，不带给所有站点各跑一遍，站点名不认识回 400；返回 `{"status":"ok","repolled":N}` |
+| POST | `/api/errorqueue/process` | 手动触发失败任务重投；返回 `{"status":"ok","processed":N}` |
+| POST | `/api/repeatqueue/process` | 手动触发周期轮询（重投**到点的** repeatable 任务；想强制某一条立刻重跑用任务表的「重投」）；返回 `{"status":"ok","repolled":N}` |
 
 数据来源分两类，均**不实时**，且不占用监控页刷新路径：
 
@@ -407,24 +399,13 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 ```jsonc
 "queues": {
-  // 默认 scope 那两行（无后缀）永远在，但没有站点声明可挂 → 一直 enabled: false
-  "error_queue":  { "name": "error_queue",  "enabled": false, "running": false, "runs": 0, /* … */ },
-  "repeat_queue": { "name": "repeat_queue", "enabled": false, "running": false, "runs": 0, /* … */ },
-  // 命名站点：每站各占一行，enabled 取自该站声明里的 ErrorQueue / RepeatQueue
-  "error_queue:huangguo": {
-    "name": "error_queue:huangguo", "enabled": true, "running": false, "runs": 12,
-    "started_at": "...", "last_finish_at": "...", "last_duration": 4000000000,
-    "last_processed": 37, "run_processed": 0, "total_processed": 421,
-    "backlog": 128, "backlog_at": "...", "last_error": ""
-  },
-  "repeat_queue:huangguo": { /* 同上，name 是 "repeat_queue:huangguo" */ }
+  "error_queue":  { "name": "error_queue",  "enabled": true, "running": false, "runs": 12, /* … */ },
+  "repeat_queue": { "name": "repeat_queue", "enabled": true, "running": false, "runs": 0,  /* … */ }
 }
 ```
 
-站点一行的**参数**（`enabled` / `worker_count` / `interval` / …）取自该站在声明里的 `ErrorQueue` / `RepeatQueue`
-（见 [CORE_CONFIG.md](./CORE_CONFIG.md) 与 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md)）——
-站点那一行显示什么状态，就是它的生效配置说了算（站点把错误队列关掉 → 那行显示「已停用」）。
-没有 `site` 参数时错误队列**逐站点各跑一遍**（不是一次全局查询）。
+队列的参数（`enabled` / `worker_count` / `interval` / …）取自 `config.yaml` 的全局段
+（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 
 `last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
 
@@ -436,21 +417,19 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 | 面板 | 切到某个站点 tab 时 |
 | --- | --- |
 | 阶段/池子（仪表盘与「执行队列」） | 只显示**该站**的阶段（阶段快照里现在带 `site`） |
-| 队列治理 | 只显示该站的两条队列（`error_queue:<站点>` 与 `repeat_queue:<站点>`）；概览里则每个站点各一行 |
-| 站点概要（tab 下面那行） | BaseURL / 阶段数 / 自动轮询开关 / 累计与待轮询数 / 上次轮询 / 熔断是否闸住 |
+| 队列治理 | **不过滤** —— 两条队列是全局各一条，切到哪个 tab 都显示 |
+| 站点概要（tab 下面那行） | BaseURL / 阶段数 / 熔断是否闸住 |
 | **熔断横幅** | **不过滤** —— 它是告警，切到哪个 tab 都显示全部被闸住的站 |
 | 任务表（表格页） | **跟着 tab 走**：切到某站再打开任务表，会带着 `site=<该站>` 的**预置筛选**打开（oao 的 `opts.filter`，筛选栏里填好、可改可清）；已开着表时切 tab 会按新站点重画。概览 → 不带筛选；「默认 scope」那档不预设（"site 为空"这个条件在 oao 的查询串里表达不出来）。**需要 oao ≥ v1.3.0**（带 `opts.filter` 的那版），老版本会静默忽略第三个参数 |
 
-> 站点概要与 `sites` 里的字段：`key / base_url / auto_repeat / stage_count / last_repeat_at /
-> repeat_total / repeat_backlog / last_repeat_error / breaker_paused / breaker_paused_at`。
-> `base_url` 与 `auto_repeat` 是**启动时按声明抄的**（改声明要重启；直接改库不生效）。
+> 站点概要与 `sites` 里的字段：`key / base_url / stage_count / breaker_paused / breaker_paused_at`。
+> `base_url` 与 `stage_count` 是**启动时按声明抄的**（改声明要重启；直接改库不生效）。
 > 「每站每阶段的池子统计」是**实时**数字，不落库 —— 它就在 `stages` 快照里（带 `site`）。
 
 ```jsonc
 "sites": {
   "huangguo": {
-    "key": "huangguo", "base_url": "https://example.com/", "auto_repeat": true, "stage_count": 3,
-    "last_repeat_at": "...", "repeat_total": 128, "repeat_backlog": 4, "last_repeat_error": "",
+    "key": "huangguo", "base_url": "https://example.com/", "stage_count": 3,
     "breaker_paused": false, "breaker_paused_at": "0001-01-01T00:00:00Z"
   }
 }

@@ -41,15 +41,6 @@ type RetrySpec = app.RetrySpec
 // BreakerSpec 站点自己的熔断阈值（覆盖 crawler.breaker 的默认值）。
 type BreakerSpec = app.BreakerSpec
 
-// ErrorQueueSpec / RecoverQueueSpec / RepeatQueueSpec 本站三个治理队列的声明
-// （SiteSpec.ErrorQueue / RecoverQueue / RepeatQueue）。**三条都得写**（这一站不跑哪条就写
-// Enabled: &false 一行）；开了就得写全，缺一项 / 越界启动就报。
-type ErrorQueueSpec = app.ErrorQueueSpec
-
-type RecoverQueueSpec = app.RecoverQueueSpec
-
-type RepeatQueueSpec = app.RepeatQueueSpec
-
 // M3U8Spec / FileDownSpec 下载器的**覆盖层**：站点声明（SiteSpec.M3U8 / FileDown）与阶段声明
 // （StageSpec.M3U8 / FileDown）用它，**字段全是指针，只写要改的那几项**：
 //

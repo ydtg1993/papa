@@ -99,8 +99,7 @@ var fakeTaskColumns = []string{
 // fakeSiteColumns 是 models.CrawlerSite 的全列（同样由 TestFakeSiteColumnsCoverModel 钉住）。
 // `f.siteRows` 为 nil = 站点表一行都没有（播种会走 INSERT）。
 var fakeSiteColumns = []string{
-	"id", "key", "base_url", "auto_repeat", "stage_count",
-	"last_repeat_at", "repeat_total", "repeat_backlog", "last_repeat_error",
+	"id", "key", "base_url", "stage_count",
 	"breaker_paused", "breaker_paused_at", "created_at", "updated_at",
 }
 
@@ -151,7 +150,7 @@ func newFakeTaskDB() *fakeTaskDB {
 	return &fakeTaskDB{
 		affected: 1,
 		row: fakeRow{
-			"id": int64(7), "p_id": int64(0), "stage": "stub", "site": "", "url": "https://example.com",
+			"id": int64(7), "p_id": int64(0), "stage": "stub", "site": "stub", "url": "https://example.com",
 			"url_hash":        models.UrlHash("https://example.com"),
 			"idempotency_key": "", "meta": []byte("{}"), "title": "", "content": []byte("{}"),
 			"retry": int64(0), "status": int64(models.TaskStatusPending), "repeatable": int64(0),

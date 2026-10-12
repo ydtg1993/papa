@@ -220,11 +220,6 @@ func (e *Engine) ApplyRegisterStage() {
 	//
 	// 引擎在这里**不做策略判断**：有回调就跑（要不要接入口回调，由声明层决定 —— 见
 	// App.RegisterSites 的 AutoStart）。
-	// 轮询队列的运行态键先备齐（默认 scope + 每个登记过的站点）：入口回调里可能就提交带周期的
-	// 任务并唤醒队列，而**运行期往那几张 map 里塞键**会与监控接口的裸 range 撞成
-	// concurrent map read and map write（进程级 fatal）。所以键只在这儿建，之后只读。
-	e.ensureRepeatQueues()
-	e.ensureErrorQueues() // 失败重投队列也按站点拆（理由同上一行）
 	// 下载器实例也先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一趟就起池子，
 	// 任务可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
 	e.resolveStageDownloads()
@@ -238,12 +233,12 @@ func (e *Engine) ApplyRegisterStage() {
 
 	// 启动高水位溢出任务的回灌协程
 	e.startDrain()
-	// 启动错误队列后台自动轮询（每站一个；某站配了 interval 才自动，否则仅手动触发）
-	e.startErrorQueues()
-	// 启动中断恢复队列（启用时启动即恢复一次 + 定时轮询）
+	// 启动错误队列后台自动轮询（配了 interval 才自动，否则仅手动触发）
+	e.startErrorQueue()
+	// 启动中断恢复队列（启动即恢复一次，没有定时轮询）
 	e.startRecoverQueue()
-	// 启动周期轮询队列（每站一个：repeatable 任务的定时重跑）
-	e.startRepeatQueues()
+	// 启动周期轮询队列（repeatable 任务的定时重跑）
+	e.startRepeatQueue()
 	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
 	e.startTraceCleanup()
 	// 启动页面归档的保留期清理（归档未开启时不启动）

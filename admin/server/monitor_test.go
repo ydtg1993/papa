@@ -923,125 +923,70 @@ func TestResolveArchivedFile(t *testing.T) {
 	}
 }
 
-// 轮询队列的手动触发：不带 ?site= 是"所有站点各跑一遍"（向后兼容），带站点则只跑那一站，
-// 站点名不认识 → 400（引擎回 engine.ErrUnknownSite）。
-func TestRepeatQueueProcessSiteParam(t *testing.T) {
-	var got []string
+// 轮询队列的手动触发：全局一条，没有站点参数。
+func TestRepeatQueueProcess(t *testing.T) {
+	var called int
 	newMon := func() *Monitor {
-		got = nil
+		called = 0
 		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
-			ProcessRepeatQueue: func(site string) (int, error) {
-				got = append(got, site)
-				if site == "ghost" {
-					return 0, fmt.Errorf("%w: %q", engine.ErrUnknownSite, site)
-				}
-				return 3, nil
-			},
+			ProcessRepeatQueue: func() (int, error) { called++; return 3, nil },
 		})
 	}
 
-	t.Run("不带 site = 所有站点", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process", nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-		}
-		if len(got) != 1 || got[0] != "" {
-			t.Fatalf("回调收到的站点 = %v, want [\"\"]（空串 = 全部）", got)
-		}
-		if body := decodeJSON(t, rr); body["repolled"] != float64(3) {
-			t.Fatalf("repolled = %v", body["repolled"])
-		}
-	})
-
-	t.Run("带 site = 只跑那一站", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=siteb", nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-		}
-		if len(got) != 1 || got[0] != "siteb" {
-			t.Fatalf("回调收到的站点 = %v, want [siteb]", got)
-		}
-	})
-
-	t.Run("站点名不认识 → 400", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=ghost", nil)
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
-		}
-	})
+	rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if called != 1 {
+		t.Fatalf("回调应被调一次，实得 %d", called)
+	}
+	if body := decodeJSON(t, rr); body["repolled"] != float64(3) {
+		t.Fatalf("repolled = %v", body["repolled"])
+	}
 }
 
-// 错误队列的手动触发与轮询队列同一套：不带 ?site= 是"所有站点各跑一遍"（向后兼容），
-// 带站点则只跑那一站，站点名不认识 → 400。两个端点都按站点拆，参数语义必须一致 ——
-// 文档（MONITOR.md / ERROR_QUEUE.md）一直写着 ?site=，实现曾经只给轮询队列做了。
-func TestErrorQueueProcessSiteParam(t *testing.T) {
-	var got []string
+// 错误队列的手动触发与轮询队列同一套：全局一条，没有站点参数。
+func TestErrorQueueProcess(t *testing.T) {
+	var called int
 	newMon := func() *Monitor {
-		got = nil
+		called = 0
 		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
-			ProcessErrorQueue: func(site string) (int, error) {
-				got = append(got, site)
-				if site == "ghost" {
-					return 0, fmt.Errorf("%w: %q", engine.ErrUnknownSite, site)
-				}
-				return 5, nil
-			},
+			ProcessErrorQueue: func() (int, error) { called++; return 5, nil },
 		})
 	}
 
-	t.Run("不带 site = 所有站点", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/errorqueue/process", nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-		}
-		if len(got) != 1 || got[0] != "" {
-			t.Fatalf("回调收到的站点 = %v, want [\"\"]（空串 = 全部）", got)
-		}
-		if body := decodeJSON(t, rr); body["processed"] != float64(5) {
-			t.Fatalf("processed = %v", body["processed"])
-		}
-	})
-
-	t.Run("带 site = 只跑那一站", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/errorqueue/process?site=siteb", nil)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-		}
-		if len(got) != 1 || got[0] != "siteb" {
-			t.Fatalf("回调收到的站点 = %v, want [siteb]", got)
-		}
-	})
-
-	t.Run("站点名不认识 → 400", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/errorqueue/process?site=ghost", nil)
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
-		}
-	})
+	rr := serve(newMon(), http.MethodPost, "/api/errorqueue/process", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if called != 1 {
+		t.Fatalf("回调应被调一次，实得 %d", called)
+	}
+	if body := decodeJSON(t, rr); body["processed"] != float64(5) {
+		t.Fatalf("processed = %v", body["processed"])
+	}
 }
 
-// 治理队列面板要把**两条队列**的站点后缀都认出来。回归点：错误队列也按站点拆了（`error_queue:<站点>`）
-// 之后前端只跟上了一半 —— 站点级的错误队列行整块不显示（`Object.keys(QUEUE_META)` 里只有默认 scope
-// 那一条），站点 Tab 下连它也没了，那一站的「立即执行」按钮根本够不着。
+// 治理队列面板只认两条全局队列，不再有 `<队列>:<站点>` 的站点后缀与 ?site= 参数。
 // 前端没有测试框架，这里直接钉静态文件（同 TestMonitorResponseKeysMatchFrontend）。
-func TestQueuePanelHandlesBothPerSiteQueues(t *testing.T) {
+func TestQueuePanelHasGlobalQueues(t *testing.T) {
 	raw, err := fs.ReadFile(staticFS, "static/mo.js")
 	if err != nil {
 		t.Fatalf("read mo.js: %v", err)
 	}
 	js := string(raw)
 	for _, want := range []string{
-		"error_queue: { label: '错误队列'",         // 错误队列进种类表（而不是写死的一条）
-		"repeat_queue: { label: '轮询队列'",        // 轮询队列同样
-		"?site=' + encodeURIComponent(p.site)", // 站点那一行的「立即执行」要带上 ?site=
-		"if (p && p.site === currentSite)",     // 站点 Tab 过滤对两条队列都生效
+		"error_queue: { label: '错误队列'",  // 错误队列进种类表
+		"repeat_queue: { label: '轮询队列'", // 轮询队列同样
 	} {
 		if !strings.Contains(js, want) {
-			t.Errorf("mo.js 里缺少 %q —— 两条治理队列都按站点拆，面板与站点 Tab 都要认出来", want)
+			t.Errorf("mo.js 里缺少 %q —— 两条治理队列都要在面板种类表里", want)
 		}
 	}
-	if strings.Contains(js, "Object.keys(QUEUE_META)") {
-		t.Error("队列行不能再写死那一条：要从快照里认（含 <队列>:<站点>）")
+	for _, bad := range []string{"?site=' + encodeURIComponent", "parseQueue(name)", ".site === currentSite"} {
+		if strings.Contains(js, bad) {
+			t.Errorf("mo.js 里不该再有按站点拆队列的残留 %q", bad)
+		}
 	}
 }
 
@@ -1051,8 +996,8 @@ func TestAPIMonitorCarriesSites(t *testing.T) {
 	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
 		SiteStats: func() map[string]core.SiteStat {
 			return map[string]core.SiteStat{
-				"":      {Key: "", AutoRepeat: true, StageCount: 1},
-				"siteb": {Key: "siteb", BaseURL: "https://b.example/", AutoRepeat: true, StageCount: 2, RepeatTotal: 9},
+				"":      {Key: "", StageCount: 1},
+				"siteb": {Key: "siteb", BaseURL: "https://b.example/", StageCount: 2},
 			}
 		},
 	})
@@ -1066,7 +1011,7 @@ func TestAPIMonitorCarriesSites(t *testing.T) {
 		t.Fatalf("sites = %v", body["sites"])
 	}
 	b, _ := sites["siteb"].(map[string]any)
-	if b["base_url"] != "https://b.example/" || b["repeat_total"] != float64(9) || b["auto_repeat"] != true {
+	if b["base_url"] != "https://b.example/" || b["stage_count"] != float64(2) {
 		t.Fatalf("站点快照字段（snake_case）不对：%v", b)
 	}
 
@@ -1099,7 +1044,7 @@ func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
 	}
 }
 
-// 队列「立即执行」也要写审计：成功一条、失败（站点名不认识）也一条。
+// 队列「立即执行」也要写审计：成功一条、失败也一条。
 // 口径与表格动作 / 令牌页 / 熔断放行一致 —— 那三处都在记，只有这两个端点一直没记，
 // 而它们同样会批量改数据（把到点的可轮询任务、失败任务重置并重投）。
 func TestQueueProcessWritesAuditEvent(t *testing.T) {
@@ -1107,24 +1052,19 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 	newMon := func() *Monitor {
 		events = nil
 		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
-			ProcessRepeatQueue: func(site string) (int, error) {
-				if site == "ghost" {
-					return 0, fmt.Errorf("%w: %q", engine.ErrUnknownSite, site)
-				}
-				return 7, nil
-			},
-			ProcessErrorQueue: func(string) (int, error) { return 5, nil },
-			OnQueueProcess:    func(ev QueueProcessEvent) { events = append(events, ev) },
+			ProcessRepeatQueue: func() (int, error) { return 7, nil },
+			ProcessErrorQueue:  func() (int, error) { return 5, nil },
+			OnQueueProcess:     func(ev QueueProcessEvent) { events = append(events, ev) },
 		})
 	}
 
 	t.Run("轮询队列成功", func(t *testing.T) {
-		serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=siteb", nil)
+		serve(newMon(), http.MethodPost, "/api/repeatqueue/process", nil)
 		if len(events) != 1 {
 			t.Fatalf("审计事件 = %+v，want 恰好一条", events)
 		}
 		ev := events[0]
-		if ev.Queue != engine.QueueRepeat || ev.Site != "siteb" || ev.Processed != 7 || ev.Err != nil {
+		if ev.Queue != engine.QueueRepeat || ev.Processed != 7 || ev.Err != nil {
 			t.Fatalf("审计事件 = %+v", ev)
 		}
 		if ev.IP == "" {
@@ -1136,29 +1076,23 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 	})
 
 	t.Run("错误队列成功", func(t *testing.T) {
-		serve(newMon(), http.MethodPost, "/api/errorqueue/process?site=siteb", nil)
+		serve(newMon(), http.MethodPost, "/api/errorqueue/process", nil)
 		if len(events) != 1 || events[0].Queue != engine.QueueError || events[0].Processed != 5 {
 			t.Fatalf("审计事件 = %+v", events)
 		}
 	})
 
-	t.Run("没带 ?site=：site 为空（那是「所有站点各跑一遍」）", func(t *testing.T) {
-		serve(newMon(), http.MethodPost, "/api/repeatqueue/process", nil)
-		if len(events) != 1 || events[0].Site != "" {
-			t.Fatalf("审计事件 = %+v，want site 为空", events)
-		}
-	})
-
-	t.Run("站点名不认识：失败了也要记", func(t *testing.T) {
-		rr := serve(newMon(), http.MethodPost, "/api/repeatqueue/process?site=ghost", nil)
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", rr.Code)
+	t.Run("处理失败：也要记一条", func(t *testing.T) {
+		events = nil
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+			ProcessRepeatQueue: func() (int, error) { return 0, fmt.Errorf("db down") },
+			OnQueueProcess:     func(ev QueueProcessEvent) { events = append(events, ev) },
+		})
+		if rr := serve(m, http.MethodPost, "/api/repeatqueue/process", nil); rr.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rr.Code)
 		}
 		if len(events) != 1 || events[0].Err == nil {
 			t.Fatalf("失败的触发也要记一条（err 非空）：%+v", events)
-		}
-		if events[0].Site != "ghost" || events[0].Processed != 0 {
-			t.Fatalf("审计事件 = %+v", events[0])
 		}
 	})
 

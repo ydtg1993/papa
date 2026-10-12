@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
@@ -93,7 +92,7 @@ func TestSampleQueueBacklogOneRecordsValue(t *testing.T) {
 	f.count = 42
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.sampleQueueBacklogOne(errorQueueKey(""), e.errorQueueQuery(""))
+	e.sampleQueueBacklogOne(QueueError, e.errorQueueQuery())
 
 	st := e.GetQueueStats()[QueueError]
 	if st.Backlog != 42 {
@@ -129,7 +128,7 @@ func TestSampleQueueBacklogOneSurvivesDBError(t *testing.T) {
 	f.failQueries = 1
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.sampleQueueBacklogOne(QueueError, e.errorQueueQuery(""))
+	e.sampleQueueBacklogOne(QueueError, e.errorQueueQuery())
 
 	st := e.GetQueueStats()[QueueError]
 	if st.Backlog != 0 {
@@ -149,9 +148,9 @@ func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
 	qs := e.queueQueries()
-	// 错误队列与轮询队列**都按站点拆**（默认 scope 那两份永远在）
+	// 错误队列与轮询队列**全局各一条**
 	if want := len(queueKeysForTest(e)); len(qs) != want {
-		t.Fatalf("应有 %d 个队列的查询（每站错误 + 每站轮询）：%+v", want, qs)
+		t.Fatalf("应有 %d 个队列的查询（error + repeat）：%+v", want, qs)
 	}
 	for _, name := range queueKeysForTest(e) {
 		if qs[name] == nil {
@@ -166,7 +165,7 @@ func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 
 	qs[QueueRepeat]().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
-	if !containsRaw(read, "repeatable = ?") || !containsRaw(read, "site = ?") {
+	if !containsRaw(read, "repeatable = ?") {
 		t.Fatalf("repeat_queue 的积压查询条件不对：\n%s", read)
 	}
 }
@@ -188,8 +187,8 @@ func TestQueueQueriesCanBeCountedDirectly(t *testing.T) {
 		name  string
 		query func() *gorm.DB
 	}{
-		{QueueError, e.errorQueueQuery("")},
-		{QueueRepeat, e.repeatQueueQuery("")},
+		{QueueError, e.errorQueueQuery()},
+		{QueueRepeat, e.repeatQueueQuery()},
 	} {
 		var n int64
 		if err := c.query().Count(&n).Error; err != nil {
@@ -220,7 +219,7 @@ func TestQueueEnabledUnknownName(t *testing.T) {
 	if e.queueEnabled(QueueError) {
 		t.Fatal("配置零值（关）时不该返回 true")
 	}
-	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{Enabled: true}})
+	e.cfg.ErrorQueue.Enabled = true
 	if !e.queueEnabled(QueueError) {
 		t.Fatal("error_queue 开着时应返回 true")
 	}
@@ -278,14 +277,7 @@ func TestQueueSampleIntervalDefault(t *testing.T) {
 	}
 }
 
-// queueKeysForTest 已登记的治理队列键：错误与轮询各按站点（默认 scope 那两份永远在）。
+// queueKeysForTest 已登记的治理队列键：错误与轮询各一条（全局）。
 func queueKeysForTest(e *Engine) []string {
-	keys := make([]string, 0, len(e.errorQueues)+len(e.repeatQueues))
-	for _, site := range e.errorQueueSites() {
-		keys = append(keys, errorQueueKey(site))
-	}
-	for _, site := range e.repeatQueueSites() {
-		keys = append(keys, repeatQueueKey(site))
-	}
-	return keys
+	return []string{QueueError, QueueRepeat}
 }

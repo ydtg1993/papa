@@ -179,6 +179,69 @@ var rules = []rule{
 		}
 		return nil
 	}},
+
+	{"error_queue.worker_count", func(c *Config) error {
+		if c.ErrorQueue.Enabled && c.ErrorQueue.WorkerCount <= 0 {
+			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，失败任务会静静躺在队列里", c.ErrorQueue.WorkerCount)
+		}
+		return nil
+	}},
+
+	{"error_queue.batch_size", func(c *Config) error {
+		if c.ErrorQueue.Enabled && c.ErrorQueue.BatchSize <= 0 {
+			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 每批处理多少条；0 = 一条都不处理", c.ErrorQueue.BatchSize)
+		}
+		return nil
+	}},
+
+	{"error_queue.max_retry", func(c *Config) error {
+		if c.ErrorQueue.Enabled && c.ErrorQueue.MaxRetry < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 0 = 不限代数", c.ErrorQueue.MaxRetry)
+		}
+		return nil
+	}},
+
+	{"error_queue.interval", func(c *Config) error {
+		if c.ErrorQueue.Enabled && c.ErrorQueue.Interval < 0 {
+			return fmt.Errorf("  interval 不能为负（实得 %s）—— 0 = 不自动轮询，仅后台手动触发", c.ErrorQueue.Interval)
+		}
+		return nil
+	}},
+
+	{"recover_queue.worker_count", func(c *Config) error {
+		if c.RecoverQueue.Enabled && c.RecoverQueue.WorkerCount <= 0 {
+			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，恢复出来的任务会静静躺在队列里", c.RecoverQueue.WorkerCount)
+		}
+		return nil
+	}},
+
+	{"recover_queue.batch_size", func(c *Config) error {
+		if c.RecoverQueue.Enabled && c.RecoverQueue.BatchSize <= 0 {
+			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 每批处理多少条；0 = 一条都不处理", c.RecoverQueue.BatchSize)
+		}
+		return nil
+	}},
+
+	{"repeat_queue.worker_count", func(c *Config) error {
+		if c.RepeatQueue.Enabled && c.RepeatQueue.WorkerCount <= 0 {
+			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，到点的任务会静静躺在队列里", c.RepeatQueue.WorkerCount)
+		}
+		return nil
+	}},
+
+	{"repeat_queue.batch_size", func(c *Config) error {
+		if c.RepeatQueue.Enabled && c.RepeatQueue.BatchSize <= 0 {
+			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 每批处理多少条；0 = 一条都不处理", c.RepeatQueue.BatchSize)
+		}
+		return nil
+	}},
+
+	{"repeat_queue.interval", func(c *Config) error {
+		if c.RepeatQueue.Enabled && c.RepeatQueue.Interval <= 0 {
+			return fmt.Errorf("  interval 必须 > 0（实得 %s）—— 这是「最粗兜底」的扫描节拍", c.RepeatQueue.Interval)
+		}
+		return nil
+	}},
 }
 
 // 连接池两键允许的区间。**下界 1 才是真正起作用的那半**：配置的零值 0 与
@@ -242,9 +305,6 @@ func checkUnusedKeys(unused []string) error {
 	if hint := suggestKeys(sorted); hint != "" {
 		b.WriteString("\n" + hint)
 	}
-	if hint := movedKeyHint(sorted); hint != "" {
-		b.WriteString("\n" + hint)
-	}
 	b.WriteString("\n  这些键会被静默忽略、写进去的值不生效 —— 所以直接拒绝启动。")
 	b.WriteString("\n  拼错了就改对；是从旧版本残留的就删掉（框架没有「静默忽略未知键」这一档）。")
 	return fmt.Errorf("config: 未知配置键\n%s", b.String())
@@ -284,32 +344,6 @@ func suggestKeys(unused []string) string {
 		return ""
 	}
 	sort.Strings(lines)
-	return strings.Join(lines, "\n")
-}
-
-// movedQueueKeys 三个治理队列从 config.yaml 搬到了站点声明：它们的值不是"拼错了"，而是不该
-// 再写在这个文件里。suggestKeys 那套编辑距离（<= 2）够不着这三个名字，只能显式列出来指路。
-var movedQueueKeys = map[string]string{
-	"error_queue":   "SiteSpec.ErrorQueue",
-	"recover_queue": "SiteSpec.RecoverQueue",
-	"repeat_queue":  "SiteSpec.RepeatQueue",
-}
-
-// movedKeyHint 给"搬了家"的旧键指路（没有这类键就返回空串）。
-//
-// unused 传进来时已按字典序排好（见 checkUnusedKeys），所以多条命中时的顺序稳定。
-func movedKeyHint(unused []string) string {
-	var lines []string
-	for _, k := range unused {
-		to, ok := movedQueueKeys[leafOf(k)]
-		if !ok {
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("  %s → 已搬进站点声明：configs/sites/<站名>.go 的 %s", leafOf(k), to))
-	}
-	if len(lines) == 0 {
-		return ""
-	}
 	return strings.Join(lines, "\n")
 }
 

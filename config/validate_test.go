@@ -276,22 +276,26 @@ func TestUnknownRemovedKeyHasNoBogusSuggestion(t *testing.T) {
 	}
 }
 
-// 三个治理队列从 config.yaml 搬进了站点声明：老工程的 yaml 里若还留着这三段，
-// 报错要**指路**（suggestKeys 的编辑距离够不着 error_queue 这种名字，只能显式列出来）。
-func TestMovedQueueSectionsPointToSiteDeclaration(t *testing.T) {
-	msg := panicOn(t, baseConfig+"error_queue:\n  enabled: true\nrepeat_queue:\n  enabled: true\n")
-	for _, want := range []string{
-		"error_queue", "repeat_queue",
-		"已搬进站点声明", "configs/sites/<站名>.go",
-		"SiteSpec.ErrorQueue", "SiteSpec.RepeatQueue",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("panic 信息里缺 %q，实得：\n%s", want, msg)
-		}
+// 三个治理队列现在又是 config.yaml 里的全局段：合法的能正常解析，开了缺项才会 panic 点名。
+func TestQueueSectionsParse(t *testing.T) {
+	cfg := loadString(t, baseConfig+
+		"error_queue:\n  enabled: true\n  worker_count: 1\n  interval: \"4h\"\n  max_retry: 3\n  batch_size: 100\n"+
+		"recover_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: 100\n"+
+		"repeat_queue:\n  enabled: true\n  worker_count: 1\n  interval: \"2h\"\n  batch_size: 100\n")
+	if !cfg.ErrorQueue.Enabled || cfg.ErrorQueue.WorkerCount != 1 || cfg.ErrorQueue.MaxRetry != 3 || cfg.ErrorQueue.BatchSize != 100 {
+		t.Fatalf("error_queue 没解析对：%+v", cfg.ErrorQueue)
 	}
-	// 只写了一段时不该把另外两段也报出来（报的是"文件里真有的键"）
-	if strings.Contains(msg, "recover_queue") {
-		t.Fatalf("配置里没写的段不该出现在报错里，实得：\n%s", msg)
+	if !cfg.RecoverQueue.Enabled || cfg.RecoverQueue.WorkerCount != 1 || cfg.RecoverQueue.BatchSize != 100 {
+		t.Fatalf("recover_queue 没解析对：%+v", cfg.RecoverQueue)
+	}
+	if !cfg.RepeatQueue.Enabled || cfg.RepeatQueue.WorkerCount != 1 || cfg.RepeatQueue.BatchSize != 100 || cfg.RepeatQueue.Interval <= 0 {
+		t.Fatalf("repeat_queue 没解析对：%+v", cfg.RepeatQueue)
+	}
+
+	// 开了却缺 worker_count → panic 点名
+	msg := panicOn(t, baseConfig+"error_queue:\n  enabled: true\n  interval: \"4h\"\n")
+	if !strings.Contains(msg, "error_queue") || !strings.Contains(msg, "worker_count") {
+		t.Fatalf("开了缺 worker_count 应当 panic 点名，实得：\n%s", msg)
 	}
 }
 

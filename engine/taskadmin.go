@@ -22,10 +22,7 @@ var (
 	ErrTaskFinished       = errors.New("该任务已结束，加急没有意义（要重跑请用「重投」）")
 	ErrTaskRepeatOn       = errors.New("该任务的周期轮询已经开着")
 	ErrTaskRepeatOff      = errors.New("该任务的周期轮询本来就没开")
-	ErrSiteAlreadyAuto    = errors.New("该站点已经在自动轮询了")
-	ErrSiteAlreadyManual  = errors.New("该站点本来就没在自动轮询")
-	ErrDefaultScopeNoAuto = errors.New("默认 scope 没有站点行：它的自动轮询恒开（也开停不了 —— 后台那两个动作只认具名站点）")
-	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（用本站声明的周期），要么不小于 10 秒")
+	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（用全局的周期），要么不小于 10 秒")
 )
 
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
@@ -244,14 +241,10 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
 	}
-	// 行的 site：0 = 用本站那份周期，改完也要叫醒该站的队列
-	site, err := e.taskSiteOf(id)
-	if err != nil {
-		return err
-	}
 	eff := int64(seconds)
 	if eff == 0 {
-		eff = int64(e.repeatQueueConfig(site).Interval / time.Second)
+		// 0 = 用全局那份周期
+		eff = int64(e.cfg.RepeatQueue.Interval / time.Second)
 	}
 	res := setRepeatIntervalScope(e.db, id, wasSeconds).Updates(map[string]any{
 		"repeat_interval": seconds,
@@ -268,31 +261,13 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 		}
 		return ErrTaskChanged // 周期刚被改过（快照过期），刷新后再看
 	}
-	e.wakeRepeatQueue(site)
+	e.wakeRepeatQueue()
 	return nil
 }
 
-// taskSiteOf 只取一行任务的 site（唤醒该站点的队列 / 取该站生效的轮询周期用）。
-func (e *Engine) taskSiteOf(id uint) (string, error) {
-	var t models.CrawlerTask
-	err := e.db.Model(&models.CrawlerTask{}).Select("site").First(&t, id).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", ErrTaskNotFound
-	}
-	if err != nil {
-		return "", fmt.Errorf("load task %d site: %w", id, err)
-	}
-	return t.Site, nil
-}
-
-// wakeRepeatQueueOfTask 按任务行上的 site 叫醒那一条轮询队列；查不到行只记 Warn（不影响已经改完的写入）。
+// wakeRepeatQueueOfTask 叫醒轮询队列重算扫描节拍（队列全局一条，不用再按任务找站点）。
 func (e *Engine) wakeRepeatQueueOfTask(id uint) {
-	site, err := e.taskSiteOf(id)
-	if err != nil {
-		e.loggerSet.Engine.Warnf("wake repeat queue for task %d: %s", id, err.Error())
-		return
-	}
-	e.wakeRepeatQueue(site)
+	e.wakeRepeatQueue()
 }
 
 // whyRepeatRejected 条件更新影响 0 行时，再查一次把原因说清楚。

@@ -21,10 +21,12 @@ func queueEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]
 	t.Helper()
 	e := submitEngine(t, f, pool)
 	e.queueRuns = newQueueRuns()
-	e.queueCounters = make(map[string]*atomic.Int64)
-	// 两个治理队列都**按站点拆**：这里备齐默认 scope 那两份（键与计数器）
-	e.ensureErrorQueues()
-	e.ensureRepeatQueues()
+	e.errorQueue = &errorQueueState{}
+	e.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)}
+	e.queueCounters = map[string]*atomic.Int64{
+		QueueError:  &e.errorQueue.retried,
+		QueueRepeat: &e.repeatQueue.repolled,
+	}
 
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
@@ -35,7 +37,7 @@ func queueEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]
 // actionRow 造一条待治理队列处理的任务行。
 func actionRow(id uint, stage string) *models.CrawlerTask {
 	return &models.CrawlerTask{
-		ID: id, Stage: stage, URL: fmt.Sprintf("https://example.com/%d", id),
+		ID: id, Stage: stage, Site: "stub", URL: fmt.Sprintf("https://example.com/%d", id),
 		Status: models.TaskStatusFailed, Content: datatypes.JSON("{}"),
 	}
 }
@@ -56,9 +58,9 @@ func setRows(f *fakeTaskDB, n int, stage string, status models.TaskStatus) {
 func TestErrorQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{MaxRetry: 3}})
+	e.cfg.ErrorQueue = config.ErrorQueueConfig{MaxRetry: 3}
 
-	e.errorQueueQuery("")().Find(&[]models.CrawlerTask{})
+	e.errorQueueQuery()().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
 	if !strings.Contains(read, "status = ?") {
 		t.Fatalf("应只捞 failed：\n%s", read)
@@ -70,7 +72,7 @@ func TestErrorQueueQueryShape(t *testing.T) {
 	// MaxRetry=0 表示不限代数 → 不带 reprocess 条件
 	f2 := newFakeTaskDB()
 	e2 := queueEngine(t, f2, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e2.errorQueueQuery("")().Find(&[]models.CrawlerTask{})
+	e2.errorQueueQuery()().Find(&[]models.CrawlerTask{})
 	if strings.Contains(f2.readSQL(), "reprocess < ?") {
 		t.Fatalf("max_retry=0 表示不限，不该有 reprocess 条件：\n%s", f2.readSQL())
 	}
@@ -82,7 +84,7 @@ func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 	setRows(f, 3, "stub", models.TaskStatusFailed)
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{BatchSize: 10, WorkerCount: 2}})
+	e.cfg.ErrorQueue = config.ErrorQueueConfig{BatchSize: 10, WorkerCount: 2}
 
 	n, err := e.ProcessErrorQueue()
 	if err != nil {
@@ -91,7 +93,7 @@ func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 	if n != 3 {
 		t.Fatalf("应重投 3 条，实得 %d", n)
 	}
-	if got := e.errorQueue(errorQueueKey("")).retried.Load(); got != 3 {
+	if got := e.errorQueue.retried.Load(); got != 3 {
 		t.Fatalf("累计重投计数 = %d, want 3", got)
 	}
 	main, urgent := pool.QueueDepths()
@@ -128,7 +130,7 @@ func TestRequeueFailedTaskSkipsUnregisteredStage(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
-	if e.requeueFailedTask("")(row) {
+	if e.requeueFailedTask()(row) {
 		t.Fatal("未注册的阶段应当跳过")
 	}
 	if got := f.written(); got != "" {
@@ -149,10 +151,10 @@ func TestRequeueFailedTaskMarksRowWhenSubmitFails(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "stub")
-	if e.requeueFailedTask("")(row) {
+	if e.requeueFailedTask()(row) {
 		t.Fatal("投递失败应返回 false")
 	}
-	if got := e.errorQueue(errorQueueKey("")).retried.Load(); got != 0 {
+	if got := e.errorQueue.retried.Load(); got != 0 {
 		t.Fatalf("没投成功不该计数，实得 %d", got)
 	}
 
@@ -175,7 +177,7 @@ func TestRecoverQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.recoverQueueQuery("")().Find(&[]models.CrawlerTask{})
+	e.recoverQueueQuery()().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
 	if !strings.Contains(read, "status IN") {
 		t.Fatalf("应按 status IN (pending, processing) 捞：%s", read)
@@ -254,7 +256,7 @@ func TestProcessRecoverQueueProcessesAllActive(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
 	// 站点级 enabled 是执行前的闸门（不写 = 跟全局）：这里显式开着
-	setSiteQueues(e, "", SiteQueues{Recover: config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
 
 	n, err := e.ProcessRecoverQueue()
 	if err != nil {
@@ -273,7 +275,7 @@ func TestStartRecoverQueueDisabled(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := queueEngine(t, f, pool)
-	setSiteQueues(e, "", SiteQueues{Recover: config.RecoverQueueConfig{Enabled: false}})
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: false}
 
 	e.startRecoverQueue()
 	if got := e.recoveredCount.Load(); got != 0 {
@@ -289,7 +291,7 @@ func TestRepeatQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.repeatQueueQuery("")().Find(&[]models.CrawlerTask{})
+	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
 	if !strings.Contains(read, "repeatable = ?") {
 		t.Fatalf("应只捞 repeatable：\n%s", read)
@@ -315,7 +317,7 @@ func TestRequeueRepeatTaskResubmits(t *testing.T) {
 	row := actionRow(7, "stub")
 	row.Status = models.TaskStatusSuccess
 
-	if !e.requeueRepeatTask("")(row) {
+	if !e.requeueRepeatTask()(row) {
 		t.Fatal("已注册的阶段应当重投成功")
 	}
 	if got := e.repeatRepolledTotal(); got != 1 {
@@ -336,7 +338,7 @@ func TestRequeueRepeatTaskSkipsUnregisteredStage(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
-	if e.requeueRepeatTask("")(row) {
+	if e.requeueRepeatTask()(row) {
 		t.Fatal("未注册的阶段应当跳过")
 	}
 	if got := e.repeatRepolledTotal(); got != 0 {
@@ -349,7 +351,7 @@ func TestRequeueRepeatTaskSkipsUnregisteredStage(t *testing.T) {
 func TestRepeatResetScopeCarriesConditions(t *testing.T) {
 	db := dryDB(t)
 	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return repeatResetScope(tx, 7, "").Updates(map[string]any{
+		return repeatResetScope(tx, 7).Updates(map[string]any{
 			"status":         models.TaskStatusPending,
 			"last_repeat_at": gorm.Expr("NOW()"),
 			"next_repeat_at": gorm.Expr(
@@ -398,9 +400,9 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 				f.failQueries = 1
 			}
 			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-			setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}})
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}
 
-			got := e.repeatTickInterval("")
+			got := e.repeatTickInterval()
 			if diff := got - tc.want; diff > time.Second || diff < -time.Second {
 				t.Fatalf("repeatTickInterval = %v, want %v", got, tc.want)
 			}
@@ -416,7 +418,7 @@ func TestRequeueRepeatTaskSkipsWhenStopped(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := queueEngine(t, f, pool)
 
-	if e.requeueRepeatTask("")(actionRow(7, "stub")) {
+	if e.requeueRepeatTask()(actionRow(7, "stub")) {
 		t.Fatal("行已不再可轮询时应跳过")
 	}
 	if got := e.repeatRepolledTotal(); got != 0 {
@@ -438,10 +440,10 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}})
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
 
 	// ① 队列只捞 repeatable = 1 的终态行
-	e.repeatQueueQuery("")().Find(&[]models.CrawlerTask{})
+	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
 	if read := f.readSQL(); !strings.Contains(read, "repeatable = ?") || !strings.Contains(read, "status IN") {
 		t.Fatalf("轮询查询应按 repeatable + 终态过滤：\n%s", read)
 	}
@@ -470,7 +472,7 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f.row["repeatable"] = int64(models.RepeatableNo)
 	f.mu.Unlock()
 
-	if e.requeueRepeatTask("")(actionRow(7, "stub")) {
+	if e.requeueRepeatTask()(actionRow(7, "stub")) {
 		t.Fatal("停掉的轮询任务不该再被重投")
 	}
 	if got := e.repeatRepolledTotal(); got != 1 {
@@ -483,7 +485,7 @@ func TestRepollRepeatableTasksProcessesAll(t *testing.T) {
 	setRows(f, 2, "stub", models.TaskStatusSuccess)
 	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
 	e := queueEngine(t, f, pool)
-	setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 2}})
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 2}
 
 	n, err := e.RepollRepeatableTasks()
 	if err != nil {
@@ -527,7 +529,7 @@ func TestRequeueRecoverTaskSkipsChangedRows(t *testing.T) {
 	}
 	// 守卫必须写在语句里（列名带引号那套同理：判据留给库，不拿到 Go 里比）
 	sql := f.written()
-	for _, want := range []string{"status IN", "site = ?"} {
+	for _, want := range []string{"status IN"} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("重置语句里缺少守卫 %q：\n%s", want, sql)
 		}
@@ -545,11 +547,11 @@ func TestRequeueFailedTaskSkipsRowsNoLongerFailed(t *testing.T) {
 	row := actionRow(5, "stub")
 	row.Status = models.TaskStatusFailed
 
-	// 守卫的形状：语句里必须同时有 站点 与 status 两个判据
-	e.requeueFailedTask("")(row)
+	// 守卫的形状：语句里必须有 status 判据（行已经不再 failed 时才跳过）
+	e.requeueFailedTask()(row)
 	sql := f.written()
-	if !strings.Contains(sql, "site = ?") || !strings.Contains(sql, "status = ?") {
-		t.Fatalf("重置语句里应当同时有 site 与 status 守卫：%s", sql)
+	if !strings.Contains(sql, "status = ?") {
+		t.Fatalf("重置语句里应当有 status 守卫：%s", sql)
 	}
 
 	// 行为：条件没匹配上（轮询队列刚把它捞走了）→ 跳过，不计数也不投递
@@ -559,10 +561,10 @@ func TestRequeueFailedTaskSkipsRowsNoLongerFailed(t *testing.T) {
 	f2.mu.Lock()
 	f2.affected = 0
 	f2.mu.Unlock()
-	if e2.requeueFailedTask("")(row) {
+	if e2.requeueFailedTask()(row) {
 		t.Fatal("行已经不再是 failed（被轮询队列捞走）时应跳过")
 	}
-	if got := e2.errorQueue(errorQueueKey("")).retried.Load(); got != 0 {
+	if got := e2.errorQueue.retried.Load(); got != 0 {
 		t.Fatalf("跳过的不该计数，实得 %d", got)
 	}
 	if main, urgent := pool2.QueueDepths(); main+urgent != 0 {
@@ -584,7 +586,7 @@ func TestRequeueFailedTaskSpillsInsteadOfFailingOnQueueFull(t *testing.T) {
 
 	row := actionRow(9, "stub")
 	row.Status = models.TaskStatusFailed
-	if !e.requeueFailedTask("")(row) {
+	if !e.requeueFailedTask()(row) {
 		t.Fatal("溢出留库算投递成功（drain 会回灌），不该报失败")
 	}
 	if got := e.spilledCount.Load(); got != 1 {
@@ -596,7 +598,7 @@ func TestRequeueFailedTaskSpillsInsteadOfFailingOnQueueFull(t *testing.T) {
 	if writes := f.written(); strings.Contains(writes, "重新投递失败") {
 		t.Fatalf("队列满不等于重投失败，不该把这行标成终态失败：\n%s", writes)
 	}
-	if got := e.errorQueue(errorQueueKey("")).retried.Load(); got != 1 {
+	if got := e.errorQueue.retried.Load(); got != 1 {
 		t.Fatalf("溢出留库应当照样计数（它确实被重投了），实得 %d", got)
 	}
 }

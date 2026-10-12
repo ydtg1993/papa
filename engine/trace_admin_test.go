@@ -226,7 +226,7 @@ func TestRunAttemptWritesStepsThroughFinish(t *testing.T) {
 	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/traced"}); err != nil {
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/traced"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 

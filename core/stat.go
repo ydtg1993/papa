@@ -47,19 +47,12 @@ type QueueStats struct {
 
 // SiteStat 站点维度的快照：站点是谁 + 它攒下来的慢变统计（后台顶部站点 Tab 与「站点」页读它）。
 //
-// 与 StageStats 的分工：池子/队列那些**实时**数字在各自的快照里（`StageStats.Site` 与
-// `repeat_queue:<站点>` 队列名都带站点维度），这里不重复它们。
-// 时间用零值表示"从未"（前端 `fmtAgo` 会把 0001 年判成从未），与 QueueStat 同一约定。
+// 与 StageStats 的分工：池子/队列那些**实时**数字在各自的快照里（`StageStats.Site` 带站点维度），
+// 这里不重复它们。时间用零值表示"从未"（前端 `fmtAgo` 会把 0001 年判成从未），与 QueueStat 同一约定。
 type SiteStat struct {
 	Key        string `json:"key"`
 	BaseURL    string `json:"base_url"`    // 启动时抄的：改声明要重启，直接改库不生效
-	AutoRepeat bool   `json:"auto_repeat"` // 是否自动轮询（库为事实）
 	StageCount int    `json:"stage_count"` // 阶段数
-
-	LastRepeatAt    time.Time `json:"last_repeat_at"`
-	RepeatTotal     int64     `json:"repeat_total"`
-	RepeatBacklog   int64     `json:"repeat_backlog"`
-	LastRepeatError string    `json:"last_repeat_error"` // 空 = 正常
 
 	BreakerPaused   bool      `json:"breaker_paused"`
 	BreakerPausedAt time.Time `json:"breaker_paused_at"`

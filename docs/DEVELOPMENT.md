@@ -95,7 +95,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   entry.go     阶段入口（fetcher 可选实现 SubmitEntries，框架启动时调）
   restricted.go 受限页判定（站点词表从 task.Site 取）
   deps.go      阶段依赖声明（NeedsFiledown / NeedsM3U8 的启动期校验）
-  queuestats.go 三条治理队列的运行快照与积压（按站点拆）
+  queuestats.go 三条治理队列的运行快照与积压（全局各一条）
   alias.go     给 core 里的值类型留的别名（见文末）
   recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用
@@ -156,15 +156,14 @@ pkg/notify ──► core
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |
-| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `AutoRepeat` / 三个治理队列（`ErrorQueue` / `RecoverQueue` / `RepeatQueue`）/ `Stages` | `internal/app/SiteSpec` |
+| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
 | 执行 | **每站每阶段一个 workerpool**（阶段名跨站唯一，所以"阶段"天然等于"站点+阶段"） | `engine.stage.go` 建池那一段 |
 | 执行 | 每站一把熔断闸门（默认 scope 用 `crawler.breaker` 那把） | `engine.SetSiteBreaker` / `breakerFor` |
-| 执行 | **每站一条周期轮询队列**（各自的锁、计数、ticker、手动入口） | `engine.repeatpoll.go`（队列名 `repeat_queue:<站点>`） |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
-| 统计 | 阶段快照带 `site`（后台的站点 Tab 靠它分组）；队列快照按队列名分站；熔断状态带 `Site` | `core.StageStats` / `core.QueueStat` / `core.BreakerStatus` |
-| 统计 | `crawler_sites` 站点表（启动按声明播种、轮询统计按列回写）+ 内存快照 | `models/crawler_site.go`、`engine/sitestat.go` |
-| 后台 | 顶部站点 Tab、每站一行轮询队列、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
-| 数据 | 任务的 `site` 列（引擎按目标阶段自动填，重投路径照抄回来） | `models/crawler_task.go`、`engine.submit.go` |
+| 统计 | 阶段快照带 `site`（后台的站点 Tab 靠它分组）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
+| 统计 | `crawler_sites` 站点表（启动按声明播种、熔断状态按列回写）+ 内存快照 | `models/crawler_site.go`、`engine/sitestat.go` |
+| 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
+| 数据 | 任务的 `site` 列（提交时显式带，重投路径照抄回来） | `models/crawler_task.go`、`engine.submit.go` |
 
 ### 全局，且**有意**如此（别想着分站）
 
@@ -176,22 +175,16 @@ pkg/notify ──► core
   按站点分流出口是业务自己的事（`papa.WithProxyURL`）。
 - **操作日志/访问令牌**：与站点无关（前者记的是后台动作，后者是后台的凭据）。
 
-### 按站点切的进度：刀 B 已切完；`crawler` 那四项**有意**保持全局
+### 按站点切的进度：三队列已**并回全局**；`crawler` 那四项**有意**保持全局
 
-- ~~**`error_queue` / `recover_queue` / `repeat_queue`**~~：已按站点拆（各自的键/锁/计数/ticker，
-  查询带 `site = ?`），后台每站一行。
-- ~~**三个治理队列的配置**~~：已**整段搬进站点声明**（`ErrorQueue` / `RecoverQueue` / `RepeatQueue`；
-  每条站点声明都得写全，不跑哪条就写 `Enabled: &false` 一行）。`config.yaml` 里再写 `error_queue:`
-  这类段会被「未知配置键」拒绝启动、并指路到声明文件。**后台热更整套取消**（`/api/config` 与
-  `runtime.yaml` 都没了：改配置 = 改站点声明 + 重启）。
-  **代价**：未归属（任务的 `site` 为空）的任务**不再有治理队列** —— 默认 scope 没有站点声明可挂，
-  错误重投 / 启动恢复 / 周期轮询对它一律不跑。老库里 `site = ''` 的行要治理，得先在数据侧给它们归站。
+- **`error_queue` / `recover_queue` / `repeat_queue` 现在是全局各一条**（不再按站点拆）：
+  各一段写在 `config.yaml` 里，后台各占一行。当初按站点拆没有收益（三队列本质都是对
+  `crawler_tasks` 表的一次复查），反而让"一个阶段占一个协程空等"的多站开销被放大 —— 已并回全局。
 - **`crawler` 的四项有意留在 `config.yaml`（定过的，不是待办）**：`queue_watermark`（`engine/stage.go`
   建池那行）、`archive.*`（`engine/archive.go`，落盘路径按阶段分子目录 —— 阶段名跨站唯一，天然分站）、`trace.*`
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
   它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
-  （原来这里记着"归刀 B2"—— 那一刀**不做了**。真要逐站调，改的是阶段参数 `StageSpec` 与站点声明上那几项。）
 - **`dedupCache` 是"按 key 分、预算共享"**：key 是 `stage|url`（阶段唯一 → 天然分站），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
   不影响正确性 —— 想每站一份预算就是"去重缓存按站点"那一项。

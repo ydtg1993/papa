@@ -2,9 +2,7 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
@@ -49,7 +47,6 @@ func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 }
 
 // RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 AutoStart 策略）、站点快照、按站的熔断阈值。
-// 参数解析与校验的纯函数部分在 app_extra_test.go 里；这里测的是**接线**。
 func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
@@ -66,14 +63,9 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	}
 
 	entry := &entryStageFetcher{} // 阶段 review：实现了 SubmitEntries（入口任务）
-	noAuto := false               // 站点 a 显式关掉自动轮询（站点 b 不写 = 自动）
-	on := true
-	errA, recA, repA := queueSpecs(&on) // 三条队列都得声明（漏了 RegisterSites 直接 panic）
-	errB, recB, repB := queueSpecs(&on)
 	a.RegisterSites(
 		SiteSpec{
-			Key: "a", BaseURL: "https://a.example/", AutoRepeat: &noAuto,
-			ErrorQueue: errA, RecoverQueue: recA, RepeatQueue: repA,
+			Key: "a", BaseURL: "https://a.example/",
 			Headers:            map[string]string{"User-Agent": "ua-a"},
 			RestrictedKeywords: []string{"安全验证"},
 			Breaker:            &BreakerSpec{Enabled: true, Threshold: 7, Window: "2m"},
@@ -84,22 +76,15 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 			}},
 		},
 		SiteSpec{
-			Key:        "b",
-			ErrorQueue: errB, RecoverQueue: recB, RepeatQueue: repB,
+			Key:    "b",
 			Stages: []StageSpec{{Fetcher: namedFetcher{name: "detail"}, WorkerCount: 1, QueueSize: 8}},
 		},
 	)
 
-	// ① 站点快照：Key/BaseURL/站点级头/受限页文案/是否自动轮询
+	// ① 站点快照：Key/BaseURL/站点级头/受限页文案
 	got, ok := a.Site("a")
 	if !ok || got.BaseURL != "https://a.example/" || got.Headers["User-Agent"] != "ua-a" {
 		t.Fatalf("App.Site(a) = %+v", got)
-	}
-	if got.AutoRepeat {
-		t.Fatalf("声明里显式写了 AutoRepeat: false，快照应当是关的：%+v", got)
-	}
-	if b, ok := a.Site("b"); !ok || !b.AutoRepeat {
-		t.Fatalf("没写 AutoRepeat 的站点应当按自动处理：%+v", b)
 	}
 	if len(got.RestrictedKeywords) != 1 || got.RestrictedKeywords[0] != "安全验证" {
 		t.Fatalf("站点受限页文案没带上：%+v", got)
@@ -165,198 +150,5 @@ func TestBreakerSpecToConfig(t *testing.T) {
 	// 窗口写错：报错（不是在运行期崩）
 	if _, err := (BreakerSpec{Enabled: true, Window: "两分钟"}).toConfig(def); err == nil {
 		t.Fatal("窗口解析失败应当报错")
-	}
-}
-
-// queueSpecs 三条队列都开着的最小声明：RegisterSites 要求**三条都得写**（见 SiteSpec 的注释）。
-func queueSpecs(on *bool) (*ErrorQueueSpec, *RecoverQueueSpec, *RepeatQueueSpec) {
-	return &ErrorQueueSpec{Enabled: on, WorkerCount: 1, Interval: "4h", MaxRetry: 3, BatchSize: 100},
-		&RecoverQueueSpec{Enabled: on, WorkerCount: 1, BatchSize: 100},
-		&RepeatQueueSpec{Enabled: on, WorkerCount: 1, Interval: "2h", BatchSize: 100}
-}
-
-// 三队列声明：写全了原样解析成引擎侧的生效值；关掉只写 Enabled: &false 一行，解析出来是零值（= 不跑）。
-func TestSiteQueueSpecsResolveToEngineValues(t *testing.T) {
-	on, off := true, false
-
-	site := SiteSpec{Key: "a",
-		ErrorQueue:   &ErrorQueueSpec{Enabled: &on, WorkerCount: 3, Interval: "30m", MaxRetry: 5, BatchSize: 100},
-		RecoverQueue: &RecoverQueueSpec{Enabled: &on, WorkerCount: 2, BatchSize: 50},
-		RepeatQueue:  &RepeatQueueSpec{Enabled: &on, WorkerCount: 1, Interval: "2h", BatchSize: 200},
-	}
-	wantError := config.ErrorQueueConfig{Enabled: true, WorkerCount: 3, Interval: 30 * time.Minute, MaxRetry: 5, BatchSize: 100}
-	if got, err := site.errorQueueConfig(); err != nil || got != wantError {
-		t.Fatalf("errorQueueConfig = %+v / %v, want %+v", got, err, wantError)
-	}
-	wantRecover := config.RecoverQueueConfig{Enabled: true, WorkerCount: 2, BatchSize: 50}
-	if got, err := site.recoverQueueConfig(); err != nil || got != wantRecover {
-		t.Fatalf("recoverQueueConfig = %+v / %v, want %+v", got, err, wantRecover)
-	}
-	wantRepeat := config.RepeatQueueConfig{Enabled: true, WorkerCount: 1, Interval: 2 * time.Hour, BatchSize: 200}
-	if got, err := site.repeatQueueConfig(); err != nil || got != wantRepeat {
-		t.Fatalf("repeatQueueConfig = %+v / %v, want %+v", got, err, wantRepeat)
-	}
-
-	// 关着的队列不看参数：其余字段一个都不写也照样解析（引擎那边 = 这一站不跑这条队列）
-	closed := SiteSpec{Key: "a",
-		ErrorQueue:   &ErrorQueueSpec{Enabled: &off},
-		RecoverQueue: &RecoverQueueSpec{Enabled: &off},
-		RepeatQueue:  &RepeatQueueSpec{Enabled: &off},
-	}
-	if got, err := closed.errorQueueConfig(); err != nil || got != (config.ErrorQueueConfig{}) {
-		t.Fatalf("关着的错误队列应当是零值：%+v / %v", got, err)
-	}
-	if got, err := closed.recoverQueueConfig(); err != nil || got != (config.RecoverQueueConfig{}) {
-		t.Fatalf("关着的启动恢复应当是零值：%+v / %v", got, err)
-	}
-	if got, err := closed.repeatQueueConfig(); err != nil || got != (config.RepeatQueueConfig{}) {
-		t.Fatalf("关着的轮询队列应当是零值：%+v / %v", got, err)
-	}
-}
-
-// 漏写 / 缺项 / 越界一律报错（RegisterSites 会 panic 点名），且必须说清是哪条队列的哪一项。
-func TestSiteQueueSpecsRejectIncompleteDeclarations(t *testing.T) {
-	on := true
-	full := func() *ErrorQueueSpec {
-		return &ErrorQueueSpec{Enabled: &on, WorkerCount: 1, Interval: "4h", MaxRetry: 3, BatchSize: 100}
-	}
-	bad := []struct {
-		name string
-		want string
-		run  func() error
-	}{
-		{"漏了 ErrorQueue 整条", "ErrorQueue", func() error {
-			_, err := SiteSpec{}.errorQueueConfig()
-			return err
-		}},
-		{"漏了 RecoverQueue 整条", "RecoverQueue", func() error {
-			_, err := SiteSpec{}.recoverQueueConfig()
-			return err
-		}},
-		{"漏了 RepeatQueue 整条", "RepeatQueue", func() error {
-			_, err := SiteSpec{}.repeatQueueConfig()
-			return err
-		}},
-		{"Enabled 漏写", "Enabled", func() error {
-			q := full()
-			q.Enabled = nil
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"WorkerCount 为 0", "WorkerCount", func() error {
-			q := full()
-			q.WorkerCount = 0
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"BatchSize 为 0", "BatchSize", func() error {
-			q := full()
-			q.BatchSize = 0
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"MaxRetry 为负", "MaxRetry", func() error {
-			q := full()
-			q.MaxRetry = -1
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"Interval 漏写", "Interval", func() error {
-			q := full()
-			q.Interval = ""
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"Interval 解析不了", "Interval", func() error {
-			q := full()
-			q.Interval = "nonsense"
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"Interval 为负", "Interval", func() error {
-			q := full()
-			q.Interval = "-1h"
-			_, err := SiteSpec{ErrorQueue: q}.errorQueueConfig()
-			return err
-		}},
-		{"recover 的 WorkerCount 为 0", "WorkerCount", func() error {
-			_, err := SiteSpec{RecoverQueue: &RecoverQueueSpec{Enabled: &on, BatchSize: 100}}.recoverQueueConfig()
-			return err
-		}},
-		{"repeat 的 Interval 漏写", "Interval", func() error {
-			_, err := SiteSpec{RepeatQueue: &RepeatQueueSpec{Enabled: &on, WorkerCount: 1, BatchSize: 100}}.repeatQueueConfig()
-			return err
-		}},
-		{"repeat 的 Interval 为 0", "Interval", func() error {
-			_, err := SiteSpec{RepeatQueue: &RepeatQueueSpec{Enabled: &on, WorkerCount: 1, Interval: "0", BatchSize: 100}}.repeatQueueConfig()
-			return err
-		}},
-	}
-	for _, tc := range bad {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.run()
-			if err == nil {
-				t.Fatal("应当报错")
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("报错要说清是哪一项（%s）：%v", tc.want, err)
-			}
-		})
-	}
-}
-
-// 三条队列是**注册时的硬要求**：漏一条、开了缺项、或给未归属（Key 为空）的声明配队列，RegisterSites 直接 panic。
-func TestRegisterSitesRequiresQueueDeclarations(t *testing.T) {
-	on := true
-	all := func() (*ErrorQueueSpec, *RecoverQueueSpec, *RepeatQueueSpec) { return queueSpecs(&on) }
-	cases := []struct {
-		name string
-		want string // panic 信息里必须点名到哪儿
-		site func() SiteSpec
-	}{
-		{"漏了 ErrorQueue", "ErrorQueue", func() SiteSpec {
-			_, rec, rep := all()
-			return SiteSpec{Key: "a", RecoverQueue: rec, RepeatQueue: rep}
-		}},
-		{"漏了 RecoverQueue", "RecoverQueue", func() SiteSpec {
-			errQ, _, rep := all()
-			return SiteSpec{Key: "a", ErrorQueue: errQ, RepeatQueue: rep}
-		}},
-		{"漏了 RepeatQueue", "RepeatQueue", func() SiteSpec {
-			errQ, rec, _ := all()
-			return SiteSpec{Key: "a", ErrorQueue: errQ, RecoverQueue: rec}
-		}},
-		{"开了却缺参数", "WorkerCount", func() SiteSpec {
-			errQ, rec, rep := all()
-			errQ.WorkerCount = 0
-			return SiteSpec{Key: "a", ErrorQueue: errQ, RecoverQueue: rec, RepeatQueue: rep}
-		}},
-		{"未归属（Key 为空）却配了队列", "未归属", func() SiteSpec {
-			errQ, rec, rep := all()
-			return SiteSpec{ErrorQueue: errQ, RecoverQueue: rec, RepeatQueue: rep}
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			cfg.Crawler.DrainInterval = time.Hour
-			e := noDBEngine(t, cfg)
-			t.Cleanup(func() { e.Stop(time.Millisecond) })
-			a := &App{
-				Config: cfg, Engine: e,
-				Logger: &loggers.LoggerSet{Engine: quietLogger()},
-				sites:  map[string]core.Site{},
-			}
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatalf("%s：应当 panic", tc.name)
-				}
-				if !strings.Contains(fmt.Sprint(r), tc.want) {
-					t.Fatalf("panic 信息里缺 %q：%v", tc.want, r)
-				}
-			}()
-			a.RegisterSites(tc.site())
-		})
 	}
 }

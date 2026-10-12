@@ -17,7 +17,7 @@ import (
 // 为什么要在项目里生成一个小程序再跑：站点与阶段声明是**项目自己的 Go 代码**
 //（`configs/sites/*.go` 在 init() 里自登记），只有把它编译进去才读得到 —— CLI 是另一个模块，
 // 看不见项目的包。而 `RegisterSites` 那套校验平时要连库、建池才会跑到。
-// 生成的那个程序只调框架的**纯校验** `papa.CheckSites`（阶段名重复、三个治理队列漏写/缺项、
+// 生成的那个程序只调框架的**纯校验** `papa.CheckSites`（阶段名重复、
 // 熔断阈值、Delay 与 Backoff 的写法），所以不连库、不建池、不改任何状态。
 //
 // 生成的目录是项目里的 `.papa-check/`（点开头，工具链与编辑器默认不当源码看），跑完立刻删。
@@ -61,7 +61,7 @@ func main() {
 	for _, line := range papa.DescribeDownloadOverlays(sites...) {
 		fmt.Println("  · 下载器覆盖 " + line + "（阶段 > 站点，其余项用框架默认那份）")
 	}
-	fmt.Println(fmt.Sprintf("✓ %d 个站点声明都合法（阶段名、三个治理队列、熔断阈值、Delay / Backoff 写法都查过）", len(sites)))
+	fmt.Println(fmt.Sprintf("✓ %d 个站点声明都合法（阶段名、熔断阈值、Delay / Backoff 写法都查过）", len(sites)))
 }
 
 // loadConfig 读配置：框架的配置校验是 panic 式的（"启动即失败"那条），这里转成 error 交给人看。

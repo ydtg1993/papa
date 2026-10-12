@@ -15,21 +15,17 @@
 
 ## 1. 配置
 
-**不在 config.yaml 里**：按站点写在 `configs/sites/<站名>.go` 的站点声明上（三队列都得写全，
-见 [CORE_CONFIG.md](./CORE_CONFIG.md)）：
+写在 `configs/config.yaml` 的全局段（**不再按站点拆**）：
 
-```go
-	RecoverQueue: &papa.RecoverQueueSpec{
-		Enabled:     &on,  // 必写；&off = 这一站不做启动恢复
-		WorkerCount: 2,    // 并发重新入队的数量，> 0
-		BatchSize:   100,  // 每批查询处理的任务数，> 0（分页流式）
-	},
+```yaml
+recover_queue:
+  enabled: true               # 启动恢复；false / 不写 = 不跑
+  worker_count: 2             # 并发重新入队的数量，开启时必填 > 0
+  batch_size: 100             # 每批查询处理的任务数，开启时必填 > 0（分页流式）
 ```
 
-启动时逐站点按各自的声明恢复；未归属（任务的 `site` 为空）的任务没有声明可挂，**不恢复**。
-
-这个类型上**没有 `interval` / `max_retry`** —— 它只在启动跑一次，没有"多久跑一次"也
-没有"再处理代数"这回事，写错是**编译期**错误。配置里**没有** `interval` 和 `timeout`，理由见下节。
+启动时全局扫一次（不再逐站点）。这个类型上**没有 `interval` / `max_retry`** —— 它只在启动跑一次，
+没有"多久跑一次"也没有"再处理代数"这回事，配置里**没有** `interval` 和 `timeout`，理由见下节。
 
 ## 2. 为什么不按超时判「卡死」
 

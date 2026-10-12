@@ -10,20 +10,11 @@ import (
 )
 
 // 真库才看得见的一类坑：**gorm 对"带 `default:` 的非指针字段 + 零值"会把零值替换成默认值**
-// （结构体与写库的值都被改掉）。于是 `AutoRepeat: &false` 这种显式声明会被静默写成 true，
-// 站点第二次启动按"库为事实"就把自动轮询开起来了 —— 与声明的意思正好相反，而且不报错。
+// （结构体与写库的值都被改掉）。于是 `Enabled: false` 这种显式声明会被静默写成 true。
 //
 // 这里用 DryRun 钉住"显式写的 false 就该是 false"（假库不跑 gorm 的默认值逻辑，测不出来）。
 func TestCreateKeepsExplicitFalse(t *testing.T) {
 	db := dryRun(t)
-
-	site := CrawlerSite{Key: "a", BaseURL: "https://x/", AutoRepeat: false}
-	if err := db.Create(&site).Error; err != nil {
-		t.Fatalf("create site: %v", err)
-	}
-	if site.AutoRepeat {
-		t.Error("CrawlerSite.AutoRepeat 显式传 false，写完后被改成了 true —— 站点声明的 &false 会被静默反转")
-	}
 
 	token := AccessToken{Operator: "alice", TokenHash: strings.Repeat("a", 64), Enabled: false}
 	if err := db.Create(&token).Error; err != nil {

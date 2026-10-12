@@ -18,17 +18,17 @@ import (
 //  3. **想临时一份**（只给这一次调用）就自己在 fetcher 里造：`M3U8ForTask(task).With(ov)`，
 //     或者干脆 `m3u8.NewDownloader(&cfg)` —— 后者是孤岛（谁也不共享），代价自负，框架不拦。
 
-// SiteDownloads 站点级的下载器覆盖层（`App.RegisterSites` 调 —— 与 `SetSiteQueues` 同一时机与约定）。
+// SiteDownloads 站点级的下载器覆盖层（`App.RegisterSites` 调）。
 //
 // 为什么不塞进 `core.Site`：core 是**只 import 标准库**的叶子包（见它的包注释），把 m3u8/filedown
-// 的配置类型放进去会让依赖图整个倒过来。所以站点级的"引擎侧配置"（队列、下载器覆盖）都走这类显式 Set。
+// 的配置类型放进去会让依赖图整个倒过来。所以站点级的"引擎侧配置"（下载器覆盖）走这类显式 Set。
 type SiteDownloads struct {
 	M3U8     *m3u8.Overlay
 	FileDown *filedown.Overlay
 }
 
 // SetSiteDownloads 登记某站点的下载器覆盖层。site 为空是非法参数（那是"未归属"的默认 scope）：
-// 与 SetSiteQueues 同一条约定 —— 要给未归属的任务换下载器，先给那一站一个 Key。
+// 要给未归属的任务换下载器，先给那一站一个 Key。
 // 必须在 `ApplyRegisterStage` 之前调（之后解析一次，不再变）。
 func (e *Engine) SetSiteDownloads(site string, d SiteDownloads) {
 	if site == "" {

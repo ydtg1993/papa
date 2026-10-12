@@ -40,8 +40,7 @@ mycrawler/
   configs/
     config.yaml            配置（先把 db.dsn 指向你的库）
     whitelist              后台来源白名单（全注释＝不限制，启动会警告）
-    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers / AutoRepeat
-                            + 三个治理队列（ErrorQueue / RecoverQueue / RepeatQueue）
+    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers
                             + 每个阶段的 worker_count / queue_size / delay / retry / AutoStart
   fetcher/                 抓取实现（一个阶段一个 fetcher；想按站点分包也行，加站不必先分包）
   models/                  业务表模型 + 建表清单（models.go）
@@ -56,8 +55,8 @@ mycrawler/
   `papa.Sites()` 收集，`main.go` 不用动（阶段名跨站要唯一，约定带站点前缀）。
 - **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
   yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
-- **三个治理队列（error_queue / recover_queue / repeat_queue）同样不在 `config.yaml` 里**：按站点声明，
-  三条都得写（不跑哪条就写 `Enabled: &false` 一行）；yaml 里留那三段会被"未知配置键"拦下并指路。
+- **三个治理队列（error_queue / recover_queue / repeat_queue）在 `config.yaml` 里全局配**：
+  没写哪段 = 那条不跑；开了（`enabled: true`）就得写全，缺一项 / 越界启动就报。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
 
 ### `papa check` 校验声明（不用起库）
@@ -77,8 +76,6 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 查的是 `RegisterSites` 会在启动时 panic 的那些事，而且**一次报全**（不是报第一条就停）：
 
 ```
-站点 "a" 的错误队列: ErrorQueue 没有声明 —— 三个治理队列都要写（ErrorQueue / RecoverQueue / RepeatQueue）…
-站点 "b" 的错误队列: ErrorQueue.Interval 无法解析: time: unknown unit " 小时" in duration "4 小时"
 站点 b 的第 1 个阶段: 阶段 "same" 重复声明（已在 站点 a 声明过）—— 多站时阶段名要能区分，约定带站点前缀…
 ```
 
@@ -123,18 +120,13 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 `go.mod` 都不会被覆盖 —— 生成物一旦落地就归项目所有，照模板覆盖等于抹掉你的改动。它们该改什么，
 报告最后给一张清单（含从 `go.mod` 读出的框架版本与 `replace` 目标）。
 
-例子（升到「队列参数搬进站点声明」那一版时，huangguo 的实际输出节选）：
+例子（升到「三队列并回 config.yaml 全局段」那一版时，站点声明里还留着旧类型名的实际输出节选）：
 
 ```
-【config.yaml】
-  读不了 —— 这就是启动时会 panic 的那条：
-    config: 未知配置键
-      未知配置键："error_queue"、"recover_queue"、"repeat_queue"
-      error_queue → 已搬进站点声明：configs/sites/<站名>.go 的 SiteSpec.ErrorQueue
-      ...
 【站点声明】
-  ！没看到 ErrorQueueSpec / RecoverQueueSpec / RepeatQueueSpec —— 三个治理队列**每条站点声明都要写**
-     （不跑哪条就写 Enabled: &false 一行），漏了启动就 panic；见 docs/CORE_CONFIG.md
+  ！站点声明里还有 ErrorQueueSpec / RecoverQueueSpec / RepeatQueueSpec —— 三个治理队列已回
+     config.yaml 的全局段（error_queue / recover_queue / repeat_queue），删掉站点声明里的这些旧类型；
+     见 docs/CORE_CONFIG.md
 ```
 
 > 框架版本还没发布时，`go.mod` 里用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>`

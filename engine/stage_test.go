@@ -73,7 +73,7 @@ func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 	n := &recordingNotifier{}
 	e.AddNotifier(n)
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com", Retry: 2}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", Retry: 2}
 
 	// 可重试的错误 → warn 级；但同样是"终态失败"，照样计数
 	e.notifyFailure(context.Background(), task, errors.New("网络抖动"))
@@ -127,7 +127,7 @@ func TestNotifyFailureSwallowsNotifierError(t *testing.T) {
 	n := &recordingNotifier{err: errors.New("webhook 500")}
 	e.AddNotifier(n)
 
-	e.notifyFailure(context.Background(), &Task{Stage: "stub", URL: "u"}, errors.New("boom"))
+	e.notifyFailure(context.Background(), &Task{Stage: "stub", Site: "stub", URL: "u"}, errors.New("boom"))
 	if len(n.snapshot()) != 1 {
 		t.Fatal("通知器应当被调用过")
 	}
@@ -146,7 +146,7 @@ func TestNotifyBreakerTripEmitsCritical(t *testing.T) {
 	e.AddNotifier(n)
 
 	e.notifyBreakerTrip(core.BreakerStatus{
-		Reason: "窗口内终态失败数达到阈值", Stage: "stub", Window: time.Minute, Failures: 50, Threshold: 50,
+		Reason: "窗口内终态失败数达到阈值", Stage: "stub", Site: "stub", Window: time.Minute, Failures: 50, Threshold: 50,
 	})
 
 	events := n.snapshot()
@@ -258,7 +258,7 @@ func TestApplyRegisterStageRunsTaskEndToEnd(t *testing.T) {
 		t.Fatal("ApplyRegisterStage 应把阶段的工作池建起来")
 	}
 
-	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	fetcher.waitCalls(t, 1)
@@ -347,7 +347,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	e.ApplyRegisterStage() // worker 一起来就停在闸门前
 
 	// 暂停中提交：任务进队但不会被取走，队列原封不动躺着（后台能直接看到积压）
-	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/paused"}); err != nil {
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/paused"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	time.Sleep(80 * time.Millisecond)
@@ -414,7 +414,7 @@ func TestStopIsNotBlockedByPostSuccessDelay(t *testing.T) {
 	}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	fetcher.waitCalls(t, 1)
@@ -447,7 +447,7 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	fetcher.waitCalls(t, 1)
@@ -501,10 +501,10 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 
 	var submitErrs []error
 	e.AddStage("a", stageCfg, fetcherA, func(eng *Engine) {
-		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "b", URL: "https://example.com/init-b"}))
+		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "b", Site: "b", URL: "https://example.com/init-b"}))
 	})
 	e.AddStage("b", stageCfg, fetcherB, func(eng *Engine) {
-		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "a", URL: "https://example.com/init-a"}))
+		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "a", Site: "a", URL: "https://example.com/init-a"}))
 	})
 
 	e.ApplyRegisterStage() // 原来这里会 panic
@@ -535,7 +535,7 @@ func TestSubmitBeforeApplyRegisterStageFails(t *testing.T) {
 	// 把池子摘掉，模拟"注册了但还没走到 ApplyRegisterStage"
 	e.stages["stub"].workerPool = nil
 
-	err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"})
+	err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"})
 	if err == nil {
 		t.Fatal("池子没建时应报错，而不是 panic")
 	}
@@ -613,7 +613,7 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 	}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	// 上限给足：这个用例的 backoff 就是 3s，用默认的 3s 上限会正好卡在截止线上

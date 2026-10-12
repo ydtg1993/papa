@@ -8,14 +8,15 @@ import (
 
 func TestEngineQueueMetrics(t *testing.T) {
 	e := &Engine{metrics: metrics.New()}
+	e.errorQueue = &errorQueueState{}
+	e.repeatQueue = &repeatQueueState{}
 	e.spilled = map[string][]*Task{
 		"a": {{}, {}},
 		"b": {{}},
 	}
 	e.spilledCount.Store(10)
 	e.recoveredCount.Store(5)
-	e.ensureErrorQueues()
-	e.errorQueue(errorQueueKey("")).retried.Store(3)
+	e.errorQueue.retried.Store(3)
 	e.RecordMetric("custom", 42)
 
 	got := e.GetMetrics()

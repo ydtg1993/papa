@@ -278,19 +278,17 @@ func checkSiteDeclarations(root string) (files []string, notes []string) {
 	if len(files) == 0 {
 		return nil, nil
 	}
-	if strings.Contains(all, "papa.QueueSpec") {
-		notes = append(notes, "还有 papa.QueueSpec（已拆成 ErrorQueueSpec / RecoverQueueSpec / RepeatQueueSpec）")
-	}
-	var missing []string
-	for _, want := range []string{"papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
-		if !strings.Contains(all, want) {
-			missing = append(missing, strings.TrimPrefix(want, "papa."))
+	// 三个治理队列现在回到了 config.yaml 的全局段：站点声明里**不该再出现**那几类 *QueueSpec。
+	var stale []string
+	for _, want := range []string{"papa.QueueSpec", "papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
+		if strings.Contains(all, want) {
+			stale = append(stale, strings.TrimPrefix(want, "papa."))
 		}
 	}
-	if len(missing) > 0 {
-		notes = append(notes, "没看到 "+strings.Join(missing, " / ")+
-			" —— 三个治理队列**每条站点声明都要写**（不跑哪条就写 Enabled: &false 一行），"+
-			"漏了启动就 panic；见 docs/CORE_CONFIG.md")
+	if len(stale) > 0 {
+		notes = append(notes, "站点声明里还有 "+strings.Join(stale, " / ")+
+			" —— 三个治理队列已回 config.yaml 的全局段（error_queue / recover_queue / repeat_queue），"+
+			"删掉站点声明里的这些旧类型；见 docs/CORE_CONFIG.md")
 	}
 	return files, notes
 }

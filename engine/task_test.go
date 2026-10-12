@@ -49,7 +49,7 @@ func TestTaskDeliverAt(t *testing.T) {
 func TestUpdateStatusOnlyTouchesItsOwnColumns(t *testing.T) {
 	f := newFakeTaskDB()
 	db := openFakeTaskDB(t, f)
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com"}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 
 	if !task.UpdateStatus(db, models.TaskStatusSuccess, nil) {
 		t.Fatal("正常路径应返回 true")
@@ -90,7 +90,7 @@ func TestSubmitTaskPersistsMeta(t *testing.T) {
 	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
 	task := &Task{
-		Stage: "stub", URL: "https://example.com/1",
+		Stage: "stub", Site: "stub", URL: "https://example.com/1",
 		Meta: map[string]string{"series_id": "119002", "episode_id": "3"},
 	}
 	if err := e.SubmitTask(task); err != nil {
@@ -129,13 +129,13 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 			return nil
 		}},
 		{"轮询队列", func(e *Engine, row *models.CrawlerTask) error {
-			if !e.requeueRepeatTask("")(row) {
+			if !e.requeueRepeatTask()(row) {
 				return errors.New("requeueRepeatTask 返回 false")
 			}
 			return nil
 		}},
 		{"错误队列", func(e *Engine, row *models.CrawlerTask) error {
-			if !e.requeueFailedTask("")(row) {
+			if !e.requeueFailedTask()(row) {
 				return errors.New("requeueFailedTask 返回 false")
 			}
 			return nil
@@ -160,7 +160,7 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 			t.Cleanup(func() { pool.Stop(time.Second) })
 
 			row := &models.CrawlerTask{
-				ID: 7, Stage: "stub", URL: "https://example.com",
+				ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com",
 				Status: models.TaskStatusPending, Repeatable: models.RepeatableYes,
 				Meta: datatypes.JSON(metaJSON),
 			}
@@ -200,7 +200,7 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 	t.Cleanup(func() { pool.Stop(time.Second) })
 
 	row := &models.CrawlerTask{
-		ID: 7, Stage: "stub", URL: "https://example.com",
+		ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com",
 		Status: models.TaskStatusPending, Meta: datatypes.JSON(broken),
 	}
 	if !e.requeueRecoverTask(row) {
@@ -219,20 +219,18 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 
 // 站点归属随行落库，也在重建路径上还原 —— 和 Meta 同一套机制（P0 的 taskFromRecord 是唯一入口）。
 //
-// 站点由**目标阶段**决定：调用方投任务时不用自己写 site，引擎按"这个阶段属于哪个站"补上；
-// 于是跨站派发（A 站的 catalog 投给 B 站的 detail）自然落到 B 站，不需要业务传参。
+// 站点由**提交方显式带**：调用方投任务时必须写 site；引擎原样落库，重建（恢复/重投）时原样带回。
 func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
 	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e.stages["stub"] = &stageInfo{workerPool: e.stages["stub"].workerPool, config: StageConfig{Site: "huangguo"}}
 
-	task := &Task{Stage: "stub", URL: "https://example.com/1"}
+	task := &Task{Stage: "stub", Site: "huangguo", URL: "https://example.com/1"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	if task.Site != "huangguo" {
-		t.Fatalf("站点应当由目标阶段补上，实得 %q", task.Site)
+		t.Fatalf("站点应当是提交时带的，实得 %q", task.Site)
 	}
 	if !strings.Contains(f.writtenArgs(), "huangguo") {
 		t.Fatalf("站点应随任务落库：%s", f.writtenArgs())

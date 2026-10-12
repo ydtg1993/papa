@@ -59,20 +59,11 @@ type Engine struct {
 	siteStats map[string]core.SiteStat
 	siteMu    sync.RWMutex
 
-	// 队列配置按站点存：声明层把站点声明里那三个治理队列解析好交进来，引擎按站点取
-	//（见 SetSiteQueues / errorQueueConfig(site)）。**没有运行期覆盖层** —— 改配置 = 改代码 + 重启。
-	siteQueues map[string]SiteQueues
-	queueCfgMu sync.RWMutex
+	// errorQueue / repeatQueue 失败重投与周期轮询队列：各**一条全局队列**（不再按站点拆）。
+	// 运行态在 NewEngine 里建好，之后只读。
+	errorQueue  *errorQueueState
+	repeatQueue *repeatQueueState
 
-	// errorQueues 失败重投队列：**按站点拆**（同 repeatQueues）。
-	errorQueues map[string]*errorQueueState
-
-	// repeatQueues 周期轮询队列：**按站点拆**，一个站点（或默认 scope）一份运行态。
-	// 键在启动期由 ensureRepeatQueues 备齐，之后只读（运行期往里塞键会与 GetQueueStats
-	// 的裸 range 撞成 concurrent map read and map write —— 那是进程级 fatal）。
-	repeatQueues map[string]*repeatQueueState
-
-	errorQueueMu   sync.Mutex // 串行化错误队列处理，避免自动+手动并发重复投递
 	recoverQueueMu sync.Mutex // 串行化启动恢复，避免重复投递（ProcessRecoverQueue 是导出的，业务也可能调）
 	// tickerWG 动态 ticker 的等待组：Stop 要等它们退出再返回，否则调用方看到 drained=true
 	// 就去关库，而在途的那一跳可能正在写库（`sql: database is closed`）。
@@ -200,11 +191,13 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		Window:    cfg.Crawler.Breaker.WindowOrDefault(),
 		Threshold: cfg.Crawler.Breaker.Threshold,
 	}, engine.notifyBreakerTrip)
-	// 队列的累计计数**按站点**各一份（键在 ensureErrorQueues / ensureRepeatQueues 里备齐）
-	engine.queueCounters = make(map[string]*atomic.Int64)
-	engine.errorQueues = make(map[string]*errorQueueState)
-	engine.repeatQueues = make(map[string]*repeatQueueState)
-	engine.siteQueues = make(map[string]SiteQueues)
+	// 两条治理队列（全局各一条）的运行态 + 累计计数：键就是监控面板上的队列名。
+	engine.errorQueue = &errorQueueState{}
+	engine.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)}
+	engine.queueCounters = map[string]*atomic.Int64{
+		QueueError:  &engine.errorQueue.retried,
+		QueueRepeat: &engine.repeatQueue.repolled,
+	}
 	engine.loadActiveTasks()
 	// 延迟投递 dispatcher 同样进 tickerWG：它到点时会写库（status=pending），
 	// Stop 要等它退出再返回（否则调用方关库时它可能正写到一半）。

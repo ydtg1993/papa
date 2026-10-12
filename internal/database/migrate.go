@@ -46,6 +46,10 @@ func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
 	if err := migrateTaskURLHash(db); err != nil {
 		return err
 	}
+	// 三队列并回全局后，crawler_sites 上按站点的 auto_repeat 与 repeat 统计列成了死列 —— 显式删掉。
+	if err := dropSiteQueueColumns(db); err != nil {
+		return err
+	}
 
 	all := make([]any, 0, 8)
 	for _, m := range FrameworkModels(cfg) {

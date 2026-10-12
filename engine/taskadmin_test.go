@@ -432,8 +432,8 @@ func TestSetTaskRepeatableRejections(t *testing.T) {
 func TestSetTaskRepeatableWakesQueue(t *testing.T) {
 	f := newFakeTaskDB()
 	e, _ := urgentEngine(t, f)
-	e.ensureRepeatQueue("") // 手搓的 Engine 没备队列键，唤醒得有地方落
-	wake := e.repeatQueue(repeatQueueKey("")).wake
+	e.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)} // 手搓的 Engine 没备队列态，唤醒得有地方落
+	wake := e.repeatQueue.wake
 
 	if err := e.SetTaskRepeatable(7, true); err != nil {
 		t.Fatalf("SetTaskRepeatable(7, true) = %v", err)
@@ -463,9 +463,9 @@ func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
 			e, _ := urgentEngine(t, f)
-			setSiteQueues(e, "", SiteQueues{Repeat: config.RepeatQueueConfig{Enabled: true, Interval: tc.global}})
-			e.ensureRepeatQueue("") // 队列键得先备好，唤醒才有地方落
-			wake := e.repeatQueue(repeatQueueKey("")).wake
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: tc.global}
+			e.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)} // 队列态先备好，唤醒才有地方落
+			wake := e.repeatQueue.wake
 
 			if err := e.SetTaskRepeatInterval(7, tc.was, tc.seconds); err != nil {
 				t.Fatalf("SetTaskRepeatInterval = %v", err)
@@ -535,13 +535,6 @@ func TestSetTaskRepeatIntervalRejections(t *testing.T) {
 			if errors.Is(err, ErrRepeatIntervalBad) {
 				if sql := f.written(); sql != "" {
 					t.Fatalf("非法周期不该写库：\n%s", sql)
-				}
-				return
-			}
-			// 行不存在：取 site 那一步就早退了（连 UPDATE 都不用发）
-			if errors.Is(err, ErrTaskNotFound) {
-				if sql := f.written(); sql != "" {
-					t.Fatalf("行不存在时不该写库：\n%s", sql)
 				}
 				return
 			}

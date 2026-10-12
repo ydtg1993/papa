@@ -111,24 +111,21 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		}
 	}
 
-	// 三个治理队列也搬进了站点声明：config.yaml 里**不该再有那三段**（留着会被"未知配置键"拒掉 ——
-	// 上面的 Load 成功就是证明，见 config 包的 TestMovedQueueSectionsPointToSiteDeclaration）。
+	// 三个治理队列又回到了 config.yaml 的全局段（不再按站点拆）：模板里应该有这三段。
 	cfgText := readFile(t, filepath.Join("demo", "configs", "config.yaml"))
-	for _, key := range []string{"error_queue", "recover_queue", "repeat_queue"} {
-		for _, line := range strings.Split(cfgText, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), key+":") {
-				t.Errorf("config.yaml 里不该再有 %s 这一段（已搬进站点声明）：%s", key, strings.TrimSpace(line))
-			}
+	for _, key := range []string{"error_queue:", "recover_queue:", "repeat_queue:"} {
+		if !strings.Contains(cfgText, key) {
+			t.Errorf("config.yaml 里应该有 %q 这一段（三个治理队列是全局一段）", key)
 		}
 	}
 
 	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
 	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 configs/sites/<站名>.go 声明。
 	siteSpec := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
-	// 三条队列都得写出来（这是用户照抄的范本）：少了哪条，注册时就是 panic
+	// 三队列已回 config.yaml：站点声明里**不该再有**这三段
 	for _, want := range []string{"papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
-		if !strings.Contains(siteSpec, want) {
-			t.Errorf("configs/sites/demo.go 里应当有 %s 的声明（三条队列都得写）", want)
+		if strings.Contains(siteSpec, want) {
+			t.Errorf("configs/sites/demo.go 里不该再有 %s 的声明（三队列已回 config.yaml）", want)
 		}
 	}
 	if strings.Contains(siteSpec, "Entries: map[string]string") {

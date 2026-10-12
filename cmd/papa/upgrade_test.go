@@ -35,11 +35,9 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 	writeFileT(t, filepath.Join("demo", "docs", "notes.md"), "# 我自己的笔记\n")
 	writeFileT(t, filepath.Join("demo", "docs", "samples", "keep.md"), "# 子目录不动\n")
 
-	// ② config.yaml 里塞回一段已退休的配置（新版本写入即拒绝启动）
-	cfg := filepath.Join("demo", "configs", "config.yaml")
-	writeFileT(t, cfg, readFile(t, cfg)+"\nerror_queue:\n  enabled: true\n")
+	// ② config.yaml：脚手架自带的三个队列段是合法的（队列已回 config.yaml，不是"已退休"的旧段）
 
-	// ③ 站点声明写成升级前的样子：旧类型名 + 没有三条新声明
+	// ③ 站点声明写成升级前的样子：还带着旧类型名
 	writeFileT(t, filepath.Join("demo", "configs", "sites", "demo.go"), `package sites
 
 import "github.com/ydtg1993/papa/v3"
@@ -72,22 +70,14 @@ func init() {
 	if contains(plan.DocStale, "keep.md") {
 		t.Errorf("子目录（docs/samples）不该被当成散落的 .md：%v", plan.DocStale)
 	}
-	if plan.ConfigOK {
-		t.Error("塞回已退休的段之后，config.yaml 应当读不了")
+	if !plan.ConfigOK {
+		t.Error("脚手架自带的三个队列段是合法的，config.yaml 应当读得通")
 	}
-	if !strings.Contains(plan.ConfigReport, "已搬进站点声明") {
-		t.Errorf("配置报错要带「搬去哪儿」的指路：%s", plan.ConfigReport)
+	if len(plan.SiteNotes) != 1 {
+		t.Fatalf("站点声明应当报一条（旧类型名 QueueSpec）：%v", plan.SiteNotes)
 	}
-	if len(plan.SiteNotes) != 2 {
-		t.Fatalf("站点声明应当报两条（旧类型名 + 三条缺项）：%v", plan.SiteNotes)
-	}
-	if !strings.Contains(strings.Join(plan.SiteNotes, "\n"), "papa.QueueSpec") {
+	if !strings.Contains(strings.Join(plan.SiteNotes, "\n"), "QueueSpec") {
 		t.Errorf("旧类型名要报出来：%v", plan.SiteNotes)
-	}
-	for _, want := range []string{"ErrorQueueSpec", "RecoverQueueSpec", "RepeatQueueSpec"} {
-		if !strings.Contains(strings.Join(plan.SiteNotes, "\n"), want) {
-			t.Errorf("缺的 %s 要报出来：%v", want, plan.SiteNotes)
-		}
 	}
 }
 

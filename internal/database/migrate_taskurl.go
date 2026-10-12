@@ -157,3 +157,28 @@ func createUniqueIndexIfMissing(db *gorm.DB, table, index, columns string) error
 	}
 	return db.Exec(fmt.Sprintf("CREATE UNIQUE INDEX `%s` ON `%s` (%s)", index, table, columns)).Error
 }
+
+// dropColumnIfExists 删一列（存在才删，幂等）。AutoMigrate 只增不减，删列只能这样显式来。
+func dropColumnIfExists(db *gorm.DB, table, column string) error {
+	ok, err := columnExists(db, table, column)
+	if err != nil || !ok {
+		return err
+	}
+	return db.Exec(fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`", table, column)).Error
+}
+
+// dropSiteQueueColumns 删 crawler_sites 上按站点队列时代的五列：auto_repeat 与四个 repeat 统计列。
+// 三个治理队列并回全局一条之后，这些按站点的列不再有写入方，属于死列。
+func dropSiteQueueColumns(db *gorm.DB) error {
+	const table = "crawler_sites"
+	exists, err := tableExists(db, table)
+	if err != nil || !exists {
+		return err
+	}
+	for _, col := range []string{"auto_repeat", "last_repeat_at", "repeat_total", "repeat_backlog", "last_repeat_error"} {
+		if err := dropColumnIfExists(db, table, col); err != nil {
+			return err
+		}
+	}
+	return nil
+}

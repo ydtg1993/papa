@@ -56,6 +56,7 @@ func TestSubmitTaskValidatesInput(t *testing.T) {
 	}{
 		{"stage 为空", &Task{URL: "https://example.com"}},
 		{"url 为空", &Task{Stage: "stub"}},
+		{"site 为空", &Task{Stage: "stub", URL: "https://example.com"}},
 		{"stage 不在配置里", &Task{Stage: "ghost", URL: "https://example.com"}},
 	}
 	for _, c := range cases {
@@ -85,7 +86,7 @@ func TestSubmitTaskDedupHitSkipsEverything(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com"}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com"}
 	e.dedupCache.Add(task.Unique())
 
 	if err := e.SubmitTask(task); err != nil {
@@ -106,7 +107,7 @@ func TestSubmitTaskRepeatableDedupHitRequeues(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com", Repeatable: true}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com", Repeatable: true}
 	e.dedupCache.Add(task.Unique())
 
 	if err := e.SubmitTask(task); err != nil {
@@ -126,7 +127,7 @@ func TestSubmitTaskExistingRecordWithoutIDIsSkipped(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com"}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
@@ -149,7 +150,7 @@ func TestSubmitTaskExistingRecordWithIDRequeues(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com"}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
@@ -167,7 +168,7 @@ func TestSubmitTaskTerminalRecordIsSkipped(t *testing.T) {
 			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 			e := submitEngine(t, f, pool)
 
-			task := &Task{ID: 7, Stage: "stub", URL: "https://example.com"}
+			task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 			if err := e.SubmitTask(task); err != nil {
 				t.Fatalf("SubmitTask = %v", err)
 			}
@@ -188,7 +189,7 @@ func TestSubmitTaskNewTaskInsertsBeforeEnqueue(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com/new"}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/new"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
@@ -219,7 +220,7 @@ func TestSubmitTaskInsertConflictBackfillsAndSkips(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com/race"}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/race"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("并发撞车应当被吸收，而不是报错：%v", err)
 	}
@@ -244,7 +245,7 @@ func TestSubmitTaskInsertFailureIsReported(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	err := e.SubmitTask(&Task{Stage: "stub", URL: "https://example.com/x"})
+	err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"})
 	if err == nil {
 		t.Fatal("写库失败必须报错")
 	}
@@ -270,7 +271,7 @@ func TestSubmitTaskSpillsWhenQueueAtWatermark(t *testing.T) {
 		t.Fatalf("占位提交 = %v", err)
 	}
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com/spill"}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spill"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("溢出不该报错：%v", err)
 	}
@@ -293,7 +294,7 @@ func TestSubmitTaskRollsBackOnSubmitFailure(t *testing.T) {
 	pool.Stop(time.Second) // 停掉，让 Submit 必然失败
 	e := submitEngine(t, f, pool)
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com"}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 	err := e.SubmitTask(task)
 	if err == nil {
 		t.Fatal("投递失败必须报错")
@@ -374,7 +375,7 @@ func TestSubmitTaskDelayedGoesToHeap(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com", Delay: time.Hour}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", Delay: time.Hour}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
@@ -396,7 +397,7 @@ func TestSubmitTaskPastNotBeforeEnqueuesImmediately(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com", NotBefore: time.Now().Add(-time.Minute)}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", NotBefore: time.Now().Add(-time.Minute)}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
@@ -424,7 +425,7 @@ func TestSubmitTasksEmptyAndValidation(t *testing.T) {
 
 	// 任一条不合法 → 整批拒绝（宁可不投，也不投一半）
 	bad := []*Task{
-		{Stage: "stub", URL: "https://ok.example.com"},
+		{Stage: "stub", Site: "stub", URL: "https://ok.example.com"},
 		{Stage: "ghost", URL: "https://bad.example.com"},
 	}
 	if err := e.SubmitTasks(bad); err == nil {
@@ -442,8 +443,8 @@ func TestSubmitTasksBatchInsertsThenEnqueues(t *testing.T) {
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
-		{Stage: "stub", URL: "https://example.com/a"},
-		{Stage: "stub", URL: "https://example.com/b"},
+		{Stage: "stub", Site: "stub", URL: "https://example.com/a"},
+		{Stage: "stub", Site: "stub", URL: "https://example.com/b"},
 	}
 	if err := e.SubmitTasks(tasks); err != nil {
 		t.Fatalf("SubmitTasks = %v", err)
@@ -469,8 +470,8 @@ func TestSubmitTasksSkipsDedupedRows(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	dup := &Task{Stage: "stub", URL: "https://example.com/dup"}
-	fresh := &Task{Stage: "stub", URL: "https://example.com/fresh"}
+	dup := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/dup"}
+	fresh := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/fresh"}
 	e.dedupCache.Add(dup.Unique()) // 内存里已有 → 非轮询直接跳过
 	f.noRows = true                // fresh 在库里是全新的
 
@@ -492,8 +493,8 @@ func TestSubmitTasksHonoursDelay(t *testing.T) {
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
-		{ID: 7, Stage: "stub", URL: "https://example.com/now"},
-		{ID: 7, Stage: "stub", URL: "https://example.com/later", Delay: time.Hour},
+		{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/now"},
+		{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/later", Delay: time.Hour},
 	}
 	if err := e.SubmitTasks(tasks); err != nil {
 		t.Fatalf("SubmitTasks = %v", err)
@@ -527,8 +528,8 @@ func TestSubmitTasksSkipsConflictingRows(t *testing.T) {
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
-		{Stage: "stub", URL: "https://example.com/conflict"},
-		{Stage: "stub", URL: "https://example.com/ok"},
+		{Stage: "stub", Site: "stub", URL: "https://example.com/conflict"},
+		{Stage: "stub", Site: "stub", URL: "https://example.com/ok"},
 	}
 	if err := e.SubmitTasks(tasks); err != nil {
 		t.Fatalf("SubmitTasks = %v", err)
@@ -554,6 +555,7 @@ func TestReSubmitTaskValidatesInput(t *testing.T) {
 	}{
 		{"stage 为空", &Task{URL: "https://example.com"}},
 		{"url 为空", &Task{Stage: "stub"}},
+		{"site 为空", &Task{Stage: "stub", URL: "https://example.com"}},
 		{"stage 不在配置里", &Task{Stage: "ghost", URL: "https://example.com"}},
 	}
 	for _, c := range cases {
@@ -578,7 +580,7 @@ func TestReSubmitTaskMissingRecord(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	err := e.ReSubmitTask(&Task{Stage: "stub", URL: "https://example.com/none"})
+	err := e.ReSubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/none"})
 	if err == nil {
 		t.Fatal("库里没有这行时应当报错")
 	}
@@ -593,7 +595,7 @@ func TestReSubmitTaskEnqueuesExistingRecord(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com"}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com"}
 	if err := e.ReSubmitTask(task); err != nil {
 		t.Fatalf("ReSubmitTask = %v", err)
 	}
@@ -618,7 +620,7 @@ func TestReSubmitTaskRollsBackOnSubmitFailure(t *testing.T) {
 	pool.Stop(time.Second)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{Stage: "stub", URL: "https://example.com"}
+	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com"}
 	err := e.ReSubmitTask(task)
 	if err == nil {
 		t.Fatal("投递失败必须报错")
@@ -653,7 +655,7 @@ func TestSubmitTaskSeedsRepeatInterval(t *testing.T) {
 	e := submitEngine(t, f, pool)
 
 	task := &Task{
-		Stage: "stub", URL: "https://example.com/series/1",
+		Stage: "stub", Site: "stub", URL: "https://example.com/series/1",
 		Repeatable: true, RepeatInterval: 10 * time.Minute,
 	}
 	if err := e.SubmitTask(task); err != nil {

@@ -93,23 +93,22 @@ func TestCheckEndToEnd(t *testing.T) {
 		t.Fatalf("脚手架产物应当校验通过：%v\n%s", checkErr, out)
 	}
 
-	// 三条队列声明删掉一条 → 必须拦住，而且要点名缺的是哪条
+	// 把一个阶段的 WorkerCount 改成 0 → 必须拦住
 	site := filepath.Join("demo", "configs", "sites", "demo.go")
 	src := readFile(t, site)
-	i := strings.Index(src, "\t\tRepeatQueue: &papa.RepeatQueueSpec{")
-	if i < 0 {
-		t.Fatalf("生成的站点声明里应当有 RepeatQueue：\n%s", src)
+	replaced := strings.Replace(src, "WorkerCount: 1,", "WorkerCount: 0,", 1)
+	if replaced == src {
+		t.Fatal("没找到要改的 WorkerCount: 1,")
 	}
-	j := strings.Index(src[i:], "\t\t},") + i + len("\t\t},\n")
-	writeFileT(t, site, src[:i]+src[j:])
+	writeFileT(t, site, replaced)
 
 	checkErr = nil
 	out = captureStderr(t, func() { checkErr = runCheckCmd([]string{"demo"}) })
 	if checkErr == nil {
-		t.Fatal("少了三条队列声明之一，校验应当不过")
+		t.Fatal("WorkerCount 为 0，校验应当不过")
 	}
-	if !strings.Contains(out, "RepeatQueue 没有声明") {
-		t.Errorf("报错要点名缺的是哪条队列：\n%s", out)
+	if !strings.Contains(out, "WorkerCount") {
+		t.Errorf("报错要点名 WorkerCount：\n%s", out)
 	}
 
 	// 临时目录两种结局都不该留下（不然项目的 git status 会多出一坨）

@@ -16,9 +16,12 @@ func newStatsEngine(t *testing.T) *Engine {
 		cfg:       &config.Config{},
 		queueRuns: newQueueRuns(),
 	}
-	e.queueCounters = make(map[string]*atomic.Int64)
-	e.ensureErrorQueues() // 两个治理队列都按站点拆：默认 scope 那两份
-	e.ensureRepeatQueues()
+	e.errorQueue = &errorQueueState{}
+	e.repeatQueue = &repeatQueueState{}
+	e.queueCounters = map[string]*atomic.Int64{
+		QueueError:  &e.errorQueue.retried,
+		QueueRepeat: &e.repeatQueue.repolled,
+	}
 
 	return e
 }
@@ -71,7 +74,7 @@ func TestQueueStatsProgressAndTotal(t *testing.T) {
 	e := newStatsEngine(t)
 
 	// 累计计数：未运行时 total 直接取累计值，本轮进度为 0
-	e.errorQueue(errorQueueKey("")).retried.Store(10)
+	e.errorQueue.retried.Store(10)
 	got := e.GetQueueStats()[QueueError]
 	if got.TotalProcessed != 10 || got.RunProcessed != 0 {
 		t.Fatalf("idle: total=%d run=%d, want 10/0", got.TotalProcessed, got.RunProcessed)
@@ -79,7 +82,7 @@ func TestQueueStatsProgressAndTotal(t *testing.T) {
 
 	// 运行中：本轮进度 = 当前累计 - 本轮起点
 	e.beginQueueRun(QueueError)
-	e.errorQueue(errorQueueKey("")).retried.Store(25)
+	e.errorQueue.retried.Store(25)
 	got = e.GetQueueStats()[QueueError]
 	if got.TotalProcessed != 25 || got.RunProcessed != 15 {
 		t.Fatalf("running: total=%d run=%d, want 25/15", got.TotalProcessed, got.RunProcessed)
@@ -115,13 +118,13 @@ func TestQueueStatsEnabledFollowsConfig(t *testing.T) {
 		t.Fatal("没声明错误队列的站点，那一行应当是已停用")
 	}
 
-	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{Enabled: true}})
+	e.cfg.ErrorQueue = config.ErrorQueueConfig{Enabled: true}
 	if got := e.GetQueueStats()[QueueError]; !got.Enabled {
 		t.Fatal("声明里开着 → error_queue 那一行应当是启用")
 	}
 
 	// 声明里关掉：快照同步反映
-	setSiteQueues(e, "", SiteQueues{Error: config.ErrorQueueConfig{Enabled: false}})
+	e.cfg.ErrorQueue = config.ErrorQueueConfig{Enabled: false}
 	if got := e.GetQueueStats()[QueueError]; got.Enabled {
 		t.Fatal("声明里关着 → error_queue 那一行应当是已停用")
 	}

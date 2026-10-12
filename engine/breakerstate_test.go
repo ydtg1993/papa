@@ -15,7 +15,7 @@ import (
 // "当前不在暂停态" —— 那个 true 自己永远清不掉（只有"先暂停再恢复"两下才能消）。
 func TestSeedSiteRowsClearsStaleBreakerPaused(t *testing.T) {
 	f := newFakeTaskDB()
-	row := siteRow("a", true)
+	row := siteRow("a")
 	row["breaker_paused"] = true
 	row["breaker_paused_at"] = time.Now().Add(-time.Hour)
 	f.siteRows = []fakeRow{row}
@@ -39,7 +39,7 @@ func TestSeedSiteRowsClearsStaleBreakerPaused(t *testing.T) {
 // 没暂停过的行不该被多写一次：启动播种只在库里真写着 true 时才动这一对列。
 func TestSeedSiteRowsLeavesUnpausedRowsAlone(t *testing.T) {
 	f := newFakeTaskDB()
-	f.siteRows = []fakeRow{siteRow("a", true)} // breaker_paused = false
+	f.siteRows = []fakeRow{siteRow("a")} // breaker_paused = false
 	e := siteEngine(t, f)
 	e.seedSiteRows()
 

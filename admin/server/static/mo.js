@@ -406,41 +406,19 @@
                 + wrows + '</table></div></div></div>';
         }).join('');
     }
-    /* ---- 治理队列（错误队列 + 轮询队列，**两条都按站点各占一行**） ---- */
-    // 两条队列的命名是同一套：默认 scope 是历史名字（`error_queue` / `repeat_queue`），
-    // 命名站点是 `<队列>:<站点>`（站点那一行只处理该站的任务，所以行里要带上站点）。
+    /* ---- 治理队列（错误队列 + 轮询队列，各一条全局） ---- */
     var QUEUE_KINDS = {
         error_queue: { label: '错误队列', desc: '失败任务重投', path: '/api/errorqueue/process', key: 'processed', done: '已重新投递' },
         repeat_queue: { label: '轮询队列', desc: '周期任务重投', path: '/api/repeatqueue/process', key: 'repolled', done: '已重投' }
     };
-    // parseQueue 拆出队列名里的"哪条队列 + 哪个站点"；不是治理队列返回 null
-    //（快照里还有别的键，认不出来就不往面板上放）。
-    function parseQueue(name) {
-        var base = name, site = '', i = name.indexOf(':');
-        if (i >= 0) { base = name.slice(0, i); site = name.slice(i + 1); }
-        var kind = QUEUE_KINDS[base];
-        return kind ? { kind: kind, base: base, site: site } : null;
-    }
     function queueMeta(name) {
-        var p = parseQueue(name);
-        if (!p) return null;
-        return {
-            label: p.kind.label + (p.site === '' ? '（默认 scope）' : (' · 站点 ' + p.site)),
-            desc: p.kind.desc,
-            url: p.kind.path + (p.site === '' ? '' : '?site=' + encodeURIComponent(p.site)),
-            key: p.kind.key, done: p.kind.done
-        };
+        var kind = QUEUE_KINDS[name];
+        if (!kind) return null;
+        return { label: kind.label, desc: kind.desc, url: kind.path, key: kind.key, done: kind.done };
     }
-    // 面板上的顺序：错误队列在前、轮询队列在后（按队列名字典序），各自"默认 scope → 站点名字典序"
+    // 面板上的顺序：错误队列在前、轮询队列在后（按名字字典序）
     function queueKeys(data) {
-        var names = Object.keys(data || {}).filter(function (n) { return parseQueue(n) !== null; });
-        names.sort(function (a, b) {
-            var pa = parseQueue(a), pb = parseQueue(b);
-            if (pa.base !== pb.base) return pa.base < pb.base ? -1 : 1;
-            if (pa.site === '' || pb.site === '') return pa.site === '' ? -1 : 1;
-            return pa.site < pb.site ? -1 : (pa.site > pb.site ? 1 : 0);
-        });
-        return names;
+        return Object.keys(data || {}).filter(function (n) { return QUEUE_KINDS[n] !== undefined; }).sort();
     }
     function timeValid(d) { return !isNaN(d.getTime()) && d.getFullYear() >= 2000; }
     function agoSeconds(iso) {
@@ -494,7 +472,7 @@
                     + '<div class="muted">' + (q.running ? '本轮已处理' : '上次处理') + ' · 累计 ' + (q.total_processed || 0) + '</div></td>'
                     + '<td>' + (backlog > 0 ? '<span class="badge warn">' + backlog + '</span>' : '0')
                     + '<div class="muted">' + esc(fmtAgo(q.backlog_at)) + '采样</div></td>'
-                    // 队列名现在是运行期才知道的（按站点拆），所以走 data-* + 从 dataset 取 ——
+                    // 队列名是运行期才知道的，所以走 data-* + 从 dataset 取 ——
                     // 与熔断那个「恢复」按钮同一套写法：内联属性里只有固定代码，运行期值不拼进 JS 字符串
                     + '<td><button class="btn" style="margin-top:0" data-queue="' + esc(name)
                     + '" onclick="triggerQueue(this.dataset.queue)">立即执行</button></td>'
@@ -532,20 +510,14 @@
 
     function siteLabel(key) { return key === '' ? '默认 scope' : key; }
 
-    // siteView 按当前站点过滤阶段与队列（概览返回全部）。
-    // 队列那一侧靠队列名编码的站点（`<队列>:<站点>`）—— 错误队列与轮询队列**都是**按站点拆的，
-    // 两条都要跟着走（只认轮询队列的话，站点 Tab 下错误队列会整块消失）。
+    // siteView 按当前站点过滤阶段；治理队列是全局各一条，不跟站点走。
     function siteView(stages, queues) {
         if (currentSite === null) return { stages: stages, queues: queues };
-        var outStages = {}, outQueues = {};
+        var outStages = {};
         Object.keys(stages || {}).forEach(function (name) {
             if ((stages[name].site || '') === currentSite) outStages[name] = stages[name];
         });
-        Object.keys(queues || {}).forEach(function (name) {
-            var p = parseQueue(name);
-            if (p && p.site === currentSite) outQueues[name] = queues[name];
-        });
-        return { stages: outStages, queues: outQueues };
+        return { stages: outStages, queues: queues };
     }
 
     function renderSiteTabs(data) {
@@ -584,15 +556,10 @@
             '<b>' + esc(siteLabel(stat.key)) + '</b>',
             esc(stat.base_url || '—'),
             (stat.stage_count || 0) + ' 个阶段',
-            stat.auto_repeat ? '自动轮询：开' : '自动轮询：<b>关</b>（只能手动触发）',
-            '累计轮询 ' + (stat.repeat_total || 0),
-            '待轮询 ' + (stat.repeat_backlog || 0),
-            '上次轮询 ' + esc(fmtAgo(stat.last_repeat_at)),
             stat.breaker_paused
                 ? '<b>熔断已闸住</b>（' + esc(fmtAgo(stat.breaker_paused_at)) + '）'
                 : '熔断未闸住'
         ];
-        if (stat.last_repeat_error) parts.push('最近错误：' + esc(stat.last_repeat_error));
         parts.push('<span class="muted">任务表在左侧菜单，进去后用「站点」筛选看本站的任务</span>');
         meta.innerHTML = parts.join(' ｜ ');
         meta.hidden = false;

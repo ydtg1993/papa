@@ -30,9 +30,9 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 		URL:   strings.TrimRight(site.BaseURL, "/") + "/list",
 		Stage: "catalog",
 		// Repeatable: true = 该任务会被「周期轮询」（到时重新抓取、发现新内容）。
-		// 周期由 RepeatInterval 定（下面那行，只给这一条任务；不写 = 用本站 RepeatQueue 的 Interval）；
+		// 周期由 RepeatInterval 定（下面那行，只给这一条任务；不写 = 用全局 repeat_queue 的 interval）；
 		// 两者都只在首次入库时播种，之后用后台任务表的「开/停轮询」「设轮询周期」改。
-		// 不需要周期轮询就删掉这一行；整个站都不要就关站点声明里的 RepeatQueue / AutoRepeat。
+		// 不需要周期轮询就删掉这一行；整个站都不要就关 config.yaml 里的 repeat_queue。
 		Repeatable: true,
 		// RepeatInterval: 10 * time.Minute,
 	}); err != nil {

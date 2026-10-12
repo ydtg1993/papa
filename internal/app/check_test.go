@@ -17,20 +17,13 @@ import (
 // CheckSites：不起库、不建池、不改状态，把启动时会 panic 的问题**一次收集全**（而不是报第一条就停）。
 // 这条是给"升级后确认声明写对了"用的 —— 起服务要连库，这一步不用。
 func TestCheckSitesCollectsAllProblems(t *testing.T) {
-	on := true
-	errQ, recQ, repQ := queueSpecs(&on)
-
-	// 站点 b 的错误队列：时长写成中文了
-	badErr := *errQ
-	badErr.Interval = "4 小时"
-
 	err := CheckSites(nil,
-		// 站点 a：三队列一条没写；阶段名与 b 撞车
+		// 站点 a：阶段名与 b 撞车
 		SiteSpec{Key: "a", Stages: []StageSpec{
 			{Fetcher: namedFetcher{name: "same"}, WorkerCount: 1, QueueSize: 8},
 		}},
-		// 站点 b：队列时长写错；两个阶段里一个撞名（报重复）、另一个名字没撞但 Delay 写法错
-		SiteSpec{Key: "b", ErrorQueue: &badErr, RecoverQueue: recQ, RepeatQueue: repQ, Stages: []StageSpec{
+		// 站点 b：两个阶段里一个撞名（报重复）、另一个名字没撞但 Delay 写法错
+		SiteSpec{Key: "b", Stages: []StageSpec{
 			{Fetcher: namedFetcher{name: "same"}, WorkerCount: 1, QueueSize: 8, Delay: "5 分钟"},
 			{Fetcher: namedFetcher{name: "b_detail"}, WorkerCount: 1, QueueSize: 8, Delay: "5 分钟"},
 		}},
@@ -40,10 +33,8 @@ func TestCheckSitesCollectsAllProblems(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		`站点 "a" 的错误队列`,             // 三队列漏写
-		"ErrorQueue.Interval 无法解析", // 时长写错
-		"重复声明",                     // 阶段名 a / b 都是 same
-		"Delay",                    // 延迟写法
+		"重复声明",  // 阶段名 a / b 都是 same
+		"Delay", // 延迟写法
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("错误汇总里应当有 %q（一次报全，不是报第一条就停）：\n%s", want, msg)
@@ -53,10 +44,8 @@ func TestCheckSitesCollectsAllProblems(t *testing.T) {
 
 // 合法声明 → nil；cfg 传 nil（没有全局默认）也要能通过。
 func TestCheckSitesAcceptsGoodDeclarations(t *testing.T) {
-	on := true
-	errQ, recQ, repQ := queueSpecs(&on)
 	site := SiteSpec{
-		Key: "a", ErrorQueue: errQ, RecoverQueue: recQ, RepeatQueue: repQ,
+		Key: "a",
 		Stages: []StageSpec{{
 			Fetcher: namedFetcher{name: "a_catalog"}, WorkerCount: 1, QueueSize: 8,
 			Delay: "5m", Retry: RetrySpec{MaxAttempts: 2, Backoff: "30s"},
@@ -73,10 +62,8 @@ func TestCheckSitesAcceptsGoodDeclarations(t *testing.T) {
 // 站点熔断阈值那条规则（enabled=true 时 threshold 必须 > 0）与 breaker.New 共用一份判据：
 // 阈值只在全局默认里时，传了 cfg 就该放行；不传 cfg 就该报出来 —— 而不是等到真起引擎才炸。
 func TestCheckSitesChecksSiteBreakerThreshold(t *testing.T) {
-	on := true
-	errQ, recQ, repQ := queueSpecs(&on)
 	site := SiteSpec{
-		Key: "a", ErrorQueue: errQ, RecoverQueue: recQ, RepeatQueue: repQ,
+		Key:     "a",
 		Breaker: &BreakerSpec{Enabled: true}, // 阈值/窗口都留给默认那份
 		Stages:  []StageSpec{{Fetcher: namedFetcher{name: "a_x"}, WorkerCount: 1, QueueSize: 8}},
 	}
@@ -95,17 +82,16 @@ func TestCheckSitesChecksSiteBreakerThreshold(t *testing.T) {
 
 // 声明有问题时**一个字节都不落地**：原来是一边注册一边炸，前几个站已经进引擎了。
 func TestRegisterSitesAppliesNothingWhenDeclarationIsBad(t *testing.T) {
-	on := true
-	errQ, recQ, repQ := queueSpecs(&on)
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := noDBEngine(t, cfg)
 	t.Cleanup(func() { e.Stop(time.Millisecond) })
 	a := &App{Config: cfg, Engine: e, Logger: &loggers.LoggerSet{Engine: quietLogger()}, sites: map[string]core.Site{}}
 
-	good := SiteSpec{Key: "good", ErrorQueue: errQ, RecoverQueue: recQ, RepeatQueue: repQ,
+	good := SiteSpec{Key: "good",
 		Stages: []StageSpec{{Fetcher: namedFetcher{name: "good_catalog"}, WorkerCount: 1, QueueSize: 8}}}
-	bad := SiteSpec{Key: "bad"} // 三队列漏写 → 启动即失败
+	bad := SiteSpec{Key: "bad",
+		Stages: []StageSpec{{Fetcher: namedFetcher{name: "bad_catalog"}, WorkerCount: 0, QueueSize: 8}}} // WorkerCount=0 → 启动即失败
 
 	func() {
 		defer func() {

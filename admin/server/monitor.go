@@ -41,7 +41,6 @@ type MonitorGetter func() map[string]core.StageStats
 // "这个按钮不是表格动作"就断档。
 type QueueProcessEvent struct {
 	Queue     string // 队列名：engine.QueueRepeat / engine.QueueError（与后台那一行的名字一致）
-	Site      string // 请求带的那一站；空 = 没带 ?site=，按"所有站点各跑一遍"跑的
 	Operator  string // 谁点的（鉴权中间件解析令牌得到；未鉴权/测试构造的请求为空）
 	IP        string // 直连来源 IP（与白名单同一取法，不信 X-Forwarded-For）
 	Processed int    // 实际处理条数
@@ -66,12 +65,10 @@ type MonitorConfig struct {
 	// 据此提供**下载**：`GET /api/task/page?file=<相对路径>`（原始 HTML，拿去本地分析）。
 	ArchiveDir string
 	OnShutdown func() // 优雅退出回调
-	// ProcessErrorQueue 错误队列手动触发回调（可空）。site 为空 = 所有站点各跑一遍；
-	// 给了站点名 = 只跑那一站（站点名不认识时回调返回 engine.ErrUnknownSite → 400）。
-	ProcessErrorQueue func(site string) (int, error)
-	// ProcessRepeatQueue 周期轮询队列手动触发回调（可空）。site 为空 = 所有站点各跑一遍；
-	// 给了站点名 = 只跑那一站（站点名不认识时回调返回 engine.ErrUnknownSite → 400）。
-	ProcessRepeatQueue func(site string) (int, error)
+	// ProcessErrorQueue 错误队列手动触发回调（可空）：全局一条，无站点参数。
+	ProcessErrorQueue func() (int, error)
+	// ProcessRepeatQueue 周期轮询队列手动触发回调（可空）：全局一条，无站点参数。
+	ProcessRepeatQueue func() (int, error)
 	// OnQueueProcess 队列「立即执行」跑完（成功或失败都算）后的回调，宿主拿它记操作日志；可空。
 	// 失败也要记：站点名打错这种"没跑成"的触发，同样是要查的线索。
 	OnQueueProcess func(QueueProcessEvent)
@@ -394,13 +391,12 @@ func (s *Monitor) shutdownHandler(w http.ResponseWriter, r *http.Request) {
 //
 // 只记**真的跑过**的那种：接口没配置（404）属于"压根没这条功能"，不是一次触发，不记。
 // 操作人与 IP 在这里取（与白名单同一套取法），宿主只负责落到 oplog。
-func (s *Monitor) auditQueueProcess(r *http.Request, queue, site string, processed int, err error) {
+func (s *Monitor) auditQueueProcess(r *http.Request, queue string, processed int, err error) {
 	if s.cfg.OnQueueProcess == nil {
 		return
 	}
 	s.cfg.OnQueueProcess(QueueProcessEvent{
 		Queue:     queue,
-		Site:      site,
 		Operator:  auth.OperatorFrom(r.Context()),
 		IP:        clientIP(r).String(),
 		Processed: processed,
@@ -419,16 +415,10 @@ func (s *Monitor) errorQueueProcessHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "error queue not configured", http.StatusNotFound)
 		return
 	}
-	// ?site= 只跑那一站（不认得的站名回 400）；不给 = 所有站点各跑一遍（向后兼容）
-	site := strings.TrimSpace(r.URL.Query().Get("site"))
-	count, err := s.cfg.ProcessErrorQueue(site)
-	s.auditQueueProcess(r, engine.QueueError, site, count, err)
+	count, err := s.cfg.ProcessErrorQueue()
+	s.auditQueueProcess(r, engine.QueueError, count, err)
 	if err != nil {
 		s.logger.Errorf("process error queue: %s", err.Error())
-		if errors.Is(err, engine.ErrUnknownSite) {
-			http.Error(w, "unknown site", http.StatusBadRequest)
-			return
-		}
 		http.Error(w, "process error queue failed", http.StatusInternalServerError)
 		return
 	}
@@ -445,16 +435,10 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "repeat queue not configured", http.StatusNotFound)
 		return
 	}
-	// ?site= 只跑那一站（不认得的站名回 400）；不给 = 所有站点各跑一遍（向后兼容）
-	site := strings.TrimSpace(r.URL.Query().Get("site"))
-	count, err := s.cfg.ProcessRepeatQueue(site)
-	s.auditQueueProcess(r, engine.QueueRepeat, site, count, err)
+	count, err := s.cfg.ProcessRepeatQueue()
+	s.auditQueueProcess(r, engine.QueueRepeat, count, err)
 	if err != nil {
 		s.logger.Errorf("process repeat queue: %s", err.Error())
-		if errors.Is(err, engine.ErrUnknownSite) {
-			http.Error(w, "unknown site", http.StatusBadRequest)
-			return
-		}
 		http.Error(w, "process repeat queue failed", http.StatusInternalServerError)
 		return
 	}
