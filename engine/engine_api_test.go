@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -49,23 +50,38 @@ func TestEngineAccessorsRoundTrip(t *testing.T) {
 	}
 }
 
-// Errors 按阶段给出各自的错误通道；业务把它们逐个丢给日志协程。
-func TestEngineErrorsPerStage(t *testing.T) {
-	f := newFakeTaskDB()
-	poolA := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e := submitEngine(t, f, poolA)
-	e.stages["second"] = &stageInfo{}
-	e.pools.set("second", workerpool.NewWorkerPool[*Task](1, 8, 1))
-
+// Errors 返回引擎的常驻错误通道（单条）：所有池（含懒建的）都汇到这一条，不再是启动时逐个池快照。
+func TestErrorsReturnsPersistentChannel(t *testing.T) {
+	e := &Engine{errorCh: make(chan error, 100)}
 	chans := e.Errors()
-	if len(chans) != 2 {
-		t.Fatalf("两个阶段应给两条错误通道，实得 %d", len(chans))
+	if len(chans) != 1 || chans[0] == nil {
+		t.Fatalf("应返回单条非 nil 错误通道，实得 %v", chans)
 	}
-	poolA.Errors()
-	for _, ch := range chans {
-		if ch == nil {
-			t.Fatal("错误通道不该为 nil")
+}
+
+// 池的错误要能汇进引擎常驻通道：转发协程把 pool.Errors() 里的错误搬进 errorCh。
+func TestPoolErrorForwarderForwards(t *testing.T) {
+	e := &Engine{
+		ctx:                context.Background(),
+		loggerSet:          testLoggerSet(),
+		errorCh:            make(chan error, 100),
+		errorForwardCancel: make(map[string]chan struct{}),
+	}
+
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e.startPoolErrorForwarder("stub", pool)
+
+	// 停掉的池上 Submit 会 SendError("worker pool already stopped")
+	pool.Stop(0)
+	_ = pool.Submit(&Task{Stage: "stub", URL: "https://example.com"})
+
+	select {
+	case err := <-e.errorCh:
+		if !strings.Contains(err.Error(), "already stopped") {
+			t.Fatalf("应转发池错误，实得：%v", err)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("1s 内没收到转发错误")
 	}
 }
 

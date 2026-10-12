@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/ydtg1993/papa/v3/internal/track"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
 )
 
 // RecordMetric 写入一条业务自定义监控数据，供监控页展示
@@ -40,6 +41,30 @@ func (e *Engine) setStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
 	e.statsQueue[stage] = mon
 }
 
+// stageTotals 一个阶段的累计吞吐（池 churn 不清零）：只累计三个计数，worker 时长统计仍是当前实例。
+type stageTotals struct {
+	Submitted int64
+	Completed int64
+	Failed    int64
+}
+
+// harvestStageTotals 把一份被回收池的最终吞吐计数累进该阶段的累计值。
+// 按具体的那份 pool 走（与 removeStageStats 的身份校验同一思路）：回收与收割之间池被重建，
+// 累进的仍是这份被回收池的计数，不会错加到新池头上。
+func (e *Engine) harvestStageTotals(stage string, pool *workerpool.WorkerPool[*Task]) {
+	submitted, completed, failed, _, _ := pool.Stats()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.stageTotals == nil {
+		e.stageTotals = make(map[string]stageTotals)
+	}
+	t := e.stageTotals[stage]
+	t.Submitted += submitted
+	t.Completed += completed
+	t.Failed += failed
+	e.stageTotals[stage] = t
+}
+
 // GetStageStats 返回各阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
 func (e *Engine) GetStageStats() map[string]StageStats {
 	e.mu.RLock()
@@ -57,9 +82,10 @@ func (e *Engine) GetStageStats() map[string]StageStats {
 			Global:  GlobalStats(mon.GetGlobalStats()),
 			Workers: workers,
 			Queue: QueueStats{
-				Submitted:  submitted,
-				Completed:  completed,
-				Failed:     failed,
+				// 累计（跨池实例） + 当前池：池 churn 后吞吐不归零
+				Submitted:  e.stageTotals[stage].Submitted + submitted,
+				Completed:  e.stageTotals[stage].Completed + completed,
+				Failed:     e.stageTotals[stage].Failed + failed,
 				InProgress: inProgress,
 				QueueLen:   queueLen,
 			},

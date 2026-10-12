@@ -1,8 +1,7 @@
 # 调度器 / 工作池重设计（大改版）
 
-> 状态：**设计已拍板；第 1–5 步全部落地（重设计完成）**。遗留的 OA 面（§5）、预留接口（§6）与
-> docs-sync / CHANGELOG 见文末。
-> 决策日期：2026-10-12。这份文档是下次迭代的接续依据，别每次重推一遍。
+> 状态：**全部落地** —— 第 1–5 步 + OA 面（监控累计计数 + 错误通道活池化）+ CHANGELOG + docs-sync 都完成。
+> 决策日期：2026-10-12。这份文档是接续依据，别每次重推一遍。
 
 ## 0. 一句话
 
@@ -133,14 +132,15 @@ func (e *Engine) LiveErrors() []<-chan error
 
 ---
 
-## 重设计已落地，遗留清单（下次迭代）
+## 完成状态（2026-10-12）
 
-1. **CHANGELOG**（按 [[changelog-append-only]] 记 [未发布] 段）：删 `RegisterCronJob` + `scheduler:` 段、
-   池懒建 + `stage_idle_timeout` 空闲回收、recover 走加急 —— 这几处是行为/API 变更，要写清症状/修法/为什么。
-2. **docs-sync**：`CORE_CONFIG.md` 补 `crawler.stage_idle_timeout`；`RECOVER_QUEUE.md` 补「恢复走加急」一句。
-   （step 2 已把 RegisterCronJob / SCHEDULER.md 的引用清掉了。）
-3. **§5 的 OA 面**（仍没动）：监控 stats 的累计计数抬出池（池 churn 不清零）、`mdMsgListener` / `Engine.Errors()`
-   的活池化 —— 接 §6 预留的 `LiveStageStats()` / `LiveErrors()`。
+1. **CHANGELOG**（✅）：[未发布] 段追加破坏性变更（删 cron）、变更（池懒建 + recover 走加急）、
+   新增（`stage_idle_timeout`）、修复（监控累计计数 + 错误通道）四条。
+2. **docs-sync**（✅）：`CORE_CONFIG.md` 补 `stage_idle_timeout`；`RECOVER_QUEUE.md` 补「恢复走加急」。
+3. **§5 的 OA 面**（✅）：`stageTotals` 累计三个吞吐计数（收割在 reap 时，`GetStageStats` 报「累计 + 当前池」）；
+   `errorCh` 常驻错误通道 + per-pool forwarder（`startPoolErrorForwarder`/`cancelPoolErrorForwarder`），
+   `Errors()` 返回它。**没有新加 `LiveStageStats()`/`LiveErrors()`** —— 直接改 `GetStageStats()`/`Errors()`
+   的语义，monitor 与 `mdMsgListener` 的接线不用动。
 
 ## 8. 爆炸半径清单
 

@@ -195,6 +195,7 @@ func (e *Engine) buildPool(stage string, info *stageInfo) *workerpool.WorkerPool
 	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
 	pool.SetGate(e.breakerFor(cfg.Site))
 	pool.Start(e.ctx, e.stageHandler(info))
+	e.startPoolErrorForwarder(stage, pool)
 	// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
 	if e.cfg.Server.Enabled {
 		stats := track.NewStatsQueue(pool)
@@ -230,6 +231,47 @@ func (e *Engine) removeStageStats(stage string, pool *workerpool.WorkerPool[*Tas
 	}
 }
 
+// startPoolErrorForwarder 起一条转发协程，把池的错误通道汇进引擎的常驻错误通道（Errors()）。
+// pool.Errors() 从不 close，所以必须带停机信号 —— 池被 reap 时 close 它，否则协程泄漏到引擎结束。
+func (e *Engine) startPoolErrorForwarder(stage string, pool *workerpool.WorkerPool[*Task]) {
+	stop := make(chan struct{})
+	e.mu.Lock()
+	if e.errorForwardCancel == nil {
+		e.errorForwardCancel = make(map[string]chan struct{})
+	}
+	if old, ok := e.errorForwardCancel[stage]; ok {
+		close(old) // 旧池的转发协程该退了（池被重建）
+	}
+	e.errorForwardCancel[stage] = stop
+	e.mu.Unlock()
+
+	go func() {
+		for {
+			select {
+			case err := <-pool.Errors():
+				select {
+				case e.errorCh <- err:
+				default: // 常驻通道满了就丢：错误通道是兜底，主日志路径已经记过
+				}
+			case <-stop:
+				return
+			case <-e.ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// cancelPoolErrorForwarder 停掉某阶段的错误转发协程（池被 reap 时配套调用）。
+func (e *Engine) cancelPoolErrorForwarder(stage string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if stop, ok := e.errorForwardCancel[stage]; ok {
+		close(stop)
+		delete(e.errorForwardCancel, stage)
+	}
+}
+
 // startIdleReaper 启动空闲池回收协程：每隔 stage_idle_timeout/2 扫一遍，回收「超过 idle 没有
 // 新任务、且空着」的池。config 没配 stage_idle_timeout（<=0）就不起 —— 默认常驻，行为与之前一致。
 func (e *Engine) startIdleReaper() {
@@ -252,7 +294,9 @@ func (e *Engine) startIdleReaper() {
 				return
 			case <-ticker.C:
 				for stage, pool := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
+					e.harvestStageTotals(stage, pool)
 					e.removeStageStats(stage, pool)
+					e.cancelPoolErrorForwarder(stage)
 					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", stage)
 				}
 			}

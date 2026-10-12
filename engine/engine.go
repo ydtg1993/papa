@@ -37,13 +37,16 @@ type Engine struct {
 	stages    map[string]*stageInfo
 	// pools 活池登记表：stage 名 -> 当前活着的池。投递/关停/错误通道都从它取池，
 	// 不再散落在 stageInfo.workerPool 上（那是裸指针，池一旦懒建/回收就会并发读写）。
-	pools       *poolRegistry
-	mu          sync.RWMutex
-	cfg         *config.Config
-	browserPool *browser.Pool
-	htmlClient  *htmlfetch.Client
-	statsQueue  map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
-	dedupCache  *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
+	pools              *poolRegistry
+	mu                 sync.RWMutex
+	cfg                *config.Config
+	browserPool        *browser.Pool
+	htmlClient         *htmlfetch.Client
+	statsQueue         map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
+	stageTotals        map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
+	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
+	errorForwardCancel map[string]chan struct{}            // per-stage 错误转发协程停机信号（reap 时 close）；e.mu 保护
+	dedupCache         *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
 	spillMu        sync.Mutex
 	spilled        map[string][]*Task // stage -> 高水位溢出的待回灌任务
@@ -173,17 +176,20 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		// startedAt 本进程启动时刻：启动恢复（recover queue）拿它当截止 —— 见 recoverQueueQuery。
 		// 用应用时钟（time.Now）而不是库时钟，是因为 updated_at 也是 gorm 在应用侧写的
 		// （autoUpdateTime），两边同一个钟，不需要校时。
-		startedAt:  time.Now(),
-		stages:     make(map[string]*stageInfo),
-		pools:      newPoolRegistry(),
-		dedupCache: newDedupCache(cfg.Crawler.DedupCacheSize),
-		db:         db,
-		cfg:        cfg,
-		loggerSet:  loggerSet,
-		metrics:    metrics.New(),
-		delayCh:    make(chan struct{}, 1),
-		spilled:    make(map[string][]*Task),
-		queueRuns:  newQueueRuns(),
+		startedAt:          time.Now(),
+		stages:             make(map[string]*stageInfo),
+		pools:              newPoolRegistry(),
+		dedupCache:         newDedupCache(cfg.Crawler.DedupCacheSize),
+		db:                 db,
+		cfg:                cfg,
+		loggerSet:          loggerSet,
+		metrics:            metrics.New(),
+		delayCh:            make(chan struct{}, 1),
+		spilled:            make(map[string][]*Task),
+		queueRuns:          newQueueRuns(),
+		stageTotals:        make(map[string]stageTotals),
+		errorCh:            make(chan error, 100),
+		errorForwardCancel: make(map[string]chan struct{}),
 	}
 	engine.siteBreaker = make(map[string]*breaker.Breaker)
 	engine.sites = make(map[string]core.Site)
@@ -510,10 +516,12 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	return drained, stats
 }
 
-// Errors 返回work pool中的错误消息队列
+// Errors 返回引擎的常驻错误通道（单条）：所有池的错误都由各自的转发协程汇到这一条上，
+// mdMsgListener 只读它。池是懒建的，逐个取池错误通道会漏掉「启动之后才建的池」——
+// 所以这里是常驻一条，而不是启动时快照。
 func (e *Engine) Errors() (errors []<-chan error) {
-	for _, pool := range e.pools.snapshot() {
-		errors = append(errors, pool.Errors())
+	if e.errorCh == nil {
+		return nil
 	}
-	return
+	return []<-chan error{e.errorCh}
 }
