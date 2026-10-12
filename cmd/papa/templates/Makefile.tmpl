@@ -8,7 +8,7 @@ endif
 .PHONY: build run migrate test race vet clean docker-up docker-down
 
 build:
-	go build -o bin/crawler$(EXE) .
+	go build -o bin/{{.Module}}$(EXE) .
 
 run:
 	go run .

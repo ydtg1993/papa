@@ -23,7 +23,14 @@
 >
 > 判据表在 `config/validate.go` 的 `rules`，一条一行；`TestRuleKeysExistInStruct` 钉住每个键都真实存在于结构体（防止表里写一个永远不会触发的假键）。**这一层只管 `config.yaml`** —— 各库自己收到的 Go 结构体零值（`filedown.ChunkSize`、`htmlfetch.MaxBodySize` 那类）不在这里，判据归各自的构造函数。
 >
-> 每条规则都区分三态：**没写**（用默认值，合法）／写了且合法／写了但越界。唯一的例外是 `log.dir` —— 它没有「没写也合法」那一态（空串会去写文件系统根），见下。
+> 每条规则都区分三态：**没写**（用默认值，合法）／写了且合法／写了但越界。两类例外：
+>
+> 1. **三个必填键**（**没有**「没写也合法」那一态）：`log.dir`（空串会去写文件系统根）、
+>    `db.max_idle_conns` / `db.max_open_conns`（0 在 `database/sql` 里是「不限」，与"漏写"是同一个数、分不开）。
+> 2. **一族「开着才必填」**：`crawler.breaker.threshold`、`html.max_body_size`、`browser.pool_size`、
+>    `crawler.archive.dir` —— 关掉对应开关时它们不参与校验（不许一个用不着的东西把人卡在启动上）。
+>
+> 各键见下面对应小节。
 >
 > 唯一的"不校验"的键是 **`business`**（见下）：框架不认它的语义，写什么键都不管 —— 那是留给业务自己的配置位，不是给框架配置的。
 

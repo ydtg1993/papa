@@ -384,4 +384,4 @@ engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
 | 结果写哪张表 | `crawler_tasks` 表的 `content`（JSON）+ `title` 列（通过 `engine.SaveResult` / `SaveContent`） |
 | 用什么结构 | 自己在 `models` 包里定义的 struct（序列化进 `content` 列） |
 | 写在哪 | 默认直接写 `FetchHandler`；复用/复杂了再抽 repository；要按列查询才建独立表 |
-| 建表要不要迁移 | 是，`papa.New(papa.WithModels(...))` 里注册（dev 环境） |
+| 建表要不要迁移 | 是，`papa.New(papa.WithModels(...))` 里注册 —— 注册只进清单，**还要跑一次 `papa migrate` / `make migrate` 才建**（启动时不会自动迁移，dev 与生产同一条命令） |

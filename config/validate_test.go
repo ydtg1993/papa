@@ -183,7 +183,9 @@ func browserOn(extra string) string {
 	return baseConfig + "browser:\n  enable: true\n" + extra
 }
 
-// 有四个键**没有「没写也合法」那一态** —— 它们的零值不是一个中性值，而是一个危险值：
+// **零值危险的键**：三个必填（`log.dir` / `db.max_idle_conns` / `db.max_open_conns` ——
+// 它们**没有**「没写也合法」那一态），外加一族「开着才必填」（如 `html.max_body_size`、
+// `browser.pool_size`：关掉对应开关就用不上）。共同点是零值不是中性值，而是一个危险值：
 //
 //   - log.dir 空串 → 拼出文件系统根下的 sys.log（没权限就静默一条日志都没有）
 //   - db.max_idle_conns / max_open_conns 漏写 → 0，而 database/sql 把 0 当成

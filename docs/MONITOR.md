@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理（按站点）、站点 Tab 与概要、表格页、设置、熔断横幅与日志导出。
+框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`，提供 Dashboard、任务队列概览、队列治理、站点 Tab 与概要、表格页、设置、熔断横幅与日志导出。
 
 > **多进程部署时注意**：Dashboard 上的**阶段概览**（排队数、在跑数、各 worker 状态）读的是
 > **本进程**的内存快照 —— 任务表是共享的，统计**不是**。跑多个进程（或容器多副本、多机器）时，
@@ -194,7 +194,7 @@ papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（
 | GET | `{prefix}/{table}` | 分页数据；query：`page`、`size`（默认取表声明，上限 200）、`search`、`sort`（`col`/`-col`）、`filter[col]=val` |
 | POST | `{prefix}/{table}/action/{key}` | 转发操作给业务 Handler（表未声明该动作一律 404） |
 
-`prefix` 默认 `/api/oao`；静态资源挂在 `/static/oao/`。两者都必须过监控后台的白名单 + 密钥校验（组件复用宿主注入的中间件）。
+`prefix` 默认 `/api/oao`；静态资源挂在 `/static/oao/`。**这几条 API** 走监控后台的白名单 + 密钥校验（组件复用宿主注入的中间件）；`/static/oao/` 与 `/static/mo.js` 一样**免鉴权**（浏览器 `<script src>` 带不了自定义请求头），所以别往组件自带的静态资源里放机密。
 
 - **列怎么显示**：`Render` 可选 `text`（省略号 + 悬停看全文）/ `input`（只读输入框，
   长度可控、横向滚动看全，**不是编辑**）/ `link` / `image` / `enum`（彩色标签）/ `time` / `json` / `custom`。

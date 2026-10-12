@@ -1,8 +1,8 @@
 # 开发容器：挂载整个业务项目源码，容器里 go run 启动；改代码后 docker compose restart 生效
 services:
-  crawler:
+  {{.Module}}:
     build: .
-    container_name: crawler
+    container_name: {{.Module}}
     volumes:
       - ..:/app                    # 挂载整个业务项目源码目录到容器 /app
       - go-mod-cache:/go/pkg/mod   # 缓存 Go 依赖，避免每次重下

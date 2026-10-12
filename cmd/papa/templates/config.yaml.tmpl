@@ -31,8 +31,7 @@ crawler:
 
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
 # 空闲超过 max_idle_time 的会被回收。
-# 这些是**全局默认**（改完要重启，没有热更）：max_idle_time / headers；
-# 其余字段需重启生效。
+# 全部字段都是**改完重启才生效**（框架没有运行期热更这回事）。
 browser:
   enable: true
   pool_size: 3                 # 并发上限（按需创建）。enable=true 时必填且 > 0：写 0 会让 Get 永久阻塞在 cond.Wait
@@ -40,11 +39,13 @@ browser:
   max_idle_time: "5m"
   headless: false
   no_sandbox: false
+  # leakless 默认关，**别开**：rod 的 leakless 辅助程序会被 Windows Defender 直接拦掉
+  #（实测报 "contains a virus or potentially unwanted software"）。要写就写 leakless: false。
   browser_path: ""             # Chrome 可执行路径，空则用默认 Chromium
   # 请求头写站点声明（configs/sites/<站名>.go 的 Headers，抓取与下载都认）；这里是**全局默认层**，
   # 只放与站点无关的头（多站共用的那一层）：headers: {Accept-Language: "zh-CN,zh;q=0.9"}
 
-# 静态 HTML 抓取客户端。这些是全局默认：timeout / max_body_size / headers（同 browser）
+# 静态 HTML 抓取客户端。timeout / max_body_size / headers 都是全局默认，同样改完重启生效。
 html:
   enable: true
   timeout: "15s"
@@ -112,3 +113,9 @@ repeat_queue:
   worker_count: 1
   interval: "2h"              # 最粗兜底的扫描间隔，必须 > 0
   batch_size: 100
+
+# 业务自己的配置写在这里：框架**不解析、不校验**这一段，原样透出给 App
+#（`app.Config.BusinessSection("covers", &covers)` 解码；详见 docs/CORE_CONFIG.md 的 business 段）。
+# business:
+#   covers:
+#     dir: ./covers

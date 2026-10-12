@@ -44,9 +44,9 @@ type SiteSpec struct {
 	// Breaker 本站的熔断阈值；nil = 用 crawler.breaker 那份默认。
 	Breaker *BreakerSpec
 	// M3U8 / FileDown 本站的下载器覆盖层：本站所有阶段默认用这一份（阶段还能再各自叠一层）。
-	// nil = 不覆盖（用全局那份，即 main.go 里 SetM3U8/SetFiledown 给的）。**字段全是指针，
+	// nil = 不覆盖（用**基座**那份，即框架按 `DefaultConfig()` 备好的）。**字段全是指针，
 	// 只写要改的那几项**：`M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments}`。
-	// 解析顺序一句话：**阶段 > 站点 > 全局**；fetcher 里要临时一份就 `M3U8ForTask(task).With(...)`，
+	// 解析顺序一句话：**阶段 > 站点 > 基座**；fetcher 里要临时一份就 `M3U8ForTask(task).With(...)`，
 	// 要完全独立的一份就自己 `m3u8.NewDownloader(&cfg)`。
 	M3U8     *m3u8.Overlay
 	FileDown *filedown.Overlay

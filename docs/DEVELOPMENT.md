@@ -46,7 +46,7 @@
 
 | 目标 | 作用 |
 | --- | --- |
-| `build` | 编译业务二进制到 `bin/crawler(.exe)`（自动按 OS 补 `.exe` 后缀） |
+| `build` | 编译业务二进制到 `bin/<项目名>(.exe)`（自动按 OS 补 `.exe` 后缀；项目名就是 `papa new` 时给的那个） |
 | `run` | `go run .` 启动爬虫 |
 | `test` / `race` / `vet` | 同框架 |
 | `clean` | 清 `bin/`、`logs/*.log`、`downloads/*` |
@@ -80,10 +80,12 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 papa.go · task.go · errors.go   门面：全是 type/var 别名，没有实现
 core/                           零依赖叶子包：跨包流动的纯值 + 不依赖任何内部包的纯函数
                                 （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定）
-config/                          配置结构 + 运行期覆盖层（纯数据，不依赖任何内部包）
+config/                          配置结构与校验（纯数据，不依赖任何内部包）
 engine/                          引擎：Task · Trace · Fetcher · Engine
   engine.go    结构体 + 生命周期 + 依赖注入 + 结果读写
+  task.go      Task 结构与状态更新（Insert / UpdateStatus / IncrRetry / Unique）
   stage.go     阶段装配与 worker 循环（ApplyRegisterStage / runAttempt）
+  pools.go     活池登记表（懒建 / 空闲回收 / 关停都从这里取池）
   submit.go    提交路径（去重 → 落库 → 入队 → 认领）
   spill.go     高水位溢出与回灌
   batch.go     各治理队列共用的分页扫描（keyset 游标）
@@ -91,11 +93,13 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
   stats.go     监控快照
   fetch.go     浏览器池 / 静态 HTML 客户端
+  downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
   entry.go     阶段入口（fetcher 可选实现 SubmitEntries，框架启动时调）
   restricted.go 受限页判定（站点词表从 task.Site 取）
-  deps.go      阶段依赖声明（NeedsFiledown / NeedsM3U8 的启动期校验）
+  deps.go      阶段依赖声明（NeedsBrowser 的启动期校验）
   queuestats.go 三条治理队列的运行快照与积压（全局各一条）
+  dynticker.go 间隔可动态调整的定时器（错误/轮询队列的节拍）
   alias.go     给 core 里的值类型留的别名（见文末）
   recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用

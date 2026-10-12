@@ -168,13 +168,9 @@ const (
 	ArchiveModeAlways  = "always"  // 每次尝试都落盘（排查期用）
 )
 
-// StageConfig 已随"阶段参数搬进 Go 声明"一起移除（见 internal/app/spec.go 的 StageSpec）——
-// 配置里不再有 crawler.stages 段。这一段留个记号，免得从旧版本升级的人找不到东西。
-
-type RetryConfig struct {
-	MaxAttempts int           `mapstructure:"max_attempts"` //最大尝试次数（含首次执行）
-	Backoff     time.Duration `mapstructure:"backoff"`      //退出延迟
-}
+// StageConfig / RetryConfig 已随"阶段参数搬进 Go 声明"一起移除（见 internal/app/spec.go 的
+// StageSpec / RetrySpec）—— 配置里不再有 crawler.stages 段，重试参数也在阶段声明里。
+// 这一段留个记号，免得从旧版本升级的人对着 config.yaml 找不到东西。
 
 // BrowserConfig chromedp浏览器池配置
 type BrowserConfig struct {

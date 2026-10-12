@@ -14,11 +14,11 @@
 ```text
 papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / monitor / config / docker / docs / Makefile / logs）
   -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v3）
-  -> 在 config.yaml 加 stage、在 main.go 注册 fetcher，并在注册回调里提交起始 URL
+  -> 在 configs/sites/<站名>.go 里声明阶段（并发/队列/间隔/重试）与该阶段的 fetcher，起始 URL 由 fetcher 的 SubmitEntries 提交
   -> 任务被 worker 池调度执行，结果通过结果 API 写入 crawler_tasks 表
 ```
 
-整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher，并给 `config.yaml` / `main.go` 加几行。
+整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher 与**站点声明**（`configs/sites/<站名>.go`：阶段参数 + 入口开关都在那儿），`config.yaml` 只放全局配置（如 `db.dsn`、`browser.enable`）。
 
 ---
 
@@ -36,19 +36,20 @@ type Fetcher interface {
 ```
 
 - `GetStage()` 返回阶段名，它在**整个程序里必须唯一**（多站就带站点前缀，如 `hgd_catalog`）。重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `configs/sites/<站名>.go` 的声明里（见 7.2）。
-- **可选**：fetcher 还可以实现四个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
+- **可选**：fetcher 还可以实现两个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
   ```go
-  // 声明本阶段要用下载器 → 框架在启动时校验接线（没接直接 panic，而不是等第一条任务跑到那一步）
-  func (f *FetchVideo) NeedsFiledown() bool { return true } // 会调 engine.GetFiledown()
-  func (f *FetchVideo) NeedsM3U8() bool     { return true } // 会调 engine.GetM3U8()
-  func (f *FetchVideo) NeedsBrowser() bool  { return true } // 会借浏览器（engine.GetBrowserPool / FetchRendered）
-                                                            // → 没开 config.yaml 的 browser.enable 就在启动时炸
+  // 声明本阶段要借浏览器 → 框架在启动时校验接线（没开 config.yaml 的 browser.enable 就直接 panic，
+  // 而不是等第一条任务跑到那一步）
+  func (f *FetchVideo) NeedsBrowser() bool { return true } // 会借浏览器（engine.GetBrowserPool / FetchRendered）
 
   // 入口任务："注册即投一批起始任务" → 框架在启动时自动调（那时所有阶段的池子都已建好）
   // site = 本站声明快照（SiteSpec → core.Site）：BaseURL / Headers 都在里面
   func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) { /* engine.SubmitTask(...) */ }
   ```
-- `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该 stage 的 `retry.max_attempts` / `retry.backoff` 自动重试，最终失败标记为 `failed`。
+  曾经还有 `NeedsFiledown()` / `NeedsM3U8()` 两个"声明要用下载器"的接口，已随下载器全局配置面一起删除 ——
+  框架一定按 `DefaultConfig()` 备好下载器基座，"声明了却没接线"在结构上不可能发生，那两条校验成了永不触发的死代码。
+  老 fetcher 上若还留着这两个方法，它们只是普通方法、不会再被调用（删不删都行）。
+- `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该阶段声明里的 `Retry.MaxAttempts` / `Retry.Backoff`（见 7.2）自动重试，最终失败标记为 `failed`。
 - 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
 - 用 `engine.FetchHTML` 抓静态页时，**判失败原因别看错误文本**：非 2xx 是 `*htmlfetch.StatusError`（`htmlfetch.StatusCode(err)` 直接取码），响应体超 `html.max_body_size` 是 `*htmlfetch.BodyTooLargeError`。文本匹配会误伤 —— 把 `max_body_size` 配成 `4040000` 时，"html response exceeds 4040000 bytes" 里就带着 `404`，一个该重试的错误会被判成"不可重试的 not_found"。
   ```go
@@ -176,7 +177,7 @@ err := engine.SaveResult(task.ID, content.Title, content)
 err := engine.SubmitTask(&papa.Task{
     PID:   task.ID,       // 关联父任务
     URL:   detailURL,
-    Stage: "detail",      // 必须对应 config.yaml 里已配置的 stage
+    Stage: "detail",      // 必须是已声明的阶段（configs/sites/<站名>.go 的 Stages 里，见 7.2）
     Meta:  map[string]string{"series_id": "119002"}, // 携带业务键，handler 里读 task.Meta
 })
 ```
@@ -250,7 +251,7 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 | **HTMLFetch（默认，一律先用它）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
 | **Rod 浏览器（例外，静态拿不到才用）** | `engine.GetBrowserPool().Get(ctx)` | 数据必须经 JS 执行、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 才产生的页面 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | **静态 HTML 里已经拿得到目标数据的页面** —— 哪怕它有 JS、有交互（浏览器贵且占池位，见上面那条规则） |
 
-HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`，并保证 `browser.pool_size`（浏览器并发上限，按需创建）不小于并发使用浏览器的 worker 数量。
+HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`（此时 `pool_size` 必填且 > 0）。`browser.pool_size` 是**全局**并发上限（浏览器按需创建，非常驻实例数）：调得比并发用浏览器的 worker 数小，多出来的 worker 只会等在池上、不报错；它不需要机械等于 worker 总数。
 （这两段说的是**配置层**的开关怎么开；**该不该用浏览器是策略问题**，判据是上面那条规则 —— 不是"把 `browser.enable` 打开就该用它"。）
 
 ### 3.1 HTMLFetch：静态目录页的完整方式
@@ -327,7 +328,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
 4. 域名用 `papa.SameHost(base, u)`（apex 与 `www.` 算同一个 host）与 `papa.IsSubdomainOf(u, base)`
    （按**点边界**比对 —— `evil-example.com` 不是 `example.com` 的子域，自己写 `strings.HasSuffix`
    最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
-5. 将列表快照写入当前 `catalog` 任务；只有已在 `config.yaml` 和 `main.go` 注册 `detail` stage 时，才为通过校验的链接调用 `engine.SubmitTask`。
+5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`configs/sites/<站名>.go` 的 `Stages`），才为通过校验的链接调用 `engine.SubmitTask`。
 
 > **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
 > `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
@@ -582,20 +583,23 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
     // 1. 监听网络请求，捕获 m3u8 地址（必须在点击播放前挂上）
     var mu sync.Mutex
     var m3u8URL string
-    wait := page.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
-        if strings.Contains(e.Request.URL, ".m3u8") {
-            mu.Lock()
-            if m3u8URL == "" {
-                m3u8URL = e.Request.URL
-            }
-            mu.Unlock()
+    wait := page.EachEvent(func(e *proto.NetworkRequestWillBeSent) bool {
+        if !strings.Contains(e.Request.URL, ".m3u8") {
+            return false
         }
-    })()
+        mu.Lock()
+        if m3u8URL == "" {
+            m3u8URL = e.Request.URL
+        }
+        mu.Unlock()
+        return true // 命中即收工
+    })
 
     // 2. 点击播放按钮，触发视频请求
     page.MustElement(".play-btn").MustClick()
     page.MustWaitLoad()
-    time.Sleep(2 * time.Second) // 等 m3u8 请求发出
+
+    // 3. 等那个请求真的发出 —— wait() 阻塞到上面的回调返回 true
     wait()
 
     mu.Lock()
@@ -920,7 +924,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 9. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
 10. **延迟投递**：反爬随机间隔用 `task.Delay`（或 `NotBefore`）在派发时设置，别在 handler 里 `time.Sleep` 空等，那会浪费 worker 并发位。
 11. **别重复记日志**：`FetchHandler` 的 error 和 `SubmitTask` 的提交错误框架都会自动记，fetcher 里**不必再** `logger.Errorf` 记一遍，否则会刷双份。你只需判断 error 要不要改变控制流（继续/中止/告警）。
-12. **限流（429 / 503）现在按普通失败重试**：框架还不认 `Retry-After` —— 命中限流后它会立刻按该 stage 的 `retry.backoff` 再打一次，容易把限流升级成封禁。反爬严的站点把 `delay` 调大（如 `"30s-60s"`），或对 429 返回 `papa.WrapNoRetryKind("rate_limited", err)`，交给 error_queue 稍后重投。
+12. **限流（429 / 503）现在按普通失败重试**：框架还不认 `Retry-After` —— 命中限流后它会立刻按该阶段的 `Retry.Backoff` 再打一次，容易把限流升级成封禁。反爬严的站点把 `delay` 调大（如 `"30s-60s"`），或对 429 返回 `papa.WrapNoRetryKind("rate_limited", err)`，交给 error_queue 稍后重投。
 
 ---
 
@@ -931,7 +935,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `page.Context(ctx).Timeout(d).Navigate(url)` 带取消+超时导航；`page.MustWaitLoad()`。
 - `page.MustElement(sel)` / `page.MustElements(sel)`；`el.MustClick()` / `el.MustText()` / `el.Attribute(name)`。
 - `page.MustEval(js)` 执行 JS（滚动、取全局变量等）。
-- `page.EachEvent(func(e *proto.NetworkRequestWillBeSent){...})()` 监听网络请求（挂上后返回 wait 函数）。
+- `page.EachEvent(func(e *proto.NetworkRequestWillBeSent) bool { ... })` 监听网络请求：**返回 wait 函数**（别在它后面多写一个 `()` —— 那会当场阻塞在事件循环里）。回调**必须返回 `bool`**，返回 `true` 才会让 `wait()` 退出；命中时 `wait()` 返回。
 
 **静态 HTML（goquery）**
 - `engine.FetchHTML(ctx, url)` → `*htmlfetch.Page`；`page.Document.Text/Texts/Attr/Attrs/HTML(selector)`。**默认路径**，见 §3 的规则。
