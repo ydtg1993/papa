@@ -97,6 +97,32 @@ type Document struct {
 	selection *goquery.Document
 }
 
+// NewRenderedPage 用**浏览器渲染好的** HTML 造一个 Page。
+//
+// 用途是让渲染路径也能复用那批"收 *Page"的工具：`RestrictedReason`（受限页判据）、
+// 归档缓冲、以及业务里按 `page.Selection()` 写的解析函数 —— 静态路径（`NewClient().Fetch`）
+// 与渲染路径因此交出同一种东西。引擎侧的入口是 `engine.FetchRenderedPage`。
+//
+// 与静态路径的差别写清楚：**StatusCode 与 ContentType 留零值** —— 浏览器那边不给这两个值
+// （渲染页的最终 HTML 不来自某一次可观测的响应），别拿它当"HTTP 200"用。
+// finalURL 传导航后的地址，空串则不设 URL（Page.URL 为 nil，调用方要自己能容错）。
+func NewRenderedPage(finalURL, html string) (*Page, error) {
+	page := &Page{HTML: html}
+	if finalURL != "" {
+		u, err := url.Parse(finalURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse rendered page url %q: %w", finalURL, err)
+		}
+		page.URL = u
+	}
+	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, fmt.Errorf("parse rendered html document: %w", err)
+	}
+	page.Document = &Document{selection: document}
+	return page, nil
+}
+
 // NewClient creates a static HTML client.
 func NewClient(cfg Config) *Client {
 	applyConfigDefaults(&cfg)

@@ -132,6 +132,7 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | --- | --- |
 | `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（Rod 封装） |
 | `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
+| `engine.FetchRenderedPage(ctx, url, waitSelector)` | 同上，但返回 `*htmlfetch.Page`（与 `FetchHTML` 同一种）—— 走浏览器的阶段要接着做受限页判定、或按 `page.Selection()` 解析时用它 |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
 | `engine.M3U8ForTask(task)` / `M3U8ForStage(stage)` | m3u8 下载器：**阶段 > 站点 > 基座**，一行拿到"这一阶段该用的那个"（见 §5.4） |
 | `engine.GetM3U8()` / `GetFiledown()` | 基座那份（框架按 `DefaultConfig` 备好）—— 按站点/阶段配过的那份要用上面的 `For*` 取 |
@@ -315,6 +316,17 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    页面（如详情页里的播放页）就传个自己的名字。要自己判、或词表不来自站点声明时，仍可直接用
    `htmlfetch.RestrictedReason(page, extra...)` + `papa.RestrictedPageError`。
 
+   **走浏览器的阶段**（`NeedsBrowser`）用 `engine.FetchRenderedPage`，别用 `FetchRendered` ——
+   它交出的是 `*htmlfetch.Page`，与静态路径同一种东西，上面这条判据照样能用：
+   ```go
+   page, err := engine.FetchRenderedPage(ctx, task.URL, ".detail-box")
+   if err != nil { return err }
+   if err := engine.RestrictedError(task, page, ""); err != nil { return err }
+   ```
+   `FetchRendered` 只给 `*goquery.Document`，收 `*Page` 的判据（与归档）都用不上，于是被反爬拦下时
+   只表现为"选择器解析不出东西"。两条方法抓的是同一份 HTML，改一个字符串就行；拿到的 Page 里
+   `StatusCode` / `Content-Type` 是零值 —— 浏览器不给这两个值，别当成"HTTP 200"用。
+
    默认词表扫**可见正文 + 标题**（captcha / verify you are human / access denied / 访问受限 / 验证码 /
    Cloudflare 的 checking your browser · just a moment / Google 的 unusual traffic），业务可用
    `SiteSpec.RestrictedKeywords` 追加本站文案。它**不扫整段 HTML** —— 内联脚本与 style 里的
@@ -369,6 +381,10 @@ if len(items) == 0 {
 > }
 > // doc 是 *goquery.Document，finalURL 是导航后的最终地址
 > ```
+>
+> 要 `*htmlfetch.Page`（接着做受限页判定、或交给按 `page.Selection()` 写的解析函数）就用
+> `engine.FetchRenderedPage`：参数完全一样，交出的是 `page.Selection()` 能直接解析、也能喂给
+> `engine.RestrictedError` 的页面对象。
 
 需要下拉、滚动或点击时，先完成操作并等待新节点出现，再提取；m3u8 这类只在播放后产生的资源，必须先通过 `EachEvent` 挂好网络监听，再点击播放。Rod 的 `Must*` 方法遇到节点缺失会 panic，因此生产 fetcher 更适合使用返回 `error` 的 API 或预先检查元素存在性，保证错误交给引擎重试。
 
@@ -944,7 +960,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
   线上传 `page.Selection()`、测试传 `goquery.NewDocumentFromReader(...).Selection` —— 同一个类型，
   不用为"框架的文档 vs 测试的文档"再包一层接口。
 - 链接与域名：`papa.ResolveURL(base, ref)` / `papa.SameHost(a, b)` / `papa.IsSubdomainOf(child, parent)`。
-- 受限页：`engine.RestrictedError(task, page, stage)`（站点词表自动带上，不可重试）。
+- 受限页：`engine.RestrictedError(task, page, stage)`（站点词表自动带上，不可重试）。page 来自 `FetchHTML` 或 `FetchRenderedPage` —— 两者都是 `*htmlfetch.Page`。
 
 **下载器**
 - m3u8：`NewDownloader(cfg)` / `Download(ctx, url, outDir, outFile, opts...) → DownloadResult`。
@@ -967,4 +983,5 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
 - `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()` / `engine.BreakerStatus()`：手动闸住/放行抓取、读熔断状态。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
+- `engine.FetchRenderedPage(ctx, url, waitSelector)` 同上，但返回 `*htmlfetch.Page`（`StatusCode` / `Content-Type` 为零值）—— 走浏览器的阶段要接 `engine.RestrictedError` 或复用静态路径那套解析时用它。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。

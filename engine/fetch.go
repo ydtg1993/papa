@@ -34,22 +34,64 @@ const defaultWaitTimeout = 30 * time.Second
 
 // FetchRendered 借浏览器渲染页面，等待 waitSelector（可选）出现后，
 // 返回解析后的 goquery.Document 与导航后的最终 URL。用后自动归还浏览器。
+//
+// 要 `*htmlfetch.Page` —— 好直接喂给 `engine.RestrictedError`（受限页判据）或 archive 那套
+// 收 *Page 的工具 —— 用 FetchRenderedPage：两者抓的是同一份 HTML，只是包成什么给调用方不同。
 func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string) (*goquery.Document, string, error) {
+	html, finalURL, err := e.render(ctx, rawURL, waitSelector)
+	if err != nil {
+		return nil, "", err
+	}
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, "", fmt.Errorf("parse html of %s: %w", rawURL, err)
+	}
+	return doc, finalURL, nil
+}
+
+// FetchRenderedPage 借浏览器渲染页面，返回 `*htmlfetch.Page` —— 与 `FetchHTML` 同一个类型。
+//
+// 为什么要有它：`FetchHTML` 拿到的页能直接喂给 `engine.RestrictedError`（受限页判据）与 archive，
+// 因为那两处收的都是 `*htmlfetch.Page`；而 `FetchRendered` 只给 `*goquery.Document`，
+// 于是**走浏览器的阶段用不上框架的受限页判据** —— 被反爬拦下时只表现为"解析不出东西"，
+// 与静态路径的 `access_restricted`（不可重试、消息里带上命中的那句话）差着一层。
+//
+// 拿到的 Page 与静态路径的差别：StatusCode / ContentType 留零值（浏览器不给，见
+// htmlfetch.NewRenderedPage）；归档与 FetchRendered 完全一致（登记的本来就是渲染后的 HTML）。
+//
+//	page, err := engine.FetchRenderedPage(ctx, task.URL, ".detail-box")
+//	if err != nil { return err }
+//	if err := engine.RestrictedError(task, page, ""); err != nil { return err }
+func (e *Engine) FetchRenderedPage(ctx context.Context, rawURL, waitSelector string) (*htmlfetch.Page, error) {
+	html, finalURL, err := e.render(ctx, rawURL, waitSelector)
+	if err != nil {
+		return nil, err
+	}
+	page, err := htmlfetch.NewRenderedPage(finalURL, html)
+	if err != nil {
+		return nil, fmt.Errorf("parse html of %s: %w", rawURL, err)
+	}
+	return page, nil
+}
+
+// render 借浏览器渲染一页，把原始 HTML 与导航后的最终 URL 交出去；两个公开方法共用它
+// （差别只在"把这份 HTML 包成 Document 还是 Page"）。归档也在这里做：那份 HTML 本来就在手上。
+func (e *Engine) render(ctx context.Context, rawURL, waitSelector string) (string, string, error) {
 	// 显式代理地址在浏览器路径上是**做不到**的：代理是浏览器实例级设置（启动参数），
 	// Chrome/CDP 不提供逐请求改路由。静默忽略会让请求从别的出口出去、而调用方以为走了代理 ——
 	// 所以在这里明确报错，并指出两条替代路。
 	if addr := core.ProxyURLFrom(ctx); addr != "" {
-		return nil, "", fmt.Errorf("浏览器路径不支持逐请求代理地址（%s）：代理是浏览器实例级设置，"+
+		return "", "", fmt.Errorf("浏览器路径不支持逐请求代理地址（%s）：代理是浏览器实例级设置，"+
 			"Chrome 不提供逐请求改路由。要给这个站换出口，用 pool 上的代理配置、或一站一进程", addr)
 	}
 
 	pool := e.browserPool
 	if pool == nil {
-		return nil, "", fmt.Errorf("browser pool is not configured (browser.enable=false)")
+		return "", "", fmt.Errorf("browser pool is not configured (browser.enable=false)")
 	}
 	bw, err := pool.Get(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("acquire browser: %w", err)
+		return "", "", fmt.Errorf("acquire browser: %w", err)
 	}
 	defer pool.Put(bw)
 
@@ -62,19 +104,19 @@ func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string)
 		RemoveHeaders: removeHeaders,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("open page %s: %w", rawURL, err)
+		return "", "", fmt.Errorf("open page %s: %w", rawURL, err)
 	}
 	defer page.Close()
 
 	if waitSelector != "" {
 		if _, err := page.Timeout(defaultWaitTimeout).Element(waitSelector); err != nil {
-			return nil, "", fmt.Errorf("wait selector %q on %s: %w", waitSelector, rawURL, err)
+			return "", "", fmt.Errorf("wait selector %q on %s: %w", waitSelector, rawURL, err)
 		}
 	}
 
 	html, err := page.HTML()
 	if err != nil {
-		return nil, "", fmt.Errorf("read html of %s: %w", rawURL, err)
+		return "", "", fmt.Errorf("read html of %s: %w", rawURL, err)
 	}
 	// 归档：这份 HTML 本来就在手上（上面那次 page.HTML() 是解析文档必须付的代价），
 	// 顺手登记 —— 于是渲染路径的失败现场（选择器等错了、渲染没出来）也留得下。
@@ -87,14 +129,12 @@ func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string)
 	}
 	archiveFromCtx(ctx).holdRendered(html, finalURL)
 	if infoErr != nil {
-		return nil, "", fmt.Errorf("get page info of %s: %w", rawURL, infoErr)
+		return "", "", fmt.Errorf("get page info of %s: %w", rawURL, infoErr)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		return nil, "", fmt.Errorf("parse html of %s: %w", rawURL, err)
-	}
-	return doc, info.URL, nil
+	// 返回值用 info.URL（导航后的地址），归档用的是上面的 finalURL（取不到 info 时退回请求的 URL）——
+	// 与拆成两条公开方法之前逐字一致。
+	return html, info.URL, nil
 }
 
 // defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项

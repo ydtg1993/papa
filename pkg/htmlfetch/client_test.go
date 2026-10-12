@@ -408,3 +408,45 @@ func TestSelectionServesBothPageAndTestDocument(t *testing.T) {
 		t.Fatalf("从测试自造文档取到的 = %#v", got)
 	}
 }
+
+// NewRenderedPage 把**浏览器渲染好的** HTML 包成与静态路径同一种 Page：
+// 渲染路径能用 RestrictedReason / 归档 / 业务按 page.Selection() 写的解析，全靠它。
+func TestNewRenderedPage(t *testing.T) {
+	page, err := NewRenderedPage("https://example.com/a/", `<html><body><h1 class="t">标题</h1></body></html>`)
+	if err != nil {
+		t.Fatalf("NewRenderedPage = %v", err)
+	}
+	if page.URL == nil || page.URL.String() != "https://example.com/a/" {
+		t.Fatalf("URL = %v, want https://example.com/a/", page.URL)
+	}
+	if page.HTML == "" {
+		t.Fatal("HTML 应当原样留着（归档要用）")
+	}
+	if page.Document == nil {
+		t.Fatal("Document 应当是解析好的")
+	}
+	if got, ok := page.Document.Text("h1.t"); !ok || got != "标题" {
+		t.Fatalf("Document.Text = %q %v", got, ok)
+	}
+	if page.Selection().Find("h1.t").Length() != 1 {
+		t.Fatal("Selection 简写应当能用")
+	}
+	// 浏览器不给这两个值，只能是零值 —— 别让调用方以为拿到了"HTTP 200"
+	if page.StatusCode != 0 || page.ContentType != "" {
+		t.Fatalf("状态码/Content-Type 应当留零值，实得 %d/%q", page.StatusCode, page.ContentType)
+	}
+
+	// finalURL 为空 → 不编一个 URL 出来，调用方自己容错
+	bare, err := NewRenderedPage("", `<html><body>x</body></html>`)
+	if err != nil {
+		t.Fatalf("NewRenderedPage(空地址) = %v", err)
+	}
+	if bare.URL != nil {
+		t.Fatalf("空地址时不该设 URL，实得 %v", bare.URL)
+	}
+
+	// 非法地址要报错，而不是静默给一个半截 URL
+	if _, err := NewRenderedPage("://bad", "<html></html>"); err == nil {
+		t.Fatal("非法地址应当报错")
+	}
+}

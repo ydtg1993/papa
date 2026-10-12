@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod/lib/launcher"
 	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 	"gorm.io/gorm"
@@ -282,6 +285,119 @@ func TestFetchRenderedWithoutPool(t *testing.T) {
 		t.Fatal("没配浏览器池应当报错")
 	} else if !containsAll(err.Error(), "browser") {
 		t.Fatalf("错误信息应指向浏览器未启用：%v", err)
+	}
+}
+
+// 渲染路径也要能拿到 *htmlfetch.Page：没配池子时给出的错误与 FetchRendered 同一条。
+func TestFetchRenderedPageWithoutPool(t *testing.T) {
+	e := &Engine{}
+	if _, err := e.FetchRenderedPage(t.Context(), "https://example.com", ""); err == nil {
+		t.Fatal("没配浏览器池应当报错")
+	} else if !containsAll(err.Error(), "browser") {
+		t.Fatalf("错误信息应指向浏览器未启用：%v", err)
+	}
+}
+
+// 渲染出来的 Page 必须能**直接**喂进 engine.RestrictedError —— 这正是这条 API 存在的理由：
+// FetchRendered 给的是 *goquery.Document，而受限页判据（默认词表 + 站点词表）收的是
+// *htmlfetch.Page，于是走浏览器的阶段被反爬拦下时只表现为"解析不出东西"。
+//
+// 不借真 Chrome：判据看的是 Page.Document，htmlfetch.NewRenderedPage 造的页与引擎渲染出来的页
+// 在这一点上完全同类（真 Chrome 那条端到端见 TestFetchRenderedPageEndToEnd）。
+func TestRenderedPageFeedsRestrictedError(t *testing.T) {
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e.SetSite(core.Site{Key: "s", RestrictedKeywords: []string{"本站专属拦截话术"}})
+
+	interstitial, err := htmlfetch.NewRenderedPage("https://example.com/drama/1/",
+		`<html><head><title>Just a moment...</title></head><body><p>Checking your browser before accessing</p></body></html>`)
+	if err != nil {
+		t.Fatalf("NewRenderedPage = %v", err)
+	}
+	err = e.RestrictedError(&Task{ID: 1, Stage: "catalog", Site: "s"}, interstitial, "")
+	if err == nil {
+		t.Fatal("命中默认词表的渲染页应当被判成受限页")
+	}
+	if core.Retryable(err) {
+		t.Fatal("受限页必须不可重试")
+	}
+	if kind := core.ErrorKind(err); kind != "access_restricted" {
+		t.Fatalf("分类 = %q, want access_restricted", kind)
+	}
+	if !strings.Contains(err.Error(), "https://example.com/drama/1/") {
+		t.Fatalf("消息里应当带上页面地址：%v", err)
+	}
+
+	// 站点词表在渲染路径上同样生效（两路用的是同一套判据），干净页返回 nil
+	siteHit, err := htmlfetch.NewRenderedPage("https://example.com/drama/2/",
+		`<html><body><h1>本站专属拦截话术</h1></body></html>`)
+	if err != nil {
+		t.Fatalf("NewRenderedPage = %v", err)
+	}
+	if err := e.RestrictedError(&Task{ID: 2, Stage: "catalog", Site: "s"}, siteHit, ""); err == nil {
+		t.Fatal("站点词表命中了却没报错")
+	}
+	clean, err := htmlfetch.NewRenderedPage("https://example.com/drama/3/", `<html><body><h1>正常页面</h1></body></html>`)
+	if err != nil {
+		t.Fatalf("NewRenderedPage = %v", err)
+	}
+	if err := e.RestrictedError(&Task{ID: 3, Stage: "catalog", Site: "s"}, clean, ""); err != nil {
+		t.Fatalf("干净页不该判受限：%v", err)
+	}
+}
+
+// 真 Chrome 端到端：FetchRenderedPage 交出可用的 Page（能查询、URL 是导航后的地址），
+// 顺带确认抽出 render() 之后 FetchRendered 这条路没变。没有浏览器就跳过（与 pkg/browser 同取向）。
+func TestFetchRenderedPageEndToEnd(t *testing.T) {
+	if _, ok := launcher.LookPath(); !ok {
+		t.Skip("本机没有可用浏览器，跳过（这条要真 Chrome）")
+	}
+	srv := serveBody(t, `<html><head><title>渲染页</title></head><body><h1 class="hit">等 JS 才有的内容</h1></body></html>`)
+
+	cfg := &config.Config{}
+	cfg.Browser.Enable = true
+	cfg.Browser.PoolSize = 1
+	cfg.Browser.Headless = true
+	cfg.Browser.MaxIdleTime = 0
+	e := &Engine{cfg: cfg}
+	e.SetBrowserPool()
+	defer e.GetBrowserPool().Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	page, err := e.FetchRenderedPage(ctx, srv.URL, "h1.hit")
+	if err != nil {
+		if strings.Contains(err.Error(), "acquire browser") {
+			t.Skipf("拿不到浏览器实例（本机浏览器起不来），跳过：%v", err)
+		}
+		t.Fatalf("FetchRenderedPage = %v", err)
+	}
+	if page == nil || page.HTML == "" || page.Document == nil {
+		t.Fatalf("渲染页应当是解析好的 Page，实得 %+v", page)
+	}
+	if got, ok := page.Document.Text("h1.hit"); !ok || !strings.Contains(got, "等 JS 才有的内容") {
+		t.Fatalf("Page 应当能直接查询：%q %v", got, ok)
+	}
+	// 比的是"最终地址"不是"发出的地址"：Chrome 会把裸 origin 规范成带尾斜杠的形态
+	// （请求 http://host:port → 最终 URL http://host:port/），所以两边都去掉尾斜杠再比。
+	if page.URL == nil || strings.TrimSuffix(page.URL.String(), "/") != strings.TrimSuffix(srv.URL, "/") {
+		t.Fatalf("URL = %v, want %s（导航后的最终地址）", page.URL, srv.URL)
+	}
+	if page.StatusCode != 0 || page.ContentType != "" {
+		t.Fatalf("渲染路径拿不到状态码/Content-Type，应当是零值：%d/%q", page.StatusCode, page.ContentType)
+	}
+	if err := e.RestrictedError(&Task{ID: 1, Stage: "catalog"}, page, ""); err != nil {
+		t.Fatalf("干净页不该判受限：%v", err)
+	}
+
+	// 同一个 render() 的另一条出口：拆完之后 FetchRendered 仍然照旧
+	doc, finalURL, err := e.FetchRendered(ctx, srv.URL, "h1.hit")
+	if err != nil {
+		t.Fatalf("FetchRendered = %v", err)
+	}
+	if strings.TrimSuffix(finalURL, "/") != strings.TrimSuffix(srv.URL, "/") || doc == nil ||
+		!strings.Contains(doc.Text(), "等 JS 才有的内容") {
+		t.Fatalf("FetchRendered 的返回值变了：finalURL=%q doc=%v", finalURL, doc)
 	}
 }
 
