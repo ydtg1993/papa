@@ -13,7 +13,7 @@ where it has already diverged from current Papa.
 | `models/` | business structs and GORM table models; `models.Models()` is the migration list |
 | `monitor/` | back-office layers: `tables.go` / `controller/` / `view/` / `router.go` / `middleware.go` |
 | `docs/` | a copy of the framework manuals (may lag the framework — see `references/doc-map.md`) |
-| `.claude/skills/` | this skill. It is written by `papa new`; `papa upgrade` does not refresh it. |
+| `.claude/skills/` | this skill. `papa new` writes it; `papa upgrade --write` refreshes `SKILL.md` + `references/{doc-map,implementation-patterns,review-checklist}.md` when they drift, but **never this file** (project-owned). |
 
 ## Conventions
 
