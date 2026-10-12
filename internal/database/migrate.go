@@ -50,6 +50,10 @@ func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
 	if err := dropSiteQueueColumns(db); err != nil {
 		return err
 	}
+	// 幂等键硬化：原文加宽 + 哈希列 + 唯一索引（见 migrate_taskkey.go）。
+	if err := migrateIdempotencyKey(db); err != nil {
+		return err
+	}
 	// 结果不再落任务表：title / content 两列由业务自建表承载，这里显式删掉（见 migrate_taskcolumns.go）。
 	if err := dropLegacyTaskColumns(db); err != nil {
 		return err

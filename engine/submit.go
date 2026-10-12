@@ -60,7 +60,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 	// 全新任务：提交到 pool 前先插入数据库
 	if ierr := task.Insert(e.db); ierr != nil {
 		// 并发下撞唯一索引：另一 goroutine 已入库并将入队，此处回填 ID 后跳过，避免重复入队
-		if rerr := e.findTaskRecord(task, &record); rerr != nil {
+		if rerr := e.findTaskRecordFallback(task, &record); rerr != nil {
 			return e.logSubmitError(task, fmt.Errorf("insert crawler task to db failed: %w", ierr))
 		}
 		e.dedupCache.Add(key)
@@ -73,16 +73,38 @@ func (e *Engine) SubmitTask(task *Task) error {
 }
 
 // findTaskRecord 按去重键查找已存在的任务记录；未找到返回 gorm.ErrRecordNotFound。
-// 幂等键优先，否则回退 stage+url_hash（与 DB 唯一索引 idx_stage_url_hash 一致 ——
-// 唯一索引建在 URL 的 sha256 上，因为长 URL 不能整串进索引）。
+//
+// 两条分支都**按唯一索引查**（查得到的前提是"查的键与索引的键一致"，否则插冲突后回查会空手而归、
+// 把并发冲突报成插入失败）：
+//   - 自定义幂等键 → `idempotency_hash`（唯一索引 idx_idempotency_hash；键原文 varchar(1000) 建不了索引）
+//   - 没有自定义键 → `url_hash + stage`（唯一索引 idx_stage_url_hash）
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
+	return e.dedupScope(task).First(record).Error
+}
+
+// dedupScope 给出"查已存在行"的条件（抽出来是为了能用 DryRun 把 SQL 形状钉住 —— 假库不解析 WHERE）。
+func (e *Engine) dedupScope(task *Task) *gorm.DB {
 	q := e.db.Model(&models.CrawlerTask{})
-	if task.IdempotencyKey != "" {
-		q = q.Where("idempotency_key = ?", task.IdempotencyKey)
-	} else {
-		q = q.Where("url_hash = ? AND stage = ?", models.UrlHash(task.URL), task.Stage)
+	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
+		return q.Where("idempotency_hash = ?", h)
 	}
-	return q.First(record).Error
+	return q.Where("url_hash = ? AND stage = ?", models.UrlHash(task.URL), task.Stage)
+}
+
+// findTaskRecordFallback 插入撞了唯一索引之后**无条件**按两条唯一索引回查。
+//
+// 为什么不能复用 findTaskRecord：它只走"这次提交用的那条键"。冲突完全可能来自**另一条**索引 ——
+// 最典型的是幂等键文本变过（老行还存着旧文本，新代码算出的哈希查不到它），而 (url_hash, stage)
+// 那条索引照样拦下这次插入。这时若只按哈希回查就会空手而归，把"复用已有行"误报成插入失败。
+// 所以先按哈希（若有自定义键），再按 (url_hash, stage)。
+func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) error {
+	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
+		if err := e.db.Model(&models.CrawlerTask{}).Where("idempotency_hash = ?", h).First(record).Error; err == nil {
+			return nil
+		}
+	}
+	return e.db.Model(&models.CrawlerTask{}).
+		Where("url_hash = ? AND stage = ?", models.UrlHash(task.URL), task.Stage).First(record).Error
 }
 
 // submitIfActive 若任务尚未到终态（success/failed）则延迟投递或入队，否则静默跳过。
@@ -319,11 +341,10 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
 			t.ID = int(rec.ID)
 			continue
 		}
-		// 按 (stage, url) 回查 —— 唯一索引就是这个，所以冲突只可能落在它上面。
-		// 不复用 findTaskRecord：它优先按 IdempotencyKey 查，而那不是唯一索引，可能捞回另一行。
+		// 按两条唯一索引回查（哈希优先，其次 (url_hash, stage)）—— 冲突落在哪条都接得住，
+		// 而只查一条时"键文本变过"那种情况会把它报成插入失败。
 		var existed models.CrawlerTask
-		if serr := e.db.Select("id").Where("url_hash = ? AND stage = ?", models.UrlHash(t.URL), t.Stage).
-			First(&existed).Error; serr != nil {
+		if serr := e.findTaskRecordFallback(t, &existed); serr != nil {
 			return nil, fmt.Errorf("insert task %q: %w", t.URL, ierr)
 		}
 		t.ID = int(existed.ID)

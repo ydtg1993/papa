@@ -91,7 +91,7 @@ var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 // **必须与模型全列一致**：rowValuesOf 只按这个列表取值，漏了新列不报错，
 // 测试里 `f.row["新列"] = ...` 会被静默丢弃、断言照样"通过"。TestFakeTaskColumnsCoverModel 钉住它。
 var fakeTaskColumns = []string{
-	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "meta",
+	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "idempotency_hash", "meta",
 	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
 	"reprocess", "urgent", "error", "created_at", "updated_at",
 }

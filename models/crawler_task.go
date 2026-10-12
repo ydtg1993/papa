@@ -35,8 +35,15 @@ type CrawlerTask struct {
 	URL string `gorm:"type:text;not null;comment:任务URL"`
 	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage) 上 ——
 	// 与 URL 长度无关。由 BeforeCreate 自动填（任何创建路径都覆盖），老库由 `papa migrate` 回填。
-	URLHash        string `gorm:"type:char(64);not null;uniqueIndex:idx_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
-	IdempotencyKey string `gorm:"type:varchar(500);index;comment:自定义幂等键，规范格式 site:stage:<标识>；空则回退 site:stage:url"`
+	URLHash string `gorm:"type:char(64);not null;uniqueIndex:idx_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
+	// IdempotencyKey 自定义幂等键的**原文**：规范格式 `site:stage:<标识>`（空 = 没自定义，回退 site:stage:url）。
+	// 1) 不建索引：键里带 URL，varchar(1000) 在 utf8mb4 下建不了索引（3072 字节上限 ≈ 768 字符）；
+	// 2) 唯一性由下面的 IdempotencyHash 上的唯一索引兜底（与 URL/URLHash 同一套做法）。
+	IdempotencyKey string `gorm:"type:varchar(1000);comment:自定义幂等键原文(规范格式 site:stage:<标识>；空=回退 site:stage:url)"`
+	// IdempotencyHash 上面那把键的 sha256（64 位十六进制小写），**唯一索引建在它上面**。
+	// **键为空时必须落 NULL**（不是空串）：MySQL 的唯一索引把多个 NULL 视作互不相同，空串会互相撞 ——
+	// 没自定义键的行占大多数，落空串等于全表只能有一行。
+	IdempotencyHash *string `gorm:"type:char(64);uniqueIndex:idx_idempotency_hash;comment:幂等键的sha256(NULL=没自定义键；唯一索引建在它上面)"`
 	// Meta 业务键（如 series_id/episode_id），与 URL 解耦。**随行落库** ——
 	// 恢复/轮询/错误队列/后台重投这几条「从行重建 Task」的路都按它还原任务身份，
 	// 不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
@@ -70,7 +77,24 @@ func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
 	if t.URLHash == "" && t.URL != "" {
 		t.URLHash = UrlHash(t.URL)
 	}
+	// 幂等键的哈希同理；**空键保持 nil**（落 NULL），见字段注释。
+	if t.IdempotencyHash == nil && t.IdempotencyKey != "" {
+		h := IdempotencyKeyHash(t.IdempotencyKey)
+		t.IdempotencyHash = &h
+	}
 	return nil
+}
+
+// IdempotencyKeyHash 幂等键原文的 sha256 十六进制（小写，64 字符）—— 唯一索引建在它上面，
+// 因为键里带 URL、整串（varchar(1000)）在 utf8mb4 下建不了索引。空键返回空串，调用方据此落 NULL。
+//
+// 与 MySQL 的 `SHA2(idempotency_key, 256)` 输出一致，所以迁移里的回填 SQL 与 Go 侧算的是同一个值。
+func IdempotencyKeyHash(key string) string {
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
 }
 
 // UrlHash URL 的 sha256 十六进制（小写，64 字符）—— 唯一索引用它，长 URL 建不了整串索引。
