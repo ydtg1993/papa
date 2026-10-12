@@ -1,0 +1,14 @@
+{
+  "skill_name": "papa-crawler-development",
+  "generated_by": "skill-creator eval-viewer workflow",
+  "viewer_generation_status": "pending-runtime-recovery",
+  "benchmark": "benchmark.json",
+  "runs": [
+    {"eval_id":1,"configuration":"with_skill_final","output":"iteration-2/eval-new-site/with_skill/outputs/answer.md","grading":"iteration-2/eval-new-site/with_skill/grading.json"},
+    {"eval_id":1,"configuration":"without_skill","output":"iteration-1/eval-new-site/without_skill/outputs/answer.md","grading":"iteration-1/eval-new-site/without_skill/grading.json"},
+    {"eval_id":2,"configuration":"with_skill_final","output":"iteration-2/eval-audit-drift/with_skill/outputs/answer.md","grading":"iteration-2/eval-audit-drift/with_skill/grading.json"},
+    {"eval_id":2,"configuration":"without_skill","output":"iteration-1/eval-audit-drift/without_skill/outputs/answer.md","grading":"iteration-1/eval-audit-drift/without_skill/grading.json"},
+    {"eval_id":3,"configuration":"with_skill_final","output":"iteration-1/eval-monitor-table/with_skill/outputs/answer.md","grading":"iteration-1/eval-monitor-table/with_skill/grading.json"},
+    {"eval_id":3,"configuration":"without_skill","output":"iteration-1/eval-monitor-table/without_skill/outputs/answer.md","grading":"iteration-1/eval-monitor-table/without_skill/grading.json"}
+  ]
+}

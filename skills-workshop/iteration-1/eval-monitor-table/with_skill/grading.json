@@ -1,0 +1,38 @@
+{
+  "eval_id": 3,
+  "eval_name": "monitor-table-action",
+  "grade": "PASS",
+  "assertions": [
+    {
+      "assertion": "Keeps the GORM model/repository in models and table declarations, Source, and handlers in the business monitor layer rather than Oao.",
+      "result": "PASS",
+      "evidence": "answer.md:30-43 assigns the Episode model and conditional-update repository to crawler/models, while assigning the table declaration, Source assembly, and action Handler to crawler/monitor. answer.md:22-26 explicitly says oao does not query the database and that the host-side Source/Handler and models repository own database behavior. The proposed repository skeleton is at answer.md:101-145 and the monitor table/handler skeletons are at answer.md:203-244 and 252-310."
+    },
+    {
+      "assertion": "Defines explicit series_id equality and title-like/search filtering with default -id sorting and a field allowlist.",
+      "result": "PASS",
+      "evidence": "answer.md:267-310 declares an explicit Columns allowlist, series_id with KindNumber and OpEq at line 290, title with OpLike at line 291, optional global title Search at lines 272-276, and DefaultSort: \"-id\" at line 295. answer.md:312-318 also explains that only allowed fields should be declared and that oao strips undeclared columns, filters, and values."
+    },
+    {
+      "assertion": "Treats the client row as untrusted, extracts only stable identity/version input, and reloads or conditionally updates server-side state.",
+      "result": "PASS",
+      "evidence": "answer.md:24-26 states that ActionRequest.Row is untrusted and only req.ID should be used. The Handler at answer.md:219-240 parses and validates req.ID, explicitly does not read req.Row or arbitrary Values, and calls a server-side repository method. answer.md:248 explains why the Row cannot serve as a version/precondition; the server instead enforces reviewed=false in the update condition."
+    },
+    {
+      "assertion": "Protects concurrent or duplicate review actions with a conditional update/CAS, checks RowsAffected, and returns a conflict when stale.",
+      "result": "PASS",
+      "evidence": "answer.md:117-144 performs one UPDATE with WHERE id = ? AND reviewed = false, checks tx.RowsAffected, and maps a zero-row existing record to ErrEpisodeAlreadyReviewed. answer.md:230-240 maps that error to HTTP 409 Conflict. answer.md:147-158 explicitly rejects a racy read-then-write approach, and answer.md:403-407 proposes duplicate and concurrent-operation tests."
+    },
+    {
+      "assertion": "Registers the model through models.Models/UseModels and requires explicit app.Migrate/papa migrate rather than startup migration.",
+      "result": "PASS",
+      "evidence": "answer.md:87-93 notes that models.Models already includes &Episode{}. answer.md:320-329 shows monitor.Register calling app.UseModels(models.Models()...) and app.UseTables. answer.md:335-356 requires explicit papa migrate or go run . -migrate, states that the registered models feed app.Migrate, and explicitly says normal startup must not AutoMigrate. These claims match repository facts in crawler/models/models.go:23-27 and crawler/monitor/register.go:21-27."
+    },
+    {
+      "assertion": "Explains that Papa monitor authentication wraps the API and central OnAction operation logging records success and failure when enabled.",
+      "result": "PASS",
+      "evidence": "answer.md:360-369 explains that Papa wraps /api/oao/* with IP/CIDR and Access Token authentication and warns against a NoAuth route. answer.md:373-391 states that server.operation_log: true enables Papa's central OnAction audit, records both successful and failed mark_reviewed actions with target/operator/IP/error context, and advises against duplicate Handler-side audit logging."
+    }
+  ],
+  "summary": "Strict overall PASS: all 6 assertions are satisfied. The response gives a repository-aligned implementation skeleton with clear models/monitor/oao boundaries, allowlisted filters and sorting, an untrusted-client-row policy, atomic conditional review updates with conflict handling, explicit migration registration and execution, and centralized Papa authentication and action auditing."
+}

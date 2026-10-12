@@ -1,0 +1,13 @@
+{
+  "eval_id": 1,
+  "eval_name": "new-site-integration",
+  "prompt": "在当前 crawler 业务项目中新增站点 example-shop（https://shop.example.com/）。目标是抓取分类页 /category/books、详情页 /book/{id}，静态 HTML 即可。请给出应新增/修改的文件与关键 Go 代码：站点阶段名必须跨站唯一；分类任务启动时自动提交并每 8 小时轮询；详情任务携带 book_id；结构缺失不可重试；网络错误按阶段重试。不要修改 papa 框架源码。",
+  "assertions": [
+    "Only changes the business crawler and explicitly keeps main.go generic and Papa framework source untouched.",
+    "Uses self-registering SiteSpec plus site-prefixed stage constants consistently in GetStage and submitted tasks.",
+    "Implements AutoStart with SubmitEntries and an 8-hour per-task repeat interval, while noting that global repeat_queue must be enabled.",
+    "Places book_id in persisted Task.Meta and uses a stable idempotency key for detail tasks.",
+    "Uses FetchHTML for static pages and separates transient network errors from no-retry structure/not-found errors without matching error strings.",
+    "Does not present guessed CSS selectors as production-ready; requests or requires saved/reachable HTML and parser fixture tests."
+  ]
+}

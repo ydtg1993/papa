@@ -1,0 +1,13 @@
+{
+  "eval_id": 2,
+  "eval_name": "audit-documentation-drift",
+  "prompt": "审查 crawler/fetcher/huangguo 与 crawler/configs/config.yaml，找出至少 4 个与当前 papa/docs 手册或代码约定不一致、可能导致误导或运行问题的地方。请按严重程度排序，给文件位置、依据和修复建议；不要凭旧版 crawler/docs 下结论。",
+  "assertions": [
+    "Uses current papa/docs and current exported code as authority rather than crawler/docs.",
+    "Flags the legacy scheduler/RegisterCronJob configuration as removed and potentially rejected by strict unknown-key validation.",
+    "Flags huangguo catalog/detail/episode stage names as unprefixed process-global collision risks and notes persisted-stage migration impact.",
+    "Flags obsolete runtime hot-reload/runtime.yaml claims when unsupported by current documentation.",
+    "Flags the repository comment claiming Task.Meta is memory-only as stale because Meta is persisted and restored.",
+    "Reports at least four concrete findings ordered by severity, each with location, evidence, impact, and repair advice."
+  ]
+}

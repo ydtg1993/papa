@@ -81,8 +81,9 @@ func init() {
 	}
 }
 
-// 默认只报告：一个字节都不落盘；--write 才写，而且**只写 docs/**。
-func TestUpgradeWriteOnlyTouchesDocs(t *testing.T) {
+// 默认只报告：一个字节都不落盘；--write 才写，而且**只写框架副本**（docs/ 与 .claude/skills/ 里的
+// 通用文件）—— 业务文件一个字节不动。
+func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := runNew("demo", nil); err != nil {
 		t.Fatalf("runNew = %v", err)
@@ -98,6 +99,8 @@ func TestUpgradeWriteOnlyTouchesDocs(t *testing.T) {
 	mainBefore := readFile(t, filepath.Join("demo", "main.go"))
 	cfgBefore := readFile(t, filepath.Join("demo", "configs", "config.yaml"))
 	siteBefore := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
+	// 技能是刚生成的，与框架逐字一致 → 升级不该动它（幂等）
+	skillBefore := readFile(t, filepath.Join("demo", skillPath(t, "SKILL.md")))
 
 	// ① 不带 --write：报告要列出要改的副本，但什么都不落盘
 	out := captureStdout(t, func() {
@@ -131,6 +134,9 @@ func TestUpgradeWriteOnlyTouchesDocs(t *testing.T) {
 	if got := readFile(t, filepath.Join("demo", "docs", "notes.md")); got != "# 我自己的笔记\n" {
 		t.Error("自己加的文档不该被删或改")
 	}
+	if got := readFile(t, filepath.Join("demo", skillPath(t, "SKILL.md"))); got != skillBefore {
+		t.Error("已经与框架一致的技能文件不该被动过（升级要幂等）")
+	}
 	for _, c := range []struct{ name, before string }{
 		{"main.go", mainBefore},
 		{"configs/config.yaml", cfgBefore},
@@ -139,6 +145,90 @@ func TestUpgradeWriteOnlyTouchesDocs(t *testing.T) {
 		if got := readFile(t, filepath.Join("demo", filepath.FromSlash(c.name))); got != c.before {
 			t.Errorf("业务文件 %s 不该被动过", c.name)
 		}
+	}
+}
+
+// skillPath 按路径后缀在技能清单里找一条，返回它相对项目根的路径（测试里拼路径用）。
+func skillPath(t *testing.T, suffix string) string {
+	t.Helper()
+	for _, sf := range skillFiles() {
+		if strings.HasSuffix(filepath.ToSlash(sf.rel), suffix) {
+			return sf.rel
+		}
+	}
+	t.Fatalf("技能清单里没有以 %q 结尾的文件", suffix)
+	return ""
+}
+
+// `papa upgrade` 刷新技能时**只刷通用文件**：project-conventions.md 属于项目（记它自己的布局与
+// 已知漂移），存在就一律不碰 —— 与 `docs/` 的区别正在这里。
+func TestUpgradeRefreshesSkillButKeepsProjectConventions(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := runNew("demo", nil); err != nil {
+		t.Fatalf("runNew = %v", err)
+	}
+
+	skillMD := filepath.Join("demo", skillPath(t, "SKILL.md"))
+	convMD := filepath.Join("demo", skillPath(t, "references/project-conventions.md"))
+	writeFileT(t, skillMD, "# 旧版本的技能\n")
+	mine := "# 本项目自己的约定\n- 我们的阶段前缀是 shop_\n"
+	writeFileT(t, convMD, mine)
+
+	// ① dry-run：报告列出来，但一个字节都不落盘
+	out := captureStdout(t, func() {
+		if err := runUpgradeCmd([]string{"demo"}); err != nil {
+			t.Fatalf("upgrade = %v", err)
+		}
+	})
+	if !strings.Contains(out, "更新  "+filepath.ToSlash(skillPath(t, "SKILL.md"))) {
+		t.Fatalf("报告里应当列出要刷新的技能文件：\n%s", out)
+	}
+	if got := readFile(t, skillMD); got != "# 旧版本的技能\n" {
+		t.Error("dry-run 不该改技能文件")
+	}
+
+	// ② --write：通用文件刷回框架那份；项目所有的那份原样不动
+	captureStdout(t, func() {
+		if err := runUpgradeCmd([]string{"demo", "--write"}); err != nil {
+			t.Fatalf("upgrade --write = %v", err)
+		}
+	})
+	want, err := skillContent("skill_SKILL.md.tmpl", skillData(filepath.Join("demo")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, skillMD); got != string(want) {
+		t.Error("--write 之后通用技能文件应当与框架逐字一致")
+	}
+	if got := readFile(t, convMD); got != mine {
+		t.Errorf("项目自己的 project-conventions.md 不该被覆盖：\n%s", got)
+	}
+}
+
+// 老项目（生成时还没有技能目录）：upgrade --write 把整套补上 —— 通用文件刷新，项目所有的播种，
+// 且播种出来的那份要带项目自己的名字（从 go.mod 的 module 行取）。
+func TestUpgradeSeedsSkillForOlderProject(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := runNew("demo", nil); err != nil {
+		t.Fatalf("runNew = %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join("demo", ".claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		if err := runUpgradeCmd([]string{"demo", "--write"}); err != nil {
+			t.Fatalf("upgrade --write = %v", err)
+		}
+	})
+	for _, sf := range skillFiles() {
+		if _, err := os.Stat(filepath.Join("demo", sf.rel)); err != nil {
+			t.Errorf("升级后应当有 %s：%v", sf.rel, err)
+		}
+	}
+	conv := readFile(t, filepath.Join("demo", skillPath(t, "references/project-conventions.md")))
+	if !strings.Contains(conv, "configs/sites/demo.go") {
+		t.Errorf("播种出来的 project-conventions.md 要写进项目自己的路径：\n%s", conv)
 	}
 }
 

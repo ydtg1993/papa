@@ -1,8 +1,11 @@
 # IDE
 .idea/
 
-# Claude Code local settings
-.claude/
+# Claude Code 本地设置。
+# **别整目录忽略** —— `.claude/skills/` 是随项目走的开发技能（papa new 生成），要进版本库；
+# 所以只忽略 .claude 下的其余条目。
+.claude/*
+!.claude/skills/
 
 # configs：只忽略这一份（里面有 dsn 等本地值）。
 # **别整目录忽略** —— configs/sites/<站名>.go 是项目的站点与阶段声明，那是代码，要进版本库。

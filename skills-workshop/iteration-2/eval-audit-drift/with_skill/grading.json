@@ -1,0 +1,56 @@
+{
+  "expectations": [
+    {
+      "text": "Uses current papa/docs and current exported code as authority rather than crawler/docs.",
+      "passed": true,
+      "evidence": "answer.md lines 3-12 explicitly state that current papa/ exported code, tests, and papa/docs are authoritative and that old crawler/docs is not used for conclusions; the answer then cites current papa/docs and papa code throughout."
+    },
+    {
+      "text": "Flags the legacy scheduler/RegisterCronJob configuration as removed and potentially rejected by strict unknown-key validation.",
+      "passed": true,
+      "evidence": "answer.md lines 16-41 identify crawler/configs/config.yaml:119-122, explain that scheduler and RegisterCronJob were removed, cite the current Config and strict unused-key validation, state that the unknown scheduler key can panic during startup, and recommend deleting the legacy section and using supported repeat behavior or business-owned wall-clock scheduling."
+    },
+    {
+      "text": "Flags huangguo catalog/detail/episode stage names as unprefixed process-global collision risks and notes persisted-stage migration impact.",
+      "passed": true,
+      "evidence": "answer.md lines 43-79 identify the unprefixed catalog/detail/episode names in GetStage and task submissions, cite the process-global uniqueness rule, explain registration and missing-stage risks, propose hgd_* constants, and explicitly warn that persisted crawler_tasks.stage rows require a site-scoped migration."
+    },
+    {
+      "text": "Flags obsolete runtime hot-reload/runtime.yaml claims when unsupported by current documentation.",
+      "passed": true,
+      "evidence": "answer.md lines 81-103 identify the OA /api/config and runtime.yaml hot-reload comments, cite current CORE_CONFIG documentation stating that all changes require restart and runtime.yaml is obsolete, explain the operational harm, and recommend removing those claims."
+    },
+    {
+      "text": "Flags the repository comment claiming Task.Meta is memory-only as stale because Meta is persisted and restored.",
+      "passed": true,
+      "evidence": "answer.md lines 105-127 locate the stale repository comments, cite the crawler_tasks.meta model and unified taskFromRecord restoration path, explain the maintenance impact, and recommend documenting URL lookup only as a fallback for legacy or damaged records."
+    },
+    {
+      "text": "Reports at least four concrete findings ordered by severity, each with location, evidence, impact, and repair advice.",
+      "passed": true,
+      "evidence": "answer.md lines 14-148 present five findings ordered from severe through low severity. Every finding has explicit Location, Evidence, Impact, and Repair Advice sections; lines 150-165 also provide a prioritized remediation and verification sequence."
+    }
+  ],
+  "summary": {
+    "passed": 6,
+    "failed": 0,
+    "total": 6,
+    "pass_rate": 1.0
+  },
+  "timing": {
+    "total_tokens": null,
+    "duration_ms": null,
+    "total_duration_seconds": null,
+    "note": "Timing metrics were not available."
+  },
+  "claims": [],
+  "user_notes_summary": {
+    "uncertainties": [],
+    "needs_review": [],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "PASS: all six assertions are explicitly satisfied. The answer uses current Papa documentation and code as authority, reports five severity-ordered findings with complete evidence and remediation, and covers every required drift issue including persisted-stage migration."
+  }
+}

@@ -38,6 +38,12 @@ type upgradePlan struct {
 	DocAdds    []string // 框架有、项目没有的
 	DocStale   []string // 项目 docs/ 下有、框架没有的（可能是你自己加的文档，不删）
 
+	// 随项目携带的开发技能（`.claude/skills/<skillName>/`）。与 docs/ 的区别只有一条：
+	// **项目所有的那个文件（project-conventions.md）不刷新**，只在缺失时播种。
+	SkillRefresh []string // 通用文件：与框架不一致（或缺失）→ --write 时刷新
+	SkillSeed    []string // 项目所有文件：缺失 → 这一次播种（此后归项目）
+	SkillKept    []string // 项目所有文件：已存在 → 不碰（哪怕内容与框架不同）
+
 	ConfigPath   string // 相对 Root
 	ConfigReport string // 读不了时的报错原文（框架的 panic 文案，自带指路）；空 = 读通了
 	ConfigOK     bool
@@ -67,6 +73,7 @@ func buildUpgradePlan(dir string) (*upgradePlan, error) {
 	p := &upgradePlan{Root: root, PapaVersion: cliVersion()}
 	p.Required, p.ReplacedTo = readPapaRequire(root)
 	p.DocAdds, p.DocUpdates, p.DocStale = planDocs(root)
+	p.SkillRefresh, p.SkillSeed, p.SkillKept = planSkill(root)
 
 	p.ConfigPath = filepath.Join("configs", "config.yaml")
 	if exists(filepath.Join(root, p.ConfigPath)) {
@@ -96,11 +103,22 @@ func runUpgradeCmd(args []string) error {
 	}
 	printUpgradePlan(p)
 
-	if write && len(p.DocAdds)+len(p.DocUpdates) > 0 {
+	skillPending := len(p.SkillRefresh) + len(p.SkillSeed)
+	if write && len(p.DocAdds)+len(p.DocUpdates)+skillPending > 0 {
 		if err := writeDocs(p); err != nil {
 			return err
 		}
-		fmt.Printf("\n已更新 %d 份手册（%s/docs/）\n", len(p.DocAdds)+len(p.DocUpdates), p.Root)
+		if err := writeSkill(p); err != nil {
+			return err
+		}
+		var parts []string
+		if n := len(p.DocAdds) + len(p.DocUpdates); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d 份手册", n))
+		}
+		if skillPending > 0 {
+			parts = append(parts, fmt.Sprintf("%d 个技能文件", skillPending))
+		}
+		fmt.Printf("\n已更新 %s（%s）\n", strings.Join(parts, " + "), p.Root)
 	}
 	return nil
 }
@@ -133,6 +151,20 @@ func printUpgradePlan(p *upgradePlan) {
 		fmt.Printf("  保留  docs/%s（框架里没有这份了 —— 你自己加的，不动）\n", f)
 	}
 
+	fmt.Printf("\n【开发技能：.claude/skills/%s/】\n", skillName)
+	if len(p.SkillRefresh)+len(p.SkillSeed) == 0 {
+		fmt.Printf("  已是最新（%d 个通用文件与框架一致；%d 个项目所有文件不刷新）\n",
+			len(skillFiles())-len(p.SkillKept), len(p.SkillKept))
+	} else {
+		for _, f := range p.SkillRefresh {
+			fmt.Printf("  更新  %s\n", filepath.ToSlash(f))
+		}
+		for _, f := range p.SkillSeed {
+			fmt.Printf("  新增  %s（此后归项目所有，升级不再动它）\n", filepath.ToSlash(f))
+		}
+		fmt.Printf("  （加 --write 落盘；通用文件以框架为准，项目所有的文件只播种不覆盖）\n")
+	}
+
 	fmt.Printf("\n【config.yaml】\n")
 	switch {
 	case !exists(filepath.Join(p.Root, p.ConfigPath)):
@@ -159,9 +191,9 @@ func printUpgradePlan(p *upgradePlan) {
 
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
-		"configs/sites/*.go：三队列必写的值（从 config.yaml 那三段抄过去）；本轮新规则见 CHANGELOG [未发布]",
+		"configs/sites/*.go：三队列必写的值（从 config.yaml 那三段抄过去）；本轮规则见 papa 仓库的 docs/issues/changes.md",
 		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>` 先跑起来",
-		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改；动过的看 CHANGELOG 里对应条目",
+		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改；动过的看 docs/issues/changes.md 里对应条目",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",
 	} {
 		fmt.Printf("  - %s\n", line)
@@ -180,6 +212,55 @@ func writeDocs(p *upgradePlan) error {
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// planSkill 比对随项目携带的开发技能与框架那份：**通用文件**不一致（或缺失）就刷新；
+// **项目所有**的文件只在缺失时播种一次，之后不碰。
+func planSkill(root string) (refresh, seed, kept []string) {
+	data := skillData(root)
+	for _, sf := range skillFiles() {
+		cur, err := os.ReadFile(filepath.Join(root, sf.rel))
+		missing := err != nil
+		want, rerr := skillContent(sf.tmpl, data)
+		switch {
+		case sf.refreshed:
+			if missing || rerr != nil || !sameContent(cur, want) {
+				refresh = append(refresh, sf.rel)
+			}
+		case missing:
+			seed = append(seed, sf.rel)
+		default:
+			kept = append(kept, sf.rel)
+		}
+	}
+	return refresh, seed, kept
+}
+
+// writeSkill 落盘技能文件：刷新通用文件 + 播种缺失的项目所有文件。
+// **不覆盖已存在的项目所有文件** —— 那正是它和 `docs/` 的区别（见 skillFile 的注释）。
+func writeSkill(p *upgradePlan) error {
+	data := skillData(p.Root)
+	pending := map[string]bool{}
+	for _, rel := range append(append([]string{}, p.SkillRefresh...), p.SkillSeed...) {
+		pending[rel] = true
+	}
+	for _, sf := range skillFiles() {
+		if !pending[sf.rel] {
+			continue
+		}
+		content, err := skillContent(sf.tmpl, data)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(p.Root, sf.rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, content, 0o644); err != nil {
 			return err
 		}
 	}

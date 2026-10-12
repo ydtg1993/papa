@@ -1,0 +1,104 @@
+{
+  "expectations": [
+    {
+      "text": "Only changes the business crawler and explicitly keeps main.go generic and Papa framework source untouched.",
+      "passed": true,
+      "evidence": "answer.md lines 3 and 21-25 explicitly say only the crawler business project changes, crawler/main.go needs no modification, and papa/** must not be modified. This matches repository facts: crawler/main.go lines 11-13 anonymously import crawler/configs/sites and lines 50-54 register papa.Sites(), so adding a self-registering site file keeps main.go generic."
+    },
+    {
+      "text": "Uses self-registering SiteSpec plus site-prefixed stage constants consistently in GetStage and submitted tasks.",
+      "passed": true,
+      "evidence": "answer.md lines 42-70 define papa.SiteSpec and self-register it with init() { papa.RegisterSite(exampleShop()) }. Lines 88-92 define StageCatalog=\"example_shop_catalog\" and StageDetail=\"example_shop_detail\"; lines 139, 146, 189, and 298 consistently use those constants in GetStage and task submissions. Repository papa/internal/app/spec.go lines 27-29 confirms stage names must distinguish sites and recommends site prefixes."
+    },
+    {
+      "text": "Implements AutoStart with SubmitEntries and an 8-hour per-task repeat interval, while noting that global repeat_queue must be enabled.",
+      "passed": false,
+      "evidence": "answer.md does implement AutoStart (line 57), SubmitEntries (lines 142-153), Repeatable=true, and RepeatInterval=8*time.Hour (lines 150-151). However, it never states that the global repeat_queue must be enabled. That omission is material: papa/config/config.go documents repeat_queue as a global queue that does not run when its config section is absent, so merely marking a task repeatable does not ensure polling occurs."
+    },
+    {
+      "text": "Places book_id in persisted Task.Meta and uses a stable idempotency key for detail tasks.",
+      "passed": true,
+      "evidence": "answer.md lines 186-193 submit detail tasks with Meta map[string]string{\"book_id\": book.BookID} and IdempotencyKey \"example-shop:book:\" + book.BookID; lines 264-267 explicitly explain persistence and deduplication. Repository papa/engine/task.go lines 26-27 define Meta and IdempotencyKey, while lines 60-68 serialize both into the task model, verifying the persistence claim."
+    },
+    {
+      "text": "Uses FetchHTML for static pages and separates transient network errors from no-retry structure/not-found errors without matching error strings.",
+      "passed": true,
+      "evidence": "answer.md lines 171 and 332 use engine.FetchHTML. Lines 167-181 and 315-340 wrap URL/DOM/metadata defects with crawlkit.StructureError and fetch failures with crawlkit.PageRequestError; lines 371-392 describe transient errors as retryable and 404/410 as no-retry. Repository crawler/crawlkit/crawlkit.go lines 35-52 confirms StructureError uses WrapNoRetryKind and PageRequestError obtains typed HTTP status via htmlfetch.StatusCode rather than matching error text."
+    },
+    {
+      "text": "Does not present guessed CSS selectors as production-ready; requests or requires saved/reachable HTML and parser fixture tests.",
+      "passed": false,
+      "evidence": "answer.md line 5 acknowledges there is no real HTML and calls the selectors examples, so it does not fully present them as production-ready. But it neither requests nor requires saved/reachable HTML, and parser tests are only labeled '# 建议' in the file list (lines 17-18) and '建议测试' in section 6 (lines 394-406). Under strict grading, optional suggested tests do not satisfy the assertion's requirement for HTML evidence plus parser fixture tests."
+    }
+  ],
+  "summary": {
+    "passed": 4,
+    "failed": 2,
+    "total": 6,
+    "pass_rate": 0.6666666667
+  },
+  "timing": {
+    "total_tokens": null,
+    "duration_ms": null,
+    "total_duration_seconds": null,
+    "note": "Harness completion notification did not expose timing metrics."
+  },
+  "claims": [
+    {
+      "claim": "main.go already anonymously imports crawler/configs/sites and registers papa.Sites(), so it need not be changed for a new self-registering site.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "crawler/main.go lines 11-13 contain the blank import, and lines 50-54 call app.RegisterSites(papa.Sites()...)."
+    },
+    {
+      "claim": "Task.Meta is persisted and restored by the framework.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "papa/engine/task.go lines 60-68 persist Meta through metaToJSON, and lines 115-128 restore it through metaFromJSON."
+    },
+    {
+      "claim": "PageRequestError classifies 404/410 as no-retry and leaves other request failures retryable without string matching.",
+      "type": "factual",
+      "verified": true,
+      "evidence": "crawler/crawlkit/crawlkit.go lines 42-52 use htmlfetch.StatusCode(err), wrap 404/410 as not_found, and return other wrapped errors normally."
+    },
+    {
+      "claim": "Running papa check after adding these files will validate the proposed code.",
+      "type": "quality",
+      "verified": false,
+      "evidence": "No files were actually created or compiled, and the proposed code has a likely invalid expression at answer.md lines 165-169: fmt.Errorf(... %w, err) may receive nil when ResolvePageURL succeeds but HasPathPrefix is false. With a nil operand, %w produces a formatting artifact rather than a clean structural error."
+    }
+  ],
+  "user_notes_summary": {
+    "uncertainties": [
+      "No execution transcript exists; grading is based directly on answer.md and repository facts.",
+      "The target site's actual HTML was not supplied or fetched, so selector correctness is unverified."
+    ],
+    "needs_review": [
+      "Replace guessed selectors only after saving or reaching representative category/detail HTML and add fixture-based parser tests.",
+      "Explicitly enable and document the global repeat_queue configuration for the 8-hour repeat task.",
+      "Split the category URL resolution failure from the path mismatch so fmt.Errorf with %w is never given a nil error."
+    ],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [
+      {
+        "assertion": "Only changes the business crawler and explicitly keeps main.go generic and Papa framework source untouched.",
+        "reason": "The assertion checks the proposed scope but not whether the supplied code compiles or truly limits modifications. Add a compile/test assertion and, when files are produced, verify the changed-file set excludes crawler/main.go and papa/**."
+      },
+      {
+        "assertion": "Uses self-registering SiteSpec plus site-prefixed stage constants consistently in GetStage and submitted tasks.",
+        "reason": "Presence and consistency are checked, but cross-site uniqueness is not verified against all registered stages. Add a repository-wide uniqueness check or require papa check output."
+      },
+      {
+        "assertion": "Uses FetchHTML for static pages and separates transient network errors from no-retry structure/not-found errors without matching error strings.",
+        "reason": "The assertion can pass from prose/code shape without executing classification paths. Require tests proving timeout/5xx remains retryable, 404/410 is no-retry, and structure/metadata errors are no-retry."
+      },
+      {
+        "reason": "No assertion checks basic Go correctness. The proposed category URL guard may call fmt.Errorf with %w and a nil error on a path mismatch, and SubmitEntries discards engine.SubmitTask errors. Add assertions for go test ./... and for explicit handling/logging of entry submission failure."
+      }
+    ],
+    "overall": "The assertions cover the key architecture and retry semantics, but they underweight executable correctness and test evidence. Several presence-based assertions could pass an uncompilable or untested proposal; add compilation, fixture tests, stage uniqueness validation, and error-handling checks."
+  }
+}

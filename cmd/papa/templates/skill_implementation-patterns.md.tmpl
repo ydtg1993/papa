@@ -1,0 +1,111 @@
+# Implementation patterns
+
+Use these as shapes, not copy-paste substitutes for inspecting the installed API.
+
+## Site declaration
+
+```go
+func exampleShop() papa.SiteSpec {
+    return papa.SiteSpec{
+        Key: "example-shop",
+        BaseURL: "https://shop.example.com/",
+        Stages: []papa.StageSpec{
+            {
+                Fetcher: &exampleshop.FetchCatalog{},
+                WorkerCount: 1, QueueSize: 32, Delay: "2s-5s",
+                Retry: papa.RetrySpec{MaxAttempts: 3, Backoff: "20s"},
+                AutoStart: true,
+            },
+            {
+                Fetcher: &exampleshop.FetchDetail{},
+                WorkerCount: 2, QueueSize: 256, Delay: "1s-3s",
+                Retry: papa.RetrySpec{MaxAttempts: 3, Backoff: "20s"},
+            },
+        },
+    }
+}
+
+func init() { papa.RegisterSite(exampleShop()) }
+```
+
+## Entry and child tasks
+
+```go
+const (
+    StageCatalog = "example_shop_catalog"
+    StageDetail  = "example_shop_detail"
+)
+
+func (*FetchCatalog) GetStage() string { return StageCatalog }
+
+func (*FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
+    u, err := papa.ResolveURL(site.BaseURL, "/category/books")
+    if err != nil { return }
+    _ = engine.SubmitTask(&papa.Task{
+        URL: u, Site: site.Key, Stage: StageCatalog,
+        Meta: map[string]string{"category": "books"},
+        IdempotencyKey: "example-shop:catalog:books",
+        Repeatable: true,
+        RepeatInterval: 8 * time.Hour,
+    })
+}
+```
+
+When the catalog discovers a book, persist or derive its identity first, then submit:
+
+```go
+err := engine.SubmitTask(&papa.Task{
+    URL: detailURL, Site: task.Site, Stage: StageDetail, PID: task.ID,
+    Meta: map[string]string{"book_id": bookID},
+    IdempotencyKey: "example-shop:book:" + bookID,
+})
+```
+
+In production code, handle a failed submit by stopping or returning the error according to the project’s batching strategy. Do not add duplicate log lines when `SubmitTask` already logs the failure.
+
+## Parser boundary
+
+Keep network behavior outside parsing:
+
+```go
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+    page, err := engine.FetchHTML(ctx, task.URL)
+    if err != nil {
+        if code, ok := htmlfetch.StatusCode(err); ok && (code == 404 || code == 410) {
+            return papa.WrapNoRetryKind("not-found", err)
+        }
+        return err
+    }
+    if err := engine.RestrictedError(task, page, "detail"); err != nil { return err }
+
+    result, err := parseDetail(page.Selection(), page.URL.String())
+    if err != nil { return papa.WrapNoRetryKind("structure", err) }
+    return engine.SaveResult(task.ID, result.Title, result)
+}
+```
+
+Match the actual `SaveResult` signature in the checked-out version. Test `parseDetail` against saved fixtures, including a valid page, explicit empty page if supported, and a broken-selector page.
+
+## Conditional monitor action
+
+Model fields might include `Reviewed bool` and `ReviewedAt *time.Time`. `ActionRequest.ID` is the canonical row primary key. `req.Int(name)` reads an action form value, not the row ID, and `req.Row` is only an untrusted snapshot that may supply an explicitly declared optimistic-lock token.
+
+```go
+Handler: func(ctx context.Context, req oao.ActionRequest) error {
+    id, err := strconv.ParseUint(req.ID, 10, 64)
+    if err != nil || id == 0 {
+        return oao.Fail(http.StatusBadRequest, "invalid id")
+    }
+
+    result := db.WithContext(ctx).Model(&models.Episode{}).
+        Where("id = ? AND reviewed = ?", id, false).
+        Updates(map[string]any{"reviewed": true, "reviewed_at": time.Now()})
+    if result.Error != nil { return result.Error }
+    if result.RowsAffected != 1 {
+        return oao.Fail(http.StatusConflict, "row changed or already reviewed")
+    }
+    return nil
+}
+```
+
+If optimistic locking is required, parse only the declared version token from `req.Row`, then include it in the conditional update. Never accept the client’s title, status, owner, or reviewed flag as authoritative.

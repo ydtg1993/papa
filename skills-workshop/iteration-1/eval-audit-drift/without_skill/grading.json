@@ -1,0 +1,38 @@
+{
+  "eval_id": 2,
+  "eval_name": "audit-documentation-drift",
+  "grade": "FAIL",
+  "assertions": [
+    {
+      "assertion": "Uses current papa/docs and current exported code as authority rather than crawler/docs.",
+      "result": "PASS",
+      "evidence": "answer.md:3 explicitly states that only current papa/docs and current code are used and old crawler/docs is excluded; answer.md:76 repeats this. The findings cite current papa/docs and papa source files."
+    },
+    {
+      "assertion": "Flags the legacy scheduler/RegisterCronJob configuration as removed and potentially rejected by strict unknown-key validation.",
+      "result": "PASS",
+      "evidence": "answer.md:5-19 identifies crawler/configs/config.yaml:119-122, states RegisterCronJob/general cron was removed, cites papa/config/config.go and papa/config/validate.go, and says strict validation will treat scheduler as an unknown key and panic at startup."
+    },
+    {
+      "assertion": "Flags huangguo catalog/detail/episode stage names as unprefixed process-global collision risks and notes persisted-stage migration impact.",
+      "result": "PASS",
+      "evidence": "answer.md:29-38 identifies catalog/detail/episode at the three fetcher files, explains program-global collision/startup panic risk, recommends huangguo-prefixed names, and explicitly calls for a migration/cleanup strategy for existing persisted tasks."
+    },
+    {
+      "assertion": "Flags obsolete runtime hot-reload/runtime.yaml claims when unsupported by current documentation.",
+      "result": "PASS",
+      "evidence": "answer.md:21-27 identifies config.yaml:44-46 and 64-70, says runtime hot reload and runtime.yaml overlay claims contradict current CORE_CONFIG.md, explains the operational impact, and recommends removing/replacing those comments."
+    },
+    {
+      "assertion": "Flags the repository comment claiming Task.Meta is memory-only as stale because Meta is persisted and restored.",
+      "result": "FAIL",
+      "evidence": "answer.md contains no finding about crawler/models/repository.go:64-66. That repository comment says Task.Meta is memory-only and absent from crawler_tasks, but current code contradicts it: papa/models/crawler_task.go:40-43 defines the persisted meta JSON column, papa/engine/task.go serializes and restores Meta, and papa/docs/FETCHER_WRITING_GUIDE.md:81-83 documents persisted Meta semantics."
+    },
+    {
+      "assertion": "Reports at least four concrete findings ordered by severity, each with location, evidence, impact, and repair advice.",
+      "result": "PASS",
+      "evidence": "answer.md reports seven numbered findings in descending severity labels (严重, 高, 中高, 中). Each numbered finding provides a file location, authority/evidence, impact, and repair recommendation."
+    }
+  ],
+  "summary": "Strict overall FAIL: 5 of 6 assertions pass, but the required stale Task.Meta comment finding is completely absent. The response otherwise provides seven well-structured findings and correctly covers scheduler removal, hot-reload drift, and global stage-name collisions."
+}

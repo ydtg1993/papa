@@ -1,0 +1,40 @@
+{
+  "eval_id": 3,
+  "eval_name": "monitor-table-action",
+  "verdict": "PASS",
+  "passed": 6,
+  "failed": 0,
+  "assertions": [
+    {
+      "assertion": "Keeps the GORM model/repository in models and table declarations, Source, and handlers in the business monitor layer rather than Oao.",
+      "verdict": "PASS",
+      "evidence": "answer.md lines 7-12 assign the persistent model to crawler/models/episode.go, table metadata to crawler/monitor/tables.go, and Source/Handler to crawler/monitor/episode_source.go and episode_handler.go; lines 114-116 explicitly state the Source is in the business integration layer and that oao must not depend on the database. This matches repository conventions in crawler/models/models.go lines 16-20 and crawler/monitor/register.go lines 1-12."
+    },
+    {
+      "assertion": "Defines explicit series_id equality and title-like/search filtering with default -id sorting and a field allowlist.",
+      "verdict": "PASS",
+      "evidence": "answer.md lines 78-96 declare DefaultSort \"-id\", a series_id equality filter, and a title LIKE filter. Lines 136-188 implement parameterized series_id equality and title LIKE, an explicit sorting allowlist, id-desc fallback, and pagination. Lines 161-184 additionally enforce server-side sortable-field mapping and a stable id tie-breaker."
+    },
+    {
+      "assertion": "Treats the client row as untrusted, extracts only stable identity/version input, and reloads or conditionally updates server-side state.",
+      "verdict": "PASS",
+      "evidence": "answer.md lines 198-204 explicitly say Row is untrusted and only req.ID plus Row version as a CAS token may be used. Lines 227-248 strictly parse ID/version and perform a server-side conditional update; lines 256-274 reload reviewed_at/version from the database to distinguish not-found, already-reviewed, and stale-version cases."
+    },
+    {
+      "assertion": "Protects concurrent or duplicate review actions with a conditional update/CAS, checks RowsAffected, and returns a conflict when stale.",
+      "verdict": "PASS",
+      "evidence": "answer.md lines 240-254 condition the update on id, reviewed_at IS NULL, and version, increment version, and accept success only when RowsAffected == 1. Lines 256-275 return 404 for missing rows and 409 for already-reviewed or concurrently modified rows. Lines 278-286 restate the CAS SQL and concurrency rationale."
+    },
+    {
+      "assertion": "Registers the model through models.Models/UseModels and requires explicit app.Migrate/papa migrate rather than startup migration.",
+      "verdict": "PASS",
+      "evidence": "answer.md lines 49-55 identify the existing models.Models registration; lines 290-305 explain monitor.Register(app) uses app.UseModels(models.Models()...), main.go -migrate calls app.Migrate(), startup does not auto-migrate, and deployment must explicitly run make migrate, go run . -migrate, or papa migrate. Repository facts corroborate this: crawler/models/models.go line 27 includes Episode, crawler/monitor/register.go line 24 calls UseModels, and crawler/main.go lines 39-43 state startup does not migrate and invoke app.Migrate only for the migrate path."
+    },
+    {
+      "assertion": "Explains that Papa monitor authentication wraps the API and central OnAction operation logging records success and failure when enabled.",
+      "verdict": "PASS",
+      "evidence": "answer.md lines 309-328 explain oao is configured with mon.Auth, covering Episode list/action routes via IP whitelist and access token. Lines 330-355 explain server.operation_log enables a central cfgOao.OnAction recorder and that both successful and failed actions are logged with table/action/row/operator/result metadata. Repository documentation corroborates that successful and failed actions call OnAction (crawler/docs/MONITOR.md lines 169-170)."
+    }
+  ],
+  "summary": "Strict PASS. The response satisfies all six assertions with concrete implementation skeletons and accurately reflects the repository's model registration, explicit migration, authentication, and audit conventions."
+}

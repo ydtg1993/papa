@@ -149,10 +149,7 @@ func runNew(name string, args []string) error {
 
 	data := scaffoldData{Module: name, SiteFunc: sanitizeIdent(name)}
 
-	files := []struct {
-		tmpl string
-		dest string
-	}{
+	files := []fileSpec{
 		{"go.mod.tmpl", "go.mod"},
 		{"gitignore.tmpl", ".gitignore"},
 		{"main.go.tmpl", "main.go"},
@@ -169,6 +166,12 @@ func runNew(name string, args []string) error {
 		{"Dockerfile.tmpl", filepath.Join("docker", "Dockerfile")},
 		{"docker-compose.yml.tmpl", filepath.Join("docker", "docker-compose.yml")},
 		{"Makefile.tmpl", "Makefile"},
+	}
+	// 随项目携带的开发技能（Claude Code 从 <项目>/.claude/skills/ 自动发现 —— 见 docs/CLI.md 的生成树）：
+	// 让每个新业务项目开箱就有一份"怎么写、怎么审"的 skill。清单与 `papa upgrade` 共用一份
+	// （cmd/papa/skill.go），免得出现"模板加了文件、升级那条路却不知道"的漂移。
+	for _, sf := range skillFiles() {
+		files = append(files, fileSpec{sf.tmpl, sf.rel})
 	}
 
 	for _, f := range files {

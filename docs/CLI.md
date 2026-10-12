@@ -28,7 +28,7 @@ go install ./cmd/papa
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
-| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/`）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
+| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 
 ### `papa new` 生成什么
@@ -46,10 +46,11 @@ mycrawler/
   models/                  业务表模型 + 建表清单（models.go）
   monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）
   docs/                    这套手册的副本（离线可查）
+  .claude/skills/          开发技能（Claude Code 从 <项目>/.claude/skills/ 自动加载，见下面要点）
   docker/ · Makefile · logs/ · .gitignore
 ```
 
-三句要点：
+几句要点：
 
 - **加一个站 = 加一个 `configs/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
   `papa.Sites()` 收集，`main.go` 不用动（阶段名跨站要唯一，约定带站点前缀）。
@@ -57,6 +58,12 @@ mycrawler/
   yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
 - **三个治理队列（error_queue / recover_queue / repeat_queue）在 `config.yaml` 里全局配**：
   没写哪段 = 那条不跑；开了（`enabled: true`）就得写全，缺一项 / 越界启动就报。
+- **`.claude/skills/papa-crawler-development/` 带一份开发技能**：Claude Code 会从 `<项目>/.claude/skills/`
+  自动加载它，所以新项目开箱就有「站点怎么加、任务怎么派、后台表格怎么写、审计怎么查」的现成指导，
+  不用先去翻手册。`.gitignore` 特意放行这一目录（`.claude/` 下的**其余**条目仍忽略）；
+  它由 `papa new` 写入；`papa upgrade` 会刷新其中的**通用文件**（`SKILL.md` 与 `references/` 下那三份），
+  而 `references/project-conventions.md` **只在缺失时播种、之后不覆盖** —— 它属于你的项目
+  （记本项目的布局与「已知漂移」），由你自己维护。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
 
 ### `papa check` 校验声明（不用起库）
@@ -107,8 +114,13 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 
 它只做框架**有把握**的两件事：
 
-1. **刷新框架副本**：`docs/` 根目录下由框架嵌入的使用手册是生成时逐字复制的，以框架为准（按“新增 / 更新”写回；具体数量随版本变化）。
-   你自己加在 `docs/` 里的 `.md`、以及子目录（如 `docs/samples/`）只列出来，**不删不改**。
+1. **刷新框架副本**：两处，都以框架为准（按"新增 / 更新"写回；具体数量随版本变化）。
+   - `docs/` 根目录下由框架嵌入的使用手册是生成时逐字复制的。你自己加在 `docs/` 里的 `.md`、以及子目录
+     （如 `docs/samples/`）只列出来，**不删不改**。
+   - `.claude/skills/papa-crawler-development/` 里的**通用文件**（`SKILL.md` 与 `references/` 下那三份）。
+     `references/project-conventions.md` 是唯一的例外：它记的是**你这个项目**的布局与已知漂移，
+     **只在缺失时播种，存在就一律不碰**（与 `main.go` 那类业务文件同一个待遇）。生成时还没有这个目录的
+     老项目，跑一次就补齐整套。
    （比内容时忽略行尾：生成物在不同 git 配置下会是 CRLF，那不是"你改过"。）
 2. **几项不用起库的检查**：
    - **`configs/config.yaml` 能不能被框架读** —— 升级最常见的坑就在这儿：旧版本留下的键现在会被

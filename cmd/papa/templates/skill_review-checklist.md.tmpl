@@ -1,0 +1,55 @@
+# Business crawler review checklist
+
+Use this for audits and pull-request reviews. Report findings by severity with file/line evidence, current authority, impact, and a concrete fix.
+
+## Critical/startup
+
+- Unknown strict YAML keys, legacy scheduler configuration, invalid durations, missing enabled-section fields.
+- Duplicate site keys or stage names.
+- A browser stage omits `NeedsBrowser`, or download code assumes removed `NeedsFiledown`/`NeedsM3U8` methods validate startup wiring.
+- File/M3U8 downloads omit explicit request-context propagation via the matching `OptionsFromRequest` helper when headers, proxy, cookies, or referer are required.
+- New GORM or optional framework tables were not explicitly migrated.
+
+## Correctness
+
+- Stage names lack a site prefix.
+- Parser returns success for an unexpected empty selection.
+- Permanent structure/not-found/config errors use ordinary retryable errors.
+- HTTP classification parses strings rather than typed/status helpers.
+- Child task identity is absent from persisted Meta or unstable.
+- Direct task-status mutation bypasses the engine.
+- A dedicated-table upsert overwrites local/download state with empty values.
+- Concurrent child tasks perform read-modify-write without transaction or condition guards.
+
+## Queue semantics
+
+- `AutoStart` is missing for a `SubmitEntries` entry stage or set for a stage without intended entries.
+- Repeatable tasks are created while the global repeat queue is disabled, yet automatic polling is promised.
+- Code assumes resubmission changes existing repeat flags/intervals.
+- No-retry errors are assumed to be excluded from `error_queue`; they are still failed rows.
+- Startup recovery is described as periodic timeout scanning; it runs once against pre-start pending/processing rows.
+
+## Performance and target-site safety
+
+- Rod is used for data present in static HTML.
+- Worker counts exceed scarce browser/downloader resources without reason.
+- No delay/rate-limit strategy exists.
+- Unbounded list loading or non-keyset batch processing is introduced.
+- Requests follow arbitrary external hosts from scraped links.
+
+## Monitor and security
+
+- Oao or UI declarations contain SQL/business transactions.
+- Source accepts arbitrary filter/sort column names.
+- Action trusts `ActionRequest.Row` as current state or reads the row primary key from action form values instead of `ActionRequest.ID`.
+- Mutation lacks conditional update/idempotency and conflict handling.
+- A custom route is assumed authenticated without checking how it is mounted.
+- Secrets or token plaintext can enter action values or operation logs.
+
+## Maintainability
+
+- Site values are duplicated across config and fetcher packages.
+- `main.go` gains per-site logic.
+- SQL is scattered through parsers instead of repositories.
+- Saved HTML fixtures and parser tests are missing.
+- Business copied docs contradict current framework docs or exported APIs.

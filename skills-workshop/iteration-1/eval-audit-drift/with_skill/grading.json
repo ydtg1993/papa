@@ -1,0 +1,64 @@
+{
+  "expectations": [
+    {
+      "text": "Uses current papa/docs and current exported code as authority rather than crawler/docs.",
+      "passed": true,
+      "evidence": "answer.md:5 explicitly says it uses current framework source and papa/docs and did not use crawler/docs for conclusions; lines 7-12 list current papa/docs manuals and papa/engine and papa/config code as authorities."
+    },
+    {
+      "text": "Flags the legacy scheduler/RegisterCronJob configuration as removed and potentially rejected by strict unknown-key validation.",
+      "passed": true,
+      "evidence": "answer.md:16-44 identifies crawler/configs/config.yaml:119-122, states generic cron, RegisterCronJob, and the scheduler section were removed, and warns strict unknown-key validation may panic during papa.New() and prevent startup."
+    },
+    {
+      "text": "Flags huangguo catalog/detail/episode stage names as unprefixed process-global collision risks and notes persisted-stage migration impact.",
+      "passed": true,
+      "evidence": "answer.md:48-78 identifies the hard-coded catalog/detail/episode names, says stages are process-global and duplicate registration can panic, explains crawler_tasks.stage and the (url_hash, stage) identity constraint make this a data-migration issue, and prescribes prefixed constants plus migration of historical rows."
+    },
+    {
+      "text": "Flags obsolete runtime hot-reload/runtime.yaml claims when unsupported by current documentation.",
+      "passed": true,
+      "evidence": "answer.md:82-105 identifies config.yaml:44-46,64,70; quotes the OA /api/config hot-reload and runtime.yaml overlay claims; states current documentation requires restart and runtime.yaml is no longer read or written; and recommends removing those claims."
+    },
+    {
+      "text": "Flags the repository comment claiming Task.Meta is memory-only as stale because Meta is persisted and restored.",
+      "passed": false,
+      "evidence": "The report never identifies crawler/models/repository.go:64-66 or the stale memory-only claim. Repository evidence directly shows the missed issue: repository.go:64-66 says Task.Meta is memory-only and not persisted, while papa/models/crawler_task.go:40-43 defines a persisted JSON meta column and papa/engine/task.go:105-127 restores Meta in taskFromRecord."
+    },
+    {
+      "text": "Reports at least four concrete findings ordered by severity, each with location, evidence, impact, and repair advice.",
+      "passed": true,
+      "evidence": "answer.md states at line 14 that findings are severity-ordered and provides seven numbered findings. At least findings 1-4 each have explicit location, current state, problem/impact, evidence, and repair-advice sections (lines 16-132)."
+    }
+  ],
+  "summary": {
+    "passed": 5,
+    "failed": 1,
+    "total": 6,
+    "pass_rate": 0.8333333333333334
+  },
+  "timing": {
+    "total_tokens": null,
+    "duration_ms": null,
+    "total_duration_seconds": null,
+    "note": "Harness completion notification did not expose timing metrics."
+  },
+  "claims": [
+    {
+      "claim": "The audit did not use legacy crawler/docs as its authority.",
+      "type": "process",
+      "verified": true,
+      "evidence": "answer.md:5 explicitly states this and the cited authorities throughout the report are papa/docs and current source files."
+    },
+    {
+      "claim": "The audit found all material documentation drift requested by the assertions.",
+      "type": "quality",
+      "verified": false,
+      "evidence": "It omitted the concrete stale comment at crawler/models/repository.go:64-66 claiming Task.Meta is memory-only, despite current model and restoration code contradicting it."
+    }
+  ],
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "The assertions are concrete and discriminating. The Task.Meta assertion successfully catches a substantive omission despite the report containing more than four other findings."
+  }
+}

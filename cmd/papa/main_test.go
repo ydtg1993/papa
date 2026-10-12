@@ -24,6 +24,11 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 		".gitignore",
 		"main.go",
 		"Makefile",
+		filepath.Join(".claude", "skills", "papa-crawler-development", "SKILL.md"),
+		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "doc-map.md"),
+		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "implementation-patterns.md"),
+		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "review-checklist.md"),
+		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "project-conventions.md"),
 		filepath.Join("configs", "config.yaml"),
 		filepath.Join("fetcher", "fetch_catalog.go"),
 		filepath.Join("models", "models.go"),
@@ -109,6 +114,17 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		if strings.TrimSpace(line) == "configs/" {
 			t.Errorf(".gitignore 不该整目录忽略 configs/（configs/sites/*.go 是代码）：%s", gitignore)
 		}
+	}
+
+	// 同一个坑的第二例：随项目携带的 skill 在 `.claude/skills/` 下，必须进版本库 ——
+	// 整目录忽略 `.claude/` 会把它静默排除（同事与 CI 都拿不到）。
+	for _, line := range strings.Split(gitignore, "\n") {
+		if strings.TrimSpace(line) == ".claude/" {
+			t.Errorf(".gitignore 不该整目录忽略 .claude/（.claude/skills/ 是随项目走的技能）：%s", gitignore)
+		}
+	}
+	if !strings.Contains(gitignore, "!.claude/skills/") {
+		t.Errorf(".gitignore 应当显式放行 .claude/skills/：%s", gitignore)
 	}
 
 	// 三个治理队列又回到了 config.yaml 的全局段（不再按站点拆）：模板里应该有这三段。

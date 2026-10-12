@@ -1,0 +1,60 @@
+{
+  "expectations": [
+    {
+      "text": "Only changes the business crawler and explicitly keeps main.go generic and Papa framework source untouched.",
+      "passed": true,
+      "evidence": "answer.md lines 3-5 explicitly limit changes to crawler/, state that papa/ framework source is untouched, and explain that crawler/main.go remains generic because it already imports crawler/configs/sites and registers papa.Sites(). Lines 28-33 again list crawler/main.go and papa/** as requiring no modification."
+    },
+    {
+      "text": "Uses self-registering SiteSpec plus site-prefixed stage constants consistently in GetStage and submitted tasks.",
+      "passed": true,
+      "evidence": "answer.md lines 50-85 define papa.SiteSpec and self-register it with init() calling papa.RegisterSite. Lines 103-106 define site-prefixed StageCatalog and StageDetail constants. Those constants are used by GetStage at lines 141 and 258 and in submitted catalog/detail tasks at lines 154 and 209."
+    },
+    {
+      "text": "Implements AutoStart with SubmitEntries and an 8-hour per-task repeat interval, while noting that global repeat_queue must be enabled.",
+      "passed": true,
+      "evidence": "answer.md line 69 sets AutoStart: true; lines 143-163 implement SubmitEntries; lines 157-158 set Repeatable: true and RepeatInterval: 8*time.Hour. Lines 381-393 explicitly require repeat_queue.enabled: true and explain that absent or disabled global repeat_queue prevents automatic polling."
+    },
+    {
+      "text": "Places book_id in persisted Task.Meta and uses a stable idempotency key for detail tasks.",
+      "passed": true,
+      "evidence": "answer.md lines 205-213 create each detail task with Meta map[string]string{\"book_id\": bookID} and IdempotencyKey \"example-shop:book:\" + bookID. Lines 269-275 read book_id from Task.Meta and reject its absence as a no-retry structural error; lines 237-238 explicitly describe Meta as persisted and the key as stable."
+    },
+    {
+      "text": "Uses FetchHTML for static pages and separates transient network errors from no-retry structure/not-found errors without matching error strings.",
+      "passed": true,
+      "evidence": "answer.md lines 175 and 277 use engine.FetchHTML. Lines 224-230 classify 404/410 through typed htmlfetch.StatusCode as no-retry and leave other fetch failures as ordinary retryable errors. Structural/configuration failures use WrapNoRetryKind at lines 111-114, 185, 195, 199, 202, 271-274, and 288. Lines 296-297 explicitly state there is no error-string matching and that network/timeout/5xx errors use StageSpec retry."
+    },
+    {
+      "text": "Does not present guessed CSS selectors as production-ready; requests or requires saved/reachable HTML and parser fixture tests.",
+      "passed": true,
+      "evidence": "answer.md line 5 clearly labels CSS selectors as placeholders and requires real category/detail HTML fixtures before replacement and testing. Parser comments at lines 330-366 repeatedly mark the empty-state vocabulary and selectors as TODO/PLACEHOLDER rather than production-ready. Lines 395-418 require fixture parser tests and state that real HTML must be saved and selectors verified before they can be marked production-ready."
+    }
+  ],
+  "summary": {
+    "passed": 6,
+    "failed": 0,
+    "total": 6,
+    "pass_rate": 1.0
+  },
+  "timing": {
+    "total_tokens": null,
+    "duration_ms": null,
+    "total_duration_seconds": null,
+    "note": "Timing metrics were not available."
+  },
+  "claims": [],
+  "user_notes_summary": {
+    "uncertainties": [
+      "Grading evaluates the written proposal only; the target site is an example domain and no real HTML or executed test results were supplied."
+    ],
+    "needs_review": [
+      "Before production use, save representative reachable catalog/detail HTML, replace placeholder selectors, and execute the listed fixture and integration tests."
+    ],
+    "workarounds": []
+  },
+  "eval_feedback": {
+    "suggestions": [],
+    "overall": "PASS: the answer satisfies all six assertions with explicit code and explanatory evidence, while appropriately treating selectors as unverified placeholders pending real HTML fixtures."
+  }
+}

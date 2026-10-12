@@ -1,0 +1,60 @@
+{
+  "skill_name": "papa-crawler-development",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "在当前 crawler 业务项目中新增站点 example-shop（https://shop.example.com/）。目标是抓取分类页 /category/books、详情页 /book/{id}，静态 HTML 即可。请给出应新增/修改的文件与关键 Go 代码：站点阶段名必须跨站唯一；分类任务启动时自动提交并每 8 小时轮询；详情任务携带 book_id；结构缺失不可重试；网络错误按阶段重试。不要修改 papa 框架源码。",
+      "expected_output": "遵循当前 Papa 站点自登记、唯一阶段名、SubmitEntries、Task.Meta/IdempotencyKey/Repeatable、FetchHTML、错误分类与测试约定，给出能落到业务项目的实现方案。",
+      "files": [],
+      "expectations": [
+        "Only changes the business crawler and explicitly keeps main.go generic and Papa framework source untouched.",
+        "Uses self-registering SiteSpec plus site-prefixed stage constants consistently in GetStage and submitted tasks.",
+        "Implements AutoStart with SubmitEntries and an 8-hour per-task repeat interval, while noting that global repeat_queue must be enabled.",
+        "Places book_id in persisted Task.Meta and uses a stable idempotency key for detail tasks.",
+        "Uses FetchHTML for static pages and separates transient network errors from no-retry structure/not-found errors without matching error strings.",
+        "Does not present guessed CSS selectors as production-ready; requests or requires saved/reachable HTML and parser fixture tests."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "审查 crawler/fetcher/huangguo 与 crawler/configs/config.yaml，找出至少 4 个与当前 papa/docs 手册或代码约定不一致、可能导致误导或运行问题的地方。请按严重程度排序，给文件位置、依据和修复建议；不要凭旧版 crawler/docs 下结论。",
+      "expected_output": "能识别业务阶段名未带站点前缀、旧 scheduler 配置、过期热更注释、repository 中 Meta 不落库的陈旧注释等真实不一致，并以 papa/docs 为权威。",
+      "files": [],
+      "expectations": [
+        "Uses current papa/docs and current exported code as authority rather than crawler/docs.",
+        "Flags the legacy scheduler/RegisterCronJob configuration as removed and potentially rejected by strict unknown-key validation.",
+        "Flags huangguo catalog/detail/episode stage names as unprefixed process-global collision risks and notes persisted-stage migration impact.",
+        "Flags obsolete runtime hot-reload/runtime.yaml claims when unsupported by current documentation.",
+        "Flags the repository comment claiming Task.Meta is memory-only as stale because Meta is persisted and restored.",
+        "Reports at least four concrete findings ordered by severity, each with location, evidence, impact, and repair advice."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "我要把 crawler/models.Episode 暴露到 Papa 监控后台：可按 series_id 和标题筛选，默认按 id 倒序；增加一个“标记已复核”动作。请说明 models、monitor/tables.go、Source/Handler、迁移、鉴权与审计分别该放在哪里，并给出实现骨架。要求遵守 oao 的职责边界：组件不直接查库、不信任客户端 Row、并发更新由业务写条件保护。",
+      "expected_output": "正确分层到 models/monitor，使用 oao 声明+业务 Source/ActionHandler，服务端重查或条件更新，接入 models.Models/App.Migrate，并说明 Papa 后台鉴权和 operation_log。",
+      "files": [],
+      "expectations": [
+        "Keeps the GORM model/repository in models and table declarations, Source, and handlers in the business monitor layer rather than Oao.",
+        "Defines explicit series_id equality and title-like/search filtering with default -id sorting and a field allowlist.",
+        "Parses the canonical row key from ActionRequest.ID rather than an action form field, and treats ActionRequest.Row only as untrusted optional version input.",
+        "Protects concurrent or duplicate review actions with a conditional update/CAS, checks RowsAffected, and returns a conflict when stale.",
+        "Registers the model through models.Models/UseModels and requires explicit app.Migrate/papa migrate rather than startup migration.",
+        "Explains that Papa monitor authentication wraps the API and central OnAction operation logging records success and failure when enabled."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "给 crawler 的一个媒体详情 fetcher 增加封面文件下载和 m3u8 下载。站点级配置有 Cookie/User-Agent，单次请求还会加 Referer。请说明当前 Papa v3 中 fetcher 是否要实现 NeedsFiledown/NeedsM3U8、怎样按 task 取得 downloader，以及怎样让下载请求带上抓取请求上下文里的 header/proxy。请给关键代码形状并指出需要验证什么。",
+      "expected_output": "不使用已移除的 downloader capability 合约，使用 task-aware downloader，并通过 filedown/m3u8 的 OptionsFromRequest 显式传播请求上下文。",
+      "files": [],
+      "expectations": [
+        "States that NeedsFiledown and NeedsM3U8 are removed/ineffective legacy contracts and does not rely on them for startup validation.",
+        "Uses FileDownForTask/FiledownForTask and M3U8ForTask according to the exact checked-out exported APIs rather than a global downloader.",
+        "Explicitly propagates fetch request headers, proxy, cookies, and referer with filedown.OptionsFromRequest or m3u8.OptionsFromRequest (or an equivalent explicit copy).",
+        "Keeps NeedsBrowser only for genuine browser stages and distinguishes it from downloader initialization.",
+        "Requires tests or evidence that protected assets receive required headers and that site/stage overlays select the intended downloader settings."
+      ]
+    }
+  ]
+}

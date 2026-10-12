@@ -1,0 +1,13 @@
+{
+  "eval_id": 3,
+  "eval_name": "monitor-table-action",
+  "prompt": "我要把 crawler/models.Episode 暴露到 Papa 监控后台：可按 series_id 和标题筛选，默认按 id 倒序；增加一个“标记已复核”动作。请说明 models、monitor/tables.go、Source/Handler、迁移、鉴权与审计分别该放在哪里，并给出实现骨架。要求遵守 oao 的职责边界：组件不直接查库、不信任客户端 Row、并发更新由业务写条件保护。",
+  "assertions": [
+    "Keeps the GORM model/repository in models and table declarations, Source, and handlers in the business monitor layer rather than Oao.",
+    "Defines explicit series_id equality and title-like/search filtering with default -id sorting and a field allowlist.",
+    "Treats the client row as untrusted, extracts only stable identity/version input, and reloads or conditionally updates server-side state.",
+    "Protects concurrent or duplicate review actions with a conditional update/CAS, checks RowsAffected, and returns a conflict when stale.",
+    "Registers the model through models.Models/UseModels and requires explicit app.Migrate/papa migrate rather than startup migration.",
+    "Explains that Papa monitor authentication wraps the API and central OnAction operation logging records success and failure when enabled."
+  ]
+}

@@ -1,0 +1,202 @@
+---
+name: papa-crawler-development
+description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v3—especially configs/sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
+compatibility: Go 1.25+, Papa v3 business projects; shell and Go toolchain recommended for validation.
+---
+
+# Papa Business Crawler Development
+
+## Purpose
+
+Implement business crawlers against Papa’s public facade without leaking business behavior into the framework. Treat the checked-out source and the framework’s current `docs/` as authoritative; generated project docs may be stale.
+
+This skill targets **business integration**, not Papa engine internals. If the requested change truly requires modifying `papa/`, explain why the public extension points are insufficient before touching it.
+
+## Establish authority before editing
+
+1. Find the module importing `github.com/ydtg1993/papa/v3`; that is the business project.
+2. Find the corresponding Papa framework checkout or module source.
+3. Read the framework’s current `docs/README.md`, then only the manuals relevant to the task.
+4. Inspect the nearest existing site/fetcher/model/monitor implementation before designing a new one.
+5. Prefer, in order:
+   - current exported types and executable tests,
+   - current framework `docs/`,
+   - current business code,
+   - copied/generated business `docs/` only as a convenience.
+6. When documents and code disagree, call out the conflict and verify the exported API. Do not silently combine versions.
+
+Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [references/project-conventions.md](references/project-conventions.md) for the repository-specific architecture and known drift traps.
+
+## Classify the requested work
+
+| Request | Primary locations | Read first |
+| --- | --- | --- |
+| Add or change a site | `configs/sites/<site>.go`, `fetcher/<site>/` | Fetcher guide, core config |
+| Parse pages or choose HTML/Rod | `fetcher/<site>/`, samples/tests | Fetcher guide, CLI |
+| Persist results | `models/`, fetcher repository calls | Data landing guide |
+| Change retries/recovery/repeat polling | site stage declaration, `configs/config.yaml`, task fields | Error/recover/repeat queue manuals |
+| Add monitor table/action/API/page | `monitor/`, possibly `models/` | Monitor manual and oao README |
+| Diagnose startup or behavior | declarations, config, archived HTML, traces, tests | CLI, development, relevant queue manual |
+
+## Workflow
+
+### 1. Inspect before proposing code
+
+- Read `go.mod`, `main.go`, `configs/config.yaml`, existing `configs/sites/*.go`, and the nearest fetcher package.
+- Search exported API names rather than guessing signatures.
+- For selector work, look for saved HTML under `docs/samples/` or archived failure pages. If no representative HTML or reachable URL exists, request one or clearly mark selectors as placeholders.
+- Determine whether the requested data belongs in `crawler_tasks.content` or a dedicated GORM table. A dedicated table is justified when the business needs column-level querying, relations, statistics, constraints, or monitor filtering.
+
+### 2. Design the site pipeline
+
+Keep each site self-contained:
+
+```text
+configs/sites/<site>.go       site identity, headers, breaker/download overrides, StageSpec values
+fetcher/<site>/site.go        prefixed stage constants and site lookup helper
+fetcher/<site>/fetch_*.go     stage handlers and entry submission
+fetcher/<site>/*_test.go      parser/URL/task behavior tests using saved HTML
+models/                       shared business data and repositories
+monitor/                      presentation, actions, routes, and pages
+```
+
+A stage name is process-global. Prefix every new stage with the site key, for example `shop_catalog` and `shop_detail`. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
+
+A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `configs/sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
+
+Put worker count, queue size, delay, retry, auto-start, and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
+
+### 3. Implement task flow deliberately
+
+Implement only the required stages. For an auto-start entry stage, implement:
+
+```go
+func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site)
+```
+
+and set its `StageSpec.AutoStart` to true.
+
+For every submitted task:
+
+- use the prefixed stage constant;
+- resolve and validate HTTP(S) URLs;
+- use `Task.Meta` for business identity such as `book_id` or `series_id`;
+- use a stable `IdempotencyKey` whose meaning agrees with `(stage, URL)` under concurrency;
+- set `Repeatable` only for actual polling tasks;
+- seed `RepeatInterval` only at first creation when a per-task period is wanted;
+- check `SubmitTask`/`SubmitTasks` for control flow, but do not duplicate framework logging.
+
+`Task.Meta` is persisted and restored by recovery, repeat, error-queue, and manual requeue paths. A URL lookup fallback can support old rows or malformed historic tasks, but do not design new task identity around URL encoding.
+
+The repeat queue must be enabled globally for automatic polling. `RepeatInterval` is per-task; the global `repeat_queue.interval` is a scan fallback. Submission does not overwrite an existing row’s operator-edited repeat settings.
+
+### 4. Fetch with the least expensive engine
+
+Use `engine.FetchHTML` when static HTML contains the target data. Use Rod/browser APIs only after evidence shows content exists only after JavaScript execution, interaction, or network interception. Implement `NeedsBrowser()` when a stage requires browser startup validation. Current Papa has no effective `NeedsFiledown` or `NeedsM3U8` capability contract: the downloader bases are always initialized, and callers select task-aware instances through `FiledownForTask` or `M3U8ForTask`.
+
+Use site-level headers for shared fetch context and `papa.WithHeaders` for request-specific fetch overrides. File and M3U8 downloaders do **not** implicitly inherit those values: explicitly pass `filedown.OptionsFromRequest(ctx, referer)` or `m3u8.OptionsFromRequest(ctx, referer)`, or copy the required options deliberately. Use `papa.ResolveURL`, `papa.SameHost`, and related facade helpers instead of fragile string concatenation when appropriate.
+
+After a fetch:
+
+1. check the fetch error by type/semantics;
+2. run `engine.RestrictedError(task, page, stageLabel)` when the site declares restricted-page signals;
+3. parse through a small pure function that can be tested with saved HTML;
+4. reject silent empty success unless the page contains an explicit empty-state signal.
+
+### 5. Classify errors by meaning
+
+- Return ordinary errors for transient network, timeout, proxy, and upstream availability failures; the stage retry policy handles them.
+- Return `papa.WrapNoRetry` or `papa.WrapNoRetryKind` for permanent structure, configuration, not-found, or protected-page failures.
+- For static HTTP status failures, inspect `htmlfetch.StatusCode(err)` rather than matching error text.
+- Do not call `task.UpdateStatus`; the engine owns status transitions.
+- Do not repeat logs already emitted by fetch and submit paths.
+- Add `task.Trace.Step`, `Warn`, or `Fail` for useful business milestones. Calls must remain safe when tracing is disabled.
+
+### 6. Persist at the correct layer
+
+Default path: serialize a stage-specific struct and use `engine.SaveResult`/`SaveContent` to write task `title` and `content`.
+
+For dedicated tables:
+
+- put one GORM model per file under root `models/`;
+- register it in `models.Models()`;
+- put queries/upserts in repository files, not scattered through fetchers;
+- prefer `engine.Upsert` for conflict updates and primary-key recovery;
+- use transactions or conditional updates when concurrent child tasks can update the same logical record;
+- keep remote asset URLs and local file paths as independently updated fields so a re-crawl does not erase a successful download path.
+
+Call `monitor.Register(app)` before the `-migrate` branch if that function installs models via `app.UseModels`. Run `papa migrate` or the project’s equivalent after adding models or enabling optional framework tables. Startup does not migrate automatically.
+
+### 7. Extend the monitor without crossing boundaries
+
+Papa monitor integration belongs in `monitor/`:
+
+- `tables.go`: `oao.Table`, columns, filters, actions;
+- a business `Source`: list/filter/sort data;
+- an action handler/service: validate and mutate business state;
+- `controller/`, `router.go`, and `view/`: custom APIs and pages;
+- `register.go`: one composition point for models, tables, pages, and routes.
+
+Oao is a declaration/transport component, not a data or identity layer. Do not make the component infer business rules or trust `ActionRequest.Row`. Parse the canonical row primary key from `ActionRequest.ID` (not `req.Int("id")`, which reads action form values), load current state on the server, and perform a conditional update such as `WHERE id = ? AND reviewed = ?`; check `RowsAffected` and return a conflict for stale or duplicate actions.
+
+Use a business Source or the framework’s exported `admin/gormsource` when its declared filtering behavior fits. Declare every sortable/filterable field explicitly. Remember that undeclared columns, filter keys, and form values are stripped by oao.
+
+Papa’s `/api/*` authentication is supplied by the monitor shell. With `server.operation_log: true`, oao actions connected through `app.UseTables` are recorded by the central `OnAction` hook, including failures. Never put secrets or plaintext tokens in action values or audit details.
+
+### 8. Validate in layers
+
+Run the narrowest checks first:
+
+1. parser/unit tests for the changed site package;
+2. `go test` for changed business packages;
+3. `papa check <project>` for config plus site/stage declarations without a database;
+4. `papa check <project> --boot` only when a database is available and startup wiring needs validation;
+5. `go test ./...`, `go vet ./...`, and race tests when the change affects shared state.
+
+On Windows, run Go commands directly in PowerShell or use `mingw32-make` from Git Bash; do not assume POSIX Makefile syntax works in PowerShell.
+
+For a real site, use `papa html`, `papa rod`, `papa diff`, and `papa select` to capture evidence and test selectors. Do not present unverified selectors as production-ready.
+
+## Audit workflow
+
+For repository review requests, do not stop after scanning the named fetcher files. Build a three-part drift inventory before ranking findings:
+
+1. **Executable configuration:** compare every top-level YAML key and behavior comment with current `CORE_CONFIG.md` and configuration structs.
+2. **Identity and lifecycle contracts:** inspect stage constants, submitted `Task` fields, recovery/repeat behavior, and adjacent repository comments—especially claims about whether `Task.Meta` persists.
+3. **Presentation and operations:** inspect monitor/Oao boundaries, migration instructions, hot-reload claims, and logging/tracing advice.
+
+Use [references/review-checklist.md](references/review-checklist.md). Always cross-check this project's own drift list in [references/project-conventions.md](references/project-conventions.md) — it records where this repository has diverged from current Papa, and it is the first place to look when something in the project contradicts the manuals. Treat the user’s named paths as the review focus, not a reason to ignore supporting files whose comments govern those paths.
+
+## Review checklist
+
+Before finishing, verify:
+
+- [ ] No Papa framework source was changed for ordinary business integration.
+- [ ] New stage names are site-prefixed and reused through constants.
+- [ ] Site self-registers; `main.go` remains generic.
+- [ ] Stage parameters are in Go declarations, governance queues remain global YAML.
+- [ ] Entry tasks use `SubmitEntries` + `AutoStart` when appropriate.
+- [ ] Business identity is in persisted `Task.Meta`; idempotency is stable.
+- [ ] Repeat tasks have both task fields and global repeat queue semantics accounted for.
+- [ ] Static HTML is preferred unless browser use is justified and declared.
+- [ ] Downloaders are task-aware, use explicit `OptionsFromRequest` propagation when needed, and do not rely on removed capability methods.
+- [ ] Transient and permanent errors are classified without text matching.
+- [ ] Empty parses cannot silently pass unless explicitly empty.
+- [ ] Persistence uses result APIs or a registered repository-backed model.
+- [ ] Monitor actions distrust client row data and protect concurrent updates.
+- [ ] Migrations and optional tables are mentioned.
+- [ ] Tests validate saved fixtures, declarations, and compilation.
+- [ ] Any docs/code version conflict is disclosed.
+
+## Avoid these traps
+
+- Copying an old generated manual instead of current framework docs.
+- Using generic `catalog/detail/episode` names in a multi-site process.
+- Adding `crawler.stages` or a removed `scheduler` block to YAML.
+- Claiming config or headers hot-reload when current docs say restart is required.
+- Claiming `Task.Meta` is memory-only.
+- Treating `WrapNoRetry` as exclusion from the global error queue; the error queue still scans failed rows.
+- Trusting browser-returned row snapshots for authorization or mutation, or reading a row key from `req.Int("id")` instead of `ActionRequest.ID`.
+- Assuming file/M3U8 downloaders inherit fetch headers without explicit option propagation.
+- Running `AutoMigrate` on normal startup.
+- Guessing selectors without sample HTML or a reproducible fetch.
