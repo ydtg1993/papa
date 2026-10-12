@@ -2,8 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
-	"gorm.io/gorm"
 )
 
 /* ---------- 门面 getter / setter ---------- */
@@ -85,114 +82,6 @@ func TestPoolErrorForwarderForwards(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("1s 内没收到转发错误")
-	}
-}
-
-/* ---------- 结果读写 ---------- */
-
-type resultPayload struct {
-	N int    `json:"n"`
-	S string `json:"s"`
-}
-
-// SaveResult 按列写 title + content，不整行 Save ——
-// 整行写会把 worker 刚认领时写的 status 覆盖回去。
-func TestSaveResultOnlyTouchesTitleAndContent(t *testing.T) {
-	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	if err := e.SaveResult(7, "标题", resultPayload{N: 1, S: "x"}); err != nil {
-		t.Fatalf("SaveResult = %v", err)
-	}
-	sql := f.written()
-	if !containsAll(sql, "title", "content") {
-		t.Fatalf("应更新 title 与 content：\n%s", sql)
-	}
-	for _, never := range []string{"`status`", "`retry`", "`url`"} {
-		if containsAll(sql, never) {
-			t.Fatalf("不该碰 %s：\n%s", never, sql)
-		}
-	}
-	if !containsAll(f.writtenArgs(), "标题") {
-		t.Fatalf("title 应作为参数写进去：%s", f.writtenArgs())
-	}
-}
-
-func TestSaveContentKeepsTitle(t *testing.T) {
-	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	if err := e.SaveContent(7, resultPayload{N: 2}); err != nil {
-		t.Fatalf("SaveContent = %v", err)
-	}
-	sql := f.written()
-	if !containsAll(sql, "content") {
-		t.Fatalf("应更新 content：\n%s", sql)
-	}
-	if containsAll(sql, "`title`") {
-		t.Fatalf("SaveContent 不该碰 title：\n%s", sql)
-	}
-}
-
-// 序列化失败要报错且一条 SQL 都不发（否则会往 content 里写进半截数据）。
-func TestSaveResultRejectsUnmarshalableContent(t *testing.T) {
-	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	bad := make(chan int)
-	if err := e.SaveResult(7, "t", bad); err == nil {
-		t.Fatal("chan 不可序列化，应当报错")
-	}
-	if err := e.SaveContent(7, bad); err == nil {
-		t.Fatal("chan 不可序列化，应当报错")
-	}
-	if got := f.written(); got != "" {
-		t.Fatalf("序列化失败不该发 SQL：\n%s", got)
-	}
-}
-
-func TestGetResultRoundTrip(t *testing.T) {
-	f := newFakeTaskDB()
-	f.row["content"] = []byte(`{"n":42,"s":"hi"}`)
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	var out resultPayload
-	if err := e.GetResult(7, &out); err != nil {
-		t.Fatalf("GetResult = %v", err)
-	}
-	if out.N != 42 || out.S != "hi" {
-		t.Fatalf("反序列化结果 = %+v", out)
-	}
-}
-
-// content 为空（列是 NULL 或空串）时不算错误：任务可能只是还没写结果。
-// GetResult **不做初始化**：out 保持调用方传进来的样子。
-func TestGetResultEmptyContentIsNotAnError(t *testing.T) {
-	f := newFakeTaskDB()
-	f.row["content"] = nil
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	out := resultPayload{N: 7}
-	if err := e.GetResult(7, &out); err != nil {
-		t.Fatalf("GetResult = %v", err)
-	}
-	if out.N != 7 {
-		t.Fatalf("空 content 时不该动 out：%+v", out)
-	}
-}
-
-func TestGetResultMissingRow(t *testing.T) {
-	f := newFakeTaskDB()
-	f.noRows = true
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	var out resultPayload
-	err := e.GetResult(7, &out)
-	if err == nil {
-		t.Fatal("行不存在应当报错")
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("应当把 gorm 的哨兵错误原样透出（业务据此判定没有这条任务），实得 %v", err)
 	}
 }
 
@@ -417,8 +306,10 @@ func TestLoadActiveTasksFillsDedupCache(t *testing.T) {
 
 	e.loadActiveTasks()
 
-	if !e.dedupCache.Get("stub|https://example.com/active") {
-		t.Fatal("进行中的任务应被装进去重表")
+	// 键是 `site:stage:url`，含站点 —— 装载时照抄旧格式（或漏了 Site）就会装进一个永远命不中的键，
+	// 静默退化成"全靠查库"。假库那行的 site 是 stub，所以键是 stub:stub:...
+	if !e.dedupCache.Get("stub:stub:https://example.com/active") {
+		t.Fatal("进行中的任务应被装进去重表（键含站点）")
 	}
 	// 装的是 pending/processing + repeatable，条件必须写进查询
 	read := f.readSQL()
@@ -508,44 +399,3 @@ type crawlerTaskStub struct {
 }
 
 func (crawlerTaskStub) TableName() string { return "crawler_tasks" }
-
-// content 列里不该出现 `<` 这类 HTML 转义。
-//
-// 业务存进 content 的常常就是一段 HTML（页面片段、页面快照、带 `<a>` 的富文本），
-// 转义之后在库里、后台表格里、SQL 客户端里都是一堆 `<`，等于"存了但看不了一眼"。
-// json.Unmarshal 把两种写法还原成同一个字符串，所以改这个**不影响已经落库的老数据**（见下）。
-func TestSaveResultDoesNotHTMLEscapeContent(t *testing.T) {
-	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
-	const snippet = `<div class="poster">a & b</div>`
-	if err := e.SaveResult(7, "标题", map[string]string{"html": snippet}); err != nil {
-		t.Fatalf("SaveResult = %v", err)
-	}
-
-	args := f.writtenArgs()
-	// JSON 层该转义的照旧（双引号写成 \"，那是 JSON 本身的要求），这里只看 HTML 的那几个字符
-	// 有没有被一起转掉 —— 所以用不带引号的片段来对，免得把 JSON 的引号转义也算进来。
-	for _, raw := range []string{`<div class=`, `>a & b<`, `</div>`} {
-		if !strings.Contains(args, raw) {
-			t.Fatalf("落库的应是原样的片段，参数里缺少 %s：%s", raw, args)
-		}
-	}
-	// 反面：默认的 json.Marshal 会把它们写成反斜杠转义（`backslash-u003c` 那种形态），那正是要避免的。
-	// 拿它的输出来比，比在断言里手写转义序列可靠 —— 手写的转义序列很容易被各种工具还原成原文。
-	if escaped, _ := json.Marshal(map[string]string{"html": snippet}); strings.Contains(args, string(escaped)) {
-		t.Fatalf("content 落库的是 json.Marshal 的 HTML 转义形态：%s", args)
-	}
-
-	// 老数据是转义形态（旧版 SaveResult 留下的），照样读得回来 —— 转义只是 JSON 的一种写法，
-	// 反序列化后是同一个字符串。这里直接用 json.Marshal 造出那份老数据。
-	old, _ := json.Marshal(map[string]string{"html": "<div>"})
-	f.row["content"] = old
-	var back map[string]string
-	if err := e.GetResult(7, &back); err != nil {
-		t.Fatalf("GetResult = %v", err)
-	}
-	if back["html"] != "<div>" {
-		t.Fatalf("转义形态应能原样还原，实得 %q", back["html"])
-	}
-}

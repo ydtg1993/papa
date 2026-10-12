@@ -71,7 +71,7 @@ type Task struct {
     Stage          string
     Repeatable     bool
     Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
-    IdempotencyKey string            // 自定义幂等键，空则回退 stage|url
+    IdempotencyKey string            // 自定义幂等键，规范格式 site:stage:<标识>；空则回退 site:stage:url
     NotBefore      time.Time         // 延迟投递：最早可执行时间
     Delay          time.Duration     // 延迟投递：相对现在的延迟
     Urgent         bool              // 加急：投到所属阶段的快车道，插到排队任务前面
@@ -83,7 +83,7 @@ type Task struct {
   **它会随行落库**（`crawler_tasks.meta`，json 列）：恢复队列（进程重启）、轮询队列、错误队列重投、后台「重投 / 加急」这几条「从行重建任务」的路都会把它读回来，handler 不必再自己按 URL 回查业务表。
   两边不一致时以**这一列**为准 —— 提交时带了非空 `Meta` 就刷新它，带空 `Meta` 的提交不动它（重投路径自己就是照着库里那份读的）。
   它与 `IdempotencyKey` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
-- `IdempotencyKey` 自定义去重键（如「标准化分类 URL + 页码」），空值回退到默认的 `stage|url`。
+- `IdempotencyKey` 自定义去重键，**规范格式 `site:stage:<标识>`**（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），空值回退成同样形状的 `site:stage:url`。三段缺一不可：少了 `site`/`stage`，两个站的同名阶段会撞成同一条任务（B 站被判"已存在"、静默不跑）。列是 `varchar(500)`，第三段用规范化后的短 URL，别塞带一长串 query 的原始地址。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
 - `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 用全局 `repeat_queue.interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
 - `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面。适合"怀疑某条有问题、想单独跑一遍看着它跑"的探测任务（`&papa.Task{URL: u, Stage: "detail", Urgent: true}`）。注意它只省**排队**时间 —— 该阶段 worker 全在忙的时候，插队也快不了；worker 认领后 `urgent` 列自动归零，是一次性的。
@@ -109,7 +109,9 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 	}
 	task.Trace.Step("解析字段", detail)
 
-	return engine.SaveResult(task.ID, detail.Title, detail)
+	// 结果落业务自己的表（见 §1.5）：框架不替你决定表结构
+	return engine.Upsert(&models.Series{SourceKey: detail.Key, Title: detail.Title},
+		[]string{"source_key"}, []string{"title"})
 }
 ```
 
@@ -148,27 +150,29 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 ### 1.5 写结果到数据库
 
-任务表由框架内置（`crawler_tasks`），结果字段是 `title` 和 `content`（JSON）。fetcher 不直接碰表，而是通过引擎的结果 API 落库：
+**结果表由业务自己建、自己写** —— 框架只管任务状态（`crawler_tasks`：URL / 阶段 / 状态 / 重试 / 轮询 / 业务键），不替你决定数据长什么样。
+
+**为什么不塞进任务表**：一类数据一张表才谈得上约束与查询（唯一键、外键、按业务维度建索引、后台单独开一张表格页）；塞进一个 JSON 列之后这些全靠应用层兜，而且"任务表"会同时承担调度状态与业务数据两种生命周期 —— 任务行被清理或重投时，业务数据跟着遭殃。
+
+写法就是项目里 `models/` 包那一套（`papa new` 已生成骨架）：
 
 ```go
-import (
-    "github.com/ydtg1993/papa/v3"
-    "yourproject/models" // 你的项目 models 包，papa new 已生成
-)
+// models/ 里定义业务表（建表走 papa migrate，模型登记在 models.Models()）
+type Series struct {
+    ID        uint64 `gorm:"primaryKey"`
+    SourceKey string `gorm:"type:varchar(191);uniqueIndex;comment:站点内稳定标识"`
+    Title     string
+    CoverURL  string
+}
 
-content := models.DetailContent{ Title: "xxx", Cover: "https://..." } // 你自己的结构，定义在 models 包里
-err := engine.SaveResult(task.ID, content.Title, content)
+// fetcher 里写：engine.Upsert 冲突更新并回填主键（不用自己拼 ON DUPLICATE KEY）
+record := &models.Series{SourceKey: key, Title: detail.Title, CoverURL: detail.CoverURL}
+if err := engine.Upsert(record, []string{"source_key"}, []string{"title", "cover_url"}); err != nil {
+    return err
+}
 ```
 
-`content` 可以是任何可 JSON 序列化的结构，框架自动 `json.Marshal` 后写进 `content` 列。业务内容结构（如 `DetailContent`）不在框架里，而是 `papa new` 生成在你自己的 `models` 包里，按需增删字段即可。
-
-结果 API 一览：
-
-| 方法 | 用途 |
-| --- | --- |
-| `engine.SaveResult(task.ID, title, content)` | 写 `title` + `content`（最常见） |
-| `engine.SaveContent(task.ID, content)` | 只写 `content`，保留已有 `title`（回写已有结果用） |
-| `engine.GetResult(task.ID, &out)` | 读回 `content` 并反序列化到 `out` |
+`engine.Upsert` 与 `engine.GetDB()` 是这一层仅有的两个入口（见 §9 速查）。完整的落地策略（怎么选表、怎么定唯一键、回写与并发怎么写）见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
 ### 1.6 派发子任务（阶段串联）
 
@@ -179,11 +183,14 @@ err := engine.SubmitTask(&papa.Task{
     PID:   task.ID,       // 关联父任务
     URL:   detailURL,
     Stage: "detail",      // 必须是已声明的阶段（configs/sites/<站名>.go 的 Stages 里，见 7.2）
+    Site:  task.Site,     // 必填，见下
     Meta:  map[string]string{"series_id": "119002"}, // 携带业务键，handler 里读 task.Meta
 })
 ```
 
-去重键默认是 `stage|url`，同一个 URL 重复提交会被引擎识别为**已存在**：单任务 `SubmitTask` 返回 `nil`（视为成功，无需 `_ = err` 忽略），批量 `SubmitTasks` 直接跳过该条——天然防重。需要别的幂等键时设 `IdempotencyKey`。
+**`Site` 必填**：任务按「站点 + 阶段」找池子，漏了它 `SubmitTask` 会拒收（日志 `task stage or url or site is empty`），任务一条都进不了池。子任务继承父任务的 `task.Site`，入口任务（`SubmitEntries`）用 `site.Key`。
+
+去重键默认是 `site:stage:url`，同一个站点的同一个 URL 重复提交会被引擎识别为**已存在**：单任务 `SubmitTask` 返回 `nil`（视为成功，无需 `_ = err` 忽略），批量 `SubmitTasks` 直接跳过该条——天然防重。需要别的幂等键时设 `IdempotencyKey`。
 
 **延迟投递**：episode 这类要反爬随机间隔的任务，设 `Delay`（或 `NotBefore`），引擎到点才入队，不空占 worker：
 
@@ -191,6 +198,7 @@ err := engine.SubmitTask(&papa.Task{
 engine.SubmitTask(&papa.Task{
     URL:   episodeURL,
     Stage: "episode",
+    Site:  task.Site, // 必填（同 §1.6）
     Delay: time.Duration(10+rand.Intn(21)) * time.Second, // 10–30s 随机
 })
 ```
@@ -488,6 +496,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
             PID:   task.ID,
             URL:   detailURL,
             Stage: "detail",
+            Site:  task.Site,
         }); err != nil {
             // 去重命中不会走到这里 —— SubmitTask 返回 nil（视为成功）；
             // 真返回 error 说明是别的提交问题，别吞掉
@@ -536,12 +545,9 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
     title := page.MustElement("h1").MustText()
     coverURL, _ := page.MustElement(".cover img").Attribute("src")
 
-    content := models.DetailContent{
-        Title: title,
-        Cover: deref(coverURL),
-        // ... 其他字段按需扩展
-    }
-    return engine.SaveResult(task.ID, title, content)
+    // 结果落业务自己的表（见 §1.5）：engine.Upsert 冲突更新并回填主键
+    series := &models.Series{SourceKey: task.URL, Title: title, CoverURL: deref(coverURL)}
+    return engine.Upsert(series, []string{"source_key"}, []string{"title", "cover_url"})
 }
 
 func deref(s *string) string {
@@ -638,10 +644,10 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
         return res.Error
     }
 
-    // 4. 写库（记录 m3u8 地址和本地输出；VideoContent 是你在 models 包里自定义的结构）
+    // 4. 写库：结果落业务自己的表（见 §1.5），不改任务行。
     // res.OutputFile 是**相对** dl.OutputDir() 的路径，要落一个能直接指到文件的本地路径就拼起来。
-    content := models.VideoContent{ Dir: filepath.Join(dl.OutputDir(), res.OutputFile), Source: url }
-    return engine.SaveContent(task.ID, content)
+    episode := &models.Episode{SourceKey: episodeKey, MediaURL: url, LocalPath: filepath.Join(dl.OutputDir(), res.OutputFile)}
+    return engine.Upsert(episode, []string{"source_key"}, []string{"media_url", "local_path"})
 }
 ```
 
@@ -773,7 +779,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	task.Trace.Step("打开列表页", map[string]string{"url": task.URL})
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
-	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})
+	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})
 
 	return nil
 }
@@ -809,8 +815,9 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
         if err := engine.SubmitTask(&papa.Task{
             URL:            url,
             Stage:          "catalog",
+            Site:           site.Key, // 必填：入口任务没有父任务，站点取自声明快照
             Meta:           map[string]string{"category_key": route.Key},
-            IdempotencyKey: "catalog:" + route.Key + ":" + url,
+            IdempotencyKey: site.Key + ":catalog:" + url, // 规范格式：site:stage:<URL>
             Repeatable:     true,
         }); err != nil {
             engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
@@ -914,7 +921,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 所以传了会**明确报错**（而不是静默直连、让人以为走了代理）；要按站换出口就用池上那套（proxied / direct 两类实例）
 或一站一进程。
 
-2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.6）。
+2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail", Site: task.Site})` 派发子任务（见 1.6）。
 
 3. **定时重抓 / 恢复失败**：
    - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；
@@ -970,11 +977,9 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
   （下载器不读 ctx，用不用由你显式决定）；`filedown.DownloadOptions.Direct` 走单次 GET（小文件）。
 
 **数据库 / 结果落地**
-- `engine.SaveResult(task.ID, title, content)` 写 `title` + `content`。
-- `engine.SaveContent(task.ID, content)` 只写 `content`（保留 `title`）。
-- `engine.GetResult(task.ID, &out)` 读回 `content` 反序列化到 `out`。
-- `engine.Upsert(record, conflictCols, updateCols)` 冲突更新并回填主键（独立表用）。
-- `engine.GetDB()` 拿 gorm 实例（建独立表、复杂查询时用）。
+- `engine.Upsert(record, conflictCols, updateCols)` 冲突更新并回填主键 —— 业务结果写自己的表就用它。
+- `engine.GetDB()` 拿 gorm 实例（复杂查询、建自己的表时用）。
+- 任务表只存调度状态（URL / 阶段 / 状态 / 重试 / 轮询 / `meta` 业务键）；结果的结构与落地全归业务，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
 **任务派发 / 错误分类 / 告警**
 - `engine.SubmitTask(&papa.Task{...})` 派发单个子任务；`engine.SubmitTasks([]*papa.Task{...})` 批量派发。

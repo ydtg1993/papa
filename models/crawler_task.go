@@ -36,13 +36,11 @@ type CrawlerTask struct {
 	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage) 上 ——
 	// 与 URL 长度无关。由 BeforeCreate 自动填（任何创建路径都覆盖），老库由 `papa migrate` 回填。
 	URLHash        string `gorm:"type:char(64);not null;uniqueIndex:idx_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
-	IdempotencyKey string `gorm:"type:varchar(500);index;comment:自定义幂等键，空则回退 stage|url"`
+	IdempotencyKey string `gorm:"type:varchar(500);index;comment:自定义幂等键，规范格式 site:stage:<标识>；空则回退 site:stage:url"`
 	// Meta 业务键（如 series_id/episode_id），与 URL 解耦。**随行落库** ——
 	// 恢复/轮询/错误队列/后台重投这几条「从行重建 Task」的路都按它还原任务身份，
 	// 不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
 	Meta       datatypes.JSON   `gorm:"type:json;comment:业务键(如 series_id/episode_id)，随行落库"`
-	Title      string           `gorm:"type:text;comment:页面标题"`
-	Content    datatypes.JSON   `gorm:"type:json;comment:页面提取内容"`
 	Retry      int              `gorm:"default:0;comment:错误重试次数"`
 	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;comment:0:待处理 1:处理中 2:成功 3:失败"`
 	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
@@ -67,9 +65,6 @@ type CrawlerTask struct {
 }
 
 func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
-	if t.Content == nil || len(t.Content) == 0 {
-		t.Content = datatypes.JSON("{}")
-	}
 	// URL 的哈希在这里统一补上：任何创建路径（含业务直接 Create 这个模型）都覆盖到，
 	// 不会出现"唯一索引上是一串空串"这种撞车。
 	if t.URLHash == "" && t.URL != "" {

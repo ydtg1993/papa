@@ -13,12 +13,20 @@ import (
 )
 
 func TestTaskUnique(t *testing.T) {
-	task := &Task{URL: "https://example.com", Stage: "mock"}
-	if got := task.Unique(); got != "mock|https://example.com" {
+	// 规范文本是 `site:stage:url`：三段都在，两个站的同名阶段才不会互相顶掉。
+	task := &Task{URL: "https://example.com", Stage: "mock", Site: "shop"}
+	if got := task.Unique(); got != "shop:mock:https://example.com" {
 		t.Fatalf("default unique = %q", got)
 	}
-	task.IdempotencyKey = "catalog:cat:2"
-	if got := task.Unique(); got != "catalog:cat:2" {
+	// 空 site（默认 scope）以空段出现，形状不变
+	task.Site = ""
+	if got := task.Unique(); got != ":mock:https://example.com" {
+		t.Fatalf("empty-site unique = %q", got)
+	}
+	// 自定义幂等键优先；按约定它自己就带站点与阶段，所以这里原样返回
+	task.Site = "shop"
+	task.IdempotencyKey = "shop:mock:cat:2"
+	if got := task.Unique(); got != "shop:mock:cat:2" {
 		t.Fatalf("idempotency key unique = %q", got)
 	}
 }

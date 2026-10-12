@@ -24,7 +24,7 @@ type Task struct {
 	// 或后台的「设轮询周期」—— 免得每次启动重投入口任务时，代码里的值把运营改的盖掉。
 	RepeatInterval time.Duration
 	Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
-	IdempotencyKey string            // 自定义幂等键，为空时回退 Stage|URL
+	IdempotencyKey string            // 自定义幂等键，规范格式 site:stage:<标识>；为空时回退 Site:Stage:URL
 	NotBefore      time.Time         // 延迟投递：最早可执行时间
 	Delay          time.Duration     // 延迟投递：相对当前时间的延迟
 	Urgent         bool              // 加急：投到所属阶段的快车道，插到常规队列前面
@@ -160,11 +160,16 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 	return db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(updates).Error == nil
 }
 
+// Unique 进程内去重键（也是"任务身份"的规范文本）：`site:stage:url`。
+//
+// 自定义 IdempotencyKey 优先，但它必须**自带站点与阶段**才唯一 —— 缺了这两段，两个站
+// 的同名阶段会撞成同一条任务（B 站被判"已存在"、静默不跑）。约定格式 `site:stage:<标识>`。
+// 回退值同样按这个格式拼（site 为空串时以空段出现，与"默认 scope"一致）。
 func (t *Task) Unique() string {
 	if t.IdempotencyKey != "" {
 		return t.IdempotencyKey
 	}
-	return t.Stage + "|" + t.URL
+	return t.Site + ":" + t.Stage + ":" + t.URL
 }
 
 // Fetcher 爬虫操作业务逻辑接口

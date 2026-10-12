@@ -330,7 +330,8 @@ func (e *Engine) DeleteTask(id uint) error {
 		}
 		return ErrTaskProcessing
 	}
-	// 这里只需要算去重键（Unique 只认幂等键或 stage|url），不必把整行还原成 Task。
-	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, IdempotencyKey: t.IdempotencyKey})
+	// 这里只需要算去重键（Unique 是 site:stage:url —— 幂等键或回退都含站点），
+	// 不必把整行还原成 Task；Site 漏了就会删不掉内存去重表里的那条残留。
+	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey})
 	return nil
 }

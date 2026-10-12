@@ -53,7 +53,7 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 		Source: gormsource.New(gormsource.Config{
 			DB:     db,
 			Model:  &models.CrawlerTask{},
-			Search: []string{"url", "title", "error"},
+			Search: []string{"url", "error"}, // 没有 title 列了：进这里就会拼出 `title LIKE ?` → 真库 1054
 		}),
 		Columns: []oao.Column{
 			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
@@ -64,7 +64,6 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "stage", Label: "阶段"},
 			{Field: "site", Label: "站点", Width: "90px"}, // 多站时按站点分：熔断、日志、任务都按它
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}", NewTab: true},
-			{Field: "title", Label: "标题"},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Render: oao.RenderEnum, Enum: taskStatusEnum, Tone: taskStatusTone},
 			{Field: "retry", Label: "重试", Kind: oao.KindNumber, Width: "70px"},

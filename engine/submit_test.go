@@ -348,7 +348,7 @@ func TestSubmitToPoolWritesOnlyItsOwnColumns(t *testing.T) {
 			sql := f.written()
 			// `` `repeat` `` 与 `` `repeatable` `` 不会互相误命中（尾引号），所以两条都要断言
 			for _, never := range []string{
-				"`repeatable`", "`url`", "`title`", "`content`", "`urgent`", "`error`",
+				"`repeatable`", "`url`", "`urgent`", "`error`",
 				// 周期与排期只由首次插入（toModel）与「设轮询周期」/「开轮询」写：
 				// 提交路径碰它们就等于把运营改的盖回去
 				"`repeat_interval`", "`next_repeat_at`", "`last_repeat_at`",

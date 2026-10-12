@@ -29,7 +29,7 @@ cd mycrawler && go mod tidy
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
 > `main.go` / `models.Models()` 里注册的模型，所以它在业务项目里会把迁移**转交**给项目自己
 > （`go run . -migrate` → `App.Migrate()`），两边都建。不在业务项目里跑时它只建框架自带的表。
-> 脚手架刚生成的项目没有业务表（内容默认写进 `crawler_tasks.content` 这个 JSON 列，不是表），
+> 脚手架刚生成的项目没有业务表（框架只管调度状态，抓到的结果要在 `models/` 里建业务表来落），
 > 所以起步阶段两条命令等价。判据与细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 
 ## 阅读路径

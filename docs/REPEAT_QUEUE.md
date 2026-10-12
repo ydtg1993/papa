@@ -61,7 +61,7 @@ repeat_queue:
 
 > **`enabled: false`（没写这段也一样）时，任务级周期也不生效** —— 关掉就是"仅手动触发"，没有自动扫描这回事。这条最容易被误解，配 `interval` 时留意。
 >
-> **停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同一个 `stage|url` 再提交仍会被 `SubmitTask` 的去重命中分支静默吞掉（所有已完成任务都这样，与轮询无关）。想立刻再跑只能「重投」。
+> **停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同一个 `site:stage:url` 再提交仍会被 `SubmitTask` 的去重命中分支静默吞掉（所有已完成任务都这样，与轮询无关）。想立刻再跑只能「重投」。
 >
 > **失败的任务走 error_queue 的节奏**：本队列只按任务周期捞 `success/failed`，而 `failed` 同时也在 [ERROR_QUEUE.md](./ERROR_QUEUE.md) 的集合里 —— 那条路有自己的 `interval` / `max_retry`，不受任务周期约束。想让"失败也别猛打目标站"，调的是 error_queue。
 

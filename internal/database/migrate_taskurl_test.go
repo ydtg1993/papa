@@ -25,6 +25,9 @@ type schemaState struct {
 	// missingHash 还有多少行等着回填；urlHashNullable = url_hash 现在可空吗
 	missingHash     int64
 	urlHashNullable bool
+	// v3.4.0 起结果落业务表：crawler_tasks 的这两列由显式迁移删掉（见 migrate_taskcolumns.go）
+	hasTitle   bool
+	hasContent bool
 }
 
 // schemaStub 造一个按 st 回答守卫查询的假库；返回的指针可改（用来模拟"迁移已经生效"）。
@@ -71,6 +74,12 @@ func schemaStub(t *testing.T, st *schemaState) *stubDB {
 			}
 			if last() == "url_hash" {
 				return count(st.hasURLHash)
+			}
+			if last() == "title" {
+				return count(st.hasTitle)
+			}
+			if last() == "content" {
+				return count(st.hasContent)
 			}
 		case strings.Contains(low, "count(*) from `crawler_tasks`") && strings.Contains(low, "url_hash"):
 			return []string{"COUNT(*)"}, [][]driver.Value{{st.missingHash}}
@@ -155,5 +164,42 @@ func TestMigrateTaskURLHashIsIdempotent(t *testing.T) {
 	}
 	if extra := s.execs[before:]; len(extra) != 0 {
 		t.Fatalf("第二次不该再发 DDL，实得：%v", extra)
+	}
+}
+
+// title / content 两列的显式删除：模型里把字段删掉，AutoMigrate **什么都不做**（只增不减），
+// 所以库里的两列只能这样显式删 —— 留着它们，后台任务表的搜索声明一旦再带上 title 就是真库 1054。
+func TestDropLegacyTaskColumns(t *testing.T) {
+	// ① 两列都在：各发一条 DROP COLUMN
+	st := &schemaState{table: true, hasTitle: true, hasContent: true}
+	s := schemaStub(t, st)
+	if err := dropLegacyTaskColumns(openStubDB(t, s)); err != nil {
+		t.Fatalf("dropLegacyTaskColumns = %v", err)
+	}
+	writes := s.written()
+	for _, want := range []string{"DROP COLUMN `title`", "DROP COLUMN `content`"} {
+		if !strings.Contains(writes, want) {
+			t.Fatalf("应发 %q，实得：\n%s", want, writes)
+		}
+	}
+
+	// ② 列已经不在了（重复跑 / 已迁移过的库）：一条 DDL 都不发 —— 迁移必须可重复跑
+	st2 := &schemaState{table: true}
+	s2 := schemaStub(t, st2)
+	if err := dropLegacyTaskColumns(openStubDB(t, s2)); err != nil {
+		t.Fatalf("dropLegacyTaskColumns（列已删过）= %v", err)
+	}
+	if w := s2.written(); strings.Contains(w, "ALTER") {
+		t.Fatalf("列不存在时不该发 DDL：\n%s", w)
+	}
+
+	// ③ 表都不在（全新库）：整段跳过，交给后面的 AutoMigrate 按新结构建表
+	st3 := &schemaState{table: false}
+	s3 := schemaStub(t, st3)
+	if err := dropLegacyTaskColumns(openStubDB(t, s3)); err != nil {
+		t.Fatalf("dropLegacyTaskColumns（表不存在）= %v", err)
+	}
+	if w := s3.written(); strings.Contains(w, "ALTER") {
+		t.Fatalf("表不存在时不该发 DDL：\n%s", w)
 	}
 }

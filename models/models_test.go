@@ -3,38 +3,7 @@ package models
 import (
 	"strings"
 	"testing"
-
-	"gorm.io/datatypes"
 )
-
-// content 列是 JSON 且要参与业务解析：业务没写内容时必须落 {}，不能落 NULL / 空串。
-func TestCrawlerTaskBeforeCreateFillsContent(t *testing.T) {
-	cases := []struct {
-		name string
-		in   datatypes.JSON
-	}{
-		{"nil", nil},
-		{"空串", datatypes.JSON("")},
-	}
-	for _, c := range cases {
-		task := &CrawlerTask{Content: c.in}
-		if err := task.BeforeCreate(nil); err != nil {
-			t.Fatalf("%s: BeforeCreate = %v", c.name, err)
-		}
-		if string(task.Content) != "{}" {
-			t.Fatalf("%s: content 应补成 {}，实得 %q", c.name, task.Content)
-		}
-	}
-
-	// 已写好的内容不能被钩子覆盖
-	task := &CrawlerTask{Content: datatypes.JSON(`{"a":1}`)}
-	if err := task.BeforeCreate(nil); err != nil {
-		t.Fatalf("BeforeCreate = %v", err)
-	}
-	if string(task.Content) != `{"a":1}` {
-		t.Fatalf("已有内容被改写：%q", task.Content)
-	}
-}
 
 // 这三张表显式声明了表名（不走 gorm 的复数化规则）；改名字等于改线上表名，钉住它。
 func TestTableNames(t *testing.T) {

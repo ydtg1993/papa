@@ -45,7 +45,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 - Read `go.mod`, `main.go`, `configs/config.yaml`, existing `configs/sites/*.go`, and the nearest fetcher package.
 - Search exported API names rather than guessing signatures.
 - For selector work, look for saved HTML under `docs/samples/` or archived failure pages. If no representative HTML or reachable URL exists, request one or clearly mark selectors as placeholders.
-- Determine whether the requested data belongs in `crawler_tasks.content` or a dedicated GORM table. A dedicated table is justified when the business needs column-level querying, relations, statistics, constraints, or monitor filtering.
+- Results go into the project’s own GORM tables under `models/`; the framework task table carries scheduling state only (url / stage / site / status / retry / repeat / `meta`) and has no result columns.
 
 ### 2. Design the site pipeline
 
@@ -114,12 +114,11 @@ After a fetch:
 
 ### 6. Persist at the correct layer
 
-Default path: serialize a stage-specific struct and use `engine.SaveResult`/`SaveContent` to write task `title` and `content`.
-
-For dedicated tables:
+Persist results into dedicated tables (one entity per table under root `models/`):
 
 - put one GORM model per file under root `models/`;
-- register it in `models.Models()`;
+- register it in `models.Models()` — unregistered models are never created by `papa migrate`;
+- give every table a unique key identifying the business row (include the site when several sites run in one process), otherwise requeues and polling insert duplicates;
 - put queries/upserts in repository files, not scattered through fetchers;
 - prefer `engine.Upsert` for conflict updates and primary-key recovery;
 - use transactions or conditional updates when concurrent child tasks can update the same logical record;

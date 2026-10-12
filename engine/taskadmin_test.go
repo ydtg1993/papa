@@ -206,7 +206,7 @@ func TestUrgentTaskHappyPath(t *testing.T) {
 	}
 
 	// 3) 进了去重表，后续正常投递不会重复入队
-	if !e.dedupCache.Get("stub|https://example.com") {
+	if !e.dedupCache.Get("stub:stub:https://example.com") {
 		t.Error("加急投递后应进内存去重表")
 	}
 }

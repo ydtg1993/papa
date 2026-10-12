@@ -80,11 +80,13 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 
     result, err := parseDetail(page.Selection(), page.URL.String())
     if err != nil { return papa.WrapNoRetryKind("structure", err) }
-    return engine.SaveResult(task.ID, result.Title, result)
+    // Results land in the project's own table (see models/); Upsert conflict-updates and backfills the PK.
+    return engine.Upsert(&models.Series{Site: task.Site, SourceKey: result.Key, Title: result.Title},
+        []string{"site", "source_key"}, []string{"title"})
 }
 ```
 
-Match the actual `SaveResult` signature in the checked-out version. Test `parseDetail` against saved fixtures, including a valid page, explicit empty page if supported, and a broken-selector page.
+Match the actual `engine.Upsert` signature in the checked-out version. Test `parseDetail` against saved fixtures, including a valid page, explicit empty page if supported, and a broken-selector page.
 
 ## Conditional monitor action
 

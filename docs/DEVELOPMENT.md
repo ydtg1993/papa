@@ -188,7 +188,7 @@ pkg/notify ──► core
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
   它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
-- **`dedupCache` 是"按 key 分、预算共享"**：key 是 `stage|url`（阶段唯一 → 天然分站），但只有**一个**
+- **`dedupCache` 是"按 key 分、预算共享"**：key 是 `site:stage:url`（`Task.Unique()`；缺 site 时以空段出现），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
   不影响正确性 —— 想每站一份预算就是"去重缓存按站点"那一项。
 - ~~**任务表的预置筛选**~~：oao 已经加上了（`render`/`open` 的 `opts.filter`，见 oao README 的

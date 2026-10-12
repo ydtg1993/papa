@@ -25,8 +25,9 @@ func TestFacadeAPI(t *testing.T) {
 	var _ papa.Fetcher = (*mockFetcher)(nil)
 
 	// Task 结构及其方法可用
-	task := &papa.Task{ID: 1, PID: 0, URL: "https://example.com", Stage: "mock", Repeatable: true}
-	if got := task.Unique(); got != "mock|https://example.com" {
+	task := &papa.Task{ID: 1, PID: 0, URL: "https://example.com", Stage: "mock", Site: "shop", Repeatable: true}
+	// 去重键的规范文本是 `site:stage:url`（缺 site 时以空段出现）——见 engine/task.go 的 Task.Unique。
+	if got := task.Unique(); got != "shop:mock:https://example.com" {
 		t.Fatalf("unexpected unique key: %s", got)
 	}
 

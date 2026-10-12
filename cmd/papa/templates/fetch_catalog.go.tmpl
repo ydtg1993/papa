@@ -29,6 +29,9 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 		// 在这里遍历它 —— 写法见 docs/FETCHER_WRITING_GUIDE.md「如何驱动任务」的初始任务示例。
 		URL:   strings.TrimRight(site.BaseURL, "/") + "/list",
 		Stage: "catalog",
+		// Site 必填：任务按「站点 + 阶段」找池子，空着 SubmitTask 直接拒收
+		//（日志里只会留一句 "task stage or url or site is empty"，入口任务一条都进不来）。
+		Site: site.Key,
 		// Repeatable: true = 该任务会被「周期轮询」（到时重新抓取、发现新内容）。
 		// 周期由 RepeatInterval 定（下面那行，只给这一条任务；不写 = 用全局 repeat_queue 的 interval）；
 		// 两者都只在首次入库时播种，之后用后台任务表的「开/停轮询」「设轮询周期」改。
@@ -65,7 +68,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	//   if items.Length() == 0 { return papa.WrapNoRetryKind("structure", fmt.Errorf("列表页没有条目：%s", page.URL)) }
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
-	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail"})
+	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})
 
 	return nil
 }

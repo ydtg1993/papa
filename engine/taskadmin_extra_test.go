@@ -36,7 +36,7 @@ func TestRetryTaskHappyPath(t *testing.T) {
 	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
 		t.Fatalf("重投的任务应入队，实得 %d", main+urgent)
 	}
-	if !e.dedupCache.Get("stub|https://example.com") {
+	if !e.dedupCache.Get("stub:stub:https://example.com") {
 		t.Fatal("重投后应进内存去重表")
 	}
 }
@@ -135,7 +135,7 @@ func TestRetryTaskReportsSubmitFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "submit task 7") {
 		t.Fatalf("错误信息应带上任务 ID：%v", err)
 	}
-	if e.dedupCache.Get("stub|https://example.com") {
+	if e.dedupCache.Get("stub:stub:https://example.com") {
 		t.Fatal("投递失败应把 key 从去重表里撤掉")
 	}
 }
@@ -202,12 +202,12 @@ func TestMarkTaskFailedRejections(t *testing.T) {
 func TestDeleteTaskClearsDedupCache(t *testing.T) {
 	f := newFakeTaskDB()
 	e, _ := urgentEngine(t, f)
-	e.dedupCache.Add("stub|https://example.com")
+	e.dedupCache.Add("stub:stub:https://example.com")
 
 	if err := e.DeleteTask(7); err != nil {
 		t.Fatalf("DeleteTask = %v", err)
 	}
-	if e.dedupCache.Get("stub|https://example.com") {
+	if e.dedupCache.Get("stub:stub:https://example.com") {
 		t.Fatal("删除后应清掉内存去重表里的残留")
 	}
 	if len(e.dedupCache.entries) != 0 {
@@ -379,7 +379,7 @@ func TestUrgentTaskReportsSubmitFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "submit urgent task 7") {
 		t.Fatalf("错误信息应带上任务 ID：%v", err)
 	}
-	if e.dedupCache.Get("stub|https://example.com") {
+	if e.dedupCache.Get("stub:stub:https://example.com") {
 		t.Fatal("投递失败应把 key 从去重表里撤掉")
 	}
 }

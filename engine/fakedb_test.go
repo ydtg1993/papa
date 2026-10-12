@@ -91,7 +91,7 @@ var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 // **必须与模型全列一致**：rowValuesOf 只按这个列表取值，漏了新列不报错，
 // 测试里 `f.row["新列"] = ...` 会被静默丢弃、断言照样"通过"。TestFakeTaskColumnsCoverModel 钉住它。
 var fakeTaskColumns = []string{
-	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "meta", "title", "content",
+	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "meta",
 	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
 	"reprocess", "urgent", "error", "created_at", "updated_at",
 }
@@ -152,7 +152,7 @@ func newFakeTaskDB() *fakeTaskDB {
 		row: fakeRow{
 			"id": int64(7), "p_id": int64(0), "stage": "stub", "site": "stub", "url": "https://example.com",
 			"url_hash":        models.UrlHash("https://example.com"),
-			"idempotency_key": "", "meta": []byte("{}"), "title": "", "content": []byte("{}"),
+			"idempotency_key": "", "meta": []byte("{}"),
 			"retry": int64(0), "status": int64(models.TaskStatusPending), "repeatable": int64(0),
 			"repeat": int64(0), "repeat_interval": int64(0), "reprocess": int64(0), "urgent": false, "error": "",
 			"created_at": now, "updated_at": now,

@@ -101,7 +101,9 @@ func (e *Engine) loadActiveTasks() {
 		return
 	}
 	for _, t := range tasks {
-		task := Task{URL: t.URL, Stage: t.Stage, IdempotencyKey: t.IdempotencyKey}
+		// Site 必须带上：Unique() 是 site:stage:url，漏了它这里算出的键与投递时不同 ——
+		// 内存去重表会「装了个永远命不中的键」，静默退化成全靠查库。
+		task := Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey}
 		e.dedupCache.Add(task.Unique())
 	}
 }

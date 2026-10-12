@@ -1,387 +1,163 @@
 # Papa 数据落地手册
 
-> 面向：写完 fetcher 之后，怎么把抓到的内容「落地」成模型、写进数据库，以及写在哪里。
+> 面向：写完 fetcher 之后，抓到的内容怎么落地成表、写进数据库、以及写在哪里。
 > 配套阅读：[FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md)（抓取逻辑怎么写）。
 
 ---
 
 ## 0. 一句话
 
-Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一张 `crawler_tasks` 表，用 `stage` 列区分阶段，抓到的结构化内容以 JSON 塞进 `content` 列。你要做的是：**把页面提取成 Go 结构体，序列化后写回对应任务的 `content`（和 `title`）列**。
+框架只管**调度状态**，业务数据**自己建表、自己写**：
 
-> 框架目前最多使用 5 张表。业务结果通常只写 `crawler_tasks`；`crawler_sites` 由框架维护，另外三张服务于后台鉴权、操作审计和任务追踪。业务的内容结构（写进 `content` 列的 JSON）由你自己在项目的 `models` 包里按需定义 —— 脚手架不预置示例。
+- `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
+- 抓到的内容要落库，就在项目的 `models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
+
+> **升级提醒**：v3.4.0 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
+> `SaveResult` / `SaveContent` / `GetResult` 三个 API，**已全部删除**。迁移步骤见 §6。
 
 ---
 
-## 1. 读懂现状：已有哪些模型
+## 1. 两类数据，两条生命周期
 
-框架目前最多使用 5 张表，**业务结果通常只写第一张**；其余由框架和后台维护：
-
-| 表 | 用途 | 创建条件 |
+| | 调度状态 | 业务结果 |
 | --- | --- | --- |
-| `crawler_tasks` | 任务与抓取结果；`title` / `content` 是主要落地点 | 总是创建 |
-| `crawler_access_token` | 后台访问令牌（`papa token add` 或后台页面维护） | 总是创建 |
-| `crawler_sites` | 站点声明、运行统计与熔断状态 | 总是创建 |
-| `crawler_operation_log` | 后台操作审计 | `server.operation_log: true` |
-| `crawler_task_trace` | 任务步骤追踪（handler 通过 `task.Trace` 上报） | `crawler.trace.enabled: true` |
+| 存在哪 | `crawler_tasks`（框架的表） | 你自己的表（`models/` 里定义） |
+| 谁写 | 只有引擎 | 只有你（fetcher / 后台动作） |
+| 生命周期 | 任务跑完、被清理、被重投都归调度管 | 数据本身长期存在，与任务行无关 |
+| 形状 | 固定的几个列 | 一类数据一张表，字段你定 |
 
-两张可选表跟随开关创建；其他三张属于基础框架表。建表规则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。本手册不展开这些框架维护表——各有归属：站点表与访问令牌见 [MONITOR.md](./MONITOR.md) 第 1 节（含字段表）、操作日志见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`、步骤追踪见 [MONITOR.md](./MONITOR.md) 第 3 节的「追踪」抽屉。
+把它们分开的好处很实在：业务表能建唯一键、外键、按业务维度建索引，后台能单独给它开一张表格页；而任务行被重投或清理时，业务数据不会跟着遭殃。
 
-### 1.1 任务表 `crawler_tasks`（业务唯一要写的一张）
+---
 
-业务关心的只有两个落地列：
+## 2. 任务表 `crawler_tasks`：业务**只读**，不要写
 
 | 列 | 说明 |
 | --- | --- |
-| `title` | 页面标题（string） |
-| `content` | 结构化内容（JSON，本质 `[]byte`），存什么结构由**每个 stage 自己决定** |
+| `id` / `p_id` | 任务 ID / 父任务 ID（阶段串联靠它） |
+| `url` / `url_hash` | 任务 URL 与它的 sha256（唯一索引用哈希，因为长 URL 整串进不了索引） |
+| `stage` / `site` | 属于哪个阶段、哪个站点（`SiteSpec.Key`；空串 = 默认 scope） |
+| `status` / `retry` / `error` | 运行态：待处理 / 处理中 / 成功 / 失败、重试次数、错误信息 |
+| `repeatable` / `repeat` / `repeat_interval` / `next_repeat_at` / `last_repeat_at` | 轮询相关，调度用 |
+| `reprocess` / `urgent` | 失败重投的代次（同时是后台动作的版本守卫）、加急标记 |
+| `idempotency_key` | 去重键，见下 |
+| `meta` | **业务键**（JSON），见下 |
 
-> `content` 里存 HTML 片段也没问题：写库时**不做 HTML 转义**（`<` `>` `&` 原样落库），
-> 所以在后台表格里、SQL 客户端里都能直接看。老数据里可能有 `<` 这种转义写法
-> （升级前的行为），读回来是同一个字符串，不影响。
-
-其余列（`status` / `retry` / `error` / `repeat` 等）是框架运行态，由引擎自动维护，**业务不要直接读写**。
-
-> `site` 列记任务属于哪个站（`SiteSpec.Key`）——多站同进程时，后台任务表可以按它筛，
-> 熔断、日志、监控也都按它分维度。它是**引擎按目标阶段自动填的**（阶段属于哪个站），业务不用传参；
-> 老行是空的（那时还没有这个概念）。
->
-> 其中 `meta` 列值得单说一句：它由 `Task.Meta`（业务键）落库，业务同样是给 `papa.Task` 赋值、不直接写列，
-> 但它**不是**临时状态 —— 恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份，
-> 所以在后台或 SQL 客户端里能直接看出「这条任务是哪条业务行的」。详见
-> [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2。
-
-- 内置唯一约束建在 **`(url_hash, stage)`** 上（`url_hash` 是 URL 的 sha256，64 位十六进制）：
-  同一个 URL 在一个阶段只会有一条记录。用哈希而不是整串 URL，是因为**长 URL 整串进不了唯一索引** ——
-  InnoDB 的键长上限是 3072 字节（utf8mb4 下 ≈768 字符），带一串 query 的 URL 很容易更长，
-  以前 `url` 是 `varchar(500)`，超了要么入库报错、要么被截断。现在 `url` 是 `text`（不限长），
-  `url_hash` 由 `BeforeCreate` 自动填（老库跑一次 `papa migrate` 会回填，用 MySQL 的 `SHA2(url,256)`，
-  与 Go 侧 `models.UrlHash` 同一个值）。
-- **`IdempotencyKey` 是「软约束」**：任务可以自定义 `IdempotencyKey`（`papa.Task{ IdempotencyKey: "..." }`）作为去重键。提交时引擎会**按它查库**（`findTaskRecord` 优先用 `idempotency_key`、其次 `stage + url`），命中就复用已有记录、不重复入库；内存去重表只是前面的一道快取，被淘汰了也不影响正确性。
-  但数据库**唯一索引只建在 `(url_hash, stage)` 上**，「同幂等键、不同 URL」这种组合它拦不住：两个这样的任务并发提交时，
-  两边查库都没查到、又都能插进去，就可能各留一行。约定：使用 `IdempotencyKey` 时保证同一幂等键始终对应同一 `(stage, url)`；
-  否则其去重是「尽力而为」而非强一致。
-- 业务**不直接碰 model**，而是通过结果 API 读写（见第 2 节）。
-
-### 1.2 业务内容结构（你自己在 `models` 包里定义）
-
-下面是一个**更完整的动漫示例**，把这些结构写进你的 `models/` 包即可：
-
-```models/comic.go
-package models
-
-import "time"
-
-// ComicContent 动漫/漫画详情页内容
-type ComicContent struct {
-	ID        int       `json:"id"`         // 主键 ID
-	SourceURL string    `json:"source_url"` // 来源页面 URL
-	Cover     string    `json:"cover"`      // 封面本地化地址
-	CoverURL  string    `json:"cover_url"`  // 封面原始 URL
-	Title     string    `json:"title"`      // 标题
-	Author    string    `json:"author"`     // 作者
-	Tags      []string  `json:"tags"`       // 标签
-	Category  string    `json:"category"`   // 分类
-	CreatedAt time.Time `json:"created_at"` // 创建时间
-	UpdatedAt time.Time `json:"updated_at"` // 更新时间
-}
-
-// TableName 指定表名
-func (ComicContent) TableName() string {
-	return "comic_contents"
-}
-```
-
-```models/chapter.go
-package models
-
-import "time"
-
-// ChapterContent 动漫/漫画章节内容
-type ChapterContent struct {
-	ID              int               `json:"id"`               // 主键 ID
-	ComicID         int               `json:"comic_id"`         // 所属漫画 ID（外键）
-	SourceURL       string            `json:"source_url"`       // 章节来源 URL
-	Title           string            `json:"title"`            // 章节标题
-	Order           int               `json:"order"`            // 章节序号（用于排序）
-	Images          map[string]string `json:"images"`           // 序号 -> 图片原始 URL
-	DownloadsImages map[string]string `json:"download_images"`  // 序号 -> 已下载图片本地路径
-	ImageCount      int               `json:"image_count"`      // 图片总数
-	DownloadedCount int               `json:"downloaded_count"` // 已下载数量
-	Status          int               `json:"status"`           // 状态: 0-未开始 1-下载中 2-已完成 3-失败
-	CreatedAt       time.Time         `json:"created_at"`       // 创建时间
-	UpdatedAt       time.Time         `json:"updated_at"`       // 更新时间
-}
-
-// TableName 指定表名
-func (ChapterContent) TableName() string {
-	return "chapter_contents"
-}
-
-// 章节状态常量
-const (
-	ChapterStatusPending    = 0 // 未开始
-	ChapterStatusDownloading = 1 // 下载中
-	ChapterStatusCompleted  = 2 // 已完成
-	ChapterStatusFailed     = 3 // 失败
-)
-
-// Progress 返回下载进度（0.0 ~ 1.0）
-func (c *ChapterContent) Progress() float64 {
-	if c.ImageCount == 0 {
-		return 0
-	}
-	return float64(c.DownloadedCount) / float64(c.ImageCount)
-}
-
-// IsCompleted 判断章节是否下载完成
-func (c *ChapterContent) IsCompleted() bool {
-	return c.Status == ChapterStatusCompleted && c.DownloadedCount >= c.ImageCount
-}
-```
-
-对应三级爬虫：
-
-| 阶段 | 抓什么 | 落地结构 |
-| --- | --- | --- |
-| `catalog` | 分类目录页：漫画标题 + 详情页链接 | 通常只派发子任务，也可写一个列表结构 |
-| `detail` | 详情页：封面/标题/作者/标签/章节列表 | ComicContent（含 ChapterItem 列表） |
-| `video` | 章节页：每页图片 URL + 本地文件 | ChapterContent（含 ImageItem 列表） |
-
-> 视频场景是 catalog → detail → video（播放页 m3u8）； 漫画场景对应的是 catalog → detail → chapter（章节页多张图片）， 因为漫画一个章节通常有几十张图，不是单一媒体流。
+- **`meta` 是唯一该由你填的任务列**：给 `papa.Task{Meta: map[string]string{...}}` 赋值即可，它随行落库。
+  恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份 ——
+  不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
+  放**键**（`series_id` / `episode_id`），别放数据本身。
+- **唯一索引建在 `(url_hash, stage)`**：同一个站点的同一个 URL 在同一个阶段只有一行。
+- **`idempotency_key` 的规范格式是 `site:stage:<标识>`**：
+  自定义时显式写上（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），
+  留空则回退成同形状的 `site:stage:url`。三段缺一不可 —— 少了 `site` / `stage`，
+  两个站的同名阶段会撞成同一条任务（B 站被判「已存在」、静默不跑）。
+  列是 `varchar(500)`，第三段用规范化后的短 URL。
+- 其余列由引擎维护，业务**不要直接读写**；后台任务表的「重投 / 加急 / 开停轮询 / 标失败 / 删除」已经覆盖了常见的运维动作。
 
 ---
 
-## 2. 三条落地路径（按需求选）
+## 3. 结果表怎么建
 
-### 路径 A：直接写在 `FetchHandler` 里（默认，最推荐起步）
+三类决定，定完就能写代码：
 
-适合：单任务、单次写、逻辑简单。写完就完事，代码就在抓取逻辑旁边，一眼看懂。
+1. **一类数据一张表**。剧集一张、分集一张、下载记录一张 —— 不要塞进一个 JSON 列再靠应用层拆。
+2. **唯一键选「站点内稳定标识」**：站内 ID（如 `book_id`）最稳；只有 URL 可靠时用规范化后的 URL 或它的 hash。
+   多站同进程时唯一键要带上站点（`site + 业务键`），否则两个站撞同一行。
+3. **登记进 `models.Models()`**，否则 `papa migrate` 不会建表：
 
 ```go
-func (f *FetchDetail) FetchHandler(ctx, task, engine) error {
-    // ... 抓取得到 title / cover / series ...
-    content := models.DetailContent{ Title: title, CoverURL: coverURL, /* ... */ }
-    return engine.SaveResult(task.ID, title, content)
+// models/models.go
+func Models() []any { return []any{&Series{}, &Episode{}} }
+```
+
+```go
+// models/series.go
+type Series struct {
+    ID        uint64    `gorm:"primaryKey"`
+    Site      string    `gorm:"type:varchar(128);not null;uniqueIndex:ux_series_site_key,priority:1"`
+    SourceKey string    `gorm:"type:varchar(191);not null;uniqueIndex:ux_series_site_key,priority:2;comment:站点内稳定标识"`
+    Title     string
+    CoverURL  string
+    Status    int       `gorm:"index;comment:业务自己的状态机"`
+    CreatedAt time.Time `gorm:"autoCreateTime"`
+    UpdatedAt time.Time `gorm:"autoUpdateTime"`
 }
 ```
 
-### 路径 B：抽一个 repository / 保存函数
+建表：项目目录里跑 `papa migrate`（等价于 `make migrate`）；它只增不减，重复跑安全。
 
-适合：**多个 fetcher 复用同一套落地逻辑**、需要 upsert / 事务 / 批量写、想写单测。
+---
+
+## 4. 怎么写
+
+### 4.1 单个对象：`engine.Upsert`
+
+冲突更新并回填主键 —— 不用自己拼 `ON DUPLICATE KEY UPDATE`：
 
 ```go
-// models/repo.go（你自己的 models 包里）
-func SaveDetail(engine *papa.Engine, taskID int, dc DetailContent) error {
-    return engine.SaveResult(taskID, dc.Title, dc)
+series := &models.Series{Site: task.Site, SourceKey: key, Title: title, CoverURL: coverURL}
+if err := engine.Upsert(series, []string{"site", "source_key"}, []string{"title", "cover_url"}); err != nil {
+    return err
 }
+// series.ID 此时已回填，可以直接拿它当子任务的外键
 ```
 
-fetcher 里只调 `models.SaveDetail(engine, task.ID, content)`。
+- 第二个参数是**冲突键**（要和表上的唯一键一致），第三个是**冲突时要更新的列**（`created_at` / 主键不要放进来）。
+- 拿不到对象、只想写几列时，也可以 `engine.GetDB()` 拿 gorm 实例自己写。
 
-### 路径 C：新建独立 GORM 表
+### 4.2 关联两个阶段：用业务外键，别回写父任务行
 
-适合：内容要被**按列查询 / 关联 / 统计**（例如「查所有已下载的剧集」「按作者聚合」），而不是塞在一个 JSON 里。
+父任务的 `id` 只适合放进子任务的 `meta`（还原身份用）。**业务关系写业务表**：
 
-做法：
-1. 定义模型：**一张表一个文件** —— `models/episode.go`、`models/series.go`……（`models/models.go`
-   只放建表清单，不堆表结构）
-2. 注册迁移：脚手架项目里是加进根 `models` 包的 `Models()` 清单（`make migrate` 时一起建）；
-   不用脚手架的话就是 `papa.New(papa.WithModels(&models.YourNewTable{}))`，或在 New 之后 `app.UseModels(...)`
-3. fetcher 里 `db.Create(&models.YourNewTable{...})`
+```go
+// 详情阶段：先 upsert 剧集，拿到 ID
+if err := engine.Upsert(series, []string{"site", "source_key"}, []string{"title"}); err != nil { return err }
+// 再把它派给下一阶段（业务键随行落库，重投时还在）
+return engine.SubmitTask(&papa.Task{
+    PID: task.ID, URL: detailURL, Stage: StageEpisode, Site: task.Site,
+    Meta: map[string]string{"series_id": fmt.Sprint(series.ID)},
+})
+```
 
-### 决策表
+### 4.3 写入必须幂等
 
-| 需求 | 选择 |
+任务会被重投、轮询会重跑、后台会「重投 / 加急」——**同一个 handler 可能对同一份数据跑好几次**。所以：
+
+- 一律 `Upsert`（或带唯一键的 INSERT），不要裸 `Create`；
+- 别在 handler 里累加（`count = count + 1` 这类要带条件更新）；
+- 回写别用「读-改-写整行」：并发下会丢更新，优先用一条 `UPDATE ... SET x = ?` 或唯一键冲突更新。
+
+---
+
+## 5. 常见坑
+
+1. **忘了登记 `models.Models()`** → `papa migrate` 不建表，运行时才报 `Table doesn't exist`。
+2. **没建唯一键** → 重投/轮询一轮就多一行；`Upsert` 也会退化成普通插入。
+3. **唯一键不含站点** → 两个站的数据互相顶掉（多站项目必踩）。
+4. **`meta` 里塞数据** → 它是给"还原任务身份"用的，塞大对象既没索引也不该随任务清理而消失。
+5. **业务列名与 gorm 生成的实际列名对不上**（后台表格页 `Field` 写 `pid` 而库里是 `p_id`）→ 后台永远渲染成空，见 [MONITOR.md](./MONITOR.md)。
+6. **改了表结构没跑迁移** → `AutoMigrate` 只增不减（不改类型、不删列）；改列类型/删列都得显式迁移，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+
+---
+
+## 6. 从 v3.4.0 之前升级
+
+老版本把结果写在 `crawler_tasks.title` / `content` 两列里。v3.4.0 起：
+
+1. **框架侧**：`SaveResult` / `SaveContent` / `GetResult` 已删除（编译期就会报），两列由 `papa migrate` 显式删除（`AutoMigrate` 不会删列，所以这一步是显式的）。
+2. **业务侧**：把原来写进 `content` 的结构提成自己的表（照 §3 定义 + 登记），写入改成 `engine.Upsert`；原来读父任务 `content` 的地方，改成按业务键查自己的表。
+3. **顺序**：先跑新代码能编译（此时老列还在，不影响），再跑 `papa migrate` 删列 —— 两步之间业务侧不能还在读那两列。
+
+---
+
+## 7. 速查
+
+| 我想… | 怎么做 |
 | --- | --- |
-| 单个 fetcher 写自己的结果，够了 | 路径 A |
-| 多个 fetcher 写同一类数据 / 要 upsert / 要单测 | 路径 B |
-| 要按字段查询、关联、统计，或跨任务汇总 | 路径 C |
-
-> 起步先走 A，发现重复了再抽 B，真有查询需求再上 C。不要一上来就建一堆表。
-
----
-
-## 3. 分阶段落地（结合动漫爬虫示例）
-
-### 3.1 catalog 阶段：抓目录页
-
-目录页一般是「标题 + 详情链接」，落地通常只做**派发子任务**，不写正文（或只写一个轻量列表结构）：
-
-```go
-// 派发详情子任务
-engine.SubmitTask(&papa.Task{ PID: task.ID, URL: detailURL, Stage: "detail" })
-```
-
-如果目录页本身要留档（比如「当日上新列表」），可以写一个自定义结构到当前任务的 `content`。
-
-### 3.2 detail 阶段：抓详情页 → 写 `DetailContent`
-
-```go
-import (
-    "github.com/ydtg1993/papa/v3"
-    "yourproject/models"
-)
-
-// 提取
-title := page.MustElement("h1").MustText()
-coverURL, _ := page.MustElement(".cover img").Attribute("src")
-author := page.MustElement(".author").MustText()
-tags := page.MustElements(".tag").Texts()
-
-// 剧集列表：标题 -> 播放页 URL
-series := map[string]string{}
-for _, el := range page.MustElements(".episode a") {
-    name := el.MustText()
-    href, _ := el.Attribute("href")
-    if href != nil {
-        series[name] = *href
-    }
-}
-
-content := models.DetailContent{
-    Title:    title,
-    CoverURL: deref(coverURL),
-    Author:   author,
-    Tags:     tags,
-    SeriesContent: models.SeriesContent{
-        Series:    series,
-        Downloads: map[string]bool{}, // 初始为空
-    },
-}
-return engine.SaveResult(task.ID, title, content)
-```
-
-### 3.3 video 阶段：抓视频 → 写 `VideoContent`，并回写详情页下载标记
-
-视频阶段产出 m3u8 地址和本地文件：
-
-```go
-// res.OutputFile 是**相对下载器 OutputDir** 的路径 —— 落库/展示要拼上基准，别当成绝对路径
-//（库里记什么、后台按哪个目录展示，都以 OutputDir 为准；两个下载器都有 OutputDir()）。
-dl := engine.GetM3U8()
-content := models.VideoContent{
-    Dir:    filepath.Join(dl.OutputDir(), res.OutputFile),
-    Source: m3u8URL,
-}
-engine.SaveContent(task.ID, content)
-
-// 回写父任务(detail)的下载标记：读-改-写
-markDownloaded(engine, task.PID, m3u8URL)
-```
-
-`markDownloaded` 需要读父任务的 `DetailContent`，改 `Downloads` 再写回：
-
-```go
-func markDownloaded(engine *papa.Engine, detailTaskID int, seriesURL string) error {
-    var dc models.DetailContent
-    if err := engine.GetResult(detailTaskID, &dc); err != nil {
-        return err
-    }
-    if dc.SeriesContent.Downloads == nil {
-        dc.SeriesContent.Downloads = map[string]bool{}
-    }
-    dc.SeriesContent.Downloads[seriesURL] = true
-    return engine.SaveContent(detailTaskID, dc)
-}
-```
-
-> 这样 video 阶段每下载一集，详情页的 `Downloads` 就多一个 `true`，配合断点续传和重复轮询，下次只下没下过的。
-
----
-
-## 4. 生成 model：从抓取内容到结构体
-
-### 4.1 优先复用，其次扩展
-
-- 内容结构没有框架预置版本 —— 在 `models` 包里按页面需要**加字段**或**定义新结构**，都只影响 `content` 里的 JSON，不用改表结构。
-- 字段命名用 `json` tag 明确序列化名（下划线风格，和现有保持一致）。
-
-### 4.2 自定义一个内容结构（示例：目录页留档）
-
-```go
-// models/catalog_content.go（你自己的 models 包）
-package models
-
-type CatalogContent struct {
-    Items []CatalogItem `json:"items"`
-}
-
-type CatalogItem struct {
-    Title string `json:"title"`
-    URL   string `json:"url"`
-}
-```
-
-fetcher 里序列化写入即可，和 `DetailContent` 完全一样的写法。
-
-### 4.3 真要建独立表（路径 C）
-
-**一张表一个文件** —— 比如 `models/episode.go`：
-
-```go
-// models/episode.go（你自己的 models 包）
-type Episode struct {
-    ID         uint   `gorm:"primarykey"`
-    DetailURL  string `gorm:"index"`
-    Title      string
-    VideoURL   string
-    Downloaded bool
-}
-```
-
-再登记进建表清单：脚手架项目里是加到 `models/models.go` 的 `Models()`
-（`make migrate` 时一起建）；不用脚手架则是 `papa.New(papa.WithModels(&models.Episode{}))`。
-
-如果还想在监控后台里分页/筛选这张表，用 `app.UseTables` 注册一个表格页（声明列怎么显示，
-数据由业务实现 `oao.Source` 提供）。详见 [MONITOR.md](./MONITOR.md) 的「表格页」。
-
----
-
-## 5. 落地代码速查
-
-```go
-import (
-    "github.com/ydtg1993/papa/v3"
-)
-
-// 写 content + title（最常用）
-engine.SaveResult(task.ID, t, someStruct)
-
-// 只写 content
-engine.SaveContent(task.ID, someStruct)
-
-// 读 content 回结构体
-var dc models.DetailContent
-engine.GetResult(task.ID, &dc)
-
-// 独立表 upsert：按冲突列更新，并回填主键（无需再手写 OnConflict + if ID==0 查回）
-engine.Upsert(&models.Episode{SeriesID: 1, EpisodeNo: 2, Title: "第2集"},
-    []string{"series_id", "episode_no"},
-    []string{"title", "source_url", "updated_at"})
-// 调用后 ep.ID 已被回填
-```
-
----
-
-## 6. 常见坑
-
-1. **结果 API 帮你序列化**：`SaveResult` / `SaveContent` 内部自动 `json.Marshal`，`GetResult` 自动 `json.Unmarshal`，业务不用再碰 `datatypes.JSON` / `json.Marshal`。
-2. **写库只写自己的 `task.ID`**：子任务各自写各自记录，不要越界改别人的任务。
-3. **改 JSON 里的嵌套字段要「读-改-写」**：`content` 是整列 JSON，没有嵌套路径更新，改 `Downloads` 这类内层字段必须整列读出来改完写回。
-4. **新增独立表记得注册迁移**：脚手架里是加进根 `models` 包的 `Models()` 清单，非脚手架则是 `papa.New(papa.WithModels(&models.YourModel{}))`（或 New 之后 `app.UseModels(...)`）。这些模型会被 `App.Migrate()` 一起建 —— 脚手架里就是 `make migrate`（在项目目录里 `papa migrate` 等价，它会转交过来）。若要后台浏览/筛选该表，在 `monitor/tables.go` 的 `Tables(db)` 里注册表格页（见 [MONITOR.md](./MONITOR.md)「表格页」）。
-5. **并发写同一记录**：detail 派发多个 video 子任务时，多个子任务可能同时回写父任务的 `Downloads`，会丢更新。需要的话对父任务加锁或串行回写（简单做法：用数据库事务或 `gorm` 的 `clause.Locking`）。
-6. **Content 空值 / nil map**：确保传给 `SaveResult` / `SaveContent` 的结构体已初始化（尤其 `map` 字段，`nil` map 序列化是 `null` 不是 `{}`）。
-7. **字段命名**：JSON tag 用下划线风格，和现有 `cover_url` / `series_info` 一致，避免和别处拼写不一致。
-8. **upsert 回填主键**：`gorm` 的 `OnConflict` 在「冲突更新」路径不回填自增 ID，别手写 `if ID==0 { 按唯一键查回 }`；直接用 `engine.Upsert(record, conflictCols, updateCols)`，它自动回填。
-
----
-
-## 7. 落地位置小结
-
-| 问题 | 答案 |
-| --- | --- |
-| 结果写哪张表 | `crawler_tasks` 表的 `content`（JSON）+ `title` 列（通过 `engine.SaveResult` / `SaveContent`） |
-| 用什么结构 | 自己在 `models` 包里定义的 struct（序列化进 `content` 列） |
-| 写在哪 | 默认直接写 `FetchHandler`；复用/复杂了再抽 repository；要按列查询才建独立表 |
-| 建表要不要迁移 | 是，`papa.New(papa.WithModels(...))` 里注册 —— 注册只进清单，**还要跑一次 `papa migrate` / `make migrate` 才建**（启动时不会自动迁移，dev 与生产同一条命令） |
+| 落地抓到的数据 | 自己的表 + `engine.Upsert` |
+| 建/改表 | `models.Models()` 登记 + `papa migrate`（改类型/删列要显式迁移） |
+| 记住「这条任务是哪条业务行」 | `papa.Task{Meta: ...}`（随任务行落库） |
+| 防重复投递 | 任务的 `(url_hash, stage)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
+| 复杂查询 / 事务 | `engine.GetDB()` |
+| 查任务运行态 | 后台「任务」表格页（重投 / 加急 / 追踪 / 开停轮询） |

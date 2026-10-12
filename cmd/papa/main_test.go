@@ -164,6 +164,11 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	if !strings.Contains(fetcher, `"catalog"`) {
 		t.Errorf("fetcher 模板的 GetStage() 与配置里的阶段名对不上：\n%s", fetcher)
 	}
+	// 入口任务必须带 Site：它是投递的路由键，SubmitTask 判空直接拒收 ——
+	// 少了这一行，新项目照模板写出来的入口任务一条都进不了池（日志里只有一句 site is empty）。
+	if !strings.Contains(fetcher, "Site: site.Key") {
+		t.Errorf("fetcher 模板的入口任务必须带 Site: site.Key（空 site 会被 SubmitTask 拒收）：\n%s", fetcher)
+	}
 	// 抓取方式的**默认路径**：能用静态客户端就用它 —— 页面上有 JS、有交互都不改变这一点
 	//（只有"数据必须等 JS 执行 / 点击 / 滚动 / 登录，或必须监听网络请求才产生"时才上 rod）。
 	// 模板是用户照抄的范本，默认给浏览器等于把例外当常态。判据与理由见 FETCHER_WRITING_GUIDE.md §3。

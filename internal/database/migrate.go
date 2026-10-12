@@ -50,6 +50,10 @@ func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
 	if err := dropSiteQueueColumns(db); err != nil {
 		return err
 	}
+	// 结果不再落任务表：title / content 两列由业务自建表承载，这里显式删掉（见 migrate_taskcolumns.go）。
+	if err := dropLegacyTaskColumns(db); err != nil {
+		return err
+	}
 
 	all := make([]any, 0, 8)
 	for _, m := range FrameworkModels(cfg) {

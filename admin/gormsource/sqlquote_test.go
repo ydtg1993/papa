@@ -38,8 +38,8 @@ import (
 func TestEveryDeclaredColumnIsQuoted(t *testing.T) {
 	lg := &captureLogger{}
 	db := dryDB(t, lg)
-	// title 不在 allOpsTable 的列里，专给全局搜索用（搜索列由业务声明，不在表格里）
-	searchCols := []string{"url", "title", "stage"}
+	// stage 不在 allOpsTable 的列里，专给全局搜索用（搜索列由业务声明，不在表格里）
+	searchCols := []string{"url", "stage"}
 	table := allOpsTable(New(Config{DB: db, Model: &models.CrawlerTask{}, Search: searchCols}))
 	table.DefaultSort = "id" // 默认排序与前端排序都要过一遍
 

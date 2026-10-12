@@ -11,7 +11,6 @@ import (
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -38,7 +37,7 @@ func queueEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]
 func actionRow(id uint, stage string) *models.CrawlerTask {
 	return &models.CrawlerTask{
 		ID: id, Stage: stage, Site: "stub", URL: fmt.Sprintf("https://example.com/%d", id),
-		Status: models.TaskStatusFailed, Content: datatypes.JSON("{}"),
+		Status: models.TaskStatusFailed,
 	}
 }
 
