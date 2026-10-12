@@ -8,7 +8,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/sirupsen/logrus v1.9.4
-	github.com/ydtg1993/oao v1.3.0
+	github.com/ydtg1993/oao v1.3.1
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/time v0.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1

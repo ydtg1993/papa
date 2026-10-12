@@ -270,6 +270,17 @@ func compareCell(a, b any) int {
 			return 1
 		}
 		return 0
+	case float64:
+		// 金额这类列在假数据里是 float64：不单列一支的话会掉到 default 的字符串比大小，
+		// "87.5" 排在 "500" 前面 —— 演示页排序看着就是坏的。
+		y, _ := b.(float64)
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
+		}
+		return 0
 	case time.Time:
 		y, _ := b.(time.Time)
 		switch {
