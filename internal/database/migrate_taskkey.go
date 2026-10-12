@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 幂等键硬化（v3.4.0）：键**原文**加宽到 varchar(1000)，另加一列 `idempotency_hash` 并建唯一索引。
+// 幂等键硬化（v3.3.2）：键**原文**加宽到 varchar(1000)，另加一列 `idempotency_hash` 并建唯一索引。
 //
 // 为什么不能直接给键原文建唯一索引：varchar(1000) 在 utf8mb4 下是 4000 字节，超过 InnoDB 的
 // 3072 字节键长上限（真库实测 `ERROR 1071: Specified key was too long`）；而键里现在带 URL，

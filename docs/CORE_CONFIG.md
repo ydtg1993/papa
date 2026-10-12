@@ -294,7 +294,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 底层使用 GORM `AutoMigrate` 补齐框架表与注册模型。它不会替业务推断删列、改名等破坏性意图；不同数据库对类型和约束迁移的能力也不完全相同。重复运行通常是幂等的，但生产环境不要把它理解成“无条件安全”：先备份、审查生成 SQL，并为改名、改类型、数据回填等操作编写显式迁移。
 
 **框架自己的破坏性变更也走这一步**：`papa migrate` 在 AutoMigrate 之前先跑显式迁移（先查 `information_schema`
-再决定要不要做，可重复跑）—— 例如 v3.4.0 删掉 `crawler_tasks` 的 `title` / `content` 两列、把幂等键加宽到
+再决定要不要做，可重复跑）—— 例如 v3.3.2 删掉 `crawler_tasks` 的 `title` / `content` 两列、把幂等键加宽到
 varchar(1000) 并把唯一性落到 `idempotency_hash` 的唯一索引上、三队列并回全局时删
 `crawler_sites` 的按站队列列。所以**升级框架后必须跑一次迁移**，光换二进制不够。
 

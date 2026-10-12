@@ -12,7 +12,7 @@
 - `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
 - 抓到的内容要落库，就在项目的 `models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
 
-> **升级提醒**：v3.4.0 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
+> **升级提醒**：v3.3.2 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
 > `SaveResult` / `SaveContent` / `GetResult` 三个 API，**已全部删除**。迁移步骤见 §6。
 
 ---
@@ -146,9 +146,9 @@ return engine.SubmitTask(&papa.Task{
 
 ---
 
-## 6. 从 v3.4.0 之前升级
+## 6. 从 v3.3.2 之前升级
 
-老版本把结果写在 `crawler_tasks.title` / `content` 两列里。v3.4.0 起：
+老版本把结果写在 `crawler_tasks.title` / `content` 两列里。v3.3.2 起：
 
 1. **框架侧**：`SaveResult` / `SaveContent` / `GetResult` 已删除（编译期就会报），两列由 `papa migrate` 显式删除（`AutoMigrate` 不会删列，所以这一步是显式的）。
 2. **业务侧**：把原来写进 `content` 的结构提成自己的表（照 §3 定义 + 登记），写入改成 `engine.Upsert`；原来读父任务 `content` 的地方，改成按业务键查自己的表。

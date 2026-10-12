@@ -25,7 +25,7 @@ type schemaState struct {
 	// missingHash 还有多少行等着回填；urlHashNullable = url_hash 现在可空吗
 	missingHash     int64
 	urlHashNullable bool
-	// v3.4.0 起结果落业务表：crawler_tasks 的这两列由显式迁移删掉（见 migrate_taskcolumns.go）
+	// v3.3.2 起结果落业务表：crawler_tasks 的这两列由显式迁移删掉（见 migrate_taskcolumns.go）
 	hasTitle   bool
 	hasContent bool
 }
