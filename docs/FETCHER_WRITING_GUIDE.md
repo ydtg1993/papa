@@ -132,7 +132,7 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（Rod 封装） |
 | `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
-| `engine.M3U8ForTask(task)` / `M3U8ForStage(stage)` | m3u8 下载器：**阶段 > 站点 > 基座**，一行拿到"这一阶段该用的那个"（见 §4.4） |
+| `engine.M3U8ForTask(task)` / `M3U8ForStage(stage)` | m3u8 下载器：**阶段 > 站点 > 基座**，一行拿到"这一阶段该用的那个"（见 §5.4） |
 | `engine.GetM3U8()` / `GetFiledown()` | 基座那份（框架按 `DefaultConfig` 备好）—— 按站点/阶段配过的那份要用上面的 `For*` 取 |
 | `engine.GetDB()` | gorm 实例，用于写结果 / 查任务 |
 | `engine.Upsert(record, conflictCols, updateCols)` | 冲突更新并回填主键（替代手写 `clause.OnConflict` + `if ID==0` 查回） |
@@ -329,7 +329,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
 5. 将列表快照写入当前 `catalog` 任务；只有已在 `config.yaml` 和 `main.go` 注册 `detail` stage 时，才为通过校验的链接调用 `engine.SubmitTask`。
 
-> **失败时自动留现场**：开了 `crawler.archive`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
+> **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
 > `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
 > `{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html`，并在后台「追踪」里多一条 `归档页面` 步骤指向它。
 > **handler 一行代码都不用改** —— 排查"选择器为什么没匹配上"时，直接打开那个文件看它到底长什么样。
@@ -379,7 +379,7 @@ if len(items) == 0 {
 
 典型例子：目录页要点「展开分类」下拉、滚动到底部触发懒加载，才能拿到所有文档的标题和链接。
 
-### 3.1 在站点声明里加两个阶段
+### 4.1 在站点声明里加两个阶段
 
 ```go
 // configs/sites/mysite.go
@@ -402,11 +402,11 @@ Stages: []papa.StageSpec{
 },
 ```
 
-### 3.2 main.go
+### 4.2 main.go
 
 不用动 —— 各站点文件在自己的 `init()` 里登记，框架用 `papa.Sites()` 收集（见 7.2）。
 
-### 3.3 catalog fetcher（列表页：点下拉 + 滚动 + 派发）
+### 4.3 catalog fetcher（列表页：点下拉 + 滚动 + 派发）
 
 ```go
 package fetcher
@@ -484,7 +484,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 > `rod.Page` 的常用操作：`MustElements(sel)` 取多个、`MustElement(sel)` 取单个、`MustClick()`、`MustText()`、`Attribute(name)`、`MustEval(js)`、`MustWaitLoad()`。完整 API 见 go-rod 文档。
 
-### 3.4 detail fetcher（详情页：提取字段 + 写库）
+### 4.4 detail fetcher（详情页：提取字段 + 写库）
 
 ```go
 package fetcher
@@ -541,7 +541,7 @@ func deref(s *string) string {
 
 典型例子：详情页要「点播放按钮」才发起视频请求，m3u8 地址不在 DOM 里，只能从网络请求里截获。
 
-### 4.1 关键点：先挂监听，再点播放
+### 5.1 关键点：先挂监听，再点播放
 
 m3u8 地址是点播放后才产生的网络请求，所以**必须在导航后、点击前**用 Rod 的 `EachEvent` 监听网络请求：
 
@@ -605,7 +605,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
         return nil // 或返回 error 触发重试
     }
 
-    // 3. 交给 m3u8 下载器（框架默认就有一份；按站点/阶段配过的话用 M3U8ForTask(task) 取，见 §4.4）
+    // 3. 交给 m3u8 下载器（框架默认就有一份；按站点/阶段配过的话用 M3U8ForTask(task) 取，见 §5.4）
     dl := engine.GetM3U8()
     if dl == nil {
         return nil
@@ -625,7 +625,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
 }
 ```
 
-### 4.2 下载器接线（main.go）
+### 5.2 下载器接线（main.go）
 
 ```go
 import "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
@@ -633,13 +633,13 @@ import "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 // 站点声明里（configs/sites/<站>.go）—— 这就是全部的配置入口，没有"全局那层"：
 SiteSpec{ M3U8: &papa.M3U8Spec{
     OutputDir: strPtr("./downloads/video"), // 输出目录
-    Output:    modePtr(papa.OutputSegments),// 只留切片组（默认是合并成 mp4，见 §4.4）
+    Output:    modePtr(papa.OutputSegments),// 只留切片组（默认是合并成 mp4，见 §5.4）
 } }
 ```
 
 m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
 
-### 4.3 静态页 / 普通文件用 filedown
+### 5.3 静态页 / 普通文件用 filedown
 
 不需要浏览器、直接下载文件（图片、附件等）时用 `filedown`：
 
@@ -671,7 +671,7 @@ localPath := filepath.Join(dl.OutputDir(), res.OutputFile)
 
 ---
 
-### 4.4 下载器配置：站点 / 阶段 / 随用随生成
+### 5.4 下载器配置：站点 / 阶段 / 随用随生成
 
 下载器（`m3u8` 与 `filedown`）**实例是唯一真值，声明只是"帮你自动建一份"**。配置**只有两层**（站点与阶段），基座是框架按 `DefaultConfig()` 备好的那份 —— **没有"全局那层配置"可写**（`SetM3U8` / `SetFiledown` 已删除）：要么在声明里按站点/阶段写清楚，要么在 fetcher 里自己造一份。
 
@@ -763,7 +763,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 配套两处改动：
 1. `configs/sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / 要不要 AutoStart）。
-2. 若用下载器，**不用在 `main.go` 里接线**（框架按 `DefaultConfig` 备好基座）；要按站点/阶段各配一份就写在站点声明里（见 §4.4）。
+2. 若用下载器，**不用在 `main.go` 里接线**（框架按 `DefaultConfig` 备好基座）；要按站点/阶段各配一份就写在站点声明里（见 §5.4）。
 
 ---
 
@@ -808,7 +808,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > 实现了入口却没开 AutoStart 会打一条 Info（"是关的、不是漏的"）。
 >
 > **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（Key / BaseURL / Headers / 熔断阈值 /
-> 三个治理队列 / 每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**没有汇总清单** —— 文件自己在
+> 下载器覆盖，以及每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**三个治理队列不在这里，统一写在 `config.yaml`**。站点声明没有汇总清单 —— 文件自己在
 > `init()` 里登记），`main.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
 > 加阶段 = 写一个 fetcher（`GetStage()` 返回阶段名）+ 在这个站的文件里加一段 `StageSpec`。
 > 阶段名取自 `GetStage()`，重名**启动就报错**；多站时阶段名要能区分（约定带站点前缀，如 `hgd_catalog` / `siteb_catalog`）。
@@ -894,7 +894,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 所以传了会**明确报错**（而不是静默直连、让人以为走了代理）；要按站换出口就用池上那套（proxied / direct 两类实例）
 或一站一进程。
 
-2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.5）。
+2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail"})` 派发子任务（见 1.6）。
 
 3. **定时重抓 / 恢复失败**：
    - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；

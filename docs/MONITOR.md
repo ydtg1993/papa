@@ -74,7 +74,7 @@
 > 关停时会先把队列排空再关数据库。
 
 > 升级时表要自己建 —— 跑一次迁移（脚手架项目里 `make migrate` 与 `papa migrate` 等价，
-> 独立用 CLI 是 `papa migrate`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节）。
+> 独立使用 CLI 时运行 `papa migrate`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 > 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
 ## 2. 设置 API
@@ -248,7 +248,7 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 **多久一次**由 `repeat_interval`（秒，0 = 用全局 `repeat_queue.interval`）决定 —— 粒度都是任务，不是阶段。
 首次提交时由 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}` 播种，之后就用这三个动作改
 （业务里等价的入口是 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)`，
-见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。任务表上有对应的三列：**轮询周期(秒) / 上次轮询 / 下次轮询** ——
+见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节。任务表上有对应的三列：**轮询周期(秒) / 上次轮询 / 下次轮询** ——
 队列只按「下次轮询」到点投，改周期会连带重算它。
 三个动作都**只改标记**：下一轮扫描时才生效（开轮询会把"下次轮询"置为现在，所以它就是下一轮），
 **不会**顺手立刻重跑一次（想立刻跑请用「重投」）；已经开着再开、已经停着再停都返回 409

@@ -9,7 +9,7 @@
 
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
-- **没有运行期热更**：改 `config.yaml` 或 Go 站点声明后需要重启。三个治理队列都是全局配置，不能按站点覆盖；站点声明可覆盖请求头、熔断和下载器配置，阶段声明负责并发、队列、间隔、重试、入口和下载器覆盖。任务自己的 repeat 周期可以通过后台或 API 动态调整。
+- **没有运行期热更**：改 `config.yaml` 或 Go 站点声明后需要重启。三个治理队列都是全局配置，不能按站点覆盖；站点声明可覆盖请求头、受限页关键词、熔断和下载器配置，阶段声明负责并发、队列、间隔、重试、入口和下载器覆盖。任务自己的 repeat 周期可以通过后台或 API 动态调整。
   老项目里的 `configs/runtime.yaml` 已经没人读写了，可以直接删。
 
 ## 1. 完整配置项参考
@@ -51,7 +51,7 @@
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | 默认 scope 的熔断开关。开启后窗口内终态失败数达阈值，就暂停该 scope 下的阶段；每个站点可以用 `SiteSpec.Breaker` 独立覆盖 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
-| `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在**启动时 panic**（判据在 `breaker.New`，调用点是 `engine.NewEngine`）。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
+| `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.New` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 
 > **熔断按站点分组**：这一节配的是**默认值**（默认 scope = 未归属站点的阶段）；每个站点可以在
 > `configs/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（含 `Enabled: false`

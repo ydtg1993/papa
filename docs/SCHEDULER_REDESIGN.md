@@ -69,7 +69,7 @@
   `RepollRepeatableTasks` / `ProcessRecoverQueue` **签名保持不变**，只是内部改走中央
   submit 口，所以 admin 里 `ProcessErrorQueue: a.Engine.ProcessErrorQueue` 这类接线不受影响。
 - docs 同步（CORE_CONFIG / DEVELOPMENT / FETCHER_WRITING_GUIDE / REPEAT_QUEUE / README 里
-  所有 `RegisterCronJob` 与 `scheduler` 段字样）—— 归下次 docs-sync。
+  所有 `RegisterCronJob` 与 `scheduler` 段字样）—— 当时归入后续 docs-sync，现已完成。
 
 ## 6. 预留的后期接口（下次迭代接 OA 用）
 
