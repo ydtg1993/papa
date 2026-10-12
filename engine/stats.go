@@ -33,6 +33,10 @@ func (e *Engine) setStatsQueue(stage string, mon *track.StatsQueue[*Task]) {
 	if e.statsQueue == nil {
 		e.statsQueue = make(map[string]*track.StatsQueue[*Task])
 	}
+	// 池被懒建/重建时会换一份新的 stats：先停掉上一份的 goroutine，别让它泄漏到引擎结束。
+	if old, ok := e.statsQueue[stage]; ok {
+		old.Stop()
+	}
 	e.statsQueue[stage] = mon
 }
 

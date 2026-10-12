@@ -62,16 +62,17 @@ func (r *poolRegistry) getOrCreate(stage string, create func() *workerpool.Worke
 	return p
 }
 
-// reapIdle 回收「连续 idle 时长没有新任务、且此刻空着（队列空 + 无在途）」的池，返回被回收的 stage 名。
+// reapIdle 回收「连续 idle 时长没有新任务、且此刻空着（队列空 + 无在途）」的池，返回被回收的 stage → 池。
+// 池要带出来：调用方清 stats 时用它做身份校验（回收与清 stats 之间，同阶段可能已被重新提交建了新池）。
 //
 // 安全守卫（队列空 + 无在途）不能省：池可能抱着一个长任务（大文件 / 整部剧）跑了几分钟没收到新任务，
 // 光看 lastSubmit 早就超了 idle —— 但此刻 Stop 它等于把在途任务腰斩。判空用 pool.Stats() 的
 // inProgress 与 queueLen，二者都为 0 才真回收。
-func (r *poolRegistry) reapIdle(idle, stopTimeout time.Duration) []string {
+func (r *poolRegistry) reapIdle(idle, stopTimeout time.Duration) map[string]*workerpool.WorkerPool[*Task] {
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var reaped []string
+	reaped := make(map[string]*workerpool.WorkerPool[*Task])
 	for stage, pool := range r.pools {
 		if now.Sub(r.lastSubmit[stage]) < idle {
 			continue
@@ -82,7 +83,7 @@ func (r *poolRegistry) reapIdle(idle, stopTimeout time.Duration) []string {
 		pool.Stop(stopTimeout)
 		delete(r.pools, stage)
 		delete(r.lastSubmit, stage)
-		reaped = append(reaped, stage)
+		reaped[stage] = pool
 	}
 	return reaped
 }

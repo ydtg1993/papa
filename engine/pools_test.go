@@ -24,7 +24,7 @@ func TestPoolRegistryReapIdle(t *testing.T) {
 	r.lastSubmit["busy"] = backdate
 
 	reaped := r.reapIdle(time.Minute, time.Second)
-	if len(reaped) != 1 || reaped[0] != "idle" {
+	if len(reaped) != 1 || reaped["idle"] == nil {
 		t.Fatalf("只该回收 idle，实得 %v", reaped)
 	}
 	if r.get("idle") != nil {

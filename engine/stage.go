@@ -219,10 +219,12 @@ func (e *Engine) getOrCreatePool(stage string) *workerpool.WorkerPool[*Task] {
 }
 
 // removeStageStats 撤掉某阶段的监控统计器并停掉它的 goroutine（池被回收时配套清理）。
-func (e *Engine) removeStageStats(stage string) {
+// pool 是那份被回收的池：清 stats 与回收之间，同阶段可能已被重新提交、建了新池新 stats ——
+// 只清「仍属于这份池」的 stats，别把新建的那份一起删掉。
+func (e *Engine) removeStageStats(stage string, pool *workerpool.WorkerPool[*Task]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if stats, ok := e.statsQueue[stage]; ok {
+	if stats, ok := e.statsQueue[stage]; ok && stats.WorkPool == pool {
 		stats.Stop()
 		delete(e.statsQueue, stage)
 	}
@@ -249,8 +251,8 @@ func (e *Engine) startIdleReaper() {
 			case <-e.ctx.Done():
 				return
 			case <-ticker.C:
-				for _, stage := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
-					e.removeStageStats(stage)
+				for stage, pool := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
+					e.removeStageStats(stage, pool)
 					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", stage)
 				}
 			}
