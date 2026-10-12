@@ -1,7 +1,7 @@
 # Papa 周期轮询队列手册
 
 > 面向：想让标记了 `Repeatable: true` 的任务（如 catalog 目录页）被周期性地重新抓取、发现新内容。
-> 配套：[SCHEDULER.md](./SCHEDULER.md)（业务自定义 cron）、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复）。
+> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复）、[ERROR_QUEUE.md](./ERROR_QUEUE.md)（失败重投）。框架已移除通用 cron；指定时刻任务由业务自行调度。
 
 ---
 
@@ -49,7 +49,7 @@ repeat_queue:
 | 开 / 停轮询 | 行内动作「开轮询」/「停轮询」 | `engine.SetTaskRepeatable(id, on)` |
 | 改周期 | 行内动作「设轮询周期」（秒，0 = 用全局周期） | `engine.SetTaskRepeatInterval(id, wasSeconds, seconds)` |
 
-队列判断只看两列：`next_repeat_at`（下次到点，判据）与 `last_repeat_at`（上次轮询时刻，只作记录，后台看得见）。语义如下 —— 升级到这套列需要先跑一次 `papa migrate`（加三列 + 一个索引，见 CHANGELOG）：
+队列以 `repeatable`、`status` 和 `next_repeat_at` 判断是否可重投；`last_repeat_at` 记录上次轮询时刻，后台可见。升级到这套列后需要先跑一次 `papa migrate`，补齐 `repeat_interval`、`last_repeat_at`、`next_repeat_at` 及 `idx_repeat_due` 索引。语义如下：
 
 - **到点才重投**：重投那一刻同一条语句写 `status = 待处理`、`last_repeat_at = NOW()`、`next_repeat_at = NOW() + 有效周期`。有效周期 = `repeat_interval`，为 0 就用全局 `interval`。
 - **周期从"上一轮投递"算起**：任务跑得比自己的周期还久时，等价于"一跑完就又投"（下一轮扫描正好接上）。
@@ -75,7 +75,7 @@ repeat_queue:
 于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
 
 
-## 5. 触发方式
+## 5. 与业务定时调度的边界
 
 | 能力 | 归属 | 调度方式 |
 | --- | --- | --- |

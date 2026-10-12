@@ -651,6 +651,10 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		result.Error = fmt.Errorf("segment file missing: %s（已清掉断点状态，下次重跑会重新下载）", missing)
 		return result
 	}
+	// 产物大小必须在**删分片之前**量：第 11 步在 keepSegments=false 时会把分片删掉，
+	// 之后再数只能得到 0 —— 这正是 result.Size 长期恒为 0 的原因。
+	// 语义与 filedown 那边一致：Size = 产物的字节数（这里是所有分片之和）。
+	totalSize := d.getTotalSize(resumeState.SegmentFiles)
 	var finalOutput string
 	if mode == OutputSegments {
 		// 只留切片组：把分片挪到 `<OutputDir>/<outputFile>/` 这个目录下（同一卷上是改名，几乎不花钱）。
@@ -714,7 +718,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	}
 	result.OutputFile = relOutput
 	result.Segments = totalSegments
-	result.Size = d.getTotalSize(resumeState.SegmentFiles)
+	result.Size = totalSize
 	return result
 }
 

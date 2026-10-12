@@ -32,13 +32,13 @@
   （今天是 `key` / `repeat` / `table` / `values`），加了新列自动覆盖。
   为什么必须有它：`repeat`（v3.1.0 起）与 `key`（v3.2.0 起）都被裸写过，MySQL 直接 Error 1064
   而且**静默**（调用处常常不判那条语句的错）—— 引擎测试跑的是假库、不解析 SQL，
-  这类错只能靠扫源码或真库跑一次才现形。详细来历见 CHANGELOG「修复 6」。
+  这类错只能靠扫源码或真库跑一次才现形。详细来历见 `docs/issues/changes.md` 的对应修复记录。
 - **`admin/gormsource/sqlquote_test.go`**：后台表格的数据源（筛选 / 全局搜索 / 排序三处都直接往 SQL 里拼列名），
   钉的是"加引号只有 `quote()` 一个出口"，两层一起看 —— **行为层**用 gorm 的 DryRun 把一张表的**整个声明面**
   跑过一遍，断言每个列名只以反引号形态出现、绝不裸写（列名清单从表格声明里取，加一列自动跟上）；
   **结构层**扫本包非测试源码，反引号字面量只许出现在 `quote()` 里（排序那条原先自己拼了一对反引号，
   正是被它拦下才改成调 `quote()` 的）。它与上一条的分工：上一条问"这个名字是不是保留字"，这一条问
-  "这个名字有没有加引号"—— 判据不重叠，所以两条都要在。来历见 CHANGELOG「修复 8」。
+  "这个名字有没有加引号"—— 判据不重叠，所以两条都要在。来历见 `docs/issues/changes.md` 的对应修复记录。
 
 ## 2. 业务项目（`papa new` 生成）
 
@@ -112,7 +112,7 @@ internal/                       真正的内部件：不对外承诺 API，**模
 pkg/                             可独立复用的件
   browser/ htmlfetch/ loggers/ notify/ middleware/{proxy,m3u8,filedown}
 models/                          框架自带的表结构
-cmd/papa/                        脚手架 CLI（new / migrate / token / html / rod / diff / select）
+cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select）
 ```
 
 > **`admin/` 与 `internal/` 的区别就一条**：Go 规定 `internal/` 下的包只能被 `internal/` 的
@@ -125,7 +125,7 @@ cmd/papa/                        脚手架 CLI（new / migrate / token / html / 
 papa 门面 ──► internal/app ──► engine ──► internal/{workerpool,database,metrics,track,breaker}
                  │               │              pkg/{browser,htmlfetch,loggers,middleware}
                  │               └──► core ◄── config
-                 └──► admin/{server,auth,tokenadmin,oplog,tasksource,scheduler,...} ──► core
+                 └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
                          └──► tasksource/oplog 还依赖 admin/gormsource
 pkg/notify ──► core
 ```

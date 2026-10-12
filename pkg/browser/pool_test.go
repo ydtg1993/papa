@@ -208,6 +208,32 @@ func TestPoolGetDirectNotConfigured(t *testing.T) {
 	}
 }
 
+// 容量 0 的池：Get 必须**立刻报错**，不能停在 cond.Wait 上永久阻塞。
+//
+// 回归点：get 的两条快路径（复用空闲 / 未达上限则新建）都带 `limit > 0` 前缀，容量 0 时全跳过
+// → 停在 cond.Wait；而 ctx 取消那条退路要靠 AfterFunc 广播才唤醒，`context.Background()`
+// 永不 cancel，于是死等 —— 调用方只看到"抓取挂死"，没有任何线索指向池容量。
+// 生产路径到不了这里（config 校验层在 browser.enable=true 时已要求 pool_size > 0），
+// 这条是给直接调 API 的人留的最后防线，与 GetDirect 对同类情况的处理对称。
+func TestPoolGetNotConfigured(t *testing.T) {
+	p := newTestPool(0, 0, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Get(context.Background())
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("容量 0 时 Get 应当报错，而不是返回实例")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("容量 0 时 Get 挂在 cond.Wait 上了 —— 应当立刻报错")
+	}
+}
+
 func TestPoolGetDirectCreatesDirectBrowser(t *testing.T) {
 	f := &countingFactory{}
 	p := newTestPool(0, 1, f.new)

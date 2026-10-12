@@ -3,6 +3,7 @@ package oplog
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,7 +47,17 @@ type Recorder struct {
 }
 
 // New 创建记录器并启动消费协程。
+//
+// logger **必须可用**：它是审计的"备选落地"（库写不进去、或队列堵了时把记录落到日志文件）。
+// 传一个不可用的 logger，今天不会当场报错 —— 要等到**消费协程里某次写库失败或队列满**时
+// 才在 `fallback` 里 nil 解引用，把整个进程带走：启动一声不响，跑着跑着突然崩，
+// 现场还离"审计"十万八千里。所以在这里就拦下（与配置校验层 / `UseRouter(nil)` /
+// `RegisterSites` 同一取向：非法就在启动时炸，别留到运行期）。
 func New(db *gorm.DB, logger Logger) *Recorder {
+	if loggerUnusable(logger) {
+		panic("oplog.New: logger 不可用（nil，或是一个类型化的 nil）—— 审计的兜底落地要靠它写日志，" +
+			"宿主请传自己的 logger（如 LoggerSet.Sys）")
+	}
 	r := &Recorder{
 		db:      db,
 		log:     logger,
@@ -55,6 +66,23 @@ func New(db *gorm.DB, logger Logger) *Recorder {
 	}
 	go r.consume()
 	return r
+}
+
+// loggerUnusable 判断 Logger 是不是"没有可用实现"。
+//
+// **不能只写 `logger == nil`**：接口参数最常见的误用形态是**类型化的 nil** ——
+// 宿主传一个没初始化的 `*logrus.Logger` 字段（比如手搓的 LoggerSet 少填了 Sys，
+// 本仓的测试构造器就有这种写法），赋给接口后接口值本身不为 nil（`== nil` 是 false），
+// 但调用它的方法照样 nil 解引用。所以这里按 kind 走一次 IsNil。
+func loggerUnusable(l Logger) bool {
+	if l == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(l); v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	}
+	return false
 }
 
 // consume 单协程消费：库里一条条写，慢也只慢这个协程，不挡业务响应。

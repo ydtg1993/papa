@@ -9,22 +9,23 @@
 
 Papa 的落地是**「单表 + JSON 内容」**：所有阶段的任务共用一张 `crawler_tasks` 表，用 `stage` 列区分阶段，抓到的结构化内容以 JSON 塞进 `content` 列。你要做的是：**把页面提取成 Go 结构体，序列化后写回对应任务的 `content`（和 `title`）列**。
 
-> 框架一共内置 4 张表，业务要写的只有 `crawler_tasks` 一张（后三张是后台自用，见 §1）。业务的内容结构（写进 `content` 列的 JSON）由你自己在项目的 `models` 包里按需定义 —— 脚手架不预置示例。
+> 框架目前最多使用 5 张表。业务结果通常只写 `crawler_tasks`；`crawler_sites` 由框架维护，另外三张服务于后台鉴权、操作审计和任务追踪。业务的内容结构（写进 `content` 列的 JSON）由你自己在项目的 `models` 包里按需定义 —— 脚手架不预置示例。
 
 ---
 
 ## 1. 读懂现状：已有哪些模型
 
-框架一共内置 4 张表，**只有第一张是业务要写的**，其余三张是后台自用（业务通过结果 API 或 `task.Trace` 间接用，不直接读写表）：
+框架目前最多使用 5 张表，**业务结果通常只写第一张**；其余由框架和后台维护：
 
-| 表 | 用途 | 业务碰不碰 |
+| 表 | 用途 | 创建条件 |
 | --- | --- | --- |
-| `crawler_tasks` | 任务与抓取结果 —— `title` / `content` 两列就是落地点 | **是**（`engine.SaveResult` / `SaveContent` / `Upsert`） |
-| `crawler_access_token` | 后台访问令牌（`papa token add` 或后台「访问令牌」页维护） | 否 |
-| `crawler_operation_log` | 后台操作审计，开关 `server.operation_log` | 否 |
-| `crawler_task_trace` | 任务步骤追踪，开关 `crawler.trace.enabled`（handler 里 `task.Trace.Step` 上报） | 否 |
+| `crawler_tasks` | 任务与抓取结果；`title` / `content` 是主要落地点 | 总是创建 |
+| `crawler_access_token` | 后台访问令牌（`papa token add` 或后台页面维护） | 总是创建 |
+| `crawler_sites` | 站点声明、运行统计与熔断状态 | 总是创建 |
+| `crawler_operation_log` | 后台操作审计 | `server.operation_log: true` |
+| `crawler_task_trace` | 任务步骤追踪（handler 通过 `task.Trace` 上报） | `crawler.trace.enabled: true` |
 
-后三张跟着开关走，建表与开关的对应关系见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。本手册不展开它们（业务不碰）—— 各有归属：访问令牌见 [MONITOR.md](./MONITOR.md) 第 1 节（含字段表）、操作日志见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`、步骤追踪见 [MONITOR.md](./MONITOR.md) 第 3 节的「追踪」抽屉。
+两张可选表跟随开关创建；其他三张属于基础框架表。建表规则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。本手册不展开这些框架维护表——各有归属：站点表与访问令牌见 [MONITOR.md](./MONITOR.md) 第 1 节（含字段表）、操作日志见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`、步骤追踪见 [MONITOR.md](./MONITOR.md) 第 3 节的「追踪」抽屉。
 
 ### 1.1 任务表 `crawler_tasks`（业务唯一要写的一张）
 

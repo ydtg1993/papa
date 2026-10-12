@@ -14,7 +14,7 @@ import (
 // 操作人丢了、把 Err 丢了）不会有任何测试红，只会表现为"操作日志里少一列"。
 func TestRecorderRecordAdaptsOaoEvent(t *testing.T) {
 	f := gormfake.New()
-	rec := New(gormfake.MustOpen(f), nil)
+	rec := New(gormfake.MustOpen(f), &memLogger{})
 
 	rec.Record(oao.ActionEvent{
 		Table:  "task",

@@ -124,6 +124,25 @@ var rules = []rule{
 		return nil
 	}},
 
+	{"browser.pool_size", func(c *Config) error {
+		if !c.Browser.Enable {
+			return nil // 没启用浏览器池时这个值用不上
+		}
+		// 与 html.max_body_size 同一个形状：**开着的时候必填**。
+		// 零值 0（漏写也一样）时池容量就是 0 —— get 里"复用空闲实例"与"未达上限则新建"
+		// 两条路都跳过（各自带 `limit > 0` 的前缀），最后停在 cond.Wait 上**永久阻塞且不报错**；
+		// 配上 CLI 那种 context.Background() 就是死等，连取消都等不到。
+		// 隔壁 GetDirect 对同类情况是明确报错的（"direct browsers not configured"）——
+		// 所以这个不对称是漏了校验，不是设计。
+		if c.Browser.PoolSize <= 0 {
+			return fmt.Errorf("  启用浏览器池时必须 > 0（实得 %d）——\n"+
+				"  为 0（漏写也一样）时池容量是 0：Get 既不会复用空闲实例、也不会新建，\n"+
+				"  最后停在 cond.Wait 上永久阻塞且不报错（GetDirect 对同类情况会明确报错）。\n"+
+				"  要关掉浏览器池请把 enable 改成 false", c.Browser.PoolSize)
+		}
+		return nil
+	}},
+
 	{"db.max_idle_conns", func(c *Config) error {
 		return inPoolRange(c.DB.MaxIdleConns)
 	}},

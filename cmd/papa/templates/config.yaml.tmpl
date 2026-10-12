@@ -35,8 +35,8 @@ crawler:
 # 其余字段需重启生效。
 browser:
   enable: true
-  pool_size: 3
-  direct_pool_size: 0
+  pool_size: 3                 # 并发上限（按需创建）。enable=true 时必填且 > 0：写 0 会让 Get 永久阻塞在 cond.Wait
+  direct_pool_size: 0          # 强制直连浏览器并发上限；0 = 不用直连池（合法，调到时会明确报错）
   max_idle_time: "5m"
   headless: false
   no_sandbox: false

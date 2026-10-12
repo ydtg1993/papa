@@ -178,6 +178,11 @@ func htmlOn(extra string) string {
 	return baseConfig + "html:\n  enable: true\n  timeout: 15s\n" + extra
 }
 
+// browserOn 造一个"浏览器池开着"的配置，extra 是要塞进 browser 段的额外行（可为空）。
+func browserOn(extra string) string {
+	return baseConfig + "browser:\n  enable: true\n" + extra
+}
+
 // 有四个键**没有「没写也合法」那一态** —— 它们的零值不是一个中性值，而是一个危险值：
 //
 //   - log.dir 空串 → 拼出文件系统根下的 sys.log（没权限就静默一条日志都没有）
@@ -216,6 +221,13 @@ func TestRequiredKeys(t *testing.T) {
 		{"max_body_size 写 10（想当 10MB，实际 10 字节）", "html.max_body_size", htmlOn("  max_body_size: 10\n")},
 		{"max_body_size 低于下界 100KB", "html.max_body_size", htmlOn("  max_body_size: 102399\n")},
 		{"max_body_size 超上界 64MB", "html.max_body_size", htmlOn("  max_body_size: 67108865\n")},
+
+		// browser.pool_size 与 html.max_body_size 同一个形状：「开着的时候必填」。
+		// 零值 0 让池容量为 0 —— Get 的两条快路径（复用空闲 / 未达上限则新建）都带
+		// `limit > 0` 前缀，于是全跳过，直接停在 cond.Wait 上永久阻塞且**不报错**。
+		{"pool_size 漏写（browser.enable=true）", "browser.pool_size", browserOn("")},
+		{"pool_size 写 0", "browser.pool_size", browserOn("  pool_size: 0\n")},
+		{"pool_size 写负数", "browser.pool_size", browserOn("  pool_size: -1\n")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			assertPanicNamesKey(t, c.key, func() { Load(mustWrite(t, c.body)) })
@@ -233,6 +245,13 @@ func TestRequiredKeys(t *testing.T) {
 	loadString(t, htmlOn("  max_body_size: 67108864\n")) // 上界
 	// 关掉静态抓取时这个值根本不参与 —— 不许一个用不着的东西把人卡在启动上
 	loadString(t, baseConfig+"html:\n  enable: false\n  max_body_size: 1\n")
+
+	// browser.pool_size：模板值要放行；**direct_pool_size 留 0 也必须合法**（不用直连池是常态，
+	// GetDirect 自己会报"direct browsers not configured"，不需要启动期拦）
+	loadString(t, browserOn("  pool_size: 3\n"))
+	loadString(t, browserOn("  pool_size: 3\n  direct_pool_size: 0\n"))
+	// 关掉浏览器池时 pool_size 根本不参与
+	loadString(t, baseConfig+"browser:\n  enable: false\n  pool_size: 0\n")
 }
 
 // idle > open：sql.DB.SetMaxIdleConns 的文档明写会把 n 压到 maxOpenConns ——

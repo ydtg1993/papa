@@ -331,32 +331,3 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
 	}
 	return conflicted, nil
 }
-
-// ReSubmitTask 已入库的非轮询任务进行重提交任务
-func (e *Engine) ReSubmitTask(task *Task) error {
-	if task.Stage == "" || task.URL == "" || task.Site == "" {
-		return e.logSubmitError(task, fmt.Errorf("task stage or url or site is empty: %+v", task))
-	}
-	if info := e.stages[task.Stage]; info == nil {
-		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage))
-	}
-	var record models.CrawlerTask
-	e.db.Model(&models.CrawlerTask{}).
-		Where("url_hash = ?", models.UrlHash(task.URL)).
-		Where("stage = ?", task.Stage).
-		First(&record)
-	if record.ID == 0 {
-		return e.logSubmitError(task, fmt.Errorf("record not exists: %s", task.URL))
-	}
-	task.ID = int(record.ID)
-	if err := e.submitToStage(task); err != nil {
-		// 提交失败，回滚内存去重表和数据库状态（与 submitToPool 同形：只写自己负责的列）
-		e.dedupCache.Delete(task.Unique())
-		e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", err.Error()+"\n"),
-		})
-		return e.logSubmitError(task, err)
-	}
-	return nil
-}

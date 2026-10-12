@@ -8,6 +8,37 @@ import (
 	"github.com/ydtg1993/oao"
 )
 
+// New 必须拦住"不可用的 logger"，而且是**当场**拦下。
+//
+// 回归点：以前不判，隐患是**延迟**的 —— 传进去的 logger 一直是摆设，直到消费协程里某次
+// 写库失败或队列满，才在 `fallback` 里 nil 解引用把整个进程带走：启动一声不响，
+// 跑着跑着突然崩，现场还离"审计"十万八千里。
+//
+// db 传 nil 是有意的：判 logger 发生在碰 db 之前，这条例外不该走到后面去。
+func TestNewPanicsOnUnusableLogger(t *testing.T) {
+	t.Run("未类型化的 nil", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("传 nil logger 应当当场 panic")
+			}
+		}()
+		New(nil, nil)
+	})
+
+	// 最常见的误用形态：宿主把自己的一个**没初始化**的 *logrus.Logger 字段传进来
+	// （比如手搓的 LoggerSet 少填了 Sys）。赋给接口后接口值本身不为 nil（`logger == nil`
+	// 是 false），但调用它的方法照样 nil 解引用 —— 只判 `== nil` 会漏掉这一种。
+	t.Run("类型化的 nil（接口值本身不为 nil）", func(t *testing.T) {
+		var l *memLogger
+		defer func() {
+			if recover() == nil {
+				t.Fatal("传类型化 nil 的 logger 也应当当场 panic")
+			}
+		}()
+		New(nil, l)
+	})
+}
+
 func TestNewRecordSuccess(t *testing.T) {
 	at := time.Now()
 	rec := newRecord(Event{

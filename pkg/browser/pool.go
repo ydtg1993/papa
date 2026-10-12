@@ -138,6 +138,15 @@ func (p *Pool) Get(ctx context.Context) (*Browser, error) {
 	if p.closed.Load() {
 		return nil, fmt.Errorf("browser pool closed")
 	}
+	// 容量 0 = 这个池没配代理浏览器，**必须立刻报错**，不能放行到 cond.Wait：
+	// get 里"复用空闲实例"与"未达上限则新建"两条快路径各自带 `limit > 0` 前缀，
+	// 容量 0 时全被跳过 → 停在 cond.Wait 上**永久阻塞且不报错**；而 CLI 那种
+	// `context.Background()` 永不 cancel（ctx 取消那条退路要靠 AfterFunc 广播去唤醒），
+	// 调用方只看到"抓取挂死"，没有任何线索指向池容量。与 GetDirect 对同类情况的处理对称。
+	// 生产路径到不了这里：config 校验层在 browser.enable=true 时已要求 pool_size > 0（config/validate.go）。
+	if cap(p.browsers) == 0 {
+		return nil, fmt.Errorf("browser pool not configured（pool_size 为 0）")
+	}
 	return p.get(ctx, p.browsers, &p.proxyAlive, true)
 }
 

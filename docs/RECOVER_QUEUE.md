@@ -8,8 +8,7 @@
 ## 0. 一句话
 
 进程在抓取中途挂了，会留下一批停在 `pending`（已入库未入队）或 `processing`（取走了但没处理完）的任务。
-**这些任务不用「判」，看一眼就知道**：进程刚起，没有任何 worker 在跑，此刻所有 `processing` 都是孤儿。
-所以恢复只做一件事 —— **启动时把「未到终态」的任务全部重新入队**。
+恢复只处理**本进程启动前遗留**的未终态任务：`status IN (pending, processing)` 且 `updated_at < 本进程启动时间`。这个启动边界不是“超过 N 小时就算卡死”的启发式，而是用来排除本进程启动后已经认领或更新过的任务。
 
 它**不是**一个队列：没有周期、没有积压、没有后台按钮。跑一次就结束。
 
@@ -42,7 +41,7 @@ recover_queue:
 
 ## 3. 判定与重投
 
-判据就是 `status IN (pending, processing)`，**没有时间条件**。
+判据是 `status IN (pending, processing) AND updated_at < engine.startedAt`。这里没有可配置的超时窗口；`startedAt` 只是本进程启动边界，用于避免异步恢复扫描误捞本次运行已经碰过的行。
 
 - `pending` 也要捞：它们可能是上次高水位溢出到 DB 的（溢出列表在内存里，随进程一起没了），
   也可能入库了但没来得及入队 —— 不捞就永远躺在「待处理」。
@@ -52,8 +51,7 @@ recover_queue:
   其中 `Meta`（业务键，见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2）是要害：
   它是 handler 认业务行的依据，恢复出来的任务要是没带上，任务会以「结构错误」永久失败 ——
   而这类失败通常不可重试，人工点「重投」也走同一条路。
-- **重复投递是安全的**：worker 认领走的是条件更新（`pending → processing`），两份里只有一份能认领成功，
-  另一份拿到 0 行直接跳过。
+- 恢复前还会以条件更新再次确认该行仍是 `pending` / `processing`；提交后的 worker 认领走 `pending → processing` 条件更新。即使出现重复排队，也只有一份能认领成功，另一份影响 0 行后跳过。
 - 重新投递失败（阶段没注册、提交出错）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
   （`engine.Engine.markRequeueFailed`）。
 
@@ -61,9 +59,7 @@ recover_queue:
 
 只有一种：**启动时**（`enabled: true`，异步跑，不阻塞启动）。
 
-代码里 `engine.ProcessRecoverQueue()` 是导出的，业务可以自己调 —— 但**别在运行期调**：
-那时的 `processing` 是正在跑的任务，重投它们就是让同一行被两个 worker 同时写。
-（这既是它当年按超时猜卡死时踩的坑，也是后台那个「恢复队列」手动按钮被删掉的原因。）
+代码里 `engine.ProcessRecoverQueue()` 是导出的，但它只应由启动恢复流程调用。当前查询用 `updated_at < startedAt` 排除本次运行已经更新过的任务；运行期再次调用通常没有意义，而且会把“启动恢复”错误地变成业务调度接口。后台因此不提供恢复队列按钮或 HTTP 入口。
 
 ## 5. 与 error_queue 的分工
 

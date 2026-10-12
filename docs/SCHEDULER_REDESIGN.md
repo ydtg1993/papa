@@ -1,7 +1,7 @@
 # 调度器 / 工作池重设计（大改版）
 
-> 状态：**全部落地** —— 第 1–5 步 + OA 面（监控累计计数 + 错误通道活池化）+ CHANGELOG + docs-sync 都完成。
-> 决策日期：2026-10-12。这份文档是接续依据，别每次重推一遍。
+> 状态：**历史设计记录，已全部落地** —— 第 1–5 步、OA 面、变更记录和 docs-sync 均已完成。
+> 决策日期：2026-10-12。第 1–6 节中的“现状”“本次不动”“下次迭代”等措辞保留的是决策当时的阶段性背景，不代表当前待办；当前结论以“完成状态”和现行源码为准。
 
 ## 0. 一句话
 
@@ -134,8 +134,8 @@ func (e *Engine) LiveErrors() []<-chan error
 
 ## 完成状态（2026-10-12）
 
-1. **CHANGELOG**（✅）：[未发布] 段追加破坏性变更（删 cron）、变更（池懒建 + recover 走加急）、
-   新增（`stage_idle_timeout`）、修复（监控累计计数 + 错误通道）四条。
+1. **变更记录**（✅）：`docs/issues/changes.md` 记破坏性变更（删 cron、删 `ReSubmitTask`）、
+   变更（池懒建 + recover 走加急）、新增（`stage_idle_timeout`）、修复（reap 竞态 + 监控累计计数/错误通道）。
 2. **docs-sync**（✅）：`CORE_CONFIG.md` 补 `stage_idle_timeout`；`RECOVER_QUEUE.md` 补「恢复走加急」。
 3. **§5 的 OA 面**（✅）：`stageTotals` 累计三个吞吐计数（收割在 reap 时，`GetStageStats` 报「累计 + 当前池」）；
    `errorCh` 常驻错误通道 + per-pool forwarder（`startPoolErrorForwarder`/`cancelPoolErrorForwarder`），

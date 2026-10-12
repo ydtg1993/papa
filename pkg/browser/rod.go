@@ -194,10 +194,12 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 	if err != nil {
 		return nil, err
 	}
+	// **成功也要关**：FetchOnce 不把 page 交出去（HTML/标题/截图都拷进 res 了），页面只在这个函数里用得到。
+	// 只判 `err != nil` 会让每次**成功**的调用都留下一个标签页 —— CLI 里跑一次看不出来，
+	// 业务把它当长跑抓取接口用时就是持续泄漏。顺带：下面 `go wait()` 那条 EachEvent 协程
+	// 要等页面关闭才退出，不关它也跟着一起漏。
 	defer func() {
-		if err != nil {
-			_ = page.Close()
-		}
+		_ = page.Close()
 	}()
 	page = page.Context(ctx)
 

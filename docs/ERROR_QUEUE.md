@@ -48,16 +48,16 @@ error_queue:
 
 配合 fetcher 里的错误分类（见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md)）可更精准：
 
-- `return papa.WrapNoRetryKind("structure", err)` / `"not-found"` / `"protected"`：这些是「重试无意义」的失败，通常不该进错误队列；
-- 普通可重试错误（网络抖动、超时）才值得进错误队列重跑。
+- `return papa.WrapNoRetryKind("structure", err)` / `"not-found"` / `"protected"` 会让当前阶段跳过进程内尝试重试，并把错误种类写入失败信息；
+- 普通可重试错误（网络抖动、超时）则先按阶段的 `Retry` 策略尝试。
 
-`engine.ProcessErrorQueue()` 已公开，可在你自己的 cron / 调度里调用并按需加过滤（如按阶段、按 `error` 里的 kind）。
+需要注意：当前 `error_queue` 的查询条件只看 `status = failed` 和 `reprocess` 上限，**不会自动排除 `NoRetry` 错误种类**。若希望结构错误、404 等永久失败不再被自动重投，应关闭自动轮询并由业务实现带过滤的处理流程，或设置有限的 `max_retry`。公开的 `engine.ProcessErrorQueue()` 使用框架固定查询条件，不能通过参数附加按阶段或错误种类过滤；自定义筛选需要业务自行查询和重投。
 
 ## 5. 与 recover_queue 的分工
 
 | 机制 | 目标状态 | 语义 |
 | --- | --- | --- |
 | `error_queue` | `failed` | 重跑「明确失败」的任务 |
-| `recover_queue` | `pending` / `processing` | 启动时把中断留下的任务全部捡回来（**只在启动跑一次**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） |
+| `recover_queue` | 本进程启动前遗留的 `pending` / `processing` | 启动时恢复中断任务（以 `updated_at < startedAt` 为边界，**只在启动跑一次**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） |
 
 两者按状态互斥，不会同时盯上同一个任务。

@@ -898,7 +898,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 3. **定时重抓 / 恢复失败**：
    - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；
-   - 中断恢复：`recover_queue` 配置开启后，**启动时**把「未到终态」（pending/processing）的任务全部重新入队 —— 进程刚起，这些就是上次中断留下的孤儿，不用按时间猜。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
+   - 中断恢复：`recover_queue` 配置开启后，**启动时**重投本进程启动前遗留的未终态任务（pending/processing，且 `updated_at` 早于本次启动时间）。这个边界用于排除本次运行已经碰过的行，不是按“卡死时长”猜测。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
 
 4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
@@ -909,7 +909,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 ## 8. 常见坑
 
 1. **阶段名重复** → `RegisterSites` 直接 panic 并点出是哪两个站声明了同一个名字。多站一律带站点前缀（`hgd_catalog` / `siteb_catalog`），别靠"能区分"碰运气。
-2. **浏览器池耗尽**：`browser.pool_size`（浏览器并发上限）要 ≥ 各 stage `worker_count` 之和，否则 worker 会阻塞在 `pool.Get`。
+2. **浏览器池容量规划**：`browser.pool_size` 是浏览器抓取的全局并发上限，不必机械地大于等于所有阶段 `worker_count` 之和。容量较小时，超出的 browser worker 会在 `pool.Get(ctx)` 等待实例，这是正常背压；应按机器资源、目标站承载能力和可接受等待时间调优。`browser.enable: true` 时 `pool_size` 必须 > 0，配置加载会拒绝零/负值。
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.OptionsFromRequest(ctx, task.URL)` 一步带上（站点头/逐请求头/代理一起过来），或自己写 `m3u8.DownloadOptions{Referer: ...}`。
 4. **下载器不继承抓取的头**：`SiteSpec.Headers` / `papa.WithHeaders` 只作用于**抓取**（静态 + 浏览器），下载（filedown / m3u8）要自己带 —— 用 `OptionsFromRequest(ctx, referer)`，它不会自动发生。
 5. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。

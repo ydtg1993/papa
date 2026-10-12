@@ -195,6 +195,11 @@ segment2.ts
 	if result.Segments != 2 {
 		t.Errorf("Segments = %d, want 2", result.Segments)
 	}
+	// 产物大小要在**删分片之前**量到。回归点：原来那句 getTotalSize 写在收尾清理之后，
+	// 那时分片已经被删了 → Size 恒为 0（这个字段等于从没生效过）。
+	if want := int64(len(seg1) + len(seg2)); result.Size != want {
+		t.Errorf("Size = %d, want %d（分片在量之前就被清理了）", result.Size, want)
+	}
 	expectedRel := filepath.Join(outputDirRel, outputFile)
 	if result.OutputFile != expectedRel {
 		t.Errorf("OutputFile = %q, want %q", result.OutputFile, expectedRel)

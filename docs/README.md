@@ -1,6 +1,6 @@
 # Papa - 高性能爬虫框架
 
-> 基于 Go 的爬虫框架，内置**浏览器自动化（Rod）**与**静态 HTML 抓取（htmlfetch）**双引擎：浏览器池、多阶段工作池、任务持久化与恢复、M3U8/文件下载、定时任务、Web 监控。
+> 基于 Go 的爬虫框架，内置**浏览器自动化（Rod）**与**静态 HTML 抓取（htmlfetch）**双引擎：浏览器池、多阶段工作池、任务持久化与恢复、M3U8/文件下载、失败重投/启动恢复/周期轮询治理队列、Web 监控。框架不再内置通用 cron 调度器。
 
 ## 快速开始
 
@@ -24,7 +24,7 @@ cd mycrawler && go mod tidy
 5. `go run .`
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
-`AutoMigrate` 只增不减（加表 / 加列 / 加索引，不删列也不改类型），重复跑幂等，随便跑。
+底层使用 GORM `AutoMigrate`，主要用于补表、列和索引，不负责删除列或表达全部破坏性变更。重复执行通常是幂等的，但生产环境仍应先备份、审查生成 SQL，并为改名、改类型等变更编写显式迁移。
 
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
 > `main.go` / `models.Models()` 里注册的模型，所以它在业务项目里会把迁移**转交**给项目自己
@@ -40,11 +40,11 @@ cd mycrawler && go mod tidy
 | --- | --- | --- |
 | 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
-| 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点与阶段声明（含三个治理队列） |
+| 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |
-| 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动时把未到终态的任务全部重新入队 | 
+| 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动时重投本进程启动前遗留的未终态任务 |
 | 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、到点才重投（周期可逐条定、后台可改） |
-| **加一个站 / 管多个站点**（站点维度都有什么） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §7、[DEVELOPMENT.md](./DEVELOPMENT.md) §7 | 一站一个文件（自登记）、阶段名带站点前缀、站点级请求头/熔断/队列；哪些**有意**留在全局 |
+| **加一个站 / 管多个站点**（站点维度都有什么） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §7、[DEVELOPMENT.md](./DEVELOPMENT.md) §7 | 一站一个文件（自登记）、阶段名带站点前缀、站点级请求头/熔断/下载器；三个治理队列有意留在全局 |
 | 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/自定义页/自定义路由与中间件/站点 Tab 与队列治理/熔断横幅/日志 API |
 | 排查「页面抓到了啥」/ 生成新项目 / 升级已有项目 / 建令牌 | [CLI.md](./CLI.md) | `papa new` 脚手架、`html`/`rod`/`diff`/`select` 调试命令、`upgrade`（刷新框架副本+检查）、`check`（不用起库验声明）、`token add` |
 | 构建 / 测试 / 竞态检测（Makefile） | [DEVELOPMENT.md](./DEVELOPMENT.md) | make 目标、Windows 怎么跑、race 前置条件 |

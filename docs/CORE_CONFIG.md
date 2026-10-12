@@ -1,7 +1,7 @@
 # Papa 爬虫核心配置手册
 
 > 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填。**全部改完要重启**（没有热更）。
-> 配套：本文是「配置字典」；各模块的行为语义见 [SCHEDULER.md](./SCHEDULER.md)、[ERROR_QUEUE.md](./ERROR_QUEUE.md)、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)、[MONITOR.md](./MONITOR.md)。
+> 配套：本文是「配置字典」；各治理队列与后台行为见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)、[REPEAT_QUEUE.md](./REPEAT_QUEUE.md)、[MONITOR.md](./MONITOR.md)。框架已移除通用 cron 调度器。
 
 ---
 
@@ -9,8 +9,7 @@
 
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
-- **没有运行期热更**：改配置 = 改 `config.yaml` / 站点声明 + 重启。队列（三段）与 `crawler` 的那四项
-  还能按站点在声明里覆盖（见各节与 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 5 节）。
+- **没有运行期热更**：改 `config.yaml` 或 Go 站点声明后需要重启。三个治理队列都是全局配置，不能按站点覆盖；站点声明可覆盖请求头、熔断和下载器配置，阶段声明负责并发、队列、间隔、重试、入口和下载器覆盖。任务自己的 repeat 周期可以通过后台或 API 动态调整。
   老项目里的 `configs/runtime.yaml` 已经没人读写了，可以直接删。
 
 ## 1. 完整配置项参考
@@ -50,7 +49,7 @@
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补两条：「任务失败」（失败尝试的**原因**，带分类与消息）与「归档页面」（带文件名，抽屉里可直接下载）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
-| `breaker.enabled` | bool | `false` | 熔断闸门总开关。开启后窗口内**终态失败**数达阈值就把**所有阶段**的 worker 一起闸住 |
+| `breaker.enabled` | bool | `false` | 默认 scope 的熔断开关。开启后窗口内终态失败数达阈值，就暂停该 scope 下的阶段；每个站点可以用 `SiteSpec.Breaker` 独立覆盖 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
 | `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在**启动时 panic**（判据在 `breaker.New`，调用点是 `engine.NewEngine`）。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 
@@ -67,8 +66,8 @@
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
 | `enable` | bool | 是否启用浏览器池 |
-| `pool_size` | int | 代理浏览器**并发上限**（按需创建，非常驻实例数） |
-| `direct_pool_size` | int | 强制直连浏览器并发上限（不走代理） |
+| `pool_size` | int | 代理浏览器**并发上限**（按需创建，非常驻实例数）。**`enable: true` 时必填且 > 0**，漏写、写 0 或负数会在配置加载时被拒绝；直接构造零容量 `Pool` 时，`Get` 也会立即返回 `browser pool not configured` |
+| `direct_pool_size` | int | 强制直连浏览器并发上限（不走代理）。**留 0 是合法的** = 不用直连池 —— 真调到 `GetDirect` 时会明确报 `direct browsers not configured` |
 | `max_idle_time` | duration | 空闲回收阈值，`0`=不回收 |
 | `headless` | bool | 无头模式 |
 | `no_sandbox` | bool | 关闭 Chromium sandbox |
@@ -285,10 +284,9 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 接在这个参数上（Makefile 里是 `make migrate`）。自己写 main 的话记得照做 —— 否则
 `papa migrate` 转交过去，就等于把你的爬虫直接启动了。
 
-**`AutoMigrate` 只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 —— 生产上执行是安全的。
-真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工写迁移。
+底层使用 GORM `AutoMigrate` 补齐框架表与注册模型。它不会替业务推断删列、改名等破坏性意图；不同数据库对类型和约束迁移的能力也不完全相同。重复运行通常是幂等的，但生产环境不要把它理解成“无条件安全”：先备份、审查生成 SQL，并为改名、改类型、数据回填等操作编写显式迁移。
 
-框架自带的表：`crawler_tasks`、`crawler_access_token` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_sites` 总是建；
 `crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则那张表不会建出来。
 
