@@ -8,6 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/oao"
 	"github.com/ydtg1993/papa/v3/admin/auth"
+	"github.com/ydtg1993/papa/v3/admin/configstore"
 	"github.com/ydtg1993/papa/v3/admin/oplog"
 	"github.com/ydtg1993/papa/v3/admin/server"
 	"github.com/ydtg1993/papa/v3/admin/sitesource"
@@ -314,15 +315,13 @@ func NewApp(opts ...Option) (*App, error) {
 		}
 	}
 
-	// 4.2 唯一索引还停在上一版（不含 site）也要喊：阶段名按站点作用域之后，两个站可以各有自己的
-	// `catalog`，而老索引 (url_hash, stage) 比新索引**严**，会把"两个站同名阶段 + 同一个 URL"
-	// 直接拦成 1062；插入失败后的回查又是按 (url_hash, stage, site) 查的，查不到那一行 ——
-	// 业务最终只看到一句没头没脑的 `insert crawler task to db failed`。
-	// 表在、索引名不对 = 迁移没跑到那一步，与上面"表不存在"是同一类事（都是"看着跑着、实际不对"）。
+	// 4.2 该有的唯一索引不在也要喊：表在、索引名不对 = 迁移没跑到那一步（或表被手工改过），
+	// 与上面"表不存在"是同一类事 —— 都是"看着在跑、实际不对"。唯一索引缺了，
+	// 去重就只剩内存表那一层，重启后同一个 URL 会再插一行。
 	if db.Migrator().HasTable(&models.CrawlerTask{}) &&
 		!db.Migrator().HasIndex(&models.CrawlerTask{}, "idx_site_stage_url_hash") {
-		loggerSet.Sys.Errorf("crawler_tasks 的唯一索引还是旧那版（缺 idx_site_stage_url_hash）—— " +
-			"阶段名现在按站点作用域，唯一索引要带 site。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）")
+		loggerSet.Sys.Errorf("crawler_tasks 缺唯一索引 idx_site_stage_url_hash（(url_hash, stage, site)）—— " +
+			"请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）")
 	}
 
 	// 5. 创建爬虫引擎
@@ -462,34 +461,43 @@ func warnIfOpenToAll(log *logrus.Logger, whitelist []string) {
 		return
 	}
 	log.Errorf("警告：生效的来源 IP 白名单为空 —— /monitor 与 /api/* 对**任何来源**开放" +
-		"（第二道门是访问令牌）；要限制来源，往 server.whitelist_file 或 server.whitelist 里写 IP/CIDR")
+		"（第二道门是访问令牌）；要限制来源，去后台设置页写 IP/CIDR（存在 crawler_config 表的 ip_whitelist 行）")
 }
 
-// resolveWhitelist 解析白名单：优先读 whitelist_file（文件存在即采用，即使为空），读不到回退内联 whitelist
-func (a *App) resolveWhitelist(cfg config.ServerConfig) []string {
-	if cfg.WhitelistFile != "" {
-		if entries := readWhitelistFile(cfg.WhitelistFile); entries != nil {
-			return entries
-		}
-	}
-	return cfg.Whitelist
-}
+// whitelistReloadInterval 白名单的重载间隔。
+//
+// 为什么要定期重载：库是唯一事实来源，而库会被**别人**改 —— 多实例后台（A 实例在设置页改完，
+// B 实例要能看见）、运维直接改 SQL 修一行。本进程自己保存的那次是即时生效的（写完就换缓存），
+// 这个 ticker 只兜上面两种；30s 是"够快，也不至于拿它当热路径"的量级。
+const whitelistReloadInterval = 30 * time.Second
 
-// readWhitelistFile 读取白名单文件：每行一个 IP/CIDR，忽略空行与 # 注释；文件不存在返回 nil
-func readWhitelistFile(path string) []string {
-	b, err := os.ReadFile(path)
+// loadIPWhitelist 从配置存储读一次白名单（启动那一次与定期重载都走这里）。
+//
+// 生效语义（与 configstore.KeyIPWhitelist 的注释、docs 里那张表逐条对应）：
+// **行不存在 / 空数组 / 值解析不出来 → 不限制来源**；数组里有效的那几条 → 只允许这些来源。
+// 读失败单独记 Error —— 这一档等于把限制**悄悄放宽了**，日志里必须留下痕迹
+// （语义是运营定的：宁可放宽，也不因为一次手改把自己锁在后台外面）。值的形状校验在 store 那层。
+func loadIPWhitelist(store *configstore.Store, log *logrus.Logger) []string {
+	entries, err := store.LoadStrings(configstore.KeyIPWhitelist)
 	if err != nil {
+		log.Errorf("来源白名单读不出来，按「不限制来源」继续：%s", err.Error())
 		return nil
 	}
-	out := []string{}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	return entries
+}
+
+// reloadWhitelistLoop 定期把库里的白名单同步进本进程的判定缓存。
+func (a *App) reloadWhitelistLoop(ctx context.Context, store *configstore.Store, mon *server.Monitor) {
+	ticker := time.NewTicker(whitelistReloadInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			mon.SetWhitelist(loadIPWhitelist(store, a.Logger.Sys))
 		}
-		out = append(out, line)
 	}
-	return out
 }
 
 // httpServer 启动统一 HTTP 服务（监控后台）
@@ -513,7 +521,15 @@ func (a *App) httpServer(ctx context.Context) {
 		a.sysInfo = sysinfo.NewCollector(2*time.Second, cfg.MonitorDirs)
 		a.sysInfo.Start(ctx)
 	}
-	whitelist := a.resolveWhitelist(cfg)
+	// 来源白名单存在 crawler_config 表里（运行期可在设置页改），不在 config.yaml —— 配置里写旧键
+	// （server.whitelist / whitelist_file）会在**配置校验**那一关就拒绝启动：未知键一律拒收。
+	whitelistStore := configstore.New(a.DB)
+	if err := whitelistStore.EnsureTable(); err != nil {
+		// 表不存在就直接起不来。少了它白名单会**静默失效**（读不到 = 不限制来源），一个字都不报 ——
+		// 而"起不来"至少把问题摆在运维面前（报错里点名 `papa migrate`）。
+		panic(fmt.Errorf("后台运行期配置表没就绪：%w", err))
+	}
+	whitelist := loadIPWhitelist(whitelistStore, a.Logger.Sys)
 	warnIfOpenToAll(a.Logger.Sys, whitelist)
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
@@ -527,9 +543,12 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		VerifyToken:        auth.Verifier(a.DB, a.Logger.Sys),
-		Whitelist:          whitelist,
-		WhitelistFile:      cfg.WhitelistFile,
+		VerifyToken: auth.Verifier(a.DB, a.Logger.Sys),
+		Whitelist:   whitelist,
+		// 设置页保存白名单 → 落 crawler_config；成功后 admin/server 自己换判定缓存（本进程即时生效）。
+		SaveWhitelist: func(entries []string, operator string) error {
+			return whitelistStore.Save(configstore.KeyIPWhitelist, entries, operator)
+		},
 		Metrics:            a.Engine.GetMetrics,
 		QueueStats:         a.Engine.GetQueueStats,
 		SiteStats:          a.Engine.GetSiteStats,
@@ -640,6 +659,8 @@ func (a *App) httpServer(ctx context.Context) {
 		},
 	})
 	mon.Register(mux)
+	// 多实例 / 运维直接改 SQL 的收敛：定期把库里的白名单同步进判定缓存
+	go a.reloadWhitelistLoop(ctx, whitelistStore, mon)
 
 	// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
 	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。

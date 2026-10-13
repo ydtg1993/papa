@@ -143,44 +143,30 @@ return engine.SubmitTask(&papa.Task{
 3. **站点维度漏了一处**（提交任务时不带 `site`、自定义幂等键少写 `site:` 那一段、按阶段取配置只给名字）→ 查不到那个阶段，或者两个站的数据互相顶掉。
 4. **`meta` 里塞数据** → 它是给"还原任务身份"用的，塞大对象既没索引也不该随任务清理而消失。
 5. **业务列名与 gorm 生成的实际列名对不上**（后台表格页 `Field` 写 `pid` 而库里是 `p_id`）→ 后台永远渲染成空，见 [MONITOR.md](./MONITOR.md)。
-6. **改了表结构没跑迁移** → `AutoMigrate` 只增不减（不改类型、不删列）；改列类型/删列都得显式迁移，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+6. **改了表结构没跑迁移** → `AutoMigrate` 只增不减（不改类型、不删列）；改列类型、删列、回填都得自己写 SQL，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 
 ---
 
 ## 6. 从旧版本升级
 
-### 6.1 从 v3.4.0 之前升级（唯一索引要带 `site`）
+**框架不为更早版本的表结构负责。** 升级跑 `papa migrate` 只做 `AutoMigrate`（建表 / 补列 / 补索引），
+它**不会**替你删旧索引、改列类型、回填数据或删死列 —— 早先版本里那几段"给旧库补课"的显式迁移
+已经删掉了（见 `docs/issues/changes.md`）。
 
-阶段名改成**按站点作用域**（两个站可以各有自己的 `catalog`）之后，`crawler_tasks` 的唯一索引
-从 `(url_hash, stage)` 换成 `(url_hash, stage, site)`，旧名字由迁移删掉。要做的事只有一件：
+从更早的框架版本升上来的库，只有两条路：
 
-1. 跑一次 `papa migrate`（建新索引、删旧索引，并删掉 `crawler_sites` 里空 key 那一行；可重复跑）。
-2. **不跑会静默出错**：库里留着旧索引时它比新索引**严** —— 两个站同名阶段抓到同一个 URL 时
-   第二条插入会报 1062，而插入失败后的回查是按三列查的、找不到那一行，业务只看到一句
-   `insert crawler task to db failed`。启动日志里也有一条警示指向这里（见 `internal/app/app.go`）。
-3. 任务的 `site` 列一直是有的（v3.3 起就在写），所以**不需要回填数据**；只有「阶段名列」改过名的
-   项目才要额外回填 `stage`。
-4. **`site` 现在是必填维度**（声明要有 `Key`、任务要有 `site`）：旧库里 `site` 为空的行成了孤儿 ——
-   它们拼出的阶段键是 `:catalog` 这种，查不到任何已声明的阶段，三条治理队列会跳过后各打一条 WARN。
-   要救就在停机窗口里把 `site` 补上（先 `SELECT` 看一眼影响多少行）：
-   `UPDATE crawler_tasks SET site = '<那一站>' WHERE site = '' AND stage = '<那个阶段>';`
+1. **手工对齐**表结构（对着当前的 `models/` 看差在哪：多出来的列/索引、改过类型的列、要回填的值，
+   自己写 SQL 或 `ALTER TABLE`；停机窗口里做，先备份）。
+2. **重建**库（`papa migrate` 建出当前结构，业务数据自己导）。
 
-### 6.2 从 v3.3.2 之前升级
-
-老版本把结果写在 `crawler_tasks.title` / `content` 两列里。v3.3.2 起：
-
-1. **框架侧**：`SaveResult` / `SaveContent` / `GetResult` 已删除（编译期就会报），两列由 `papa migrate` 显式删除（`AutoMigrate` 不会删列，所以这一步是显式的）。
-2. **业务侧**：把原来写进 `content` 的结构提成自己的表（照 §3 定义 + 登记），写入改成 `engine.Upsert`；原来读父任务 `content` 的地方，改成按业务键查自己的表。
-3. **顺序**：先跑新代码能编译（此时老列还在，不影响），再跑 `papa migrate` 删列 —— 两步之间业务侧不能还在读那两列。
-
----
+新建的库（`papa migrate` 从空库建起来）不受影响，永远是当前结构。
 
 ## 7. 速查
 
 | 我想… | 怎么做 |
 | --- | --- |
 | 落地抓到的数据 | 自己的表 + `engine.Upsert` |
-| 建/改表 | `models.Models()` 登记 + `papa migrate`（改类型/删列要显式迁移） |
+| 建/改表 | `models.Models()` 登记 + `papa migrate`（改类型 / 删列 / 回填要自己写 SQL） |
 | 记住「这条任务是哪条业务行」 | `papa.Task{Meta: ...}`（随任务行落库） |
 | 防重复投递 | 任务的 `(url_hash, stage, site)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
 | 复杂查询 / 事务 | `engine.GetDB()` |

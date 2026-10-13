@@ -204,11 +204,6 @@ func runNew(name string, args []string) error {
 		return err
 	}
 
-	// 生成白名单持久化文件，供 config.yaml 的 server.whitelist_file 引用
-	if err := os.WriteFile(filepath.Join(name, "configs", "whitelist"), []byte("# 每行一个 IP 或 CIDR，留空 = 不限制\n"), 0o600); err != nil {
-		return err
-	}
-
 	fmt.Printf("project %q generated.\n", name)
 	fmt.Printf("next: cd %s && go mod tidy\n", name)
 	fmt.Printf("      建表：papa migrate（在项目目录里跑，会连业务模型一起建；等价于 make migrate）\n")

@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 )
@@ -37,91 +36,6 @@ func TestOptionsSetFields(t *testing.T) {
 		t.Fatalf("UseModels 应追加到同一份清单，实得 %d", len(a.extraModels))
 	}
 }
-
-/* ---------- 白名单解析 ---------- */
-
-// 文件里每行一个 IP/CIDR，空行与 # 注释忽略。
-func TestReadWhitelistFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "whitelist")
-	content := "# 注释\n10.0.0.1\n\n  192.168.1.0/24  \n# 又一行注释\n::1\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := readWhitelistFile(path)
-	want := []string{"10.0.0.1", "192.168.1.0/24", "::1"}
-	if len(got) != len(want) {
-		t.Fatalf("readWhitelistFile = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("第 %d 项 = %q, want %q（顺序保持文件序，值要 trim）", i, got[i], want[i])
-		}
-	}
-
-	// 文件不存在 → nil（调用方据此回退内联配置）
-	if readWhitelistFile(filepath.Join(dir, "nope")) != nil {
-		t.Fatal("文件不存在应返回 nil")
-	}
-}
-
-// **已知的 fail-open**（见 问题分析.md「空 whitelist 文件 = 放开」）：
-// 文件存在但解析后为空时，返回的是**非 nil 空切片**，于是被当成"已配置"采用 → ipAllowed 恒 true。
-//
-// 这条钉的是现状，不是"应该如此"。要改成回退内联 whitelist 时，请连这条一起改。
-func TestReadWhitelistFileEmptyMeansAllowAll(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "empty")
-	if err := os.WriteFile(path, []byte("# 只有注释\n\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	got := readWhitelistFile(path)
-	if got == nil {
-		t.Fatal("现状：空文件返回非 nil 空切片（这正是 fail-open 的成因）")
-	}
-	if len(got) != 0 {
-		t.Fatalf("应解析出 0 条，实得 %v", got)
-	}
-
-	// 经过 resolveWhitelist 之后，内联 whitelist 就被这份"空"顶掉了
-	a := &App{}
-	resolved := a.resolveWhitelist(config.ServerConfig{
-		Whitelist:     []string{"10.0.0.1"},
-		WhitelistFile: path,
-	})
-	if len(resolved) != 0 {
-		t.Fatalf("现状：空文件会顶掉内联白名单，实得 %v", resolved)
-	}
-}
-
-// 文件优先于内联；文件不存在时回退内联。
-func TestResolveWhitelistPrecedence(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "whitelist")
-	if err := os.WriteFile(path, []byte("172.16.0.1\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	a := &App{}
-	cfg := config.ServerConfig{Whitelist: []string{"10.0.0.1"}, WhitelistFile: path}
-	if got := a.resolveWhitelist(cfg); len(got) != 1 || got[0] != "172.16.0.1" {
-		t.Fatalf("文件应优先，实得 %v", got)
-	}
-
-	cfg.WhitelistFile = filepath.Join(dir, "missing")
-	if got := a.resolveWhitelist(cfg); len(got) != 1 || got[0] != "10.0.0.1" {
-		t.Fatalf("文件读不到时应回退内联，实得 %v", got)
-	}
-
-	cfg = config.ServerConfig{}
-	if got := a.resolveWhitelist(cfg); len(got) != 0 {
-		t.Fatalf("两边都没有时返回空，实得 %v", got)
-	}
-}
-
-/* ---------- 页面 key 校验 ---------- */
 
 // key 会进 DOM id 与 URL，所以限制成字母/数字/下划线/连字符。
 func TestValidPageKey(t *testing.T) {

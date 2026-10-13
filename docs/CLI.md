@@ -39,7 +39,6 @@ mycrawler/
                            （下载器不在这里配：框架按 DefaultConfig 备好基座，要各站/各阶段不同就写在站点声明里）
   configs/
     config.yaml            配置（先把 db.dsn 指向你的库）
-    whitelist              后台来源白名单（全注释＝不限制，启动会警告）
     sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers
                             + 每个阶段的 worker_count / queue_size / delay / retry / Entry
   fetcher/                 抓取实现（一个阶段一个 fetcher；想按站点分包也行，加站不必先分包）

@@ -855,7 +855,6 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 ```
 configs/
   config.yaml
-  whitelist
   sites/
     huangguo.go             // 一站一份：Key/BaseURL/Breaker/Stages + func init() { papa.RegisterSite(huangguo()) }
     huangguo2.go            // 加一个站 = 加一个文件（改 Key/BaseURL/阶段参数）
@@ -869,7 +868,7 @@ import (
 app.RegisterSites(papa.Sites()...)
 ```
 
-`configs/` 根目录仍只放数据（config.yaml / whitelist），Go 包单独一层。
+`configs/` 根目录仍只放数据（config.yaml），Go 包单独一层。
 **框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型；为什么必须"文件自己登记"：
 Go 没有"枚举一个包里有哪些函数/类型"的能力（反射只能从值倒推名字），所以"框架自动发现"只有
 代码生成或代码自登记两条路，这里选后者（零构建步骤、可 grep，也是 `database/sql` 驱动那套标准做法）。
@@ -882,7 +881,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
   改完要重启，没有热更）。没写哪段 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
 - **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
-- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`。
+- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml）。声明放 `configs/sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
   站点多了想按站点分包（`fetcher/<站点>/`，如 huangguo）也行。硬要求只有一条 ——
   **阶段名（`GetStage()`）在本站内唯一**，跟 fetcher 放哪儿无关。
@@ -937,7 +936,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
-**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；可用 `server.whitelist` 限制来源 IP。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
+**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；来源 IP 限制在后台「设置」页改（存在 `crawler_config` 表，空 = 不限制）。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
 
 ---
 

@@ -106,6 +106,18 @@ func serve(m *Monitor, method, target string, body io.Reader) *httptest.Response
 	return rr
 }
 
+// serveAllowed 与 serve 相同，但把来源 IP 放在白名单里：白名单真的生效的用例要能过那道门
+// （httptest 默认的 RemoteAddr 不在任何名单里，直接 serve 会拿到 403）。
+func serveAllowed(m *Monitor, method, target string, body io.Reader) *httptest.ResponseRecorder {
+	mux := http.NewServeMux()
+	m.Register(mux)
+	req := httptest.NewRequest(method, target, body)
+	req.RemoteAddr = "10.0.0.5:1111"
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	return rr
+}
+
 func decodeJSON(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var v map[string]any
@@ -284,6 +296,29 @@ func TestAuthNoVerifier(t *testing.T) {
 	}
 }
 
+// whitelistStoreStub 假的配置存储：记下每次保存的条目与操作人，并能注入失败。
+// 这些用例全程同步调用（httptest 直接 ServeHTTP），不需要锁。
+type whitelistStoreStub struct {
+	calls [][]string
+	ops   []string
+	err   error
+}
+
+func (s *whitelistStoreStub) save(entries []string, operator string) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.calls = append(s.calls, append([]string(nil), entries...))
+	s.ops = append(s.ops, operator)
+	return nil
+}
+
+func (s *whitelistStoreStub) fail(err error) { s.err = err }
+
+func (s *whitelistStoreStub) saved() [][]string { return s.calls }
+
+func (s *whitelistStoreStub) savedCount() int { return len(s.calls) }
+
 func TestWhitelist(t *testing.T) {
 	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{Whitelist: []string{"10.0.0.0/8"}})
 	mux := http.NewServeMux()
@@ -306,35 +341,45 @@ func TestWhitelist(t *testing.T) {
 	}
 }
 
+// 保存白名单：写时严格（坏条目当场拒收）· 落库成功才换判定缓存 · 落库失败时旧名单继续生效。
+//
+// 这一版把持久化从"写 whitelist_file"换成了"交给宿主的存储"（papa 落在 crawler_config），
+// 所以断言从"文件内容"改成了"存储收到了什么"—— 文件那条路已经不存在了。
 func TestWhitelistHandler(t *testing.T) {
-	dir := t.TempDir()
-	wf := filepath.Join(dir, "whitelist.txt")
-
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{WhitelistFile: wf})
+	store := &whitelistStoreStub{}
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		Whitelist:     []string{"10.0.0.0/8"},
+		SaveWhitelist: store.save,
+	})
 	mux := http.NewServeMux()
 	m.Register(mux)
 
 	// GET 不允许
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/settings/whitelist", nil))
+	rr := serveAllowed(m, http.MethodGet, "/api/settings/whitelist", nil)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET status = %d, want 405", rr.Code)
 	}
 
-	// POST 更新白名单并持久化
+	// 不是 IP/CIDR 的条目：400，且**一个字都不写存储**
+	rr = serveAllowed(m, http.MethodPost, "/api/settings/whitelist",
+		strings.NewReader(`{"whitelist":["10.0.0.0/8","不是IP"]}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("坏条目 status = %d, want 400（%s）", rr.Code, rr.Body.String())
+	}
+	if got := store.savedCount(); got != 0 {
+		t.Fatalf("坏条目不该写存储，实得写了 %d 次", got)
+	}
+
+	// 正常保存：落库 + 立刻生效
 	body := `{"whitelist":["10.0.0.0/8","192.168.1.1"]}`
-	rr2 := httptest.NewRecorder()
-	mux.ServeHTTP(rr2, httptest.NewRequest(http.MethodPost, "/api/settings/whitelist", strings.NewReader(body)))
+	rr2 := serveAllowed(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(body))
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("POST status = %d, body=%s", rr2.Code, rr2.Body.String())
 	}
-	if b, err := os.ReadFile(wf); err != nil {
-		t.Fatalf("read whitelist file: %v", err)
-	} else if !strings.Contains(string(b), "10.0.0.0/8") {
-		t.Errorf("whitelist file content = %q, want contains 10.0.0.0/8", string(b))
+	if saved := store.saved(); len(saved) != 1 || len(saved[0]) != 2 {
+		t.Fatalf("存储应收到 2 条，实得 %v", saved)
 	}
 
-	// 更新后：新白名单内的 IP 放行，其余拒绝
 	req := httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
 	req.RemoteAddr = "10.0.0.5:1111"
 	rr3 := httptest.NewRecorder()
@@ -350,39 +395,70 @@ func TestWhitelistHandler(t *testing.T) {
 	if rr4.Code != http.StatusForbidden {
 		t.Errorf("after update non-whitelisted ip status = %d, want 403", rr4.Code)
 	}
+
+	// 存储写失败 → 500，且**旧名单继续生效**：不能出现"本进程放行、重启后不认"的白名单
+	store.fail(errors.New("库抖了"))
+	rr5 := serveAllowed(m, http.MethodPost, "/api/settings/whitelist",
+		strings.NewReader(`{"whitelist":["192.168.0.0/16"]}`))
+	if rr5.Code != http.StatusInternalServerError {
+		t.Fatalf("存储失败 status = %d, want 500（%s）", rr5.Code, rr5.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
+	req.RemoteAddr = "10.0.0.5:1111"
+	rr6 := httptest.NewRecorder()
+	mux.ServeHTTP(rr6, req)
+	if rr6.Code != http.StatusOK {
+		t.Errorf("保存失败后旧名单该继续生效，status = %d, want 200", rr6.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
+	req.RemoteAddr = "192.168.0.5:1111"
+	rr7 := httptest.NewRecorder()
+	mux.ServeHTTP(rr7, req)
+	if rr7.Code != http.StatusForbidden {
+		t.Errorf("保存失败时新名单不该生效，status = %d, want 403", rr7.Code)
+	}
 }
 
+// 没接配置存储的宿主（admin/server 被直接使用时）：保存返回 404 说明原因，
+// 而不是"静默只改内存、重启就没了"。
+func TestWhitelistHandlerWithoutStore(t *testing.T) {
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+	rr := serve(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(`{"whitelist":["10.0.0.0/8"]}`))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404（%s）", rr.Code, rr.Body.String())
+	}
+}
 func TestSettingsHandler(t *testing.T) {
 	dir := t.TempDir()
-	wf := filepath.Join(dir, "w.txt")
-	if err := os.WriteFile(wf, []byte("10.0.0.0/8\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
+	store := &whitelistStoreStub{}
 	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
 		Whitelist:     []string{"10.0.0.0/8"},
-		WhitelistFile: wf,
+		SaveWhitelist: store.save,
 		LogDir:        dir,
 	})
-	mux := http.NewServeMux()
-	m.Register(mux)
-	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
-	req.RemoteAddr = "10.0.0.5:1111"
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
-	body := decodeJSON(t, rr)
+	body := decodeJSON(t, serveAllowed(m, http.MethodGet, "/api/settings", nil))
 
 	if got := body["whitelist"].([]any); len(got) != 1 || got[0] != "10.0.0.0/8" {
 		t.Errorf("whitelist = %v", body["whitelist"])
 	}
-	if got := body["has_whitelist_file"]; got != true {
-		t.Errorf("has_whitelist_file = %v, want true", got)
+	// 前端拿 whitelist_source 拼那句"存哪儿"的提示；原来那对 whitelist_file / has_whitelist_file
+	// 已经随白名单搬迁去掉了。
+	if got := body["whitelist_source"]; got != whitelistSource {
+		t.Errorf("whitelist_source = %v, want %s", got, whitelistSource)
 	}
 	if got := body["log_dir"]; got != dir {
 		t.Errorf("log_dir = %v, want %s", got, dir)
 	}
 }
 
+// 没接存储的宿主：whitelist_source 为空串 —— 前端据此显示"改动仅本次运行有效"。
+func TestSettingsHandlerWithoutStore(t *testing.T) {
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{Whitelist: []string{"10.0.0.0/8"}})
+	rr := serveAllowed(m, http.MethodGet, "/api/settings", nil)
+	if got := decodeJSON(t, rr)["whitelist_source"]; got != "" {
+		t.Fatalf("没接存储时 whitelist_source 应为空串，实得 %v", got)
+	}
+}
 func TestLogsListHandler(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.log"), []byte("hello"), 0o644); err != nil {
@@ -823,27 +899,22 @@ func TestAdminJSONHandlersRejectOversizedBody(t *testing.T) {
 		return `{"` + key + `":["` + strings.Repeat("a", maxAdminBody) + `"]}`
 	}
 
-	t.Run("whitelist 超限：400 且不落盘", func(t *testing.T) {
-		dir := t.TempDir()
-		wf := filepath.Join(dir, "whitelist.txt")
-		original := "10.0.0.0/8\n"
-		if err := os.WriteFile(wf, []byte(original), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{WhitelistFile: wf})
+	t.Run("whitelist 超限：400 且不落存储", func(t *testing.T) {
+		store := &whitelistStoreStub{}
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{SaveWhitelist: store.save})
 		rr := serve(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(oversized("whitelist")))
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400（body %d 字节）", rr.Code, rr.Body.Len())
 		}
-
-		// 关键：解析失败不能把白名单改成半截 —— 文件必须还是原样
-		got, err := os.ReadFile(wf)
-		if err != nil {
-			t.Fatal(err)
+		if got := store.savedCount(); got != 0 {
+			t.Fatalf("超限的请求不该写存储，实得 %d 次", got)
 		}
-		if string(got) != original {
-			t.Fatalf("超限的请求不该改动白名单文件：%q", got)
+
+		// 关键：解析失败不能把白名单改成半截 —— 生效的那份必须还是"没设过"（空 → 不限制），
+		// 而不是那串被截断的 aaaa…
+		body := decodeJSON(t, serve(m, http.MethodGet, "/api/settings", nil))
+		if got := body["whitelist"].([]any); len(got) != 0 {
+			t.Fatalf("超限的请求不该改动生效的白名单，实得 %v", got)
 		}
 	})
 
@@ -865,26 +936,36 @@ func TestWhitelistHandlerAcceptsLargeButBoundedBody(t *testing.T) {
 		t.Fatalf("前置条件：这份 body 应当在上限之内（%d >= %d）", len(body), maxAdminBody)
 	}
 
-	dir := t.TempDir()
-	wf := filepath.Join(dir, "whitelist.txt")
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{WhitelistFile: wf})
+	store := &whitelistStoreStub{}
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{SaveWhitelist: store.save})
 
 	rr := serve(m, http.MethodPost, "/api/settings/whitelist", bytes.NewReader(body))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200（body %d 字节）", rr.Code, rr.Body.Len())
 	}
 
-	got, err := os.ReadFile(wf)
-	if err != nil {
-		t.Fatal(err)
+	saved := store.saved()
+	if len(saved) != 1 || len(saved[0]) != entries {
+		t.Fatalf("存储应收到 %d 条，实得 %v 条", entries, len(saved[0]))
 	}
-	lines := strings.Count(strings.TrimRight(string(got), "\n"), "\n") + 1
-	if lines != entries {
-		t.Fatalf("落盘条数 = %d, want %d", lines, entries)
+	// 而且真的生效了：名单里的第一条放行，名单外的一律 403
+	mux := http.NewServeMux()
+	m.Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
+	req.RemoteAddr = "10.0.1.0:1111"
+	rr2 := httptest.NewRecorder()
+	mux.ServeHTTP(rr2, req)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("名单内的来源该放行，status = %d", rr2.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/monitor", nil)
+	req.RemoteAddr = "203.0.113.9:1111"
+	rr3 := httptest.NewRecorder()
+	mux.ServeHTTP(rr3, req)
+	if rr3.Code != http.StatusForbidden {
+		t.Fatalf("名单外的来源该拦，status = %d", rr3.Code)
 	}
 }
-
-// 归档页面的下载接口：给的就是文件本身（拿去本地分析），路径是**不可信输入**，越界一律拒。
 func TestTaskPageEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	rel := "huangguo/task-7-try-0-abc12345.html"

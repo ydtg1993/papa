@@ -36,7 +36,7 @@ type CrawlerTask struct {
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`
 	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage, site) 上 ——
-	// 与 URL 长度无关。由 BeforeCreate 自动填（任何创建路径都覆盖），老库由 `papa migrate` 回填。
+	// 与 URL 长度无关。由 BeforeCreate 自动填 —— 任何创建路径都覆盖，不存在"哪条路忘了填"。
 	URLHash string `gorm:"type:char(64);not null;uniqueIndex:idx_site_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
 	// IdempotencyKey 自定义幂等键的**原文**：规范格式 `site:stage:<标识>`（空 = 没自定义，回退 site:stage:url）。
 	// 1) 不建索引：键里带 URL，varchar(1000) 在 utf8mb4 下建不了索引（3072 字节上限 ≈ 768 字符）；

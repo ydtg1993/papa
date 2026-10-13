@@ -18,9 +18,21 @@
 
 所有 `/api/` 接口都过两道校验：
 
-1. **IP/CIDR 白名单**（`server.whitelist` / `whitelist_file`），空 = 不限制；`/monitor` 页面本身只查这一道。
+1. **IP/CIDR 白名单**（存在 `crawler_config` 表的 `cfg_key = ip_whitelist` 行，运行期在设置页改；**不在 config.yaml 里**）。
+   语义：**行不存在 / 空数组 / 值解析不出来 → 不限制来源**；有值 → 只允许列出的那些来源。`/monitor` 页面本身只查这一道。
 2. **访问令牌**：请求带 `Authorization: Bearer <令牌>`，或 `X-Auth-Key: <令牌>`。方案名按 RFC 7235 **大小写不敏感**（`bearer` / `BEARER` 也收）；令牌本身逐字节精确匹配，不做大小写归一。
    **不再支持 `?key=`**（凭据进 URL 会落进浏览器历史与访问日志）。
+
+**哪些路径要过哪道门**（三类，别混）：
+
+| 谁 | 白名单 | 令牌 |
+| --- | --- | --- |
+| 后台内置数据接口（`/api/*`，含 oao 表格 `/api/oao/*`、`/api/tokens/*`、`/api/pages`） | 要 | 要 |
+| `/monitor` 这张 HTML 壳（还有 `/static/*`） | 页面要、静态资源不要 | **不要** —— 令牌是在页面里填的，填之前也得拿得到页面 |
+| **挂在同一个 mux 上的业务路由**（`Router` 默认套的就是 `Monitor.Auth`） | 要 | **要，且不看路径前缀** —— 要公开就显式 `NoAuth()` |
+
+第三行是 2026-10-13 修的：`Monitor.Auth` 以前复用的是内置端点那条"只看 `/api/` 前缀"的判断，
+于是**注册在非 `/api/` 路径上的业务路由只剩白名单那一道**（白名单内的任何人都进得来）。见 `changes.md`。
 
 `/api/*` 的响应一律带 `Cache-Control: no-store`：带凭据的数据（仪表盘、日志下载、白名单……）
 不该被中间代理缓存 —— 否则令牌停用/删除之后，那份旧的 200 还能被重放出来。
@@ -81,8 +93,8 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/settings` | 返回白名单、白名单文件路径与是否存在、日志目录 |
-| POST | `/api/settings/whitelist` | 更新白名单并持久化到 `whitelist_file`；body `{"whitelist": ["127.0.0.1","10.0.0.0/8"]}` |
+| GET | `/api/settings` | 返回当前白名单（回显**原样**输入）、它持久化在哪（`whitelist_source`，空串 = 该宿主没接配置存储）、日志目录 |
+| POST | `/api/settings/whitelist` | 更新白名单并交给宿主持久化（papa 落在 `crawler_config.ip_whitelist`），**成功即生效**；body `{"whitelist": ["127.0.0.1","10.0.0.0/8"]}`。写时严格：有条目不是 IP/CIDR 就整单 400 不落库；落库失败 500 且旧名单继续生效 |
 | POST | `/api/settings/shutdown` | 触发优雅退出。**body 必须带 `{"token":"..."}`**（要求操作人重新输一遍自己的访问令牌），校验不过返回 403 且不关停；宿主没注入校验器时该接口返回 404 |
 
 ### 访问令牌 API（「访问令牌」页用）
@@ -338,7 +350,8 @@ app.UseRouter(func(r *papa.Router) {
 | `Handle(pattern, h)` | 任意方法；pattern 可带方法前缀（`"PATCH /api/x"`） |
 | `NoAuth()` | 返回一个**不带后台鉴权**的组视图（见下） |
 
-**鉴权默认开着**：业务路由和后台内置接口一样过「IP 白名单 + 访问令牌」，自定义页里用
+**鉴权默认开着**：业务路由和后台内置接口一样过「IP 白名单 + 访问令牌」（**不看路径前缀** ——
+注册在 `/internal/x` 这种路径上照样要令牌），自定义页里用
 `apiFetch` / `apiPost` 调它会自动带上凭据。后台鉴权套在**最外层** —— 白名单/令牌没过的请求
 根本不会进你的中间件，所以日志、计数这类带副作用的中间件不会被未鉴权流量污染。
 
@@ -357,8 +370,8 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
   注册了却没挂上**不会静默**：启动会打一条醒目错误日志说明有 N 组路由没生效。
 - 回调传 `nil` 直接 panic（与 `UsePage` / `RegisterSites` 同风格：声明有问题启动即失败）。
 - pattern 与现有路由冲突时是 `http.ServeMux` 的 panic（挂在同一个 mux 上），不会悄悄覆盖。
-- 路径以 `/api/` 开头的业务路由走的是同一道 `Monitor.Auth`，`Cache-Control: no-store`
-  由它统一加上；`NoAuth()` 的路由没有这层，需要的话自己在 handler 里设置。
+- 业务路由走的是同一道 `Monitor.Auth`：**不管路径是否以 `/api/` 开头**，白名单与令牌都要过
+  （`NoAuth()` 的组除外），`Cache-Control: no-store` 也由它统一加上 —— 需要的话自己在 handler 里覆盖。
 
 `papa new` 生成的工程把这套东西放在 `monitor/` 包里分层：`router.go` 声明路由与中间件、
 `controller/` 放 handler、`middleware.go` 放中间件、`tables.go` 放表格页、`view/` 放自定义页。

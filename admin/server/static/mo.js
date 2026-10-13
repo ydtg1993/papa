@@ -820,9 +820,9 @@
         if (!resp) return;
         var data = await resp.json();
         document.getElementById('wl-input').value = (data.whitelist || []).join('\n');
-        document.getElementById('wl-file-info').textContent = data.whitelist_file
-            ? ('持久化文件：' + data.whitelist_file + (data.has_whitelist_file ? '（已存在）' : '（首次保存时创建）'))
-            : '未配置 whitelist_file：改动仅本次运行有效';
+        document.getElementById('wl-file-info').textContent = data.whitelist_source
+            ? ('持久化在 ' + data.whitelist_source)
+            : '这个宿主没接配置存储：改动仅本次运行有效';
     }
     async function saveWhitelist() {
         var lines = document.getElementById('wl-input').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);

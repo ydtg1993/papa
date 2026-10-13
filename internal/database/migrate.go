@@ -24,6 +24,9 @@ func FrameworkModels(cfg *config.Config) []Model {
 		{Name: "crawler_tasks", Value: &models.CrawlerTask{}},
 		{Name: "crawler_access_token", Value: &models.AccessToken{}},
 		{Name: "crawler_sites", Value: &models.CrawlerSite{}},
+		// 运行期配置（来源 IP 白名单等）。**无条件登记**：它是后台设置页的落点，
+		// 而且"表在不在"不该取决于某个开关 —— 时有时无会让排查变成猜谜。
+		{Name: "crawler_config", Value: &models.Config{}},
 	}
 	if cfg.Server.OperationLog {
 		out = append(out, Model{Name: "crawler_operation_log", Value: &models.OperationLog{}})
@@ -40,30 +43,12 @@ func FrameworkModels(cfg *config.Config) []Model {
 //
 // AutoMigrate **只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 ——
 // 所以生产上跑它是安全的。真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工迁移。
+//
+// **这里不再有"给旧库补课"的显式迁移**：框架不为更早版本的表结构负责 ——
+// 删旧索引、url 改 text、回填 url_hash 与 idempotency_hash、删死列（title/content、按站点的队列统计列）、
+// 删「默认 scope」那行，这些一步都删掉了（它们只对旧库有意义，而旧库不在支持范围内）。
+// 从老库升上来的库要么手工对齐表结构，要么重建。
 func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
-	// 先跑那几步 AutoMigrate 做不了的显式迁移（删旧索引、改列类型、回填、建新索引）——
-	// 它们各自先查 information_schema 判断要不要做，可重复跑。见 migrate_taskurl.go。
-	if err := migrateTaskURLHash(db); err != nil {
-		return err
-	}
-	// 三队列并回全局后，crawler_sites 上按站点的 auto_repeat 与 repeat 统计列成了死列 —— 显式删掉。
-	if err := dropSiteQueueColumns(db); err != nil {
-		return err
-	}
-	// 站点成为必填维度后，"默认 scope"（空 key）那一行没有意义了 —— 删掉它，
-	// 否则后台会一直多一个「默认 scope」Tab（见 migrate_sitescope.go）。
-	if err := deleteDefaultScopeSiteRow(db); err != nil {
-		return err
-	}
-	// 幂等键硬化：原文加宽 + 哈希列 + 唯一索引（见 migrate_taskkey.go）。
-	if err := migrateIdempotencyKey(db); err != nil {
-		return err
-	}
-	// 结果不再落任务表：title / content 两列由业务自建表承载，这里显式删掉（见 migrate_taskcolumns.go）。
-	if err := dropLegacyTaskColumns(db); err != nil {
-		return err
-	}
-
 	all := make([]any, 0, 8)
 	for _, m := range FrameworkModels(cfg) {
 		all = append(all, m.Value)

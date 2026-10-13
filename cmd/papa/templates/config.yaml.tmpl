@@ -85,8 +85,8 @@ server:
   port: 9090
   # 访问令牌在 crawler_access_token 表（一条令牌一个操作人）：papa token add --operator <名字>，
   # 明文只打印一次、库里只存 sha256；一条都没有时 /api/* 对白名单内来源完全开放（启动会警告）。
-  whitelist: []                   # 回退白名单（仅当 whitelist_file 不存在时生效）
-  whitelist_file: "configs/whitelist" # 白名单持久化文件（设置页动态改白名单会写回此文件）
+  # 来源 IP/CIDR 白名单**不在配置里**了：它存在 crawler_config 表的 ip_whitelist 行
+  # （运行期在后台「设置」页改，改完立刻生效）。空 / 读不到 = 不限制来源，只靠访问令牌那道门。
   monitor_dirs:                   # 监控页展示的业务目录占用（name: path）
     downloads: "./downloads"
     logs: "./logs"

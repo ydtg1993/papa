@@ -172,7 +172,6 @@ const (
 
 // StageConfig / RetryConfig 已随"阶段参数搬进 Go 声明"一起移除（见 internal/app/spec.go 的
 // StageSpec / RetrySpec）—— 配置里不再有 crawler.stages 段，重试参数也在阶段声明里。
-// 这一段留个记号，免得从旧版本升级的人对着 config.yaml 找不到东西。
 
 // BrowserConfig chromedp浏览器池配置
 type BrowserConfig struct {
@@ -255,11 +254,9 @@ type ServerConfig struct {
 	// Enabled 是否开启统一 HTTP 服务。开则挂载监控后台（/monitor + /api/* + 表格页 + 自定义页 +
 	// 业务用 UseRouter 注册的路由）；关则整个服务不监听，上面这些一律不挂载（启动会打错误日志）。
 	// 原来还有一个 monitor 子开关，但它唯一的效果是「起了服务却什么都不挂」，已移除。
-	Enabled       bool              `mapstructure:"enabled"`
-	Port          int               `mapstructure:"port"`           // 监听端口，如 9090
-	Whitelist     []string          `mapstructure:"whitelist"`      // 来源 IP/CIDR 白名单（回退默认），空=不限制
-	WhitelistFile string            `mapstructure:"whitelist_file"` // 白名单持久化文件路径，优先于 whitelist
-	MonitorDirs   map[string]string `mapstructure:"monitor_dirs"`   // 监控页展示的业务目录占用，name->path
+	Enabled     bool              `mapstructure:"enabled"`
+	Port        int               `mapstructure:"port"`         // 监听端口，如 9090
+	MonitorDirs map[string]string `mapstructure:"monitor_dirs"` // 监控页展示的业务目录占用，name->path
 	// 治理队列（error/recover/repeat）积压数的采样间隔；<=0 用默认 1m。监控页只读内存快照，仅采样时查库。
 	QueueSampleInterval time.Duration `mapstructure:"queue_sample_interval"`
 	// 操作日志：开启后后台所有增删改操作写入 crawler_operation_log 表（含失败）。

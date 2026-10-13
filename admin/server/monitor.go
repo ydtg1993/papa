@@ -67,9 +67,13 @@ type MonitorConfig struct {
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
 	// 由宿主注入（papa 用 admin/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
-	VerifyToken   func(r *http.Request) (operator string, ok bool)
-	Whitelist     []string                         // 初始 IP/CIDR 白名单，空=不限制
-	WhitelistFile string                           // 白名单持久化文件路径（动态更新时写回）
+	VerifyToken func(r *http.Request) (operator string, ok bool)
+	// Whitelist 初始来源 IP/CIDR 白名单（宿主从**配置存储**读来的第一份）；空=不限制。
+	// 后续的变化（设置页保存 / 宿主的定期重载）经 SetWhitelist 进本包，不经这里。
+	Whitelist []string
+	// SaveWhitelist 把白名单**持久化**（宿主注入：papa 落在 crawler_config 表的 ip_whitelist 行）。
+	// nil = 这个宿主没接配置存储 —— 保存接口返回 404 说明原因，而不是"只改内存、重启就没了"。
+	SaveWhitelist func(entries []string, operator string) error
 	Metrics       func() map[string]any            // 业务自定义数据快照（可空）
 	QueueStats    func() map[string]core.QueueStat // 治理队列运行快照（可空）
 	SiteStats     func() map[string]core.SiteStat  // 站点维度快照（站点信息 + 慢变统计，可空）
@@ -127,8 +131,11 @@ type Monitor struct {
 	parseOnce sync.Once
 	parseErr  error
 
-	mu        sync.RWMutex
-	whitelist []*net.IPNet
+	mu sync.RWMutex
+	// whitelist 解析后的白名单（每请求判定用它）；rawWhitelist 是**原样**的那一份（设置页回显用它，
+	// 免得把运营输入的 "192.168.1.1" 显示成规范化后的 "192.168.1.1/32"）。两者永远一起换。
+	whitelist    []*net.IPNet
+	rawWhitelist []string
 }
 
 // Logger 简单日志接口，避免循环依赖
@@ -141,10 +148,11 @@ type Logger interface {
 // NewMonitor 创建监控路由
 func NewMonitor(getter MonitorGetter, logger Logger, cfg MonitorConfig) *Monitor {
 	return &Monitor{
-		getter:    getter,
-		logger:    logger,
-		cfg:       cfg,
-		whitelist: parseWhitelist(cfg.Whitelist, logger),
+		getter:       getter,
+		logger:       logger,
+		cfg:          cfg,
+		whitelist:    parseWhitelist(cfg.Whitelist, logger),
+		rawWhitelist: nonEmptyStrings(cfg.Whitelist),
 	}
 }
 
@@ -170,7 +178,64 @@ func parseWhitelist(items []string, logger Logger) []*net.IPNet {
 			logger.Errorf("invalid whitelist entry %q: %s", item, err.Error())
 		}
 	}
+	// 非空、却一条都没解析出来 —— 这一档的语义是"按不限制来源生效"（见 configstore.KeyIPWhitelist），
+	// 也就是把限制**悄悄放宽了**。运营写错一个字符就会走到这里，所以按 Error 单独喊一句。
+	if len(out) == 0 && len(items) > 0 {
+		logger.Errorf("来源 IP 白名单配置了 %d 条、但一条都解析不出来 —— 按「不限制来源」生效。"+
+			"要么改对（后台设置页 / crawler_config 表的 ip_whitelist 行），要么显式清空成 []", len(items))
+	}
 	return out
+}
+
+// nonEmptyStrings 去掉空串与首尾空白，保留原样的顺序（设置页回显用）。
+func nonEmptyStrings(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if v := strings.TrimSpace(item); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// SetWhitelist 换一份白名单（宿主在启动读取与定期重载时调；解析在本包内做）。
+//
+// 传进来的就是**存储里的原样字符串**：解析后的 CIDR 用于每请求判定，原样那串回显给设置页。
+// 解析规则与初始值同一条路（裸 IP 补 /32、IPv6 补 /128；坏条目丢掉并记 Error）。
+func (s *Monitor) SetWhitelist(entries []string) {
+	parsed := parseWhitelist(entries, s.logger)
+	raw := nonEmptyStrings(entries)
+	s.mu.Lock()
+	s.whitelist = parsed
+	s.rawWhitelist = raw
+	s.mu.Unlock()
+}
+
+// firstInvalidWhitelistEntry 严格校验一份**待保存**的白名单：返回第一条不是 IP/CIDR 的条目
+// （都合法、或整份为空，返回空串）。
+//
+// 与读路径（parseWhitelist）的差别是时机与后果：读路径跑在"库里已存的值"上，坏条目丢掉、
+// 丢完为空就是不限制（那是运营定的语义）；保存路径是人在后台手输的，写坏了没有第二次机会 ——
+// 所以当场拒收，把是哪一条说给操作人听。空数组允许：语义是"清空限制"。
+func firstInvalidWhitelistEntry(items []string) string {
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		cidr := item
+		if !strings.Contains(cidr, "/") {
+			if strings.Contains(cidr, ":") {
+				cidr += "/128"
+			} else {
+				cidr += "/32"
+			}
+		}
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return item
+		}
+	}
+	return ""
 }
 
 // Register 将监控路由注册到统一 mux 上
@@ -197,8 +262,12 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/task/page", s.wrap(s.taskPageHandler))
 }
 
-// wrap 包装处理器：先 IP 白名单，再令牌校验（仅 /api/ 数据接口）。
+// wrap 包装处理器：先 IP 白名单，再令牌校验（**仅 /api/ 数据接口**）。
 // 校验通过时把「操作人」放进请求上下文，操作日志据此记人。
+//
+// `/api/` 前缀这条豁免是给**后台自己的页面**留的：/monitor 的 HTML 壳要先能加载出来，
+// 而令牌是在那张页面里填的（填之前也得拿得到页面）。挂在同一个 mux 上的外部组件与业务路由
+// 不走这里，它们走 Auth —— 那道**不看前缀**，见下面那条注释。
 func (s *Monitor) wrap(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.ipAllowed(r) {
@@ -206,27 +275,53 @@ func (s *Monitor) wrap(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			// 带凭据的数据响应不许任何缓存留存：令牌被停用/删除后，代理（或浏览器）里那份
-			// 旧 200 还能被原样重放出来。浏览器自己不会缓存带 Authorization 的响应，
-			// 但中间代理会 —— 这里把它明确掉，不靠实现细节。
-			w.Header().Set("Cache-Control", "no-store")
-			operator, ok := s.authOK(r)
+			r2, ok := s.requireToken(w, r)
 			if !ok {
-				w.Header().Set("WWW-Authenticate", "Bearer")
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-			r = r.WithContext(auth.WithOperator(r.Context(), operator))
+			r = r2
 		}
 		next(w, r)
 	}
 }
 
+// requireToken 校验令牌并把操作人放进请求上下文；不通过时**已经写好了响应**
+// （401 + WWW-Authenticate），调用方直接 return 即可。
+//
+// 顺手打上 Cache-Control: no-store —— 带凭据的数据响应不许任何缓存留存：令牌被停用/删除后，
+// 代理（或浏览器）里那份旧 200 还能被原样重放出来。浏览器自己不会缓存带 Authorization 的响应，
+// 但中间代理会，所以把它明确掉，不靠实现细节。
+func (s *Monitor) requireToken(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
+	w.Header().Set("Cache-Control", "no-store")
+	operator, ok := s.authOK(r)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return r, false
+	}
+	return r.WithContext(auth.WithOperator(r.Context(), operator)), true
+}
+
 // Auth 把同一套「白名单 + 令牌」校验暴露成 http.Handler 中间件，
-// 供挂在同一 mux 上的外部组件（如 oao 表格）复用，避免业务侧接口绕过鉴权。
+// 供挂在同一 mux 上的外部组件（如 oao 表格）与业务路由复用，避免业务侧接口绕过鉴权。
+//
+// **与 wrap 的差别只有一处：令牌校验对**所有路径**生效，不看 /api/ 前缀。**
+// 那个前缀豁免是给后台自己的页面留的（理由见 wrap），业务路由没有这个需要 ——
+// 它们要么带着令牌，要么用 NoAuth() 显式公开（Router 上那两条正是这么约定的）。
+//
+// 这里以前直接复用 wrap，于是**挂在非 /api/ 路径上的业务路由只剩下白名单那道门**：
+// 白名单是"哪些来源可以进来"，令牌是"谁"，后者缺了就等于对白名单内的任何人开放。
 func (s *Monitor) Auth(next http.Handler) http.Handler {
-	return s.wrap(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.ipAllowed(r) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		r2, ok := s.requireToken(w, r)
+		if !ok {
+			return
+		}
+		next.ServeHTTP(w, r2)
 	})
 }
 
@@ -341,17 +436,22 @@ func (s *Monitor) customData() map[string]any {
 // settingsHandler 返回当前后台设置状态（不含密钥明文）
 func (s *Monitor) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
-	wl := make([]string, len(s.whitelist))
-	for i, n := range s.whitelist {
-		wl[i] = n.String()
-	}
+	// 用 append([]string{}, …) 而不是 append([]string(nil), …)：空名单要序列化成 []（前端按数组用），
+	// nil 会变成 JSON null —— 老实现一直返回 []，别在这里退化成 null。
+	wl := append([]string{}, s.rawWhitelist...)
 	s.mu.RUnlock()
 
+	// whitelist_source：这份白名单**持久化在哪**（空串 = 这个宿主没接配置存储，改动只在本次运行有效）。
+	// 前端拿它拼那句提示 —— 原来这里报的是 whitelist_file / has_whitelist_file，白名单搬到库里之后
+	// 那两个键没有意义了。
+	source := ""
+	if s.cfg.SaveWhitelist != nil {
+		source = whitelistSource
+	}
 	writeJSON(w, map[string]any{
-		"whitelist":          wl,
-		"whitelist_file":     s.cfg.WhitelistFile,
-		"has_whitelist_file": s.cfg.WhitelistFile != "" && fileExists(s.cfg.WhitelistFile),
-		"log_dir":            s.cfg.LogDir,
+		"whitelist":        wl,
+		"whitelist_source": source,
+		"log_dir":          s.cfg.LogDir,
 	})
 }
 
@@ -363,7 +463,11 @@ func (s *Monitor) settingsHandler(w http.ResponseWriter, r *http.Request) {
 // 64KB 约合 3000 条 IP/CIDR，给足余量。
 const maxAdminBody = 64 << 10
 
-// whitelistHandler 动态更新 IP/CIDR 白名单并持久化到 whitelist_file
+// whitelistSource 白名单的持久化位置说明（回给设置页的提示文案用）。
+const whitelistSource = "crawler_config.ip_whitelist"
+
+// whitelistHandler 动态更新 IP/CIDR 白名单：交给宿主持久化（papa 落在 crawler_config 表），
+// 成功后立刻换本进程的判定缓存 —— 存储是唯一事实来源，这里不自己记一份"待保存"的差异。
 func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -377,19 +481,24 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	if s.cfg.WhitelistFile != "" {
-		data := strings.Join(body.Whitelist, "\n")
-		if err := os.WriteFile(s.cfg.WhitelistFile, []byte(data+"\n"), 0o600); err != nil {
-			s.logger.Errorf("write whitelist file %s: %s", s.cfg.WhitelistFile, err.Error())
-			http.Error(w, "persist whitelist failed", http.StatusInternalServerError)
-			return
-		}
+	// 写时严格：先确认每一条都是 IP/CIDR，再去动存储。写坏一份白名单的代价是"限制静默放宽"，
+	// 而那正是这条路唯一会造成的坏事 —— 当场拒收比事后从日志里翻出来强。
+	if bad := firstInvalidWhitelistEntry(body.Whitelist); bad != "" {
+		http.Error(w, "白名单里有不是 IP/CIDR 的条目："+bad, http.StatusBadRequest)
+		return
 	}
-	parsed := parseWhitelist(body.Whitelist, s.logger)
-	s.mu.Lock()
-	s.whitelist = parsed
-	s.mu.Unlock()
-	writeJSON(w, map[string]any{"status": "ok", "whitelist": body.Whitelist})
+	if s.cfg.SaveWhitelist == nil {
+		http.Error(w, "这个宿主没有接配置存储，白名单改不了（papa 由 crawler_config 表承载）", http.StatusNotFound)
+		return
+	}
+	// 落库成功才动缓存：反过来的话，库写失败会留下一份"本进程放行、重启后不认"的白名单。
+	if err := s.cfg.SaveWhitelist(body.Whitelist, auth.OperatorFrom(r.Context())); err != nil {
+		s.logger.Errorf("save whitelist: %s", err.Error())
+		http.Error(w, "保存白名单失败："+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.SetWhitelist(body.Whitelist)
+	writeJSON(w, map[string]any{"status": "ok", "whitelist": nonEmptyStrings(body.Whitelist)})
 }
 
 // shutdownHandler 触发优雅退出（稍延迟以便响应刷出）
@@ -920,11 +1029,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // fileExists 判断路径是否存在
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // htmlHandler 返回 HTML 监控页面
 func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := s.loadTemplate()

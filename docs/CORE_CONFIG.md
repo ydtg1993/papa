@@ -136,7 +136,6 @@
 | --- | --- | --- |
 | `enabled` | bool | 是否开启统一 HTTP 服务。开则挂载整个监控后台（`/monitor` + `/api/*` + 表格页 + 自定义页 + `UseRouter` 注册的路由）；关则**服务完全不监听**，上面这些一律不挂载。原来还有一个 `monitor` 子开关，但它唯一的效果是「起了 HTTP 服务却什么都不挂」（所有路径 404），已移除 |
 | `port` | int | 监听端口 |
-| `whitelist` / `whitelist_file` | []string | 来源 IP/CIDR 白名单；文件优先 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
 | （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人）；用 `papa token add --operator <名字>` 创建 |
@@ -294,15 +293,12 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 接在这个参数上（Makefile 里是 `make migrate`）。自己写 main 的话记得照做 —— 否则
 `papa migrate` 转交过去，就等于把你的爬虫直接启动了。
 
-底层使用 GORM `AutoMigrate` 补齐框架表与注册模型。它不会替业务推断删列、改名等破坏性意图；不同数据库对类型和约束迁移的能力也不完全相同。重复运行通常是幂等的，但生产环境不要把它理解成“无条件安全”：先备份、审查生成 SQL，并为改名、改类型、数据回填等操作编写显式迁移。
+底层使用 GORM `AutoMigrate` 补齐框架表与注册模型。它不会替业务推断删列、改名等破坏性意图；不同数据库对类型和约束迁移的能力也不完全相同。重复运行通常是幂等的，但生产环境不要把它理解成“无条件安全”：先备份、审查生成 SQL，并为改名、改类型、数据回填等操作自己写迁移 SQL。
 
-**框架自己的破坏性变更也走这一步**：`papa migrate` 在 AutoMigrate 之前先跑显式迁移（先查 `information_schema`
-再决定要不要做，可重复跑）—— 例如 v3.3.2 删掉 `crawler_tasks` 的 `title` / `content` 两列、把幂等键加宽到
-varchar(1000) 并把唯一性落到 `idempotency_hash` 的唯一索引上、三队列并回全局时删
-`crawler_sites` 的按站队列列；v3.4.0 把 `crawler_tasks` 的唯一索引从 `(url_hash, stage)`
-换成 `(url_hash, stage, site)`（阶段名按站点作用域）并删掉旧名字、删掉 `crawler_sites` 里空 key
-那一行（站点成为必填维度后，「未归属 / 默认 scope」不再存在）。
-所以**升级框架后必须跑一次迁移**，光换二进制不够。
+**框架不为更早版本的表结构负责**：`papa migrate` 只做 `AutoMigrate`（建表 / 补列 / 补索引），
+不再带任何"给旧库补课"的显式迁移（删旧索引、改列类型、回填、删死列那些都删掉了）。
+表结构差异只保证**当前版本新建的库**是对的；从更早版本升上来的库要么手工对齐，要么重建
+—— `papa migrate` 不会替你改。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_sites` 总是建；
 `crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）

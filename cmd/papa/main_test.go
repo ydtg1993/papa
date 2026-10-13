@@ -41,7 +41,6 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 		filepath.Join("docker", "Dockerfile"),
 		filepath.Join("docker", "docker-compose.yml"),
 		filepath.Join("logs", ".gitkeep"),
-		filepath.Join("configs", "whitelist"),
 	}
 	for _, f := range wantFiles {
 		if _, err := os.Stat(filepath.Join("demo", f)); err != nil {
@@ -80,15 +79,6 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 			t.Errorf("docs 下出现了非 markdown 文件：%s", d.Name())
 		}
 	}
-
-	// 白名单文件是 config.yaml 里 server.whitelist_file 引用的，内容必须能被当注释全部忽略
-	wl := readFile(t, filepath.Join("demo", "configs", "whitelist"))
-	for line := range strings.SplitSeq(wl, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "#") {
-			t.Errorf("whitelist 模板里有意外的条目 %q —— 它会真的生效", line)
-		}
-	}
 }
 
 // 生成的 config.yaml 必须能被框架自己解析：模板改坏了要在这里炸，而不是在用户的项目里。
@@ -98,8 +88,8 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		t.Fatalf("runNew = %v", err)
 	}
 
-	cfg, err := config.Load(filepath.Join("demo", "configs", "config.yaml"))
-	if err != nil {
+	// 生成的配置必须能被框架自己读进来（含"未知键一律拒绝启动"那一关）
+	if _, err := config.Load(filepath.Join("demo", "configs", "config.yaml")); err != nil {
 		t.Fatalf("脚手架产出的配置框架读不了：%v", err)
 	}
 
@@ -192,11 +182,13 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		t.Error("config.yaml 里不该再写一份 UA —— 请求头写在 configs/sites/<站名>.go 的 Headers 里")
 	}
 
-	// 配置里引用的白名单文件得真的存在，否则那条注释形同虚设
-	if cfg.Server.WhitelistFile == "" {
-		t.Error("server.whitelist_file 没配")
-	} else if _, err := os.Stat(filepath.Join("demo", cfg.Server.WhitelistFile)); err != nil {
-		t.Errorf("配置引用的白名单文件不存在（%s）：%v", cfg.Server.WhitelistFile, err)
+	// 白名单在 crawler_config 表里（不在 config.yaml）：生成的配置里**不该**再出现那两个旧键 ——
+	// 出现了新项目一启动就被配置校验拒掉（未知键一律拒绝启动）。
+	for _, bad := range []string{"whitelist_file", "whitelist:"} {
+		cfgText := readFile(t, filepath.Join("demo", "configs", "config.yaml"))
+		if strings.Contains(cfgText, bad) {
+			t.Errorf("生成的 config.yaml 里还有已废弃的白名单键 %q", bad)
+		}
 	}
 }
 
