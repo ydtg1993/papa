@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"sort"
@@ -187,20 +189,33 @@ func runDebugCmd(cmd string, args []string) error {
 	return fmt.Errorf("unknown command: %s", cmd)
 }
 
-// loadOptionalConfig 加载配置；文件缺失时返回零值配置与 false，让命令零配置也能跑。
-func loadOptionalConfig(path string) (*config.Config, bool) {
+// defaultConfigPath 没给 -c / PAPA_CONFIG 时用的默认配置路径。
+const defaultConfigPath = "configs/config.yaml"
+
+// loadOptionalConfig 加载配置。三档分开，别混：
+//
+//   - **显式指定**了路径（`-c` 或 `PAPA_CONFIG`）却读不了 / 解析不了 → **报错**。
+//     以前这里一律退回零值配置，于是"在必须走代理的环境里忘了改 -c"表现为**悄悄直连**，
+//     请求头、超时、代理全都不生效 —— 一个字都不提示。
+//   - 没指定、默认路径也不存在 → 零值配置 + false：零配置也能跑是设计要的（`papa html <url>` 直接看页面）。
+//   - 默认路径**存在但坏了** → 报错：文件在那儿还解析不了是配置写错了，不能当"没配"。
+func loadOptionalConfig(path string) (*config.Config, bool, error) {
+	explicit := path != "" || os.Getenv("PAPA_CONFIG") != ""
 	cfgPath := path
 	if cfgPath == "" {
 		cfgPath = os.Getenv("PAPA_CONFIG")
 	}
 	if cfgPath == "" {
-		cfgPath = "configs/config.yaml"
+		cfgPath = defaultConfigPath
 	}
 	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return &config.Config{}, false
+	if err == nil {
+		return cfg, true, nil
 	}
-	return cfg, true
+	if !explicit && errors.Is(err, fs.ErrNotExist) {
+		return &config.Config{}, false, nil
+	}
+	return nil, false, fmt.Errorf("读配置 %s: %w（配置错了就改对；不想用配置就把它挪开或别写 -c）", cfgPath, err)
 }
 
 // newProxyManager 仅在显式 --proxy 时构建代理管理器。
@@ -253,7 +268,10 @@ type outcome struct {
 
 // runHTML 静态 HTML 抓取（htmlfetch）。
 func runHTML(rawURL string, df debugFlags) error {
-	cfg, _ := loadOptionalConfig(df.config)
+	cfg, _, err := loadOptionalConfig(df.config)
+	if err != nil {
+		return err
+	}
 	headers := mergeHeaders(cfg.HTML.Headers, df.headers)
 
 	ua := df.ua
@@ -297,7 +315,10 @@ func runHTML(rawURL string, df debugFlags) error {
 
 // runRod 浏览器渲染后抓取（rod）。--act 顺序执行页面动作，--show 交还人工操作后再导出。
 func runRod(rawURL string, df debugFlags) error {
-	cfg, loaded := loadOptionalConfig(df.config)
+	cfg, loaded, err := loadOptionalConfig(df.config)
+	if err != nil {
+		return err
+	}
 	headers := mergeHeaders(cfg.Browser.Headers, df.headers)
 
 	// 解析动作序列：语法错误在开浏览器之前就报出来
@@ -392,7 +413,10 @@ func runRod(rawURL string, df debugFlags) error {
 
 // runDiff 同一 URL 分别用 htmlfetch 与 rod 抓取并对比。
 func runDiff(rawURL string, df debugFlags) error {
-	cfg, loaded := loadOptionalConfig(df.config)
+	cfg, loaded, err := loadOptionalConfig(df.config)
+	if err != nil {
+		return err
+	}
 
 	// html 侧
 	htmlHeaders := mergeHeaders(cfg.HTML.Headers, df.headers)
@@ -503,7 +527,10 @@ func runSelect(css string, target string, df debugFlags) error {
 	var htmlStr string
 
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		cfg, _ := loadOptionalConfig(df.config)
+		cfg, _, err := loadOptionalConfig(df.config)
+		if err != nil {
+			return err
+		}
 		headers := mergeHeaders(cfg.HTML.Headers, df.headers)
 		ua := df.ua
 		if ua == "" {

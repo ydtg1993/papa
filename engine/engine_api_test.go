@@ -399,3 +399,17 @@ type crawlerTaskStub struct {
 }
 
 func (crawlerTaskStub) TableName() string { return "crawler_tasks" }
+
+// 没启用静态 HTML 客户端（crawler.html.enable = false）时直接调 FetchHTML：给一句能照着改的错误，
+// 而不是 nil 解引用 panic —— 框架 handler 里有 recover，会被吃成一次莫名其妙的任务失败；
+// 直接调 API 的业务（cron / 后台任务）就是整个进程被带走。
+func TestFetchHTMLWithoutClientReturnsError(t *testing.T) {
+	e := &Engine{} // 没调 SetHTMLClient 的样子
+	_, err := e.FetchHTML(context.Background(), "https://example.com")
+	if err == nil {
+		t.Fatal("未启用静态 HTML 客户端时应当返回错误")
+	}
+	if !strings.Contains(err.Error(), "html.enable") {
+		t.Fatalf("报错要点名开关，实得：%v", err)
+	}
+}

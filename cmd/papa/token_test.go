@@ -56,7 +56,10 @@ func TestRunTokenCmdRejectsBlankOperator(t *testing.T) {
 	}
 }
 
-// 操作人合法、但配置读不到时：报"读不到配置"，而不是继续往下连库。
+// 操作人合法、但配置读不到时：报配置的问题，而不是继续往下连库。
+//
+// 显式 `-c` 指到不存在的文件现在由 loadOptionalConfig 直接报错（"读配置 <path>: …"）——
+// 比原来那句笼统的"读不到配置"更早也更准；这里钉的是"错因指向配置 + 没走到连库"。
 func TestRunTokenCmdNeedsConfig(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("PAPA_CONFIG", "")
@@ -65,8 +68,11 @@ func TestRunTokenCmdNeedsConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("配置不存在时应当报错")
 	}
-	if !strings.Contains(err.Error(), "读不到配置") {
-		t.Fatalf("错误信息 = %q，应当指向配置问题", err.Error())
+	if !strings.Contains(err.Error(), "configs/nope.yaml") {
+		t.Fatalf("错误信息 = %q，应当点名那个读不到的配置", err.Error())
+	}
+	if strings.Contains(err.Error(), "连接数据库") {
+		t.Fatalf("配置读不到就不该继续连库：%v", err)
 	}
 }
 

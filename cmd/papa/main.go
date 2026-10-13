@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"go/format"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,46 @@ func sanitizeIdent(s string) string {
 	if id[0] >= '0' && id[0] <= '9' {
 		return "site" + id
 	}
+	// 字符合法还不够，有三类名字会让生成的 `func <名字>() papa.SiteSpec` 编不过：
+	// Go 关键字（`func type()` 语法错）· 预处理标识符 `_`（`func _()` 合法，但 `RegisterSite(_())`
+	// 用不了它）· `init`（Go 规定 init 函数不能有参数和返回值）。撞上就加个 Site 后缀 ——
+	// 不这样的话，报出来的是 format.Source 那句"生成的 xxx 不是合法 Go（模板改坏了？）"，真错因被盖掉。
+	if token.IsKeyword(id) || id == "_" || id == "init" {
+		return id + "Site"
+	}
 	return id
+}
+
+// validateModuleName 校验项目名（它就是 go.mod 里的 module 路径）。
+//
+// 同一个名字还会变成：项目目录名、`configs/sites/<名字>.go` 的文件名、以及生成代码里的 import 前缀 ——
+// 所以规则比 Go 的模块路径再严一点：空格、引号、冒号、问号这些在文件名里非法的字符一律不收。
+//
+// **必须在写任何文件之前拦**：不拦的话，名字里的空格要到 `format.Source` 那一步才炸，报出来的是
+// "生成的 xxx 不是合法 Go（模板改坏了？）" —— 真错因（名字）被掩盖，项目目录里还留下半成品。
+func validateModuleName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("项目名不能为空")
+	}
+	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.Contains(name, "//") {
+		return fmt.Errorf("项目名 %q 不合法：不能以 / 开头或结尾，也不能有连续的 //", name)
+	}
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("项目名 %q 不合法：路径段不能是 %q", name, seg)
+		}
+		for _, r := range seg {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+				r == '.' || r == '_' || r == '~' || r == '+' || r == '-':
+			default:
+				return fmt.Errorf("项目名 %q 里有不能用作模块路径与文件名的字符 %q："+
+					"只允许字母、数字与 . _ ~ + - ，路径分隔用 /（例如 mycrawler 或 example.com/mycrawler）",
+					name, string(r))
+			}
+		}
+	}
+	return nil
 }
 
 func main() {
@@ -127,6 +167,10 @@ func usage() {
 func runNew(name string, args []string) error {
 	if name == "" {
 		return fmt.Errorf("project name is empty")
+	}
+	// 先校验名字再落任何文件：它同时是 module 路径、目录名与文件名，写坏了要到生成到一半才现形。
+	if err := validateModuleName(name); err != nil {
+		return err
 	}
 
 	// 解析 --replace / -replace 或 --replace=<path>

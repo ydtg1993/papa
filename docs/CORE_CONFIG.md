@@ -126,8 +126,8 @@
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
 | `dir` | string | 日志目录。**必填** —— 空串会拼出**文件系统根 / 当前盘根**下的 `sys.log`：要么因为没权限而静默一条日志都没有，要么把日志散在盘根 |
-| `max_size` | int | 单文件大小上限（MB） |
-| `max_days` / `max_backups` | int | 保留天数 / 备份数 |
+| `max_size` | int | 单文件大小上限（MB），默认 100 |
+| `max_days` / `max_backups` | int | 保留天数 / 备份数；**0（或没配）= 默认 7 天 / 3 份**（不是"永久保留"，要留久就给大数） |
 | `compress` / `local_time` | bool | 是否压缩 / 本地时间 |
 
 ### server —— 监控 HTTP 服务（详见 [MONITOR.md](./MONITOR.md)）
@@ -156,11 +156,11 @@ error_queue:
   worker_count: 1             # 并发重新投递数；开启时必填 > 0
   interval: "4h"              # 自动轮询间隔；"0" = 不自动，仅后台手动触发
   max_retry: 3                # 单个任务最多再处理代数；0 = 不限
-  batch_size: 100             # 每批查询处理的任务数；开启时必填 > 0（分页流式）
+  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（分页流式，不能为负）
 ```
 
 > 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
-> 开着（`enabled: true`）时 `worker_count` / `batch_size` 必填 > 0、`max_retry` 不能为负、
+> 开着（`enabled: true`）时 `worker_count` 必填 > 0、`batch_size`（0 = 默认 1000）与 `max_retry` 不能为负、
 > `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker` 的
 > 「enabled=true 时 threshold 必填」同一档）。参数启动时读一次，改完要重启。
 
@@ -212,7 +212,7 @@ crawler:
 recover_queue:
   enabled: true               # 启动恢复；false / 不写 = 不跑
   worker_count: 1             # 并发重新入队的数量；开启时必填 > 0
-  batch_size: 100             # 每批查询处理的任务数；开启时必填 > 0
+  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
 ```
 
 > 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `interval` / `max_retry`。
@@ -226,7 +226,7 @@ repeat_queue:
   enabled: true               # 周期轮询；false / 不写 = 不跑
   worker_count: 1             # 并发重新投递的数量；开启时必填 > 0
   interval: "2h"              # 最粗兜底的扫描间隔；开启时必填 > 0
-  batch_size: 100             # 每批查询处理的任务数；开启时必填 > 0
+  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
 ```
 
 > 轮询队列是**全局一条**（后台一行）。"要不要自动跑"只有一层：`enabled`（false 就是仅手动触发）。

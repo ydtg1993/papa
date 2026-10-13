@@ -159,15 +159,15 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 	if err != nil {
 		return nil, err
 	}
-	// **`page != nil` 这个判断不能省**：下面几条失败路径写的是 `return nil, ...`，会把命名返回值
-	// page 置成 nil，而这个 defer 仍然会跑 —— `(*rod.Page)(nil).Close()` 里第一句就取
-	// `p.browser.targetsLock`，直接 nil 解引用 panic（rod.Close 不判 nil）。
-	// 触发条件很普通：DNS 失败、连接被拒、导航超时（默认 30s）。在 worker 里那会变成一个
-	// `panic: runtime error` 把真实原因（navigate: …）盖掉；在 worker 之外（业务 cron 直接调）
-	// 会把整个进程带走。
+	// 失败路径要关掉的是**刚建出来的那个页面**：用局部变量接住原指针，别去看命名返回值 ——
+	// 下面几条失败路径写的是 `return nil, ...`，那会先把 page 置成 nil，defer 里再判 `page != nil`
+	// 就永远为假，页面（挂在池化浏览器上的一个标签页）就这么漏了；反过来不判 nil 直接 Close 又会
+	// `(*rod.Page)(nil).Close()` nil 解引用 panic（rod.Close 不判 nil）。
+	// 触发条件很普通：DNS 失败、连接被拒、导航超时（默认 30s）—— 反复失败会一直吃标签页。
+	created := page // 上面已经挡住 err != nil，这里必非 nil
 	defer func() {
-		if err != nil && page != nil {
-			_ = page.Close()
+		if err != nil {
+			_ = created.Close()
 		}
 	}()
 

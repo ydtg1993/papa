@@ -498,7 +498,7 @@ func TestMergeFailureKeepsSegments(t *testing.T) {
 	// 造一份"前两个分片已下好"的续传状态，其中**第二个分片的文件故意不存在**，
 	// 这样合并会在第二个分片上失败 —— 正好能看出第一个分片有没有被提前删掉。
 	la := &labor{url: server.URL, outputDir: "d", filename: "f.bin"}
-	segDir := filepath.Join(tempState, "segments", la.outputDir, la.filename)
+	segDir := d.segDir(la)
 	if err := os.MkdirAll(segDir, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -69,7 +69,10 @@ func runTokenCmd(args []string) error {
 		return fmt.Errorf("--operator 不能为空\n\n%s", usage)
 	}
 
-	cfg, ok := loadOptionalConfig(cfgPath)
+	cfg, ok, err := loadOptionalConfig(cfgPath)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return fmt.Errorf("读不到配置（用 -c 指定 configs/config.yaml，或设 PAPA_CONFIG）")
 	}

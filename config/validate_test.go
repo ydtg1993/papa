@@ -297,6 +297,22 @@ func TestUnknownRemovedKeyHasNoBogusSuggestion(t *testing.T) {
 	}
 }
 
+// batch_size 写 0 要**能用**：运行时本来就把 <= 0 当"默认 1000"（见 engine/batch.go 的 processInBatches），
+// 而校验层以前按 "> 0" 拒收 —— 于是注释里那句"0 = 默认 1000"和实际行为对不上：照注释写反而起不来。
+// 负数才是真错的（照原样传下去会进 LIMIT）。
+func TestQueueBatchSizeZeroMeansDefault(t *testing.T) {
+	cfg := loadString(t, baseConfig+
+		"error_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: 0\n")
+	if cfg.ErrorQueue.BatchSize != 0 {
+		t.Fatalf("batch_size: 0 应当被接受（运行时按默认 1000 走），实得 %d", cfg.ErrorQueue.BatchSize)
+	}
+
+	msg := panicOn(t, baseConfig+"error_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: -1\n")
+	if !strings.Contains(msg, "batch_size") {
+		t.Fatalf("负数应当 panic 并点名 batch_size，实得：\n%s", msg)
+	}
+}
+
 // 三个治理队列现在又是 config.yaml 里的全局段：合法的能正常解析，开了缺项才会 panic 点名。
 func TestQueueSectionsParse(t *testing.T) {
 	cfg := loadString(t, baseConfig+

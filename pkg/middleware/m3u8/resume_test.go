@@ -116,7 +116,7 @@ func TestDownloadCleansStateFileAfterSuccess(t *testing.T) {
 		t.Fatal("跑完之后状态文件不该还在")
 	}
 	// 切片临时目录也该空了（分片被挪进产物目录）
-	segTemp := filepath.Join(cfg.ResumeStateDir, "segments", outDir, outFile)
+	segTemp := dl.segDir(la)
 	if entries, err := os.ReadDir(segTemp); err == nil && len(entries) != 0 {
 		t.Fatalf("收尾之后临时目录里不该还留着分片：%v", entries)
 	}

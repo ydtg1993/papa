@@ -54,6 +54,9 @@ type labor struct {
 	filename  string
 	execMu    sync.Mutex // 确保同一任务不并发执行
 	resumeMu  sync.Mutex // 保护 resumeState 的修改
+	// waiters 正在使用或排队等这条 labor 的下载数。只在 laborMu 下读写 —— 它是"这条 labor
+	// 能不能从表里删"的引用计数，见 acquireLabor / releaseLabor。
+	waiters int
 }
 
 // NewDownloader 创建下载器
@@ -242,6 +245,48 @@ func (d *Downloader) saveResumeState(la *labor, state *ResumeState) error {
 }
 
 // cleanResumeState 清理状态文件
+// acquireLabor 取（或建）这一任务的 labor，并把引用数 +1。
+//
+// 引用数保证一条不变量：**只要还有人排队，这条 labor 就不从表里删**。于是同键的后来者排在同一条
+// labor 的 execMu 后面，绝不会各自拿到一条新 labor 并发写同一份产物 —— 老写法是"用完无条件 delete"，
+// A 结束删掉条目后、B 还排在旧 labor 的锁上，此时 C 又能建一条新的，B/C 就各拿一条锁并发写同一个文件。
+func (d *Downloader) acquireLabor(key, url, outputDir, fileName string) *labor {
+	d.st.laborMu.Lock()
+	defer d.st.laborMu.Unlock()
+	l, ok := d.st.labors[key]
+	if !ok {
+		l = &labor{url: url, outputDir: outputDir, filename: fileName}
+		d.st.labors[key] = l
+	}
+	l.waiters++
+	return l
+}
+
+// releaseLabor 引用数 -1，归零才删。**先 -1 再判断**：引用数是"还有人要用这条 labor"的计数，
+// 归零前删掉就等于把后来者的锁抽走（就是无条件 delete 那个老 bug）。
+func (d *Downloader) releaseLabor(key string, l *labor) {
+	d.st.laborMu.Lock()
+	defer d.st.laborMu.Unlock()
+	l.waiters--
+	if l.waiters == 0 {
+		delete(d.st.labors, key)
+	}
+}
+
+// segDir 分片临时目录。
+//
+// **必须带源**：状态文件按 `md5(源|目录|文件名)` 区分，分片目录也得按源区分，否则"换源重写到同一个
+// 输出路径"（同一路径先下 A 源、再下 B 源）会复用上一源的旧分片 —— 分片跳过只看磁盘大小、不认源，
+// 于是拼出混合内容还返回成功。哈希用源 URL 即可（目录与文件名已经字面量进路径了）。
+//
+// 续传身份 = **源 URL + 输出路径 + 大小/分块大小**（见 download 里对 TotalSize/ChunkSize 的比对）。
+// 同一个 URL 的内容**变了但长度不变**时这里分不出来（要 ETag/Last-Modified，Range 请求不保证给），
+// 属爬虫框架的既定边界：要抓新内容，换 URL 或换输出文件名。
+func (d *Downloader) segDir(la *labor) string {
+	h := md5.Sum([]byte(la.url))
+	return filepath.Join(d.config.ResumeStateDir, "segments", la.outputDir, la.filename+"-"+hex.EncodeToString(h[:]))
+}
+
 func (d *Downloader) cleanResumeState(la *labor) error {
 	statePath := d.getStateFilePath(la)
 	return os.Remove(statePath)
@@ -258,23 +303,8 @@ func (d *Downloader) Download(ctx context.Context, fileURL, outputDir, fileName 
 	}
 	outputDir, fileName = dir, file
 	key := fileURL + "|" + outputDir + "|" + fileName
-	d.st.laborMu.Lock()
-	l, exists := d.st.labors[key]
-	if !exists {
-		l = &labor{
-			url:       fileURL,
-			outputDir: outputDir,
-			filename:  fileName,
-		}
-		d.st.labors[key] = l
-	}
-	d.st.laborMu.Unlock()
-
-	defer func() {
-		d.st.laborMu.Lock()
-		delete(d.st.labors, key)
-		d.st.laborMu.Unlock()
-	}()
+	l := d.acquireLabor(key, fileURL, outputDir, fileName)
+	defer d.releaseLabor(key, l)
 	var opt *DownloadOptions
 	if len(opts) > 0 && opts[0] != nil {
 		opt = opts[0]
@@ -351,8 +381,8 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		completedMap[start] = true
 	}
 
-	// 临时目录
-	tempDir := filepath.Join(cfgGlobal.ResumeStateDir, "segments", la.outputDir, la.filename)
+	// 临时目录（按源隔离，见 segDir）
+	tempDir := d.segDir(la)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		result.Error = err
 		return result
@@ -603,11 +633,21 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 		return &DownloadResult{Error: fmt.Errorf("unexpected status: %d", resp.StatusCode)}
 	}
 
-	file, err := os.Create(absOutput)
+	// 先写临时文件、成功后整体改名：直接 os.Create(absOutput) 会**先截断**目标 —— 中途任何失败
+	//（读错 / 写错 / 磁盘满 / 长度不符）都留下半截文件，还把上一份好文件一起毁掉。
+	// 分片路径的每片本来就是"临时文件 + 改名"，这里对齐。
+	tmpPath := absOutput + ".tmp"
+	file, err := os.Create(tmpPath)
 	if err != nil {
 		return &DownloadResult{Error: err}
 	}
-	defer file.Close()
+	success := false
+	defer func() {
+		_ = file.Close()
+		if !success {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	buf := make([]byte, 128*1024)
 	var written int64
@@ -633,13 +673,17 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 			return &DownloadResult{Error: fmt.Errorf("read body: %w", readErr)}
 		}
 	}
-	// defer Close 只兜提前返回的路径，正常路径在此显式关闭以拿到落盘错误（磁盘满/NFS 回写失败）
+	// 正常路径在此显式关闭以拿到落盘错误（磁盘满/NFS 回写失败）；defer 那次 Close 只兜提前返回。
 	if err := file.Close(); err != nil {
 		return &DownloadResult{Error: fmt.Errorf("close %s: %w", absOutput, err)}
 	}
 	if total > 0 && written != total {
 		return &DownloadResult{Error: fmt.Errorf("truncated download: got %d bytes, want %d", written, total)}
 	}
+	if err := os.Rename(tmpPath, absOutput); err != nil {
+		return &DownloadResult{Error: fmt.Errorf("finalize %s: %w", absOutput, err)}
+	}
+	success = true
 	// 这条路上真正拿到字节的是这次 GET，所以优先用它声明的类型；
 	// GET 没给（少见）才回落到 HEAD 那份 —— 同一个 URL、同一套请求头，问出来的东西一样。
 	contentType := resp.Header.Get("Content-Type")

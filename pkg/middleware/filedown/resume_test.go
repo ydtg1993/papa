@@ -38,7 +38,7 @@ func TestDownloadSelfHealsStaleResumeState(t *testing.T) {
 	url := server.URL + "/file.bin"
 	la := &labor{url: url, outputDir: outDir, filename: name}
 
-	tempDirPath := filepath.Join(cfg.ResumeStateDir, "segments", outDir, name)
+	tempDirPath := dl.segDir(la)
 	// 手工造一份"三段都下好了"的状态；临时分片一个都不建 —— 就是残局那一刻的样子
 	stale := &ResumeState{
 		URL:        url,
@@ -107,7 +107,7 @@ func TestDownloadCleansStateAndTempAfterSuccess(t *testing.T) {
 	if _, err := os.Stat(dl.getStateFilePath(la)); !os.IsNotExist(err) {
 		t.Fatal("跑完之后状态文件不该还在")
 	}
-	tempDirPath := filepath.Join(cfg.ResumeStateDir, "segments", outDir, name)
+	tempDirPath := dl.segDir(la)
 	if entries, err := os.ReadDir(tempDirPath); err == nil && len(entries) != 0 {
 		t.Fatalf("KeepSegmentsAfterMerge=false 时收尾该清掉临时分片：%v", entries)
 	}
@@ -134,7 +134,7 @@ func TestResumeIgnoresOffBoundaryOffsets(t *testing.T) {
 	const outDir, name = "sub", "file.bin"
 	url := server.URL + "/file.bin"
 	la := &labor{url: url, outputDir: outDir, filename: name}
-	segDir := filepath.Join(cfg.ResumeStateDir, "segments", outDir, name)
+	segDir := dl.segDir(la)
 	if err := os.MkdirAll(segDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestResumeRejectsTruncatedSegment(t *testing.T) {
 	const outDir, name = "sub", "file.bin"
 	url := server.URL + "/file.bin"
 	la := &labor{url: url, outputDir: outDir, filename: name}
-	segDir := filepath.Join(cfg.ResumeStateDir, "segments", outDir, name)
+	segDir := dl.segDir(la)
 	if err := os.MkdirAll(segDir, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -134,7 +134,10 @@ func TestLoadOptionalConfigMissingFile(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv("PAPA_CONFIG", "")
 
-	cfg, ok := loadOptionalConfig("")
+	cfg, ok, err := loadOptionalConfig("")
+	if err != nil {
+		t.Fatalf("「没给配置、默认路径也不存在」不算错，实得 %v", err)
+	}
 	if ok {
 		t.Fatal("没有配置文件时 ok 应为 false")
 	}
@@ -151,9 +154,9 @@ func TestLoadOptionalConfigFromPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte("log:\n  dir: ./logs\ndb:\n  max_idle_conns: 10\n  max_open_conns: 100\nhtml:\n  timeout: 7s\n  headers:\n    X-Cfg: from-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, ok := loadOptionalConfig(path)
-	if !ok {
-		t.Fatal("配置存在时 ok 应为 true")
+	cfg, ok, err := loadOptionalConfig(path)
+	if err != nil || !ok {
+		t.Fatalf("配置存在时应当 (cfg, true, nil)，实得 ok=%v err=%v", ok, err)
 	}
 	if cfg.HTML.Timeout != 7*time.Second {
 		t.Fatalf("html.timeout = %v, want 7s", cfg.HTML.Timeout)
@@ -514,4 +517,38 @@ func TestExtractLinksResolveReference(t *testing.T) {
 	if len(got) != 1 || got[0] != "https://example.com/a/up" {
 		t.Fatalf("相对路径解析 = %v", got)
 	}
+}
+
+// 显式指定了配置却读不了 / 解析不了 → **必须报错**，不能静默退回零值配置。
+//
+// 回归点：以前这里一律返回零值，于是"在必须走代理的环境里忘了改 -c"表现为**悄悄直连** ——
+// 请求头、超时、代理全不生效，一个字都不提示。默认路径不存在那一档仍然允许（零配置能跑是设计要的）。
+func TestLoadOptionalConfigExplicitErrorsAreLoud(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("PAPA_CONFIG", "")
+
+	t.Run("显式路径不存在 → 报错", func(t *testing.T) {
+		if _, _, err := loadOptionalConfig(filepath.Join("nope", "config.yaml")); err == nil {
+			t.Fatal("显式给了 -c 却读不到，必须报错")
+		}
+	})
+
+	t.Run("PAPA_CONFIG 指向不存在的文件 → 报错", func(t *testing.T) {
+		t.Setenv("PAPA_CONFIG", filepath.Join("nope", "config.yaml"))
+		if _, _, err := loadOptionalConfig(""); err == nil {
+			t.Fatal("PAPA_CONFIG 是显式指定，读不到必须报错")
+		}
+	})
+
+	t.Run("默认路径存在但解析不了 → 报错", func(t *testing.T) {
+		if err := os.MkdirAll("configs", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(defaultConfigPath, []byte("db: [这不是映射\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := loadOptionalConfig(""); err == nil {
+			t.Fatal("文件在那儿却解析不了，是配置写错了，不能当成「没配」")
+		}
+	})
 }

@@ -302,3 +302,53 @@ func captureStderr(t *testing.T, fn func()) string {
 	_ = r.Close()
 	return got
 }
+
+// 项目名不合法要在**写任何文件之前**拦住：同一个名字会变成 module 路径、项目目录名
+// 与 `configs/sites/<名字>.go` 的文件名，放过去的话要到 format.Source 那一步才炸，
+// 报出来的是"生成的 xxx 不是合法 Go（模板改坏了？）"—— 真错因（名字）被盖掉，还留下半成品目录。
+func TestRunNewRejectsBadModuleName(t *testing.T) {
+	for _, bad := range []string{"my project", "my:project", "my?project", "my//sub", "/leading", "trailing/", "a/../b"} {
+		t.Run(bad, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			if err := runNew(bad, nil); err == nil {
+				t.Fatalf("项目名 %q 应当被拒", bad)
+			}
+			if entries, err := os.ReadDir("."); err == nil && len(entries) != 0 {
+				t.Fatalf("被拒时不该写任何文件，实得 %v", entries)
+			}
+		})
+	}
+}
+
+// 站点函数名撞上 Go 关键字 / `_` / `init` 时加 Site 后缀。
+// 不兜的话 `func type() papa.SiteSpec` 这类语法错会以"模板改坏了？"的形式报出来。
+func TestSanitizeIdentAvoidsKeywords(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"huangguo", "huangguo"},
+		{"my-site", "my_site"},
+		{"123abc", "site123abc"},
+		{"type", "typeSite"},
+		{"func", "funcSite"},
+		{"init", "initSite"},
+		{"_", "_Site"},
+	} {
+		if got := sanitizeIdent(c.in); got != c.want {
+			t.Errorf("sanitizeIdent(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// 端到端：站点名是 Go 关键字也要能生成出**格式合法**的项目（format.Source 那一关过了）。
+func TestRunNewKeywordNameGeneratesCompilableGo(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := runNew("type", nil); err != nil {
+		t.Fatalf("关键字名字应当被后缀兜住，而不是报错：%v", err)
+	}
+	src := readFile(t, filepath.Join("type", "configs", "sites", "type.go"))
+	if !strings.Contains(src, "func typeSite() papa.SiteSpec") {
+		t.Fatalf("站点函数名应当是 typeSite：\n%s", src)
+	}
+	if !strings.Contains(src, "papa.RegisterSite(typeSite())") {
+		t.Fatalf("登记那行也要跟着改：\n%s", src)
+	}
+}

@@ -64,6 +64,8 @@ type labor struct {
 	source   string
 	resumeMu sync.Mutex // 保护 resumeState 的修改
 	execMu   sync.Mutex
+	// waiters 正在使用或排队等这条 labor 的下载数。只在 laborMu 下读写 —— 引用计数，见 acquire/release。
+	waiters int
 }
 
 // NewDownloader 创建下载器（全局共享实例）
@@ -155,7 +157,12 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	return c
 }
 
-// doRequest 执行 HTTP 请求，支持重试
+// doRequest 执行 HTTP 请求，支持重试。
+//
+// **这里与 downloadSegmentToFile 各有一层重试**（请求级 vs 分片级）：最坏情况下一次分片下载会发
+// (MaxRetries+1)^2 次请求。这是有意的 —— 请求级管"单次 HTTP 失败"，分片级管"这段最终没拿到"，
+// 两层各退各的；代价是故障源上请求量被放大，属可接受的上界，不是失控重试。别为了"省请求"把某层
+// 去掉，那会把"临时抖动"变成"整段失败"。
 func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opts *DownloadOptions) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
@@ -319,6 +326,37 @@ type DownloadResult struct {
 	Error      error
 }
 
+// acquireLabor 取（或建）这一任务的 labor，并把引用数 +1。引用数保证"只要还有人排队，
+// 这条 labor 就不从表里删"，同键后来者排在同一条 labor 的 execMu 后面 —— 老写法"用完无条件 delete"
+// 会在 A 结束删条目后，让 B（还排在旧锁上）与新建的 C 各拿一条锁并发写同一个文件。
+func (d *Downloader) acquireLabor(key, source, outDir, fileName string) *labor {
+	d.st.laborMu.Lock()
+	defer d.st.laborMu.Unlock()
+	l, ok := d.st.labors[key]
+	if !ok {
+		l = &labor{source: source, outDir: outDir, filename: fileName}
+		d.st.labors[key] = l
+	}
+	l.waiters++
+	return l
+}
+
+// releaseLabor 引用数 -1，归零才删。先 -1 再判断：引用数是"还有人要用"的计数，归零前删等于抽走后来者的锁。
+func (d *Downloader) releaseLabor(key string, l *labor) {
+	d.st.laborMu.Lock()
+	defer d.st.laborMu.Unlock()
+	l.waiters--
+	if l.waiters == 0 {
+		delete(d.st.labors, key)
+	}
+}
+
+// segDir 分片临时目录。**必须带源**：状态文件按 `md5(源|目录|文件名)` 区分，分片目录也得按源区分，
+// 否则"换源重写到同一个输出路径"会复用上一源的旧分片（分片跳过只看非空、不认源）→ 拼出混合内容还返回成功。
+func (d *Downloader) segDir(la *labor) string {
+	return filepath.Join(d.config.ResumeStateDir, "segments", la.outDir, la.filename+"-"+fmt.Sprintf("%x", md5.Sum([]byte(la.source))))
+}
+
 // ==================== 断点续传状态管理 ====================
 
 type ResumeState struct {
@@ -409,22 +447,8 @@ func (d *Downloader) Download(ctx context.Context, m3u8URL, outputDir, outputFil
 	}
 	outputDir, outputFile = dir, file
 	key := m3u8URL + "|" + outputDir + "|" + outputFile
-	d.st.laborMu.Lock()
-	l, exists := d.st.labors[key]
-	if !exists {
-		l = &labor{
-			source:   m3u8URL,
-			outDir:   outputDir,
-			filename: outputFile,
-		}
-		d.st.labors[key] = l
-	}
-	d.st.laborMu.Unlock()
-	defer func() {
-		d.st.laborMu.Lock()
-		delete(d.st.labors, key)
-		d.st.laborMu.Unlock()
-	}()
+	l := d.acquireLabor(key, m3u8URL, outputDir, outputFile)
+	defer d.releaseLabor(key, l)
 	var opt *DownloadOptions
 	if len(opts) > 0 && opts[0] != nil {
 		opt = opts[0]
@@ -520,9 +544,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 			resumeState = nil
 		}
 	}
-	// 校验状态是否匹配
-	if resumeState != nil && resumeState.TotalSegments != totalSegments {
-		d.st.trackQueue.SendError(fmt.Errorf("segment count mismatch (state:%d, actual:%d), restart", resumeState.TotalSegments, totalSegments))
+	// 校验状态是否匹配：段数、以及 SegmentFiles 数组长度都要对得上。只查段数的话，被改短 / 改坏的
+	// SegmentFiles 会在下面 `resumeState.SegmentFiles[index] = …` 直接越界 panic —— 状态文件是本应用写的，
+	// 但不保证没被改过（磁盘坏 / 手工编辑）。
+	if resumeState != nil && (resumeState.TotalSegments != totalSegments || len(resumeState.SegmentFiles) != totalSegments) {
+		d.st.trackQueue.SendError(fmt.Errorf("resume state mismatch (segments %d→%d, files %d), restart",
+			resumeState.TotalSegments, totalSegments, len(resumeState.SegmentFiles)))
 		resumeState = nil
 	}
 
@@ -537,8 +564,8 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 	}
 
-	// 6. 准备临时目录（存放单个片段文件）
-	tempDir := filepath.Join(cfg.ResumeStateDir, "segments", outputDir, filepath.Base(outputFile))
+	// 6. 准备临时目录（存放单个片段文件；按源隔离，见 segDir）
+	tempDir := d.segDir(la)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		result.Error = fmt.Errorf("mkdir temp dir: %w", err)
 		return result
@@ -549,7 +576,11 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	if initSegment != nil {
 		initSegmentPath = filepath.Join(tempDir, "init.ts")
 		if _, err := os.Stat(initSegmentPath); os.IsNotExist(err) {
-			data, err := d.downloadSegment(ctx, initSegment.URL, opts)
+			rangeHeader := ""
+			if initSegment.Range != "" {
+				rangeHeader = "bytes=" + initSegment.Range
+			}
+			data, err := d.doRequest(ctx, initSegment.URL, rangeHeader, opts)
 			if err != nil {
 				result.Error = fmt.Errorf("init segment: %w", err)
 				return result
@@ -671,6 +702,14 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 			}
 			if err := os.Rename(f, filepath.Join(finalOutput, filepath.Base(f))); err != nil {
 				result.Error = fmt.Errorf("move segment %s: %w", f, err)
+				return result
+			}
+		}
+		// init 段（EXT-X-MAP）也要进产物：fMP4 没有 init 段没法解码。老写法只挪媒体分片，
+		// 把它漏在临时目录里 —— 产物缺一块还看不出，要等播放器解不出来才暴露。
+		if initSegmentPath != "" {
+			if err := os.Rename(initSegmentPath, filepath.Join(finalOutput, filepath.Base(initSegmentPath))); err != nil {
+				result.Error = fmt.Errorf("move init segment %s: %w", initSegmentPath, err)
 				return result
 			}
 		}
@@ -909,10 +948,6 @@ func (d *Downloader) fetchPlaylist(ctx context.Context, m3u8URL string, opts *Do
 	return playlist, baseURL, nil
 }
 
-func (d *Downloader) downloadSegment(ctx context.Context, url string, opts *DownloadOptions) ([]byte, error) {
-	return d.doRequest(ctx, url, "", opts)
-}
-
 // prepareKey 取回解密用的密钥与 IV。mediaSeq 是该片段的媒体序号，仅在密钥标签不带 IV 时用于推导 IV。
 func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, mediaSeq int64, opts *DownloadOptions) (key, iv []byte, err error) {
 	// IV 每次现算，不进缓存：隐式 IV 由媒体序号推导，逐片段不同
@@ -1096,9 +1131,21 @@ func (d *Downloader) parseMapTag(tag, baseURL string) *SegmentInfo {
 	if uriEnd == -1 {
 		return nil
 	}
-	uri := tag[uriStart : uriStart+uriEnd]
-	url := d.resolveURL(uri, baseURL)
-	return &SegmentInfo{URL: url}
+	url := d.resolveURL(tag[uriStart:uriStart+uriEnd], baseURL)
+	seg := &SegmentInfo{URL: url}
+	// BYTERANGE（可省略）：EXT-X-MAP 的字节区间起点要么显式 @偏移、要么从 0 起算 —— 它不与别的
+	// 子区间共享"上一段末尾"，所以 prevEnd 恒传 0。解析不出来就当没写（Range 留空、整段下载）：
+	// 与媒体段"解析失败硬报错"不同 —— 媒体段退化成整段会**拼错文件**，init 段退化成整段只是多下点
+	//（init URL 通常就是独立文件，本就没有 BYTERANGE）。
+	if brStart := strings.Index(tag, "BYTERANGE=\""); brStart != -1 {
+		brStart += len("BYTERANGE=\"")
+		if brEnd := strings.Index(tag[brStart:], "\""); brEnd != -1 {
+			if rng, err := parseByteRange(tag[brStart:brStart+brEnd], 0); err == nil {
+				seg.Range = rng.String()
+			}
+		}
+	}
+	return seg
 }
 
 func (d *Downloader) parseKeyTag(tag, baseURL string) *KeyInfo {

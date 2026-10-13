@@ -199,6 +199,12 @@ func (e *Engine) NextProxy() string {
 // 开了 `crawler.archive` 时，这里会**自动**把抓到的页面登记进本次尝试的归档缓冲
 // （handler 不用写任何代码，见 archive.go）——登记不写盘，落盘在本次尝试结束时按结局决定。
 func (e *Engine) FetchHTML(ctx context.Context, rawURL string) (*htmlfetch.Page, error) {
+	// 未启用时 SetHTMLClient 不建客户端（cfg.HTML.Enable=false），直接解引用就是 nil panic ——
+	// 给一句能照着改的错，别让业务去猜"为什么抓一下就崩"。
+	if e.htmlClient == nil {
+		return nil, fmt.Errorf("静态 HTML 客户端未启用（crawler.html.enable = false）：FetchHTML 用不了。" +
+			"要用浏览器渲染走 FetchRendered（browser.enable），或把 html.enable 打开")
+	}
 	page, err := e.htmlClient.Fetch(ctx, rawURL)
 	if err != nil {
 		return nil, err

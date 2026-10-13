@@ -105,7 +105,7 @@ error_queue:
   worker_count: 1             # 并发重新投递数，必须 > 0
   interval: "4h"              # 自动轮询间隔
   max_retry: 3                # 单条失败任务最多再处理几代；0 = 不限
-  batch_size: 100             # 每批处理条数，必须 > 0（分页流式）
+  batch_size: 100             # 每批处理条数；0 = 默认 1000（分页流式，不能为负）
 recover_queue:
   enabled: true               # 启动恢复：重启时捡回上次中断留下的「未到终态」任务（只在启动跑一次）
   worker_count: 1

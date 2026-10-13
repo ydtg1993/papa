@@ -35,6 +35,11 @@ func TestNavigateFailureReturnsErrorNotPanic(t *testing.T) {
 	}
 	defer func() { _ = pool.Put(bw) }()
 
+	before, err := bw.Browser.Pages()
+	if err != nil {
+		t.Fatalf("列页面失败：%v", err)
+	}
+
 	start := time.Now()
 	_, err = bw.NewPageWithOptions(ctx, "http://127.0.0.1:1/", PageOptions{Timeout: 5 * time.Second})
 	if err == nil {
@@ -42,5 +47,21 @@ func TestNavigateFailureReturnsErrorNotPanic(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 20*time.Second {
 		t.Fatalf("导航失败应当很快返回，实得 %v", elapsed)
+	}
+
+	// 失败时**刚建出来的那个页面**必须被关掉：页面挂在池化浏览器上，漏一个就少一个标签页，
+	// 反复失败会一直吃下去。回归点：这里曾经判的是命名返回值 `page != nil` —— 而失败路径写的是
+	// `return nil, ...`，那个变量早被置成 nil，于是"失败要收掉页面"的 defer 永远不生效。
+	// 关页面是发给 Chrome 的异步指令，给它一点时间落下去再判。
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		after, perr := bw.Browser.Pages()
+		if perr == nil && len(after) <= len(before) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("导航失败后页面没被关掉：建之前 %d 个页面，现在还有 %d 个", len(before), len(after))
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

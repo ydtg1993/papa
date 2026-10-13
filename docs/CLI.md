@@ -21,7 +21,7 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含根 `models/` 数据层与 `monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节） |
+| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含根 `models/` 数据层与 `monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节）。`<name>` 同时是 module 路径与目录名：只允许字母、数字与 `._~+-`，分隔用 `/`（例如 `mycrawler` 或 `example.com/mycrawler`）；带空格/冒号这类字符的名字会在**写任何文件之前**被拒 |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
@@ -150,7 +150,7 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 
 | Flag | 说明 |
 | --- | --- |
-| `-c, --config <path>` | 复用项目配置；回退链 `PAPA_CONFIG` → `configs/config.yaml`。**可缺省**：零配置也能跑（用内置默认 UA） |
+| `-c, --config <path>` | 复用项目配置；回退链 `PAPA_CONFIG` → `configs/config.yaml`。**可缺省**：零配置也能跑（用内置默认 UA）。**但显式给的那份读不了 / 解析不了会直接报错** —— 不静默退回零配置（那会表现为"请求头/超时/代理全不生效，还一声不吭"） |
 | `--proxy` | 走代理（读 `config.proxy`）；**默认直连**，避免调试时烧代理配额 |
 | `--timeout <duration>` | 覆盖请求/导航超时 |
 | `--ua <string>` | 覆盖 User-Agent |

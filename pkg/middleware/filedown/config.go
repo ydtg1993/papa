@@ -6,9 +6,11 @@ import (
 
 // Config 文件下载器配置
 type Config struct {
-	OutputDir              string        // 输出目录，默认 "./downloads"
-	ResumeStateDir         string        // 断点续传状态存储目录，默认 "./.resume"
-	MaxRetries             int           // 重试次数，默认 3
+	OutputDir      string // 输出目录，默认 "./downloads"
+	ResumeStateDir string // 断点续传状态存储目录，默认 "./.resume"
+	MaxRetries     int    // 重试次数，默认 3
+	// RetryInterval **当前未在分片路径接线**：downloadChunkToFile 用的是固定指数退避（1s·2s·4s…封顶 10s）。
+	// 留着这个字段是为了与 m3u8 的配置形状对齐；要让它生效再接线（把退避基数换成它）。
 	RetryInterval          int           // 重试间隔（秒），默认 1
 	Timeout                time.Duration // 下载超时，默认 30s
 	MaxConcurrent          int           // 并发分片数，默认 4
