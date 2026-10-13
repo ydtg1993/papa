@@ -76,9 +76,16 @@ type StageSpec struct {
 	// M3U8 / FileDown 本阶段的下载器覆盖层（nil = 不覆盖）：比站点那层更细，赢了就用它。
 	M3U8     *m3u8.Overlay
 	FileDown *filedown.Overlay
-	// AutoStart 启动时投本阶段的入口任务（fetcher 实现 SubmitEntries 才有得投）。
-	// 显式写出来，"是关的、不是漏的"启动时会打一条 Info。
-	AutoStart bool
+	// Entry 阶段入口的模式（fetcher 实现了 SubmitEntries 才有得投）：
+	//
+	//	papa.EntryAuto   启动那一趟就投（原来的 AutoStart: true）
+	//	papa.EntryManual 启动不投，等后台「阶段入口」卡片上点火
+	//	（不写 = papa.EntryOff）启动不投、后台也不显示这一行
+	//
+	// 三态而不是 bool：多站项目里"这个站的入口先别投，等我把那一站放开再点"是常规需求，
+	// 而"不投"有两种意思 —— 有意留到后台点（manual），和"这阶段根本没有入口这回事"（off）。
+	// 前者要在后台看得见、点得动，后者不该在界面上占位。
+	Entry engine.EntryMode
 }
 
 // RetrySpec 重试声明。
@@ -315,6 +322,11 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 	}
 	owner[key] = siteLabel(site, 0)
 
+	// 字符串枚举写错（"Auto" / "manual "）能过编译，只会被当成"不是 auto"而静默不投 —— 声明期就拦。
+	if err := st.Entry.Valid(); err != nil {
+		return plan, fmt.Errorf("阶段 %q: %w", stage, err)
+	}
+
 	sub := entryFunc(st.Fetcher, site)
 	plan = stagePlan{
 		stage:   stage,
@@ -326,18 +338,29 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 			QueueSize:   st.QueueSize,
 			Delay:       delay,
 			Site:        site.Key,
+			Entry:       st.Entry,
 			M3U8:        st.M3U8,
 			FileDown:    st.FileDown,
 		},
 	}
+	// 三态 × 有没有入口：六个格子各有各的说法，别让任一种组合静默过去。
 	switch {
-	case st.AutoStart && sub == nil:
-		// 开了开关却没人实现入口：配置与实现对不上，值得说一句（不 panic —— 入口可能回头再补）
-		plan.note, plan.warn = fmt.Sprintf("阶段 %s: AutoStart=true，但它的 fetcher 没有实现 SubmitEntries —— 没有入口任务可投", stage), true
-	case !st.AutoStart && sub != nil:
-		// 实现了入口却没开开关：说一句"是关的、不是漏的"（少写一个 AutoStart: true 是很容易犯的错）
-		plan.note = fmt.Sprintf("阶段 %s: 实现了入口但 AutoStart=false，本次启动不投入口任务", stage)
+	case st.Entry == engine.EntryAuto && sub == nil:
+		// 声明要自动投却没人实现入口：配置与实现对不上（不 panic —— 入口可能回头再补）
+		plan.note, plan.warn = fmt.Sprintf("阶段 %s: Entry=auto，但它的 fetcher 没有实现 SubmitEntries —— 没有入口任务可投", stage), true
+	case st.Entry == engine.EntryManual && sub == nil:
+		// 同理：说要在后台手动点火，可没有入口回调 —— 那张卡上会是个点不动的按钮
+		plan.note, plan.warn = fmt.Sprintf("阶段 %s: Entry=manual，但它的 fetcher 没有实现 SubmitEntries —— 后台点它会报错", stage), true
+	case st.Entry == engine.EntryOff && sub != nil:
+		// off 是零值/默认值，所以"实现了入口却忘了声明"是**最常见**的那种手误 ——
+		// 按 WARN 说，并且把两条出路都写出来（比一句"是关的、不是漏的"有用）。
+		plan.note, plan.warn = fmt.Sprintf("阶段 %s: fetcher 实现了 SubmitEntries，但声明里没写 Entry —— "+
+			"启动不投、后台也不显示它。想后台手动点火就写 Entry: papa.EntryManual，想启动即投就写 papa.EntryAuto", stage), true
+		// off 在引擎侧等于"没有入口"：回调丢掉（与"fetcher 没实现 SubmitEntries"同一个状态），
+		// 于是后台列不出来、也点不动 —— 这正是 off 与 manual 的区别。
 		sub = nil
+	case st.Entry == engine.EntryManual:
+		plan.note = fmt.Sprintf("阶段 %s: 入口是 manual —— 启动不投，等后台「阶段入口」点火", stage)
 	}
 	plan.sub = sub
 	return plan, nil

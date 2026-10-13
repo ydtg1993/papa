@@ -41,7 +41,7 @@ mycrawler/
     config.yaml            配置（先把 db.dsn 指向你的库）
     whitelist              后台来源白名单（全注释＝不限制，启动会警告）
     sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers
-                            + 每个阶段的 worker_count / queue_size / delay / retry / AutoStart
+                            + 每个阶段的 worker_count / queue_size / delay / retry / Entry
   fetcher/                 抓取实现（一个阶段一个 fetcher；想按站点分包也行，加站不必先分包）
   models/                  业务表模型 + 建表清单（models.go）
   monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）

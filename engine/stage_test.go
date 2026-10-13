@@ -361,8 +361,11 @@ func TestStopWaitsStagesConcurrently(t *testing.T) {
 // 闸门在**取下一个任务之前**探一次，所以这里先把闸门压下再建池 ——
 // 与生产一致：熔断是在累积失败之后触发的，那时 worker 会立刻停在循环顶部。
 func TestStopDrainsWhileBreakerPaused(t *testing.T) {
+	// 假库有两个模式：noRows = 库里的行"查不到"（提交路径按全新任务走 INSERT），
+	// 反之查得到（提交路径会命中去重、静默跳过）。提交那一刻要前者，回灌那一刻要后者 ——
+	// 真库里两种情况都是真的（行刚 INSERT 过、当然查得到），假库不落写所以只能手动切。
 	f := newFakeTaskDB()
-	f.noRows = true // 让待提交的任务在库里是全新的
+	f.noRows = true
 	e := newTestEngine(t, f)
 
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
@@ -382,7 +385,8 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 
 	e.ApplyRegisterStage() // worker 一起来就停在闸门前
 
-	// 暂停中提交：任务进队但不会被取走，队列原封不动躺着（后台能直接看到积压）
+	// 暂停中提交：**在入队点就收口** —— 任务不入队、寄放到溢出表（行已落库、状态 pending），
+	// 池子也不该被建起来（暂停期间连 worker 都不需要）。
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/paused"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
@@ -390,10 +394,20 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	if got := fetcher.calls(); len(got) != 0 {
 		t.Fatalf("暂停中不该取任务，实得 %v", got)
 	}
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("暂停中的任务应当寄放在溢出表里，实得 %d", got)
+	}
+	if pool := e.pools.get(stubKey); pool != nil {
+		t.Fatal("暂停期间不该建池（收口在建池之前）")
+	}
+
+	f.noRows = false // 回灌要按 id 回查那一行（见上面假库两种模式的说明）
 
 	if !e.ResumeCrawling() {
 		t.Fatal("放行应当成功")
 	}
+	// 恢复要**立刻**把寄放的任务灌回去（wakeDrainNow），不能等 drain_interval ——
+	// 本夹具把它设成了 1 小时，所以这条断言就是那个唤醒机制的证明。
 	fetcher.waitCalls(t, 1)
 
 	// 已经在跑的状态下再放行 = 没做什么，返回 false（后台据此回 resumed=false 而不是报错）
@@ -532,9 +546,11 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	t.Cleanup(e.cancel)
 
 	stageCfg := StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
-	// 两个站各声明自己的阶段：任务上的 Site 必须与声明里的 Site 对上（键是 `site:stage`）
+	// 两个站各声明自己的阶段：任务上的 Site 必须与声明里的 Site 对上（键是 `site:stage`）。
+	// Entry: auto 不能少 —— 启动那一趟只投 `EntryAuto` 的阶段（manual 的等后台点火）。
 	stageCfgA, stageCfgB := stageCfg, stageCfg
 	stageCfgA.Site, stageCfgB.Site = "a", "b"
+	stageCfgA.Entry, stageCfgB.Entry = EntryAuto, EntryAuto
 	fetcherA := &recordingFetcher{stage: "a"}
 	fetcherB := &recordingFetcher{stage: "b"}
 
@@ -651,10 +667,11 @@ func TestSameStageNameInTwoSitesIsIsolated(t *testing.T) {
 	}
 }
 
-// 熔断闸门**每站一把**：A 站被墙闸住不该把 B 站一起闸住。
-// 声明层（App.RegisterSites）会给每个声明的站点建一把 —— 没单配阈值的站也用自己那把、
-// 阈值取 crawler.breaker 那份默认（见 internal/app 的 defaultBreakerConfig）。
-func TestEachSiteGetsItsOwnBreaker(t *testing.T) {
+// 暂停**按站点隔离**：闸住 A 站不该影响 B 站。
+//
+// 这条原来测的是"每站一把闸门对象"，现在暂停只有一处（engine/pause.go 的信号表），
+// 所以测的是那条信号的 scope 判定；熔断器退化成每站一个计数器（下面顺带钉住它还是每站一份）。
+func TestPauseIsolatesPerSite(t *testing.T) {
 	f := newFakeTaskDB()
 	e := newTestEngine(t, f)
 
@@ -662,22 +679,28 @@ func TestEachSiteGetsItsOwnBreaker(t *testing.T) {
 	e.SetSiteBreaker("a", cfg)
 	e.SetSiteBreaker("b", cfg)
 
-	gateA, gateB := e.breakerFor("a"), e.breakerFor("b")
-	if gateA == gateB {
-		t.Fatal("两个站必须是两把闸门")
+	if e.breakerFor("a") == e.breakerFor("b") {
+		t.Fatal("两个站的计数器应当各一份（失败数不能互相灌）")
 	}
 	if e.breakerFor("ghost") != nil {
-		t.Fatal("没配过闸门的站点应当是 nil（= 不设闸），不是回落到谁身上")
+		t.Fatal("没配过熔断的站点应当是 nil（= 没有熔断这回事），不是回落到谁身上")
 	}
 
-	// 闸住 a 站：只有 a 站是暂停的
 	if !e.PauseSite("a", "a 站被墙") {
 		t.Fatal("暂停 a 站应当成功")
 	}
-	if !gateA.Status().Paused {
-		t.Fatal("a 站应当被闸住")
+	if e.PauseSite("a", "再来一次") {
+		t.Fatal("已停着时应当返回 false（后台据此不记审计）")
 	}
-	if gateB.Status().Paused {
+	if e.PauseSite("ghost", "没这个站") {
+		t.Fatal("不认识的站点应当返回 false（后台据此回 400）")
+	}
+
+	// 整站暂停涵盖该站的任何阶段，且不碰别的站
+	if !e.isPaused(pauseScope{Site: "a", Stage: "catalog"}) {
+		t.Fatal("整站暂停应当涵盖该站所有阶段")
+	}
+	if e.isPaused(pauseScope{Site: "b", Stage: "catalog"}) {
 		t.Fatal("a 站被闸住不该影响 b 站")
 	}
 
@@ -686,8 +709,11 @@ func TestEachSiteGetsItsOwnBreaker(t *testing.T) {
 	if !sts["a"].Paused || sts["b"].Paused {
 		t.Fatalf("逐站状态不对：%+v", sts)
 	}
-	if sts["a"].Site != "a" {
-		t.Fatalf("状态里要带上是哪个站：%+v", sts["a"])
+	if sts["a"].Site != "a" || sts["a"].Source != PauseSourceManual {
+		t.Fatalf("状态里要带上站点与来源：%+v", sts["a"])
+	}
+	if sts["b"].Source != "" {
+		t.Fatalf("没暂停的站不该有 source：%+v", sts["b"])
 	}
 }
 
@@ -843,12 +869,15 @@ func TestBreakerScopesAreIndependent(t *testing.T) {
 	}
 }
 
-// 触发时回调要带上站点：告警文案不能只有一句"全任务暂停"，得知道是哪个站（多站时这是唯一的区分）。
+// 熔断触发要带上站点与阶段：告警文案不能只有一句"全任务暂停"，得知道是哪个站
+// （多站时这是唯一的区分），并且要**写进暂停信号**（后台横幅读的就是它）。
+//
+// 触发这条路原来在熔断器的构造回调里；现在它在 `notifyFailure`（终态失败那一刻）：
+// 计数 → 写暂停信号 → 写成功才发告警。所以这条用例推的是 notifyFailure。
 func TestBreakerTripCarriesSite(t *testing.T) {
 	f := newFakeTaskDB()
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
-	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	t.Cleanup(e.cancel)
 	// 不用重赋 e.ctx：NewEngine 已经建好可取消的 ctx，重赋会与 delayDispatcher
@@ -858,18 +887,41 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 	e.AddNotifier(n)
 	e.SetSiteBreaker("siteb", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 1})
 
-	// 直接驱动那把小闸门（阈值 1）：它触发时会走 engine 的告警回调
-	b := e.siteBreakerOf("siteb")
-	if b == nil {
-		t.Fatal("站点 siteb 应当有自己的闸门")
+	failOnce := func() {
+		e.notifyFailure(context.Background(),
+			&Task{Stage: "siteb_catalog", Site: "siteb", URL: "https://example.com/x"}, errors.New("boom"))
 	}
-	b.RecordFailure("siteb_catalog")
+	failOnce()
 
-	events := n.snapshot()
-	if len(events) != 1 {
-		t.Fatalf("应发 1 条告警，实得 %d", len(events))
+	var trips []core.AlertEvent
+	for _, ev := range n.snapshot() {
+		if ev.Level == core.AlertCritical {
+			trips = append(trips, ev)
+		}
 	}
-	if events[0].Site != "siteb" || events[0].Stage != "siteb_catalog" {
-		t.Fatalf("告警里应带站点与阶段：%+v", events[0].TaskError)
+	if len(trips) != 1 {
+		t.Fatalf("应当发 1 条 critical 的熔断告警，实得 %d：%+v", len(trips), n.snapshot())
+	}
+	if trips[0].Site != "siteb" || trips[0].Stage != "siteb_catalog" {
+		t.Fatalf("告警里应带站点与阶段：%+v", trips[0].TaskError)
+	}
+
+	// 同一条失败也要落到暂停信号上（Source=breaker + 现场），后台横幅/站点卡片读它
+	sts := e.BreakerStatuses()
+	if !sts["siteb"].Paused || sts["siteb"].Source != PauseSourceBreaker ||
+		sts["siteb"].Stage != "siteb_catalog" || sts["siteb"].Failures == 0 {
+		t.Fatalf("触发的现场没写进暂停信号：%+v", sts["siteb"])
+	}
+
+	// 再失败一次：已经停着 → **不重复报警**（"一次触发只报一次"现在由 setPause 的去重保证）
+	failOnce()
+	if got := len(trips); got != 1 {
+		t.Fatalf("第二次失败不该再报一次熔断：%d", got)
+	}
+	for _, ev := range n.snapshot() {
+		if ev.Level == core.AlertCritical {
+			continue
+		}
+		// 非熔断的那条（任务失败本身）照旧每次都发 —— 那里不受暂停影响
 	}
 }

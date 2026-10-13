@@ -18,6 +18,7 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 	"gorm.io/gorm"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,23 @@ type Engine struct {
 	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
 	errorForwardCancel map[string]chan struct{}            // 每阶段错误转发协程停机信号（reap 时 close）；e.mu 保护
 	dedupCache         *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
+
+	// 阶段入口：点火串行化用的锁，与"上次点火时刻"的锁**分开**（见 entry.go 的理由）。
+	// entryMu 用 TryLock，不会阻塞后台请求；也绝不能换成 e.mu —— 点火会走到建池，
+	// 建池路上要拿 e.mu（setStatsQueue），非重入锁当场自锁。
+	entryMu      sync.Mutex
+	entryLastMu  sync.Mutex
+	entryLast    map[string]time.Time // 阶段键 -> 上次手动点火时刻（零值/缺 = 从未）
+	entriesReady atomic.Bool          // ApplyRegisterStage 跑完才置真：之前点火会踩坑（见 entryReadyErr）
+
+	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
+	// 取任务点的闸门、入队点的寄放、后台的横幅/卡片/落库。
+	// 锁序是硬的：breakerMu → pauseMu → (spillMu | e.mu | siteMu)，不许反向；pauseMu 绝不跨 DB 调用。
+	pauseMu      sync.Mutex
+	paused       map[pauseScope]pauseState // scope -> 现场（整站条目的 Stage 为空）
+	pauseChanged chan struct{}             // 每次变更换一个新的并 close 旧的（叫醒所有等闸门的人）
+	lastResumed  map[pauseScope]time.Time  // 放行时刻（信号删了之后后台 payload 还要它）
+	wakeDrain    chan struct{}             // 容量 1：恢复时叫醒回灌循环，别让它等下一个 tick
 
 	spillMu        sync.Mutex
 	spilled        map[string][]*Task // 阶段键 -> 高水位溢出的待回灌任务
@@ -88,12 +106,12 @@ type Engine struct {
 	filedownBySite  map[string]*filedown.Downloader
 	metrics         *metrics.Registry // 业务自定义监控数据注册表
 	notifiers       []Notifier        // 告警通知器，任务最终失败时触发
-	// 熔断闸门：**每个站点一把**（没有"默认 scope"那一把）。一台闸门管一个站点的
-	// （该站所有阶段的）worker，一个站被墙不会把另一个站一起闸住 —— 与阶段名按站点作用是
-	// 配套的：两个站同名阶段的失败各数各的。
-	// 闸门由声明层建（App.RegisterSites 对每个站点调 SetSiteBreaker：单配了阈值的用它的，
-	// 没单配的用 crawler.breaker 那份默认值）。引擎自己不再造闸门 —— 站点是必填维度，
-	// "没有站点的任务"在提交那一步就被拒了（见 SubmitTask）。
+	// siteBreaker 每站一个**熔断计数器**（滑动窗口数终态失败、判阈），由声明层按站点建
+	// （App.RegisterSites 对每个站点调 SetSiteBreaker：单配了阈值的用它的，没单配的用
+	// crawler.breaker 那份默认值）。一个站被墙不会把另一个站一起闸住 —— 与阶段名按站点作用配套。
+	//
+	// 它**不再是闸门**：达到阈值只是"该停了"，停这个动作由 notifyFailure 写进暂停信号、
+	// 由取任务点的闸门与入队点的寄放去执行（见 pause.go）。
 	breakerMu   sync.Mutex
 	siteBreaker map[string]*breaker.Breaker
 	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
@@ -158,6 +176,12 @@ type StageConfig struct {
 	// 分组、任务表也按它记归属（`crawler_tasks.site`），没有「未归属」那一档。
 	Site string
 
+	// Entry 入口模式：`EntryAuto` 启动那一趟就投入口任务（SubmitEntries），
+	// `EntryManual` 不自动投、等后台点火（Engine.SubmitStageEntries）。
+	// 零值 `EntryOff` 在**声明层**就等于"没有入口"（那边会把回调丢掉），所以引擎侧见不到它：
+	// 到了这里还带 off 的，只可能是绕过声明层直接 AddStage 的用法，那一概按"不投"处理。
+	Entry EntryMode
+
 	// M3U8 / FileDown 本阶段的下载器**覆盖层**（nil = 不覆盖）：启动时叠在"站点那份 → 全局那份"之上，
 	// 解析出这一阶段该用的实例（见 engine/downloads.go）。fetcher 用 `M3U8ForTask(task)` /
 	// `FiledownForTask(task)` 取 —— 一行拿到"这一阶段该用的那个"，不会拿错站。
@@ -200,12 +224,14 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		stageTotals:        make(map[string]stageTotals),
 		errorCh:            make(chan error, 100),
 		errorForwardCancel: make(map[string]chan struct{}),
+		// 容量 1：恢复时叫醒回灌循环（非阻塞发送，重复叫醒只留一次）
+		wakeDrain: make(chan struct{}, 1),
 	}
 	engine.siteBreaker = make(map[string]*breaker.Breaker)
 	engine.sites = make(map[string]core.Site)
-	// 熔断闸门不在这里建：每站一把、由声明层按站点建（SetSiteBreaker）。
-	// 计数走 RecordFailure（终态失败），触发时回调发一条 AlertCritical —— 那个回调建在
-	// SetSiteBreaker 里，顺手把站点填进事件（业务不用再接一套告警通道）。
+	// 熔断计数器不在这里建：每站一个、由声明层按站点建（SetSiteBreaker）。
+	// 计数走 RecordFailure（终态失败）；达到阈值之后由 notifyFailure 写暂停信号并发一条
+	// AlertCritical（业务不用再接一套告警通道）。
 	// 两条治理队列（全局各一条）的运行态 + 累计计数：键就是监控面板上的队列名。
 	engine.errorQueue = &errorQueueState{}
 	engine.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)}
@@ -312,85 +338,97 @@ func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	if e.siteBreaker == nil {
 		e.siteBreaker = make(map[string]*breaker.Breaker)
 	}
-	// 回调里补上站点：告警文案与后台都要能看出"是哪个站被闸住了"（只带阶段名不够）
-	e.siteBreaker[site] = breaker.New(cfg, func(st BreakerStatus) {
-		st.Site = site
-		e.notifyBreakerTrip(st)
-	})
+	// 这里只登记**计数配置**：熔断器不再持有暂停状态、也不发告警 ——
+	// 达到阈值之后由 notifyFailure 写一条暂停信号（Source=breaker）并发 AlertCritical。
+	e.siteBreaker[site] = breaker.New(cfg)
 }
 
-// breakerFor 取某个站点的熔断闸门；没这个站（或没给它 SetSiteBreaker）返回 nil = 不设闸。
+// breakerFor 取某个站点的熔断计数器；没这个站（或没给它 SetSiteBreaker）返回 nil。
 //
-// 正常路径上不会 miss：App.RegisterSites 对**每个**声明的站点都调 SetSiteBreaker，
-// 而任务的 site 是必填的（SubmitTask 拒空、声明层拒没有 Key 的声明）—— 所以"哪个站点"
-// 永远有答案。返回 nil 只服务两种情况：自己搭引擎没配闸门（那就是"不设闸"，与
-// `SetGate(nil)` 同一语义），以及旧库里 site 为空的行（它们连阶段都查不到，见三条治理队列的守卫）。
+// 返回 nil 是常态的一种（自己搭引擎没配熔断、旧库里 site 为空的行）：`*breaker.Breaker`
+// 的所有方法都容忍 nil 接收者，所以调用处不必判空 —— 没配就是"没有熔断这回事"。
+//
+// 注意它**不再是闸门**：暂停与它无关（那是 pause.go 里那条信号）。
 func (e *Engine) breakerFor(site string) *breaker.Breaker {
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
 	return e.siteBreaker[site]
 }
 
-// ResumeCrawling 放行**所有站点**的熔断闸门，返回是否真的放行了至少一个。
+// ResumeCrawling 放行**所有站点**的暂停，返回是否真的放行了至少一个。
 // 这就是后台横幅上那个「恢复抓取」；只想放行某一站用 ResumeSite。
+//
+// 它清的是**暂停信号**（见 pause.go）—— 熔断触发与人工暂停写的是同一张表，所以这里一视同仁地放行。
 func (e *Engine) ResumeCrawling() bool {
-	resumed := false
-	e.breakerMu.Lock()
-	sites := make([]*breaker.Breaker, 0, len(e.siteBreaker))
-	for _, b := range e.siteBreaker {
-		sites = append(sites, b)
-	}
-	e.breakerMu.Unlock()
-	for _, b := range sites {
-		if b.Resume() {
-			resumed = true
-		}
-	}
-	return resumed
-}
-
-// ResumeSite 放行某个站点的闸门；没这个站（或它没配过闸门）返回 false。
-func (e *Engine) ResumeSite(site string) bool {
-	b := e.siteBreakerOf(site)
-	if b == nil || !b.Resume() {
+	if !e.clearAllPauses() {
 		return false
 	}
+	// 放行之后立刻把寄放在溢出表里的任务灌回去（不等下一个 drain tick）
+	e.wakeDrainNow()
+	return true
+}
+
+// ResumeSite 放行某个站点（该站所有暂停条目一起清，见 clearSite 的理由）；
+// 没这个站、或它本来就没暂停返回 false。
+func (e *Engine) ResumeSite(site string) bool {
+	if !e.knownSite(site) {
+		return false
+	}
+	if !e.clearSite(site) {
+		return false
+	}
+	e.wakeDrainNow()
+	// 落库放在放锁之后：pauseMu 绝不跨 DB 调用（锁序见 pause.go）。
+	// 熔断**触发**不写这一列（与今天一致）：它只写暂停信号，横幅读信号、站点表读库，两者在触发时
+	// 本来就不同步 —— 这是有意的，别顺手把两条路并成一条。
 	e.writeSiteBreakerState(site, false)
 	return true
 }
 
-// PauseSite 手动暂停某个站点的闸门；没这把闸门时返回 false（后台据此回 400：那个 scope 不存在）。
+// PauseSite 手动暂停某个站点的抓取；不认识的站点返回 false（后台据此回 400）。
+//
+// 现场里带上当时的窗口失败数（与今天一致：它是后台 payload 的一个字段，别顺手改成 0）。
 func (e *Engine) PauseSite(site, reason string) bool {
-	b := e.siteBreakerOf(site)
-	if b == nil || !b.Pause(reason) {
+	if !e.knownSite(site) {
+		return false
+	}
+	changed := e.setPause(pauseScope{Site: site}, pauseState{
+		Reason: reason, Source: PauseSourceManual,
+		Failures: e.breakerSum(site),
+	})
+	if !changed {
+		// 已经停着（可能正是熔断触发的那一条）：返回 false，也**不覆盖**它的 reason 与快照 ——
+		// 后台"空点不记审计"那条规则、以及"人工暂停不该把熔断现场改写成手动"都靠这个。
 		return false
 	}
 	e.writeSiteBreakerState(site, true)
 	return true
 }
 
-// siteBreakerOf 取某个站点的闸门对象；没这个站返回 nil（后台据此回 400：那个 scope 不存在）。
-func (e *Engine) siteBreakerOf(site string) *breaker.Breaker {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	return e.siteBreaker[site]
-}
-
-// PauseCrawling 手动闸住抓取（后台/业务都可用）：**所有站点**一起闸，返回是否真的切到暂停态。
+// PauseCrawling 手动闸住抓取（后台/业务都可用）：**所有配了抓取策略的站点**一起暂停，
+// 返回是否真的至少停了一个。
 func (e *Engine) PauseCrawling(reason string) bool {
+	sites := e.allSites()
+	sort.Strings(sites)
 	paused := false
-	e.breakerMu.Lock()
-	sites := make([]*breaker.Breaker, 0, len(e.siteBreaker))
-	for _, b := range e.siteBreaker {
-		sites = append(sites, b)
-	}
-	e.breakerMu.Unlock()
-	for _, b := range sites {
-		if b.Pause(reason) {
+	for _, site := range sites {
+		if e.setPause(pauseScope{Site: site}, pauseState{
+			Reason: reason, Source: PauseSourceManual,
+			Failures: e.breakerSum(site),
+		}) {
 			paused = true
 		}
 	}
+	// 与 PauseSite 一样**不写 crawler_sites**（今天的 PauseCrawling 也不写）。
 	return paused
+}
+
+// breakerSum 该站当前窗口内的终态失败数（没配熔断/没这个站都是 0）。
+func (e *Engine) breakerSum(site string) int {
+	if b := e.breakerFor(site); b != nil {
+		return b.Sum()
+	}
+	return 0
 }
 
 // BreakerStatuses 返回各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
@@ -399,15 +437,46 @@ func (e *Engine) PauseCrawling(reason string) bool {
 // 包括没启用、也没暂停的：后台的「恢复抓取」端点 targets 取自这张表，不列就等于
 // "那个站闸住了却既看不见、也点不到恢复"，只能重启或让业务代码自己调 ResumeCrawling。
 func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
-	out := make(map[string]BreakerStatus)
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	for site, b := range e.siteBreaker {
-		st := b.Status()
-		st.Site = site
-		out[site] = st
+	sites := e.allSites()
+	sort.Strings(sites)
+	out := make(map[string]BreakerStatus, len(sites))
+	for _, site := range sites {
+		out[site] = e.breakerStatusOf(site)
 	}
 	return out
+}
+
+// breakerStatusOf 一个站点的快照：**合成视图** —— 统计与配置取自熔断器，暂停那几列取自暂停信号。
+//
+// 为什么合成：暂停状态现在只有一处（pause.go），而后台的历史契约是"一条记录里既有熔断阈值
+// 又有暂停现场"。合成让 payload 的字段形状一个字都不变（只多一个 Source）。
+func (e *Engine) breakerStatusOf(site string) BreakerStatus {
+	var st BreakerStatus
+	if b := e.breakerFor(site); b != nil {
+		st.Enabled = b.Enabled()
+		st.Window = b.Window()
+		st.Threshold = b.Threshold()
+		st.InWindow = b.Sum()
+	}
+	st.Site = site
+	// 用"该站任一暂停条目"而不是只查整站那条：阶段级暂停也该在这一行里显示出来
+	//（这样才能一眼看出"这一站停的是哪个阶段"）。
+	info := e.pauseInfoOf(site)
+	if info.Paused {
+		st.Paused = true
+		st.PausedAt = info.State.At
+		st.Reason = info.State.Reason
+		st.Source = info.State.Source
+		// stage 先说**scope**（阶段级暂停停的是它），scope 是整站时才退回触发现场那个阶段：
+		// 熔断触发一定带"当时哪个阶段在失败"，手动整站暂停两者都为空。
+		st.Stage = info.Scope.Stage
+		if st.Stage == "" {
+			st.Stage = info.State.Stage
+		}
+		st.Failures = info.State.Failures
+	}
+	st.ResumedAt = info.ResumedAt
+	return st
 }
 
 // Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
@@ -444,6 +513,20 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		}(name, pool)
 	}
 	wg.Wait()
+	// 溢出表里**寄放**的任务也算进存留：被暂停的站点，任务不在任何池子的队列里（那正是收口的语义），
+	// 只报池子的存留就会得出 drained=true —— 调用方（app.Run）随即去关库，而几十上百条任务
+	// 还在溢出表里躺着。它们的行是 pending，重启后由启动恢复捞，但那一刻**运维看不到任何告警**。
+	// 这与池子队列里的任务同一性质（"这一轮没跑完"），所以并进同一个结构。
+	e.spillMu.Lock()
+	for key, tasks := range e.spilled {
+		if len(tasks) == 0 {
+			continue
+		}
+		st := stats[key]
+		st.Queued += len(tasks)
+		stats[key] = st
+	}
+	e.spillMu.Unlock()
 	drained = len(stats) == 0
 	// 动态 ticker（错误/恢复/每站的轮询队列）也要等在途的那一跳跑完：它们同样会写库。
 	// 与阶段池共用同一个 timeout（并发计），等不到就如实说"没排空"。

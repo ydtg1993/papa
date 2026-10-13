@@ -14,7 +14,7 @@ func exampleShop() papa.SiteSpec {
                 Fetcher: &exampleshop.FetchCatalog{},
                 WorkerCount: 1, QueueSize: 32, Delay: "2s-5s",
                 Retry: papa.RetrySpec{MaxAttempts: 3, Backoff: "20s"},
-                AutoStart: true,
+                Entry:     papa.EntryAuto,
             },
             {
                 Fetcher: &exampleshop.FetchDetail{},

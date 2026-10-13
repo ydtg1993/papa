@@ -210,6 +210,18 @@ func submitUpdates(task *Task) map[string]any {
 // submitToStage 所有投递路径的收口：取活池（没有就懒建），按加急/常规路由。
 // 阶段未注册 → ErrStageNotRegistered（后台据此翻 409）。
 func (e *Engine) submitToStage(task *Task) error {
+	// 暂停中：**在入队点收口**，不接新活。
+	//
+	// 返回 ErrQueueFull 而不是自己往溢出表里塞：五个调用点已经把这个错误处理得正好
+	// （`submitToPool` 计数 spilledCount + 溢出并返回 nil、错误队列、后台重投/加急、延迟投递）——
+	// 自己再来一遍会漏掉那个计数（`queue_spilled` 指标失真），还让那几处的处理变成死代码。
+	//
+	// 放在建池**之前**：暂停期间连池子都不该建（没有 worker、没有统计器），
+	// 恢复时第一个任务进来才懒建 —— 这也让"暂停期间什么都不会发生"这条性质干净利落。
+	if e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
+		return fmt.Errorf("%w: 站点 %q 的阶段 %q 已暂停，任务先寄放（恢复后自动灌回）",
+			workerpool.ErrQueueFull, task.Site, task.Stage)
+	}
 	pool := e.getOrCreatePool(stageKeyOf(task))
 	if pool == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, task.Stage)

@@ -6,13 +6,11 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/ydtg1993/papa/v3/core"
 )
 
 // newTest 造一个时钟可控的熔断器 —— 窗口滑动全靠时间，用真 sleep 测会又慢又脆。
 func newTest(cfg Config) (b *Breaker, advance func(time.Duration)) {
-	b = New(cfg, nil)
+	b = New(cfg)
 	var mu sync.Mutex
 	now := time.Unix(1700000000, 0)
 	b.now = func() time.Time {
@@ -27,30 +25,49 @@ func newTest(cfg Config) (b *Breaker, advance func(time.Duration)) {
 	}
 }
 
+// 达到阈值就报 tripped，并把当时的窗口失败数一起给出 —— **停不停、怎么写现场、发不发告警
+// 都是引擎的事**（见 engine/pause.go）：本包只回答"到没到阈"。
 func TestTripsAtThreshold(t *testing.T) {
 	b, _ := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 3})
 
-	for i := 0; i < 2; i++ {
-		if b.RecordFailure("catalog") {
-			t.Fatalf("第 %d 次失败就触发了，阈值是 3", i+1)
+	for i := 1; i <= 2; i++ {
+		tripped, n := b.RecordFailure()
+		if tripped {
+			t.Fatalf("第 %d 次失败就报触发了，阈值是 3", i)
+		}
+		if n != i {
+			t.Fatalf("第 %d 次失败后窗口内应当是 %d，实得 %d", i, i, n)
 		}
 	}
-	if b.Paused() {
-		t.Fatal("没到阈值不该暂停")
+	tripped, failures := b.RecordFailure()
+	if !tripped {
+		t.Fatal("第 3 次失败应当报触发")
 	}
-	if !b.RecordFailure("catalog") {
-		t.Fatal("第 3 次失败应当触发熔断")
+	if failures != 3 {
+		t.Fatalf("触发时的失败数 = %d, want 3（引擎把它写进暂停现场，后台要显示）", failures)
 	}
-	if !b.Paused() {
-		t.Fatal("触发后应处于暂停态")
+	if got := b.Sum(); got != 3 {
+		t.Fatalf("Sum = %d, want 3", got)
 	}
+	// 配置也要能读出来：后台 payload 的 window / threshold 两列取自这里
+	if b.Threshold() != 3 || b.Window() != time.Minute {
+		t.Fatalf("config 读不对：threshold=%d window=%v", b.Threshold(), b.Window())
+	}
+}
 
-	st := b.Status()
-	if st.Stage != "catalog" || st.Failures != 3 || !st.Paused || st.InWindow != 3 {
-		t.Fatalf("status = %+v, want stage=catalog failures=3 in_window=3 paused", st)
-	}
-	if st.Threshold != 3 || st.Window != time.Minute {
-		t.Fatalf("status 应带上配置：%+v", st)
+// 越过阈值之后**每次都还报 tripped**（因为计数还在涨）—— 判重是调用方的事：
+// 引擎靠"写暂停信号成功没成功"来保证"一次触发只报一次告警"（已经停着时 setPause 返回 false）。
+// 这条把那个分工钉住：熔断器不再自己记"报过了"。
+func TestReportsTrippedEveryTimePastThreshold(t *testing.T) {
+	b, _ := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 2})
+	for i := 1; i <= 5; i++ {
+		tripped, n := b.RecordFailure()
+		if want := i >= 2; tripped != want {
+			t.Fatalf("第 %d 次失败：tripped = %v, want %v", i, tripped, want)
+		}
+		if n != i {
+			t.Fatalf("第 %d 次失败：窗口内 %d", i, n)
+		}
 	}
 }
 
@@ -58,202 +75,48 @@ func TestTripsAtThreshold(t *testing.T) {
 func TestFailuresFallOutOfWindow(t *testing.T) {
 	b, advance := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 3})
 
-	b.RecordFailure("s")
-	b.RecordFailure("s")
+	b.RecordFailure()
+	b.RecordFailure()
 	advance(2 * time.Minute)
 
 	if got := b.Sum(); got != 0 {
 		t.Fatalf("窗口滑走后 Sum = %d, want 0", got)
 	}
-	if b.RecordFailure("s") {
+	if tripped, _ := b.RecordFailure(); tripped {
 		t.Fatal("老失败不该把新失败顶到阈值")
 	}
-	if b.Paused() {
-		t.Fatal("不该暂停")
+	if got := b.Sum(); got != 1 {
+		t.Fatalf("滑走之后应当只剩新的一条：%d", got)
 	}
 }
 
-// 触发那一刻的现场（Stage/Failures/Reason）是快照，窗口滑走也不改写 ——
-// 排查时要看的是"当时为什么断的"。
-func TestTripSnapshotSurvivesWindowSlide(t *testing.T) {
-	b, advance := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 2})
-	b.RecordFailure("detail")
-	b.RecordFailure("detail")
-	advance(10 * time.Minute)
-
-	st := b.Status()
-	if st.Failures != 2 || st.Stage != "detail" || st.Reason == "" {
-		t.Fatalf("现场快照被改写了：%+v", st)
-	}
-	if st.InWindow != 0 {
-		t.Fatalf("InWindow 是实时值，应当已滑到 0，实得 %d", st.InWindow)
-	}
-}
-
-// 暂停时 Wait 阻塞、Resume 放行 —— 闸门的核心语义。
-func TestWaitBlocksUntilResume(t *testing.T) {
-	b, _ := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 1})
-	b.RecordFailure("s")
-
-	done := make(chan bool, 1)
-	go func() { done <- b.Wait(make(chan struct{})) }()
-
-	select {
-	case <-done:
-		t.Fatal("暂停中 Wait 不该返回")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	if !b.Resume() {
-		t.Fatal("Resume 应返回 true")
-	}
-	select {
-	case ok := <-done:
-		if !ok {
-			t.Fatal("Resume 后 Wait 应返回 true（继续干活）")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Resume 没有唤醒 Wait")
-	}
-}
-
-// 暂停 → 恢复 → 再暂停 → 再恢复。
-//
-// 回归点：resumeCh 必须在 Pause 时**换一个新的**。只 close 不复用的话，第二次暂停时
-// 那个 channel 早就关着了，select 立刻命中，"暂停"当场被放行 —— 熔断形同虚设。
-func TestPauseResumeCycleDoesNotLeakOldSignal(t *testing.T) {
-	b, _ := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 1})
-
-	for round := 1; round <= 3; round++ {
-		if !b.RecordFailure("s") {
-			t.Fatalf("第 %d 轮没触发", round)
-		}
-		if !b.Paused() {
-			t.Fatalf("第 %d 轮应处于暂停态", round)
-		}
-
-		done := make(chan bool, 1)
-		go func() { done <- b.Wait(make(chan struct{})) }()
-		select {
-		case <-done:
-			t.Fatalf("第 %d 轮：暂停中 Wait 不该返回（是不是复用了上一轮已经 close 的 resumeCh？）", round)
-		case <-time.After(30 * time.Millisecond):
-		}
-
-		if !b.Resume() {
-			t.Fatalf("第 %d 轮 Resume 应返回 true", round)
-		}
-		select {
-		case ok := <-done:
-			if !ok {
-				t.Fatalf("第 %d 轮 Resume 后应放行", round)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("第 %d 轮 Resume 没唤醒 Wait", round)
-		}
-	}
-}
-
-// stop 到达时暂停中的 worker 必须能退出去 —— 否则关停会被暂停卡死。
-func TestWaitReturnsFalseOnStop(t *testing.T) {
-	b, _ := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 1})
-	b.RecordFailure("s")
-
-	stop := make(chan struct{})
-	done := make(chan bool, 1)
-	go func() { done <- b.Wait(stop) }()
-	time.Sleep(30 * time.Millisecond)
-	close(stop)
-
-	select {
-	case ok := <-done:
-		if ok {
-			t.Fatal("stop 关闭后 Wait 应返回 false（该停机了），而不是 true")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("stop 没有唤醒 Wait")
-	}
-}
-
-// 未启用时任何调用都不改变状态：不计数、不暂停。
+// 未启用时任何调用都不改变计数：enabled=false 就是"没有自动触发这回事"。
 func TestDisabledNeverTrips(t *testing.T) {
 	b, _ := newTest(Config{Enabled: false, Window: time.Minute, Threshold: 1})
 
 	for i := 0; i < 100; i++ {
-		if b.RecordFailure("s") {
-			t.Fatal("未启用不该触发")
+		if tripped, n := b.RecordFailure(); tripped || n != 0 {
+			t.Fatalf("未启用不该触发也不该计数：tripped=%v n=%d", tripped, n)
 		}
-	}
-	if b.Paused() {
-		t.Fatal("未启用不该暂停")
 	}
 	if got := b.Sum(); got != 0 {
 		t.Fatalf("未启用不该计数，实得 %d", got)
 	}
-	if st := b.Status(); st.Paused || st.InWindow != 0 {
-		t.Fatalf("未启用时状态应干净：%+v", st)
+	if b.Enabled() {
+		t.Fatal("Enabled 应当报告未启用")
 	}
 }
 
-// 触发时回调一次，且**只一次** —— 之后每条失败都再喊一次就把人淹了。
-func TestOnTripFiresOnce(t *testing.T) {
-	var n int
-	var got core.BreakerStatus
-	var mu sync.Mutex
-	b := New(Config{Enabled: true, Window: time.Minute, Threshold: 1}, func(st core.BreakerStatus) {
-		mu.Lock()
-		n++
-		got = st
-		mu.Unlock()
-	})
-
-	for i := 0; i < 5; i++ {
-		b.RecordFailure("catalog")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if n != 1 {
-		t.Fatalf("onTrip 调了 %d 次, want 1", n)
-	}
-	if got.Stage != "catalog" || !got.Paused {
-		t.Fatalf("告警里带的状态 = %+v", got)
-	}
-}
-
-// 手动 Pause 走同一套闸门；本来就暂停时不再重复置位。
-func TestManualPause(t *testing.T) {
-	b, _ := newTest(Config{Enabled: true, Window: time.Minute, Threshold: 99})
-
-	if !b.Pause("人工排查") {
-		t.Fatal("首次 Pause 应返回 true")
-	}
-	if b.Pause("再来一次") {
-		t.Fatal("已在暂停态，Pause 应返回 false")
-	}
-	if st := b.Status(); !st.Paused || st.Reason != "人工排查" {
-		t.Fatalf("status = %+v", st)
-	}
-	if !b.Resume() || b.Resume() {
-		t.Fatal("Resume 首次 true、再次 false")
-	}
-}
-
-// nil 接收者（引擎没配熔断、或测试里直接构造 Engine）任何方法都不能 panic。
-// 这条是有意为之：调用处（notifyFailure / waitGate）就不必到处判空。
+// nil 接收者（引擎没配熔断、或测试里直接构造 Engine）任何方法都不能 panic ——
+// 这样调用处（notifyFailure）就不必到处判空。
 func TestNilReceiverIsSafe(t *testing.T) {
 	var b *Breaker
 
-	if b.Enabled() || b.Paused() || b.RecordFailure("s") || b.Resume() || b.Pause("x") {
-		t.Fatal("nil 熔断器不该有任何一个方法返回 true")
+	if b.Enabled() || b.Sum() != 0 || b.Window() != 0 || b.Threshold() != 0 {
+		t.Fatal("nil 熔断器不该报告任何启用/计数/配置")
 	}
-	if !b.Wait(nil) {
-		t.Fatal("nil 熔断器不该闸住（Wait 必须返回 true）")
-	}
-	if b.Sum() != 0 {
-		t.Fatal("nil 熔断器 Sum 应为 0")
-	}
-	if st := b.Status(); st != (core.BreakerStatus{}) {
-		t.Fatalf("nil 熔断器状态应为零值，实得 %+v", st)
+	if tripped, n := b.RecordFailure(); tripped || n != 0 {
+		t.Fatalf("nil 熔断器不该计数：tripped=%v n=%d", tripped, n)
 	}
 }
 
@@ -262,9 +125,10 @@ func TestNilReceiverIsSafe(t *testing.T) {
 //
 // 两个除零点的症状不同，这是它难查的原因：add 走 RecordFailure，在 worker 的 handler
 // 调用栈里、被 workerpool 的 runHandler 接住 → 表现成"每个任务都失败"；sumLocked 走
-// Status()，在 HTTP handler 里、被 net/http 接住 → 后台熔断那块读不出来。都不崩进程。
+// Sum()，而 Sum 现在是**后台合成视图**（以及引擎判阈值）读的那条路，在 HTTP handler 里、
+// 被 net/http 接住 → 后台熔断那块读不出来。都不崩进程。
 //
-// 所以这条用例不只要"不 panic"，还要求阈值判定与状态快照照常工作 —— 兜底把桶宽压成
+// 所以这条用例不只要"不 panic"，还要求阈值判定与窗口计数照常工作 —— 兜底把桶宽压成
 // 1ns 之后，窗口语义随之变成"至少 60ns"，那是这一档的既定代价（与 m3u8/filedown 的
 // max(MaxConcurrent, 1) 同一路数：只补"会崩"的那一类，不动字段本身的语义）。
 func TestTinyWindowDoesNotDivideByZero(t *testing.T) {
@@ -280,22 +144,14 @@ func TestTinyWindowDoesNotDivideByZero(t *testing.T) {
 			// 用 newTest 的注入时钟才能让断言稳定（这里要测的是除零，不是滑动）。
 			b, _ := newTest(Config{Enabled: true, Window: w, Threshold: 1})
 
-			if !b.RecordFailure("catalog") { // ← 除零点 ①：add
-				t.Fatalf("window=%v 阈值=1，第一条失败就该触发", w)
-			}
-			if !b.Paused() {
-				t.Fatalf("window=%v 触发后应处于暂停态", w)
+			if tripped, n := b.RecordFailure(); !tripped || n != 1 { // ← 除零点 ①：add
+				t.Fatalf("window=%v 阈值=1，第一条失败就该触发，实得 tripped=%v n=%d", w, tripped, n)
 			}
 			if got := b.Sum(); got != 1 { // ← 除零点 ②：sumLocked
 				t.Fatalf("window=%v Sum() = %d, want 1", w, got)
 			}
-
-			st := b.Status() // 同样走 sumLocked
-			if !st.Enabled || !st.Paused || st.InWindow != 1 || st.Failures != 1 {
-				t.Fatalf("window=%v status = %+v, want enabled/paused/in_window=1/failures=1", w, st)
-			}
-			if st.Window != w || st.Threshold != 1 {
-				t.Fatalf("window=%v status 应原样带出配置：%+v", w, st)
+			if b.Window() != w || b.Threshold() != 1 {
+				t.Fatalf("window=%v 配置应原样带出：%v / %d", w, b.Window(), b.Threshold())
 			}
 		})
 	}
@@ -326,29 +182,25 @@ func TestEnabledWithoutThresholdPanics(t *testing.T) {
 					t.Fatalf("panic 信息应点名配置键与字段，实得 %q", msg)
 				}
 			}()
-			New(c.cfg, nil)
+			New(c.cfg)
 		})
 	}
 
 	// 关着的时候阈值随便写：整段不写就是 enabled=false + threshold=0，这是**默认状态**，
-	// 不能因为它 panic。
+	// 不能因为它 panic。关掉的是"自动计数 + 触发"，与"能不能手动暂停"无关 ——
+	// 后者归暂停信号（见 engine/pause.go），与 enabled 是两件事。
 	for _, cfg := range []Config{
 		{},
 		{Threshold: 0},
 		{Threshold: -1},
 		{Enabled: false, Threshold: 0},
 	} {
-		b := New(cfg, nil)
-		if b.Enabled() || b.Paused() || b.RecordFailure("catalog") || b.Sum() != 0 {
-			t.Fatalf("%+v 关着时不该有任何动作生效", cfg)
+		b := New(cfg)
+		if b.Enabled() || b.Sum() != 0 {
+			t.Fatalf("%+v 关着时不该有任何计数生效", cfg)
 		}
-		// 关掉的是「自动计数 + 触发」，**不是闸门本身** —— 手动 Pause/Resume 照旧有用
-		// （业务拿它当维护窗口用，与 enabled 无关）。
-		if !b.Pause("维护窗口") || !b.Paused() {
-			t.Fatalf("%+v 手动 Pause 应当仍然有效（闸门与 enabled 是两件事）", cfg)
-		}
-		if !b.Resume() {
-			t.Fatalf("%+v 手动 Resume 应当仍然有效", cfg)
+		if tripped, _ := b.RecordFailure(); tripped {
+			t.Fatalf("%+v 关着时不该报触发", cfg)
 		}
 	}
 }

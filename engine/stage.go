@@ -51,14 +51,23 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 		"kind":    te.Kind,
 	}).Errorf("task failed: %s", te.Message)
 
-	// 熔断计数。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
+	// 熔断计数 + 触发。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
 	// 按 attempt 数会把一个烂 URL 记 3 次，阈值会被噪声灌满。见 breaker.RecordFailure。
-	// **记在该任务所属站点的闸门上**：一个站的失败不该把另一个站一起闸住。
-	// 失败计数按阶段名记：闸门本来就是每站一把，所以裸阶段名在这里够用，页面也更好读。
-	// 闸门为 nil = 这个站点没有闸门（自己搭引擎没 SetSiteBreaker，或旧行 site 为空）——
-	// 那就没有"熔断"这回事，跳过计数；不能让它 nil 解引用把任务收尾带崩。
-	if gate := e.breakerFor(task.Site); gate != nil {
-		gate.RecordFailure(task.Stage)
+	//
+	// **计数在熔断器里（每站一份），"停"这个动作在暂停信号里**：达到阈值就写一条整站暂停
+	//（Source=breaker，带上"哪个阶段在失败、当时窗口内多少次"的现场）。
+	// **写成功才发告警** —— "一次触发只报一次"因此由 setPause 的去重天然保证：
+	// 已经停着时它返回 false（可能是人工暂停在先），那就既不该覆盖人家的原因，也不该重复报警。
+	// 站点没有熔断配置时 breakerFor 返回 nil，RecordFailure 是 nil 安全的（没有熔断这回事）。
+	if tripped, failures := e.breakerFor(task.Site).RecordFailure(); tripped {
+		if e.setPause(pauseScope{Site: task.Site}, pauseState{
+			Reason:   "窗口内终态失败数达到阈值",
+			Source:   PauseSourceBreaker,
+			Stage:    task.Stage,
+			Failures: failures,
+		}) {
+			e.notifyBreakerTrip(e.breakerStatusOf(task.Site))
+		}
 	}
 
 	notifiers := e.getNotifiers()
@@ -126,6 +135,11 @@ func (e *Engine) stageKeys() []string {
 // 从 ApplyRegisterStage 的第一趟提出来：池子懒建（首次 submit 才建），建的时候绑上同一个 handler。
 func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	cfg := info.config
+	// 尝试次数兜底为 1：声明层（planStage）已经保证 > 0，但直接调 AddStage 的用法可以传 0 ——
+	// 那一档的循环一次都不跑，然后拿着**还是 nil** 的 lastErr 去落 failed、进 notifyFailure
+	//（那里会 err.Error()），当场空指针 panic。只兜"会崩"的这一类，不动其它字段的语义
+	//（与下载器那边 max(MaxConcurrent, 1) 同一路数）。
+	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
 		// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
 		// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
@@ -139,7 +153,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		}
 		// 重试FetchHandler
 		var lastErr error
-		for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
+		for attempt := 0; attempt < attempts; attempt++ {
 			if attempt > 0 {
 				// 退避放在**下一次尝试之前**（与 m3u8 / filedown 的退避同一写法）。
 				// 它不能写在上一轮的末尾：那样最后一次尝试失败之后还要再睡满一个周期才落 failed，
@@ -196,10 +210,10 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
 	cfg := info.config
 	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
-	// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管 —— 每个声明的站点各有一把
-	// （声明层建，没单配阈值的用 crawler.breaker 那份默认值）。
+	// 闸门绑**这个池自己的 scope**（站点 + 阶段）：它问的是暂停信号，所以"整站暂停"与
+	// "某个阶段暂停"由同一个适配器回答，不需要在池子上串两道闸。
 	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
-	pool.SetGate(e.breakerFor(cfg.Site))
+	pool.SetGate(e.pauseGateFor(pauseScope{Site: cfg.Site, Stage: info.stage}))
 	pool.Start(e.ctx, e.stageHandler(info))
 	e.startPoolErrorForwarder(key, pool)
 	// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
@@ -328,18 +342,22 @@ func (e *Engine) ApplyRegisterStage() {
 	// 池子**懒建**：不在这里全量建，等第一条任务 submit 时才建（getOrCreatePool）。于是入口回调
 	// 可以放心投给任意阶段 —— 投到谁、谁的池子在这一刻才起，不再有"后面的池子还没建"的 nil 解引用。
 	//
-	// 引擎在这里**不做策略判断**：有回调就跑（要不要接入口回调，由声明层决定 —— 见
-	// App.RegisterSites 的 AutoStart）。
+	// 引擎在这里**不做策略判断**：有回调、且声明的是 auto，就跑（要不要接入口回调由声明层决定，
+	// 是 auto 还是等后台点火由 StageSpec.Entry 决定 —— 见 internal/app/spec.go）。
 	// 下载器实例先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一条任务
 	// 可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
 	e.resolveStageDownloads()
 	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
 	e.seedSiteRows()
 	for _, key := range keys {
-		if fn := e.stages[key].submitFunc; fn != nil {
-			fn(e)
+		info := e.stages[key]
+		if info.submitFunc != nil && info.config.Entry == EntryAuto {
+			info.submitFunc(e)
 		}
 	}
+	// 到这里下载器覆盖层、站点行、入口任务都落地了 —— 后台的手动点火从这一刻起才算安全
+	//（早于点火会踩"覆盖层还没解析"与"建出一个停不掉的池"两个坑，见 Engine.SubmitStageEntries）。
+	e.entriesReady.Store(true)
 
 	// 启动高水位溢出任务的回灌协程
 	e.startDrain()

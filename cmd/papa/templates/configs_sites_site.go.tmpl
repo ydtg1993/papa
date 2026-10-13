@@ -55,7 +55,9 @@ func {{.SiteFunc}}() papa.SiteSpec {
 				QueueSize:   20,
 				Delay:       "5m",                                  // "5m" 或随机区间 "10s-30s"；空 = 不延迟
 				Retry:       papa.RetrySpec{MaxAttempts: 3, Backoff: "30s"},
-				AutoStart:   true, // 启动时投本阶段的入口任务（SubmitEntries 在 fetcher 自己身上）
+				// 入口：EntryAuto = 启动就投（SubmitEntries 在 fetcher 自己身上）；
+				// EntryManual = 启动不投，等后台「阶段入口」卡片上点火；不写 = 没有入口。
+				Entry: papa.EntryAuto,
 			},
 
 			// 加一个阶段：写一个 fetcher（GetStage 返回阶段名），然后在这里加一段（参数写全）。

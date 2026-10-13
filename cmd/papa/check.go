@@ -303,7 +303,13 @@ func stageNames(s papa.SiteSpec) []string {
 			out = append(out, "(fetcher 为 nil)")
 			continue
 		}
-		out = append(out, st.Fetcher.GetStage())
+		name := st.Fetcher.GetStage()
+		// 入口模式跟着标出来：这一版的 AutoStart 变成了三态，"哪些阶段会被后台/启动投"
+		// 是自查时最该一眼看到的东西（off 的不标，免得满屏噪音）。
+		if st.Entry != papa.EntryOff {
+			name += "(" + st.Entry.String() + ")"
+		}
+		out = append(out, name)
 	}
 	return out
 }

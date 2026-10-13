@@ -166,7 +166,8 @@ pkg/notify ──► core
 | --- | --- | --- |
 | 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
 | 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine.stage.go` 建池那一段 |
-| 执行 | **每站一把熔断闸门**（没单配阈值的站也用自己那把，阈值取 `crawler.breaker` 那份默认） | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine.breakerFor` |
+| 执行 | **每站一个熔断计数器**（没单配阈值的站也用自己那份，阈值取 `crawler.breaker` 那份默认）；它只判据，不再持有暂停状态 | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine.breakerFor` |
+| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | `crawler_sites` 站点表（启动按声明播种、熔断状态按列回写）+ 内存快照 | `models/crawler_site.go`、`engine/sitestat.go` |

@@ -90,17 +90,19 @@ type CrawlerConfig struct {
 	StopTimeout      time.Duration `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
 	StageIdleTimeout time.Duration `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
 	Trace            TraceConfig   `mapstructure:"trace"`              //单任务步骤追踪
-	Breaker          BreakerConfig `mapstructure:"breaker"`            //熔断闸门
+	Breaker          BreakerConfig `mapstructure:"breaker"`            //熔断（计数 + 阈值）
 	Archive          ArchiveConfig `mapstructure:"archive"`            //页面归档：失败时把那一页的原样 HTML 落到本地文件
 }
 
-// BreakerConfig 熔断闸门：窗口内**终态失败**数达到阈值，就把所有阶段的 worker 一起闸住
-// （不再取任何任务），等人处理完再从后台手动放行（`POST /api/breaker/resume`）。
+// BreakerConfig 熔断：窗口内**终态失败**数达到阈值就**自动暂停那一站的抓取**，
+// 等人处理完再从后台手动放行（`POST /api/breaker/resume`）。
 //
 // 只数终态失败（重试耗尽 / 不可重试），**不数每次尝试失败** —— 否则一个任务重试 3 次会记 3 次，
 // 几个烂 URL 就能把窗口灌满、熔断误触发，把整个爬虫停掉。
 //
-// 暂停状态**不跨重启**：进程重启即恢复运行（起进程本身就是一次人工介入）。
+// 这一节配的是**判据**（窗口与阈值）；"停"这个动作与暂停状态在引擎的暂停信号里
+// （人工暂停写的是同一张表，只是来源标成 manual）。**暂停状态不跨重启**：进程重启即恢复运行
+// （起进程本身就是一次人工介入）。
 type BreakerConfig struct {
 	Enabled   bool          `mapstructure:"enabled"`   //是否启用熔断闸门（默认 false）
 	Window    time.Duration `mapstructure:"window"`    //统计窗口；<=0 用默认 5m

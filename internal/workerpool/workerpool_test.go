@@ -377,8 +377,8 @@ func TestStopReportsDrainedAndIsIdempotent(t *testing.T) {
 	}
 }
 
-// fakeGate 测试用闸门。池子只认 Gate 接口，这里不必拖进真的熔断器 ——
-// 熔断器自己的闸门语义在 internal/breaker 里测。
+// fakeGate 测试用闸门。池子只认 Gate 接口，这里不必拖进真的暂停信号 ——
+// 那一套（暂停信号 + 按 scope 现查的闸门）在 engine/pause_test.go 里测。
 type fakeGate struct {
 	mu     sync.Mutex
 	paused bool

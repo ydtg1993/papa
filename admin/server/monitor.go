@@ -48,6 +48,20 @@ type QueueProcessEvent struct {
 	At        time.Time
 }
 
+// EntryTriggerEvent 一次「阶段入口点火」的结局（宿主拿它记操作日志）。
+//
+// 与 QueueProcessEvent 同一处境：后台自带的原生端点、不走表格组件，而它同样会**投一批任务**
+// （入口任务还常带着轮询周期）—— 审计不该因为"这个按钮不是表格动作"就断档。
+type EntryTriggerEvent struct {
+	Site     string // 哪个站
+	Stage    string // 哪个阶段
+	Mode     string // 点火那一刻的入口模式（恒为 manual，带上让日志自解释）
+	Operator string // 谁点的（鉴权中间件解析令牌得到；未鉴权/测试构造的请求为空）
+	IP       string // 直连来源 IP（与白名单同一取法，不信 X-Forwarded-For）
+	Err      error  // nil = 成功
+	At       time.Time
+}
+
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
@@ -76,11 +90,29 @@ type MonitorConfig struct {
 	// BreakerStatuses 各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
 	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
 	BreakerStatuses func() map[string]core.BreakerStatus
-	// ResumeBreaker 放行**某个站点**的闸门；返回是否真的从暂停态切了回来（本来在跑就是 false）。
+	// ResumeBreaker 放行某个站点（`stage` 为空）或**某站的某个阶段**的抓取（清掉对应的暂停信号）；
+	// 返回是否真的从暂停态切了回来（本来在跑就是 false）。
 	// 要知道有哪些站点，看 BreakerStatuses 的键。
-	ResumeBreaker func(site string) bool
+	ResumeBreaker func(site, stage string) bool
 	// OnBreakerResume 放行成功后的回调，宿主拿它记操作日志（人在场的干预必须留痕）；可空。
-	OnBreakerResume func(operator, site string)
+	// `stage` 为空 = 整站那一层。
+	OnBreakerResume func(operator, site, stage string)
+	// StageEntries 有入口任务的阶段快照（引擎侧 `Engine.StageEntries`）：进 /api/monitor 的
+	// `entries` 数组。可空；空时那个键缺席 —— 与 sites / breakers 同一约定（前端据此隐藏面板）。
+	StageEntries func() []core.StageEntry
+	// SubmitStageEntries 手动点火某个阶段的入口任务（引擎侧 `Engine.SubmitStageEntries`）。
+	// 只对声明成 EntryManual 的阶段有效；错误是引擎的哨兵（NoEntry / AutoStage / NotReady / Busy），
+	// 后台一律按 **409 + 原话**回给操作人 —— 那几种情况点了也没用，得让他知道为什么。
+	SubmitStageEntries func(site, stage string) error
+	// OnEntryTrigger 点火跑完（成功或失败都算）后的回调，宿主拿它记操作日志；可空。
+	OnEntryTrigger func(EntryTriggerEvent)
+	// PauseBreaker 暂停某个站点（`stage` 为空）或**某站的某个阶段**的抓取（写一条暂停信号）；
+	// 返回是否真的从运行态切到了暂停。与 ResumeBreaker 是一对：
+	// 后台卡片上那个站点级的「暂停/恢复」，以及每个阶段行上的那个。
+	PauseBreaker func(site, stage string) bool
+	// OnBreakerPause 暂停成功后的回调。**与 OnBreakerResume 一样只带操作人、站点与阶段**（不带 IP）——
+	// 这一对是对称的，要补 IP 就两边一起补。
+	OnBreakerPause func(operator, site, stage string)
 	// VerifyTokenValue 单独校验一个**令牌值**（不是请求头），给关停这类高危操作做二次确认用：
 	// 调用方要把自己的令牌放进请求体再输一遍。nil 表示不支持关停（该接口直接 404）。
 	VerifyTokenValue func(token string) (operator string, ok bool)
@@ -157,6 +189,8 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
 	mux.HandleFunc("/api/breaker", s.wrap(s.breakerHandler))
 	mux.HandleFunc("/api/breaker/resume", s.wrap(s.breakerResumeHandler))
+	mux.HandleFunc("/api/breaker/pause", s.wrap(s.breakerPauseHandler))
+	mux.HandleFunc("/api/entries/trigger", s.wrap(s.entryTriggerHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
@@ -252,9 +286,13 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// 熔断状态跟着 /api/monitor 一起回：前端每轮刷新只发一个请求就能画出横幅，
 	// 不必再单开一条轮询。单独的 GET /api/breaker 留给脚本/外部系统。
 	if s.cfg.BreakerStatuses != nil {
-		// 是**数组**不是单个对象：每个站点一把闸门，后台要能逐站看、逐站放行。
+		// 是**数组**不是单个对象：每个站点一条状态（暂停与否都在里面），后台要能逐站看、逐站放行。
 		// 顺序固定（按站点名字典序），前端就不用再排。
 		resp["breakers"] = sortedBreakerStatuses(s.cfg.BreakerStatuses())
+	}
+	if s.cfg.StageEntries != nil {
+		// 是**数组**不是对象：后台按 site 分组画卡片，顺序（站点 → 阶段）由引擎排好，前端不用再排。
+		resp["entries"] = s.cfg.StageEntries()
 	}
 	if s.cfg.SiteStats != nil {
 		resp["sites"] = s.cfg.SiteStats()
@@ -494,33 +532,33 @@ func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 要放行哪个 scope：`?scope=xxx` 或请求体 `{"scope":"xxx"}`；都不给 = **全部**。
+	// 要放行谁：`?scope=xxx&stage=yyy` 或请求体同名字段；都不给 = **全部站点**（整站那一层）。
 	// 多站时"全部"是横幅上那个「恢复抓取」，单站时与以前完全一样。
-	scope, ok := breakerScopeParam(r)
+	site, stage, ok := breakerTargetParam(r)
 	if !ok {
-		http.Error(w, "bad request: scope must be a string", http.StatusBadRequest)
+		http.Error(w, "bad request: scope/stage must be strings (stage 需要 scope)", http.StatusBadRequest)
 		return
 	}
 	known := s.cfg.BreakerStatuses()
-	if scope != "" {
-		if _, exists := known[scope]; !exists {
-			http.Error(w, "unknown scope: "+scope, http.StatusBadRequest)
+	if site != "" {
+		if _, exists := known[site]; !exists {
+			http.Error(w, "unknown scope: "+site, http.StatusBadRequest)
 			return
 		}
 	}
 
-	targets := []string{scope}
-	if scope == "" {
+	targets := []string{site}
+	if site == "" {
 		targets = targets[:0]
-		for site := range known {
-			targets = append(targets, site)
+		for key := range known {
+			targets = append(targets, key)
 		}
 		sort.Strings(targets)
 	}
 	resumed := make([]string, 0, len(targets))
-	for _, site := range targets {
-		if s.cfg.ResumeBreaker(site) {
-			resumed = append(resumed, site)
+	for _, key := range targets {
+		if s.cfg.ResumeBreaker(key, stage) {
+			resumed = append(resumed, key)
 		}
 	}
 	if len(resumed) == 0 {
@@ -528,40 +566,183 @@ func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operator := auth.OperatorFrom(r.Context())
-	for _, site := range resumed {
+	for _, key := range resumed {
 		if s.cfg.OnBreakerResume != nil {
-			s.cfg.OnBreakerResume(operator, site)
+			s.cfg.OnBreakerResume(operator, key, stage)
 		}
 	}
-	s.logger.Infof("熔断已手动放行（操作人 %q，scope=%q），恢复取任务", operator, strings.Join(resumed, ","))
+	s.logger.Infof("已手动放行（操作人 %q，scope=%q stage=%q），恢复取任务", operator, strings.Join(resumed, ","), stage)
 	// resumed 仍是**布尔**（前端/脚本靠它区分"本来就没暂停"）；放行了哪些 scope 在 resumed_scopes 里。
-	writeJSON(w, map[string]any{"status": "ok", "resumed": true, "resumed_scopes": resumed})
+	out := map[string]any{"status": "ok", "resumed": true, "resumed_scopes": resumed}
+	if stage != "" {
+		out["stage"] = stage
+	}
+	writeJSON(w, out)
 }
 
-// breakerScopeParam 取要放行的 scope：先看 `?scope=`，再看请求体 `{"scope":"…"}`；都不给 = 空串（全部）。
-// 给了但不是字符串 → ok=false（调用方回 400，别静默当成"全部"）。
-func breakerScopeParam(r *http.Request) (scope string, ok bool) {
-	if v := r.URL.Query().Get("scope"); v != "" {
-		return v, true
+// breakerPauseHandler 手动暂停某个站点的抓取 —— 与 resume 是一对，但**scope 必填**。
+//
+// 为什么不点名就 400（而 resume 不点名 = 全部放行）：放行是往安全方向走，暂停是往危险方向走 ——
+// 一个误点不该把**所有**站点一起停掉。逐站点名也让操作日志能落实到具体那一站。
+//
+// 暂停的语义（与熔断触发时同一套）：两层一起生效 ——
+//   - **取任务点**（闸门）：worker 停在取任务**之前**，队列里已经躺着的那批也冻住，在途任务跑完为止；
+//   - **入队点**（收口）：不再接新活，任务寄放到溢出表，点「恢复」时立刻灌回。
+//
+// 所以它天然适合"多站分批放开"：停得干净、不堆积、放开即续跑。
+func (s *Monitor) breakerPauseHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-	if r.Body == nil {
-		return "", true
+	if s.cfg.PauseBreaker == nil || s.cfg.BreakerStatuses == nil {
+		http.Error(w, "breaker not configured", http.StatusNotFound)
+		return
 	}
-	var body struct {
-		Scope *string `json:"scope"`
+	site, stage, ok := breakerTargetParam(r)
+	if !ok {
+		http.Error(w, "bad request: scope/stage must be strings (stage 需要 scope)", http.StatusBadRequest)
+		return
 	}
-	// 空请求体是合法的（"全部放行"）：先看一眼有没有内容，避免把 io.EOF 当解析失败。
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
-	if err := dec.Decode(&body); err != nil {
-		if errors.Is(err, io.EOF) {
-			return "", true
+	if site == "" {
+		// 与 resume 的默认相反：这里不点名就是错的（见函数头）。文案要说清"不是静默停全部"。
+		http.Error(w, "bad request: scope is required（暂停必须点名站点；不点名不会停掉全部）", http.StatusBadRequest)
+		return
+	}
+	if _, exists := s.cfg.BreakerStatuses()[site]; !exists {
+		http.Error(w, "unknown scope: "+site, http.StatusBadRequest)
+		return
+	}
+	if !s.cfg.PauseBreaker(site, stage) {
+		// 本来就在暂停态：不报错（重复点击不该看起来像失败），也不记审计（没有状态变更）——
+		// 与 resume 的 resumed=false 那条同一取向。
+		note := "该站点本来就在暂停态"
+		if stage != "" {
+			note = "该站点或这个阶段本来就在暂停态"
 		}
-		return "", false
+		writeJSON(w, map[string]any{"status": "ok", "paused": false, "note": note})
+		return
 	}
-	if body.Scope == nil {
-		return "", true
+	operator := auth.OperatorFrom(r.Context())
+	if s.cfg.OnBreakerPause != nil {
+		s.cfg.OnBreakerPause(operator, site, stage)
 	}
-	return *body.Scope, true
+	s.logger.Infof("已手动暂停（操作人 %q，scope=%q stage=%q），worker 不再取任务", operator, site, stage)
+	out := map[string]any{"status": "ok", "paused": true, "paused_scopes": []string{site}}
+	if stage != "" {
+		out["stage"] = stage
+	}
+	writeJSON(w, out)
+}
+
+// entryTriggerHandler 手动点火某个阶段的入口任务（后台「阶段入口」卡片上那个按钮）。
+//
+// 参数走**请求体** `{"site":…,"stage":…}`（也认 `?site=&stage=`，给脚本用）：站点键与阶段名
+// 除了不能带 `:` 什么都允许（空格、`&`、中文……），塞进 query string 会被 URL 编码坑。
+//
+// 失败一律回 **409 + 引擎原话**：点不动的那几种原因（阶段没入口 / 它是 auto / 引擎没就绪 /
+// 已有一次在跑）都是"点了没用、但得让操作人知道为什么"的业务判断，不是服务器故障。
+func (s *Monitor) entryTriggerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.SubmitStageEntries == nil {
+		http.Error(w, "entry trigger not configured", http.StatusNotFound)
+		return
+	}
+	site, stage, ok := entryTriggerParams(r)
+	if !ok {
+		http.Error(w, "bad request: site and stage are required", http.StatusBadRequest)
+		return
+	}
+	err := s.cfg.SubmitStageEntries(site, stage)
+	s.auditEntryTrigger(r, site, stage, err)
+	if err != nil {
+		s.logger.Errorf("trigger stage entries %s/%s: %s", site, stage, err.Error())
+		switch {
+		case errors.Is(err, engine.ErrStageNotRegistered), errors.Is(err, engine.ErrStageNoEntry),
+			errors.Is(err, engine.ErrEntryAutoStage), errors.Is(err, engine.ErrEntryNotReady),
+			errors.Is(err, engine.ErrEntryBusy):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			http.Error(w, "trigger stage entries failed", http.StatusInternalServerError)
+		}
+		return
+	}
+	writeJSON(w, map[string]any{"status": "ok", "site": site, "stage": stage})
+}
+
+// auditEntryTrigger 把一次点火的结局交给宿主记审计。成功、失败都记；接口没配置（404）不记 ——
+// 那是"压根没这条功能"，不是一次触发（与 auditQueueProcess 同一取向）。
+func (s *Monitor) auditEntryTrigger(r *http.Request, site, stage string, err error) {
+	if s.cfg.OnEntryTrigger == nil {
+		return
+	}
+	s.cfg.OnEntryTrigger(EntryTriggerEvent{
+		Site:     site,
+		Stage:    stage,
+		Mode:     string(engine.EntryManual), // 点火只对 manual 开放（引擎那边拦的）
+		Operator: auth.OperatorFrom(r.Context()),
+		IP:       clientIP(r).String(),
+		Err:      err,
+		At:       time.Now(),
+	})
+}
+
+// entryTriggerParams 取要点火的站点与阶段：先看 `?site=&stage=`，再看请求体（体优先，前端走体）。
+// 缺任一项 → ok=false（调用方回 400）；请求体不是合法 JSON → 也算不合法。
+func entryTriggerParams(r *http.Request) (site, stage string, ok bool) {
+	q := r.URL.Query()
+	site, stage = q.Get("site"), q.Get("stage")
+	if r.Body != nil {
+		var body struct {
+			Site  *string `json:"site"`
+			Stage *string `json:"stage"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
+		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			return "", "", false
+		}
+		if body.Site != nil {
+			site = *body.Site
+		}
+		if body.Stage != nil {
+			stage = *body.Stage
+		}
+	}
+	return site, stage, site != "" && stage != ""
+}
+
+// breakerTargetParam 取暂停/放行的对象：先看 `?scope=&stage=`，再看请求体 `{"scope":"…","stage":"…"}`。
+//
+// `scope` 是**站点键**（沿用这个端点的老叫法）；空串在 resume 里表示"全部站点"、在 pause 里是错误。
+// `stage` 为空 = 整站那一层。**给了 stage 却没给 scope 一律不合法**（阶段属于某个站）——
+// 调用方回 400，别静默当成"整站"或"全部"。
+func breakerTargetParam(r *http.Request) (site, stage string, ok bool) {
+	q := r.URL.Query()
+	site, stage = q.Get("scope"), q.Get("stage")
+	if r.Body != nil {
+		var body struct {
+			Scope *string `json:"scope"`
+			Stage *string `json:"stage"`
+		}
+		// 空请求体是合法的（"全部放行"）：先看一眼有没有内容，避免把 io.EOF 当解析失败。
+		dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
+		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			return "", "", false
+		}
+		if body.Scope != nil {
+			site = *body.Scope
+		}
+		if body.Stage != nil {
+			stage = *body.Stage
+		}
+	}
+	if stage != "" && site == "" {
+		return "", "", false
+	}
+	return site, stage, true
 }
 
 // taskTraceHandler 返回一条任务的步骤追踪时间线（按尝试、步骤排序）。

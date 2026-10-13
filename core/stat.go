@@ -85,7 +85,11 @@ type QueueStat struct {
 	LastError      string        `json:"last_error"`      // 上次执行错误，空=正常
 }
 
-// BreakerStatus 熔断闸门的当前状态（纯值，供监控后台读取）。
+// BreakerStatus 一个站点的暂停与熔断状态（纯值，供监控后台读取）。
+//
+// 它是**合成视图**：窗口/阈值/窗口内失败数取自熔断计数器，
+// 暂停那几列（paused / paused_at / reason / source / stage / failures）取自暂停信号 ——
+// 后者可能来自人工暂停，也可能来自熔断自动触发，`Source` 说明是哪种。
 //
 // 字段分两类：**配置**（Window / Threshold，来自 config）、**现场**（其余）。
 // InWindow 是实时值，Paused 之后仍在变（窗口会滑走）；Failures / Stage / Reason 是
@@ -99,6 +103,10 @@ type BreakerStatus struct {
 	PausedAt  time.Time     `json:"paused_at"`
 	ResumedAt time.Time     `json:"resumed_at"`
 	Reason    string        `json:"reason"`
+	// Source 这条暂停是谁下的：`manual`（后台/业务手动）或 `breaker`（熔断自动触发）。
+	// 横幅靠它区分两种说法 —— 别再回去用"enabled && stage"那种启发式猜
+	//（熔断关着时的手动暂停、以及将来的阶段级手动暂停都会猜错）。
+	Source string `json:"source"`
 	// Site 哪个站点（SiteSpec.Key）触发的。多站时告警与后台都靠它区分，
 	// 不再只有一句"全任务暂停"。
 	Site     string `json:"site"`

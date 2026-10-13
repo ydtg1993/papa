@@ -416,7 +416,7 @@ Stages: []papa.StageSpec{
         QueueSize:   20,
         Delay:       "5m",
         Retry:       papa.RetrySpec{MaxAttempts: 3, Backoff: "30s"},
-        AutoStart:   true,
+        Entry:       papa.EntryAuto,
     },
     {
         Fetcher:     &fetcher.FetchDetail{}, // 详情页阶段
@@ -789,7 +789,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 > `task.Trace.*` 是**框架的步骤上报接口**（见 1.3），关掉追踪时是 no-op —— 写新 fetcher 时照抄即可。
 
 配套两处改动：
-1. `configs/sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / 要不要 AutoStart）。
+1. `configs/sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / Entry 入口模式）。
 2. 若用下载器，**不用在 `main.go` 里接线**（框架按 `DefaultConfig` 备好基座）；要按站点/阶段各配一份就写在站点声明里（见 §5.4）。
 
 ---
@@ -831,9 +831,15 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > 它跑在**所有阶段的池子都建好之后**，所以可以往任意阶段投递（不限于自己这个阶段）：
 > 比如把多个站点的入口分别交给各自的阶段。调用顺序按阶段名字典序，启动期提交顺序是稳定的。
 >
-> **要不要投、由声明说了算**：`StageSpec.AutoStart`（`true` = 启动时投）。排查时只想跑某个阶段
->（不想让入口阶段又跑一遍）就把它设成 `false` —— 它只管启动时投不投入口，阶段本身照常跑。
-> 实现了入口却没开 AutoStart 会打一条 Info（"是关的、不是漏的"）。
+> **什么时候投、由声明说了算**：`StageSpec.Entry` 是三态 ——
+> `papa.EntryAuto` 启动那一趟就投；`papa.EntryManual` **一次都不自动投**，等你到后台「阶段入口」
+> 卡片上点火（`engine.SubmitStageEntries(site, stage)`，后台那个按钮走的就是它）；
+> 不写（= `papa.EntryOff`）表示"这个阶段没有入口这回事"：启动不投，后台也不显示它。
+> 排查时只想跑某个阶段（不想让入口阶段又跑一遍）就把 `auto` 改成 `manual` ——
+> 它只管入口投不投，阶段本身照常跑（队列里已有的任务、重投进来的都照跑）。
+>
+> 声明跟实现对不上会打 WARN，且文案指路：写了 `auto`/`manual` 却没实现 `SubmitEntries`，
+> 或者**实现了入口却忘了写 `Entry`**（`off` 是默认值，这是最常见的那种手误）。
 >
 > **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（Key / BaseURL / Headers / 熔断阈值 /
 > 下载器覆盖，以及每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**三个治理队列不在这里，统一写在 `config.yaml`**。站点声明没有汇总清单 —— 文件自己在
@@ -894,7 +900,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
   入口路由表正相反：它**只**声明在 `fetcher/<站点>/fetch_catalog.go`（包级 `catalogRoutes` 那类，例见 §7.1），
   入口投递与 handler 反推任务的 key 共用同一张表 —— 别在 handler 里再抄一份 key → 路由的映射。
 
-已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一把熔断闸门**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那把；后台横幅逐站一行、可逐站放行）、归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台横幅逐站一行、可逐站放行）；**暂停是一处信号**（人工暂停与熔断触发写同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
@@ -989,6 +995,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
 - `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动闸住 / 放行**所有站点**的抓取；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
+- `engine.SubmitStageEntries(site, stage)` / `engine.StageEntries()`：**手动投入口任务**与「哪些阶段有入口」，后台「阶段入口」卡片用的就是它们。只对声明成 `papa.EntryManual` 的阶段有效；点不动的原因（没入口 / 它是 auto / 引擎没就绪 / 已有一次在跑）是哨兵错误（`ErrStageNoEntry` / `ErrEntryAutoStage` / `ErrEntryNotReady` / `ErrEntryBusy`），`errors.Is` 判。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
 - `engine.FetchRenderedPage(ctx, url, waitSelector)` 同上，但返回 `*htmlfetch.Page`（`StatusCode` / `Content-Type` 为零值）—— 走浏览器的阶段要接 `engine.RestrictedError` 或复用静态路径那套解析时用它。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。

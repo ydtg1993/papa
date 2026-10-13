@@ -74,7 +74,8 @@ Implement only the required stages. For an auto-start entry stage, implement:
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site)
 ```
 
-and set its `StageSpec.AutoStart` to true.
+and set its `StageSpec.Entry` to `papa.EntryAuto` (startup) or `papa.EntryManual` (ignite it later from the
+back-office 「阶段入口」 card).
 
 For every submitted task:
 
@@ -175,7 +176,7 @@ Before finishing, verify:
 - [ ] Every submitted task carries `Site` — the stage lookup is keyed by `site:stage`.
 - [ ] Site self-registers; `main.go` remains generic.
 - [ ] Stage parameters are in Go declarations, governance queues remain global YAML.
-- [ ] Entry tasks use `SubmitEntries` + `AutoStart` when appropriate.
+- [ ] Entry tasks use `SubmitEntries` + `StageSpec.Entry` (`EntryAuto` / `EntryManual`) when appropriate.
 - [ ] Business identity is in persisted `Task.Meta`; idempotency is stable.
 - [ ] Repeat tasks have both task fields and global repeat queue semantics accounted for.
 - [ ] Static HTML is preferred unless browser use is justified and declared.

@@ -46,7 +46,7 @@ func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 	})
 }
 
-// RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 AutoStart 策略）、站点快照、按站的熔断阈值。
+// RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 Entry 模式）、站点快照、按站的熔断阈值。
 func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
@@ -72,7 +72,7 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 			Stages: []StageSpec{{
 				Fetcher: entry, WorkerCount: 2, QueueSize: 16,
 				Delay: "5m", Retry: RetrySpec{MaxAttempts: 2, Backoff: "3s"},
-				AutoStart: true,
+				Entry: engine.EntryAuto,
 			}},
 		},
 		SiteSpec{
@@ -111,10 +111,10 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		t.Fatalf("空键不再是一个 scope：%+v", sts[""])
 	}
 
-	// ③ 阶段注册了、AutoStart=true 的入口真的被调（两趟遍历 + 策略在声明层这一整套）
+	// ③ 阶段注册了、Entry=auto 的入口真的被调（三趟遍历 + 策略在声明层这一整套）
 	e.ApplyRegisterStage()
 	if !entry.called {
-		t.Fatal("AutoStart=true 的阶段应当在启动时投入口任务")
+		t.Fatal("Entry=auto 的阶段应当在启动时投入口任务")
 	}
 	// 站点声明（BaseURL / Headers）也一并交给入口回调 —— fetcher 不必自己存副本。
 	// 少了这一条，站点值就只能在 fetcher 里再写一份常量，改了会漂。

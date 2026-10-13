@@ -316,23 +316,28 @@ func TestPlanSitesScopesStageNameBySite(t *testing.T) {
 	}
 }
 
-// AutoStart 决定**要不要把入口回调接上**，并给出该打的那句话：
-//   - 开了却没人实现入口 → WARN（配置与实现对不上）
-//   - 实现了入口却没开   → Info（"是关的、不是漏的"），且回调不接
-//   - 既没开也没实现     → 什么都不打（绝大多数阶段）
+// Entry 的三态 × 有没有入口，六个格子各有各的说法：
+//   - auto 却没人实现入口 / manual 却没人实现入口 → WARN（配置与实现对不上）
+//   - off（不写）却实现了入口 → WARN 且**回调不接** —— off 是默认值，这是最常见的那种手误，
+//     所以在日志里直接给出两条出路（写 manual 就能后台点火）
+//   - manual 且有入口 → Info（后台那张卡上有它），回调留着等下点火
+//   - auto 且有入口 / off 且没入口 → 什么都不打（各走各的正常路）
 func TestPlanStageEntryPolicy(t *testing.T) {
 	cases := []struct {
 		name      string
-		autoStart bool
+		entry     engine.EntryMode
 		withEntry bool
 		wantSub   bool
+		wantEntry engine.EntryMode // 落进 StageConfig 的那个值（mm 得跟声明一致）
 		wantNote  string
 		wantWarn  bool
 	}{
-		{"开了 AutoStart 且有入口", true, true, true, "", false},
-		{"开了 AutoStart 但没入口", true, false, false, "AutoStart=true", true},
-		{"有入口但没开 AutoStart", false, true, false, "AutoStart=false", false},
-		{"既没开也没入口", false, false, false, "", false},
+		{"auto + 有入口", engine.EntryAuto, true, true, engine.EntryAuto, "", false},
+		{"auto + 没入口", engine.EntryAuto, false, false, engine.EntryAuto, "Entry=auto", true},
+		{"manual + 有入口", engine.EntryManual, true, true, engine.EntryManual, "manual", false},
+		{"manual + 没入口", engine.EntryManual, false, false, engine.EntryManual, "Entry=manual", true},
+		{"off + 有入口", engine.EntryOff, true, false, engine.EntryOff, "没写 Entry", true},
+		{"off + 没入口", engine.EntryOff, false, false, engine.EntryOff, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -341,13 +346,17 @@ func TestPlanStageEntryPolicy(t *testing.T) {
 				f = &entryStageFetcher{}
 			}
 			plan, err := planStage(SiteSpec{Key: "a"}.snapshot(), StageSpec{
-				Fetcher: f, WorkerCount: 1, QueueSize: 8, AutoStart: c.autoStart,
+				Fetcher: f, WorkerCount: 1, QueueSize: 8, Entry: c.entry,
 			}, map[string]string{})
 			if err != nil {
 				t.Fatalf("planStage = %v", err)
 			}
 			if got := plan.sub != nil; got != c.wantSub {
 				t.Fatalf("接不接入口回调 = %v，want %v", got, c.wantSub)
+			}
+			// 模式要原样落进引擎侧的 StageConfig（漏抄一处，引擎就会按零值 = off 处理）
+			if plan.cfg.Entry != c.wantEntry {
+				t.Fatalf("cfg.Entry = %q，want %q", plan.cfg.Entry, c.wantEntry)
 			}
 			if c.wantNote != "" && !strings.Contains(plan.note, c.wantNote) {
 				t.Fatalf("日志应含 %q，实得 %q", c.wantNote, plan.note)
@@ -359,6 +368,17 @@ func TestPlanStageEntryPolicy(t *testing.T) {
 				t.Fatalf("warn = %v，want %v", plan.warn, c.wantWarn)
 			}
 		})
+	}
+}
+
+// 字符串枚举写错（"Auto"、"manual "）能过编译，只会被当成"不是 auto"而静默不投 ——
+// 声明期就要点名报错。
+func TestPlanStageRejectsBadEntryMode(t *testing.T) {
+	_, err := planStage(SiteSpec{Key: "a"}.snapshot(), StageSpec{
+		Fetcher: &entryStageFetcher{}, WorkerCount: 1, QueueSize: 8, Entry: engine.EntryMode("Auto"),
+	}, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "Entry 只能是") {
+		t.Fatalf("写错的 Entry 应当报错并列出合法值：%v", err)
 	}
 }
 

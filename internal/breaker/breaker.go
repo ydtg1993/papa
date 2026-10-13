@@ -1,20 +1,17 @@
-// Package breaker 是框架级的熔断闸门：滑动窗口统计**终态失败**数，达到阈值就把所有阶段的
-// worker 闸住不再取任务，等人处理完再手动放行。
+// Package breaker 只做一件事：**滑动窗口统计终态失败数，判断有没有达到阈值**。
 //
-// 它由两件事组成：
-//   - 计数：窗口内「任务最终失败」的次数（不是每次尝试失败 —— 见 RecordFailure）；
-//   - 闸门（Gate）：worker 每次取任务前探一次，暂停时 worker 就停在原地（见 workerpool.Gate）。
-//
-// 它**不 import workerpool**：池子那边声明了自己需要的最小接口，本包在结构上满足它即可。
-// 这样池子不认识熔断，熔断也不认识池子。
+// 它的职责边界是刻意收窄的（改过一次）：
+//   - 它**不再持有暂停状态**，也不再是实现 `workerpool.Gate` 的那道闸门 ——
+//     暂停的唯一定义在 `engine` 的暂停信号里（人工暂停与熔断触发写的是同一张表）。
+//     它只把"达到阈值了、当时窗口内多少次失败"**返回**给引擎，由引擎去写信号、发告警。
+//   - 所以它既**不 import workerpool**，也**不 import core**：不认识池子，也不认识监控 DTO。
+//     （有一条扫源码守卫钉着"不 import core"这个契约。）
 package breaker
 
 import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/ydtg1993/papa/v3/core"
 )
 
 // bucketCount 滑动窗口切成多少个等宽桶。求和时只算还在窗口内的桶，所以窗口是「近似」的，
@@ -31,7 +28,7 @@ type Config struct {
 	Threshold int           // 启用时必填且必须 > 0，否则 New 直接 panic
 }
 
-// Breaker 熔断器：滑动窗口计数 + 一道暂停闸门。
+// Breaker 熔断器：一个滑动窗口计数器。
 // 所有方法都容忍 nil 接收者（引擎没配熔断时就是一个 nil 指针），省得调用处到处判空。
 type Breaker struct {
 	enabled     bool
@@ -45,21 +42,6 @@ type Breaker struct {
 	mu     sync.Mutex
 	counts [bucketCount]int64
 	slots  [bucketCount]int64
-
-	// 闸门。Pause 时**换一个新 channel**、Resume 时 close 掉它 —— 被关掉的那个不可能再被复用，
-	// 所以「暂停 → 恢复 → 再暂停」不会出现「恢复信号早就关着了、第二次暂停立刻被放行」。
-	gateMu   sync.RWMutex
-	paused   bool
-	resumeCh chan struct{}
-
-	// 触发现场：Pause 那一刻的快照，**不随窗口滑动改写** —— 排查时要看的是"当时为什么断的"。
-	reason    string
-	stage     string
-	failures  int
-	pausedAt  time.Time
-	resumedAt time.Time
-
-	onTrip func(core.BreakerStatus)
 }
 
 // Validate 检查一份（默认值已填好的）配置是否合法：**New 会 panic 的那几条规则都在这儿**，
@@ -73,13 +55,13 @@ func Validate(cfg Config) error {
 	return nil
 }
 
-// New 构造熔断器。onTrip 在**自动触发**时回调一次（可为 nil），宿主用它发告警。
+// New 构造熔断器。
 //
 // **启用熔断却不给正阈值是非法配置，直接 panic** —— 判据与 App.RegisterSites 对阶段
 // 配置那几行同一路数。这里不兜默认值：threshold <= 0 时"多少条才算熔断"没有答案，
 // 补一个数（原来补的是 50）只会让人以为开着、数的却是另一回事。
 // 调用点在 engine.NewEngine，所以这是**启动时**失败，不是跑到某条任务才炸。
-func New(cfg Config, onTrip func(core.BreakerStatus)) *Breaker {
+func New(cfg Config) *Breaker {
 	if err := Validate(cfg); err != nil {
 		panic(err)
 	}
@@ -98,88 +80,43 @@ func New(cfg Config, onTrip func(core.BreakerStatus)) *Breaker {
 		// 只兜"会崩"这一档，不动 window 的语义（配 10ns 还是 10ns，只是桶宽不再为 0）。
 		bucketWidth: max(cfg.Window/bucketCount, time.Nanosecond),
 		now:         time.Now,
-		resumeCh:    make(chan struct{}),
-		onTrip:      onTrip,
 	}
 }
 
 // Enabled 报告熔断是否启用。
 func (b *Breaker) Enabled() bool { return b != nil && b.enabled }
 
-// RecordFailure 记一次**终态失败**（任务重试耗尽、或不可重试），返回是否因此触发了熔断。
+// Window 生效的统计窗口（后台 payload 的 window 字段取它）。
+func (b *Breaker) Window() time.Duration {
+	if b == nil {
+		return 0
+	}
+	return b.window
+}
+
+// Threshold 阈值（后台 payload 的 threshold 字段取它）。
+func (b *Breaker) Threshold() int {
+	if b == nil {
+		return 0
+	}
+	return b.threshold
+}
+
+// RecordFailure 记一次**终态失败**（任务重试耗尽、或不可重试），
+// 返回是否**达到阈值**与此刻窗口内的失败数。
 //
 // 为什么只数终态失败：一个任务重试 3 次会走 3 次 attempt，若按 attempt 计，几个烂 URL
 // 就能把窗口灌满、熔断误触发 —— 那会把整个爬虫停掉，代价远大于放着几条烂任务不管。
-func (b *Breaker) RecordFailure(stage string) bool {
+//
+// **达到阈值只是"该停了"，停不停、怎么写现场、要不要发告警都是引擎的事**
+// （它要先把那条暂停写进暂停信号表，写成功了才发告警 —— 从而保住"一次触发只报一次"）。
+// 所以这里会**反复**返回 tripped=true（每多一次失败就越过阈值一格），调用方去判重。
+func (b *Breaker) RecordFailure() (tripped bool, failures int) {
 	if b == nil || !b.enabled {
-		return false
+		return false, 0
 	}
 	n := b.add(1)
-	if n < b.threshold { // 走到这里 threshold 必然 > 0（New 已校验）
-		return false
-	}
-	if !b.pause("窗口内终态失败数达到阈值", stage, n) {
-		return false
-	}
-	if b.onTrip != nil {
-		b.onTrip(b.Status())
-	}
-	return true
-}
-
-// Pause 手动闸住（同样走这套闸门，后台/业务都能用）。已在暂停态返回 false。
-func (b *Breaker) Pause(reason string) bool {
-	if b == nil {
-		return false
-	}
-	return b.pause(reason, "", b.Sum())
-}
-
-// Resume 放行。本来就没暂停返回 false。
-func (b *Breaker) Resume() bool {
-	if b == nil {
-		return false
-	}
-	b.gateMu.Lock()
-	defer b.gateMu.Unlock()
-	if !b.paused {
-		return false
-	}
-	b.paused = false
-	b.resumedAt = b.now()
-	close(b.resumeCh)
-	return true
-}
-
-// Paused 只读探询，不阻塞。实现 workerpool.Gate。
-func (b *Breaker) Paused() bool {
-	if b == nil {
-		return false
-	}
-	b.gateMu.RLock()
-	defer b.gateMu.RUnlock()
-	return b.paused
-}
-
-// Wait 阻塞到放行或 stop 关闭；返回 true = 继续干活，false = 该停机了。实现 workerpool.Gate。
-func (b *Breaker) Wait(stop <-chan struct{}) bool {
-	if b == nil {
-		return true
-	}
-	b.gateMu.RLock()
-	if !b.paused {
-		b.gateMu.RUnlock()
-		return true
-	}
-	ch := b.resumeCh
-	b.gateMu.RUnlock()
-
-	select {
-	case <-ch:
-		return true
-	case <-stop:
-		return false
-	}
+	return n >= b.threshold, n // threshold 必然 > 0（New 已校验）
 }
 
 // Sum 返回当前窗口内的终态失败数。
@@ -190,44 +127,6 @@ func (b *Breaker) Sum() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return int(b.sumLocked())
-}
-
-// Status 返回状态快照（含触发时留下的现场）。
-func (b *Breaker) Status() core.BreakerStatus {
-	if b == nil {
-		return core.BreakerStatus{}
-	}
-	b.gateMu.RLock()
-	st := core.BreakerStatus{
-		Enabled:   b.enabled,
-		Window:    b.window,
-		Threshold: b.threshold,
-		Paused:    b.paused,
-		PausedAt:  b.pausedAt,
-		ResumedAt: b.resumedAt,
-		Reason:    b.reason,
-		Stage:     b.stage,
-		Failures:  b.failures,
-	}
-	b.gateMu.RUnlock()
-	st.InWindow = b.Sum()
-	return st
-}
-
-// pause 置为暂停态；已在暂停态返回 false。调用方负责触发回调。
-func (b *Breaker) pause(reason, stage string, failures int) bool {
-	b.gateMu.Lock()
-	defer b.gateMu.Unlock()
-	if b.paused {
-		return false
-	}
-	b.paused = true
-	b.resumeCh = make(chan struct{}) // 换新的：下次 Resume 关的是它
-	b.reason = reason
-	b.stage = stage
-	b.failures = failures
-	b.pausedAt = b.now()
-	return true
 }
 
 // add 把当前槽位的计数加 n，返回加完之后窗口内的总数。调用方须已确认 enabled。

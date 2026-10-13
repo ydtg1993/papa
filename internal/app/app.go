@@ -558,21 +558,84 @@ func (a *App) httpServer(ctx context.Context) {
 		TaskTrace:        a.Engine.ListTrace,
 		VerifyTokenValue: auth.Confirmer(a.DB, a.Logger.Sys),
 		BreakerStatuses:  a.Engine.BreakerStatuses,
-		ResumeBreaker:    a.Engine.ResumeSite,
-		OnBreakerResume: func(operator, site string) {
+		// 暂停/放行的 scope 有两层：`stage` 为空 = 整站，否则只动那一站的某个阶段。
+		// 两层写的是**同一张暂停信号表**（见 engine/pause.go），只是 scope 不同。
+		ResumeBreaker: func(site, stage string) bool {
+			if stage == "" {
+				return a.Engine.ResumeSite(site)
+			}
+			return a.Engine.ResumeStage(site, stage)
+		},
+		OnBreakerResume: func(operator, site, stage string) {
 			// 放行是**人在场的干预**：熔断停了整条抓取线，谁在什么时候放的行必须查得到
 			if rec == nil {
 				return
 			}
+			values := map[string]any{
+				"note":  "手动放行被暂停的抓取",
+				"scope": site, // 哪个站（站点是必填维度，不存在空键）
+			}
+			if stage != "" {
+				values["note"] = "手动放行被暂停的抓取（只放行这个阶段）"
+				values["stage"] = stage
+			}
 			rec.RecordEvent(oplog.Event{
-				Table:  "breaker",
-				Action: "resume",
-				Values: map[string]any{
-					"note":  "手动放行被熔断闸住的抓取",
-					"scope": site, // 哪个站（站点是必填维度，不存在空键）
-				},
+				Table:    "breaker",
+				Action:   "resume",
+				Values:   values,
 				Operator: operator,
 				At:       time.Now(),
+			})
+		},
+		PauseBreaker: func(site, stage string) bool {
+			// 暂停同样是人**在场的干预**（它停了整站的抓取线），所以 reason 由宿主给死，
+			// 后台只管点：操作日志里能看清"是谁在后台按的"。
+			const reason = "后台手动暂停"
+			if stage == "" {
+				return a.Engine.PauseSite(site, reason)
+			}
+			return a.Engine.PauseStage(site, stage, reason)
+		},
+		OnBreakerPause: func(operator, site, stage string) {
+			if rec == nil {
+				return
+			}
+			values := map[string]any{
+				"note":  "后台手动暂停了这一站的抓取",
+				"scope": site,
+			}
+			if stage != "" {
+				values["note"] = "后台手动暂停了这一站的某个阶段"
+				values["stage"] = stage
+			}
+			rec.RecordEvent(oplog.Event{
+				Table:    "breaker",
+				Action:   "pause",
+				Values:   values,
+				Operator: operator,
+				At:       time.Now(),
+			})
+		},
+		StageEntries:       a.Engine.StageEntries,
+		SubmitStageEntries: a.Engine.SubmitStageEntries,
+		OnEntryTrigger: func(ev server.EntryTriggerEvent) {
+			// 点火会**投一批任务**（入口任务还常带轮询周期），谁在什么时候点的必须查得到
+			if rec == nil {
+				return
+			}
+			rec.RecordEvent(oplog.Event{
+				Table:  "stage_entry",
+				Action: "trigger",
+				Values: map[string]any{
+					"note":  "后台手动点火阶段入口任务",
+					"site":  ev.Site,
+					"stage": ev.Stage,
+					"mode":  ev.Mode,
+				},
+				Err:      ev.Err,
+				IP:       ev.IP,
+				Operator: ev.Operator,
+				At:       ev.At,
 			})
 		},
 	})
