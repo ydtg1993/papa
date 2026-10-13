@@ -655,8 +655,9 @@
         el.innerHTML = html; // 每一段都过了 esc()
         el.hidden = false;
     }
-    // site 省略 = 全部放行（多站时后台横幅上的「全部恢复」）；stage 省略 = 那一站的整站那一层，
-    // 给了 stage 就只放行那一个阶段（与阶段行上的按钮配对）。
+    // site 省略 = 全部放行（多站时后台横幅上的「全部恢复」）；stage 省略 = 那一站的整站那一层。
+    // `stage` 这一档框架自带的界面**不用**（卡片只做到站点级），它是留给业务自己接的：
+    // 注进来的页/脚本调 `pauseCrawling('yeguodj', 'catalog')` 就能只掐那一个阶段。
     async function resumeCrawling(site, stage) {
         var body = site ? { scope: site } : {};
         if (site && stage) body.stage = stage;
@@ -706,23 +707,15 @@
                         ? '<button class="btn" data-site="' + esc(site) + '" data-stage="' + esc(e.stage) +
                           '" onclick="triggerEntry(this.dataset.site, this.dataset.stage)">点火</button>'
                         : '<span class="muted">启动已自动投过</span>';
-                    // 每个阶段自己一个「暂停/恢复」（端点带 stage，只动这一个阶段）。
-                    // 整站停着时不给这个开关：那一条是整站那一层的，这里点只会让操作人以为点错了 ——
-                    // 显示成一句说明，恢复走卡头那个按钮（它清的是整站那一条）。
-                    var stageBtn;
-                    if (sitePaused(site)) {
-                        stageBtn = '<span class="muted">整站已暂停</span>';
-                    } else {
-                        var off = !!e.paused;
-                        stageBtn = '<button class="btn' + (off ? '' : ' danger') + '" data-site="' + esc(site) +
-                            '" data-stage="' + esc(e.stage) + '" onclick="' + (off ? 'resumeCrawling' : 'pauseCrawling') +
-                            '(this.dataset.site, this.dataset.stage)">' + (off ? '恢复' : '暂停') + '</button>';
-                    }
+                    // 这一行只**显示**状态（这个阶段停没停），不给阶段级的开关 ——
+                    // 卡片上那个「暂停/恢复」是**站点那一层**（管这一站的全部阶段）。
+                    // 阶段级的接口是留着的（端点带 stage、引擎侧 PauseStage/ResumeStage）：
+                    // 要不要在界面上开到这个粒度由业务定，接在自己的页/路由里就行（见 docs/MONITOR.md §10）。
                     return '<div class="breaker-row">' +
                         '<span class="breaker-text">' + esc(e.stage) +
                         ' <span class="badge ' + (manual ? 'warn' : 'ok') + '">' + esc(e.mode) + '</span>' +
                         (e.paused ? ' <span class="badge off">已暂停</span>' : '') +
-                        '｜' + esc(when) + '</span>' + btn + stageBtn + '</div>';
+                        '｜' + esc(when) + '</span>' + btn + '</div>';
                 }).join('');
             if (!rows) {
                 rows = '<div class="breaker-row"><span class="breaker-text muted">没有入口阶段</span></div>';
@@ -764,8 +757,8 @@
         fetchData();
     }
 
-    // 暂停抓取：只给 site = 整站那一层；再给 stage = 只停那一个阶段。
-    // 暂停**必须点名**（一个误点不该停掉所有站）。
+    // 暂停抓取：只给 site = 整站那一层（框架自带界面走的就是这一档）；再给 stage = 只停那一个阶段
+    //（留给业务自己接的界面/脚本）。暂停**必须点名**（一个误点不该停掉所有站）。
     async function pauseCrawling(site, stage) {
         var body = { scope: site };
         if (stage) body.stage = stage;
