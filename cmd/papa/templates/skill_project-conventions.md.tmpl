@@ -17,10 +17,11 @@ where it has already diverged from current Papa.
 
 ## Conventions
 
-- **Stage names are process-global.** Prefix every stage with the site key (`{{.Module}}_catalog`, …),
-  define the constants once in the fetcher package, and reuse them in `GetStage`, `Task.Stage`, tests
-  and diagnostics.
-- Stage parameters (worker count, queue size, delay, retry, auto-start, downloader overrides) live in the
+- **Stage names are unique *within a site*** (`v3.4.0`+; the engine keys a stage by `site:stage`). Two sites
+  may each declare `catalog`, so **no site prefix is needed** — define the constants once in the fetcher
+  package and reuse them in `GetStage`, `Task.Stage`, tests and diagnostics. A duplicate *within one site*
+  fails at startup and names the site.
+- Stage parameters (worker count, queue size, delay, retry, `Entry`, downloader overrides) live in the
   `configs/sites/` declaration — **not** in `config.yaml`.
 - `main.go` stays generic: `monitor.Register(app)` plus `app.RegisterSites(papa.Sites()...)`. Adding a
   site is adding a file.

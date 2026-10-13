@@ -64,11 +64,11 @@ A stage name is unique **within its site** — two sites may each declare `catal
 
 A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `configs/sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
 
-Put worker count, queue size, delay, retry, auto-start, and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
+Put worker count, queue size, delay, retry, `Entry` (see below), and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
 
 ### 3. Implement task flow deliberately
 
-Implement only the required stages. For an auto-start entry stage, implement:
+Implement only the required stages. For a stage that owns an entry task (`EntryAuto` or `EntryManual`), implement:
 
 ```go
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site)
