@@ -4,7 +4,7 @@ app:
 
 # 爬虫核心配置
 crawler:
-  dedup_cache_size: 0          # 内存去重表上限：0=不限；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+  dedup_cache_size: 10000      # 内存去重表上限：0=不限；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
   queue_watermark: 0.75        # 队列高水位(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
   stop_timeout: "5s"           # 优雅退出时等各阶段 worker 排空队列的上限；超时则跳过关库/关浏览器池，让在途写入落盘
