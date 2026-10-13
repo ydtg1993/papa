@@ -50,6 +50,11 @@ func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
 	if err := dropSiteQueueColumns(db); err != nil {
 		return err
 	}
+	// 站点成为必填维度后，"默认 scope"（空 key）那一行没有意义了 —— 删掉它，
+	// 否则后台会一直多一个「默认 scope」Tab（见 migrate_sitescope.go）。
+	if err := deleteDefaultScopeSiteRow(db); err != nil {
+		return err
+	}
 	// 幂等键硬化：原文加宽 + 哈希列 + 唯一索引（见 migrate_taskkey.go）。
 	if err := migrateIdempotencyKey(db); err != nil {
 		return err

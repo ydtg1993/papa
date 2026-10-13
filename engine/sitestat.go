@@ -16,9 +16,9 @@ import (
 // 内存里那份（e.siteStats）供监控页 3 秒一刷 —— 与治理队列同一套：请求路径不查库。
 // 写入点只有两处，都不在监控请求路径上：启动播种、熔断暂停/恢复。
 
-// siteKeys 所有站点键：默认 scope（空串）在最前，其余按站点名字典序。
-// 默认 scope 永远在列 —— `crawler_tasks.site` 是后加的列，更早入库的行是空串，
-// 它们也占一个"站点维度"（后台那一行叫「默认 scope」）。
+// siteKeys 所有站点键，按字典序。**没有"默认 scope"那一档**：站点是必填维度 ——
+// 声明必须有 Key（validateSites 拒没有 Key 的声明）、任务必须有 site（SubmitTask 拒空串），
+// 所以这张表里只会是声明过的站点。
 func (e *Engine) siteKeys() []string {
 	e.breakerMu.Lock()
 	keys := make([]string, 0, len(e.sites))
@@ -27,7 +27,7 @@ func (e *Engine) siteKeys() []string {
 	}
 	e.breakerMu.Unlock()
 	sort.Strings(keys)
-	return append([]string{""}, keys...)
+	return keys
 }
 
 // stageCountOfSite 本站声明了几个阶段（站点表里那一列的来源）。
@@ -63,9 +63,9 @@ func (e *Engine) seedSiteRows() {
 		}
 	}
 
-	next := make(map[string]core.SiteStat, len(e.sites)+1)
+	next := make(map[string]core.SiteStat, len(e.sites))
 	for _, key := range e.siteKeys() {
-		site, _ := e.Site(key) // 默认 scope 取不到 → 零值
+		site, _ := e.Site(key) // 取不到就是零值（声明里有、引擎里还没登记）
 		stat := core.SiteStat{
 			Key:        key,
 			BaseURL:    site.BaseURL,

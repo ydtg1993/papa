@@ -50,37 +50,44 @@ func TestSeedSiteRowsLeavesUnpausedRowsAlone(t *testing.T) {
 	}
 }
 
-// 熔断**没启用**（`crawler.breaker.enabled: false`）时手动暂停默认 scope：
+// 熔断**没启用**（`crawler.breaker.enabled: false`）时手动暂停某站：
 // 后台必须看得见、也放行得了 —— HTTP 的「恢复抓取」端点 targets 取自 BreakerStatuses，
 // 不列出来就等于"闸住了却既看不见也点不到恢复"，只能重启。
-func TestBreakerStatusesListsManuallyPausedDefaultScope(t *testing.T) {
+//
+// 每把闸门**都列**（包括没启用、也没暂停的）：站点是必填维度，后台的逐站放行就靠这张表的键。
+func TestBreakerStatusesListsDisabledSiteGate(t *testing.T) {
 	f := newFakeTaskDB()
 	e := siteEngine(t, f)
-	// 手工拼的 Engine 没有熔断闸门（submitEngine 不建它）：按 stage_test.go 的写法补一把**没启用**的 ——
-	// "没启用" 正是这条要测的场景（自动闸不了，但手动能闸）。
-	e.breaker = breaker.New(breaker.Config{Enabled: false, Window: time.Minute, Threshold: 1000}, nil)
-	if e.breaker.Enabled() {
-		t.Fatal("这条测的是熔断关着时的场景")
+	// "没启用" 正是这条要测的场景（自动闸不了，但手动能闸）
+	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Window: time.Minute, Threshold: 1000})
+
+	st, ok := e.BreakerStatuses()["a"]
+	if !ok {
+		t.Fatal("每把闸门都该列出来（否则那个站闸住了也点不到恢复）")
 	}
-	if _, ok := e.BreakerStatuses()[""]; ok {
-		t.Fatal("没暂停、也没启用时，默认 scope 不该出现在列表里")
+	if st.Enabled || st.Paused || st.Site != "a" {
+		t.Fatalf("没启用、没暂停的站应当是「关着、没暂停」且带上站点：%+v", st)
 	}
 
 	if !e.PauseCrawling("手工暂停") {
 		t.Fatal("手动暂停应当成功（它不看 enabled）")
 	}
-	st, ok := e.BreakerStatuses()[""]
-	if !ok {
-		t.Fatal("手动暂停过的默认 scope 必须列出来，否则后台既看不见也放行不了")
-	}
-	if !st.Paused || st.Site != "" {
-		t.Fatalf("默认 scope 的状态不对：%+v", st)
+	if st := e.BreakerStatuses()["a"]; !st.Paused {
+		t.Fatalf("手动暂停过的站必须报成暂停：%+v", st)
 	}
 
 	if !e.ResumeCrawling() {
 		t.Fatal("被手动暂停过就应当能放行")
 	}
+	if st := e.BreakerStatuses()["a"]; st.Paused {
+		t.Fatalf("放行之后不该还是暂停：%+v", st)
+	}
+
+	// 没有"默认 scope"那一档了：站点是必填维度（声明要有 Key、任务要有 site）
 	if _, ok := e.BreakerStatuses()[""]; ok {
-		t.Fatal("放行之后（且没启用）默认 scope 该从列表里消失")
+		t.Fatal("空键不再是一个 scope")
+	}
+	if e.PauseSite("", "空键不是站点") {
+		t.Fatal("暂停一个不存在的 scope 应当失败（后台据此回 400）")
 	}
 }

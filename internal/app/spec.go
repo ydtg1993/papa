@@ -133,9 +133,6 @@ func DescribeDownloadOverlays(sites ...SiteSpec) []string {
 	var out []string
 	for _, spec := range sites {
 		name := spec.Key
-		if name == "" {
-			name = "（未命名 / 默认 scope）"
-		}
 		if line := overlayLine("站点 "+name, spec.M3U8, spec.FileDown); line != "" {
 			out = append(out, line)
 		}
@@ -216,7 +213,7 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	// 熔断闸门**每站一把**：声明里写了阈值就用它，没写就用 `crawler.breaker` 那份默认 ——
 	// 要紧的是"每站各自一把"。共用的后果是 A 站被墙会把 B 站一起闸住（两个站同时被同一面墙
 	// 挡住时看着"对"，但它们本该各自判定、各自恢复；一方先恢复时更明显）。
-	// 未命名声明（Key 为空）没有站点维度可绑，仍只有默认 scope 那一把（声明层已禁止未命名）。
+	// Key 一定非空（validateSites 已经拒掉没有 Key 的声明）—— 这里的判断纯属防御。
 	if p.site.Key != "" {
 		bc := defaultBreakerConfig(defBreaker)
 		usable := true

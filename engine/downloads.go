@@ -28,8 +28,8 @@ type SiteDownloads struct {
 	FileDown *filedown.Overlay
 }
 
-// SetSiteDownloads 登记某站点的下载器覆盖层。site 为空是非法参数（那是"未归属"的默认 scope）：
-// 要给未归属的任务换下载器，先给那一站一个 Key。
+// SetSiteDownloads 登记某站点的下载器覆盖层。site 为空是非法参数 —— 站点是必填维度，
+// 没有「未归属」那一档（声明要有 Key，任务要有 site）。
 // 必须在 `ApplyRegisterStage` 之前调（之后解析一次，不再变）。
 func (e *Engine) SetSiteDownloads(site string, d SiteDownloads) {
 	if site == "" {

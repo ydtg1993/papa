@@ -988,7 +988,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `papa.WrapNoRetry(err)` / `papa.WrapNoRetryKind(kind, err)` 标记不可重试错误。
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
-- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()` / `engine.BreakerStatus()`：手动闸住/放行抓取、读熔断状态。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
+- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动闸住 / 放行**所有站点**的抓取；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
 - `engine.FetchRenderedPage(ctx, url, waitSelector)` 同上，但返回 `*htmlfetch.Page`（`StatusCode` / `Content-Type` 为零值）—— 走浏览器的阶段要接 `engine.RestrictedError` 或复用静态路径那套解析时用它。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。

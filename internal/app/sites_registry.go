@@ -51,14 +51,13 @@ func resetRegisteredSites() {
 func validateSites(sites []SiteSpec) error {
 	seen := make(map[string]bool, len(sites))
 	for i, site := range sites {
-		// Key 必填：阶段键是 `site:stage`，熔断/统计/任务表也都按站点分 —— 没有 Key 的声明
-		// 只会落进"默认 scope"，而那个 scope 现在只服务存量数据（`crawler_tasks.site` 为空的
-		// 旧行）；新任务一律要求带上站点（SubmitTask 那道校验）。所以未命名声明是个
-		// "注册了却永远收不到新任务"的陷阱，在声明期就拒掉。
+		// Key 必填：阶段键是 `site:stage`，熔断 / 统计 / 任务表也都按站点分 —— 没有 Key 就分不开。
+		// 没有「未归属（默认 scope）」那一档：任务的 site 同样是必填的（SubmitTask 拒空串），
+		// 所以未命名的声明只会是「注册上了、却永远收不到新任务」的陷阱，在声明期就拒掉。
 		if site.Key == "" {
 			return fmt.Errorf("第 %d 个站点声明缺 Key —— 阶段名按站点作用域（键是 `site:stage`），"+
-				"熔断、统计、任务表也都按站点分，没有 Key 就分不开。"+
-				"（旧库里 `site` 为空的行仍落在「默认 scope」、用 crawler.breaker 那把闸门 —— 那不需要声明）", i+1)
+				"熔断、统计、任务表也都按站点分，没有 Key 就分不开。站点是必填维度："+
+				"没有「未归属」那一档（声明要有 Key，任务要有 site）", i+1)
 		}
 		// 阶段键是 `site:stage` 拼出来的，Key 里再有 `:` 就会串味：Key `shop:eu` + 阶段
 		// `catalog` 与 Key `shop` + 阶段 `eu:catalog` 会拼成同一个键 —— 两对不同的东西共用一个

@@ -106,9 +106,9 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	if sts["b"].Threshold != 50 || sts["b"].Window != 5*time.Minute {
 		t.Fatalf("没单配阈值的站也该有自己的闸门（阈值取默认那份）：%+v", sts["b"])
 	}
-	// 默认 scope 那把仍在（它管着旧库里 site 为空的行），但它不再代表"没声明的站"
-	if sts[""].Threshold != 50 || sts[""].Window != 5*time.Minute {
-		t.Fatalf("默认 scope 应当用 crawler.breaker：%+v", sts[""])
+	// **没有"默认 scope"那一档**：站点是必填维度，闸门只按站点建
+	if _, ok := sts[""]; ok {
+		t.Fatalf("空键不再是一个 scope：%+v", sts[""])
 	}
 
 	// ③ 阶段注册了、AutoStart=true 的入口真的被调（两趟遍历 + 策略在声明层这一整套）

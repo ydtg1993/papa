@@ -569,7 +569,7 @@ func (a *App) httpServer(ctx context.Context) {
 				Action: "resume",
 				Values: map[string]any{
 					"note":  "手动放行被熔断闸住的抓取",
-					"scope": site, // 空 = 默认 scope；多站时看得出放的是哪个站
+					"scope": site, // 哪个站（站点是必填维度，不存在空键）
 				},
 				Operator: operator,
 				At:       time.Now(),

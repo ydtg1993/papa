@@ -420,7 +420,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 | 队列治理 | **不过滤** —— 两条队列是全局各一条，切到哪个 tab 都显示 |
 | 站点概要（tab 下面那行） | BaseURL / 阶段数 / 熔断是否闸住 |
 | **熔断横幅** | **不过滤** —— 它是告警，切到哪个 tab 都显示全部被闸住的站 |
-| 任务表（表格页） | **跟着 tab 走**：切到某站再打开任务表，会带着 `site=<该站>` 的**预置筛选**打开（oao 的 `opts.filter`，筛选栏里填好、可改可清）；已开着表时切 tab 会按新站点重画。概览 → 不带筛选；「默认 scope」那档不预设（"site 为空"这个条件在 oao 的查询串里表达不出来）。**需要 oao ≥ v1.3.0**（带 `opts.filter` 的那版），老版本会静默忽略第三个参数 |
+| 任务表（表格页） | **跟着 tab 走**：切到某站再打开任务表，会带着 `site=<该站>` 的**预置筛选**打开（oao 的 `opts.filter`，筛选栏里填好、可改可清）；已开着表时切 tab 会按新站点重画。概览 → 不带筛选。**需要 oao ≥ v1.3.0**（带 `opts.filter` 的那版），老版本会静默忽略第三个参数 |
 
 > 站点概要与 `sites` 里的字段：`key / base_url / stage_count / breaker_paused / breaker_paused_at`。
 > `base_url` 与 `stage_count` 是**启动时按声明抄的**（改声明要重启；直接改库不生效）。
@@ -468,12 +468,12 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 （不额外发请求），所以别的标签页里触发的熔断，这边几秒内也能看到。
 
 **多站时每个站点是一把独立的闸门**（`SiteSpec.Breaker`，见 FETCHER_WRITING_GUIDE.md 7.2），
-横幅**逐站一行**：每行写清是哪一站（`site` 为空 = 默认 scope）、哪个阶段、窗口内多少次终态失败、
+横幅**逐站一行**：每行写清是哪一站（站点是必填维度，没有空键那一档）、哪个阶段、窗口内多少次终态失败、
 暂停于何时，并各带一个「恢复」按钮（只放行那一站）；两个以上被闸住时额外给一个「全部恢复」。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/breaker` | 各 scope 的状态：`{"breakers":[...]}`（默认 scope 排第一，其余按站点名字典序） |
+| GET | `/api/breaker` | 各站点的状态：`{"breakers":[...]}`（按站点名字典序） |
 | POST | `/api/breaker/resume` | 放行。**不点名 = 全部**；点名：`?scope=siteb` 或请求体 `{"scope":"siteb"}`。未知 scope 回 **400**（不静默放行全部） |
 
 `resumed=false` 表示**当前本来就不在暂停态**（比如另一个人先点了），这不是错误 ——
@@ -489,7 +489,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 "breakers": [
   {
     "enabled": true,
-    "site": "",             // 空 = 默认 scope（现在只剩旧库里 site 为空的行）
+    "site": "huangguo",    // 哪个站（站点是必填维度，没有空键那一档）
     "window": 300000000000, // duration 是纳秒
     "threshold": 50,
     "in_window": 12,        // 实时值：当前窗口内的终态失败数

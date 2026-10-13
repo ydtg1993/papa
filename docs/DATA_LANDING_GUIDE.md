@@ -36,7 +36,7 @@
 | --- | --- |
 | `id` / `p_id` | 任务 ID / 父任务 ID（阶段串联靠它） |
 | `url` / `url_hash` | 任务 URL 与它的 sha256（唯一索引用哈希，因为长 URL 整串进不了索引） |
-| `stage` / `site` | 属于哪个阶段、哪个站点（`SiteSpec.Key`；空串 = 默认 scope） |
+| `stage` / `site` | 属于哪个阶段、哪个站点（`SiteSpec.Key`，**必填** —— 没有「未归属」那一档） |
 | `status` / `retry` / `error` | 运行态：待处理 / 处理中 / 成功 / 失败、重试次数、错误信息 |
 | `repeatable` / `repeat` / `repeat_interval` / `next_repeat_at` / `last_repeat_at` | 轮询相关，调度用 |
 | `reprocess` / `urgent` | 失败重投的代次（同时是后台动作的版本守卫）、加急标记 |
@@ -154,12 +154,16 @@ return engine.SubmitTask(&papa.Task{
 阶段名改成**按站点作用域**（两个站可以各有自己的 `catalog`）之后，`crawler_tasks` 的唯一索引
 从 `(url_hash, stage)` 换成 `(url_hash, stage, site)`，旧名字由迁移删掉。要做的事只有一件：
 
-1. 跑一次 `papa migrate`（它建新索引、再删旧索引，可重复跑）。
+1. 跑一次 `papa migrate`（建新索引、删旧索引，并删掉 `crawler_sites` 里空 key 那一行；可重复跑）。
 2. **不跑会静默出错**：库里留着旧索引时它比新索引**严** —— 两个站同名阶段抓到同一个 URL 时
    第二条插入会报 1062，而插入失败后的回查是按三列查的、找不到那一行，业务只看到一句
    `insert crawler task to db failed`。启动日志里也有一条警示指向这里（见 `internal/app/app.go`）。
-3. 任务的 `site` 列一直是有的（v3.3 起就在写），所以**不需要回填数据**；只有"阶段名列"改过名的
-   项目才要额外回填 `stage`（本项目没有）。
+3. 任务的 `site` 列一直是有的（v3.3 起就在写），所以**不需要回填数据**；只有「阶段名列」改过名的
+   项目才要额外回填 `stage`。
+4. **`site` 现在是必填维度**（声明要有 `Key`、任务要有 `site`）：旧库里 `site` 为空的行成了孤儿 ——
+   它们拼出的阶段键是 `:catalog` 这种，查不到任何已声明的阶段，三条治理队列会跳过后各打一条 WARN。
+   要救就在停机窗口里把 `site` 补上（先 `SELECT` 看一眼影响多少行）：
+   `UPDATE crawler_tasks SET site = '<那一站>' WHERE site = '' AND stage = '<那个阶段>';`
 
 ### 6.2 从 v3.3.2 之前升级
 

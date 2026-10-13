@@ -73,11 +73,11 @@ type MonitorConfig struct {
 	// 失败也要记：站点名打错这种"没跑成"的触发，同样是要查的线索。
 	OnQueueProcess func(QueueProcessEvent)
 	TaskTrace      func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
-	// BreakerStatuses 各 scope（站点）的熔断状态快照：key 是站点 Key，"" 是默认 scope。
+	// BreakerStatuses 各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
 	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
 	BreakerStatuses func() map[string]core.BreakerStatus
-	// ResumeBreaker 放行**某个 scope**（site 为空 = 默认 scope）；返回是否真的从暂停态切了回来
-	//（本来在跑就是 false）。要知道有哪些 scope，看 BreakerStatuses 的键。
+	// ResumeBreaker 放行**某个站点**的闸门；返回是否真的从暂停态切了回来（本来在跑就是 false）。
+	// 要知道有哪些站点，看 BreakerStatuses 的键。
 	ResumeBreaker func(site string) bool
 	// OnBreakerResume 放行成功后的回调，宿主拿它记操作日志（人在场的干预必须留痕）；可空。
 	OnBreakerResume func(operator, site string)
@@ -252,8 +252,8 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// 熔断状态跟着 /api/monitor 一起回：前端每轮刷新只发一个请求就能画出横幅，
 	// 不必再单开一条轮询。单独的 GET /api/breaker 留给脚本/外部系统。
 	if s.cfg.BreakerStatuses != nil {
-		// 是**数组**不是单个对象：多站时每个 scope 一把闸门，后台要能逐站看、逐站放行。
-		// 顺序固定（默认 scope 在前，其余按站点名字典序），前端就不用再排。
+		// 是**数组**不是单个对象：每个站点一把闸门，后台要能逐站看、逐站放行。
+		// 顺序固定（按站点名字典序），前端就不用再排。
 		resp["breakers"] = sortedBreakerStatuses(s.cfg.BreakerStatuses())
 	}
 	if s.cfg.SiteStats != nil {
@@ -450,18 +450,13 @@ func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, map[string]any{"status": "ok", "repolled": count})
 }
 
-// sortedBreakerStatuses 把各 scope 的状态排成稳定顺序：默认 scope（""）在前，其余按站点名。
+// sortedBreakerStatuses 把各站点的状态排成稳定顺序（按站点名字典序）。
 func sortedBreakerStatuses(all map[string]core.BreakerStatus) []core.BreakerStatus {
 	sites := make([]string, 0, len(all))
 	for site := range all {
 		sites = append(sites, site)
 	}
-	sort.Slice(sites, func(i, j int) bool {
-		if (sites[i] == "") != (sites[j] == "") {
-			return sites[i] == "" // 默认 scope 永远排第一
-		}
-		return sites[i] < sites[j]
-	})
+	sort.Strings(sites)
 	out := make([]core.BreakerStatus, 0, len(sites))
 	for _, site := range sites {
 		st := all[site]

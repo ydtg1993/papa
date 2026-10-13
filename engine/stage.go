@@ -53,10 +53,13 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 
 	// 熔断计数。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
 	// 按 attempt 数会把一个烂 URL 记 3 次，阈值会被噪声灌满。见 breaker.RecordFailure。
-	// **记在该阶段所属站点的闸门上**：多站时站点 A 的失败不该把站点 B 一起闸住。
-	// 闸门按**站点**取（阶段名只在本站内唯一，站点才是闸门的 scope）。
+	// **记在该任务所属站点的闸门上**：一个站的失败不该把另一个站一起闸住。
 	// 失败计数按阶段名记：闸门本来就是每站一把，所以裸阶段名在这里够用，页面也更好读。
-	e.breakerFor(task.Site).RecordFailure(task.Stage)
+	// 闸门为 nil = 这个站点没有闸门（自己搭引擎没 SetSiteBreaker，或旧行 site 为空）——
+	// 那就没有"熔断"这回事，跳过计数；不能让它 nil 解引用把任务收尾带崩。
+	if gate := e.breakerFor(task.Site); gate != nil {
+		gate.RecordFailure(task.Stage)
+	}
 
 	notifiers := e.getNotifiers()
 	if len(notifiers) == 0 {
@@ -193,8 +196,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
 	cfg := info.config
 	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
-	// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管；未归属站点的阶段落在默认 scope、
-	// 用 crawler.breaker 那把。单站项目 = 一个隐式 scope = 一把闸门，与之前完全一致。
+	// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管 —— 每个声明的站点各有一把
+	// （声明层建，没单配阈值的用 crawler.breaker 那份默认值）。
 	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
 	pool.SetGate(e.breakerFor(cfg.Site))
 	pool.Start(e.ctx, e.stageHandler(info))

@@ -11,7 +11,7 @@ type StageStats struct {
 	// 两个站可以各有自己的 catalog，所以它必须与 Site 一起看才是完整的身份
 	// （快照 map 的键就是 `core.StageKey(site, stage)`）。
 	Stage string
-	// Site 这个阶段属于哪个站点（站点声明的 Key；空串 = 默认 scope）。
+	// Site 这个阶段属于哪个站点（站点声明的 Key，**必填** —— 没有"未归属"那一档）。
 	// 池子与统计本来就是"每站每阶段"一份（阶段名按站点作用域，每站声明自己的 Stages）——
 	// 这个字段只是把站点维度带出来，让后台能按站点分组展示。
 	Site    string
@@ -99,8 +99,8 @@ type BreakerStatus struct {
 	PausedAt  time.Time     `json:"paused_at"`
 	ResumedAt time.Time     `json:"resumed_at"`
 	Reason    string        `json:"reason"`
-	// Site 哪个站点（SiteSpec.Key）触发的；空 = 默认 scope（未归属站点的阶段）。
-	// 多站时告警与后台都靠它区分，不再只有一句"全任务暂停"。
+	// Site 哪个站点（SiteSpec.Key）触发的。多站时告警与后台都靠它区分，
+	// 不再只有一句"全任务暂停"。
 	Site     string `json:"site"`
 	Stage    string `json:"stage"`    // 触发时哪个阶段在失败
 	Failures int    `json:"failures"` // 触发那一刻窗口内的失败数

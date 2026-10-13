@@ -14,7 +14,7 @@ import "time"
 // 所以 raw SQL 里一律写 “ `key` “（见 engine/sitestat.go 的 siteKeyScope 与 engine/sqlshape_test.go）。
 type CrawlerSite struct {
 	ID         uint   `gorm:"primaryKey;comment:站点行 ID"`
-	Key        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_site_key;comment:站点键（站点声明的 Key）；空串=默认 scope"`
+	Key        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_site_key;comment:站点键（站点声明的 Key，必填；没有未归属那一档）"`
 	BaseURL    string `gorm:"type:varchar(1024);comment:站点根地址（启动时抄的）"`
 	StageCount int    `gorm:"not null;default:0;comment:阶段数"`
 	// 熔断状态（暂停/恢复那一刻写）

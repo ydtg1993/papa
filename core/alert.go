@@ -40,7 +40,7 @@ func (l AlertLevel) String() string {
 // TaskError 结构化任务错误上下文，覆盖手册要求的日志字段。
 type TaskError struct {
 	Stage string `json:"stage"`
-	// Site 任务/闸门所属站点（SiteSpec.Key）；空 = 未归属（默认 scope）。
+	// Site 任务/闸门所属站点（SiteSpec.Key，**必填**）。
 	// 多站时告警里必须能看出是哪个站 —— webhook 那头据此路由（@对应的人）。
 	Site    string `json:"site,omitempty"`
 	TaskID  int    `json:"task_id"`

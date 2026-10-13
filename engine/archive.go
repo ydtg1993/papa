@@ -212,7 +212,7 @@ func (a *archiveBuffer) writeOne(root string, page archivedPage) (string, error)
 //
 // **按站点分一层**：阶段名只在本站内唯一，两个站各有 `catalog` 时会写进同一个目录、混在一起
 // （文件名带全局唯一的 task ID，不会互相覆盖，只是"这个阶段抓到过哪些页"再也分不开）。
-// 站点为空（默认 scope）落成 `_`，见 sanitizePathSegment。
+// 站点为空只在旧行上还会遇到（新任务必须有 site），那一段落成 `_`，见 sanitizePathSegment。
 //
 // 带 try（= task.Retry）是必须的：同一任务重试 3 次时后面那次会覆盖前面那次，
 // 而"第一次是登录墙、第三次正常"恰好是排查的关键。urlhash8 保证一个尝试里的多页不打架。
@@ -223,7 +223,8 @@ func (a *archiveBuffer) relPath(page archivedPage) string {
 }
 
 // sanitizePathSegment 清洗作为**目录名**用的站点名 / 阶段名：两者都来自业务代码，
-// 但不该能让归档写到目录之外。空串落成 `_`（默认 scope 的站点就落在这里）。
+// 但不该能让归档写到目录之外。空串落成 `_` —— 写盘这一步不做站点校验（旧行、手工构造的 Task
+// 都可能带着空站点进来），落进一个固定名的目录比落到根目录好。
 func sanitizePathSegment(s string) string {
 	out := make([]rune, 0, len(s))
 	for _, r := range s {

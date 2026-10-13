@@ -18,7 +18,7 @@ type Task struct {
 	URL        string // 要打开的 URL
 	Retry      int
 	Stage      string // 阶段标识，如 "catalog", "detail", "video"
-	Site       string // 所属站点（SiteSpec.Key）；空 = 未归属。随行落库，供后台按站点筛/排障
+	Site       string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
 	Repeatable bool
 	// RepeatInterval 这条任务的周期轮询周期；0 = 用本站 RepeatQueue 的 Interval。
 	// **只在首次入库时播种**（见 toModel）：之后要改周期，用 `Engine.SetTaskRepeatInterval`
@@ -165,7 +165,7 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 //
 // 自定义 IdempotencyKey 优先，但它必须**自带站点与阶段**才唯一 —— 缺了这两段，两个站
 // 的同名阶段会撞成同一条任务（B 站被判"已存在"、静默不跑）。约定格式 `site:stage:<标识>`。
-// 回退值同样按这个格式拼（site 为空串时以空段出现，与"默认 scope"一致）。
+// 回退值同样按这个格式拼（三段都在：site 是必填维度）。
 func (t *Task) Unique() string {
 	if t.IdempotencyKey != "" {
 		return t.IdempotencyKey
@@ -178,7 +178,7 @@ func (t *Task) Unique() string {
 //
 // **只用阶段名是不够的**：阶段名只在本站内唯一，两个站的 `catalog` 是两条独立记录。
 // 这两个函数就是"哪两个字段拼键"的唯一定义 —— 调用点一律走它们，别各自手写 `core.StageKey(...)`，
-// 免得哪天多出一个维度时漏掉一处（漏了会静默落到别的站/默认 scope 上）。
+// 免得哪天多出一个维度时漏掉一处（漏了会静默落到另一个站上）。
 // 两个变体只是因为入参一个是内存里的任务、一个是库里的行。
 func stageKeyOf(t *Task) string { return core.StageKey(t.Site, t.Stage) }
 

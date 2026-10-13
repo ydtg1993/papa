@@ -56,13 +56,13 @@
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补两条：「任务失败」（失败尝试的**原因**，带分类与消息）与「归档页面」（带文件名，抽屉里可直接下载）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
-| `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：闸门本身**每站一把**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这项也会成为它的默认）。"默认 scope"（`site` 为空）只剩旧库里那些行 |
+| `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：闸门本身**每站一把**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
 | `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.New` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 
-> **熔断按站点分组**：这一节配的是**默认值**（默认 scope = 未归属站点的阶段）；每个站点可以在
-> `configs/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（含 `Enabled: false`
-> 单独关掉某一站）。多站时站点 A 被墙不会把站点 B 一起闸住。
+> **熔断按站点分组**：这一节配的是**默认值**；每个站点可以在
+> `configs/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
+> 只关掉某一站）。每站一把闸门是硬要求 —— 共用一把的话站点 A 被墙会把站点 B 一起闸住。
 
 ### browser —— 浏览器池（Rod）
 
@@ -237,7 +237,7 @@ repeat_queue:
 
 ### crawler_sites —— 站点表（框架自建，不是配置）
 
-站点声明与运行统计的落库形态：一行一个站点（空 `key` 那行是**默认 scope**）。
+站点声明与运行统计的落库形态：一行一个站点（站点键必填，没有空 key 那一档）。
 启动时按声明播种（行不存在才插入；已存在只刷新 `base_url` / `stage_count`），
 之后由引擎在"熔断暂停/恢复"时按列更新状态。
 它是后台站点 Tab 与站点概要与 `papa migrate` 的产物；**不落 Headers**（里面有 UA/Cookie）。
@@ -297,7 +297,8 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 再决定要不要做，可重复跑）—— 例如 v3.3.2 删掉 `crawler_tasks` 的 `title` / `content` 两列、把幂等键加宽到
 varchar(1000) 并把唯一性落到 `idempotency_hash` 的唯一索引上、三队列并回全局时删
 `crawler_sites` 的按站队列列；v3.4.0 把 `crawler_tasks` 的唯一索引从 `(url_hash, stage)`
-换成 `(url_hash, stage, site)`（阶段名按站点作用域）并删掉旧名字。
+换成 `(url_hash, stage, site)`（阶段名按站点作用域）并删掉旧名字、删掉 `crawler_sites` 里空 key
+那一行（站点成为必填维度后，「未归属 / 默认 scope」不再存在）。
 所以**升级框架后必须跑一次迁移**，光换二进制不够。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_sites` 总是建；

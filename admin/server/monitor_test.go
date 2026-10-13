@@ -651,10 +651,10 @@ func TestTaskTraceHandler(t *testing.T) {
 // 熔断闸门的两个后台接口。放行是**人在场的干预**（熔断停了整条抓取线），
 // 所以除了状态对不对，还要钉住"操作人确实被传给了宿主去记操作日志"。
 //
-// 多站之后每个 scope 一把闸门：状态是**列表**（默认 scope 排第一），放行可以点名某个 scope，
-// 不点名 = 全部放行（后台横幅上那个「恢复抓取」）。
+// 每个站点一把闸门：状态是**列表**（按站点名排序），放行可以点名某个站点，
+// 不点名 = 全部放行（后台横幅上那个「恢复抓取」）。站点是必填维度，没有空键那一档。
 func TestBreakerEndpoints(t *testing.T) {
-	paused := map[string]bool{"": true, "siteb": false} // 默认 scope 被闸住，siteb 正常
+	paused := map[string]bool{"sitea": true, "siteb": false} // sitea 被闸住，siteb 正常
 	var resumedBy []string
 
 	status := func(site string) core.BreakerStatus {
@@ -667,7 +667,7 @@ func TestBreakerEndpoints(t *testing.T) {
 	newMon := func() *Monitor {
 		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
 			BreakerStatuses: func() map[string]core.BreakerStatus {
-				return map[string]core.BreakerStatus{"": status(""), "siteb": status("siteb")}
+				return map[string]core.BreakerStatus{"sitea": status("sitea"), "siteb": status("siteb")}
 			},
 			ResumeBreaker: func(site string) bool {
 				if !paused[site] {
@@ -682,11 +682,11 @@ func TestBreakerEndpoints(t *testing.T) {
 		})
 	}
 	reset := func() {
-		paused = map[string]bool{"": true, "siteb": false}
+		paused = map[string]bool{"sitea": true, "siteb": false}
 		resumedBy = nil
 	}
 
-	t.Run("GET 返回各 scope 的状态，默认 scope 排第一", func(t *testing.T) {
+	t.Run("GET 返回各站点的状态，按站点名排序", func(t *testing.T) {
 		reset()
 		rr := serve(newMon(), http.MethodGet, "/api/breaker", nil)
 		if rr.Code != http.StatusOK {
@@ -698,8 +698,8 @@ func TestBreakerEndpoints(t *testing.T) {
 			t.Fatalf("breakers = %v", body["breakers"])
 		}
 		first, _ := list[0].(map[string]any)
-		if first["site"] != "" || first["paused"] != true || first["stage"] != "-catalog" {
-			t.Fatalf("第一条应当是默认 scope：%v", first)
+		if first["site"] != "sitea" || first["paused"] != true || first["stage"] != "sitea-catalog" {
+			t.Fatalf("第一条应当是 sitea：%v", first)
 		}
 		if first["in_window"] != float64(12) {
 			t.Fatalf("in_window = %v, want 12（实时值，和触发快照的 failures 不是一回事）", first["in_window"])
@@ -720,7 +720,7 @@ func TestBreakerEndpoints(t *testing.T) {
 		}
 	})
 
-	t.Run("不点名 = 全部放行，回调逐 scope 收到操作人", func(t *testing.T) {
+	t.Run("不点名 = 全部放行，回调逐站点收到操作人", func(t *testing.T) {
 		reset()
 		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume", nil)
 		if rr.Code != http.StatusOK {
@@ -730,16 +730,16 @@ func TestBreakerEndpoints(t *testing.T) {
 		if body["resumed"] != true {
 			t.Fatalf("resumed = %v, want true", body["resumed"])
 		}
-		if scopes, _ := body["resumed_scopes"].([]any); len(scopes) != 1 || scopes[0] != "" {
-			t.Fatalf("resumed_scopes = %v，应当只有被闸住的默认 scope", body["resumed_scopes"])
+		if scopes, _ := body["resumed_scopes"].([]any); len(scopes) != 1 || scopes[0] != "sitea" {
+			t.Fatalf("resumed_scopes = %v，应当只有被闸住的 sitea", body["resumed_scopes"])
 		}
-		// 测试请求没走鉴权中间件，所以操作人是空串 —— 这里要的是"回调被调了一次、且带上了 scope"。
-		if len(resumedBy) != 1 || resumedBy[0] != "@" {
-			t.Fatalf("OnBreakerResume 收到 %v，want [@]（操作人@scope）", resumedBy)
+		// 测试请求没走鉴权中间件，所以操作人是空串 —— 这里要的是"回调被调了一次、且带上了站点"。
+		if len(resumedBy) != 1 || resumedBy[0] != "@sitea" {
+			t.Fatalf("OnBreakerResume 收到 %v，want [@sitea]（操作人@站点）", resumedBy)
 		}
 	})
 
-	t.Run("点名 scope 只放行那一个", func(t *testing.T) {
+	t.Run("点名站点只放行那一个", func(t *testing.T) {
 		reset()
 		paused["siteb"] = true // 两个都被闸住
 		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume?scope=siteb", nil)
@@ -749,8 +749,8 @@ func TestBreakerEndpoints(t *testing.T) {
 		if scopes, _ := decodeJSON(t, rr)["resumed_scopes"].([]any); len(scopes) != 1 || scopes[0] != "siteb" {
 			t.Fatalf("resumed_scopes = %v，应当只有 siteb", scopes)
 		}
-		if !paused[""] {
-			t.Fatal("默认 scope 不该被顺手放行")
+		if !paused["sitea"] {
+			t.Fatal("sitea 不该被顺手放行")
 		}
 	})
 
@@ -760,14 +760,14 @@ func TestBreakerEndpoints(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400", rr.Code)
 		}
-		if !paused[""] {
-			t.Fatal("报错时不该把默认 scope 放行了")
+		if !paused["sitea"] {
+			t.Fatal("报错时不该把 sitea 放行了")
 		}
 	})
 
 	t.Run("本来就没暂停：resumed=false 而不是报错", func(t *testing.T) {
 		reset()
-		paused[""] = false
+		paused["sitea"] = false
 		rr := serve(newMon(), http.MethodPost, "/api/breaker/resume", nil)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200（重复点击恢复不该看起来像失败）", rr.Code)

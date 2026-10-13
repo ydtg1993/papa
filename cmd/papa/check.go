@@ -263,9 +263,7 @@ func main() {
 		os.Exit(1)
 	}
 	for _, s := range sites {
-		if s.Key == "" {
-			continue // 未归属（默认 scope）没有站点快照
-		}
+		// 站点键必填（validateSites 拒没有 Key 的声明），所以这里不必再跳过谁
 		if _, ok := app.Engine.Site(s.Key); !ok {
 			fmt.Println("站点", s.Key, "注册完却没进引擎（SetSite 没跑到？）")
 			os.Exit(1)
@@ -310,12 +308,7 @@ func stageNames(s papa.SiteSpec) []string {
 	return out
 }
 
-func siteName(s papa.SiteSpec) string {
-	if s.Key == "" {
-		return "(未归属 / 默认 scope)"
-	}
-	return s.Key
-}
+func siteName(s papa.SiteSpec) string { return s.Key }
 
 // loadConfig 同 papa check 那版：框架的配置校验是 panic 式的，这里转成 error。
 func loadConfig(path string) (cfg *config.Config, err error) {

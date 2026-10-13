@@ -63,11 +63,10 @@
 
     /**
      * tableFilterOpts 让表格跟着**当前站点 tab** 走：切到某站再打开任务表，就带着 `site=<该站>` 的
-     * 预置筛选打开（oao 会把它填进筛选栏，用户能改能清）。概览与「默认 scope」都不预设 ——
-     * 前者本来就是看全部，后者的"site 为空"这个条件在 oao 的查询串里表达不出来（空值会被跳过）。
+     * 预置筛选打开（oao 会把它填进筛选栏，用户能改能清）。概览不预设 —— 它本来就是看全部。
      */
     function tableFilterOpts() {
-        if (currentSite === null || currentSite === '') return { filter: {} };
+        if (currentSite === null) return { filter: {} };
         return { filter: { site: currentSite } };
     }
 
@@ -504,11 +503,11 @@
         }).join('');
     }
     /* ============ 站点 Tab（多站点时按站点把面板分开） ============ */
-    // currentSite：null = 概览（全部）；'' = 默认 scope（任务 site 为空串那一档）；其余 = 站点键。
-    // 用 null 当"全部"而不是 ''，就是为了能单独看"默认 scope"那一档。
+    // currentSite：null = 概览（全部）；其余 = 站点键（站点是必填维度，没有"空键"那一档）。
     var currentSite = null;
 
-    function siteLabel(key) { return key === '' ? '默认 scope' : key; }
+    // 站点键直接就是显示名（没有"默认 scope"那一档了：声明要有 Key、任务要有 site）。
+    function siteLabel(key) { return key; }
 
     // stageLabel 阶段面板的标题：优先用条目里带的**裸阶段名**（st.stage）—— 快照的键是
     // `site:stage`（阶段名只在本站内唯一，两个站可以各有 catalog），标题里带上站点只会更长；
@@ -531,10 +530,7 @@
         var el = document.getElementById('site-tabs');
         if (!el) return;
         var sites = (data && data.sites) || {};
-        var keys = Object.keys(sites).sort(function (a, b) {
-            if (a === '' || b === '') return a === '' ? 1 : -1; // 默认 scope 排最后
-            return a < b ? -1 : (a > b ? 1 : 0);
-        });
+        var keys = Object.keys(sites).sort(); // 站点键本身就是字典序的显示名
         if (keys.length === 0) { // 还没有站点快照（老引擎 / 没播种）：整排隐藏，不占位
             el.hidden = true;
             document.getElementById('site-meta').hidden = true;
@@ -613,7 +609,7 @@
         var html = paused.map(function (b) {
             var at = b.paused_at ? new Date(b.paused_at) : null;
             var when = (at && timeValid(at)) ? at.toLocaleString() : '';
-            var where = b.site ? ('站点 ' + b.site) : '默认 scope';
+            var where = '站点 ' + b.site; // 每个 scope 都是站点（没有"未归属"那一档）
             return '<div class="breaker-row">' +
                 '<span class="breaker-text">抓取已暂停（熔断）｜' + esc(where) +
                 (b.stage ? '｜阶段 ' + esc(b.stage) : '') +

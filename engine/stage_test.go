@@ -68,7 +68,9 @@ func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
-	e.breaker = breaker.New(breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000}, nil)
+	// 闸门按站点取：这台引擎里那个阶段属于站点 stub
+	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
+	gate := e.breakerFor("stub")
 
 	n := &recordingNotifier{}
 	e.AddNotifier(n)
@@ -77,13 +79,13 @@ func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 
 	// 可重试的错误 → warn 级；但同样是"终态失败"，照样计数
 	e.notifyFailure(context.Background(), task, errors.New("网络抖动"))
-	if got := e.breaker.Sum(); got != 1 {
+	if got := gate.Sum(); got != 1 {
 		t.Fatalf("熔断计数 = %d, want 1", got)
 	}
 
 	// 不可重试的错误 → error 级，并带上分类标识
 	e.notifyFailure(context.Background(), task, core.WrapNoRetryKind("structure", errors.New("页面结构变了")))
-	if got := e.breaker.Sum(); got != 2 {
+	if got := gate.Sum(); got != 2 {
 		t.Fatalf("熔断计数 = %d, want 2", got)
 	}
 
@@ -110,11 +112,27 @@ func TestNotifyFailureWithoutNotifiers(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
-	e.breaker = breaker.New(breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000}, nil)
+	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
 
-	e.notifyFailure(context.Background(), &Task{Stage: "stub"}, errors.New("boom"))
-	if got := e.breaker.Sum(); got != 1 {
+	e.notifyFailure(context.Background(), &Task{Stage: "stub", Site: "stub"}, errors.New("boom"))
+	if got := e.breakerFor("stub").Sum(); got != 1 {
 		t.Fatalf("熔断计数 = %d, want 1", got)
+	}
+}
+
+// 那个站点没有闸门（自己搭引擎没 SetSiteBreaker、或旧行 site 为空）时：**跳过计数、不 panic** ——
+// 没有闸门就没有"熔断"这回事，但任务收尾（日志 + 告警）照旧。
+func TestNotifyFailureWithoutGate(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool) // 一台没配任何闸门的引擎
+
+	n := &recordingNotifier{}
+	e.AddNotifier(n)
+	e.notifyFailure(context.Background(), &Task{Stage: "stub", Site: "ghost"}, errors.New("boom"))
+
+	if got := len(n.snapshot()); got != 1 {
+		t.Fatalf("没有闸门也该照发告警，实得 %d 条", got)
 	}
 }
 
@@ -347,8 +365,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	f.noRows = true // 让待提交的任务在库里是全新的
 	e := newTestEngine(t, f)
 
-	b := breaker.New(breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000}, nil)
-	e.breaker = b
+	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
 
 	fetcher := &recordingFetcher{stage: "stub"}
 	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, fetcher, nil)
@@ -356,7 +373,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	if !e.PauseCrawling("测试暂停") {
 		t.Fatal("手动暂停应当成功")
 	}
-	if !e.BreakerStatus().Paused {
+	if !e.BreakerStatuses()["stub"].Paused {
 		t.Fatal("状态快照应显示暂停中")
 	}
 	if e.PauseCrawling("再来一次") {
@@ -649,8 +666,8 @@ func TestEachSiteGetsItsOwnBreaker(t *testing.T) {
 	if gateA == gateB {
 		t.Fatal("两个站必须是两把闸门")
 	}
-	if gateA == e.breaker || gateB == e.breaker {
-		t.Fatal("有站点的阶段不该落到默认 scope 那把闸门上")
+	if e.breakerFor("ghost") != nil {
+		t.Fatal("没配过闸门的站点应当是 nil（= 不设闸），不是回落到谁身上")
 	}
 
 	// 闸住 a 站：只有 a 站是暂停的
@@ -660,8 +677,8 @@ func TestEachSiteGetsItsOwnBreaker(t *testing.T) {
 	if !gateA.Status().Paused {
 		t.Fatal("a 站应当被闸住")
 	}
-	if gateB.Status().Paused || e.breaker.Status().Paused {
-		t.Fatal("a 站被闸住不该影响 b 站、也不该影响默认 scope")
+	if gateB.Status().Paused {
+		t.Fatal("a 站被闸住不该影响 b 站")
 	}
 
 	// 后台逐站看到的状态要一致（横幅与「恢复抓取」按这张表来）
@@ -766,22 +783,19 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 	t.Fatalf("最后一次尝试失败后 %v 内没有落 failed —— 说明还在白等退避", backoff/2)
 }
 
-// 熔断按 scope（站点）分组：每站一把闸门，各停各的；不点名就是**全部**（后台那个「恢复抓取」）。
+// 熔断按站点分组：每站一把闸门，各停各的；不点名就是**全部**（后台那个「恢复抓取」）。
+// 没有"默认 scope"那一档 —— 声明要有 Key（引擎这台是声明层 SetSiteBreaker 建的）、任务要有 site。
 func TestBreakerScopesAreIndependent(t *testing.T) {
 	f := newFakeTaskDB()
-	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
-	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
-	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
-	t.Cleanup(e.cancel)
+	e := siteEngine(t, f)
 
-	// 站点 a 单开一把（阈值不同），站点 b 不单配 → 用默认那把（但 b 有自己的 scope 名）
+	// 站点 a 单开一把（阈值不同），站点 b 另一把
 	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 10})
 	e.SetSiteBreaker("b", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 50})
 
-	// 三个 scope 都要在状态里（默认 + a + b）
+	// 两个站点都要在状态里
 	sts := e.BreakerStatuses()
-	for _, site := range []string{"", "a", "b"} {
+	for _, site := range []string{"a", "b"} {
 		if _, ok := sts[site]; !ok {
 			t.Fatalf("状态里应有 scope %q，实得 %v", site, sts)
 		}
@@ -793,12 +807,12 @@ func TestBreakerScopesAreIndependent(t *testing.T) {
 		t.Fatalf("状态里应带上站点：%q", sts["a"].Site)
 	}
 
-	// 只闸住 a：默认 scope 与 b 照常跑
+	// 只闸住 a：b 照常跑
 	if !e.PauseSite("a", "站点 a 被墙") {
 		t.Fatal("PauseSite(a) 应当成功")
 	}
 	sts = e.BreakerStatuses()
-	if !sts["a"].Paused || sts[""].Paused || sts["b"].Paused {
+	if !sts["a"].Paused || sts["b"].Paused {
 		t.Fatalf("只该闸住 a：%+v", sts)
 	}
 	// 点名放行 a
@@ -808,24 +822,24 @@ func TestBreakerScopesAreIndependent(t *testing.T) {
 	if e.BreakerStatuses()["a"].Paused {
 		t.Fatal("a 应当已放行")
 	}
-	// 不存在的 scope：不静默作用到默认那把
-	if e.PauseSite("ghost", "x") || e.ResumeSite("ghost") {
+	// 不存在的 scope：返回 false（后台据此回 400）；空键也不是一个站点
+	if e.PauseSite("ghost", "x") || e.ResumeSite("ghost") || e.PauseSite("", "x") {
 		t.Fatal("不存在的 scope 应当返回 false（后台据此回 400）")
 	}
-	// 全部：三个一起闸住、一起放行
+	// 全部：两个一起闸住、一起放行
 	if !e.PauseCrawling("手动") {
 		t.Fatal("PauseCrawling 应当成功")
 	}
 	sts = e.BreakerStatuses()
-	if !sts[""].Paused || !sts["a"].Paused || !sts["b"].Paused {
-		t.Fatalf("PauseCrawling 应当闸住所有 scope：%+v", sts)
+	if !sts["a"].Paused || !sts["b"].Paused {
+		t.Fatalf("PauseCrawling 应当闸住所有站点：%+v", sts)
 	}
 	if !e.ResumeCrawling() {
 		t.Fatal("ResumeCrawling 应当成功")
 	}
 	sts = e.BreakerStatuses()
-	if sts[""].Paused || sts["a"].Paused || sts["b"].Paused {
-		t.Fatalf("ResumeCrawling 应当放行所有 scope：%+v", sts)
+	if sts["a"].Paused || sts["b"].Paused {
+		t.Fatalf("ResumeCrawling 应当放行所有站点：%+v", sts)
 	}
 }
 
