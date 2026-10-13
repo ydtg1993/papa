@@ -290,6 +290,9 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 
 	cfgGlobal := d.config
 
+	// 分块大小走兜底：<= 0 见 chunkSizeOrDefault 的说明（那是个"会卡死"的值）
+	chunkSize := chunkSizeOrDefault(cfgGlobal.ChunkSize)
+
 	// 直接下载（`DownloadOptions.Direct`）：不探测、不分片。给封面这类小文件用 ——
 	// 省掉一次 HEAD 往返，也就不必为"一个 GET 就够"的文件去走分片+续传那套机器。
 	if cfg.direct {
@@ -322,7 +325,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 			resumeState = nil
 		}
 	}
-	if resumeState != nil && (resumeState.TotalSize != totalSize || resumeState.ChunkSize != cfgGlobal.ChunkSize) {
+	if resumeState != nil && (resumeState.TotalSize != totalSize || resumeState.ChunkSize != chunkSize) {
 		d.st.trackQueue.SendError(fmt.Errorf("state mismatch, restart"))
 		resumeState = nil
 	}
@@ -331,13 +334,20 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 			URL:        la.url,
 			OutputFile: la.filename,
 			TotalSize:  totalSize,
-			ChunkSize:  cfgGlobal.ChunkSize,
+			ChunkSize:  chunkSize,
 			Completed:  []int64{},
 			TempFiles:  []string{},
 		}
 	}
-	completedMap := make(map[int64]bool)
+	// 状态文件里"已完成的分片"只当**索引**用，不当事实：偏移必须落在分片边界上才算数。
+	// 不信的话，损坏/被改过的状态里任何一个数字都能成为"往输出文件某个位置写字节"的许可证
+	//（合并那一步就是按这个偏移定位写的）。边界之外的当它没下过 —— 于是那一片会被重新下载。
+	completedMap := make(map[int64]bool, len(resumeState.Completed))
 	for _, start := range resumeState.Completed {
+		if !isChunkStart(start, totalSize, chunkSize) {
+			d.st.trackQueue.SendError(fmt.Errorf("resume state: 忽略非法分片偏移 %d（不在分片边界上），该片按未下载处理", start))
+			continue
+		}
 		completedMap[start] = true
 	}
 
@@ -368,12 +378,14 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 
 	// 分片起始位置列表
 	var chunks []int64
-	for start := int64(0); start < totalSize; start += cfgGlobal.ChunkSize {
+	for start := int64(0); start < totalSize; start += chunkSize {
 		chunks = append(chunks, start)
 	}
 	totalChunks := len(chunks)
 
 	for _, start := range chunks {
+		// 照状态文件跳过下载 —— 但**合并那一步会按偏移+长度复核一遍**（见下），
+		// 状态说"下好了"而磁盘上没有/长度不对时，那里会清掉状态并报错，让下一次跑重下这一片。
 		if completedMap[start] {
 			continue
 		}
@@ -383,11 +395,11 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			end := start + cfgGlobal.ChunkSize - 1
+			end := start + chunkSize - 1
 			if end >= totalSize {
 				end = totalSize - 1
 			}
-			tempFile := filepath.Join(tempDir, fmt.Sprintf("chunk_%020d.tmp", start))
+			tempFile := chunkTempPath(tempDir, start)
 			err := d.downloadChunkToFile(ctx, la.url, start, end, tempFile, cfg)
 			if err != nil {
 				errMu.Lock()
@@ -437,14 +449,16 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		result.Error = err
 		return result
 	}
-	for _, tempFile := range resumeState.TempFiles {
-		// 从文件名解析起始偏移量
-		var start int64
-		base := filepath.Base(tempFile)
-		parts := strings.Split(strings.TrimSuffix(base, ".tmp"), "_")
-		if len(parts) == 2 {
-			fmt.Sscanf(parts[1], "%020d", &start)
+	// 遍历的**不是** `resumeState.TempFiles` 里的路径，而是"已完成分片"的偏移：路径一律由偏移拼出来。
+	// 状态文件是本应用自己写的，但损坏或被改过时，照它给的路径 os.Open 就能把进程读得到的任意文件
+	// 合并进下载产物；照它给的偏移写，就是往产物的任意位置塞字节。`TempFiles` 仍照写进状态文件
+	// （格式不动），只是不再被当成路径来源。
+	for _, start := range resumeState.Completed {
+		if !isChunkStart(start, totalSize, chunkSize) {
+			d.st.trackQueue.SendError(fmt.Errorf("resume state: 合并时忽略非法分片偏移 %d（不在分片边界上）", start))
+			continue
 		}
+		tempFile := chunkTempPath(tempDir, start)
 		// 使用 offset writer 流式复制
 		src, err := os.Open(tempFile)
 		if err != nil {
@@ -454,6 +468,15 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 			// 永久失败到只能人工去删状态文件。
 			_ = d.cleanResumeState(la)
 			result.Error = fmt.Errorf("open temp file %s: %w（已清掉断点状态，下次重跑会重新下载）", tempFile, err)
+			return result
+		}
+		// 长度也要对得上：短分片会让这一片的目标区间留下零填充空洞（产物先 Truncate(totalSize)）。
+		// 这与"文件不在"同一处理 —— 清状态、报错，让下一次跑重下，而不是交出一个看着成功的坏文件。
+		if info, serr := src.Stat(); serr != nil || info.Size() != chunkLength(start, totalSize, chunkSize) {
+			_ = src.Close()
+			_ = d.cleanResumeState(la)
+			result.Error = fmt.Errorf("segment %d: 临时分片 %s 长度不符（应有 %d 字节，已清掉断点状态，下次重跑会重新下载）",
+				start, tempFile, chunkLength(start, totalSize, chunkSize))
 			return result
 		}
 		offsetWriter := io.NewOffsetWriter(outFile, start)
@@ -786,4 +809,36 @@ func (d *Downloader) genFileName(rawURL, contentDisposition string) string {
 		}
 	}
 	return fmt.Sprintf("file_%d", time.Now().UnixNano())
+}
+
+// chunkSizeOrDefault 分块大小的兜底：<= 0 会让分片循环**永不退出**（`start += 0` 原地打转、
+// `start += 负数` 往回走），表现是进程卡在 OOM 上、连一行日志都没有 —— 与 MaxConcurrent /
+// saveBatchSize 同一处理方式：只补"会卡死"的那一类。回落到默认 5MB 而不是 1：
+// 1 字节一块会把分片数打成"文件有多少字节"，goroutine 与临时文件的数量同样能把机器拖死。
+func chunkSizeOrDefault(v int64) int64 {
+	if v <= 0 {
+		return DefaultConfig().ChunkSize
+	}
+	return v
+}
+
+// isChunkStart 判断一个偏移是不是合法的分片起点：落在 [0, totalSize) 且是 chunkSize 的整数倍。
+//
+// 分片偏移一律由这个函数把关（状态文件里的 `Completed` 两条路都用它）—— 合并是按偏移定位写的，
+// 认下一个边界之外的值就是往产物任意位置塞字节，而分片循环也不会为它生成任何一格。
+func isChunkStart(start, totalSize, chunkSize int64) bool {
+	return chunkSize > 0 && start >= 0 && start < totalSize && start%chunkSize == 0
+}
+
+// chunkTempPath 分片临时文件路径。**由偏移拼出来**，不从状态文件里读 —— 见合并处的注释。
+func chunkTempPath(tempDir string, start int64) string {
+	return filepath.Join(tempDir, fmt.Sprintf("chunk_%020d.tmp", start))
+}
+
+// chunkLength 第 start 片应有的字节数（最后一片可能不足一个 chunkSize）。
+func chunkLength(start, totalSize, chunkSize int64) int64 {
+	if n := totalSize - start; n < chunkSize {
+		return n
+	}
+	return chunkSize
 }

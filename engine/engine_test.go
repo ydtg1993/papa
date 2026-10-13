@@ -151,3 +151,36 @@ func TestEngineStopReportsUnfinishedStage(t *testing.T) {
 
 	close(release)
 }
+
+// Stop 之后不再懒建池：晚到的投递按「先寄放」处理（行保持 pending），
+// 不会出现「Stop 已返回 drained=true、新池的 worker 还在跑」那种状态。
+//
+// 这条窗口是框架自己的收尾协程踩出来的：Engine.Stop 先 e.cancel()，而延迟投递的
+// deliverDelayed 与溢出回灌的 drainSpilled 都在 ctx 上 select —— 被 cancel 唤醒的那一次
+// 照样会把手里这条投出去，于是快照之后又建出一个没人停的池。
+func TestEngineStopRefusesPoolCreationAfterwards(t *testing.T) {
+	f := newFakeTaskDB()
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e.pools = newPoolRegistry() // 该阶段处于「首次提交前」：登记表里没有活池
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+
+	drained, stats := e.Stop(50 * time.Millisecond)
+	if !drained || len(stats) != 0 {
+		t.Fatalf("没有活池时应当 drained=true，实得 %v %+v", drained, stats)
+	}
+
+	// Stop 已经返回（调用方此刻会去关库/关浏览器池）—— 这一次投递不许再建池、不许起 worker
+	err := e.SubmitTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("停机后的投递按「先寄放」处理，不该报错：%v", err)
+	}
+	if pool := e.pools.get("stub:stub"); pool != nil {
+		t.Fatalf("Stop 之后不该再建池，实得 %v", pool)
+	}
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("任务该留在溢出表等下次启动恢复，实得 %d", got)
+	}
+	if got := e.spilledCount.Load(); got != 1 {
+		t.Fatalf("寄放要计进 queue_spilled（与暂停同一条路），实得 %d", got)
+	}
+}

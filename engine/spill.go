@@ -101,9 +101,8 @@ func (e *Engine) drainSpilled() {
 			if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 				continue // 已终态，无需再入队
 			}
-			if err := e.submitToPool(task, record); err != nil {
-				e.loggerSet.Engine.Errorf("drain spilled task %d: %s", task.ID, err.Error())
-			}
+			// 投不进去（池刚被回收 / 已停机）时 submitToPool 会把它重新放回溢出表，下轮再来
+			e.submitToPool(task, record)
 		}
 	}
 }

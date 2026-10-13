@@ -481,6 +481,11 @@ func (e *Engine) breakerStatusOf(site string) BreakerStatus {
 
 // Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
 //
+// 从这一句起，引擎**不再接新活**：活池登记表置上停机位（pools.shutdown），之后任何投递
+// 都不会再懒建出新的池 —— 新池会既不在这次快照里、又带着活着的 worker 跑任务，而调用方
+// 已经拿 drained=true 去关库了。投进来的任务按"先寄放"处理（行保持 pending，
+// 下次启动的启动恢复重新入队），不判失败。
+//
 // 返回 drained 表示是否**所有**阶段与后台动态 ticker（错误/恢复/每站的轮询队列）都在 timeout
 // 内停下；没排空时 stats 是那一刻的存留情况（已排空的阶段不会出现在 map 里）。ticker 也算在内，
 // / 是因为它们同样会写库 —— 不等它们就关库，在途的那一跳会报 `sql: database is closed`。
@@ -498,7 +503,10 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	stats = make(map[string]StopStats)
 	// 遍历活池表（而不是 e.stages）：池子是懒建/回收的，e.stages 里「没建池」的阶段
 	// 不在表里，天然被跳过 —— 关停这一步不该自己 panic 掉。
-	for name, pool := range e.pools.snapshot() {
+	//
+	// 用 shutdown() 而不是 snapshot()：它在同一把锁里**置停机位 + 取快照**，于是"快照之后
+	// 才建出来的池"在结构上不存在（后来者一律被拒，任务按"先寄放"处理）。见 pools.go 的注释。
+	for name, pool := range e.pools.shutdown() {
 		wg.Add(1)
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()

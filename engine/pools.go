@@ -19,6 +19,9 @@ type poolRegistry struct {
 	mu         sync.RWMutex
 	pools      map[string]*workerpool.WorkerPool[*Task]
 	lastSubmit map[string]time.Time
+	// stopped 停机位：Engine.Stop 置上之后 getOrCreate 一律拒绝建池（见 shutdown）。
+	// 它是**单向**的，与 e.cancel() 一样不可逆 —— 引擎本来就不能重启。
+	stopped bool
 }
 
 func newPoolRegistry() *poolRegistry {
@@ -52,6 +55,12 @@ func (r *poolRegistry) getOrCreate(key string, create func() *workerpool.WorkerP
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stopped {
+		// 停机之后不再建池：停机的语义是"没有新活"，新池会既不在 Stop 取的那份快照里、
+		// 又带着一群活着的 worker 跑任务，而调用方（app.Run）已经按 drained=true 去关库了。
+		// 返回 nil 由 submitToStage 翻成"先寄放"，任务留在待处理态等下次启动的启动恢复。
+		return nil
+	}
 	if p, ok := r.pools[key]; ok {
 		r.lastSubmit[key] = now
 		return p
@@ -88,16 +97,39 @@ func (r *poolRegistry) reapIdle(idle, stopTimeout time.Duration) map[string]*wor
 	return reaped
 }
 
-// snapshot 活池快照（Stop / Errors 用）。nil 接收者返回 nil：手工构造的 Engine 可能没有这张表。
-func (r *poolRegistry) snapshot() map[string]*workerpool.WorkerPool[*Task] {
+// shutdown 置停机位，并在**同一把写锁里**返回活池快照 —— Engine.Stop 用它代替 snapshot()。
+//
+// 置位与取快照必须原子，这是这段的关键：分成两步的话，两步之间进来的 getOrCreate 会建出一个
+// 既不在这份快照里、又已经不该存在的池 —— 就是"Stop 之后新池逃出关停"那条时序窗。
+// 而框架自己的收尾协程恰好就在这个窗口里投递：延迟投递的 deliverDelayed 与溢出回灌的
+// drainSpilled 都会走到 submitToStage → getOrCreatePool（它们只在 ctx 上 select，
+// 被 cancel 唤起的那个 tick 照样会把手里这条投出去）。
+//
+// 原子之后只剩两种结局，没有第三种：要么池已在快照里（Stop 会停它、等它），
+// 要么 getOrCreate 被拒（投递方按"先寄放"处理，行保持 pending，下次启动恢复重新入队）。
+//
+// nil 接收者返回 nil（与 snapshot 同一处理：手工构造的 Engine 可能没有这张表）。
+func (r *poolRegistry) shutdown() map[string]*workerpool.WorkerPool[*Task] {
 	if r == nil {
 		return nil
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = true
 	out := make(map[string]*workerpool.WorkerPool[*Task], len(r.pools))
 	for k, v := range r.pools {
 		out[k] = v
 	}
 	return out
+}
+
+// isStopped 停机位是否已置。submitToStage 用它把"引擎在停机"与"阶段没注册"分开报 ——
+// 两者都会让 getOrCreatePool 返回 nil，但给运维的结论完全不同。
+func (r *poolRegistry) isStopped() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.stopped
 }

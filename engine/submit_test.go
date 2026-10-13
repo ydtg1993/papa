@@ -290,33 +290,58 @@ func TestSubmitTaskSpillsWhenQueueAtWatermark(t *testing.T) {
 	}
 }
 
-/* ---------- 投递失败 → 回滚 ---------- */
+/* ---------- 投递失败 → 重新寄放 ---------- */
 
-// 池子已停机时的投递失败：回滚内存去重表 + 把行标成 failed 并记下原因。
-// 不标的话它会永远停在 pending，而没有任何队列会再捞 pending 的普通任务。
-func TestSubmitTaskRollsBackOnSubmitFailure(t *testing.T) {
+// 池子已停机时的投递失败：任务**重新寄放到溢出表**（行保持 pending），不再标 failed。
+//
+// 这里一度是"回滚内存去重表 + 把行标成 failed 并记下原因"。换掉它的理由见 submitToPool 的注释：
+// 池被 reapIdle 回收不是这条任务的错（它判空与我们 Submit 之间有窗口），而 failed 不在启动恢复的
+// 集合里（recoverqueue 只收 pending/processing）—— 标了就只能等错误队列那一跳（默认 4h）捞回来。
+func TestSubmitTaskRespillsOnSubmitFailure(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	pool.Stop(time.Second) // 停掉，让 Submit 必然失败
 	e := submitEngine(t, f, pool)
 
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
-	err := e.SubmitTask(task)
-	if err == nil {
-		t.Fatal("投递失败必须报错")
+	if err := e.SubmitTask(task); err != nil {
+		t.Fatalf("任务已寄放到溢出表（drain 会重投），不该报错：%v", err)
 	}
-	if e.dedupCache.Get(task.Unique()) {
-		t.Fatal("投递失败应把 key 从内存去重表里删掉，否则这条再也投不进来")
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("投递失败的任务应进溢出表等回灌，实得 %d", got)
 	}
-	if n := strings.Count(f.written(), "UPDATE"); n != 2 {
-		t.Fatalf("应有两次 UPDATE（先标 pending、失败后标 failed），实得 %d：\n%s", n, f.written())
+	if !e.dedupCache.Get(task.Unique()) {
+		t.Fatal("任务还在我们手上（溢出表里），去重键不该删：删了并发的同一 URL 会再插一行")
 	}
-	if !strings.Contains(f.writtenArgs(), "already stopped") {
-		t.Fatalf("失败原因应写进 error 列：%s", f.writtenArgs())
+	// 不是容量压力：这条路径不该计进 queue_spilled（监控页拿它看队列水位）
+	if got := e.spilledCount.Load(); got != 0 {
+		t.Fatalf("非队满的投递失败不该计进 spilledCount，实得 %d", got)
 	}
-	// 回滚也只写自己负责的列：整行写回会把运营在这期间改的 repeatable（后台「开/停轮询」）盖掉
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatalf("不该再把行标成 failed（failed 不在启动恢复的集合里），语句：%s", f.written())
+	}
+	// 投递路径只写自己负责的列：整行写回会把运营在这期间改的 repeatable（后台「开/停轮询」）盖掉
 	if strings.Contains(f.written(), "`repeatable`") {
-		t.Fatalf("提交失败的回滚不该整行写回：\n%s", f.written())
+		t.Fatalf("投递路径不该整行写回，语句：%s", f.written())
+	}
+}
+
+// 回灌时拿到的是**已停止**的池（reapIdle 判空与 Submit 之间的那个窗口）→ 重新寄放，任务不丢。
+// 改之前这条是"记一条错误日志就没了"：任务离开溢出表、行被标 failed，只能人工重投。
+func TestDrainSpilledKeepsTaskWhenPoolStopped(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+	pool.Stop(time.Second)
+
+	e.spillTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spilled"})
+	e.drainSpilled()
+
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("投递不进去的任务应留在溢出表等下一轮，实得 %d", got)
+	}
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatalf("不该把它标成 failed，语句：%s", f.written())
 	}
 }
 
@@ -585,5 +610,38 @@ func TestSubmitTaskSeedsRepeatInterval(t *testing.T) {
 	}
 	if args := f.writtenArgs(); !strings.Contains(args, "600") {
 		t.Fatalf("周期应按秒落库（10m → 600）：%s", args)
+	}
+}
+
+/* ---------- 提交前的落库写失败 → 不入队 ---------- */
+
+// 提交前那次 UPDATE 失败时**不入队**，任务寄放到溢出表；回灌那一跳会重读行、重跑这一句。
+//
+// 这条不变量（已入队 ⇒ 行里是 pending）原先只靠注释撑着：写失败照样入队，worker 取到后
+// claimTask 拿不到行、直接跳过执行 —— 任务在队列里待过、谁都没跑过，库里那行还是旧状态。
+func TestSubmitTaskParksWhenStatusUpdateFails(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+	f.failNext = 1 // 第一条写就是提交前那次 UPDATE（前面都是 SELECT）
+
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
+	if err := e.SubmitTask(task); err != nil {
+		t.Fatalf("已寄放、回灌会重投，不该报错：%v", err)
+	}
+	if got := queued(t, pool); got != 0 {
+		t.Fatalf("落库没成功就不该入队，实得队列 %d 条", got)
+	}
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("任务该寄放到溢出表等回灌，实得 %d", got)
+	}
+
+	// 回灌：这一跳库已经恢复 → 重新落库 + 入队
+	e.drainSpilled()
+	if got := queued(t, pool); got != 1 {
+		t.Fatalf("回灌后应当补上入队，实得队列 %d 条", got)
+	}
+	if got := e.spillBacklog(); got != 0 {
+		t.Fatalf("回灌成功后应离开溢出表，实得 %d", got)
 	}
 }

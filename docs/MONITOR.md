@@ -455,7 +455,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 
 | 键 | 含义 |
 | --- | --- |
-| `queue_spilled` | 累计溢出任务数（队列达高水位被回灌 DB 的次数） |
+| `queue_spilled` | 累计溢出任务数（任务没能直接入队、改由溢出表寄放的次数）。三种来由：队列达高水位 · 阶段/站点被暂停 · **引擎已停机**（`Engine.Stop` 之后不再建池，晚到的投递一律寄放）。后两种不是容量问题 —— 看这一栏时别当成队列压力 |
 | `queue_spill_backlog` | 当前待回灌的溢出任务数 —— 两种来由：队列持续满，**或有站点被暂停**（暂停期间不接新活，任务都寄放在这里，恢复时立刻灌回） |
 | `recover_total` | 累计启动恢复的任务数（`recover_queue`，只在启动跑一次） |
 | `error_retry_total` | 累计失败重投任务数（error_queue） |

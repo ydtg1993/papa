@@ -38,7 +38,8 @@ func (e *Engine) SubmitTask(task *Task) error {
 			return e.logSubmitError(task, fmt.Errorf("load repeat task record: %w", err))
 		}
 		task.ID = int(record.ID)
-		return e.submitIfActive(task, record)
+		e.submitIfActive(task, record)
+		return nil
 	}
 
 	err := e.findTaskRecord(task, &record)
@@ -51,7 +52,8 @@ func (e *Engine) SubmitTask(task *Task) error {
 		if !task.Repeatable && wasNew {
 			return nil
 		}
-		return e.submitIfActive(task, record)
+		e.submitIfActive(task, record)
+		return nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return e.logSubmitError(task, fmt.Errorf("query task dedup: %w", err))
@@ -69,7 +71,8 @@ func (e *Engine) SubmitTask(task *Task) error {
 	}
 	e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
 	e.dedupCache.Add(key)
-	return e.submitIfActive(task, record)
+	e.submitIfActive(task, record)
+	return nil
 }
 
 // findTaskRecord 按去重键查找已存在的任务记录；未找到返回 gorm.ErrRecordNotFound。
@@ -109,23 +112,27 @@ func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) 
 }
 
 // submitIfActive 若任务尚未到终态（success/failed）则延迟投递或入队，否则静默跳过。
-func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) error {
+//
+// 没有返回值：这条路上不存在"失败" —— 入队、延迟投递、寄放到溢出表等回灌，三种都是
+// "任务已经有人管了"（见 submitToPool 末尾）。
+func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) {
 	if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
-		return nil
+		return
 	}
 	// 延迟投递：到点才入队，避免 worker 空等浪费并发位
 	if at := task.deliverAt(); !at.IsZero() && at.After(time.Now()) {
 		e.enqueueDelayed(at, task, record)
-		return nil
+		return
 	}
-	if err := e.submitToPool(task, record); err != nil {
-		return e.logSubmitError(task, err)
-	}
-	return nil
+	e.submitToPool(task, record)
 }
 
 // submitToPool 将任务提交到对应阶段工作池，并更新数据库状态。
-func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
+//
+// **没有返回值**：这条路上不存在"投递失败" —— 三类结局（落库写不进去 · 队满 · 池已停机/被回收）
+// 统统归到同一个动作：任务留在溢出表等回灌（见函数末尾）。所以调用方不需要、也不该处理错误，
+// 由类型把这件事说出来；原先签名带 error 而三条出口全是 nil，那几处 err 处理是死代码。
+func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 	// 先落库再入队：「已入队 ⇒ 行里是 pending」必须是不变量。
 	// worker 取到任务时会以 status=待处理 为条件认领（claimTask），
 	// 如果这里先入队后落库，中间那个窗口里取到任务的 worker（repeatable 重跑时
@@ -134,28 +141,48 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) error {
 	// 而**延迟投递**那条会把它存进 delayHeap、到点才走到这里（Delay 多长就旧多久）。
 	// 整行写回会把运营在这期间改的列（repeatable / urgent / error…）静默盖回去 ——
 	// 尤其是 repeatable：它现在可由后台「开/停轮询」随时改，被盖回去就是"控制面被数据面吃掉"。
-	e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(submitUpdates(task))
+	// 写不进去就**不入队**：上面那句「已入队 ⇒ 行里是 pending」全靠这一条 UPDATE 撑着。
+	// 报错还照旧入队的话，worker 取到它会因认领不到（claimTask 要的正是 pending）而跳过执行 ——
+	// 任务在队列里待过、谁都没跑过，库里那行还停在旧状态上，两头都看不出发生过什么。
+	//
+	// 处理方式与投递失败一致：寄放到溢出表，回灌时重读行、重跑这一句，权当一次重试。
+	// **只看 Error，不看 RowsAffected**：MySQL 的 UPDATE 默认返回「真正被改动的行数」，
+	// 行已经是 pending、meta/site 也没变时它照样是 0，拿它当失败会平白寄放一堆正常任务。
+	if res := e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(submitUpdates(task)); res.Error != nil {
+		e.loggerSet.Engine.Errorf("update task %d before enqueue failed, task kept in spill list for retry: %s",
+			task.ID, res.Error.Error())
+		e.spillTask(task)
+		return
+	}
 	if task.RepeatInterval > 0 {
 		// 新播种了一条带周期的轮询任务：叫醒轮询队列重算扫描节拍，别让它等当前那次 sleep。
 		e.wakeRepeatQueue()
 	}
 
+	// 投递失败的两条路都归到同一个动作：**任务留在溢出表里等回灌**（行保持 pending）。
+	//
+	//   - 队列达 75% 高水位（ErrQueueFull）：这是真·队列压力，计进 spilledCount。
+	//   - 其它投递错误：实测只有一种来源 —— 拿到的池刚被空闲回收 / 已停机，
+	//     Submit 报 "worker pool already stopped"。它不是容量问题，所以不进那次计数。
+	//
+	// **这里一度是把行标成 failed 的**。换掉它有两个理由：
+	//   - 池被 reapIdle 回收不是这条任务的错：它判空（队列空 + 无在途）与我们 Submit 之间有窗口 ——
+	//     调用方已经从表里拿到池、还没投进去，池就先被停了。拿内部竞态给业务判 failed 是让任务背锅；
+	//   - failed **不在启动恢复的集合里**（recoverqueue 只收 pending/processing）：标了就只剩错误队列那一跳
+	//     （默认 4h 一轮、max_retry 3 代）能捞回来 —— 中间这几个小时后台显示的是「失败」，业务看到的是一次
+	//     根本没发生的失败；错误队列关着或代数用尽，就真的回不来了。
+	// 改成重新寄放后，"不标 failed 会永远停在 pending、没有队列会再捞它"这个担心也不成立：
+	// 溢出表就是干这个的 —— drain 每 drain_interval（默认 2s）重投一次，进程真退了还有启动恢复兜底。
 	if err := e.submitToStage(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
-			// 队列达 75% 高水位：任务保持 pending（已入库），加入溢出列表由 drain 稍后回灌
 			e.spilledCount.Add(1)
 			e.spillTask(task)
-			return nil
+			return
 		}
-		// 提交失败，回滚内存去重表和数据库状态（同样只写自己负责的列：错误用 SQL 追加，不读出再拼）
-		e.dedupCache.Delete(task.Unique())
-		e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", err.Error()+"\n"),
-		})
-		return err
+		e.loggerSet.Engine.Warnf("submit to stage failed, task kept in spill list for retry: stage=%q id=%d err=%v",
+			stageKeyOf(task), task.ID, err)
+		e.spillTask(task)
 	}
-	return nil
 }
 
 // claimTask 把任务从「待处理」认领为「处理中」，成功才允许执行。
@@ -224,6 +251,15 @@ func (e *Engine) submitToStage(task *Task) error {
 	}
 	pool := e.getOrCreatePool(stageKeyOf(task))
 	if pool == nil {
+		// 拿不到池有两种原因，给运维的结论完全不同，别混成一句"阶段未注册"：
+		// 引擎在停机（活池登记表置了停机位，从此不再建池）—— 任务先寄放，行保持 pending，
+		// 下次启动的启动恢复重新入队。用 ErrQueueFull 包住是**故意的**：五个投递调用点对
+		// ErrQueueFull 的处理正是"寄放、不判失败、不建池"，与停机要的语义逐字相同
+		//（暂停那条路也是这么复用的，见上面 isPaused 那段）。
+		if e.pools.isStopped() {
+			return fmt.Errorf("%w: 引擎已停机，站点 %q 的阶段 %q 先寄放（行保持 pending，下次启动的启动恢复会重新入队）",
+				workerpool.ErrQueueFull, task.Site, task.Stage)
+		}
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, task.Stage)
 	}
 	if task.Urgent {
@@ -294,8 +330,8 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		}
 	}
 
-	// 逐个入队（含延迟投递）
-	var errs []error
+	// 逐个入队（含延迟投递）。这里没有"投递失败"要收集：投不进去的任务会进溢出表等回灌，
+	// 真正会失败的只有前面那道批量插入（它已经返回了）。
 	for _, t := range toProcess {
 		// 并发撞车的那几条：库里那行已经被另一路入库并入队了，别再入一次（与 SubmitTask 同一处理）
 		if _, hit := conflicted[t.Unique()]; hit {
@@ -312,12 +348,9 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 			e.enqueueDelayed(at, t, record)
 			continue
 		}
-		if err := e.submitToPool(t, record); err != nil {
-			e.logSubmitError(t, err)
-			errs = append(errs, err)
-		}
+		e.submitToPool(t, record)
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // insertTasks 批量入库并回填 ID，返回其中「撞了唯一索引、复用了库里已有行」的那些任务的去重键。

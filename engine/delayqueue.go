@@ -112,9 +112,8 @@ func (e *Engine) deliverDelayed(item *delayedTask) {
 		e.loggerSet.Engine.Infof("delayed task %d dropped: status is no longer pending", item.task.ID)
 		return
 	}
-	if err := e.submitToPool(item.task, record); err != nil {
-		e.loggerSet.Engine.Errorf("delayed submit task %d failed: %s", item.task.ID, err.Error())
-	}
+	// 投不进去（池刚被回收 / 已停机）时 submitToPool 会把它放进溢出表，回灌那一跳重投
+	e.submitToPool(item.task, record)
 }
 
 // requeueDelayedAfter 把一条延迟任务放回堆里、改到 after 之后再投（只给"重读失败"那条路用）。
