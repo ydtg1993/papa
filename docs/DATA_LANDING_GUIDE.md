@@ -47,7 +47,8 @@
   恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份 ——
   不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
   放**键**（`series_id` / `episode_id`），别放数据本身。
-- **唯一索引建在 `(url_hash, stage)`**：同一个站点的同一个 URL 在同一个阶段只有一行。
+- **唯一索引建在 `(url_hash, stage, site)`**：同一个站点的同一个 URL 在同一个阶段只有一行 ——
+  三个都在里面是必须的：**阶段名只在本站内唯一**，两个站可以各有自己的 `catalog` 并各自抓同一个 URL。
 - **`idempotency_key` 的规范格式是 `site:stage:<标识>`，而且唯一性由数据库兜底**：
   自定义时显式写上（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），
   留空则回退成同形状的 `site:stage:url`。三段缺一不可 —— 少了 `site` / `stage`，
@@ -56,7 +57,7 @@
     键里带 URL，`varchar(1000)` 在 utf8mb4 下超过 InnoDB 的 3072 字节键长上限（真库实测 `ERROR 1071`）。
     所以原文只存文本、`idempotency_hash` 才是身份；**同一个自定义键在库里只会有一行**，并发也插不进第二行。
   - **空键落 NULL**（不是空串）：MySQL 的唯一索引把多个 NULL 视作互不相同，落空串等于全表只能有一行。
-    NULL 同时也是"没自定义键"的标记，这类行由 `(url_hash, stage)` 那条索引管。
+    NULL 同时也是"没自定义键"的标记，这类行由 `(url_hash, stage, site)` 那条索引管。
   - 键原文上限 1000 字符（第三段用规范化后的短 URL；实测三段的键都在 60 字符内）。
 - 其余列由引擎维护，业务**不要直接读写**；后台任务表的「重投 / 加急 / 开停轮询 / 标失败 / 删除」已经覆盖了常见的运维动作。
 
@@ -139,14 +140,28 @@ return engine.SubmitTask(&papa.Task{
 
 1. **忘了登记 `models.Models()`** → `papa migrate` 不建表，运行时才报 `Table doesn't exist`。
 2. **没建唯一键** → 重投/轮询一轮就多一行；`Upsert` 也会退化成普通插入。
-3. **唯一键不含站点** → 两个站的数据互相顶掉（多站项目必踩）。
+3. **站点维度漏了一处**（提交任务时不带 `site`、自定义幂等键少写 `site:` 那一段、按阶段取配置只给名字）→ 查不到那个阶段，或者两个站的数据互相顶掉。
 4. **`meta` 里塞数据** → 它是给"还原任务身份"用的，塞大对象既没索引也不该随任务清理而消失。
 5. **业务列名与 gorm 生成的实际列名对不上**（后台表格页 `Field` 写 `pid` 而库里是 `p_id`）→ 后台永远渲染成空，见 [MONITOR.md](./MONITOR.md)。
 6. **改了表结构没跑迁移** → `AutoMigrate` 只增不减（不改类型、不删列）；改列类型/删列都得显式迁移，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 
 ---
 
-## 6. 从 v3.3.2 之前升级
+## 6. 从旧版本升级
+
+### 6.1 从 v3.4.0 之前升级（唯一索引要带 `site`）
+
+阶段名改成**按站点作用域**（两个站可以各有自己的 `catalog`）之后，`crawler_tasks` 的唯一索引
+从 `(url_hash, stage)` 换成 `(url_hash, stage, site)`，旧名字由迁移删掉。要做的事只有一件：
+
+1. 跑一次 `papa migrate`（它建新索引、再删旧索引，可重复跑）。
+2. **不跑会静默出错**：库里留着旧索引时它比新索引**严** —— 两个站同名阶段抓到同一个 URL 时
+   第二条插入会报 1062，而插入失败后的回查是按三列查的、找不到那一行，业务只看到一句
+   `insert crawler task to db failed`。启动日志里也有一条警示指向这里（见 `internal/app/app.go`）。
+3. 任务的 `site` 列一直是有的（v3.3 起就在写），所以**不需要回填数据**；只有"阶段名列"改过名的
+   项目才要额外回填 `stage`（本项目没有）。
+
+### 6.2 从 v3.3.2 之前升级
 
 老版本把结果写在 `crawler_tasks.title` / `content` 两列里。v3.3.2 起：
 
@@ -163,6 +178,6 @@ return engine.SubmitTask(&papa.Task{
 | 落地抓到的数据 | 自己的表 + `engine.Upsert` |
 | 建/改表 | `models.Models()` 登记 + `papa migrate`（改类型/删列要显式迁移） |
 | 记住「这条任务是哪条业务行」 | `papa.Task{Meta: ...}`（随任务行落库） |
-| 防重复投递 | 任务的 `(url_hash, stage)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
+| 防重复投递 | 任务的 `(url_hash, stage, site)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
 | 复杂查询 / 事务 | `engine.GetDB()` |
 | 查任务运行态 | 后台「任务」表格页（重投 / 加急 / 追踪 / 开停轮询） |

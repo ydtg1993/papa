@@ -5,14 +5,14 @@ Use this for audits and pull-request reviews. Report findings by severity with f
 ## Critical/startup
 
 - Unknown strict YAML keys, legacy scheduler configuration, invalid durations, missing enabled-section fields.
-- Duplicate site keys or stage names.
+- Duplicate site keys, or a duplicate stage name **within one site** (the same name in two sites is legal).
 - A browser stage omits `NeedsBrowser`, or download code assumes removed `NeedsFiledown`/`NeedsM3U8` methods validate startup wiring.
 - File/M3U8 downloads omit explicit request-context propagation via the matching `OptionsFromRequest` helper when headers, proxy, cookies, or referer are required.
 - New GORM or optional framework tables were not explicitly migrated.
 
 ## Correctness
 
-- Stage names lack a site prefix.
+- A submitted task has no `Site` (the stage lookup is keyed by `site:stage`), or a declaration has no `Key`.
 - Parser returns success for an unexpected empty selection.
 - Permanent structure/not-found/config errors use ordinary retryable errors.
 - HTTP classification parses strings rather than typed/status helpers.

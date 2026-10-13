@@ -175,6 +175,7 @@ type recordingFetcher struct {
 
 	mu    sync.Mutex
 	got   []string
+	sites []string    // 每次调用时任务的站点，与 got 一一对应（多站同名阶段靠它分辨）
 	times []time.Time // 每次调用的时刻，与 got 一一对应（验证退避节奏用）
 }
 
@@ -183,6 +184,7 @@ func (s *recordingFetcher) GetStage() string { return s.stage }
 func (s *recordingFetcher) FetchHandler(_ context.Context, task *Task, _ *Engine) error {
 	s.mu.Lock()
 	s.got = append(s.got, task.URL)
+	s.sites = append(s.sites, task.Site)
 	s.times = append(s.times, time.Now())
 	s.mu.Unlock()
 	return s.err
@@ -192,6 +194,13 @@ func (s *recordingFetcher) calls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.got...)
+}
+
+// calledSites 返回各次调用时任务的站点（与 calls 一一对应）。
+func (s *recordingFetcher) calledSites() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.sites...)
 }
 
 // callsAt 返回各次调用的时刻（与 calls 一一对应）。
@@ -242,6 +251,11 @@ func newTestEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	return e
 }
 
+// stubKey 引擎测试里那条"大家都用"的阶段键：站点与阶段名都叫 stub（各用例的任务都带 Site: "stub"）。
+// 键是 `site:stage` —— 阶段名只在本站内唯一，所以登记与取池都按这个复合键。
+// 这里写字面量而不是 core.StageKey(...)，顺带把拼法本身也钉住。
+const stubKey = "stub:stub"
+
 // 从提交到 handler 跑完的整条链路：池子建起来、worker 认领任务、状态落库、
 // 列表清理、优雅关停。这是引擎最核心的一条路，之前没有任何测试覆盖。
 func TestApplyRegisterStageRunsTaskEndToEnd(t *testing.T) {
@@ -250,17 +264,17 @@ func TestApplyRegisterStageRunsTaskEndToEnd(t *testing.T) {
 	e := newTestEngine(t, f)
 
 	fetcher := &recordingFetcher{stage: "stub"}
-	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
+	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if e.pools.get("stub") != nil {
+	if e.pools.get(stubKey) != nil {
 		t.Fatal("ApplyRegisterStage 不应建池（池子懒建，等第一条任务 submit 才建）")
 	}
 
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
-	if e.pools.get("stub") == nil {
+	if e.pools.get(stubKey) == nil {
 		t.Fatal("首次 submit 应懒建阶段的工作池")
 	}
 	fetcher.waitCalls(t, 1)
@@ -337,7 +351,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	e.breaker = b
 
 	fetcher := &recordingFetcher{stage: "stub"}
-	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, fetcher, nil)
+	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, fetcher, nil)
 
 	if !e.PauseCrawling("测试暂停") {
 		t.Fatal("手动暂停应当成功")
@@ -380,13 +394,13 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 func TestAddStageOnlyRegisters(t *testing.T) {
 	e := &Engine{stages: map[string]*stageInfo{}, pools: newPoolRegistry()}
 	fetcher := &recordingFetcher{stage: "stub"}
-	e.AddStage("stub", StageConfig{WorkerCount: 2, QueueSize: 4}, fetcher, nil)
+	e.AddStage("stub", StageConfig{Site: "stub", WorkerCount: 2, QueueSize: 4}, fetcher, nil)
 
-	info, ok := e.stages["stub"]
+	info, ok := e.stages[stubKey]
 	if !ok {
 		t.Fatal("阶段没登记上")
 	}
-	if e.pools.get("stub") != nil {
+	if e.pools.get(stubKey) != nil {
 		t.Fatal("登记阶段时不该建池子")
 	}
 	if info.fetcher != fetcher || info.config.WorkerCount != 2 {
@@ -412,7 +426,7 @@ func TestStopIsNotBlockedByPostSuccessDelay(t *testing.T) {
 	e := newTestEngine(t, f)
 
 	fetcher := &recordingFetcher{stage: "stub"}
-	e.AddStage("stub", StageConfig{
+	e.AddStage("stub", StageConfig{Site: "stub",
 		MaxAttempts: 1, WorkerCount: 1, QueueSize: 8,
 		// 模板里的量级：catalog 的 delay 就是 5m
 		Delay: config.DurationRange{Min: 5 * time.Minute, Max: 5 * time.Minute},
@@ -446,7 +460,7 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	e := newTestEngine(t, f)
 
 	fetcher := &recordingFetcher{stage: "stub"}
-	e.AddStage("stub", StageConfig{
+	e.AddStage("stub", StageConfig{Site: "stub",
 		MaxAttempts: 1, WorkerCount: 1, QueueSize: 8,
 		Delay: config.DurationRange{Min: 500 * time.Millisecond, Max: 500 * time.Millisecond},
 	}, fetcher, nil)
@@ -458,7 +472,7 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	fetcher.waitCalls(t, 1)
 
 	// 假库上抓取本身是瞬时的，所以此刻 worker 必然已经在延迟里
-	pool := e.pools.get("stub")
+	pool := e.pools.get(stubKey)
 	time.Sleep(150 * time.Millisecond)
 	if _, _, _, inProgress, _ := pool.Stats(); inProgress != 1 {
 		t.Fatalf("延迟期间该任务应仍占着 worker，实得 inProgress=%d", inProgress)
@@ -501,14 +515,17 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	t.Cleanup(e.cancel)
 
 	stageCfg := StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
+	// 两个站各声明自己的阶段：任务上的 Site 必须与声明里的 Site 对上（键是 `site:stage`）
+	stageCfgA, stageCfgB := stageCfg, stageCfg
+	stageCfgA.Site, stageCfgB.Site = "a", "b"
 	fetcherA := &recordingFetcher{stage: "a"}
 	fetcherB := &recordingFetcher{stage: "b"}
 
 	var submitErrs []error
-	e.AddStage("a", stageCfg, fetcherA, func(eng *Engine) {
+	e.AddStage("a", stageCfgA, fetcherA, func(eng *Engine) {
 		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "b", Site: "b", URL: "https://example.com/init-b"}))
 	})
-	e.AddStage("b", stageCfg, fetcherB, func(eng *Engine) {
+	e.AddStage("b", stageCfgB, fetcherB, func(eng *Engine) {
 		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "a", Site: "a", URL: "https://example.com/init-a"}))
 	})
 
@@ -538,16 +555,123 @@ func TestSubmitCreatesPoolLazily(t *testing.T) {
 	e := newTestEngine(t, f)
 
 	fetcher := &recordingFetcher{stage: "stub"}
-	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
+	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	// 注意：不调 ApplyRegisterStage —— 池子该由首次 submit 懒建
 
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("首次 submit 应懒建池子并成功，实得：%v", err)
 	}
-	if e.pools.get("stub") == nil {
+	if e.pools.get(stubKey) == nil {
 		t.Fatal("首次 submit 后应有活池")
 	}
 	fetcher.waitCalls(t, 1) // 任务真的跑起来了
+}
+
+// **这一版的核心承诺**：两个站可以各有自己的 `catalog` —— 两个池子、各收各的任务、
+// 统计各占一条；同一个 URL 在两站各跑一次，谁也不会把谁顶掉。
+// 之前阶段名是进程全局唯一的，这种声明在 RegisterSites 就会 panic。
+func TestSameStageNameInTwoSitesIsIsolated(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true // 全新任务：走 INSERT
+	e := newTestEngine(t, f)
+	e.cfg.Server.Enabled = true // 统计器跟着池子一起建（buildPool 里按这个开关）
+
+	fetcherA := &recordingFetcher{stage: "catalog"}
+	fetcherB := &recordingFetcher{stage: "catalog"}
+	cfgA := StageConfig{Site: "a", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
+	cfgB := cfgA
+	cfgB.Site = "b"
+
+	// 阶段名一模一样，站点不同 —— 登记表、池子、统计三条都不该互相顶掉
+	e.AddStage("catalog", cfgA, fetcherA, nil)
+	e.AddStage("catalog", cfgB, fetcherB, nil)
+	e.ApplyRegisterStage()
+
+	// 同一个 URL：站点不同就是两条独立任务（去重键是 site:stage:url）
+	const sameURL = "https://example.com/same"
+	for _, site := range []string{"a", "b"} {
+		if err := e.SubmitTask(&Task{Stage: "catalog", Site: site, URL: sameURL}); err != nil {
+			t.Fatalf("站点 %s 投递失败：%v", site, err)
+		}
+	}
+
+	poolA := e.pools.get(core.StageKey("a", "catalog"))
+	poolB := e.pools.get(core.StageKey("b", "catalog"))
+	if poolA == nil || poolB == nil {
+		t.Fatalf("两个站都该有自己的池子，实得 a=%v b=%v", poolA, poolB)
+	}
+	if poolA == poolB {
+		t.Fatal("两个站必须是两个池子（并发/队列/间隔各自独立）")
+	}
+
+	fetcherA.waitCalls(t, 1)
+	fetcherB.waitCalls(t, 1)
+	if got := fetcherA.calledSites(); len(got) != 1 || got[0] != "a" {
+		t.Fatalf("a 站的 handler 只该跑 a 站的任务，实得 %v", got)
+	}
+	if got := fetcherB.calledSites(); len(got) != 1 || got[0] != "b" {
+		t.Fatalf("b 站的 handler 只该跑 b 站的任务，实得 %v", got)
+	}
+
+	// 统计各一条：键是 `site:stage`，两段都带全（后台靠这两个字段分组与显示）
+	stats := e.GetStageStats()
+	for _, key := range []string{"a:catalog", "b:catalog"} {
+		ss, ok := stats[key]
+		if !ok {
+			t.Fatalf("统计里缺 %q：%+v", key, stats)
+		}
+		if ss.Stage != "catalog" {
+			t.Fatalf("%s 的裸阶段名应当是 catalog，实得 %q", key, ss.Stage)
+		}
+		if ss.Site != key[:1] {
+			t.Fatalf("%s 的站点字段不对：%q", key, ss.Site)
+		}
+	}
+
+	// 同一个 URL 两条任务都真的落库了（假库不解析 SQL，索引那一层要真库才验得到）
+	if n := strings.Count(f.written(), "INSERT INTO `crawler_tasks`"); n != 2 {
+		t.Fatalf("两个站各该插一行，实得 %d 行：\n%s", n, f.written())
+	}
+}
+
+// 熔断闸门**每站一把**：A 站被墙闸住不该把 B 站一起闸住。
+// 声明层（App.RegisterSites）会给每个声明的站点建一把 —— 没单配阈值的站也用自己那把、
+// 阈值取 crawler.breaker 那份默认（见 internal/app 的 defaultBreakerConfig）。
+func TestEachSiteGetsItsOwnBreaker(t *testing.T) {
+	f := newFakeTaskDB()
+	e := newTestEngine(t, f)
+
+	cfg := breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1}
+	e.SetSiteBreaker("a", cfg)
+	e.SetSiteBreaker("b", cfg)
+
+	gateA, gateB := e.breakerFor("a"), e.breakerFor("b")
+	if gateA == gateB {
+		t.Fatal("两个站必须是两把闸门")
+	}
+	if gateA == e.breaker || gateB == e.breaker {
+		t.Fatal("有站点的阶段不该落到默认 scope 那把闸门上")
+	}
+
+	// 闸住 a 站：只有 a 站是暂停的
+	if !e.PauseSite("a", "a 站被墙") {
+		t.Fatal("暂停 a 站应当成功")
+	}
+	if !gateA.Status().Paused {
+		t.Fatal("a 站应当被闸住")
+	}
+	if gateB.Status().Paused || e.breaker.Status().Paused {
+		t.Fatal("a 站被闸住不该影响 b 站、也不该影响默认 scope")
+	}
+
+	// 后台逐站看到的状态要一致（横幅与「恢复抓取」按这张表来）
+	sts := e.BreakerStatuses()
+	if !sts["a"].Paused || sts["b"].Paused {
+		t.Fatalf("逐站状态不对：%+v", sts)
+	}
+	if sts["a"].Site != "a" {
+		t.Fatalf("状态里要带上是哪个站：%+v", sts["a"])
+	}
 }
 
 // assertPanicsContains 断言 f() panic 且信息里含 want（启动期的校验都是 panic：与配置校验层同取向）。
@@ -588,7 +712,7 @@ type legacyNeedsDownloaders struct{ recordingFetcher }
 func (s *legacyNeedsDownloaders) NeedsFiledown() bool { return true }
 func (s *legacyNeedsDownloaders) NeedsM3U8() bool     { return true }
 
-var stageDepCfg = StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
+var stageDepCfg = StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
 
 // stageDepEngine 造一个只声明 stub 阶段的引擎（依赖校验用例的公共脚手架）。
 func stageDepEngine(t *testing.T) *Engine {
@@ -614,7 +738,7 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 
 	const backoff = 3 * time.Second
 	fetcher := &recordingFetcher{stage: "stub", err: errors.New("boom")} // 每次尝试都失败
-	e.AddStage("stub", StageConfig{
+	e.AddStage("stub", StageConfig{Site: "stub",
 		MaxAttempts: 2, WorkerCount: 1, QueueSize: 8, Backoff: backoff, Delay: config.DurationRange{},
 	}, fetcher, nil)
 	e.ApplyRegisterStage()

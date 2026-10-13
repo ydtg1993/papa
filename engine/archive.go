@@ -191,6 +191,7 @@ func (a *archiveBuffer) writeOne(root string, page archivedPage) (string, error)
 	meta := map[string]any{
 		"task_id":      a.task.ID,
 		"stage":        a.task.Stage,
+		"site":         a.task.Site,
 		"attempt":      a.attempt,
 		"retry":        a.task.Retry,
 		"task_url":     a.task.URL,
@@ -207,17 +208,22 @@ func (a *archiveBuffer) writeOne(root string, page archivedPage) (string, error)
 	return rel, nil
 }
 
-// relPath 归档文件的相对路径：`{stage}/task-{id}-try-{retry}-{urlhash8}.html`。
+// relPath 归档文件的相对路径：`{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html`。
+//
+// **按站点分一层**：阶段名只在本站内唯一，两个站各有 `catalog` 时会写进同一个目录、混在一起
+// （文件名带全局唯一的 task ID，不会互相覆盖，只是"这个阶段抓到过哪些页"再也分不开）。
+// 站点为空（默认 scope）落成 `_`，见 sanitizePathSegment。
 //
 // 带 try（= task.Retry）是必须的：同一任务重试 3 次时后面那次会覆盖前面那次，
 // 而"第一次是登录墙、第三次正常"恰好是排查的关键。urlhash8 保证一个尝试里的多页不打架。
 func (a *archiveBuffer) relPath(page archivedPage) string {
 	sum := sha256.Sum256([]byte(page.url))
 	name := fmt.Sprintf("task-%d-try-%d-%s.html", a.task.ID, a.task.Retry, hex.EncodeToString(sum[:4]))
-	return filepath.Join(sanitizePathSegment(a.task.Stage), name)
+	return filepath.Join(sanitizePathSegment(a.task.Site), sanitizePathSegment(a.task.Stage), name)
 }
 
-// sanitizePathSegment 清洗作为**目录名**用的阶段名：阶段名来自业务代码，但不该能让归档写到目录之外。
+// sanitizePathSegment 清洗作为**目录名**用的站点名 / 阶段名：两者都来自业务代码，
+// 但不该能让归档写到目录之外。空串落成 `_`（默认 scope 的站点就落在这里）。
 func sanitizePathSegment(s string) string {
 	out := make([]rune, 0, len(s))
 	for _, r := range s {

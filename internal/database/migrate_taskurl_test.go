@@ -20,8 +20,12 @@ type schemaState struct {
 	table       bool   // crawler_tasks 在不在（全新库 = false）
 	urlType     string // url 列的类型（DATA_TYPE）
 	hasURLHash  bool   // url_hash 列在不在
-	hasOldIndex bool   // 旧唯一索引 idx_stage_url
-	hasNewIndex bool   // 新唯一索引 idx_stage_url_hash
+	hasOldIndex bool   // 最老那一版唯一索引 idx_stage_url（建在 url 上）
+	// hasStageHashIndex (url_hash, stage) 与 hasSiteStageIndex (url_hash, stage, site)：
+	// 阶段名按站点作用域之后，唯一索引要带 site —— 前者是上一版的名字，跑到最后要删掉。
+	hasStageHashIndex bool
+	hasSiteStageIndex bool
+	hasSiteColumn     bool // site 列在不在（v3.3 那轮由 AutoMigrate 加的）
 	// missingHash 还有多少行等着回填；urlHashNullable = url_hash 现在可空吗
 	missingHash     int64
 	urlHashNullable bool
@@ -59,7 +63,9 @@ func schemaStub(t *testing.T, st *schemaState) *stubDB {
 			case "idx_stage_url":
 				return count(st.hasOldIndex)
 			case "idx_stage_url_hash":
-				return count(st.hasNewIndex)
+				return count(st.hasStageHashIndex)
+			case "idx_site_stage_url_hash":
+				return count(st.hasSiteStageIndex)
 			}
 		case strings.Contains(low, "information_schema.columns"):
 			if strings.Contains(low, "is_nullable") {
@@ -74,6 +80,9 @@ func schemaStub(t *testing.T, st *schemaState) *stubDB {
 			}
 			if last() == "url_hash" {
 				return count(st.hasURLHash)
+			}
+			if last() == "site" {
+				return count(st.hasSiteColumn)
 			}
 			if last() == "title" {
 				return count(st.hasTitle)
@@ -90,11 +99,17 @@ func schemaStub(t *testing.T, st *schemaState) *stubDB {
 	return s
 }
 
-// 迁移步骤的**先后顺序**：删旧索引 → 加列 → url 改 text → 回填 → 收紧 NOT NULL → 建新索引。
+// 迁移步骤的**先后顺序**：删旧索引 → 加列 → url 改 text → 回填 → 收紧 NOT NULL →
+// 建新索引 (url_hash, stage, site) → 删上一版的名字 (url_hash, stage)。
+//
+// ④→⑤→⑥ 的顺序都是硬的：回填前不能建唯一索引（一堆空串会自己撞自己）；
+// ⑥ 在 ⑦ 之前，则是因为新索引是旧的**超集** —— 先建再删，中间任何时刻都有唯一约束兜着，
+// 没有"没有唯一索引"的窗口。
 func TestMigrateTaskURLHashOrderOnLegacySchema(t *testing.T) {
 	st := &schemaState{
 		table: true, urlType: "varchar", hasOldIndex: true,
 		missingHash: 66, urlHashNullable: true, // 老库：66 行待回填、列还空着
+		hasSiteColumn: true, hasStageHashIndex: true, // 已经有 site 列、唯一索引还是上一版那个
 	}
 	s := schemaStub(t, st)
 	db := openStubDB(t, s)
@@ -105,12 +120,14 @@ func TestMigrateTaskURLHashOrderOnLegacySchema(t *testing.T) {
 
 	writes := s.written()
 	wantOrder := []string{
-		"DROP INDEX `idx_stage_url`",               // ① 旧索引必须先进垃圾桶
-		"ADD COLUMN `url_hash`",                    // ② 先可空（表里有行）
-		"MODIFY `url` text NOT NULL",               // ③ url 改 text（索引已经让开了）
-		"SHA2(`url`, 256)",                         // ④ 回填
-		"MODIFY `url_hash` char(64) NOT NULL",      // ⑤ 回填完才收紧
-		"CREATE UNIQUE INDEX `idx_stage_url_hash`", // ⑥ 最后才建唯一索引
+		"DROP INDEX `idx_stage_url`",                    // ① 最老那版索引先进垃圾桶
+		"ADD COLUMN `url_hash`",                         // ② 先可空（表里有行）
+		"MODIFY `url` text NOT NULL",                    // ③ url 改 text（索引已经让开了）
+		"SHA2(`url`, 256)",                              // ④ 回填
+		"MODIFY `url_hash` char(64) NOT NULL",           // ⑤ 回填完才收紧
+		"CREATE UNIQUE INDEX `idx_site_stage_url_hash`", // ⑥ 建当前那版（带 site）
+		"(url_hash, stage, site)",                       //    —— 列要齐
+		"DROP INDEX `idx_stage_url_hash`",               // ⑦ 上一版的名字删掉
 	}
 	pos := -1
 	for _, w := range wantOrder {
@@ -122,6 +139,27 @@ func TestMigrateTaskURLHashOrderOnLegacySchema(t *testing.T) {
 			t.Fatalf("顺序不对：%q 出现在前一条之前。完整语句：\n%s", w, writes)
 		}
 		pos = i
+	}
+}
+
+// 更老的库还没有 site 列（它是 v3.3 那轮由 AutoMigrate 加的）：**不建新索引，也不删旧索引** ——
+// 索引列里的 site 此刻还不存在，建会报 1072；而先删旧的就等于让表在没有唯一约束的状态下运行。
+// 等 AutoMigrate 补上列，再按模型标签把新索引建出来。
+func TestMigrateTaskURLHashKeepsOldIndexWhenSiteColumnMissing(t *testing.T) {
+	st := &schemaState{
+		table: true, urlType: "text", hasURLHash: true,
+		hasStageHashIndex: true, hasSiteColumn: false,
+	}
+	s := schemaStub(t, st)
+	if err := migrateTaskURLHash(openStubDB(t, s)); err != nil {
+		t.Fatalf("migrateTaskURLHash = %v", err)
+	}
+	writes := s.written()
+	if strings.Contains(writes, "idx_site_stage_url_hash") {
+		t.Fatalf("site 列还不存在，不该建带 site 的唯一索引：\n%s", writes)
+	}
+	if strings.Contains(writes, "DROP INDEX `idx_stage_url_hash`") {
+		t.Fatalf("建不了新的就不该删旧的（否则这段窗口里没有唯一约束）：\n%s", writes)
 	}
 }
 
@@ -156,8 +194,8 @@ func TestMigrateTaskURLHashIsIdempotent(t *testing.T) {
 		t.Fatal("第一次应当真的做点事")
 	}
 
-	// 模拟"迁移已经生效"
-	*st = schemaState{table: true, urlType: "text", hasURLHash: true, hasNewIndex: true}
+	// 模拟"迁移已经生效"：新索引已在、上一版的名字已删、site 列在
+	*st = schemaState{table: true, urlType: "text", hasURLHash: true, hasSiteColumn: true, hasSiteStageIndex: true}
 	before := len(s.execs)
 	if err := migrateTaskURLHash(db); err != nil {
 		t.Fatalf("第二次 = %v", err)

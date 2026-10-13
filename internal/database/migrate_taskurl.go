@@ -7,7 +7,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// 本文件是**一次显式迁移**：把 crawler_tasks 的唯一索引从 (url, stage) 换到 (url_hash, stage)。
+// 本文件是**一次显式迁移**：把 crawler_tasks 的唯一索引从 (url, stage) 换到 (url_hash, stage, site)。
 //
 // 为什么不能交给 AutoMigrate：它**只增不减**（见 Migrate 的注释），而这次要做四件事，且顺序不能乱 ——
 //
@@ -15,9 +15,15 @@ import (
 //	   MySQL 不允许 TEXT 列不带前缀长度进索引）
 //	② url 从 varchar(500) 改成 text（长 URL 不再入库失败/被截断）
 //	③ 加 url_hash 列并**回填**（SHA2(url,256)，与 Go 侧 models.UrlHash 同一个值）
-//	④ 建新的唯一索引 idx_stage_url_hash (url_hash, stage)
+//	④ 建唯一索引 (url_hash, stage, site) ——**当前那一版**的列
+//	⑤ 删掉上一版的名字 idx_stage_url_hash（(url_hash, stage)：不含 site，太严）
 //
 // ③ 必须在 ④ 之前：先建唯一索引的话，一堆还没回填的空串会自己撞自己。
+// ④ 在 ⑤ 之前：新索引是旧索引的**超集**（多一列 = 更松），所以中间任何时刻都有唯一约束兜着，
+// 没有"没有唯一索引"的窗口；反过来先删再建就有了。
+//
+// **④ 建的是新名字、新列**（不是先建老名字再让别处删掉）：否则每跑一次 `papa migrate` 都会
+// "这里建回来、那一步删掉"，在大表上白白重建一次唯一索引。
 //
 // 每一步都先查 information_schema 判断要不要做，所以**可重复跑**；表还不存在（全新库）时整段跳过，
 // 交给 AutoMigrate 按新结构建表。
@@ -41,7 +47,21 @@ func migrateTaskURLHash(db *gorm.DB) error {
 	if err := backfillURLHash(db, table); err != nil {
 		return err
 	}
-	return createUniqueIndexIfMissing(db, table, "idx_stage_url_hash", "url_hash, stage")
+	// site 列存在才建：阶段名按站点作用域之后唯一索引要带 site，但 site 列本身是
+	// v3.3 那轮由 AutoMigrate 加的 —— 更老的库此刻还没有它，建索引会报 1072。
+	// 这种情况下先跳过（返回 nil），AutoMigrate 补上列之后会按模型标签把索引建出来。
+	hasSite, err := columnExists(db, table, "site")
+	if err != nil {
+		return err
+	}
+	if !hasSite {
+		return nil
+	}
+	if err := createUniqueIndexIfMissing(db, table, "idx_site_stage_url_hash", "url_hash, stage, site"); err != nil {
+		return err
+	}
+	// ⑤ 上一版的名字现在多余了，删掉（它不含 site，会把"两个站同名阶段 + 同一个 URL"拦成 1062）。
+	return dropIndexIfExists(db, table, "idx_stage_url_hash")
 }
 
 func tableExists(db *gorm.DB, table string) (bool, error) {

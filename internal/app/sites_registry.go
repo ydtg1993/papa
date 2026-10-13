@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -46,12 +47,25 @@ func resetRegisteredSites() {
 	registered = nil
 }
 
-// validateSites 校验一批站点声明（纯函数，便于单测）：站点键不能重复。
+// validateSites 校验一批站点声明（纯函数，便于单测）：站点键**必填**、不能重复、也不能带 `:`。
 func validateSites(sites []SiteSpec) error {
 	seen := make(map[string]bool, len(sites))
 	for i, site := range sites {
+		// Key 必填：阶段键是 `site:stage`，熔断/统计/任务表也都按站点分 —— 没有 Key 的声明
+		// 只会落进"默认 scope"，而那个 scope 现在只服务存量数据（`crawler_tasks.site` 为空的
+		// 旧行）；新任务一律要求带上站点（SubmitTask 那道校验）。所以未命名声明是个
+		// "注册了却永远收不到新任务"的陷阱，在声明期就拒掉。
 		if site.Key == "" {
-			continue // 空键 = 未归属（默认 scope），多个站点都可以留空
+			return fmt.Errorf("第 %d 个站点声明缺 Key —— 阶段名按站点作用域（键是 `site:stage`），"+
+				"熔断、统计、任务表也都按站点分，没有 Key 就分不开。"+
+				"（旧库里 `site` 为空的行仍落在「默认 scope」、用 crawler.breaker 那把闸门 —— 那不需要声明）", i+1)
+		}
+		// 阶段键是 `site:stage` 拼出来的，Key 里再有 `:` 就会串味：Key `shop:eu` + 阶段
+		// `catalog` 与 Key `shop` + 阶段 `eu:catalog` 会拼成同一个键 —— 两对不同的东西共用一个
+		// 池子、一把闸门、一行统计。这是静默串站，不如声明时就拒绝。
+		if strings.Contains(site.Key, ":") {
+			return fmt.Errorf("站点键 %q 不能包含 `:`（第 %d 个）—— 阶段键按 `site:stage` 拼，"+
+				"键里带 `:` 会和别的站点/阶段拼出同一个键", site.Key, i+1)
 		}
 		if seen[site.Key] {
 			return fmt.Errorf("站点键 %q 重复（第 %d 个）—— 同一个站只能声明一次，"+

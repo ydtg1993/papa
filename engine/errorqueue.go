@@ -57,8 +57,9 @@ func (e *Engine) requeueFailedTask() func(*models.CrawlerTask) bool {
 
 // requeueFailedTaskIn 单条重投的实体。
 func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
-	if e.stages[t.Stage] == nil {
-		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", t.Stage, t.ID)
+	// 站点也要看：阶段名只在本站内唯一，光按名字查会把另一站的同名阶段当成本站那个。
+	if e.stages[stageKeyOfRecord(t)] == nil {
+		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
 	// **`status` 守卫不能省**：批次 SELECT 与这次重置之间，**轮询队列**可能已经把这一行捞走并重投

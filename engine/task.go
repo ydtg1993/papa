@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -169,8 +170,19 @@ func (t *Task) Unique() string {
 	if t.IdempotencyKey != "" {
 		return t.IdempotencyKey
 	}
-	return t.Site + ":" + t.Stage + ":" + t.URL
+	return core.StageKey(t.Site, t.Stage) + ":" + t.URL
 }
+
+// stageKeyOf / stageKeyOfRecord 这一条属于哪个阶段 —— 引擎内部一切"按阶段取东西"的键
+// （登记表、工作池、统计、覆盖层、溢出桶、三条治理队列的守卫）。
+//
+// **只用阶段名是不够的**：阶段名只在本站内唯一，两个站的 `catalog` 是两条独立记录。
+// 这两个函数就是"哪两个字段拼键"的唯一定义 —— 调用点一律走它们，别各自手写 `core.StageKey(...)`，
+// 免得哪天多出一个维度时漏掉一处（漏了会静默落到别的站/默认 scope 上）。
+// 两个变体只是因为入参一个是内存里的任务、一个是库里的行。
+func stageKeyOf(t *Task) string { return core.StageKey(t.Site, t.Stage) }
+
+func stageKeyOfRecord(t *models.CrawlerTask) string { return core.StageKey(t.Site, t.Stage) }
 
 // Fetcher 爬虫操作业务逻辑接口
 type Fetcher interface {

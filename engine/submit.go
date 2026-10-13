@@ -21,14 +21,14 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" || task.Site == "" {
 		return e.logSubmitError(task, fmt.Errorf("task stage or url or site is empty: %+v", task))
 	}
-	if info := e.stages[task.Stage]; info == nil {
-		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage))
+	if info := e.stages[stageKeyOf(task)]; info == nil {
+		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage, task.Site))
 	}
 
 	key := task.Unique()
 	var record models.CrawlerTask
 
-	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_stage_url_hash 兜底）
+	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_site_stage_url_hash 兜底）
 	if e.dedupCache.Get(key) {
 		if !task.Repeatable {
 			return nil // 去重命中：视为成功，无需重复处理
@@ -77,7 +77,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 // 两条分支都**按唯一索引查**（查得到的前提是"查的键与索引的键一致"，否则插冲突后回查会空手而归、
 // 把并发冲突报成插入失败）：
 //   - 自定义幂等键 → `idempotency_hash`（唯一索引 idx_idempotency_hash；键原文 varchar(1000) 建不了索引）
-//   - 没有自定义键 → `url_hash + stage`（唯一索引 idx_stage_url_hash）
+//   - 没有自定义键 → `url_hash + stage + site`（唯一索引 idx_site_stage_url_hash）
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
 	return e.dedupScope(task).First(record).Error
 }
@@ -88,15 +88,15 @@ func (e *Engine) dedupScope(task *Task) *gorm.DB {
 	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
 		return q.Where("idempotency_hash = ?", h)
 	}
-	return q.Where("url_hash = ? AND stage = ?", models.UrlHash(task.URL), task.Stage)
+	return q.Where("url_hash = ? AND stage = ? AND site = ?", models.UrlHash(task.URL), task.Stage, task.Site)
 }
 
 // findTaskRecordFallback 插入撞了唯一索引之后**无条件**按两条唯一索引回查。
 //
 // 为什么不能复用 findTaskRecord：它只走"这次提交用的那条键"。冲突完全可能来自**另一条**索引 ——
-// 最典型的是幂等键文本变过（老行还存着旧文本，新代码算出的哈希查不到它），而 (url_hash, stage)
+// 最典型的是幂等键文本变过（老行还存着旧文本，新代码算出的哈希查不到它），而 (url_hash, stage, site)
 // 那条索引照样拦下这次插入。这时若只按哈希回查就会空手而归，把"复用已有行"误报成插入失败。
-// 所以先按哈希（若有自定义键），再按 (url_hash, stage)。
+// 所以先按哈希（若有自定义键），再按 (url_hash, stage, site)。
 func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) error {
 	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
 		if err := e.db.Model(&models.CrawlerTask{}).Where("idempotency_hash = ?", h).First(record).Error; err == nil {
@@ -104,7 +104,8 @@ func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) 
 		}
 	}
 	return e.db.Model(&models.CrawlerTask{}).
-		Where("url_hash = ? AND stage = ?", models.UrlHash(task.URL), task.Stage).First(record).Error
+		Where("url_hash = ? AND stage = ? AND site = ?", models.UrlHash(task.URL), task.Stage, task.Site).
+		First(record).Error
 }
 
 // submitIfActive 若任务尚未到终态（success/failed）则延迟投递或入队，否则静默跳过。
@@ -209,7 +210,7 @@ func submitUpdates(task *Task) map[string]any {
 // submitToStage 所有投递路径的收口：取活池（没有就懒建），按加急/常规路由。
 // 阶段未注册 → ErrStageNotRegistered（后台据此翻 409）。
 func (e *Engine) submitToStage(task *Task) error {
-	pool := e.getOrCreatePool(task.Stage)
+	pool := e.getOrCreatePool(stageKeyOf(task))
 	if pool == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, task.Stage)
 	}
@@ -228,8 +229,8 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		if t.Stage == "" || t.URL == "" || t.Site == "" {
 			return e.logSubmitError(t, fmt.Errorf("task stage or url or site is empty: %+v", t))
 		}
-		if info := e.stages[t.Stage]; info == nil {
-			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s（该阶段没注册 —— 往阶段清单里加一行，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", t.Stage))
+		if info := e.stages[stageKeyOf(t)]; info == nil {
+			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", t.Stage, t.Site))
 		}
 	}
 
@@ -315,8 +316,8 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 // 业务看到的是一整批任务凭空消失。所以批量失败就退到逐条插。
 //
 // 这里不去分辨"批量失败是不是因为重复键"：逐条那条路自己会分辨 —— 插不进去就按唯一索引
-// `idx_stage_url_hash` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
-// 把同样的 stage|url 写进去了），回填它的 ID、记进返回的集合；查不到说明插入是真的失败了，
+// `idx_site_stage_url_hash` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
+// 把同样的 site|stage|url 写进去了），回填它的 ID、记进返回的集合；查不到说明插入是真的失败了，
 // 原样把插入的那个错报出去（它比"没查到"更有信息量）。
 // 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
 func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {

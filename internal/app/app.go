@@ -18,6 +18,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
 	"github.com/ydtg1993/papa/v3/pkg/middleware"
@@ -311,6 +312,17 @@ func NewApp(opts ...Option) (*App, error) {
 		if !db.Migrator().HasTable(m.Value) {
 			loggerSet.Sys.Errorf("表 %s 不存在 —— 相关功能不会写入任何数据。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）", m.Name)
 		}
+	}
+
+	// 4.2 唯一索引还停在上一版（不含 site）也要喊：阶段名按站点作用域之后，两个站可以各有自己的
+	// `catalog`，而老索引 (url_hash, stage) 比新索引**严**，会把"两个站同名阶段 + 同一个 URL"
+	// 直接拦成 1062；插入失败后的回查又是按 (url_hash, stage, site) 查的，查不到那一行 ——
+	// 业务最终只看到一句没头没脑的 `insert crawler task to db failed`。
+	// 表在、索引名不对 = 迁移没跑到那一步，与上面"表不存在"是同一类事（都是"看着跑着、实际不对"）。
+	if db.Migrator().HasTable(&models.CrawlerTask{}) &&
+		!db.Migrator().HasIndex(&models.CrawlerTask{}, "idx_site_stage_url_hash") {
+		loggerSet.Sys.Errorf("crawler_tasks 的唯一索引还是旧那版（缺 idx_site_stage_url_hash）—— " +
+			"阶段名现在按站点作用域，唯一索引要带 site。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）")
 	}
 
 	// 5. 创建爬虫引擎

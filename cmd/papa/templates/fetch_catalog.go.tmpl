@@ -11,8 +11,8 @@ import (
 // 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
 type FetchCatalog struct{}
 
-// GetStage 返回阶段名；它在整个程序里必须唯一（多站就带站点前缀，如 hgd_catalog）。
-// 重名会在启动时报错并点出来。
+// GetStage 返回阶段名；它在**本站内**唯一 —— 两个站可以各有自己的 "catalog"（各自的池子与统计）。
+// 同一个站里重名会在启动时报错并点出来。
 func (f *FetchCatalog) GetStage() string { return "catalog" }
 
 // SubmitEntries 入口任务：本阶段"注册即投一批起始任务"。实现这个方法就够了 ——

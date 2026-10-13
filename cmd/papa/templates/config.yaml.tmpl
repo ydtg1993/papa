@@ -14,15 +14,17 @@ crawler:
     enabled: true              # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
   # 页面归档：**失败那一刻抓到的那一页**按原始字节落盘（不重新序列化，否则丢 <noscript> 回退标签）；
-  # 本次尝试结束自动写、handler 不用写代码，trace 里多一条「归档页面」步骤指向 {dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html。
+  # 本次尝试结束自动写、handler 不用写代码，trace 里多一条「归档页面」步骤指向 {dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html。
   archive:
     enabled: false             # 默认关。排查选择器/登录墙/地区限制时打开
     dir: "./logs/fetcher-html" # 归档根目录（enabled=true 时必填，没写会启动 panic）
     mode: failure              # failure = 只在失败的尝试落（默认，写入量按失败率走）；always = 每次都落
     retention: "168h"          # 保留期（默认 7 天，与 trace 对齐）；负数 = 不自动清理
     max_file_mb: 8             # 单页上限（MB）；超了不归档并记 WARN
-  # 熔断闸门：窗口内**终态失败**数（重试耗尽或不可重试，不是每次 attempt）达阈值就把所有阶段的 worker 闸住，
-  # 并发一条 critical 告警；从后台 Dashboard 横幅的「恢复抓取」放行。暂停**不跨重启**。详见 docs/CORE_CONFIG.md
+  # 熔断闸门：窗口内**终态失败**数（重试耗尽或不可重试，不是每次 attempt）达阈值就把该站所有阶段的 worker 闸住，
+  # 并发一条 critical 告警；从后台 Dashboard 横幅的「恢复抓取」放行（可逐站放行）。暂停**不跨重启**。
+  # **闸门每站一把**：这里这份是**没单配阈值的站点**用的默认值（`SiteSpec.Breaker` 按站点覆盖），
+  # 一个站被墙不会把别的站一起闸住。详见 docs/CORE_CONFIG.md
   breaker:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口

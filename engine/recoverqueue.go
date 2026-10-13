@@ -50,8 +50,9 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
 func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
-	if e.stages[t.Stage] == nil {
-		e.loggerSet.Engine.Warnf("recover queue: stage %s not registered, skip task %d", t.Stage, t.ID)
+	// 站点也要看：阶段名只在本站内唯一，光按名字查会把另一站的同名阶段当成本站那个。
+	if e.stages[stageKeyOfRecord(t)] == nil {
+		e.loggerSet.Engine.Warnf("recover queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
 	// Repeatable / Meta 照抄行上的值（taskFromRecord 已带）：丢了 Repeatable 会让轮询任务恢复后

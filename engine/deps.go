@@ -19,10 +19,11 @@ type NeedsBrowser interface{ NeedsBrowser() bool }
 
 // checkStageDeps 校验一个阶段的依赖是否都就绪；不满足直接 panic（启动期，fail fast）。
 // 报错里写清"怎么改"（这一条几乎总是"配置里没打开那个开关"）。
-func (e *Engine) checkStageDeps(stage string, f Fetcher) {
+// key 是**阶段键**（`site:stage`）：多站时同名阶段要能分辨是哪一个没接线。
+func (e *Engine) checkStageDeps(key string, f Fetcher) {
 	if d, ok := f.(NeedsBrowser); ok && d.NeedsBrowser() && e.GetBrowserPool() == nil {
 		panic(fmt.Errorf("阶段 %s 声明依赖浏览器池（NeedsBrowser() 返回 true），但没有启用："+
 			"在 configs/config.yaml 里把 browser.enable 打开（浏览器按需创建，并发上限是 browser.pool_size）；"+
-			"这个阶段其实不用浏览器就删掉 fetcher 上的 NeedsBrowser()", stage))
+			"这个阶段其实不用浏览器就删掉 fetcher 上的 NeedsBrowser()", key))
 	}
 }

@@ -54,7 +54,9 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 	// 熔断计数。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
 	// 按 attempt 数会把一个烂 URL 记 3 次，阈值会被噪声灌满。见 breaker.RecordFailure。
 	// **记在该阶段所属站点的闸门上**：多站时站点 A 的失败不该把站点 B 一起闸住。
-	e.breakerFor(e.siteOf(task.Stage)).RecordFailure(task.Stage)
+	// 闸门按**站点**取（阶段名只在本站内唯一，站点才是闸门的 scope）。
+	// 失败计数按阶段名记：闸门本来就是每站一把，所以裸阶段名在这里够用，页面也更好读。
+	e.breakerFor(task.Site).RecordFailure(task.Stage)
 
 	notifiers := e.getNotifiers()
 	if len(notifiers) == 0 {
@@ -102,12 +104,13 @@ func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
 	}
 }
 
-// stageNames 按名字排序返回已注册的阶段名。
+// stageKeys 按名字排序返回已注册的**阶段键**（`core.StageKey`，含站点）。
 //
 // 建池与跑 submitFunc 都按这个顺序（而不是 map 遍历顺序）：启动期的副作用是**看得见**的
 // —— 起始任务入库的顺序决定它们的 ID，统计器注册的顺序决定后台阶段的排列。map 顺序随机，
 // 每次重启都不一样，排查"为什么这次启动多了两条任务"时就成了噪声源。
-func (e *Engine) stageNames() []string {
+// 排序结果按"站点 → 阶段名"排（键就是 `site:stage`），多站时同一个站的阶段聚在一起。
+func (e *Engine) stageKeys() []string {
 	names := make([]string, 0, len(e.stages))
 	for name := range e.stages {
 		names = append(names, name)
@@ -186,8 +189,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 }
 
 // buildPool 建一个阶段的工作池并登记：建池 + 按站点绑闸门 + 起 worker + 建监控 stats。
-// 调用方须保证 stage 已注册。
-func (e *Engine) buildPool(stage string, info *stageInfo) *workerpool.WorkerPool[*Task] {
+// 调用方须保证 key（`core.StageKey`，不是裸阶段名）已注册。
+func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
 	cfg := info.config
 	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
 	// 闸门**按站点**绑：该阶段的池子由它所属站点的闸门管；未归属站点的阶段落在默认 scope、
@@ -195,54 +198,56 @@ func (e *Engine) buildPool(stage string, info *stageInfo) *workerpool.WorkerPool
 	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
 	pool.SetGate(e.breakerFor(cfg.Site))
 	pool.Start(e.ctx, e.stageHandler(info))
-	e.startPoolErrorForwarder(stage, pool)
+	e.startPoolErrorForwarder(key, pool)
 	// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
 	if e.cfg.Server.Enabled {
 		stats := track.NewStatsQueue(pool)
 		stats.Start(e.ctx)
-		e.setStatsQueue(stage, stats)
-		e.loggerSet.Monitor.Infof("monitor started for stage: %s", stage)
+		e.setStatsQueue(key, stats)
+		e.loggerSet.Monitor.Infof("monitor started for stage: %s", key)
 	}
 	return pool
 }
 
 // getOrCreatePool 取某阶段的活池；没有就按 StageConfig 懒建一个并登记。阶段未注册返回 nil。
+// 入参是**阶段键**（`core.StageKey(site, stage)`）—— 阶段名只在本站内唯一，两个站的 catalog
+// 是两个池子，所以键里必须带站点。
 // 每次都走 getOrCreate（而不是先 get 快路径）—— 要让 lastSubmit 在**每次投递**时刷新，
 // 空闲回收靠它判断池闲置了多久。
-func (e *Engine) getOrCreatePool(stage string) *workerpool.WorkerPool[*Task] {
-	info := e.stages[stage]
+func (e *Engine) getOrCreatePool(key string) *workerpool.WorkerPool[*Task] {
+	info := e.stages[key]
 	if info == nil {
 		return nil
 	}
-	return e.pools.getOrCreate(stage, func() *workerpool.WorkerPool[*Task] {
-		return e.buildPool(stage, info)
+	return e.pools.getOrCreate(key, func() *workerpool.WorkerPool[*Task] {
+		return e.buildPool(key, info)
 	})
 }
 
 // removeStageStats 撤掉某阶段的监控统计器并停掉它的 goroutine（池被回收时配套清理）。
 // pool 是那份被回收的池：清 stats 与回收之间，同阶段可能已被重新提交、建了新池新 stats ——
 // 只清「仍属于这份池」的 stats，别把新建的那份一起删掉。
-func (e *Engine) removeStageStats(stage string, pool *workerpool.WorkerPool[*Task]) {
+func (e *Engine) removeStageStats(key string, pool *workerpool.WorkerPool[*Task]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if stats, ok := e.statsQueue[stage]; ok && stats.WorkPool == pool {
+	if stats, ok := e.statsQueue[key]; ok && stats.WorkPool == pool {
 		stats.Stop()
-		delete(e.statsQueue, stage)
+		delete(e.statsQueue, key)
 	}
 }
 
 // startPoolErrorForwarder 起一条转发协程，把池的错误通道汇进引擎的常驻错误通道（Errors()）。
 // pool.Errors() 从不 close，所以必须带停机信号 —— 池被 reap 时 close 它，否则协程泄漏到引擎结束。
-func (e *Engine) startPoolErrorForwarder(stage string, pool *workerpool.WorkerPool[*Task]) {
+func (e *Engine) startPoolErrorForwarder(key string, pool *workerpool.WorkerPool[*Task]) {
 	stop := make(chan struct{})
 	e.mu.Lock()
 	if e.errorForwardCancel == nil {
 		e.errorForwardCancel = make(map[string]chan struct{})
 	}
-	if old, ok := e.errorForwardCancel[stage]; ok {
+	if old, ok := e.errorForwardCancel[key]; ok {
 		close(old) // 旧池的转发协程该退了（池被重建）
 	}
-	e.errorForwardCancel[stage] = stop
+	e.errorForwardCancel[key] = stop
 	e.mu.Unlock()
 
 	go func() {
@@ -263,12 +268,12 @@ func (e *Engine) startPoolErrorForwarder(stage string, pool *workerpool.WorkerPo
 }
 
 // cancelPoolErrorForwarder 停掉某阶段的错误转发协程（池被 reap 时配套调用）。
-func (e *Engine) cancelPoolErrorForwarder(stage string) {
+func (e *Engine) cancelPoolErrorForwarder(key string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if stop, ok := e.errorForwardCancel[stage]; ok {
+	if stop, ok := e.errorForwardCancel[key]; ok {
 		close(stop)
-		delete(e.errorForwardCancel, stage)
+		delete(e.errorForwardCancel, key)
 	}
 }
 
@@ -293,11 +298,11 @@ func (e *Engine) startIdleReaper() {
 			case <-e.ctx.Done():
 				return
 			case <-ticker.C:
-				for stage, pool := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
-					e.harvestStageTotals(stage, pool)
-					e.removeStageStats(stage, pool)
-					e.cancelPoolErrorForwarder(stage)
-					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", stage)
+				for key, pool := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
+					e.harvestStageTotals(key, pool)
+					e.removeStageStats(key, pool)
+					e.cancelPoolErrorForwarder(key)
+					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", key)
 				}
 			}
 		}
@@ -309,12 +314,12 @@ func (e *Engine) ApplyRegisterStage() {
 	// 阶段的存在性只有一个来源：**注册进来的 e.stages**（配置里不再声明阶段，见 App.RegisterSites）。
 	// 于是"配置声明了、代码没实现"这一类不同源的问题在结构上不存在了；未注册的阶段在提交时
 	// 由 submitToPool 报 ErrStageNotRegistered。
-	names := e.stageNames()
+	keys := e.stageKeys()
 
 	// 第零趟之二：依赖接线校验。声明了要用下载器却没接线，就在**启动这一刻**炸掉 ——
 	// 不然那句话要等第一条任务跑到那一步才出现，失败的是任务、不是启动（见 deps.go）。
-	for _, stage := range names {
-		e.checkStageDeps(stage, e.stages[stage].fetcher)
+	for _, key := range keys {
+		e.checkStageDeps(key, e.stages[key].fetcher)
 	}
 
 	// 池子**懒建**：不在这里全量建，等第一条任务 submit 时才建（getOrCreatePool）。于是入口回调
@@ -327,8 +332,8 @@ func (e *Engine) ApplyRegisterStage() {
 	e.resolveStageDownloads()
 	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
 	e.seedSiteRows()
-	for _, stage := range names {
-		if fn := e.stages[stage].submitFunc; fn != nil {
+	for _, key := range keys {
+		if fn := e.stages[key].submitFunc; fn != nil {
 			fn(e)
 		}
 	}
@@ -377,7 +382,7 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 			// OA 追踪抽屉里"失败"与"那一页"的连接点：光有文件、不知道属于哪条任务等于没留。
 			// 注意这条步骤的 data 也受 trace 的既有策略约束（只有失败的尝试才保留 data）——
 			// `always` 模式下成功的尝试里，步骤名还在但文件名会被剥掉；那种情况按
-			// `{dir}/{stage}/task-{id}-try-{retry}-*` 在目录里找同一次尝试的文件即可。
+			// `{dir}/{site}/{stage}/task-{id}-try-{retry}-*` 在目录里找同一次尝试的文件即可。
 			tr.Step(archiveTraceStep, map[string]any{"files": files})
 		}
 		// 失败原因写进 trace：handler 返回错误、或直接 panic，都在这里落一条带分类与消息的

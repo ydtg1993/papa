@@ -230,7 +230,7 @@ func TestPlanStageRejects(t *testing.T) {
 		{"queue_size 非正", func() StageSpec { s := base(); s.QueueSize = 0; return s }, nil, "QueueSize"},
 		{"delay 写错", func() StageSpec { s := base(); s.Delay = "五分钟"; return s }, nil, "Delay"},
 		{"backoff 写错", func() StageSpec { s := base(); s.Retry.Backoff = "很快"; return s }, nil, "Backoff"},
-		{"阶段名重复", base, map[string]string{"review": "站点 a"}, "重复声明"},
+		{"阶段名重复", base, map[string]string{core.StageKey("a", "review"): "站点 a"}, "重复声明"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -266,8 +266,8 @@ func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
 	if plan.cfg.Backoff != 30*time.Second || plan.cfg.MaxAttempts != 2 {
 		t.Fatalf("Retry 没解析进计划：%+v", plan.cfg)
 	}
-	if owner["review"] == "" {
-		t.Fatal("阶段名应登记到 owner（重复声明靠它查）")
+	if owner[core.StageKey("huangguo", "review")] == "" {
+		t.Fatal("阶段名应登记到 owner（同站重名靠它查）")
 	}
 	// 未给参数时的默认：不延迟 + 退避 1s + 尝试 3 次
 	plan2, err := planStage(SiteSpec{}.snapshot(), StageSpec{Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 1}, map[string]string{})
@@ -276,6 +276,43 @@ func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
 	}
 	if plan2.cfg.Backoff != time.Second || plan2.cfg.MaxAttempts != 3 || plan2.cfg.Delay.Min != 0 {
 		t.Fatalf("默认值不对：%+v", plan2.cfg)
+	}
+}
+
+// 阶段名按站点作用域：两个站可以各有自己的 catalog，各自一份计划（各自一个池子）。
+// 同站内重名仍然报错 —— 别把"跨站允许"读成"随便重名"。
+func TestPlanSitesScopesStageNameBySite(t *testing.T) {
+	same := func() StageSpec {
+		return StageSpec{Fetcher: stageNamed{"catalog"}, WorkerCount: 1, QueueSize: 8}
+	}
+	plans, err := planSites(nil, []SiteSpec{
+		{Key: "huangguo", Stages: []StageSpec{same()}},
+		{Key: "yeguodj", Stages: []StageSpec{same()}},
+	})
+	if err != nil {
+		t.Fatalf("两个站同名阶段应当合法：%v", err)
+	}
+	if len(plans) != 2 || len(plans[0].stages) != 1 || len(plans[1].stages) != 1 {
+		t.Fatalf("两份声明各应落地一个阶段：%+v", plans)
+	}
+	if plans[0].stages[0].stage != "catalog" || plans[0].stages[0].cfg.Site != "huangguo" {
+		t.Fatalf("第一个站落地的阶段不对：%+v", plans[0].stages[0])
+	}
+	if plans[1].stages[0].stage != "catalog" || plans[1].stages[0].cfg.Site != "yeguodj" {
+		t.Fatalf("第二个站落地的阶段不对：%+v", plans[1].stages[0])
+	}
+
+	// 同一个站里声明两次同名 → 还是要报
+	if _, err := planSites(nil, []SiteSpec{
+		{Key: "huangguo", Stages: []StageSpec{same(), same()}},
+	}); err == nil || !strings.Contains(err.Error(), "重复声明") {
+		t.Fatalf("同站内重名应当报错，实得：%v", err)
+	}
+
+	// 未命名的声明直接拒掉（不再有"未归属"那一档）：它会落进默认 scope，而新任务一律要带站点
+	if _, err := planSites(nil, []SiteSpec{{Stages: []StageSpec{same()}}}); err == nil ||
+		!strings.Contains(err.Error(), "缺 Key") {
+		t.Fatalf("未命名的站点声明应当报错，实得：%v", err)
 	}
 }
 
@@ -399,8 +436,10 @@ func TestValidateSitesRejectsDuplicateKey(t *testing.T) {
 	if !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), "第 3 个") {
 		t.Fatalf("报错要点名是哪个键、第几个：%v", err)
 	}
-	// 空键（未归属）可以有多个
-	if err := validateSites([]SiteSpec{{}, {Key: "a"}, {}}); err != nil {
-		t.Fatalf("空键不该算重复：%v", err)
+	// 缺 Key 直接拒掉：那种声明会落进"默认 scope"，而新任务一律要求带站点 ——
+	// 注册得上却永远收不到新任务，是个陷阱（见 validateSites）。
+	err = validateSites([]SiteSpec{{Key: "a"}, {}})
+	if err == nil || !strings.Contains(err.Error(), "缺 Key") {
+		t.Fatalf("缺 Key 的声明应当报错：%v", err)
 	}
 }

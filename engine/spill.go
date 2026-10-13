@@ -20,9 +20,11 @@ func (e *Engine) spillBacklog() int {
 }
 
 // spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。
+// 桶按**阶段键**（站点 + 阶段名）分：两个站的同名阶段各有各的溢出队列，不互相占位。
 func (e *Engine) spillTask(task *Task) {
+	key := stageKeyOf(task)
 	e.spillMu.Lock()
-	e.spilled[task.Stage] = append(e.spilled[task.Stage], task)
+	e.spilled[key] = append(e.spilled[key], task)
 	e.spillMu.Unlock()
 }
 
@@ -58,8 +60,8 @@ func (e *Engine) drainSpilled() {
 	e.spilled = make(map[string][]*Task)
 	e.spillMu.Unlock()
 
-	for stage, tasks := range all {
-		if e.stages[stage] == nil {
+	for key, tasks := range all {
+		if e.stages[key] == nil {
 			continue
 		}
 		for _, task := range tasks {

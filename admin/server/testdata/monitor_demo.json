@@ -8,7 +8,7 @@
     "video_total": 42
   },
   "stages": {
-    "catalog": {
+    "shop:catalog": {
       "global": {
         "AvgTime": 12369375,
         "MaxTime": 22137200,
@@ -24,7 +24,8 @@
         "queue_len": 0,
         "submitted": 8
       },
-      "site": "",
+      "site": "shop",
+      "stage": "catalog",
       "workers": {
         "0": {
           "FailedTasks": 0,
@@ -52,7 +53,7 @@
         }
       }
     },
-    "detail": {
+    "shop:detail": {
       "global": {
         "AvgTime": 24982216,
         "MaxTime": 40192700,
@@ -68,7 +69,8 @@
         "queue_len": 0,
         "submitted": 6
       },
-      "site": "",
+      "site": "shop",
+      "stage": "detail",
       "workers": {
         "0": {
           "FailedTasks": 0,
@@ -88,7 +90,7 @@
         }
       }
     },
-    "video": {
+    "shop:video": {
       "global": {
         "AvgTime": 36571580,
         "MaxTime": 60246100,
@@ -104,7 +106,8 @@
         "queue_len": 0,
         "submitted": 10
       },
-      "site": "",
+      "site": "shop",
+      "stage": "video",
       "workers": {
         "0": {
           "FailedTasks": 1,

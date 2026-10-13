@@ -155,18 +155,24 @@ pkg/notify ──► core
 多站点项目里最常问的一句是"这个配置/这个状态是按站点的，还是全局的？"。下面按**层**列清楚 ——
 改东西之前对着它看一眼，省得把一个本就是全局的东西硬塞进 `SiteSpec`（或者反过来以为某处已经分站了）。
 
+**两条硬规则**（阶段名按站点作用域那一版定下的）：**站点声明的 `Key` 必填**（阶段键是 `site:stage`，
+没有 Key 就分不开，启动即报错）；**任务的 `Site` 必填**（提交时就得带对，否则那个阶段查不到）。
+"默认 scope"（`site` 为空）现在只剩**存量数据**：旧库里 `site` 为空的那些行仍落在它上面、
+用 `crawler.breaker` 那把闸门；新任务不会再产生这样的行。
+
 ### 已按站点切
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |
 | 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
-| 执行 | **每站每阶段一个 workerpool**（阶段名跨站唯一，所以"阶段"天然等于"站点+阶段"） | `engine.stage.go` 建池那一段 |
-| 执行 | 每站一把熔断闸门（默认 scope 用 `crawler.breaker` 那把） | `engine.SetSiteBreaker` / `breakerFor` |
+| 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine.stage.go` 建池那一段 |
+| 执行 | **每站一把熔断闸门**（没单配阈值的站也用自己那把，阈值取 `crawler.breaker` 那份默认） | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine.breakerFor` |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
-| 统计 | 阶段快照带 `site`（后台的站点 Tab 靠它分组）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
+| 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | `crawler_sites` 站点表（启动按声明播种、熔断状态按列回写）+ 内存快照 | `models/crawler_site.go`、`engine/sitestat.go` |
 | 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
-| 数据 | 任务的 `site` 列（提交时显式带，重投路径照抄回来） | `models/crawler_task.go`、`engine.submit.go` |
+| 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
+| 落盘 | 页面归档按 `{dir}/{site}/{stage}/` 分两层（同名阶段不再混在一起） | `engine/archive.go` 的 `relPath` |
 
 ### 全局，且**有意**如此（别想着分站）
 
@@ -184,7 +190,7 @@ pkg/notify ──► core
   各一段写在 `config.yaml` 里，后台各占一行。当初按站点拆没有收益（三队列本质都是对
   `crawler_tasks` 表的一次复查），反而让"一个阶段占一个协程空等"的多站开销被放大 —— 已并回全局。
 - **`crawler` 的四项有意留在 `config.yaml`（定过的，不是待办）**：`queue_watermark`（`engine/stage.go`
-  建池那行）、`archive.*`（`engine/archive.go`，落盘路径按阶段分子目录 —— 阶段名跨站唯一，天然分站）、`trace.*`
+  建池那行）、`archive.*`（`engine/archive.go`，落盘路径按 `{site}/{stage}/` 分两层）、`trace.*`
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
   它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。

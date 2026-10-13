@@ -24,7 +24,7 @@ func TestGetStageStatsSnapshot(t *testing.T) {
 	defer cancel()
 	stats := track.NewStatsQueue[*Task](pool)
 	stats.Start(ctx)
-	e.setStatsQueue("stub", stats)
+	e.setStatsQueue("stub:stub", stats)
 
 	pool.Start(ctx, func(_ context.Context, _ *Task) error { return nil })
 	defer pool.Stop(time.Second)
@@ -34,7 +34,7 @@ func TestGetStageStatsSnapshot(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if e.GetStageStats()["stub"].Global.TotalTasks == 1 {
+		if e.GetStageStats()["stub:stub"].Global.TotalTasks == 1 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -43,9 +43,13 @@ func TestGetStageStatsSnapshot(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	snap, ok := e.GetStageStats()["stub"]
+	snap, ok := e.GetStageStats()["stub:stub"]
 	if !ok {
-		t.Fatal("快照里应有 stub 阶段")
+		t.Fatal("快照里应有 stub:stub 阶段（键是 site:stage）")
+	}
+	// 站点与裸阶段名是两个字段：后台按 site 分组、标题用 stage（键 `site:stage` 太长）
+	if snap.Stage != "stub" || snap.Site != "stub" {
+		t.Fatalf("快照该带上裸阶段名与站点，实得 Stage=%q Site=%q", snap.Stage, snap.Site)
 	}
 	if snap.Global.TotalTasks != 1 || snap.Global.TotalFailed != 0 {
 		t.Fatalf("全局统计 = %+v", snap.Global)
@@ -66,6 +70,22 @@ func TestGetStageStatsSnapshot(t *testing.T) {
 	}
 	if snap.Queue.InProgress != 0 || snap.Queue.QueueLen != 0 {
 		t.Fatalf("跑完之后不该有在途/排队：%+v", snap.Queue)
+	}
+}
+
+// 统计器在、阶段却没登记（只有测试会这么塞）时：两段留空、不 panic ——
+// 监控页少一行标注，好过整个 /api/monitor 500。
+func TestGetStageStatsWithoutRegisteredStage(t *testing.T) {
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := &Engine{statsQueue: map[string]*track.StatsQueue[*Task]{}}
+	e.setStatsQueue("ghost:catalog", track.NewStatsQueue[*Task](pool))
+
+	snap, ok := e.GetStageStats()["ghost:catalog"]
+	if !ok {
+		t.Fatal("统计器在，条目就该在")
+	}
+	if snap.Stage != "" || snap.Site != "" {
+		t.Fatalf("阶段没登记时两段都该留空：Stage=%q Site=%q", snap.Stage, snap.Site)
 	}
 }
 

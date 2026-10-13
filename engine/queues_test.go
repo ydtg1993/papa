@@ -140,6 +140,27 @@ func TestRequeueFailedTaskSkipsUnregisteredStage(t *testing.T) {
 	}
 }
 
+// 阶段名注册过、但**属于另一个站**的行也要跳过：键是 `site:stage`，光看名字会把它当成
+// 本站那个阶段、投到错误的池子里（两个站各有 catalog 时这是最容易踩的一种）。
+func TestRequeueFailedTaskSkipsRowFromAnotherSite(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := queueEngine(t, f, pool) // 夹具里注册的是 stub:stub
+
+	row := actionRow(4, "stub")
+	row.Site = "other" // 名字对得上，站点对不上
+
+	if e.requeueFailedTask()(row) {
+		t.Fatal("站点对不上的行应当跳过（阶段名只在本站内唯一）")
+	}
+	if got := f.written(); got != "" {
+		t.Fatalf("跳过的行不该被改写：\n%s", got)
+	}
+	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+		t.Fatal("跳过的行不该入队")
+	}
+}
+
 // 重新投递失败时，必须把行标成 failed 并写下原因。
 // 上面刚把行重置成 pending，不管的话本队列（只捞 failed）再也捞不到它 ——
 // 运营看着是"排队中"，实际早就没人会执行。
@@ -224,7 +245,7 @@ func TestRequeueRecoverTaskClearsDedupCache(t *testing.T) {
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(7, "stub")
-	key := (&Task{Stage: "stub", URL: row.URL}).Unique()
+	key := (&Task{Stage: "stub", Site: row.Site, URL: row.URL}).Unique()
 	e.dedupCache.Add(key)
 
 	if !e.requeueRecoverTask(row) {
@@ -579,7 +600,7 @@ func TestRequeueFailedTaskSpillsInsteadOfFailingOnQueueFull(t *testing.T) {
 	// 队列容量 1、水位 1：先塞满，再投就一定 ErrQueueFull（池子不 Start，没人消费）
 	pool := workerpool.NewWorkerPool[*Task](1, 1, 1)
 	e := queueEngine(t, f, pool)
-	if err := pool.Submit(&Task{Stage: "stub", URL: "https://example.com/filler"}); err != nil {
+	if err := pool.Submit(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/filler"}); err != nil {
 		t.Fatalf("先把队列塞满：%v", err)
 	}
 
@@ -614,9 +635,9 @@ func TestStopWaitsForBackgroundLoops(t *testing.T) {
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.cfg.Crawler.DrainInterval = 20 * time.Millisecond
 	// worker 要真起：池子里压着没跑完的任务时 Stop 不该报"排空"（那是另一条契约）
-	e.pools.get("stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
+	e.pools.get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
 	// 塞一条溢出任务：回灌每一跳都会把它重新投一次（submitToPool 会写 status=pending）
-	e.spillTask(&Task{Stage: "stub", URL: "https://example.com/spilled"})
+	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/spilled"})
 	e.startDrain()
 
 	time.Sleep(80 * time.Millisecond) // 至少跑过一轮

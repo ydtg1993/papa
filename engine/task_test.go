@@ -232,6 +232,9 @@ func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
 	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	// 同一台引擎里两个站各有一个 stub：阶段名只在本站内唯一，取用的是 `site:stage` 这个键 ——
+	// 所以带上站点 huangguo 的任务能落到这个站的 stub 上，而不是夹具里那个 stub:stub。
+	e.stages["huangguo:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "huangguo"}}
 
 	task := &Task{Stage: "stub", Site: "huangguo", URL: "https://example.com/1"}
 	if err := e.SubmitTask(task); err != nil {

@@ -62,11 +62,14 @@ func TestDedupScopeMatchesUniqueIndexes(t *testing.T) {
 		t.Fatalf("键原文上没有唯一索引，查它在插冲突后会空手而归：%s", sql)
 	}
 
-	// 没有自定义键 → 按 (url_hash, stage) 查（idx_stage_url_hash）
+	// 没有自定义键 → 按 (url_hash, stage, site) 查（idx_site_stage_url_hash）
+	//
+	// **三列都得在**：阶段名只在本站内唯一，两个站可以各有 catalog；少查 site 就会把
+	// 另一个站同 URL 的行当成"已存在"，那条任务静默不跑。
 	plain := &Task{URL: "https://example.com/a", Stage: "catalog", Site: "shop"}
 	sqlPlain := renderSQL(t, db, func(*gorm.DB) *gorm.DB { return e.dedupScope(plain).First(&rec) })
-	if !strings.Contains(sqlPlain, "url_hash = ? AND stage = ?") {
-		t.Fatalf("没有自定义键时应当按 (url_hash, stage) 查：%s", sqlPlain)
+	if !strings.Contains(sqlPlain, "url_hash = ? AND stage = ? AND site = ?") {
+		t.Fatalf("没有自定义键时应当按 (url_hash, stage, site) 查：%s", sqlPlain)
 	}
 }
 

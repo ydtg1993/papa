@@ -33,14 +33,14 @@ func TestHarvestStageTotalsAccumulates(t *testing.T) {
 // GetStageStats 汇报「累计（跨池实例）+ 当前池」，池 churn 后吞吐不归零。
 func TestGetStageStatsAddsCumulative(t *testing.T) {
 	e := &Engine{
-		stages:      map[string]*stageInfo{"stub": {config: StageConfig{Site: "a"}}},
-		stageTotals: map[string]stageTotals{"stub": {Submitted: 10, Completed: 8, Failed: 2}},
+		stages:      map[string]*stageInfo{"a:stub": {stage: "stub", config: StageConfig{Site: "a"}}},
+		stageTotals: map[string]stageTotals{"a:stub": {Submitted: 10, Completed: 8, Failed: 2}},
 	}
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	_ = pool.Submit(&Task{Stage: "stub", URL: "https://example.com"}) // 当前池 submitted=1
-	e.setStatsQueue("stub", track.NewStatsQueue[*Task](pool))
+	e.setStatsQueue("a:stub", track.NewStatsQueue[*Task](pool))
 
-	got := e.GetStageStats()["stub"]
+	got := e.GetStageStats()["a:stub"]
 	if got.Queue.Submitted != 11 || got.Queue.Completed != 8 || got.Queue.Failed != 2 {
 		t.Fatalf("累计+当前池应相加：submitted=%d completed=%d failed=%d",
 			got.Queue.Submitted, got.Queue.Completed, got.Queue.Failed)

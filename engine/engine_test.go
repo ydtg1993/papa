@@ -14,17 +14,17 @@ import (
 // 池子本身不认识优先级（Tasker 接口只有 Unique），队列深度是唯一可观测的证据。
 func TestSubmitToRoutesByUrgentFlag(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e := &Engine{stages: map[string]*stageInfo{"s": {}}, pools: newPoolRegistry()}
-	e.pools.set("s", pool)
+	e := &Engine{stages: map[string]*stageInfo{"s:s": {stage: "s", config: StageConfig{Site: "s"}}}, pools: newPoolRegistry()}
+	e.pools.set("s:s", pool)
 
-	if err := e.submitToStage(&Task{URL: "a", Stage: "s"}); err != nil {
+	if err := e.submitToStage(&Task{URL: "a", Stage: "s", Site: "s"}); err != nil {
 		t.Fatalf("普通任务投递失败：%v", err)
 	}
 	if main, urgent := pool.QueueDepths(); main != 1 || urgent != 0 {
 		t.Fatalf("普通任务应进常规队列，实得 main/urgent = %d/%d", main, urgent)
 	}
 
-	if err := e.submitToStage(&Task{URL: "b", Stage: "s", Urgent: true}); err != nil {
+	if err := e.submitToStage(&Task{URL: "b", Stage: "s", Site: "s", Urgent: true}); err != nil {
 		t.Fatalf("加急任务投递失败：%v", err)
 	}
 	if main, urgent := pool.QueueDepths(); main != 1 || urgent != 1 {
@@ -68,8 +68,8 @@ func TestInsertTasksReportsConflictingRow(t *testing.T) {
 	e, _ := urgentEngine(t, f)
 
 	tasks := []*Task{
-		{URL: "https://example.com/dup", Stage: "stub"},
-		{URL: "https://example.com/ok", Stage: "stub"},
+		{URL: "https://example.com/dup", Stage: "stub", Site: "stub"},
+		{URL: "https://example.com/ok", Stage: "stub", Site: "stub"},
 	}
 	// 批量 INSERT 失败 + 第一条逐条 INSERT 也失败（假库里 query 恒返回 id=7 那行 → 视为"已存在"）
 	f.failNext = 2
@@ -88,10 +88,10 @@ func TestInsertTasksReportsConflictingRow(t *testing.T) {
 		t.Fatal("没撞车的那条应当正常插入并回填 ID")
 	}
 
-	// 回查必须按 (stage, url) —— 唯一索引就是这个。
+	// 回查必须按 (url_hash, stage, site) —— 唯一索引就是这个（阶段名只在本站内唯一）。
 	// 不能复用 findTaskRecord：它优先按 IdempotencyKey 查，而那列不是唯一索引，可能捞回另一行。
 	read := f.readSQL()
-	for _, want := range []string{"url_hash = ?", "stage = ?"} {
+	for _, want := range []string{"url_hash = ?", "stage = ?", "site = ?"} {
 		if !strings.Contains(read, want) {
 			t.Fatalf("回查应带 %s 条件：\n%s", want, read)
 		}
@@ -141,9 +141,9 @@ func TestEngineStopReportsUnfinishedStage(t *testing.T) {
 	if drained {
 		t.Fatal("handler 还卡着，不该报 drained")
 	}
-	got, ok := stats["stub"]
+	got, ok := stats["stub:stub"]
 	if !ok {
-		t.Fatalf("应当报出卡住的阶段 stub，实得 %+v", stats)
+		t.Fatalf("应当报出卡住的阶段 stub:stub，实得 %+v", stats)
 	}
 	if got.Unfinished != 1 {
 		t.Fatalf("stub.Unfinished = %d, want 1（%+v）", got.Unfinished, got)

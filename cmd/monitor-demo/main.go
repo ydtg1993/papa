@@ -110,9 +110,14 @@ func main() {
 	log.Println("bye")
 }
 
+// fakeStageStats 阶段快照假数据。键是 `site:stage` 的**复合键**（阶段名只在本站内唯一），
+// 这里故意让两个站各有一个 `catalog` —— 多站同名阶段是这一版的新常态，演示页也该照它画：
+// 站点 Tab 按 `site` 分组，阶段面板的标题用裸阶段名。
 func fakeStageStats() map[string]core.StageStats {
 	return map[string]core.StageStats{
-		"catalog": {
+		"shop:catalog": {
+			Stage:  "catalog",
+			Site:   "shop",
 			Global: core.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
 			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 3, FailedTasks: 0, TotalTime: 39456100, MaxTime: 19010900, MinTime: 8489000},
@@ -121,7 +126,9 @@ func fakeStageStats() map[string]core.StageStats {
 			},
 			Queue: core.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
 		},
-		"detail": {
+		"shop:detail": {
+			Stage:  "detail",
+			Site:   "shop",
 			Global: core.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
 			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 0, TotalTime: 70649100, MaxTime: 40192700, MinTime: 30456400},
@@ -129,7 +136,9 @@ func fakeStageStats() map[string]core.StageStats {
 			},
 			Queue: core.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
 		},
-		"video": {
+		"blog:catalog": {
+			Stage:  "catalog",
+			Site:   "blog",
 			Global: core.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
 			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 1, TotalTime: 106798900, MaxTime: 56096300, MinTime: 50702600},

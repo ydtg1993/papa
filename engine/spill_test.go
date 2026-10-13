@@ -18,8 +18,8 @@ func TestSpillBacklogCountsAcrossStages(t *testing.T) {
 	if got := e.spillBacklog(); got != 0 {
 		t.Fatalf("初始应为空，实得 %d", got)
 	}
-	e.spillTask(&Task{Stage: "stub", URL: "a"})
-	e.spillTask(&Task{Stage: "stub", URL: "b"})
+	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "a"})
+	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "b"})
 	e.spillTask(&Task{Stage: "other", URL: "c"})
 
 	if got := e.spillBacklog(); got != 3 {
@@ -33,7 +33,7 @@ func TestDrainSpilledRequeuesPendingTask(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	task := &Task{ID: 7, Stage: "stub", URL: "https://example.com/spilled"}
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spilled"}
 	e.spillTask(task)
 	e.drainSpilled()
 
@@ -52,7 +52,7 @@ func TestDrainSpilledDropsTerminalTask(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	e.spillTask(&Task{ID: 7, Stage: "stub", URL: "https://example.com/done"})
+	e.spillTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/done"})
 	e.drainSpilled()
 
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -70,7 +70,7 @@ func TestDrainSpilledDropsMissingRow(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	e.spillTask(&Task{ID: 7, Stage: "stub", URL: "https://example.com/gone"})
+	e.spillTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/gone"})
 	e.drainSpilled()
 
 	if got := e.spillBacklog(); got != 0 {
@@ -86,7 +86,7 @@ func TestDrainSpilledKeepsTaskOnTransientDBError(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
-	e.spillTask(&Task{ID: 7, Stage: "stub", URL: "https://example.com/flaky"})
+	e.spillTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/flaky"})
 	e.drainSpilled()
 
 	if got := e.spillBacklog(); got != 1 {
@@ -138,7 +138,7 @@ func delayEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]
 
 func delayRecord(id uint) models.CrawlerTask {
 	return models.CrawlerTask{
-		ID: id, Stage: "stub", URL: "https://example.com/delayed",
+		ID: id, Stage: "stub", Site: "stub", URL: "https://example.com/delayed",
 		Status: models.TaskStatusPending,
 	}
 }
@@ -165,7 +165,7 @@ func TestDelayDispatcherDeliversDueTask(t *testing.T) {
 	e := delayEngine(t, f, pool)
 
 	e.enqueueDelayed(time.Now().Add(-time.Second),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
 
 	waitQueueDepth(t, pool, 1)
 	// 入队时同样要先落库（"已入队 ⇒ 行里是 pending" 的不变量）
@@ -181,7 +181,7 @@ func TestDelayDispatcherHoldsFutureTask(t *testing.T) {
 	e := delayEngine(t, f, pool)
 
 	e.enqueueDelayed(time.Now().Add(time.Hour),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/later"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/later"}, delayRecord(7))
 
 	time.Sleep(60 * time.Millisecond)
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -204,12 +204,12 @@ func TestDelayDispatcherRecomputesOnEarlierTask(t *testing.T) {
 
 	// 先排一个 1 小时后的
 	e.enqueueDelayed(time.Now().Add(time.Hour),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/later"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/later"}, delayRecord(7))
 	time.Sleep(30 * time.Millisecond) // 让它进入定时器等待
 
 	// 再来一个已经到点的
 	e.enqueueDelayed(time.Now().Add(-time.Second),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/now"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/now"}, delayRecord(7))
 
 	waitQueueDepth(t, pool, 1)
 
@@ -231,7 +231,7 @@ func TestDelayDispatcherExitsOnCtxCancel(t *testing.T) {
 	time.Sleep(80 * time.Millisecond) // 让协程走完 ctx.Done 那一支
 
 	e.enqueueDelayed(time.Now().Add(-time.Second),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/dead"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/dead"}, delayRecord(7))
 	time.Sleep(80 * time.Millisecond)
 
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -244,7 +244,7 @@ func TestEnqueueDelayedSignalsDispatcher(t *testing.T) {
 	f := newFakeTaskDB()
 	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 
-	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub"}, delayRecord(7))
+	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub", Site: "stub"}, delayRecord(7))
 	select {
 	case <-e.delayCh:
 	default:
@@ -252,6 +252,6 @@ func TestEnqueueDelayedSignalsDispatcher(t *testing.T) {
 	}
 
 	// 信号满了也不能阻塞调用方（第二次发送走 default 分支）
-	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub"}, delayRecord(7))
-	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub"}, delayRecord(7))
+	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub", Site: "stub"}, delayRecord(7))
+	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub", Site: "stub"}, delayRecord(7))
 }

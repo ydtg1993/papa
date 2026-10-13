@@ -266,12 +266,17 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // stageData 组装各阶段统计（全局耗时统计 + worker 统计 + 队列计数）
+//
+// 键是**阶段键** `site:stage`（阶段名只在本站内唯一，两个站的 catalog 是两条），
+// 条目里另给 `stage` / `site` 两个字段：前端按 `site` 分组、标题用 `stage`（短名字）。
 func (s *Monitor) stageData() map[string]any {
 	monitors := s.getter()
 	out := make(map[string]any, len(monitors))
 	for stage, ss := range monitors {
 		out[stage] = map[string]any{
-			// 阶段属于哪个站点（空串 = 默认 scope）：后台的站点 Tab 靠它把阶段分组
+			// 裸阶段名（`GetStage()` 原值）与所属站点：站点的 Tab 靠 site 分组，
+			// 标题显示 stage；键 `site:stage` 只用于唯一标识这一格。
+			"stage":   ss.Stage,
 			"site":    ss.Site,
 			"global":  ss.Global,
 			"workers": ss.Workers,

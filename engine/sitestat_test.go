@@ -74,11 +74,11 @@ func TestStageStatsCarrySite(t *testing.T) {
 	f := newFakeTaskDB()
 	e := siteEngine(t, f)
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e.stages["stub"] = &stageInfo{config: StageConfig{Site: "a"}}
-	e.setStatsQueue("stub", track.NewStatsQueue[*Task](pool))
+	e.stages["a:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "a"}}
+	e.setStatsQueue("a:stub", track.NewStatsQueue[*Task](pool))
 
 	got := e.GetStageStats()
-	if len(got) != 1 || got["stub"].Site != "a" {
-		t.Fatalf("阶段快照应带上站点：%+v", got)
+	if len(got) != 1 || got["a:stub"].Site != "a" || got["a:stub"].Stage != "stub" {
+		t.Fatalf("阶段快照应带上站点与裸阶段名：%+v", got)
 	}
 }

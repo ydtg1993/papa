@@ -40,7 +40,7 @@ func TestDownloadOverlayResolution(t *testing.T) {
 	e.ApplyRegisterStage()
 
 	// 阶段 a1：只有站点层覆盖 → 站点那份（目录变了、其余还是基座的值）
-	a1 := e.M3U8ForTask(&Task{Stage: "a1"})
+	a1 := e.M3U8ForTask(&Task{Site: "a", Stage: "a1"})
 	if a1 == nil || a1 == base {
 		t.Fatal("站点层覆盖过的阶段应当拿到一份覆盖实例，而不是基座那份")
 	}
@@ -50,12 +50,12 @@ func TestDownloadOverlayResolution(t *testing.T) {
 	if got, want := a1.Config().MaxConcurrent, base.Config().MaxConcurrent; got != want {
 		t.Fatalf("站点没改的项应当保留基座的值，实得 %d want %d", got, want)
 	}
-	if got := e.FiledownForStage("a1").Config().OutputDir; got != siteDir {
+	if got := e.FiledownForStage("a", "a1").Config().OutputDir; got != siteDir {
 		t.Fatalf("文件下载器同样要按站点解析：%q", got)
 	}
 
 	// 阶段 a2：阶段层再叠一层 → 站点层与阶段层同时生效（阶段赢）
-	a2 := e.M3U8ForStage("a2")
+	a2 := e.M3U8ForStage("a", "a2")
 	if got := a2.Config().MaxConcurrent; got != stageConcurrent {
 		t.Fatalf("阶段层的 MaxConcurrent 没生效：%d", got)
 	}
@@ -64,18 +64,18 @@ func TestDownloadOverlayResolution(t *testing.T) {
 	}
 
 	// 阶段 b1：一句都没覆盖 → 直接用基座那份（不额外建实例）
-	if e.M3U8ForStage("b1") != base {
+	if e.M3U8ForStage("b", "b1") != base {
 		t.Fatal("没有任何覆盖的阶段应当直接用基座那份")
 	}
-	if e.FiledownForStage("b1") != e.GetFiledown() {
+	if e.FiledownForStage("b", "b1") != e.GetFiledown() {
 		t.Fatal("文件下载器同理")
 	}
 
 	// 取用入口：按任务取与按阶段取是同一份；任务为空 / 阶段没覆盖都回落基座
-	if e.M3U8ForTask(&Task{Stage: "a2"}) != a2 {
+	if e.M3U8ForTask(&Task{Site: "a", Stage: "a2"}) != a2 {
 		t.Fatal("M3U8ForTask 应当按 task.Stage 解析到同一份")
 	}
-	if e.M3U8ForTask(nil) != base || e.M3U8ForStage("ghost") != base {
+	if e.M3U8ForTask(nil) != base || e.M3U8ForStage("a", "ghost") != base {
 		t.Fatal("取不到阶段时应当回落基座那份")
 	}
 	// 站点层单独一份（给只知道站点的调用方）—— m3u8 与 filedown 两边都要认
@@ -105,10 +105,10 @@ func TestDownloadOverlayWithoutBase(t *testing.T) {
 	e.AddStage("a1", cfg, &recordingFetcher{stage: "a1"}, nil)
 	e.ApplyRegisterStage()
 
-	if got := e.M3U8ForStage("a1"); got != nil {
+	if got := e.M3U8ForStage("a", "a1"); got != nil {
 		t.Fatalf("没有基座时不该凭空造一份出来，实得 %+v", got)
 	}
-	if got := e.FiledownForTask(&Task{Stage: "a1"}); got != nil {
+	if got := e.FiledownForTask(&Task{Site: "a", Stage: "a1"}); got != nil {
 		t.Fatalf("文件下载器同理，实得 %+v", got)
 	}
 }

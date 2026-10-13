@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
@@ -52,21 +53,22 @@ func (e *Engine) siteDownloadsOf(site string) SiteDownloads {
 // resolveStageDownloads 启动期解析每个阶段该用哪份下载器（`ApplyRegisterStage` 里调一次）。
 //
 // 只在"确实有覆盖"时才 `With` 出一份：没覆盖的阶段不进 map，取用时回落到全局那份。
+// 阶段那份按**阶段键**（`core.StageKey`）存：两个站的同名阶段可以各有各的覆盖。
 func (e *Engine) resolveStageDownloads() {
 	e.m3u8ByStage = make(map[string]*m3u8.Downloader)
 	e.m3u8BySite = make(map[string]*m3u8.Downloader)
 	e.filedownByStage = make(map[string]*filedown.Downloader)
 	e.filedownBySite = make(map[string]*filedown.Downloader)
 
-	for stage, info := range e.stages {
+	for key, info := range e.stages {
 		site := info.config.Site
 		ov := e.siteDownloadsOf(site)
 
 		if merged := mergeM3U8(ov.M3U8, info.config.M3U8); !merged.IsZero() && e.m3u8 != nil {
-			e.m3u8ByStage[stage] = e.m3u8.With(merged)
+			e.m3u8ByStage[key] = e.m3u8.With(merged)
 		}
 		if merged := mergeFileDown(ov.FileDown, info.config.FileDown); !merged.IsZero() && e.filedown != nil {
-			e.filedownByStage[stage] = e.filedown.With(merged)
+			e.filedownByStage[key] = e.filedown.With(merged)
 		}
 	}
 	// 站点层单独一份：给"只知道站点、不知道阶段"的调用方（定时任务之类）用。
@@ -135,12 +137,13 @@ func (e *Engine) M3U8ForTask(task *Task) *m3u8.Downloader {
 	if task == nil {
 		return e.m3u8
 	}
-	return e.M3U8ForStage(task.Stage)
+	return e.M3U8ForStage(task.Site, task.Stage)
 }
 
-// M3U8ForStage 按阶段名取（cron / 非任务上下文用）。
-func (e *Engine) M3U8ForStage(stage string) *m3u8.Downloader {
-	if d, ok := e.m3u8ByStage[stage]; ok && d != nil {
+// M3U8ForStage 按**站点 + 阶段**取（cron / 非任务上下文用）。
+// 两个参数都要给：阶段名只在本站内唯一，"某个阶段名"在多站项目里不指向唯一一份配置。
+func (e *Engine) M3U8ForStage(site, stage string) *m3u8.Downloader {
+	if d, ok := e.m3u8ByStage[core.StageKey(site, stage)]; ok && d != nil {
 		return d
 	}
 	return e.m3u8
@@ -159,12 +162,12 @@ func (e *Engine) FiledownForTask(task *Task) *filedown.Downloader {
 	if task == nil {
 		return e.filedown
 	}
-	return e.FiledownForStage(task.Stage)
+	return e.FiledownForStage(task.Site, task.Stage)
 }
 
-// FiledownForStage 按阶段名取。
-func (e *Engine) FiledownForStage(stage string) *filedown.Downloader {
-	if d, ok := e.filedownByStage[stage]; ok && d != nil {
+// FiledownForStage 按**站点 + 阶段**取（与 M3U8ForStage 同一套参数：阶段名在本站内才唯一）。
+func (e *Engine) FiledownForStage(site, stage string) *filedown.Downloader {
+	if d, ok := e.filedownByStage[core.StageKey(site, stage)]; ok && d != nil {
 		return d
 	}
 	return e.filedown

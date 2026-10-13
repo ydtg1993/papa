@@ -7,8 +7,12 @@ import "time"
 
 // StageStats 阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）
 type StageStats struct {
+	// Stage 阶段名（`GetStage()` 的原值，不带站点）。**只在本站内唯一** ——
+	// 两个站可以各有自己的 catalog，所以它必须与 Site 一起看才是完整的身份
+	// （快照 map 的键就是 `core.StageKey(site, stage)`）。
+	Stage string
 	// Site 这个阶段属于哪个站点（站点声明的 Key；空串 = 默认 scope）。
-	// 池子与统计本来就是"每站每阶段"一份（阶段名跨站唯一，每站声明自己的 Stages）——
+	// 池子与统计本来就是"每站每阶段"一份（阶段名按站点作用域，每站声明自己的 Stages）——
 	// 这个字段只是把站点维度带出来，让后台能按站点分组展示。
 	Site    string
 	Global  GlobalStats

@@ -35,7 +35,7 @@ type Fetcher interface {
 }
 ```
 
-- `GetStage()` 返回阶段名，它在**整个程序里必须唯一**（多站就带站点前缀，如 `hgd_catalog`）。重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `configs/sites/<站名>.go` 的声明里（见 7.2）。
+- `GetStage()` 返回阶段名，它在**本站内必须唯一**（两个站可以各有自己的 `catalog`：阶段键是 `site:stage`，各跑各的池子与统计）。同一个站里重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `configs/sites/<站名>.go` 的声明里（见 7.2）。
 - **可选**：fetcher 还可以实现两个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
   ```go
   // 声明本阶段要借浏览器 → 框架在启动时校验接线（没开 config.yaml 的 browser.enable 就直接 panic，
@@ -756,7 +756,7 @@ import (
 // 职责：打开目标页 → 提取标题 + 详情链接 → 派发 detail 子任务。
 type FetchCatalog struct{}
 
-func (f *FetchCatalog) GetStage() string { return "catalog" } // 阶段名，全程序唯一（多站带站点前缀）
+func (f *FetchCatalog) GetStage() string { return "catalog" } // 阶段名，本站内唯一（两个站可以同名）
 
 func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
 	bw, err := engine.GetBrowserPool().Get(ctx)
@@ -839,7 +839,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > 下载器覆盖，以及每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**三个治理队列不在这里，统一写在 `config.yaml`**。站点声明没有汇总清单 —— 文件自己在
 > `init()` 里登记），`main.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
 > 加阶段 = 写一个 fetcher（`GetStage()` 返回阶段名）+ 在这个站的文件里加一段 `StageSpec`。
-> 阶段名取自 `GetStage()`，重名**启动就报错**；多站时阶段名要能区分（约定带站点前缀，如 `hgd_catalog` / `siteb_catalog`）。
+> 阶段名取自 `GetStage()`，**同一个站里**重名启动就报错并点名；两个站之间同名是允许的（键是 `site:stage`，池子/统计/归档/唯一索引都按它分）。
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
@@ -875,14 +875,15 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
   改完要重启，没有热更）。没写哪段 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
-- **阶段名跨站仍要唯一**（如 `hgd_catalog` / `siteb_catalog`）—— 重名会在**启动时 panic** 并提示；前缀不是强制的，能区分就行。
+- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / whitelist）。声明放 `configs/sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
   站点多了想按站点分包（`fetcher/<站点>/`，如 huangguo）也行。硬要求只有一条 ——
-  **阶段名（`GetStage()`）跨站唯一**，跟 fetcher 放哪儿无关。
+  **阶段名（`GetStage()`）在本站内唯一**，跟 fetcher 放哪儿无关。
 - **"加一个站"不等于只复制一个声明文件**：阶段的存在离不开 fetcher，而**阶段名取自 `GetStage()`**
-  （不在声明文件里）。复制站点文件后，新站若还指向原来那个 fetcher，就是两个站声明了同一个阶段名 ——
-  启动直接 panic。副本要连带自己的 fetcher（新类型，或按站点分包），`GetStage()` 一并改成带站点前缀的名字。
+  （不在声明文件里）。复制站点文件后新站若还指向原来那个 fetcher，**不会**再报重名（同名阶段在不同站是合法的），
+  但两个站会跑同一份 fetcher —— 选择器与入口路由都是照旧站写的，抓出来的是错的、却不报错。
+  副本要连带自己的 fetcher（新类型，或按站点分包）。
 - **声明写完先自查**：项目目录里跑一次 `papa check` —— **不用起库**就能把上面这几项（阶段名重复、
   三个治理队列漏写/缺项、熔断阈值、Delay 与 Backoff 写法）一次报全。见 [CLI.md](./CLI.md)。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：
@@ -893,7 +894,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
   入口路由表正相反：它**只**声明在 `fetcher/<站点>/fetch_catalog.go`（包级 `catalogRoutes` 那类，例见 §7.1），
   入口投递与 handler 反推任务的 key 共用同一张表 —— 别在 handler 里再抄一份 key → 路由的映射。
 
-已按站切开的东西：每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一把熔断闸门**（后台横幅逐站一行、可逐站放行）、任务表 `site` 列（提交时显式带，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一把熔断闸门**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那把；后台横幅逐站一行、可逐站放行）、归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
@@ -936,7 +937,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 ## 8. 常见坑
 
-1. **阶段名重复** → `RegisterSites` 直接 panic 并点出是哪两个站声明了同一个名字。多站一律带站点前缀（`hgd_catalog` / `siteb_catalog`），别靠"能区分"碰运气。
+1. **同一个站里阶段名重复** → `RegisterSites` 直接 panic 并点出是这个站的哪两个阶段（多半是复制站点文件后两份声明指向了同一个 fetcher）。两个站用同一个阶段名**不是**错误 —— 那是这一版的常态，不必为了避开重名去硬加前缀。
 2. **浏览器池容量规划**：`browser.pool_size` 是浏览器抓取的全局并发上限，不必机械地大于等于所有阶段 `worker_count` 之和。容量较小时，超出的 browser worker 会在 `pool.Get(ctx)` 等待实例，这是正常背压；应按机器资源、目标站承载能力和可接受等待时间调优。`browser.enable: true` 时 `pool_size` 必须 > 0，配置加载会拒绝零/负值。
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.OptionsFromRequest(ctx, task.URL)` 一步带上（站点头/逐请求头/代理一起过来），或自己写 `m3u8.DownloadOptions{Referer: ...}`。
 4. **下载器不继承抓取的头**：`SiteSpec.Headers` / `papa.WithHeaders` 只作用于**抓取**（静态 + 浏览器），下载（filedown / m3u8）要自己带 —— 用 `OptionsFromRequest(ctx, referer)`，它不会自动发生。

@@ -22,13 +22,14 @@ import (
 // 并发、队列、间隔、重试、要不要投入口、属于哪个站、熔断阈值。
 //
 // config.yaml 里**不再有 `crawler.stages` 段**：阶段的存在性与参数都以这份声明为准
-//（`crawler.breaker` 仍是默认 scope 的熔断阈值，可被 SiteSpec.Breaker 按站点覆盖）。
+//（`crawler.breaker` 那份阈值是**每个站没单配时的默认值**，可被 SiteSpec.Breaker 按站点覆盖；
+// "默认 scope" 现在只剩存量数据 —— 旧行 `site` 为空，它们仍用 crawler.breaker 那把闸门）。
 
-// SiteSpec 一个站点（或一个分组）的声明。多站就是多个 SiteSpec，各自的阶段名要能区分
-// （约定带站点前缀，如 `hgd_catalog` / `siteb_catalog` —— 重名会直接报错并提示）。
+// SiteSpec 一个站点的声明（`Key` 必填）。多站就是多个 SiteSpec。
+// **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，互不干扰（同站内重名仍会报错并提示）。
 type SiteSpec struct {
-	// Key 站点键：熔断 scope、日志与监控维度、落库的 `crawler_tasks.site`。
-	// 留空表示"未归属"（落在默认 scope，用 crawler.breaker 那把闸门）。
+	// Key 站点键：**必填** —— 阶段键是 `site:stage`（阶段名只在本站内唯一），熔断 scope、
+	// 日志与监控维度、落库的 `crawler_tasks.site` 也都用它。没有 Key 的声明会在启动时报错。
 	Key string
 	// BaseURL 站点根地址。框架不拿它当限制，只是方便 handler 取用
 	//（`engine.Site(task.Site)` → BaseURL）。
@@ -142,7 +143,7 @@ func DescribeDownloadOverlays(sites ...SiteSpec) []string {
 			if st.Fetcher == nil {
 				continue
 			}
-			if line := overlayLine("阶段 "+st.Fetcher.GetStage(), st.M3U8, st.FileDown); line != "" {
+			if line := overlayLine("阶段 "+core.StageKey(spec.Key, st.Fetcher.GetStage()), st.M3U8, st.FileDown); line != "" {
 				out = append(out, line)
 			}
 		}
@@ -189,7 +190,10 @@ func planSites(cfg *config.Config, sites []SiteSpec) ([]sitePlan, error) {
 	if cfg != nil {
 		defBreaker = cfg.Crawler.Breaker
 	}
-	owner := make(map[string]string, len(sites)) // 阶段名 → 已声明的站点，用来查重
+	// 阶段名只在**本站内**唯一（两个站可以各有自己的 catalog）—— 所以查重的键是
+	// `site:stage` 的复合键，不是裸的阶段名。未命名的声明在上面就被 validateSites 拒掉了，
+	// 所以这里的站点键一定非空；用 core.StageKey 拼只是为了"键只有一处拼法"。
+	owner := make(map[string]string, len(sites)) // core.StageKey(site, stage) → 已声明的站点，用来查重
 	plans := make([]sitePlan, 0, len(sites))
 	for i, spec := range sites {
 		plan, err := planSite(spec, i, defBreaker, owner)
@@ -209,16 +213,28 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	// 下载器覆盖层原样交给引擎（解析时机在 ApplyRegisterStage：那时全局那份已经 Set 好了）
 	p.downloads = engine.SiteDownloads{M3U8: spec.M3U8, FileDown: spec.FileDown}
 
-	if spec.Breaker != nil {
-		bc, err := spec.Breaker.toConfig(defBreaker)
-		if err == nil {
-			// 阈值那条规则与 breaker.New 共用（enabled=true 时必须 > 0）—— 原来只有真起引擎时才炸，
-			// 现在 CheckSites 也查得到。
-			err = breaker.Validate(bc)
+	// 熔断闸门**每站一把**：声明里写了阈值就用它，没写就用 `crawler.breaker` 那份默认 ——
+	// 要紧的是"每站各自一把"。共用的后果是 A 站被墙会把 B 站一起闸住（两个站同时被同一面墙
+	// 挡住时看着"对"，但它们本该各自判定、各自恢复；一方先恢复时更明显）。
+	// 未命名声明（Key 为空）没有站点维度可绑，仍只有默认 scope 那一把（声明层已禁止未命名）。
+	if p.site.Key != "" {
+		bc := defaultBreakerConfig(defBreaker)
+		usable := true
+		if spec.Breaker != nil {
+			declared, err := spec.Breaker.toConfig(defBreaker)
+			if err == nil {
+				// 阈值那条规则与 breaker.New 共用（enabled=true 时必须 > 0）—— 原来只有真起引擎时才炸，
+				// 现在 CheckSites 也查得到。
+				err = breaker.Validate(declared)
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("站点 %q 的熔断配置: %w", p.site.Key, err))
+				usable = false
+			} else {
+				bc = declared
+			}
 		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("站点 %q 的熔断配置: %w", p.site.Key, err))
-		} else {
+		if usable {
 			p.breaker = &bc
 		}
 	}
@@ -271,9 +287,16 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 	if stage == "" {
 		return plan, fmt.Errorf("fetcher 的 GetStage() 返回空串")
 	}
-	if prev, dup := owner[stage]; dup {
-		return plan, fmt.Errorf("阶段 %q 重复声明（已在 %s 声明过）—— 多站时阶段名要能区分，"+
-			"约定带站点前缀，如 %s_%s", stage, prev, site.Key, stage)
+	// 与站点键同一条道理：阶段键是 `site:stage` 拼的，名字里带 `:` 会和别的站点/阶段拼成同一个键。
+	if strings.Contains(stage, ":") {
+		return plan, fmt.Errorf("阶段名 %q 不能包含 `:` —— 阶段键按 `site:stage` 拼，"+
+			"名字里带 `:` 会和别的站点/阶段拼出同一个键", stage)
+	}
+	key := core.StageKey(site.Key, stage)
+	if _, dup := owner[key]; dup {
+		return plan, fmt.Errorf("阶段 %q 在本站重复声明（%s 已经声明过）—— 同一站内阶段名必须唯一；"+
+			"两个站之间同名是允许的（各自一份池子与统计）。若你本意是同一个站，"+
+			"多半是复制站点文件后两份声明指向了同一个 fetcher", stage, siteLabel(site, 0))
 	}
 	if st.WorkerCount <= 0 {
 		return plan, fmt.Errorf("阶段 %q: WorkerCount 必须 > 0（为 0 时池子里没有 worker，任务会静静躺在队列里）", stage)
@@ -293,7 +316,7 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 	if attempts <= 0 {
 		attempts = 3
 	}
-	owner[stage] = siteLabel(site, 0)
+	owner[key] = siteLabel(site, 0)
 
 	sub := entryFunc(st.Fetcher, site)
 	plan = stagePlan{
@@ -387,6 +410,16 @@ func parseBackoff(s string) (time.Duration, error) {
 }
 
 // toConfig 把站点自己的熔断声明合到默认值上；未给的字段用默认值。
+// defaultBreakerConfig 把全局那份默认阈值翻成引擎侧的 breaker.Config：给**没单独声明**
+// 的站点当它自己那把闸门的阈值用（每站一把，见 planSite）。
+func defaultBreakerConfig(def config.BreakerConfig) breaker.Config {
+	return breaker.Config{
+		Enabled:   def.Enabled,
+		Window:    def.WindowOrDefault(),
+		Threshold: def.Threshold,
+	}
+}
+
 func (b BreakerSpec) toConfig(def config.BreakerConfig) (breaker.Config, error) {
 	out := breaker.Config{
 		Enabled:   b.Enabled, // 不看默认：写了就由它说了算（见 BreakerSpec.Enabled）

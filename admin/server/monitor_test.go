@@ -31,9 +31,13 @@ func (l testLogger) Infof(format string, args ...any)  {}
 func (l testLogger) Errorf(format string, args ...any) { l.t.Logf(format, args...) }
 
 // fakeStageStats 直接构造各阶段统计快照（纯值假数据，确定性且无并发）。
+// 键用 **`site:stage` 的复合键**（与生产一致：阶段名只在本站内唯一，两个站可以各有 catalog），
+// 条目里另带裸阶段名与站点 —— 前端按 site 分组、标题用 stage。
 func fakeStageStats() map[string]core.StageStats {
 	return map[string]core.StageStats{
-		"catalog": {
+		"shop:catalog": {
+			Stage:  "catalog",
+			Site:   "shop",
 			Global: core.GlobalStats{TotalTasks: 8, TotalFailed: 1, TotalTime: 98955000, AvgTime: 12369375, MaxTime: 22137200, MinTime: 6222500},
 			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 3, FailedTasks: 0, TotalTime: 39456100, MaxTime: 19010900, MinTime: 8489000},
@@ -42,7 +46,9 @@ func fakeStageStats() map[string]core.StageStats {
 			},
 			Queue: core.QueueStats{Submitted: 8, Completed: 7, Failed: 1, InProgress: 0, QueueLen: 0},
 		},
-		"detail": {
+		"shop:detail": {
+			Stage:  "detail",
+			Site:   "shop",
 			Global: core.GlobalStats{TotalTasks: 6, TotalFailed: 0, TotalTime: 149893300, AvgTime: 24982216, MaxTime: 40192700, MinTime: 7094600},
 			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 0, TotalTime: 70649100, MaxTime: 40192700, MinTime: 30456400},
@@ -50,7 +56,9 @@ func fakeStageStats() map[string]core.StageStats {
 			},
 			Queue: core.QueueStats{Submitted: 6, Completed: 6, Failed: 0, InProgress: 0, QueueLen: 0},
 		},
-		"video": {
+		"shop:video": {
+			Stage:  "video",
+			Site:   "shop",
 			Global: core.GlobalStats{TotalTasks: 10, TotalFailed: 2, TotalTime: 365715800, AvgTime: 36571580, MaxTime: 60246100, MinTime: 10220500},
 			Workers: map[int]core.WorkerStat{
 				0: {WorkerID: 0, TotalTasks: 2, FailedTasks: 1, TotalTime: 106798900, MaxTime: 56096300, MinTime: 50702600},
@@ -123,19 +131,26 @@ func TestAPIMonitor(t *testing.T) {
 	if !ok {
 		t.Fatalf("stages missing or wrong type: %T", body["stages"])
 	}
-	for _, name := range []string{"catalog", "detail", "video"} {
+	for _, name := range []string{"shop:catalog", "shop:detail", "shop:video"} {
 		st, ok := stages[name].(map[string]any)
 		if !ok {
 			t.Fatalf("stage %q missing", name)
 		}
-		for _, key := range []string{"global", "workers", "queue"} {
+		for _, key := range []string{"stage", "site", "global", "workers", "queue"} {
 			if _, ok := st[key]; !ok {
 				t.Errorf("stage %q missing %q", name, key)
 			}
 		}
+		// 标题要用裸阶段名（站点维度由站点 Tab 表达），而不是 `shop:catalog` 这个键
+		if got := st["stage"]; got != "catalog" && got != "detail" && got != "video" {
+			t.Errorf("stage %q 的 stage 字段应当是裸阶段名，实得 %v", name, got)
+		}
+		if got := st["site"]; got != "shop" {
+			t.Errorf("stage %q 的 site 字段不对：%v", name, got)
+		}
 	}
 
-	catalog := stages["catalog"].(map[string]any)
+	catalog := stages["shop:catalog"].(map[string]any)
 	queue := catalog["queue"].(map[string]any)
 	if got := queue["submitted"]; got != float64(8) {
 		t.Errorf("catalog submitted = %v, want 8", got)
@@ -1035,6 +1050,12 @@ func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
 		if !strings.Contains(js, want) {
 			t.Errorf("mo.js 里没读 %s —— 服务端写了这个键，前端却读别的名字就会静默失效", want)
 		}
+	}
+	// 阶段面板的标题要读条目里的裸阶段名：快照的键是 `site:stage`（阶段名只在本站内唯一），
+	// 拿键当标题在多站下会显示成 "shop:catalog"。同 `data.breakers`/`data.breaker` 那条，
+	// 前端没有测试框架，只能这样钉住。
+	if !strings.Contains(js, "st.stage") {
+		t.Error("mo.js 的 stageLabel 没读 st.stage —— 标题会退回 `site:stage` 那个复合键")
 	}
 	// 单数那个是错的（服务端从来不发这个键）
 	for _, line := range strings.Split(js, "\n") {

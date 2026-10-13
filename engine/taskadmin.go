@@ -103,7 +103,7 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	if err != nil {
 		return err
 	}
-	if e.stages[t.Stage] == nil {
+	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
@@ -166,7 +166,7 @@ func (e *Engine) UrgentTask(id uint) error {
 	if t.Status == models.TaskStatusSuccess || t.Status == models.TaskStatusFailed {
 		return ErrTaskFinished
 	}
-	if e.stages[t.Stage] == nil {
+	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 

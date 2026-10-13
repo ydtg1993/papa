@@ -56,7 +56,7 @@
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补两条：「任务失败」（失败尝试的**原因**，带分类与消息）与「归档页面」（带文件名，抽屉里可直接下载）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
-| `breaker.enabled` | bool | `false` | 默认 scope 的熔断开关。开启后窗口内终态失败数达阈值，就暂停该 scope 下的阶段；每个站点可以用 `SiteSpec.Breaker` 独立覆盖 |
+| `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：闸门本身**每站一把**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这项也会成为它的默认）。"默认 scope"（`site` 为空）只剩旧库里那些行 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
 | `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.New` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 
@@ -178,7 +178,7 @@ crawler:
 | 键 | 说明 |
 | --- | --- |
 | `enabled` | 是否开启；默认 `false` |
-| `dir` | 归档根目录。**开启时必填**（空串会拼成"文件系统根"下的 `{stage}/…`，见校验层） |
+| `dir` | 归档根目录。**开启时必填**（空串会拼成"文件系统根"下的 `{site}/{stage}/…`，见校验层） |
 | `mode` | `failure`（默认）= 只在**失败**的尝试落盘，写入量按失败率走（与 trace「只在失败尝试写 data」同构）；`always` = 每次尝试都落（排查期开，一天几万个文件很正常） |
 | `retention` | 保留期；`0`/未写 = 默认 7 天（与 trace 对齐），**负数 = 永久保留** |
 | `max_file_mb` | 单页上限（**MB**）；`0`/未写 = 8；超了不归档并记一条 WARN |
@@ -186,15 +186,15 @@ crawler:
 **它做什么**：把「失败那一刻抓到的那一页」原样落到
 
 ```
-{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html   ← 原始字节，可直接用浏览器打开
-{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.json   ← 状态码 / 最终 URL / 字节数 / 时间
+{dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html   ← 原始字节，可直接用浏览器打开
+{dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.json   ← 状态码 / 最终 URL / 字节数 / 时间
 ```
 
 - **不用写任何代码**：`engine.FetchHTML` 抓到的页面自动登记进"本次尝试"的缓冲，尝试结束（**含 panic**）时按结局决定落不落盘。业务只管照常 `FetchHTML`。
 - **必须是原始字节**：goquery 把文档重新序列化一遍会丢掉 `<noscript>` 里的回退标签 —— 延迟渲染的封面正藏在里面，而那恰恰是选择器坏掉时最该看的东西。所以落的是 `page.HTML`，不是 `doc.Html()`。
 - **文件名带 `try`**（= `crawler_tasks.retry`）：同一任务重试 3 次不会互相覆盖，"第一次是登录墙、第三次正常"这种关键信息才留得住。
 - **trace 里连得起来**：归档后引擎会补一条 `归档页面` 步骤，data 里就是文件名 —— 后台「追踪」抽屉里"失败"与"那一页"是同一条线索。
-  （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{stage}/task-{id}-try-{retry}-*` 在目录里找即可。）
+  （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{site}/{stage}/task-{id}-try-{retry}-*` 在目录里找即可。）
 - **写盘失败不影响任务**：归档是排查辅助，写不进去只记 WARN（磁盘满、目录只读都不该让任务失败）。
 - **两条抓取路径都覆盖**：`FetchHTML`（静态）与 `FetchRendered`（浏览器渲染）。后者的原始 HTML 本来就是 `page.HTML()` 读出来的（解析文档必须付的代价），登记不额外花 CDP 调用；它拿不到状态码与 Content-Type，元信息里留 0/空。
 - 保留期清理每小时巡检一次（与 trace 的清理同频），按文件修改时间删，`ctx` 取消即收工。
@@ -296,7 +296,9 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 **框架自己的破坏性变更也走这一步**：`papa migrate` 在 AutoMigrate 之前先跑显式迁移（先查 `information_schema`
 再决定要不要做，可重复跑）—— 例如 v3.3.2 删掉 `crawler_tasks` 的 `title` / `content` 两列、把幂等键加宽到
 varchar(1000) 并把唯一性落到 `idempotency_hash` 的唯一索引上、三队列并回全局时删
-`crawler_sites` 的按站队列列。所以**升级框架后必须跑一次迁移**，光换二进制不够。
+`crawler_sites` 的按站队列列；v3.4.0 把 `crawler_tasks` 的唯一索引从 `(url_hash, stage)`
+换成 `(url_hash, stage, site)`（阶段名按站点作用域）并删掉旧名字。
+所以**升级框架后必须跑一次迁移**，光换二进制不够。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_sites` 总是建；
 `crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）

@@ -424,7 +424,9 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 > 站点概要与 `sites` 里的字段：`key / base_url / stage_count / breaker_paused / breaker_paused_at`。
 > `base_url` 与 `stage_count` 是**启动时按声明抄的**（改声明要重启；直接改库不生效）。
-> 「每站每阶段的池子统计」是**实时**数字，不落库 —— 它就在 `stages` 快照里（带 `site`）。
+> 「每站每阶段的池子统计」是**实时**数字，不落库 —— 它就在 `stages` 快照里：**键是 `site:stage`**
+> （阶段名只在本站内唯一，两个站的 `catalog` 是两条），条目里另带裸阶段名 `stage` 与 `site` ——
+> 站点 Tab 按 `site` 分组，面板标题用 `stage`。
 
 ```jsonc
 "sites": {
@@ -487,7 +489,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 "breakers": [
   {
     "enabled": true,
-    "site": "",             // 空 = 默认 scope（未归属站点的阶段）
+    "site": "",             // 空 = 默认 scope（现在只剩旧库里 site 为空的行）
     "window": 300000000000, // duration 是纳秒
     "threshold": 50,
     "in_window": 12,        // 实时值：当前窗口内的终态失败数
@@ -495,7 +497,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
     "paused_at": "...",
     "resumed_at": "...",
     "reason": "窗口内终态失败数达到阈值",
-    "stage": "hgd_catalog",
+    "stage": "catalog",   // 触发的阶段（裸名）；哪个站看上面的 "site"
     "failures": 50
   }
 ]

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -21,16 +22,19 @@ func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task
 	cfg := &config.Config{}
 
 	e := &Engine{
+		// ctx 必须有：阶段没预登记池子时 getOrCreatePool 会懒建一个并 Start，
+		// 而转发协程的 select 里要读 e.ctx.Done() —— nil ctx 会直接 panic（不是"卡住"）。
+		ctx:        context.Background(),
 		db:         openFakeTaskDB(t, f),
 		loggerSet:  &loggers.LoggerSet{Engine: quietLogger(), DB: quietLogger()},
 		cfg:        cfg,
-		stages:     map[string]*stageInfo{"stub": {}},
+		stages:     map[string]*stageInfo{"stub:stub": {stage: "stub", config: StageConfig{Site: "stub"}}},
 		pools:      newPoolRegistry(),
 		dedupCache: newDedupCache(0),
 		spilled:    make(map[string][]*Task),
 		delayCh:    make(chan struct{}, 1),
 	}
-	e.pools.set("stub", pool)
+	e.pools.set("stub:stub", pool)
 	return e
 }
 
@@ -339,7 +343,7 @@ func TestSubmitToPoolWritesOnlyItsOwnColumns(t *testing.T) {
 
 			task := &Task{
 				ID: 7, Stage: "stub", URL: "https://example.com",
-				Repeatable: tc.repeatable, Site: "s1",
+				Repeatable: tc.repeatable, Site: "stub",
 				Meta: map[string]string{"series_id": "1"},
 			}
 			if err := e.SubmitTask(task); err != nil {

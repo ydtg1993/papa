@@ -382,7 +382,7 @@
         var names = Object.keys(stages || {});
         if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
         el.innerHTML = names.map(function (name) {
-            return '<div class="stage"><h3>' + esc(name) + '</h3>' + stageTiles(stages[name].queue) + '</div>';
+            return '<div class="stage"><h3>' + esc(stageLabel(name, stages[name])) + '</h3>' + stageTiles(stages[name].queue) + '</div>';
         }).join('');
     }
     function renderQueue(stages) {
@@ -399,7 +399,7 @@
                     + '</td><td>' + fmtDuration(w.TotalTime) + '</td><td>' + fmtDuration(w.MaxTime)
                     + '</td><td>' + fmtDuration(w.MinTime) + '</td></tr>';
             }).join('');
-            return '<div class="stage"><h3>' + esc(name) + '</h3>' + stageTiles(st.queue)
+            return '<div class="stage"><h3>' + esc(stageLabel(name, st)) + '</h3>' + stageTiles(st.queue)
                 + '<div class="muted">累计任务 ' + g.TotalTasks + ' · 累计失败 ' + g.TotalFailed
                 + ' · 平均 ' + fmtDuration(g.AvgTime) + ' · 最大 ' + fmtDuration(g.MaxTime) + ' · 最小 ' + fmtDuration(g.MinTime) + '</div>'
                 + '<div style="margin-top:12px"><div class="table-wrap"><table><tr><th>Worker</th><th>任务</th><th>失败</th><th>总耗时</th><th>最大</th><th>最小</th></tr>'
@@ -509,6 +509,13 @@
     var currentSite = null;
 
     function siteLabel(key) { return key === '' ? '默认 scope' : key; }
+
+    // stageLabel 阶段面板的标题：优先用条目里带的**裸阶段名**（st.stage）—— 快照的键是
+    // `site:stage`（阶段名只在本站内唯一，两个站可以各有 catalog），标题里带上站点只会更长；
+    // 站点维度由上面的站点 Tab 表达。老服务端不带 stage 字段时回落到键。
+    function stageLabel(name, st) {
+        return (st && st.stage) || name;
+    }
 
     // siteView 按当前站点过滤阶段；治理队列是全局各一条，不跟站点走。
     function siteView(stages, queues) {

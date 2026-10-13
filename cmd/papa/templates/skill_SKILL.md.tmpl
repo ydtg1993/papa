@@ -53,14 +53,14 @@ Keep each site self-contained:
 
 ```text
 configs/sites/<site>.go       site identity, headers, breaker/download overrides, StageSpec values
-fetcher/<site>/site.go        prefixed stage constants and site lookup helper
+fetcher/<site>/site.go        stage constants and site lookup helper
 fetcher/<site>/fetch_*.go     stage handlers and entry submission
 fetcher/<site>/*_test.go      parser/URL/task behavior tests using saved HTML
 models/                       shared business data and repositories
 monitor/                      presentation, actions, routes, and pages
 ```
 
-A stage name is process-global. Prefix every new stage with the site key, for example `shop_catalog` and `shop_detail`. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
+A stage name is unique **within its site** — two sites may each declare `catalog`. The engine keys a stage by `site:stage`, so pools, stats, archive directories and the DB unique index stay separate. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
 
 A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `configs/sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
 
@@ -78,7 +78,7 @@ and set its `StageSpec.AutoStart` to true.
 
 For every submitted task:
 
-- use the prefixed stage constant;
+- use the stage constant;
 - resolve and validate HTTP(S) URLs;
 - use `Task.Meta` for business identity such as `book_id` or `series_id`;
 - use a stable `IdempotencyKey` whose meaning agrees with `(stage, URL)` under concurrency;
@@ -171,7 +171,8 @@ Use [references/review-checklist.md](references/review-checklist.md). Always cro
 Before finishing, verify:
 
 - [ ] No Papa framework source was changed for ordinary business integration.
-- [ ] New stage names are site-prefixed and reused through constants.
+- [ ] Stage names are reused through constants and unique within their site (two sites may share one).
+- [ ] Every submitted task carries `Site` — the stage lookup is keyed by `site:stage`.
 - [ ] Site self-registers; `main.go` remains generic.
 - [ ] Stage parameters are in Go declarations, governance queues remain global YAML.
 - [ ] Entry tasks use `SubmitEntries` + `AutoStart` when appropriate.

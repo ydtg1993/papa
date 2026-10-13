@@ -51,7 +51,7 @@ func TestDelayDispatcherDropsTaskNoLongerPending(t *testing.T) {
 			e := delayEngine(t, f, pool)
 
 			e.enqueueDelayed(time.Now().Add(-time.Second),
-				&Task{ID: 7, Stage: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
+				&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
 			time.Sleep(80 * time.Millisecond)
 
 			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -82,7 +82,7 @@ func TestDelayDispatcherDropsDeletedRow(t *testing.T) {
 	e := delayEngine(t, f, pool)
 
 	e.enqueueDelayed(time.Now().Add(-time.Second),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
 	time.Sleep(80 * time.Millisecond)
 
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -106,7 +106,7 @@ func TestDelayDispatcherRetriesWhenRereadFails(t *testing.T) {
 
 	before := time.Now()
 	e.enqueueDelayed(time.Now().Add(-time.Second),
-		&Task{ID: 7, Stage: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/delayed"}, delayRecord(7))
 	time.Sleep(80 * time.Millisecond)
 
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {

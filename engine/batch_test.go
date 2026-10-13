@@ -46,7 +46,7 @@ func TestRequeueFailureMarksTaskFailed(t *testing.T) {
 	e, pool := urgentEngine(t, f)
 	pool.Stop(0) // 停掉的池：Submit 必然失败，且不是 ErrQueueFull（不会走溢出那条路）
 
-	row := &models.CrawlerTask{ID: 7, Stage: "stub", URL: "https://example.com"}
+	row := &models.CrawlerTask{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 	if e.requeueFailedTask()(row) {
 		t.Fatal("投递必然失败，应返回 false")
 	}

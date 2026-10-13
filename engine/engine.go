@@ -32,22 +32,24 @@ type Engine struct {
 	// 「本进程启动之后被写过的行」= 本进程碰过的行 → 恢复不重投它们。
 	startedAt time.Time
 	cancel    context.CancelFunc
-	stages    map[string]*stageInfo
-	// pools 活池登记表：stage 名 -> 当前活着的池。投递/关停/错误通道都从它取池，
+	// stages 阶段登记表：**键是 `core.StageKey(site, stage)`**，不是裸的阶段名 ——
+	// 阶段名只在本站内唯一（两个站可以各有自己的 catalog）。凡是按阶段取东西的地方都用这个键。
+	stages map[string]*stageInfo
+	// pools 活池登记表：阶段键 -> 当前活着的池。投递/关停/错误通道都从它取池，
 	// 不再散落在 stageInfo.workerPool 上（那是裸指针，池一旦懒建/回收就会并发读写）。
 	pools              *poolRegistry
 	mu                 sync.RWMutex
 	cfg                *config.Config
 	browserPool        *browser.Pool
 	htmlClient         *htmlfetch.Client
-	statsQueue         map[string]*track.StatsQueue[*Task] // key: stage name 分阶段监控信号
+	statsQueue         map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
 	stageTotals        map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
 	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
-	errorForwardCancel map[string]chan struct{}            // per-stage 错误转发协程停机信号（reap 时 close）；e.mu 保护
+	errorForwardCancel map[string]chan struct{}            // 每阶段错误转发协程停机信号（reap 时 close）；e.mu 保护
 	dedupCache         *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
 	spillMu        sync.Mutex
-	spilled        map[string][]*Task // stage -> 高水位溢出的待回灌任务
+	spilled        map[string][]*Task // 阶段键 -> 高水位溢出的待回灌任务
 	spilledCount   atomic.Int64       // 累计溢出任务数（监控埋点）
 	recoveredCount atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
 
@@ -86,9 +88,10 @@ type Engine struct {
 	filedownBySite  map[string]*filedown.Downloader
 	metrics         *metrics.Registry // 业务自定义监控数据注册表
 	notifiers       []Notifier        // 告警通知器，任务最终失败时触发
-	// 熔断闸门。**按站点分组**：一台闸门管一个站点的（该站所有阶段的）worker；
-	// 默认 scope（未归属站点的阶段）就是 breaker 这一把 —— 单站项目的行为与之前完全一致。
-	// 多站时站点 A 被墙不会再把站点 B 一起闸住（见 SetSiteBreaker / breakerFor）。
+	// 熔断闸门。**每站一把**：一台闸门管一个站点的（该站所有阶段的）worker，一个站被墙
+	// 不会把另一个站一起闸住（与阶段名按站点作用是配套的：两站同名阶段的失败各数各的）。
+	// 没单配阈值的站点也有自己那把，阈值取 crawler.breaker 那份默认（见 SetSiteBreaker）。
+	// breaker 这一把是**默认 scope** 的（只剩旧库里 `site` 为空的行），不再是"没声明的站共用"那把。
 	breaker     *breaker.Breaker
 	breakerMu   sync.Mutex
 	siteBreaker map[string]*breaker.Breaker
@@ -133,6 +136,10 @@ func (e *Engine) Site(key string) (core.Site, bool) {
 
 // stageInfo 内部阶段信息
 type stageInfo struct {
+	// stage 阶段名（`GetStage()` 的原值，**不带站点**）。登记表的键是复合键
+	// `core.StageKey(config.Site, stage)`，这里留着裸名是给监控快照与日志用的
+	//（后台要在站点分组里显示"catalog"这种短名字，而不是 "yeguodj:catalog"）。
+	stage      string
 	config     StageConfig
 	fetcher    Fetcher
 	submitFunc func(engine *Engine)
@@ -157,8 +164,12 @@ type StageConfig struct {
 	FileDown *filedown.Overlay
 }
 
+// AddStage 登记一个阶段。**键由 config.Site + stage 拼出来**（`core.StageKey`）——
+// 站点归属取自声明层的 `StageConfig.Site`，所以调用方不可能"忘了带站点"。
+// 阶段名只在本站内唯一：两个站登记各自的 `catalog` 是两条独立记录（各自的池子与统计）。
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
-	e.stages[stage] = &stageInfo{
+	e.stages[core.StageKey(config.Site, stage)] = &stageInfo{
+		stage:      stage,
 		config:     config,
 		fetcher:    fetcher,
 		submitFunc: subFunc,
@@ -287,11 +298,14 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
 
-// SetSiteBreaker 为一个站点单独配一把熔断闸门（覆盖 crawler.breaker 那份默认值）。
+// SetSiteBreaker 为一个站点建一把熔断闸门。
 //
-// 必须在 ApplyRegisterStage 之前调用（池子在那一刻就把闸门绑好了，之后再设换不回来）——
-// App.RegisterSites 会按 SiteSpec 逐个调它。site 为空是非法参数（那正是"默认 scope"，
-// 它用 crawler.breaker 那把，不需要也不允许单独配）。
+// **声明层会给每个站点都调它**（App.RegisterSites 按 SiteSpec 逐个来）：单配了阈值的用它的，
+// 没单配的用 crawler.breaker 那份默认 —— 关键在于"每站一把"，而不是"没声明的站共用默认那把"
+// （共用的话 A 站被墙会把 B 站一起闸住）。
+//
+// 必须在 ApplyRegisterStage 之前调用（池子在那一刻就把闸门绑好了，之后再设换不回来）。
+// site 为空是非法参数（那正是"默认 scope"，它用 crawler.breaker 那把，不需要也不允许单独配）。
 func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	if site == "" {
 		return
@@ -308,7 +322,10 @@ func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	})
 }
 
-// breakerFor 取某个站点（scope）的熔断闸门；site 为空或没单独配过 → 用默认那把。
+// breakerFor 取某个站点（scope）的熔断闸门。
+//
+// 调过 SetSiteBreaker 的站返回它自己那把（正常路径：App.RegisterSites 给每个声明的站都建了）；
+// site 为空、或直接用引擎而没给这个站配过 → 默认 scope 那把（后者是个提醒：自己搭引擎就该自己 Set）。
 func (e *Engine) breakerFor(site string) *breaker.Breaker {
 	if site == "" {
 		return e.breaker
@@ -395,7 +412,8 @@ func (e *Engine) BreakerStatus() BreakerStatus { return e.breaker.Status() }
 
 // BreakerStatuses 返回各 scope（站点）的熔断状态快照：key 是站点 Key，"" 是默认 scope。
 //
-// 只列出**真的有闸门**的 scope：单独配过的站点，加上默认那把（如果启用了熔断）。
+// 列出**真的有闸门**的 scope：每个声明的站点各一条（不管有没有单配阈值），加上默认那把
+// （启用了熔断、或曾被手动暂停时列出 —— 它现在管的是旧库里 `site` 为空的行）。
 func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 	out := make(map[string]BreakerStatus)
 	// 默认 scope：**启用**时列出来（它自动管着未归属站点的阶段）；没启用但**被手动暂停过**时
@@ -413,14 +431,6 @@ func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 		out[site] = st
 	}
 	return out
-}
-
-// siteOf 取某个阶段所属的站点 Key（未注册或未归属返回空串 = 默认 scope）。
-func (e *Engine) siteOf(stage string) string {
-	if info := e.stages[stage]; info != nil {
-		return info.config.Site
-	}
-	return ""
 }
 
 // Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。

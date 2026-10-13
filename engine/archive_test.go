@@ -134,8 +134,9 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 	if htmlRel == "" {
 		t.Fatalf("失败的尝试应当留下归档，实得 %v", files)
 	}
-	// 路径形状：{stage}/task-{id}-try-{retry}-{urlhash8}.html
-	if !regexp.MustCompile(`^stub/task-7-try-0-[0-9a-f]{8}\.html$`).MatchString(htmlRel) {
+	// 路径形状：{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html
+	// 这条任务没带站点（默认 scope）→ 站点那层落成 `_`（见 sanitizePathSegment）。
+	if !regexp.MustCompile(`^_/stub/task-7-try-0-[0-9a-f]{8}\.html$`).MatchString(htmlRel) {
 		t.Fatalf("归档路径形状不对：%q", htmlRel)
 	}
 	// 旁边的元信息
@@ -156,7 +157,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读元信息：%v", err)
 	}
-	for _, want := range []string{`"task_id":7`, `"stage":"stub"`, `"status":200`, `"final_url":"` + srv.URL} {
+	for _, want := range []string{`"task_id":7`, `"stage":"stub"`, `"site":""`, `"status":200`, `"final_url":"` + srv.URL} {
 		if !strings.Contains(string(meta), want) {
 			t.Fatalf("元信息里缺少 %s：%s", want, meta)
 		}

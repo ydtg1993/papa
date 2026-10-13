@@ -26,16 +26,18 @@ const (
 )
 
 type CrawlerTask struct {
-	ID    uint   `gorm:"primarykey;comment:任务ID"`
-	PID   uint   `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
-	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等)"`
-	Site  string `gorm:"type:varchar(128);index;comment:所属站点(站点声明的 Key)；空=未归属"`
+	ID  uint `gorm:"primarykey;comment:任务ID"`
+	PID uint `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
+	// Stage 阶段名（fetcher 的 GetStage() 原值，**不带站点前缀**）。只在本站内唯一 ——
+	// 两个站可以各有自己的 catalog，所以它与 Site 一起才构成"哪个阶段"，唯一索引三者都带。
+	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_site_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`
+	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_site_stage_url_hash,priority:3;comment:所属站点(站点声明的 Key)；空=未归属"`
 	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`
-	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage) 上 ——
+	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage, site) 上 ——
 	// 与 URL 长度无关。由 BeforeCreate 自动填（任何创建路径都覆盖），老库由 `papa migrate` 回填。
-	URLHash string `gorm:"type:char(64);not null;uniqueIndex:idx_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
+	URLHash string `gorm:"type:char(64);not null;uniqueIndex:idx_site_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
 	// IdempotencyKey 自定义幂等键的**原文**：规范格式 `site:stage:<标识>`（空 = 没自定义，回退 site:stage:url）。
 	// 1) 不建索引：键里带 URL，varchar(1000) 在 utf8mb4 下建不了索引（3072 字节上限 ≈ 768 字符）；
 	// 2) 唯一性由下面的 IdempotencyHash 上的唯一索引兜底（与 URL/URLHash 同一套做法）。

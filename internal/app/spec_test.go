@@ -97,11 +97,16 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		t.Fatalf("engine.Site(a) = %+v, %v", viaEngine, ok)
 	}
 
-	// ② 按站的熔断阈值：a 用自己的 7/2m，b 没单配 → 落在默认 scope 的那把（50/5m）
+	// ② 熔断闸门**每站一把**：a 用自己声明的 7/2m；b 没单配阈值 → 也有**自己**那一把，
+	// 阈值取 crawler.breaker 那份默认（50/5m）。共用的后果是 a 站被墙会把 b 站一起闸住。
 	sts := e.BreakerStatuses()
 	if sts["a"].Threshold != 7 || sts["a"].Window != 2*time.Minute {
 		t.Fatalf("站点 a 的熔断阈值没生效：%+v", sts["a"])
 	}
+	if sts["b"].Threshold != 50 || sts["b"].Window != 5*time.Minute {
+		t.Fatalf("没单配阈值的站也该有自己的闸门（阈值取默认那份）：%+v", sts["b"])
+	}
+	// 默认 scope 那把仍在（它管着旧库里 site 为空的行），但它不再代表"没声明的站"
 	if sts[""].Threshold != 50 || sts[""].Window != 5*time.Minute {
 		t.Fatalf("默认 scope 应当用 crawler.breaker：%+v", sts[""])
 	}

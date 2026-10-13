@@ -223,7 +223,7 @@ func TestRunAttemptWritesStepsThroughFinish(t *testing.T) {
 	t.Cleanup(e.cancel)
 
 	fetcher := &stubFetcher{steps: []string{"打开页面", "解析列表"}}
-	e.AddStage("stub", StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
+	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/traced"}); err != nil {
