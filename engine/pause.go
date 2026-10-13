@@ -131,8 +131,12 @@ func (e *Engine) isPausedLocked(scope pauseScope) bool {
 
 /* ---------- 变更 ---------- */
 
-// setPause 下一条暂停；已经停着返回 false（**且不覆盖已有的 reason/快照** ——
+// setPause 下一条暂停；这个 scope 已经停着就返回 false（**且不覆盖已有的 reason/快照** ——
 // 后台"空点不记审计"那条规则、以及"人工暂停不该被熔断触发改写成熔断"都靠这个）。
+//
+// 判定按**精确 scope**（不看继承）：所以某站只被手动停了 `catalog` 时，**熔断触发照样会追加一条
+// 整站暂停** —— 那是熔断的本职（它管的是"这一站现在不能抓了"，比某个阶段的意图更宽），
+// 而反过来（整站停着时又来了阶段级的暂停/熔断）会被这条去重挡掉。
 func (e *Engine) setPause(scope pauseScope, st pauseState) bool {
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()

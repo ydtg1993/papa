@@ -104,7 +104,7 @@ type CrawlerConfig struct {
 // （人工暂停写的是同一张表，只是来源标成 manual）。**暂停状态不跨重启**：进程重启即恢复运行
 // （起进程本身就是一次人工介入）。
 type BreakerConfig struct {
-	Enabled   bool          `mapstructure:"enabled"`   //是否启用熔断闸门（默认 false）
+	Enabled   bool          `mapstructure:"enabled"`   //是否启用熔断（计数与阈值；默认 false）
 	Window    time.Duration `mapstructure:"window"`    //统计窗口；<=0 用默认 5m
 	Threshold int           `mapstructure:"threshold"` //窗口内终态失败数达到它即暂停；enabled=true 时必填且 > 0，否则启动 panic
 }

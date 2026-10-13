@@ -8,11 +8,11 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 )
 
-// `breaker_paused` **不跨重启**：熔断闸门每次启动都是新建的、未暂停（暂停状态只活在内存里），
+// `breaker_paused` **不跨重启**：暂停状态只活在内存里（引擎的暂停信号），
 // 所以启动播种时库里残留的 true 要按"没暂停"算，并把那一对列清掉。
 //
-// 不清的后果：后台横幅与「站点」表一直显示"熔断已闸住"，而点「恢复」时闸门只会回
-// "当前不在暂停态" —— 那个 true 自己永远清不掉（只有"先暂停再恢复"两下才能消）。
+// 不清的后果：后台横幅与「站点」表一直显示"已暂停"，而点「恢复」只会回"当前不在暂停态" ——
+// 那个 true 自己永远清不掉（只有"先暂停再恢复"两下才能消）。
 func TestSeedSiteRowsClearsStaleBreakerPaused(t *testing.T) {
 	f := newFakeTaskDB()
 	row := siteRow("a")

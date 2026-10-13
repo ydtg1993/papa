@@ -88,6 +88,8 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   pools.go     活池登记表（懒建 / 空闲回收 / 关停都从这里取池）
   submit.go    提交路径（去重 → 落库 → 入队 → 认领）
   spill.go     高水位溢出与回灌
+  pause.go     暂停信号表（唯一真源：scope / reason / source）+ 取任务点的闸门
+               （入队点的收口在 submit.go 的 submitToStage；熔断只往这张表里写）
   batch.go     各治理队列共用的分页扫描（keyset 游标）
   dedup.go     内存去重表 + 活跃任务装载
   sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）

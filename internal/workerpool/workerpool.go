@@ -93,9 +93,9 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 type Gate interface {
 	// Wait 阻塞到放行或 stop 关闭；返回 true 表示继续干活，false 表示该停机了。
 	//
-	// 只有一个方法是有意的：池子问闸门的问题只有这一个。闸门的"现在是不是暂停态"
-	// 归闸门自己（比如 breaker.Status()）或后台去过问，池子不需要知道 ——
-	// 需要它的时候（暂停中不排空）才会有 Paused() 进来，而那条路已经拆了。
+	// 只有一个方法是有意的：池子问闸门的问题只有这一个。闸门"现在是不是暂停态"、
+	// 停的是整站还是某个阶段、谁下的（人工还是熔断）—— 全归闸门自己与后台去过问，
+	// 池子不需要知道，所以这里没有 Paused() 之类的第二个方法。
 	Wait(stop <-chan struct{}) bool
 }
 

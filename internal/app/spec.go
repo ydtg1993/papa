@@ -23,7 +23,8 @@ import (
 //
 // config.yaml 里**不再有 `crawler.stages` 段**：阶段的存在性与参数都以这份声明为准
 //（`crawler.breaker` 那份阈值是**每个站没单配时的默认值**，可被 SiteSpec.Breaker 按站点覆盖；
-// "默认 scope" 现在只剩存量数据 —— 旧行 `site` 为空，它们仍用 crawler.breaker 那把闸门）。
+// "默认 scope" 现在只剩存量数据 —— 旧行 `site` 为空，它们没有熔断计数器（除非显式
+// `SetSiteBreaker("")`）、也不会被暂停信号挡住：暂停只认**声明过的**站点）。
 
 // SiteSpec 一个站点的声明（`Key` 必填）。多站就是多个 SiteSpec。
 // **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，互不干扰（同站内重名仍会报错并提示）。
@@ -217,7 +218,7 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	// 下载器覆盖层原样交给引擎（解析时机在 ApplyRegisterStage：那时全局那份已经 Set 好了）
 	p.downloads = engine.SiteDownloads{M3U8: spec.M3U8, FileDown: spec.FileDown}
 
-	// 熔断闸门**每站一把**：声明里写了阈值就用它，没写就用 `crawler.breaker` 那份默认 ——
+	// 熔断**每站一份计数**：声明里写了阈值就用它，没写就用 `crawler.breaker` 那份默认 ——
 	// 要紧的是"每站各自一把"。共用的后果是 A 站被墙会把 B 站一起闸住（两个站同时被同一面墙
 	// 挡住时看着"对"，但它们本该各自判定、各自恢复；一方先恢复时更明显）。
 	// Key 一定非空（validateSites 已经拒掉没有 Key 的声明）—— 这里的判断纯属防御。
@@ -431,7 +432,7 @@ func parseBackoff(s string) (time.Duration, error) {
 
 // toConfig 把站点自己的熔断声明合到默认值上；未给的字段用默认值。
 // defaultBreakerConfig 把全局那份默认阈值翻成引擎侧的 breaker.Config：给**没单独声明**
-// 的站点当它自己那把闸门的阈值用（每站一把，见 planSite）。
+// 的站点当它自己的阈值用（每站一个计数器，见 planSite）。
 func defaultBreakerConfig(def config.BreakerConfig) breaker.Config {
 	return breaker.Config{
 		Enabled:   def.Enabled,

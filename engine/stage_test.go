@@ -809,7 +809,7 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 	t.Fatalf("最后一次尝试失败后 %v 内没有落 failed —— 说明还在白等退避", backoff/2)
 }
 
-// 熔断按站点分组：每站一把闸门，各停各的；不点名就是**全部**（后台那个「恢复抓取」）。
+// 暂停按站点分组：每站一条，各停各的；不点名就是**全部**（后台那个「恢复抓取」）。
 // 没有"默认 scope"那一档 —— 声明要有 Key（引擎这台是声明层 SetSiteBreaker 建的）、任务要有 site。
 func TestBreakerScopesAreIndependent(t *testing.T) {
 	f := newFakeTaskDB()

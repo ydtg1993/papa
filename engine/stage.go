@@ -92,7 +92,8 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 // 区别只在 level（critical 比 error 高一级），webhook 那边可以据此单独路由（钉钉 @全体之类）。
 func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
 	e.loggerSet.Engine.Errorf(
-		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败 ≥ 阈值 %d）—— 已闸住所有阶段的 worker，"+
+		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败 ≥ 阈值 %d）—— 已暂停整站："+
+			"worker 停在取任务点，新任务不再入队（先寄放到溢出表）。"+
 			"处理完后调 POST /api/breaker/resume（后台 Dashboard 上也有按钮）放行",
 		st.Reason, st.Stage, st.Window, st.Failures, st.Threshold)
 

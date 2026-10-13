@@ -87,7 +87,7 @@ func (e *Engine) seedSiteRows() {
 				e.loggerSet.Engine.Warnf("refresh crawler_sites row %q: %s", key, err.Error())
 			}
 		}
-		// breaker_paused **不跨重启**：熔断闸门每次启动都是新建的、未暂停（暂停状态只活在内存里），
+		// breaker_paused **不跨重启**：暂停状态只活在内存里（引擎的暂停信号），
 		// 所以这一对列一律按"没暂停"算。库里残留的 true 还要**清掉**，否则后台横幅与「站点」表会
 		// 一直显示"熔断已闸住"，而点「恢复」时闸门只会回"当前不在暂停态" —— 那个 true 自己永远
 		// 清不掉（只有"先暂停再恢复"两下才能消）。写法与 ResumeSite 一致：解闸就把这一对一起清。

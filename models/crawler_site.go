@@ -17,9 +17,9 @@ type CrawlerSite struct {
 	Key        string `gorm:"type:varchar(128);not null;uniqueIndex:ux_site_key;comment:站点键（站点声明的 Key，必填；没有未归属那一档）"`
 	BaseURL    string `gorm:"type:varchar(1024);comment:站点根地址（启动时抄的）"`
 	StageCount int    `gorm:"not null;default:0;comment:阶段数"`
-	// 熔断状态（暂停/恢复那一刻写）
-	BreakerPaused   bool       `gorm:"not null;default:false;comment:熔断是否把本站闸住"`
-	BreakerPausedAt *time.Time `gorm:"comment:闸住的时间"`
+	// 暂停状态（**后台手动暂停/恢复那一刻写**；熔断触发不写这一对 —— 它只写引擎的暂停信号）
+	BreakerPaused   bool       `gorm:"not null;default:false;comment:本站是否被手动暂停"`
+	BreakerPausedAt *time.Time `gorm:"comment:暂停那一刻的时间"`
 	CreatedAt       time.Time  `gorm:"autoCreateTime"`
 	UpdatedAt       time.Time  `gorm:"autoUpdateTime"`
 }

@@ -517,7 +517,7 @@ func (s *Monitor) breakerHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"breakers": sortedBreakerStatuses(s.cfg.BreakerStatuses())})
 }
 
-// breakerResumeHandler 手动放行被熔断闸住的抓取。
+// breakerResumeHandler 手动放行暂停中的抓取（手动暂停的、熔断触发的，同一个按钮）。
 //
 // 这是**人在场的干预**，所以成功了要记进操作日志（OnBreakerResume 回调，宿主接到 oplog）。
 // 已经是运行态时返回 resumed=false 而不是报错 —— 「重复点击恢复」不该看起来像失败，

@@ -575,9 +575,11 @@
             '<b>' + esc(siteLabel(stat.key)) + '</b>',
             esc(stat.base_url || '—'),
             (stat.stage_count || 0) + ' 个阶段',
+            // 这两列只由**手动暂停**写（熔断触发不写它），所以别叫"熔断闸住" ——
+            // 一次后台点的暂停会被显示成熔断，读的人会去找"哪来的失败"。
             stat.breaker_paused
-                ? '<b>熔断已闸住</b>（' + esc(fmtAgo(stat.breaker_paused_at)) + '）'
-                : '熔断未闸住'
+                ? '<b>已暂停</b>（' + esc(fmtAgo(stat.breaker_paused_at)) + '）'
+                : '运行中'
         ];
         parts.push('<span class="muted">任务表在左侧菜单，进去后用「站点」筛选看本站的任务</span>');
         meta.innerHTML = parts.join(' ｜ ');
@@ -628,10 +630,12 @@
             var at = b.paused_at ? new Date(b.paused_at) : null;
             var when = (at && timeValid(at)) ? at.toLocaleString() : '';
             var where = '站点 ' + b.site; // 每个 scope 都是站点（没有"未归属"那一档）
-            // **手动暂停与熔断触发分开说**：手动那次没有触发阶段、窗口里的失败数也不是原因，
-            // 一律按熔断文案渲染就会读出"阈值 0 / 窗口内 0 次失败"这种幻觉（熔断没启用时阈值就是 0）。
-            // 判据：熔断触发一定带 stage（触发那一刻在失败的阶段）；手动闸没有。
-            var tripped = b.enabled && !!b.stage;
+            // **手动暂停与熔断触发分开说**：一律按熔断文案渲染就会读出"阈值 0 / 窗口内 0 次失败"
+            // 这种幻觉（熔断没启用时阈值就是 0），也是一次手动暂停被说成"熔断"。
+            //
+            // 判据只看 `source`。**别回去用"enabled && stage"猜**：阶段级的手动暂停也带 stage
+            //（那是它的 scope），在熔断启用着的站上会被猜成熔断 —— 这正是加 source 字段的原因。
+            var tripped = b.source === 'breaker';
             var head = tripped ? '抓取已暂停（熔断）' : ('抓取已暂停（' + esc(b.reason || '手动') + '）');
             var detail = tripped
                 ? ('｜' + esc(fmtSpan(b.window / 1e9)) + ' 窗口内 ' + (b.failures || 0) +

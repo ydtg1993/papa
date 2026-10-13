@@ -97,7 +97,7 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		t.Fatalf("engine.Site(a) = %+v, %v", viaEngine, ok)
 	}
 
-	// ② 熔断闸门**每站一把**：a 用自己声明的 7/2m；b 没单配阈值 → 也有**自己**那一把，
+	// ② 熔断**每站一份**：a 用自己声明的 7/2m；b 没单配阈值 → 也有**自己**那一份，
 	// 阈值取 crawler.breaker 那份默认（50/5m）。共用的后果是 a 站被墙会把 b 站一起闸住。
 	sts := e.BreakerStatuses()
 	if sts["a"].Threshold != 7 || sts["a"].Window != 2*time.Minute {

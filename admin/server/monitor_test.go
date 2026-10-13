@@ -648,7 +648,7 @@ func TestTaskTraceHandler(t *testing.T) {
 	})
 }
 
-// 熔断闸门的两个后台接口。放行是**人在场的干预**（熔断停了整条抓取线），
+// 暂停/放行的两个后台接口。放行是**人在场的干预**（那一站停了整条抓取线），
 // 所以除了状态对不对，还要钉住"操作人确实被传给了宿主去记操作日志"。
 //
 // 每个站点一把闸门：状态是**列表**（按站点名排序），放行可以点名某个站点，
@@ -1368,6 +1368,11 @@ func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
 	// 前端没有测试框架，只能这样钉住。
 	if !strings.Contains(js, "st.stage") {
 		t.Error("mo.js 的 stageLabel 没读 st.stage —— 标题会退回 `site:stage` 那个复合键")
+	}
+	// 横幅判"这次是熔断还是手动"必须读条目里的 `source`。曾经用 `enabled && stage` 猜 ——
+	// 阶段级的手动暂停也带 stage（那是它的 scope），在熔断启用着的站上会被说成"熔断"。
+	if !strings.Contains(js, "b.source") {
+		t.Error("mo.js 的横幅没读 b.source —— 手动的阶段级暂停会被显示成「熔断」")
 	}
 	// 单数那个是错的（服务端从来不发这个键）
 	for _, line := range strings.Split(js, "\n") {

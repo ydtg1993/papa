@@ -321,7 +321,7 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
 
-// SetSiteBreaker 为一个站点建一把熔断闸门。
+// SetSiteBreaker 为一个站点建一个**熔断计数器**（滑动窗口数终态失败、判阈）。
 //
 // **声明层会给每个声明的站点都调它**（App.RegisterSites 按 SiteSpec 逐个来）：单配了阈值的用它的，
 // 没单配的用 crawler.breaker 那份默认 —— 关键在于"每站一把"，而不是"没声明的站共用默认那把"
@@ -433,9 +433,9 @@ func (e *Engine) breakerSum(site string) int {
 
 // BreakerStatuses 返回各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
 //
-// 列出**有闸门**的站点 —— 每个声明的站点各一条（不管有没有单配阈值）。**每一把都要列**，
+// 列出**每个声明的站点**（不管有没有单配阈值、有没有在暂停）。**一条都不能少**，
 // 包括没启用、也没暂停的：后台的「恢复抓取」端点 targets 取自这张表，不列就等于
-// "那个站闸住了却既看不见、也点不到恢复"，只能重启或让业务代码自己调 ResumeCrawling。
+// "那个站暂停了却既看不见、也点不到恢复"，只能重启或让业务代码自己调 ResumeCrawling。
 func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 	sites := e.allSites()
 	sort.Strings(sites)

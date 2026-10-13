@@ -18,7 +18,7 @@ const (
 	AlertInfo AlertLevel = iota
 	AlertWarn
 	AlertError
-	// AlertCritical 需要人介入的那种：比如熔断已把整个爬虫闸住。比 AlertError（单个任务失败）高一级，
+	// AlertCritical 需要人介入的那种：比如熔断触发、整站暂停了。比 AlertError（单个任务失败）高一级，
 	// 好让 webhook 那边能单独路由（钉钉 @全体之类）。
 	AlertCritical
 )
@@ -40,7 +40,7 @@ func (l AlertLevel) String() string {
 // TaskError 结构化任务错误上下文，覆盖手册要求的日志字段。
 type TaskError struct {
 	Stage string `json:"stage"`
-	// Site 任务/闸门所属站点（SiteSpec.Key，**必填**）。
+	// Site 任务/暂停所属站点（SiteSpec.Key，**必填**）。
 	// 多站时告警里必须能看出是哪个站 —— webhook 那头据此路由（@对应的人）。
 	Site    string `json:"site,omitempty"`
 	TaskID  int    `json:"task_id"`
