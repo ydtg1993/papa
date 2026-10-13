@@ -79,8 +79,8 @@ func (m *Manager) refreshProxies() {
 		return
 	}
 	m.mu.Lock()
-	// 直接建好再一次性换上去：原来这里先 make 一次 m.proxies，紧接着又被 list 覆盖，
-	// 那次分配是死的（写下来免得下次有人以为它是"先清空再填"）。
+	// 整份建好再一次性换上去：换的那一刻 m.proxies 要么是旧的、要么是新的，
+	// 不会出现半满的中间态（读侧只持 m.mu，不做拷贝）。
 	list := make([]string, 0, len(proxies))
 	for _, p := range proxies {
 		list = append(list, "http://"+p["host"]+":"+p["port"])

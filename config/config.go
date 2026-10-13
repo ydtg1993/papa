@@ -71,7 +71,10 @@ type RepeatQueueConfig struct {
 
 // AppConfig 环境基础配置
 type AppConfig struct {
-	Env string `mapstructure:"env"` //dev开发环境(数据迁移) ol线上
+	// Env 只有 dev / 非 dev 两档，管的是 **SQL 日志**：dev → 级别 info 且不隐参数值；
+	// 其它值（含没写）→ 级别 warn 且隐掉参数值。**与建表无关**：迁移只有 `papa migrate` 一条路，
+	// 任何环境都不会因为 env 而自动迁移。
+	Env string `mapstructure:"env"`
 }
 
 type LogConfig struct {
@@ -173,12 +176,12 @@ const (
 // StageConfig / RetryConfig 已随"阶段参数搬进 Go 声明"一起移除（见 internal/app/spec.go 的
 // StageSpec / RetrySpec）—— 配置里不再有 crawler.stages 段，重试参数也在阶段声明里。
 
-// BrowserConfig chromedp浏览器池配置
+// BrowserConfig 浏览器池配置（go-rod 驱动）
 type BrowserConfig struct {
 	Enable      bool              `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
 	PoolSize    int               `mapstructure:"pool_size"`        //浏览器并发上限（按需创建，非常驻数量；改需重启）
 	DirectSize  int               `mapstructure:"direct_pool_size"` //强制直连浏览器并发上限（不经过代理）
-	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"`    //浏览器生命周期
+	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"`    //池内实例的闲置上限：超时回收；0 = 不回收
 	Headless    bool              `mapstructure:"headless"`         //无头模式
 	NoSandbox   bool              `mapstructure:"no_sandbox"`
 	Leakless    bool              `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
@@ -202,7 +205,7 @@ type ProxyConfig struct {
 
 // DBConfig 数据库配置
 type DBConfig struct {
-	Driver          string        `mapstructure:"driver"`             // mysql, postgres etc
+	Driver          string        `mapstructure:"driver"`             // 数据库驱动：目前只支持 "mysql"（别的值启动即报错）
 	DSN             string        `mapstructure:"dsn"`                // 数据源名称
 	MaxIdleConns    int           `mapstructure:"max_idle_conns"`     // 最大空闲连接数
 	MaxOpenConns    int           `mapstructure:"max_open_conns"`     // 最大打开连接数

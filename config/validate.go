@@ -207,8 +207,8 @@ var rules = []rule{
 	}},
 
 	{"error_queue.batch_size", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.BatchSize <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 每批处理多少条；0 = 一条都不处理", c.ErrorQueue.BatchSize)
+		if c.ErrorQueue.Enabled && c.ErrorQueue.BatchSize < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000（分页流式，避免一次性全量加载）", c.ErrorQueue.BatchSize)
 		}
 		return nil
 	}},
@@ -235,8 +235,8 @@ var rules = []rule{
 	}},
 
 	{"recover_queue.batch_size", func(c *Config) error {
-		if c.RecoverQueue.Enabled && c.RecoverQueue.BatchSize <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 每批处理多少条；0 = 一条都不处理", c.RecoverQueue.BatchSize)
+		if c.RecoverQueue.Enabled && c.RecoverQueue.BatchSize < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000", c.RecoverQueue.BatchSize)
 		}
 		return nil
 	}},
@@ -249,8 +249,8 @@ var rules = []rule{
 	}},
 
 	{"repeat_queue.batch_size", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.BatchSize <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 每批处理多少条；0 = 一条都不处理", c.RepeatQueue.BatchSize)
+		if c.RepeatQueue.Enabled && c.RepeatQueue.BatchSize < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000", c.RepeatQueue.BatchSize)
 		}
 		return nil
 	}},

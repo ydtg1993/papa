@@ -151,7 +151,7 @@ return engine.SubmitTask(&papa.Task{
 
 **框架不为更早版本的表结构负责。** 升级跑 `papa migrate` 只做 `AutoMigrate`（建表 / 补列 / 补索引），
 它**不会**替你删旧索引、改列类型、回填数据或删死列 —— 早先版本里那几段"给旧库补课"的显式迁移
-已经删掉了（见 `docs/issues/changes.md`）。
+已经删掉了（见框架仓库的 `docs/issues/changes.md`，那份不随脚手架复制到项目里）。
 
 从更早的框架版本升上来的库，只有两条路：
 

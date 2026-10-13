@@ -3,7 +3,6 @@ package loggers
 import (
 	"github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
-	_ "gopkg.in/natefinch/lumberjack.v2"
 	"os"
 	"path/filepath"
 )
@@ -28,13 +27,12 @@ type LoggerConfig struct {
 	// MaxSize 是日志文件在轮转前的最大大小，单位为兆字节（MB）。默认值为 100 MB。
 	MaxSize int
 
-	// MaxAge 是根据文件名中编码的时间戳保留旧日志文件的最大天数。
-	// 注意，一天定义为 24 小时，可能因夏令时、闰秒等与日历日不完全对应。
-	// 默认不会根据时间删除旧日志文件。
+	// MaxAge 保留旧日志文件的最大天数（一天按 24 小时计）。
+	// **0（或没配）= 用默认的 7 天** —— 注意这不是 lumberjack 那套"0 = 永不删除"：
+	// NewLoggerSet 会把 0 归一成 7，想留久一点就给个大数（比如 3650）。
 	MaxAge int
 
-	// MaxBackups 是保留的旧日志文件的最大数量。默认保留所有旧日志文件
-	//（但 MaxAge 仍可能导致它们被删除）。
+	// MaxBackups 保留的旧日志文件个数。**0（或没配）= 用默认的 3 份**（同上，不是"全留"）。
 	MaxBackups int
 
 	// LocalTime 决定备份文件中时间戳的格式化是否使用计算机的本地时间。默认使用 UTC 时间。

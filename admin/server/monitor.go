@@ -501,7 +501,6 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"status": "ok", "whitelist": nonEmptyStrings(body.Whitelist)})
 }
 
-// shutdownHandler 触发优雅退出（稍延迟以便响应刷出）
 // shutdownHandler 优雅退出。
 //
 // 这是**高危操作**：要求调用方在请求体里把自己的访问令牌再输一遍（`{"token":"..."}`）。
