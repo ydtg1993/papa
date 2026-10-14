@@ -348,8 +348,8 @@ func (e *Engine) ApplyRegisterStage() {
 	// 下载器实例先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一条任务
 	// 可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
 	e.resolveStageDownloads()
-	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
-	e.seedSiteRows()
+	// 站点快照也在这儿备齐（按声明重建、整块写进落点），后台站点 Tab/站点页读它
+	e.buildSiteStats()
 
 	// **先闸住、再投入口任务**（顺序是硬的）：声明了 StartPaused 的站，这一刻整站被暂停 ——
 	// 反过来的话，投进去的头几条可能在"闸还没下"的那个窗口里被 worker 抢去跑掉。

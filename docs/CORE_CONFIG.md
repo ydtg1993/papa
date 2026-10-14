@@ -239,13 +239,20 @@ repeat_queue:
 > 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
 >（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
 
-### crawler_sites —— 站点表（框架自建，不是配置）
+### crawler_config 的 `sites` 键 —— 站点快照（**内存是源，库是投影**）
 
-站点声明与运行统计的落库形态：一行一个站点（站点键必填，没有空 key 那一档）。
-`breaker_paused*` 那对列**只由后台手动暂停/恢复写**（熔断触发不写它），所以它的意思是"被手动停着"。
-启动时按声明播种（行不存在才插入；已存在只刷新 `base_url` / `stage_count`），
-之后由引擎在"熔断暂停/恢复"时按列更新状态。
-它是后台站点 Tab 与站点概要与 `papa migrate` 的产物；**不落 Headers**（里面有 UA/Cookie）。
+站点信息不再单独一张表：它落在 `crawler_config` 的 `cfg_key = sites` 一行上，值是站点数组
+（`key` / `base_url` / `stage_count` / `breaker_paused` / `breaker_paused_at`）。
+
+| 谁 | 什么时候动它 |
+| --- | --- |
+| 引擎启动 | 读这一行：**没有就按声明生成**；有就载入内存。载入后**按当前声明对齐**（站点集合 / `base_url` / `stage_count`；`breaker_paused*` 一律归零 —— 暂停状态**不跨重启**），内容一致就不回写 |
+| 后台点「暂停整站 / 恢复整站」 | 改内存那份 + 整块回写这一行（在读写口那把写锁里做读-改-写） |
+| 后台「站点」页 `/api/monitor` 的 `sites` | **读内存**（读写口的内存缓存），不查库 |
+
+**不要手改这一行**：它是投影，下一次启动重建就把你的改动覆盖掉；`base_url` / `stage_count` 也是
+按声明抄的（改声明要重启，直接改库不生效）。**不落 Headers**（里面有 UA/Cookie）。
+从更早版本升上来的库，`crawler_sites` 那张表已经没有代码再用它了，手工 `DROP TABLE crawler_sites` 即可。
 
 ### business —— 业务自己的配置段（框架不解析）
 
@@ -303,7 +310,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 表结构差异只保证**当前版本新建的库**是对的；从更早版本升上来的库要么手工对齐，要么重建
 —— `papa migrate` 不会替你改。
 
-框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_sites` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config` 总是建；
 `crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则那张表不会建出来。
 

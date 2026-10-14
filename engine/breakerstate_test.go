@@ -1,52 +1,47 @@
 package engine
 
 import (
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
+	"github.com/ydtg1993/papa/v3/internal/workerpool"
 )
 
-// `breaker_paused` **不跨重启**：暂停状态只活在内存里（引擎的暂停信号），
-// 所以启动播种时库里残留的 true 要按"没暂停"算，并把那一对列清掉。
+// `breaker_paused` **不跨重启**：暂停状态只活在内存里（引擎的暂停信号）。
 //
-// 不清的后果：后台横幅与「站点」表一直显示"已暂停"，而点「恢复」只会回"当前不在暂停态" ——
-// 那个 true 自己永远清不掉（只有"先暂停再恢复"两下才能消）。
-func TestSeedSiteRowsClearsStaleBreakerPaused(t *testing.T) {
-	f := newFakeTaskDB()
-	row := siteRow("a")
-	row["breaker_paused"] = true
-	row["breaker_paused_at"] = time.Now().Add(-time.Hour)
-	f.siteRows = []fakeRow{row}
-
-	e := siteEngine(t, f)
-	e.seedSiteRows()
-
-	st := e.GetSiteStats()["a"]
-	if st.BreakerPaused || !st.BreakerPausedAt.IsZero() {
-		t.Fatalf("启动后不该还显示「熔断已闸住」：%+v", st)
+// 这条以前靠"启动时把库里残留的 true 清掉"实现（那对列 + 两条 UPDATE），现在靠
+// **启动按声明整块重建**（buildSiteStats）从结构上成立 —— 重建出来的快照一律是"没暂停"，
+// 上一次留下的 true 没有回来的路。落点是同一份（模拟同一个库），引擎是新的（模拟重启）。
+func TestSiteSnapshotResetsPauseStateOnRestart(t *testing.T) {
+	store := &fakeSiteStore{}
+	newEngine := func() *Engine {
+		e := queueEngine(t, newFakeTaskDB(), workerpool.NewWorkerPool[*Task](1, 8, 1))
+		e.SetSite(core.Site{Key: "a"})
+		e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
+		e.SetSiteStore(store)
+		return e
 	}
-	sql := f.written()
-	if !strings.Contains(sql, "`breaker_paused`") {
-		t.Fatalf("库里残留的 true 应当被清掉：\n%s", sql)
-	}
-	if !strings.Contains(sql, "`breaker_paused_at`") {
-		t.Fatalf("与 ResumeSite 一致：解闸要把这一对列一起清（别留个孤零零的时间）：\n%s", sql)
-	}
-}
 
-// 没暂停过的行不该被多写一次：启动播种只在库里真写着 true 时才动这一对列。
-func TestSeedSiteRowsLeavesUnpausedRowsAlone(t *testing.T) {
-	f := newFakeTaskDB()
-	f.siteRows = []fakeRow{siteRow("a")} // breaker_paused = false
-	e := siteEngine(t, f)
-	e.seedSiteRows()
+	first := newEngine()
+	first.buildSiteStats()
+	if !first.PauseSite("a", "人工暂停") {
+		t.Fatal("暂停应当成功")
+	}
+	if !store.snapshot()[0].BreakerPaused {
+		t.Fatalf("落点里该记着暂停：%+v", store.snapshot())
+	}
 
-	for _, stmt := range strings.Split(f.written(), "\n") {
-		if strings.HasPrefix(stmt, "UPDATE") && strings.Contains(stmt, "breaker_paused") {
-			t.Fatalf("没暂停过的行不该被写 breaker_paused：\n%s", stmt)
-		}
+	// "重启"：同一份落点、新的引擎
+	second := newEngine()
+	second.buildSiteStats()
+
+	if st := second.GetSiteStats()["a"]; st.BreakerPaused || !st.BreakerPausedAt.IsZero() {
+		t.Fatalf("重启后不该还显示「已暂停」：%+v", st)
+	}
+	if store.snapshot()[0].BreakerPaused {
+		t.Fatalf("落点里那份也不该还留着上次的暂停态：%+v", store.snapshot())
 	}
 }
 

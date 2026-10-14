@@ -11,13 +11,15 @@ import (
 )
 
 // 引擎测试跑的是假库（不解析 SQL），所以"这条 SQL 能不能被 MySQL 认"这一层以前只能等真跑才发现 ——
-// 两个坑就是这么漏过去的：**`repeat`（crawler_tasks）与 `key`（crawler_sites）都是 MySQL 保留字**，
-// 裸写进 SQL 直接被当成关键字 / 函数，整条语句 Error 1064（在真库上逐条验过）：
+// 那个坑就是这么漏过去的：**`repeat`（crawler_tasks）是 MySQL 保留字**，裸写进 SQL 直接被当成
+// 关键字 / 函数，整条语句 Error 1064（在真库上逐条验过）：
 //
-//	SELECT repeat + 1 ...             → Error 1064     SELECT `repeat` + 1 ...   → ok
-//	SELECT count(*) ... WHERE key='x' → Error 1064     ... WHERE `key` = 'x'     → ok
+//	SELECT repeat + 1 ...  → Error 1064     SELECT `repeat` + 1 ...  → ok
 //
-// 这里用 gorm 的 DryRun（**不连库**，只借 mysql 方言把语句拼出来）钉住生产路径那两条语句的列名带引号。
+// （另一半历史：`key` 曾经也是（crawler_sites 那一列）—— 那张表已经并进 `crawler_config` 的 `sites` 键，
+// 这个坑随表一起消失了。扫描式的守卫见 sqlreserved_test.go。）
+//
+// 这里用 gorm 的 DryRun（**不连库**，只借 mysql 方言把语句拼出来）钉住生产路径那条语句的列名带引号。
 // 往裸 SQL 里再加列名时，这条会提醒一句"保留字要引号"。
 func TestReservedWordColumnsAreQuotedInRawSQL(t *testing.T) {
 	db := dryRunMySQL(t)
@@ -29,15 +31,6 @@ func TestReservedWordColumnsAreQuotedInRawSQL(t *testing.T) {
 		})
 		if !strings.Contains(sql, "`repeat`=`repeat` + 1") {
 			t.Errorf("`repeat` 是保留字，裸写会 1064；拼出来应当是带引号的：%s", sql)
-		}
-	})
-
-	t.Run("站点行：key 作为条件", func(t *testing.T) {
-		sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
-			return siteKeyScope(tx, "example").Updates(map[string]any{"base_url": "https://x/"})
-		})
-		if !strings.Contains(sql, "`key` = ?") {
-			t.Errorf("`key` 是保留字，裸写会 1064；拼出来应当是带引号的：%s", sql)
 		}
 	})
 }

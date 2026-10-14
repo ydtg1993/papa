@@ -26,6 +26,8 @@ import (
 //
 // 这坑真踩过两次，都在已发布版本里：`repeat`（crawler_tasks，v3.1.0 起，写 `repeat + 1`）
 // 与 `key`（crawler_sites，v3.2.0 起，写 `Where("key = ?")`）—— 见 CHANGELOG「修复 6」。
+// （`crawler_sites` 后来并进了 `crawler_config` 的 `sites` 键，`key` 这一列没了；
+// 判据是从 models 反射出来的，所以它自动跟着走，不用改清单。）
 // 引擎测试跑的是假库（不解析 SQL），所以这类错只能靠"扫源码"或"真库跑一次"发现；这里做前者。
 //
 // 判据**不靠手写清单**：
@@ -58,13 +60,11 @@ func TestRawSQLQuotesReservedWordColumns(t *testing.T) {
 		lit  string
 		want bool
 	}{
-		{dq + "key = ?" + dq, true},                     // 就是踩过的那个
-		{dq + "repeat + 1" + dq, true},                  // 另一个
-		{dq + tick + "key" + tick + " = ?" + dq, false}, // 加了引号
-		{dq + tick + "repeat" + tick + " + 1" + dq, false},
-		{dq + "repeat" + dq, false},                  // map 键那种单字面量（gorm 自己会加引号）
-		{dq + "ON DUPLICATE KEY UPDATE" + dq, false}, // SQL 关键字（大写）不算
-		{dq + "idempotency_key = ?" + dq, false},     // 别的列名里含 key
+		{dq + "repeat + 1" + dq, true},                     // 真踩过的那个
+		{dq + tick + "repeat" + tick + " + 1" + dq, false}, // 加了引号
+		{dq + "repeat" + dq, false},                        // map 键那种单字面量（gorm 自己会加引号）
+		{dq + "ON DUPLICATE KEY UPDATE" + dq, false},       // SQL 关键字（大写）不算
+		{dq + "repeat_interval = ?" + dq, false},           // 别的列名里含 repeat（词边界要认对）
 	} {
 		if got := len(bareReserved(c.lit, mustQuote)) > 0; got != c.want {
 			t.Errorf("探针 %s：bareReserved = %v, want %v", c.lit, got, c.want)

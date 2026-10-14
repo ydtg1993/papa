@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
+	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/database"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/datatypes"
@@ -53,6 +55,32 @@ var registry = map[string]Spec{
 		Default:  []string{},
 		Validate: validateStringSlice,
 	},
+	KeySites: {
+		Key: KeySites,
+		Doc: "站点快照（Key / BaseURL / 阶段数 + 运行期暂停状态）；**引擎按声明重建**、" +
+			"暂停/恢复时整块回写，不是给人手改的配置",
+		Default:  []core.SiteStat{},
+		Validate: validateSiteStats,
+	},
+}
+
+// validateSiteStats 形状校验：站点数组（`[]core.SiteStat`，或 JSON 解出来的 []any 里全是对象）。
+//
+// 与 validateStringSlice 同一条分工：**只管形状**，不管"哪些站点该在里面"—— 那是引擎与声明的事。
+func validateSiteStats(v any) error {
+	switch t := v.(type) {
+	case []core.SiteStat:
+		return nil
+	case []any:
+		for i, item := range t {
+			if _, ok := item.(map[string]any); !ok {
+				return fmt.Errorf("第 %d 项不是对象（%T）", i+1, item)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("要的是站点数组，实得 %T", v)
+	}
 }
 
 // validateStringSlice 形状校验：字符串数组（[]string，或 JSON 解出来的 []any 里全是 string）。
@@ -92,7 +120,17 @@ func Keys() []string {
 }
 
 // Store 一张表的读写口。
-type Store struct{ db *gorm.DB }
+//
+// 除了直连库的 Load / Save，它还有一层**内存缓存**（cache.go）：读优先走内存、写时先落库再更新内存。
+type Store struct {
+	db *gorm.DB
+
+	// mu 保护 cache。**写锁要覆盖"读-改-写"的整段**（见 UpdateSites）——
+	// 值是一整块 JSON，RMW 分成两次加锁就会互相盖。
+	// 读锁只服务"命中缓存"这条快路径（监控页每 3 秒一刷）：miss 与所有写都走写锁。
+	mu    sync.RWMutex
+	cache map[string]cached
+}
 
 // New 造一个读写口。不连库、不检查表 —— 表的存在性由 EnsureTable 单独把关（启动期那一步）。
 func New(db *gorm.DB) *Store { return &Store{db: db} }

@@ -23,8 +23,7 @@ func FrameworkModels(cfg *config.Config) []Model {
 	out := []Model{
 		{Name: "crawler_tasks", Value: &models.CrawlerTask{}},
 		{Name: "crawler_access_token", Value: &models.AccessToken{}},
-		{Name: "crawler_sites", Value: &models.CrawlerSite{}},
-		// 运行期配置（来源 IP 白名单等）。**无条件登记**：它是后台设置页的落点，
+		// 运行期配置（来源 IP 白名单、站点快照等）。**无条件登记**：它是后台设置页与站点页的落点，
 		// 而且"表在不在"不该取决于某个开关 —— 时有时无会让排查变成猜谜。
 		{Name: "crawler_config", Value: &models.Config{}},
 	}

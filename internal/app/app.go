@@ -50,6 +50,9 @@ type App struct {
 	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
 	cancel      context.CancelFunc
 	sites       map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
+	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
+	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
+	configStore *configstore.Store
 }
 
 // Option 应用初始化选项
@@ -333,6 +336,10 @@ func NewApp(opts ...Option) (*App, error) {
 	a.Logger = &loggerSet
 	a.DB = db
 	a.Engine = eng
+	a.configStore = configstore.New(db)
+	// 站点快照的落点：引擎按声明重建、暂停/恢复时整块回写，读走内存
+	//（`crawler_config` 的 `sites` 键，见 admin/configstore/sites.go 与 engine/sitestat.go）。
+	a.Engine.SetSiteStore(a.configStore)
 	return a, nil
 }
 
@@ -523,7 +530,7 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 	// 来源白名单存在 crawler_config 表里（运行期可在设置页改），不在 config.yaml —— 配置里写旧键
 	// （server.whitelist / whitelist_file）会在**配置校验**那一关就拒绝启动：未知键一律拒收。
-	whitelistStore := configstore.New(a.DB)
+	whitelistStore := a.configStore // 与站点快照共用同一个读写口（同一份内存缓存）
 	if err := whitelistStore.EnsureTable(); err != nil {
 		// 表不存在就直接起不来。少了它白名单会**静默失效**（读不到 = 不限制来源），一个字都不报 ——
 		// 而"起不来"至少把问题摆在运维面前（报错里点名 `papa migrate`）。
@@ -644,7 +651,7 @@ func (a *App) httpServer(ctx context.Context) {
 	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
 	tables := append([]oao.Table{
 		tasksource.Table(a.DB, a.Engine),
-		sitesource.Table(a.DB), // 站点信息（只读：key/base_url/阶段数/熔断状态）
+		sitesource.Table(a.Engine.GetSiteStats), // 站点信息（只读：内存快照，不走 SQL）
 	}, a.tables...)
 	cfgOao := oao.Config{
 		Tables: tables,

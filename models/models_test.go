@@ -59,7 +59,6 @@ func TestTableNames(t *testing.T) {
 		got, want string
 	}{
 		{AccessToken{}.TableName(), "crawler_access_token"},
-		{CrawlerSite{}.TableName(), "crawler_sites"},
 		{OperationLog{}.TableName(), "crawler_operation_log"},
 		{TaskTrace{}.TableName(), "crawler_task_trace"},
 	}

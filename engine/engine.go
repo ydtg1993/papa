@@ -70,10 +70,10 @@ type Engine struct {
 	delayHeap delayHeap  // 延迟投递最小堆
 	delayCh   chan struct{}
 
-	// siteStats 各站点的快照（站点信息 + 慢变统计）：启动播种时填，之后每次写库同步更新；
-	// 监控页读它（不查库）。库那一份在 crawler_sites 表（见 sitestat.go）。
-	siteStats map[string]core.SiteStat
-	siteMu    sync.RWMutex
+	// siteStore 站点快照的落点（内存优先 + 落库投影），由 internal/app 注入 —— 见 sitestat.go。
+	// 引擎自己不持有站点数据：那份"内存"在落点的缓存里（configstore 的 `sites` 键），
+	// 于是"监控页读内存、不查库"与"库里那份是投影"这两件事只有一份实现。
+	siteStore SiteStore
 
 	// errorQueue / repeatQueue 失败重投与周期轮询队列：各**一条全局队列**（不再按站点拆）。
 	// 运行态在 NewEngine 里建好，之后只读。

@@ -2,23 +2,39 @@ package engine
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/models"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
-// 站点表与站点快照（见 models/crawler_site.go 与 core.SiteStat）。
+// sitesKeyName 站点快照在 crawler_config 里的键（admin/configstore 的 KeySites ——
+// 但本包不 import admin/*，所以只借这个名字打日志）。
+const sitesKeyName = "sites"
+
+// 站点快照：**内存是源，库是投影**。
 //
-// 分工：**库是站点信息与慢变统计的落点**（后台「站点」页与站点 Tab 的数据源），
-// 内存里那份（e.siteStats）供监控页 3 秒一刷 —— 与治理队列同一套：请求路径不查库。
-// 写入点只有两处，都不在监控请求路径上：启动播种、熔断暂停/恢复。
+// 这份数据只有两类 —— ①声明里抄来的（Key / BaseURL / 阶段数）②运行期的暂停状态。两者的真源
+// 都在引擎里（声明 + 暂停信号），落库那一份是给"要 SQL 查的运行期状态"留的投影
+// （papa 把它放在 `crawler_config` 的 `sites` 键上，见 admin/configstore）。
+//
+// 落点通过 SiteStore 注入，所以本包不 import admin/*，也不认识那张表：
+//   - `Sites()` 读快照（内存优先，命中不查库）—— 监控页 3 秒一刷走这条；
+//   - `SetSites()` 整块写（启动播种）；
+//   - `UpdateSites()` 在**落点那一层的写锁里**读-改-写（暂停/恢复）—— 整块 JSON 的 RMW 必须原子，
+//     否则两次并发改不同站点会互相盖掉。
+type SiteStore interface {
+	Sites() ([]core.SiteStat, error)
+	SetSites(rows []core.SiteStat) error
+	UpdateSites(fn func(rows []core.SiteStat) []core.SiteStat) error
+}
+
+// SetSiteStore 注入站点快照的落点。**由 internal/app 在造引擎后立刻调一次**；
+// 没注入时站点相关的能力退化成"空快照 + 不落库"（手工拼的 Engine、部分单测）。
+func (e *Engine) SetSiteStore(s SiteStore) { e.siteStore = s }
 
 // siteKeys 所有站点键，按字典序。**没有"默认 scope"那一档**：站点是必填维度 ——
-// 声明必须有 Key（validateSites 拒没有 Key 的声明）、任务必须有 site（SubmitTask 拒空串），
-// 所以这张表里只会是声明过的站点。
+// 声明必须有 Key（validateSites 拒没有 Key 的声明）、任务必须有 site（SubmitTask 拒空串）。
 func (e *Engine) siteKeys() []string {
 	e.breakerMu.Lock()
 	keys := make([]string, 0, len(e.sites))
@@ -30,7 +46,7 @@ func (e *Engine) siteKeys() []string {
 	return keys
 }
 
-// stageCountOfSite 本站声明了几个阶段（站点表里那一列的来源）。
+// stageCountOfSite 本站声明了几个阶段（站点快照里那一列的来源）。
 func (e *Engine) stageCountOfSite(site string) int {
 	n := 0
 	for _, info := range e.stages {
@@ -41,105 +57,167 @@ func (e *Engine) stageCountOfSite(site string) int {
 	return n
 }
 
-// siteKeyScope 定位某个站点行的条件。**`key` 是 MySQL 保留字**：裸写进 SQL 会被当成关键字，
-// 整条语句报 Error 1064（真库实测，见 engine/sqlshape_test.go）—— 引号只写在这一处，各调用点共用。
-func siteKeyScope(db *gorm.DB, key string) *gorm.DB {
-	return db.Model(&models.CrawlerSite{}).Where("`key` = ?", key)
-}
-
-// seedSiteRows 启动期按声明把站点行备齐（单线程段调用）。
+// buildSiteStats 启动期把站点快照备齐（单线程段调用）：**读 `crawler_config` 的 `sites` 那一行 ——
+// 没有就按声明生成，有就把值放进内存**（这次读会把内存缓存也填上，之后监控页与站点页都走内存）。
 //
-// 规则：**声明只播种** —— 行不存在就按声明插入；已存在则只刷新 base_url / stage_count。
-// 读库失败（比如还没跑 migrate）不让启动失败：内存快照退化成"只有声明里的信息"，
-// 并留一条 Error —— 框架启动时本来就有"该有的表在不在"的检查，这条只是把原因说清楚。
-func (e *Engine) seedSiteRows() {
-	existing := map[string]models.CrawlerSite{}
-	var rows []models.CrawlerSite
-	if err := e.db.Find(&rows).Error; err != nil {
-		e.loggerSet.Engine.Errorf("load crawler_sites: %s（先跑一次 `papa migrate` 建表；这次启动站点信息按声明走）", err.Error())
-	} else {
-		for _, r := range rows {
-			existing[r.Key] = r
-		}
+// 读回来之后要**按当前声明对齐**，因为声明是站点集合与那两个字段的源：
+//   - 声明里有、行里没有的站 → 补上；
+//   - 行里有、声明里已经删掉的站 → 丢掉（否则后台会显示一个不存在的站）；
+//   - `base_url` / `stage_count` → 按声明刷新（文档里那句"改声明要重启、直接改库不生效"就是这条）；
+//   - `breaker_paused*` → **一律按"没暂停"算**：暂停状态不跨重启（暂停信号只活在内存里），
+//     读回旧值等于把上一次的暂停态带回来 —— 那是行为回退。
+//
+// 对齐之后**内容一致就不回写**（一次正常启动不该让 `updated_at` 往前跳），不一致（或那一行压根不在）
+// 才写一次。落点读写失败都不让启动失败（与"读不到配置就用声明"同一取向）：内存缓存里那份仍然是
+// 声明算出来的，只是库里的投影暂时落后，后台「站点」页与外部 SQL 看到的是上一次的样子。
+func (e *Engine) buildSiteStats() {
+	if e.siteStore == nil {
+		return
+	}
+	want := e.declaredSiteStats()
+
+	cur, err := e.siteStore.Sites() // 没有这一行时是空切片，不会报错
+	if err != nil {
+		e.loggerSet.Engine.Warnf("load sites snapshot: %s（按声明走，库里那份这次没读到）", err.Error())
+		return
+	}
+	switch {
+	case len(cur) == 0:
+		e.loggerSet.Engine.Infof("站点快照：crawler_config 里没有 %s 这一行，按声明生成 %d 条", sitesKeyName, len(want))
+	case !sameSiteStats(cur, want):
+		e.loggerSet.Engine.Infof("站点快照：库里那份与当前声明不一致（%s），已按声明对齐 %d 条",
+			siteStatsDiff(cur, want), len(want))
+	default:
+		e.loggerSet.Engine.Infof("站点快照：已从 crawler_config 载入 %d 条（与声明一致）", len(cur))
+		return // 一致：不动库
 	}
 
-	next := make(map[string]core.SiteStat, len(e.sites))
+	if err := e.siteStore.SetSites(want); err != nil {
+		e.loggerSet.Engine.Warnf("save sites snapshot: %s（后台「站点」页与外部 SQL 看到的是上一次的快照）", err.Error())
+	}
+}
+
+// declaredSiteStats 按声明算出来的那一份快照（暂停态一律"没暂停"，见 buildSiteStats）。
+func (e *Engine) declaredSiteStats() []core.SiteStat {
+	rows := make([]core.SiteStat, 0, len(e.sites))
 	for _, key := range e.siteKeys() {
 		site, _ := e.Site(key) // 取不到就是零值（声明里有、引擎里还没登记）
-		stat := core.SiteStat{
+		rows = append(rows, core.SiteStat{
 			Key:        key,
 			BaseURL:    site.BaseURL,
 			StageCount: e.stageCountOfSite(key),
-		}
-		row, exists := existing[key]
-		switch {
-		case !exists:
-			created := models.CrawlerSite{
-				Key: key, BaseURL: stat.BaseURL, StageCount: stat.StageCount,
-			}
-			// 两个进程同时首启时，唯一键冲突就跳过（另一进程已经建好了），不必报错
-			if err := e.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&created).Error; err != nil {
-				e.loggerSet.Engine.Errorf("create crawler_sites row %q: %s", key, err.Error())
-			}
-		default:
-			if err := siteKeyScope(e.db, key).
-				Updates(map[string]any{"base_url": stat.BaseURL, "stage_count": stat.StageCount}).Error; err != nil {
-				e.loggerSet.Engine.Warnf("refresh crawler_sites row %q: %s", key, err.Error())
-			}
-		}
-		// breaker_paused **不跨重启**：暂停状态只活在内存里（引擎的暂停信号），
-		// 所以这一对列一律按"没暂停"算。库里残留的 true 还要**清掉**，否则后台横幅与「站点」表会
-		// 一直显示"熔断已闸住"，而点「恢复」时闸门只会回"当前不在暂停态" —— 那个 true 自己永远
-		// 清不掉（只有"先暂停再恢复"两下才能消）。写法与 ResumeSite 一致：解闸就把这一对一起清。
-		if row.BreakerPaused {
-			if err := siteKeyScope(e.db, key).Updates(map[string]any{
-				"breaker_paused": false, "breaker_paused_at": nil,
-			}).Error; err != nil {
-				e.loggerSet.Engine.Warnf("clear stale breaker_paused for %q: %s", key, err.Error())
-			}
-		}
-		next[key] = stat
+		})
 	}
-
-	e.siteMu.Lock()
-	e.siteStats = next
-	e.siteMu.Unlock()
+	return rows
 }
 
-// GetSiteStats 返回各站点的快照（纯内存，供监控页高频拉取）。
+// sameSiteStats 两份快照内容是否一致（按站点键比；两份都按站点键升序，见 siteKeys / configstore.Sites）。
+func sameSiteStats(a, b []core.SiteStat) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// siteStatsDiff 一句话说清哪里不一样（给启动日志用）：多了哪些站、少了哪些站、哪些字段变了。
+func siteStatsDiff(cur, want []core.SiteStat) string {
+	have := make(map[string]core.SiteStat, len(cur))
+	for _, r := range cur {
+		have[r.Key] = r
+	}
+	var missing, extra, changed []string
+	for _, r := range want {
+		got, ok := have[r.Key]
+		switch {
+		case !ok:
+			missing = append(missing, r.Key)
+		case got.BaseURL != r.BaseURL || got.StageCount != r.StageCount:
+			changed = append(changed, r.Key)
+		case got.BreakerPaused || !got.BreakerPausedAt.IsZero():
+			changed = append(changed, r.Key+"(暂停态)")
+		}
+	}
+	for _, r := range cur {
+		if _, ok := lookupSite(want, r.Key); !ok {
+			extra = append(extra, r.Key)
+		}
+	}
+	parts := make([]string, 0, 3)
+	if len(missing) > 0 {
+		parts = append(parts, "新增/缺失 "+strings.Join(missing, ","))
+	}
+	if len(extra) > 0 {
+		parts = append(parts, "声明里已没有 "+strings.Join(extra, ","))
+	}
+	if len(changed) > 0 {
+		parts = append(parts, "字段变了 "+strings.Join(changed, ","))
+	}
+	if len(parts) == 0 {
+		return "顺序或条数"
+	}
+	return strings.Join(parts, "；")
+}
+
+// lookupSite 在快照里找一个站点。
+func lookupSite(rows []core.SiteStat, key string) (core.SiteStat, bool) {
+	for _, r := range rows {
+		if r.Key == key {
+			return r, true
+		}
+	}
+	return core.SiteStat{}, false
+}
+
+// GetSiteStats 返回各站点的快照（内存优先，命中不查库）。监控页 3 秒一刷走这条。
 func (e *Engine) GetSiteStats() map[string]core.SiteStat {
-	e.siteMu.RLock()
-	defer e.siteMu.RUnlock()
-	out := make(map[string]core.SiteStat, len(e.siteStats))
-	for k, v := range e.siteStats {
-		out[k] = v
+	if e.siteStore == nil {
+		return map[string]core.SiteStat{}
+	}
+	rows, err := e.siteStore.Sites()
+	if err != nil {
+		e.loggerSet.Engine.Warnf("load sites snapshot: %s", err.Error())
+		return map[string]core.SiteStat{}
+	}
+	out := make(map[string]core.SiteStat, len(rows))
+	for _, r := range rows {
+		out[r.Key] = r
 	}
 	return out
 }
 
-// writeSiteBreakerState 熔断暂停/恢复时写站点表（暂停时间 = 那一刻；恢复时清掉）。
+// writeSiteBreakerState 暂停/恢复时把那一站的状态写进快照（整块替换，暂停时间 = 那一刻）。
+//
+// 读-改-写在**落点那一层的写锁**里完成（`UpdateSites`）：这里两次调用并发改不同站点时，
+// 后写的那次不能把前一次的结果抹平 —— 值是一整块 JSON，RMW 分两次加锁就有这个窗口。
+//
+// 落点写失败只记 WARN：暂停/恢复是**控制面**动作，内存（暂停信号）才是闸门的判据 ——
+// 不该因为"给外部看的投影"写不进去就停不下来。真要强一致（写库失败 = 操作失败），
+// 把这里的错误往上抛给 PauseSite 即可，但那会让 DB 抖动变成"停不住"。
 func (e *Engine) writeSiteBreakerState(site string, paused bool) {
-	e.siteMu.Lock()
-	stat, ok := e.siteStats[site]
-	if ok {
-		stat.BreakerPaused = paused
-		if paused {
-			stat.BreakerPausedAt = time.Now()
-		} else {
-			stat.BreakerPausedAt = time.Time{}
-		}
-		e.siteStats[site] = stat
-	}
-	e.siteMu.Unlock()
-	if !ok {
+	if e.siteStore == nil {
 		return
 	}
-
-	updates := map[string]any{"breaker_paused": paused, "breaker_paused_at": nil}
-	if paused {
-		updates["breaker_paused_at"] = time.Now()
-	}
-	if err := siteKeyScope(e.db, site).Updates(updates).Error; err != nil {
-		e.loggerSet.Engine.Warnf("save crawler_sites breaker state for %q: %s", site, err.Error())
+	at := time.Now()
+	err := e.siteStore.UpdateSites(func(rows []core.SiteStat) []core.SiteStat {
+		for i := range rows {
+			if rows[i].Key != site {
+				continue
+			}
+			rows[i].BreakerPaused = paused
+			if paused {
+				rows[i].BreakerPausedAt = at
+			} else {
+				rows[i].BreakerPausedAt = time.Time{}
+			}
+		}
+		return rows
+	})
+	if err != nil {
+		e.loggerSet.Engine.Warnf("save sites breaker state for %q: %s", site, err.Error())
 	}
 }

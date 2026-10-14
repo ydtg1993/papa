@@ -185,21 +185,21 @@ func TestStartPausedOnlyAffectsDeclaredSites(t *testing.T) {
 
 // 人工暂停**不跨重启**：进程重启即恢复运行（起进程本身就是一次人工介入）。
 //
-// 两边都要成立：新引擎的内存里没有暂停（构造上就没有），而库里残留的 true 会被启动播种清掉
-// （`seedSiteRows` 那半边在 breakerstate_test.go 里另有专测）。
+// 两边都要成立：新引擎的内存里没有暂停（构造上就没有），而落点里残留的 true 会被启动重建覆盖
+// （`buildSiteStats` 那半边在 breakerstate_test.go 里另有专测）。
 func TestPauseDoesNotSurviveRestart(t *testing.T) {
 	f := newFakeTaskDB()
 	first := siteEngine(t, f)
 	first.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
-	first.seedSiteRows()
+	first.buildSiteStats()
 	if !first.PauseSite("a", "人工暂停") {
 		t.Fatal("暂停应当成功")
 	}
 
-	// "重启"：同一份库上起一台新引擎
+	// "重启"：同一份落点上起一台新引擎（同样的接线：SetSiteStore）
 	second := siteEngine(t, f)
 	second.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
-	second.seedSiteRows()
+	second.buildSiteStats()
 
 	if second.isPaused(pauseScope{Site: "a", Stage: "catalog"}) {
 		t.Fatal("重启后不该还停着（人工暂停不跨重启）")
