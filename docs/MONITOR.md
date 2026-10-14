@@ -446,8 +446,8 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 ```jsonc
 "sites": {
-  "huangguo": {
-    "key": "huangguo", "base_url": "https://example.com/", "stage_count": 3,
+  "example": {
+    "key": "example", "base_url": "https://example.com/", "stage_count": 3,
     "breaker_paused": false, "breaker_paused_at": "0001-01-01T00:00:00Z"
   }
 }
@@ -539,7 +539,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 "breakers": [
   {
     "enabled": true,
-    "site": "huangguo",    // 哪个站（站点是必填维度，没有空键那一档）
+    "site": "example",    // 哪个站（站点是必填维度，没有空键那一档）
     "window": 300000000000, // duration 是纳秒
     "threshold": 50,
     "in_window": 12,        // 实时值：当前窗口内的终态失败数
@@ -583,13 +583,13 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/entries/trigger` | 点火。请求体 `{"site":"yeguodj","stage":"catalog"}`（也认 `?site=&stage=`，给脚本用）。成功回 `{"status":"ok","site":…,"stage":…}`；**点不动的原因一律 409 + 引擎那句话**：没入口 / 它是 auto / 引擎还没就绪 / 已有一次在跑 |
+| POST | `/api/entries/trigger` | 点火。请求体 `{"site":"example","stage":"catalog"}`（也认 `?site=&stage=`，给脚本用）。成功回 `{"status":"ok","site":…,"stage":…}`；**点不动的原因一律 409 + 引擎那句话**：没入口 / 它是 auto / 引擎还没就绪 / 已有一次在跑 |
 | GET | `/api/monitor` 的 `entries` | 各站点入口阶段的快照（数组，按站点 → 阶段排序，见下） |
 
 ```jsonc
 "entries": [
   {
-    "site": "yeguodj",
+    "site": "example",
     "stage": "catalog",
     "mode": "manual",              // 入口模式：auto（启动已投过）/ manual（等后台点火）
     "last_triggered_at": "…",      // 上次**手动点火**的时刻；零值 = 从未（启动自动投的那次不算）
@@ -610,7 +610,7 @@ fetcher 里调 `engine.RecordMetric("key", value)`，监控页「自定义数据
 
 | 接口 | 形态 |
 | --- | --- |
-| HTTP | `/api/breaker/pause` 与 `/api/breaker/resume` 都认一个可选 `stage`：`{"scope":"yeguodj","stage":"catalog"}`（只动那一个阶段；**给了 `stage` 没给 `scope` 回 400**） |
+| HTTP | `/api/breaker/pause` 与 `/api/breaker/resume` 都认一个可选 `stage`：`{"scope":"example","stage":"catalog"}`（只动那一个阶段；**给了 `stage` 没给 `scope` 回 400**） |
 | 引擎 | `Engine.PauseStage(site, stage, reason)` / `Engine.ResumeStage(site, stage)`；读状态用 `Engine.StageEntries()` 里的 `paused` / `pause_source` |
 | 前端 | 静态文件里的 `pauseCrawling(site, stage)` / `resumeCrawling(site, stage)` 也是这个签名，注进来的页可以直接调 |
 

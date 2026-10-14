@@ -328,7 +328,7 @@ func TestRunNewRejectsBadModuleName(t *testing.T) {
 // 不兜的话 `func type() papa.SiteSpec` 这类语法错会以"模板改坏了？"的形式报出来。
 func TestSanitizeIdentAvoidsKeywords(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
-		{"huangguo", "huangguo"},
+		{"example", "example"},
 		{"my-site", "my_site"},
 		{"123abc", "site123abc"},
 		{"type", "typeSite"},

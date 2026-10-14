@@ -661,7 +661,7 @@
     }
     // site 省略 = 全部放行（多站时后台横幅上的「全部恢复」）；stage 省略 = 那一站的整站那一层。
     // `stage` 这一档框架自带的界面**不用**（卡片只做到站点级），它是留给业务自己接的：
-    // 注进来的页/脚本调 `pauseCrawling('yeguodj', 'catalog')` 就能只掐那一个阶段。
+    // 注进来的页/脚本调 `pauseCrawling('example', 'catalog')` 就能只掐那一个阶段。
     async function resumeCrawling(site, stage) {
         var body = site ? { scope: site } : {};
         if (site && stage) body.stage = stage;

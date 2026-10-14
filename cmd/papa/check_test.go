@@ -10,12 +10,12 @@ import (
 // 生成的校验程序：必须在**项目内**（配置与站点声明都是项目自己的包/文件），
 // import 项目的 sites（让 init() 登记跑起来），只调框架的纯校验。
 func TestCheckProgramContent(t *testing.T) {
-	src := checkProgram("huangguo", "E:/x/huangguo/configs/config.yaml")
+	src := checkProgram("demo", "E:/x/demo/configs/config.yaml")
 	for _, want := range []string{
-		`_ "huangguo/sites"`,                  // 匿名导入：站点声明自己登记
-		"papa.Sites()",                        // 收集到的声明
-		"papa.CheckSites(cfg, sites...)",      // 只调纯校验（不连库）
-		`"E:/x/huangguo/configs/config.yaml"`, // 配置用绝对路径（程序的工作目录是项目根）
+		`_ "demo/sites"`,                  // 匿名导入：站点声明自己登记
+		"papa.Sites()",                    // 收集到的声明
+		"papa.CheckSites(cfg, sites...)",  // 只调纯校验（不连库）
+		`"E:/x/demo/configs/config.yaml"`, // 配置用绝对路径（程序的工作目录是项目根）
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("生成的校验程序里应当有 %q：\n%s", want, src)
@@ -29,9 +29,9 @@ func TestCheckProgramContent(t *testing.T) {
 // --boot 那版：要真的走启动路径（New + RegisterSites），但**绝不能 Run** ——
 // Run 会投入口任务、跑启动恢复、开 HTTP 服务，那就不是"确认注册那条链"而是"起爬虫"了。
 func TestBootProgramContent(t *testing.T) {
-	src := bootProgram("huangguo", "E:/x/huangguo/configs/config.yaml")
+	src := bootProgram("demo", "E:/x/demo/configs/config.yaml")
 	for _, want := range []string{
-		`_ "huangguo/sites"`,
+		`_ "demo/sites"`,
 		"papa.New(papa.WithConfigPath(configPath))", // 读配置 + 连库 + 建引擎
 		"app.RegisterSites(sites...)",               // 要确认的就是这条
 		"app.Engine.Site(s.Key)",                    // 接线也核一遍：站点真的进了引擎

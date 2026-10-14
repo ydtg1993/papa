@@ -164,14 +164,14 @@ func TestPlanStageRejects(t *testing.T) {
 // 合法声明：算出来的计划带上阶段名、站点归属与解析好的参数。
 func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
 	owner := map[string]string{}
-	plan, err := planStage(SiteSpec{Key: "huangguo"}.snapshot(), StageSpec{
+	plan, err := planStage(SiteSpec{Key: "example"}.snapshot(), StageSpec{
 		Fetcher: stubStageFetcher{}, WorkerCount: 1, QueueSize: 8,
 		Delay: "10s-30s", Retry: RetrySpec{MaxAttempts: 2, Backoff: "30s"},
 	}, owner)
 	if err != nil {
 		t.Fatalf("合法声明不该报错：%v", err)
 	}
-	if plan.stage != "review" || plan.cfg.Site != "huangguo" {
+	if plan.stage != "review" || plan.cfg.Site != "example" {
 		t.Fatalf("计划不对：%+v", plan)
 	}
 	if plan.cfg.Delay.Min != 10*time.Second || plan.cfg.Delay.Max != 30*time.Second {
@@ -180,7 +180,7 @@ func TestPlanStageAcceptsAndFillsPlan(t *testing.T) {
 	if plan.cfg.Backoff != 30*time.Second || plan.cfg.MaxAttempts != 2 {
 		t.Fatalf("Retry 没解析进计划：%+v", plan.cfg)
 	}
-	if owner[core.StageKey("huangguo", "review")] == "" {
+	if owner[core.StageKey("example", "review")] == "" {
 		t.Fatal("阶段名应登记到 owner（同站重名靠它查）")
 	}
 	// 未给参数时的默认：不延迟 + 退避 1s + 尝试 3 次
@@ -200,8 +200,8 @@ func TestPlanSitesScopesStageNameBySite(t *testing.T) {
 		return StageSpec{Fetcher: stageNamed{"catalog"}, WorkerCount: 1, QueueSize: 8}
 	}
 	plans, err := planSites(nil, []SiteSpec{
-		{Key: "huangguo", Stages: []StageSpec{same()}},
-		{Key: "yeguodj", Stages: []StageSpec{same()}},
+		{Key: "example", Stages: []StageSpec{same()}},
+		{Key: "example2", Stages: []StageSpec{same()}},
 	})
 	if err != nil {
 		t.Fatalf("两个站同名阶段应当合法：%v", err)
@@ -209,16 +209,16 @@ func TestPlanSitesScopesStageNameBySite(t *testing.T) {
 	if len(plans) != 2 || len(plans[0].stages) != 1 || len(plans[1].stages) != 1 {
 		t.Fatalf("两份声明各应落地一个阶段：%+v", plans)
 	}
-	if plans[0].stages[0].stage != "catalog" || plans[0].stages[0].cfg.Site != "huangguo" {
+	if plans[0].stages[0].stage != "catalog" || plans[0].stages[0].cfg.Site != "example" {
 		t.Fatalf("第一个站落地的阶段不对：%+v", plans[0].stages[0])
 	}
-	if plans[1].stages[0].stage != "catalog" || plans[1].stages[0].cfg.Site != "yeguodj" {
+	if plans[1].stages[0].stage != "catalog" || plans[1].stages[0].cfg.Site != "example2" {
 		t.Fatalf("第二个站落地的阶段不对：%+v", plans[1].stages[0])
 	}
 
 	// 同一个站里声明两次同名 → 还是要报
 	if _, err := planSites(nil, []SiteSpec{
-		{Key: "huangguo", Stages: []StageSpec{same(), same()}},
+		{Key: "example", Stages: []StageSpec{same(), same()}},
 	}); err == nil || !strings.Contains(err.Error(), "重复声明") {
 		t.Fatalf("同站内重名应当报错，实得：%v", err)
 	}

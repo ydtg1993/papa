@@ -968,9 +968,9 @@ func TestWhitelistHandlerAcceptsLargeButBoundedBody(t *testing.T) {
 }
 func TestTaskPageEndpoint(t *testing.T) {
 	dir := t.TempDir()
-	rel := "huangguo/task-7-try-0-abc12345.html"
+	rel := "example/task-7-try-0-abc12345.html"
 	const body = "<html><body>archived page</body></html>"
-	if err := os.MkdirAll(filepath.Join(dir, "huangguo"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "example"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
@@ -994,7 +994,7 @@ func TestTaskPageEndpoint(t *testing.T) {
 	})
 
 	t.Run("路径越界一律拒", func(t *testing.T) {
-		for _, bad := range []string{"../secret", "/etc/passwd", "huangguo/../../x", "", "huangguo/.."} {
+		for _, bad := range []string{"../secret", "/etc/passwd", "example/../../x", "", "example/.."} {
 			rr := serve(newMon(dir), http.MethodGet, "/api/task/page?file="+url.QueryEscape(bad), nil)
 			if rr.Code != http.StatusBadRequest {
 				t.Fatalf("file=%q 应当 400，实得 %d", bad, rr.Code)
@@ -1010,7 +1010,7 @@ func TestTaskPageEndpoint(t *testing.T) {
 	})
 
 	t.Run("文件不在（过期被清了）：404", func(t *testing.T) {
-		rr := serve(newMon(dir), http.MethodGet, "/api/task/page?file=huangguo/task-9-try-0-deadbeef.html", nil)
+		rr := serve(newMon(dir), http.MethodGet, "/api/task/page?file=example/task-9-try-0-deadbeef.html", nil)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", rr.Code)
 		}
@@ -1027,8 +1027,8 @@ func TestTaskPageEndpoint(t *testing.T) {
 func TestResolveArchivedFile(t *testing.T) {
 	root := filepath.Join("tmp", "archive")
 	ok := []struct{ rel, want string }{
-		{"huangguo/task-1-try-0-aaaaaaaa.html", filepath.Join(root, "huangguo", "task-1-try-0-aaaaaaaa.html")},
-		{"huangguo/./task-1-try-0-aaaaaaaa.html", filepath.Join(root, "huangguo", "task-1-try-0-aaaaaaaa.html")},
+		{"example/task-1-try-0-aaaaaaaa.html", filepath.Join(root, "example", "task-1-try-0-aaaaaaaa.html")},
+		{"example/./task-1-try-0-aaaaaaaa.html", filepath.Join(root, "example", "task-1-try-0-aaaaaaaa.html")},
 	}
 	for _, c := range ok {
 		got, err := resolveArchivedFile(root, c.rel)

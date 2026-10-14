@@ -704,12 +704,12 @@ localPath := filepath.Join(dl.OutputDir(), res.OutputFile)
 
 ```go
 // ① 站点级：本站所有阶段默认这一份（sites/<站>.go）
-SiteSpec{ Key: "yeguodj",
+SiteSpec{ Key: "example",
           M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments},
           FileDown: &papa.FileDownSpec{MaxConcurrent: &n} }
 
 // ② 阶段级：比站点更细，赢了就用它（StageSpec 上同名字段）
-StageSpec{ Fetcher: &yeguodjfetcher.FetchEpisode{}, M3U8: &papa.M3U8Spec{Output: &papa.OutputPlaylist} }
+StageSpec{ Fetcher: &examplefetcher.FetchEpisode{}, M3U8: &papa.M3U8Spec{Output: &papa.OutputPlaylist} }
 
 // ③ fetcher 里随用随生成：拿"这一阶段该用的那份"，叠一层只给这次调用用的改动
 dl := engine.M3U8ForTask(task)                       // 阶段 > 站点 > 基座，不会拿错站
@@ -855,9 +855,10 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 ```
 configs/
   config.yaml
-  sites/
-    huangguo.go             // 一站一份：Key/BaseURL/Breaker/Stages + func init() { papa.RegisterSite(huangguo()) }
-    huangguo2.go            // 加一个站 = 加一个文件（改 Key/BaseURL/阶段参数）
+  config.yaml.example
+sites/
+  example.go              // 一站一份：Key/BaseURL/Breaker/Stages + func init() { papa.RegisterSite(example()) }
+  example2.go             // 加一个站 = 加一个文件（改 Key/BaseURL/阶段参数）
 ```
 
 ```go
@@ -868,7 +869,7 @@ import (
 app.RegisterSites(papa.Sites()...)
 ```
 
-`configs/` 根目录仍只放数据（config.yaml），Go 包单独一层。
+`configs/` 根目录只放数据（config.yaml / config.yaml.example），Go 包单独一层（`sites/`）。
 **框架不需要"站点包"这个概念** —— `SiteSpec` 就是普通值类型；为什么必须"文件自己登记"：
 Go 没有"枚举一个包里有哪些函数/类型"的能力（反射只能从值倒推名字），所以"框架自动发现"只有
 代码生成或代码自登记两条路，这里选后者（零构建步骤、可 grep，也是 `database/sql` 驱动那套标准做法）。
@@ -883,7 +884,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 - **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
-  站点多了想按站点分包（`fetcher/<站点>/`，如 huangguo）也行。硬要求只有一条 ——
+  站点多了想按站点分包（`fetcher/<站点>/`，如 `fetcher/example/`）也行。硬要求只有一条 ——
   **阶段名（`GetStage()`）在本站内唯一**，跟 fetcher 放哪儿无关。
 - **"加一个站"不等于只复制一个声明文件**：阶段的存在离不开 fetcher，而**阶段名取自 `GetStage()`**
   （不在声明文件里）。复制站点文件后新站若还指向原来那个 fetcher，**不会**再报重名（同名阶段在不同站是合法的），

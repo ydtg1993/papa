@@ -125,29 +125,29 @@ func TestRegisterSitesAppliesNothingWhenDeclarationIsBad(t *testing.T) {
 // 下载器覆盖的自查输出：只列**改过**的项，站点层与阶段层分开说 —— 四层覆盖 + 随手造实例之后，
 // "到底哪份生效"只能靠它一眼看清（`papa check` 会把这些行打出来）。
 func TestDescribeDownloadOverlaysListsOnlyOverrides(t *testing.T) {
-	dir := "./downloads/yeguodj"
+	dir := "./downloads/example"
 	concurrent := 3
 	mode := m3u8.OutputSegments
 	lines := DescribeDownloadOverlays(SiteSpec{
-		Key:      "yeguodj",
-		BaseURL:  "https://yeguodj.com/",
+		Key:      "example",
+		BaseURL:  "https://example.com/",
 		M3U8:     &m3u8.Overlay{OutputDir: &dir},
 		FileDown: &filedown.Overlay{MaxConcurrent: &concurrent},
 		Stages: []StageSpec{
-			{Fetcher: stageNamed{"ygd_catalog"}},                                     // 一句没覆盖 → 不出现在结果里
-			{Fetcher: stageNamed{"ygd_episode"}, M3U8: &m3u8.Overlay{Output: &mode}}, // 阶段层覆盖 → 单独一行
+			{Fetcher: stageNamed{"catalog"}},                                     // 一句没覆盖 → 不出现在结果里
+			{Fetcher: stageNamed{"episode"}, M3U8: &m3u8.Overlay{Output: &mode}}, // 阶段层覆盖 → 单独一行
 		},
 	})
 	joined := strings.Join(lines, " | ")
 	for _, want := range []string{
-		"站点 yeguodj: m3u8{output_dir=./downloads/yeguodj} filedown{max_concurrent=3}",
-		"阶段 yeguodj:ygd_episode: m3u8{output=segments}",
+		"站点 example: m3u8{output_dir=./downloads/example} filedown{max_concurrent=3}",
+		"阶段 example:episode: m3u8{output=segments}",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("缺少 %q ｜ 实得：%s", want, joined)
 		}
 	}
-	if strings.Contains(joined, "ygd_catalog") {
+	if strings.Contains(joined, "catalog") {
 		t.Errorf("没覆盖的阶段不该出现：%s", joined)
 	}
 	if got := DescribeDownloadOverlays(SiteSpec{Key: "plain"}); len(got) != 0 {

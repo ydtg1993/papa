@@ -771,7 +771,7 @@ func stageDepEngine(t *testing.T) *Engine {
 // 重试的退避只发生在**两次尝试之间**：最后一次尝试失败之后要立刻落 failed，不能再等一个周期。
 //
 // 回归点：退避原来写在每一轮的**末尾**，于是最后一次失败之后还要睡满 backoff<<(N-1) ——
-// 3 次尝试、30s 退避就是 120s，期间 worker 抱着一个并发位空等。实测（huangguo 真实环境）：
+// 3 次尝试、30s 退避就是 120s，期间 worker 抱着一个并发位空等。实测（真实站点）：
 // 一个注定失败的 detail 任务从认领到落 failed 正好 210s = 30+60+120；episode 阶段只配
 // 1 个 worker，等于把整个阶段堵 3.5 分钟。m3u8 / filedown 的退避写在每轮**开头**，本就没有这个问题。
 func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {

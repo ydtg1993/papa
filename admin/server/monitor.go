@@ -935,7 +935,7 @@ func resolveArchivedFile(root, rel string) (string, error) {
 		return "", fmt.Errorf("file 参数越界")
 	}
 	cleaned := filepath.Clean(filepath.FromSlash(rel))
-	// `huangguo/..` 清洗完是 `.`（指到根目录本身）—— 那不是文件，也别让它再往下走。
+	// `example/..` 清洗完是 `.`（指到根目录本身）—— 那不是文件，也别让它再往下走。
 	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." ||
 		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("file 参数越界")

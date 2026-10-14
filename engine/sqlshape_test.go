@@ -34,7 +34,7 @@ func TestReservedWordColumnsAreQuotedInRawSQL(t *testing.T) {
 
 	t.Run("站点行：key 作为条件", func(t *testing.T) {
 		sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
-			return siteKeyScope(tx, "huangguo").Updates(map[string]any{"base_url": "https://x/"})
+			return siteKeyScope(tx, "example").Updates(map[string]any{"base_url": "https://x/"})
 		})
 		if !strings.Contains(sql, "`key` = ?") {
 			t.Errorf("`key` 是保留字，裸写会 1064；拼出来应当是带引号的：%s", sql)

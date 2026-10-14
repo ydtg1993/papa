@@ -157,7 +157,7 @@ func (e *Engine) Site(key string) (core.Site, bool) {
 type stageInfo struct {
 	// stage 阶段名（`GetStage()` 的原值，**不带站点**）。登记表的键是复合键
 	// `core.StageKey(config.Site, stage)`，这里留着裸名是给监控快照与日志用的
-	//（后台要在站点分组里显示"catalog"这种短名字，而不是 "yeguodj:catalog"）。
+	//（后台要在站点分组里显示"catalog"这种短名字，而不是 "example:catalog"）。
 	stage      string
 	config     StageConfig
 	fetcher    Fetcher

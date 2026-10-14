@@ -96,7 +96,7 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 
 ```
 ✓ 注册通过：1 个站点、3 个阶段（连库跑的是启动路径前半段，没有 Run：不投入口任务、不跑启动恢复、不开 HTTP 服务、不抓任何页面）
-    huangguo：catalog / detail / episode
+    example：catalog / detail / episode
 ```
 
 它同时校验"声明与引擎接线对得上"（每个声明的站点都得能在 `app.Engine.Site(key)` 里查到）。
