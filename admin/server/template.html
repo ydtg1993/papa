@@ -83,12 +83,14 @@
                 <h2>任务队列概览</h2>
                 <div id="dash-queue"></div>
             </section>
-            <!-- 阶段入口：一站一张卡片（卡头是站点 + 暂停/恢复，卡体是该站入口阶段的点火按钮）。
-                 数据来自 /api/monitor 的 entries（数组，按站点分组）与 breakers（暂停状态）；没配回调时
-                 整个区块隐藏，前端不额外发请求。 -->
-            <section id="dash-entries-sec" hidden>
-                <h2>阶段入口</h2>
-                <div class="grid" id="dash-entries"></div>
+            <!-- 站点控制：一站一行（站点名 + 运行中/已暂停 + 暂停/恢复整站）。
+                 数据来自 /api/monitor 的 sites（跟着站点 Tab 过滤）与 breakers（暂停状态）；
+                 两个都没有时整个区块隐藏，前端不额外发请求。
+                 这一档是**整站**的控制：声明了 SiteSpec.StartPaused 的站启动就停在这儿，
+                 等这里点「恢复整站」。阶段级那档是接口（端点带 stage），框架不做界面。 -->
+            <section id="dash-site-ctl-sec" hidden>
+                <h2>站点控制</h2>
+                <div class="grid" id="dash-site-ctl"></div>
             </section>
         </div>
 

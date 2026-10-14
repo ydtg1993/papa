@@ -635,28 +635,6 @@ func (a *App) httpServer(ctx context.Context) {
 				At:       time.Now(),
 			})
 		},
-		StageEntries:       a.Engine.StageEntries,
-		SubmitStageEntries: a.Engine.SubmitStageEntries,
-		OnEntryTrigger: func(ev server.EntryTriggerEvent) {
-			// 点火会**投一批任务**（入口任务还常带轮询周期），谁在什么时候点的必须查得到
-			if rec == nil {
-				return
-			}
-			rec.RecordEvent(oplog.Event{
-				Table:  "stage_entry",
-				Action: "trigger",
-				Values: map[string]any{
-					"note":  "后台手动点火阶段入口任务",
-					"site":  ev.Site,
-					"stage": ev.Stage,
-					"mode":  ev.Mode,
-				},
-				Err:      ev.Err,
-				IP:       ev.IP,
-				Operator: ev.Operator,
-				At:       ev.At,
-			})
-		},
 	})
 	mon.Register(mux)
 	// 多实例 / 运维直接改 SQL 的收敛：定期把库里的白名单同步进判定缓存

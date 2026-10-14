@@ -230,28 +230,27 @@ func TestPlanSitesScopesStageNameBySite(t *testing.T) {
 	}
 }
 
-// Entry 的三态 × 有没有入口，六个格子各有各的说法：
-//   - auto 却没人实现入口 / manual 却没人实现入口 → WARN（配置与实现对不上）
-//   - off（不写）却实现了入口 → WARN 且**回调不接** —— off 是默认值，这是最常见的那种手误，
-//     所以在日志里直接给出两条出路（写 manual 就能后台点火）
-//   - manual 且有入口 → Info（后台那张卡上有它），回调留着等下点火
-//   - auto 且有入口 / off 且没入口 → 什么都不打（各走各的正常路）
+// Entry 是 bool（有没有入口任务）× 有没有实现入口，四个格子各有各的说法：
+//   - 写了 Entry 却没人实现入口 → WARN（配置与实现对不上）
+//   - 没写 Entry 却实现了入口 → WARN 且**回调不接** —— false 是默认值，这是最常见的那种手误，
+//     所以在日志里直接把话写全（写 Entry: true 就投）
+//   - 写了 Entry 且有入口 → Info，回调留着，启动那一趟投
+//   - 没写且没入口 → 什么都不打（各走各的正常路）
+//
+// "启动先别跑"不在这张表里：那是站点级的 StartPaused（见 TestSiteSpecSnapshotCarriesStartPaused）。
 func TestPlanStageEntryPolicy(t *testing.T) {
 	cases := []struct {
 		name      string
-		entry     engine.EntryMode
+		entry     bool
 		withEntry bool
 		wantSub   bool
-		wantEntry engine.EntryMode // 落进 StageConfig 的那个值（mm 得跟声明一致）
 		wantNote  string
 		wantWarn  bool
 	}{
-		{"auto + 有入口", engine.EntryAuto, true, true, engine.EntryAuto, "", false},
-		{"auto + 没入口", engine.EntryAuto, false, false, engine.EntryAuto, "Entry=auto", true},
-		{"manual + 有入口", engine.EntryManual, true, true, engine.EntryManual, "manual", false},
-		{"manual + 没入口", engine.EntryManual, false, false, engine.EntryManual, "Entry=manual", true},
-		{"off + 有入口", engine.EntryOff, true, false, engine.EntryOff, "没写 Entry", true},
-		{"off + 没入口", engine.EntryOff, false, false, engine.EntryOff, "", false},
+		{"有 Entry + 有入口", true, true, true, "有入口任务", false},
+		{"有 Entry + 没入口", true, false, false, "没有实现 SubmitEntries", true},
+		{"没写 Entry + 有入口", false, true, false, "没写 Entry", true},
+		{"没写 Entry + 没入口", false, false, false, "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -268,9 +267,9 @@ func TestPlanStageEntryPolicy(t *testing.T) {
 			if got := plan.sub != nil; got != c.wantSub {
 				t.Fatalf("接不接入口回调 = %v，want %v", got, c.wantSub)
 			}
-			// 模式要原样落进引擎侧的 StageConfig（漏抄一处，引擎就会按零值 = off 处理）
-			if plan.cfg.Entry != c.wantEntry {
-				t.Fatalf("cfg.Entry = %q，want %q", plan.cfg.Entry, c.wantEntry)
+			// 声明要原样落进引擎侧的 StageConfig（漏抄一处，引擎就会按零值 = 没有入口处理）
+			if plan.cfg.Entry != c.entry {
+				t.Fatalf("cfg.Entry = %v，want %v", plan.cfg.Entry, c.entry)
 			}
 			if c.wantNote != "" && !strings.Contains(plan.note, c.wantNote) {
 				t.Fatalf("日志应含 %q，实得 %q", c.wantNote, plan.note)
@@ -285,14 +284,25 @@ func TestPlanStageEntryPolicy(t *testing.T) {
 	}
 }
 
-// 字符串枚举写错（"Auto"、"manual "）能过编译，只会被当成"不是 auto"而静默不投 ——
-// 声明期就要点名报错。
-func TestPlanStageRejectsBadEntryMode(t *testing.T) {
-	_, err := planStage(SiteSpec{Key: "a"}.snapshot(), StageSpec{
-		Fetcher: &entryStageFetcher{}, WorkerCount: 1, QueueSize: 8, Entry: engine.EntryMode("Auto"),
-	}, map[string]string{})
-	if err == nil || !strings.Contains(err.Error(), "Entry 只能是") {
-		t.Fatalf("写错的 Entry 应当报错并列出合法值：%v", err)
+// StartPaused 是**站点级**的：它得原样过 snapshot() 到引擎，引擎在 ApplyRegisterStage 里读它下闸。
+// 漏抄一处的表现最难查 —— 声明写了、启动日志里一个字都没有、任务照跑。
+func TestSiteSpecSnapshotCarriesStartPaused(t *testing.T) {
+	snap := SiteSpec{
+		Key: "a", BaseURL: "https://a.example/",
+		Headers:            map[string]string{"User-Agent": "ua-a"},
+		RestrictedKeywords: []string{"安全验证"},
+		StartPaused:        true,
+	}.snapshot()
+	if !snap.StartPaused {
+		t.Fatal("StartPaused 没进快照 —— 引擎就永远不知道该闸住这一站")
+	}
+	// 其余字段也逐个对一遍：这条用例是"快照照声明走"的守卫，漏哪一个都是同一个 bug
+	if snap.Key != "a" || snap.BaseURL != "https://a.example/" ||
+		snap.Headers["User-Agent"] != "ua-a" || len(snap.RestrictedKeywords) != 1 {
+		t.Fatalf("快照漏了字段：%+v", snap)
+	}
+	if off := (SiteSpec{Key: "a"}).snapshot(); off.StartPaused {
+		t.Fatal("没写 StartPaused 的站不该被闸住（零值必须是「照跑」）")
 	}
 }
 

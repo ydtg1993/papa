@@ -23,8 +23,9 @@ Use this for audits and pull-request reviews. Report findings by severity with f
 
 ## Queue semantics
 
-- `StageSpec.Entry` is missing for a `SubmitEntries` entry stage (it defaults to off, so the stage silently
-  never fires and stays invisible in the back-office), or is `auto`/`manual` for a stage without `SubmitEntries`.
+- `StageSpec.Entry` is missing for a stage that implements `SubmitEntries` (it defaults to false, so the entry
+  never fires), or is `true` for a stage without `SubmitEntries`. "Don't run yet" belongs to
+  `SiteSpec.StartPaused`, not to `Entry`.
 - Repeatable tasks are created while the global repeat queue is disabled, yet automatic polling is promised.
 - Code assumes resubmission changes existing repeat flags/intervals.
 - No-retry errors are assumed to be excluded from `error_queue`; they are still failed rows.

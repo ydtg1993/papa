@@ -304,17 +304,24 @@ func stageNames(s papa.SiteSpec) []string {
 			continue
 		}
 		name := st.Fetcher.GetStage()
-		// 入口模式跟着标出来：这一版的 AutoStart 变成了三态，"哪些阶段会被后台/启动投"
-		// 是自查时最该一眼看到的东西（off 的不标，免得满屏噪音）。
-		if st.Entry != papa.EntryOff {
-			name += "(" + st.Entry.String() + ")"
+		// 有入口的阶段标出来：启动那一下会投一批任务，自查时这是最该一眼看到的东西
+		// （没有入口的不标，免得满屏噪音）。
+		if st.Entry {
+			name += "(入口·启动即投)"
 		}
 		out = append(out, name)
 	}
 	return out
 }
 
-func siteName(s papa.SiteSpec) string { return s.Key }
+// siteName 站点一行：站点级的那几项声明也跟着标 —— 尤其 StartPaused（启动即闸住），
+// 少了它，"这个站启动为什么不跑"要翻声明文件才知道。
+func siteName(s papa.SiteSpec) string {
+	if s.StartPaused {
+		return s.Key + "(启动暂停)"
+	}
+	return s.Key
+}
 
 // loadConfig 同 papa check 那版：框架的配置校验是 panic 式的，这里转成 error。
 func loadConfig(path string) (cfg *config.Config, err error) {

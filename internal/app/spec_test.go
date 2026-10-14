@@ -69,10 +69,12 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 			Headers:            map[string]string{"User-Agent": "ua-a"},
 			RestrictedKeywords: []string{"安全验证"},
 			Breaker:            &BreakerSpec{Enabled: true, Threshold: 7, Window: "2m"},
+			// 启动即闸住这一站：入口任务照投（下面 ③ 会验），但整站在入队点被收口
+			StartPaused: true,
 			Stages: []StageSpec{{
 				Fetcher: entry, WorkerCount: 2, QueueSize: 16,
 				Delay: "5m", Retry: RetrySpec{MaxAttempts: 2, Backoff: "3s"},
-				Entry: engine.EntryAuto,
+				Entry: true,
 			}},
 		},
 		SiteSpec{
@@ -85,6 +87,9 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	got, ok := a.Site("a")
 	if !ok || got.BaseURL != "https://a.example/" || got.Headers["User-Agent"] != "ua-a" {
 		t.Fatalf("App.Site(a) = %+v", got)
+	}
+	if !got.StartPaused {
+		t.Fatal("StartPaused 没进站点快照 —— 引擎在 ApplyRegisterStage 里读的正是它")
 	}
 	if len(got.RestrictedKeywords) != 1 || got.RestrictedKeywords[0] != "安全验证" {
 		t.Fatalf("站点受限页文案没带上：%+v", got)
@@ -111,15 +116,24 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		t.Fatalf("空键不再是一个 scope：%+v", sts[""])
 	}
 
-	// ③ 阶段注册了、Entry=auto 的入口真的被调（三趟遍历 + 策略在声明层这一整套）
+	// ③ 阶段注册了、写了 Entry 的入口真的被调（三趟遍历 + 策略在声明层这一整套）
 	e.ApplyRegisterStage()
 	if !entry.called {
-		t.Fatal("Entry=auto 的阶段应当在启动时投入口任务")
+		t.Fatal("写了 Entry 的阶段应当在启动时投入口任务")
 	}
 	// 站点声明（BaseURL / Headers）也一并交给入口回调 —— fetcher 不必自己存副本。
 	// 少了这一条，站点值就只能在 fetcher 里再写一份常量，改了会漂。
 	if entry.site.BaseURL != "https://a.example/" || entry.site.Headers["User-Agent"] != "ua-a" {
 		t.Fatalf("入口回调拿到的站点快照不对：%+v", entry.site)
+	}
+
+	// ④ StartPaused 一路走到引擎：声明 → 快照 → 启动那一刻的整站暂停信号。
+	// 这条链上任何一处漏抄的表现都一样 —— 声明写了、日志里没有、任务照跑。
+	if st := e.BreakerStatuses()["a"]; !st.Paused || st.Source != engine.PauseSourceManual {
+		t.Fatalf("声明了 StartPaused 的站，启动后该被手动闸着：%+v", st)
+	}
+	if st := e.BreakerStatuses()["b"]; st.Paused {
+		t.Fatalf("没声明 StartPaused 的站不该被带上：%+v", st)
 	}
 }
 

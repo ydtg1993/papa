@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sort"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
@@ -17,6 +18,10 @@ import (
 //   - **取任务点**（`pauseGate`，实现 workerpool.Gate）：冻住 —— 队列里那批也不动；
 //   - **入队点**（`submitToStage`）：收口 —— 不接新活，寄放到溢出表，恢复后回灌；
 //   - **熔断器**退化成"自动往这张表里写一条的人"（`Source=breaker`），它只判据 + 报警。
+//
+// 往这张表里写的人有三个：后台/业务手动（`PauseSite` / `PauseStage` / `PauseCrawling`）、
+// 熔断自动触发、以及**启动那一刻的 `SiteSpec.StartPaused`**（`applyStartPaused`，声明期的一次性
+// 整站闸门，走的还是 `PauseSite` 那条路）。
 
 // pauseSource 这条暂停是谁下的。后台要显示，也是"熔断触发"与"人工暂停"的唯一区别依据 ——
 // 别再用"enabled && stage"那种启发式去猜（熔断关着时的手动暂停、以及阶段级的手动暂停都会猜错）。
@@ -306,6 +311,51 @@ func (e *Engine) knownSite(site string) bool {
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
 	return e.siteBreaker[site] != nil
+}
+
+/* ---------- 启动那一刻：声明里的 StartPaused ---------- */
+
+// applyStartPaused 把声明了 `StartPaused` 的站点闸住（`ApplyRegisterStage` 在**投入口任务之前**
+// 调一次，顺序的理由见那里）。
+//
+// 为什么要有它：`StageSpec.Entry` 只说"这个阶段有入口任务"，管不了"现在跑不跑"。
+// "这一站启动先别动"是**整站**级别的事 —— 而那正是暂停信号（`SiteSpec.StartPaused` 压进
+// core.Site、落到这里）。原先由一个三态枚举（auto/manual/off）兼职表达，结果是 manual 只管住
+// 了入口那一投：启动恢复、轮询队列照样把这一站跑起来，看着像"声明没生效"。
+//
+// 闸住之后这一站**什么都没发生**：入队点不再建池、任务一律折回溢出表（`queue_spill_backlog` 会涨），
+// 启动恢复与轮询队列捞回来的任务也一样；后台点「恢复整站」（`ResumeSite`）时 `wakeDrainNow`
+// 立刻把它们灌回。
+//
+// 走 `PauseSite` 而不是自己 `setPause`：来源是 manual、现场带当时的失败数、并落库 `crawler_sites`
+// （后台站点表的「已暂停」列）—— 与人在后台点一下完全同一条路，没有第二套语义。
+// 暂停不跨重启，所以"每次启动都重新闸上、运行期放的闸不会被声明改回去"是这句话的自然结果。
+func (e *Engine) applyStartPaused() {
+	for _, site := range e.startPausedSites() {
+		if !e.PauseSite(site, "站点声明 StartPaused") {
+			// 静默失效是最难查的那类问题：声明写了、日志里一个字都没有、任务却照跑。
+			e.loggerSet.Engine.Warnf("站点 %s: 声明了 StartPaused，但这次没能闸住（它没有配抓取策略？）——"+
+				"启动后会照常跑，去后台「站点控制」卡上手动暂停", site)
+			continue
+		}
+		e.loggerSet.Engine.Infof("站点 %s: 声明了 StartPaused —— 启动即闸住整站；"+
+			"入口任务照投（先寄放在溢出表、池子不建），去后台「站点控制」卡点「恢复整站」放开", site)
+	}
+}
+
+// startPausedSites 声明了 StartPaused 的站点键，**按名字典序**（读的是声明快照，不是熔断器那张表：
+// 这里问的是"声明怎么说"，不是"配了抓取策略的有哪些"）。
+func (e *Engine) startPausedSites() []string {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	out := make([]string, 0, len(e.sites))
+	for key, s := range e.sites {
+		if s.StartPaused {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // allSites 有一份 per-site 抓取配置的站点键（按名字典序）—— 与 BreakerStatuses 同一批。

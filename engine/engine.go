@@ -49,14 +49,6 @@ type Engine struct {
 	errorForwardCancel map[string]chan struct{}            // 每阶段错误转发协程停机信号（reap 时 close）；e.mu 保护
 	dedupCache         *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
-	// 阶段入口：点火串行化用的锁，与"上次点火时刻"的锁**分开**（见 entry.go 的理由）。
-	// entryMu 用 TryLock，不会阻塞后台请求；也绝不能换成 e.mu —— 点火会走到建池，
-	// 建池路上要拿 e.mu（setStatsQueue），非重入锁当场自锁。
-	entryMu      sync.Mutex
-	entryLastMu  sync.Mutex
-	entryLast    map[string]time.Time // 阶段键 -> 上次手动点火时刻（零值/缺 = 从未）
-	entriesReady atomic.Bool          // ApplyRegisterStage 跑完才置真：之前点火会踩坑（见 entryReadyErr）
-
 	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
 	// 取任务点的闸门、入队点的寄放、后台的横幅/卡片/落库。
 	// 锁序是硬的：breakerMu → pauseMu → (spillMu | e.mu | siteMu)，不许反向；pauseMu 绝不跨 DB 调用。
@@ -176,11 +168,14 @@ type StageConfig struct {
 	// 分组、任务表也按它记归属（`crawler_tasks.site`），没有「未归属」那一档。
 	Site string
 
-	// Entry 入口模式：`EntryAuto` 启动那一趟就投入口任务（SubmitEntries），
-	// `EntryManual` 不自动投、等后台点火（Engine.SubmitStageEntries）。
-	// 零值 `EntryOff` 在**声明层**就等于"没有入口"（那边会把回调丢掉），所以引擎侧见不到它：
-	// 到了这里还带 off 的，只可能是绕过声明层直接 AddStage 的用法，那一概按"不投"处理。
-	Entry EntryMode
+	// Entry 本阶段**有入口任务**：启动那一趟调它的 `SubmitEntries` 投一轮
+	//（`ApplyRegisterStage` 的第三趟）。零值 false = 这阶段没有入口这回事。
+	//
+	// 它只说"有没有入口"，**不说"现在跑不跑"** —— "启动先别跑整站"是站点级的一件事，
+	// 写在 `SiteSpec.StartPaused` 上（见 core.Site.StartPaused）。这两件事原来挤在一个
+	// 三态枚举里（auto/manual/off），结果是 manual 只管得住入口那一投、管不住整站：
+	// 声明 manual 之后启动恢复与轮询队列照样把这一站跑起来。
+	Entry bool
 
 	// M3U8 / FileDown 本阶段的下载器**覆盖层**（nil = 不覆盖）：启动时叠在"站点那份 → 全局那份"之上，
 	// 解析出这一阶段该用的实例（见 engine/downloads.go）。fetcher 用 `M3U8ForTask(task)` /

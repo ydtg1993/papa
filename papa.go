@@ -8,7 +8,6 @@ package papa
 import (
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/app"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
@@ -30,26 +29,11 @@ type Middleware = app.Middleware
 // Page 一个自定义后台页，传给 App.UsePage。
 type Page = app.Page
 
-// SiteSpec 站点声明（Key / BaseURL / 熔断阈值 / 阶段清单），传给 App.RegisterSites。
+// SiteSpec 站点声明（Key / BaseURL / StartPaused / 熔断阈值 / 阶段清单），传给 App.RegisterSites。
 type SiteSpec = app.SiteSpec
 
-// StageSpec 一个阶段的完整声明：fetcher + 并发/队列/间隔/重试/入口模式。
+// StageSpec 一个阶段的完整声明：fetcher + 并发/队列/间隔/重试 + 有没有入口任务（Entry）。
 type StageSpec = app.StageSpec
-
-// EntryMode 阶段入口的模式（`StageSpec.Entry`）：
-//
-//	EntryAuto   启动那一趟就投入口任务（`SubmitEntries`）
-//	EntryManual 启动不投，等后台「阶段入口」卡片上点火（`Engine.SubmitStageEntries`）
-//	EntryOff    零值/不写：启动不投、后台也不显示这一行
-//
-// 要手动点火就必须先声明成 `EntryManual` —— 后台只给 manual 的阶段按钮。
-type EntryMode = engine.EntryMode
-
-const (
-	EntryOff    = engine.EntryOff
-	EntryAuto   = engine.EntryAuto
-	EntryManual = engine.EntryManual
-)
 
 // RetrySpec 重试声明（MaxAttempts / Backoff）。
 type RetrySpec = app.RetrySpec

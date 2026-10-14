@@ -189,3 +189,21 @@ type Fetcher interface {
 	GetStage() string
 	FetchHandler(ctx context.Context, task *Task, engine *Engine) error
 }
+
+// EntrySubmitter 由 fetcher **可选**实现：本阶段投一批入口任务（列表页入口、分类入口……）。
+//
+// 什么时候投由**声明**说了算：`StageSpec.Entry: true` → 启动那一趟（`ApplyRegisterStage` 的第三趟，
+// 那时**所有**阶段的池子都已备好 —— 池子是懒建的，投给谁就等于把谁建起来，所以入口任务可以投给
+// 任意阶段，不必只在"自己这个阶段"上打转）；不写就是"这个阶段没有入口这回事"。
+//
+// **"有没有入口"与"现在跑不跑"是两件事**：后者是**站点级**的 `SiteSpec.StartPaused`
+// （入口任务照投，但整站在入队点被闸住 —— 每一条都寄放到溢出表里、池子一个都不建，
+// 后台点「恢复整站」才灌回）。两个字段合起来才是"先把入口排好、再放开这一站"。
+//
+// site 是本阶段的**站点声明快照**（`SiteSpec` 压成的 `core.Site`：BaseURL / Headers…）。
+// 站点值只声明在 `sites/<站名>.go` 一处，框架把它交到这里 —— fetcher 里别存副本：存了就会漂。
+//
+//	没实现这个接口、或实现返回后什么也不投：都合法，阶段照常跑（只是没有入口任务）。
+type EntrySubmitter interface {
+	SubmitEntries(engine *Engine, site core.Site)
+}

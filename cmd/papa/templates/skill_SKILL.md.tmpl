@@ -68,14 +68,16 @@ Put worker count, queue size, delay, retry, `Entry` (see below), and stage downl
 
 ### 3. Implement task flow deliberately
 
-Implement only the required stages. For a stage that owns an entry task (`EntryAuto` or `EntryManual`), implement:
+Implement only the required stages. For a stage that owns an entry task (a stage that seeds the crawl), implement:
 
 ```go
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site)
 ```
 
-and set its `StageSpec.Entry` to `papa.EntryAuto` (startup) or `papa.EntryManual` (ignite it later from the
-back-office 「阶段入口」 card).
+and set its `StageSpec.Entry` to `true` — entry tasks are submitted once at startup. To keep a site from
+running until an operator releases it, declare `SiteSpec.StartPaused: true` instead: entry tasks are still
+submitted (they park in the spill table), and the whole site stays frozen until 「恢复整站」 is clicked on the
+back-office 「站点控制」 card.
 
 For every submitted task:
 
@@ -176,7 +178,8 @@ Before finishing, verify:
 - [ ] Every submitted task carries `Site` — the stage lookup is keyed by `site:stage`.
 - [ ] Site self-registers; `main.go` remains generic.
 - [ ] Stage parameters are in Go declarations, governance queues remain global YAML.
-- [ ] Entry tasks use `SubmitEntries` + `StageSpec.Entry` (`EntryAuto` / `EntryManual`) when appropriate.
+- [ ] Entry tasks use `SubmitEntries` + `StageSpec.Entry: true` when appropriate (`SiteSpec.StartPaused` if the
+      site should wait for an operator).
 - [ ] Business identity is in persisted `Task.Meta`; idempotency is stable.
 - [ ] Repeat tasks have both task fields and global repeat queue semantics accounted for.
 - [ ] Static HTML is preferred unless browser use is justified and declared.

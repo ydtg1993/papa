@@ -48,20 +48,6 @@ type QueueProcessEvent struct {
 	At        time.Time
 }
 
-// EntryTriggerEvent 一次「阶段入口点火」的结局（宿主拿它记操作日志）。
-//
-// 与 QueueProcessEvent 同一处境：后台自带的原生端点、不走表格组件，而它同样会**投一批任务**
-// （入口任务还常带着轮询周期）—— 审计不该因为"这个按钮不是表格动作"就断档。
-type EntryTriggerEvent struct {
-	Site     string // 哪个站
-	Stage    string // 哪个阶段
-	Mode     string // 点火那一刻的入口模式（恒为 manual，带上让日志自解释）
-	Operator string // 谁点的（鉴权中间件解析令牌得到；未鉴权/测试构造的请求为空）
-	IP       string // 直连来源 IP（与白名单同一取法，不信 X-Forwarded-For）
-	Err      error  // nil = 成功
-	At       time.Time
-}
-
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
@@ -101,15 +87,6 @@ type MonitorConfig struct {
 	// OnBreakerResume 放行成功后的回调，宿主拿它记操作日志（人在场的干预必须留痕）；可空。
 	// `stage` 为空 = 整站那一层。
 	OnBreakerResume func(operator, site, stage string)
-	// StageEntries 有入口任务的阶段快照（引擎侧 `Engine.StageEntries`）：进 /api/monitor 的
-	// `entries` 数组。可空；空时那个键缺席 —— 与 sites / breakers 同一约定（前端据此隐藏面板）。
-	StageEntries func() []core.StageEntry
-	// SubmitStageEntries 手动点火某个阶段的入口任务（引擎侧 `Engine.SubmitStageEntries`）。
-	// 只对声明成 EntryManual 的阶段有效；错误是引擎的哨兵（NoEntry / AutoStage / NotReady / Busy），
-	// 后台一律按 **409 + 原话**回给操作人 —— 那几种情况点了也没用，得让他知道为什么。
-	SubmitStageEntries func(site, stage string) error
-	// OnEntryTrigger 点火跑完（成功或失败都算）后的回调，宿主拿它记操作日志；可空。
-	OnEntryTrigger func(EntryTriggerEvent)
 	// PauseBreaker 暂停某个站点（`stage` 为空）或**某站的某个阶段**的抓取（写一条暂停信号）；
 	// 返回是否真的从运行态切到了暂停。与 ResumeBreaker 是一对：
 	// 后台卡片上那个站点级的「暂停/恢复」，以及每个阶段行上的那个。
@@ -255,7 +232,6 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/breaker", s.wrap(s.breakerHandler))
 	mux.HandleFunc("/api/breaker/resume", s.wrap(s.breakerResumeHandler))
 	mux.HandleFunc("/api/breaker/pause", s.wrap(s.breakerPauseHandler))
-	mux.HandleFunc("/api/entries/trigger", s.wrap(s.entryTriggerHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
@@ -384,10 +360,6 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 		// 是**数组**不是单个对象：每个站点一条状态（暂停与否都在里面），后台要能逐站看、逐站放行。
 		// 顺序固定（按站点名字典序），前端就不用再排。
 		resp["breakers"] = sortedBreakerStatuses(s.cfg.BreakerStatuses())
-	}
-	if s.cfg.StageEntries != nil {
-		// 是**数组**不是对象：后台按 site 分组画卡片，顺序（站点 → 阶段）由引擎排好，前端不用再排。
-		resp["entries"] = s.cfg.StageEntries()
 	}
 	if s.cfg.SiteStats != nil {
 		resp["sites"] = s.cfg.SiteStats()
@@ -741,85 +713,6 @@ func (s *Monitor) breakerPauseHandler(w http.ResponseWriter, r *http.Request) {
 		out["stage"] = stage
 	}
 	writeJSON(w, out)
-}
-
-// entryTriggerHandler 手动点火某个阶段的入口任务（后台「阶段入口」卡片上那个按钮）。
-//
-// 参数走**请求体** `{"site":…,"stage":…}`（也认 `?site=&stage=`，给脚本用）：站点键与阶段名
-// 除了不能带 `:` 什么都允许（空格、`&`、中文……），塞进 query string 会被 URL 编码坑。
-//
-// 失败一律回 **409 + 引擎原话**：点不动的那几种原因（阶段没入口 / 它是 auto / 引擎没就绪 /
-// 已有一次在跑）都是"点了没用、但得让操作人知道为什么"的业务判断，不是服务器故障。
-func (s *Monitor) entryTriggerHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.SubmitStageEntries == nil {
-		http.Error(w, "entry trigger not configured", http.StatusNotFound)
-		return
-	}
-	site, stage, ok := entryTriggerParams(r)
-	if !ok {
-		http.Error(w, "bad request: site and stage are required", http.StatusBadRequest)
-		return
-	}
-	err := s.cfg.SubmitStageEntries(site, stage)
-	s.auditEntryTrigger(r, site, stage, err)
-	if err != nil {
-		s.logger.Errorf("trigger stage entries %s/%s: %s", site, stage, err.Error())
-		switch {
-		case errors.Is(err, engine.ErrStageNotRegistered), errors.Is(err, engine.ErrStageNoEntry),
-			errors.Is(err, engine.ErrEntryAutoStage), errors.Is(err, engine.ErrEntryNotReady),
-			errors.Is(err, engine.ErrEntryBusy):
-			http.Error(w, err.Error(), http.StatusConflict)
-		default:
-			http.Error(w, "trigger stage entries failed", http.StatusInternalServerError)
-		}
-		return
-	}
-	writeJSON(w, map[string]any{"status": "ok", "site": site, "stage": stage})
-}
-
-// auditEntryTrigger 把一次点火的结局交给宿主记审计。成功、失败都记；接口没配置（404）不记 ——
-// 那是"压根没这条功能"，不是一次触发（与 auditQueueProcess 同一取向）。
-func (s *Monitor) auditEntryTrigger(r *http.Request, site, stage string, err error) {
-	if s.cfg.OnEntryTrigger == nil {
-		return
-	}
-	s.cfg.OnEntryTrigger(EntryTriggerEvent{
-		Site:     site,
-		Stage:    stage,
-		Mode:     string(engine.EntryManual), // 点火只对 manual 开放（引擎那边拦的）
-		Operator: auth.OperatorFrom(r.Context()),
-		IP:       clientIP(r).String(),
-		Err:      err,
-		At:       time.Now(),
-	})
-}
-
-// entryTriggerParams 取要点火的站点与阶段：先看 `?site=&stage=`，再看请求体（体优先，前端走体）。
-// 缺任一项 → ok=false（调用方回 400）；请求体不是合法 JSON → 也算不合法。
-func entryTriggerParams(r *http.Request) (site, stage string, ok bool) {
-	q := r.URL.Query()
-	site, stage = q.Get("site"), q.Get("stage")
-	if r.Body != nil {
-		var body struct {
-			Site  *string `json:"site"`
-			Stage *string `json:"stage"`
-		}
-		dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
-		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-			return "", "", false
-		}
-		if body.Site != nil {
-			site = *body.Site
-		}
-		if body.Stage != nil {
-			stage = *body.Stage
-		}
-	}
-	return site, stage, site != "" && stage != ""
 }
 
 // breakerTargetParam 取暂停/放行的对象：先看 `?scope=&stage=`，再看请求体 `{"scope":"…","stage":"…"}`。

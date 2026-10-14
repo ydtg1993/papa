@@ -75,8 +75,8 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 	f.noRows = true
 	e := newTestEngine(t, f)
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: false, Threshold: 1})
-	// 两个阶段：catalog 是入口阶段（后台卡片上有它），detail 不是（卡片上根本没有这一行）
-	e.AddStage("catalog", StageConfig{Site: "stub", Entry: EntryAuto, MaxAttempts: 1, WorkerCount: 1, QueueSize: 8},
+	// 两个阶段：catalog 有入口（后台站点控制卡上看得到它的入口任务），detail 没有
+	e.AddStage("catalog", StageConfig{Site: "stub", Entry: true, MaxAttempts: 1, WorkerCount: 1, QueueSize: 8},
 		&recordingFetcher{stage: "catalog"}, func(*Engine) {})
 	detail := &recordingFetcher{stage: "detail"}
 	e.AddStage("detail", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, detail, nil)
@@ -103,6 +103,84 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 	if got := detail.calls(); len(got) != 0 {
 		t.Fatalf("暂停中不该跑任务，实得 %v", got)
 	}
+}
+
+// 声明了 `StartPaused` 的站：**启动那一刻整站就是停的**。
+//
+// 入口任务照投（这正是"先把入口排好、再放开这一站"），但入队点把每一条都折回溢出表、
+// 池子一个都不建、worker 一条都没跑；后台点「恢复整站」（ResumeSite）才灌回并跑起来。
+//
+// 这条钉的正是原来 `EntryManual` 想表达却做不到的那件事：manual 只管住了入口那一投，
+// 启动恢复与轮询队列照样把这一站跑起来 —— 而"这一站先别动"本来就是整站级的。
+func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true
+	e := newTestEngine(t, f)
+	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
+	fetcher := &recordingFetcher{stage: "catalog"}
+	submitted := 0
+	e.AddStage("catalog", StageConfig{Site: "a", Entry: true, MaxAttempts: 1, WorkerCount: 1, QueueSize: 8},
+		fetcher, func(eng *Engine) {
+			submitted++ // 入口回调投了一条（真入口在这一步投一批：分类页、探索页…）
+			_ = eng.SubmitTask(&Task{Stage: "catalog", Site: "a", URL: "https://example.com/1"})
+		})
+	e.SetSite(core.Site{Key: "a", StartPaused: true})
+
+	e.ApplyRegisterStage()
+
+	if submitted != 1 {
+		t.Fatalf("入口任务照投（先排好队，恢复时才灌回），实得 %d 次", submitted)
+	}
+	if !e.isPaused(pauseScope{Site: "a"}) {
+		t.Fatal("声明 StartPaused 的站，启动后整站该是停着的")
+	}
+	// 后台据此画横幅与站点行：停着、来源是手动（不是熔断 —— 那会让人去找"哪来的失败"）
+	if got := e.BreakerStatuses()["a"]; !got.Paused || got.Source != PauseSourceManual {
+		t.Fatalf("状态快照应当是「被手动停着」：%+v", got)
+	}
+	if stale := e.pools.get(core.StageKey("a", "catalog")); stale != nil {
+		t.Fatal("闸住的站启动时连池子都不该建（收口在建池之前）")
+	}
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("入口任务应当先寄放在溢出表，实得 %d", got)
+	}
+	if got := fetcher.calls(); len(got) != 0 {
+		t.Fatalf("闸住期间不该跑任务，实得 %v", got)
+	}
+
+	// 后台点「恢复整站」：立刻灌回（夹具把 DrainInterval 设成一小时，等 tick 就是永远等不到）
+	f.noRows = false // 回灌要按 id 回查那一行（真库里本来就在）
+	if !e.ResumeSite("a") {
+		t.Fatal("恢复应当成功")
+	}
+	fetcher.waitCalls(t, 1)
+}
+
+// 声明是**按站**的：同一个进程里，写了 StartPaused 的站停着，没写的照跑 ——
+// 免得哪天实现成"有一个站写了就全停"（那种 bug 在单站测试里看不出来）。
+func TestStartPausedOnlyAffectsDeclaredSites(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true
+	e := newTestEngine(t, f)
+	e.SetSiteBreaker("stopped", breaker.Config{Enabled: false, Threshold: 1})
+	e.SetSiteBreaker("running", breaker.Config{Enabled: false, Threshold: 1})
+	run := &recordingFetcher{stage: "catalog"}
+	e.AddStage("catalog", StageConfig{Site: "running", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, run, nil)
+	e.SetSite(core.Site{Key: "stopped", StartPaused: true})
+	e.SetSite(core.Site{Key: "running"})
+
+	e.ApplyRegisterStage()
+
+	if !e.isPaused(pauseScope{Site: "stopped"}) {
+		t.Fatal("写了 StartPaused 的站该停着")
+	}
+	if e.isPaused(pauseScope{Site: "running"}) {
+		t.Fatal("没写 StartPaused 的站不该被带上")
+	}
+	if err := e.SubmitTask(&Task{Stage: "catalog", Site: "running", URL: "https://example.com/r"}); err != nil {
+		t.Fatalf("照跑的站提交应当成功：%v", err)
+	}
+	run.waitCalls(t, 1)
 }
 
 // 人工暂停**不跨重启**：进程重启即恢复运行（起进程本身就是一次人工介入）。

@@ -84,6 +84,7 @@ config/                          配置结构与校验（纯数据，不依赖�
 engine/                          引擎：Task · Trace · Fetcher · Engine
   engine.go    结构体 + 生命周期 + 依赖注入 + 结果读写
   task.go      Task 结构与状态更新（Insert / UpdateStatus / IncrRetry / Unique）
+               + 两个 fetcher 接口：Fetcher（GetStage / FetchHandler）与 EntrySubmitter（可选的入口任务）
   stage.go     阶段装配与 worker 循环（ApplyRegisterStage / runAttempt）
   pools.go     活池登记表（懒建 / 空闲回收 / 关停都从这里取池）
   submit.go    提交路径（去重 → 落库 → 入队 → 认领）
@@ -97,7 +98,6 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   fetch.go     浏览器池 / 静态 HTML 客户端
   downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
-  entry.go     阶段入口（fetcher 可选实现 SubmitEntries，框架启动时调）
   restricted.go 受限页判定（站点词表从 task.Site 取）
   deps.go      阶段依赖声明（NeedsBrowser 的启动期校验）
   queuestats.go 三条治理队列的运行快照与积压（全局各一条）
@@ -166,10 +166,10 @@ pkg/notify ──► core
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |
-| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
+| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `StartPaused` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
 | 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine.stage.go` 建池那一段 |
 | 执行 | **每站一个熔断计数器**（没单配阈值的站也用自己那份，阈值取 `crawler.breaker` 那份默认）；它只判据，不再持有暂停状态 | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine.breakerFor` |
-| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
+| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | `crawler_sites` 站点表（启动按声明播种、熔断状态按列回写）+ 内存快照 | `models/crawler_site.go`、`engine/sitestat.go` |

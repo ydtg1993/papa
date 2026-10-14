@@ -43,6 +43,15 @@ type SiteSpec struct {
 	// RestrictedKeywords 本站自己的"受限页"文案，追加到 `htmlfetch.RestrictedReason` 的默认词表之后
 	//（如"安全验证""请稍后再试"这类本站特有的话术）。命中后一般返回 `papa.RestrictedPageError`。
 	RestrictedKeywords []string
+	// StartPaused 启动时就把**整站**闸住：入口任务照投（它们先寄放在溢出表里、池子一个都不建），
+	// 启动恢复与轮询队列捞回来的任务也一样不动 —— 等后台「站点控制」卡点「恢复整站」才灌回。
+	//
+	// 用途是"先把入口排好、再放开这一站"：多站项目里，某几站希望启动那一刻停在原地、由人来决定
+	// 什么时候开始跑（也让上线后先看一眼队列、再放量的做法成立）。
+	//
+	// 它是**声明期的值**：每次启动都按它重新闸上；运行期在后台点的那次「恢复」不会被它改回去
+	//（进程重启即失效，与全局的"暂停不跨重启"同一条规矩）。
+	StartPaused bool
 	// Breaker 本站的熔断阈值；nil = 用 crawler.breaker 那份默认。
 	Breaker *BreakerSpec
 	// M3U8 / FileDown 本站的下载器覆盖层：本站所有阶段默认用这一份（阶段还能再各自叠一层）。
@@ -67,7 +76,7 @@ type BreakerSpec struct {
 // StageSpec 一个阶段的完整声明。
 type StageSpec struct {
 	// Fetcher 阶段的实现。名字取自它自己的 `GetStage()`，不在这里写第二遍。
-	// 实现了 engine.EntrySubmitter（`SubmitEntries`）的阶段，可以在启动时投一批入口任务。
+	// 实现了 engine.EntrySubmitter（`SubmitEntries`）的阶段，声明里写了 `Entry: true` 时启动那一趟投一轮。
 	Fetcher     engine.Fetcher
 	WorkerCount int
 	QueueSize   int
@@ -77,16 +86,14 @@ type StageSpec struct {
 	// M3U8 / FileDown 本阶段的下载器覆盖层（nil = 不覆盖）：比站点那层更细，赢了就用它。
 	M3U8     *m3u8.Overlay
 	FileDown *filedown.Overlay
-	// Entry 阶段入口的模式（fetcher 实现了 SubmitEntries 才有得投）：
+	// Entry 本阶段**有入口任务**：启动那一趟就投（fetcher 实现了 `SubmitEntries` 才有得投）。
+	// 零值 false = 这阶段没有入口这回事。
 	//
-	//	papa.EntryAuto   启动那一趟就投（原来的 AutoStart: true）
-	//	papa.EntryManual 启动不投，等后台「阶段入口」卡片上点火
-	//	（不写 = papa.EntryOff）启动不投、后台也不显示这一行
-	//
-	// 三态而不是 bool：多站项目里"这个站的入口先别投，等我把那一站放开再点"是常规需求，
-	// 而"不投"有两种意思 —— 有意留到后台点（manual），和"这阶段根本没有入口这回事"（off）。
-	// 前者要在后台看得见、点得动，后者不该在界面上占位。
-	Entry engine.EntryMode
+	// 它**不是**"现在跑不跑"的开关 —— 那个在站点声明上（`SiteSpec.StartPaused`）：
+	// 一个站想"启动先别动、等人来点"，要的是整站级闸门（入口任务照投、任务先寄放在溢出表），
+	// 而不是"入口阶段不投、其它阶段照跑"。原先这两件事挤在一个三态枚举（auto/manual/off）里，
+	// 声明 manual 之后启动恢复与轮询队列照样把这一站跑起来 —— 接口就是那么写的，别改回去。
+	Entry bool
 }
 
 // RetrySpec 重试声明。
@@ -266,6 +273,7 @@ func (s SiteSpec) snapshot() core.Site {
 		BaseURL:            s.BaseURL,
 		Headers:            s.Headers,
 		RestrictedKeywords: s.RestrictedKeywords,
+		StartPaused:        s.StartPaused,
 	}
 }
 
@@ -323,11 +331,6 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 	}
 	owner[key] = siteLabel(site, 0)
 
-	// 字符串枚举写错（"Auto" / "manual "）能过编译，只会被当成"不是 auto"而静默不投 —— 声明期就拦。
-	if err := st.Entry.Valid(); err != nil {
-		return plan, fmt.Errorf("阶段 %q: %w", stage, err)
-	}
-
 	sub := entryFunc(st.Fetcher, site)
 	plan = stagePlan{
 		stage:   stage,
@@ -344,24 +347,20 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 			FileDown:    st.FileDown,
 		},
 	}
-	// 三态 × 有没有入口：六个格子各有各的说法，别让任一种组合静默过去。
+	// 两态 × 有没有实现入口：四个格子各有各的说法，别让任一种组合静默过去。
 	switch {
-	case st.Entry == engine.EntryAuto && sub == nil:
-		// 声明要自动投却没人实现入口：配置与实现对不上（不 panic —— 入口可能回头再补）
-		plan.note, plan.warn = fmt.Sprintf("阶段 %s: Entry=auto，但它的 fetcher 没有实现 SubmitEntries —— 没有入口任务可投", stage), true
-	case st.Entry == engine.EntryManual && sub == nil:
-		// 同理：说要在后台手动点火，可没有入口回调 —— 那张卡上会是个点不动的按钮
-		plan.note, plan.warn = fmt.Sprintf("阶段 %s: Entry=manual，但它的 fetcher 没有实现 SubmitEntries —— 后台点它会报错", stage), true
-	case st.Entry == engine.EntryOff && sub != nil:
-		// off 是零值/默认值，所以"实现了入口却忘了声明"是**最常见**的那种手误 ——
-		// 按 WARN 说，并且把两条出路都写出来（比一句"是关的、不是漏的"有用）。
+	case st.Entry && sub == nil:
+		// 声明有入口却没人实现：配置与实现对不上（不 panic —— 入口可能回头再补）
+		plan.note, plan.warn = fmt.Sprintf("阶段 %s: 声明了 Entry（有入口任务），但它的 fetcher 没有实现 SubmitEntries —— 没有入口任务可投", stage), true
+	case !st.Entry && sub != nil:
+		// false 是零值/默认值，所以"实现了入口却忘了声明"是**最常见**的那种手误 ——
+		// 按 WARN 说，并且把话写全（比一句"是关的、不是漏的"有用）。
 		plan.note, plan.warn = fmt.Sprintf("阶段 %s: fetcher 实现了 SubmitEntries，但声明里没写 Entry —— "+
-			"启动不投、后台也不显示它。想后台手动点火就写 Entry: papa.EntryManual，想启动即投就写 papa.EntryAuto", stage), true
-		// off 在引擎侧等于"没有入口"：回调丢掉（与"fetcher 没实现 SubmitEntries"同一个状态），
-		// 于是后台列不出来、也点不动 —— 这正是 off 与 manual 的区别。
+			"启动不投、这个入口形同不存在。想启动即投就写 Entry: true", stage), true
+		// 声明没写就等于"没有入口"：回调丢掉（与"fetcher 没实现 SubmitEntries"同一个状态）。
 		sub = nil
-	case st.Entry == engine.EntryManual:
-		plan.note = fmt.Sprintf("阶段 %s: 入口是 manual —— 启动不投，等后台「阶段入口」点火", stage)
+	case st.Entry:
+		plan.note = fmt.Sprintf("阶段 %s: 有入口任务 —— 启动那一趟投一轮（SubmitEntries）", stage)
 	}
 	plan.sub = sub
 	return plan, nil

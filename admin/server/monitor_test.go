@@ -1146,114 +1146,7 @@ func TestAPIMonitorCarriesSites(t *testing.T) {
 	}
 }
 
-/* ---------- 阶段入口：点火 + 逐站暂停 ---------- */
-
-func fakeStageEntries() []core.StageEntry {
-	return []core.StageEntry{
-		{Site: "shop", Stage: "catalog", Mode: "manual", LastTriggeredAt: time.Now().Add(-3 * time.Minute)},
-		{Site: "shop", Stage: "detail", Mode: "auto"},
-	}
-}
-
-// 点火端点：成功要审计（站点/阶段/模式/操作人/IP 都要在）；"点了没用"的那几种原因是
-// **409 + 引擎原话**（操作人得看到那句话才知道下一步怎么做），服务器故障才是 500；
-// 没配回调一律 404，且 404 与 400 都不记审计（那不是一次触发）。
-func TestEntryTriggerEndpoint(t *testing.T) {
-	var got []EntryTriggerEvent
-	var submitErr error
-	newMon := func() *Monitor {
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
-			SubmitStageEntries: func(_, _ string) error { return submitErr },
-			OnEntryTrigger:     func(ev EntryTriggerEvent) { got = append(got, ev) },
-		})
-	}
-	post := func(body string) *httptest.ResponseRecorder {
-		return serve(newMon(), http.MethodPost, "/api/entries/trigger", strings.NewReader(body))
-	}
-
-	t.Run("点火成功：回执点名站点与阶段，审计一条", func(t *testing.T) {
-		got, submitErr = nil, nil
-		rr := post(`{"site":"shop","stage":"catalog"}`)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
-		}
-		body := decodeJSON(t, rr)
-		if body["site"] != "shop" || body["stage"] != "catalog" {
-			t.Fatalf("回执应点名是哪个站哪个阶段：%v", body)
-		}
-		if len(got) != 1 {
-			t.Fatalf("应当记一条审计，实得 %+v", got)
-		}
-		ev := got[0]
-		if ev.Site != "shop" || ev.Stage != "catalog" || ev.Mode != "manual" || ev.Err != nil ||
-			ev.At.IsZero() || ev.IP == "" {
-			t.Fatalf("审计事件不完整：%+v", ev)
-		}
-	})
-
-	t.Run("点不动的原因：409 + 原话（含怎么改）", func(t *testing.T) {
-		got, submitErr = nil, engine.ErrEntryAutoStage
-		rr := post(`{"site":"shop","stage":"detail"}`)
-		if rr.Code != http.StatusConflict {
-			t.Fatalf("status = %d, want 409（%s）", rr.Code, rr.Body.String())
-		}
-		if !strings.Contains(rr.Body.String(), "EntryManual") {
-			t.Fatalf("引擎那句话要原样交给操作人：%s", rr.Body.String())
-		}
-		if len(got) != 1 || got[0].Err == nil {
-			t.Fatalf("失败也要记审计（谁在哪一步点了）：%+v", got)
-		}
-	})
-
-	t.Run("服务器故障才是 500", func(t *testing.T) {
-		got, submitErr = nil, errors.New("db down")
-		rr := post(`{"site":"shop","stage":"catalog"}`)
-		if rr.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want 500", rr.Code)
-		}
-		if len(got) != 1 || got[0].Err == nil {
-			t.Fatalf("500 也要记审计：%+v", got)
-		}
-	})
-
-	t.Run("缺参数 / body 不是 JSON：400 且不记审计", func(t *testing.T) {
-		got, submitErr = nil, nil
-		for _, body := range []string{`{"site":"shop"}`, `{"stage":"catalog"}`, `{}`, `not json`} {
-			if rr := post(body); rr.Code != http.StatusBadRequest {
-				t.Fatalf("body=%s status = %d, want 400", body, rr.Code)
-			}
-		}
-		if len(got) != 0 {
-			t.Fatalf("400 不该记审计：%+v", got)
-		}
-	})
-
-	t.Run("query string 也认（给脚本用）", func(t *testing.T) {
-		got, submitErr = nil, nil
-		rr := serve(newMon(), http.MethodPost, "/api/entries/trigger?site=shop&stage=catalog", nil)
-		if rr.Code != http.StatusOK || len(got) != 1 {
-			t.Fatalf("status = %d，审计 %d 条", rr.Code, len(got))
-		}
-	})
-
-	t.Run("没配回调：404 且不记审计", func(t *testing.T) {
-		got = nil
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
-		rr := serve(m, http.MethodPost, "/api/entries/trigger", strings.NewReader(`{"site":"a","stage":"b"}`))
-		if rr.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want 404", rr.Code)
-		}
-		if len(got) != 0 {
-			t.Fatalf("404 不是一次触发，不该记审计：%+v", got)
-		}
-	})
-
-	t.Run("GET：405", func(t *testing.T) {
-		if rr := serve(newMon(), http.MethodGet, "/api/entries/trigger", nil); rr.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("status = %d, want 405", rr.Code)
-		}
-	})
-}
+/* ---------- 逐站暂停 ---------- */
 
 // 暂停端点与 resume 是一对，但**scope 必填**：一个误点不该把全部站点停掉。
 func TestBreakerPauseEndpoint(t *testing.T) {
@@ -1381,52 +1274,34 @@ func TestBreakerPauseEndpoint(t *testing.T) {
 	})
 }
 
-// entries 进 /api/monitor：配了回调才有这个键（前端据此隐藏面板），字段名要与前端一致。
-func TestAPIMonitorCarriesEntries(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{StageEntries: fakeStageEntries})
-	body := decodeJSON(t, serve(m, http.MethodGet, "/api/monitor", nil))
-	list, ok := body["entries"].([]any)
-	if !ok || len(list) != 2 {
-		t.Fatalf("entries = %v", body["entries"])
-	}
-	first, _ := list[0].(map[string]any)
-	if first["site"] != "shop" || first["stage"] != "catalog" || first["mode"] != "manual" {
-		t.Fatalf("第一条不对：%v", first)
-	}
-	if _, ok := first["last_triggered_at"]; !ok {
-		t.Error("要带 last_triggered_at（零值 = 从未点火，前端 fmtAgo 会显示成从未）")
-	}
-
-	plain := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
-	if _, ok := decodeJSON(t, serve(plain, http.MethodGet, "/api/monitor", nil))["entries"]; ok {
-		t.Fatal("没配 StageEntries 的宿主：这个键应当缺席（前端据此隐藏整块面板）")
-	}
-}
-
-// 阶段入口面板的静态接线：渲染函数写进一个**不存在的容器 id** 是静默失效（页面上什么都没有、
+// 站点控制面板的静态接线：渲染函数写进一个**不存在的容器 id** 是静默失效（页面上什么都没有、
 // 也没有报错）—— 前端没有测试框架，只能把容器与两个动作钉在静态文件里。
-func TestEntryPanelWired(t *testing.T) {
+func TestSiteControlPanelWired(t *testing.T) {
 	tpl, err := fs.ReadFile(templateFS, "template.html")
 	if err != nil {
 		t.Fatalf("read template.html: %v", err)
 	}
-	if !strings.Contains(string(tpl), `id="dash-entries"`) {
-		t.Error(`template.html 里没有 id="dash-entries" —— renderEntries 会静默什么都不画`)
+	if !strings.Contains(string(tpl), `id="dash-site-ctl"`) {
+		t.Error(`template.html 里没有 id="dash-site-ctl" —— renderSiteControl 会静默什么都不画`)
 	}
 	js, err := fs.ReadFile(staticFS, "static/mo.js")
 	if err != nil {
 		t.Fatalf("read mo.js: %v", err)
 	}
 	for _, want := range []string{
-		"renderEntries(",
-		"triggerEntry(",
+		"renderSiteControl(",
 		"pauseCrawling(",
-		"/api/entries/trigger",
+		"resumeCrawling(",
 		"/api/breaker/pause",
+		"/api/breaker/resume",
 	} {
 		if !strings.Contains(string(js), want) {
 			t.Errorf("mo.js 里缺少 %q", want)
 		}
+	}
+	// 那一档是**整站**的暂停：站点控制卡上不该再出现点火那个动作（引擎侧已经没有它了）
+	if strings.Contains(string(js), "triggerEntry(") || strings.Contains(string(js), "/api/entries/trigger") {
+		t.Error("mo.js 里还留着点火那套东西（入口不再有手动模式）")
 	}
 }
 
@@ -1439,7 +1314,7 @@ func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
 		t.Fatalf("read mo.js: %v", err)
 	}
 	js := string(raw)
-	for _, want := range []string{"data.stages", "data.queues", "data.breakers", "data.sites", "data.entries", "data.custom", "data.system"} {
+	for _, want := range []string{"data.stages", "data.queues", "data.breakers", "data.sites", "data.custom", "data.system"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("mo.js 里没读 %s —— 服务端写了这个键，前端却读别的名字就会静默失效", want)
 		}

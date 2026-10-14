@@ -16,4 +16,9 @@ type Site struct {
 	// RestrictedKeywords 本站自己的"受限页"文案（追加到框架默认词表之后），
 	// 交给 `htmlfetch.RestrictedReason(page, site.RestrictedKeywords...)` 用。
 	RestrictedKeywords []string `json:"restricted_keywords,omitempty"`
+	// StartPaused **声明期就把整站闸住**（`SiteSpec.StartPaused` 压过来的那一项）。
+	// 引擎在 `ApplyRegisterStage` 里据此下一道整站暂停 —— 于是启动那一刻池子一个都不建
+	// （投递在入队点就折回溢出表），等后台点「恢复整站」再灌回。
+	// 对 fetcher 只是信息（入口回调拿到的是这份快照）：它不用管这件事，照常投它的入口任务。
+	StartPaused bool `json:"start_paused,omitempty"`
 }

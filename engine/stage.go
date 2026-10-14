@@ -343,22 +343,24 @@ func (e *Engine) ApplyRegisterStage() {
 	// 池子**懒建**：不在这里全量建，等第一条任务 submit 时才建（getOrCreatePool）。于是入口回调
 	// 可以放心投给任意阶段 —— 投到谁、谁的池子在这一刻才起，不再有"后面的池子还没建"的 nil 解引用。
 	//
-	// 引擎在这里**不做策略判断**：有回调、且声明的是 auto，就跑（要不要接入口回调由声明层决定，
-	// 是 auto 还是等后台点火由 StageSpec.Entry 决定 —— 见 internal/app/spec.go）。
+	// 引擎在这里**不做策略判断**：有回调、且声明里写了 `Entry: true`，就跑（"这个阶段有没有入口"
+	// 由声明层决定 —— 见 internal/app/spec.go；"这一站现在跑不跑"是另一件事，见下面那一句）。
 	// 下载器实例先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一条任务
 	// 可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
 	e.resolveStageDownloads()
 	// 站点行也在这儿备齐（声明只播种；库为准的列不覆盖），后台站点 Tab/站点页读它
 	e.seedSiteRows()
+
+	// **先闸住、再投入口任务**（顺序是硬的）：声明了 StartPaused 的站，这一刻整站被暂停 ——
+	// 反过来的话，投进去的头几条可能在"闸还没下"的那个窗口里被 worker 抢去跑掉。
+	// 闸住之后入队点直接折回溢出表、池子一个都不建（见 applyStartPaused）。
+	e.applyStartPaused()
 	for _, key := range keys {
 		info := e.stages[key]
-		if info.submitFunc != nil && info.config.Entry == EntryAuto {
+		if info.submitFunc != nil && info.config.Entry {
 			info.submitFunc(e)
 		}
 	}
-	// 到这里下载器覆盖层、站点行、入口任务都落地了 —— 后台的手动点火从这一刻起才算安全
-	//（早于点火会踩"覆盖层还没解析"与"建出一个停不掉的池"两个坑，见 Engine.SubmitStageEntries）。
-	e.entriesReady.Store(true)
 
 	// 启动高水位溢出任务的回灌协程
 	e.startDrain()

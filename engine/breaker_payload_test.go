@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 )
 
@@ -54,65 +53,6 @@ func TestBreakerStatusPayloadKeys(t *testing.T) {
 	if strings.Join(manual, ",") != strings.Join(doc, ",") {
 		t.Fatalf("payload 与 docs/MONITOR.md 的示例对不上：\n代码 %v\n文档 %v", manual, doc)
 	}
-}
-
-// entries 的字段集合同样两头钉：`core.StageEntry` marshal 出来 == docs/MONITOR.md 的示例。
-// 加这个字段时正是它拦住了"代码改了、文档没跟上"。
-func TestStageEntryPayloadKeys(t *testing.T) {
-	e := newTestEngine(t, newFakeTaskDB())
-	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
-	// 入口回调必须给：`StageEntries()` 正是靠"有没有回调"判这个阶段有没有入口
-	//（生产里由声明层的 entryFunc 填，测试这里给个空实现）
-	e.AddStage("catalog", StageConfig{Site: "a", Entry: EntryManual, MaxAttempts: 1, WorkerCount: 1, QueueSize: 8},
-		&recordingFetcher{stage: "catalog"}, func(*Engine) {})
-	e.ApplyRegisterStage()
-
-	rows := e.StageEntries()
-	if len(rows) != 1 {
-		t.Fatalf("应当列出那个 manual 阶段：%+v", rows)
-	}
-	keys := marshalEntryKeys(t, rows[0])
-	if got, want := strings.Join(keys, ","), strings.Join(docKeys(t, "entries"), ","); got != want {
-		t.Fatalf("entries 的字段与 docs/MONITOR.md 的示例对不上：\n代码 %s\n文档 %s", got, want)
-	}
-
-	// 暂停之后字段集合不能变（"有时有、有时没有"会让前端静默读不到），且状态要跟着走
-	if !e.PauseStage("a", "catalog", "只停这个阶段") {
-		t.Fatal("阶段级暂停应当成功")
-	}
-	rows = e.StageEntries()
-	if !rows[0].Paused || rows[0].PauseSource != PauseSourceManual {
-		t.Fatalf("阶段级暂停应当反映在这一行上：%+v", rows[0])
-	}
-	if got := strings.Join(marshalEntryKeys(t, rows[0]), ","); got != strings.Join(keys, ",") {
-		t.Fatalf("暂停前后字段集合不一致：\n前 %s\n后 %s", strings.Join(keys, ","), got)
-	}
-	// 整站暂停要**继承**到阶段行（闸门看到的就是它，两处必须一致）
-	e.ResumeStage("a", "catalog")
-	if !e.PauseSite("a", "整站") {
-		t.Fatal("整站暂停应当成功")
-	}
-	if rows = e.StageEntries(); !rows[0].Paused || rows[0].PauseSource != PauseSourceManual {
-		t.Fatalf("整站暂停应当继承到阶段行：%+v", rows[0])
-	}
-}
-
-func marshalEntryKeys(t *testing.T, en core.StageEntry) []string {
-	t.Helper()
-	raw, err := json.Marshal(en)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func marshalKeys(t *testing.T, st BreakerStatus) []string {

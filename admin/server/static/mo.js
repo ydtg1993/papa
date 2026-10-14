@@ -519,25 +519,18 @@
     // siteView 按当前站点过滤阶段；治理队列是全局各一条，不跟站点走。
     // siteList 是**阶段入口卡片**要用的站点清单：它以 sites（声明播种的站点快照）为准，
     // 不是从 entries 推出来的 —— 没有入口阶段的站也该有卡片，否则"暂停/恢复"那个按钮就跟着没了。
-    function siteView(stages, queues, entries, sites) {
+    function siteView(stages, queues, sites) {
         var allSites = Object.keys(sites || {}).sort();
-        if (!allSites.length) { // 没配 sites 回调（或还没播种）：退回"有入口的那些站"
-            (entries || []).forEach(function (e) {
-                if (e && e.site && allSites.indexOf(e.site) < 0) allSites.push(e.site);
-            });
-            allSites.sort();
-        }
         if (currentSite === null) {
-            return { stages: stages, queues: queues, entries: entries, sites: allSites };
+            return { stages: stages, queues: queues, sites: allSites };
         }
         var outStages = {};
         Object.keys(stages || {}).forEach(function (name) {
             if ((stages[name].site || '') === currentSite) outStages[name] = stages[name];
         });
-        // 切到某站：阶段、入口、站点清单都只留那一站（概览时全列出来，当总控台用）
-        var outEntries = (entries || []).filter(function (e) { return e && e.site === currentSite; });
+        // 切到某站：阶段与站点清单都只留那一站（概览时全列出来，当总控台用）
         return {
-            stages: outStages, queues: queues, entries: outEntries,
+            stages: outStages, queues: queues,
             sites: allSites.filter(function (s) { return s === currentSite; }),
         };
     }
@@ -600,7 +593,7 @@
     function renderAll(data) {
         lastData = data;
         renderSiteTabs(data);
-        var view = siteView(data.stages, data.queues, data.entries, data.sites);
+        var view = siteView(data.stages, data.queues, data.sites);
         renderSystem(data.system);
         renderDirs(data.system && data.system.dirs);
         renderQueueSummary(view.stages);
@@ -612,8 +605,8 @@
         // 一个字都不报 —— 多站熔断横幅其实一直没显示过。
         // **不过滤**：横幅是告警，切到哪个站点 tab 都该看得见（切走了反而看不见出事的是哪个站）。
         renderBreaker(data.breakers);
-        // 阶段入口卡片：跟着站点 Tab 过滤（概览 = 全部站点），暂停状态取自同一轮的 breakers。
-        renderEntries(view.entries, data.breakers, view.sites);
+        // 站点控制卡片：跟着站点 Tab 过滤（概览 = 全部站点），暂停状态取自同一轮的 breakers。
+        renderSiteControl(view.sites, data.breakers);
     }
 
     /* ---- 熔断横幅（多站时逐 scope 一行） ---- */
@@ -675,13 +668,20 @@
         fetchData();
     }
 
-    /* ---- 阶段入口：一站一张卡片（卡头是站点 + 暂停/恢复，卡体是入口阶段的点火按钮） ---- */
-    // 为什么要有：`Entry: manual` 的入口**只能从这里点火** —— 启动不投、别处也没有入口（见 StageSpec.Entry）。
-    // 多站时这也是一处"总控台"：谁在自动跑、谁等着你点、哪一站被闸住，一张卡上看全（概览页）。
-    // 数据：entries（数组，按站点分组）+ breakers（暂停状态），都跟着 /api/monitor 每轮刷新一起来。
-    function renderEntries(entries, breakers, sites) {
-        var sec = document.getElementById('dash-entries-sec');
-        var el = document.getElementById('dash-entries');
+    /* ---- 站点控制：一站一行（站点名 + 运行中/已暂停 + 暂停/恢复整站） ---- */
+    // 为什么要有：**站点那一层**是唯一不需要站点知识的粒度（"这一站先别抓"），也是后台**唯一**
+    // 主动暂停的入口 —— 熔断横幅只在已经闸住时才出现、只有「恢复」。声明了 `StartPaused` 的站
+    // 启动就停在这一档上，操作人在这里点开（见 docs/MONITOR.md §10）。
+    //
+    // 阶段那一层（只停某一站的某一个阶段）是**接口**：端点带 stage、引擎侧 PauseStage / ResumeStage
+    // 都在，框架不替业务决定界面长什么样 —— 注进来的页/脚本调 `pauseCrawling('example', 'catalog')`
+    // 就行。这里刻意不做成每个阶段一行：那是站点知识，框架没有。
+    //
+    // 数据：sites（跟着站点 Tab 过滤，概览 = 全部站点）+ breakers（与横幅同一份暂停状态，
+    // 不额外发请求）。两个回调都没配时整块隐藏，不占位。
+    function renderSiteControl(sites, breakers) {
+        var sec = document.getElementById('dash-site-ctl-sec');
+        var el = document.getElementById('dash-site-ctl');
         if (!sec || !el) return;
         var breakerOf = {};
         (breakers || []).forEach(function (b) { if (b) breakerOf[b.site] = b; });
@@ -696,73 +696,26 @@
             return !(b.source === 'manual' && b.stage);
         }
 
-        // 站点清单由调用方给（以 sites 为准）：**每个站一张卡**，哪怕它没有入口阶段 ——
-        // 卡片头上那个「暂停/恢复」是整站的控制，不该因为"这个站没有入口"就消失。
-        sites = (sites || []).slice();
-        if (!sites.length) { sec.hidden = true; el.innerHTML = ''; return; }
+        // 站点清单由调用方给（以 sites 为准）：**每个站一行**，哪怕它没有入口阶段 ——
+        // 这个「暂停/恢复」是整站的控制，不该因为"这个站没有入口"就消失。
+        var list = (sites || []).slice();
+        if (!list.length) { sec.hidden = true; el.innerHTML = ''; return; }
 
-        el.innerHTML = sites.map(function (site) {
-            var rows = (entries || []).filter(function (e) { return e && e.site === site; })
-                .map(function (e) {
-                    var manual = e.mode === 'manual';
-                    var when = e.last_triggered_at ? fmtAgo(e.last_triggered_at) : '从未点火';
-                    // 运行期值一律走 data-*（内联属性里只有固定代码）—— 与熔断那个「恢复」按钮同一套写法
-                    var btn = manual
-                        ? '<button class="btn" data-site="' + esc(site) + '" data-stage="' + esc(e.stage) +
-                          '" onclick="triggerEntry(this.dataset.site, this.dataset.stage)">点火</button>'
-                        : '<span class="muted">启动已自动投过</span>';
-                    // 这一行只**显示**状态（这个阶段停没停），不给阶段级的开关 ——
-                    // 卡片上那个「暂停/恢复」是**站点那一层**（管这一站的全部阶段）。
-                    // 阶段级的接口是留着的（端点带 stage、引擎侧 PauseStage/ResumeStage）：
-                    // 要不要在界面上开到这个粒度由业务定，接在自己的页/路由里就行（见 docs/MONITOR.md §10）。
-                    return '<div class="breaker-row">' +
-                        '<span class="breaker-text">' + esc(e.stage) +
-                        ' <span class="badge ' + (manual ? 'warn' : 'ok') + '">' + esc(e.mode) + '</span>' +
-                        (e.paused ? ' <span class="badge off">已暂停</span>' : '') +
-                        '｜' + esc(when) + '</span>' + btn + '</div>';
-                }).join('');
-            if (!rows) {
-                rows = '<div class="breaker-row"><span class="breaker-text muted">没有入口阶段</span></div>';
-            }
+        el.innerHTML = list.map(function (site) {
             var paused = sitePaused(site);
+            // 运行期值一律走 data-*（内联属性里只有固定代码）—— 与熔断那个「恢复」按钮同一套写法
             var toggle = '<button class="btn' + (paused ? '' : ' danger') + '" data-site="' + esc(site) + '" ' +
                 'onclick="' + (paused ? 'resumeCrawling' : 'pauseCrawling') + '(this.dataset.site)">' +
                 (paused ? '恢复整站' : '暂停整站') + '</button>';
             return '<div class="card"><div class="breaker-row">' +
                 '<span class="breaker-text"><b>' + esc(siteLabel(site)) + '</b>' +
-                (paused ? '｜<b>已暂停</b>' : '｜运行中') + '</span>' + toggle + '</div>' +
-                rows + '</div>';
+                (paused ? '｜<b>已暂停</b>' : '｜运行中') + '</span>' + toggle + '</div></div>';
         }).join('');
         sec.hidden = false;
     }
 
-    // 点火：入口任务自带幂等键，所以这是"把还没有终态行的入口投一遍" ——
-    // 已经跑完（成功或失败）的入口会被静默跳过，不会重跑。
-    async function triggerEntry(site, stage) {
-        // 刻意不用 apiPost：那个"失败即 null"会把服务端的话吞掉，而这里的拒绝原因
-        //（没入口 / 它是 auto / 引擎没就绪 / 已有一次在跑）正是操作人要知道的。
-        var headers = { 'Content-Type': 'application/json' };
-        var key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp = null;
-        try {
-            resp = await fetch('/api/entries/trigger', {
-                method: 'POST', headers: headers, body: JSON.stringify({ site: site, stage: stage })
-            });
-        } catch (e) { Toast.err('连接失败'); return; }
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return; }
-        if (!resp.ok) {
-            var msg = '';
-            try { msg = (await resp.text()).trim(); } catch (e) { /* 拿不到 body 就报通用话术 */ }
-            Toast.err(site + '/' + stage + '：' + (msg || '点火失败'));
-            return;
-        }
-        Toast.ok('已点火 ' + site + '/' + stage + '（已完成的入口会被去重跳过）');
-        fetchData();
-    }
-
-    // 暂停抓取：只给 site = 整站那一层（框架自带界面走的就是这一档）；再给 stage = 只停那一个阶段
-    //（留给业务自己接的界面/脚本）。暂停**必须点名**（一个误点不该停掉所有站）。
+    // 暂停抓取：只给 site = 整站那一层（框架自带界面走的就是这一档 —— 站点控制卡上那个按钮）；
+    // 再给 stage = 只停那一个阶段（留给业务自己接的界面/脚本）。暂停**必须点名**（一个误点不该停掉所有站）。
     async function pauseCrawling(site, stage) {
         var body = { scope: site };
         if (stage) body.stage = stage;

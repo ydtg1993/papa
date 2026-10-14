@@ -547,10 +547,10 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 
 	stageCfg := StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
 	// 两个站各声明自己的阶段：任务上的 Site 必须与声明里的 Site 对上（键是 `site:stage`）。
-	// Entry: auto 不能少 —— 启动那一趟只投 `EntryAuto` 的阶段（manual 的等后台点火）。
+	// Entry 不能少 —— 启动那一趟只投写了 Entry 的阶段。
 	stageCfgA, stageCfgB := stageCfg, stageCfg
 	stageCfgA.Site, stageCfgB.Site = "a", "b"
-	stageCfgA.Entry, stageCfgB.Entry = EntryAuto, EntryAuto
+	stageCfgA.Entry, stageCfgB.Entry = true, true
 	fetcherA := &recordingFetcher{stage: "a"}
 	fetcherB := &recordingFetcher{stage: "b"}
 
