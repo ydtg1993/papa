@@ -10,18 +10,19 @@ papa new mycrawler --replace /path/to/papa   # 或外部 go run github.com/ydtg1
 cd mycrawler && go mod tidy
 ```
 
-1. 把 `configs/config.yaml` 的 `db.dsn` 指向你的 MySQL。
+1. 把 `configs/config.yaml` 的 `db.dsn` 指向你的 MySQL（`configs/config.yaml.example` 是进版本库的范本，
+   照它抄一份自己的 `config.yaml`）。
 2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
    之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled`）都要**再跑一次**，那两张表跟着开关走。
-3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `configs/sites/<站名>.go`**（并发/队列/间隔/重试/
+3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `sites/<站名>.go`**（并发/队列/间隔/重试/
    入口开关都在那儿一份写全，各文件在自己的 `init()` 里登记），`main.go` 里只有 `app.RegisterSites(papa.Sites()...)`
    一行 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
    （见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.1）。
 4. 加数据模型写根目录 `models/` 包（`models/models.go` 里登记建表清单）；后台（`/monitor`）
    要加表格页 / 自定义页 / 自己的接口，改 `monitor/` 包 ——
    `main.go` 只有 `monitor.Register(app)` 一行（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
-5. `go run .`
+5. `go run .`（配置路径默认 `configs/config.yaml`，要用别处就 `go run . --config=./config.yaml`）。
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
 底层使用 GORM `AutoMigrate`，主要用于补表、列和索引，不负责删除列或表达全部破坏性变更。重复执行通常是幂等的，但生产环境仍应先备份、审查生成 SQL，并为改名、改类型等变更自己写迁移 SQL。

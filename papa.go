@@ -92,11 +92,11 @@ type Config = config.Config
 
 // RegisterSite 登记一个站点声明（**在站点文件的 init() 里调**）：
 //
-//	// configs/sites/huangguo.go
-//	func init() { papa.RegisterSite(huangguo()) }
+//	// sites/target_site.go
+//	func init() { papa.RegisterSite(target_site()) }
 //
 // 框架自己收集，项目不用手写汇总清单 —— 加一个站 = 加一个文件。
-// main.go 只需一行匿名导入（`_ "yourmod/configs/sites"`）让这些 init 跑起来，
+// main.go 只需一行匿名导入（`_ "yourmod/sites"`）让这些 init 跑起来，
 // 再把收集到的交给 App：`app.RegisterSites(papa.Sites()...)`。
 var RegisterSite = app.RegisterSite
 

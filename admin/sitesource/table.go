@@ -13,7 +13,7 @@ func Table(db *gorm.DB) oao.Table {
 	return oao.Table{
 		Key: "site", Label: "站点", Group: "数据",
 		// 站点行是引擎启动时按声明播种 + 跑起来按列回写的，所以这里**不给编辑**：
-		// 配置在声明里（configs/sites/<站名>.go），运营没有可动的列。
+		// 配置在声明里（sites/<站名>.go），运营没有可动的列。
 		Source: gormsource.New(gormsource.Config{
 			DB:     db,
 			Model:  &models.CrawlerSite{},

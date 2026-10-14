@@ -29,7 +29,7 @@ crawler:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
     threshold: 50              # 达阈值即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
-  # 阶段参数不在这里配：声明在 configs/sites/<站名>.go（Go 里一份写全）。详见 docs/FETCHER_WRITING_GUIDE.md 7.2
+  # 阶段参数不在这里配：声明在 sites/<站名>.go（Go 里一份写全）。详见 docs/FETCHER_WRITING_GUIDE.md 7.2
 
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
 # 空闲超过 max_idle_time 的会被回收。
@@ -44,7 +44,7 @@ browser:
   # leakless 默认关，**别开**：rod 的 leakless 辅助程序会被 Windows Defender 直接拦掉
   #（实测报 "contains a virus or potentially unwanted software"）。要写就写 leakless: false。
   browser_path: ""             # Chrome 可执行路径，空则用默认 Chromium
-  # 请求头写站点声明（configs/sites/<站名>.go 的 Headers，抓取与下载都认）；这里是**全局默认层**，
+  # 请求头写站点声明（sites/<站名>.go 的 Headers，抓取与下载都认）；这里是**全局默认层**，
   # 只放与站点无关的头（多站共用的那一层）：headers: {Accept-Language: "zh-CN,zh;q=0.9"}
 
 # 静态 HTML 抓取客户端。timeout / max_body_size / headers 都是全局默认，同样改完重启生效。

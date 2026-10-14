@@ -38,7 +38,7 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 	// ② config.yaml：脚手架自带的三个队列段是合法的（队列已回 config.yaml，不是"已退休"的旧段）
 
 	// ③ 站点声明写成升级前的样子：还带着旧类型名
-	writeFileT(t, filepath.Join("demo", "configs", "sites", "demo.go"), `package sites
+	writeFileT(t, filepath.Join("demo", "sites", "demo.go"), `package sites
 
 import "github.com/ydtg1993/papa/v3"
 
@@ -98,7 +98,7 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 
 	mainBefore := readFile(t, filepath.Join("demo", "main.go"))
 	cfgBefore := readFile(t, filepath.Join("demo", "configs", "config.yaml"))
-	siteBefore := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
+	siteBefore := readFile(t, filepath.Join("demo", "sites", "demo.go"))
 	// 技能是刚生成的，与框架逐字一致 → 升级不该动它（幂等）
 	skillBefore := readFile(t, filepath.Join("demo", skillPath(t, "SKILL.md")))
 
@@ -140,7 +140,7 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	for _, c := range []struct{ name, before string }{
 		{"main.go", mainBefore},
 		{"configs/config.yaml", cfgBefore},
-		{"configs/sites/demo.go", siteBefore},
+		{"sites/demo.go", siteBefore},
 	} {
 		if got := readFile(t, filepath.Join("demo", filepath.FromSlash(c.name))); got != c.before {
 			t.Errorf("业务文件 %s 不该被动过", c.name)
@@ -227,7 +227,7 @@ func TestUpgradeSeedsSkillForOlderProject(t *testing.T) {
 		}
 	}
 	conv := readFile(t, filepath.Join("demo", skillPath(t, "references/project-conventions.md")))
-	if !strings.Contains(conv, "configs/sites/demo.go") {
+	if !strings.Contains(conv, "sites/demo.go") {
 		t.Errorf("播种出来的 project-conventions.md 要写进项目自己的路径：\n%s", conv)
 	}
 }
@@ -279,7 +279,7 @@ replace github.com/ydtg1993/papa/v3 => E:/go-project/test_papa/papa
 	}
 }
 
-// 没有 configs/sites/ 时不该凭空报"缺三条队列声明"。
+// 没有 sites/ 时不该凭空报"缺三条队列声明"。
 func TestUpgradeNoSiteDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 	writeFileT(t, filepath.Join("p", "configs", "config.yaml"),
@@ -290,7 +290,7 @@ func TestUpgradeNoSiteDir(t *testing.T) {
 		t.Fatalf("buildUpgradePlan = %v", err)
 	}
 	if len(p.SiteNotes) != 0 || len(p.SiteFiles) != 0 {
-		t.Errorf("没有 configs/sites/ 时不该报站点声明的问题：%v / %v", p.SiteFiles, p.SiteNotes)
+		t.Errorf("没有 sites/ 时不该报站点声明的问题：%v / %v", p.SiteFiles, p.SiteNotes)
 	}
 	if !p.ConfigOK {
 		t.Errorf("这份 config.yaml 读得通才对，实得：%s", p.ConfigReport)

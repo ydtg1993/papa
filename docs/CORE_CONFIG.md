@@ -43,7 +43,7 @@
 ### crawler —— 爬虫核心
 
 > **阶段参数不在这个文件里**：`worker_count` / `queue_size` / `delay` / `retry` / 入口开关 /
-> 站点归属都在 `configs/sites/<站名>.go` 里一份写全（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）——
+> 站点归属都在 `sites/<站名>.go` 里一份写全（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）——
 > 一个阶段的存在本来就离不开代码（必须有个 fetcher），参数再放另一份文件等于加一个阶段要改两处。
 > 配置里留着的 `crawler.stages` 段会被"未知配置键"拦下（**故意的**，见下面的校验层说明）。
 
@@ -61,7 +61,7 @@
 | `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.New` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 
 > **熔断按站点分组**：这一节配的是**默认值**；每个站点可以在
-> `configs/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
+> `sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
 > 只关掉某一站）。每站一份计数是硬要求 —— 共用一份的话站点 A 被墙会把站点 B 一起闸住。
 > 这一节只管**判据**（窗口与阈值）；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](./MONITOR.md) §9），
 > 人工暂停写的是同一张表、来源标成 manual。
@@ -82,7 +82,7 @@
 | `no_sandbox` | bool | 关闭 Chromium sandbox |
 | `leakless` | bool | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
 | `browser_path` | string | Chrome 可执行文件路径，空则用默认 Chromium |
-| `headers` | map | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `configs/sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用"的头 |
+| `headers` | map | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用"的头 |
 
 ### html —— 静态 HTML 客户端
 

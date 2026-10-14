@@ -7,8 +7,8 @@
 .claude/*
 !.claude/skills/
 
-# configs：只忽略这一份（里面有 dsn 等本地值）。
-# **别整目录忽略** —— configs/sites/<站名>.go 是项目的站点与阶段声明，那是代码，要进版本库。
+# configs：只忽略 config.yaml（里面有 dsn 等本地值）；
+# configs/config.yaml.example 是进版本库的范本，跟着项目走。站点声明在 sites/（顶层代码目录，不忽略）。
 configs/config.yaml
 
 # Logs 日志目录

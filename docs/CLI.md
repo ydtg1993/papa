@@ -39,8 +39,10 @@ mycrawler/
                            （下载器不在这里配：框架按 DefaultConfig 备好基座，要各站/各阶段不同就写在站点声明里）
   configs/
     config.yaml            配置（先把 db.dsn 指向你的库）
-    sites/<项目名>.go      ★站点与阶段声明：Key / BaseURL / Headers
-                            + 每个阶段的 worker_count / queue_size / delay / retry / Entry
+    config.yaml.example    配置范本（进版本库，新同事照它抄一份）
+  sites/
+    <项目名>.go            ★站点与阶段声明：Key / BaseURL / Headers
+                           + 每个阶段的 worker_count / queue_size / delay / retry / Entry
   fetcher/                 抓取实现（一个阶段一个 fetcher；想按站点分包也行，加站不必先分包）
   models/                  业务表模型 + 建表清单（models.go）
   monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）
@@ -51,7 +53,7 @@ mycrawler/
 
 几句要点：
 
-- **加一个站 = 加一个 `configs/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
+- **加一个站 = 加一个 `sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
   `papa.Sites()` 收集，`main.go` 不用动（站点键必填；阶段名只在本站内唯一，两个站可以同名）。
 - **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
   yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
@@ -72,7 +74,7 @@ papa check [目录] [-c <配置路径>]              # 目录默认当前目录�
 papa check [目录] --boot                       # 再往前一步：连库跑到 RegisterSites（不 Run）
 ```
 
-站点与阶段声明是**项目自己的 Go 代码**（`configs/sites/*.go` 在 `init()` 里自登记），而框架那套
+站点与阶段声明是**项目自己的 Go 代码**（`sites/*.go` 在 `init()` 里自登记），而框架那套
 「声明有问题启动即失败」的校验平时要连库、建池才跑得到。`papa check` 把这两件事解开：
 
 - 它在你项目里临时生成一个 **一次性校验程序**（`<目录>/.papa-check/main.go`），`go run` 一次，
@@ -125,9 +127,9 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
    - **`configs/config.yaml` 能不能被框架读** —— 升级最常见的坑就在这儿：旧版本留下的键现在会被
      「未知配置键一律拒绝启动」拦下，而**报错自带"搬去哪儿"的指路**。这条不需要连数据库，
      `papa upgrade` 直接把它跑一遍给你看（就是启动时那条 panic 的原文）。
-   - **`configs/sites/*.go` 的可疑点**（文本级提醒，不解析）：还在用改过名的旧类型，或把已经并回 `config.yaml` 全局段的三个治理队列继续写在站点声明里。
+   - **`sites/*.go` 的可疑点**（文本级提醒，不解析）：还在用改过名的旧类型，或把已经并回 `config.yaml` 全局段的三个治理队列继续写在站点声明里。
 
-**业务文件一律不碰**：`main.go` / `monitor/` / `models/` / `fetcher/` / `configs/sites/` / `config.yaml` /
+**业务文件一律不碰**：`main.go` / `monitor/` / `models/` / `fetcher/` / `sites/` / `config.yaml` /
 `go.mod` 都不会被覆盖 —— 生成物一旦落地就归项目所有，照模板覆盖等于抹掉你的改动。它们该改什么，
 报告最后给一张清单（含从 `go.mod` 读出的框架版本与 `replace` 目标）。
 

@@ -30,6 +30,8 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "review-checklist.md"),
 		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "project-conventions.md"),
 		filepath.Join("configs", "config.yaml"),
+		filepath.Join("configs", "config.yaml.example"),
+		filepath.Join("sites", "demo.go"),
 		filepath.Join("fetcher", "fetch_catalog.go"),
 		filepath.Join("models", "models.go"),
 		filepath.Join("monitor", "register.go"),
@@ -93,16 +95,18 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 		t.Fatalf("脚手架产出的配置框架读不了：%v", err)
 	}
 
-	// `.gitignore` 不能整目录忽略 configs/ —— configs/sites/<站名>.go 是站点与阶段声明（真代码），
-	// 被忽略掉的话新工程的骨架进不了版本库。回归点：v3.0.0 把声明搬进 configs/ 之后，
-	// 模板里的 `configs/` 那行就成了坑（实测生成物里它就那么写着）。
+	// `.gitignore` 只忽略 configs/config.yaml（里面有 dsn 等本地值）；configs/config.yaml.example
+	// 是进版本库的范本，站点声明也已搬到顶层 sites/（真代码），这两样都不该被忽略。
 	gitignore := readFile(t, filepath.Join("demo", ".gitignore"))
 	if !strings.Contains(gitignore, "configs/config.yaml") {
 		t.Errorf(".gitignore 应当忽略 configs/config.yaml：%s", gitignore)
 	}
 	for _, line := range strings.Split(gitignore, "\n") {
-		if strings.TrimSpace(line) == "configs/" {
-			t.Errorf(".gitignore 不该整目录忽略 configs/（configs/sites/*.go 是代码）：%s", gitignore)
+		switch strings.TrimSpace(line) {
+		case "configs/":
+			t.Errorf(".gitignore 不该整目录忽略 configs/（configs/config.yaml.example 要进版本库）：%s", gitignore)
+		case "sites/":
+			t.Errorf(".gitignore 不该整目录忽略 sites/（sites/*.go 是代码）：%s", gitignore)
 		}
 	}
 
@@ -126,25 +130,25 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	}
 
 	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
-	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 configs/sites/<站名>.go 声明。
-	siteSpec := readFile(t, filepath.Join("demo", "configs", "sites", "demo.go"))
+	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 sites/<站名>.go 声明。
+	siteSpec := readFile(t, filepath.Join("demo", "sites", "demo.go"))
 	// 三队列已回 config.yaml：站点声明里**不该再有**这三段
 	for _, want := range []string{"papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
 		if strings.Contains(siteSpec, want) {
-			t.Errorf("configs/sites/demo.go 里不该再有 %s 的声明（三队列已回 config.yaml）", want)
+			t.Errorf("sites/demo.go 里不该再有 %s 的声明（三队列已回 config.yaml）", want)
 		}
 	}
 	if strings.Contains(siteSpec, "Entries: map[string]string") {
 		t.Errorf("生成的 SiteSpec 不应包含入口表 Entries 字段：\n%s", siteSpec)
 	}
 	if !strings.Contains(siteSpec, "fetcher.FetchCatalog{}") {
-		t.Errorf("configs/sites/demo.go 里应当列出 catalog 阶段")
+		t.Errorf("sites/demo.go 里应当列出 catalog 阶段")
 	}
 	// 站点文件自己在 init 里登记（框架收集），项目里没有需要手写的汇总清单
 	if !strings.Contains(siteSpec, "papa.RegisterSite(") {
-		t.Errorf("configs/sites/demo.go 应当在 init 里自登记")
+		t.Errorf("sites/demo.go 应当在 init 里自登记")
 	}
-	if _, err := os.Stat(filepath.Join("demo", "configs", "sites", "sites.go")); err == nil {
+	if _, err := os.Stat(filepath.Join("demo", "sites", "sites.go")); err == nil {
 		t.Errorf("不该再生成 sites.go 汇总清单（各站点文件自己登记）")
 	}
 	fetcher := readFile(t, filepath.Join("demo", "fetcher", "fetch_catalog.go"))
@@ -171,7 +175,7 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	// 请求头只写**一处**：站点声明。模板里再抄一份到 config.yaml 就是会静默失效的副本
 	//（站点级同键覆盖全局层），而脚手架是用户照抄的范本 —— 两处各写一份 UA 正是要杜绝的样子。
 	if !strings.Contains(siteSpec, "Headers: map[string]string{") {
-		t.Errorf("configs/sites/demo.go 应当把站点的请求头声明出来（脚手架产物要能直接对着真站跑）：\n%s", siteSpec)
+		t.Errorf("sites/demo.go 应当把站点的请求头声明出来（脚手架产物要能直接对着真站跑）：\n%s", siteSpec)
 	}
 	if !strings.Contains(siteSpec, "User-Agent") {
 		t.Errorf("站点声明里应当给出 User-Agent（框架默认的 PapaStaticHTML/1.0 会被真实站点判为爬虫）：\n%s", siteSpec)
@@ -179,7 +183,7 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	// 反面：config.yaml 里不该再出现一份 UA。全局那层仍在（注释里给了用法），
 	// 它留给"与站点无关、所有站共用、还想热更"的头。
 	if strings.Contains(readFile(t, filepath.Join("demo", "configs", "config.yaml")), "Mozilla/") {
-		t.Error("config.yaml 里不该再写一份 UA —— 请求头写在 configs/sites/<站名>.go 的 Headers 里")
+		t.Error("config.yaml 里不该再写一份 UA —— 请求头写在 sites/<站名>.go 的 Headers 里")
 	}
 
 	// 白名单在 crawler_config 表里（不在 config.yaml）：生成的配置里**不该**再出现那两个旧键 ——
@@ -304,7 +308,7 @@ func captureStderr(t *testing.T, fn func()) string {
 }
 
 // 项目名不合法要在**写任何文件之前**拦住：同一个名字会变成 module 路径、项目目录名
-// 与 `configs/sites/<名字>.go` 的文件名，放过去的话要到 format.Source 那一步才炸，
+// 与 `sites/<名字>.go` 的文件名，放过去的话要到 format.Source 那一步才炸，
 // 报出来的是"生成的 xxx 不是合法 Go（模板改坏了？）"—— 真错因（名字）被盖掉，还留下半成品目录。
 func TestRunNewRejectsBadModuleName(t *testing.T) {
 	for _, bad := range []string{"my project", "my:project", "my?project", "my//sub", "/leading", "trailing/", "a/../b"} {
@@ -344,7 +348,7 @@ func TestRunNewKeywordNameGeneratesCompilableGo(t *testing.T) {
 	if err := runNew("type", nil); err != nil {
 		t.Fatalf("关键字名字应当被后缀兜住，而不是报错：%v", err)
 	}
-	src := readFile(t, filepath.Join("type", "configs", "sites", "type.go"))
+	src := readFile(t, filepath.Join("type", "sites", "type.go"))
 	if !strings.Contains(src, "func typeSite() papa.SiteSpec") {
 		t.Fatalf("站点函数名应当是 typeSite：\n%s", src)
 	}

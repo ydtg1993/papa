@@ -65,7 +65,7 @@ crawler:
 	if cfg.HTML.Headers["User-Agent"] != "html-ua" {
 		t.Fatalf("html headers 大小写丢失: %+v", cfg.HTML.Headers)
 	}
-	// 注意：阶段参数已搬进 Go 声明（`configs/sites/<站名>.go` 的 StageSpec），配置里不再有 crawler.stages 段；
+	// 注意：阶段参数已搬进 Go 声明（`sites/<站名>.go` 的 StageSpec），配置里不再有 crawler.stages 段；
 	// 那套 "10s-30s" 区间的解析由 duration_test.go 直接覆盖 config.ParseDurationRange。
 	// 三个治理队列同理，也不在这里了（搬到站点声明）—— 它们出现在 config.yaml 里会被拒绝启动，
 	// 见 validate_test.go 的 TestMovedQueueSectionsPointToSiteDeclaration。

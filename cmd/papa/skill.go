@@ -26,7 +26,7 @@ type fileSpec struct {
 //   - refreshed=true（通用文件）：框架所有，与框架不一致就刷新 —— 和 `docs/` 同一待遇。
 //   - refreshed=false（项目所有）：只在**缺失**时播种一次，之后一律不碰。
 //     `project-conventions.md` 记的是「本项目自己」的布局与已知漂移，框架去覆盖就是
-//     "控制面吃掉数据面"（与 `configs/sites/*.go`、`main.go` 属于业务那类同一个道理）。
+//     "控制面吃掉数据面"（与 `sites/*.go`、`main.go` 属于业务那类同一个道理）。
 type skillFile struct {
 	tmpl      string
 	rel       string

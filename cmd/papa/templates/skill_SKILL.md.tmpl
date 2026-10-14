@@ -1,6 +1,6 @@
 ---
 name: papa-crawler-development
-description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v3—especially configs/sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
+description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v3—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
 compatibility: Go 1.25+, Papa v3 business projects; shell and Go toolchain recommended for validation.
 ---
 
@@ -31,7 +31,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 
 | Request | Primary locations | Read first |
 | --- | --- | --- |
-| Add or change a site | `configs/sites/<site>.go`, `fetcher/<site>/` | Fetcher guide, core config |
+| Add or change a site | `sites/<site>.go`, `fetcher/<site>/` | Fetcher guide, core config |
 | Parse pages or choose HTML/Rod | `fetcher/<site>/`, samples/tests | Fetcher guide, CLI |
 | Persist results | `models/`, fetcher repository calls | Data landing guide |
 | Change retries/recovery/repeat polling | site stage declaration, `configs/config.yaml`, task fields | Error/recover/repeat queue manuals |
@@ -42,7 +42,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 
 ### 1. Inspect before proposing code
 
-- Read `go.mod`, `main.go`, `configs/config.yaml`, existing `configs/sites/*.go`, and the nearest fetcher package.
+- Read `go.mod`, `main.go`, `configs/config.yaml`, existing `sites/*.go`, and the nearest fetcher package.
 - Search exported API names rather than guessing signatures.
 - For selector work, look for saved HTML under `docs/samples/` or archived failure pages. If no representative HTML or reachable URL exists, request one or clearly mark selectors as placeholders.
 - Results go into the project’s own GORM tables under `models/`; the framework task table carries scheduling state only (url / stage / site / status / retry / repeat / `meta`) and has no result columns.
@@ -52,7 +52,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 Keep each site self-contained:
 
 ```text
-configs/sites/<site>.go       site identity, headers, breaker/download overrides, StageSpec values
+sites/<site>.go              site identity, headers, breaker/download overrides, StageSpec values
 fetcher/<site>/site.go        stage constants and site lookup helper
 fetcher/<site>/fetch_*.go     stage handlers and entry submission
 fetcher/<site>/*_test.go      parser/URL/task behavior tests using saved HTML
@@ -62,7 +62,7 @@ monitor/                      presentation, actions, routes, and pages
 
 A stage name is unique **within its site** — two sites may each declare `catalog`. The engine keys a stage by `site:stage`, so pools, stats, archive directories and the DB unique index stay separate. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
 
-A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `configs/sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
+A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
 
 Put worker count, queue size, delay, retry, `Entry` (see below), and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
 

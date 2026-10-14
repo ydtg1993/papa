@@ -14,7 +14,7 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
-// 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `configs/sites/<站名>.go`），
+// 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `sites/<站名>.go`），
 // main.go 只要一行 `app.RegisterSites(configs.Sites()...)`。
 //
 // 为什么参数不放 config.yaml：一个阶段的存在本来就离不开代码（必须有个 fetcher），

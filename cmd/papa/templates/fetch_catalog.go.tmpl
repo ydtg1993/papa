@@ -19,7 +19,7 @@ func (f *FetchCatalog) GetStage() string { return "catalog" }
 // 框架在启动时自动调它（那时**所有**阶段的池子都已建好，所以这里能往任意阶段投）。
 // 不需要起始任务就删掉这个方法（阶段照常跑，只是没人往里投任务）。
 //
-// site 是本站声明（configs/sites/{{.Module}}.go）的快照：BaseURL / Headers 都在里面 ——
+// site 是本站声明（sites/{{.Module}}.go）的快照：BaseURL / Headers 都在里面 ——
 // 入口路由（"要抓哪些分类"）是本站业务逻辑，就写在这个文件里，不放站点声明。
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 	if err := engine.SubmitTask(&papa.Task{

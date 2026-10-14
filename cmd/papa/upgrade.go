@@ -15,7 +15,7 @@ import (
 // 本文件是 `papa upgrade`：把一个**已经生成过的**业务目录升到当前脚手架。
 //
 // 为什么不能直接照模板覆盖：生成物一旦落地就归项目所有 —— main.go / monitor/ / models/ / fetcher/ /
-// configs/sites/ / config.yaml / go.mod 都会被业务改，覆盖等于把人家写的东西抹掉（而它恰恰是项目的全部价值）。
+// sites/ / config.yaml / go.mod 都会被业务改，覆盖等于把人家写的东西抹掉（而它恰恰是项目的全部价值）。
 // 所以这里只做两件框架**有把握**的事：
 //
 //  1. 刷新**框架副本**：`docs/`（生成时逐字复制的使用手册，以框架为准）。默认只报告，`--write` 才落盘。
@@ -180,7 +180,7 @@ func printUpgradePlan(p *upgradePlan) {
 
 	fmt.Printf("\n【站点声明】\n")
 	if len(p.SiteFiles) == 0 {
-		fmt.Printf("  configs/sites/ 下没有 .go（站点与阶段声明都在这儿）\n")
+		fmt.Printf("  sites/ 下没有 .go（站点与阶段声明都在这儿）\n")
 	}
 	for _, n := range p.SiteNotes {
 		fmt.Printf("  ！%s\n", n)
@@ -191,7 +191,7 @@ func printUpgradePlan(p *upgradePlan) {
 
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
-		"configs/sites/*.go：三队列必写的值（从 config.yaml 那三段抄过去）；本轮规则见 papa 仓库的 docs/issues/changes.md",
+		"sites/*.go：三队列必写的值（从 config.yaml 那三段抄过去）；本轮规则见 papa 仓库的 docs/issues/changes.md",
 		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>` 先跑起来",
 		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改；动过的看 docs/issues/changes.md 里对应条目",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",
@@ -339,10 +339,10 @@ func checkConfig(path string) (report string, ok bool) {
 	return "", true
 }
 
-// checkSiteDeclarations 对 configs/sites/*.go 做**文本级**检查（不改不解析）：
+// checkSiteDeclarations 对 sites/*.go 做**文本级**检查（不改不解析）：
 // 旧类型名还在不在、三条队列声明有没有出现过。只是提醒 —— 真正的校验在启动时（RegisterSites）。
 func checkSiteDeclarations(root string) (files []string, notes []string) {
-	paths, err := filepath.Glob(filepath.Join(root, "configs", "sites", "*.go"))
+	paths, err := filepath.Glob(filepath.Join(root, "sites", "*.go"))
 	if err != nil {
 		return nil, nil
 	}

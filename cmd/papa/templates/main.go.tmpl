@@ -2,23 +2,34 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
-	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/ydtg1993/papa/v3"
-	// 匿名导入：让 configs/sites 里各站点文件的 init() 跑起来（它们自己登记到框架）。
-	// 加一个站 = 加一个文件，这里和 main 都不用改。
-	_ "{{.Module}}/configs/sites"
 	"{{.Module}}/monitor"
+	// 匿名导入：让 sites 里各站点文件的 init() 跑起来（它们自己登记到框架）。
+	// 加一个站 = 加一个文件，这里和 main 都不用改。
+	_ "{{.Module}}/sites"
 )
 
 func main() {
-	// 1. 创建应用容器（默认读 configs/config.yaml）
-	//    自定义配置路径：papa.New(papa.WithConfigPath("configs/config.yaml"))
+	// 1. 创建应用容器。配置路径用 `--config` 指定：
+	//      go run . --config=./config.yaml
+	//    缺省依次读 PAPA_CONFIG 环境变量、configs/config.yaml。
 	//    注册模型也可以走这里（papa.WithModels(...)），不过脚手架统一在根 models 包里登记。
-	app, err := papa.New()
+	var (
+		configPath = flag.String("config", "", "配置文件路径（默认 configs/config.yaml，也可用 PAPA_CONFIG）")
+		doMigrate  = flag.Bool("migrate", false, "建表后退出（papa migrate 会转交到这里）")
+	)
+	flag.Parse()
+
+	var opts []papa.Option
+	if *configPath != "" {
+		opts = append(opts, papa.WithConfigPath(*configPath))
+	}
+	app, err := papa.New(opts...)
 	if err != nil {
 		panic(fmt.Sprintf("init app failed: %s", err.Error()))
 	}
@@ -34,7 +45,7 @@ func main() {
 	//     启动时**不会**自动迁移 —— 新开的开关（server.operation_log / crawler.trace.enabled）
 	//     也要重跑一次才会建出对应的表。必须在 monitor.Register 之后：建表清单在那里登记
 	//     （register.go 里的 models.Models()）。
-	if len(os.Args) > 1 && os.Args[1] == "-migrate" {
+	if *doMigrate {
 		if err := app.Migrate(); err != nil {
 			panic(fmt.Sprintf("migrate failed: %s", err.Error()))
 		}
@@ -44,10 +55,10 @@ func main() {
 
 	// 2. 可选：设置代理（需在 RegisterSites 之前）。
 	//    **下载器不在这里配**：框架已按 DefaultConfig 备好基座，要按站点/阶段各配一份就写在
-	//    configs/sites/<站名>.go 的 SiteSpec.FileDown / M3U8 上（解析顺序：阶段 > 站点）。
+	//    sites/<站名>.go 的 SiteSpec.FileDown / M3U8 上（解析顺序：阶段 > 站点）。
 	// app.Engine.SetProxy(proxy.NewManager(app.Config.Proxy.APIURL, 8*time.Minute))
 
-	// 3. 注册站点与阶段：站点在 configs/sites/ 下一站一个文件（自己登记），框架把它们收在
+	// 3. 注册站点与阶段：站点在 sites/ 下一站一个文件（自己登记），框架把它们收在
 	//    papa.Sites() 里 —— 加一个站只加文件，main 不用动。并发/队列/间隔/重试/要不要投入口/
 	//    熔断阈值都在各站的声明里；起始任务由 fetcher 自己的 SubmitEntries 提交。
 	app.RegisterSites(papa.Sites()...)

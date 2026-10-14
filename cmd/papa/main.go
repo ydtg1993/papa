@@ -19,7 +19,7 @@ var tmplFS embed.FS
 
 type scaffoldData struct {
 	Module string
-	// SiteFunc 站点声明函数名（configs/sites/<模块名>.go 里的 `func xxx() papa.SiteSpec`）。
+	// SiteFunc 站点声明函数名（sites/<模块名>.go 里的 `func xxx() papa.SiteSpec`）。
 	// 模块名可能带连字符/大写，这里归一成合法标识符。
 	SiteFunc string
 }
@@ -54,7 +54,7 @@ func sanitizeIdent(s string) string {
 
 // validateModuleName 校验项目名（它就是 go.mod 里的 module 路径）。
 //
-// 同一个名字还会变成：项目目录名、`configs/sites/<名字>.go` 的文件名、以及生成代码里的 import 前缀 ——
+// 同一个名字还会变成：项目目录名、`sites/<名字>.go` 的文件名、以及生成代码里的 import 前缀 ——
 // 所以规则比 Go 的模块路径再严一点：空格、引号、冒号、问号这些在文件名里非法的字符一律不收。
 //
 // **必须在写任何文件之前拦**：不拦的话，名字里的空格要到 `format.Source` 那一步才炸，报出来的是
@@ -144,7 +144,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  papa upgrade [目录] [--write]")
 	fmt.Fprintln(os.Stderr, "    把**已经生成过的**项目升到当前脚手架：刷新框架副本（docs/）+ 几项不用起库的检查")
 	fmt.Fprintln(os.Stderr, "    默认只报告不落盘；业务文件（main.go / monitor / models / fetcher /")
-	fmt.Fprintln(os.Stderr, "    configs/sites / config.yaml / go.mod）一律不碰 —— 照模板覆盖会抹掉你的改动")
+	fmt.Fprintln(os.Stderr, "    sites / config.yaml / go.mod）一律不碰 —— 照模板覆盖会抹掉你的改动")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa migrate [-c configs/config.yaml]")
 	fmt.Fprintln(os.Stderr, "    建/补表。在业务项目目录里跑会转交 `go run . -migrate`（连业务模型一起建）；")
@@ -198,7 +198,8 @@ func runNew(name string, args []string) error {
 		{"gitignore.tmpl", ".gitignore"},
 		{"main.go.tmpl", "main.go"},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
-		{"configs_sites_site.go.tmpl", filepath.Join("configs", "sites", "{{.Module}}.go")},
+		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml.example")},
+		{"configs_sites_site.go.tmpl", filepath.Join("sites", "{{.Module}}.go")},
 		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},
 		{"models_models.go.tmpl", filepath.Join("models", "models.go")},
 		{"monitor_register.go.tmpl", filepath.Join("monitor", "register.go")},
@@ -219,7 +220,7 @@ func runNew(name string, args []string) error {
 	}
 
 	for _, f := range files {
-		dest, err := renderStr(f.dest, data) // 文件名也走一遍模板（configs/sites/<模块名>.go）
+		dest, err := renderStr(f.dest, data) // 文件名也走一遍模板（sites/<模块名>.go）
 		if err != nil {
 			return err
 		}

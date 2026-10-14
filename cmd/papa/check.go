@@ -15,7 +15,7 @@ import (
 // 本文件是 `papa check`：**不用起库**把站点与阶段声明验一遍。
 //
 // 为什么要在项目里生成一个小程序再跑：站点与阶段声明是**项目自己的 Go 代码**
-//（`configs/sites/*.go` 在 init() 里自登记），只有把它编译进去才读得到 —— CLI 是另一个模块，
+//（`sites/*.go` 在 init() 里自登记），只有把它编译进去才读得到 —— CLI 是另一个模块，
 // 看不见项目的包。而 `RegisterSites` 那套校验平时要连库、建池才会跑到。
 // 生成的那个程序只调框架的**纯校验** `papa.CheckSites`（阶段名重复、
 // 熔断阈值、Delay 与 Backoff 的写法），所以不连库、不建池、不改任何状态。
@@ -50,7 +50,7 @@ func main() {
 	}
 	sites := papa.Sites()
 	if len(sites) == 0 {
-		fmt.Fprintln(os.Stderr, "没有收集到任何站点声明 —— configs/sites/ 里的 init() 登记了吗（papa.RegisterSite）？")
+		fmt.Fprintln(os.Stderr, "没有收集到任何站点声明 —— sites/ 里的 init() 登记了吗（papa.RegisterSite）？")
 		os.Exit(1)
 	}
 	if err := papa.CheckSites(cfg, sites...); err != nil {
@@ -91,7 +91,7 @@ func checkProgram(module, configPath string) string {
 // fillProgram 填占位符：两个占位符都落在**字符串字面量**的位置上，所以先 Quote
 // （Windows 路径里的反斜杠、模块名里的怪字符都不会写坏生成物）。
 func fillProgram(tmpl, module, configPath string) string {
-	src := strings.ReplaceAll(tmpl, "__SITES_IMPORT__", strconv.Quote(module+"/configs/sites"))
+	src := strings.ReplaceAll(tmpl, "__SITES_IMPORT__", strconv.Quote(module+"/sites"))
 	return strings.ReplaceAll(src, "__CONFIG__", strconv.Quote(configPath))
 }
 
@@ -191,7 +191,7 @@ func runCheckCmd(args []string) error {
 	return nil
 }
 
-// readModulePath 从 go.mod 读 module 路径：生成的程序要 import <module>/configs/sites。
+// readModulePath 从 go.mod 读 module 路径：生成的程序要 import <module>/sites。
 func readModulePath(root string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
@@ -240,7 +240,7 @@ func main() {
 	}
 	sites := papa.Sites()
 	if len(sites) == 0 {
-		fmt.Fprintln(os.Stderr, "没有收集到任何站点声明 —— configs/sites/ 里的 init() 登记了吗（papa.RegisterSite）？")
+		fmt.Fprintln(os.Stderr, "没有收集到任何站点声明 —— sites/ 里的 init() 登记了吗（papa.RegisterSite）？")
 		os.Exit(1)
 	}
 	if err := papa.CheckSites(cfg, sites...); err != nil {

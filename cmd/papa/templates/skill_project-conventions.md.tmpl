@@ -8,7 +8,7 @@ where it has already diverged from current Papa.
 
 | Path | What goes there |
 | --- | --- |
-| `configs/sites/{{.Module}}.go` | site + stage declaration (Key / BaseURL / Headers / Breaker / Stages). Self-registers via `init()` + `papa.RegisterSite`. |
+| `sites/{{.Module}}.go` | site + stage declaration (Key / BaseURL / Headers / Breaker / Stages). Self-registers via `init()` + `papa.RegisterSite`. |
 | `fetcher/<site>/` | stage handlers and entry submission — one package per site once there is more than one |
 | `models/` | business structs and GORM table models; `models.Models()` is the migration list |
 | `monitor/` | back-office layers: `tables.go` / `controller/` / `view/` / `router.go` / `middleware.go` |
@@ -22,7 +22,7 @@ where it has already diverged from current Papa.
   package and reuse them in `GetStage`, `Task.Stage`, tests and diagnostics. A duplicate *within one site*
   fails at startup and names the site.
 - Stage parameters (worker count, queue size, delay, retry, `Entry`, downloader overrides) live in the
-  `configs/sites/` declaration — **not** in `config.yaml`.
+  `sites/` declaration — **not** in `config.yaml`.
 - `main.go` stays generic: `monitor.Register(app)` plus `app.RegisterSites(papa.Sites()...)`. Adding a
   site is adding a file.
 - The three governance queues (`error_queue` / `recover_queue` / `repeat_queue`) are **global**, configured

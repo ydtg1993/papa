@@ -14,11 +14,11 @@
 ```text
 papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / monitor / config / docker / docs / Makefile / logs）
   -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v3）
-  -> 在 configs/sites/<站名>.go 里声明阶段（并发/队列/间隔/重试）与该阶段的 fetcher，起始 URL 由 fetcher 的 SubmitEntries 提交
+  -> 在 sites/<站名>.go 里声明阶段（并发/队列/间隔/重试）与该阶段的 fetcher，起始 URL 由 fetcher 的 SubmitEntries 提交
   -> 任务被 worker 池调度执行，结果通过结果 API 写入 crawler_tasks 表
 ```
 
-整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher 与**站点声明**（`configs/sites/<站名>.go`：阶段参数 + 入口开关都在那儿），`config.yaml` 只放全局配置（如 `db.dsn`、`browser.enable`）。
+整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher 与**站点声明**（`sites/<站名>.go`：阶段参数 + 入口开关都在那儿），`config.yaml` 只放全局配置（如 `db.dsn`、`browser.enable`）。
 
 ---
 
@@ -35,7 +35,7 @@ type Fetcher interface {
 }
 ```
 
-- `GetStage()` 返回阶段名，它在**本站内必须唯一**（两个站可以各有自己的 `catalog`：阶段键是 `site:stage`，各跑各的池子与统计）。同一个站里重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `configs/sites/<站名>.go` 的声明里（见 7.2）。
+- `GetStage()` 返回阶段名，它在**本站内必须唯一**（两个站可以各有自己的 `catalog`：阶段键是 `site:stage`，各跑各的池子与统计）。同一个站里重名、缺 `WorkerCount`/`QueueSize`、`Delay` 写错都会在 `RegisterSites` 时 panic 并点名 —— 阶段的存在性与参数都在 `sites/<站名>.go` 的声明里（见 7.2）。
 - **可选**：fetcher 还可以实现两个接口，都是"实现一个方法就自动生效"，不实现也不影响运行：
   ```go
   // 声明本阶段要借浏览器 → 框架在启动时校验接线（没开 config.yaml 的 browser.enable 就直接 panic，
@@ -183,7 +183,7 @@ if err := engine.Upsert(record, []string{"source_key"}, []string{"title", "cover
 err := engine.SubmitTask(&papa.Task{
     PID:   task.ID,       // 关联父任务
     URL:   detailURL,
-    Stage: "detail",      // 必须是已声明的阶段（configs/sites/<站名>.go 的 Stages 里，见 7.2）
+    Stage: "detail",      // 必须是已声明的阶段（sites/<站名>.go 的 Stages 里，见 7.2）
     Site:  task.Site,     // 必填，见下
     Meta:  map[string]string{"series_id": "119002"}, // 携带业务键，handler 里读 task.Meta
 })
@@ -349,7 +349,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
 4. 域名用 `papa.SameHost(base, u)`（apex 与 `www.` 算同一个 host）与 `papa.IsSubdomainOf(u, base)`
    （按**点边界**比对 —— `evil-example.com` 不是 `example.com` 的子域，自己写 `strings.HasSuffix`
    最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
-5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`configs/sites/<站名>.go` 的 `Stages`），才为通过校验的链接调用 `engine.SubmitTask`。
+5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`sites/<站名>.go` 的 `Stages`），才为通过校验的链接调用 `engine.SubmitTask`。
 
 > **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
 > `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
@@ -401,14 +401,14 @@ if len(items) == 0 {
 
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
-> 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段 —— 写第二个 fetcher，在 `configs/sites/<站名>.go` 里加一段 `StageSpec` 即可（main.go 不用动）。
+> 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段 —— 写第二个 fetcher，在 `sites/<站名>.go` 里加一段 `StageSpec` 即可（main.go 不用动）。
 
 典型例子：目录页要点「展开分类」下拉、滚动到底部触发懒加载，才能拿到所有文档的标题和链接。
 
 ### 4.1 在站点声明里加两个阶段
 
 ```go
-// configs/sites/mysite.go
+// sites/mysite.go
 Stages: []papa.StageSpec{
     {
         Fetcher:     &fetcher.FetchCatalog{}, // 列表页阶段
@@ -657,7 +657,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
 ```go
 import "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 
-// 站点声明里（configs/sites/<站>.go）—— 这就是全部的配置入口，没有"全局那层"：
+// 站点声明里（sites/<站>.go）—— 这就是全部的配置入口，没有"全局那层"：
 SiteSpec{ M3U8: &papa.M3U8Spec{
     OutputDir: strPtr("./downloads/video"), // 输出目录
     Output:    modePtr(papa.OutputSegments),// 只留切片组（默认是合并成 mp4，见 §5.4）
@@ -703,7 +703,7 @@ localPath := filepath.Join(dl.OutputDir(), res.OutputFile)
 下载器（`m3u8` 与 `filedown`）**实例是唯一真值，声明只是"帮你自动建一份"**。配置**只有两层**（站点与阶段），基座是框架按 `DefaultConfig()` 备好的那份 —— **没有"全局那层配置"可写**（`SetM3U8` / `SetFiledown` 已删除）：要么在声明里按站点/阶段写清楚，要么在 fetcher 里自己造一份。
 
 ```go
-// ① 站点级：本站所有阶段默认这一份（configs/sites/<站>.go）
+// ① 站点级：本站所有阶段默认这一份（sites/<站>.go）
 SiteSpec{ Key: "yeguodj",
           M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments},
           FileDown: &papa.FileDownSpec{MaxConcurrent: &n} }
@@ -732,9 +732,9 @@ own := m3u8.NewDownloader(&myCfg)                    // 完全独立的一份（
 
 ## 6. 最小可跑骨架（脚手架已生成）
 
-`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（建表清单 models.go）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ **configs/sites/（一站一个文件 + 注册表）** / configs/config.yaml / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。
+`papa new <name>` 会生成好 main.go / fetcher/fetch_catalog.go / models（建表清单 models.go）/ monitor（后台分层：表格页、控制器、视图、路由与中间件）/ **sites/（一站一个文件，自登记）** / configs/config.yaml + config.yaml.example / docker / docs / Makefile / logs，你只需把 fetcher 里的 TODO 换成真实逻辑。
 
-其中 main.go 的阶段注册只有一行（声明在 `configs/sites/<站名>.go`）：
+其中 main.go 的阶段注册只有一行（声明在 `sites/<站名>.go`）：
 
 ```go
 app.RegisterSites(papa.Sites()...)
@@ -789,7 +789,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 > `task.Trace.*` 是**框架的步骤上报接口**（见 1.3），关掉追踪时是 no-op —— 写新 fetcher 时照抄即可。
 
 配套两处改动：
-1. `configs/sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / Entry 入口模式）。
+1. `sites/<站名>.go` 里加一段 `StageSpec`（worker_count / queue_size / delay / retry / Entry 入口模式）。
 2. 若用下载器，**不用在 `main.go` 里接线**（框架按 `DefaultConfig` 备好基座）；要按站点/阶段各配一份就写在站点声明里（见 §5.4）。
 
 ---
@@ -841,7 +841,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > 声明跟实现对不上会打 WARN，且文案指路：写了 `auto`/`manual` 却没实现 `SubmitEntries`，
 > 或者**实现了入口却忘了写 `Entry`**（`off` 是默认值，这是最常见的那种手误）。
 >
-> **站点与阶段声明在一个文件里**：`configs/sites/<站名>.go`（Key / BaseURL / Headers / 熔断阈值 /
+> **站点与阶段声明在一个文件里**：`sites/<站名>.go`（Key / BaseURL / Headers / 熔断阈值 /
 > 下载器覆盖，以及每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**三个治理队列不在这里，统一写在 `config.yaml`**。站点声明没有汇总清单 —— 文件自己在
 > `init()` 里登记），`main.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
 > 加阶段 = 写一个 fetcher（`GetStage()` 返回阶段名）+ 在这个站的文件里加一段 `StageSpec`。
@@ -849,7 +849,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
-一站一个文件放进 `configs/sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
+一站一个文件放进 `sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
 框架把它们收在 `papa.Sites()` 里，**项目里没有汇总清单要维护**：
 
 ```
@@ -863,7 +863,7 @@ configs/
 ```go
 // main.go
 import (
-    _ "yourmod/configs/sites"   // 匿名导入：让各站点文件的 init 跑起来（它们自己登记）
+    _ "yourmod/sites"   // 匿名导入：让各站点文件的 init 跑起来（它们自己登记）
 )
 app.RegisterSites(papa.Sites()...)
 ```
@@ -881,7 +881,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
   改完要重启，没有热更）。没写哪段 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
 - **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
-- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml）。声明放 `configs/sites/`。
+- **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
   站点多了想按站点分包（`fetcher/<站点>/`，如 huangguo）也行。硬要求只有一条 ——
   **阶段名（`GetStage()`）在本站内唯一**，跟 fetcher 放哪儿无关。
