@@ -56,13 +56,28 @@
     <main class="content">
         <header class="content-top">
             <h1 id="moduleTitle">Dashboard</h1>
-            <div class="refresh" id="refreshTime"></div>
+            <div class="top-right">
+                <!-- 暂停与告警铃铛：徽标数字 = 被闸住的 scope 数（含声明期的 StartPaused），
+                     颜色分语义（有熔断触发就红、只有手动/声明期就琥珀）。点开在下方列出细节
+                     （站点/阶段/原因/暂停于 + 逐站恢复），再点一次或点面板外部、按 Esc 关闭。
+                     它**不跟站点 Tab 过滤**（告警不该被切走的 tab 藏起来），由 mo.js 的 renderBell 画。 -->
+                <div class="bell-wrap" id="bell-wrap">
+                    <button class="bell" id="bell" type="button" onclick="toggleBell(event)"
+                            title="暂停与告警" aria-label="暂停与告警" aria-expanded="false" aria-controls="bell-panel">
+                        <!-- 内联 SVG 而不是 emoji：🔔 在 Windows 上是彩色字体，跟这套黑白/等宽的风格不搭；
+                             currentColor 让它跟着主题走。 -->
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                        </svg>
+                        <span class="bell-badge" id="bell-badge" hidden>0</span>
+                    </button>
+                    <div class="bell-panel" id="bell-panel" hidden></div>
+                </div>
+                <div class="refresh" id="refreshTime"></div>
+            </div>
         </header>
-
-        <!-- 熔断横幅：有 scope 被闸住时由 mo.js 逐行渲染（多站时每站一行、各带自己的「恢复」），
-             整页顶部一条（在任何模块之上，切到哪个页都看得到）。平时 hidden，不占位。
-             放行走 POST /api/breaker/resume（点名 scope，或不点名 = 全部）。 -->
-        <div class="breaker-banner" id="breaker-banner" hidden></div>
 
         <!-- 站点 Tab：多站点时按站点把各面板分开（「概览」= 全部；默认 scope 单独一档）。
              数据来自 /api/monitor 的 sites（站点信息 + 慢变统计），由 mo.js 渲染。

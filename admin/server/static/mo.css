@@ -570,19 +570,72 @@ input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
 .sidebar::-webkit-scrollbar-corner,
 .content::-webkit-scrollbar-corner { background: transparent; }
 
-/* ---- 熔断横幅（整页顶部，暂停时由 mo.js 显形） ---- */
-.breaker-banner {
-    display: block;
-    margin: 0 0 18px; padding: 14px 18px;
-    background: var(--destructive); color: #fff;
-    border: 2px solid var(--border-color);
-    box-shadow: 6px 6px 0 0 var(--shadow-color);
+/* ---- 暂停与告警铃铛（右上角；面板由 mo.js 的 renderBell 画） ----
+   为什么不是红色横幅：声明了 SiteSpec.StartPaused 的站一加载就停着，横幅会变成常驻的一大块，
+   把正文挤下去 —— 平时它什么也不必说。这里压成一个徽标数字，点开才看细节。 */
+.content-top .top-right { display: flex; align-items: center; gap: 16px; }
+.bell-wrap { position: relative; }
+.bell {
+    position: relative; /* 徽标以它为准定位 */
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0; width: 34px; height: 34px;
+    background: var(--card); color: var(--foreground);
+    border: 2px solid var(--border-color); box-shadow: 3px 3px 0 0 var(--shadow-color);
+    cursor: pointer; transition: transform .08s ease, box-shadow .08s ease;
+}
+.bell:hover { transform: translate(-2px, -2px); box-shadow: 5px 5px 0 0 var(--shadow-color); }
+.bell:active { transform: translate(3px, 3px); box-shadow: none; }
+/* 徽标：数字 = 被闸住的 scope 数；颜色分语义 —— 有熔断触发是红的（出事了），
+   只有手动/声明期的暂停用琥珀（是你自己让它停的）。 */
+.bell-badge {
+    position: absolute; top: -9px; right: -9px;
+    min-width: 18px; padding: 1px 4px;
+    border: 2px solid var(--border-color); background: var(--muted-fill); color: #111;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 700; line-height: 1.2;
+    text-align: center;
+}
+.bell-badge.breaker { background: var(--destructive); color: #fff; }
+.bell-badge.manual { background: var(--orange); }
+/* 新出现的**熔断**触发：铃铛脉冲两下（StartPaused 那种一加载就停着的不触发，见 renderBell） */
+@keyframes bell-pulse {
+    0%, 100% { transform: rotate(0); }
+    25%      { transform: rotate(-14deg); }
+    75%      { transform: rotate(14deg); }
+}
+.bell.pulse svg { animation: bell-pulse .6s ease-in-out 2; transform-origin: 50% 12%; }
+@media (prefers-reduced-motion: reduce) { .bell.pulse svg { animation: none; } }
+
+/* 下拉面板：贴铃铛下方右对齐；窄屏按视口收窄，不溢出 */
+.bell-panel {
+    position: absolute; right: 0; top: calc(100% + 10px); z-index: 40;
+    width: min(600px, calc(100vw - 64px));
+    max-height: min(60vh, 420px); overflow: auto;
+    padding: 14px 18px;
+    background: var(--card); color: var(--foreground);
+    border: 2px solid var(--border-color); box-shadow: 6px 6px 0 0 var(--shadow-color);
     font-size: 14px; line-height: 1.5;
 }
-/* [hidden] 是 UA 的 display:none，但上面那条 display:flex 会盖掉它 —— 得显式再声明一次 */
-.breaker-banner[hidden] { display: none; }
-/* 每个被闸住的 scope 一行；站点多时逐行排开，各自带一个「恢复」 */
+.bell-panel[hidden] { display: none; }
+/* 面板里每个 scope 一块：第一行「站点 + 结论 + 恢复」，第二行等宽小字写细节。
+   一行塞整句散文会折成三四行、按钮悬在中间 —— 拆两行之后扫读的是第一行。 */
+.bell-item + .bell-item { margin-top: 12px; }
+.bell-head { display: flex; align-items: center; gap: 10px; }
+.bell-where { font-family: var(--font-display); font-weight: 700; white-space: nowrap; }
+.bell-head-text { flex: 1 1 auto; }
+.bell-meta {
+    margin-top: 3px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground);
+    word-break: break-word;
+}
+.bell-all { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+/* 面板里的按钮小一号（.btn 是给表单/整页用的，在这个 600px 的浮层里太大） */
+.bell-panel .btn, .bell-all .btn {
+    flex: 0 0 auto; margin-top: 0; padding: 8px 12px; font-size: 12px;
+    box-shadow: 3px 3px 0 0 var(--shadow-color);
+}
+/* 每个被闸住的 scope 一行；站点多时逐行排开，各自带一个「恢复」。
+   这套 .breaker-row 是**通用**的：仪表盘那张「站点控制」卡也在用。 */
 .breaker-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .breaker-row + .breaker-row { margin-top: 10px; }
-.breaker-banner .breaker-text { flex: 1 1 320px; font-family: var(--font-mono); }
-.breaker-banner .btn { flex: 0 0 auto; background: #fff; color: var(--destructive); }
+/* .btn 默认那条 margin-top 是给纵向排布的（表单里按钮自己占一行）—— 放进这种横排里会偏下 */
+.breaker-row .btn { flex: 0 0 auto; margin-top: 0; }

@@ -603,54 +603,115 @@
         // 键名是**复数**：服务端 monitor.go 写的是 resp["breakers"]（数组，每站一条）。
         // 这里曾经写成 data.breaker，于是横幅永远拿不到数据、（list || []）把它吞成空数组，
         // 一个字都不报 —— 多站熔断横幅其实一直没显示过。
-        // **不过滤**：横幅是告警，切到哪个站点 tab 都该看得见（切走了反而看不见出事的是哪个站）。
-        renderBreaker(data.breakers);
+        // **不过滤**：铃铛是告警，切到哪个站点 tab 都该看得见（切走了反而看不见出事的是哪个站）。
+        renderBell(data.breakers);
         // 站点控制卡片：跟着站点 Tab 过滤（概览 = 全部站点），暂停状态取自同一轮的 breakers。
         renderSiteControl(view.sites, data.breakers);
     }
 
-    /* ---- 熔断横幅（多站时逐 scope 一行） ---- */
-    // 每个站点一把闸门（引擎按 scope 分组）：哪一站被闸住、为什么、什么时候，以及**只放行那一站**的按钮；
-    // 两个以上被闸住时额外给一个「全部恢复」。状态跟着 /api/monitor 每轮刷新一起来（不额外发请求），
-    // 所以别的标签页 / 别的操作人触发的熔断也能看到。
-    function renderBreaker(list) {
-        var el = document.getElementById('breaker-banner');
-        if (!el) return;
+    /* ---- 暂停与告警：右上角铃铛 + 下拉面板（多站时逐 scope 一行） ---- */
+    // 为什么不是红色横幅：声明了 `SiteSpec.StartPaused` 的站一加载就停着，横幅会变成常驻的一大块
+    //（把正文挤下去），而它平时什么也不必说。铃铛把"有东西停着"压成一个徽标数字：
+    //   - 数字 = 被闸住的 scope 数（含声明期的 StartPaused）；
+    //   - 颜色 = 语义：里面有熔断触发就是红的，只有手动/声明期就用琥珀 —— 一眼看出"是不是出事了"。
+    // 点开才列出细节（站点 / 阶段 / 原因 / 暂停于 + 逐站「恢复」）；再点一次、点面板外部、按 Esc 关闭。
+    // 状态跟着 /api/monitor 每轮刷新一起来（不额外发请求），所以别的标签页 / 别的操作人触发的
+    // 熔断，这边几秒内也能看到。
+    //
+    // 面板**不跟站点 Tab 过滤**（告警不该被切走的 tab 藏起来）；跟 tab 走的是仪表盘上那张
+    // 「站点控制」卡 —— 那张是控制视角，这张是告警视角。
+    var bellSeen = null; // 上一轮见过的熔断 scope；null = 还没画过（首帧不脉冲，免得一进页面就抖）
+    function renderBell(list) {
+        var btn = document.getElementById('bell');
+        var badge = document.getElementById('bell-badge');
+        var panel = document.getElementById('bell-panel');
+        if (!btn || !badge || !panel) return;
         var paused = (list || []).filter(function (b) { return b && b.paused; });
-        if (!paused.length) { el.hidden = true; el.innerHTML = ''; return; }
+        var tripped = paused.filter(function (b) { return b.source === 'breaker'; });
 
-        var html = paused.map(function (b) {
-            var at = b.paused_at ? new Date(b.paused_at) : null;
-            var when = (at && timeValid(at)) ? at.toLocaleString() : '';
-            var where = '站点 ' + b.site; // 每个 scope 都是站点（没有"未归属"那一档）
-            // **手动暂停与熔断触发分开说**：一律按熔断文案渲染就会读出"阈值 0 / 窗口内 0 次失败"
-            // 这种幻觉（熔断没启用时阈值就是 0），也是一次手动暂停被说成"熔断"。
-            //
-            // 判据只看 `source`。**别回去用"enabled && stage"猜**：阶段级的手动暂停也带 stage
-            //（那是它的 scope），在熔断启用着的站上会被猜成熔断 —— 这正是加 source 字段的原因。
-            var tripped = b.source === 'breaker';
-            var head = tripped ? '抓取已暂停（熔断）' : ('抓取已暂停（' + esc(b.reason || '手动') + '）');
-            var detail = tripped
-                ? ('｜' + esc(fmtSpan(b.window / 1e9)) + ' 窗口内 ' + (b.failures || 0) +
-                   ' 次终态失败，阈值 ' + (b.threshold || 0))
-                : '';
-            return '<div class="breaker-row">' +
-                '<span class="breaker-text">' + head + '｜' + esc(where) +
-                (b.stage ? '｜阶段 ' + esc(b.stage) : '') +
-                detail +
-                (when ? '｜暂停于 ' + esc(when) : '') +
-                '。处理完后点右侧按钮恢复。</span>' +
-                '<button class="btn" data-scope="' + esc(b.site || '') +
-                '" onclick="resumeCrawling(this.dataset.scope)">恢复</button>' +
-                '</div>';
-        }).join('');
+        // 徽标：数字 = 被闸住的 scope 数，颜色分语义；没有就整个藏起来（空徽标比没徽标更吵）
+        badge.hidden = !paused.length;
+        badge.textContent = paused.length;
+        badge.className = 'bell-badge' + (paused.length ? (tripped.length ? ' breaker' : ' manual') : '');
+
+        // 脉冲只给**新出现的熔断**：页面开着时出事要看得见；而 StartPaused 那种"一加载就停着"
+        // 不该被当成新告警（首帧也不算 —— 否则每次刷新页面都抖一下）。
+        var now = tripped.map(scopeKey);
+        if (bellSeen !== null && now.some(function (k) { return bellSeen.indexOf(k) < 0; })) pulseBell(btn);
+        bellSeen = now;
+
+        var html = paused.map(bellRow).join('');
         if (paused.length > 1) {
-            html += '<div class="breaker-row"><span class="breaker-text">共 ' + paused.length +
+            html += '<div class="bell-all"><span class="bell-meta">共 ' + paused.length +
                 ' 个 scope 被闸住</span>' +
                 '<button class="btn" onclick="resumeCrawling()">全部恢复</button></div>';
         }
-        el.innerHTML = html; // 每一段都过了 esc()
-        el.hidden = false;
+        if (!html) {
+            html = '<div class="bell-meta">当前没有被闸住的站点</div>';
+        }
+        panel.innerHTML = html; // 每一段都过了 esc()
+    }
+
+    // scopeKey 一个 scope 的稳定标识：站点 + 阶段（阶段级暂停的 scope 带 stage，整站的不带）。
+    // 用 \u0000 拼是为了两个字段怎么取值都不会拼出同一个键。
+    function scopeKey(b) { return (b.site || '') + '\u0000' + (b.stage || ''); }
+
+    // pulseBell 脉冲两下。先把上一次的类摘掉再加回去 —— 中间必须读一次布局属性强制重排，
+    // 否则"摘掉"与"加回"会被浏览器合并成一次样式变更，动画不会重新开始（第二次告警就不抖了）。
+    function pulseBell(btn) {
+        btn.classList.remove('pulse');
+        void btn.offsetWidth;
+        btn.classList.add('pulse');
+    }
+
+    // bellRow 面板里的一行：**两行式**（头部一行 + 一条等宽小字的 meta）。
+    // 面板只有五百来像素宽，把"整句散文 + 按钮"塞进一行会折成三四行、按钮悬在中间；
+    // 拆开之后第一行永远是"谁 + 结论 + 动作"，细节退到第二行。
+    function bellRow(b) {
+        var at = b.paused_at ? new Date(b.paused_at) : null;
+        var when = (at && timeValid(at)) ? at.toLocaleString() : '';
+        // **手动暂停与熔断触发分开说**：一律按熔断文案渲染就会读出"阈值 0 / 窗口内 0 次失败"
+        // 这种幻觉（熔断没启用时阈值就是 0），也是一次手动暂停被说成"熔断"。
+        //
+        // 判据只看 `source`。**别回去用"enabled && stage"猜**：阶段级的手动暂停也带 stage
+        //（那是它的 scope），在熔断启用着的站上会被猜成熔断 —— 这正是加 source 字段的原因。
+        var tripped = b.source === 'breaker';
+        var head = tripped ? '抓取已暂停（熔断）' : ('抓取已暂停（' + esc(b.reason || '手动') + '）');
+        // meta 的几段：有哪段写哪段（整站暂停没有阶段；熔断才有窗口与失败数）
+        var meta = [];
+        if (b.stage) meta.push('阶段 ' + esc(b.stage));
+        if (tripped) {
+            meta.push(esc(fmtSpan(b.window / 1e9)) + ' 窗口内 ' + (b.failures || 0) +
+                ' 次终态失败，阈值 ' + (b.threshold || 0));
+        }
+        if (when) meta.push('暂停于 ' + esc(when));
+        return '<div class="bell-item">' +
+            '<div class="bell-head">' +
+            '<span class="bell-where">站点 ' + esc(b.site || '') + '</span>' +
+            '<span class="bell-head-text">' + head + '</span>' +
+            '<button class="btn" data-scope="' + esc(b.site || '') +
+            '" onclick="resumeCrawling(this.dataset.scope)">恢复</button>' +
+            '</div>' +
+            (meta.length ? '<div class="bell-meta">' + meta.join('｜') + '</div>' : '') +
+            '</div>';
+    }
+
+    // 铃铛的开合：点铃铛切换；点面板外部、按 Esc 关闭（后两个监听在文件末尾注册一次）。
+    function toggleBell(ev) {
+        if (ev) ev.stopPropagation(); // 不拦住的话，"点面板外部就关"会当场把它关回去
+        var panel = document.getElementById('bell-panel');
+        var btn = document.getElementById('bell');
+        if (!panel || !btn) return;
+        panel.hidden = !panel.hidden;
+        btn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+    }
+
+    function closeBell() {
+        var panel = document.getElementById('bell-panel');
+        var btn = document.getElementById('bell');
+        if (!panel || panel.hidden) return;
+        panel.hidden = true;
+        if (btn) btn.setAttribute('aria-expanded', 'false');
     }
     // site 省略 = 全部放行（多站时后台横幅上的「全部恢复」）；stage 省略 = 那一站的整站那一层。
     // `stage` 这一档框架自带的界面**不用**（卡片只做到站点级），它是留给业务自己接的：
@@ -1059,6 +1120,16 @@
 
     /* ============ 启动 ============ */
     document.getElementById('key').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitKey(); });
+
+    // 铃铛：点面板外部、按 Esc 关掉它（注册一次就够，开合状态在 toggleBell / closeBell 里）。
+    // 点铃铛自己与面板里的按钮都算"内部"—— 否则点「恢复」时面板会先被关掉（虽然请求照发，
+    // 但列表会在下一轮刷新前空一下）。
+    document.addEventListener('click', function (ev) {
+        var wrap = document.getElementById('bell-wrap');
+        if (wrap && ev.target && wrap.contains(ev.target)) return;
+        closeBell();
+    });
+    document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeBell(); });
 
     // 表格动作的防重复提交由 oao 组件自己做（runAction 里的 inFlightActions，
     // key 用「表 + 动作 + 主键」）—— v1.2.3 及以前没有，v1.2.4 起有。

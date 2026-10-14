@@ -1305,6 +1305,62 @@ func TestSiteControlPanelWired(t *testing.T) {
 	}
 }
 
+// 铃铛面板的静态接线：与站点控制卡同一条道理 —— 容器 id 写错是**静默失效**
+// （点了没反应、或面板画进一个不存在的容器），前端没有测试框架，只能把容器与动作钉在静态文件里。
+//
+// 反向那几条同样重要:红色横幅撤掉了,它要是还有残留(css/js),页面上就会又冒出一大块 ——
+// 这正是这次改动要消掉的东西。
+func TestBellPanelWired(t *testing.T) {
+	tpl, err := fs.ReadFile(templateFS, "template.html")
+	if err != nil {
+		t.Fatalf("read template.html: %v", err)
+	}
+	for _, want := range []string{`id="bell"`, `id="bell-badge"`, `id="bell-panel"`, `id="bell-wrap"`} {
+		if !strings.Contains(string(tpl), want) {
+			t.Errorf("template.html 里缺少 %s —— 铃铛/徽标/面板就接不上", want)
+		}
+	}
+	if strings.Contains(string(tpl), "breaker-banner") {
+		t.Error("template.html 里还留着 breaker-banner（整页红条已被铃铛取代）")
+	}
+
+	js, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	for _, want := range []string{
+		"renderBell(",
+		"toggleBell(",
+		"closeBell()",
+		"bell-badge",          // 徽标的数字与颜色都写在这个 class 上
+		"b.source",            // 徽标颜色（熔断=红 / 手动=琥珀）与面板文案都靠它区分
+		"/api/breaker/resume", // 面板里那两个「恢复」
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Errorf("mo.js 里缺少 %q", want)
+		}
+	}
+	for _, bad := range []string{"renderBreaker(", "breaker-banner"} {
+		if strings.Contains(string(js), bad) {
+			t.Errorf("mo.js 里还留着 %q（整页红条已被铃铛取代）", bad)
+		}
+	}
+
+	// 样式跟着钉一下：面板的定位/层叠写在 mo.css 里，删了它面板会以内联方式铺在页面上
+	css, err := fs.ReadFile(staticFS, "static/mo.css")
+	if err != nil {
+		t.Fatalf("read mo.css: %v", err)
+	}
+	for _, want := range []string{".bell-panel", ".bell-badge", ".bell "} {
+		if !strings.Contains(string(css), want) {
+			t.Errorf("mo.css 里缺少 %q", want)
+		}
+	}
+	if strings.Contains(string(css), ".breaker-banner") {
+		t.Error("mo.css 里还留着 .breaker-banner")
+	}
+}
+
 // 前端读的键名必须与服务端写的**一致**。回归点：熔断横幅曾经因为服务端写 "breakers"、
 // 前端读 "breaker"，一直拿不到数据、（list || []）把它吞成空数组，一个字都不报 ——
 // 多站熔断横幅其实从上线起就没显示过。前端没有测试框架，这里直接钉静态文件里的键名。
