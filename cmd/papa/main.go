@@ -179,12 +179,16 @@ func runNew(name string, args []string) error {
 		a := args[i]
 		switch {
 		case a == "--replace" || a == "-replace":
-			if i+1 < len(args) {
-				replacePath = args[i+1]
-				i++
+			if i+1 >= len(args) {
+				return fmt.Errorf("--replace 后要跟本地 papa 仓库路径")
 			}
+			replacePath = args[i+1]
+			i++
 		case strings.HasPrefix(a, "--replace="):
 			replacePath = strings.TrimPrefix(a, "--replace=")
+		default:
+			// 未识别的参数：拼错选项、多传位置参数都该报错，别静默忽略还报"生成成功"
+			return fmt.Errorf("未知参数 %q（只支持 --replace <本地 papa 仓库路径>）", a)
 		}
 	}
 	if replacePath != "" {

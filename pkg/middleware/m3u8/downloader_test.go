@@ -960,3 +960,22 @@ func TestOptionsFromRequestReachesSegmentRequest(t *testing.T) {
 		t.Fatalf("Accept-Encoding = %q, want identity", got.Get("Accept-Encoding"))
 	}
 }
+
+// 有效片段后跟超长行：Scanner 会停下（Err 非 nil）。必须报错，不能返回已解析的前缀片段还当成功
+// （否则只合并出半截文件）。
+func TestParsePlaylistRejectsOversizedLine(t *testing.T) {
+	d := &Downloader{}
+	playlist := "#EXTM3U\n#EXTINF:5,\nok.ts\n" + strings.Repeat("x", maxPlaylistLine+1)
+	if _, _, _, err := d.parsePlaylistEnhancedWithIndex(playlist, "https://example.com/"); err == nil {
+		t.Fatal("超长行应报错，不能返回部分片段还当成功")
+	}
+}
+
+// 多码率解析同样不能吞掉 Scanner 错误（超长行会静默忽略后续流）。
+func TestSelectBestStreamRejectsOversizedLine(t *testing.T) {
+	d := &Downloader{}
+	playlist := "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\n" + strings.Repeat("x", maxPlaylistLine+1)
+	if _, err := d.selectBestStream(playlist, "https://example.com/"); err == nil {
+		t.Fatal("超长行应报错")
+	}
+}

@@ -3,12 +3,17 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/ydtg1993/papa/v3/internal/msgqueue"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/internal/msgqueue"
 )
+
+// defaultRefreshInterval 调用方传非正刷新间隔时兜底的默认值（与历史默认一致的 8 分钟）。
+// 非正间隔会让 time.NewTicker panic，而且是在后台 goroutine 里、进程直接崩。
+const defaultRefreshInterval = 8 * time.Minute
 
 // Manager 代理管理器，从 API 获取代理并缓存
 type Manager struct {
@@ -30,6 +35,11 @@ func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
 		trackQueue: msgqueue.NewMsgQueue[any](10),
 	}
 	if apiURL != "" {
+		// 非正刷新间隔会让 time.NewTicker panic（而且是在 goroutine 里、进程直接崩），
+		// 这里用默认值兜底，别把"启动 goroutine 前才触发 panic"留给调用方。
+		if m.refresh <= 0 {
+			m.refresh = defaultRefreshInterval
+		}
 		m.refreshProxies()
 		go m.startRefresh()
 	}
@@ -72,7 +82,7 @@ func (m *Manager) refreshProxies() {
 		m.trackQueue.SendError(fmt.Errorf("proxy API returned status %d", resp.StatusCode))
 		return
 	}
-	//===============接受数据结构按照三方返回做调整===============/
+	// 代理 API 返回 JSON 数组，每条形如 {"host":"1.2.3.4","port":"8080"} —— 按第三方返回调整这里的字段名。
 	var proxies []map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&proxies); err != nil {
 		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %w", err))

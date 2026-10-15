@@ -184,3 +184,20 @@ func TestMemSourceWithoutSnapshot(t *testing.T) {
 		t.Fatalf("没有快照时应当是空表：%+v", got)
 	}
 }
+
+// pageBounds 的极端输入：page 极大时 (page-1)*size 会溢出成负数，绕过 from > n 的比较
+// 直接切片 panic。改后要用除法夹页码，超界给空区间。
+func TestPageBoundsClampsHugePage(t *testing.T) {
+	if from, to := pageBounds(1<<40, 50, 100); from != 100 || to != 100 {
+		t.Fatalf("极大 page 应给空区间 (100,100)，实得 (%d,%d)", from, to)
+	}
+	if from, to := pageBounds(1, 50, 100); from != 0 || to != 50 {
+		t.Fatalf("第 1 页应是 (0,50)，实得 (%d,%d)", from, to)
+	}
+	if from, to := pageBounds(2, 50, 100); from != 50 || to != 100 {
+		t.Fatalf("第 2 页应是 (50,100)，实得 (%d,%d)", from, to)
+	}
+	if from, to := pageBounds(3, 50, 100); from != 100 || to != 100 {
+		t.Fatalf("第 3 页（超界）应是空区间 (100,100)，实得 (%d,%d)", from, to)
+	}
+}

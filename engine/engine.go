@@ -46,7 +46,7 @@ type Engine struct {
 	statsQueue         map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
 	stageTotals        map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
 	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
-	errorForwardCancel map[string]chan struct{}            // 每阶段错误转发协程停机信号（reap 时 close）；e.mu 保护
+	errorForwardCancel map[string]*poolForwarder           // 每阶段错误转发协程（停机信号 + 归属池）；e.mu 保护
 	dedupCache         *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
 	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
@@ -218,7 +218,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		queueRuns:          newQueueRuns(),
 		stageTotals:        make(map[string]stageTotals),
 		errorCh:            make(chan error, 100),
-		errorForwardCancel: make(map[string]chan struct{}),
+		errorForwardCancel: make(map[string]*poolForwarder),
 		// 容量 1：恢复时叫醒回灌循环（非阻塞发送，重复叫醒只留一次）
 		wakeDrain: make(chan struct{}, 1),
 	}
@@ -354,12 +354,17 @@ func (e *Engine) breakerFor(site string) *breaker.Breaker {
 // 这就是后台横幅上那个「恢复抓取」；只想放行某一站用 ResumeSite。
 //
 // 它清的是**暂停信号**（见 pause.go）—— 熔断触发与人工暂停写的是同一张表，所以这里一视同仁地放行。
+// 与 ResumeSite 一样，放行后逐站把站点快照翻回「未暂停」（后台站点表读的是这份快照）。
 func (e *Engine) ResumeCrawling() bool {
+	sites := e.pausedSites()
 	if !e.clearAllPauses() {
 		return false
 	}
 	// 放行之后立刻把寄放在溢出表里的任务灌回去（不等下一个 drain tick）
 	e.wakeDrainNow()
+	for _, site := range sites {
+		e.writeSiteBreakerState(site, false)
+	}
 	return true
 }
 
@@ -402,6 +407,9 @@ func (e *Engine) PauseSite(site, reason string) bool {
 
 // PauseCrawling 手动闸住抓取（后台/业务都可用）：**所有配了抓取策略的站点**一起暂停，
 // 返回是否真的至少停了一个。
+//
+// 与 PauseSite 一样，对真正停下来的站逐站把快照写回（后台站点表的「已暂停」列读它）；
+// 只改内存信号的话，站点表在全局暂停后仍显示「运行中」，两条暂停路径行为不一致。
 func (e *Engine) PauseCrawling(reason string) bool {
 	sites := e.allSites()
 	sort.Strings(sites)
@@ -412,9 +420,9 @@ func (e *Engine) PauseCrawling(reason string) bool {
 			Failures: e.breakerSum(site),
 		}) {
 			paused = true
+			e.writeSiteBreakerState(site, true)
 		}
 	}
-	// 与 PauseSite 一样**不写 crawler_sites**（今天的 PauseCrawling 也不写）。
 	return paused
 }
 

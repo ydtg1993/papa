@@ -249,7 +249,7 @@ func toOaoError(err error) error {
 	case errors.Is(err, engine.ErrTaskTerminal):
 		return oao.Fail(http.StatusConflict, "该任务已结束（成功或失败），无需再标记失败")
 	case errors.Is(err, engine.ErrTaskProcessing):
-		return oao.Fail(http.StatusConflict, "该任务正在处理中，请先标记失败或等它结束")
+		return oao.Fail(http.StatusConflict, "该任务正在处理中，等它结束再操作")
 	case errors.Is(err, engine.ErrStageNotRegistered):
 		return oao.Fail(http.StatusConflict, "该任务的阶段未注册，无法重新投递")
 	case errors.Is(err, engine.ErrTaskUrgent):

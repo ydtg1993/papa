@@ -26,10 +26,31 @@ func AccessLog(app *papa.App) papa.Middleware {
 // statusRecorder 记下 handler 实际写出的状态码：没显式调 WriteHeader 时是 200。
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (s *statusRecorder) WriteHeader(code int) {
+	if s.wroteHeader {
+		return // 只记第一个最终状态码：net/http 也只认第一个，后写的 WriteHeader 不生效
+	}
+	if code >= 100 && code < 200 {
+		s.ResponseWriter.WriteHeader(code) // 1xx 是中间响应，不算最终状态，照旧透传
+		return
+	}
+	s.wroteHeader = true
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap 让 http.ResponseController 能透过 wrapper 找到底层 writer 的可选接口
+// （Flusher / Hijacker / Pusher）—— 否则包一层之后 SSE / WebSocket / push 全失效。
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// Flush 透传底层 Flusher：流式/SSE 端点直接断言 rec.(http.Flusher) 也能工作，
+// 不必绕道 http.ResponseController。
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

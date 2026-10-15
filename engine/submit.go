@@ -148,7 +148,14 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 	// 处理方式与投递失败一致：寄放到溢出表，回灌时重读行、重跑这一句，权当一次重试。
 	// **只看 Error，不看 RowsAffected**：MySQL 的 UPDATE 默认返回「真正被改动的行数」，
 	// 行已经是 pending、meta/site 也没变时它照样是 0，拿它当失败会平白寄放一堆正常任务。
-	if res := e.db.Model(&models.CrawlerTask{}).Where("id = ?", record.ID).Updates(submitUpdates(task)); res.Error != nil {
+	// 所以状态守卫不能靠 RowsAffected 判（0 分不出"已经是 pending"与"已被认领"），只能写在 WHERE 里：
+	// 行若在 SELECT 之后被 worker 认领成了 processing，`status = pending` 匹配不到、不把它翻回 pending，
+	// 正在跑的旧 worker 才不会被回灌 / 延迟投递重置掉（见 drainSpilled 跳过 processing 那一跳）。
+	// 匹配不到还照旧入队：入队的那份副本 claimTask（同样以 pending 为条件）认领不到、直接跳过，
+	// 不会造成二次执行。
+	if res := e.db.Model(&models.CrawlerTask{}).
+		Where("id = ? AND status = ?", record.ID, models.TaskStatusPending).
+		Updates(submitUpdates(task)); res.Error != nil {
 		e.loggerSet.Engine.Errorf("update task %d before enqueue failed, task kept in spill list for retry: %s",
 			task.ID, res.Error.Error())
 		e.spillTask(task)

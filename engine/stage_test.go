@@ -925,3 +925,41 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 		// 非熔断的那条（任务失败本身）照旧每次都发 —— 那里不受暂停影响
 	}
 }
+
+// panic 的 FetchHandler 也要落到终态：行标 failed、错误进 error 列、去重键清掉 ——
+// 否则行永远停在 processing、同一 URL 本进程内再也提交不进去（见 stageHandler 的 panic 收尾）。
+//
+// 这条是 R3-02：runAttempt 只负责 trace/归档后原样抛回，workerpool 只负责计数，
+// 中间没人把任务行收尾 —— 补在 stageHandler 这一层的 defer 里。
+func TestStageHandlerPanicMarksTaskFailed(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+	e.stages["stub:stub"].fetcher = &pageFetcher{panicWith: "boom-in-handler"}
+
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
+	e.dedupCache.Add(task.Unique()) // 任务在活动去重表里：panic 收尾必须把它剔掉
+
+	handler := e.stageHandler(e.stages["stub:stub"])
+
+	// panic 应原样抛回（workerpool 靠它记栈与计数），只是沿途把终态收尾做了
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("panic 应当原样抛回给 workerpool")
+			}
+		}()
+		_ = handler(context.Background(), task)
+	}()
+
+	sql := f.written()
+	if !strings.Contains(sql, "CONCAT(COALESCE(error") {
+		t.Fatalf("panic 收尾应把行标 failed 并追加错误：\n%s", sql)
+	}
+	if !strings.Contains(f.writtenArgs(), "boom-in-handler") {
+		t.Fatalf("错误列里应带上 panic 原因：\n%s", f.writtenArgs())
+	}
+	if e.dedupCache.Get(task.Unique()) {
+		t.Fatal("panic 收尾应清掉活动去重键，否则同一 URL 本进程内再也进不来")
+	}
+}

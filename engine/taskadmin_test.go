@@ -76,16 +76,16 @@ func TestAdminScopesCarryConditions(t *testing.T) {
 			[]string{"UPDATE", "id = 7", "status <> 1", "reprocess = 3"},
 		},
 		{
-			"标失败：只碰非终态，原因写进错误列",
+			"标失败：待处理 + 上一轮的处理中孤儿，原因写进错误列",
 			func() string {
 				return db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-					return markFailedScope(tx, 7).Updates(map[string]any{
+					return markFailedScope(tx, 7, time.Now()).Updates(map[string]any{
 						"status": models.TaskStatusFailed,
 						"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", "后台手动标记失败：内容违规\n"),
 					})
 				})
 			},
-			[]string{"UPDATE", "id = 7", "status IN", "CONCAT", "内容违规"},
+			[]string{"UPDATE", "id = 7", "status = 0", "status = 1", "updated_at <", "CONCAT", "内容违规"},
 		},
 		{
 			"删除：排除处理中",

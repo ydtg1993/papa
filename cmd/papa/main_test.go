@@ -356,3 +356,37 @@ func TestRunNewKeywordNameGeneratesCompilableGo(t *testing.T) {
 		t.Fatalf("登记那行也要跟着改：\n%s", src)
 	}
 }
+
+// statusRecorder 模板的两个修复：只记第一个最终状态码（重复 WriteHeader 后写不生效、
+// 1xx 不算最终），以及透传底层可选接口（Unwrap + Flush，否则 SSE/WebSocket 在生成项目里退化）。
+func TestMonitorMiddlewareTemplateRecorder(t *testing.T) {
+	raw, err := tmplFS.ReadFile("templates/monitor_middleware.go.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	for _, want := range []string{
+		"wroteHeader",                  // 只记第一个最终状态码
+		"Unwrap() http.ResponseWriter", // 让 http.ResponseController 透传可选接口
+		"Flush()",                      // 流式/SSE 直接断言 rec.(http.Flusher) 可用
+		"code >= 100 && code < 200",    // 1xx 是中间响应，不算最终状态
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("monitor_middleware.go.tmpl 缺少 %q", want)
+		}
+	}
+}
+
+// 未知参数与 --replace 漏传路径都该报错：静默忽略会让"拼错选项"还报"生成成功"。
+func TestRunNewRejectsUnknownArgs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := runNew("demo", []string{"--bogus"}); err == nil || !strings.Contains(err.Error(), "未知参数") {
+		t.Fatalf("未知参数应报错，实得 %v", err)
+	}
+	if err := runNew("demo", []string{"--replace"}); err == nil || !strings.Contains(err.Error(), "后要跟") {
+		t.Fatalf("--replace 漏传路径应报错，实得 %v", err)
+	}
+	if entries, _ := os.ReadDir("."); len(entries) != 0 {
+		t.Fatalf("报错时不该落任何文件，实得 %v", entries)
+	}
+}

@@ -944,3 +944,39 @@ func TestOptionsFromRequestReachesTheRequest(t *testing.T) {
 		t.Fatalf("Referer = %q，参数里的来源页应当优先于 ctx 里那个", got.Get("Referer"))
 	}
 }
+
+// RetryInterval 是分片重试的指数退避基数：非默认值要真的改变退避，0/负值兜底成 1（不是 0 空转）。
+func TestChunkBackoff(t *testing.T) {
+	cases := []struct {
+		attempt, base int
+		want          time.Duration
+	}{
+		{1, 1, 2 * time.Second},  // 第 1 次退避：1<<1 * 1s
+		{2, 1, 4 * time.Second},  // 第 2 次：4s
+		{1, 7, 10 * time.Second}, // 基数 7 → 14s，封顶 10s
+		{1, 0, 2 * time.Second},  // 基数 0 兜底成 1
+		{1, -3, 2 * time.Second}, // 负数兜底成 1
+		{5, 1, 10 * time.Second}, // 封顶 10s
+	}
+	for _, tc := range cases {
+		if got := chunkBackoff(tc.attempt, tc.base); got != tc.want {
+			t.Fatalf("chunkBackoff(%d, %d) = %v, want %v", tc.attempt, tc.base, got, tc.want)
+		}
+	}
+}
+
+// Content-Range 起止必须等于请求区间：长度相同、偏移却错的片段会被照收并写错内容。
+func TestCheckContentRange(t *testing.T) {
+	ok := &http.Response{Header: http.Header{"Content-Range": []string{"bytes 0-9/100"}}}
+	if err := checkContentRange(ok, 0, 9); err != nil {
+		t.Fatalf("正确偏移应通过：%v", err)
+	}
+	bad := &http.Response{Header: http.Header{"Content-Range": []string{"bytes 10-19/100"}}}
+	if err := checkContentRange(bad, 0, 9); err == nil {
+		t.Fatal("偏移不匹配应报错")
+	}
+	missing := &http.Response{Header: http.Header{}}
+	if err := checkContentRange(missing, 0, 9); err == nil {
+		t.Fatal("缺 Content-Range 应报错")
+	}
+}

@@ -221,3 +221,24 @@ func TestUpdateSitesConcurrentKeepsEveryChange(t *testing.T) {
 		}
 	}
 }
+
+// GetCached 返回的是副本：调用方改它不该污染后续读取（缓存里那份是共享的底层数组）。
+func TestGetCachedReturnsCopy(t *testing.T) {
+	f := gormfake.New()
+	f.SetRow(whitelistRow())
+	store := New(gormfake.MustOpen(f))
+
+	raw, _, err := store.GetCached(KeyIPWhitelist)
+	if err != nil {
+		t.Fatalf("GetCached: %v", err)
+	}
+	raw[0] = 'X' // 污染返回的切片
+
+	again, _, err := store.GetCached(KeyIPWhitelist)
+	if err != nil {
+		t.Fatalf("第二次 GetCached: %v", err)
+	}
+	if string(again) != `["10.0.0.0/8"]` {
+		t.Fatalf("调用方改返回切片污染了缓存：%s", again)
+	}
+}

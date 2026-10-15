@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/textproto"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -293,23 +294,12 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 		}
 	}
 
-	// 2. 合并请求头（默认头来自池的共享可热更配置）
-	headers := make(map[string]string)
-	for k, v := range b.pool.headersSnapshot() {
-		headers[k] = v
-	}
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
-	for _, k := range opts.RemoveHeaders {
-		delete(headers, k)
-	}
-	if len(headers) > 0 {
-		// SetExtraHeaders 接受一个字符串切片，元素按 key, value, key, value 的顺序交替
-		headerArgs := make([]string, 0, len(headers)*2)
-		for k, v := range headers {
-			headerArgs = append(headerArgs, k, v)
-		}
+	// 2. 合并请求头（默认头来自池的共享可热更配置）。
+	// 键一律按 HTTP 语义规范化：header 名大小写不敏感，站点级默认头可能是 `Authorization`、
+	// 逐请求覆盖/删除写的却是 `authorization`—— map 按精确键删的话删不掉，旧凭据照发。
+	// 规范化后 set/remove 与默认头落到同一个键上，覆盖/删除才按大小写不敏感生效。
+	headerArgs := mergeExtraHeaders(b.pool.headersSnapshot(), opts.Headers, opts.RemoveHeaders)
+	if len(headerArgs) > 0 {
 		if _, err := page.SetExtraHeaders(headerArgs); err != nil {
 			_ = page.Close()
 			return nil, fmt.Errorf("set extra headers: %w", err)
@@ -336,4 +326,26 @@ func (b *Browser) MustNewPage(ctx context.Context, url string) *rod.Page {
 		panic(err)
 	}
 	return page
+}
+
+// mergeExtraHeaders 把默认头 + 逐请求覆盖 + 逐请求删除合并成 CDP SetExtraHeaders 需要的
+// key,value,key,value 交替切片。所有键按 HTTP 语义规范化（大小写不敏感）——
+// 站点级默认头可能是 `Authorization`、覆盖/删除写的却是 `authorization`，map 按精确键删不掉，
+// 规范化后才落到同一个键上。空值已在调用方拆进 remove，这里不处理。
+func mergeExtraHeaders(defaults, override map[string]string, remove []string) []string {
+	merged := make(map[string]string, len(defaults)+len(override))
+	for k, v := range defaults {
+		merged[textproto.CanonicalMIMEHeaderKey(k)] = v
+	}
+	for k, v := range override {
+		merged[textproto.CanonicalMIMEHeaderKey(k)] = v
+	}
+	for _, k := range remove {
+		delete(merged, textproto.CanonicalMIMEHeaderKey(k))
+	}
+	args := make([]string, 0, len(merged)*2)
+	for k, v := range merged {
+		args = append(args, k, v)
+	}
+	return args
 }

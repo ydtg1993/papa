@@ -35,6 +35,7 @@ func TestParseByteRange(t *testing.T) {
 		{"长度是负的", "-10@0", 0, "", true},
 		{"起点不是数", "10@x", 0, "", true},
 		{"起点是负的", "10@-1", 0, "", true},
+		{"溢出：起点+长度超 MaxInt64", "2@9223372036854775807", 0, "", true},
 		{"空", "", 0, "", true},
 	}
 	for _, tc := range cases {
@@ -163,5 +164,17 @@ func TestParsePlaylistRejectsBadByteRange(t *testing.T) {
 	playlist := "#EXTM3U\n#EXTINF:1.0,\n#EXT-X-BYTERANGE:oops\nfile.ts\n"
 	if _, _, _, err := d.parsePlaylistEnhancedWithIndex(playlist, "https://example.com/p/"); err == nil {
 		t.Fatal("非法 BYTERANGE 应当报错，而不是当成整段下载")
+	}
+}
+
+// Content-Range 起止必须等于请求区间：长度相同、偏移却错的片段会被照收并写错内容。
+func TestCheckContentRange(t *testing.T) {
+	ok := &http.Response{Header: http.Header{"Content-Range": []string{"bytes 0-9/100"}}}
+	if err := checkContentRange(ok, "bytes=0-9"); err != nil {
+		t.Fatalf("正确偏移应通过：%v", err)
+	}
+	bad := &http.Response{Header: http.Header{"Content-Range": []string{"bytes 10-19/100"}}}
+	if err := checkContentRange(bad, "bytes=0-9"); err == nil {
+		t.Fatal("偏移不匹配应报错")
 	}
 }

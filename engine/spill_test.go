@@ -255,3 +255,38 @@ func TestEnqueueDelayedSignalsDispatcher(t *testing.T) {
 	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub", Site: "stub"}, delayRecord(7))
 	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub", Site: "stub"}, delayRecord(7))
 }
+
+// 处理中的任务不该回灌：它已经被 worker 认领，池里还有一份在跑/待跑。
+// 回灌会造出第二份可被认领的副本（claimTask 只看 status=pending，回灌前没有状态守卫时
+// submitUpdates 会把它无条件翻回 pending）。见 R3-01。
+func TestDrainSpilledSkipsProcessingTask(t *testing.T) {
+	f := newFakeTaskDB()
+	f.row["status"] = int64(models.TaskStatusProcessing)
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+
+	e.spillTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spilled"})
+	e.drainSpilled()
+
+	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+		t.Fatal("处理中的任务不该回灌入队")
+	}
+	if got := e.spillBacklog(); got != 0 {
+		t.Fatalf("处理中的任务应被跳过（不再留在溢出表），实得 %d", got)
+	}
+}
+
+// 溢出表去重：同一任务从多条投递路径反复 spill 只应留一份，
+// 否则 drain 对同一条行重复 SELECT / 重复回灌。
+func TestSpillTaskDedups(t *testing.T) {
+	f := newFakeTaskDB()
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spilled"}
+	e.spillTask(task)
+	e.spillTask(task)
+
+	if got := e.spillBacklog(); got != 1 {
+		t.Fatalf("同一任务溢出两次只应计 1，实得 %d", got)
+	}
+}

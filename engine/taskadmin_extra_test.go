@@ -153,8 +153,8 @@ func TestMarkTaskFailedHappyPath(t *testing.T) {
 	if !strings.Contains(sql, "CONCAT") {
 		t.Fatalf("原因应在 SQL 里追加到 error 列（而不是读出来拼字符串）：\n%s", sql)
 	}
-	if !strings.Contains(sql, "status IN") {
-		t.Fatalf("应只碰非终态的行：\n%s", sql)
+	if !strings.Contains(sql, "status = ? OR (status = ? AND updated_at < ?)") {
+		t.Fatalf("应只碰待处理的行、外加上一轮留下的处理中孤儿：\n%s", sql)
 	}
 	args := f.writtenArgs()
 	if !strings.Contains(args, "内容违规") {
@@ -180,6 +180,17 @@ func TestMarkTaskFailedRejections(t *testing.T) {
 
 		if err := e.MarkTaskFailed(7, "r"); !errors.Is(err, ErrTaskTerminal) {
 			t.Fatalf("err = %v, want ErrTaskTerminal", err)
+		}
+	})
+
+	t.Run("处理中", func(t *testing.T) {
+		f := newFakeTaskDB()
+		f.affected = 0
+		f.row["status"] = int64(models.TaskStatusProcessing)
+		e, _ := urgentEngine(t, f)
+
+		if err := e.MarkTaskFailed(7, "r"); !errors.Is(err, ErrTaskProcessing) {
+			t.Fatalf("err = %v, want ErrTaskProcessing", err)
 		}
 	})
 
@@ -311,7 +322,7 @@ func TestRejectedAdminOpsWriteNothing(t *testing.T) {
 	}
 }
 
-// 「标失败」对已终态的行：拦截靠 UPDATE 语句里的 `status IN (待处理, 处理中)`，
+// 「标失败」对已终态的行：拦截靠 UPDATE 语句里的 `status = 待处理`，
 // 所以语句会发出去、只是 RowsAffected=0 —— 这里同时钉住"守卫在语句里"和"报错说得清原因"。
 func TestMarkTaskFailedTerminalGuardIsInStatement(t *testing.T) {
 	f := newFakeTaskDB()
@@ -323,7 +334,7 @@ func TestMarkTaskFailedTerminalGuardIsInStatement(t *testing.T) {
 		t.Fatalf("err = %v, want ErrTaskTerminal", err)
 	}
 	sql := f.written()
-	if !strings.Contains(sql, "status IN") {
+	if !strings.Contains(sql, "status = ? OR (status = ? AND updated_at < ?)") {
 		t.Fatalf("守卫应写在语句里（不是先查再写）：\n%s", sql)
 	}
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -405,4 +416,39 @@ func TestLoadTaskTranslatesNotFound(t *testing.T) {
 		t.Fatalf("载入的行不对：%+v", got)
 	}
 	_ = time.Second
+}
+
+// 「标失败」的孤儿例外：上一轮崩溃留下的 processing 行（updated_at 早于本进程启动）要能标，
+// 否则 recover_queue 关着时这类行没有任何人工出口（重投/删除/标失败全拒）。
+// 判据与启动恢复同一套（updated_at < startedAt = 不是本进程碰过的行）—— 假库不解析 WHERE，
+// 所以这里钉"判据确实写进了语句"，并在 WHERE 不匹配时验证报错说得清原因。
+func TestMarkTaskFailedOrphanProcessingRow(t *testing.T) {
+	t.Run("判据写进语句", func(t *testing.T) {
+		f := newFakeTaskDB()
+		e, _ := urgentEngine(t, f)
+		e.startedAt = time.Now()
+
+		if err := e.MarkTaskFailed(7, "孤儿清理"); err != nil {
+			t.Fatalf("MarkTaskFailed = %v", err)
+		}
+		sql := f.written()
+		if !strings.Contains(sql, "status = ? OR (status = ? AND updated_at < ?)") {
+			t.Fatalf("孤儿例外（updated_at < startedAt）应写在语句里：%s", sql)
+		}
+		if got := f.writtenArgs(); !strings.Contains(got, "孤儿清理") {
+			t.Fatalf("原因应写进 error 列：%s", got)
+		}
+	})
+
+	t.Run("本进程在跑（WHERE 不匹配）：报处理中", func(t *testing.T) {
+		f := newFakeTaskDB()
+		f.affected = 0 // 条件没匹配上：本进程认领的行 updated_at 比 startedAt 新
+		f.row["status"] = int64(models.TaskStatusProcessing)
+		e, _ := urgentEngine(t, f)
+		e.startedAt = time.Now().Add(-time.Hour)
+
+		if err := e.MarkTaskFailed(7, "r"); !errors.Is(err, ErrTaskProcessing) {
+			t.Fatalf("err = %v, want ErrTaskProcessing", err)
+		}
+	})
 }

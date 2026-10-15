@@ -59,6 +59,32 @@ func TestBusinessProject(t *testing.T) {
 		t.Errorf("不依赖 papa 的模块不该被当作业务项目，got %q", mod)
 	}
 
+	// require 块形式（脚手架 go mod tidy 之后的真实形状：直接依赖一个块 + indirect 一个块）。
+	dir = write(t, `module hg
+
+go 1.25.0
+
+require (
+	github.com/PuerkitoBio/goquery v1.10.2
+	github.com/ydtg1993/papa/v3 v3.4.5
+	gorm.io/gorm v1.31.2
+)
+
+require (
+	github.com/sirupsen/logrus v1.9.4 // indirect
+)
+`)
+
+	if mod, ok := businessProject(dir); !ok || mod != "hg" {
+		t.Errorf("require 块形式应被认出，got %q/%v", mod, ok)
+	}
+
+	// 注释 / replace 里提到 papa 不算依赖（只有 require 指令才算）。
+	dir = write(t, "module other\n\ngo 1.25.0\n\n// 待接 github.com/ydtg1993/papa/v3\nreplace github.com/ydtg1993/papa/v3 => ../papa\n")
+	if mod, ok := businessProject(dir); ok {
+		t.Errorf("只有注释/replace 提到 papa 不该算业务项目，got %q", mod)
+	}
+
 	// 没有 go.mod。
 	if mod, ok := businessProject(write(t, "")); ok {
 		t.Errorf("没有 go.mod 时不该被当作业务项目，got %q", mod)

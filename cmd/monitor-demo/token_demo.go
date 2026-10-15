@@ -7,6 +7,8 @@ package main
 // 而不是只能看着列表变化。
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,13 +18,22 @@ import (
 	"github.com/ydtg1993/papa/v3/admin/tokenadmin"
 )
 
-// demoToken 演示用的固定令牌；登录框里填它（后台新建的令牌同样能登录）。
-const demoToken = "demo-token"
+// randomDemoToken 每次启动生成一把随机演示令牌，只打印到本机日志里。
+// 不再用写死在源码里的固定令牌：知道源码的人（或翻过旧提交的人）不该天然就能登录任何一台
+// 跑着 demo 的主机。想对外演示时，让调用方自己把令牌换成已知值、并显式改监听地址。
+func randomDemoToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand 几乎不会失败；真失败退回一个仅限回环监听的兜底值
+		return "demo-token"
+	}
+	return hex.EncodeToString(b)
+}
 
 type demoTokens struct{ store *tokenadmin.MemStore }
 
-// newDemoTokens 造三条演示令牌：一条能用（就是 demoToken）、一条停用的。
-func newDemoTokens() *demoTokens {
+// newDemoTokens 造三条演示令牌：一条能用（就是调用方给的演示令牌）、一条停用的。
+func newDemoTokens(demoToken string) *demoTokens {
 	s := tokenadmin.NewMemStore()
 	s.Seed(demoToken, "张三", "运维机")
 	s.Seed("demo-token-li", "李四", "笔记本")

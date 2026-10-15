@@ -132,6 +132,19 @@ func (e *Engine) stageKeys() []string {
 	return names
 }
 
+// finishTask 任务落终态后的统一收尾：非轮询任务清活动去重键，轮询任务唤醒轮询队列。
+//
+// 两条不能合并成"总是清理 + 总是唤醒"：非轮询任务不该占着去重表（否则同一 URL 再也进不来），
+// 轮询任务则要留在去重表里等 repeat_queue 重新捞；唤醒只对轮询任务有意义（它有下次到点，
+// 落终态后 soonestRepeatIn 要立刻把它算进节拍，否则 ticker 还睡在上一次算出的全局 interval 上）。
+func (e *Engine) finishTask(task *Task) {
+	if task.Repeatable {
+		e.wakeRepeatQueue()
+		return
+	}
+	e.DelActiveTask(task)
+}
+
 // stageHandler 一个阶段 worker 的任务处理函数：认领 → 带重试地跑 handler → 落终态。
 // 从 ApplyRegisterStage 的第一趟提出来：池子懒建（首次 submit 才建），建的时候绑上同一个 handler。
 func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
@@ -142,6 +155,19 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	//（与下载器那边 max(MaxConcurrent, 1) 同一路数）。
 	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
+		// panic 收尾：FetchHandler 一次尝试里 panic 会展开跳过下面整段「重试 + 落终态」。
+		// runAttempt 只负责 trace/归档（记完原样抛回），workerpool 只负责计数 —— 谁都不碰任务行，
+		// 于是行会永远停在 processing、错误队列与失败通知都不触发、活动任务也没清掉。
+		// 这里补上终态落库 + 失败通知 + 清活动任务，栈照旧抛回给 workerpool（见 runAttempt 的注释）。
+		defer func() {
+			if r := recover(); r != nil {
+				err := fmt.Errorf("panic: %v", r)
+				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				e.notifyFailure(ctx, task, err)
+				e.finishTask(task)
+				panic(r)
+			}
+		}()
 		// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
 		// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
 		// 运营已经动过它（标失败/删除），或同一行的另一份副本（后台「加急」会另投一份）先认领了。
@@ -170,9 +196,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if err == nil {
 				task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
-				if !task.Repeatable {
-					e.DelActiveTask(task)
-				}
+				e.finishTask(task)
 				// 任务间隔延迟：让 worker 在两次抓取之间歇一下，别把目标站打急。
 				// **必须可被 ctx 打断** —— 任务到这里已经成功、状态也已经落库，
 				// 再让 worker 抱着这个并发位睡满一个 delay（模板里 catalog 是 5m），
@@ -189,9 +213,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			if !Retryable(err) {
 				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
 				e.notifyFailure(ctx, task, err)
-				if !task.Repeatable {
-					e.DelActiveTask(task)
-				}
+				e.finishTask(task)
 				return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
 			}
 			lastErr = err
@@ -199,9 +221,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		// 所有重试失败：记录错误并更新状态为 failed
 		task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
 		e.notifyFailure(ctx, task, lastErr)
-		if !task.Repeatable {
-			e.DelActiveTask(task)
-		}
+		e.finishTask(task)
 		return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
 	}
 }
@@ -254,18 +274,28 @@ func (e *Engine) removeStageStats(key string, pool *workerpool.WorkerPool[*Task]
 	}
 }
 
+// poolForwarder 一条错误转发协程的归属：停机信号 + 它转发的是哪个池。
+//
+// 取消时**必须核对池身份**，不能只按 stage key：reapIdle 把池从登记表摘掉之后、调用
+// cancelPoolErrorForwarder 之前，同阶段可能已被重新提交、建了新池新转发协程 —— 只按 key
+// 关通道会误关新池的那条，让新池的错误再也进不了 Errors()。
+type poolForwarder struct {
+	stop chan struct{}
+	pool *workerpool.WorkerPool[*Task]
+}
+
 // startPoolErrorForwarder 起一条转发协程，把池的错误通道汇进引擎的常驻错误通道（Errors()）。
 // pool.Errors() 从不 close，所以必须带停机信号 —— 池被 reap 时 close 它，否则协程泄漏到引擎结束。
 func (e *Engine) startPoolErrorForwarder(key string, pool *workerpool.WorkerPool[*Task]) {
 	stop := make(chan struct{})
 	e.mu.Lock()
 	if e.errorForwardCancel == nil {
-		e.errorForwardCancel = make(map[string]chan struct{})
+		e.errorForwardCancel = make(map[string]*poolForwarder)
 	}
 	if old, ok := e.errorForwardCancel[key]; ok {
-		close(old) // 旧池的转发协程该退了（池被重建）
+		close(old.stop) // 旧池的转发协程该退了（池被重建）
 	}
-	e.errorForwardCancel[key] = stop
+	e.errorForwardCancel[key] = &poolForwarder{stop: stop, pool: pool}
 	e.mu.Unlock()
 
 	go func() {
@@ -286,11 +316,13 @@ func (e *Engine) startPoolErrorForwarder(key string, pool *workerpool.WorkerPool
 }
 
 // cancelPoolErrorForwarder 停掉某阶段的错误转发协程（池被 reap 时配套调用）。
-func (e *Engine) cancelPoolErrorForwarder(key string) {
+// 只停「仍属于被回收的那份池」的转发协程：reap 与新池建之间没有锁，同阶段可能已换了池，
+// 只按 key 关会误关新池的（见 poolForwarder 的注释）。
+func (e *Engine) cancelPoolErrorForwarder(key string, pool *workerpool.WorkerPool[*Task]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if stop, ok := e.errorForwardCancel[key]; ok {
-		close(stop)
+	if fw, ok := e.errorForwardCancel[key]; ok && fw.pool == pool {
+		close(fw.stop)
 		delete(e.errorForwardCancel, key)
 	}
 }
@@ -319,7 +351,7 @@ func (e *Engine) startIdleReaper() {
 				for key, pool := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
 					e.harvestStageTotals(key, pool)
 					e.removeStageStats(key, pool)
-					e.cancelPoolErrorForwarder(key)
+					e.cancelPoolErrorForwarder(key, pool)
 					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", key)
 				}
 			}

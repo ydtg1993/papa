@@ -186,12 +186,12 @@ func printUpgradePlan(p *upgradePlan) {
 		fmt.Printf("  ！%s\n", n)
 	}
 	if len(p.SiteNotes) == 0 {
-		fmt.Printf("  %d 份声明文件，没看到旧的队列类型名，三条队列声明也都在\n", len(p.SiteFiles))
+		fmt.Printf("  %d 份声明文件，没看到旧的队列类型名\n", len(p.SiteFiles))
 	}
 
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
-		"sites/*.go：三队列必写的值（从 config.yaml 那三段抄过去）；本轮规则见 papa 仓库的 docs/issues/changes.md",
+		"config.yaml：三个治理队列（error_queue / recover_queue / repeat_queue）仍是全局段，缺省=那条队列不跑；本轮规则见 papa 仓库的 docs/issues/changes.md",
 		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>` 先跑起来",
 		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改；动过的看 docs/issues/changes.md 里对应条目",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",

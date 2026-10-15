@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -52,5 +53,14 @@ func TestDurationRangeUnmarshalText(t *testing.T) {
 	}
 	if d.Min != time.Minute || d.Max != 2*time.Minute {
 		t.Fatalf("unexpected unmarshaled range: %+v", d)
+	}
+}
+
+// 极端区间 `0s-2562047h47m16.854775807s`：宽度 = MaxInt64，+1 会溢出成负数传给
+// rand.Int63n → panic。Random 要退化成一个固定值，不能 panic、不能产出负数。
+func TestDurationRangeRandomMaxWidth(t *testing.T) {
+	d := DurationRange{Min: 0, Max: time.Duration(math.MaxInt64)}
+	if got := d.Random(); got != 0 {
+		t.Fatalf("MaxInt64 宽度应退化成 Min，实得 %v", got)
 	}
 }

@@ -197,6 +197,14 @@ func pageBounds(page, size, n int) (int, int) {
 	if page <= 0 {
 		page = 1
 	}
+	if n <= 0 {
+		return 0, 0
+	}
+	// 用除法夹页码：page 极大时 (page-1)*size 会溢出成负数，绕过下面的比较直接切片 panic。
+	// 第 page 页存在当且仅当 page-1 <= (n-1)/size（最后一页的页号），超过就是空区间。
+	if page-1 > (n-1)/size {
+		return n, n
+	}
 	from := (page - 1) * size
 	if from > n {
 		from = n

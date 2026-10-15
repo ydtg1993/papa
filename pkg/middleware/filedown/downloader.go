@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -539,6 +540,46 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 }
 
 // downloadChunkToFile 下载分片到临时文件
+// checkContentRange 核对 206 响应的 Content-Range 起止是否等于请求区间（"bytes 起-止/总长"）。
+// 只比 body 长度不够：长度恰好相同、偏移却错误的片段会被照收并写入错误内容。
+func checkContentRange(resp *http.Response, start, end int64) error {
+	cr := resp.Header.Get("Content-Range")
+	rest, ok := strings.CutPrefix(cr, "bytes ")
+	if !ok {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	rng, _, ok := strings.Cut(rest, "/")
+	if !ok {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	sStr, eStr, ok := strings.Cut(rng, "-")
+	if !ok {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	s, err1 := strconv.ParseInt(sStr, 10, 64)
+	e, err2 := strconv.ParseInt(eStr, 10, 64)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	if s != start || e != end {
+		return fmt.Errorf("Content-Range offset mismatch: got %d-%d, want %d-%d", s, e, start, end)
+	}
+	return nil
+}
+
+// chunkBackoff 分片重试的退避时长：基数（RetryInterval，默认 1s）按 1·2·4… 翻倍，封顶 10s。
+// 基数 0/负兜底成 1，别让"非默认值"配出一个 0 退避的空转循环。
+func chunkBackoff(attempt, base int) time.Duration {
+	if base <= 0 {
+		base = 1
+	}
+	d := time.Duration(1<<attempt) * time.Duration(base) * time.Second
+	if d > 10*time.Second {
+		d = 10 * time.Second
+	}
+	return d
+}
+
 func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, start, end int64, destFile string, cfg *requestConfig) error {
 	if info, err := os.Stat(destFile); err == nil && info.Size() == (end-start+1) {
 		return nil
@@ -551,10 +592,7 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 		default:
 		}
 		if attempt > 0 {
-			sleepTime := time.Duration(1<<attempt) * time.Second
-			if sleepTime > 10*time.Second {
-				sleepTime = 10 * time.Second
-			}
+			sleepTime := chunkBackoff(attempt, d.config.RetryInterval)
 			// 退避要能被 ctx 打断：Engine.Stop 只等 crawler.stop_timeout（模板 5s），
 			// 而这里最多睡 10s —— 卡住的话 Stop 会报"未排空"，并连带跳过关库与关浏览器池的收尾
 			// （那两件事正是在 drained=false 时故意不做的）。与 engine/stage.go 的退避同一写法。
@@ -579,6 +617,13 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 		if resp.StatusCode != http.StatusPartialContent {
 			_ = resp.Body.Close()
 			lastErr = fmt.Errorf("unexpected status: %d", resp.StatusCode)
+			continue
+		}
+		// 只比 body 长度会被"长度恰好相同、偏移却错误"的响应骗过去：源站/代理给错片
+		// （或错误缓存）会照收并写入错误内容。核对 Content-Range 的实际起止。
+		if err := checkContentRange(resp, start, end); err != nil {
+			_ = resp.Body.Close()
+			lastErr = err
 			continue
 		}
 		expectSize := end - start + 1

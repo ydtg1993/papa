@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"bytes"
 	"encoding/json"
 )
 
@@ -25,6 +26,9 @@ type cached struct {
 }
 
 // GetCached 读一个键，优先走缓存。
+//
+// 成功时返回的是**副本**：缓存里存的是 cfg_val 的原始字节，直接回给调用方的话，
+// 谁改了返回切片就污染后续所有读取（并发读同一底层数组还会数据竞争）。
 func (s *Store) GetCached(key string) (raw []byte, found bool, err error) {
 	if _, err := SpecOf(key); err != nil { // 键必须在注册表里（与 Load 同一道门）
 		return nil, false, err
@@ -32,13 +36,17 @@ func (s *Store) GetCached(key string) (raw []byte, found bool, err error) {
 	s.mu.RLock()
 	if c, ok := s.cache[key]; ok {
 		s.mu.RUnlock()
-		return c.raw, c.found, nil
+		return bytes.Clone(c.raw), c.found, nil
 	}
 	s.mu.RUnlock()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.getLocked(key)
+	raw, found, err = s.getLocked(key)
+	if err != nil || !found {
+		return raw, found, err
+	}
+	return bytes.Clone(raw), found, nil
 }
 
 // SetCached 整块写一个键：先落库、再更新缓存（库写失败仍然更新缓存，并把 err 返回）。

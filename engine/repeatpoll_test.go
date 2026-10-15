@@ -105,3 +105,45 @@ func TestSoonestRepeatQueryCastsToSignedInt(t *testing.T) {
 		t.Errorf("CAST 被去掉了（MIN(CASE ...) 的 DECIMAL 扫不进 *int64）｜ %s", sql)
 	}
 }
+
+// 「最早到点」那条聚合的底必须是**只按 repeatable** 筛，不能套终态（status IN）条件。
+// 否则 pending/processing 行的未来 next_repeat_at 进不了聚合，节拍退回全局 interval
+// （见 soonestRepeatQueryOn 的注释：状态取舍交给 CASE，活跃行只看未来 next_repeat_at）。
+func TestSoonestRepeatQueryIncludesActiveRows(t *testing.T) {
+	db := dryRunMySQL(t)
+	sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
+		var rows []struct{ Epoch *int64 }
+		return soonestRepeatQueryOn(tx).Find(&rows)
+	})
+	if !strings.Contains(sql, "WHERE repeatable = ?") {
+		t.Errorf("WHERE 应只按 repeatable 筛：%s", sql)
+	}
+	if strings.Contains(sql, "repeatable = ? AND status IN") {
+		t.Errorf("WHERE 不应再把 status IN 套进去（会把活跃行排除掉）：%s", sql)
+	}
+}
+
+// finishTask 两条分支：非轮询清去重键，轮询留在去重表并唤醒轮询队列重算节拍。
+func TestFinishTaskWakesRepeatQueueForRepeatable(t *testing.T) {
+	f := newFakeTaskDB()
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+
+	plain := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/plain"}
+	e.dedupCache.Add(plain.Unique())
+	e.finishTask(plain)
+	if e.dedupCache.Get(plain.Unique()) {
+		t.Fatal("非轮询任务落终态应清掉去重键")
+	}
+
+	repeat := &Task{ID: 8, Stage: "stub", Site: "stub", URL: "https://example.com/repeat", Repeatable: true}
+	e.dedupCache.Add(repeat.Unique())
+	e.finishTask(repeat)
+	if !e.dedupCache.Get(repeat.Unique()) {
+		t.Fatal("轮询任务落终态应留在去重表，等 repeat_queue 重新捞")
+	}
+	select {
+	case <-e.repeatQueue.wake:
+	default:
+		t.Fatal("轮询任务落终态应唤醒轮询队列重算节拍")
+	}
+}

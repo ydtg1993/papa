@@ -172,3 +172,34 @@ func TestRecorderAfterCloseFallsBackInsteadOfPanic(t *testing.T) {
 		t.Fatalf("关停后的记录应降到日志文件：%s", lg.joined())
 	}
 }
+
+// Close 超时后要**继续等**直到排空：提前返回会把没写完的记录留给"宿主随即退出"的窗口
+// （那时 consumer 的 fallback 也写不进去）。这里让消费协程卡在写库，Close 用很短的 timeout，
+// 验证它不会在 timeout 后返回。
+func TestRecorderCloseWaitsPastTimeout(t *testing.T) {
+	p := &stubPool{block: make(chan struct{})}
+	rec := New(openStubDB(t, p), &memLogger{})
+
+	rec.RecordEvent(Event{Table: "task", Action: "retry", RowID: "7", At: time.Now()})
+
+	closed := make(chan struct{})
+	go func() {
+		rec.Close(50 * time.Millisecond) // 很短的 timeout
+		close(closed)
+	}()
+
+	// 消费协程还卡着、记录还没排空，Close 不该在 timeout 后返回
+	select {
+	case <-closed:
+		t.Fatal("消费协程还卡着，Close 不该提前返回")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(p.block) // 放消费协程走完
+
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("放行后 Close 应等到排空返回")
+	}
+}

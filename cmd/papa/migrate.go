@@ -111,10 +111,43 @@ func businessProject(dir string) (string, bool) {
 	if mod == "" || mod == papaModule {
 		return "", false
 	}
-	if !strings.Contains(content, papaModule) {
+	if !requiresPapa(content) {
 		return "", false
 	}
 	return mod, true
+}
+
+// requiresPapa 判断 go.mod 的 require 指令里是否真的依赖 papa。
+// 只认 require 块内、或单行 require 的 module 路径 —— 注释、replace、retract 里的偶然出现不算，
+// 否则一条注释里提到 papa 也会把无关项目误判成业务项目（进而错误委托 `go run . -migrate`）。
+func requiresPapa(gomod string) bool {
+	inRequire := false
+	for line := range strings.SplitSeq(gomod, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "require (") {
+			inRequire = true
+			continue
+		}
+		if inRequire {
+			if trimmed == ")" {
+				inRequire = false
+				continue
+			}
+			if fields := strings.Fields(trimmed); len(fields) > 0 && fields[0] == papaModule {
+				return true
+			}
+			continue
+		}
+		if rest, ok := strings.CutPrefix(trimmed, "require "); ok {
+			if fields := strings.Fields(rest); len(fields) > 0 && fields[0] == papaModule {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // modulePath 取 go.mod 里的 `module x` 行。

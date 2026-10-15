@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -335,4 +336,73 @@ func TestGetWithCancelledContext(t *testing.T) {
 		t.Fatal("Get 应当被 ctx 取消唤醒，而不是一直挂着")
 	}
 	p.Close()
+}
+
+// 头名大小写不敏感：默认头 `authorization`、逐请求删除 `AUTHORIZATION` 必须能删掉，
+// 覆盖的键也要规范化后与默认头落到同一个键上 —— 否则旧凭据照发（map 按精确键删）。
+func TestMergeExtraHeadersCanonicalizesKeys(t *testing.T) {
+	args := mergeExtraHeaders(
+		map[string]string{"authorization": "token", "cookie": "a=b", "x-trace": "t1"},
+		map[string]string{"User-Agent": "custom"},
+		[]string{"AUTHORIZATION"},
+	)
+	got := headerPairs(args)
+	if _, ok := got["Authorization"]; ok {
+		t.Fatalf("AUTHORIZATION 应删掉 authorization：%v", got)
+	}
+	if got["Cookie"] != "a=b" || got["X-Trace"] != "t1" {
+		t.Fatalf("默认头应保留并规范化：%v", got)
+	}
+	if got["User-Agent"] != "custom" {
+		t.Fatalf("覆盖应生效：%v", got)
+	}
+}
+
+// headerPairs 把 key,value 交替的切片摊成 map（这里不该有重复键）。
+func headerPairs(args []string) map[string]string {
+	out := make(map[string]string, len(args)/2)
+	for i := 0; i+1 < len(args); i += 2 {
+		out[args[i]] = args[i+1]
+	}
+	return out
+}
+
+// copyCookies 里 nil 元素应被跳过（不 panic）：调用方传含 nil 的 DefaultCookies 不该崩。
+func TestCopyCookiesSkipsNilElements(t *testing.T) {
+	src := []*proto.NetworkCookieParam{{Name: "sid", Value: "v"}, nil, {Name: "uid", Value: "u"}}
+	got := copyCookies(src)
+	if len(got) != 2 {
+		t.Fatalf("nil 元素应被跳过，实得 %d 条：%+v", len(got), got)
+	}
+	if got[0].Name != "sid" || got[1].Name != "uid" {
+		t.Fatalf("跳过 nil 后顺序应保留：%+v", got)
+	}
+}
+
+// Close 与 ensureReaper 并发时不能留下停不掉的回收协程：ensureReaper 必须在持 reaperMu 时
+// 再查 closed（Close 关 reaperStop 也持同一把锁），否则 Close 抢先（看到 reaperStop==nil 就跳过）
+// 之后，ensureReaper 仍会建 stop 并起协程 —— 那个协程每个 tick 空转直到进程退出。
+func TestEnsureReaperConcurrentWithClose(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		p := newTestPool(1, 0, nil)
+		p.maxIdle.Store(int64(time.Second))
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); p.SetMaxIdleTime(2 * time.Second) }()
+		go func() { defer wg.Done(); p.Close() }()
+		wg.Wait()
+
+		// 不变式：Close 完成后，reaperStop 要么 nil，要么已被 Close 关闭。
+		p.reaperMu.Lock()
+		stop := p.reaperStop
+		p.reaperMu.Unlock()
+		if stop != nil {
+			select {
+			case <-stop:
+			default:
+				t.Fatalf("第 %d 轮：Close 之后回收协程还活着（stop 没被关）", i)
+			}
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -14,12 +15,17 @@ import (
 )
 
 // splitHeaderOverride 把逐请求头拆成"要设的"与"要删的"（空值 = 删）——两条抓取路径共用这套语义。
+//
+// 键按 HTTP 语义规范化：header 名大小写不敏感，站点级可能是 `Authorization`、逐请求覆盖/删除
+// 写的却是 `authorization`—— 不规范化的话，浏览器路径（map 精确键删）会删不掉、旧凭据照发。
+// 静态路径（net/http 的 Set/Del）本身会 canonical 化，但这里统一规范化，消费方不用各做各的。
 func splitHeaderOverride(h map[string]string) (set map[string]string, remove []string) {
 	if len(h) == 0 {
 		return nil, nil
 	}
 	set = make(map[string]string, len(h))
 	for k, v := range h {
+		k = textproto.CanonicalMIMEHeaderKey(k)
 		if v == "" {
 			remove = append(remove, k)
 			continue
@@ -110,6 +116,11 @@ func (e *Engine) render(ctx context.Context, rawURL, waitSelector string) (strin
 
 	if waitSelector != "" {
 		if _, err := page.Timeout(defaultWaitTimeout).Element(waitSelector); err != nil {
+			// 选择器没出现正是最该看现场的时候：尽力读一次当前 HTML 归档，再带错误返回
+			//（归档只在页缓冲里登记、落盘在 runAttempt 收尾，读失败也不拦这次错误）。
+			if html, herr := page.HTML(); herr == nil {
+				archiveFromCtx(ctx).holdRendered(html, rawURL)
+			}
 			return "", "", fmt.Errorf("wait selector %q on %s: %w", waitSelector, rawURL, err)
 		}
 	}

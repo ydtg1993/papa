@@ -645,3 +645,21 @@ func TestSubmitTaskParksWhenStatusUpdateFails(t *testing.T) {
 		t.Fatalf("回灌成功后应离开溢出表，实得 %d", got)
 	}
 }
+
+// 投递路径的状态重置必须带 status=pending 守卫：行在 SELECT 之后被 worker 认领成 processing 时，
+// 无条件 UPDATE 会把它翻回 pending，正在跑的旧 worker 失去状态保护（回灌 / 延迟投递都走这里）。
+// 守卫写在 WHERE 里而不是靠 RowsAffected 判 —— MySQL 下"已经是 pending"与"已被认领"都是 0 行。
+func TestSubmitToPoolResetsOnlyPending(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
+	if err := e.SubmitTask(task); err != nil {
+		t.Fatalf("SubmitTask = %v", err)
+	}
+
+	if sql := f.written(); !strings.Contains(sql, "id = ? AND status = ?") {
+		t.Fatalf("状态重置的 WHERE 应带 status=pending 守卫：\n%s", sql)
+	}
+}

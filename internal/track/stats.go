@@ -75,11 +75,7 @@ func (m *StatsQueue[T]) Stop() {
 
 // processActivity 处理单个活动事件
 func (m *StatsQueue[T]) processActivity(act workerpool.Activity) {
-	switch act.Type {
-	case workerpool.ActivityTaskStart:
-		// 任务开始：可以记录开始时间到某个临时存储，但这里我们不记录，因为结束时已有 Duration
-		// 如果需要在开始事件中做统计，可以预留
-	case workerpool.ActivityTaskEnd:
+	if act.Type == workerpool.ActivityTaskEnd {
 		m.updateStats(act)
 	}
 }

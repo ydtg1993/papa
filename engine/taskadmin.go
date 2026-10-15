@@ -15,7 +15,7 @@ import (
 var (
 	ErrTaskNotFound       = errors.New("任务不存在")
 	ErrTaskTerminal       = errors.New("该任务已结束（成功或失败），无需再标记失败")
-	ErrTaskProcessing     = errors.New("该任务正在处理中，请先标记失败或等它结束")
+	ErrTaskProcessing     = errors.New("该任务正在处理中，等它结束再操作")
 	ErrTaskChanged        = errors.New("该行已被他人修改，请刷新后重试")
 	ErrStageNotRegistered = errors.New("该任务的阶段未注册")
 	ErrTaskUrgent         = errors.New("该任务已经加急过了，或已被取走，刷新后再看")
@@ -51,10 +51,16 @@ func urgentScope(db *gorm.DB, id uint) *gorm.DB {
 		Where("id = ? AND status = ? AND urgent = ?", id, models.TaskStatusPending, false)
 }
 
-func markFailedScope(db *gorm.DB, id uint) *gorm.DB {
+// markFailedScope 「标失败」的条件：待处理，**外加**上一轮留下的处理中孤儿。
+//
+// 那个孤儿例外不能省。只认待处理的话，进程崩在任务中途留下的 `processing` 行会没有任何人工出口：
+// 「重投」按 retryScope 排除 processing、「删除」按 deleteScope 排除 processing、「标失败」也拒绝 ——
+// `recover_queue` 关着的部署就只能等下次把开关打开。判据与启动恢复完全同一套（也是同一个理由）：
+// `updated_at` 由应用侧写、认领也会写，所以「早于本进程启动」= 「不是本进程在跑」。
+func markFailedScope(db *gorm.DB, id uint, startedAt time.Time) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status IN ?", id,
-			[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing})
+		Where("id = ? AND (status = ? OR (status = ? AND updated_at < ?))",
+			id, models.TaskStatusPending, models.TaskStatusProcessing, startedAt)
 }
 
 func deleteScope(db *gorm.DB, id uint) *gorm.DB {
@@ -285,15 +291,22 @@ func (e *Engine) whyRepeatRejected(id uint, on bool) error {
 	return ErrTaskChanged
 }
 
-// MarkTaskFailed 把「还没结束」的任务标记为失败（待处理/处理中都算）。
+// MarkTaskFailed 把「还没被取走」的任务标记为失败（待处理，或上一轮留下的处理中孤儿）。
 // 允许标记待处理的行，是为了让运营能在 worker 取走之前拦下一条排队任务：
 // worker 执行前会用 claimTask 以 status=待处理 为条件认领，拿不到行就不执行。
+//
+// 本进程正在处理的行**拒绝**（不再像旧版那样放行）：它已经被 worker 认领，这里改了也会被 worker
+// 完成后无条件写回（UpdateStatus 只按 id、没有状态守卫），"标失败"因此不是终态 —— 运营以为掐掉了，
+// 任务其实还在跑，最后还会把自己写回成功。想让它停用 PauseSite，想重跑等它结束再「重投」。
+//
+// 上一轮崩溃留下的 processing 行**放行**（判据见 markFailedScope）：没有 worker 在跑它，
+// 而它是这类行唯一的人工出口 —— 尤其在 recover_queue 关着的时候。
 func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 	msg := "后台手动标记失败"
 	if reason != "" {
 		msg += "：" + reason
 	}
-	res := markFailedScope(e.db, id).
+	res := markFailedScope(e.db, id, e.startedAt).
 		Updates(map[string]any{
 			"status": models.TaskStatusFailed,
 			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", msg+"\n"),
@@ -302,8 +315,12 @@ func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 		return fmt.Errorf("mark task %d failed: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		if _, err := e.loadTask(id); err != nil {
+		t, err := e.loadTask(id)
+		if err != nil {
 			return err // 行不存在
+		}
+		if t.Status == models.TaskStatusProcessing {
+			return ErrTaskProcessing
 		}
 		return ErrTaskTerminal
 	}

@@ -552,3 +552,16 @@ func TestLoadOptionalConfigExplicitErrorsAreLoud(t *testing.T) {
 		}
 	})
 }
+
+// malformed URL（无效转义序列）应被跳过：老写法 `err == nil && …` 短路后不 return，
+// 会把无效地址原样留在结果里，与"仅保留 http(s)"的注释不符。
+func TestExtractLinksSkipsMalformed(t *testing.T) {
+	doc, err := parseDoc(`<html><body><a href="https://example.com/%zz">bad</a><a href="https://example.com/ok">ok</a></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := extractLinks(doc, "https://example.com/")
+	if len(got) != 1 || got[0] != "https://example.com/ok" {
+		t.Fatalf("extractLinks = %v, want 只保留 https://example.com/ok", got)
+	}
+}

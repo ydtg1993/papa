@@ -102,6 +102,14 @@ func TestCheckEndToEnd(t *testing.T) {
 	}
 	writeFileT(t, site, replaced)
 
+	// 预置一个旧的固定目录名 + 文件：check 现在用 MkdirTemp 建唯一目录，不该碰这个固定名
+	if err := os.MkdirAll(filepath.Join("demo", ".papa-check"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("demo", ".papa-check", "keepme.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	checkErr = nil
 	out = captureStderr(t, func() { checkErr = runCheckCmd([]string{"demo"}) })
 	if checkErr == nil {
@@ -111,8 +119,11 @@ func TestCheckEndToEnd(t *testing.T) {
 		t.Errorf("报错要点名 WorkerCount：\n%s", out)
 	}
 
-	// 临时目录两种结局都不该留下（不然项目的 git status 会多出一坨）
-	if _, err := os.Stat(filepath.Join("demo", ".papa-check")); err == nil {
-		t.Error("校验完应当删掉 .papa-check/")
+	// 预置的同名目录不能被删（那是不属于本次 check 的东西），临时目录也不该留下残留
+	if _, err := os.Stat(filepath.Join("demo", ".papa-check", "keepme.txt")); err != nil {
+		t.Errorf("预置的 .papa-check 目录不该被 check 删掉：%v", err)
+	}
+	if glob, _ := filepath.Glob(filepath.Join("demo", ".papa-check-*")); len(glob) != 0 {
+		t.Errorf("校验完不应残留 .papa-check-*：%v", glob)
 	}
 }

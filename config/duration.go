@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"strings"
 	"time"
@@ -61,7 +62,14 @@ func (d DurationRange) Random() time.Duration {
 	if d.Max <= d.Min {
 		return d.Min
 	}
-	return d.Min + time.Duration(rand.Int63n(int64(d.Max-d.Min)+1))
+	width := int64(d.Max - d.Min)
+	if width == math.MaxInt64 {
+		// 宽度 + 1 会溢出成负数传给 rand.Int63n → panic。`0s-2562047h47m16.854775807s`
+		// 这类区间能被 ParseDuration 正常解析，却不可表示"含两端点的均匀采样"。
+		// 退化成一个固定值（Min），不 panic、也不产出负数。
+		return d.Min
+	}
+	return d.Min + time.Duration(rand.Int63n(width+1))
 }
 
 // Fixed 报告是否为固定值（或空区间）。

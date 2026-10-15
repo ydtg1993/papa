@@ -91,8 +91,16 @@ const soonestRepeatSelect = `MIN(CAST(CASE
 			ELSE NULL END AS SIGNED)) AS epoch`
 
 // soonestRepeatQueryOn 「最早到点」那条查询（抽出来是为了能在不连库的前提下渲染 SQL 验它）。
+//
+// 底只按 `repeatable = yes` 筛（**不**套 repeatBaseQueryOn 的「已完成」条件）：soonestRepeatIn
+// 注释里那个「跑着 / 排队中的行只在未来才算数」的分支，正是要靠把 pending/processing 也纳入
+// 这张表才能命中 —— 用终态那套 WHERE 会把它整个过滤掉，活跃行的个人 next_repeat_at 就查不到，
+// 节拍只能退回全局 interval。状态怎么取舍交给 CASE（见 soonestRepeatSelect）：终态看
+// next_repeat_at（未排期即到点），活跃行只看未来的 next_repeat_at。
 func soonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
-	return repeatBaseQueryOn(db).Select(soonestRepeatSelect, repeatDueStatuses)
+	return db.Model(&models.CrawlerTask{}).
+		Where("repeatable = ?", models.RepeatableYes).
+		Select(soonestRepeatSelect, repeatDueStatuses)
 }
 
 // RepollRepeatableTasks 重新投递「到点」的可轮询任务（success/failed），返回实际投递数量。

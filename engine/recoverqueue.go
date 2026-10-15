@@ -99,7 +99,13 @@ func (e *Engine) startRecoverQueue() {
 	if !e.cfg.RecoverQueue.Enabled {
 		return
 	}
+	// 进 tickerWG：恢复中途写库（批量 SELECT / 重置 pending / 提交入队）。Stop 里"drained"的承诺
+	// 是**所有**写库后台都停下来了 —— 这条裸 goroutine 不进等待组的话，Stop 会在恢复还在查库/写库时
+	// 就返回 drained=true，app.Run 随即关库，在途那一跳全报 `database is closed`。它不检查 ctx，
+	// 所以"纳入生命周期"在这里表现为"等它跑完"（Stop 的 tickerWG.Wait 会等到它退出，或超时报未排空）。
+	e.tickerWG.Add(1)
 	go func() {
+		defer e.tickerWG.Done()
 		if n, err := e.ProcessRecoverQueue(); err != nil {
 			e.loggerSet.Engine.Errorf("recover queue: startup recover: %s", err.Error())
 		} else if n > 0 {

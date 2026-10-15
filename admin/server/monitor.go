@@ -446,16 +446,23 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Whitelist []string `json:"whitelist"`
+		Whitelist *[]string `json:"whitelist"`
 	}
 	// 超限会以解码错误的形式浮上来（http.MaxBytesError），与"body 不是合法 JSON"合并成同一个 400
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBody)).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	// 字段缺失或显式 null 都**不是**"清空"：空列表在 ipAllowed 里等于"不限制来源"，是放宽而不是
+	// 收紧 —— 一次字段名写错或手抖的请求不该悄悄放开限制。想清空必须显式传 []。
+	if body.Whitelist == nil {
+		http.Error(w, "whitelist 必须是数组（想清空请显式传 []）", http.StatusBadRequest)
+		return
+	}
+	whitelist := *body.Whitelist
 	// 写时严格：先确认每一条都是 IP/CIDR，再去动存储。写坏一份白名单的代价是"限制静默放宽"，
 	// 而那正是这条路唯一会造成的坏事 —— 当场拒收比事后从日志里翻出来强。
-	if bad := firstInvalidWhitelistEntry(body.Whitelist); bad != "" {
+	if bad := firstInvalidWhitelistEntry(whitelist); bad != "" {
 		http.Error(w, "白名单里有不是 IP/CIDR 的条目："+bad, http.StatusBadRequest)
 		return
 	}
@@ -464,13 +471,13 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 落库成功才动缓存：反过来的话，库写失败会留下一份"本进程放行、重启后不认"的白名单。
-	if err := s.cfg.SaveWhitelist(body.Whitelist, auth.OperatorFrom(r.Context())); err != nil {
+	if err := s.cfg.SaveWhitelist(whitelist, auth.OperatorFrom(r.Context())); err != nil {
 		s.logger.Errorf("save whitelist: %s", err.Error())
 		http.Error(w, "保存白名单失败："+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.SetWhitelist(body.Whitelist)
-	writeJSON(w, map[string]any{"status": "ok", "whitelist": nonEmptyStrings(body.Whitelist)})
+	s.SetWhitelist(whitelist)
+	writeJSON(w, map[string]any{"status": "ok", "whitelist": nonEmptyStrings(whitelist)})
 }
 
 // shutdownHandler 优雅退出。
@@ -920,7 +927,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// fileExists 判断路径是否存在
 // htmlHandler 返回 HTML 监控页面
 func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := s.loadTemplate()

@@ -65,7 +65,7 @@ func TestPoolErrorForwarderForwards(t *testing.T) {
 		ctx:                context.Background(),
 		loggerSet:          testLoggerSet(),
 		errorCh:            make(chan error, 100),
-		errorForwardCancel: make(map[string]chan struct{}),
+		errorForwardCancel: make(map[string]*poolForwarder),
 	}
 
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
@@ -411,5 +411,40 @@ func TestFetchHTMLWithoutClientReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "html.enable") {
 		t.Fatalf("报错要点名开关，实得：%v", err)
+	}
+}
+
+// reap 与新池建之间没有锁：旧池被 reapIdle 摘掉后、reaper 调 cancelPoolErrorForwarder 之前，
+// 同阶段可能已被重新提交、建了新池新转发协程。取消必须核对「归属池」，只按 stage key 关通道
+// 会把新池的转发协程一起关掉，让新池的错误再也进不了 Errors()。
+func TestCancelPoolErrorForwarderChecksPoolIdentity(t *testing.T) {
+	e := &Engine{
+		ctx:                context.Background(),
+		loggerSet:          testLoggerSet(),
+		errorCh:            make(chan error, 100),
+		errorForwardCancel: make(map[string]*poolForwarder),
+	}
+
+	oldPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e.startPoolErrorForwarder("stub", oldPool)
+
+	// 同阶段换池：新转发协程占住同一个 key（旧池的转发协程随之退掉）
+	newPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e.startPoolErrorForwarder("stub", newPool)
+
+	// 旧 reaper 只该停旧池的转发，不能误关新池的
+	e.cancelPoolErrorForwarder("stub", oldPool)
+
+	// 新池的转发协程还活着：停掉 newPool 触发错误，应该还能从 Errors() 收到
+	newPool.Stop(0)
+	_ = newPool.Submit(&Task{Stage: "stub", URL: "https://example.com"})
+
+	select {
+	case err := <-e.errorCh:
+		if !strings.Contains(err.Error(), "already stopped") {
+			t.Fatalf("应转发新池错误，实得：%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("新池的转发协程被误关了：1s 内没收到错误")
 	}
 }

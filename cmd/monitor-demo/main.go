@@ -1,7 +1,8 @@
 // 一次性监控后台演示入口，用于肉眼看页面渲染效果。
 // 运行：go run ./cmd/monitor-demo
-// 浏览器打开 http://localhost:9090/monitor（Ctrl+C 退出）。
+// 浏览器打开 http://127.0.0.1:9090/monitor（Ctrl+C 退出）。
 // 说明：用假阶段数据 + 真实系统指标起服务，无需 MySQL；验证完可整目录删除。
+// 默认只监听回环地址、令牌随机生成（打进日志）；对外演示需显式改 addr 与令牌。
 package main
 
 import (
@@ -57,7 +58,8 @@ func main() {
 	}
 
 	// 访问令牌：内存存储，登录校验与「访问令牌」页共用它（后台新建的令牌当场就能登录）
-	tokens := newDemoTokens()
+	demoToken := randomDemoToken()
+	tokens := newDemoTokens(demoToken)
 
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
 		VerifyToken: tokens.verify,
@@ -100,8 +102,10 @@ func main() {
 
 	demoCustomPage(mux, mon)
 
-	addr := ":9090"
-	log.Printf("监控演示已启动：http://localhost%s/monitor（Ctrl+C 退出）", addr)
+	// 默认只监听回环地址：demo 的令牌随机生成并打进日志，绑到全网卡等于把后台开放给
+	// 所有能猜中/看到日志的人。要在别的机器上演示，显式改这里 + 把令牌换成已知值，并清楚暴露范围。
+	addr := "127.0.0.1:9090"
+	log.Printf("监控演示已启动：http://%s/monitor（Ctrl+C 退出）", addr)
 	log.Printf("  登录令牌：%s（登录框里填它；在「访问令牌」页新建的令牌也能登录）", demoToken)
 	log.Printf("  值得看：侧边栏 General 下的「访问令牌」（新增 → 明文只显示一次 → 拿它登录）")
 	log.Printf("  以及「演示」分组：订单（4 个动作 → 更多 ▾）/ 操作日志（操作人列）/ 审核（自定义页）")

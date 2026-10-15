@@ -32,11 +32,19 @@ func (e *Engine) spillTasks(key string, tasks []*Task) {
 
 // spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。
 // 桶按**阶段键**（站点 + 阶段名）分：两个站的同名阶段各有各的溢出队列，不互相占位。
+//
+// 去重：同一个任务（同 ID；ID 为 0 时退化成 Unique）只放一份。append 不去重的话，
+// 同一任务从多条投递路径（队满 / 池被回收）反复 spill 会越积越多，drain 对同一条行重复 SELECT。
 func (e *Engine) spillTask(task *Task) {
 	key := stageKeyOf(task)
 	e.spillMu.Lock()
+	defer e.spillMu.Unlock()
+	for _, t := range e.spilled[key] {
+		if (task.ID != 0 && t.ID == task.ID) || (task.ID == 0 && t.Unique() == task.Unique()) {
+			return
+		}
+	}
 	e.spilled[key] = append(e.spilled[key], task)
-	e.spillMu.Unlock()
 }
 
 // startDrain 启动后台回灌协程：定期把溢出列表中的任务重新入队。
@@ -100,6 +108,11 @@ func (e *Engine) drainSpilled() {
 			}
 			if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 				continue // 已终态，无需再入队
+			}
+			if record.Status == models.TaskStatusProcessing {
+				// 已有人认领：池里还有一份在跑/待跑，回灌这份只会造出第二份副本，
+				// 而且 submitToPool 的状态守卫（status=pending）也不该去翻它 —— 直接跳过。
+				continue
 			}
 			// 投不进去（池刚被回收 / 已停机）时 submitToPool 会把它重新放回溢出表，下轮再来
 			e.submitToPool(task, record)

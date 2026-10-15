@@ -688,7 +688,9 @@ func extractLinks(doc *goquery.Document, baseURL string) []string {
 				abs = base.ResolveReference(ref).String()
 			}
 		}
-		if u, err := url.Parse(abs); err == nil && u.Scheme != "http" && u.Scheme != "https" {
+		// 解析失败直接跳过（老写法 `err == nil && …` 短路后不 return，会把无效地址原样留在结果里）
+		u, err := url.Parse(abs)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 			return
 		}
 		if _, ok := seen[abs]; ok {

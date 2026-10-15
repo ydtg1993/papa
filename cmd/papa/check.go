@@ -145,8 +145,11 @@ func runCheckCmd(args []string) error {
 		cfgPath = abs
 	}
 
-	tmp := filepath.Join(root, ".papa-check")
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	// 唯一临时目录（不是固定 .papa-check）：固定目录会覆盖同名文件，跑完整目录 RemoveAll 还可能
+	// 删掉目录里本不属于它的东西（并发跑两次互相踩、目录是 symlink 时还会写到项目外）。
+	// MkdirTemp 建的是本次独有的目录，defer 只删自己建的那个。
+	tmp, err := os.MkdirTemp(root, ".papa-check-*")
+	if err != nil {
 		return err
 	}
 	// 跑完就删（含出错时）；删不掉也只提示一句 —— 那是项目的目录，不该在这儿失败

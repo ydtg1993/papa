@@ -650,3 +650,45 @@ func TestStopWaitsForBackgroundLoops(t *testing.T) {
 		t.Fatalf("Stop 返回后不该再有人写库：\n新增：\n%s", strings.TrimPrefix(after, before))
 	}
 }
+
+// 启动恢复的裸 goroutine 也要被 Stop 的「排空」覆盖：恢复中途写库（批量 SELECT / 重置 / 提交），
+// 不纳入 tickerWG 的话 Stop 会在它还查库时返回 drained=true，app.Run 随即关库。
+// 这里用 onQuery 把恢复卡在第一次 SELECT 上：Stop 必须等它退出才返回（不修的话 Stop 会立即返回）。
+func TestStopWaitsForStartupRecover(t *testing.T) {
+	f := newFakeTaskDB()
+	setRows(f, 1, "stub", models.TaskStatusProcessing)
+	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	e := queueEngine(t, f, pool)
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+
+	release := make(chan struct{})
+	f.onQuery = func(n int) {
+		if n == 1 {
+			<-release
+		}
+	}
+
+	e.startRecoverQueue()
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		e.Stop(time.Second)
+	}()
+
+	// 恢复还卡着，Stop 不该返回（否则它把这跳写库当不存在）
+	select {
+	case <-stopped:
+		t.Fatal("恢复还没结束，Stop 不该返回")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release) // 放行恢复
+
+	select {
+	case <-stopped:
+		// Stop 等到恢复退出才返回
+	case <-time.After(time.Second):
+		t.Fatal("放行后 Stop 应当等到恢复退出")
+	}
+}

@@ -717,6 +717,13 @@
     // `stage` 这一档框架自带的界面**不用**（卡片只做到站点级），它是留给业务自己接的：
     // 注进来的页/脚本调 `pauseCrawling('example', 'catalog')` 就能只掐那一个阶段。
     async function resumeCrawling(site, stage) {
+        // 有 stage 没 site 是调用错误：老代码会把它当成「全部放行」（body 发成 {}），
+        // 服务端把"无 scope"解释成全部站点、逐站清暂停 —— 一个"恢复某阶段"的手滑变成"恢复所有站"。
+        // 服务端已拒绝这类参数（400），这里先拦住并说清楚，别让业务脚本踩成静默的越权放行。
+        if (stage && !site) {
+            Toast.err('恢复某个阶段需要同时给出站点（scope）');
+            return;
+        }
         var body = site ? { scope: site } : {};
         if (site && stage) body.stage = stage;
         var resp = await apiPost('/api/breaker/resume', body);

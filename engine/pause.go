@@ -327,8 +327,8 @@ func (e *Engine) knownSite(site string) bool {
 // 启动恢复与轮询队列捞回来的任务也一样；后台点「恢复整站」（`ResumeSite`）时 `wakeDrainNow`
 // 立刻把它们灌回。
 //
-// 走 `PauseSite` 而不是自己 `setPause`：来源是 manual、现场带当时的失败数、并落库 `crawler_sites`
-// （后台站点表的「已暂停」列）—— 与人在后台点一下完全同一条路，没有第二套语义。
+// 走 `PauseSite` 而不是自己 `setPause`：来源是 manual、现场带当时的失败数、并把暂停状态写进
+// 站点快照（后台站点表的「已暂停」列）—— 与人在后台点一下完全同一条路，没有第二套语义。
 // 暂停不跨重启，所以"每次启动都重新闸上、运行期放的闸不会被声明改回去"是这句话的自然结果。
 func (e *Engine) applyStartPaused() {
 	for _, site := range e.startPausedSites() {
@@ -367,6 +367,22 @@ func (e *Engine) allSites() []string {
 		out = append(out, key)
 	}
 	// 不在这里排：调用方（PauseCrawling / BreakerStatuses）自己排，免得同一个列表两种顺序。
+	return out
+}
+
+// pausedSites 现在有暂停条目的站点键（去重快照）。ResumeCrawling 用它先记下「哪些站停着」，
+// clearAllPauses 之后逐站把站点快照翻回未暂停 —— 落库必须发生在放锁之后（见 ResumeSite 的注释）。
+func (e *Engine) pausedSites() []string {
+	e.pauseMu.Lock()
+	defer e.pauseMu.Unlock()
+	seen := make(map[string]bool)
+	for sc := range e.paused {
+		seen[sc.Site] = true
+	}
+	out := make([]string, 0, len(seen))
+	for site := range seen {
+		out = append(out, site)
+	}
 	return out
 }
 

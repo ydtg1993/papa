@@ -360,6 +360,7 @@ func (a *App) Run(ctx context.Context) {
 
 	// 初始化引擎浏览器池
 	a.Engine.SetBrowserPool()
+	a.BrowserPool = a.Engine.GetBrowserPool() // 同步给导出字段：外部读 App.BrowserPool 不该一直是 nil
 	// 初始化静态 HTML 抓取客户端（读取请求头与代理配置）
 	a.Engine.SetHTMLClient()
 	// 下载器（文件 / m3u8）：框架按 DefaultConfig 备好**基座** —— 它们没有"全局那层配置面"，

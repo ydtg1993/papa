@@ -10,9 +10,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/ydtg1993/papa/v3/internal/msgqueue"
-	"github.com/ydtg1993/papa/v3/pkg/middleware"
 	"io"
+	"math"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -23,8 +22,16 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/ydtg1993/papa/v3/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/pkg/middleware"
 	"time"
 )
+
+// maxPlaylistLine 播放列表单行的最大字节数（bufio 默认 token 上限是 64KiB）。超长行会让
+// Scanner 静默停下（Scan 返回 false、Err 非 nil）——不设上限、又不检查 Err，就会截断成前缀
+// 还报成功（只合并前缀片段）。
+const maxPlaylistLine = 1 << 20
 
 // Downloader 全局下载器（线程安全）
 type Downloader struct {
@@ -233,6 +240,15 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
+		// 带 Range 时核对 Content-Range 的实际起止：长度相同、偏移却错的片段（错误缓存/坏代理）
+		// 会照收并写错内容，只比状态码与长度防不住。
+		if rangeHeader != "" {
+			if err := checkContentRange(resp, rangeHeader); err != nil {
+				resp.Body.Close()
+				lastErr = err
+				continue
+			}
+		}
 
 		// 读之前先定一个上界，而不是无脑 ReadAll —— 远端返回超大（或干脆不结束）的响应时，
 		// ReadAll 会一路吃内存直到 OOM。上界是**推出来的**，不是拍的魔数：
@@ -259,6 +275,33 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 		return data, nil
 	}
 	return nil, fmt.Errorf("failed after %d retries: %w", d.config.MaxRetries, lastErr)
+}
+
+// checkContentRange 核对 206 响应的 Content-Range 起止是否等于请求区间（"bytes 起-止/总长"）。
+// 只比状态码与长度不够：长度相同、偏移却错的片段（错误缓存/坏代理）会被照收并写错内容。
+func checkContentRange(resp *http.Response, rangeHeader string) error {
+	cr := resp.Header.Get("Content-Range")
+	rest, ok := strings.CutPrefix(cr, "bytes ")
+	if !ok {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	got, _, ok := strings.Cut(rest, "/")
+	if !ok {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	gs, ge, ok := strings.Cut(got, "-")
+	if !ok {
+		return fmt.Errorf("malformed Content-Range %q", cr)
+	}
+	want, _ := strings.CutPrefix(rangeHeader, "bytes=")
+	ws, we, ok := strings.Cut(want, "-")
+	if !ok {
+		return fmt.Errorf("malformed request Range %q", rangeHeader)
+	}
+	if gs != strings.TrimSpace(ws) || ge != strings.TrimSpace(we) {
+		return fmt.Errorf("Content-Range offset mismatch: got %s-%s, want %s-%s", gs, ge, ws, we)
+	}
+	return nil
 }
 
 // rangeLength 从 `bytes=start-end` 解析出这一段期望的字节数；格式不认识时 ok=false。
@@ -1058,12 +1101,18 @@ func parseByteRange(spec string, prevEnd int64) (byteRange, error) {
 			return byteRange{}, fmt.Errorf("invalid offset %q", offsetStr)
 		}
 	}
+	// start + length - 1 会溢出：`2@9223372036854775807` 这类畸形值能把 end 溢出成负数，
+	// 之后构造出非法 Range、错误延后到请求阶段。这里先挡掉。
+	if length-1 > math.MaxInt64-start {
+		return byteRange{}, fmt.Errorf("byte range overflows: start=%d length=%d", start, length)
+	}
 	return byteRange{start: start, end: start + length - 1}, nil
 }
 
 // parsePlaylistEnhancedWithIndex 解析 M3U8，为每个片段分配索引
 func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*SegmentInfo, []*SegmentInfo, []*KeyInfo, error) {
 	scanner := bufio.NewScanner(strings.NewReader(playlist))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxPlaylistLine)
 	var initSegment *SegmentInfo
 	var segments []*SegmentInfo
 	var segmentKeys []*KeyInfo
@@ -1117,6 +1166,10 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 			segmentKeys = append(segmentKeys, currentKey)
 			segmentIndex++
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		// 超长行让 Scan 停下：只拿到前缀片段，绝不能当完整播放列表返回（会合并出半截文件还报成功）
+		return nil, nil, nil, fmt.Errorf("read playlist: %w", err)
 	}
 	return initSegment, segments, segmentKeys, nil
 }
@@ -1193,6 +1246,7 @@ func (d *Downloader) resolveURL(raw, base string) string {
 // selectBestStream 选择最高码率流
 func (d *Downloader) selectBestStream(playlist, baseURL string) (string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(playlist))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxPlaylistLine)
 	var bestURL string
 	maxBW := 0
 	for scanner.Scan() {
@@ -1210,6 +1264,9 @@ func (d *Downloader) selectBestStream(playlist, baseURL string) (string, error) 
 				}
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read playlist: %w", err)
 	}
 	if bestURL == "" {
 		return "", fmt.Errorf("no stream found")

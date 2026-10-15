@@ -148,8 +148,14 @@ func (r *Recorder) RecordEvent(ev Event) {
 	}
 }
 
-// Close 停止接收新记录，把队列里剩下的写完（最多等 timeout）。
+// Close 停止接收新记录，把队列里剩下的写完。
+// timeout 是**警告阈值**：超过它还没排空就记一条 Error，但**仍然等**到真正排空 —— 提前返回
+// 会把没写完的记录留给"宿主随即退出"这个窗口（那时 consumer 的 fallback 也写不进去了）。
 // 必须在关数据库之前调，否则排空时写不进去。
+//
+// **代价是有意的**：库彻底卡死（不是慢，是永不返回）时这条会一直等下去，关停因此卡住。
+// 取这个而不是"超时就撒手"的理由：审计丢一条就不可追，而卡住的关停还能强杀进程收拾
+// （此刻已无在途业务写入，强杀不产生新的不一致）。要更硬的保证得给 db.Create 加超时，那是另一件事。
 func (r *Recorder) Close(timeout time.Duration) {
 	r.mu.Lock()
 	if r.closed {
@@ -163,7 +169,8 @@ func (r *Recorder) Close(timeout time.Duration) {
 	select {
 	case <-r.drained:
 	case <-time.After(timeout):
-		r.log.Errorf("审计队列排空超时，还有 %d 条未落库", len(r.ch))
+		r.log.Errorf("审计队列排空超时（%s），还有 %d 条未落库，继续等待排空", timeout, len(r.ch))
+		<-r.drained
 	}
 }
 

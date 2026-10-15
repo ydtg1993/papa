@@ -13,7 +13,8 @@ import (
 // 无视 Range 塞回超大 body 的服务器，以前会被 io.ReadAll 一路吃内存，现在直接失败。
 func TestOversizedRangeResponseIsRejected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusPartialContent) // 声明 206，却无视 Range 塞回 4KB
+		w.Header().Set("Content-Range", "bytes 0-9/4096") // 声称 0-9，却塞回 4KB body
+		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(bytes.Repeat([]byte("x"), 4096))
 	}))
 	defer srv.Close()
@@ -35,6 +36,7 @@ func TestOversizedRangeResponseIsRejected(t *testing.T) {
 func TestRangeResponseWithinLimitIsAccepted(t *testing.T) {
 	body := []byte("0123456789")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 0-9/10")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(body)
 	}))

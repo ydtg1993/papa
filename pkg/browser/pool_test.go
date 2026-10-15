@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -352,4 +353,57 @@ func TestPoolCloseWakesBlockedGet(t *testing.T) {
 	if err := p.Put(b); err == nil {
 		t.Fatal("Put after Close should return an error")
 	}
+}
+
+// 创建失败释放槽位后必须广播：池满时另一个 Get 睡在 cond.Wait，若这次新建失败只扣 alive
+// 不广播，等待者会一直睡到下一次 put / Close / 自己 ctx 取消（传不取消的 ctx 就是无限期阻塞）。
+func TestPoolGetBroadcastsOnCreateFailure(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	release := make(chan struct{})
+	factory := func(useProxy bool) (*Browser, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			<-release // 让 alive 停在 limit 上，好让另一个 Get 睡进 cond.Wait
+			return nil, fmt.Errorf("boom")
+		}
+		return testBrowser(useProxy, true), nil
+	}
+	p := newTestPool(1, 0, factory)
+
+	ch1 := make(chan error, 1)
+	go func() { _, err := p.Get(context.Background()); ch1 <- err }()
+	time.Sleep(20 * time.Millisecond) // 让 Get 1 加到 alive=limit 并卡在 factory 上
+
+	type result struct {
+		b   *Browser
+		err error
+	}
+	ch2 := make(chan result, 1)
+	go func() { b, err := p.Get(context.Background()); ch2 <- result{b, err} }()
+	time.Sleep(20 * time.Millisecond) // 让 Get 2 走到 cond.Wait
+
+	close(release) // Get 1 的创建失败 → 扣 alive + 广播
+
+	select {
+	case err := <-ch1:
+		if err == nil {
+			t.Fatal("Get 1 应返回创建错误")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Get 1 没返回")
+	}
+
+	select {
+	case r := <-ch2:
+		if r.err != nil {
+			t.Fatalf("等待者应被唤醒并成功创建，实得 %v", r.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("创建失败释放槽位后，等待者应被广播唤醒（不修的话一直睡）")
+	}
+	p.Close()
 }

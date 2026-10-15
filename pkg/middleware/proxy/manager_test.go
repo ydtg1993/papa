@@ -166,3 +166,16 @@ func drainError(t *testing.T, m *Manager) string {
 		return ""
 	}
 }
+
+// 非正刷新间隔不能 panic：NewManager 会在后台 goroutine 里调 time.NewTicker，非正值会直接崩进程。
+// 构造时用默认值兜底，别把 panic 留给 goroutine。
+func TestNewManagerNonPositiveIntervalFallsBack(t *testing.T) {
+	srv := proxyServer(t, []map[string]string{{"host": "1.2.3.4", "port": "8080"}})
+	m := NewManager(srv.URL, 0)
+	if m.refresh != defaultRefreshInterval {
+		t.Fatalf("非正间隔应用默认值兜底，实得 %v", m.refresh)
+	}
+	if got := m.Next(); got != "http://1.2.3.4:8080" {
+		t.Fatalf("Next = %q", got)
+	}
+}

@@ -86,3 +86,33 @@ func TestBreakerStatusesListsDisabledSiteGate(t *testing.T) {
 		t.Fatal("暂停一个不存在的 scope 应当失败（后台据此回 400）")
 	}
 }
+
+// 全局暂停/恢复也要落站点快照：单站 PauseSite/ResumeSite 会写（后台「已暂停」列读它），
+// 全局 PauseCrawling/ResumeCrawling 只改内存信号的话，站点表在全局暂停后仍显示「运行中」、
+// 恢复后也可能仍显示「已暂停」—— 两条路径行为不一致。
+func TestPauseResumeCrawlingWritesSiteSnapshot(t *testing.T) {
+	f := newFakeTaskDB()
+	e := siteEngine(t, f)
+	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
+	e.SetSiteBreaker("b", breaker.Config{Enabled: false, Threshold: 1})
+	e.buildSiteStats()
+	store := siteStoreOf(e)
+
+	if !e.PauseCrawling("全局暂停") {
+		t.Fatal("PauseCrawling 应当成功")
+	}
+	for _, row := range store.snapshot() {
+		if !row.BreakerPaused {
+			t.Fatalf("全局暂停后站点快照应显示「已暂停」：%+v", store.snapshot())
+		}
+	}
+
+	if !e.ResumeCrawling() {
+		t.Fatal("ResumeCrawling 应当成功")
+	}
+	for _, row := range store.snapshot() {
+		if row.BreakerPaused || !row.BreakerPausedAt.IsZero() {
+			t.Fatalf("全局恢复后站点快照应显示「未暂停」：%+v", store.snapshot())
+		}
+	}
+}

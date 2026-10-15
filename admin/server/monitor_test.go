@@ -1459,3 +1459,44 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 		}
 	})
 }
+
+// 白名单字段缺失 / 显式 null 都**不是**"清空"：空列表在 ipAllowed 里等于"不限制来源"，是放宽。
+// 只有显式 [] 才是清空 —— 防止一次字段名写错或手抖的请求把后台放开。
+func TestWhitelistHandlerRejectsMissingOrNull(t *testing.T) {
+	store := &whitelistStoreStub{}
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		Whitelist:     []string{"10.0.0.0/8"},
+		SaveWhitelist: store.save,
+	})
+
+	for _, body := range []string{`{}`, `{"whitelist":null}`} {
+		rr := serveAllowed(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(body))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s status = %d, want 400（%s）", body, rr.Code, rr.Body.String())
+		}
+	}
+	if got := store.savedCount(); got != 0 {
+		t.Fatalf("缺失/null 不该写存储，实得写了 %d 次", got)
+	}
+
+	// 显式 [] 才是清空
+	rr := serveAllowed(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(`{"whitelist":[]}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("显式 [] status = %d, want 200（%s）", rr.Code, rr.Body.String())
+	}
+	if saved := store.saved(); len(saved) != 1 || len(saved[0]) != 0 {
+		t.Fatalf("显式 [] 应清空存储，实得 %v", saved)
+	}
+}
+
+// 恢复某个阶段（有 stage 无 site）在 JS 侧就要拦住：老代码把它发成 {}，服务端把"无 scope"
+// 当全部站点、逐站清暂停 —— 一个"恢复某阶段"的手滑变成"恢复所有站"。服务端已拒绝，前端再兜一道。
+func TestResumeCrawlingRejectsStageWithoutSite(t *testing.T) {
+	js, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	if !strings.Contains(string(js), "if (stage && !site)") {
+		t.Error("mo.js 的 resumeCrawling 没有拦住「有 stage 没 site」的调用 —— 会发成 {}、被服务端当成全部放行")
+	}
+}

@@ -51,8 +51,6 @@ func TestDurationRangeUnmarshalTextRejectsBadInput(t *testing.T) {
 	}
 }
 
-/* ---------- Merge 的 nil 容忍 ---------- */
-
 /* ---------- 各默认值 helper ---------- */
 
 // 熔断窗口：没配（或配成非正）时补默认 5m。

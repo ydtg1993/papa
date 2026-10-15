@@ -202,6 +202,10 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 			b, err := p.newBrowserFn(useProxy)
 			if err != nil {
 				alive.Add(-1)
+				// 槽位空出来了：叫醒睡在 cond.Wait 的 Get。照 broadcast 的约定，凡是改变
+				// "还有没有空闲槽位"的状态变化都要叫一声 —— 这里不广播的话，池满时那个
+				// 等待者会一直睡到下一次 put / Close / 自己 ctx 取消（传不取消的 ctx 就是无限期）。
+				p.broadcast()
 				return nil, fmt.Errorf("create browser: %w", err)
 			}
 			b.pool = p
@@ -335,12 +339,14 @@ func (p *Pool) maxIdleDuration() time.Duration {
 
 // ensureReaper 空闲回收协程：max_idle_time > 0 时启动，定期关闭空闲超时的浏览器。
 func (p *Pool) ensureReaper() {
-	if p.closed.Load() || p.maxIdleDuration() <= 0 {
+	if p.maxIdleDuration() <= 0 {
 		return
 	}
 	p.reaperMu.Lock()
 	defer p.reaperMu.Unlock()
-	if p.reaperStop != nil {
+	// closed 必须在持锁时再查一次：锁外查完、进锁前若被 Close 抢先（Close 看到 reaperStop==nil
+	// 就返回），这里仍会建 stop channel 并起协程 —— 那个协程再也停不掉，每个 tick 空转直到进程退出。
+	if p.closed.Load() || p.reaperStop != nil {
 		return
 	}
 	p.reaperStop = make(chan struct{})
@@ -480,15 +486,19 @@ func copyMap(m map[string]string) map[string]string {
 	return cp
 }
 
-// 辅助函数：深拷贝 cookies
+// copyCookies 逐个复制 cookies。NetworkCookieParam 全是标量字段，`*c` 就是值拷贝，
+// 没有内部可变字段要额外深挖；nil 元素跳过（它没有语义，也不该让它 panic）。
 func copyCookies(cookies []*proto.NetworkCookieParam) []*proto.NetworkCookieParam {
 	if cookies == nil {
 		return []*proto.NetworkCookieParam{}
 	}
-	cp := make([]*proto.NetworkCookieParam, len(cookies))
-	for i, c := range cookies {
+	cp := make([]*proto.NetworkCookieParam, 0, len(cookies))
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
 		cpy := *c
-		cp[i] = &cpy
+		cp = append(cp, &cpy)
 	}
 	return cp
 }
