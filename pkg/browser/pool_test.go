@@ -2,7 +2,10 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -315,6 +318,174 @@ func TestPoolSetHeadersAndMaxIdle(t *testing.T) {
 		t.Fatalf("maxIdle = %v", p.maxIdleDuration())
 	}
 	p.Close()
+}
+
+// resolveBrowserBinary 的归一规则：留空按 browser_path 推断（有路径 = path，没有 = rod），
+// 显式来源与路径冲突时拒绝。system 的真正探测依赖机器上装没装浏览器，不在这里测。
+func TestResolveBrowserBinary(t *testing.T) {
+	cases := []struct {
+		name       string
+		source     string
+		path       string
+		wantSource string
+		wantPath   string
+		wantErr    bool
+	}{
+		{"留空且无路径 → rod", "", "", BrowserBinaryRod, "", false},
+		{"留空有路径 → path", "", "/x/chrome", BrowserBinaryPath, "/x/chrome", false},
+		{"rod", BrowserBinaryRod, "", BrowserBinaryRod, "", false},
+		{"rod 带路径 → 拒绝", BrowserBinaryRod, "/x/chrome", "", "", true},
+		{"system 带路径 → 拒绝", BrowserBinarySystem, "/x/chrome", "", "", true},
+		{"path 无路径 → 拒绝", BrowserBinaryPath, "", "", "", true},
+		{"path 有路径", BrowserBinaryPath, "/x/chrome", BrowserBinaryPath, "/x/chrome", false},
+		{"未知来源 → 拒绝", "auto", "", "", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			source, path, err := resolveBrowserBinary(c.source, c.path)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("应当报错，实得 source=%q path=%q", source, path)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("不该报错：%v", err)
+			}
+			if source != c.wantSource || path != c.wantPath {
+				t.Fatalf("resolve(%q, %q) = (%q, %q)，want (%q, %q)",
+					c.source, c.path, source, path, c.wantSource, c.wantPath)
+			}
+		})
+	}
+}
+
+// 来源与路径冲突要在**建池时**就报错（引擎启动即失败），而不是等第一次抓取。
+func TestNewPoolRejectsConflictingBinary(t *testing.T) {
+	if _, err := NewPool(PoolConfig{Size: 1, BinarySource: BrowserBinaryRod, BrowserPath: "/x/chrome"}); err == nil {
+		t.Fatal("rod + browser_path 应当拒绝")
+	}
+	if _, err := NewPool(PoolConfig{Size: 1, BinarySource: "auto"}); err == nil {
+		t.Fatal("未知来源应当拒绝")
+	}
+}
+
+// browser.flags 必须真的进 launcher 的命令行：用 FormatArgs 验证，不启动浏览器。
+// 值的两种形态（空 = 布尔开关 / 非空 = --name=value）与前导 -- 的规范化都在这里钉住。
+func TestLauncherFlags(t *testing.T) {
+	p := &Pool{cfg: PoolConfig{
+		Headless:  true,
+		NoSandbox: true,
+		Flags: map[string]string{
+			"disable-gpu":            "",
+			"--disable-extensions":   "",
+			"renderer-process-limit": "2",
+			"blink-settings":         "imagesEnabled=false",
+		},
+	}}
+	joined := " " + strings.Join(p.newLauncher(false).FormatArgs(), " ") + " "
+	for _, want := range []string{
+		" --headless ",
+		" --no-sandbox ",
+		" --disable-gpu ",
+		" --disable-extensions ", // 配置里带的前导 -- 被 rod 规范化掉，不会拼成 ----disable-extensions
+		" --renderer-process-limit=2 ",
+		" --blink-settings=imagesEnabled=false ",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("启动参数里缺 %q，实得：%s", want, joined)
+		}
+	}
+}
+
+// self_check 的失败要在**建池时**返回（引擎启动失败），而不是拖到第一次抓取。
+// 用一个不存在的可执行文件：Launch 会立刻在 cmd.Start 失败，不会真起浏览器，也不碰网络。
+func TestSelfCheckSurfacesLaunchError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-chrome")
+	_, err := NewPool(PoolConfig{
+		Size:         1,
+		BinarySource: BrowserBinaryPath,
+		BrowserPath:  missing,
+		SelfCheck:    true,
+	})
+	if err == nil {
+		t.Fatal("self_check 应当把启动失败返回给建池方")
+	}
+	if !strings.Contains(err.Error(), "browser self-check") {
+		t.Fatalf("错误应点名 self-check，实得：%v", err)
+	}
+}
+
+// WithBrowser 的回调式借用：成功、返回 error、panic 三条路径都要把实例还回池里。
+func TestPoolWithBrowserReturnsInstance(t *testing.T) {
+	p := newTestPool(1, 0, nil)
+	called := 0
+	if err := p.WithBrowser(context.Background(), func(b *Browser) error {
+		called++
+		if b == nil {
+			t.Fatal("回调拿到 nil 浏览器")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBrowser: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("回调调用 %d 次，want 1", called)
+	}
+	// 实例已归还：再 Get 应当复用而不是新建
+	b, err := p.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get after WithBrowser: %v", err)
+	}
+	_ = p.Put(b)
+}
+
+func TestPoolWithBrowserReturnsOnError(t *testing.T) {
+	p := newTestPool(1, 0, nil)
+	want := errors.New("boom")
+	if err := p.WithBrowser(context.Background(), func(*Browser) error { return want }); !errors.Is(err, want) {
+		t.Fatalf("WithBrowser = %v, want %v", err, want)
+	}
+	b, err := p.Get(context.Background())
+	if err != nil {
+		t.Fatalf("回调报错后实例没归还：%v", err)
+	}
+	_ = p.Put(b)
+}
+
+func TestPoolWithBrowserReturnsOnPanic(t *testing.T) {
+	p := newTestPool(1, 0, nil)
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("回调 panic 应当继续向上传播")
+			}
+		}()
+		_ = p.WithBrowser(context.Background(), func(*Browser) error { panic("boom-in-callback") })
+	}()
+	b, err := p.Get(context.Background())
+	if err != nil {
+		t.Fatalf("panic 后实例没归还：%v", err)
+	}
+	_ = p.Put(b)
+}
+
+// 直连版本走 direct 通道（useProxy=false）。
+func TestPoolWithDirectBrowser(t *testing.T) {
+	p := newTestPool(0, 1, nil)
+	if err := p.WithDirectBrowser(context.Background(), func(b *Browser) error {
+		if b.useProxy {
+			t.Fatal("直连池给的实例应当 useProxy=false")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithDirectBrowser: %v", err)
+	}
+	b, err := p.GetDirect(context.Background())
+	if err != nil {
+		t.Fatalf("GetDirect after WithDirectBrowser: %v", err)
+	}
+	_ = p.Put(b)
 }
 
 func TestNewPoolRejectsNegativeSize(t *testing.T) {

@@ -185,6 +185,8 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 
 > `rod` 的 headless 取自 `config.browser.headless`；**无配置文件时默认 headless**（不弹窗）。
 > `--show` / `--devtools` 强制有头。
+> 浏览器来源与启动参数同样取自配置（`browser.binary` / `browser_path` / `browser.flags`），
+> 与生产抓取走的是同一套解析；`browser.self_check` 在调试命令里不生效（马上就启动，不再自检一遍）。
 
 ### `--act` 动作
 

@@ -451,7 +451,10 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 			tr.Fail(failureTraceStep, err, nil)
 		}
 	}()
-	// 缓冲挂在 ctx 上：FetchHTML 只拿得到 ctx，这是它知道"这一页属于哪次尝试"的唯一途径
+	// 缓冲挂在 ctx 上：FetchHTML 只拿得到 ctx，这是它知道"这一页属于哪次尝试"的唯一途径。
+	// Trace 同样挂一份：render / CaptureRequest 的签名里没有 task，失败步骤从 ctx 取
+	// （见 trace.go 的 traceCtxKey）。
+	ctx = withTrace(ctx, tr)
 	ctx = withArchive(ctx, ar)
 	// 站点请求头也挂在 ctx 上：这个站的任务抓任何页面都自动带上它的 UA/Cookie/Referer，
 	// handler 不用写代码；要对单次请求再改，用 `papa.WithHeaders(ctx, …)` 叠加（它只会覆盖给到的键）。

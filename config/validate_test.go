@@ -116,6 +116,24 @@ func TestRuleBoundaries(t *testing.T) {
 			bad:    baseConfig + "crawler:\n  breaker:\n    enabled: true\n", // 开了却不给阈值
 		},
 		{
+			// browser.binary 的三种取值都合法；拼错（或写成 auto/default 这类
+			// "看起来像默认"的词）必须拒绝 —— 否则值悄悄不生效，二进制仍按 rod 走。
+			name:   "browser.binary",
+			key:    "browser.binary",
+			absent: baseConfig, // 留空 = 有 browser_path 走 path，没有走 rod
+			ok:     baseConfig + "browser:\n  binary: rod\n",
+			bad:    baseConfig + "browser:\n  binary: auto\n",
+		},
+		{
+			name: "browser.flags",
+			key:  "browser.flags",
+			// 键里带 "=" 是典型写法错误：它会被当成开关名的一部分，
+			// 而不是像 --blink-settings=... 那样拆开。
+			absent: baseConfig,
+			ok:     baseConfig + "browser:\n  flags:\n    disable-gpu:\n    renderer-process-limit: \"2\"\n",
+			bad:    baseConfig + "browser:\n  flags:\n    \"blink-settings=imagesEnabled=false\": \"\"\n",
+		},
+		{
 			name:   "proxy.refresh_interval",
 			key:    "proxy.refresh_interval",
 			absent: baseConfig + "proxy:\n  api_url: \"\"\n", // 没有 api_url 就不会起刷新协程，这个值用不上
@@ -254,6 +272,76 @@ func TestRequiredKeys(t *testing.T) {
 	loadString(t, browserOn("  pool_size: 3\n  direct_pool_size: 0\n"))
 	// 关掉浏览器池时 pool_size 根本不参与
 	loadString(t, baseConfig+"browser:\n  enable: false\n  pool_size: 0\n")
+}
+
+// browser.binary 与 browser_path 的组合规则：
+//   - 留空 binary：给了 browser_path 按 path，没给按 rod（都合法）；
+//   - rod / system：不能再给 browser_path（两个来源互相矛盾，静默选一个都是坑）；
+//   - path：必须给 browser_path。
+//
+// system 能不能真的找到浏览器不在配置层判断 —— 那是环境，建池时才探测
+// （见 pkg/browser 的 resolveBrowserBinary）。
+func TestBrowserBinaryCombinations(t *testing.T) {
+	// 留空 + browser_path：显式路径
+	cfg := loadString(t, baseConfig+"browser:\n  browser_path: /usr/bin/chromium\n")
+	if cfg.Browser.Binary != "" || cfg.Browser.BrowserPath != "/usr/bin/chromium" {
+		t.Fatalf("解析结果不对：binary=%q path=%q", cfg.Browser.Binary, cfg.Browser.BrowserPath)
+	}
+	// 留空 + 不给路径：Rod 自动下载
+	loadString(t, baseConfig+"browser: {}\n")
+	// system：配置层放行（找不到系统浏览器由建池时报）
+	loadString(t, baseConfig+"browser:\n  binary: system\n")
+	// path + 路径
+	loadString(t, baseConfig+"browser:\n  binary: path\n  browser_path: /usr/bin/chromium\n")
+
+	for _, c := range []struct {
+		name string
+		body string
+	}{
+		{"path 却没给 browser_path", baseConfig + "browser:\n  binary: path\n"},
+		{"path 的 browser_path 只有空白", baseConfig + "browser:\n  binary: path\n  browser_path: '   '\n"},
+		{"rod 又给了 browser_path", baseConfig + "browser:\n  binary: rod\n  browser_path: /usr/bin/chromium\n"},
+		{"system 又给了 browser_path", baseConfig + "browser:\n  binary: system\n  browser_path: /usr/bin/chromium\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			assertPanicNamesKey(t, "browser.binary", func() { Load(mustWrite(t, c.body)) })
+		})
+	}
+}
+
+// browser.flags 的值语义：空值 = 布尔开关，非空 = --name=value。
+// YAML 里 `disable-gpu:`（不带值）解出来是 nil，mapstructure 要落成空串 ——
+// 这条钉住它，免得将来换成别的解码方式时布尔开关静默变成 "--disable-gpu=<nil>"。
+func TestBrowserFlagsParsed(t *testing.T) {
+	cfg := loadString(t, baseConfig+`browser:
+  flags:
+    disable-gpu:
+    disable-extensions: ""
+    blink-settings: imagesEnabled=false
+    renderer-process-limit: "2"
+`)
+	want := map[string]string{
+		"disable-gpu":            "",
+		"disable-extensions":     "",
+		"blink-settings":         "imagesEnabled=false",
+		"renderer-process-limit": "2",
+	}
+	if len(cfg.Browser.Flags) != len(want) {
+		t.Fatalf("flags = %#v，want %#v", cfg.Browser.Flags, want)
+	}
+	for k, v := range want {
+		if got, ok := cfg.Browser.Flags[k]; !ok || got != v {
+			t.Fatalf("flags[%q] = %q（存在=%v），want %q；全部：%#v", k, got, ok, v, cfg.Browser.Flags)
+		}
+	}
+}
+
+// rod- 前缀是 launcher 的内部参数（rod-bin / rod-leakless …）：它们不进 Chromium
+// 命令行，写进 browser.flags 只会静默改掉框架自己的启动行为，所以直接拒绝。
+func TestBrowserFlagsRejectsRodInternal(t *testing.T) {
+	assertPanicNamesKey(t, "browser.flags", func() {
+		Load(mustWrite(t, baseConfig+"browser:\n  flags:\n    rod-bin: /usr/bin/chromium\n"))
+	})
 }
 
 // idle > open：sql.DB.SetMaxIdleConns 的文档明写会把 n 压到 maxOpenConns ——

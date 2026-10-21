@@ -79,7 +79,8 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 ```
 papa.go · task.go · errors.go   门面：全是 type/var 别名，没有实现
 core/                           零依赖叶子包：跨包流动的纯值 + 不依赖任何内部包的纯函数
-                                （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定）
+                                （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定、
+                                页面身份与任务幂等键 identity.go、站点地址回钉 siteurl.go）
 config/                          配置结构与校验（纯数据，不依赖任何内部包）
 engine/                          引擎：Task · Trace · Fetcher · Engine
   engine.go    结构体 + 生命周期 + 依赖注入 + 结果读写
@@ -95,7 +96,8 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   dedup.go     内存去重表 + 活跃任务装载
   sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
   stats.go     监控快照
-  fetch.go     浏览器池 / 静态 HTML 客户端
+  fetch.go     浏览器池 / 静态 HTML 客户端 / 渲染等待与 FetchRenderedPageWith
+  capture.go   浏览器网络请求捕获的引擎层包装（trace 步骤 + 归档登记）
   downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
   restricted.go 受限页判定（站点词表从 task.Site 取）
@@ -116,7 +118,9 @@ internal/                       真正的内部件：不对外承诺 API，**模
   workerpool/ database/ metrics/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
 pkg/                             可独立复用的件
-  browser/ htmlfetch/ loggers/ notify/ middleware/{proxy,m3u8,filedown}
+  browser/                       池与页面生命周期（pool.go / rod.go）、网络请求捕获（capture.go）、
+                                 等待条件（wait.go）、按页资源拦截（block.go）
+  htmlfetch/ loggers/ notify/ middleware/{proxy,m3u8,filedown}
 models/                          框架自带的表结构
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select）
 ```

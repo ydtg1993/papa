@@ -128,6 +128,25 @@ var SameHost = core.SameHost
 // `SameHost(base, u) || IsSubdomainOf(u, base)`。
 var IsSubdomainOf = core.IsSubdomainOf
 
+// PageIdentity 把页面地址规范成与站点域名无关的身份（path[?query]，去 fragment）。
+// 只收绝对的 http/https 地址；`https://a.com` 与 `https://a.com/` 都是 `/`。
+//
+// 用途是做「站点换域名/多镜像也不变」的去重与任务键；它**不改变** Task.Unique 的默认行为。
+var PageIdentity = core.PageIdentity
+
+// TaskKey 返回推荐的自定义幂等键：`site:stage:<PageIdentity>`（不含 host）。
+// 超过 crawler_tasks.idempotency_key 的 varchar(1000) 时返回 error，不静默截断。
+//
+//	key, err := papa.TaskKey(task.Site, "detail", canonicalURL)
+//	child := &papa.Task{URL: canonicalURL, Stage: "detail", Site: task.Site, IdempotencyKey: key}
+var TaskKey = core.TaskKey
+
+// ResolveSiteURL 把任务里存的地址钉回**当前站点根地址**：scheme/host 取自 baseURL，
+// path/query 取自 raw，去掉 fragment。站点换域名后，请求仍走 SiteSpec.BaseURL 用它。
+//
+// 注意：raw 是别的域名时 host 会被改写 —— 这是给「任务 URL 回钉」用的，不是通用链接跟随。
+var ResolveSiteURL = core.ResolveSiteURL
+
 // WithConfigPath 指定配置文件路径（缺省读 PAPA_CONFIG 环境变量，再回退 configs/config.yaml）
 var WithConfigPath = app.WithConfigPath
 

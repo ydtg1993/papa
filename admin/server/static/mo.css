@@ -443,14 +443,14 @@ html.need-login #login { display: flex; }
 .trace-step-head { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
 .trace-step-name { font-weight: 600; }
 .trace-step-meta { font-size: 12px; color: var(--muted-foreground); white-space: nowrap; }
-.trace-msg, .trace-data pre {
+.trace-msg, .trace-data pre, .trace-candidates pre {
     margin: 6px 0 0; padding: 8px; max-height: 30vh; overflow: auto;
     font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
     white-space: pre-wrap; word-break: break-word;
     background: var(--code-bg); border: 1px solid var(--code-border);
 }
-.trace-data { margin-top: 6px; }
-.trace-data summary { cursor: pointer; font-size: 12px; color: var(--muted-foreground); }
+.trace-data, .trace-candidates { margin-top: 6px; }
+.trace-data summary, .trace-candidates summary { cursor: pointer; font-size: 12px; color: var(--muted-foreground); }
 /* 归档步骤的下载按钮：现场文件拿下去本地分析（见 trace.js 的 «下载这一页»） */
 .trace-files { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .trace-files .btn { padding: 4px 10px; font-size: 12px; }

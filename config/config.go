@@ -178,16 +178,40 @@ const (
 
 // BrowserConfig 浏览器池配置（go-rod 驱动）
 type BrowserConfig struct {
-	Enable      bool              `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
-	PoolSize    int               `mapstructure:"pool_size"`        //浏览器并发上限（按需创建，非常驻数量；改需重启）
-	DirectSize  int               `mapstructure:"direct_pool_size"` //强制直连浏览器并发上限（不经过代理）
-	MaxIdleTime time.Duration     `mapstructure:"max_idle_time"`    //池内实例的闲置上限：超时回收；0 = 不回收
-	Headless    bool              `mapstructure:"headless"`         //无头模式
-	NoSandbox   bool              `mapstructure:"no_sandbox"`
-	Leakless    bool              `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
-	BrowserPath string            `mapstructure:"browser_path"`
-	Headers     map[string]string `mapstructure:"headers"` //默认请求头
+	Enable      bool          `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
+	PoolSize    int           `mapstructure:"pool_size"`        //浏览器并发上限（按需创建，非常驻数量；改需重启）
+	DirectSize  int           `mapstructure:"direct_pool_size"` //强制直连浏览器并发上限（不经过代理）
+	MaxIdleTime time.Duration `mapstructure:"max_idle_time"`    //池内实例的闲置上限：超时回收；0 = 不回收
+	Headless    bool          `mapstructure:"headless"`         //无头模式
+	NoSandbox   bool          `mapstructure:"no_sandbox"`
+	Leakless    bool          `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
+	// Binary 浏览器二进制从哪来：rod / system / path（见下面三个常量）。
+	// 留空 = 看 browser_path：给了就按 path，没给就按 rod。
+	Binary string `mapstructure:"binary"`
+	// BrowserPath 只在 Binary 为 path（或 Binary 留空）时生效。
+	BrowserPath string `mapstructure:"browser_path"`
+	// Flags 额外 Chromium 启动参数（launcher flags）：键是开关名（可带也可不带前导 --），
+	// 值为空 = 布尔开关（只出现 `--name`），否则拼成 `--name=value`。
+	//
+	// **这里只放 Chromium 自己的开关**（disable-gpu / renderer-process-limit / blink-settings …）；
+	// 框架已经单列的 headless / no_sandbox / leakless / 代理走各自的配置键，
+	// 再在这里写一遍会覆盖掉那几项（flags 最后应用）。
+	Flags map[string]string `mapstructure:"flags"`
+	// SelfCheck 启动时自检：建池时真实启动一次浏览器（rod 模式下这会触发 Chromium 下载），
+	// 起不来就启动失败；false = 第一次抓取时才启动。
+	SelfCheck bool              `mapstructure:"self_check"`
+	Headers   map[string]string `mapstructure:"headers"` //默认请求头
 }
+
+// browser.binary 的取值。
+const (
+	// BrowserBinaryRod 用 Rod 管理（缺了自动下载）的 Chromium —— 服务器上不用手动装浏览器。
+	BrowserBinaryRod = "rod"
+	// BrowserBinarySystem 用系统已安装的 Chrome / Chromium / Edge（启动时探测，找不到就报错，不下载）。
+	BrowserBinarySystem = "system"
+	// BrowserBinaryPath 用 browser_path 指定的可执行文件。
+	BrowserBinaryPath = "path"
+)
 
 // HTMLConfig 静态 HTML 抓取客户端配置
 type HTMLConfig struct {

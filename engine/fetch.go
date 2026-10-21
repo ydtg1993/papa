@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/textproto"
@@ -35,8 +36,8 @@ func splitHeaderOverride(h map[string]string) (set map[string]string, remove []s
 	return set, remove
 }
 
-// defaultWaitTimeout 等待业务容器出现的默认超时。
-const defaultWaitTimeout = 30 * time.Second
+// renderWaitTraceStep 渲染等待失败在 trace 里的步骤名。
+const renderWaitTraceStep = "等待渲染"
 
 // FetchRendered 借浏览器渲染页面，等待 waitSelector（可选）出现后，
 // 返回解析后的 goquery.Document 与导航后的最终 URL。用后自动归还浏览器。
@@ -44,7 +45,7 @@ const defaultWaitTimeout = 30 * time.Second
 // 要 `*htmlfetch.Page` —— 好直接喂给 `engine.RestrictedError`（受限页判据）或 archive 那套
 // 收 *Page 的工具 —— 用 FetchRenderedPage：两者抓的是同一份 HTML，只是包成什么给调用方不同。
 func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string) (*goquery.Document, string, error) {
-	html, finalURL, err := e.render(ctx, rawURL, waitSelector)
+	html, finalURL, err := e.render(ctx, rawURL, browser.PageOptions{WaitSelector: waitSelector})
 	if err != nil {
 		return nil, "", err
 	}
@@ -69,7 +70,18 @@ func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string)
 //	if err != nil { return err }
 //	if err := engine.RestrictedError(task, page, ""); err != nil { return err }
 func (e *Engine) FetchRenderedPage(ctx context.Context, rawURL, waitSelector string) (*htmlfetch.Page, error) {
-	html, finalURL, err := e.render(ctx, rawURL, waitSelector)
+	return e.FetchRenderedPageWith(ctx, rawURL, browser.PageOptions{WaitSelector: waitSelector})
+}
+
+// FetchRenderedPageWith 与 FetchRenderedPage 相同，但把页面准备与等待条件全部交给
+// browser.PageOptions：设备、请求头、Cookies、导航超时，以及 WaitSelector / WaitJS /
+// WaitRequestIdle（顺序固定，共享 Timeout 的等待预算）。
+//
+// ctx 上的站点级 / 逐请求头仍会合并进来；显式 opts.Headers 优先。
+// 等待失败时页面在关闭前被读一次 HTML，随 browser.WaitError 带出 —— 这里会把它登记进
+// 归档并在 trace 写一条「等待渲染」失败步骤。
+func (e *Engine) FetchRenderedPageWith(ctx context.Context, rawURL string, opts browser.PageOptions) (*htmlfetch.Page, error) {
+	html, finalURL, err := e.render(ctx, rawURL, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -80,15 +92,74 @@ func (e *Engine) FetchRenderedPage(ctx context.Context, rawURL, waitSelector str
 	return page, nil
 }
 
+// browserProxyError 报告浏览器路径不支持的「逐请求代理地址」；没配时返回 nil。
+//
+// 为什么不能静默忽略：代理是浏览器实例级设置（启动参数），Chrome/CDP 不提供逐请求改路由。
+// 忽略会让请求从别的出口出去、而调用方以为走了代理 —— 所以两条浏览器抓取路径
+// （render / CaptureRequest）都在入口处明确报错，并指出替代路。
+func browserProxyError(ctx context.Context) error {
+	if addr := core.ProxyURLFrom(ctx); addr != "" {
+		return fmt.Errorf("浏览器路径不支持逐请求代理地址（%s）：代理是浏览器实例级设置，"+
+			"Chrome 不提供逐请求改路由。要给这个站换出口，用 pool 上的代理配置、或一站一进程", addr)
+	}
+	return nil
+}
+
+// mergeBrowserOptions 把 ctx 上的站点级 / 逐请求头合并进 PageOptions；
+// 显式 opts.Headers 是 API 调用方给的最后一层，优先。
+//
+// 逐请求头（站点级 + `WithHeaders` 两层）走 PageOptions —— 浏览器那边本来就支持
+// "额外请求头合并默认头"；它是**导航前**设好的，首个请求就带上。
+// 空值表示删掉那个头，得单独交给 RemoveHeaders（rod 的默认头在内部先合并，光给空值删不掉）。
+func mergeBrowserOptions(ctx context.Context, opts browser.PageOptions) browser.PageOptions {
+	reqHeaders, removeHeaders := splitHeaderOverride(core.HeadersFrom(ctx))
+	if len(reqHeaders) > 0 {
+		merged := make(map[string]string, len(reqHeaders)+len(opts.Headers))
+		maps.Copy(merged, reqHeaders)
+		maps.Copy(merged, opts.Headers)
+		opts.Headers = merged
+	}
+	if len(removeHeaders) > 0 {
+		opts.RemoveHeaders = append(opts.RemoveHeaders, removeHeaders...)
+	}
+	return opts
+}
+
+// recordRenderWaitFailure 把「导航成功、等待失败」的现场写进归档与 trace。
+// 只处理 browser.WaitError：导航本身失败没有页面可看，走原来的错误路径。
+func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.PageOptions, err error) {
+	var waitErr *browser.WaitError
+	if !errors.As(err, &waitErr) {
+		return
+	}
+	// 页面在 NewPageWithOptions 的失败路径上已经关了；HTML 是它关闭前读出来的现场。
+	if waitErr.HTML != "" {
+		archiveFromCtx(ctx).holdRendered(waitErr.HTML, rawURL)
+	}
+	data := map[string]any{
+		"wait_stage": waitErr.Stage,
+		"elapsed_ms": waitErr.Elapsed.Milliseconds(),
+	}
+	if opts.WaitSelector != "" {
+		data["wait_selector"] = opts.WaitSelector
+	}
+	if opts.WaitJS != "" {
+		data["wait_js"] = opts.WaitJS
+	}
+	if opts.WaitRequestIdle > 0 {
+		data["wait_request_idle_ms"] = opts.WaitRequestIdle.Milliseconds()
+	}
+	traceFromCtx(ctx).Fail(renderWaitTraceStep, waitErr, data)
+}
+
 // render 借浏览器渲染一页，把原始 HTML 与导航后的最终 URL 交出去；两个公开方法共用它
 // （差别只在"把这份 HTML 包成 Document 还是 Page"）。归档也在这里做：那份 HTML 本来就在手上。
-func (e *Engine) render(ctx context.Context, rawURL, waitSelector string) (string, string, error) {
-	// 显式代理地址在浏览器路径上是**做不到**的：代理是浏览器实例级设置（启动参数），
-	// Chrome/CDP 不提供逐请求改路由。静默忽略会让请求从别的出口出去、而调用方以为走了代理 ——
-	// 所以在这里明确报错，并指出两条替代路。
-	if addr := core.ProxyURLFrom(ctx); addr != "" {
-		return "", "", fmt.Errorf("浏览器路径不支持逐请求代理地址（%s）：代理是浏览器实例级设置，"+
-			"Chrome 不提供逐请求改路由。要给这个站换出口，用 pool 上的代理配置、或一站一进程", addr)
+//
+// opts 里的 WaitSelector / WaitJS / WaitRequestIdle 由 NewPageWithOptions 应用；
+// 等待失败时会带回 browser.WaitError（含现场 HTML），这里负责归档与 trace。
+func (e *Engine) render(ctx context.Context, rawURL string, opts browser.PageOptions) (string, string, error) {
+	if err := browserProxyError(ctx); err != nil {
+		return "", "", err
 	}
 
 	pool := e.browserPool
@@ -101,29 +172,13 @@ func (e *Engine) render(ctx context.Context, rawURL, waitSelector string) (strin
 	}
 	defer pool.Put(bw)
 
-	// 逐请求头（站点级 + `WithHeaders` 两层）走 PageOptions —— 浏览器那边本来就支持
-	// "额外请求头合并默认头"，只是以前没人传；它是**导航前**设好的，首个请求就带上。
-	// 空值表示删掉那个头，得单独交给 RemoveHeaders（rod 的默认头在内部先合并，光给空值删不掉）。
-	reqHeaders, removeHeaders := splitHeaderOverride(core.HeadersFrom(ctx))
-	page, err := bw.NewPageWithOptions(ctx, rawURL, browser.PageOptions{
-		Headers:       reqHeaders,
-		RemoveHeaders: removeHeaders,
-	})
+	opts = mergeBrowserOptions(ctx, opts)
+	page, err := bw.NewPageWithOptions(ctx, rawURL, opts)
 	if err != nil {
+		recordRenderWaitFailure(ctx, rawURL, opts, err)
 		return "", "", fmt.Errorf("open page %s: %w", rawURL, err)
 	}
 	defer page.Close()
-
-	if waitSelector != "" {
-		if _, err := page.Timeout(defaultWaitTimeout).Element(waitSelector); err != nil {
-			// 选择器没出现正是最该看现场的时候：尽力读一次当前 HTML 归档，再带错误返回
-			//（归档只在页缓冲里登记、落盘在 runAttempt 收尾，读失败也不拦这次错误）。
-			if html, herr := page.HTML(); herr == nil {
-				archiveFromCtx(ctx).holdRendered(html, rawURL)
-			}
-			return "", "", fmt.Errorf("wait selector %q on %s: %w", waitSelector, rawURL, err)
-		}
-	}
 
 	html, err := page.HTML()
 	if err != nil {
@@ -167,8 +222,10 @@ func (e *Engine) SetBrowserPool() {
 		Headless:       e.cfg.Browser.Headless,
 		NoSandbox:      e.cfg.Browser.NoSandbox,
 		Leakless:       e.cfg.Browser.Leakless,
+		BinarySource:   e.cfg.Browser.Binary,
 		BrowserPath:    e.cfg.Browser.BrowserPath,
-		Flags:          map[string]string{},
+		Flags:          e.cfg.Browser.Flags,
+		SelfCheck:      e.cfg.Browser.SelfCheck,
 		DefaultHeaders: e.browserHeaders(),
 		ProxyManager:   e.GetProxy(),
 	})

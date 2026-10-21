@@ -118,9 +118,19 @@ var TRACE_ACTION_PATH = '/task/action/trace';
     function renderStep(s) {
         var failed = s.status === 'failed';
         var warn = s.status === 'warn';
+        var data = stepData(s);
         var meta = fmtDuration(s.duration);
         // 失败与警告都带上错误分类（kind），成功步骤没有
         if ((failed || warn) && s.kind) meta += (meta ? ' · ' : '') + s.kind;
+        // 捕获/等待的失败现场：把「超时上限」与「实际等了多久」并排放在步骤头上。
+        // 这两个数字来自 data（引擎写的 timeout_ms / elapsed_ms），不是步骤的 duration ——
+        // duration 是"距上一步"的时间，会把打开页面的开销也算进去。
+        if (failed && data) {
+            var limit = fmtMillis(data.timeout_ms);
+            var waited = fmtMillis(data.elapsed_ms);
+            if (limit) meta += (meta ? ' · ' : '') + '超时 ' + limit;
+            if (waited) meta += (meta ? ' · ' : '') + '实等 ' + waited;
+        }
         var cls = failed ? ' trace-step-failed' : (warn ? ' trace-step-warn' : '');
         var html = '<li class="trace-step' + cls + '">'
             + '<div class="trace-step-head">'
@@ -130,6 +140,14 @@ var TRACE_ACTION_PATH = '/task/action/trace';
         // 警告的 message 同样要显示：它就是"这一步降级在哪"的答案（任务本身是成功的）
         if ((failed || warn) && s.message) {
             html += '<pre class="trace-msg">' + esc(s.message) + '</pre>';
+        }
+        // 捕获失败的候选请求：data.candidates 是 "METHOD URL" 的样本 ——
+        // 用来区分「一个请求都没发」「发了但域名换了」「路径改版」三种死法。
+        if (data && Array.isArray(data.candidates) && data.candidates.length) {
+            var total = typeof data.candidates_total === 'number' ? data.candidates_total : data.candidates.length;
+            html += '<details class="trace-candidates">'
+                + '<summary>期间发出的请求 · 共 ' + total + ' 条（样本 ' + data.candidates.length + ' 条）</summary>'
+                + '<pre>' + esc(data.candidates.join('\n')) + '</pre></details>';
         }
         if (s.data) {
             html += '<details class="trace-data"><summary>采集到的数据</summary>'
@@ -147,15 +165,20 @@ var TRACE_ACTION_PATH = '/task/action/trace';
         return html + '</li>';
     }
 
+    /** 解析步骤的 data（JSON 字符串）；解不出来时返回 null —— 坏值不该把整条时间线弄断。 */
+    function stepData(s) {
+        if (!s.data) return null;
+        try {
+            return JSON.parse(s.data);
+        } catch (e) {
+            return null;
+        }
+    }
+
     /** 这一步是不是「归档页面」，是就返回它记下的文件相对路径列表。 */
     function archivedFiles(s) {
-        if (!s.data) return [];
-        try {
-            var d = JSON.parse(s.data);
-            return Array.isArray(d && d.files) ? d.files : [];
-        } catch (e) {
-            return [];
-        }
+        var d = stepData(s);
+        return Array.isArray(d && d.files) ? d.files : [];
     }
 
     // 走 mo.js 的 downloadFile（它带令牌、并按 Content-Disposition 定文件名）。
@@ -171,6 +194,13 @@ var TRACE_ACTION_PATH = '/task/action/trace';
         if (ns < 1e6) return (ns / 1e3).toFixed(1) + ' ms';
         if (ns < 1e9) return Math.round(ns / 1e6) + ' ms';
         return (ns / 1e9).toFixed(2) + ' s';
+    }
+
+    /** trace data 里的 elapsed_ms / timeout_ms 是毫秒整数（不是纳秒）。 */
+    function fmtMillis(ms) {
+        if (typeof ms !== 'number' || ms <= 0) return '';
+        if (ms < 1000) return ms + ' ms';
+        return (ms / 1000).toFixed(1).replace(/\.0$/, '') + ' s';
     }
 
     function prettyJSON(text) {

@@ -143,6 +143,59 @@ var rules = []rule{
 		return nil
 	}},
 
+	{"browser.binary", func(c *Config) error {
+		b := c.Browser
+		switch b.Binary {
+		case "":
+			// 留空是默认态：给了 browser_path 就按 path，没给就按 rod —— 两种都合法
+			return nil
+		case BrowserBinaryRod, BrowserBinarySystem:
+			if b.BrowserPath != "" {
+				return fmt.Errorf("  binary=%q 时不能再配 browser_path（实得 %q）——\n"+
+					"  这一项已经决定了二进制从哪来：rod = Rod 自动下载并管理，system = 系统已安装的那个；\n"+
+					"  要指定某个可执行文件请写 binary: path", b.Binary, b.BrowserPath)
+			}
+		case BrowserBinaryPath:
+			if strings.TrimSpace(b.BrowserPath) == "" {
+				return fmt.Errorf("  binary: path 时必须同时给 browser_path ——\n" +
+					"  没有路径就不知道启动哪个可执行文件（要交回 Rod 管理请写 binary: rod，或删掉 binary 留空）")
+			}
+		default:
+			return fmt.Errorf("  只能是 %q（默认：Rod 自动下载和管理）/ %q（系统已安装的 Chrome / Chromium / Edge）/ %q（用 browser_path 指定），实得 %q",
+				BrowserBinaryRod, BrowserBinarySystem, BrowserBinaryPath, b.Binary)
+		}
+		return nil
+	}},
+
+	// 键路径写作 flags[]：规则对象是 map 里的每个条目（validKeys 对 map 叶子就是这个形状）。
+	{"browser.flags[]", func(c *Config) error {
+		if len(c.Browser.Flags) == 0 {
+			return nil
+		}
+		// 按键名排序再校验：map 遍历顺序随机，多个坏键时同一条配置每次报出来的
+		// 那个键都不一样 —— 与 checkUnusedKeys 的排序同一个理由。
+		names := make([]string, 0, len(c.Browser.Flags))
+		for name := range c.Browser.Flags {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("  开关名不能为空 —— 键就是 Chromium 的开关名（如 disable-gpu）")
+			}
+			if strings.Contains(name, "=") {
+				return fmt.Errorf("  开关名 %q 里不能有 '=' ——\n"+
+					"  键写开关名（如 blink-settings），值写它对应的值（如 \"imagesEnabled=false\"）；\n"+
+					"  rod 会自己拼成 --%s=<值>", name, name)
+			}
+			if strings.HasPrefix(name, "rod-") {
+				return fmt.Errorf("  开关名 %q 是 Rod 的内部参数，不能从 browser.flags 配 ——\n"+
+					"  它们不走 Chromium 命令行（launcher 会跳过），只会静默改掉框架自己的启动行为", name)
+			}
+		}
+		return nil
+	}},
+
 	{"db.max_idle_conns", func(c *Config) error {
 		return inPoolRange(c.DB.MaxIdleConns)
 	}},

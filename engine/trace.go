@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -51,6 +52,30 @@ type Trace struct {
 // newTrace 构造一次尝试的记录器。
 func newTrace(db *gorm.DB, logger *logrus.Logger, taskID, attempt int) *Trace {
 	return &Trace{db: db, logger: logger, taskID: taskID, attempt: attempt, lastAt: time.Now()}
+}
+
+// traceCtxKey 把本次尝试的 Trace 挂到 ctx 上 —— 与 archiveCtxKey 同一个手法。
+//
+// 为什么不让调用方直接读 task.Trace：`engine.render` / `engine.CaptureRequest` 这类
+// 「拿了 ctx 就开始干活」的方法签名里没有 task（前者本来就不带），而它们的失败
+// 恰恰最该写进 trace。ctx 是它们唯一能拿到「这次尝试属于谁」的途径。
+type traceCtxKey struct{}
+
+// withTrace 把 Trace 挂上 ctx；tr 为 nil（追踪未开启 / 没有任务行）时原样返回。
+func withTrace(ctx context.Context, tr *Trace) context.Context {
+	if tr == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, traceCtxKey{}, tr)
+}
+
+// traceFromCtx 取出本次尝试的 Trace；没有（未开启 / 不是从 worker 里调的）时返回 nil。
+// Trace 的方法全是 nil 安全的 —— 可选协作者就该是可选的。
+func traceFromCtx(ctx context.Context) *Trace {
+	if tr, ok := ctx.Value(traceCtxKey{}).(*Trace); ok {
+		return tr
+	}
+	return nil
 }
 
 // Step 记录一个**已完成**的步骤，data 可为 nil。

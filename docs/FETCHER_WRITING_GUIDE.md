@@ -261,7 +261,7 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 | **HTMLFetch（默认，一律先用它）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
 | **Rod 浏览器（例外，静态拿不到才用）** | `engine.GetBrowserPool().Get(ctx)` | 数据必须经 JS 执行、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 才产生的页面 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | **静态 HTML 里已经拿得到目标数据的页面** —— 哪怕它有 JS、有交互（浏览器贵且占池位，见上面那条规则） |
 
-HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`（此时 `pool_size` 必填且 > 0）。`browser.pool_size` 是**全局**并发上限（浏览器按需创建，非常驻实例数）：调得比并发用浏览器的 worker 数小，多出来的 worker 只会等在池上、不报错；它不需要机械等于 worker 总数。
+HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`（此时 `pool_size` 必填且 > 0）；浏览器二进制默认由 Rod 自动下载（`browser.binary: rod`，服务器不用预装），要用系统已装的浏览器写 `binary: system`，启动自检见 `CORE_CONFIG.md` 的 `browser.self_check`。`browser.pool_size` 是**全局**并发上限（浏览器按需创建，非常驻实例数）：调得比并发用浏览器的 worker 数小，多出来的 worker 只会等在池上、不报错；它不需要机械等于 worker 总数。
 （这两段说的是**配置层**的开关怎么开；**该不该用浏览器是策略问题**，判据是上面那条规则 —— 不是"把 `browser.enable` 打开就该用它"。）
 
 ### 3.1 HTMLFetch：静态目录页的完整方式
@@ -564,6 +564,32 @@ func deref(s *string) string {
 ## 5. 场景二：详情页点击播放 → 捕获 m3u8 → 下载
 
 典型例子：详情页要「点播放按钮」才发起视频请求，m3u8 地址不在 DOM 里，只能从网络请求里截获。
+
+> **先看这里：请求会自动发出时，不要手写事件循环。**
+> 如果播放器自动播放、请求在页面加载过程中自己发出（不需要点击），用
+> `engine.CaptureRequest` —— 它负责「导航前挂监听 → 截第一条匹配请求 → 关页面」，
+> 失败时还会把**那一刻的页面 HTML 与期间发出的请求样本**写进归档和任务追踪
+> （OA 抽屉里的「捕获网络请求」步骤，见 [MONITOR.md](./MONITOR.md) §3）：
+>
+> ```go
+> res, err := engine.CaptureRequest(ctx, task.URL, browser.CaptureOptions{
+>     Page: browser.PageOptions{Timeout: 45 * time.Second},
+>     Match: func(r browser.CapturedRequest) bool {
+>         u, err := url.Parse(r.URL)
+>         return err == nil && strings.HasSuffix(strings.ToLower(u.Path), ".m3u8")
+>     },
+>     CaptureTimeout: 30 * time.Second,
+> })
+> if err != nil {
+>     return err // 现场已登记；不要再自己归档/上报
+> }
+> mediaURL := res.URL
+> ```
+>
+> 只有「必须先点一下/滚动/输入」的页面才继续看下面的手写方式（V1 的 `CaptureRequest`
+> 不执行交互）。需要等渲染条件（元素 / JS 表达式 / 网络空闲）时用
+> `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{WaitSelector: ..., WaitJS: ...,
+> WaitRequestIdle: ...})`；要按页拦图片/统计脚本用 `browser.PageOptions{Block: ...}`。
 
 ### 5.1 关键点：先挂监听，再点播放
 
@@ -972,6 +998,18 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `page.MustElement(sel)` / `page.MustElements(sel)`；`el.MustClick()` / `el.MustText()` / `el.Attribute(name)`。
 - `page.MustEval(js)` 执行 JS（滚动、取全局变量等）。
 - `page.EachEvent(func(e *proto.NetworkRequestWillBeSent) bool { ... })` 监听网络请求：**返回 wait 函数**（别在它后面多写一个 `()` —— 那会当场阻塞在事件循环里）。回调**必须返回 `bool`**，返回 `true` 才会让 `wait()` 退出；命中时 `wait()` 返回。
+
+**浏览器托管 / 捕获 / 等待（推荐优先用这组）**
+- `pool.WithBrowser(ctx, fn)` / `pool.WithDirectBrowser(ctx, fn)`：借实例执行回调，成功 / 报错 / panic 都保证归还。
+- `bw.WithPage(ctx, fn)` / `bw.WithNavigatedPage(ctx, url, opts, fn)`：页面生命周期托管，返回后保证关页。
+- `engine.CaptureRequest(ctx, url, browser.CaptureOptions{Page, Match, CaptureTimeout, WaitLoad})`：导航前挂监听、截第一条匹配请求；失败时现场 HTML 与候选请求自动进归档 + trace。
+- `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{...})`：比 `FetchRenderedPage` 多支持 `WaitSelector` / `WaitJS`（表达式）/ `WaitRequestIdle` / `Block`（按页拦资源）。顺序：`WaitSelector → WaitJS → WaitRequestIdle`，共享 `Timeout` 的等待预算。
+- 等待失败返回 `*browser.WaitError`（`Stage` / `HTML` / `Elapsed`）；引擎层已自动归档并写「等待渲染」步骤，业务直接返回 error 即可。
+
+**任务身份 / 站点地址**
+- `papa.PageIdentity(rawURL)`：`path[?query]`，与域名无关（`https://a.com` 与 `https://a.com/` 都是 `/`）。
+- `papa.TaskKey(site, stage, rawURL)`：`site:stage:<PageIdentity>`，适合站点换域名/多镜像时的自定义幂等键；超过 1000 字符报错，不截断。
+- `papa.ResolveSiteURL(baseURL, raw)`：把任务里存的旧地址钉回当前站点根（scheme/host 换成 baseURL 的），path/query 保留。
 
 **静态 HTML（goquery）**
 - `engine.FetchHTML(ctx, url)` → `*htmlfetch.Page`；`page.Document.Text/Texts/Attr/Attrs/HTML(selector)`。**默认路径**，见 §3 的规则。

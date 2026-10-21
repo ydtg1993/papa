@@ -127,9 +127,17 @@ type PageOptions struct {
 	// RemoveHeaders 从最终请求头里删掉这些键（含池的默认头）——"这次不要那个头"用；
 	// 单独一条是因为 rod 的默认头是在内部先合并的，光靠 Headers 给空值删不掉。
 	RemoveHeaders []string
-	Cookies       []*proto.NetworkCookieParam // 额外 Cookies，会追加到默认 Cookies
-	Timeout       time.Duration               // 导航超时，默认 30 秒
-	Wait          time.Duration               // FetchOnce：WaitLoad 后额外等待再抓取快照
+	// Block 本页的资源拦截（导航前生效）；nil = 不拦截。见 BlockOptions。
+	Block   *BlockOptions
+	Cookies []*proto.NetworkCookieParam // 额外 Cookies，会追加到默认 Cookies
+	Timeout time.Duration               // 导航超时，默认 30 秒
+	Wait    time.Duration               // FetchOnce：WaitLoad 后额外等待再抓取快照
+	// WaitSelector 导航后等元素出现；空 = 不等。
+	WaitSelector string
+	// WaitJS 导航后轮询求值这段表达式直到 truthy；空 = 不等。
+	WaitJS string
+	// WaitRequestIdle 导航后等「连续这么久没有网络请求」（最少空闲时长，不是上限）。
+	WaitRequestIdle time.Duration
 	// FetchOnce 专用：是否截图 / 是否整页截图（配合 Screenshot）
 	Screenshot bool
 	FullPage   bool
@@ -184,6 +192,10 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 	if err := page.Timeout(timeout).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
+	// 渲染条件（selector / js / request-idle）按固定顺序等；失败时错误里带着现场 HTML
+	if err := applyWaits(page, opts); err != nil {
+		return nil, err
+	}
 	return page, nil
 }
 
@@ -229,6 +241,10 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 	}
 	if err := page.Timeout(timeout).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("wait load: %w", err)
+	}
+	// 渲染条件（selector / js / request-idle）按固定顺序等；失败时错误里带着现场 HTML
+	if err := applyWaits(page, opts); err != nil {
+		return nil, err
 	}
 	if opts.Wait > 0 {
 		select {
@@ -316,6 +332,12 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 			return nil, fmt.Errorf("set cookies: %w", err)
 		}
 	}
+
+	// 4. 本页资源拦截（必须在导航前；见 BlockOptions 的两种机制）
+	if err := applyBlock(page, opts.Block); err != nil {
+		_ = page.Close()
+		return nil, err
+	}
 	return page, nil
 }
 
@@ -326,6 +348,30 @@ func (b *Browser) MustNewPage(ctx context.Context, url string) *rod.Page {
 		panic(err)
 	}
 	return page
+}
+
+// WithPage 在浏览器上开一个空白页交给 fn，返回后保证关页。
+// 默认设备 / 池共享请求头 / 默认 Cookies 由 newPageBase 应用（不导航）。
+// fn panic 时同样先关页，再把 panic 抛回。
+func (b *Browser) WithPage(ctx context.Context, fn func(*rod.Page) error) error {
+	page, err := b.newPageBase(PageOptions{})
+	if err != nil {
+		return err
+	}
+	page = page.Context(ctx)
+	defer func() { _ = page.Close() }()
+	return fn(page)
+}
+
+// WithNavigatedPage 等于 NewPageWithOptions + 保证关页：导航失败也会关。
+func (b *Browser) WithNavigatedPage(ctx context.Context, url string, opts PageOptions, fn func(*rod.Page) error) error {
+	page, err := b.NewPageWithOptions(ctx, url, opts)
+	if err != nil {
+		return err
+	}
+	page = page.Context(ctx)
+	defer func() { _ = page.Close() }()
+	return fn(page)
 }
 
 // mergeExtraHeaders 把默认头 + 逐请求覆盖 + 逐请求删除合并成 CDP SetExtraHeaders 需要的

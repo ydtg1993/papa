@@ -43,20 +43,68 @@ type Pool struct {
 	reaperStop chan struct{} // 非 nil 表示空闲回收协程在运行
 }
 
+// 浏览器二进制来源（对应 config.yaml 的 browser.binary）。
+const (
+	BrowserBinaryRod    = "rod"    // Rod 管理、缺了自动下载的 Chromium
+	BrowserBinarySystem = "system" // 系统已安装的 Chrome / Chromium / Edge
+	BrowserBinaryPath   = "path"   // BrowserPath 指定的可执行文件
+)
+
 // PoolConfig 浏览器池配置
 type PoolConfig struct {
-	Size           int            // 代理浏览器并发上限（按需创建）
-	DirectSize     int            // 强制直连浏览器并发上限（不经过代理）
-	MaxIdleTime    time.Duration  // 最大空闲时间，0 表示无限制
-	ProxyManager   *proxy.Manager //代理管理器
-	Headless       bool
-	NoSandbox      bool
-	Leakless       bool
-	BrowserPath    string            // 浏览器可执行文件路径，为空则使用系统默认
-	Flags          map[string]string // 浏览器启动参数
+	Size         int            // 代理浏览器并发上限（按需创建）
+	DirectSize   int            // 强制直连浏览器并发上限（不经过代理）
+	MaxIdleTime  time.Duration  // 最大空闲时间，0 表示无限制
+	ProxyManager *proxy.Manager //代理管理器
+	Headless     bool
+	NoSandbox    bool
+	Leakless     bool
+	// BinarySource 二进制来源：留空 / rod（默认，Rod 自动下载）/ system（探测系统已装的）/ path。
+	// 留空时看 BrowserPath：给了就是 path，没给就是 rod。
+	BinarySource   string
+	BrowserPath    string            // 可执行文件路径；system 模式下由 NewPool 填入探测结果
+	Flags          map[string]string // 额外 Chromium 启动参数（值为空 = 布尔开关）
+	SelfCheck      bool              // 建池时真实启动一次（rod 模式会触发下载），失败即报错
 	DefaultDevice  *devices.Device   // 可选：全局设备模拟
 	DefaultHeaders map[string]string // 默认 HTTP 请求头
 	DefaultCookies []*proto.NetworkCookieParam
+}
+
+// resolveBrowserBinary 把 source + path 归一成"要么给可执行文件路径，要么留空让 Rod 下载管理"。
+//
+// 留空 source 时按 path 推断：给了路径 = path，没给 = rod —— browser_path 本来的意思
+// 就是"指定一个可执行文件"，不写它则交给 Rod。system 的探测**只在这里做一次**，
+// 而不是每次 newBrowser 都去 LookPath（同一台机器上结果不会变，也没必要重复扫）。
+func resolveBrowserBinary(source, path string) (string, string, error) {
+	switch source {
+	case "":
+		if path != "" {
+			return BrowserBinaryPath, path, nil
+		}
+		return BrowserBinaryRod, "", nil
+	case BrowserBinaryRod:
+		if path != "" {
+			return "", "", fmt.Errorf("browser binary=rod 时不能再配 browser_path（实得 %q）：要指定可执行文件请用 binary=path", path)
+		}
+		return BrowserBinaryRod, "", nil
+	case BrowserBinarySystem:
+		if path != "" {
+			return "", "", fmt.Errorf("browser binary=system 时不能再配 browser_path（实得 %q）：system 就是指系统已安装的浏览器", path)
+		}
+		found, ok := launcher.LookPath()
+		if !ok {
+			return "", "", fmt.Errorf("browser binary=system，但系统里没找到 Chrome / Chromium / Edge：" +
+				"装一个，或改成 binary=rod（Rod 会自动下载并管理，不用手动装）")
+		}
+		return BrowserBinarySystem, found, nil
+	case BrowserBinaryPath:
+		if path == "" {
+			return "", "", fmt.Errorf("browser binary=path 时必须给 browser_path")
+		}
+		return BrowserBinaryPath, path, nil
+	default:
+		return "", "", fmt.Errorf("invalid browser binary %q: must be rod / system / path", source)
+	}
 }
 
 // NewPool 创建浏览器池
@@ -64,6 +112,13 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	if cfg.Size < 0 || cfg.DirectSize < 0 {
 		return nil, fmt.Errorf("invalid pool size: %d/%d", cfg.Size, cfg.DirectSize)
 	}
+	// 二进制来源在建池时就定下来：system 找不到浏览器属于配置错误，该在启动时报，
+	// 而不是等某条任务第一次 Get 时才冒出来。
+	source, bin, err := resolveBrowserBinary(cfg.BinarySource, cfg.BrowserPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg.BinarySource, cfg.BrowserPath = source, bin
 	if cfg.Flags == nil {
 		cfg.Flags = make(map[string]string)
 	}
@@ -86,12 +141,25 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	p.headers.Store(&h)
 	p.maxIdle.Store(int64(cfg.MaxIdleTime))
 
+	// 自检：建池时真实启动一次浏览器再关掉。放在这里而不是第一次抓取，是为了让
+	// 「Chromium 还没下载 / 缺系统库 / 路径写错」变成**启动失败** —— 服务器部署时
+	// 起一次进程就知道浏览器这一环通不通（rod 模式会在这里触发下载）。
+	// 用完就关是刻意的：自检只负责验证，不占直连池的槽位（要常驻实例由 Get 按需建）。
+	if cfg.SelfCheck {
+		b, err := p.newBrowserFn(false)
+		if err != nil {
+			return nil, fmt.Errorf("browser self-check: %w", err)
+		}
+		b.Close()
+	}
+
 	p.ensureReaper()
 	return p, nil
 }
 
-// newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
-func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
+// newLauncher 按池配置构造 launcher（**不启动**）。
+// 抽出来是为了让启动参数能在单测里用 FormatArgs 验证，不必真拉一个 Chromium。
+func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 	l := launcher.New().
 		Headless(p.cfg.Headless).
 		NoSandbox(p.cfg.NoSandbox).
@@ -99,6 +167,8 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	if p.cfg.BrowserPath != "" {
 		l = l.Bin(p.cfg.BrowserPath)
 	}
+	// flags 最后应用：同名的 headless / no-sandbox 等会被这里覆盖。
+	// 这是有意的 —— 配置里明确写了的开关应当赢（文档也写了别重复配）。
 	for key, val := range p.cfg.Flags {
 		if val == "" {
 			l.Set(flags.Flag(key))
@@ -111,6 +181,12 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 			l.Proxy(proxyURL)
 		}
 	}
+	return l
+}
+
+// newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
+func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
+	l := p.newLauncher(useProxy)
 
 	url, err := l.Launch()
 	if err != nil {
@@ -159,6 +235,31 @@ func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) {
 		return nil, fmt.Errorf("direct browsers not configured")
 	}
 	return p.get(ctx, p.direct, &p.directAlive, false)
+}
+
+// WithBrowser 从代理池借一个实例执行 fn，返回后保证归还。
+//
+// 归还走 defer：fn 返回 error 或直接 panic 都会先 Put 再继续向上传播。
+// Put 的错误被忽略 —— 与现有各调用点的 `defer func() { _ = pool.Put(b) }()` 一致：
+// fn 的结果比归还失败更重要，池关闭时 Put 自己会把实例关掉。
+func (p *Pool) WithBrowser(ctx context.Context, fn func(*Browser) error) error {
+	return p.withBrowser(ctx, p.Get, fn)
+}
+
+// WithDirectBrowser 同上，走强制直连池。
+func (p *Pool) WithDirectBrowser(ctx context.Context, fn func(*Browser) error) error {
+	return p.withBrowser(ctx, p.GetDirect, fn)
+}
+
+// withBrowser 是 WithBrowser / WithDirectBrowser 的共用实现。
+// get 必须是方法值（p.Get / p.GetDirect）—— 测试注入池子时也走同一条路。
+func (p *Pool) withBrowser(ctx context.Context, get func(context.Context) (*Browser, error), fn func(*Browser) error) error {
+	b, err := get(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = p.Put(b) }()
+	return fn(b)
 }
 
 // get 从指定通道获取浏览器实例：优先复用空闲，其次按需新建，最后阻塞等待状态变化。

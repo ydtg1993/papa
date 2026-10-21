@@ -335,7 +335,12 @@ func runRod(rawURL string, df debugFlags) error {
 		headless = false
 	}
 
-	flags := map[string]string{}
+	// 配置文件里的启动参数 + 调试开关（后者覆盖同名项）。自检不在这里做：
+	// 这个命令马上就要启动浏览器，再自检一次等于白启一次。
+	flags := make(map[string]string, len(cfg.Browser.Flags)+1)
+	for k, v := range cfg.Browser.Flags {
+		flags[k] = v
+	}
 	if df.devtools {
 		flags["auto-open-devtools-for-tabs"] = ""
 	}
@@ -352,6 +357,7 @@ func runRod(rawURL string, df debugFlags) error {
 		Headless:       headless,
 		NoSandbox:      cfg.Browser.NoSandbox,
 		Leakless:       cfg.Browser.Leakless,
+		BinarySource:   cfg.Browser.Binary,
 		BrowserPath:    cfg.Browser.BrowserPath,
 		Flags:          flags,
 		DefaultHeaders: headers,
@@ -454,8 +460,9 @@ func runDiff(rawURL string, df debugFlags) error {
 		Headless:       headless,
 		NoSandbox:      cfg.Browser.NoSandbox,
 		Leakless:       cfg.Browser.Leakless,
+		BinarySource:   cfg.Browser.Binary,
 		BrowserPath:    cfg.Browser.BrowserPath,
-		Flags:          map[string]string{},
+		Flags:          cfg.Browser.Flags,
 		DefaultHeaders: mergeHeaders(cfg.Browser.Headers, df.headers),
 		ProxyManager:   pm,
 	})
