@@ -53,7 +53,8 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	// 只有"数据必须等 JS 执行 / 点击 / 滚动 / 登录之后才产生，或必须监听网络请求才拿得到"时，
 	// 才改用 rod（`engine.FetchRenderedPage` —— 它给的是 `*htmlfetch.Page`，受限页判定
 	// `engine.RestrictedError` 与归档都还能用；只要 `*goquery.Document` 就用 `FetchRendered`，
-	// 要自己接管页面生命周期才用 `GetBrowserPool`）。判据与理由见
+	// 要自己接管页面生命周期才用 `GetBrowserPool`，或直接用 `WithBrowser` / `WithPage` 托管）。
+	// 判据与理由见
 	// docs/FETCHER_WRITING_GUIDE.md §3 —— 模板是照着抄的范本，所以这里默认给的就是那条默认路径。
 	page, err := engine.FetchHTML(ctx, task.URL)
 	if err != nil {

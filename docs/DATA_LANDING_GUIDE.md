@@ -53,6 +53,10 @@
   自定义时显式写上（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），
   留空则回退成同形状的 `site:stage:url`。三段缺一不可 —— 少了 `site` / `stage`，
   两个站的同名阶段会撞成同一条任务（B 站被判「已存在」、静默不跑）。
+  - **站点换域名/多镜像**：用 `papa.TaskKey(site, stage, rawURL)` 生成
+    `site:stage:<path?query>`（不含 host，`https://a.com` 与 `https://a.com/` 都是 `/`）。
+    它不改变默认键；直接赋给 `Task.IdempotencyKey` 即可。键超过 1000 字符会返回 error
+    （不静默截断）。
   - **唯一索引建在 `idempotency_hash` 上**（键原文的 sha256，64 位十六进制），不是键原文上 ——
     键里带 URL，`varchar(1000)` 在 utf8mb4 下超过 InnoDB 的 3072 字节键长上限（真库实测 `ERROR 1071`）。
     所以原文只存文本、`idempotency_hash` 才是身份；**同一个自定义键在库里只会有一行**，并发也插不进第二行。

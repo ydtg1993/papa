@@ -40,7 +40,7 @@ type Fetcher interface {
   ```go
   // 声明本阶段要借浏览器 → 框架在启动时校验接线（没开 config.yaml 的 browser.enable 就直接 panic，
   // 而不是等第一条任务跑到那一步）
-  func (f *FetchVideo) NeedsBrowser() bool { return true } // 会借浏览器（engine.GetBrowserPool / FetchRendered）
+  func (f *FetchVideo) NeedsBrowser() bool { return true } // 会借浏览器（engine.CaptureRequest / FetchRenderedPage / GetBrowserPool）
 
   // 入口任务："注册即投一批起始任务" → 框架在启动时自动调（那时所有阶段的池子都已建好）
   // site = 本站声明快照（SiteSpec → core.Site）：BaseURL / Headers 都在里面
@@ -126,6 +126,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 - **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
+- **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。
 
 ### 1.4 Engine 暴露的能力
 
@@ -133,9 +134,12 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 | 方法 | 用途 |
 | --- | --- |
-| `engine.GetBrowserPool().Get(ctx)` / `Put(bw)` | 取 / 还一个浏览器实例（Rod 封装） |
+| `engine.GetBrowserPool().WithBrowser(ctx, fn)` / `WithDirectBrowser` | 借实例执行回调，成功 / 报错 / panic 都保证归还（**推荐**；底层 `Get(ctx)` / `Put(bw)` 仍可用） |
+| `bw.WithPage(ctx, fn)` / `bw.WithNavigatedPage(ctx, url, opts, fn)` | 页面生命周期托管：返回后保证关页 |
+| `engine.CaptureRequest(ctx, url, browser.CaptureOptions{...})` | 导航前挂监听、截第一条匹配的网络请求；失败现场自动进归档 + trace（见 §5） |
 | `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
 | `engine.FetchRenderedPage(ctx, url, waitSelector)` | 同上，但返回 `*htmlfetch.Page`（与 `FetchHTML` 同一种）—— 走浏览器的阶段要接着做受限页判定、或按 `page.Selection()` 解析时用它 |
+| `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{...})` | 同上，另支持 `WaitSelector` / `WaitJS` / `WaitRequestIdle` / `Block`（按页拦资源） |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
 | `engine.M3U8ForTask(task)` / `M3U8ForStage(stage)` | m3u8 下载器：**阶段 > 站点 > 基座**，一行拿到"这一阶段该用的那个"（见 §5.4） |
 | `engine.GetM3U8()` / `GetFiledown()` | 基座那份（框架按 `DefaultConfig` 备好）—— 按站点/阶段配过的那份要用上面的 `For*` 取 |
@@ -259,7 +263,7 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 | 策略 | 入口 | 适用页面 | 节点获取方式 | 校验重点 | 不适用场景 |
 | --- | --- | --- | --- | --- | --- |
 | **HTMLFetch（默认，一律先用它）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
-| **Rod 浏览器（例外，静态拿不到才用）** | `engine.GetBrowserPool().Get(ctx)` | 数据必须经 JS 执行、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 才产生的页面 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | **静态 HTML 里已经拿得到目标数据的页面** —— 哪怕它有 JS、有交互（浏览器贵且占池位，见上面那条规则） |
+| **Rod 浏览器（例外，静态拿不到才用）** | `engine.GetBrowserPool().WithBrowser(ctx, fn)`（底层 `Get` / `Put` 仍可用） | 数据必须经 JS 执行、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 才产生的页面 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | **静态 HTML 里已经拿得到目标数据的页面** —— 哪怕它有 JS、有交互（浏览器贵且占池位，见上面那条规则） |
 
 HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`（此时 `pool_size` 必填且 > 0）；浏览器二进制默认由 Rod 自动下载（`browser.binary: rod`，服务器不用预装），要用系统已装的浏览器写 `binary: system`，启动自检见 `CORE_CONFIG.md` 的 `browser.self_check`。`browser.pool_size` 是**全局**并发上限（浏览器按需创建，非常驻实例数）：调得比并发用浏览器的 worker 数小，多出来的 worker 只会等在池上、不报错；它不需要机械等于 worker 总数。
 （这两段说的是**配置层**的开关怎么开；**该不该用浏览器是策略问题**，判据是上面那条规则 —— 不是"把 `browser.enable` 打开就该用它"。）
@@ -381,6 +385,11 @@ if len(items) == 0 {
 }
 ```
 
+> 上面是底层写法，为了把「导航 → 等待 → 取节点」的时序摊开。新代码更推荐用
+> `engine.GetBrowserPool().WithBrowser(ctx, func(bw *browser.Browser) error { ... })`
+> 包住整段、再用 `bw.WithPage(ctx, fn)` / `bw.WithNavigatedPage(...)` 管页面 ——
+> 成功、报错、panic 都保证归还实例与关页（见 §9）。
+
 > 若只需「借浏览器 → 导航 → 等某个选择器出现 → 拿 HTML/最终 URL」，直接用高层封装 `engine.FetchRendered`，免去手写借还浏览器：
 >
 > ```go
@@ -394,6 +403,11 @@ if len(items) == 0 {
 > 要 `*htmlfetch.Page`（接着做受限页判定、或交给按 `page.Selection()` 写的解析函数）就用
 > `engine.FetchRenderedPage`：参数完全一样，交出的是 `page.Selection()` 能直接解析、也能喂给
 > `engine.RestrictedError` 的页面对象。
+>
+> 要等 JS 表达式 / 网络空闲，或按页拦图片、统计脚本，用
+> `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{WaitSelector: ..., WaitJS: ...,
+> WaitRequestIdle: ..., Block: ...})`：同样返回 `*htmlfetch.Page`，等待失败时页面 HTML 会进归档、
+> trace 里多一条「等待渲染」。
 
 需要下拉、滚动或点击时，先完成操作并等待新节点出现，再提取；m3u8 这类只在播放后产生的资源，必须先通过 `EachEvent` 挂好网络监听，再点击播放。Rod 的 `Must*` 方法遇到节点缺失会 panic，因此生产 fetcher 更适合使用返回 `error` 的 API 或预先检查元素存在性，保证错误交给引擎重试。
 
@@ -402,6 +416,9 @@ if len(items) == 0 {
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
 > 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段 —— 写第二个 fetcher，在 `sites/<站名>.go` 里加一段 `StageSpec` 即可（main.go 不用动）。
+
+> 下面几段浏览器示例用底层的 `Get` / `Put` + `MustPage` 展示时序；新代码更推荐
+> `WithBrowser` / `WithPage`（见 §9），成功、报错、panic 都保证归还实例与关页。
 
 典型例子：目录页要点「展开分类」下拉、滚动到底部触发懒加载，才能拿到所有文档的标题和链接。
 
@@ -593,7 +610,9 @@ func deref(s *string) string {
 
 ### 5.1 关键点：先挂监听，再点播放
 
-m3u8 地址是点播放后才产生的网络请求，所以**必须在导航后、点击前**用 Rod 的 `EachEvent` 监听网络请求：
+m3u8 地址是点播放后才产生的网络请求，所以**必须在导航后、点击前**用 Rod 的 `EachEvent` 监听网络请求。
+下面的手写示例用 `Get` / `Put` 展示时序；实例与页面也可以套 `WithBrowser` / `WithPage`
+（见 §9），归还与关页由框架保证。
 
 ```go
 package fetcher
@@ -773,7 +792,7 @@ package fetcher
 
 import (
 	"context"
-	"time"
+	"strings"
 
 	"github.com/ydtg1993/papa/v3"
 )
@@ -784,26 +803,29 @@ type FetchCatalog struct{}
 
 func (f *FetchCatalog) GetStage() string { return "catalog" } // 阶段名，本站内唯一（两个站可以同名）
 
+// SubmitEntries：站点声明写了 Entry: true 时，框架在启动那一趟调它。
+func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
+	_ = engine.SubmitTask(&papa.Task{
+		URL:   strings.TrimRight(site.BaseURL, "/") + "/list",
+		Stage: "catalog",
+		Site:  site.Key,
+		// Repeatable: true + RepeatInterval 让这条入口任务参与周期轮询（首次入库时播种）。
+		Repeatable: true,
+	})
+}
+
 func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
-	bw, err := engine.GetBrowserPool().Get(ctx)
+	// **默认静态客户端**：页面上有 JS/交互不改变这一点，只要目标节点在 HTML 里翻得到。
+	// 只有数据必须等 JS/点击/滚动/登录/网络监听才产生时才上 rod（见 §3.2、§4、§5）。
+	page, err := engine.FetchHTML(ctx, task.URL)
 	if err != nil {
-		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据，后台「追踪」里能直接看到。
+		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据。
 		// task.Trace 关闭时是 nil，这些调用都是安全的 no-op —— 不需要判空。
-		task.Trace.Fail("取浏览器实例", err, nil)
+		task.Trace.Fail("抓取列表页", err, map[string]string{"url": task.URL})
 		return err
 	}
-	defer engine.GetBrowserPool().Put(bw)
-
-	page := bw.Browser.MustPage("")
-	defer page.Close()
-
-	if err := page.Context(ctx).Timeout(30*time.Second).Navigate(task.URL); err != nil {
-		task.Trace.Fail("打开列表页", err, map[string]string{"url": task.URL})
-		return err
-	}
-	page.MustWaitLoad()
 	// Step 表示「这一步已经做完了」，耗时按距上一步的间隔算
-	task.Trace.Step("打开列表页", map[string]string{"url": task.URL})
+	task.Trace.Step("抓取列表页", map[string]string{"url": page.URL.String()})
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
 	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})

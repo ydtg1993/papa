@@ -1,6 +1,8 @@
 # 开发容器：带 Go 工具链 + Chromium，源码通过 volume 挂载后 go run 热启动
 FROM golang:1.25-alpine
 
+# 这里的 chromium 只在 browser.binary: system 时被使用；默认 binary: rod 会让 Rod 自己下载
+# 一份到容器内的 ~/.cache/rod/browser（容器重建即丢，dev 环境够用；生产建议挂卷或用 system）。
 RUN apk --no-cache add chromium ffmpeg ca-certificates
 
 WORKDIR /app

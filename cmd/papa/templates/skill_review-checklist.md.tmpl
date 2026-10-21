@@ -7,6 +7,8 @@ Use this for audits and pull-request reviews. Report findings by severity with f
 - Unknown strict YAML keys, legacy scheduler configuration, invalid durations, missing enabled-section fields.
 - Duplicate site keys, or a duplicate stage name **within one site** (the same name in two sites is legal).
 - A browser stage omits `NeedsBrowser`, or download code assumes removed `NeedsFiledown`/`NeedsM3U8` methods validate startup wiring.
+- A stage that captures an automatically-fired network request hand-rolls `EachEvent` instead of `engine.CaptureRequest`; failures then lack the archived page and candidate-request trace step.
+- A browser stage that needs JS/idle waits uses raw Rod instead of `engine.FetchRenderedPageWith` (`WaitSelector` / `WaitJS` / `WaitRequestIdle`).
 - File/M3U8 downloads omit explicit request-context propagation via the matching `OptionsFromRequest` helper when headers, proxy, cookies, or referer are required.
 - New GORM or optional framework tables were not explicitly migrated.
 
@@ -16,7 +18,7 @@ Use this for audits and pull-request reviews. Report findings by severity with f
 - Parser returns success for an unexpected empty selection.
 - Permanent structure/not-found/config errors use ordinary retryable errors.
 - HTTP classification parses strings rather than typed/status helpers.
-- Child task identity is absent from persisted Meta or unstable.
+- Child task identity is absent from persisted Meta or unstable; for sites whose hostname changes, the key is not host-independent (`papa.TaskKey`).
 - Direct task-status mutation bypasses the engine.
 - A dedicated-table upsert overwrites local/download state with empty values.
 - Concurrent child tasks perform read-modify-write without transaction or condition guards.

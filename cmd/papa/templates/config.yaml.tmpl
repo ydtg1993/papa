@@ -46,7 +46,7 @@ browser:
   binary: rod                  # rod=Rod 自动下载并管理（服务器不用手装）；system=系统已安装的；path=用 browser_path
   browser_path: ""             # 仅 binary: path（或 binary 留空）时生效；binary: rod/system 时写它会被拒绝
   self_check: false            # true = 启动时真实启动一次浏览器（rod 模式会触发下载），起不来就启动失败
-  flags: {}                    # 额外 Chromium 开关；键=开关名，值为空 = 布尔开关，如 {disable-gpu: "", renderer-process-limit: "2"}
+  flags: {}                    # 额外 Chromium 开关；键=开关名，值为空 = 布尔开关；数字要加引号，如 {disable-gpu: "", renderer-process-limit: "2"}
   # 请求头写站点声明（sites/<站名>.go 的 Headers，抓取与下载都认）；这里是**全局默认层**，
   # 只放与站点无关的头（多站共用的那一层）：headers: {Accept-Language: "zh-CN,zh;q=0.9"}
 

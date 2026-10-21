@@ -54,7 +54,7 @@
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
 | `stop_timeout` | duration | `5s` | 优雅退出时等各阶段 worker 把队列跑完的上限（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
-| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补两条：「任务失败」（失败尝试的**原因**，带分类与消息）与「归档页面」（带文件名，抽屉里可直接下载）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：计数与阈值**每站一份**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
@@ -203,7 +203,10 @@ crawler:
 - **trace 里连得起来**：归档后引擎会补一条 `归档页面` 步骤，data 里就是文件名 —— 后台「追踪」抽屉里"失败"与"那一页"是同一条线索。
   （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{site}/{stage}/task-{id}-try-{retry}-*` 在目录里找即可。）
 - **写盘失败不影响任务**：归档是排查辅助，写不进去只记 WARN（磁盘满、目录只读都不该让任务失败）。
-- **两条抓取路径都覆盖**：`FetchHTML`（静态）与 `FetchRendered`（浏览器渲染）。后者的原始 HTML 本来就是 `page.HTML()` 读出来的（解析文档必须付的代价），登记不额外花 CDP 调用；它拿不到状态码与 Content-Type，元信息里留 0/空。
+- **几条抓取路径都覆盖**：`FetchHTML`（静态）、`FetchRendered` / `FetchRenderedPage(With)`（渲染）与
+  `engine.CaptureRequest`（捕获）。渲染/捕获的原始 HTML 本来就已读出来，登记不额外花 CDP 调用；
+  等待条件失败时由 `browser.WaitError.HTML` 带出、捕获失败时由 `CaptureResult.HTML` 带出，
+  引擎层统一登记。它们拿不到状态码与 Content-Type，元信息里留 0/空。
 - 保留期清理每小时巡检一次（与 trace 的清理同频），按文件修改时间删，`ctx` 取消即收工。
 
 > **后台能直接把那一页拿走**：「追踪」抽屉里带「下载这一页」按钮，走 `GET /api/task/page?file=<相对路径>` ——

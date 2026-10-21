@@ -63,6 +63,8 @@ err := engine.SubmitTask(&papa.Task{
 
 In production code, handle a failed submit by stopping or returning the error according to the project’s batching strategy. Do not add duplicate log lines when `SubmitTask` already logs the failure.
 
+When the same page can be reached through different hostnames (mirrors / domain changes), derive the key with `papa.TaskKey(site, stage, rawURL)` — it returns `site:stage:<path?query>` without the host. It does not change the default key; assign it to `Task.IdempotencyKey` explicitly.
+
 ## Parser boundary
 
 Keep network behavior outside parsing:
