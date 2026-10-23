@@ -1500,3 +1500,51 @@ func TestResumeCrawlingRejectsStageWithoutSite(t *testing.T) {
 		t.Error("mo.js 的 resumeCrawling 没有拦住「有 stage 没 site」的调用 —— 会发成 {}、被服务端当成全部放行")
 	}
 }
+
+// /monitor 首帧的登录框由服务端下发的 data-auth-required 决定：一条令牌都没配置时后端本来就开放，
+// 不能仅仅因为浏览器 localStorage 没有 key 就弹登录（否则本地开发每次刷新都闪一下登录框）。
+func TestMonitorTemplateAuthRequiredFlag(t *testing.T) {
+	verify := func(*http.Request) (string, bool) { return "", true }
+	for _, tt := range []struct {
+		name string
+		cfg  MonitorConfig
+		want string
+	}{
+		{"未注入校验器（等价于没配凭据）", MonitorConfig{}, `data-auth-required="0"`},
+		{"宿主报告令牌表为空", MonitorConfig{VerifyToken: verify, AuthRequired: func() bool { return false }}, `data-auth-required="0"`},
+		{"有令牌", MonitorConfig{VerifyToken: verify, AuthRequired: func() bool { return true }}, `data-auth-required="1"`},
+		{"只给校验器时保守要求登录", MonitorConfig{VerifyToken: verify}, `data-auth-required="1"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := serve(NewMonitor(emptyGetter, testLogger{t}, tt.cfg), http.MethodGet, "/monitor", nil)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.want) {
+				t.Fatalf("页面里缺少 %q", tt.want)
+			}
+		})
+	}
+}
+
+// mo.js 的启动分支要跟着服务端的 auth-required 走：
+// 0 令牌时不要停在登录页；需要令牌且没有本地凭据才停在登录框，登录成功后再启动轮询。
+func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
+	js, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	raw := string(js)
+	for _, want := range []string{
+		"function authRequired()",
+		"if (authRequired() && !loadKey())",
+		"function startPolling()",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("mo.js 里缺少 %q", want)
+		}
+	}
+	if strings.Contains(raw, "if (loadKey()) hideLogin(); else showLogin(false);") {
+		t.Error("mo.js 还留着「没 key 就无条件弹登录」的旧逻辑 —— 0 令牌环境每次刷新都会闪登录框")
+	}
+}

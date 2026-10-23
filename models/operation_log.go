@@ -9,7 +9,7 @@ import (
 // OperationLog 后台 OA 的增删改操作记录。
 // 由 server.operation_log 开关控制：开启才建表、才写库。
 type OperationLog struct {
-	ID uint `gorm:"primarykey" json:"id"`
+	ID uint `gorm:"primarykey;comment:主键" json:"id"`
 
 	Table  string         `gorm:"type:varchar(128);not null;index;comment:表格 key" json:"table"`
 	Action string         `gorm:"type:varchar(128);not null;comment:动作 key" json:"action"`

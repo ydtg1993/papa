@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-auth-required="{{if .AuthRequired}}1{{else}}0{{end}}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,13 +7,17 @@
     <!-- 首帧之前就定好「主题」与「登录遮罩显不显示」。
          这两件事 mo.js 也会做，但它在 </body> 前、还要等外部脚本加载完 —— 那之前浏览器
          已经能画第一帧了：深色用户会闪一下白底，有凭据的人每次刷新会闪一下登录框。
-         内联在这里（样式表之前）就不会。键名与 mo.js 的 themeKey / KEY_STORAGE 保持一致。 -->
+         内联在这里（样式表之前）就不会。键名与 mo.js 的 themeKey / KEY_STORAGE 保持一致。
+         data-auth-required 由服务端下发：一条访问令牌都没配置时后端本来就开放，
+         前端不能再看“本地没有 key”就弹登录（那会让本地开发每次刷新都闪登录框）。 -->
     <script>
         (function () {
             var d = document.documentElement;
             var theme = localStorage.getItem('papa-theme');
             if (theme) d.setAttribute('data-theme', theme);
-            if (!localStorage.getItem('papa_monitor_key')) d.classList.add('need-login');
+            if (d.getAttribute('data-auth-required') === '1' && !localStorage.getItem('papa_monitor_key')) {
+                d.classList.add('need-login');
+            }
         })();
     </script>
     <link rel="stylesheet" href="/static/mo.css">

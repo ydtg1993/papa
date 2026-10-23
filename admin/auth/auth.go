@@ -83,6 +83,19 @@ func CountAll(db *gorm.DB) (int64, error) {
 	return n, err
 }
 
+// Required 报告后台当前是否强制需要访问令牌：表里存在任何一条令牌（启用或停用）都算需要。
+//
+// 用途只有一个：`/monitor` 页面首帧据此决定要不要显示登录遮罩。表里一条都没有时后端本来就把
+// `/api/*` 当“还没配凭据”开放（见 Verifier），前端再弹登录只会让本地开发每次刷新闪一下。
+// 查库失败按 true 处理（fail closed）：宁可多弹一次登录，也不把需要凭据的环境画成开放。
+func Required(db *gorm.DB) bool {
+	total, err := CountAll(db)
+	if err != nil {
+		return true
+	}
+	return total > 0
+}
+
 // Logger 只要一个 Errorf —— 避免为一个日志接口把宿主拉进来。
 type Logger interface {
 	Errorf(format string, args ...any)

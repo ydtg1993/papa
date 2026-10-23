@@ -84,18 +84,20 @@ func Models() []any { return []any{&Series{}, &Episode{}} }
 ```go
 // models/series.go
 type Series struct {
-    ID        uint64    `gorm:"primaryKey"`
-    Site      string    `gorm:"type:varchar(128);not null;uniqueIndex:ux_series_site_key,priority:1"`
+    ID        uint64    `gorm:"primaryKey;comment:主键"`
+    Site      string    `gorm:"type:varchar(128);not null;uniqueIndex:ux_series_site_key,priority:1;comment:站点 Key"`
     SourceKey string    `gorm:"type:varchar(191);not null;uniqueIndex:ux_series_site_key,priority:2;comment:站点内稳定标识"`
-    Title     string
-    CoverURL  string
+    Title     string    `gorm:"type:varchar(512);not null;comment:标题"`
+    CoverURL  string    `gorm:"type:varchar(2048);comment:封面 URL"`
     Status    int       `gorm:"index;comment:业务自己的状态机"`
-    CreatedAt time.Time `gorm:"autoCreateTime"`
-    UpdatedAt time.Time `gorm:"autoUpdateTime"`
+    CreatedAt time.Time `gorm:"autoCreateTime;comment:创建时间"`
+    UpdatedAt time.Time `gorm:"autoUpdateTime;comment:更新时间"`
 }
 ```
 
 建表：项目目录里跑 `papa migrate`（等价于 `make migrate`）；它只增不减，重复跑安全。
+
+**每个字段都要写 `comment:...`**：注释随 `papa migrate` 进库（`information_schema.COLUMNS.COLUMN_COMMENT`），排查时不用再猜列含义。注意 gorm 的 `MigrateColumn` 会跳过**已存在表的主键列**注释，老库的 `id` 注释要手工 `ALTER TABLE ... MODIFY COLUMN ... COMMENT` 补（新建表时随 CREATE TABLE 自动带上）。
 
 ---
 

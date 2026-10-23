@@ -29,6 +29,9 @@
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
     function saveKey(k) { localStorage.setItem(KEY_STORAGE, k); }
     function clearKey() { localStorage.removeItem(KEY_STORAGE); }
+    // 服务端在 <html data-auth-required> 上下发「当前是否设了访问令牌」。
+    // 一条都没设时后端本来就把 /api/* 当开放，前端不要弹登录（否则本地开发每次刷新闪一下）。
+    function authRequired() { return document.documentElement.getAttribute('data-auth-required') === '1'; }
 
     function showLogin(showErr) {
         // 可见性挂在 <html> 的 need-login 上（不是遮罩自己的 .hidden）：这样 <head> 里的
@@ -40,7 +43,7 @@
     function hideLogin() { document.documentElement.classList.remove('need-login'); }
     // 输密钥后除了拉数据，也要重建两个动态菜单 —— 否则首次访问输完密钥，
     // 侧边栏的表格页与自定义页都是空的，要手动刷新才出来
-    function submitKey() { saveKey(document.getElementById('key').value); fetchData(); renderNav(); }
+    function submitKey() { saveKey(document.getElementById('key').value); startPolling(); }
     function setStatus(ok, text) {
         document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
         document.getElementById('statusText').textContent = text;
@@ -1159,10 +1162,19 @@
         }
     });
 
-    // 有本地凭据就直接进（遮罩的状态 <head> 的内联脚本已经在首帧前定好了，这里兜底：
-    // 万一那段脚本没了，也不会变成"没凭据却不弹登录框"）；没凭据则弹出并聚焦输入框
-    if (loadKey()) hideLogin(); else showLogin(false);
-
-    fetchData();
-    renderNav();
-    setInterval(fetchData, 3000);
+    // 有本地凭据或服务端根本没配置令牌 → 直接进；需要令牌且本地没凭据 → 停在登录框，
+    // 等登录成功后再开始轮询/渲染菜单（避免未登录状态下每 3 秒刷一次 401）。
+    function startPolling() {
+        if (!startPolling.started) {
+            startPolling.started = true;
+            setInterval(fetchData, 3000);
+        }
+        fetchData();
+        renderNav();
+    }
+    if (authRequired() && !loadKey()) {
+        showLogin(false);
+    } else {
+        hideLogin();
+        startPolling();
+    }

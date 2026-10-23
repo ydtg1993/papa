@@ -97,6 +97,10 @@ type MonitorConfig struct {
 	// VerifyTokenValue 单独校验一个**令牌值**（不是请求头），给关停这类高危操作做二次确认用：
 	// 调用方要把自己的令牌放进请求体再输一遍。nil 表示不支持关停（该接口直接 404）。
 	VerifyTokenValue func(token string) (operator string, ok bool)
+	// AuthRequired 可空：宿主告诉后台页面「当前是否强制需要令牌」（papa 用 admin/auth.Required
+	// 查令牌表）。模板首帧据此决定要不要显示登录遮罩 —— 一条令牌都没配置时后端本来就开放，
+	// 前端也不该弹登录。nil 时按 VerifyToken != nil 兜底（保守：有校验器就要求登录）。
+	AuthRequired func() bool
 }
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -335,6 +339,15 @@ func (s *Monitor) authOK(r *http.Request) (operator string, ok bool) {
 		return "", true
 	}
 	return s.cfg.VerifyToken(r)
+}
+
+// authRequired 报告后台页面是否应该要求登录（只影响 /monitor 首帧要不要画登录遮罩，
+// 不参与接口鉴权 —— 接口鉴权由 VerifyToken 决定）。nil 注入时按“有校验器就要求”兜底。
+func (s *Monitor) authRequired() bool {
+	if s.cfg.AuthRequired != nil {
+		return s.cfg.AuthRequired()
+	}
+	return s.cfg.VerifyToken != nil
 }
 
 // loadTemplate 加载 HTML 模板（懒加载，线程安全）
@@ -927,6 +940,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// monitorTemplateData 是渲染 /monitor HTML 时交给模板的唯一数据。
+// 目前只有“要不要弹登录框”这一项：一条访问令牌都没配置时不弹（见 AuthRequired）。
+type monitorTemplateData struct {
+	AuthRequired bool
+}
+
 // htmlHandler 返回 HTML 监控页面
 func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := s.loadTemplate()
@@ -936,7 +955,7 @@ func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, nil); err != nil {
+	if err := tmpl.Execute(w, monitorTemplateData{AuthRequired: s.authRequired()}); err != nil {
 		s.logger.Errorf("execute monitor template: %s", err.Error())
 	}
 }

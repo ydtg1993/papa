@@ -552,7 +552,9 @@ func (a *App) httpServer(ctx context.Context) {
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
 		VerifyToken: auth.Verifier(a.DB, a.Logger.Sys),
-		Whitelist:   whitelist,
+		// 后台页面首帧用：令牌表一条都没有时后端本来就是开放的，前端也不必弹登录框。
+		AuthRequired: func() bool { return auth.Required(a.DB) },
+		Whitelist:    whitelist,
 		// 设置页保存白名单 → 落 crawler_config；成功后 admin/server 自己换判定缓存（本进程即时生效）。
 		SaveWhitelist: func(entries []string, operator string) error {
 			return whitelistStore.Save(configstore.KeyIPWhitelist, entries, operator)

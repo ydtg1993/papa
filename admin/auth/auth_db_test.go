@@ -163,3 +163,25 @@ func TestWarnIfNoTokenBranches(t *testing.T) {
 		}
 	})
 }
+
+// Required 报告后台首帧要不要弹登录框：令牌表一条都没有 = 不要求；存在任意一条（含停用）= 要求；
+// 查库失败 fail closed（宁可多弹一次登录，也不把需要凭据的环境画成开放）。
+func TestRequired(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup func(*gormfake.DB)
+		want  bool
+	}{
+		"一条都没有 → 不要求":           {setup: func(f *gormfake.DB) { f.SetCounts(0, 0) }, want: false},
+		"有启用令牌 → 要求":            {setup: func(f *gormfake.DB) { f.SetCounts(1, 1) }, want: true},
+		"全部停用（表里还有行）→ 要求":       {setup: func(f *gormfake.DB) { f.SetCounts(0, 2) }, want: true},
+		"查库失败 → fail closed 要求": {setup: func(f *gormfake.DB) { f.SetQueryError("count(", "db down") }, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := gormfake.New()
+			tc.setup(f)
+			if got := Required(gormfake.MustOpen(f)); got != tc.want {
+				t.Fatalf("Required = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -26,8 +26,8 @@ type Config struct {
 	// 审计的另一半在 crawler_operation_log，而那个开关可以关 —— 所以"谁改的"记在行上。
 	UpdatedBy string `gorm:"column:updated_by;type:varchar(128);comment:最后修改人（后台令牌的 operator）"`
 
-	CreatedAt time.Time `gorm:"autoCreateTime"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+	CreatedAt time.Time `gorm:"autoCreateTime;comment:创建时间"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime;comment:更新时间"`
 }
 
 // TableName 指定表名，与其它框架模型保持 crawler_ 前缀。
