@@ -379,9 +379,57 @@
             + '<div class="tile submitted"><div class="k">已提交</div><div class="v">' + q.submitted + '</div></div>'
             + '</div>';
     }
-    function renderQueueSummary(stages) {
+    // 概览里每个阶段压缩成一行：阶段名 + 三个关键数字 + 完成小字。
+    // 三个数字是「现在怎么样」（排队/执行中/错误），完成量是累计视角，放小字不占视线；
+    // 已提交=累计提交（≈完成+失败+在途），在概览里重复感太强，只在任务队列详情里出现。
+    function stageLine(name, st) {
+        var q = (st && st.queue) || {};
+        function mini(cls, label, val) {
+            return '<span class="mini ' + cls + '" title="' + label + '">' + '<i></i>' + label
+                + ' <b>' + (val || 0) + '</b></span>';
+        }
+        return '<div class="stage-line">'
+            + '<span class="stage-name">' + esc(stageLabel(name, st)) + '</span>'
+            + '<span class="mini-group">'
+            + mini('queued', '排队', q.queue_len)
+            + mini('running', '执行中', q.in_progress)
+            + mini('failed', '错误', q.failed)
+            + '</span>'
+            + '<span class="stage-done">完成 ' + (q.completed || 0) + '</span>'
+            + '</div>';
+    }
+    // 任务队列概览分两种形态：
+    //   - 概览（全部站点）：**按站点分卡片**。多站都叫 catalog/detail，平铺在一起只看阶段名
+    //     分不清是哪个站；卡片里每个阶段只占一行，扫一眼就知道哪站在排队/出错。
+    //   - 选中某站点 Tab：保持原来的多阶段详情（每阶段五格大数字 + 完成量），不压缩。
+    function renderQueueSummary(stages, sites) {
         var el = document.getElementById('dash-queue');
         var names = Object.keys(stages || {});
+        if (currentSite === null && sites && sites.length > 0) {
+            el.classList.add('queue-site-grid');
+            var bySite = {};
+            names.forEach(function (name) {
+                var st = stages[name];
+                // 正常服务端一定带 site（阶段键只是 `site:stage` 的复合标识）；老快照没有 site 时
+                // 从键里取站点段兜底，至少不会把一条阶段错归到别的站。
+                var site = (st && st.site) || name.split(':')[0];
+                (bySite[site] = bySite[site] || []).push(name);
+            });
+            el.innerHTML = sites.map(function (site) {
+                var list = (bySite[site] || []).slice().sort();
+                var head = '<div class="site-card-head"><h3>' + esc(siteLabel(site)) + '</h3>'
+                    + '<span class="muted">' + list.length + ' 个阶段</span></div>';
+                if (list.length === 0) {
+                    return '<div class="site-card">' + head + '<div class="empty">暂无运行中的阶段</div></div>';
+                }
+                return '<div class="site-card">' + head
+                    + '<div class="stage-lines">' + list.map(function (name) {
+                        return stageLine(name, stages[name]);
+                    }).join('') + '</div></div>';
+            }).join('');
+            return;
+        }
+        el.classList.remove('queue-site-grid');
         if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
         el.innerHTML = names.map(function (name) {
             return '<div class="stage"><h3>' + esc(stageLabel(name, stages[name])) + '</h3>' + stageTiles(stages[name].queue) + '</div>';
@@ -599,7 +647,7 @@
         var view = siteView(data.stages, data.queues, data.sites);
         renderSystem(data.system);
         renderDirs(data.system && data.system.dirs);
-        renderQueueSummary(view.stages);
+        renderQueueSummary(view.stages, view.sites);
         renderQueue(view.stages);
         renderQueues(view.queues);
         renderCustom(data.custom);

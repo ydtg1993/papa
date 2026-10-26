@@ -479,14 +479,29 @@ func warnIfOpenToAll(log *logrus.Logger, whitelist []string) {
 // 这个 ticker 只兜上面两种；30s 是"够快，也不至于拿它当热路径"的量级。
 const whitelistReloadInterval = 30 * time.Second
 
+// whitelistCacheTTL 白名单读取的进程内缓存时长（装饰器 CachedStringListReader 的 TTL）。
+//
+// 重载循环每 30 秒跑一次，但不该每 30 秒查一次库：白名单值几乎不变，读库结果缓存 5 分钟后
+// 才真正回源。代价是"别的进程/运维直接改 SQL"最迟约 5 分钟可见（本进程后台保存会 Invalidate，
+// 即时生效）。要调可见性/查库频率的平衡就改这个常量。
+const whitelistCacheTTL = 5 * time.Minute
+
+// tokenCountCacheTTL 是「访问令牌数量」的进程内缓存时长（auth.TokenCounter 的 TTL）。
+//
+// 每个 /api/* 请求都要 COUNT 一次启用令牌数，`/monitor` 首帧还要 COUNT 总数 —— 而令牌
+// 数量几乎不变。它比白名单的 5 分钟短得多：enabled=0 时后台按"还没配凭据"放行，缓存
+// 太旧会让刚用 `papa token add` 建的令牌在 TTL 内不生效（后台仍敞开）。
+// 本进程后台令牌页的写操作会立即 Invalidate（见 tokenWriteHook）；CLI/直接改库最迟 TTL 可见。
+const tokenCountCacheTTL = time.Minute
+
 // loadIPWhitelist 从配置存储读一次白名单（启动那一次与定期重载都走这里）。
 //
 // 生效语义（与 configstore.KeyIPWhitelist 的注释、docs 里那张表逐条对应）：
 // **行不存在 / 空数组 / 值解析不出来 → 不限制来源**；数组里有效的那几条 → 只允许这些来源。
 // 读失败单独记 Error —— 这一档等于把限制**悄悄放宽了**，日志里必须留下痕迹
 // （语义是运营定的：宁可放宽，也不因为一次手改把自己锁在后台外面）。值的形状校验在 store 那层。
-func loadIPWhitelist(store *configstore.Store, log *logrus.Logger) []string {
-	entries, err := store.LoadStrings(configstore.KeyIPWhitelist)
+func loadIPWhitelist(reader configstore.StringListReader, log *logrus.Logger) []string {
+	entries, err := reader.LoadStrings(configstore.KeyIPWhitelist)
 	if err != nil {
 		log.Errorf("来源白名单读不出来，按「不限制来源」继续：%s", err.Error())
 		return nil
@@ -495,7 +510,9 @@ func loadIPWhitelist(store *configstore.Store, log *logrus.Logger) []string {
 }
 
 // reloadWhitelistLoop 定期把库里的白名单同步进本进程的判定缓存。
-func (a *App) reloadWhitelistLoop(ctx context.Context, store *configstore.Store, mon *server.Monitor) {
+//
+// 读经 CachedStringListReader：30 秒的 tick 只打内存，真正的 SELECT 由 TTL 摊薄。
+func (a *App) reloadWhitelistLoop(ctx context.Context, reader configstore.StringListReader, mon *server.Monitor) {
 	ticker := time.NewTicker(whitelistReloadInterval)
 	defer ticker.Stop()
 	for {
@@ -503,8 +520,35 @@ func (a *App) reloadWhitelistLoop(ctx context.Context, store *configstore.Store,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			mon.SetWhitelist(loadIPWhitelist(store, a.Logger.Sys))
+			mon.SetWhitelist(loadIPWhitelist(reader, a.Logger.Sys))
 		}
+	}
+}
+
+// tokenWriteHook 接「访问令牌」页的写操作：成功后让令牌数量缓存失效，同时按开关记审计。
+//
+// 为什么必须失效：新建第一把令牌后，后台要立刻从"还没配凭据（开放）"切到"需要登录"；
+// 不失效就得等 tokenCountCacheTTL，期间页面还是开放状态。失败事件不失效（数据没变）。
+//
+// 抽成独立函数是为了能离线断言"写成功确实 Invalidate"——它的调用点在 httpServer 里，
+// 那一步要真库真端口。
+func tokenWriteHook(counter *auth.TokenCounter, rec *oplog.Recorder) tokenadmin.Hook {
+	return func(ev tokenadmin.Event) {
+		if ev.Err == nil {
+			counter.Invalidate()
+		}
+		if rec == nil {
+			return
+		}
+		rec.RecordEvent(oplog.Event{
+			Table: ev.Table, Action: ev.Action,
+			RowID:    strconv.FormatUint(uint64(ev.ID), 10),
+			Values:   ev.Values,
+			Err:      ev.Err,
+			IP:       ev.IP,
+			Operator: auth.OperatorFrom(ev.Req.Context()),
+			At:       ev.At,
+		})
 	}
 }
 
@@ -537,10 +581,15 @@ func (a *App) httpServer(ctx context.Context) {
 		// 而"起不来"至少把问题摆在运维面前（报错里点名 `papa migrate`）。
 		panic(fmt.Errorf("后台运行期配置表没就绪：%w", err))
 	}
-	whitelist := loadIPWhitelist(whitelistStore, a.Logger.Sys)
+	// 读白名单的装饰器：重载循环每 30s 打一次内存，真正查库由 TTL 摊薄（见 whitelistCacheTTL）。
+	whitelistReader := configstore.NewCachedStringListReader(whitelistStore, whitelistCacheTTL)
+	whitelist := loadIPWhitelist(whitelistReader, a.Logger.Sys)
 	warnIfOpenToAll(a.Logger.Sys, whitelist)
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
+
+	// 令牌数量缓存：Verifier / Required / Confirmer 都会被每个请求问到，别让它变成 COUNT 刷屏。
+	tokenCounter := auth.NewTokenCounter(a.DB, tokenCountCacheTTL)
 
 	// 操作日志：开启时，oao 表格页的动作、后台自带的「访问令牌」页、以及熔断放行都往这里记。
 	// 它得**先于** MonitorConfig 构造 —— 熔断放行的 OnBreakerResume 回调要闭包住这个 rec。
@@ -551,13 +600,18 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		VerifyToken: auth.Verifier(a.DB, a.Logger.Sys),
+		VerifyToken: tokenCounter.Verifier(a.Logger.Sys),
 		// 后台页面首帧用：令牌表一条都没有时后端本来就是开放的，前端也不必弹登录框。
-		AuthRequired: func() bool { return auth.Required(a.DB) },
+		AuthRequired: tokenCounter.Required,
 		Whitelist:    whitelist,
 		// 设置页保存白名单 → 落 crawler_config；成功后 admin/server 自己换判定缓存（本进程即时生效）。
 		SaveWhitelist: func(entries []string, operator string) error {
-			return whitelistStore.Save(configstore.KeyIPWhitelist, entries, operator)
+			if err := whitelistStore.Save(configstore.KeyIPWhitelist, entries, operator); err != nil {
+				return err
+			}
+			// 写成功才失效缓存：否则 30s 后的重载会拿旧缓存把刚保存的值盖回内存。
+			whitelistReader.Invalidate(configstore.KeyIPWhitelist)
+			return nil
 		},
 		Metrics:            a.Engine.GetMetrics,
 		QueueStats:         a.Engine.GetQueueStats,
@@ -585,7 +639,7 @@ func (a *App) httpServer(ctx context.Context) {
 			})
 		},
 		TaskTrace:        a.Engine.ListTrace,
-		VerifyTokenValue: auth.Confirmer(a.DB, a.Logger.Sys),
+		VerifyTokenValue: tokenCounter.Confirmer(a.Logger.Sys),
 		BreakerStatuses:  a.Engine.BreakerStatuses,
 		// 暂停/放行的 scope 有两层：`stage` 为空 = 整站，否则只动那一站的某个阶段。
 		// 两层写的是**同一张暂停信号表**（见 engine/pause.go），只是 scope 不同。
@@ -648,7 +702,7 @@ func (a *App) httpServer(ctx context.Context) {
 	})
 	mon.Register(mux)
 	// 多实例 / 运维直接改 SQL 的收敛：定期把库里的白名单同步进判定缓存
-	go a.reloadWhitelistLoop(ctx, whitelistStore, mon)
+	go a.reloadWhitelistLoop(ctx, whitelistReader, mon)
 
 	// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
 	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
@@ -681,20 +735,8 @@ func (a *App) httpServer(ctx context.Context) {
 	// 「访问令牌」页是后台自带的模块，不走表格组件 —— 它要「新增」，
 	// 而表格组件的动作只回 {"status":"ok"}，没法把服务端生成的明文令牌交给操作人。
 	// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 admin/tokenadmin）。
-	var tokenHook tokenadmin.Hook
-	if rec != nil {
-		tokenHook = func(ev tokenadmin.Event) {
-			rec.RecordEvent(oplog.Event{
-				Table: ev.Table, Action: ev.Action,
-				RowID:    strconv.FormatUint(uint64(ev.ID), 10),
-				Values:   ev.Values,
-				Err:      ev.Err,
-				IP:       ev.IP,
-				Operator: auth.OperatorFrom(ev.Req.Context()),
-				At:       ev.At,
-			})
-		}
-	}
+	// hook 同时负责让令牌数量缓存失效（否则刚建的令牌要等 TTL 才生效）。
+	tokenHook := tokenWriteHook(tokenCounter, rec)
 	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
 
 	// 自定义页与注入（阶段 3 的逃生舱）

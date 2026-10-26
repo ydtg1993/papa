@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v3/admin/configstore"
@@ -61,7 +62,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 	t.Run("行不存在 → 空（不限制）", func(t *testing.T) {
 		f := gormfake.New()
 		log, buf := newLog()
-		if got := loadIPWhitelist(configstore.New(gormfake.MustOpen(f)), log); len(got) != 0 {
+		if got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
 			t.Fatalf("没设过白名单时应当是空，实得 %v", got)
 		}
 		if buf.Len() != 0 {
@@ -73,7 +74,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8"]`)})
 		log, _ := newLog()
-		got := loadIPWhitelist(configstore.New(gormfake.MustOpen(f)), log)
+		got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log)
 		if len(got) != 1 || got[0] != "10.0.0.0/8" {
 			t.Fatalf("实得 %v", got)
 		}
@@ -83,7 +84,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`{"a":1}`)})
 		log, buf := newLog()
-		if got := loadIPWhitelist(configstore.New(gormfake.MustOpen(f)), log); len(got) != 0 {
+		if got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
 			t.Fatalf("坏值应当按不限制来源继续，实得 %v", got)
 		}
 		if !strings.Contains(buf.String(), "不限制来源") {
@@ -95,7 +96,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetQueryError("crawler_config", "库抖了")
 		log, buf := newLog()
-		if got := loadIPWhitelist(configstore.New(gormfake.MustOpen(f)), log); len(got) != 0 {
+		if got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
 			t.Fatalf("库抖动时按不限制来源继续，实得 %v", got)
 		}
 		if buf.Len() == 0 {
@@ -108,5 +109,31 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 func TestWhitelistKeyIsTheStoreConstant(t *testing.T) {
 	if configstore.KeyIPWhitelist != "ip_whitelist" {
 		t.Fatalf("键名变了：%q —— 与 docs 和配置注释里的说明要对得上", configstore.KeyIPWhitelist)
+	}
+}
+
+// TTL 缓存：重载循环每 30 秒调一次 loadIPWhitelist，但 TTL 内不应该重复查库。
+func TestLoadIPWhitelistUsesTTLCache(t *testing.T) {
+	f := gormfake.New()
+	f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8"]`)})
+	reader := configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute)
+	log := logrus.New()
+	log.SetLevel(logrus.FatalLevel)
+
+	for i := 0; i < 3; i++ {
+		if got := loadIPWhitelist(reader, log); len(got) != 1 || got[0] != "10.0.0.0/8" {
+			t.Fatalf("第 %d 次读白名单 = %v", i+1, got)
+		}
+	}
+	if hits := strings.Count(f.Written(), "crawler_config"); hits != 1 {
+		t.Fatalf("TTL 内查库次数 = %d，want 1；实际 SQL：\n%s", hits, f.Written())
+	}
+
+	reader.Invalidate(configstore.KeyIPWhitelist)
+	if got := loadIPWhitelist(reader, log); len(got) != 1 {
+		t.Fatalf("失效后重读 = %v", got)
+	}
+	if hits := strings.Count(f.Written(), "crawler_config"); hits != 2 {
+		t.Fatalf("Invalidate 后查库次数 = %d，want 2", hits)
 	}
 }

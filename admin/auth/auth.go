@@ -88,12 +88,11 @@ func CountAll(db *gorm.DB) (int64, error) {
 // 用途只有一个：`/monitor` 页面首帧据此决定要不要显示登录遮罩。表里一条都没有时后端本来就把
 // `/api/*` 当“还没配凭据”开放（见 Verifier），前端再弹登录只会让本地开发每次刷新闪一下。
 // 查库失败按 true 处理（fail closed）：宁可多弹一次登录，也不把需要凭据的环境画成开放。
+//
+// 这是不带缓存的便捷入口（启动期/一次性调用用）；每个请求都要走的路径用
+// NewTokenCounter(db, ttl).Required，免得首帧渲染把 COUNT(*) 刷进日志。
 func Required(db *gorm.DB) bool {
-	total, err := CountAll(db)
-	if err != nil {
-		return true
-	}
-	return total > 0
+	return NewTokenCounter(db, 0).Required()
 }
 
 // Logger 只要一个 Errorf —— 避免为一个日志接口把宿主拉进来。
@@ -108,35 +107,11 @@ type Logger interface {
 //   - **表里一条令牌都没有** → 放行（视为"还没配凭据"，与本项目既有语义一致；WarnIfNoToken 会在启动时喊出来）；
 //   - **有令牌但全被停用** → 拒绝（fail closed）—— 否则"停用最后一条"会等于把后台悄悄敞开；
 //   - **查库出错** → 拒绝并记日志（fail closed）。
+//
+// 这是不带缓存的便捷入口；每个 /api/* 请求都会走它，所以 app 装配时用
+// NewTokenCounter(db, ttl).Verifier —— 令牌数量按 TTL 缓存，令牌本身仍逐请求查库。
 func Verifier(db *gorm.DB, log Logger) func(r *http.Request) (string, bool) {
-	return func(r *http.Request) (string, bool) {
-		n, err := CountEnabled(db)
-		if err != nil {
-			if log != nil {
-				log.Errorf("统计访问令牌失败: %s", err.Error())
-			}
-			return "", false
-		}
-		if n == 0 {
-			total, err := CountAll(db)
-			if err != nil {
-				if log != nil {
-					log.Errorf("统计访问令牌失败: %s", err.Error())
-				}
-				return "", false
-			}
-			// 一条都没配过 → 未配置凭据；配过但都停用了 → 拒绝
-			return "", total == 0
-		}
-		op, ok, err := Verify(db, Extract(r))
-		if err != nil {
-			if log != nil {
-				log.Errorf("校验访问令牌失败: %s", err.Error())
-			}
-			return "", false
-		}
-		return op, ok
-	}
+	return NewTokenCounter(db, 0).Verifier(log)
 }
 
 // Confirmer 造一个「要求调用方把令牌重新输一遍」的校验闭包，给关停这类高危操作做二次确认用。
@@ -147,27 +122,10 @@ func Verifier(db *gorm.DB, log Logger) func(r *http.Request) (string, bool) {
 //
 // **这不是新的安全边界**：调用方手里本来就有能过中间件的令牌。它的作用是让"关停"这个动作
 // 必须由人再确认一次（误点、开着页面走开都不至于把服务停掉），顺带把操作人记下来。
+//
+// 这是不带缓存的便捷入口；app 装配时用 NewTokenCounter(db, ttl).Confirmer。
 func Confirmer(db *gorm.DB, log Logger) func(token string) (operator string, ok bool) {
-	return func(token string) (string, bool) {
-		total, err := CountAll(db)
-		if err != nil {
-			if log != nil {
-				log.Errorf("统计访问令牌失败: %s", err.Error())
-			}
-			return "", false // 查库出错 → fail closed
-		}
-		if total == 0 {
-			return "", true
-		}
-		op, ok, err := Verify(db, strings.TrimSpace(token))
-		if err != nil {
-			if log != nil {
-				log.Errorf("校验访问令牌失败: %s", err.Error())
-			}
-			return "", false
-		}
-		return op, ok
-	}
+	return NewTokenCounter(db, 0).Confirmer(log)
 }
 
 // WarnIfNoToken 启动时调用：表里一条令牌都没有就喊一声。

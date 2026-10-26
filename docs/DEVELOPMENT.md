@@ -113,6 +113,7 @@ admin/                          ★后台模块：**对外公开**，业务项�
   oplog/        操作日志（异步写入器 + 只读表格页）
   tasksource/   内置「任务」表，动作接线的参考实现
   gormsource/   配置驱动的 oao.Source，业务表格页直接复用
+  configstore/  运行期配置存储（crawler_config 表）+ 读缓存层（内存 / TTL 装饰器）
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ metrics/ msgqueue/ track/ breaker/

@@ -88,8 +88,9 @@ server:
   port: 9090
   # 访问令牌在 crawler_access_token 表（一条令牌一个操作人）：papa token add --operator <名字>，
   # 明文只打印一次、库里只存 sha256；一条都没有时 /api/* 对白名单内来源完全开放（启动会警告）。
+  # 令牌数量有 1 分钟进程内 TTL 缓存：后台令牌页的写操作即时生效；papa token add（另一进程）最迟约 1 分钟可见。
   # 来源 IP/CIDR 白名单**不在配置里**了：它存在 crawler_config 表的 ip_whitelist 行
-  # （运行期在后台「设置」页改，改完立刻生效）。空 / 读不到 = 不限制来源，只靠访问令牌那道门。
+  # （运行期在后台「设置」页改，改完立刻生效；本进程读有 5 分钟 TTL 缓存，跨实例/直接改 SQL 最迟约 5 分钟可见）。空 / 读不到 = 不限制来源，只靠访问令牌那道门。
   monitor_dirs:                   # 监控页展示的业务目录占用（name: path）
     downloads: "./downloads"
     logs: "./logs"

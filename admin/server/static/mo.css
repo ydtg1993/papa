@@ -260,6 +260,49 @@ section > h2 {
 .tile.failed { background: var(--red); }
 .tile.submitted { background: var(--purple); }
 
+/* ---- Dashboard queue overview：概览按站点分卡片（阶段压成一行） ---- */
+.queue-site-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+.site-card {
+    background: var(--card); border: var(--border-width) solid var(--border-color);
+    box-shadow: 4px 4px 0 0 var(--shadow-color); padding: 14px 16px;
+}
+.site-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.site-card-head h3 {
+    margin: 0; font-family: var(--font-display); font-size: 15px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .5px; display: inline-block;
+    background: var(--green); border: 2px solid var(--border-color);
+    box-shadow: 3px 3px 0 0 var(--shadow-color); padding: 3px 11px; color: #111;
+}
+.site-card-head .muted { font-size: 11px; font-family: var(--font-mono); color: var(--muted-foreground); }
+.site-card .empty { padding: 2px 0; }
+.stage-lines { display: flex; flex-direction: column; }
+.stage-line {
+    display: flex; align-items: center; gap: 10px; padding: 7px 2px;
+    border-bottom: 2px dotted var(--border-color);
+}
+.stage-line:last-child { border-bottom: 0; padding-bottom: 2px; }
+.stage-line .stage-name {
+    font-family: var(--font-mono); font-size: 13px; font-weight: 700;
+    min-width: 74px; white-space: nowrap;
+}
+.stage-line .mini-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.stage-line .mini {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 2px solid var(--border-color); background: var(--card);
+    padding: 1px 7px; font-size: 11px; font-family: var(--font-mono); white-space: nowrap;
+}
+.stage-line .mini i {
+    width: 8px; height: 8px; border: 1px solid var(--border-color); display: inline-block;
+}
+.stage-line .mini.queued i { background: var(--blue); }
+.stage-line .mini.running i { background: var(--orange); }
+.stage-line .mini.failed i { background: var(--red); }
+.stage-line .mini b { font-family: var(--font-display); font-size: 12px; }
+.stage-line .stage-done {
+    margin-left: auto; font-size: 11px; font-family: var(--font-mono);
+    color: var(--muted-foreground); white-space: nowrap;
+}
+
 /* ---- Table ---- */
 .table-wrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }

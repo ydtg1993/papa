@@ -1548,3 +1548,56 @@ func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
 		t.Error("mo.js 还留着「没 key 就无条件弹登录」的旧逻辑 —— 0 令牌环境每次刷新都会闪登录框")
 	}
 }
+
+// Dashboard「任务队列概览」在「概览（全部）」Tab 下要**按站点分卡片**（多站都有 catalog/detail，
+// 平铺时只看阶段名分不清是哪一站）；切到具体站点 Tab 时仍走原来的多阶段 tiles 详情。
+// 前端没有测试框架，只能把接线与样式类钉在静态文件里，防止某次重构成"又平铺回去"。
+func TestDashboardQueueOverviewGroupsBySite(t *testing.T) {
+	tpl, err := fs.ReadFile(templateFS, "template.html")
+	if err != nil {
+		t.Fatalf("read template.html: %v", err)
+	}
+	if !strings.Contains(string(tpl), `id="dash-queue"`) {
+		t.Error("template.html 里缺少 id=\"dash-queue\" —— 概览卡片画不进去")
+	}
+	if !strings.Contains(string(tpl), "按站点分卡片") {
+		t.Error("template.html 的「任务队列概览」注释没写清两种形态（概览=站点卡片 / 站点 Tab=多阶段详情）")
+	}
+
+	js, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	raw := string(js)
+	for _, want := range []string{
+		"function stageLine(",
+		"function renderQueueSummary(stages, sites)",
+		"queue-site-grid",
+		"site-card-head",
+		"stage-line",
+		"renderQueueSummary(view.stages, view.sites)",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("mo.js 里缺少 %q —— 概览按站点分组会静默失效", want)
+		}
+	}
+	// 只有「概览」才分组：选中站点 Tab 时必须回到多阶段 tiles 详情。
+	if !strings.Contains(raw, "if (currentSite === null && sites && sites.length > 0)") {
+		t.Error("mo.js 的 renderQueueSummary 没有按 currentSite 区分「概览=站点卡片 / 站点 Tab=多阶段详情」")
+	}
+	if !strings.Contains(raw, "每阶段五格大数字") {
+		t.Error("mo.js 缺少「选中站点仍保持多阶段详情」的注释说明 —— 后来者会误删这条分支")
+	}
+
+	css, err := fs.ReadFile(staticFS, "static/mo.css")
+	if err != nil {
+		t.Fatalf("read mo.css: %v", err)
+	}
+	for _, want := range []string{
+		".queue-site-grid", ".site-card", ".site-card-head", ".stage-line", ".stage-line .mini",
+	} {
+		if !strings.Contains(string(css), want) {
+			t.Errorf("mo.css 里缺少 %q —— 站点卡片会掉成无样式堆叠", want)
+		}
+	}
+}
