@@ -80,7 +80,8 @@ obs:
     snapshot_interval: "30s"  # 阶段/队列快照间隔；"0" = 不发
   report:
     on_exit: false       # 进程优雅退出时自动生成报告
-    dir: "./reports"     # 产物根目录：<dir>/<run_id>/
+    dir: "./reports"     # 产物根目录：<dir>/<2006-01-02>/（一份 = 一天的日报；--run 时 <dir>/<run_id>/）
+    retention: "168h"    # 报告保留期：默认 7 天；负数 = 永久保留（0/不写同默认）；每次生成后清理
     timeout: "120s"      # on_exit 生成报告的超时（失败只记日志，不阻塞退出）
     thresholds:          # 通用分析节（framework）的阈值
       stuck_after: "10m"
@@ -90,6 +91,15 @@ obs:
 `obs.report.on_exit` 的退出顺序（`internal/app`）：停 HTTP → 停引擎排空 → 写 `run_stopped` → **flush 事件** →
 生成报告（**此时数据库还开着**）→ 关库/关浏览器。所以退出报告能读到完整的「本轮 + 状态层」。
 
+报告产物**按本地日历日拆分**：一次生成会把事件窗口按本地时区切成若干天，有事件的每天各写一份
+`<dir>/<2006-01-02>/`（四份产物；同一天重跑会刷新当天那份）。进程退出的自动报告同理 —— 它的窗口是
+事件文件（含轮转备份）里保留的全部事件，所以每次退出会把窗口内有事件的每天各刷一份日报。
+`papa report generate --run <run_id>` 是例外：只出一份 `<dir>/<run_id>/`（排查单次运行用，不按天拆）。
+
+每次生成报告之后会按 `obs.report.retention` 清理过期目录（默认保留 7 天，负数 = 永久保留）：
+只删报告根目录下**直接子目录、且目录里有 `report.md`** 的，手工放在同一目录里的其它东西不碰；
+日报目录按名字里的日期判断（保留最近 N 个自然日），升级前留下的 `run_id` / `window-*` 旧目录按修改时间判断。
+
 > 事件默认关着时，报告只做「失败分组 + 状态层检查」，`report.json` 的 `degraded` 会写明「事件数据缺失」。
 > 想长期出报告就把 `obs.events.enabled` 打开。
 
@@ -97,17 +107,21 @@ obs:
 
 ```bash
 # 按配置出报告（默认读 configs/config.yaml 的 db / log.dir / obs 段）
+# 默认按本地日历日拆分：有事件的每天各写一份 <dir>/<2006-01-02>/（同一天重跑刷新当天那份）
 papa report generate -c configs/config.yaml
 
-# 指定窗口 / 只跑某个 run / 跳过日志证据 / 产物目录
+# 指定窗口 / 只出某一次运行的报告（单份 <dir>/<run_id>/，不按天拆）/ 跳过日志证据 / 产物目录
 papa report generate -c configs/config.yaml --since 2026-10-28T00:00:00+08:00 \
   --until 2026-10-28T23:59:59+08:00 --run r-xxx --out ./reports --no-logs
 
-# 列出已有报告的 run（读的是 obs.report.dir 下的事件文件）
+# 列出报告目录下的子目录（按天拆分后通常是日期；也兼容升级前留下的 run_id / window-*）
 papa report list -c configs/config.yaml
 ```
 
-产物固定 4 个文件（同一 `<dir>/<run_id>/` 下）：
+每次生成会逐份打印每天的判定与事件统计；真的清掉过期目录时，最后再打印「清理过期报告 N 份」。
+`--fail-on-verdict` 在**任一**日报判定为「不通过」时以非零码退出（CI / 自动化门禁用）。
+
+产物固定 4 个文件（同一 `<dir>/<2006-01-02>/` 下；`--run` 时是 `<dir>/<run_id>/`）：
 
 | 文件 | 给谁 | 内容 |
 | --- | --- | --- |
@@ -177,6 +191,8 @@ if ev := app.Events(); ev != nil {
 - **事件不是审计日志**：异步、有界、可能丢；缺口的判据是 `seq` 不连续。
 - 日志证据窗口会前后放宽 5 分钟（事件毫秒精度 vs 日志秒精度）；非 logrus 格式的文件会记进
   `logs.unparsed`，不影响判定但会拉低日志证据质量。
+- **按天拆分看的是服务器本地时区**（`time.Local`）：零点前后的事件只落一天；日志证据也按天索引，
+  前后 5 分钟的富余可能让边界日志同时出现在相邻两天的报告里。跨时区部署时以跑报告那台机器为准。
 - 耗时口径：用事件的 `duration_ms` / trace；**不要用 `crawler_tasks.updated_at` 算任务耗时**（每次写都会刷新）。
 - `stuck_after` 是**报告口径**（默认 10m），不是引擎的恢复口径；引擎的启动恢复按「启动边界」判定
   （见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）。

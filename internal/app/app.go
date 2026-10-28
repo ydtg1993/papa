@@ -500,6 +500,8 @@ func (a *App) UseReportPattern(patterns ...obs.Pattern) {
 
 // generateExitReport 在进程退出时生成报告（obs.report.on_exit）。
 //
+// 产物按本地日历日拆分：事件窗口里有事件的每天各写一份 `<dir>/<2006-01-02>/`（重跑会刷新当天那份）。
+// 写完后按 obs.report.retention 清理过期日报目录（默认 7 天，负数 = 永久保留）。
 // 失败只记日志，绝不阻塞退出：报告本身不能比被观测系统更脆弱。
 func (a *App) generateExitReport() {
 	cfg := a.Config
@@ -517,7 +519,7 @@ func (a *App) generateExitReport() {
 	if evFile == "" {
 		evFile = "events.jsonl"
 	}
-	src, err := obs.LoadSources(obs.SourceConfig{
+	sources, err := obs.LoadDailySources(obs.SourceConfig{
 		EventsFile:  filepath.Join(cfg.Log.Dir, evFile),
 		LogDir:      cfg.Log.Dir,
 		IncludeLogs: true,
@@ -525,6 +527,10 @@ func (a *App) generateExitReport() {
 	})
 	if err != nil {
 		a.Logger.Sys.Warnf("exit report: 读取事件失败，跳过：%s", err.Error())
+		return
+	}
+	if len(sources) == 0 {
+		a.Logger.Sys.Warnf("exit report: 事件窗口里没有事件，跳过")
 		return
 	}
 
@@ -535,28 +541,44 @@ func (a *App) generateExitReport() {
 	sections = append(sections, a.reportSections...)
 	patterns := append(pattern.Builtin(), a.reportPatterns...)
 
-	rep, err := obs.Generate(ctx, obs.Options{
-		Run:         src.Run,
-		EventMeta:   src.EventMeta,
-		Events:      src.Events,
-		Logs:        src.Logs,
-		DB:          a.DB,
-		Environment: map[string]string{"papa_version": buildVersion()},
-		Degraded:    src.Degraded,
-		Sections:    sections,
-		Patterns:    patterns,
-	})
-	if err != nil {
-		a.Logger.Sys.Warnf("exit report: 生成失败：%s", err.Error())
-		return
+	written := 0
+	for _, src := range sources {
+		if ctx.Err() != nil {
+			a.Logger.Sys.Warnf("exit report: 生成超时（%s），剩余日报跳过", timeout)
+			break
+		}
+		rep, err := obs.Generate(ctx, obs.Options{
+			Run:         src.Run,
+			EventMeta:   src.EventMeta,
+			Events:      src.Events,
+			Logs:        src.Logs,
+			DB:          a.DB,
+			Environment: map[string]string{"papa_version": buildVersion()},
+			Degraded:    src.Degraded,
+			Sections:    sections,
+			Patterns:    patterns,
+		})
+		if err != nil {
+			a.Logger.Sys.Warnf("exit report: 生成失败：%s", err.Error())
+			continue
+		}
+		day := report.DayName(src.Run.From)
+		dir := filepath.Join(cfg.Obs.Report.Dir, day)
+		if _, err := report.Write(dir, rep); err != nil {
+			a.Logger.Sys.Warnf("exit report: 写盘失败（%s）：%s", day, err.Error())
+			continue
+		}
+		written++
+		a.Logger.Sys.Infof("exit report: %s verdict=%s dir=%s", day, rep.Verdict, dir)
 	}
-	dir := filepath.Join(cfg.Obs.Report.Dir, report.DirName(rep.Run))
-	files, err := report.Write(dir, rep)
-	if err != nil {
-		a.Logger.Sys.Warnf("exit report: 写盘失败：%s", err.Error())
-		return
+	if written == 0 {
+		a.Logger.Sys.Warnf("exit report: 没有写出任何日报")
 	}
-	a.Logger.Sys.Infof("exit report: verdict=%s dir=%s files=%s", rep.Verdict, dir, strings.Join(files, ", "))
+	if removed, err := report.Prune(cfg.Obs.Report.Dir, cfg.Obs.Report.Retention, time.Now(), time.Local); err != nil {
+		a.Logger.Sys.Warnf("exit report: 清理过期报告失败：%s", err.Error())
+	} else if len(removed) > 0 {
+		a.Logger.Sys.Infof("exit report: 已清理过期报告 %d 份：%s", len(removed), strings.Join(removed, ", "))
+	}
 }
 
 // buildVersion 返回当前主模块版本（开发构建为 "(devel)"）。

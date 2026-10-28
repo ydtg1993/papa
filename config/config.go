@@ -128,7 +128,14 @@ type ObsEventsConfig struct {
 type ObsReportConfig struct {
 	OnExit bool `mapstructure:"on_exit"` // 进程退出时是否生成报告（默认 false）
 	// Dir 报告根目录：空（或全空白）= ./reports（相对当前工作目录）。
+	//
+	// 产物按**本地日期**分目录：<dir>/<2006-01-02>/report.md 等（一份 = 一天）；`papa report --run` 的
+	// 单 run 报告仍是 <dir>/<run_id>/（不拆，留给排查单次运行）。
 	Dir string `mapstructure:"dir"`
+	// Retention 报告产物保留期：每次生成报告后，把超过保留期的旧报告目录删掉（整目录）。
+	// 0/未写 = 默认 7 天（168h）；负数 = 永久保留、不自动清理（与 crawler.trace.retention 同一口径）。
+	// 只清 "<dir>" 下、且目录里有 report.md 的子目录 —— 手工放在同一目录里的其它东西不碰。
+	Retention time.Duration `mapstructure:"retention"`
 	// Timeout 进程内生成报告的超时；<=0 用 120s。生成失败只记日志，不阻塞退出。
 	Timeout time.Duration `mapstructure:"timeout"`
 	// Thresholds 通用判定阈值（业务阈值由业务 Section 自己持有，框架不认识）。

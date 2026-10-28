@@ -489,7 +489,8 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 侧边栏 **General** 分组里有一个「obs报告」页（菜单在「访问令牌」与「设置」之间）：把
 `obs.report.dir`（默认 `./reports`）下的**历史运行报告**列出来，不用登服务器就能看产物原文、下载。
-报告由 `papa report` 或 `obs.report.on_exit`（进程退出时自动生成）写入，**一份报告 = 一个运行目录**，
+报告由 `papa report` 或 `obs.report.on_exit`（进程退出时自动生成）写入，**一份报告 = 一个目录**
+（默认按本地日历日拆分：`<obs.report.dir>/<2006-01-02>/`，一份 = 一天；`--run` 例外，单份 `<obs.report.dir>/<run_id>/`），
 目录里固定四份产物（产物口径见 [OBSERVABILITY.md](./OBSERVABILITY.md)）：
 
 | 文件 | 内容 |
@@ -500,6 +501,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 | `ai-brief.json` | 同构机读版本 |
 
 **报告列表**（每行一份报告，按生成时间倒序）：目录名、判定、生成时间、文件数、「查看」。
+目录名通常是**日报日期** `YYYY-MM-DD`（一份 = 一天），升级前留下的 `run_id` / `window-*` 目录也照常列出。
 判定读的是 `report.json` 的 `verdict`，翻成「通过」/「带风险通过」/「不通过」，读不到（缺 `report.json`、
 文件坏了）就显示「未判定」。文件数显示 `已有份数 / 4` —— 缺文件的半份报告照列；只要目录里
 至少有一份已知产物就会被列出，报告目录里手工放的无关目录/文件不会出现在列表里。
@@ -509,6 +511,9 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 空态两种：`obs.report.dir` 没配 → 页面提示「报告目录未配置」；配了但目录里还没有报告 →
 提示先跑一次 `papa report`（或开 `obs.report.on_exit` 让进程退出时自动生成）。
+
+报告目录的保留期由 `obs.report.retention` 控制（默认 7 天，负数 = 永久保留）；过期目录是**生成报告时**
+清掉的（见 [OBSERVABILITY.md](./OBSERVABILITY.md)），后台这个页面只展示、不删除。
 
 接口（和其它后台接口一样过 IP 白名单 + 访问令牌，见 §1）：
 

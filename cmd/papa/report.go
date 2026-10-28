@@ -21,14 +21,17 @@ const reportUsage = `usage:
   papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] [--run <run_id>] [--out <dir>] [--no-logs] [--fail-on-verdict]
   papa report list [--out <dir>]
 
-生成一次运行报告（只读）：读事件流 + 日志证据 + 框架状态，输出 report.md / report.json。
+生成一次运行报告（只读）：读事件流 + 日志证据 + 框架状态，输出 report.md / report.json / ai-brief.md / ai-brief.json。
 
   -c/--config       配置文件路径（默认 PAPA_CONFIG，再回退 configs/config.yaml）
   --since/--until   时间窗口（RFC3339）；缺省按事件里的最早/最晚时刻
-  --run             只保留指定 run_id；缺省合并窗口内所有 run
+  --run             只保留指定 run_id，输出单份报告（目录名 = run_id；兼容旧的"单次运行"排查用法）
   --out             输出根目录（默认 obs.report.dir，再回退 ./reports）
   --no-logs         跳过日志证据索引（事件缺失时反而更快）
-  --fail-on-verdict 判定为"不通过"时以非零码退出（供 CI/自动化门禁）
+  --fail-on-verdict 任一日报判定为"不通过"时以非零码退出（供 CI/自动化门禁）
+
+产物默认**按本地日历日拆分**：有事件的每天各写一份 <dir>/<2006-01-02>/（同一天重跑会刷新当天那份）。
+生成后按 obs.report.retention 清掉过期报告目录（默认 7 天；负数 = 永久保留）。
 
 判定聚合：任一 fail 级检查未通过 → 不通过；只有 warn 未通过 → 带风险通过；否则通过。
 业务报告段由业务进程注册（papa report 只有框架通用段）。`
@@ -57,7 +60,7 @@ func runReportCmd(args []string) error {
 	if evFile == "" {
 		evFile = "events.jsonl"
 	}
-	src, err := obs.LoadSources(obs.SourceConfig{
+	base := obs.SourceConfig{
 		EventsFile:  filepath.Join(cfg.Log.Dir, evFile),
 		LogDir:      cfg.Log.Dir,
 		Since:       opts.since,
@@ -65,38 +68,37 @@ func runReportCmd(args []string) error {
 		RunID:       opts.runID,
 		IncludeLogs: !opts.noLogs,
 		Loc:         time.Local,
-	})
-	if err != nil {
-		return err
 	}
-
-	degraded := append([]string(nil), src.Degraded...)
-	db, err := database.NewDB(cfg)
-	if err != nil {
-		degraded = append(degraded, "数据库连接失败（跳过框架状态检查）: "+err.Error())
+	// DB 连接失败只降级（报告跳过框架状态检查），不中断 —— 报告本身不能比被观测系统先死。
+	db, dbErr := database.NewDB(cfg)
+	if dbErr != nil {
 		db = nil
 	}
-
-	rep, err := obs.Generate(context.Background(), obs.Options{
-		Run:       src.Run,
-		EventMeta: src.EventMeta,
-		Events:    src.Events,
-		Logs:      src.Logs,
-		DB:        db,
-		Environment: map[string]string{
-			"papa_version": runtimeVersion(),
-			"events_file":  filepath.Join(cfg.Log.Dir, evFile),
-			"log_dir":      cfg.Log.Dir,
-		},
-		Degraded: degraded,
-		Sections: []obs.Section{&analyze.Generic{Thresholds: analyze.Thresholds{
-			StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
-			CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
-		}}},
-		Patterns: pattern.Builtin(),
-	})
-	if err != nil {
-		return fmt.Errorf("生成报告: %w", err)
+	sections := []obs.Section{&analyze.Generic{Thresholds: analyze.Thresholds{
+		StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
+		CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
+	}}}
+	environment := map[string]string{
+		"papa_version": runtimeVersion(),
+		"events_file":  filepath.Join(cfg.Log.Dir, evFile),
+		"log_dir":      cfg.Log.Dir,
+	}
+	generate := func(src *obs.Sources) (*obs.Report, error) {
+		degraded := append([]string(nil), src.Degraded...)
+		if dbErr != nil {
+			degraded = append(degraded, "数据库连接失败（跳过框架状态检查）: "+dbErr.Error())
+		}
+		return obs.Generate(context.Background(), obs.Options{
+			Run:         src.Run,
+			EventMeta:   src.EventMeta,
+			Events:      src.Events,
+			Logs:        src.Logs,
+			DB:          db,
+			Environment: environment,
+			Degraded:    degraded,
+			Sections:    sections,
+			Patterns:    pattern.Builtin(),
+		})
 	}
 
 	outDir := opts.outDir
@@ -106,18 +108,70 @@ func runReportCmd(args []string) error {
 	if outDir == "" {
 		outDir = "./reports"
 	}
-	dir := filepath.Join(outDir, report.DirName(rep.Run))
-	files, err := report.Write(dir, rep)
-	if err != nil {
-		return err
+	worst := obs.VerdictPass
+	writeOne := func(label string, rep *obs.Report) error {
+		files, err := report.Write(filepath.Join(outDir, label), rep)
+		if err != nil {
+			return err
+		}
+		switch rep.Verdict {
+		case obs.VerdictFail:
+			worst = obs.VerdictFail
+		case obs.VerdictWarn:
+			if worst != obs.VerdictFail {
+				worst = obs.VerdictWarn
+			}
+		}
+		fmt.Printf("[%s] 判定：%s（%s）\n", label, report.VerdictLabel(rep.Verdict), rep.Verdict)
+		fmt.Printf("       事件：%d 条 · 缺口 %d · 坏行 %d · 日志签名 %d\n",
+			rep.EventMeta.Count, rep.EventMeta.Gaps, rep.EventMeta.Unparsed, len(rep.Logs.Signatures))
+		for _, f := range files {
+			fmt.Println("写出:", f)
+		}
+		return nil
 	}
-	fmt.Printf("判定：%s（%s）\n", report.VerdictLabel(rep.Verdict), rep.Verdict)
-	fmt.Printf("事件：%d 条 · 缺口 %d · 坏行 %d · 日志签名 %d\n",
-		rep.EventMeta.Count, rep.EventMeta.Gaps, rep.EventMeta.Unparsed, len(rep.Logs.Signatures))
-	for _, f := range files {
-		fmt.Println("写出:", f)
+
+	if opts.runID != "" {
+		// 显式 --run：出一份单 run 报告（目录名 = run_id），方便排查某一次运行；不参与按天拆分。
+		src, err := obs.LoadSources(base)
+		if err != nil {
+			return err
+		}
+		rep, err := generate(src)
+		if err != nil {
+			return fmt.Errorf("生成报告: %w", err)
+		}
+		if err := writeOne(report.DirName(rep.Run), rep); err != nil {
+			return err
+		}
+	} else {
+		// 默认按本地日历日拆分：有事件的每天各写一份 <dir>/<2006-01-02>/，重跑刷新当天那份。
+		sources, err := obs.LoadDailySources(base)
+		if err != nil {
+			return err
+		}
+		if len(sources) == 0 {
+			return fmt.Errorf("窗口内没有事件（检查 obs.events 是否开启、或 --since/--until 是否填对）")
+		}
+		for _, src := range sources {
+			day := report.DayName(src.Run.From)
+			rep, err := generate(src)
+			if err != nil {
+				return fmt.Errorf("生成报告（%s）: %w", day, err)
+			}
+			if err := writeOne(day, rep); err != nil {
+				return err
+			}
+		}
 	}
-	if opts.failOnVerdict && rep.Verdict == obs.VerdictFail {
+
+	// 生成完顺手清过期报告（默认保留 7 天；obs.report.retention 负数 = 永久保留）。
+	if removed, err := report.Prune(outDir, cfg.Obs.Report.Retention, time.Now(), time.Local); err != nil {
+		fmt.Fprintf(os.Stderr, "清理过期报告失败：%v\n", err)
+	} else if len(removed) > 0 {
+		fmt.Printf("清理过期报告 %d 份：%s\n", len(removed), strings.Join(removed, ", "))
+	}
+	if opts.failOnVerdict && worst == obs.VerdictFail {
 		return errors.New("判定为不通过（--fail-on-verdict）")
 	}
 	return nil

@@ -33,6 +33,9 @@ func TestObsAndLogDefaultsWhenAbsent(t *testing.T) {
 	if got := cfg.Obs.Report.Dir; got != "./reports" {
 		t.Fatalf("obs.report.dir 默认 = %q, want ./reports", got)
 	}
+	if got := cfg.Obs.Report.Retention; got != 168*time.Hour {
+		t.Fatalf("obs.report.retention 默认 = %v, want 168h（7 天）", got)
+	}
 	if got := cfg.Log.Level; got != "info" {
 		t.Fatalf("log.level 默认 = %q, want info", got)
 	}
@@ -62,6 +65,9 @@ func TestObsZeroValuesNormalized(t *testing.T) {
 	if got := cfg.Obs.Report.Dir; got != "./reports" {
 		t.Fatalf("空白 report.dir 应归一为 ./reports，实得 %q", got)
 	}
+	if got := cfg.Obs.Report.Retention; got != 168*time.Hour {
+		t.Fatalf("0 retention 应归一为默认 7 天，实得 %v", got)
+	}
 }
 
 // 显式开启：所有键都必须原样落到结构体上（含 snapshot_interval 的时长解析）。
@@ -82,6 +88,7 @@ obs:
   report:
     on_exit: true
     dir: ./reports/dev
+    retention: 72h
 `)
 
 	if !cfg.Obs.Events.Enabled {
@@ -102,8 +109,22 @@ obs:
 	if got := cfg.Obs.Report.Dir; got != "./reports/dev" {
 		t.Fatalf("obs.report.dir = %q, want ./reports/dev", got)
 	}
+	if got := cfg.Obs.Report.Retention; got != 72*time.Hour {
+		t.Fatalf("obs.report.retention = %v, want 72h", got)
+	}
 	if got := cfg.Log.Level; got != "debug" {
 		t.Fatalf("log.level = %q, want debug", got)
+	}
+}
+
+// 负的 retention = 永久保留（与 crawler.trace.retention 同一口径）：默认值归一不能把它改成 7 天。
+func TestObsReportNegativeRetentionMeansPermanent(t *testing.T) {
+	cfg := loadString(t, baseConfig+`obs:
+  report:
+    retention: "-1h"
+`)
+	if got := cfg.Obs.Report.Retention; got >= 0 {
+		t.Fatalf("负数 retention 应原样保留（永久），实得 %v", got)
 	}
 }
 
@@ -169,6 +190,8 @@ func TestObsKeysAreRegistered(t *testing.T) {
 		"obs.events.snapshot_interval",
 		"obs.report.on_exit",
 		"obs.report.dir",
+		"obs.report.retention",
+		"obs.report.timeout",
 	} {
 		if !slices.Contains(valid, want) {
 			t.Errorf("validKeys() 缺 %q", want)

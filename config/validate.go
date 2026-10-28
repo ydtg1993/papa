@@ -60,6 +60,7 @@ const (
 	defaultObsEventsFile       = "events.jsonl"
 	defaultObsEventsBuffer     = 8192
 	defaultObsReportDir        = "./reports"
+	defaultObsReportRetention  = 168 * time.Hour // 7 天：报告产物按天拆分后默认只留一周
 	defaultObsReportTimeout    = 120 * time.Second
 	defaultObsStuckAfter       = 10 * time.Minute
 	defaultObsCrawlFailRateMax = 0.05
@@ -100,6 +101,10 @@ func applyDefaults(c *Config) {
 	}
 	if strings.TrimSpace(c.Obs.Report.Dir) == "" {
 		c.Obs.Report.Dir = defaultObsReportDir
+	}
+	// 报告保留期：0/未写补默认 7 天；负数 = 永久保留（与 crawler.trace.retention 同一口径，刻意保留）。
+	if c.Obs.Report.Retention == 0 {
+		c.Obs.Report.Retention = defaultObsReportRetention
 	}
 	if c.Obs.Report.Timeout <= 0 {
 		c.Obs.Report.Timeout = defaultObsReportTimeout
