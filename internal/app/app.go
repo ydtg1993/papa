@@ -37,6 +37,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -56,16 +57,22 @@ type App struct {
 	// 报告扩展点（Run 之前注册）：业务段/业务模式。papa 只编排与渲染，不认识其语义。
 	reportSections []obs.Section
 	reportPatterns []obs.Pattern
-	tables         []oao.Table
-	pages          []Page          // 业务注册的自定义页
-	routers        []func(*Router) // 业务注册的自定义路由组（UseRouter）
-	extraJS        []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
-	extraCSS       []string        // UseCSS 注入的样式，拼成 /static/custom.css
-	sysInfo        *sysinfo.Collector
-	httpSrv        *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
-	oplog          *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
-	cancel         context.CancelFunc
-	sites          map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
+	// 报告定时生成（obs.report.interval）：Run 期间按间隔刷新「当天」日报。
+	// 停机时先 cancel、再等这一轮生成结束（都发生在关库之前）；reportMu 串行化
+	// 定时报告与退出报告，避免同一天目录被两个 goroutine 同时写。
+	reportCancel context.CancelFunc
+	reportWG     sync.WaitGroup
+	reportMu     sync.Mutex
+	tables       []oao.Table
+	pages        []Page          // 业务注册的自定义页
+	routers      []func(*Router) // 业务注册的自定义路由组（UseRouter）
+	extraJS      []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
+	extraCSS     []string        // UseCSS 注入的样式，拼成 /static/custom.css
+	sysInfo      *sysinfo.Collector
+	httpSrv      *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
+	oplog        *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
+	cancel       context.CancelFunc
+	sites        map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
 	configStore *configstore.Store
@@ -499,15 +506,74 @@ func (a *App) UseReportPattern(patterns ...obs.Pattern) {
 }
 
 // generateExitReport 在进程退出时生成报告（obs.report.on_exit）。
+func (a *App) generateExitReport() {
+	cfg := a.Config
+	if cfg == nil || !cfg.Obs.Report.OnExit {
+		return
+	}
+	a.generateDailyReports("exit report")
+}
+
+// startReportLoop 启动定时报告（obs.report.interval）：Run 期间每隔 interval 刷新一次当天日报。
+//
+// 与 on_exit 独立：只开定时不必开 on_exit；两者都开时写同一天目录，后写覆盖前写（当天最新快照）。
+// 事件流没开时直接跳过 —— 没有事件就没有可报告的内容，只会白扫日志与库。
+func (a *App) startReportLoop() {
+	cfg := a.Config
+	if cfg == nil || !cfg.Obs.Events.Enabled || cfg.Obs.Report.Interval <= 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.reportCancel = cancel
+	a.reportWG.Add(1)
+	go func() {
+		defer a.reportWG.Done()
+		ticker := time.NewTicker(cfg.Obs.Report.Interval)
+		defer ticker.Stop()
+		a.Logger.Sys.Infof("auto report enabled: interval=%s dir=%s", cfg.Obs.Report.Interval, cfg.Obs.Report.Dir)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.generatePeriodicReport()
+			}
+		}
+	}()
+}
+
+// stopReportLoop 停止定时报告并等当前这一轮生成结束；可重复调用。
+func (a *App) stopReportLoop() {
+	if a.reportCancel != nil {
+		a.reportCancel()
+		a.reportCancel = nil
+	}
+	a.reportWG.Wait()
+}
+
+// generatePeriodicReport 生成一次定时报告（失败只记日志，绝不影响业务）。
+func (a *App) generatePeriodicReport() {
+	cfg := a.Config
+	if cfg == nil || !cfg.Obs.Events.Enabled || cfg.Obs.Report.Interval <= 0 {
+		return
+	}
+	a.generateDailyReports("auto report")
+}
+
+// generateDailyReports 是 on_exit 与定时报告共用的实现：读事件+日志+库，按本地日期写日报并清理过期产物。
 //
 // 产物按本地日历日拆分：事件窗口里有事件的每天各写一份 `<dir>/<2006-01-02>/`（重跑会刷新当天那份）。
 // 写完后按 obs.report.retention 清理过期日报目录（默认 7 天，负数 = 永久保留）。
-// 失败只记日志，绝不阻塞退出：报告本身不能比被观测系统更脆弱。
-func (a *App) generateExitReport() {
+// 失败只记日志，绝不阻塞调用方：报告本身不能比被观测系统更脆弱。
+func (a *App) generateDailyReports(trigger string) {
 	cfg := a.Config
-	if cfg == nil || !cfg.Obs.Report.OnExit || !cfg.Obs.Events.Enabled {
+	if cfg == nil || !cfg.Obs.Events.Enabled {
 		return
 	}
+	// 串行化：定时报告与退出报告都写「当天」目录，不能同时写同一批文件。
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
+
 	timeout := cfg.Obs.Report.Timeout
 	if timeout <= 0 {
 		timeout = 120 * time.Second
@@ -526,11 +592,11 @@ func (a *App) generateExitReport() {
 		Loc:         time.Local,
 	})
 	if err != nil {
-		a.Logger.Sys.Warnf("exit report: 读取事件失败，跳过：%s", err.Error())
+		a.Logger.Sys.Warnf("%s: 读取事件失败，跳过：%s", trigger, err.Error())
 		return
 	}
 	if len(sources) == 0 {
-		a.Logger.Sys.Warnf("exit report: 事件窗口里没有事件，跳过")
+		a.Logger.Sys.Warnf("%s: 事件窗口里没有事件，跳过", trigger)
 		return
 	}
 
@@ -544,7 +610,7 @@ func (a *App) generateExitReport() {
 	written := 0
 	for _, src := range sources {
 		if ctx.Err() != nil {
-			a.Logger.Sys.Warnf("exit report: 生成超时（%s），剩余日报跳过", timeout)
+			a.Logger.Sys.Warnf("%s: 生成超时（%s），剩余日报跳过", trigger, timeout)
 			break
 		}
 		rep, err := obs.Generate(ctx, obs.Options{
@@ -559,25 +625,25 @@ func (a *App) generateExitReport() {
 			Patterns:    patterns,
 		})
 		if err != nil {
-			a.Logger.Sys.Warnf("exit report: 生成失败：%s", err.Error())
+			a.Logger.Sys.Warnf("%s: 生成失败：%s", trigger, err.Error())
 			continue
 		}
 		day := report.DayName(src.Run.From)
 		dir := filepath.Join(cfg.Obs.Report.Dir, day)
 		if _, err := report.Write(dir, rep); err != nil {
-			a.Logger.Sys.Warnf("exit report: 写盘失败（%s）：%s", day, err.Error())
+			a.Logger.Sys.Warnf("%s: 写盘失败（%s）：%s", trigger, day, err.Error())
 			continue
 		}
 		written++
-		a.Logger.Sys.Infof("exit report: %s verdict=%s dir=%s", day, rep.Verdict, dir)
+		a.Logger.Sys.Infof("%s: %s verdict=%s dir=%s", trigger, day, rep.Verdict, dir)
 	}
 	if written == 0 {
-		a.Logger.Sys.Warnf("exit report: 没有写出任何日报")
+		a.Logger.Sys.Warnf("%s: 没有写出任何日报", trigger)
 	}
 	if removed, err := report.Prune(cfg.Obs.Report.Dir, cfg.Obs.Report.Retention, time.Now(), time.Local); err != nil {
-		a.Logger.Sys.Warnf("exit report: 清理过期报告失败：%s", err.Error())
+		a.Logger.Sys.Warnf("%s: 清理过期报告失败：%s", trigger, err.Error())
 	} else if len(removed) > 0 {
-		a.Logger.Sys.Infof("exit report: 已清理过期报告 %d 份：%s", len(removed), strings.Join(removed, ", "))
+		a.Logger.Sys.Infof("%s: 已清理过期报告 %d 份：%s", trigger, len(removed), strings.Join(removed, ", "))
 	}
 }
 
@@ -596,6 +662,8 @@ func (a *App) Run(ctx context.Context) {
 	defer cancel()
 
 	a.emitRunStarted()
+	// 定时报告（obs.report.interval）：与退出报告共用同一套日报产物，停机时会先停它再出最终报告。
+	a.startReportLoop()
 
 	// 初始化引擎浏览器池
 	a.Engine.SetBrowserPool()
@@ -630,6 +698,9 @@ func (a *App) Run(ctx context.Context) {
 	}
 
 	// 事件流：先写 run_stopped，再排空 sink。必须早于关库 —— 报告 on_exit 还要读库。
+	//
+	// 定时报告先停：否则它可能和退出报告并发写同一天目录，或在关库之后还在读库。
+	a.stopReportLoop()
 	a.emitRunStopped(drained, stopStats)
 	a.closeEvents()
 

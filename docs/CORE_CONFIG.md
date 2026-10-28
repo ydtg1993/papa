@@ -149,9 +149,10 @@
 | `events.buffer` | int | 异步队列长度，默认 8192。**满了丢弃并计数，绝不阻塞 worker** |
 | `events.snapshot_interval` | duration | `stage_snapshot`（阶段/队列周期快照）的间隔，如 `30s`；`0` / 不写 = 不发 |
 | `report.on_exit` | bool | 进程退出时生成报告，默认 `false`。开启后退出流程在关库前生成一份报告（失败只记日志，不阻塞退出） |
+| `report.interval` | duration | **定时生成报告**：如 `30m` = Run 期间每 30 分钟刷新一次当天日报；`0` / 不写 = 不自动生成（默认关）。与 `on_exit` 独立，两者都开时写同一天目录、后写覆盖前写（当天最新快照）；定时器停机时先停、再出退出报告 |
 | `report.dir` | string | 报告产物目录，默认 `./reports`。产物按**本地日历日**拆分：`<dir>/<2006-01-02>/`（一份 = 一天的日报；`--run` 时 `<dir>/<run_id>/`），四份 `report.md` / `report.json` / `ai-brief.md` / `ai-brief.json`；后台「obs报告」页也读它 |
-| `report.retention` | duration | 报告保留期，默认 `168h`（7 天）；`0` / 不写同默认；负数 = 永久保留、不自动清理。**每次生成报告后**（`papa report generate` / `obs.report.on_exit`）清理 `<dir>` 下过期的报告目录：只删有 `report.md` 的直接子目录；日报目录按名字里的日期算（保留最近 N 个自然日），旧命名（`run_id` / `window-*`）按目录修改时间算 |
-| `report.timeout` | duration | 退出时生成报告的超时，默认 `120s` |
+| `report.retention` | duration | 报告保留期，默认 `168h`（7 天）；`0` / 不写同默认；负数 = 永久保留、不自动清理。**每次生成报告后**（`papa report generate` / `report.interval` / `report.on_exit`）清理 `<dir>` 下过期的报告目录：只删有 `report.md` 的直接子目录；日报目录按名字里的日期算（保留最近 N 个自然日），旧命名（`run_id` / `window-*`）按目录修改时间算 |
+| `report.timeout` | duration | 单次生成报告的超时，默认 `120s`（`report.interval` 与 `report.on_exit` 共用） |
 | `report.thresholds.stuck_after` | duration | 判「卡住」的阈值（processing 超过它未更新），默认 `10m`。**报告口径**，不是启动恢复判据 |
 | `report.thresholds.crawl_fail_rate_max` | float | 抓取终态失败率上限，默认 `0.05`（未校准） |
 

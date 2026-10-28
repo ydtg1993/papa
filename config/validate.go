@@ -397,6 +397,14 @@ var rules = []rule{
 		return nil
 	}},
 
+	{"obs.report.interval", func(c *Config) error {
+		// 0/不写 = 不自动生成；负数没有语义，直接拒绝（避免 time.NewTicker panic 被吞成启动崩溃）。
+		if c.Obs.Report.Interval < 0 {
+			return fmt.Errorf("  不能为负（实得 %s）—— 0/不写 = 不自动生成报告", c.Obs.Report.Interval)
+		}
+		return nil
+	}},
+
 	{"repeat_queue.worker_count", func(c *Config) error {
 		if c.RepeatQueue.Enabled && c.RepeatQueue.WorkerCount <= 0 {
 			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，到点的任务会静静躺在队列里", c.RepeatQueue.WorkerCount)

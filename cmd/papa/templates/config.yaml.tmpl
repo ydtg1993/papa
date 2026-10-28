@@ -92,9 +92,10 @@ obs:
     snapshot_interval: "30s"     # 阶段/队列周期快照事件间隔；"0" = 不发
   report:
     on_exit: false               # 优雅退出时自动生成报告（在事件 flush 之后、关库之前）
+    interval: "0"                # 定时生成报告：如 "30m" = 每 30 分钟刷新当天日报；0/不写 = 关（与 on_exit 独立，可只开定时）
     dir: "./reports"             # 产物目录：<dir>/<2006-01-02>/（report.md / report.json / ai-brief.md / ai-brief.json）；后台「obs报告」页也读它
     retention: "168h"            # 报告保留期；默认 7 天；负数 = 永久保留（每次生成报告后清过期目录）
-    timeout: "120s"              # on_exit 生成报告的超时；失败只记日志，不阻塞退出
+    timeout: "120s"              # 单次生成报告的超时（interval 与 on_exit 共用）；失败只记日志，不阻塞业务
     thresholds:                  # 通用分析节（framework）的阈值
       stuck_after: "10m"
       crawl_fail_rate_max: 0.05

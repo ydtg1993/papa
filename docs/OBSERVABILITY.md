@@ -79,16 +79,29 @@ obs:
     buffer: 8192         # 异步队列容量；满则丢弃并计数
     snapshot_interval: "30s"  # 阶段/队列快照间隔；"0" = 不发
   report:
-    on_exit: false       # 进程优雅退出时自动生成报告
+    on_exit: false       # 进程优雅退出时自动生成报告（默认 false）
+    interval: "0"        # 定时生成报告：如 "30m" = Run 期间每 30 分钟刷新一次当天日报；0/不写 = 关
     dir: "./reports"     # 产物根目录：<dir>/<2006-01-02>/（一份 = 一天的日报；--run 时 <dir>/<run_id>/）
     retention: "168h"    # 报告保留期：默认 7 天；负数 = 永久保留（0/不写同默认）；每次生成后清理
-    timeout: "120s"      # on_exit 生成报告的超时（失败只记日志，不阻塞退出）
+    timeout: "120s"      # 单次生成报告的超时（失败只记日志，不阻塞业务/退出）
     thresholds:          # 通用分析节（framework）的阈值
       stuck_after: "10m"
       crawl_fail_rate_max: 0.05
 ```
 
-`obs.report.on_exit` 的退出顺序（`internal/app`）：停 HTTP → 停引擎排空 → 写 `run_stopped` → **flush 事件** →
+**三种生成方式，互相独立**：
+
+| 方式 | 配置 | 适用 |
+| --- | --- | --- |
+| 定时（推荐用于长跑） | `obs.report.interval: "30m"` | 进程常驻、想随时有最新的当天日报，不依赖人工命令或退出一刻 |
+| 退出时 | `obs.report.on_exit: true` | 一次性任务 / 自动化作业，结束后要一份最终总结 |
+| 命令行 | `papa report generate` | 事后补报告、指定窗口、CI 门禁（`--fail-on-verdict`） |
+
+定时报告与退出报告都写**同一个当天目录**（后写覆盖前写 = 当天最新快照）；只开定时就足够，
+不需要再保留 `on_exit`，也不需要定时跑命令。定时器在 `Run` 期间启动；停机时先停定时器、
+再出退出报告，最后才关库。
+
+`obs.report.on_exit` 的退出顺序（`internal/app`）：停 HTTP → 停引擎排空 → **停定时报告** → 写 `run_stopped` → **flush 事件** →
 生成报告（**此时数据库还开着**）→ 关库/关浏览器。所以退出报告能读到完整的「本轮 + 状态层」。
 
 报告产物**按本地日历日拆分**：一次生成会把事件窗口按本地时区切成若干天，有事件的每天各写一份

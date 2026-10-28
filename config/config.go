@@ -127,6 +127,11 @@ type ObsEventsConfig struct {
 // ObsReportConfig 报告产物配置。
 type ObsReportConfig struct {
 	OnExit bool `mapstructure:"on_exit"` // 进程退出时是否生成报告（默认 false）
+	// Interval 定时生成报告：Run 期间每隔 Interval 刷新一次「当天」日报（按本地日期分目录）。
+	//
+	// 0/未写 = 不自动生成（默认关）。与 OnExit 互相独立：可以只开定时、也可只开退出、也可都开
+	//（两者都写同一天目录，后写覆盖前写，即"当天最新快照"）。生成失败只记日志，不影响业务。
+	Interval time.Duration `mapstructure:"interval"`
 	// Dir 报告根目录：空（或全空白）= ./reports（相对当前工作目录）。
 	//
 	// 产物按**本地日期**分目录：<dir>/<2006-01-02>/report.md 等（一份 = 一天）；`papa report --run` 的
