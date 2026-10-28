@@ -28,12 +28,16 @@ func newObsReportFixture(t *testing.T) string {
 		}
 	}
 	// 完整报告两份：文件内容用不同标记，读接口能区分读到的是哪一份。
-	for _, run := range []struct{ dir, verdict, marker string }{
-		{"run-old", "pass", "OLD"},
-		{"window-20261028-153000", "warn", "NEW"},
+	// report.json 带上 mode/generated_at/engine/checks：列表摘要要用这几项。
+	for _, run := range []struct{ dir, verdict, mode, marker, generatedAt string }{
+		{"run-old", "pass", "acceptance", "OLD", "2026-10-28T10:00:00+08:00"},
+		{"window-20261028-153000", "warn", "snapshot", "NEW", "2026-10-28T15:30:00+08:00"},
 	} {
 		write(run.dir+"/report.md", "# "+run.marker+" 运行报告\n")
-		write(run.dir+"/report.json", `{"schema_version":1,"verdict":"`+run.verdict+`"}`+"\n")
+		write(run.dir+"/report.json", `{"schema_version":1,"verdict":"`+run.verdict+
+			`","mode":"`+run.mode+`","generated_at":"`+run.generatedAt+
+			`","engine":{"source":"engine","active_pools":0,"sites":[{"key":"a","paused":true}]},`+
+			`"checks":[{"id":"stuck_processing","severity":"fail","passed":false}]}`+"\n")
 		write(run.dir+"/ai-brief.md", "# "+run.marker+" AI 简报\n")
 		write(run.dir+"/ai-brief.json", `{"verdict":"`+run.verdict+`"}`+"\n")
 	}
@@ -54,7 +58,7 @@ func newObsReportFixture(t *testing.T) string {
 	return root
 }
 
-// 报告列表：只认含已知产物的子目录，按时间倒序，带 report.json 的判定。
+// 报告列表：只认含已知产物的子目录，按生成时间倒序，带 report.json 的判定/模式/暂停/失败原因。
 func TestObsReportList(t *testing.T) {
 	root := newObsReportFixture(t)
 	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
@@ -80,22 +84,66 @@ func TestObsReportList(t *testing.T) {
 	if got := first["verdict"]; got != "warn" {
 		t.Errorf("最新报告的 verdict = %v, want warn", got)
 	}
+	if got := first["mode"]; got != "snapshot" {
+		t.Errorf("mode = %v, want snapshot", got)
+	}
+	if got := first["engine_paused"]; got != true {
+		t.Errorf("engine_paused = %v, want true", got)
+	}
+	if got := first["generated_at"]; got == nil {
+		t.Error("列表应返回 generated_at")
+	}
 	if files := first["files"].([]any); len(files) != 4 {
 		t.Errorf("完整报告文件数 = %d, want 4", len(files))
 	}
+	// 按 generated_at 倒序：run-old（10:00）在只有 report.md 的 run-partial 之前，
+	// 即使 run-partial 的目录 mtime 更新。
 	second := runs[1].(map[string]any)
-	if got := second["name"]; got != "run-partial" {
-		t.Errorf("第二份报告 = %v, want run-partial（按时间倒序）", got)
-	}
-	if files := second["files"].([]any); len(files) != 1 {
-		t.Errorf("半份报告文件数 = %d, want 1", len(files))
-	}
-	if _, has := second["verdict"]; has {
-		t.Error("没有 report.json 的报告不该有 verdict 字段")
+	if got := second["name"]; got != "run-old" {
+		t.Errorf("第二份报告 = %v, want run-old（按 generated_at 倒序）", got)
 	}
 	third := runs[2].(map[string]any)
-	if got := third["name"]; got != "run-old" {
-		t.Errorf("第三份报告 = %v, want run-old", got)
+	if got := third["name"]; got != "run-partial" {
+		t.Errorf("第三份报告 = %v, want run-partial（没有 generated_at 的排最后）", got)
+	}
+	if files := third["files"].([]any); len(files) != 1 {
+		t.Errorf("半份报告文件数 = %d, want 1", len(files))
+	}
+	if _, has := third["verdict"]; has {
+		t.Error("没有 report.json 的报告不该有 verdict 字段")
+	}
+}
+
+// 排序优先用 report.json 的 generated_at，不再只看目录 mtime：
+// 目录 mtime 与 generated_at 相反时，新报告必须排前面。
+func TestObsReportListSortsByGeneratedAt(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("new-mtime-but-old-report/report.json",
+		`{"verdict":"pass","generated_at":"2026-10-28T10:00:00+08:00"}`)
+	write("old-mtime-but-new-report/report.json",
+		`{"verdict":"warn","generated_at":"2026-10-28T15:30:00+08:00"}`)
+
+	now := time.Now()
+	// mtime 与 generated_at 故意相反：mtime 新的那份报告反而是旧的。
+	_ = os.Chtimes(filepath.Join(root, "new-mtime-but-old-report"), now, now)
+	old := now.Add(-48 * time.Hour)
+	_ = os.Chtimes(filepath.Join(root, "old-mtime-but-new-report"), old, old)
+
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
+	rr := serve(m, http.MethodGet, "/api/obs/reports", nil)
+	body := decodeJSON(t, rr)
+	runs := body["runs"].([]any)
+	if got := runs[0].(map[string]any)["name"]; got != "old-mtime-but-new-report" {
+		t.Fatalf("应按 generated_at 倒序，第一份 = %v", got)
 	}
 }
 

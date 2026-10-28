@@ -1180,7 +1180,15 @@
         if (raw === 'pass') return { label: '通过', cls: 'ok' };
         if (raw === 'warn') return { label: '带风险通过', cls: 'warn' };
         if (raw === 'fail') return { label: '不通过', cls: 'err' };
+        if (raw === 'unknown') return { label: '未判定', cls: 'off' };
         return { label: '未判定', cls: 'off' };
+    }
+
+    // obsFailReasons 未通过的检查（最多 3 条）：给判定单元格补一句「为什么红」。
+    function obsFailReasons(ids) {
+        var top = Array.isArray(ids) ? ids.slice(0, 3) : [];
+        if (top.length === 0) return '';
+        return ' <span class="muted" title="未通过的检查">' + esc(top.join('、')) + '</span>';
     }
 
     async function fetchObsReports() {
@@ -1215,8 +1223,12 @@
             var v = obsVerdict(run.verdict);
             html += '<tr>'
                 + '<td><b>' + esc(run.name) + '</b></td>'
-                + '<td><span class="badge ' + v.cls + '">' + v.label + '</span></td>'
-                + '<td>' + esc(fmtTime(run.mod_time)) + '</td>'
+                + '<td><span class="badge ' + v.cls + '">' + v.label + '</span>'
+                + (run.mode === 'snapshot' ? ' <span class="badge off">快照</span>' : '')
+                + (run.engine_paused ? ' <span class="badge warn">引擎暂停</span>' : '')
+                + obsFailReasons(run.fail_reason_top)
+                + '</td>'
+                + '<td>' + esc(run.generated_at ? fmtTime(run.generated_at) : fmtTime(run.mod_time)) + '</td>'
                 + '<td>' + ((run.files || []).length) + ' / ' + OBS_FILES.length + '</td>'
                 + '<td><button class="btn" style="margin-top:0" data-run="' + esc(run.name)
                 + '" onclick="openObsReport(this.dataset.run)">查看</button></td>'

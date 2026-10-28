@@ -3,7 +3,8 @@
 // 报告目录由 `papa report`、定时任务（obs.report.interval）或进程退出（obs.report.on_exit）写入，
 // 每个运行一份目录，目录里固定四份产物：
 // report.md / report.json / ai-brief.md / ai-brief.json（见 obs/report.Write）。
-// 后端只做两件事：列目录、把单个文件原样当文本读出来 —— 不解析、不渲染、不改写。
+// 后端只做两件事：列目录（顺带流式读 report.json 的几个摘要字段：判定/模式/生成时间/引擎暂停/未通过检查）
+// 和把单个文件原样当文本读出来 —— 不整体解析、不渲染、不改写。
 // 报告内容里会有日志与 URL（不可信文本），前端按纯文本展示，下载走 attachment。
 package server
 
@@ -29,8 +30,9 @@ const obsReportMaxRuns = 100
 // 超过这个数多半是报告目录被换成了别的东西，直接拒绝比把进程内存打满好。
 const obsReportMaxFileBytes = 16 << 20
 
-// obsReportVerdictMaxBytes 只为取 report.json 里的 verdict 读文件时的上限（不整个解析大文件）。
-const obsReportVerdictMaxBytes = 1 << 20
+// obsReportSummaryMaxBytes 流式读 report.json 摘要时的文件上限。报告可能几 MB
+// （带日志/URL），超过这个数说明路径多半不对，不读也罢 —— 列表照常显示，只是没有摘要。
+const obsReportSummaryMaxBytes = 8 << 20
 
 // obsReportFileInfo 一份产物在列表里的样子。
 type obsReportFileInfo struct {
@@ -41,10 +43,14 @@ type obsReportFileInfo struct {
 
 // obsReportRunInfo 一个运行目录在列表里的样子。
 type obsReportRunInfo struct {
-	Name    string              `json:"name"`              // 目录名（papa report 用 run_id / 窗口起点命名）
-	Verdict string              `json:"verdict,omitempty"` // report.json 里的 verdict（pass/warn/fail）；读不到就空
-	ModTime time.Time           `json:"mod_time"`
-	Files   []obsReportFileInfo `json:"files"`
+	Name         string              `json:"name"`                      // 目录名（papa report 用 run_id / 窗口起点命名）
+	Verdict      string              `json:"verdict,omitempty"`         // report.json 里的 verdict（pass/warn/fail/unknown）；读不到就空
+	Mode         string              `json:"mode,omitempty"`            // report.json 里的 mode（snapshot/acceptance）
+	EnginePaused bool                `json:"engine_paused,omitempty"`   // 报告里任一 site 处于暂停
+	GeneratedAt  *time.Time          `json:"generated_at,omitempty"`    // 指针：没有该字段的旧报告不出 0001 年
+	FailReasons  []string            `json:"fail_reason_top,omitempty"` // 最多 3 条未通过的 fail/warn 检查 ID
+	ModTime      time.Time           `json:"mod_time"`
+	Files        []obsReportFileInfo `json:"files"`
 }
 
 // obsReportListHandler 列出报告目录下的运行目录（GET /api/obs/reports）。
@@ -79,12 +85,31 @@ func (s *Monitor) obsReportListHandler(w http.ResponseWriter, r *http.Request) {
 				if len(run.Files) == 0 {
 					continue // 不是报告目录（没有一份已知产物）
 				}
-				run.Verdict = readObsReportVerdict(filepath.Join(dir, e.Name(), "report.json"))
+				summary := readObsReportSummary(filepath.Join(dir, e.Name(), "report.json"))
+				run.Verdict = summary.Verdict
+				run.Mode = summary.Mode
+				run.EnginePaused = summary.paused()
+				if !summary.GeneratedAt.IsZero() {
+					at := summary.GeneratedAt
+					run.GeneratedAt = &at
+				}
+				run.FailReasons = summary.failReasons()
 				runs = append(runs, run)
 			}
 		}
 	}
 	sort.Slice(runs, func(i, j int) bool {
+		// 生成时间优先（有 generated_at 的在前、按时间倒序），再退回目录 mtime。
+		gi, gj := generatedAt(runs[i].GeneratedAt), generatedAt(runs[j].GeneratedAt)
+		if !gi.Equal(gj) {
+			if gi.IsZero() {
+				return false
+			}
+			if gj.IsZero() {
+				return true
+			}
+			return gi.After(gj)
+		}
 		if !runs[i].ModTime.Equal(runs[j].ModTime) {
 			return runs[i].ModTime.After(runs[j].ModTime)
 		}
@@ -187,23 +212,75 @@ func obsReportKnownFile(name string) bool {
 	return false
 }
 
-// readObsReportVerdict 从 report.json 里取判定；文件不在/坏了/太大都当"未判定"，不影响列表。
-func readObsReportVerdict(path string) string {
+// obsReportSummary 是列表需要的 report.json 摘要，只声明关心的字段：
+// json.Decoder 会跳过其余内容，内存不随报告体积（日志/URL/checks 详情）增长。
+type obsReportSummary struct {
+	Verdict     string    `json:"verdict"`
+	Mode        string    `json:"mode"`
+	GeneratedAt time.Time `json:"generated_at"`
+	Engine      struct {
+		ActivePools int `json:"active_pools"`
+		Sites       []struct {
+			Paused bool `json:"paused"`
+		} `json:"sites"`
+	} `json:"engine"`
+	Checks []struct {
+		ID       string `json:"id"`
+		Severity string `json:"severity"`
+		Passed   bool   `json:"passed"`
+		Skipped  bool   `json:"skipped"`
+	} `json:"checks"`
+}
+
+// readObsReportSummary 从 report.json 里取列表摘要；文件不在/坏了/太大都当零值，不影响列表。
+func readObsReportSummary(path string) obsReportSummary {
+	var out obsReportSummary
 	fi, err := os.Stat(path)
-	if err != nil || fi.IsDir() || fi.Size() > obsReportVerdictMaxBytes {
-		return ""
+	if err != nil || fi.IsDir() || fi.Size() > obsReportSummaryMaxBytes {
+		return out
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return out
 	}
-	var v struct {
-		Verdict string `json:"verdict"`
+	defer f.Close()
+	if err := json.NewDecoder(f).Decode(&out); err != nil {
+		return obsReportSummary{}
 	}
-	if err := json.Unmarshal(b, &v); err != nil {
-		return ""
+	return out
+}
+
+// paused 报告里是否有任一 site 处于暂停（引擎暂停时判定会降级，页面要有提示）。
+func (s obsReportSummary) paused() bool {
+	for _, site := range s.Engine.Sites {
+		if site.Paused {
+			return true
+		}
 	}
-	return v.Verdict
+	return false
+}
+
+// failReasons 取最多 3 条未通过的 fail/warn 检查 ID；跳过的不算失败。
+func (s obsReportSummary) failReasons() []string {
+	out := make([]string, 0, 3)
+	for _, c := range s.Checks {
+		if c.Passed || c.Skipped || (c.Severity != "fail" && c.Severity != "warn") {
+			continue
+		}
+		out = append(out, c.ID)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+// generatedAt 把可空时间摊平成可比较的值；零值代表这份报告没有 generated_at。
+func generatedAt(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
 }
 
 // obsReportDownloadName 拼下载文件名（run-file），并去掉会破坏 Content-Disposition 的字符。
