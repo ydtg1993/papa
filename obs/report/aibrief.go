@@ -28,6 +28,23 @@ type AIBrief struct {
 	KnownPitfalls []string          `json:"known_pitfalls"`
 	Unknowns      []string          `json:"unknowns,omitempty"`
 	NextActions   []string          `json:"next_actions,omitempty"`
+	// Snapshot 是「现在怎样」的摘要：暂停站点/活跃阶段池/积压与 ETA，供接手者一眼看清当前状态。
+	Snapshot AIBriefSnapshot `json:"snapshot,omitempty"`
+}
+
+// AIBriefSnapshot 是快照摘要的机读形态（ai-brief.md 的「现在怎样」段由它渲染）。
+type AIBriefSnapshot struct {
+	Mode          string             `json:"mode,omitempty"`
+	VerdictReason string             `json:"verdict_reason,omitempty"`
+	PausedSites   []string           `json:"paused_sites,omitempty"`
+	ActivePools   int                `json:"active_pools"`
+	Backlog       obs.BacklogSummary `json:"backlog,omitempty"`
+}
+
+// hasContent 判断快照摘要是否值得渲染：全空的快照不占版面（历史报告没有 mode/engine/backlog）。
+func (s AIBriefSnapshot) hasContent() bool {
+	return s.Mode != "" || s.VerdictReason != "" || len(s.PausedSites) > 0 ||
+		s.Backlog != (obs.BacklogSummary{})
 }
 
 // AIBriefRun 是任务包里的运行标识（时间用字符串，便于外部工具直接消费）。
@@ -80,6 +97,23 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 		Problems:      rep.Problems,
 		Boundaries:    briefBoundaries,
 		KnownPitfalls: genericPitfalls,
+	}
+	out.Snapshot.Mode = string(rep.Mode)
+	out.Snapshot.VerdictReason = rep.VerdictReason
+	out.Snapshot.ActivePools = rep.Engine.ActivePools
+	for _, site := range rep.Engine.Sites {
+		if site.Paused {
+			out.Snapshot.PausedSites = append(out.Snapshot.PausedSites, site.Key)
+		}
+	}
+	// 积压段是 batch2 新增段；没有该段（或 Metrics 不是约定类型）时留零值，渲染层会跳过。
+	for _, sec := range rep.Sections {
+		if sec.Key != "backlog" {
+			continue
+		}
+		if m, ok := sec.Metrics.(obs.BacklogSummary); ok {
+			out.Snapshot.Backlog = m
+		}
 	}
 	for _, p := range rep.Problems {
 		action := fmt.Sprintf("%s：按假设验证后修复", p.ID)
@@ -138,6 +172,20 @@ func AIBriefMarkdown(rep *obs.Report) string {
 		sortStrings(keys)
 		for _, k := range keys {
 			fmt.Fprintf(&s, "- `%s`: %s\n", k, b.Environment[k])
+		}
+		s.WriteString("\n")
+	}
+
+	// 「现在怎样」：模式与判定原因在头部已有一行，这里只给快照独有的事实（暂停/阶段池/积压），
+	// 避免同一份简报把判定信息重复两遍。
+	if b.Snapshot.hasContent() {
+		s.WriteString("## 现在怎样（快照摘要）\n\n")
+		if len(b.Snapshot.PausedSites) > 0 {
+			fmt.Fprintf(&s, "- 暂停站点：%s\n", strings.Join(b.Snapshot.PausedSites, "、"))
+		}
+		fmt.Fprintf(&s, "- 活跃阶段池：%d\n", b.Snapshot.ActivePools)
+		if b.Snapshot.Backlog != (obs.BacklogSummary{}) {
+			fmt.Fprintf(&s, "- 积压：%s\n", backlogText(b.Snapshot.Backlog))
 		}
 		s.WriteString("\n")
 	}
@@ -206,6 +254,24 @@ func AIBriefMarkdown(rep *obs.Report) string {
 		s.WriteString("\n")
 	}
 	return s.String()
+}
+
+// backlogText 把积压摘要渲染成一行：核心数字始终给，非轮询/吞吐/ETA 有值才给（零值跳过）。
+func backlogText(bl obs.BacklogSummary) string {
+	parts := []string{
+		fmt.Sprintf("pending %d", bl.TotalPending),
+		fmt.Sprintf("processing %d", bl.TotalProcessing),
+	}
+	if bl.NonRepeatablePending > 0 {
+		parts = append(parts, fmt.Sprintf("非轮询 %d", bl.NonRepeatablePending))
+	}
+	if bl.ThroughputPerMin > 0 {
+		parts = append(parts, fmt.Sprintf("吞吐 %.1f/min", bl.ThroughputPerMin))
+	}
+	if bl.ETA != "" {
+		parts = append(parts, "ETA "+bl.ETA)
+	}
+	return strings.Join(parts, " · ")
 }
 
 // sortStrings 是小工具（避免为一次排序引入更多依赖）。

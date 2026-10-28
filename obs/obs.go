@@ -179,6 +179,8 @@ type Input struct {
 	Now       time.Time
 	Mode      Mode
 	Engine    EngineState
+	// Inputs 是本次报告的自证信息（Generate 已填好快照时刻/窗口/事件覆盖，其余由调用方提供）。
+	Inputs Inputs
 }
 
 // SectionReport 一节在报告里的落地形态。
@@ -210,6 +212,8 @@ type Report struct {
 	Mode          Mode              `json:"mode,omitempty"`
 	VerdictReason string            `json:"verdict_reason,omitempty"`
 	Engine        EngineState       `json:"engine"`
+	// Inputs 是报告自证信息：这份报告基于哪一刻的快照、什么版本/配置/阈值、事件覆盖到哪。
+	Inputs Inputs `json:"inputs,omitempty"`
 }
 
 // Options 生成报告所需的全部输入。
@@ -227,6 +231,8 @@ type Options struct {
 	Now         time.Time
 	Mode        Mode
 	Engine      EngineState
+	// Inputs 由调用方填版本/commit/配置/阈值来源，Generate 负责补快照时刻、窗口与事件覆盖。
+	Inputs Inputs
 }
 
 // Generate 依次跑 Section 与 Pattern，聚合成一份 Report。
@@ -237,6 +243,15 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	// 自证信息以调用方提供的为底：快照时刻缺省=生成时刻（batch 1 语义），
+	// 窗口与事件覆盖必须由本次运行推导，不接受调用方自相矛盾的填法。
+	inp := opts.Inputs
+	if inp.SnapshotAt.IsZero() {
+		inp.SnapshotAt = now
+	}
+	inp.WindowFrom = opts.Run.From
+	inp.WindowTo = opts.Run.To
+	inp.Events = ComputeEventCoverage(opts.Events)
 	in := &Input{
 		Run:       opts.Run,
 		EventMeta: opts.EventMeta,
@@ -247,6 +262,7 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		Now:       now,
 		Mode:      opts.Mode,
 		Engine:    opts.Engine,
+		Inputs:    inp,
 	}
 	rep := &Report{
 		SchemaVersion: SchemaVersion,
@@ -258,6 +274,7 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		Degraded:      append([]string(nil), opts.Degraded...),
 		Mode:          opts.Mode,
 		Engine:        opts.Engine,
+		Inputs:        inp,
 	}
 	for _, s := range opts.Sections {
 		if s == nil {

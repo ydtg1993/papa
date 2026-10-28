@@ -64,6 +64,28 @@ func Markdown(rep *obs.Report) string {
 		fmt.Fprintf(&b, "- 判定原因：%s\n", rep.VerdictReason)
 	}
 	fmt.Fprintf(&b, "- 生成时间：%s（最近一次更新）\n", fmtTime(rep.GeneratedAt))
+	// 自证块：报告要能被独立复核 —— 数字取自哪一刻的库、由什么版本+配置+阈值算出、事件覆盖到哪。
+	// 零值字段直接跳过（历史报告没有 inputs，不能渲染成空行或 0001 年）。
+	if !rep.Inputs.SnapshotAt.IsZero() {
+		fmt.Fprintf(&b, "- DB 快照时刻：%s（状态层数字取这一时刻的全库现状）\n", fmtTime(rep.Inputs.SnapshotAt))
+	}
+	if rep.Inputs.PapaVersion != "" {
+		fmt.Fprintf(&b, "- 版本：%s", rep.Inputs.PapaVersion)
+		if rep.Inputs.PapaCommit != "" {
+			fmt.Fprintf(&b, " (commit %s)", rep.Inputs.PapaCommit)
+		}
+		b.WriteString("\n")
+	}
+	if rep.Inputs.ConfigFile != "" {
+		fmt.Fprintf(&b, "- 配置：%s\n", rep.Inputs.ConfigFile)
+	}
+	if len(rep.Inputs.Thresholds) > 0 {
+		fmt.Fprintf(&b, "- 阈值来源：%s（%s）\n", rep.Inputs.ThresholdsSource, thresholdText(rep.Inputs.Thresholds))
+	}
+	if !rep.Inputs.Events.FirstTS.IsZero() {
+		fmt.Fprintf(&b, "- 事件覆盖：%s ~ %s，最大事件间隔 %s\n",
+			fmtTime(rep.Inputs.Events.FirstTS), fmtTime(rep.Inputs.Events.LastTS), rep.Inputs.Events.MaxGap)
+	}
 	fmt.Fprintf(&b, "- 窗口：%s ~ %s\n", fmtTime(rep.Run.From), fmtTime(rep.Run.To))
 	fmt.Fprintf(&b, "- 运行：%s\n", strings.Join(rep.Run.RunIDs, ", "))
 	fmt.Fprintf(&b, "- 事件：%d 条（文件 %d、seq 缺口 %d、坏行 %d、重复 %d）\n\n",
@@ -266,6 +288,21 @@ func fmtTime(t time.Time) string {
 		return "-"
 	}
 	return t.Format("2006-01-02 15:04:05")
+}
+
+// thresholdText 把阈值 map 渲染成稳定的 "k=v, k2=v2"：按 key 排序，
+// 避免 map 迭代顺序让同一份报告的头部每次都不一样。
+func thresholdText(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+m[k])
+	}
+	return strings.Join(parts, ", ")
 }
 
 func passText(ok bool) string {
