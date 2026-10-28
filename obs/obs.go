@@ -94,6 +94,15 @@ type SectionResult struct {
 	Tables   []Table   `json:"tables,omitempty"`
 }
 
+// BacklogSummary 是积压段的机读摘要（供 ai-brief 的「现在怎样」快照复用）。
+type BacklogSummary struct {
+	TotalPending         int64   `json:"total_pending"`
+	TotalProcessing      int64   `json:"total_processing"`
+	NonRepeatablePending int64   `json:"non_repeatable_pending"`
+	ThroughputPerMin     float64 `json:"throughput_per_min"`
+	ETA                  string  `json:"eta,omitempty"`
+}
+
 // Section 由框架内置分析器或业务实现，向报告贡献一节。
 type Section interface {
 	Key() string
