@@ -199,6 +199,12 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // rename 成功后是无效路径，失败时清掉
+	// CreateTemp 默认 0600；旧实现是 os.WriteFile(..., 0o644)，产物可能要跨用户/被采集脚本读，
+	// 这里保持 0644（Windows 上 chmod 基本是空操作，不影响）。
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err

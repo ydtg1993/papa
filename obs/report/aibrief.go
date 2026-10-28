@@ -122,7 +122,7 @@ func AIBriefMarkdown(rep *obs.Report) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "# AI 排查任务包 · %s\n\n", strings.Join(b.Run.RunIDs, ", "))
 	fmt.Fprintf(&s, "**判定：%s**（%s）\n\n", VerdictLabel(obs.Verdict(b.Verdict)), b.Verdict)
-	fmt.Fprintf(&s, "- 模式：%s\n", b.Mode)
+	fmt.Fprintf(&s, "- 模式：%s\n", modeText(obs.Mode(b.Mode)))
 	if b.VerdictReason != "" {
 		fmt.Fprintf(&s, "- 判定原因：%s\n", b.VerdictReason)
 	}

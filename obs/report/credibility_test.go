@@ -3,6 +3,7 @@ package report
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,5 +64,37 @@ func TestWriteIsAtomic(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "2026-10-29T00:28:41") {
 		t.Fatalf("第二次写入没生效：%s", raw)
+	}
+}
+
+// 原子写不应把产物权限从 0644 改成 0600（旧实现是 os.WriteFile(..., 0o644)）。
+// Windows 的 chmod 语义有限，权限断言只在类 Unix 上有效。
+func TestWriteKeepsFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 的 chmod 语义有限，权限断言只在类 Unix 上有效")
+	}
+	dir := t.TempDir()
+	if _, err := Write(dir, credibilityReport()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"report.md", "report.json", "ai-brief.md", "ai-brief.json"} {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != 0o644 {
+			t.Fatalf("%s 权限 = %04o, want 0644", name, got)
+		}
+	}
+}
+
+// 历史/合成报告没有 mode 时，ai-brief.md 也要显示占位而不是空行。
+func TestAIBriefMarkdownEmptyMode(t *testing.T) {
+	rep := credibilityReport()
+	rep.Mode = ""
+	rep.VerdictReason = ""
+	md := AIBriefMarkdown(rep)
+	if !strings.Contains(md, "- 模式：-（历史报告）") {
+		t.Fatalf("空模式应显示历史报告占位：\n%s", md)
 	}
 }
