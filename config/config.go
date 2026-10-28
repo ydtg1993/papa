@@ -132,6 +132,9 @@ type ObsReportConfig struct {
 	// 0/未写 = 不自动生成（默认关）。与 OnExit 互相独立：可以只开定时、也可只开退出、也可都开
 	//（两者都写同一天目录，后写覆盖前写，即"当天最新快照"）。生成失败只记日志，不影响业务。
 	Interval time.Duration `mapstructure:"interval"`
+	// Mode 报告判定语义：auto（按生成方式，默认）/ snapshot（快照，不因常驻积压判 fail）/
+	// acceptance（验收，期末应排空）。由 internal/app 与 CLI 经 obs.ResolveMode 解析。
+	Mode string `mapstructure:"mode"`
 	// Dir 报告根目录：空（或全空白）= ./reports（相对当前工作目录）。
 	//
 	// 产物按**本地日期**分目录：<dir>/<2006-01-02>/report.md 等（一份 = 一天）；`papa report --run` 的
@@ -152,6 +155,9 @@ type ObsThresholdsConfig struct {
 	// StuckAfter 判"卡住"的阈值（processing 超过它仍未更新）；<=0 用 10m。
 	// 这是**报告口径**，不是引擎启动恢复判据（后者是 updated_at < startedAt）。
 	StuckAfter time.Duration `mapstructure:"stuck_after"`
+	// EventMaxGap 事件流允许的最大相邻间隔：超过即认为存在时间断层（丢事件/进程被硬杀）。
+	// 0/未写 = 默认 10m。只影响 event_coverage 检查，不影响 verdict 之外的业务口径。
+	EventMaxGap time.Duration `mapstructure:"event_max_gap"`
 	// CrawlFailRateMax 抓取终态失败率上限；<=0 用 5%。
 	CrawlFailRateMax float64 `mapstructure:"crawl_fail_rate_max"`
 }

@@ -64,6 +64,8 @@ const (
 	defaultObsReportTimeout    = 120 * time.Second
 	defaultObsStuckAfter       = 10 * time.Minute
 	defaultObsCrawlFailRateMax = 0.05
+	defaultObsReportMode       = "auto"
+	defaultObsEventMaxGap      = 10 * time.Minute
 	// defaultRecoverBatchPause 启动恢复的默认批间停顿：把一次恢复摊到多个时间片里。
 	// 30m 是"第一批投完先让 worker 消化，再投下一批"的粗粒度节拍；可在 recover_queue.batch_pause 覆盖。
 	defaultRecoverBatchPause = 30 * time.Minute
@@ -98,6 +100,14 @@ func applyDefaults(c *Config) {
 	}
 	if c.RecoverQueue.BatchPause == 0 {
 		c.RecoverQueue.BatchPause = defaultRecoverBatchPause
+	}
+	if strings.TrimSpace(c.Obs.Report.Mode) == "" {
+		c.Obs.Report.Mode = defaultObsReportMode
+	} else {
+		c.Obs.Report.Mode = strings.ToLower(strings.TrimSpace(c.Obs.Report.Mode))
+	}
+	if c.Obs.Report.Thresholds.EventMaxGap == 0 {
+		c.Obs.Report.Thresholds.EventMaxGap = defaultObsEventMaxGap
 	}
 	if strings.TrimSpace(c.Obs.Report.Dir) == "" {
 		c.Obs.Report.Dir = defaultObsReportDir
@@ -401,6 +411,22 @@ var rules = []rule{
 		// 0/不写 = 不自动生成；负数没有语义，直接拒绝（避免 time.NewTicker panic 被吞成启动崩溃）。
 		if c.Obs.Report.Interval < 0 {
 			return fmt.Errorf("  不能为负（实得 %s）—— 0/不写 = 不自动生成报告", c.Obs.Report.Interval)
+		}
+		return nil
+	}},
+
+	{"obs.report.mode", func(c *Config) error {
+		switch c.Obs.Report.Mode {
+		case "auto", "snapshot", "acceptance":
+			return nil
+		default:
+			return fmt.Errorf("  必须是 auto/snapshot/acceptance 之一（实得 %q）；auto = 定时 snapshot、退出/CLI acceptance", c.Obs.Report.Mode)
+		}
+	}},
+
+	{"obs.report.thresholds.event_max_gap", func(c *Config) error {
+		if c.Obs.Report.Thresholds.EventMaxGap < 0 {
+			return fmt.Errorf("  不能为负（实得 %s）—— 0/不写 = 默认 10m", c.Obs.Report.Thresholds.EventMaxGap)
 		}
 		return nil
 	}},
