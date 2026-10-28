@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/internal/database"
 	"github.com/ydtg1993/papa/v3/obs"
 	"github.com/ydtg1993/papa/v3/obs/analyze"
@@ -83,10 +85,16 @@ func runReportCmd(args []string) error {
 	if dbErr != nil {
 		db = nil
 	}
-	sections := []obs.Section{&analyze.Generic{Thresholds: analyze.Thresholds{
-		StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
-		CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
-	}}}
+	// 框架内置段与 App 的退出/定时报告保持一致：通用概览 + 引擎状态 + 积压/老化。
+	sections := []obs.Section{
+		&analyze.Generic{Thresholds: analyze.Thresholds{
+			StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
+			CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
+			EventMaxGap:      cfg.Obs.Report.Thresholds.EventMaxGap,
+		}},
+		&analyze.EngineSection{StuckAfter: cfg.Obs.Report.Thresholds.StuckAfter},
+		&analyze.BacklogSection{},
+	}
 	environment := map[string]string{
 		"papa_version": runtimeVersion(),
 		"events_file":  filepath.Join(cfg.Log.Dir, evFile),
@@ -115,6 +123,7 @@ func runReportCmd(args []string) error {
 			Patterns:    pattern.Builtin(),
 			Mode:        mode,
 			Engine:      engine,
+			Inputs:      reportInputs(cfg.Obs.Report.Thresholds, opts.configPath),
 		})
 	}
 
@@ -407,4 +416,34 @@ func runtimeVersion() string {
 		return bi.Main.Version
 	}
 	return "unknown"
+}
+
+// reportInputs 汇总 CLI 报告的自证信息：版本、配置路径与生效阈值。
+//
+// CLI 的 cfg 已经过 config.Load 归一，但这里仍按 analyze 的默认口径兜底 ——
+// 将来若有人直接构造 Config，报告也不该把 0 当成生效阈值写出去。
+// 时长统一换算成秒（FormatFloat 最短表示），与 App 的 obsReportInputs 保持同一口径。
+func reportInputs(th config.ObsThresholdsConfig, configPath string) obs.Inputs {
+	stuckAfter := 10 * time.Minute
+	failRateMax := 0.05
+	eventMaxGap := 10 * time.Minute
+	if th.StuckAfter > 0 {
+		stuckAfter = th.StuckAfter
+	}
+	if th.CrawlFailRateMax > 0 {
+		failRateMax = th.CrawlFailRateMax
+	}
+	if th.EventMaxGap > 0 {
+		eventMaxGap = th.EventMaxGap
+	}
+	return obs.Inputs{
+		PapaVersion: runtimeVersion(),
+		ConfigFile:  configPath,
+		Thresholds: map[string]string{
+			"stuck_after":         strconv.FormatFloat(stuckAfter.Seconds(), 'f', -1, 64),
+			"crawl_fail_rate_max": strconv.FormatFloat(failRateMax, 'f', -1, 64),
+			"event_max_gap":       strconv.FormatFloat(eventMaxGap.Seconds(), 'f', -1, 64),
+		},
+		ThresholdsSource: "effective（config 覆盖后，未校准）",
+	}
 }

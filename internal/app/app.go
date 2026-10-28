@@ -618,10 +618,17 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 		return
 	}
 
-	sections := []obs.Section{&analyze.Generic{Thresholds: analyze.Thresholds{
-		StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
-		CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
-	}}}
+	// 框架内置段：通用概览 + 引擎状态 + 积压/老化。顺序即渲染顺序；
+	// 业务段始终排在框架段之后（业务段看到的是同一份 Input，不改变框架口径）。
+	sections := []obs.Section{
+		&analyze.Generic{Thresholds: analyze.Thresholds{
+			StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
+			CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
+			EventMaxGap:      cfg.Obs.Report.Thresholds.EventMaxGap,
+		}},
+		&analyze.EngineSection{StuckAfter: cfg.Obs.Report.Thresholds.StuckAfter},
+		&analyze.BacklogSection{},
+	}
 	sections = append(sections, a.reportSections...)
 	patterns := append(pattern.Builtin(), a.reportPatterns...)
 
@@ -644,6 +651,7 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 			Patterns:    patterns,
 			Mode:        mode,
 			Engine:      engine,
+			Inputs:      a.obsReportInputs(),
 		})
 		if err != nil {
 			a.Logger.Sys.Warnf("%s: 生成失败：%s", trigger, err.Error())
@@ -694,6 +702,43 @@ func buildVersion() string {
 		return bi.Main.Version
 	}
 	return "unknown"
+}
+
+// obsReportInputs 汇总报告自证信息里由宿主提供的部分：版本、配置路径与「生效阈值」。
+//
+// 阈值取配置归一后的值。测试/嵌入式构造的 Config 可能没走 config.Load，阈值是零值；
+// 这里按 analyze 的默认口径补齐，避免报告把 0 当成生效值写出去。
+// 时长统一换算成秒、用 FormatFloat 的最短表示：JSON 消费方拿到的是可直接解析的数字字符串。
+func (a *App) obsReportInputs() obs.Inputs {
+	stuckAfter := 10 * time.Minute
+	failRateMax := 0.05
+	eventMaxGap := 10 * time.Minute
+	configFile := ""
+	if a != nil {
+		configFile = a.configPath
+		if a.Config != nil {
+			th := a.Config.Obs.Report.Thresholds
+			if th.StuckAfter > 0 {
+				stuckAfter = th.StuckAfter
+			}
+			if th.CrawlFailRateMax > 0 {
+				failRateMax = th.CrawlFailRateMax
+			}
+			if th.EventMaxGap > 0 {
+				eventMaxGap = th.EventMaxGap
+			}
+		}
+	}
+	return obs.Inputs{
+		PapaVersion: buildVersion(),
+		ConfigFile:  configFile,
+		Thresholds: map[string]string{
+			"stuck_after":         strconv.FormatFloat(stuckAfter.Seconds(), 'f', -1, 64),
+			"crawl_fail_rate_max": strconv.FormatFloat(failRateMax, 'f', -1, 64),
+			"event_max_gap":       strconv.FormatFloat(eventMaxGap.Seconds(), 'f', -1, 64),
+		},
+		ThresholdsSource: "effective（config 覆盖后，未校准）",
+	}
 }
 
 // Run 启动引擎，等待退出信号

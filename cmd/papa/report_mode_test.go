@@ -52,6 +52,39 @@ func TestVerdictGate(t *testing.T) {
 	}
 }
 
+// 默认 generate（按天拆分）走的是 CLI 的段注册与 Inputs：读今天那份 report.json，
+// 确认版本与 event_max_gap 生效值真的写进了自证信息（不是只有 App 报告才有）。
+func TestReportGenerateWritesInputs(t *testing.T) {
+	dir := t.TempDir()
+	logDir := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reportsDir := filepath.Join(dir, "reports")
+	now := time.Now()
+	writeReportTestEvents(t, filepath.Join(logDir, "events.jsonl"), now)
+	cfgPath := writeReportTestConfig(t, dir, logDir, reportsDir)
+
+	if err := runReportCmd([]string{"generate", "-c", cfgPath, "--no-logs"}); err != nil {
+		t.Fatalf("runReportCmd: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(reportsDir, report.DayName(now), "report.json"))
+	if err != nil {
+		t.Fatalf("读今天 report.json：%v", err)
+	}
+	var rep obs.Report
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("解析 report.json: %v", err)
+	}
+	if rep.Inputs.PapaVersion == "" {
+		t.Fatalf("inputs.papa_version 为空：%+v", rep.Inputs)
+	}
+	if rep.Inputs.Thresholds["event_max_gap"] == "" {
+		t.Fatalf("inputs.thresholds.event_max_gap 为空：%+v", rep.Inputs.Thresholds)
+	}
+}
+
 // --snapshot 且没有 --run：只出「最后一个事件所在本地日」的一份报告，绝不按天拆分。
 func TestReportGenerateSnapshotWritesOnlyLastDay(t *testing.T) {
 	dir := t.TempDir()
