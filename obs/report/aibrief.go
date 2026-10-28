@@ -18,6 +18,8 @@ type AIBrief struct {
 	GeneratedAt   string            `json:"generated_at,omitempty"`
 	Run           AIBriefRun        `json:"run"`
 	Verdict       string            `json:"verdict"`
+	Mode          string            `json:"mode,omitempty"`
+	VerdictReason string            `json:"verdict_reason,omitempty"`
 	Environment   map[string]string `json:"environment,omitempty"`
 	Degraded      []string          `json:"degraded,omitempty"`
 	Checks        []obs.Check       `json:"checks"`
@@ -70,6 +72,8 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 			EventGaps: rep.EventMeta.Gaps,
 		},
 		Verdict:       string(rep.Verdict),
+		Mode:          string(rep.Mode),
+		VerdictReason: rep.VerdictReason,
 		Environment:   rep.Environment,
 		Degraded:      rep.Degraded,
 		Checks:        rep.Checks,
@@ -86,6 +90,16 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 		if len(out.NextActions) >= 5 {
 			break
 		}
+	}
+	for _, c := range rep.Checks {
+		if !c.Skipped {
+			continue
+		}
+		reason := c.SkipReason
+		if reason == "" {
+			reason = "判定项标记为不适用"
+		}
+		out.Unknowns = append(out.Unknowns, fmt.Sprintf("`%s` 本次未判定：%s", c.ID, reason))
 	}
 	if len(rep.Degraded) > 0 {
 		out.Unknowns = append(out.Unknowns,
@@ -108,6 +122,10 @@ func AIBriefMarkdown(rep *obs.Report) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "# AI 排查任务包 · %s\n\n", strings.Join(b.Run.RunIDs, ", "))
 	fmt.Fprintf(&s, "**判定：%s**（%s）\n\n", VerdictLabel(obs.Verdict(b.Verdict)), b.Verdict)
+	fmt.Fprintf(&s, "- 模式：%s\n", b.Mode)
+	if b.VerdictReason != "" {
+		fmt.Fprintf(&s, "- 判定原因：%s\n", b.VerdictReason)
+	}
 	fmt.Fprintf(&s, "- 窗口：%s ~ %s\n- 事件：%d 条 · seq 缺口 %d\n- 生成时间：%s（最近一次更新）\n\n",
 		b.Run.From, b.Run.To, b.Run.Events, b.Run.EventGaps, b.GeneratedAt)
 

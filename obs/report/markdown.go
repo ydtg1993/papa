@@ -22,8 +22,22 @@ func VerdictLabel(v obs.Verdict) string {
 		return "带风险通过"
 	case obs.VerdictFail:
 		return "不通过"
+	case obs.VerdictUnknown:
+		return "未判定"
 	default:
 		return string(v)
+	}
+}
+
+// modeText 把判定模式转成带解释的短标签；空模式来自旧版报告（没有 mode 字段）。
+func modeText(m obs.Mode) string {
+	switch m {
+	case obs.ModeSnapshot:
+		return "snapshot（快照，不代表验收结论）"
+	case obs.ModeAcceptance:
+		return "acceptance（验收）"
+	default:
+		return "-（历史报告）"
 	}
 }
 
@@ -34,11 +48,21 @@ func Markdown(rep *obs.Report) string {
 	}
 	var b strings.Builder
 	title := "运行报告"
-	if len(rep.Run.RunIDs) > 0 {
+	// 单 run 且窗口在同一天时才敢在标题里挂 run_id：跨天/多 run 的窗口不代表
+	// 那个 run 发生在窗口内，标题只给日期与 run 数。
+	switch {
+	case len(rep.Run.RunIDs) == 1 && !rep.Run.From.IsZero() &&
+		rep.Run.From.Format("2006-01-02") == rep.Run.To.Format("2006-01-02"):
 		title += " · " + rep.Run.RunIDs[0]
+	case !rep.Run.From.IsZero():
+		title += fmt.Sprintf(" · %s · %d 个 run", rep.Run.From.Format("2006-01-02"), len(rep.Run.RunIDs))
 	}
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "**判定：%s**（%s）\n\n", VerdictLabel(rep.Verdict), rep.Verdict)
+	fmt.Fprintf(&b, "- 模式：%s\n", modeText(rep.Mode))
+	if rep.VerdictReason != "" {
+		fmt.Fprintf(&b, "- 判定原因：%s\n", rep.VerdictReason)
+	}
 	fmt.Fprintf(&b, "- 生成时间：%s（最近一次更新）\n", fmtTime(rep.GeneratedAt))
 	fmt.Fprintf(&b, "- 窗口：%s ~ %s\n", fmtTime(rep.Run.From), fmtTime(rep.Run.To))
 	fmt.Fprintf(&b, "- 运行：%s\n", strings.Join(rep.Run.RunIDs, ", "))
@@ -57,7 +81,7 @@ func Markdown(rep *obs.Report) string {
 		b.WriteString("## 判定项\n\n| 检查 | 级别 | 结果 | 说明 | 口径 |\n| --- | --- | --- | --- | --- |\n")
 		for _, c := range rep.Checks {
 			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s |\n",
-				c.ID, c.Severity, passText(c.Passed), c.Message, c.Detail)
+				c.ID, c.Severity, checkResultText(c), checkMessageText(c), c.Detail)
 		}
 		b.WriteString("\n")
 	}
@@ -139,7 +163,7 @@ func Write(dir string, rep *obs.Report) ([]string, error) {
 		return nil, fmt.Errorf("create report dir: %w", err)
 	}
 	mdPath := filepath.Join(dir, "report.md")
-	if err := os.WriteFile(mdPath, []byte(Markdown(rep)), 0o644); err != nil {
+	if err := writeFileAtomic(mdPath, []byte(Markdown(rep))); err != nil {
 		return nil, fmt.Errorf("write report.md: %w", err)
 	}
 	raw, err := JSON(rep)
@@ -147,11 +171,11 @@ func Write(dir string, rep *obs.Report) ([]string, error) {
 		return nil, fmt.Errorf("encode report.json: %w", err)
 	}
 	jsonPath := filepath.Join(dir, "report.json")
-	if err := os.WriteFile(jsonPath, raw, 0o644); err != nil {
+	if err := writeFileAtomic(jsonPath, raw); err != nil {
 		return nil, fmt.Errorf("write report.json: %w", err)
 	}
 	aiMD := filepath.Join(dir, "ai-brief.md")
-	if err := os.WriteFile(aiMD, []byte(AIBriefMarkdown(rep)), 0o644); err != nil {
+	if err := writeFileAtomic(aiMD, []byte(AIBriefMarkdown(rep))); err != nil {
 		return nil, fmt.Errorf("write ai-brief.md: %w", err)
 	}
 	aiRaw, err := AIBriefJSON(rep)
@@ -159,10 +183,34 @@ func Write(dir string, rep *obs.Report) ([]string, error) {
 		return nil, fmt.Errorf("encode ai-brief.json: %w", err)
 	}
 	aiJSON := filepath.Join(dir, "ai-brief.json")
-	if err := os.WriteFile(aiJSON, aiRaw, 0o644); err != nil {
+	if err := writeFileAtomic(aiJSON, aiRaw); err != nil {
 		return nil, fmt.Errorf("write ai-brief.json: %w", err)
 	}
 	return []string{mdPath, jsonPath, aiMD, aiJSON}, nil
+}
+
+// writeFileAtomic 写临时文件再 rename：后台可能在读，不能让它读到半份。
+// 每份产物各自独立：中途失败时旧文件保持原样，defer 清掉本次的临时文件。
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // rename 成功后是无效路径，失败时清掉
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // SortedRunIDs 给调用方拼目录名用：按字典序去重。
@@ -219,6 +267,26 @@ func passText(ok bool) string {
 		return "✅ 通过"
 	}
 	return "❌ 未通过"
+}
+
+// checkResultText 是判定项表的结果列：不适用必须与"未通过"区分开，
+// 否则暂停/无阶段时会把不适用读成红。
+func checkResultText(c obs.Check) string {
+	if c.Skipped {
+		if c.SkipReason != "" {
+			return "➖ 不适用（" + c.SkipReason + "）"
+		}
+		return "➖ 不适用"
+	}
+	return passText(c.Passed)
+}
+
+// checkMessageText 给不适用且没有说明的判定项兜底，避免表格出现空单元格。
+func checkMessageText(c obs.Check) string {
+	if c.Skipped && strings.TrimSpace(c.Message) == "" {
+		return "-"
+	}
+	return c.Message
 }
 
 func oneLine(s string, n int) string {
