@@ -42,15 +42,14 @@
         <nav>
             <div class="nav-section">Menu</div>
             <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">Dashboard</button>
-            <button class="nav-item" data-module="queue" onclick="switchModule('queue')">任务队列</button>
             <button class="nav-item" data-module="queues" onclick="switchModule('queues')">队列治理</button>
             <div id="oao-nav"></div>
             <div class="nav-section">General</div>
-            <button class="nav-item" data-module="custom" onclick="switchModule('custom')">自定义数据</button>
             <!-- 内置表格页：菜单固定在这里（不跟业务表格挤在一起），渲染仍交给表格组件。
                  开启 server.operation_log 才注册这张表，没注册时这个按钮由 renderNav 藏起来。 -->
             <button class="nav-item hidden" id="nav-oplog" onclick="openTable('operation_log', this.textContent, this)">操作日志</button>
             <button class="nav-item" data-module="tokens" onclick="switchModule('tokens')">访问令牌</button>
+            <button class="nav-item" data-module="obs" onclick="switchModule('obs')">obs报告</button>
             <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
         </nav>
         <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
@@ -100,8 +99,10 @@
             </section>
             <section>
                 <h2>任务队列概览</h2>
-                <!-- 「概览（全部）」下按站点分卡片（阶段压成一行）；切到某站点 Tab 时恢复
-                     原来的多阶段 tiles 详情。两种形态都由 mo.js 的 renderQueueSummary 画。 -->
+                <!-- 原「任务队列」模块已并入这里（侧边栏不再单列）：概览（全部）下按站点分卡片
+                     （阶段压成一行）；切到某站点 Tab 时显示该站的多阶段详情 —— 五格大数字 +
+                     累计耗时 + Worker 明细表（就是原模块的内容）。两种形态都由 mo.js 的
+                     renderQueueSummary 画。 -->
                 <div id="dash-queue"></div>
             </section>
             <!-- 站点控制：一站一行（站点名 + 运行中/已暂停 + 暂停/恢复整站）。
@@ -112,13 +113,6 @@
             <section id="dash-site-ctl-sec" hidden>
                 <h2>站点控制</h2>
                 <div class="grid" id="dash-site-ctl"></div>
-            </section>
-        </div>
-
-        <div class="module" id="mod-queue">
-            <section>
-                <h2>各阶段队列详情</h2>
-                <div id="queue-stages"></div>
             </section>
         </div>
 
@@ -158,10 +152,29 @@
             </section>
         </div>
 
-        <div class="module" id="mod-custom">
+        <!-- obs 报告页：列 obs.report.dir 下的历史运行报告（papa report / obs.report.on_exit 写入），
+             每份报告四个文件 Tab 看原文（纯文本，不渲染 markdown）并可单独下载。 -->
+        <div class="module" id="mod-obs">
             <section>
-                <h2>自定义数据</h2>
-                <div class="kv" id="custom"></div>
+                <h2>报告列表</h2>
+                <div class="card">
+                    <p class="hint">报告由 <code>papa report</code> 或进程退出时自动生成（<code>obs.report.on_exit</code>），
+                        目录取配置 <code>obs.report.dir</code>；每份报告含 report.md / report.json / ai-brief.md / ai-brief.json 四份产物。</p>
+                    <p class="hint" id="obs-dir"></p>
+                    <div class="table-wrap" id="obs-runs"></div>
+                    <div class="hint" id="obs-msg"></div>
+                </div>
+            </section>
+            <section id="obs-viewer-sec" hidden>
+                <h2>报告内容</h2>
+                <div class="card">
+                    <div class="obs-toolbar">
+                        <div class="obs-tabs" id="obs-tabs"></div>
+                        <span class="obs-meta" id="obs-meta"></span>
+                        <button class="btn obs-download" onclick="downloadObsReport()">下载当前文件</button>
+                    </div>
+                    <pre class="obs-content" id="obs-content"></pre>
+                </div>
             </section>
         </div>
 

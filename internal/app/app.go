@@ -837,11 +837,12 @@ func (a *App) httpServer(ctx context.Context) {
 			whitelistReader.Invalidate(configstore.KeyIPWhitelist)
 			return nil
 		},
-		Metrics:            a.Engine.GetMetrics,
-		QueueStats:         a.Engine.GetQueueStats,
-		SiteStats:          a.Engine.GetSiteStats,
-		SysInfo:            a.sysInfo,
-		LogDir:             a.Config.Log.Dir,
+		QueueStats: a.Engine.GetQueueStats,
+		SiteStats:  a.Engine.GetSiteStats,
+		SysInfo:    a.sysInfo,
+		LogDir:     a.Config.Log.Dir,
+		// obs 报告目录：「obs报告」页列这里的历史运行报告（papa report / 退出自动报告写同一目录）。
+		ReportDir:          a.Config.Obs.Report.Dir,
 		ArchiveDir:         a.Engine.ArchiveDir(),
 		OnShutdown:         a.Shutdown,
 		ProcessErrorQueue:  a.Engine.ProcessErrorQueue,

@@ -60,11 +60,13 @@ type MonitorConfig struct {
 	// SaveWhitelist 把白名单**持久化**（宿主注入：papa 落在 crawler_config 表的 ip_whitelist 行）。
 	// nil = 这个宿主没接配置存储 —— 保存接口返回 404 说明原因，而不是"只改内存、重启就没了"。
 	SaveWhitelist func(entries []string, operator string) error
-	Metrics       func() map[string]any            // 业务自定义数据快照（可空）
 	QueueStats    func() map[string]core.QueueStat // 治理队列运行快照（可空）
 	SiteStats     func() map[string]core.SiteStat  // 站点维度快照（站点信息 + 慢变统计，可空）
 	SysInfo       *sysinfo.Collector               // 系统指标采集器（可空）
 	LogDir        string                           // 日志目录（导出用）
+	// ReportDir obs 报告根目录（`obs.report.dir`；可空 = 没开报告）。后台「obs报告」页据此列出
+	// 历史运行目录并读取四份产物（report.md / report.json / ai-brief.md / ai-brief.json）。
+	ReportDir string
 	// ArchiveDir 页面归档根目录（可空 = 归档没开）。后台「追踪」抽屉里那条"归档页面"步骤
 	// 据此提供**下载**：`GET /api/task/page?file=<相对路径>`（原始 HTML，拿去本地分析）。
 	ArchiveDir string
@@ -240,6 +242,9 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
 	mux.HandleFunc("/api/task/page", s.wrap(s.taskPageHandler))
+	// obs 报告页：列历史报告 + 读单份产物原文（download=1 下载）。目录来自 obs.report.dir。
+	mux.HandleFunc("/api/obs/reports", s.wrap(s.obsReportListHandler))
+	mux.HandleFunc("/api/obs/report", s.wrap(s.obsReportFileHandler))
 }
 
 // wrap 包装处理器：先 IP 白名单，再令牌校验（**仅 /api/ 数据接口**）。
@@ -362,7 +367,6 @@ func (s *Monitor) loadTemplate() (*template.Template, error) {
 func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"stages": s.stageData(),
-		"custom": s.customData(),
 	}
 	if s.cfg.QueueStats != nil {
 		resp["queues"] = s.cfg.QueueStats()
@@ -408,14 +412,6 @@ func (s *Monitor) stageData() map[string]any {
 		}
 	}
 	return out
-}
-
-// customData 返回业务自定义数据
-func (s *Monitor) customData() map[string]any {
-	if s.cfg.Metrics == nil {
-		return map[string]any{}
-	}
-	return s.cfg.Metrics()
 }
 
 // settingsHandler 返回当前后台设置状态（不含密钥明文）

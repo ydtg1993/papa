@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,31 +46,27 @@ func main() {
 	// 阶段统计假数据
 	getter := func() map[string]core.StageStats { return fakeStageStats() }
 
-	// 业务自定义指标假数据
-	metrics := func() map[string]any {
-		return map[string]any{
-			"catalog_total": 128,
-			"detail_total":  96,
-			"video_total":   42,
-			"success_rate":  0.972,
-			"running":       true,
-			"started_at":    "2026-09-29T08:00:00Z",
-		}
-	}
-
 	// 访问令牌：内存存储，登录校验与「访问令牌」页共用它（后台新建的令牌当场就能登录）
 	demoToken := randomDemoToken()
 	tokens := newDemoTokens(demoToken)
+
+	// obs 报告页的假数据：临时目录里造两份带四份产物的报告（真实项目由 papa report 写入 obs.report.dir）
+	reportDir := demoReportDir()
+	if reportDir != "" {
+		defer os.RemoveAll(reportDir)
+	}
 
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
 		VerifyToken: tokens.verify,
 		// 关停要求把令牌再输一遍（与 internal/app 的装配一致）
 		VerifyTokenValue: tokens.confirm,
-		Metrics:          metrics,
 		QueueStats:       fakeQueueStats,
-		SysInfo:          sc,
-		LogDir:           "logs",
-		OnShutdown:       func() { stop() },
+		// 站点快照：站点 Tab、Dashboard 的「任务队列概览」按站点分卡片与「站点控制」卡都靠它
+		SiteStats:  fakeSiteStats,
+		SysInfo:    sc,
+		LogDir:     "logs",
+		ReportDir:  reportDir,
+		OnShutdown: func() { stop() },
 	})
 
 	mux := http.NewServeMux()
@@ -108,8 +105,15 @@ func main() {
 	log.Printf("监控演示已启动：http://%s/monitor（Ctrl+C 退出）", addr)
 	log.Printf("  登录令牌：%s（登录框里填它；在「访问令牌」页新建的令牌也能登录）", demoToken)
 	log.Printf("  值得看：侧边栏 General 下的「访问令牌」（新增 → 明文只显示一次 → 拿它登录）")
+	log.Printf("  以及 General 下的「obs报告」页（两份演示报告：判定徽标、四文件 Tab、下载当前文件）")
 	log.Printf("  以及「演示」分组：订单（4 个动作 → 更多 ▾）/ 操作日志（操作人列）/ 审核（自定义页）")
-	go func() { _ = http.ListenAndServe(addr, mux) }()
+	go func() {
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			// 端口被占用等情况不能静默（旧进程还占着 9090 时，浏览器会访问到旧版本的服务）
+			log.Printf("监听 %s 失败：%v", addr, err)
+			stop()
+		}
+	}()
 	<-ctx.Done()
 	log.Println("bye")
 }
@@ -153,6 +157,52 @@ func fakeStageStats() map[string]core.StageStats {
 			Queue: core.QueueStats{Submitted: 10, Completed: 8, Failed: 2, InProgress: 0, QueueLen: 0},
 		},
 	}
+}
+
+// fakeSiteStats 站点快照假数据：Dashboard 的站点 Tab、按站点分卡片与「站点控制」卡都靠它；
+// 站点键与 fakeStageStats 一致（shop 两个阶段、blog 一个阶段）。
+func fakeSiteStats() map[string]core.SiteStat {
+	return map[string]core.SiteStat{
+		"shop": {Key: "shop", BaseURL: "https://shop.example/", StageCount: 2},
+		"blog": {Key: "blog", BaseURL: "https://blog.example/", StageCount: 1},
+	}
+}
+
+// demoReportDir 造两份假的 obs 报告（每份四份产物），供「obs报告」页肉眼验收。
+// 真实项目里这些文件由 `papa report` 或 obs.report.on_exit 写进 obs.report.dir。
+func demoReportDir() string {
+	dir, err := os.MkdirTemp("", "papa-monitor-demo-reports-*")
+	if err != nil {
+		log.Printf("prepare demo report dir: %v", err)
+		return ""
+	}
+	now := time.Now()
+	for _, run := range []struct {
+		name    string
+		verdict string
+		at      time.Time
+	}{
+		{"run-demo-0001", "pass", now.Add(-26 * time.Hour)},
+		{"window-20261028-153000", "warn", now.Add(-2 * time.Hour)},
+	} {
+		rd := filepath.Join(dir, run.name)
+		if err := os.MkdirAll(rd, 0o755); err != nil {
+			log.Printf("prepare demo report %s: %v", run.name, err)
+			continue
+		}
+		write := func(name, body string) {
+			if err := os.WriteFile(filepath.Join(rd, name), []byte(body), 0o644); err != nil {
+				log.Printf("write demo report %s: %v", filepath.Join(run.name, name), err)
+			}
+		}
+		write("report.md", fmt.Sprintf("# 运行报告（演示）\n\n- 判定：%s\n- 事件：42 条 · 缺口 0 · 坏行 0\n- 日志签名：3\n\n## 抓取\n\n| 站点 | 完成 | 失败 |\n| --- | --- | --- |\n| shop | 7 | 1 |\n", run.verdict))
+		write("report.json", fmt.Sprintf("{\n  \"schema_version\": 1,\n  \"verdict\": %q,\n  \"run\": {\"run_ids\": [%q]}\n}\n", run.verdict, run.name))
+		write("ai-brief.md", "# AI 排查简报（演示）\n\n1. shop/detail 有 1 条终态失败，先看日志签名。\n")
+		write("ai-brief.json", fmt.Sprintf("{\n  \"verdict\": %q,\n  \"problems\": []\n}\n", run.verdict))
+		// 时间戳拉开，列表按生成时间倒序的演示才看得出来
+		_ = os.Chtimes(rd, run.at, run.at)
+	}
+	return dir
 }
 
 // fakeQueueStats 治理队列假数据：覆盖「运行中 / 空闲待执行 / 已停用且有错误」三种状态。

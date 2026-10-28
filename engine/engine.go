@@ -8,7 +8,6 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 	"github.com/ydtg1993/papa/v3/internal/database"
-	"github.com/ydtg1993/papa/v3/internal/metrics"
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
@@ -106,8 +105,7 @@ type Engine struct {
 	m3u8BySite      map[string]*m3u8.Downloader
 	filedownByStage map[string]*filedown.Downloader
 	filedownBySite  map[string]*filedown.Downloader
-	metrics         *metrics.Registry // 业务自定义监控数据注册表
-	notifiers       []Notifier        // 告警通知器，任务最终失败时触发
+	notifiers       []Notifier // 告警通知器，任务最终失败时触发
 	// siteBreaker 每站一个**熔断计数器**（滑动窗口数终态失败、判阈），由声明层按站点建
 	// （App.RegisterSites 对每个站点调 SetSiteBreaker：单配了阈值的用它的，没单配的用
 	// crawler.breaker 那份默认值）。一个站被墙不会把另一个站一起闸住 —— 与阶段名按站点作用配套。
@@ -222,7 +220,6 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		db:                 db,
 		cfg:                cfg,
 		loggerSet:          loggerSet,
-		metrics:            metrics.New(),
 		delayCh:            make(chan struct{}, 1),
 		spilled:            make(map[string][]*Task),
 		queueRuns:          newQueueRuns(),

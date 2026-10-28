@@ -71,18 +71,6 @@ func fakeStageStats() map[string]core.StageStats {
 	}
 }
 
-// fakeMetricsSnapshot 造一批业务自定义指标快照。
-func fakeMetricsSnapshot() map[string]any {
-	return map[string]any{
-		"catalog_total": 128,
-		"detail_total":  96,
-		"video_total":   42,
-		"success_rate":  0.972,
-		"running":       true,
-		"started_at":    "2026-09-29T08:00:00Z",
-	}
-}
-
 // newFakeMonitor 组装一个带全套假数据的监控路由。
 func newFakeMonitor(t *testing.T) *Monitor {
 	t.Helper()
@@ -90,9 +78,7 @@ func newFakeMonitor(t *testing.T) *Monitor {
 	return NewMonitor(
 		fakeStageStats,
 		testLogger{t: t},
-		MonitorConfig{
-			Metrics: fakeMetricsSnapshot,
-		},
+		MonitorConfig{},
 	)
 }
 
@@ -186,9 +172,8 @@ func TestAPIMonitor(t *testing.T) {
 		t.Error("catalog workers should be non-empty")
 	}
 
-	custom := body["custom"].(map[string]any)
-	if got := custom["catalog_total"]; got != float64(128) {
-		t.Errorf("custom catalog_total = %v, want 128", got)
+	if _, ok := body["custom"]; ok {
+		t.Error("custom 不该再出现在 /api/monitor 里 —— 自定义数据模块已整块删除")
 	}
 	if _, ok := body["system"]; ok {
 		t.Error("system should be absent when SysInfo is nil")
@@ -1370,10 +1355,14 @@ func TestMonitorResponseKeysMatchFrontend(t *testing.T) {
 		t.Fatalf("read mo.js: %v", err)
 	}
 	js := string(raw)
-	for _, want := range []string{"data.stages", "data.queues", "data.breakers", "data.sites", "data.custom", "data.system"} {
+	for _, want := range []string{"data.stages", "data.queues", "data.breakers", "data.sites", "data.system"} {
 		if !strings.Contains(js, want) {
 			t.Errorf("mo.js 里没读 %s —— 服务端写了这个键，前端却读别的名字就会静默失效", want)
 		}
+	}
+	// 「自定义数据」模块已删除：服务端不再发 custom，前端也不许再读（读了会静默拿不到东西）。
+	if strings.Contains(js, "data.custom") {
+		t.Error("mo.js 还在读 data.custom —— 自定义数据模块已整块删除，服务端不再发这个键")
 	}
 	// 阶段面板的标题要读条目里的裸阶段名：快照的键是 `site:stage`（阶段名只在本站内唯一），
 	// 拿键当标题在多站下会显示成 "shop:catalog"。同 `data.breakers`/`data.breaker` 那条，
@@ -1550,7 +1539,7 @@ func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
 }
 
 // Dashboard「任务队列概览」在「概览（全部）」Tab 下要**按站点分卡片**（多站都有 catalog/detail，
-// 平铺时只看阶段名分不清是哪一站）；切到具体站点 Tab 时仍走原来的多阶段 tiles 详情。
+// 平铺时只看阶段名分不清是哪一站）；切到具体站点 Tab 时展开完整阶段详情（五格大数字 + 累计 + Worker 明细）。
 // 前端没有测试框架，只能把接线与样式类钉在静态文件里，防止某次重构成"又平铺回去"。
 func TestDashboardQueueOverviewGroupsBySite(t *testing.T) {
 	tpl, err := fs.ReadFile(templateFS, "template.html")
@@ -1581,12 +1570,12 @@ func TestDashboardQueueOverviewGroupsBySite(t *testing.T) {
 			t.Errorf("mo.js 里缺少 %q —— 概览按站点分组会静默失效", want)
 		}
 	}
-	// 只有「概览」才分组：选中站点 Tab 时必须回到多阶段 tiles 详情。
+	// 只有「概览」才分组：选中站点 Tab 时必须回到完整的多阶段详情。
 	if !strings.Contains(raw, "if (currentSite === null && sites && sites.length > 0)") {
-		t.Error("mo.js 的 renderQueueSummary 没有按 currentSite 区分「概览=站点卡片 / 站点 Tab=多阶段详情」")
+		t.Error("mo.js 的 renderQueueSummary 没有按 currentSite 区分「概览=站点卡片 / 站点 Tab=完整详情」")
 	}
-	if !strings.Contains(raw, "每阶段五格大数字") {
-		t.Error("mo.js 缺少「选中站点仍保持多阶段详情」的注释说明 —— 后来者会误删这条分支")
+	if !strings.Contains(raw, "五格大数字") {
+		t.Error("mo.js 缺少「选中站点展示完整阶段详情」的注释说明 —— 后来者会误删这条分支")
 	}
 
 	css, err := fs.ReadFile(staticFS, "static/mo.css")
@@ -1598,6 +1587,82 @@ func TestDashboardQueueOverviewGroupsBySite(t *testing.T) {
 	} {
 		if !strings.Contains(string(css), want) {
 			t.Errorf("mo.css 里缺少 %q —— 站点卡片会掉成无样式堆叠", want)
+		}
+	}
+}
+
+// 「任务队列」模块已并入 Dashboard 的「任务队列概览」：菜单项与模块壳不能再回来，
+// 原模块的完整内容（五格 tiles + 累计耗时行 + Worker 明细表）要在站点 Tab 形态里画出来。
+// 前端没有测试框架，把「删掉的」和「必须有」的两边都钉住，否则下次重构会静默丢信息。
+func TestTaskQueueModuleMergedIntoDashboard(t *testing.T) {
+	tpl, err := fs.ReadFile(templateFS, "template.html")
+	if err != nil {
+		t.Fatalf("read template.html: %v", err)
+	}
+	page := string(tpl)
+	for _, gone := range []string{`data-module="queue"`, `id="mod-queue"`, `id="queue-stages"`} {
+		if strings.Contains(page, gone) {
+			t.Errorf("template.html 里还有 %q —— 「任务队列」模块已并入 Dashboard，菜单/模块壳不该回来", gone)
+		}
+	}
+
+	js, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	raw := string(js)
+	for _, gone := range []string{"function renderQueue(", "renderQueue(view.stages)", "queue-stages", "queue: '任务队列'"} {
+		if strings.Contains(raw, gone) {
+			t.Errorf("mo.js 里还有 %q —— 独立「任务队列」模块的接线会重复画一份", gone)
+		}
+	}
+	// 原模块的内容必须完整地搬过来：阶段 tiles 的累计行 + Worker 明细表。
+	for _, want := range []string{
+		"function stageDetail(",
+		"function stageGlobal(",
+		"function workerTable(",
+		"累计任务 ",
+		"Worker 明细",
+		"暂无 Worker 明细",
+		"Worker</th><th>任务</th><th>失败</th>",
+		"stageDetail(name, stages[name])",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("mo.js 里缺少 %q —— 原「任务队列」模块的 Worker 明细会丢", want)
+		}
+	}
+
+	css, err := fs.ReadFile(staticFS, "static/mo.css")
+	if err != nil {
+		t.Fatalf("read mo.css: %v", err)
+	}
+	if !strings.Contains(string(css), ".stage-workers") {
+		t.Error("mo.css 里缺少 .stage-workers —— Worker 明细表会贴到累计行上")
+	}
+}
+
+// 「General > 自定义数据」整块删除：模板导航/模块壳、前端取数与渲染、服务端 custom 字段都不该再回来。
+// （/api/monitor 不再下发 custom 由 TestAPIMonitor 钉；engine.RecordMetric/GetMetrics 随包删除由编译钉。）
+func TestCustomDataModuleRemoved(t *testing.T) {
+	tpl, err := fs.ReadFile(templateFS, "template.html")
+	if err != nil {
+		t.Fatalf("read template.html: %v", err)
+	}
+	page := string(tpl)
+	for _, gone := range []string{`data-module="custom"`, `id="mod-custom"`, `id="custom"`, "自定义数据"} {
+		if strings.Contains(page, gone) {
+			t.Errorf("template.html 里还有 %q —— 「自定义数据」模块已删除", gone)
+		}
+	}
+
+	js, err := fs.ReadFile(staticFS, "static/mo.js")
+	if err != nil {
+		t.Fatalf("read mo.js: %v", err)
+	}
+	raw := string(js)
+	for _, gone := range []string{"function renderCustom(", "data.custom", "自定义数据", "custom: '"} {
+		if strings.Contains(raw, gone) {
+			t.Errorf("mo.js 里还有 %q —— 服务端不再发 custom，前端留着只会静默失效", gone)
 		}
 	}
 }

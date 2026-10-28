@@ -116,7 +116,7 @@ admin/                          ★后台模块：**对外公开**，业务项�
   configstore/  运行期配置存储（crawler_config 表）+ 读缓存层（内存 / TTL 装饰器）
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
-  workerpool/ database/ metrics/ msgqueue/ track/ breaker/
+  workerpool/ database/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
 pkg/                             可独立复用的件
   events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
@@ -137,7 +137,7 @@ cmd/papa/                        CLI（new / check / upgrade / migrate / token /
 **依赖方向**（箭头 = import 方向，不允许反向）：
 
 ```
-papa 门面 ──► internal/app ──► engine ──► internal/{workerpool,database,metrics,track,breaker}
+papa 门面 ──► internal/app ──► engine ──► internal/{workerpool,database,track,breaker}
                  │               │              pkg/{browser,htmlfetch,loggers,middleware}
                  │               └──► core ◄── config
                  └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core

@@ -260,6 +260,10 @@ section > h2 {
 .tile.failed { background: var(--red); }
 .tile.submitted { background: var(--purple); }
 
+/* ---- 站点 Tab 的完整阶段详情：累计耗时行 + Worker 明细表（原「任务队列」模块并入 Dashboard） ---- */
+.stage-workers { margin-top: 14px; }
+.stage-workers > .muted { margin-bottom: 8px; }
+
 /* ---- Dashboard queue overview：概览按站点分卡片（阶段压成一行） ---- */
 .queue-site-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
 .site-card {
@@ -399,6 +403,24 @@ textarea { width: 100%; font-family: var(--font-mono); resize: vertical; }
 .log-row .nm { font-family: var(--font-mono); word-break: break-all; }
 .log-row .sz { font-family: var(--font-mono); color: var(--muted-foreground); font-size: 12px; margin: 0 12px; flex-shrink: 0; }
 .log-row a { cursor: pointer; color: var(--foreground); font-weight: 800; text-decoration: underline; flex-shrink: 0; }
+
+/* ---- obs 报告页：四文件 Tab + 原文查看 ---- */
+.obs-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.obs-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.obs-tab {
+    border: 2px solid var(--border-color); background: var(--card); color: inherit;
+    padding: 4px 12px; cursor: pointer; font: inherit;
+    box-shadow: 2px 2px 0 0 var(--shadow-color);
+}
+.obs-tab.active { background: var(--primary); color: #fff; }
+.obs-meta { font-size: 12px; color: var(--muted-foreground); font-family: var(--font-mono); }
+.obs-download { margin-left: auto; }
+.obs-content {
+    margin: 0; padding: 12px; max-height: 65vh; overflow: auto;
+    border: 2px solid var(--border-color); background: rgba(0, 0, 0, .06);
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+    white-space: pre-wrap; word-break: break-all;
+}
 
 .secret-box {
     margin-top: 12px; padding: 10px; border: 2px dashed var(--border-color);

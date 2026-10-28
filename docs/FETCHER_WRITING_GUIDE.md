@@ -149,7 +149,6 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.SubmitTask(&papa.Task{...})` | 派发子任务（列表页 → 详情页） |
 | `engine.SubmitTasks([]*papa.Task{...})` | 批量派发子任务（一次多行 INSERT，减少 DB 往返；撞唯一索引时自动降级为逐条并跳过冲突行，不会让整批失败） |
 | `engine.GetStageStats()` | 各阶段的统计快照（监控页读的就是它） |
-| `engine.RecordMetric(key, value)` | 写一条业务自定义监控数据，监控页的「自定义数据」模块展示 |
 | `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
 
@@ -990,7 +989,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
-**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览，另有「任务队列」「自定义数据」模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；来源 IP 限制在后台「设置」页改（存在 `crawler_config` 表，空 = 不限制）。fetcher 里可调 `engine.RecordMetric("key", value)` 写入自定义展示数据。
+**看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览（概览按站点分卡片，切到某站点 Tab 可看该站各阶段的五格数字、累计耗时与 Worker 明细），另有「队列治理」等模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；来源 IP 限制在后台「设置」页改（存在 `crawler_config` 表，空 = 不限制）。
 
 ---
 

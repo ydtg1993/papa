@@ -5,28 +5,6 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 )
 
-// RecordMetric 写入一条业务自定义监控数据，供监控页展示
-func (e *Engine) RecordMetric(key string, v any) {
-	if e.metrics == nil {
-		return
-	}
-	e.metrics.Set(key, v)
-}
-
-// GetMetrics 返回监控数据快照：业务自定义数据 + 框架级队列治理计数（溢出/恢复/失败重投）。
-func (e *Engine) GetMetrics() map[string]any {
-	base := map[string]any{}
-	if e.metrics != nil {
-		base = e.metrics.GetAll()
-	}
-	base["queue_spilled"] = e.spilledCount.Load()
-	base["queue_spill_backlog"] = e.spillBacklog()
-	base["recover_total"] = e.recoveredCount.Load()
-	base["error_retry_total"] = e.errorRetriedTotal()
-	base["repeat_repoll_total"] = e.repeatRepolledTotal()
-	return base
-}
-
 // setStatsQueue 设置阶段统计信息管理器（key 是 `core.StageKey`：两个站的同名阶段各有各的统计）
 func (e *Engine) setStatsQueue(key string, mon *track.StatsQueue[*Task]) {
 	e.mu.Lock()

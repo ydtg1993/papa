@@ -360,25 +360,6 @@ func TestLoadActiveTasksSurvivesDBError(t *testing.T) {
 	}
 }
 
-/* ---------- 业务自定义指标 ---------- */
-
-// 引擎没建注册表（测试里手搓的 Engine）时 RecordMetric 是安全的 no-op。
-func TestRecordMetricNilRegistryIsSafe(t *testing.T) {
-	e := &Engine{}
-	e.RecordMetric("k", 1)
-
-	got := e.GetMetrics()
-	// 框架级计数仍在
-	for _, k := range []string{"queue_spilled", "queue_spill_backlog", "recover_total", "error_retry_total", "repeat_repoll_total"} {
-		if _, ok := got[k]; !ok {
-			t.Fatalf("GetMetrics 少了框架级计数 %q：%v", k, got)
-		}
-	}
-	if _, ok := got["k"]; ok {
-		t.Fatal("没有注册表时业务指标不该出现")
-	}
-}
-
 /* ---------- 工具 ---------- */
 
 func containsAll(s string, subs ...string) bool {

@@ -1,12 +1,4 @@
 {
-  "custom": {
-    "catalog_total": 128,
-    "detail_total": 96,
-    "running": true,
-    "started_at": "2026-09-29T08:00:00Z",
-    "success_rate": 0.972,
-    "video_total": 42
-  },
   "stages": {
     "shop:catalog": {
       "global": {

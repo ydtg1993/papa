@@ -23,7 +23,7 @@
 
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
-    var MODULE_TITLES = { dashboard: 'Dashboard', queue: '任务队列', queues: '队列治理', tables: '数据', pages: '自定义页', custom: '自定义数据', tokens: '访问令牌', settings: '设置' };
+    var MODULE_TITLES = { dashboard: 'Dashboard', queues: '队列治理', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: 'obs报告', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
@@ -59,6 +59,7 @@
         document.getElementById('moduleTitle').textContent = MODULE_TITLES[name];
         if (name === 'settings') { fetchSettings(); fetchLogs(); }
         if (name === 'tokens') { fetchTokens(); }
+        if (name === 'obs') { fetchObsReports(); }
     }
 
     /* ============ 表格（oao 组件） ============ */
@@ -344,11 +345,6 @@
         return v.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
     }
     function pct(p) { return p == null ? 0 : Math.min(100, Math.max(0, p)); }
-    function jsonVal(v) {
-        if (v === null || v === undefined) return String(v);
-        if (typeof v === 'object') return JSON.stringify(v);
-        return String(v);
-    }
     function bar(cls, p) { return '<div class="bar ' + cls + '"><span style="width:' + p + '%"></span></div>'; }
 
     /* ============ 渲染 ============ */
@@ -381,7 +377,7 @@
     }
     // 概览里每个阶段压缩成一行：阶段名 + 三个关键数字 + 完成小字。
     // 三个数字是「现在怎么样」（排队/执行中/错误），完成量是累计视角，放小字不占视线；
-    // 已提交=累计提交（≈完成+失败+在途），在概览里重复感太强，只在任务队列详情里出现。
+    // 已提交=累计提交（≈完成+失败+在途），在概览里重复感太强，只在站点 Tab 的完整详情里出现。
     function stageLine(name, st) {
         var q = (st && st.queue) || {};
         function mini(cls, label, val) {
@@ -398,10 +394,38 @@
             + '<span class="stage-done">完成 ' + (q.completed || 0) + '</span>'
             + '</div>';
     }
+    // 站点 Tab 里的完整阶段详情：五格大数字 + 累计耗时 + Worker 明细表。
+    // 这块原来是独立的「任务队列」模块，模块已并入 Dashboard 的「任务队列概览」——
+    // 概览（全部）保持紧凑的站点卡片，切到某站点时才展开到这一层，信息不丢。
+    function stageGlobal(st) {
+        var g = (st && st.global) || {};
+        return '累计任务 ' + (g.TotalTasks || 0) + ' · 累计失败 ' + (g.TotalFailed || 0)
+            + ' · 平均 ' + fmtDuration(g.AvgTime) + ' · 最大 ' + fmtDuration(g.MaxTime)
+            + ' · 最小 ' + fmtDuration(g.MinTime);
+    }
+    // workerTable 画某阶段的 Worker 明细（池内每个 worker 的任务数/失败数/耗时快照）。
+    function workerTable(st) {
+        var workers = (st && st.workers) || {};
+        var ids = Object.keys(workers);
+        if (ids.length === 0) return '<div class="muted">暂无 Worker 明细</div>';
+        var rows = ids.map(function (id) {
+            var w = workers[id];
+            return '<tr><td>#' + esc(id) + '</td><td>' + (w.TotalTasks || 0) + '</td><td>' + (w.FailedTasks || 0)
+                + '</td><td>' + fmtDuration(w.TotalTime) + '</td><td>' + fmtDuration(w.MaxTime)
+                + '</td><td>' + fmtDuration(w.MinTime) + '</td></tr>';
+        }).join('');
+        return '<div class="table-wrap"><table><thead><tr><th>Worker</th><th>任务</th><th>失败</th>'
+            + '<th>总耗时</th><th>最大</th><th>最小</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    function stageDetail(name, st) {
+        return '<div class="stage"><h3>' + esc(stageLabel(name, st)) + '</h3>' + stageTiles(st.queue)
+            + '<div class="muted">' + stageGlobal(st) + '</div>'
+            + '<div class="stage-workers"><div class="muted">Worker 明细</div>' + workerTable(st) + '</div></div>';
+    }
     // 任务队列概览分两种形态：
     //   - 概览（全部站点）：**按站点分卡片**。多站都叫 catalog/detail，平铺在一起只看阶段名
     //     分不清是哪个站；卡片里每个阶段只占一行，扫一眼就知道哪站在排队/出错。
-    //   - 选中某站点 Tab：保持原来的多阶段详情（每阶段五格大数字 + 完成量），不压缩。
+    //   - 选中某站点 Tab：显示该站的多阶段详情（五格大数字 + 累计耗时 + Worker 明细表）。
     function renderQueueSummary(stages, sites) {
         var el = document.getElementById('dash-queue');
         var names = Object.keys(stages || {});
@@ -432,28 +456,7 @@
         el.classList.remove('queue-site-grid');
         if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
         el.innerHTML = names.map(function (name) {
-            return '<div class="stage"><h3>' + esc(stageLabel(name, stages[name])) + '</h3>' + stageTiles(stages[name].queue) + '</div>';
-        }).join('');
-    }
-    function renderQueue(stages) {
-        var el = document.getElementById('queue-stages');
-        var names = Object.keys(stages || {});
-        if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
-        el.innerHTML = names.map(function (name) {
-            var st = stages[name];
-            var g = st.global || {};
-            var workers = st.workers || {};
-            var wrows = Object.keys(workers).map(function (id) {
-                var w = workers[id];
-                return '<tr><td>#' + id + '</td><td>' + w.TotalTasks + '</td><td>' + w.FailedTasks
-                    + '</td><td>' + fmtDuration(w.TotalTime) + '</td><td>' + fmtDuration(w.MaxTime)
-                    + '</td><td>' + fmtDuration(w.MinTime) + '</td></tr>';
-            }).join('');
-            return '<div class="stage"><h3>' + esc(stageLabel(name, st)) + '</h3>' + stageTiles(st.queue)
-                + '<div class="muted">累计任务 ' + g.TotalTasks + ' · 累计失败 ' + g.TotalFailed
-                + ' · 平均 ' + fmtDuration(g.AvgTime) + ' · 最大 ' + fmtDuration(g.MaxTime) + ' · 最小 ' + fmtDuration(g.MinTime) + '</div>'
-                + '<div style="margin-top:12px"><div class="table-wrap"><table><tr><th>Worker</th><th>任务</th><th>失败</th><th>总耗时</th><th>最大</th><th>最小</th></tr>'
-                + wrows + '</table></div></div></div>';
+            return stageDetail(name, stages[name]);
         }).join('');
     }
     /* ---- 治理队列（错误队列 + 轮询队列，各一条全局） ---- */
@@ -544,14 +547,6 @@
         var data = await resp.json();
         Toast.ok(m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务');
         fetchData();
-    }
-    function renderCustom(custom) {
-        var el = document.getElementById('custom');
-        var keys = Object.keys(custom || {});
-        if (keys.length === 0) { el.innerHTML = '<div class="empty">暂无自定义数据（fetcher 里调 engine.RecordMetric 写入）</div>'; return; }
-        el.innerHTML = keys.map(function (k) {
-            return '<div class="row"><div class="k">' + esc(k) + '</div><div class="v">' + esc(jsonVal(custom[k])) + '</div></div>';
-        }).join('');
     }
     /* ============ 站点 Tab（多站点时按站点把面板分开） ============ */
     // currentSite：null = 概览（全部）；其余 = 站点键（站点是必填维度，没有"空键"那一档）。
@@ -648,9 +643,7 @@
         renderSystem(data.system);
         renderDirs(data.system && data.system.dirs);
         renderQueueSummary(view.stages, view.sites);
-        renderQueue(view.stages);
         renderQueues(view.queues);
-        renderCustom(data.custom);
         // 键名是**复数**：服务端 monitor.go 写的是 resp["breakers"]（数组，每站一条）。
         // 这里曾经写成 data.breaker，于是横幅永远拿不到数据、（list || []）把它吞成空数组，
         // 一个字都不报 —— 多站熔断横幅其实一直没显示过。
@@ -1175,6 +1168,109 @@
     }
     async function downloadLog(name) { await downloadFile('/api/logs/download?file=' + encodeURIComponent(name)); }
     async function downloadLogs() { await downloadFile('/api/logs/download'); }
+
+    /* ============ obs 报告（obs.report.dir） ============ */
+    // 后端只列报告目录、把单份产物当纯文本吐回来；这里做「选报告 → 切文件 → 看原文 / 下载」。
+    // 报告里会带日志与 URL（不可信文本），一律用 textContent 放进 <pre>，不渲染 markdown。
+    var OBS_FILES = ['report.md', 'report.json', 'ai-brief.md', 'ai-brief.json'];
+    var obsState = { dir: '', runs: [], run: '', file: '' };
+
+    // obsVerdict 把 report.json 里的 verdict 翻成后台的徽标；未知/读不到都算「未判定」。
+    function obsVerdict(raw) {
+        if (raw === 'pass') return { label: '通过', cls: 'ok' };
+        if (raw === 'warn') return { label: '带风险通过', cls: 'warn' };
+        if (raw === 'fail') return { label: '不通过', cls: 'err' };
+        return { label: '未判定', cls: 'off' };
+    }
+
+    async function fetchObsReports() {
+        var el = document.getElementById('obs-runs');
+        if (!el) return;
+        el.innerHTML = '<table><tbody>' + skeletonRows(5, 3) + '</tbody></table>';
+        var msg = document.getElementById('obs-msg');
+        if (msg) msg.textContent = '';
+        var resp = await apiFetch('/api/obs/reports');
+        if (!resp) { el.innerHTML = '<div class="empty">读取失败，请稍后重试</div>'; return; }
+        renderObsReports(await resp.json());
+    }
+
+    function renderObsReports(data) {
+        obsState.dir = (data && data.report_dir) || '';
+        obsState.runs = (data && data.runs) || [];
+        var dirEl = document.getElementById('obs-dir');
+        if (dirEl) {
+            dirEl.textContent = obsState.dir
+                ? ('报告目录：' + obsState.dir)
+                : '报告目录未配置（obs.report.dir）：这份部署还没开报告产物。';
+        }
+        var el = document.getElementById('obs-runs');
+        if (!el) return;
+        if (obsState.runs.length === 0) {
+            el.innerHTML = '<div class="empty">还没有报告：跑一次 <code>papa report</code>，'
+                + '或开启 obs.report.on_exit 让进程退出时自动生成。</div>';
+            return;
+        }
+        var html = '<table><thead><tr><th>报告</th><th>判定</th><th>生成时间</th><th>文件</th><th>操作</th></tr></thead><tbody>';
+        obsState.runs.forEach(function (run) {
+            var v = obsVerdict(run.verdict);
+            html += '<tr>'
+                + '<td><b>' + esc(run.name) + '</b></td>'
+                + '<td><span class="badge ' + v.cls + '">' + v.label + '</span></td>'
+                + '<td>' + esc(fmtTime(run.mod_time)) + '</td>'
+                + '<td>' + ((run.files || []).length) + ' / ' + OBS_FILES.length + '</td>'
+                + '<td><button class="btn" style="margin-top:0" data-run="' + esc(run.name)
+                + '" onclick="openObsReport(this.dataset.run)">查看</button></td>'
+                + '</tr>';
+        });
+        el.innerHTML = html + '</tbody></table>';
+    }
+
+    // openObsReport 选中一份报告：默认打开 report.md（缺它时退到第一份存在的产物）。
+    function openObsReport(runName) {
+        var run = obsState.runs.filter(function (r) { return r.name === runName; })[0];
+        if (!run) return;
+        obsState.run = run.name;
+        var names = (run.files || []).map(function (f) { return f.name; });
+        obsState.file = names.indexOf('report.md') >= 0 ? 'report.md' : (names[0] || '');
+        document.getElementById('obs-viewer-sec').hidden = false;
+        renderObsTabs();
+        loadObsReport();
+    }
+
+    function renderObsTabs() {
+        var tabs = document.getElementById('obs-tabs');
+        if (!tabs) return;
+        var run = obsState.runs.filter(function (r) { return r.name === obsState.run; })[0];
+        var names = run ? (run.files || []).map(function (f) { return f.name; }) : [];
+        tabs.innerHTML = names.map(function (name) {
+            var active = name === obsState.file ? ' active' : '';
+            return '<button class="obs-tab' + active + '" data-obs-file="' + esc(name) + '">' + esc(name) + '</button>';
+        }).join('');
+        tabs.querySelectorAll('[data-obs-file]').forEach(function (b) {
+            b.onclick = function () { obsState.file = b.dataset.obsFile; renderObsTabs(); loadObsReport(); };
+        });
+        var meta = document.getElementById('obs-meta');
+        if (meta) meta.textContent = obsState.run ? ('报告：' + obsState.run) : '';
+    }
+
+    async function loadObsReport() {
+        var pre = document.getElementById('obs-content');
+        if (!pre) return;
+        if (!obsState.run || !obsState.file) { pre.textContent = '这份报告没有可看的产物'; return; }
+        pre.textContent = '加载中…';
+        var url = '/api/obs/report?run=' + encodeURIComponent(obsState.run)
+            + '&file=' + encodeURIComponent(obsState.file);
+        var resp = await apiFetch(url);
+        if (!resp) { pre.textContent = '读取失败（报告可能已被清理）'; return; }
+        pre.textContent = await resp.text();
+    }
+
+    async function downloadObsReport() {
+        if (!obsState.run || !obsState.file) return;
+        var url = '/api/obs/report?run=' + encodeURIComponent(obsState.run)
+            + '&file=' + encodeURIComponent(obsState.file) + '&download=1';
+        await downloadFile(url);
+    }
 
     /* ============ 启动 ============ */
     document.getElementById('key').addEventListener('keydown', function (e) { if (e.key === 'Enter') submitKey(); });
