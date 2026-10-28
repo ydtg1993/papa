@@ -733,9 +733,9 @@ func (a *App) obsReportInputs() obs.Inputs {
 		PapaVersion: buildVersion(),
 		ConfigFile:  configFile,
 		Thresholds: map[string]string{
-			"stuck_after":         strconv.FormatFloat(stuckAfter.Seconds(), 'f', -1, 64),
+			"stuck_after":         stuckAfter.String(),
 			"crawl_fail_rate_max": strconv.FormatFloat(failRateMax, 'f', -1, 64),
-			"event_max_gap":       strconv.FormatFloat(eventMaxGap.Seconds(), 'f', -1, 64),
+			"event_max_gap":       eventMaxGap.String(),
 		},
 		ThresholdsSource: "effective（config 覆盖后，未校准）",
 	}

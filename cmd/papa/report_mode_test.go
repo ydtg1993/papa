@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,9 @@ func TestReportGenerateWritesInputs(t *testing.T) {
 	}
 	if rep.Inputs.Thresholds["event_max_gap"] == "" {
 		t.Fatalf("inputs.thresholds.event_max_gap 为空：%+v", rep.Inputs.Thresholds)
+	}
+	if got := rep.Inputs.Thresholds["event_max_gap"]; !strings.Contains(got, "m") {
+		t.Fatalf("inputs.thresholds.event_max_gap 应是可读时长（如 10m0s），实得 %q", got)
 	}
 }
 

@@ -49,5 +49,7 @@ func TestPeriodicReportIncludesEngineAndBacklogSections(t *testing.T) {
 	}
 	if v, _ := thresholds["stuck_after"].(string); v == "" {
 		t.Fatalf("inputs.thresholds.stuck_after 为空：%v", thresholds)
+	} else if !strings.Contains(v, "m") {
+		t.Fatalf("inputs.thresholds.stuck_after 应是可读时长（如 10m0s），实得 %q", v)
 	}
 }

@@ -422,7 +422,7 @@ func runtimeVersion() string {
 //
 // CLI 的 cfg 已经过 config.Load 归一，但这里仍按 analyze 的默认口径兜底 ——
 // 将来若有人直接构造 Config，报告也不该把 0 当成生效阈值写出去。
-// 时长统一换算成秒（FormatFloat 最短表示），与 App 的 obsReportInputs 保持同一口径。
+// 时长用 time.Duration.String()（如 "10m0s"），与 App 的 obsReportInputs 保持同一口径。
 func reportInputs(th config.ObsThresholdsConfig, configPath string) obs.Inputs {
 	stuckAfter := 10 * time.Minute
 	failRateMax := 0.05
@@ -440,9 +440,9 @@ func reportInputs(th config.ObsThresholdsConfig, configPath string) obs.Inputs {
 		PapaVersion: runtimeVersion(),
 		ConfigFile:  configPath,
 		Thresholds: map[string]string{
-			"stuck_after":         strconv.FormatFloat(stuckAfter.Seconds(), 'f', -1, 64),
+			"stuck_after":         stuckAfter.String(),
 			"crawl_fail_rate_max": strconv.FormatFloat(failRateMax, 'f', -1, 64),
-			"event_max_gap":       strconv.FormatFloat(eventMaxGap.Seconds(), 'f', -1, 64),
+			"event_max_gap":       eventMaxGap.String(),
 		},
 		ThresholdsSource: "effective（config 覆盖后，未校准）",
 	}
