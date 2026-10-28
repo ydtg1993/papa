@@ -91,7 +91,9 @@ obs:
       event_max_gap: "10m"    # 事件时间断层阈值（相邻事件间隔超过它算断层；event_coverage 检查用）
 ```
 
-> `event_max_gap` 本版只做配置与校验：事件完整性检查（`event_coverage`）尚未接入，写它暂时不改变判定。
+> `event_max_gap` 已接入事件完整性检查（`event_coverage`）：相邻两条事件的时间差超过阈值，
+> 或窗口起点之后超过阈值才有首条事件，该检查判**未通过**（warn），同时向 `degraded` 写一条
+> 「事件存在时间断层，事件口径可能不完整」—— 断档期间的「0 失败」不能当结论。`0` / 不写 = 默认 `10m`。
 
 **三种生成方式，互相独立**：
 
@@ -142,8 +144,8 @@ papa report list -c configs/config.yaml
 
 | 文件 | 给谁 | 内容 |
 | --- | --- | --- |
-| `report.md` | 人 | 头部含**生成时间（最近一次更新）**；判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、各检查段 |
-| `report.json` | 机器/看板 | 同源结构化数据：`generated_at`（生成时间）/ `verdict` / `run` / `events` / `logs` / `degraded` / `sections` / `checks` / `problems` |
+| `report.md` | 人 | 头部含**生成时间（最近一次更新）**与**模式**；判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、**引擎状态**、**积压与老化（含 ETA）**、各检查段 |
+| `report.json` | 机器/看板 | 同源结构化数据：`generated_at`（生成时间）/ `mode` / `verdict` / `verdict_reason` / `run` / `events` / `logs` / `degraded` / `engine` / `inputs`（自证：版本、阈值、事件覆盖）/ `sections` / `checks` / `problems` |
 | `ai-brief.md` | AI / 接手排查的人 | 头部含**生成时间**；边界（只读、修复后必须复验）、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、已知陷阱、未知项、下一步 |
 | `ai-brief.json` | AI 工具链 | 同源结构化版本（含 `generated_at`） |
 
@@ -175,10 +177,61 @@ papa report list -c configs/config.yaml
 ## 5. 通用分析节与模式库
 
 - **通用分析节** `framework`（`obs/analyze`）：运行边界与耗时、队列快照、失败分组（站点×阶段×错误类型）、
-  任务终态分布，以及事件缺口 / 日志坏行 / 队列收敛 / 抓取失败率 / 卡死 / 未完成等检查。
+  任务终态分布，以及事件缺口 / 日志坏行 / 队列收敛 / 抓取失败率 / 卡死 / 未完成 / 事件覆盖等检查。
   阈值来自 `obs.report.thresholds`。
 - **内置模式库**（`obs/pattern`，5 个通用模式）：`event-loss`、`process-restart`、`queue-not-draining`、
   `breaker-noise`、`stage-not-registered`。Pattern 只做「推断 + 验证方法」，不自动改数据。
+
+batch2 起框架报告固定带三段排查信息，`report.md` 按注册顺序渲染（通用概览 → 引擎状态 → 积压与老化），
+分别回答「现在是不是停着」「还有多少、还要多久」「事件本身全不全」：
+
+### 5.1 引擎状态（段标题「引擎状态」）
+
+回答「报告时刻引擎停没停、recover 跑到哪了」。三张表：
+
+- **站点状态**：每站一行 `站点 / 暂停 / 暂停时间 / 阶段数`。它只陈述「报告时刻是否暂停」，暂停原因看后台铃铛
+  或事件里的 `pause_resumed`（`source=manual` / `breaker`）。
+- **阶段池（窗口内最后一次快照）**：`阶段 / 排队 / 在跑 / worker`，来自窗口内最后一条 `stage_snapshot`；
+  事件没开时这张表为空。
+- **恢复进度**：窗口内 `task_requeued` 按队列（`recover_queue` / `error_queue` / `repeat_queue`）计数与首末时间，
+  外加「DB 旧 processing」—— `updated_at` 超过 `stuck_after` 仍是 processing 的行数。启动恢复是分批的：
+  processing 逐批变回 pending 是正常过程，不是卡死。
+
+数据来源：定时/退出报告用进程内实时快照（`source=engine`）；`papa report generate` 离线时读
+`crawler_config.sites` 的当前快照、并用窗口内事件推断阶段池（`source=db` / `events`）；两者都没有时摘要写
+「无运行上下文（离线报告）」，此时不据此做暂停/空闲跳过。判定项里只有 `engine_paused` 会告警（warn，有站点暂停）；
+`stage_pools` / `recover_in_progress` / `engine_idle` 都是 info，不参与判定。
+
+### 5.2 积压与老化（段标题「积压与老化（含 ETA）」）
+
+回答「还有多少、堆了多久、按当前速度还要多久」。两张表：
+
+- **积压分布（crawler_tasks）**：按 `站点 × 阶段 × 状态 × 是否轮询 × 年龄桶` 聚合，只统计**非终态**
+  （`待处理` / `处理中`）。年龄桶按 `updated_at` 划：`lt10m` / `10m-1h` / `1h-6h` / `gt6h` ——
+  待处理行的年龄 ≈ 排队等了多久；处理中行的年龄 ≈ 距最后一次更新多久（`gt6h` 的处理中行多半是上次进程
+  留下的孤儿，或彻底卡死）。
+- **吞吐与 ETA**：`站点/阶段 / 窗口完成数 / 吞吐(条/分) / 非轮询待处理 / ETA`。
+  窗口完成数 = 窗口内 `task_finished` + `task_failed` 事件数；吞吐 = 完成数 ÷ 窗口分钟数；
+  ETA = 该站该阶段非轮询待处理 ÷ 吞吐。**轮询（repeatable）待处理不计入 ETA** —— 它们按轮询周期反复处理，
+  算进去只会把 ETA 放大成没有意义的数。引擎暂停/空闲时 ETA 显示「ETA 不适用（引擎未运行）」。
+  离线 `papa report generate` 的引擎状态取**当前** DB 快照：站点现在是暂停的，历史窗口的 ETA 也会标不适用
+  （判定项同理），要算历史 ETA 得在引擎运行时用定时/退出报告。
+
+判定项 `throughput_zero`（warn）：有非轮询待处理、窗口吞吐却是 0 = 引擎在跑但没吃任务（worker/队列问题）；
+引擎暂停/空闲时该检查标不适用（这时 0 吞吐是正常的）。注意整段数字是**报告时刻的全库快照**，不是窗口末。
+
+### 5.3 事件完整性（判定项 `event_coverage`）
+
+`seq` 缺口只能发现「丢了单条」；进程被硬杀、日志轮转没接上时丢的是一整段，`seq` 反而连续 ——
+只能靠**时间断层**发现：相邻两条事件的时间差超过 `obs.report.thresholds.event_max_gap`（默认 `10m`），
+或窗口起点之后超过阈值才有首条事件，`event_coverage` 就判未通过（warn），message 带断档起止时间，
+同时向 `degraded` 写「事件存在时间断层，事件口径可能不完整」。所以这项红了先怀疑事件文件缺了一段，
+不要拿这段时间的「0 失败 / 0 完成」当结论 —— 先补数据，再做判定。
+
+引擎暂停/空闲时（`snapshot` 模式）该检查标不适用：暂停时本来就不产生事件，稀疏不代表丢失；
+`acceptance` 模式仍按窗口检查（验收要看这一轮事件全不全）。
+`report.json` 的 `inputs.events`（`first_ts` / `last_ts` / `max_gap` / `max_gap_from` / `max_gap_to`）是同一份口径，
+可拿去独立复核；`report.md` 头部的「事件覆盖」行也来自它。
 
 ## 6. 业务项目怎么扩展
 
@@ -213,22 +266,39 @@ if ev := app.Events(); ev != nil {
 
 业务段也能用同一套判定语义：`Build` 拿到的 `Input.Mode`（`snapshot` / `acceptance`）决定按哪种口径判，
 `Check.Skipped` + `SkipReason` 用来声明「本次不适用」（暂停、空闲、窗口对不上）—— 不适用的检查不参与判定、
-也不合成 Problem。本版只有框架的 `stuck_processing` / `unfinished_tasks` / `queue_drained` 接入了跳过规则，
-业务段要自己按 `Input.Mode` 判。
+也不合成 Problem。框架自带的 `stuck_processing` / `unfinished_tasks` / `queue_drained` / `event_coverage` /
+`throughput_zero` 已按模式与引擎状态自己跳过，业务段要自己按 `Input.Mode` / `Input.Engine` 判。
 
 边界铁律：**业务段只读**（不写表、不重投、不调接收端）、**确定性输出**（同一输入两次跑结果一致）、
 **不把业务阈值写进 papa**（阈值放业务配置，如 `cfg.BusinessSection`）。
 
 ## 7. 报告怎么读（排查路径）
 
-1. 先看 `report.json` 的 `checks`：哪些 `passed=false`，`severity` 是 `fail` 还是 `warn`；
-2. 再看 `problems`：每条都带证据（事件 `task_id` / 日志 `file:line` 原文 / SQL 计数）；
-3. 用 `ai-brief.md` 直接开工：它按「验证命令 → 修复方向 → 验收标准」组织；
-4. 需要原文时按证据里的 `file:line` 去 `logs/*.log` 看上下文；event 证据可直接用 `--run` 过滤重出报告。
+按「判定/原因 → 引擎状态 → 积压/ETA → 失败组证据」四步读，别一上来就 grep 日志：
+
+1. **判定/原因**：先看 `report.json` 的 `verdict` / `verdict_reason` 与 `checks` —— 哪些 `passed=false`、
+   `severity` 是 `fail` 还是 `warn`、哪些是 `➖ 不适用`（不适用既不是通过也不是失败）。若 `event_coverage` 未通过，
+   说明事件本身就缺了一段，先补数据再谈其它结论。
+2. **引擎状态（是不是暂停了）**：看「引擎状态」段 —— 哪些站点暂停、活跃阶段池几个、`recover_queue` 还在不在重投
+   （恢复进度）。暂停/恢复期间「期末积压、卡住、0 吞吐」都不代表故障，先确认引擎在不在干活。
+3. **积压/ETA（还要多久）**：看「积压与老化」段 —— 非轮询待处理多少、年龄落在哪个桶（`1h-6h` / `gt6h` 要认真看）、
+   窗口吞吐与 ETA。有积压、吞吐却为 0、引擎又在跑，才是真的 worker/队列问题。
+4. **失败组证据（为什么）**：最后看 `problems` —— 每条都带证据（事件 `task_id` / 日志 `file:line` 原文 / SQL 计数），
+   失败分组按站点×阶段×错误类型聚合，组内证据按 `task_id` / URL 精确匹配（不再整组指向同一条日志行）。
+   需要原文时按证据里的 `file:line` 去 `logs/*.log` 看上下文；event 证据可直接用 `--run` 过滤重出报告。
+
+不确定从哪下手时用 `ai-brief.md`：它按「验证命令 → 修复方向 → 验收标准」组织，并带同样的段摘要。
 
 ## 8. 局限与注意
 
 - **事件不是审计日志**：异步、有界、可能丢；缺口的判据是 `seq` 不连续。
+- **`event_coverage` 只反映事件文件里能看到的**：进程被硬杀、轮转没接上导致的整段丢失只能靠上面的时间断层发现；
+  事件本来就没开（`obs.events.enabled: false`）时报告已有「事件数据缺失」的 degraded，别指望这项兜底。
+- **ETA 是窗口吞吐的线性外推**：完成数取窗口内 `task_finished` + `task_failed`，再假设吞吐不变、剩余任务同质 ——
+  遇到限速、批次性失败、阶段切换会偏乐观或偏悲观；只作量级参考，别当 SLA。
+- **`inputs.snapshot_at` 是取 DB 快照的时刻**，`generated_at` 是这份产物最后写出的时刻，两者可能差几秒
+  （先取快照，再分析、渲染、落盘）。判断「数字是哪一刻的」看 `snapshot_at`，判断「文件新不新」看 `generated_at`。
+- 积压/年龄/ETA 是**报告时刻的全库快照**（不是窗口末）；待处理行的年龄按 `updated_at` 算，不是提交时间。
 - 日志证据窗口会前后放宽 5 分钟（事件毫秒精度 vs 日志秒精度）；非 logrus 格式的文件会记进
   `logs.unparsed`，不影响判定但会拉低日志证据质量。
 - **按天拆分看的是服务器本地时区**（`time.Local`）：零点前后的事件只落一天；日志证据也按天索引，

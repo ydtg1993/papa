@@ -156,7 +156,7 @@
 | `report.timeout` | duration | 单次生成报告的超时，默认 `120s`（`report.interval` 与 `report.on_exit` 共用） |
 | `report.thresholds.stuck_after` | duration | 判「卡住」的阈值（processing 超过它未更新），默认 `10m`。**报告口径**，不是启动恢复判据 |
 | `report.thresholds.crawl_fail_rate_max` | float | 抓取终态失败率上限，默认 `0.05`（未校准） |
-| `report.thresholds.event_max_gap` | duration | 事件时间断层阈值，默认 `10m`：事件流里相邻事件间隔超过它即算一次断层（丢事件 / 被硬杀）；`event_coverage` 检查用，本版只有配置与校验生效、该检查尚未接入。`0` / 不写 = 默认，负数启动报错 |
+| `report.thresholds.event_max_gap` | duration | 事件时间断层阈值，默认 `10m`：事件流里相邻事件间隔超过它即算一次断层（丢事件 / 被硬杀）。**已用于 `event_coverage` 检查**：超过阈值、或窗口起点后超过阈值才有首条事件，该检查判未通过（warn），并向 `degraded` 写「事件存在时间断层，事件口径可能不完整」；`snapshot` 模式下引擎暂停/空闲时该检查标不适用。`0` / 不写 = 默认，负数启动报错 |
 
 **事件契约（v1，只增不改）**：一行一个 JSON 对象，字段 `v`（schema 版本）、`seq`（本 run 内单调递增）、`ts`、`run_id`、`type`，以及按类型可选的 `site` / `stage` / `task_id` / `attempt` / `duration_ms` / `queue` / `counts` / `backlog` / `attrs` / `stages` / `queues` 等。其中 `attrs` 是**业务自定义键值对**（框架不解释语义），业务事件需要携带框架不认识的维度时放这里。读者必须忽略未知键；`seq` 出现缺口 = 丢弃或丢失。
 

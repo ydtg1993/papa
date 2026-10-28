@@ -497,14 +497,17 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 | 文件 | 内容 |
 | --- | --- |
 | `report.md` | 人读：生成时间、判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、检查段 |
-| `report.json` | 机读：同源结构化数据（`generated_at` / `verdict` / `run` / `events` / `logs` / `degraded` / `sections` / `checks` / `problems`） |
+| `report.json` | 机读：同源结构化数据（`generated_at` / `mode` / `verdict` / `verdict_reason` / `run` / `events` / `logs` / `degraded` / `engine` / `inputs` / `sections` / `checks` / `problems`） |
 | `ai-brief.md` | 给 AI / 接手排查的人：生成时间、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、下一步 |
 | `ai-brief.json` | 同构机读版本（含 `generated_at`） |
 
 **报告列表**（每行一份报告，按生成时间倒序）：目录名、判定、生成时间、文件数、「查看」。
+判定单元格除了判定徽标，还会带：`mode=snapshot` 的「快照」徽标、`engine_paused=true`（报告里任一站点暂停）的
+「引擎暂停」徽标、以及 `fail_reason_top`（最多 3 条未通过检查的 ID，给判定补一句「为什么红」）。
+生成时间优先用 `report.json` 的 `generated_at`，没有这个字段的旧报告退回目录修改时间。
 目录名通常是**日报日期** `YYYY-MM-DD`（一份 = 一天），升级前留下的 `run_id` / `window-*` 目录也照常列出。
-判定读的是 `report.json` 的 `verdict`，翻成「通过」/「带风险通过」/「不通过」，读不到（缺 `report.json`、
-文件坏了）就显示「未判定」。文件数显示 `已有份数 / 4` —— 缺文件的半份报告照列；只要目录里
+判定读的是 `report.json` 的 `verdict`，翻成「通过」/「带风险通过」/「不通过」/「未判定」，读不到（缺 `report.json`、
+文件坏了）也显示「未判定」。文件数显示 `已有份数 / 4` —— 缺文件的半份报告照列；只要目录里
 至少有一份已知产物就会被列出，报告目录里手工放的无关目录/文件不会出现在列表里。
 
 **报告内容**：选中一份后，页内出现四个产物对应的文件 Tab（只列实际存在的），
@@ -520,7 +523,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/obs/reports` | 报告列表：`{"report_dir":"…","runs":[{"name":"…","verdict":"pass","mod_time":"…","files":[{"name":"report.md","size":1234,"mod_time":"…"}]}]}`。`verdict` 读不到时省略；最多回 100 份（按生成时间倒序）；`report_dir` 没配 / 目录不存在都回空列表（不是错误） |
+| GET | `/api/obs/reports` | 报告列表：`{"report_dir":"…","runs":[{"name":"…","verdict":"pass","mode":"acceptance","engine_paused":false,"generated_at":"…","fail_reason_top":["event_coverage"],"mod_time":"…","files":[{"name":"report.md","size":1234,"mod_time":"…"}]}]}`。`verdict` / `mode` / `engine_paused` / `generated_at` / `fail_reason_top` 从 `report.json` 读出，旧报告缺字段就省略（`engine_paused=false` 也省略）；`fail_reason_top` 最多 3 条、只列未通过的 fail/warn 检查 ID；最多回 100 份（按生成时间倒序，无 `generated_at` 的退回目录 mtime）；`report_dir` 没配 / 目录不存在都回空列表（不是错误） |
 | GET | `/api/obs/report?run=<目录名>&file=<四份产物之一>` | 单份产物原文（`text/plain; charset=utf-8`）；`download=1` 时带 `Content-Disposition: attachment; filename="<run>-<file>"` |
 
 **报告里是日志、URL 等不可信文本**，所以这几条边界是硬的：
