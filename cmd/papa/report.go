@@ -18,7 +18,7 @@ import (
 )
 
 const reportUsage = `usage:
-  papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] [--run <run_id>] [--out <dir>] [--no-logs] [--fail-on-verdict]
+  papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] [--run <run_id>] [--snapshot] [--out <dir>] [--no-logs] [--fail-on-verdict]
   papa report list [--out <dir>]
 
 生成一次运行报告（只读）：读事件流 + 日志证据 + 框架状态，输出 report.md / report.json / ai-brief.md / ai-brief.json。
@@ -26,9 +26,10 @@ const reportUsage = `usage:
   -c/--config       配置文件路径（默认 PAPA_CONFIG，再回退 configs/config.yaml）
   --since/--until   时间窗口（RFC3339）；缺省按事件里的最早/最晚时刻
   --run             只保留指定 run_id，输出单份报告（目录名 = run_id；兼容旧的"单次运行"排查用法）
+  --snapshot        强制快照模式：只出单日窗口的一份报告（跨天报错；验收请用默认 acceptance）
   --out             输出根目录（默认 obs.report.dir，再回退 ./reports）
   --no-logs         跳过日志证据索引（事件缺失时反而更快）
-  --fail-on-verdict 任一日报判定为"不通过"时以非零码退出（供 CI/自动化门禁）
+  --fail-on-verdict 任一日报判定为 fail 或 unknown 时以非零码退出（供 CI/自动化门禁）
 
 产物默认**按本地日历日拆分**：有事件的每天各写一份 <dir>/<2006-01-02>/（同一天重跑会刷新当天那份）。
 生成后按 obs.report.retention 清掉过期报告目录（默认 7 天；负数 = 永久保留）。
@@ -54,6 +55,14 @@ func runReportCmd(args []string) error {
 	}
 	if !ok {
 		return fmt.Errorf("读不到配置（用 -c 指定 configs/config.yaml，或设 PAPA_CONFIG）")
+	}
+	// 判定模式：配置 auto 时 CLI = acceptance（验收）；--snapshot 强制快照语义。
+	mode, err := obs.ResolveMode(cfg.Obs.Report.Mode, obs.TriggerCLI)
+	if err != nil {
+		return err
+	}
+	if opts.snapshot {
+		mode = obs.ModeSnapshot
 	}
 
 	evFile := cfg.Obs.Events.File
@@ -83,7 +92,13 @@ func runReportCmd(args []string) error {
 		"events_file":  filepath.Join(cfg.Log.Dir, evFile),
 		"log_dir":      cfg.Log.Dir,
 	}
+	// 引擎上下文：先给零值语义的 Source=none（不据此做暂停跳过）；首次拿到事件时
+	// 再用 DB 快照 + 事件刷新一次（之后不再重复查库）。
+	engine := obs.EngineState{Source: "none"}
 	generate := func(src *obs.Sources) (*obs.Report, error) {
+		if engine.Source == "none" && len(src.Events) > 0 {
+			engine = analyze.LoadEngineState(context.Background(), db, src.Events, time.Now())
+		}
 		degraded := append([]string(nil), src.Degraded...)
 		if dbErr != nil {
 			degraded = append(degraded, "数据库连接失败（跳过框架状态检查）: "+dbErr.Error())
@@ -98,6 +113,8 @@ func runReportCmd(args []string) error {
 			Degraded:    degraded,
 			Sections:    sections,
 			Patterns:    pattern.Builtin(),
+			Mode:        mode,
+			Engine:      engine,
 		})
 	}
 
@@ -117,8 +134,13 @@ func runReportCmd(args []string) error {
 		switch rep.Verdict {
 		case obs.VerdictFail:
 			worst = obs.VerdictFail
-		case obs.VerdictWarn:
+		case obs.VerdictUnknown:
+			// unknown 不是 pass：门禁下按不通过处理；但不该盖掉真正的 fail。
 			if worst != obs.VerdictFail {
+				worst = obs.VerdictUnknown
+			}
+		case obs.VerdictWarn:
+			if worst != obs.VerdictFail && worst != obs.VerdictUnknown {
 				worst = obs.VerdictWarn
 			}
 		}
@@ -131,7 +153,44 @@ func runReportCmd(args []string) error {
 		return nil
 	}
 
-	if opts.runID != "" {
+	if mode == obs.ModeSnapshot && opts.runID == "" {
+		// --snapshot（且没有 --run）：只出「最后一个事件所在本地日」的一份快照报告。
+		// 不能把全事件窗口直接交给 snapshotWindow —— 多天事件文件会误报跨天。
+		probeCfg := base
+		probeCfg.IncludeLogs = false // 只是探窗口，不必做两遍日志索引
+		probe, err := obs.LoadSources(probeCfg)
+		if err != nil {
+			return err
+		}
+		if len(probe.Events) == 0 || probe.Run.To.IsZero() {
+			return fmt.Errorf("snapshot 模式：窗口内没有事件，无法确定单日窗口（检查 obs.events 是否开启、或 --since/--until 是否填对）")
+		}
+		var day, end time.Time
+		if opts.since.IsZero() && opts.until.IsZero() {
+			// 缺省：最后一个事件所在**本地日**的 [当天 0 点, 最后事件时刻]。
+			last := probe.Run.To.In(time.Local)
+			day = time.Date(last.Year(), last.Month(), last.Day(), 0, 0, 0, 0, time.Local)
+			end = probe.Run.To
+		} else {
+			// 显式窗口：收紧到本地日；跨日直接指路 acceptance（多日报告）。
+			day, end, err = snapshotWindow(probe.Run.From, probe.Run.To, time.Local)
+			if err != nil {
+				return err
+			}
+		}
+		base.Since, base.Until = day, end
+		src, err := obs.LoadSources(base)
+		if err != nil {
+			return err
+		}
+		rep, err := generate(src)
+		if err != nil {
+			return fmt.Errorf("生成报告: %w", err)
+		}
+		if err := writeOne(report.DayName(day), rep); err != nil {
+			return err
+		}
+	} else if opts.runID != "" {
 		// 显式 --run：出一份单 run 报告（目录名 = run_id），方便排查某一次运行；不参与按天拆分。
 		src, err := obs.LoadSources(base)
 		if err != nil {
@@ -171,10 +230,7 @@ func runReportCmd(args []string) error {
 	} else if len(removed) > 0 {
 		fmt.Printf("清理过期报告 %d 份：%s\n", len(removed), strings.Join(removed, ", "))
 	}
-	if opts.failOnVerdict && worst == obs.VerdictFail {
-		return errors.New("判定为不通过（--fail-on-verdict）")
-	}
-	return nil
+	return verdictGate(worst, opts.failOnVerdict)
 }
 
 type reportArgs struct {
@@ -184,6 +240,7 @@ type reportArgs struct {
 	runID         string
 	outDir        string
 	noLogs        bool
+	snapshot      bool
 	failOnVerdict bool
 }
 
@@ -247,6 +304,8 @@ func parseReportArgs(args []string) (reportArgs, error) {
 			out.runID = v
 		case strings.HasPrefix(a, "--run="):
 			out.runID = strings.TrimPrefix(a, "--run=")
+		case a == "--snapshot":
+			out.snapshot = true
 		case a == "--out":
 			v, ok := take(&i)
 			if !ok {
@@ -264,6 +323,34 @@ func parseReportArgs(args []string) (reportArgs, error) {
 		}
 	}
 	return out, nil
+}
+
+// snapshotWindow 把窗口的起点收紧到**本地日**：返回当天 0 点与该窗口终点；跨日返回错误。
+//
+// snapshot 模式回答「现在这一刻的当天」，一份报告只覆盖一天 —— 多天窗口是 acceptance 语义。
+func snapshotWindow(from, to time.Time, loc *time.Location) (time.Time, time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	// 按 loc 取日历日（from 可能带别的时区偏移，比如 UTC 的 --since）。
+	f := from.In(loc)
+	day := time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, loc)
+	t := to.In(loc)
+	endDay := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	if !endDay.Equal(day) {
+		return time.Time{}, time.Time{}, fmt.Errorf("snapshot 模式只支持单日窗口（%s ~ %s 跨天）；多日报告请用 acceptance 模式",
+			from.Format("2006-01-02 15:04"), to.Format("2006-01-02 15:04"))
+	}
+	return day, to, nil
+}
+
+// verdictGate 是 --fail-on-verdict 的收口：fail 与 unknown 都算不通过 —— 门禁不能把
+// 「没判定出来」当通过（数据缺失/暂停快照时 unknown 恰恰是最该人看的结果）。
+func verdictGate(worst obs.Verdict, failOnVerdict bool) error {
+	if failOnVerdict && (worst == obs.VerdictFail || worst == obs.VerdictUnknown) {
+		return errors.New("判定为不通过或未判定（--fail-on-verdict）")
+	}
+	return nil
 }
 
 // runReportList 列出报告目录下的既有报告（按目录名排序）。
