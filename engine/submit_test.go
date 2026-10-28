@@ -165,6 +165,27 @@ func TestSubmitTaskExistingRecordWithIDRequeues(t *testing.T) {
 	}
 }
 
+// 去重回查只投影 id/status：历史行的 error/meta 可能很宽，去重只要这两列。
+func TestFindTaskRecordProjectsIDAndStatus(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := submitEngine(t, f, pool)
+
+	var record models.CrawlerTask
+	if err := e.findTaskRecord(&Task{Stage: "stub", Site: "stub", URL: "https://example.com"}, &record); err != nil {
+		t.Fatalf("findTaskRecord = %v", err)
+	}
+	sql := f.readSQL()
+	if strings.Contains(sql, "SELECT *") {
+		t.Fatalf("去重回查不该 SELECT *：\n%s", sql)
+	}
+	for _, col := range []string{"`id`", "`status`"} {
+		if !strings.Contains(sql, col) {
+			t.Fatalf("去重回查缺列 %s：\n%s", col, sql)
+		}
+	}
+}
+
 // 已到终态（success/failed）的行不再入队：业务侧标失败就是对排队中任务的拦截力。
 func TestSubmitTaskTerminalRecordIsSkipped(t *testing.T) {
 	for _, status := range []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed} {

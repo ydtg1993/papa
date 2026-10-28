@@ -49,9 +49,15 @@ type CrawlerTask struct {
 	// Meta 业务键（如 series_id/episode_id），与 URL 解耦。**随行落库** ——
 	// 恢复/轮询/错误队列/后台重投这几条「从行重建 Task」的路都按它还原任务身份，
 	// 不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
-	Meta       datatypes.JSON   `gorm:"type:json;comment:业务键(如 series_id/episode_id)，随行落库"`
-	Retry      int              `gorm:"default:0;comment:错误重试次数"`
-	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;comment:0:待处理 1:处理中 2:成功 3:失败"`
+	Meta  datatypes.JSON `gorm:"type:json;comment:业务键(如 series_id/episode_id)，随行落库"`
+	Retry int            `gorm:"default:0;comment:错误重试次数"`
+	// Status 挂了**两个**索引：
+	//   - idx_repeat_due 的第二列（轮询判据的复合索引，leading 是 repeatable）；
+	//   - idx_task_status 单列：恢复队列 `status IN (0,1)`、去重预热 `status IN (...) OR repeatable=1`
+	//     都只按 status 过滤，复合索引 leading 不是 status 时用不上，数据量大后会退化成全表扫描。
+	// gorm 允许同一字段写多个 `index:` tag（schema.ParseIndexes 会解析出两条；别被 TagSettings
+	// map 只留最后一个值误导 —— parseFieldIndexes 读的是原始 tag）。
+	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;comment:0:待处理 1:处理中 2:成功 3:失败"`
 	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
 	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 用本站 RepeatQueue 的 Interval。

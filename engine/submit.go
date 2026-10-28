@@ -16,13 +16,24 @@ func (e *Engine) logSubmitError(task *Task, err error) error {
 	return err
 }
 
-// SubmitTask 任务提交
-func (e *Engine) SubmitTask(task *Task) error {
+// validateTask 提交前的最小校验（stage/url/site 必填、阶段已登记）。
+//
+// 抽出来给 SubmitTask 与 submitRecoveredTask 共用：两条路对入参的要求必须一致 ——
+// 恢复/轮询队列从库里重建的 Task 也可能因为历史脏行缺少字段，不能因为省一次查库就少校验一道。
+func (e *Engine) validateTask(task *Task) error {
 	if task.Stage == "" || task.URL == "" || task.Site == "" {
-		return e.logSubmitError(task, fmt.Errorf("task stage or url or site is empty: %+v", task))
+		return fmt.Errorf("task stage or url or site is empty: %+v", task)
 	}
 	if info := e.stages[stageKeyOf(task)]; info == nil {
-		return e.logSubmitError(task, fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage, task.Site))
+		return fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage, task.Site)
+	}
+	return nil
+}
+
+// SubmitTask 任务提交
+func (e *Engine) SubmitTask(task *Task) error {
+	if err := e.validateTask(task); err != nil {
+		return e.logSubmitError(task, err)
 	}
 
 	key := task.Unique()
@@ -81,8 +92,11 @@ func (e *Engine) SubmitTask(task *Task) error {
 // 把并发冲突报成插入失败）：
 //   - 自定义幂等键 → `idempotency_hash`（唯一索引 idx_idempotency_hash；键原文 varchar(1000) 建不了索引）
 //   - 没有自定义键 → `url_hash + stage + site`（唯一索引 idx_site_stage_url_hash）
+//
+// 调用方只用 ID 与 Status（入队前判终态），所以只投影这两列：历史行的 error/meta 可能很宽，
+// 为了去重把整行读出来纯属浪费。
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return e.dedupScope(task).First(record).Error
+	return e.dedupScope(task).Select("id", "status").First(record).Error
 }
 
 // dedupScope 给出"查已存在行"的条件（抽出来是为了能用 DryRun 把 SQL 形状钉住 —— 假库不解析 WHERE）。
@@ -102,11 +116,11 @@ func (e *Engine) dedupScope(task *Task) *gorm.DB {
 // 所以先按哈希（若有自定义键），再按 (url_hash, stage, site)。
 func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) error {
 	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
-		if err := e.db.Model(&models.CrawlerTask{}).Where("idempotency_hash = ?", h).First(record).Error; err == nil {
+		if err := e.db.Model(&models.CrawlerTask{}).Select("id").Where("idempotency_hash = ?", h).First(record).Error; err == nil {
 			return nil
 		}
 	}
-	return e.db.Model(&models.CrawlerTask{}).
+	return e.db.Model(&models.CrawlerTask{}).Select("id").
 		Where("url_hash = ? AND stage = ? AND site = ?", models.UrlHash(task.URL), task.Stage, task.Site).
 		First(record).Error
 }
@@ -161,6 +175,19 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 		e.spillTask(task)
 		return
 	}
+	e.afterTaskPending(task)
+}
+
+// submitPendingTask 行**已经**是 pending 时只做投递，不再写回状态。
+//
+// 给"刚从批次里捞出整行、刚做完条件重置"的恢复/轮询队列用：它们手上的行状态已经落定，
+// 再执行一次 submitToPool 的 UPDATE 只会刷新 updated_at（一条无信息量的写）。
+func (e *Engine) submitPendingTask(task *Task) {
+	e.afterTaskPending(task)
+}
+
+// afterTaskPending 任务行已处于（或已写回）pending 之后的收尾：叫醒轮询队列 + 投递。
+func (e *Engine) afterTaskPending(task *Task) {
 	if task.RepeatInterval > 0 {
 		// 新播种了一条带周期的轮询任务：叫醒轮询队列重算扫描节拍，别让它等当前那次 sleep。
 		e.wakeRepeatQueue()
@@ -190,6 +217,24 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 			stageKeyOf(task), task.ID, err)
 		e.spillTask(task)
 	}
+}
+
+// submitRecoveredTask 把恢复队列/轮询队列刚条件重置成 pending 的任务投回队列。
+//
+// 与 SubmitTask 的差别只有一个：调用方手里已经握着那一行（刚从批次查出来、刚做完条件更新），
+// 不需要再按去重键查一次库，也不需要再写一次 pending。Repeatable 任务仍走 submitToPool ——
+// 它负责 `repeat` +1（轮询次数），那是这条路径的既有语义，不能因为省写就丢。
+func (e *Engine) submitRecoveredTask(task *Task) error {
+	if err := e.validateTask(task); err != nil {
+		return err
+	}
+	e.dedupCache.Add(task.Unique())
+	if task.Repeatable {
+		e.submitIfActive(task, models.CrawlerTask{ID: uint(task.ID), Status: models.TaskStatusPending})
+		return nil
+	}
+	e.submitPendingTask(task)
+	return nil
 }
 
 // claimTask 把任务从「待处理」认领为「处理中」，成功才允许执行。

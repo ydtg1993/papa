@@ -147,3 +147,40 @@ func TestRunDynamicTickerExitsWhileDisabled(t *testing.T) {
 		t.Fatal("停用状态下停机应当立刻退出")
 	}
 }
+
+// wake 突发要合并：启动恢复/批量提交会连续叫醒，每次重算节拍都是一条 MIN 聚合查询；
+// 合并窗口内只该重算一次（加上最开始算间隔那一次）。
+func TestRunDynamicTickerCoalescesWakeBurst(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	e := &Engine{ctx: ctx, cancel: cancel, wakeCoalesce: 40 * time.Millisecond}
+	wake := make(chan struct{}, 64)
+
+	var recalcs, ticks atomic.Int64
+	e.runDynamicTicker(
+		func() time.Duration { recalcs.Add(1); return time.Hour }, // 长间隔：只靠 wake 触发重算
+		wake, func() { ticks.Add(1) },
+	)
+
+	// 等第一次 getInterval（启动那次）
+	deadline := time.Now().Add(2 * time.Second)
+	for recalcs.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("ticker 没启动")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for i := 0; i < 50; i++ {
+		wake <- struct{}{}
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if got := recalcs.Load(); got < 2 {
+		t.Fatalf("窗口到期后应当重算一次节拍，实得 %d 次", got)
+	} else if got > 3 {
+		t.Fatalf("50 次 wake 被合并后最多重算 3 次（含启动那次），实得 %d 次", got)
+	}
+	if ticks.Load() != 0 {
+		t.Fatalf("长间隔下不该 tick，实得 %d", ticks.Load())
+	}
+}

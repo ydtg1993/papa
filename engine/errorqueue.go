@@ -8,6 +8,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
 )
 
@@ -101,6 +102,10 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 		}
 	}
 	e.errorQueue.retried.Add(1)
+	e.emit(events.Event{
+		Type: events.TypeTaskRequeued, Queue: QueueError, Source: "auto",
+		Site: t.Site, Stage: t.Stage, TaskID: t.ID, Reprocess: t.Reprocess + 1,
+	})
 	return true
 }
 

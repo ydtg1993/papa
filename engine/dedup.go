@@ -90,11 +90,15 @@ func (e *Engine) DelActiveTask(task *Task) {
 
 // loadActiveTasks 启动时把「进行中」任务（pending/processing）与全部轮询任务加载进内存去重表，
 // 避免全表加载导致内存随历史任务无限增长；已完成任务由 DB 唯一索引兜底去重。
+//
+// 只投影去重键需要的四列（URL/stage/site/idempotency_key）：重建 Task.Unique() 用不到
+// error / meta / timestamp 这些宽列，历史量大时 SELECT * 会把无用的行宽也读进内存。
 func (e *Engine) loadActiveTasks() {
 	var tasks []models.CrawlerTask
-	err := e.db.Where("status IN ? OR repeatable = ?",
-		[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing},
-		models.RepeatableYes).
+	err := e.db.Select("url", "stage", "site", "idempotency_key").
+		Where("status IN ? OR repeatable = ?",
+			[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing},
+			models.RepeatableYes).
 		Find(&tasks).Error
 	if err != nil {
 		e.loggerSet.DB.Errorf("load active tasks failed: %s", err.Error())

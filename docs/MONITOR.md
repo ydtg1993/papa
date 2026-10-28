@@ -457,8 +457,10 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 > 站点概要与 `sites` 里的字段：`key / base_url / stage_count / breaker_paused / breaker_paused_at`。
 > `base_url` 与 `stage_count` 是**启动时按声明抄的**（改声明要重启；直接改库不生效）。
-> `breaker_paused*` 这一对**只由后台手动暂停/恢复写**（熔断触发不写它 —— 它只往引擎的暂停信号里写）：
-> 所以列名叫 `breaker_*` 但含义是"**手动**暂停"，要看熔断触发请点右上角铃铛（`breakers[]` 的 `source`）。
+> `breaker_paused*` 这一对由**后台手动暂停/恢复**与**启动期 `StartPaused` 播种**写（熔断触发不写它 ——
+> 它只往引擎的暂停信号里写）：手动暂停时含义是"被手动停着"，要看熔断触发请点右上角铃铛
+> （`breakers[]` 的 `source`）。声明了 `StartPaused` 的站每次启动都按**本次启动时刻**重新写成暂停态
+> （随启动快照一次写回，不再逐站补写）。
 > 「每站每阶段的池子统计」是**实时**数字，不落库 —— 它就在 `stages` 快照里：**键是 `site:stage`**
 > （阶段名只在本站内唯一，两个站的 `catalog` 是两条），条目里另带裸阶段名 `stage` 与 `site` ——
 > 站点 Tab 按 `site` 分组，面板标题用 `stage`。

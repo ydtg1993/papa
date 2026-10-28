@@ -40,6 +40,11 @@ type LoggerConfig struct {
 
 	// Compress 决定轮转的日志文件是否应使用 gzip 压缩。默认不进行压缩。
 	Compress bool
+
+	// Level 十套 logger 的统一日志级别：debug / info / warn / warning / error。
+	// **空值或未知值一律按 info**：非法值由 config 层在启动时报错（log.level 规则），
+	// 这里再兜一次是为了让 pkg/loggers 单独使用时也不 panic —— 这个包不校验用户配置。
+	Level string
 }
 
 func NewLoggerSet(cfg LoggerConfig) LoggerSet {
@@ -76,6 +81,7 @@ func NewLoggerSet(cfg LoggerConfig) LoggerSet {
 func newLogger(cfg LoggerConfig, filename string, formatter logrus.Formatter) *logrus.Logger {
 	logger := logrus.New()
 	logger.SetFormatter(formatter)
+	logger.SetLevel(cfg.logrusLevel())
 	logger.SetOutput(&lumberjack.Logger{
 		Filename:   filename,
 		MaxSize:    cfg.MaxSize, // MB
@@ -86,6 +92,21 @@ func newLogger(cfg LoggerConfig, filename string, formatter logrus.Formatter) *l
 	})
 	logger.AddHook(&consoleHook{})
 	return logger
+}
+
+// logrusLevel 把配置里的级别名映射成 logrus 级别。空值与未知值都按 info ——
+// 十套 logger 共用同一个级别，不然"调低日志"这件事就变成逐套猜。
+func (cfg LoggerConfig) logrusLevel() logrus.Level {
+	switch cfg.Level {
+	case "debug":
+		return logrus.DebugLevel
+	case "warn", "warning": // warning 是 warn 的别名
+		return logrus.WarnLevel
+	case "error":
+		return logrus.ErrorLevel
+	default:
+		return logrus.InfoLevel
+	}
 }
 
 type consoleHook struct{}

@@ -148,6 +148,78 @@ func TestBuildSiteStatsSeedsFromDeclaration(t *testing.T) {
 	}
 }
 
+// 启动快照只写一次：以前 buildSiteStats 按"全没暂停"写一次、applyStartPaused 再对每个
+// StartPaused 站各写一次（先清零、再改回 true，N+1 条 crawler_config upsert）。现在
+// declaredSiteStats 直接按声明算 paused，快照一次写到位，applyStartPaused 只下内存信号。
+func TestStartupSnapshotWritesOnceForStartPaused(t *testing.T) {
+	f := newFakeTaskDB()
+	e := siteEngine(t, f)
+	e.SetSite(core.Site{Key: "a", StartPaused: true})
+	e.SetSite(core.Site{Key: "b", StartPaused: true})
+	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
+	e.SetSiteBreaker("b", breaker.Config{Enabled: false, Threshold: 1})
+	store := siteStoreOf(e)
+
+	// 上一次启动留下的快照：两站都 paused=true、时间旧（每次启动都该按本次启动刷新一次）
+	old := time.Now().Add(-time.Hour)
+	if err := store.SetSites([]core.SiteStat{
+		{Key: "a", BreakerPaused: true, BreakerPausedAt: old},
+		{Key: "b", BreakerPaused: true, BreakerPausedAt: old},
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	store.mu.Lock()
+	store.writes = 0 // 只数启动播种这一次
+	store.mu.Unlock()
+
+	e.buildSiteStats()
+	e.applyStartPaused()
+
+	if got := store.writeCount(); got != 1 {
+		t.Fatalf("启动快照应只写 1 次（StartPaused 不再逐站写），实得 %d 次", got)
+	}
+	snap := store.snapshot()
+	if len(snap) != 2 || !snap[0].BreakerPaused || !snap[1].BreakerPaused {
+		t.Fatalf("快照里两个 StartPaused 站都该是暂停态：%+v", snap)
+	}
+	if !snap[0].BreakerPausedAt.After(old) {
+		t.Fatalf("暂停时间该按本次启动刷新：%+v", snap[0])
+	}
+	// 内存暂停信号也要真的下（快照只是投影，闸门读的是信号）
+	for _, site := range []string{"a", "b"} {
+		if !e.isPaused(pauseScope{Site: site}) {
+			t.Fatalf("站点 %s 应当已被 StartPaused 闸住", site)
+		}
+	}
+}
+
+// 差异判定：只有暂停时间不同 ≠ 声明漂移（每次启动按 StartPaused 重新暂停都会这样）。
+func TestStartPausedResetOnly(t *testing.T) {
+	now := time.Now()
+	base := func(pausedAt time.Time, paused bool) []core.SiteStat {
+		return []core.SiteStat{{Key: "a", BaseURL: "https://a/", StageCount: 1, BreakerPaused: paused, BreakerPausedAt: pausedAt}}
+	}
+	cases := []struct {
+		name string
+		cur  []core.SiteStat
+		want []core.SiteStat
+		ok   bool
+	}{
+		{"只有暂停时间变了", base(now.Add(-time.Hour), true), base(now, true), true},
+		{"暂停标记不同", base(now, false), base(now, true), false},
+		{"BaseURL 不同", []core.SiteStat{{Key: "a", BaseURL: "https://old/", BreakerPaused: true, BreakerPausedAt: now}}, base(now, true), false},
+		{"条数不同", base(now, true), nil, false},
+		{"完全一致", base(now, true), base(now, true), false}, // 一致时根本不该走这个分支（没有差异可报）
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := startPausedResetOnly(c.cur, c.want); got != c.ok {
+				t.Fatalf("startPausedResetOnly = %v, want %v", got, c.ok)
+			}
+		})
+	}
+}
+
 // 没注入落点时退化：不 panic、不落库，快照为空（手工拼的 Engine / 部分单测走这条路）。
 func TestSiteStatsWithoutStoreDegrade(t *testing.T) {
 	f := newFakeTaskDB()

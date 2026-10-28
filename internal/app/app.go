@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,13 +21,20 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/database"
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v3/obs/analyze"
+	"github.com/ydtg1993/papa/v3/obs/pattern"
+	"github.com/ydtg1993/papa/v3/obs/report"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
 	"github.com/ydtg1993/papa/v3/pkg/middleware"
+	"gopkg.in/natefinch/lumberjack.v2"
 	"gorm.io/gorm"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -40,16 +49,23 @@ type App struct {
 
 	configPath  string
 	extraModels []any
-	tables      []oao.Table
-	pages       []Page          // 业务注册的自定义页
-	routers     []func(*Router) // 业务注册的自定义路由组（UseRouter）
-	extraJS     []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
-	extraCSS    []string        // UseCSS 注入的样式，拼成 /static/custom.css
-	sysInfo     *sysinfo.Collector
-	httpSrv     *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
-	oplog       *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
-	cancel      context.CancelFunc
-	sites       map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
+	// events 运行事件流（默认关）。业务侧通过 App.Events() 复用同一个 sink，
+	// 于是框架事件与业务事件写在同一个 events.jsonl、共享 seq/run_id。
+	events events.Emitter
+	runID  string
+	// 报告扩展点（Run 之前注册）：业务段/业务模式。papa 只编排与渲染，不认识其语义。
+	reportSections []obs.Section
+	reportPatterns []obs.Pattern
+	tables         []oao.Table
+	pages          []Page          // 业务注册的自定义页
+	routers        []func(*Router) // 业务注册的自定义路由组（UseRouter）
+	extraJS        []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
+	extraCSS       []string        // UseCSS 注入的样式，拼成 /static/custom.css
+	sysInfo        *sysinfo.Collector
+	httpSrv        *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
+	oplog          *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
+	cancel         context.CancelFunc
+	sites          map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
 	configStore *configstore.Store
@@ -297,6 +313,7 @@ func NewApp(opts ...Option) (*App, error) {
 		MaxBackups: cfg.Log.MaxBackups,
 		LocalTime:  cfg.Log.LocalTime,
 		Compress:   cfg.Log.Compress,
+		Level:      cfg.Log.Level,
 	})
 
 	// 3. 初始化数据库
@@ -312,25 +329,47 @@ func NewApp(opts ...Option) (*App, error) {
 
 	// 4.1 表不在 = 对应功能看着启用、实际什么都写不进去。必须显式喊一声 ——
 	// 审计表那条「开关开着、实际什么都没记」的静默丢失就是这么来的。
-	for _, m := range database.FrameworkModels(cfg) {
-		if !db.Migrator().HasTable(m.Value) {
-			loggerSet.Sys.Errorf("表 %s 不存在 —— 相关功能不会写入任何数据。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）", m.Name)
+	//
+	// 一次 information_schema 查询查全部（原来逐表 db.Migrator().HasTable：gorm 的 MySQL
+	// 迁移器每次都要先猜库名，一张表 3 条 SQL，启动日志被十几条「查表在不在」刷屏）。
+	missingTables, missingIndexes, schemaErr := checkFrameworkSchema(db, cfg)
+	if schemaErr != nil {
+		loggerSet.Sys.Errorf("检查框架表/唯一索引失败：%s（无法确认表结构是否就绪，请检查数据库连接/权限）", schemaErr.Error())
+	} else {
+		for _, name := range missingTables {
+			loggerSet.Sys.Errorf("表 %s 不存在 —— 相关功能不会写入任何数据。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）", name)
 		}
-	}
-
-	// 4.2 该有的唯一索引不在也要喊：表在、索引名不对 = 迁移没跑到那一步（或表被手工改过），
-	// 与上面"表不存在"是同一类事 —— 都是"看着在跑、实际不对"。唯一索引缺了，
-	// 去重就只剩内存表那一层，重启后同一个 URL 会再插一行。
-	if db.Migrator().HasTable(&models.CrawlerTask{}) &&
-		!db.Migrator().HasIndex(&models.CrawlerTask{}, "idx_site_stage_url_hash") {
-		loggerSet.Sys.Errorf("crawler_tasks 缺唯一索引 idx_site_stage_url_hash（(url_hash, stage, site)）—— " +
-			"请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）")
+		// 4.2 该有的索引不在也要喊：表在、索引名不对 = 迁移没跑到那一步（或表被手工改过），
+		// 与上面"表不存在"是同一类事 —— 都是"看着在跑、实际不对"。
+		for _, idx := range missingIndexes {
+			hint := ""
+			for _, c := range frameworkIndexHints {
+				if c.index == idx {
+					hint = c.hint
+				}
+			}
+			if hint != "" {
+				hint = "（" + hint + "）"
+			}
+			loggerSet.Sys.Errorf("crawler_tasks 缺索引 %s%s —— 请先跑迁移：`papa migrate`（大表加索引建议低峰期）", idx, hint)
+		}
 	}
 
 	// 5. 创建爬虫引擎
 	// 局部变量叫 eng 而不是 engine：包名已经是 engine，`engine := engine.NewEngine(...)`
 	// 虽然合法（RHS 在声明语句结束前仍解析到包），但读起来像自己给自己赋值。
 	eng := engine.NewEngine(db, cfg, &loggerSet)
+
+	// 运行事件流（obs.events，默认关）：与人类日志同一套轮转参数，写 log.dir/events.jsonl。
+	// 关闭时用 NopEmitter —— Emit 是空调用，热路径不做分配。
+	a.runID = newRunID()
+	if cfg.Obs.Events.Enabled {
+		em := newEventEmitter(cfg, a.runID)
+		eng.SetEventsEmitter(em)
+		a.events = em
+	} else {
+		a.events = events.NopEmitter{}
+	}
 
 	a.Config = cfg
 	a.Logger = &loggerSet
@@ -352,11 +391,189 @@ func (a *App) Migrate() error {
 	return database.Migrate(a.DB, a.Config, a.extraModels...)
 }
 
+// Events 返回运行事件流；未开启时是 NopEmitter（可安全调用 Emit）。
+//
+// 业务层用它与框架写同一个 events.jsonl（同一 run_id / seq 序列）：
+//
+//	app.Events().Emit(events.Event{Type: "your_event", Site: "...", Counts: ...})
+//
+// 注意：业务事件类型是业务侧约定，框架只保证承载与落盘，不做语义解释。
+func (a *App) Events() events.Emitter {
+	if a.events == nil {
+		return events.NopEmitter{}
+	}
+	return a.events
+}
+
+// eventLifecycle 有生命周期的 emitter（框架内置的 bufferedEmitter 实现）。
+// NopEmitter 不实现它，于是"关闭时什么都不做"不需要额外分支。
+type eventLifecycle interface {
+	events.Emitter
+	Close(ctx context.Context) error
+	Dropped() uint64
+}
+
+// newEventEmitter 按配置组装 JSONL 事件流；轮转沿用 log 段参数（10 个人类日志同一套）。
+func newEventEmitter(cfg *config.Config, runID string) events.Emitter {
+	file := cfg.Obs.Events.File
+	if file == "" {
+		file = "events.jsonl"
+	}
+	lj := &lumberjack.Logger{
+		Filename:   filepath.Join(cfg.Log.Dir, file),
+		MaxSize:    cfg.Log.MaxSize,
+		MaxAge:     cfg.Log.MaxDays,
+		MaxBackups: cfg.Log.MaxBackups,
+		Compress:   cfg.Log.Compress,
+		LocalTime:  cfg.Log.LocalTime,
+	}
+	return events.NewEmitter(runID, events.NewJSONLSink(lj), cfg.Obs.Events.Buffer, time.Now)
+}
+
+// newRunID 生成一次进程运行的身份：毫秒时间戳 + 4 字节随机，同机多次启动不冲突。
+func newRunID() string {
+	var b [4]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return fmt.Sprintf("r-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("r-%d-%s", time.Now().UnixMilli(), hex.EncodeToString(b[:]))
+}
+
+// emitRunStarted 写 run 开始事件。
+func (a *App) emitRunStarted() {
+	a.Events().Emit(events.Event{Type: events.TypeRunStarted, Source: "app",
+		Counts: map[string]int{"pid": os.Getpid()}})
+}
+
+// emitRunStopped 写 run 结束事件（drained 与存留量来自 Engine.Stop）。
+func (a *App) emitRunStopped(drained bool, stats map[string]engine.StopStats) {
+	var unfinished, queued int
+	for _, st := range stats {
+		unfinished += st.Unfinished
+		queued += st.Queued
+	}
+	outcome := "drained"
+	if !drained {
+		outcome = "partial"
+	}
+	a.Events().Emit(events.Event{Type: events.TypeRunStopped, Source: "app", Outcome: outcome,
+		Counts: map[string]int{"unfinished": unfinished, "queued": queued}})
+}
+
+// closeEvents 关闭事件流并限时排空（事件流关闭时是 no-op）。
+func (a *App) closeEvents() {
+	life, ok := a.events.(eventLifecycle)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := life.Close(ctx); err != nil {
+		a.Logger.Sys.Warnf("close event stream: %s", err.Error())
+	}
+	if d := life.Dropped(); d > 0 {
+		a.Logger.Sys.Warnf("event stream dropped %d events (buffer full or write failed)", d)
+	}
+}
+
+// UseReportSection 注册业务报告段（须在 Run 之前调用）。
+//
+// 报告引擎只认 obs.Section 接口；业务语义（业务表、业务事件、业务阈值）留在业务段里。
+func (a *App) UseReportSection(sections ...obs.Section) {
+	for _, s := range sections {
+		if s == nil {
+			panic(fmt.Errorf("UseReportSection: nil Section"))
+		}
+		a.reportSections = append(a.reportSections, s)
+	}
+}
+
+// UseReportPattern 注册业务报告模式（须在 Run 之前调用）。
+func (a *App) UseReportPattern(patterns ...obs.Pattern) {
+	for _, p := range patterns {
+		if p == nil {
+			panic(fmt.Errorf("UseReportPattern: nil Pattern"))
+		}
+		a.reportPatterns = append(a.reportPatterns, p)
+	}
+}
+
+// generateExitReport 在进程退出时生成报告（obs.report.on_exit）。
+//
+// 失败只记日志，绝不阻塞退出：报告本身不能比被观测系统更脆弱。
+func (a *App) generateExitReport() {
+	cfg := a.Config
+	if cfg == nil || !cfg.Obs.Report.OnExit || !cfg.Obs.Events.Enabled {
+		return
+	}
+	timeout := cfg.Obs.Report.Timeout
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	evFile := cfg.Obs.Events.File
+	if evFile == "" {
+		evFile = "events.jsonl"
+	}
+	src, err := obs.LoadSources(obs.SourceConfig{
+		EventsFile:  filepath.Join(cfg.Log.Dir, evFile),
+		LogDir:      cfg.Log.Dir,
+		IncludeLogs: true,
+		Loc:         time.Local,
+	})
+	if err != nil {
+		a.Logger.Sys.Warnf("exit report: 读取事件失败，跳过：%s", err.Error())
+		return
+	}
+
+	sections := []obs.Section{&analyze.Generic{Thresholds: analyze.Thresholds{
+		StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
+		CrawlFailRateMax: cfg.Obs.Report.Thresholds.CrawlFailRateMax,
+	}}}
+	sections = append(sections, a.reportSections...)
+	patterns := append(pattern.Builtin(), a.reportPatterns...)
+
+	rep, err := obs.Generate(ctx, obs.Options{
+		Run:         src.Run,
+		EventMeta:   src.EventMeta,
+		Events:      src.Events,
+		Logs:        src.Logs,
+		DB:          a.DB,
+		Environment: map[string]string{"papa_version": buildVersion()},
+		Degraded:    src.Degraded,
+		Sections:    sections,
+		Patterns:    patterns,
+	})
+	if err != nil {
+		a.Logger.Sys.Warnf("exit report: 生成失败：%s", err.Error())
+		return
+	}
+	dir := filepath.Join(cfg.Obs.Report.Dir, report.DirName(rep.Run))
+	files, err := report.Write(dir, rep)
+	if err != nil {
+		a.Logger.Sys.Warnf("exit report: 写盘失败：%s", err.Error())
+		return
+	}
+	a.Logger.Sys.Infof("exit report: verdict=%s dir=%s files=%s", rep.Verdict, dir, strings.Join(files, ", "))
+}
+
+// buildVersion 返回当前主模块版本（开发构建为 "(devel)"）。
+func buildVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" {
+		return bi.Main.Version
+	}
+	return "unknown"
+}
+
 // Run 启动引擎，等待退出信号
 func (a *App) Run(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	defer cancel()
+
+	a.emitRunStarted()
 
 	// 初始化引擎浏览器池
 	a.Engine.SetBrowserPool()
@@ -389,6 +606,13 @@ func (a *App) Run(ctx context.Context) {
 		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 跳过关库与浏览器池关闭，让在途写入完成；"+
 			"留在库里的 pending 任务下次启动的启动恢复会重新入队", stopTimeout, stopStats)
 	}
+
+	// 事件流：先写 run_stopped，再排空 sink。必须早于关库 —— 报告 on_exit 还要读库。
+	a.emitRunStopped(drained, stopStats)
+	a.closeEvents()
+
+	// 进程退出自动出报告（obs.report.on_exit）：在关库之前生成，读到的是完整事件与权威状态。
+	a.generateExitReport()
 
 	// 审计队列先排空再关库：反过来的话最后几条（包括"优雅退出"这条操作本身）写不进去，
 	// 只能落到日志文件里。写失败不阻塞响应是常态，但关停这一下要给它一个收尾的机会。

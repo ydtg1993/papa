@@ -351,16 +351,17 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 	switch {
 	case st.Entry && sub == nil:
 		// 声明有入口却没人实现：配置与实现对不上（不 panic —— 入口可能回头再补）
-		plan.note, plan.warn = fmt.Sprintf("阶段 %s: 声明了 Entry（有入口任务），但它的 fetcher 没有实现 SubmitEntries —— 没有入口任务可投", stage), true
+		plan.note, plan.warn = fmt.Sprintf("站点 %s / 阶段 %s: 声明了 Entry（有入口任务），但它的 fetcher 没有实现 SubmitEntries —— 没有入口任务可投", site.Key, stage), true
 	case !st.Entry && sub != nil:
 		// false 是零值/默认值，所以"实现了入口却忘了声明"是**最常见**的那种手误 ——
 		// 按 WARN 说，并且把话写全（比一句"是关的、不是漏的"有用）。
-		plan.note, plan.warn = fmt.Sprintf("阶段 %s: fetcher 实现了 SubmitEntries，但声明里没写 Entry —— "+
-			"启动不投、这个入口形同不存在。想启动即投就写 Entry: true", stage), true
+		plan.note, plan.warn = fmt.Sprintf("站点 %s / 阶段 %s: fetcher 实现了 SubmitEntries，但声明里没写 Entry —— "+
+			"启动不投、这个入口形同不存在。想启动即投就写 Entry: true", site.Key, stage), true
 		// 声明没写就等于"没有入口"：回调丢掉（与"fetcher 没实现 SubmitEntries"同一个状态）。
 		sub = nil
 	case st.Entry:
-		plan.note = fmt.Sprintf("阶段 %s: 有入口任务 —— 启动那一趟投一轮（SubmitEntries）", stage)
+		// 阶段名只在本站内唯一：两个站都有 catalog 时，不写站点就是两行一模一样的日志。
+		plan.note = fmt.Sprintf("站点 %s / 阶段 %s: 有入口任务 —— 启动那一趟投一轮（SubmitEntries）", site.Key, stage)
 	}
 	plan.sub = sub
 	return plan, nil

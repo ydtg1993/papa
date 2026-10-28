@@ -274,6 +274,10 @@ func TestPlanStageEntryPolicy(t *testing.T) {
 			if c.wantNote != "" && !strings.Contains(plan.note, c.wantNote) {
 				t.Fatalf("日志应含 %q，实得 %q", c.wantNote, plan.note)
 			}
+			// 阶段名只在本站内唯一：日志必须带站点，否则两个站的 catalog 会打成两行一样的话。
+			if c.wantNote != "" && !strings.Contains(plan.note, "站点 a /") {
+				t.Fatalf("日志应带站点前缀，实得 %q", plan.note)
+			}
 			if c.wantNote == "" && plan.note != "" {
 				t.Fatalf("不该打日志，实得 %q", plan.note)
 			}

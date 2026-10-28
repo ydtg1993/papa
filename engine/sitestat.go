@@ -64,10 +64,11 @@ func (e *Engine) stageCountOfSite(site string) int {
 //   - 声明里有、行里没有的站 → 补上；
 //   - 行里有、声明里已经删掉的站 → 丢掉（否则后台会显示一个不存在的站）；
 //   - `base_url` / `stage_count` → 按声明刷新（文档里那句"改声明要重启、直接改库不生效"就是这条）；
-//   - `breaker_paused*` → **一律按"没暂停"算**：暂停状态不跨重启（暂停信号只活在内存里），
-//     读回旧值等于把上一次的暂停态带回来 —— 那是行为回退。
+//   - `breaker_paused*` → **Reset 后按声明算**：普通站一律"没暂停"（暂停状态不跨重启）；
+//     声明了 `StartPaused` 的站则带 paused=true + 本次启动时刻 —— 它启动就该是停着的。
+//     这一份就是"启动后应有的样子"，所以随后 applyStartPaused 只下内存信号、**不再逐站写库**。
 //
-// 对齐之后**内容一致就不回写**（一次正常启动不该让 `updated_at` 往前跳），不一致（或那一行压根不在）
+// 对齐之后内容一致就不回写（一次正常启动不该让 `updated_at` 往前跳），不一致（或那一行压根不在）
 // 才写一次。落点读写失败都不让启动失败（与"读不到配置就用声明"同一取向）：内存缓存里那份仍然是
 // 声明算出来的，只是库里的投影暂时落后，后台「站点」页与外部 SQL 看到的是上一次的样子。
 func (e *Engine) buildSiteStats() {
@@ -84,6 +85,10 @@ func (e *Engine) buildSiteStats() {
 	switch {
 	case len(cur) == 0:
 		e.loggerSet.Engine.Infof("站点快照：crawler_config 里没有 %s 这一行，按声明生成 %d 条", sitesKeyName, len(want))
+	case startPausedResetOnly(cur, want):
+		// 上次启动留下的 paused=true 与本次声明的 StartPaused 本来就该一致，只是暂停时间要按本次启动刷新。
+		// 这不是"声明漂移"，别用「字段变了」吓人。
+		e.loggerSet.Engine.Infof("站点快照：按 StartPaused 重新暂停 %d 个站点（暂停时间按本次启动刷新），写回一次", countPausedSites(want))
 	case !sameSiteStats(cur, want):
 		e.loggerSet.Engine.Infof("站点快照：库里那份与当前声明不一致（%s），已按声明对齐 %d 条",
 			siteStatsDiff(cur, want), len(want))
@@ -97,18 +102,67 @@ func (e *Engine) buildSiteStats() {
 	}
 }
 
-// declaredSiteStats 按声明算出来的那一份快照（暂停态一律"没暂停"，见 buildSiteStats）。
+// declaredSiteStats 按声明算出来的那一份快照：`StartPaused` 的站直接带 paused=true + 本次启动时刻。
+//
+// 为什么不等 applyStartPaused 逐站写：那会先按"全没暂停"写一份、再对每个 StartPaused 站各写一次，
+// 一次启动 1+N 条 crawler_config 写（先清零、再改回 true，纯浪费，日志里也能看到三次大 JSON upsert）。
 func (e *Engine) declaredSiteStats() []core.SiteStat {
+	paused := make(map[string]bool)
+	for _, key := range e.startPausedSites() {
+		paused[key] = true
+	}
+	now := time.Now()
 	rows := make([]core.SiteStat, 0, len(e.sites))
 	for _, key := range e.siteKeys() {
 		site, _ := e.Site(key) // 取不到就是零值（声明里有、引擎里还没登记）
-		rows = append(rows, core.SiteStat{
+		row := core.SiteStat{
 			Key:        key,
 			BaseURL:    site.BaseURL,
 			StageCount: e.stageCountOfSite(key),
-		})
+		}
+		if paused[key] {
+			row.BreakerPaused = true
+			row.BreakerPausedAt = now
+		}
+		rows = append(rows, row)
 	}
 	return rows
+}
+
+// countPausedSites 快照里 paused=true 的站点数（启动日志用）。
+func countPausedSites(rows []core.SiteStat) int {
+	n := 0
+	for _, r := range rows {
+		if r.BreakerPaused {
+			n++
+		}
+	}
+	return n
+}
+
+// startPausedResetOnly 判断两份快照的差异是否**只是 StartPaused 站的暂停时间**：
+// 站集合 / BaseURL / StageCount / 暂停标记都一致，只有 BreakerPausedAt 不同。
+// 这是每次启动按声明重新暂停的正常结果，不是声明漂移 —— 日志该说的是"重新暂停"，不是"字段变了"。
+func startPausedResetOnly(cur, want []core.SiteStat) bool {
+	if len(cur) != len(want) {
+		return false
+	}
+	have := make(map[string]core.SiteStat, len(cur))
+	for _, r := range cur {
+		have[r.Key] = r
+	}
+	onlyPausedAt := false
+	for _, w := range want {
+		got, ok := have[w.Key]
+		if !ok || got.BaseURL != w.BaseURL || got.StageCount != w.StageCount ||
+			got.BreakerPaused != w.BreakerPaused {
+			return false
+		}
+		if !got.BreakerPausedAt.Equal(w.BreakerPausedAt) {
+			onlyPausedAt = true
+		}
+	}
+	return onlyPausedAt
 }
 
 // sameSiteStats 两份快照内容是否一致（按站点键比；两份都按站点键升序，见 siteKeys / configstore.Sites）。

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
 )
 
@@ -182,12 +183,17 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	// Repeatable 显式置真：本队列捞出来的行本来就该是可轮询的，写死比照抄行上的值更少一层怀疑。
 	task := e.taskFromRecord(t)
 	task.Repeatable = true
-	if err := e.SubmitTask(task); err != nil {
+	// 刚做完条件重置，行已经是 pending：用恢复队列同一条路径投递，省掉 SubmitTask 的去重查库。
+	if err := e.submitRecoveredTask(task); err != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: submit task %d: %s", t.ID, err.Error())
 		e.markRequeueFailed(QueueRepeat, t.ID, err)
 		return false
 	}
 	e.repeatQueue.repolled.Add(1)
+	e.emit(events.Event{
+		Type: events.TypeTaskRequeued, Queue: QueueRepeat, Source: "auto",
+		Site: t.Site, Stage: t.Stage, TaskID: t.ID,
+	})
 	return true
 }
 
@@ -247,7 +253,7 @@ func (e *Engine) startRepeatQueue() {
 		if n, err := e.RepollRepeatableTasks(); err != nil {
 			e.loggerSet.Engine.Errorf("repeat queue: auto repoll: %s", err.Error())
 		} else if n > 0 {
-			e.loggerSet.Engine.Infof("repeat queue: auto repolled %d tasks", n)
+			e.loggerSet.Engine.Debugf("repeat queue: auto repolled %d tasks", n)
 		}
 	})
 }

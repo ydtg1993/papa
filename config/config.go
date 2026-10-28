@@ -17,6 +17,9 @@ type Config struct {
 	Proxy   ProxyConfig   `mapstructure:"proxy"`
 	DB      DBConfig      `mapstructure:"db"`
 	Server  ServerConfig  `mapstructure:"server"`
+	// Obs 运行观测：事件流（JSONL）与报告产物。**默认全关**，不写这段时行为与没有观测体系时一致。
+	// 这里只放**通用**的运行数据；业务指标与业务阈值属于业务仓库，不进框架配置。
+	Obs ObsConfig `mapstructure:"obs"`
 	// 三个治理队列都是**全局**一段：error_queue（失败重投，定期轮询）、recover_queue（启动恢复，
 	// 只在启动跑一次）、repeat_queue（周期轮询，定期轮询）。缺省（没写这段）= 那条队列不跑。
 	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
@@ -84,6 +87,54 @@ type LogConfig struct {
 	MaxBackups int    `mapstructure:"max_backups"`
 	Compress   bool   `mapstructure:"compress"`
 	LocalTime  bool   `mapstructure:"local_time"`
+	// Level 十套 logger 的统一日志级别：debug / info / warn / warning / error。
+	// 留空（没写）= info；**未知值启动即报错**，不会悄悄按 info 跑（见 validate.go 的规则）。
+	Level string `mapstructure:"level"`
+}
+
+// ObsConfig 运行观测：config.yaml 的 `obs` 段。
+//
+// 与业务无关，框架只产出通用的运行数据：
+//   - events：事件流（JSONL，一行一个事件），供离线报告与故障复盘消费；
+//   - report：报告产物的开关与目录（P1 只占位，P2/P3 补全）。
+//
+// 默认全关：没写这段 = 不产任何观测文件，行为与改造前一致。人类日志与事件流是两条线 ——
+// 日志负责可读的摘要，事件流负责机器可消费的时间序列，互不替代。
+type ObsConfig struct {
+	Events ObsEventsConfig `mapstructure:"events"`
+	Report ObsReportConfig `mapstructure:"report"`
+}
+
+// ObsEventsConfig 运行事件流（JSONL）。开启后每次运行写一个事件文件（默认落在 log.dir 下）。
+type ObsEventsConfig struct {
+	Enabled bool `mapstructure:"enabled"` // 是否写事件流（默认 false）
+	// File 事件文件名：空（或全空白）= events.jsonl。相对路径，落在 log.dir 下。
+	File string `mapstructure:"file"`
+	// Buffer 异步写队列长度：<=0 = 默认 8192。满了丢弃并计数，**绝不阻塞 worker**。
+	Buffer int `mapstructure:"buffer"`
+	// SnapshotInterval 周期快照（stage_snapshot）间隔：<=0 = 不发（默认）。
+	// 快照带的是运行时的时间序列，与监控页是否开启无关。
+	SnapshotInterval time.Duration `mapstructure:"snapshot_interval"`
+}
+
+// ObsReportConfig 报告产物配置。
+type ObsReportConfig struct {
+	OnExit bool `mapstructure:"on_exit"` // 进程退出时是否生成报告（默认 false）
+	// Dir 报告根目录：空（或全空白）= ./reports（相对当前工作目录）。
+	Dir string `mapstructure:"dir"`
+	// Timeout 进程内生成报告的超时；<=0 用 120s。生成失败只记日志，不阻塞退出。
+	Timeout time.Duration `mapstructure:"timeout"`
+	// Thresholds 通用判定阈值（业务阈值由业务 Section 自己持有，框架不认识）。
+	Thresholds ObsThresholdsConfig `mapstructure:"thresholds"`
+}
+
+// ObsThresholdsConfig 是框架通用判定阈值。
+type ObsThresholdsConfig struct {
+	// StuckAfter 判"卡住"的阈值（processing 超过它仍未更新）；<=0 用 10m。
+	// 这是**报告口径**，不是引擎启动恢复判据（后者是 updated_at < startedAt）。
+	StuckAfter time.Duration `mapstructure:"stuck_after"`
+	// CrawlFailRateMax 抓取终态失败率上限；<=0 用 5%。
+	CrawlFailRateMax float64 `mapstructure:"crawl_fail_rate_max"`
 }
 
 type CrawlerConfig struct {

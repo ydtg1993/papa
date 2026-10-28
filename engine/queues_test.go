@@ -256,6 +256,33 @@ func TestRequeueRecoverTaskClearsDedupCache(t *testing.T) {
 	}
 }
 
+// 行本来就是 pending（上次被 StartPaused/高水位折回溢出表留下的那批）→ 恢复不写库、不查库，
+// 直接放回内存队列。这是启动恢复最常见的形态：再重置/再写 pending 只会刷新 updated_at。
+func TestRequeueRecoverTaskPendingRowSkipsDB(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	e := queueEngine(t, f, pool)
+
+	row := actionRow(7, "stub")
+	row.Status = models.TaskStatusPending
+
+	if !e.requeueRecoverTask(row) {
+		t.Fatal("已注册且仍 pending 的行应当恢复成功")
+	}
+	if got := e.recoveredCount.Load(); got != 1 {
+		t.Fatalf("恢复计数 = %d, want 1", got)
+	}
+	if got := f.written(); got != "" {
+		t.Fatalf("行已是 pending，不该再写库：\n%s", got)
+	}
+	if got := f.readSQL(); got != "" {
+		t.Fatalf("不该再走 SubmitTask 的去重查库：\n%s", got)
+	}
+	if main, urgent := pool.QueueDepths(); urgent != 1 || main != 0 {
+		t.Fatalf("恢复的任务应走加急快车道，实得 main/urgent = %d/%d", main, urgent)
+	}
+}
+
 func TestRequeueRecoverTaskSkipsUnregisteredStage(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
@@ -267,6 +294,33 @@ func TestRequeueRecoverTaskSkipsUnregisteredStage(t *testing.T) {
 	}
 	if got := e.recoveredCount.Load(); got != 0 {
 		t.Fatalf("跳过的不该计数，实得 %d", got)
+	}
+}
+
+// 启动恢复最常见的一批是「上次 StartPaused/高水位留下的 pending」：这类行状态本来就对，
+// 恢复只该把它们放回内存队列，**一条 SQL 的写都不该有**（这是启动恢复从 ~500 条 SQL 降下来的主因）。
+func TestProcessRecoverQueuePendingRowsAreReadOnly(t *testing.T) {
+	f := newFakeTaskDB()
+	setRows(f, 120, "stub", models.TaskStatusPending)
+	pool := workerpool.NewWorkerPool[*Task](1, 256, 1)
+	e := queueEngine(t, f, pool)
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 100, WorkerCount: 4}
+
+	n, err := e.ProcessRecoverQueue()
+	if err != nil {
+		t.Fatalf("ProcessRecoverQueue = %v", err)
+	}
+	if n != 120 {
+		t.Fatalf("应恢复 120 条，实得 %d", n)
+	}
+	if got := e.recoveredCount.Load(); got != 120 {
+		t.Fatalf("恢复计数 = %d, want 120", got)
+	}
+	if got := f.written(); got != "" {
+		t.Fatalf("pending 行的恢复不该写库：\n%s", got)
+	}
+	if main, urgent := pool.QueueDepths(); main+urgent != 120 {
+		t.Fatalf("应入队 120 条，实得 %d", main+urgent)
 	}
 }
 
@@ -349,6 +403,10 @@ func TestRequeueRepeatTaskResubmits(t *testing.T) {
 	// 轮询代数要 +1（后台「轮询次数」列看的就是它）
 	if !strings.Contains(f.written(), "`repeat`") {
 		t.Fatalf("轮询任务重置时应把 repeat 次数 +1：\n%s", f.written())
+	}
+	// 刚做过条件重置，不该再走 SubmitTask 的去重查库
+	if got := f.readSQL(); got != "" {
+		t.Fatalf("轮询重投不该再查一次去重表：\n%s", got)
 	}
 }
 

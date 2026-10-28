@@ -135,6 +135,41 @@
 | `max_size` | int | 单文件大小上限（MB），默认 100 |
 | `max_days` / `max_backups` | int | 保留天数 / 备份数；**0（或没配）= 默认 7 天 / 3 份**（不是"永久保留"，要留久就给大数） |
 | `compress` / `local_time` | bool | 是否压缩 / 本地时间 |
+| `level` | string | 日志级别：`debug` / `info` / `warn` / `warning` / `error`（`warning` 是 `warn` 别名）；留空 = `info`。非法值启动即报错。**只影响人类日志**；机器消费走 `obs.events` |
+
+### obs —— 运行事件流与报告产物（默认关）
+
+> 面向自动化作业：让「一次运行结束后出报告」有机器可读的数据源。**默认全关** —— 不写这段时行为与没有观测体系时一致。
+> 框架只负责事件流（写入 + 契约）；报告引擎（人读文档 / AI 排查细则）在后续版本提供。
+
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `events.enabled` | bool | 是否写运行事件流，默认 `false` |
+| `events.file` | string | 文件名（相对 `log.dir`），默认 `events.jsonl`；轮转沿用 `log.max_size` / `max_days` / `max_backups` / `compress` / `local_time` |
+| `events.buffer` | int | 异步队列长度，默认 8192。**满了丢弃并计数，绝不阻塞 worker** |
+| `events.snapshot_interval` | duration | `stage_snapshot`（阶段/队列周期快照）的间隔，如 `30s`；`0` / 不写 = 不发 |
+| `report.on_exit` | bool | 进程退出时生成报告，默认 `false`。开启后退出流程在关库前生成一份报告（失败只记日志，不阻塞退出） |
+| `report.dir` | string | 报告产物目录，默认 `./reports`。产物：`report.md` / `report.json` / `ai-brief.md` / `ai-brief.json` |
+| `report.timeout` | duration | 退出时生成报告的超时，默认 `120s` |
+| `report.thresholds.stuck_after` | duration | 判「卡住」的阈值（processing 超过它未更新），默认 `10m`。**报告口径**，不是启动恢复判据 |
+| `report.thresholds.crawl_fail_rate_max` | float | 抓取终态失败率上限，默认 `0.05`（未校准） |
+
+**事件契约（v1，只增不改）**：一行一个 JSON 对象，字段 `v`（schema 版本）、`seq`（本 run 内单调递增）、`ts`、`run_id`、`type`，以及按类型可选的 `site` / `stage` / `task_id` / `attempt` / `duration_ms` / `queue` / `counts` / `backlog` / `attrs` / `stages` / `queues` 等。其中 `attrs` 是**业务自定义键值对**（框架不解释语义），业务事件需要携带框架不认识的维度时放这里。读者必须忽略未知键；`seq` 出现缺口 = 丢弃或丢失。
+
+事件类型（常量见 `pkg/events/event.go`）：
+
+| 类别 | 事件 |
+| --- | --- |
+| 运行 | `run_started` / `run_stopped` |
+| 任务 | `task_claimed` / `task_finished` / `task_failed` / `task_retry_scheduled` |
+| 队列 | `queue_round` / `task_requeued` / `backlog_sampled` |
+| 运行时 | `stage_snapshot` / `stage_pool` / `spill_changed` / `breaker_tripped` / `pause_resumed` |
+
+业务侧可 `app.Events().Emit(events.Event{...})` 复用同一个 sink（同一 `run_id` / `seq` 序列）；业务事件类型由业务自己约定，框架只负责承载与落盘。
+
+报告扩展点：`app.UseReportSection(section...)` / `app.UseReportPattern(pattern...)` 在 `Run` 之前注册业务报告段与业务模式；不注册时报告只有框架通用段。报告产物默认写两份文档：`report.md`（人读）与 `ai-brief.md`（交给另一个 AI 的排查细则，含边界/证据/假设/验证/验收），各带一份同构 JSON。
+
+**已知限制（这一版）**：`queue_wait_ms` 不发（需要在任务上记录提交时刻）；`queue_round` 只带本轮处理量，不带每轮失败数。
 
 ### server —— 监控 HTTP 服务（详见 [MONITOR.md](./MONITOR.md)）
 
@@ -252,7 +287,7 @@ repeat_queue:
 
 | 谁 | 什么时候动它 |
 | --- | --- |
-| 引擎启动 | 读这一行：**没有就按声明生成**；有就载入内存。载入后**按当前声明对齐**（站点集合 / `base_url` / `stage_count`；`breaker_paused*` 一律归零 —— 暂停状态**不跨重启**），内容一致就不回写 |
+| 引擎启动 | 读这一行：**没有就按声明生成**；有就载入内存。载入后**按当前声明对齐**（站点集合 / `base_url` / `stage_count`；`breaker_paused*` 普通站一律归零 —— 暂停状态**不跨重启**；声明了 `StartPaused` 的站带 `paused=true` + 本次启动时刻），内容一致就不回写。整份快照**一次写回**（不再先按"全没暂停"写一次、再逐站补写） |
 | 后台点「暂停整站 / 恢复整站」 | 改内存那份 + 整块回写这一行（在读写口那把写锁里做读-改-写） |
 | 后台「站点」页 `/api/monitor` 的 `sites` | **读内存**（读写口的内存缓存），不查库 |
 

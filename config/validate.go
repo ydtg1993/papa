@@ -40,11 +40,79 @@ func Validate(c *Config, unused []string) {
 	if err := checkUnusedKeys(unused); err != nil {
 		panic(err)
 	}
+	// 先补默认值再跑规则：规则里的"没写"这一态（三态里的第一态）已经在这里归一成
+	// 生效值，规则只需判"写了什么" —— 于是"没写"和"写了零值"两条路走同一个结果。
+	applyDefaults(c)
 	for _, r := range rules {
 		if err := r.check(c); err != nil {
 			panic(fmt.Errorf("config: %s\n%s", r.key, err))
 		}
 	}
+}
+
+// 观测与日志配置的默认值。
+//
+// 在 Validate 里补（而不是在 Load 解码后、或各消费方各写一个 OrDefault）：这里是
+// **配置生效值的唯一出口**，消费方（internal/app 等）读到的永远是生效值，
+// 不用再记住"空串要当哪个默认值"。
+const (
+	defaultLogLevel            = "info"
+	defaultObsEventsFile       = "events.jsonl"
+	defaultObsEventsBuffer     = 8192
+	defaultObsReportDir        = "./reports"
+	defaultObsReportTimeout    = 120 * time.Second
+	defaultObsStuckAfter       = 10 * time.Minute
+	defaultObsCrawlFailRateMax = 0.05
+)
+
+// validLogLevels 是 log.level 的合法取值，切片顺序即报错信息里的展示顺序。
+// warning 是 warn 的别名（logrus 只有一档 WarnLevel）。
+var validLogLevels = []string{"debug", "info", "warn", "warning", "error"}
+
+// applyDefaults 把**可选键**的"没写 / 零值"归一成生效值。
+//
+// 只碰可选键：必填键（log.dir、db 的连接池两键）仍由规则拒绝，不会被这里"补"成合法。
+// 空白串与没写等价 —— 与 log.dir / archive.dir 的判法一致（YAML 里写了个空值也是没写）。
+func applyDefaults(c *Config) {
+	if strings.TrimSpace(c.Log.Level) == "" {
+		c.Log.Level = defaultLogLevel
+	}
+	if strings.TrimSpace(c.Obs.Events.File) == "" {
+		c.Obs.Events.File = defaultObsEventsFile
+	}
+	if c.Obs.Events.Buffer <= 0 {
+		c.Obs.Events.Buffer = defaultObsEventsBuffer
+	}
+	// 0 与负数都是"不发"：负间隔不能交给 time.NewTicker（它会 panic）。
+	if c.Obs.Events.SnapshotInterval < 0 {
+		c.Obs.Events.SnapshotInterval = 0
+	}
+	if strings.TrimSpace(c.Obs.Report.Dir) == "" {
+		c.Obs.Report.Dir = defaultObsReportDir
+	}
+	if c.Obs.Report.Timeout <= 0 {
+		c.Obs.Report.Timeout = defaultObsReportTimeout
+	}
+	if c.Obs.Report.Thresholds.StuckAfter <= 0 {
+		c.Obs.Report.Thresholds.StuckAfter = defaultObsStuckAfter
+	}
+	if c.Obs.Report.Thresholds.CrawlFailRateMax <= 0 {
+		c.Obs.Report.Thresholds.CrawlFailRateMax = defaultObsCrawlFailRateMax
+	}
+}
+
+// validLogLevel 报告 log.level 是否合法。空串也算合法（"留空 = info"），
+// 虽然 applyDefaults 之后不会再出现空串 —— 两条路都放行，免得将来调用顺序一变就炸。
+func validLogLevel(name string) bool {
+	if name == "" {
+		return true
+	}
+	for _, lvl := range validLogLevels {
+		if name == lvl {
+			return true
+		}
+	}
+	return false
 }
 
 // rule 一条值域规则。key 用**配置文件里的键路径**写法（与文档、与报错信息同一套），
@@ -70,6 +138,17 @@ var rules = []rule{
 				SQLLogSilent, SQLLogError, SQLLogWarn, SQLLogInfo, c.DB.LogLevel)
 		}
 		return nil
+	}},
+
+	{"log.level", func(c *Config) error {
+		// 没写/写空已在 applyDefaults 里归一为 info（合法）；这里只判枚举。
+		// 不在这里拒绝的话，未知级别会被 pkg/loggers 静默兜底成 info ——
+		// 配了个名字却不生效，正是这一层要消灭的那类静默。
+		if validLogLevel(c.Log.Level) {
+			return nil
+		}
+		return fmt.Errorf("  只能是 %s（warning 是 warn 的别名；留空 = %s），实得 %q",
+			strings.Join(validLogLevels, " / "), defaultLogLevel, c.Log.Level)
 	}},
 
 	{"crawler.breaker.window", func(c *Config) error {

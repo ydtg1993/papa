@@ -107,3 +107,84 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+/* ---------- log.level ---------- */
+
+// allLoggers 把十套 logger 收成一张表 —— 级别必须十套一起改，漏一套就会继续刷屏。
+func allLoggers(set LoggerSet) map[string]*logrus.Logger {
+	return map[string]*logrus.Logger{
+		"Sys": set.Sys, "Engine": set.Engine, "Monitor": set.Monitor, "Browser": set.Browser,
+		"Fetcher": set.Fetcher, "DB": set.DB, "Scheduler": set.Scheduler, "Proxy": set.Proxy,
+		"Filedown": set.Filedown, "M3U8": set.M3U8,
+	}
+}
+
+// 十套 logger 必须共用同一个级别：只给 Sys 设级别的话，engine/browser 那几套会继续刷屏。
+func TestLevelAppliedToAllLoggers(t *testing.T) {
+	set := NewLoggerSet(LoggerConfig{Dir: t.TempDir(), Level: "error"})
+	t.Cleanup(func() { closeLoggers(t, set) })
+
+	for name, l := range allLoggers(set) {
+		if got := l.GetLevel(); got != logrus.ErrorLevel {
+			t.Errorf("%s 的级别 = %v, want error", name, got)
+		}
+	}
+}
+
+// 级别名映射：空值与未知值一律 info —— pkg/loggers 单独使用（不经 config 校验）时不能 panic；
+// 非法值该由 config 层的 log.level 规则在启动时报错，那是另一个入口的事。
+func TestLevelMapping(t *testing.T) {
+	for _, c := range []struct {
+		level string
+		want  logrus.Level
+	}{
+		{"", logrus.InfoLevel},        // 没写 = info
+		{"info", logrus.InfoLevel},    //
+		{"debug", logrus.DebugLevel},  //
+		{"warn", logrus.WarnLevel},    //
+		{"warning", logrus.WarnLevel}, // warn 的别名
+		{"error", logrus.ErrorLevel},  //
+		{"verbose", logrus.InfoLevel}, // 未知 → info（兜底不 panic）
+		{"ERROR", logrus.InfoLevel},   // 大小写不认
+	} {
+		name := c.level
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			if got := (LoggerConfig{Level: c.level}).logrusLevel(); got != c.want {
+				t.Fatalf("Level=%q 映射 = %v, want %v", c.level, got, c.want)
+			}
+		})
+	}
+}
+
+// 级别要真的过滤落盘：error 级别下 Info 不该写、Error 要写。
+// 只 SetLevel 不生效（比如设完又被覆盖）的话，这条会红。
+func TestLevelFiltersFileOutput(t *testing.T) {
+	dir := t.TempDir()
+	set := NewLoggerSet(LoggerConfig{Dir: dir, Level: "error"})
+	set.Sys.Info("info-marker")
+	set.Sys.Error("error-marker")
+	closeLoggers(t, set)
+
+	got := readFile(t, filepath.Join(dir, "sys.log"))
+	if strings.Contains(got, "info-marker") {
+		t.Fatalf("error 级别下 Info 不该落盘：\n%s", got)
+	}
+	if !strings.Contains(got, "error-marker") {
+		t.Fatalf("error 级别下 Error 必须落盘：\n%s", got)
+	}
+}
+
+// 反过来：debug 级别要放行 Debug（默认 info 会把 Debug 吞掉，本地排查正靠它）。
+func TestDebugLevelPassesDebug(t *testing.T) {
+	dir := t.TempDir()
+	set := NewLoggerSet(LoggerConfig{Dir: dir, Level: "debug"})
+	set.Sys.Debug("debug-marker")
+	closeLoggers(t, set)
+
+	if got := readFile(t, filepath.Join(dir, "sys.log")); !strings.Contains(got, "debug-marker") {
+		t.Fatalf("debug 级别下 Debug 必须落盘：\n%s", got)
+	}
+}

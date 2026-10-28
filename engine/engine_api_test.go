@@ -316,6 +316,15 @@ func TestLoadActiveTasksFillsDedupCache(t *testing.T) {
 	if !containsAll(read, "status IN") || !containsAll(read, "repeatable") {
 		t.Fatalf("装载条件不完整：\n%s", read)
 	}
+	// 只投影去重键需要的列：历史行宽了以后 SELECT * 会把用不上的列也读出来
+	if strings.Contains(read, "SELECT *") {
+		t.Fatalf("预热不该 SELECT *：\n%s", read)
+	}
+	for _, col := range []string{"`url`", "`stage`", "`site`", "`idempotency_key`"} {
+		if !strings.Contains(read, col) {
+			t.Fatalf("预热查询缺列 %s：\n%s", col, read)
+		}
+	}
 }
 
 // 库里一条进行中的任务都没有时：缓存保持空，不 panic。

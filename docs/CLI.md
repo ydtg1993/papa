@@ -30,6 +30,7 @@ go install ./cmd/papa
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
 | `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
+| `papa report generate [-c <配置路径>] [--since/--until] [--run] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成一次运行报告（`report.md` + `report.json`）：读事件流 + 日志证据 + `crawler_tasks` 状态，输出判定/问题/表格。业务报告段需在业务进程内注册（CLI 只有框架通用段） |
 
 ### `papa new` 生成什么
 
@@ -148,6 +149,20 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 >
 > 全局配置或站点/阶段声明改完（尤其是启用后要求字段齐全的三个治理队列）跑一次 **`papa check`**：它不用起库就能告诉你漏没漏，
 > 不必等下次启动才发现；要连库把启动路径也走一遍，就加 **`--boot`**。
+
+### `papa report` 生成运行报告（只读）
+
+```
+papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] \
+                     [--run <run_id>] [--out <dir>] [--no-logs] [--fail-on-verdict]
+papa report list [--out <dir>]
+```
+
+- 数据源：`log.dir/events.jsonl`（含轮转备份与 `.gz`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `obs.events`）+ `log.dir/*.log` 的证据索引 + `crawler_tasks` 状态。
+- 产物：`<obs.report.dir 或 --out>/<run_id>/` 下 4 个文件：`report.md`（人读）、`report.json`（机读指标）、`ai-brief.md`（AI 排查细则）、`ai-brief.json`（同构机读）。
+- 判定：任一 `fail` 级检查未通过 → 不通过；只有 `warn` 未通过 → 带风险通过；否则通过。`--fail-on-verdict` 让「不通过」以非零码退出（CI / 自动化门禁）。
+- 只读：不写业务表、不重投任务、不调用接收端。
+- 业务报告段（如预处理 / 推送 / 数据一致性）只能在业务进程内注册 —— CLI 是独立编译的，拿不到业务模型。
 
 ## 2. 通用 flags（html / rod / diff 共用）
 

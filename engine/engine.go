@@ -12,6 +12,7 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
@@ -27,6 +28,9 @@ import (
 type Engine struct {
 	db        *gorm.DB
 	loggerSet *loggers.LoggerSet
+	// events 运行事件流（默认关）。nil = 关闭；emit 对 nil 安全。
+	// 由 internal/app 按 obs.events 配置组装后注入（SetEventsEmitter），业务也可自定义实现。
+	events events.Emitter
 
 	ctx context.Context
 	// startedAt 本进程启动时刻，只给启动恢复当截止用（见 recoverQueueQuery）：
@@ -62,6 +66,9 @@ type Engine struct {
 	spilled        map[string][]*Task // 阶段键 -> 高水位溢出的待回灌任务
 	spilledCount   atomic.Int64       // 累计溢出任务数（监控埋点）
 	recoveredCount atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
+	// recoverSkippedUnregistered 启动恢复里因"阶段未注册"被跳过的条数：
+	// 逐条降级为 Debug，启动后汇总一条 Warn（否则一次恢复能把日志刷几百行）。
+	recoverSkippedUnregistered atomic.Int64
 
 	queueRuns     map[string]*queueRunState // 治理队列的运行快照（监控页读取）
 	queueCounters map[string]*atomic.Int64  // 队列名 -> 累计重新投递计数
@@ -84,6 +91,9 @@ type Engine struct {
 	// tickerWG 动态 ticker 的等待组：Stop 要等它们退出再返回，否则调用方看到 drained=true
 	// 就去关库，而在途的那一跳可能正在写库（`sql: database is closed`）。
 	tickerWG sync.WaitGroup
+	// wakeCoalesce 动态 ticker 的唤醒合并窗口（见 dynticker.go 的 coalesceWake）。
+	// 0 = 不合并（测试/手工构造的 Engine 默认行为），生产由 NewEngine 设默认值。
+	wakeCoalesce time.Duration
 
 	proxy    *proxy.Manager       // 代理管理器中间件
 	m3u8     *m3u8.Downloader     // m3u8下载器（全局那份）
@@ -221,6 +231,9 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		errorForwardCancel: make(map[string]*poolForwarder),
 		// 容量 1：恢复时叫醒回灌循环（非阻塞发送，重复叫醒只留一次）
 		wakeDrain: make(chan struct{}, 1),
+		// 启动恢复会连续 submit（每条都可能 wakeRepeatQueue）：合并窗口把同一批 wake 的
+		// N 次节拍重算（MIN 聚合查询）压成一次；见 dynticker.go。
+		wakeCoalesce: defaultWakeCoalesce,
 	}
 	engine.siteBreaker = make(map[string]*breaker.Breaker)
 	engine.sites = make(map[string]core.Site)
@@ -258,6 +271,20 @@ func (e *Engine) Upsert(record any, conflictColumns, updateColumns []string) err
 // GetLoggerSet 获取日志管理器列表
 func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
 	return e.loggerSet
+}
+
+// SetEventsEmitter 注入运行事件流（internal/app 组装好后调用）；传 nil 表示关闭。
+// 必须在 Run/ApplyRegisterStage 之前调用：快照事件的 ticker 在那一刻才起。
+func (e *Engine) SetEventsEmitter(em events.Emitter) {
+	e.events = em
+}
+
+// emit 发一条事件；emitter 为 nil（未开启）时是 no-op。
+func (e *Engine) emit(ev events.Event) {
+	if e.events == nil {
+		return
+	}
+	e.events.Emit(ev)
 }
 
 // GetConfig 获取全局配置
@@ -389,20 +416,28 @@ func (e *Engine) ResumeSite(site string) bool {
 //
 // 现场里带上当时的窗口失败数（与今天一致：它是后台 payload 的一个字段，别顺手改成 0）。
 func (e *Engine) PauseSite(site, reason string) bool {
-	if !e.knownSite(site) {
-		return false
-	}
-	changed := e.setPause(pauseScope{Site: site}, pauseState{
-		Reason: reason, Source: PauseSourceManual,
-		Failures: e.breakerSum(site),
-	})
-	if !changed {
+	if !e.setSitePausedSignal(site, reason) {
 		// 已经停着（可能正是熔断触发的那一条）：返回 false，也**不覆盖**它的 reason 与快照 ——
 		// 后台"空点不记审计"那条规则、以及"人工暂停不该把熔断现场改写成手动"都靠这个。
 		return false
 	}
 	e.writeSiteBreakerState(site, true)
 	return true
+}
+
+// setSitePausedSignal 只下"整站暂停"的内存信号 + 现场，**不写站点快照**。
+//
+// 两个调用方：PauseSite（手动暂停，成功后自己写快照）与 applyStartPaused（启动期 StartPaused）。
+// 后者不能走 PauseSite：它的暂停态已经由 buildSiteStats 在**一次**快照写里带上了，
+// 再逐站写就是 1+N 条 crawler_config upsert（先按"全没暂停"写一次、再逐站改回 true）。
+func (e *Engine) setSitePausedSignal(site, reason string) bool {
+	if !e.knownSite(site) {
+		return false
+	}
+	return e.setPause(pauseScope{Site: site}, pauseState{
+		Reason: reason, Source: PauseSourceManual,
+		Failures: e.breakerSum(site),
+	})
 }
 
 // PauseCrawling 手动闸住抓取（后台/业务都可用）：**所有配了抓取策略的站点**一起暂停，

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
 )
 
@@ -45,14 +46,21 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 	if !cfg.Enabled {
 		return 0, nil
 	}
-	return e.processInBatches(e.recoverQueueQuery(), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	n, err := e.processInBatches(e.recoverQueueQuery(), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	if skipped := e.recoverSkippedUnregistered.Swap(0); skipped > 0 {
+		e.loggerSet.Engine.Warnf("recover queue: %d tasks skipped —— 它们所属的阶段没有再注册（声明改了？）", skipped)
+	}
+	return n, err
 }
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
 func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 	// 站点也要看：阶段名只在本站内唯一，光按名字查会把另一站的同名阶段当成本站那个。
 	if e.stages[stageKeyOfRecord(t)] == nil {
-		e.loggerSet.Engine.Warnf("recover queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
+		// 逐条只记 Debug：启动恢复扫到几百条老任务时，这条会把日志刷满。
+		// 真正的信号在 ProcessRecoverQueue 结束时汇总一条 Warn（见 recoverSkippedUnregistered）。
+		e.recoverSkippedUnregistered.Add(1)
+		e.loggerSet.Engine.Debugf("recover queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
 	// Repeatable / Meta 照抄行上的值（taskFromRecord 已带）：丢了 Repeatable 会让轮询任务恢复后
@@ -65,30 +73,43 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 	// 不剔的话 SubmitTask 第一道 dedupCache.Get 命中、非轮询任务会直接 return nil —— 队列根本没进。
 	e.DelActiveTask(task)
 
-	// **条件重置**（照兄弟队列的写法：repeatResetScope / requeueFailedTaskIn 都查 RowsAffected）：
-	// 批次 SELECT 与这一句之间有窗口 —— 运营可能把这一行删了、标了失败，或任务自己跑完落了 success。
-	// 无条件 UPDATE 会把这些行也翻回 pending：删掉的行重新插回来、已终态的行再跑一遍。
-	// 0 行 = 这一行已经不该被恢复：跳过，不计数、也不标 failed（它不是"恢复失败"，是"轮不到它了"）。
-	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status IN ?", t.ID, []models.TaskStatus{
-			models.TaskStatusPending,
-			models.TaskStatusProcessing,
-		}).
-		Updates(map[string]any{"status": models.TaskStatusPending})
-	if res.Error != nil {
-		e.loggerSet.Engine.Errorf("recover queue: reset task %d: %s", t.ID, res.Error.Error())
-		return false
-	}
-	if res.RowsAffected == 0 {
-		return false
+	// **只对"不是 pending"的行做条件重置**：上一次被 StartPaused / 高水位折回溢出表的任务本来就是
+	// pending，再 UPDATE 一次只会刷新 updated_at（日志里看着 rows:1，实际什么都没变）。
+	// 对 processing 的孤儿仍要重置 —— 不清它就会一直停在「处理中」。
+	// 已 pending 的行省掉的只是那次状态确认：若它在 SELECT 之后被删/标终态，入队的那份副本
+	// 认领不到（claimTask 以 pending 为条件），直接跳过，不会重复执行 —— 与 SubmitTask 那条路一致。
+	if t.Status != models.TaskStatusPending {
+		// **条件重置**（照兄弟队列的写法：repeatResetScope / requeueFailedTaskIn 都查 RowsAffected）：
+		// 批次 SELECT 与这一句之间有窗口 —— 运营可能把这一行删了、标了失败，或任务自己跑完落了 success。
+		// 无条件 UPDATE 会把这些行也翻回 pending：删掉的行重新插回来、已终态的行再跑一遍。
+		// 0 行 = 这一行已经不该被恢复：跳过，不计数、也不标 failed（它不是"恢复失败"，是"轮不到它了"）。
+		res := e.db.Model(&models.CrawlerTask{}).
+			Where("id = ? AND status IN ?", t.ID, []models.TaskStatus{
+				models.TaskStatusPending,
+				models.TaskStatusProcessing,
+			}).
+			Updates(map[string]any{"status": models.TaskStatusPending})
+		if res.Error != nil {
+			e.loggerSet.Engine.Errorf("recover queue: reset task %d: %s", t.ID, res.Error.Error())
+			return false
+		}
+		if res.RowsAffected == 0 {
+			return false
+		}
 	}
 
-	if err := e.SubmitTask(task); err != nil {
+	// 行现在一定是 pending：直接投回队列，不再走 SubmitTask —— 它还会按去重键查一次库、
+	// 再把 pending 写一遍（启动恢复 120 条时就是 240 条无意义 SQL）。
+	if err := e.submitRecoveredTask(task); err != nil {
 		e.loggerSet.Engine.Errorf("recover queue: submit task %d: %s", t.ID, err.Error())
 		e.markRequeueFailed(recoverQueueName, t.ID, err)
 		return false
 	}
 	e.recoveredCount.Add(1)
+	e.emit(events.Event{
+		Type: events.TypeTaskRequeued, Queue: recoverQueueName, Source: "auto",
+		Site: t.Site, Stage: t.Stage, TaskID: t.ID,
+	})
 	return true
 }
 

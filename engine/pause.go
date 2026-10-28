@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 )
 
 // 本文件是**暂停**的唯一定义：一处状态、两个消费者。
@@ -163,12 +164,14 @@ func (e *Engine) setPause(scope pauseScope, st pauseState) bool {
 func (e *Engine) clearScope(scope pauseScope) bool {
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
-	if _, ok := e.paused[scope]; !ok {
+	st, ok := e.paused[scope]
+	if !ok {
 		return false
 	}
 	delete(e.paused, scope)
 	e.recordResumeLocked(scope)
 	e.broadcastPauseLocked()
+	e.emit(events.Event{Type: events.TypePauseResumed, Site: scope.Site, Stage: scope.Stage, Source: st.Source})
 	return true
 }
 
@@ -181,10 +184,11 @@ func (e *Engine) clearSite(site string) bool {
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	cleared := false
-	for sc := range e.paused {
+	for sc, st := range e.paused {
 		if sc.Site == site {
 			delete(e.paused, sc)
 			e.recordResumeLocked(sc)
+			e.emit(events.Event{Type: events.TypePauseResumed, Site: sc.Site, Stage: sc.Stage, Source: st.Source})
 			cleared = true
 		}
 	}
@@ -201,9 +205,10 @@ func (e *Engine) clearAllPauses() bool {
 	if len(e.paused) == 0 {
 		return false
 	}
-	for sc := range e.paused {
+	for sc, st := range e.paused {
 		delete(e.paused, sc)
 		e.recordResumeLocked(sc)
+		e.emit(events.Event{Type: events.TypePauseResumed, Site: sc.Site, Stage: sc.Stage, Source: st.Source})
 	}
 	e.broadcastPauseLocked()
 	return true
@@ -327,12 +332,12 @@ func (e *Engine) knownSite(site string) bool {
 // 启动恢复与轮询队列捞回来的任务也一样；后台点「恢复整站」（`ResumeSite`）时 `wakeDrainNow`
 // 立刻把它们灌回。
 //
-// 走 `PauseSite` 而不是自己 `setPause`：来源是 manual、现场带当时的失败数、并把暂停状态写进
-// 站点快照（后台站点表的「已暂停」列）—— 与人在后台点一下完全同一条路，没有第二套语义。
-// 暂停不跨重启，所以"每次启动都重新闸上、运行期放的闸不会被声明改回去"是这句话的自然结果。
+// 只下**内存信号**、不逐站写快照：暂停态已经由 `buildSiteStats` 在启动播种那**一次**写里
+// 带上（declaredSiteStats 直接按 StartPaused 算 paused 字段）。走 PauseSite 会变成 1+N 条
+// crawler_config upsert。运行期的人工暂停仍走 PauseSite（写快照）。
 func (e *Engine) applyStartPaused() {
 	for _, site := range e.startPausedSites() {
-		if !e.PauseSite(site, "站点声明 StartPaused") {
+		if !e.setSitePausedSignal(site, "站点声明 StartPaused") {
 			// 静默失效是最难查的那类问题：声明写了、日志里一个字都没有、任务却照跑。
 			e.loggerSet.Engine.Warnf("站点 %s: 声明了 StartPaused，但这次没能闸住（它没有配抓取策略？）——"+
 				"启动后会照常跑，去后台「站点控制」卡上手动暂停", site)

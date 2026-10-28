@@ -11,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 )
 
 // AddNotifier 注册告警通知器；任务最终失败时触发 Notify。
@@ -91,6 +92,11 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 // 走的是与任务失败**同一个** Notifier 通道，业务不用再接一套告警 ——
 // 区别只在 level（critical 比 error 高一级），webhook 那边可以据此单独路由（钉钉 @全体之类）。
 func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
+	e.emit(events.Event{
+		Type: events.TypeBreakerTripped, Site: st.Site, Stage: st.Stage,
+		Source: "breaker", Kind: "circuit-breaker",
+		Counts: map[string]int{"failures": st.Failures, "threshold": st.Threshold},
+	})
 	e.loggerSet.Engine.Errorf(
 		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败 ≥ 阈值 %d）—— 已暂停整站："+
 			"worker 停在取任务点，新任务不再入队（先寄放到溢出表）。"+
@@ -155,6 +161,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	//（与下载器那边 max(MaxConcurrent, 1) 同一路数）。
 	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
+		// claimedAt 认领时刻：事件里的 duration_ms 用它算整段在途时间（成功/失败都算）。
+		var claimedAt time.Time
 		// panic 收尾：FetchHandler 一次尝试里 panic 会展开跳过下面整段「重试 + 落终态」。
 		// runAttempt 只负责 trace/归档（记完原样抛回），workerpool 只负责计数 —— 谁都不碰任务行，
 		// 于是行会永远停在 processing、错误队列与失败通知都不触发、活动任务也没清掉。
@@ -163,6 +171,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			if r := recover(); r != nil {
 				err := fmt.Errorf("panic: %v", r)
 				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				e.emitTaskFailed(task, err, claimedAt)
 				e.notifyFailure(ctx, task, err)
 				e.finishTask(task)
 				panic(r)
@@ -175,9 +184,14 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		if err != nil {
 			e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
 		} else if !claimed {
-			e.loggerSet.Engine.Warnf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
+			e.loggerSet.Engine.Debugf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
 			return nil
 		}
+		claimedAt = time.Now()
+		e.emit(events.Event{
+			Type: events.TypeTaskClaimed, Site: task.Site, Stage: task.Stage,
+			TaskID: uint(task.ID), URL: task.URL, Attempt: 0,
+		})
 		// 重试FetchHandler
 		var lastErr error
 		for attempt := 0; attempt < attempts; attempt++ {
@@ -192,10 +206,19 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
 				}
 				task.IncRetry(e.db)
+				e.emit(events.Event{
+					Type: events.TypeTaskRetry, Site: task.Site, Stage: task.Stage,
+					TaskID: uint(task.ID), Attempt: attempt,
+				})
 			}
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if err == nil {
 				task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
+				e.emit(events.Event{
+					Type: events.TypeTaskFinished, Site: task.Site, Stage: task.Stage,
+					TaskID: uint(task.ID), Outcome: "success", Attempt: attempt,
+					DurationMS: elapsedMS(claimedAt),
+				})
 				e.finishTask(task)
 				// 任务间隔延迟：让 worker 在两次抓取之间歇一下，别把目标站打急。
 				// **必须可被 ctx 打断** —— 任务到这里已经成功、状态也已经落库，
@@ -212,6 +235,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			// 不可重试的错误：直接标 failed，不再空转重试
 			if !Retryable(err) {
 				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				e.emitTaskFailed(task, err, claimedAt)
 				e.notifyFailure(ctx, task, err)
 				e.finishTask(task)
 				return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
@@ -220,6 +244,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
 		task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
+		e.emitTaskFailed(task, lastErr, claimedAt)
 		e.notifyFailure(ctx, task, lastErr)
 		e.finishTask(task)
 		return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, lastErr)
@@ -244,6 +269,10 @@ func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*
 		e.setStatsQueue(key, stats)
 		e.loggerSet.Monitor.Infof("monitor started for stage: %s", key)
 	}
+	e.emit(events.Event{
+		Type: events.TypeStagePool, Site: cfg.Site, Stage: info.stage,
+		Source: "created", Counts: map[string]int{"workers": cfg.WorkerCount},
+	})
 	return pool
 }
 
@@ -352,7 +381,9 @@ func (e *Engine) startIdleReaper() {
 					e.harvestStageTotals(key, pool)
 					e.removeStageStats(key, pool)
 					e.cancelPoolErrorForwarder(key, pool)
-					e.loggerSet.Engine.Infof("reaped idle stage pool: %s", key)
+					e.loggerSet.Engine.Debugf("reaped idle stage pool: %s", key)
+					site, stage := splitStageKey(key)
+					e.emit(events.Event{Type: events.TypeStagePool, Site: site, Stage: stage, Source: "reaped"})
 				}
 			}
 		}
@@ -410,6 +441,8 @@ func (e *Engine) ApplyRegisterStage() {
 	if e.cfg.Server.Enabled {
 		e.startQueueSampler()
 	}
+	// 运行事件流的阶段/队列周期快照（obs.events 开启且配了 interval 才起）
+	e.startSnapshotEmitter()
 	// 空闲池回收（没配 stage_idle_timeout 就是 no-op，池常驻）
 	e.startIdleReaper()
 }

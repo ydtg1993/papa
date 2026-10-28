@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
 )
 
@@ -28,6 +29,9 @@ func (e *Engine) spillTasks(key string, tasks []*Task) {
 	e.spillMu.Lock()
 	e.spilled[key] = append(e.spilled[key], tasks...)
 	e.spillMu.Unlock()
+	// 这里**不发事件**：这条路径是 drain 把"暂停桶"原样放回，每个 drain tick（默认 2s）都会走一次；
+	// 发事件会把 events.jsonl 刷屏（实测：4 个暂停站点 150s 产生 386 条 spill_changed）。
+	// 真实的新增溢出走 spillTask（每条一次），回灌成效走 drainSpilled 的 submitted 计数。
 }
 
 // spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。
@@ -45,6 +49,9 @@ func (e *Engine) spillTask(task *Task) {
 		}
 	}
 	e.spilled[key] = append(e.spilled[key], task)
+	site, stage := splitStageKey(key)
+	e.emit(events.Event{Type: events.TypeSpillChanged, Site: site, Stage: stage,
+		Source: "added", Counts: map[string]int{"added": 1}})
 }
 
 // startDrain 启动后台回灌协程：定期把溢出列表中的任务重新入队。
@@ -83,6 +90,7 @@ func (e *Engine) drainSpilled() {
 	e.spilled = make(map[string][]*Task)
 	e.spillMu.Unlock()
 
+	submitted := 0
 	for key, tasks := range all {
 		info := e.stages[key]
 		if info == nil {
@@ -116,6 +124,12 @@ func (e *Engine) drainSpilled() {
 			}
 			// 投不进去（池刚被回收 / 已停机）时 submitToPool 会把它重新放回溢出表，下轮再来
 			e.submitToPool(task, record)
+			submitted++
 		}
+	}
+	// 只有真的回灌了才发事件：暂停桶每次 drain 都被原样放回，按"桶"发会每 2s 一条刷屏。
+	if submitted > 0 {
+		e.emit(events.Event{Type: events.TypeSpillChanged, Source: "drained",
+			Counts: map[string]int{"drained": submitted}, Backlog: int64(e.spillBacklog())})
 	}
 }

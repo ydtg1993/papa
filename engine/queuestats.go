@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
 )
 
@@ -63,16 +64,29 @@ func (e *Engine) endQueueRun(name string, processed int, err error) {
 	now := time.Now()
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	dur := now.Sub(st.stat.StartedAt)
 	st.stat.Running = false
 	st.stat.Runs++
 	st.stat.LastProcessed = processed
 	st.stat.LastFinishAt = now
-	st.stat.LastDuration = now.Sub(st.stat.StartedAt)
+	st.stat.LastDuration = dur
 	if err != nil {
 		st.stat.LastError = err.Error()
 	} else {
 		st.stat.LastError = ""
 	}
+	// 队列轮次事件：报告引擎用它算每轮处理量与耗时，不依赖日志文案。
+	ev := events.Event{
+		Type:       events.TypeQueueRound,
+		Queue:      name,
+		Source:     "auto",
+		Counts:     map[string]int{"processed": processed},
+		DurationMS: dur.Milliseconds(),
+	}
+	if err != nil {
+		ev.Error = events.TruncateError(err.Error())
+	}
+	e.emit(ev)
 }
 
 // setQueueBacklog 记录采样到的待处理积压数。
@@ -148,6 +162,7 @@ func (e *Engine) sampleQueueBacklogOne(name string, query func() *gorm.DB) {
 		return
 	}
 	e.setQueueBacklog(name, int(n))
+	e.emit(events.Event{Type: events.TypeBacklogSampled, Queue: name, Backlog: n})
 }
 
 // startQueueSampler 后台低频采样各队列的积压数（COUNT 查询）。
