@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/pkg/events"
@@ -31,9 +32,10 @@ const (
 type Verdict string
 
 const (
-	VerdictPass Verdict = "pass" // 全部通过
-	VerdictWarn Verdict = "warn" // 带风险通过（只有警告未通过）
-	VerdictFail Verdict = "fail" // 不通过（至少一条 fail 未通过）
+	VerdictPass    Verdict = "pass"    // 全部通过
+	VerdictWarn    Verdict = "warn"    // 带风险通过（只有警告未通过）
+	VerdictFail    Verdict = "fail"    // 不通过（至少一条 fail 未通过）
+	VerdictUnknown Verdict = "unknown" // 未判定：数据不足/暂停快照，无法下结论
 )
 
 // Check 一个判定项。papa 只认 ID/Severity/Passed/Message，不解释其业务语义。
@@ -41,8 +43,11 @@ type Check struct {
 	ID       string   `json:"id"`
 	Severity Severity `json:"severity"`
 	Passed   bool     `json:"passed"`
-	Message  string   `json:"message"`
-	Detail   string   `json:"detail,omitempty"`
+	// Skipped 本次不适用：不参与判定；SkipReason 说明为什么（暂停/无阶段/数据缺失）。
+	Skipped    bool   `json:"skipped,omitempty"`
+	SkipReason string `json:"skip_reason,omitempty"`
+	Message    string `json:"message"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 // Evidence 一条证据引用（事件 / 日志 / 数据库）。
@@ -70,6 +75,7 @@ type Problem struct {
 	Evidence   []Evidence   `json:"evidence,omitempty"`
 	Hypotheses []Hypothesis `json:"hypotheses,omitempty"`
 	Acceptance string       `json:"acceptance,omitempty"`
+	Origin     string       `json:"origin,omitempty"` // section | pattern | check
 }
 
 // Table 人读表格。
@@ -162,6 +168,8 @@ type Input struct {
 	Baseline  Baseline
 	Degraded  []string
 	Now       time.Time
+	Mode      Mode
+	Engine    EngineState
 }
 
 // SectionReport 一节在报告里的落地形态。
@@ -180,16 +188,19 @@ type Report struct {
 	SchemaVersion int `json:"schema_version"`
 	// GeneratedAt 报告生成时刻（= 最近一次更新时间）：定时报告每次刷新都会更新它；
 	// 同一天目录被定时/退出/命令反复覆盖时，以这里为准判断"这份报告是什么时候的"。
-	GeneratedAt time.Time         `json:"generated_at"`
-	Verdict     Verdict           `json:"verdict"`
-	Run         RunMeta           `json:"run"`
-	EventMeta   EventMeta         `json:"event_meta"`
-	Logs        LogSummary        `json:"logs,omitempty"`
-	Environment map[string]string `json:"environment,omitempty"`
-	Degraded    []string          `json:"degraded,omitempty"`
-	Sections    []SectionReport   `json:"sections"`
-	Checks      []Check           `json:"checks"`
-	Problems    []Problem         `json:"problems"`
+	GeneratedAt   time.Time         `json:"generated_at"`
+	Verdict       Verdict           `json:"verdict"`
+	Run           RunMeta           `json:"run"`
+	EventMeta     EventMeta         `json:"event_meta"`
+	Logs          LogSummary        `json:"logs,omitempty"`
+	Environment   map[string]string `json:"environment,omitempty"`
+	Degraded      []string          `json:"degraded,omitempty"`
+	Sections      []SectionReport   `json:"sections"`
+	Checks        []Check           `json:"checks"`
+	Problems      []Problem         `json:"problems"`
+	Mode          Mode              `json:"mode,omitempty"`
+	VerdictReason string            `json:"verdict_reason,omitempty"`
+	Engine        EngineState       `json:"engine"`
 }
 
 // Options 生成报告所需的全部输入。
@@ -205,6 +216,8 @@ type Options struct {
 	Sections    []Section
 	Patterns    []Pattern
 	Now         time.Time
+	Mode        Mode
+	Engine      EngineState
 }
 
 // Generate 依次跑 Section 与 Pattern，聚合成一份 Report。
@@ -223,6 +236,8 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		DB:        opts.DB,
 		Baseline:  opts.Baseline,
 		Now:       now,
+		Mode:      opts.Mode,
+		Engine:    opts.Engine,
 	}
 	rep := &Report{
 		SchemaVersion: SchemaVersion,
@@ -232,6 +247,8 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		Logs:          opts.Logs,
 		Environment:   opts.Environment,
 		Degraded:      append([]string(nil), opts.Degraded...),
+		Mode:          opts.Mode,
+		Engine:        opts.Engine,
 	}
 	for _, s := range opts.Sections {
 		if s == nil {
@@ -262,14 +279,17 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 	// 分析器可能在 Input.Degraded 里追加（如 DB 未配置），一并带进报告。
 	rep.Degraded = append(rep.Degraded, in.Degraded...)
 	rep.Verdict = VerdictOf(rep.Checks)
+	synthesizeProblems(rep)
+	applyVerdictPolicy(rep)
 	return rep, nil
 }
 
 // VerdictOf 聚合判定：任一 fail 级检查未通过 → fail；否则任一 warn 未通过 → warn；否则 pass。
+// Skipped 的检查本次不适用，不参与判定。
 func VerdictOf(checks []Check) Verdict {
 	v := VerdictPass
 	for _, c := range checks {
-		if c.Passed {
+		if c.Passed || c.Skipped {
 			continue
 		}
 		switch c.Severity {
@@ -280,6 +300,88 @@ func VerdictOf(checks []Check) Verdict {
 		}
 	}
 	return v
+}
+
+// applyVerdictPolicy 在聚合判定之后做 fail-closed 收口：
+// 已经 fail 的不改；降级、无可判定检查或暂停快照下的 pass 一律降成 unknown。
+func applyVerdictPolicy(rep *Report) {
+	switch rep.Verdict {
+	case VerdictFail:
+		rep.VerdictReason = failReason(rep.Checks)
+		return
+	case VerdictWarn:
+		rep.VerdictReason = warnReason(rep.Checks)
+		return
+	}
+	if !hasApplicableChecks(rep.Checks) {
+		rep.Verdict = VerdictUnknown
+		rep.VerdictReason = "没有可判定的检查项（全部不适用或为空）"
+		return
+	}
+	if len(rep.Degraded) > 0 {
+		rep.Verdict = VerdictUnknown
+		rep.VerdictReason = "报告降级，数据不完整：" + rep.Degraded[0]
+		return
+	}
+	if rep.Mode == ModeSnapshot && rep.Engine.Inactive() {
+		rep.Verdict = VerdictUnknown
+		rep.VerdictReason = "引擎暂停/空闲，快照模式不评估运行健康"
+	}
+}
+
+// hasApplicableChecks 只把 fail/warn 当判定项；info 只是提示，不承担「已检查」的语义。
+func hasApplicableChecks(checks []Check) bool {
+	for _, c := range checks {
+		if c.Skipped || c.Severity == SeverityInfo {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func failedIDs(checks []Check, sev Severity) []string {
+	out := make([]string, 0, 4)
+	for _, c := range checks {
+		if c.Skipped || c.Passed || c.Severity != sev {
+			continue
+		}
+		out = append(out, c.ID)
+	}
+	return out
+}
+
+func failReason(checks []Check) string {
+	ids := failedIDs(checks, SeverityFail)
+	return fmt.Sprintf("%d 个适用 fail 检查未通过：%s", len(ids), strings.Join(ids, "、"))
+}
+
+func warnReason(checks []Check) string {
+	ids := failedIDs(checks, SeverityWarn)
+	return fmt.Sprintf("%d 个适用 warn 检查未通过：%s", len(ids), strings.Join(ids, "、"))
+}
+
+// synthesizeProblems 把未通过的 fail/warn 检查合成可行动 Problem（已有同 ID 的不重复）。
+func synthesizeProblems(rep *Report) {
+	have := make(map[string]bool, len(rep.Problems))
+	for _, p := range rep.Problems {
+		have[p.ID] = true
+	}
+	for _, c := range rep.Checks {
+		if c.Passed || c.Skipped || c.Severity == SeverityInfo {
+			continue
+		}
+		id := "check-" + c.ID
+		if have[id] {
+			continue
+		}
+		rep.Problems = append(rep.Problems, Problem{
+			ID: id, Severity: c.Severity, Title: c.Message, Origin: "check",
+			Evidence:   []Evidence{{Type: "check", Ref: c.ID, Excerpt: c.Detail}},
+			Acceptance: "修复后重新生成报告，该检查通过",
+		})
+	}
+	sortProblems(rep.Problems)
 }
 
 // NewCheck 构造一条判定项（少写重复字面量）。

@@ -66,9 +66,15 @@ func TestGenerateAggregatesSectionsAndPatterns(t *testing.T) {
 	if len(rep.Sections) != 1 || rep.Sections[0].Key != "fake" {
 		t.Fatalf("sections = %+v", rep.Sections)
 	}
-	// p2（fail、count 5）应排在 p1（warn）之前。
-	if len(rep.Problems) != 2 || rep.Problems[0].ID != "p2" {
+	// p2（fail、count 5）应排在 p1（warn）之前；失败检查会合成一条 fail Problem 插在中间。
+	if len(rep.Problems) != 3 || rep.Problems[0].ID != "p2" {
 		t.Fatalf("problems 排序不对：%+v", rep.Problems)
+	}
+	if p := rep.Problems[1]; p.ID != "check-stuck_processing" || p.Origin != "check" {
+		t.Fatalf("失败检查应合成 check Problem：%+v", rep.Problems)
+	}
+	if rep.Problems[2].ID != "p1" {
+		t.Fatalf("p1 应排在最后：%+v", rep.Problems)
 	}
 	if len(rep.Checks) != 1 {
 		t.Fatalf("checks = %+v", rep.Checks)
@@ -85,8 +91,11 @@ func TestGenerateSectionErrorIsDegraded(t *testing.T) {
 	if len(rep.Degraded) != 1 {
 		t.Fatalf("degraded = %+v", rep.Degraded)
 	}
-	if rep.Verdict != VerdictPass {
-		t.Fatalf("verdict = %q, want pass", rep.Verdict)
+	if rep.Verdict != VerdictUnknown {
+		t.Fatalf("verdict = %q, want unknown（单节失败=降级，fail-closed 不判 pass）", rep.Verdict)
+	}
+	if rep.VerdictReason == "" {
+		t.Fatal("降级报告必须给出 verdict_reason")
 	}
 }
 
