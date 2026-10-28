@@ -5,7 +5,9 @@ package analyze
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/models"
@@ -63,12 +65,12 @@ func (g *Generic) Build(ctx context.Context, in *obs.Input) (*obs.SectionResult,
 	g.addRuntime(in, res)
 	addEventCoverage(in, res, g.Thresholds.eventMaxGap())
 	g.addQueue(in, res)
-	g.addFailures(in, res)
+	groups := g.addFailures(in, res)
 	g.addPerformance(in, res)
 	g.addFrameworkState(ctx, in, res)
-	if res.Summary == "" {
-		res.Summary = fmt.Sprintf("事件 %d 条，失败分组 %d 个", len(in.Events), len(res.Problems))
-	}
+	// 失败分组数只算 task_failed 的分组，不用 len(res.Problems)：
+	// 后者把 run-boundary / no-stage-snapshot 等框架问题也算成「失败分组」，会虚高。
+	res.Summary = fmt.Sprintf("事件 %d 条，失败分组 %d 个", len(in.Events), groups)
 	return res, nil
 }
 
@@ -106,20 +108,16 @@ func (g *Generic) addRuntime(in *obs.Input, res *obs.SectionResult) {
 		obs.NewCheck("log_unparsed", obs.SeverityInfo, in.Logs.Unparsed == 0,
 			fmt.Sprintf("日志坏行 %d 条", in.Logs.Unparsed), "只影响证据索引，不影响判定"),
 	)
-	if started == 0 && len(in.Events) > 0 {
+	// 窗口里有事件但既没有 run_started、也收集不到任何 run_id：可能是从轮转尾部读取。
+	// 有 run_id 说明 run 起于窗口前（常驻进程跨天），是正常现象，不报问题。
+	if started == 0 && len(in.Run.RunIDs) == 0 && len(in.Events) > 0 {
 		res.Problems = append(res.Problems, obs.Problem{
 			ID: "run-boundary-missing", Severity: obs.SeverityWarn,
 			Title: "事件里没有 run_started（可能从轮转尾部读取）", Count: 1,
 			Acceptance: "能解释窗口起点；否则放宽 --since 重跑报告",
 		})
 	}
-	if started > 1 {
-		res.Problems = append(res.Problems, obs.Problem{
-			ID: "process-restarts", Severity: obs.SeverityWarn,
-			Title: fmt.Sprintf("窗口内进程启动 %d 次（含重启）", started), Count: started,
-			Acceptance: "确认重启不是由崩溃引起；对照 run_stopped.outcome",
-		})
-	}
+	// 窗口内多次启动 = 进程重启，由 pattern.Builtin() 的 process-restarts 报，避免重复。
 }
 
 /* ---------- 队列健康 ---------- */
@@ -226,12 +224,18 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 type failGroup struct {
 	Site, Stage, Kind string
 	Count             int
-	SampleTask        uint
-	SampleURL         string
-	SampleMsg         string
+	FirstTS, LastTS   time.Time
+	// Attempts 按 attempt 统计次数；Errors 按归一化模板（errorTemplate）统计次数。
+	Attempts map[int]int
+	Errors   map[string]int
+
+	SampleTask uint
+	SampleURL  string
+	SampleMsg  string
 }
 
-func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) {
+// addFailures 把 task_failed 按 site × stage × kind 分组落成 Problem，返回失败分组数。
+func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 	groups := map[string]*failGroup{}
 	for _, ev := range in.Events {
 		if ev.Type != events.TypeTaskFailed {
@@ -240,10 +244,23 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) {
 		key := ev.Site + "|" + ev.Stage + "|" + ev.Kind
 		grp := groups[key]
 		if grp == nil {
-			grp = &failGroup{Site: ev.Site, Stage: ev.Stage, Kind: ev.Kind}
+			grp = &failGroup{
+				Site: ev.Site, Stage: ev.Stage, Kind: ev.Kind,
+				Attempts: map[int]int{}, Errors: map[string]int{},
+			}
 			groups[key] = grp
 		}
 		grp.Count++
+		if grp.FirstTS.IsZero() || ev.TS.Before(grp.FirstTS) {
+			grp.FirstTS = ev.TS
+		}
+		if grp.LastTS.IsZero() || ev.TS.After(grp.LastTS) {
+			grp.LastTS = ev.TS
+		}
+		grp.Attempts[ev.Attempt]++
+		if tpl := errorTemplate(ev.Error); tpl != "" {
+			grp.Errors[tpl]++
+		}
 		if grp.SampleTask == 0 && ev.TaskID != 0 {
 			grp.SampleTask = ev.TaskID
 			grp.SampleURL = ev.URL
@@ -251,7 +268,7 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) {
 		}
 	}
 	if len(groups) == 0 {
-		return
+		return 0
 	}
 	keys := make([]string, 0, len(groups))
 	for k := range groups {
@@ -270,6 +287,7 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) {
 
 	for _, k := range keys {
 		grp := groups[k]
+		topTpl := topTemplate(grp.Errors)
 		prob := obs.Problem{
 			ID:       "task-failed-" + sanitizeID(grp.Site) + "-" + sanitizeID(grp.Stage) + "-" + sanitizeID(grp.Kind),
 			Severity: obs.SeverityWarn,
@@ -277,12 +295,19 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) {
 			Scope:    grp.Site + "/" + grp.Stage,
 			Count:    grp.Count,
 			Evidence: []obs.Evidence{{
-				Type: "event", Ref: fmt.Sprintf("task_failed task_id=%d", grp.SampleTask),
+				Type: "event",
+				Ref: fmt.Sprintf("task_failed task_id=%d（%s~%s，共%d次）",
+					grp.SampleTask, fmtTime(grp.FirstTS), fmtTime(grp.LastTS), grp.Count),
 				Excerpt: truncate(grp.SampleMsg, 500),
 			}},
 		}
-		prob.Hypotheses = hypothesesFor(grp.Kind)
-		if sample, ok := findLogSample(in, "task failed"); ok {
+		if topTpl != "" {
+			prob.Evidence = append(prob.Evidence, obs.Evidence{
+				Type: "event", Ref: "错误模板", Excerpt: topTpl,
+			})
+		}
+		prob.Hypotheses = hypothesesForKind(grp.Kind, grp.SampleMsg)
+		if sample, ok := findLogSampleForGroup(in, grp); ok {
 			prob.Evidence = append(prob.Evidence, obs.Evidence{
 				Type: "log", Ref: fmt.Sprintf("%s:%d", sample.File, sample.Line),
 				Excerpt: truncate(sample.Msg, 500),
@@ -290,6 +315,86 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) {
 		}
 		prob.Acceptance = "重跑该阶段，同 kind 的失败数下降或归零"
 		res.Problems = append(res.Problems, prob)
+	}
+	return len(groups)
+}
+
+// errNumRE / errURLRE 在包级编译一次：errorTemplate 对每条失败事件都会调用。
+var (
+	errNumRE = regexp.MustCompile(`\d+`)
+	errURLRE = regexp.MustCompile(`https?://\S+`)
+)
+
+// errorTemplate 把错误文本归一成模板（去 task failed: 前缀 / 数字 -> # / URL -> <url>），
+// 用于同组内 TopN：一串带 task_id、行号、URL 的错误文本只有归一后才能看出是同一个错。
+func errorTemplate(msg string) string {
+	s := msg
+	if i := strings.Index(s, "task failed:"); i >= 0 {
+		s = s[i+len("task failed:"):]
+	}
+	s = errNumRE.ReplaceAllString(s, "#")
+	s = errURLRE.ReplaceAllString(s, "<url>")
+	// 按字符（rune）截断，避免把多字节字符切成半个。
+	if r := []rune(s); len(r) > 120 {
+		s = string(r[:120])
+	}
+	return strings.TrimSpace(s)
+}
+
+// topTemplate 返回组内出现次数最多的错误模板；并列时取字典序最小者，保证报告可复现。
+func topTemplate(counts map[string]int) string {
+	best, bestN := "", 0
+	for tpl, n := range counts {
+		if n > bestN || n == bestN && tpl < best {
+			best, bestN = tpl, n
+		}
+	}
+	return best
+}
+
+// findLogSampleForGroup 先按本组的 task_id / URL / site+stage 找日志样本，
+// 找不到才回退到日志里第一条 "task failed"。
+// 否则所有失败组都会引用同一行日志（往往是别的组的证据），证据并不成立。
+func findLogSampleForGroup(in *obs.Input, grp *failGroup) (obs.LogSample, bool) {
+	needles := []string{}
+	if grp.SampleTask != 0 {
+		needles = append(needles, fmt.Sprintf("task_id=%d", grp.SampleTask))
+	}
+	if grp.SampleURL != "" {
+		needles = append(needles, grp.SampleURL)
+	}
+	if grp.Site != "" && grp.Stage != "" {
+		needles = append(needles, grp.Site+" "+grp.Stage)
+	}
+	for _, needle := range needles {
+		for _, sig := range in.Logs.Signatures {
+			for _, s := range sig.Samples {
+				if strings.Contains(s.Msg, needle) {
+					return s, true
+				}
+			}
+		}
+	}
+	return findLogSample(in, "task failed")
+}
+
+// hypothesesForKind 先用错误文本给高置信度假设，认不出错误文本时回退到按 kind 的通用假设。
+func hypothesesForKind(kind, errText string) []obs.Hypothesis {
+	switch {
+	case strings.Contains(errText, "Access is denied"), strings.Contains(errText, "browser binary"),
+		strings.Contains(errText, "debug url"), strings.Contains(errText, "ProcessSingleton"):
+		return []obs.Hypothesis{{
+			Text:       "浏览器/文件系统权限问题（rod 下载目录或 Chrome user-data-dir 不可写）",
+			Confidence: "high", Verify: "`papa rod --self-check` 与检查 rod 目录 ACL",
+			FixHint: "browser.binary / user-data-dir 指向可写目录",
+		}}
+	case strings.Contains(errText, "unsupported detail route"), strings.Contains(errText, "grid missing"):
+		return []obs.Hypothesis{{
+			Text: "站点页面结构变化或 URL 规则不符", Confidence: "high",
+			Verify: "用 `papa rod --url <失败 URL>` 对照归档页面", FixHint: "站点声明/抓取解析规则",
+		}}
+	default:
+		return hypothesesFor(kind)
 	}
 }
 
