@@ -14,6 +14,10 @@
 > 每个进程的后台只显示自己那部分，「排队中 N」加不起来，任务量也会低于表里的真实值。
 > 要全局口径请直接查 `crawler_tasks` 表（按 `stage` / `status` 分组），或按进程分别看。
 
+> **实时看板 ≠ 事后报告**：本后台回答「现在队列 / worker / 暂停是什么状态」；「这一轮跑得怎么样、
+> 失败怎么分组、退出后总结」由 `obs` 事件流 + `papa report` 产出（`report.md` / `report.json` /
+> `ai-brief.md` / `ai-brief.json`），见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
+
 ## 1. 鉴权（访问令牌 + 白名单）
 
 所有 `/api/` 接口都过两道校验：

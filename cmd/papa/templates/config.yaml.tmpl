@@ -76,22 +76,27 @@ db:
 # 日志
 log:
   dir: "./logs"
+  level: "info"                  # debug / info / warn(warning) / error；默认 info
   max_size: 10
   max_days: 7
   max_backups: 30
   compress: true
   local_time: true
 
-# 运行观测（框架通用事件流；默认关）
+# 运行观测（框架通用事件流 + 运行报告；默认关）。详见 docs/OBSERVABILITY.md
 obs:
   events:
     enabled: false               # 打开后写 logs/events.jsonl（一行一个 JSON 事件）；本地排查/出报告时开
     file: "events.jsonl"
     buffer: 8192                 # 异步队列；满则丢弃并计数，绝不阻塞 worker
     snapshot_interval: "30s"     # 阶段/队列周期快照事件间隔；"0" = 不发
-  report:                        # 报告引擎在后续版本实现（当前仅占位）
-    on_exit: false
-    dir: "./reports"
+  report:
+    on_exit: false               # 优雅退出时自动生成报告（在事件 flush 之后、关库之前）
+    dir: "./reports"             # 产物目录：<dir>/<run_id>/（report.md / report.json / ai-brief.md / ai-brief.json）
+    timeout: "120s"              # on_exit 生成报告的超时；失败只记日志，不阻塞退出
+    thresholds:                  # 通用分析节（framework）的阈值
+      stuck_after: "10m"
+      crawl_fail_rate_max: 0.05
 
 # 统一 HTTP 服务（监控后台）
 server:

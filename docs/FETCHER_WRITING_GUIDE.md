@@ -1064,3 +1064,46 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
 - `engine.FetchRenderedPage(ctx, url, waitSelector)` 同上，但返回 `*htmlfetch.Page`（`StatusCode` / `Content-Type` 为零值）—— 走浏览器的阶段要接 `engine.RestrictedError` 或复用静态路径那套解析时用它。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。
+
+---
+
+## 10. 运行观测（obs）：业务怎么接
+
+观测层（事件契约 / 报告引擎 / 模式库）是框架通用的，业务只通过三个扩展点接入；详细手册见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
+
+**10.1 发业务事件**
+
+```go
+// 业务服务里：类型常量自己定义，attrs 是框架不解释的自由键值
+if ev := app.Events(); ev != nil {
+    ev.Emit(events.Event{
+        Type:   "prepare_round_finished",
+        Site:   "siteA",
+        Stage:  "prepare",
+        Counts: map[string]int{"ok": 12, "failed": 1},
+        Attrs:  map[string]string{"round": "3"},
+    })
+}
+```
+
+`events.Event` 来自 `github.com/ydtg1993/papa/v3/pkg/events`；打开 `obs.events.enabled` 后业务事件与框架事件
+共用同一个 sink、同一个 `run_id` / `seq` 序列。事件关闭时 `app.Events()` 返回 no-op，不判空也能跑。
+
+**10.2 自定义报告段**
+
+实现 `obs.Section`（`ID()` / `Title()` / `Build(ctx, *obs.Input) (SectionResult, error)`），在 `monitor.Register` 或 `Run` 之前注册：
+
+```go
+app.UseReportSection(sections.All()...)   // 业务自己的分析段
+```
+
+`obs.Input` 带事件、日志摘要与只读 DB；用 `obs.NewCheck(...)` 产出判定项、`obs.Table` 产出表格。
+**业务段只读**：不写表、不重投、不调接收端，同一输入两次跑结果必须一致。
+
+**10.3 自定义模式**
+
+实现 `obs.Pattern`（从输入推断 `obs.Problem`，带 `Evidence` / `Hypothesis` / 验证命令），
+`app.UseReportPattern(...)` 注册。模式只做假设与验证方法，不自动修数据。
+
+**边界**：papa 不认任何业务语义（没有 prepare / push / 站点名 / 业务表）；业务阈值放 `business` 段
+（`app.Config.BusinessSection`），不要塞进框架配置。

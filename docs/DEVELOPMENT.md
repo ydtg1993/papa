@@ -119,11 +119,15 @@ internal/                       真正的内部件：不对外承诺 API，**模
   workerpool/ database/ metrics/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
 pkg/                             可独立复用的件
+  events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
   browser/                       池与页面生命周期（pool.go / rod.go）、网络请求捕获（capture.go）、
                                  等待条件（wait.go）、按页资源拦截（block.go）
   htmlfetch/ loggers/ notify/ middleware/{proxy,m3u8,filedown}
+obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
+                                 eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
+                                 pattern/ 内置模式库 / report/ 4 产物渲染
 models/                          框架自带的表结构
-cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select）
+cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
 ```
 
 > **`admin/` 与 `internal/` 的区别就一条**：Go 规定 `internal/` 下的包只能被 `internal/` 的
@@ -139,6 +143,7 @@ papa 门面 ──► internal/app ──► engine ──► internal/{workerpo
                  └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
                          └──► tasksource/oplog 还依赖 admin/gormsource
 pkg/notify ──► core
+obs ──► pkg/events + models（只读；不依赖 engine / admin / app，业务项目可直接 import 扩展）
 ```
 
 三条约束值得记住：
