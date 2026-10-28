@@ -35,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -511,7 +512,7 @@ func (a *App) generateExitReport() {
 	if cfg == nil || !cfg.Obs.Report.OnExit {
 		return
 	}
-	a.generateDailyReports("exit report")
+	a.generateDailyReports(obs.TriggerExit)
 }
 
 // startReportLoop 启动定时报告（obs.report.interval）：Run 期间每隔 interval 刷新一次当天日报。
@@ -557,7 +558,7 @@ func (a *App) generatePeriodicReport() {
 	if cfg == nil || !cfg.Obs.Events.Enabled || cfg.Obs.Report.Interval <= 0 {
 		return
 	}
-	a.generateDailyReports("auto report")
+	a.generateDailyReports(obs.TriggerPeriodic)
 }
 
 // generateDailyReports 是 on_exit 与定时报告共用的实现：读事件+日志+库，按本地日期写日报并清理过期产物。
@@ -565,7 +566,7 @@ func (a *App) generatePeriodicReport() {
 // 产物按本地日历日拆分：事件窗口里有事件的每天各写一份 `<dir>/<2006-01-02>/`（重跑会刷新当天那份）。
 // 写完后按 obs.report.retention 清理过期日报目录（默认 7 天，负数 = 永久保留）。
 // 失败只记日志，绝不阻塞调用方：报告本身不能比被观测系统更脆弱。
-func (a *App) generateDailyReports(trigger string) {
+func (a *App) generateDailyReports(trigger obs.Trigger) {
 	cfg := a.Config
 	if cfg == nil || !cfg.Obs.Events.Enabled {
 		return
@@ -573,6 +574,14 @@ func (a *App) generateDailyReports(trigger string) {
 	// 串行化：定时报告与退出报告都写「当天」目录，不能同时写同一批文件。
 	a.reportMu.Lock()
 	defer a.reportMu.Unlock()
+
+	// 触发方式决定默认语义：定时 = snapshot（现在怎样），退出 = acceptance（这轮通过没）。
+	// 配置可强制覆盖；未知值回退 acceptance（fail-closed：宁可按验收判红，也别漏判）。
+	mode, err := obs.ResolveMode(cfg.Obs.Report.Mode, trigger)
+	if err != nil {
+		a.Logger.Sys.Warnf("%s: 模式解析失败，回退 acceptance：%s", trigger, err.Error())
+		mode = obs.ModeAcceptance
+	}
 
 	timeout := cfg.Obs.Report.Timeout
 	if timeout <= 0 {
@@ -585,12 +594,21 @@ func (a *App) generateDailyReports(trigger string) {
 	if evFile == "" {
 		evFile = "events.jsonl"
 	}
-	sources, err := obs.LoadDailySources(obs.SourceConfig{
+	now := time.Now()
+	base := obs.SourceConfig{
 		EventsFile:  filepath.Join(cfg.Log.Dir, evFile),
 		LogDir:      cfg.Log.Dir,
 		IncludeLogs: true,
 		Loc:         time.Local,
-	})
+	}
+	if mode == obs.ModeSnapshot {
+		base.Since = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+		// 上界不钉在 now：snapshot 的「当天」由 Since 决定，LoadDailySources 只会拆出今天这一天。
+		// 若把 Until 固定为 now，时间戳晚于生成时刻的事件（时钟偏差、补写、固定 fixture）会被整段裁掉，
+		// 凌晨跑定时报告就会因为「窗口里没有事件」直接跳过 —— 报告不可信比窗口末端晚几毫秒更糟。
+		// 生产里事件都是已发生的，窗口末端自然等于最后一条事件（≈ now）。
+	}
+	sources, err := obs.LoadDailySources(base)
 	if err != nil {
 		a.Logger.Sys.Warnf("%s: 读取事件失败，跳过：%s", trigger, err.Error())
 		return
@@ -607,6 +625,7 @@ func (a *App) generateDailyReports(trigger string) {
 	sections = append(sections, a.reportSections...)
 	patterns := append(pattern.Builtin(), a.reportPatterns...)
 
+	engine := a.obsEngineState()
 	written := 0
 	for _, src := range sources {
 		if ctx.Err() != nil {
@@ -623,6 +642,8 @@ func (a *App) generateDailyReports(trigger string) {
 			Degraded:    src.Degraded,
 			Sections:    sections,
 			Patterns:    patterns,
+			Mode:        mode,
+			Engine:      engine,
 		})
 		if err != nil {
 			a.Logger.Sys.Warnf("%s: 生成失败：%s", trigger, err.Error())
@@ -645,6 +666,26 @@ func (a *App) generateDailyReports(trigger string) {
 	} else if len(removed) > 0 {
 		a.Logger.Sys.Infof("%s: 已清理过期报告 %d 份：%s", trigger, len(removed), strings.Join(removed, ", "))
 	}
+}
+
+// obsEngineState 把引擎的只读快照转成 obs 的纯值上下文（obs 包不 import engine）。
+//
+// Engine 为 nil 时给 Source="none"：报告引擎据此知道「没有实时依据」，不做暂停/空闲跳过。
+func (a *App) obsEngineState() obs.EngineState {
+	st := obs.EngineState{Source: "none", CapturedAt: time.Now()}
+	if a == nil || a.Engine == nil {
+		return st
+	}
+	stats := a.Engine.GetSiteStats()
+	sites := make([]obs.SiteState, 0, len(stats))
+	for key, s := range stats {
+		sites = append(sites, obs.SiteState{Key: key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt, StageCount: s.StageCount})
+	}
+	sort.Slice(sites, func(i, j int) bool { return sites[i].Key < sites[j].Key })
+	st.Source = "engine"
+	st.Sites = sites
+	st.ActivePools = len(a.Engine.GetStageStats())
+	return st
 }
 
 // buildVersion 返回当前主模块版本（开发构建为 "(devel)"）。
