@@ -603,10 +603,10 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 	}
 	if mode == obs.ModeSnapshot {
 		base.Since = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-		// 上界不钉在 now：snapshot 的「当天」由 Since 决定，LoadDailySources 只会拆出今天这一天。
-		// 若把 Until 固定为 now，时间戳晚于生成时刻的事件（时钟偏差、补写、固定 fixture）会被整段裁掉，
-		// 凌晨跑定时报告就会因为「窗口里没有事件」直接跳过 —— 报告不可信比窗口末端晚几毫秒更糟。
-		// 生产里事件都是已发生的，窗口末端自然等于最后一条事件（≈ now）。
+		base.Until = now
+		// 窗口 = [当天 0 点, 生成时刻]：snapshot 报的是「现在这一刻的当天」，
+		// 上界钉在 now —— 晚于生成时刻的事件（时钟偏差、补写、未来时间戳）不算进来。
+		// 代价是测试 fixture 必须落在窗口内：凌晨跑时把事件写在中午会被裁掉，报告因「没有事件」跳过。
 	}
 	sources, err := obs.LoadDailySources(base)
 	if err != nil {

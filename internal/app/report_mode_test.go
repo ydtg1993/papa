@@ -50,28 +50,36 @@ func readReportJSON(t *testing.T, dir string) map[string]any {
 
 func TestPeriodicReportIsSnapshotAndOnlyToday(t *testing.T) {
 	now := time.Now()
-	todayNoon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local)
-	yesterdayNoon := todayNoon.AddDate(0, 0, -1)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
 	evs := []map[string]any{
-		{"v": 1, "seq": 1, "ts": yesterdayNoon.Format(time.RFC3339Nano), "run_id": "r-old", "type": "run_started"},
-		{"v": 1, "seq": 2, "ts": todayNoon.Format(time.RFC3339Nano), "run_id": "r-new", "type": "run_started"},
+		{"v": 1, "seq": 1, "ts": yesterdayStart.Format(time.RFC3339Nano), "run_id": "r-old", "type": "run_started"},
+		{"v": 1, "seq": 2, "ts": todayStart.Format(time.RFC3339Nano), "run_id": "r-new", "type": "run_started"},
 	}
 	a, cfg := newReportTestApp(t, now, evs)
 
 	a.generatePeriodicReport()
 
-	todayDir := filepath.Join(cfg.Obs.Report.Dir, report.DayName(todayNoon))
+	todayDir := filepath.Join(cfg.Obs.Report.Dir, report.DayName(todayStart))
 	m := readReportJSON(t, todayDir)
 	if m["mode"] != "snapshot" {
 		t.Fatalf("定时报告 mode = %v, want snapshot", m["mode"])
 	}
-	if _, err := os.Stat(filepath.Join(cfg.Obs.Report.Dir, report.DayName(yesterdayNoon))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(cfg.Obs.Report.Dir, report.DayName(yesterdayStart))); !os.IsNotExist(err) {
 		t.Fatalf("snapshot 模式不该写历史日目录（yesterday 应不存在）：%v", err)
 	}
 	run := m["run"].(map[string]any)
 	from, _ := time.Parse(time.RFC3339Nano, run["from"].(string))
 	if from.Hour() != 0 || from.Minute() != 0 {
 		t.Fatalf("snapshot 窗口应从当天 00:00 起，实得 %v", from)
+	}
+	// 上界必须钉在生成时刻：否则「当天」窗口会一路延到 23:59:59，snapshot 语义失真。
+	to, err := time.Parse(time.RFC3339Nano, run["to"].(string))
+	if err != nil {
+		t.Fatalf("解析 run.to: %v", err)
+	}
+	if d := time.Since(to); d < 0 || d > time.Minute {
+		t.Fatalf("snapshot 窗口上界应是生成时刻（距 time.Now 不超过 1 分钟），实得 to=%v（相差 %v）", to, d)
 	}
 }
 

@@ -21,10 +21,10 @@ func TestGeneratePeriodicReportWritesDailyFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local)
+	eventTS := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	writeEvents(t, filepath.Join(logDir, "events.jsonl"), []map[string]any{
-		{"v": 1, "seq": 1, "ts": noon.Format(time.RFC3339Nano), "run_id": "r-auto", "type": "run_started"},
-		{"v": 1, "seq": 2, "ts": noon.Add(time.Minute).Format(time.RFC3339Nano), "run_id": "r-auto", "type": "task_finished",
+		{"v": 1, "seq": 1, "ts": eventTS.Format(time.RFC3339Nano), "run_id": "r-auto", "type": "run_started"},
+		{"v": 1, "seq": 2, "ts": eventTS.Add(time.Minute).Format(time.RFC3339Nano), "run_id": "r-auto", "type": "task_finished",
 			"site": "s", "stage": "catalog", "task_id": 1, "outcome": "success"},
 	})
 
@@ -42,7 +42,7 @@ func TestGeneratePeriodicReportWritesDailyFiles(t *testing.T) {
 
 	a.generatePeriodicReport()
 
-	reportDir := filepath.Join(cfg.Obs.Report.Dir, report.DayName(noon))
+	reportDir := filepath.Join(cfg.Obs.Report.Dir, report.DayName(eventTS))
 	for _, name := range []string{"report.md", "report.json", "ai-brief.md", "ai-brief.json"} {
 		path := filepath.Join(reportDir, name)
 		info, err := os.Stat(path)
@@ -63,9 +63,9 @@ func TestStartReportLoopWritesAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local)
+	eventTS := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	writeEvents(t, filepath.Join(logDir, "events.jsonl"), []map[string]any{
-		{"v": 1, "seq": 1, "ts": noon.Format(time.RFC3339Nano), "run_id": "r-loop", "type": "run_started"},
+		{"v": 1, "seq": 1, "ts": eventTS.Format(time.RFC3339Nano), "run_id": "r-loop", "type": "run_started"},
 	})
 
 	cfg := &config.Config{}
@@ -81,7 +81,7 @@ func TestStartReportLoopWritesAndStops(t *testing.T) {
 	a := &App{Config: cfg, Logger: &loggers.LoggerSet{Sys: logger}}
 
 	a.startReportLoop()
-	reportPath := filepath.Join(cfg.Obs.Report.Dir, report.DayName(noon), "report.md")
+	reportPath := filepath.Join(cfg.Obs.Report.Dir, report.DayName(eventTS), "report.md")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if _, err := os.Stat(reportPath); err == nil {
