@@ -79,6 +79,7 @@ obs:
     buffer: 8192         # 异步队列容量；满则丢弃并计数
     snapshot_interval: "30s"  # 阶段/队列快照间隔；"0" = 不发
   report:
+    mode: "auto"         # 判定语义：auto（默认）= 定时 snapshot、退出/CLI acceptance；可强制 snapshot / acceptance
     on_exit: false       # 进程优雅退出时自动生成报告（默认 false）
     interval: "0"        # 定时生成报告：如 "30m" = Run 期间每 30 分钟刷新一次当天日报；0/不写 = 关
     dir: "./reports"     # 产物根目录：<dir>/<2006-01-02>/（一份 = 一天的日报；--run 时 <dir>/<run_id>/）
@@ -87,7 +88,10 @@ obs:
     thresholds:          # 通用分析节（framework）的阈值
       stuck_after: "10m"
       crawl_fail_rate_max: 0.05
+      event_max_gap: "10m"    # 事件时间断层阈值（相邻事件间隔超过它算断层；event_coverage 检查用）
 ```
+
+> `event_max_gap` 本版只做配置与校验：事件完整性检查（`event_coverage`）尚未接入，写它暂时不改变判定。
 
 **三种生成方式，互相独立**：
 
@@ -132,7 +136,7 @@ papa report list -c configs/config.yaml
 ```
 
 每次生成会逐份打印每天的判定与事件统计；真的清掉过期目录时，最后再打印「清理过期报告 N 份」。
-`--fail-on-verdict` 在**任一**日报判定为「不通过」时以非零码退出（CI / 自动化门禁用）。
+`--fail-on-verdict` 在**任一**日报判定为「不通过」或「未判定」时以非零码退出（CI / 自动化门禁用）。
 
 产物固定 4 个文件（同一 `<dir>/<2006-01-02>/` 下；`--run` 时是 `<dir>/<run_id>/`）：
 
@@ -148,6 +152,21 @@ papa report list -c configs/config.yaml
 
 判定规则：任一 `fail` 级检查失败 → `fail`；只有 `warn` → `warn`；否则 `pass`。
 `degraded` 非空表示数据不全（例如事件文件缺失、日志索引失败、DB 查询失败），此时结论只能当参考。
+
+**未判定（`unknown`）**：三种情况会判未判定 —— 一个可判定的检查都没有（全被标成不适用或为空）、
+本来会判 `pass` 但 `degraded` 非空（数据不全是「没测到」，不是「没问题」）、`snapshot` 模式下引擎暂停/空闲
+且没有别的问题。「未判定」既不是通过也不是失败：`report.md` 判定行写 `⏸ 未判定`（`report.json` 是
+`"verdict": "unknown"` + `verdict_reason`），需要人工确认。
+
+**`snapshot` 与 `acceptance` 的区别**：`acceptance`（验收）回答「这一轮通过没」—— 期末应当排空，
+暂停和历史积压照常判；`snapshot`（快照）回答「此刻怎样」—— 引擎暂停或没有活跃阶段时，
+`stuck_processing` / `unfinished_tasks` / `queue_drained` 这几项判不了，判定项里标 `➖ 不适用`
+（`report.json` 是 `"skipped": true` + `skip_reason`），既不参与判定、也不合成 Problem；引擎在跑时两者结论一致。
+模式由触发方式定（定时=snapshot、退出/CLI=acceptance，`--snapshot` 强制，`obs.report.mode` 写死），
+报告头部与 `report.json` 的 `mode` 会写明。
+
+`--fail-on-verdict`：`fail` **或** `unknown` 都以非零码退出（`warn` 仍放行）—— CI 门禁不能把
+「没判定出来」当通过。
 
 > **后台也能看**：侧边栏 **General →「obs报告」** 页会把 `obs.report.dir` 下的历史报告列出来
 > （判定 / 生成时间 / 产物数），选中后按纯文本看四份产物的原文并下载当前文件 —— 不用登服务器。
@@ -188,9 +207,14 @@ if ev := app.Events(); ev != nil {
 | 类型 | 用途 |
 | --- | --- |
 | `obs.Section` | 一个报告段：`ID()` / `Title()` / `Build(ctx, *obs.Input) (SectionResult, error)` |
-| `obs.Check` + `obs.NewCheck` | 判定项：`ID` / `Severity` / `Passed` / `Message`；任一 fail 即整体 fail |
+| `obs.Check` + `obs.NewCheck` | 判定项：`ID` / `Severity` / `Passed` / `Message`；`Skipped` + `SkipReason` 声明本次不适用；任一**适用**的 fail 未通过即整体 fail |
 | `obs.Pattern` | 模式：从输入推导 `Problem`（含 `Evidence` / `Hypothesis` / 验证命令） |
 | `obs.Problem` / `obs.Evidence` / `obs.Hypothesis` / `obs.Table` | 问题、证据、假设、表格的通用结构 |
+
+业务段也能用同一套判定语义：`Build` 拿到的 `Input.Mode`（`snapshot` / `acceptance`）决定按哪种口径判，
+`Check.Skipped` + `SkipReason` 用来声明「本次不适用」（暂停、空闲、窗口对不上）—— 不适用的检查不参与判定、
+也不合成 Problem。本版只有框架的 `stuck_processing` / `unfinished_tasks` / `queue_drained` 接入了跳过规则，
+业务段要自己按 `Input.Mode` 判。
 
 边界铁律：**业务段只读**（不写表、不重投、不调接收端）、**确定性输出**（同一输入两次跑结果一致）、
 **不把业务阈值写进 papa**（阈值放业务配置，如 `cfg.BusinessSection`）。
