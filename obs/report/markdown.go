@@ -39,6 +39,7 @@ func Markdown(rep *obs.Report) string {
 	}
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "**判定：%s**（%s）\n\n", VerdictLabel(rep.Verdict), rep.Verdict)
+	fmt.Fprintf(&b, "- 生成时间：%s（最近一次更新）\n", fmtTime(rep.GeneratedAt))
 	fmt.Fprintf(&b, "- 窗口：%s ~ %s\n", fmtTime(rep.Run.From), fmtTime(rep.Run.To))
 	fmt.Fprintf(&b, "- 运行：%s\n", strings.Join(rep.Run.RunIDs, ", "))
 	fmt.Fprintf(&b, "- 事件：%d 条（文件 %d、seq 缺口 %d、坏行 %d、重复 %d）\n\n",

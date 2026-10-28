@@ -138,10 +138,13 @@ papa report list -c configs/config.yaml
 
 | 文件 | 给谁 | 内容 |
 | --- | --- | --- |
-| `report.md` | 人 | 判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、各检查段 |
-| `report.json` | 机器/看板 | 同源结构化数据：`verdict` / `run` / `events` / `logs` / `degraded` / `sections` / `checks` / `problems` |
-| `ai-brief.md` | AI / 接手排查的人 | 边界（只读、修复后必须复验）、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、已知陷阱、未知项、下一步 |
-| `ai-brief.json` | AI 工具链 | 同源结构化版本 |
+| `report.md` | 人 | 头部含**生成时间（最近一次更新）**；判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、各检查段 |
+| `report.json` | 机器/看板 | 同源结构化数据：`generated_at`（生成时间）/ `verdict` / `run` / `events` / `logs` / `degraded` / `sections` / `checks` / `problems` |
+| `ai-brief.md` | AI / 接手排查的人 | 头部含**生成时间**；边界（只读、修复后必须复验）、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、已知陷阱、未知项、下一步 |
+| `ai-brief.json` | AI 工具链 | 同源结构化版本（含 `generated_at`） |
+
+> **生成时间 = 最近一次更新时间**：定时报告每天覆盖同一目录，重复生成会刷新这个时间；
+> 看到它就能判断手上这份报告是不是最新的，不用依赖文件 mtime（分发、拷贝都会丢 mtime 语义）。
 
 判定规则：任一 `fail` 级检查失败 → `fail`；只有 `warn` → `warn`；否则 `pass`。
 `degraded` 非空表示数据不全（例如事件文件缺失、日志索引失败、DB 查询失败），此时结论只能当参考。

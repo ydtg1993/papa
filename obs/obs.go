@@ -177,16 +177,19 @@ type SectionReport struct {
 
 // Report 一次运行的完整报告（report.json 的根）。
 type Report struct {
-	SchemaVersion int               `json:"schema_version"`
-	Verdict       Verdict           `json:"verdict"`
-	Run           RunMeta           `json:"run"`
-	EventMeta     EventMeta         `json:"event_meta"`
-	Logs          LogSummary        `json:"logs,omitempty"`
-	Environment   map[string]string `json:"environment,omitempty"`
-	Degraded      []string          `json:"degraded,omitempty"`
-	Sections      []SectionReport   `json:"sections"`
-	Checks        []Check           `json:"checks"`
-	Problems      []Problem         `json:"problems"`
+	SchemaVersion int `json:"schema_version"`
+	// GeneratedAt 报告生成时刻（= 最近一次更新时间）：定时报告每次刷新都会更新它；
+	// 同一天目录被定时/退出/命令反复覆盖时，以这里为准判断"这份报告是什么时候的"。
+	GeneratedAt time.Time         `json:"generated_at"`
+	Verdict     Verdict           `json:"verdict"`
+	Run         RunMeta           `json:"run"`
+	EventMeta   EventMeta         `json:"event_meta"`
+	Logs        LogSummary        `json:"logs,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
+	Degraded    []string          `json:"degraded,omitempty"`
+	Sections    []SectionReport   `json:"sections"`
+	Checks      []Check           `json:"checks"`
+	Problems    []Problem         `json:"problems"`
 }
 
 // Options 生成报告所需的全部输入。
@@ -223,6 +226,7 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 	}
 	rep := &Report{
 		SchemaVersion: SchemaVersion,
+		GeneratedAt:   now,
 		Run:           opts.Run,
 		EventMeta:     opts.EventMeta,
 		Logs:          opts.Logs,

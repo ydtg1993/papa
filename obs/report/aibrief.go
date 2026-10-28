@@ -13,7 +13,9 @@ import (
 // 与 report.json 的分工：report.json 面向"指标与判定"，AIBrief 面向"问题与行动" ——
 // 自带边界、已知陷阱、可验证假设与验收标准，让接手者不必重新摸索口径。
 type AIBrief struct {
-	SchemaVersion int               `json:"schema_version"`
+	SchemaVersion int `json:"schema_version"`
+	// GeneratedAt 与 report.json 的 generated_at 同源：这份排查包是什么时候生成的（最近一次更新）。
+	GeneratedAt   string            `json:"generated_at,omitempty"`
 	Run           AIBriefRun        `json:"run"`
 	Verdict       string            `json:"verdict"`
 	Environment   map[string]string `json:"environment,omitempty"`
@@ -59,6 +61,7 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 	}
 	out := &AIBrief{
 		SchemaVersion: obs.SchemaVersion,
+		GeneratedAt:   fmtTime(rep.GeneratedAt),
 		Run: AIBriefRun{
 			RunIDs:    rep.Run.RunIDs,
 			From:      fmtTime(rep.Run.From),
@@ -105,7 +108,8 @@ func AIBriefMarkdown(rep *obs.Report) string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "# AI 排查任务包 · %s\n\n", strings.Join(b.Run.RunIDs, ", "))
 	fmt.Fprintf(&s, "**判定：%s**（%s）\n\n", VerdictLabel(obs.Verdict(b.Verdict)), b.Verdict)
-	fmt.Fprintf(&s, "- 窗口：%s ~ %s\n- 事件：%d 条 · seq 缺口 %d\n\n", b.Run.From, b.Run.To, b.Run.Events, b.Run.EventGaps)
+	fmt.Fprintf(&s, "- 窗口：%s ~ %s\n- 事件：%d 条 · seq 缺口 %d\n- 生成时间：%s（最近一次更新）\n\n",
+		b.Run.From, b.Run.To, b.Run.Events, b.Run.EventGaps, b.GeneratedAt)
 
 	if len(b.Environment) > 0 {
 		s.WriteString("## 环境事实\n\n")
