@@ -3,6 +3,7 @@ package analyze
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -24,15 +25,8 @@ func LoadEngineState(ctx context.Context, db *gorm.DB, evs []events.Event, now t
 	st := obs.EngineState{Source: "none", CapturedAt: now}
 	if db != nil {
 		var row models.Config
-		err := db.WithContext(ctx).Where("cfg_key = ?", "sites").Take(&row).Error
-		if err == nil {
-			var sites []core.SiteStat
-			if json.Unmarshal(row.CfgVal, &sites) == nil {
-				states := make([]obs.SiteState, 0, len(sites))
-				for _, s := range sites {
-					states = append(states, obs.SiteState{Key: s.Key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt, StageCount: s.StageCount})
-				}
-				sort.Slice(states, func(i, j int) bool { return states[i].Key < states[j].Key })
+		if db.WithContext(ctx).Where("cfg_key = ?", "sites").Take(&row).Error == nil {
+			if states, err := parseSiteStates(row.CfgVal); err == nil {
 				st.Sites = states
 				st.Source = "db"
 				st.Degraded = "站点暂停状态取当前 DB 快照，可能不是报告窗口内的状态"
@@ -67,4 +61,19 @@ func LoadEngineState(ctx context.Context, db *gorm.DB, evs []events.Event, now t
 		st.Source = "events"
 	}
 	return st
+}
+
+// parseSiteStates 从 crawler_config.sites 的 JSON 解析站点快照（与 engine 同一 schema）。
+// 排序保证报告输出稳定；空数组返回空切片而非 nil，调用方不用区分「没有站点」和「没解析出」。
+func parseSiteStates(raw []byte) ([]obs.SiteState, error) {
+	var sites []core.SiteStat
+	if err := json.Unmarshal(raw, &sites); err != nil {
+		return nil, fmt.Errorf("解析 sites 快照: %w", err)
+	}
+	states := make([]obs.SiteState, 0, len(sites))
+	for _, s := range sites {
+		states = append(states, obs.SiteState{Key: s.Key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt, StageCount: s.StageCount})
+	}
+	sort.Slice(states, func(i, j int) bool { return states[i].Key < states[j].Key })
+	return states, nil
 }
