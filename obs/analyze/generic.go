@@ -20,6 +20,8 @@ type Thresholds struct {
 	StuckAfter time.Duration
 	// CrawlFailRateMax 抓取终态失败率上限。
 	CrawlFailRateMax float64
+	// EventMaxGap 事件流允许的最大相邻间隔：超过即认为存在时间断层（丢事件/进程被硬杀）。
+	EventMaxGap time.Duration
 }
 
 func (t Thresholds) stuckAfter() time.Duration {
@@ -34,6 +36,13 @@ func (t Thresholds) crawlFailRateMax() float64 {
 		return t.CrawlFailRateMax
 	}
 	return 0.05
+}
+
+func (t Thresholds) eventMaxGap() time.Duration {
+	if t.EventMaxGap > 0 {
+		return t.EventMaxGap
+	}
+	return 10 * time.Minute
 }
 
 // Generic 是框架内置的通用分析节：运行边界、队列健康、失败归因、性能、框架状态。
@@ -52,6 +61,7 @@ func (g *Generic) Build(ctx context.Context, in *obs.Input) (*obs.SectionResult,
 	}
 	res := &obs.SectionResult{}
 	g.addRuntime(in, res)
+	addEventCoverage(in, res, g.Thresholds.eventMaxGap())
 	g.addQueue(in, res)
 	g.addFailures(in, res)
 	g.addPerformance(in, res)
