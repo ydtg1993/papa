@@ -152,14 +152,15 @@
             </section>
         </div>
 
-        <!-- obs 报告页：列 obs.report.dir 下的历史运行报告（papa report / obs.report.on_exit 写入），
+        <!-- obs 报告页：列 obs.report.dir 下的历史运行报告（定时 obs.report.interval / 退出 obs.report.on_exit / 命令 papa report 写入），
              每份报告四个文件 Tab 看原文（纯文本，不渲染 markdown）并可单独下载。 -->
         <div class="module" id="mod-obs">
             <section>
                 <h2>报告列表</h2>
                 <div class="card">
-                    <p class="hint">报告由 <code>papa report</code> 或进程退出时自动生成（<code>obs.report.on_exit</code>），
-                        目录取配置 <code>obs.report.dir</code>；每份报告含 report.md / report.json / ai-brief.md / ai-brief.json 四份产物。</p>
+                    <p class="hint">报告由定时任务（<code>obs.report.interval</code>）、进程退出（<code>obs.report.on_exit</code>）
+                        或命令 <code>papa report</code> 写入，目录取配置 <code>obs.report.dir</code>；
+                        每份报告含 report.md / report.json / ai-brief.md / ai-brief.json 四份产物，头部与 JSON 里都标注生成时间（最近一次更新）。</p>
                     <p class="hint" id="obs-dir"></p>
                     <div class="table-wrap" id="obs-runs"></div>
                     <div class="hint" id="obs-msg"></div>

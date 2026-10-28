@@ -489,16 +489,17 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 侧边栏 **General** 分组里有一个「obs报告」页（菜单在「访问令牌」与「设置」之间）：把
 `obs.report.dir`（默认 `./reports`）下的**历史运行报告**列出来，不用登服务器就能看产物原文、下载。
-报告由 `papa report` 或 `obs.report.on_exit`（进程退出时自动生成）写入，**一份报告 = 一个目录**
+报告由**定时任务**（`obs.report.interval`）、**进程退出**（`obs.report.on_exit`）或命令 `papa report` 写入，
+**一份报告 = 一个目录**
 （默认按本地日历日拆分：`<obs.report.dir>/<2006-01-02>/`，一份 = 一天；`--run` 例外，单份 `<obs.report.dir>/<run_id>/`），
-目录里固定四份产物（产物口径见 [OBSERVABILITY.md](./OBSERVABILITY.md)）：
+目录里固定四份产物（产物口径见 [OBSERVABILITY.md](./OBSERVABILITY.md)），头部与 JSON 里都带**生成时间（最近一次更新）**：
 
 | 文件 | 内容 |
 | --- | --- |
-| `report.md` | 人读：判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、检查段 |
-| `report.json` | 机读：同源结构化数据（`verdict` / `run` / `events` / `logs` / `degraded` / `sections` / `checks` / `problems`） |
-| `ai-brief.md` | 给 AI / 接手排查的人：环境事实、问题证据 + 假设 + 验证命令 + 修复方向、下一步 |
-| `ai-brief.json` | 同构机读版本 |
+| `report.md` | 人读：生成时间、判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、检查段 |
+| `report.json` | 机读：同源结构化数据（`generated_at` / `verdict` / `run` / `events` / `logs` / `degraded` / `sections` / `checks` / `problems`） |
+| `ai-brief.md` | 给 AI / 接手排查的人：生成时间、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、下一步 |
+| `ai-brief.json` | 同构机读版本（含 `generated_at`） |
 
 **报告列表**（每行一份报告，按生成时间倒序）：目录名、判定、生成时间、文件数、「查看」。
 目录名通常是**日报日期** `YYYY-MM-DD`（一份 = 一天），升级前留下的 `run_id` / `window-*` 目录也照常列出。

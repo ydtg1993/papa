@@ -50,7 +50,7 @@ func main() {
 	demoToken := randomDemoToken()
 	tokens := newDemoTokens(demoToken)
 
-	// obs 报告页的假数据：临时目录里造两份带四份产物的报告（真实项目由 papa report 写入 obs.report.dir）
+	// obs 报告页的假数据：临时目录里造两份带四份产物的报告（真实项目由定时/退出/`papa report` 写入 obs.report.dir）
 	reportDir := demoReportDir()
 	if reportDir != "" {
 		defer os.RemoveAll(reportDir)
@@ -169,7 +169,7 @@ func fakeSiteStats() map[string]core.SiteStat {
 }
 
 // demoReportDir 造两份假的 obs 报告（每份四份产物），供「obs报告」页肉眼验收。
-// 真实项目里这些文件由 `papa report` 或 obs.report.on_exit 写进 obs.report.dir。
+// 真实项目里这些文件由定时（obs.report.interval）/退出（obs.report.on_exit）/`papa report` 写进 obs.report.dir。
 func demoReportDir() string {
 	dir, err := os.MkdirTemp("", "papa-monitor-demo-reports-*")
 	if err != nil {

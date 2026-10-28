@@ -1,6 +1,7 @@
 // obs 报告页的后端：把 obs.report.dir 下的历史运行报告列出来，并按需读取其中一份产物。
 //
-// 报告目录由 `papa report`（或 obs.report.on_exit）写入，每个运行一份目录，目录里固定四份产物：
+// 报告目录由 `papa report`、定时任务（obs.report.interval）或进程退出（obs.report.on_exit）写入，
+// 每个运行一份目录，目录里固定四份产物：
 // report.md / report.json / ai-brief.md / ai-brief.json（见 obs/report.Write）。
 // 后端只做两件事：列目录、把单个文件原样当文本读出来 —— 不解析、不渲染、不改写。
 // 报告内容里会有日志与 URL（不可信文本），前端按纯文本展示，下载走 attachment。
