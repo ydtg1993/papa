@@ -127,9 +127,15 @@ type stageRow struct {
 func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 	latest := map[string]events.StageSnapshot{}
 	var lastQueues map[string]events.QueueSnapshot
+	var latestTS time.Time // 最近一次**含 stages** 的快照时间：queue_drained 的新鲜度判定
+	hasSnapshotEvent := false
 	for _, ev := range in.Events {
-		if ev.Type != events.TypeStageSnapshot || len(ev.Stages) == 0 {
+		if ev.Type != events.TypeStageSnapshot {
 			continue
+		}
+		hasSnapshotEvent = true
+		if len(ev.Stages) > 0 {
+			latestTS = ev.TS
 		}
 		for k, v := range ev.Stages {
 			latest[k] = v
@@ -137,11 +143,23 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		lastQueues = ev.Queues
 	}
 	if len(latest) == 0 {
-		res.Problems = append(res.Problems, obs.Problem{
-			ID: "no-stage-snapshot", Severity: obs.SeverityWarn,
-			Title: "没有 stage_snapshot 事件（报告无法给队列时序）", Count: 1,
-			Acceptance: "确认 obs.events.snapshot_interval > 0 且事件流已开启",
-		})
+		// 暂停/空闲时「期末队列必须清空」不适用：明确跳过，而不是报红。
+		if engineInactive(in) {
+			c := obs.NewCheck("queue_drained", obs.SeverityWarn, false,
+				"引擎暂停/无活跃阶段，队列不可采样", "暂停快照，不适用")
+			c.Skipped, c.SkipReason = true, "引擎暂停/无活跃阶段，队列无法采样"
+			res.Checks = append(res.Checks, c)
+			return
+		}
+		// 只有「窗口内完全没有 stage_snapshot 事件」才提示检查配置；
+		// 有事件但 stages 全空 = 引擎没建池（暂停/空闲），不是配置错。
+		if !hasSnapshotEvent {
+			res.Problems = append(res.Problems, obs.Problem{
+				ID: "no-stage-snapshot", Severity: obs.SeverityWarn,
+				Title: "没有 stage_snapshot 事件（报告无法给队列时序）", Count: 1,
+				Acceptance: "确认 obs.events.snapshot_interval > 0 且事件流已开启",
+			})
+		}
 		return
 	}
 	keys := make([]string, 0, len(latest))
@@ -178,9 +196,19 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		}
 		res.Tables = append(res.Tables, qt)
 	}
-	res.Checks = append(res.Checks, obs.NewCheck("queue_drained", obs.SeverityWarn, backlog == 0,
-		fmt.Sprintf("窗口末队列仍有 %d 条排队/在跑/积压", backlog),
-		"有界测试窗口结束时应为 0；常驻进程应按当前负载判断"))
+	if engineInactive(in) {
+		c := obs.NewCheck("queue_drained", obs.SeverityWarn, false, "", "")
+		c.Skipped, c.SkipReason = true, "引擎暂停/无活跃阶段，队列无法采样"
+		res.Checks = append(res.Checks, c)
+	} else {
+		stale := !latestTS.IsZero() && in.Now.Sub(latestTS) > g.Thresholds.stuckAfter()
+		msg := fmt.Sprintf("窗口末队列仍有 %d 条排队/在跑/积压", backlog)
+		if stale {
+			msg += fmt.Sprintf("（快照时间 %s，已陈旧）", latestTS.Format("15:04:05"))
+		}
+		res.Checks = append(res.Checks, obs.NewCheck("queue_drained", obs.SeverityWarn, backlog == 0, msg,
+			"有界测试窗口结束时应为 0；常驻进程应按当前负载判断"))
+	}
 }
 
 /* ---------- 失败归因 ---------- */
@@ -364,9 +392,17 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 		in.Degraded = append(in.Degraded, "framework state: 卡住检查查询失败: "+err.Error())
 		return
 	}
-	res.Checks = append(res.Checks, obs.NewCheck("stuck_processing", obs.SeverityFail, stuck == 0,
-		fmt.Sprintf("processing 超过 %s 未更新：%d 条", g.Thresholds.stuckAfter(), stuck),
-		"报告口径，不是引擎的启动恢复判据（后者是 updated_at < startedAt）"))
+	stuckDetail := "报告口径，不是引擎的启动恢复判据（后者是 updated_at < startedAt）"
+	if !hasEngineContext(in) {
+		stuckDetail += "（无引擎上下文，无法区分暂停与卡住）"
+	}
+	stuckCheck := obs.NewCheck("stuck_processing", obs.SeverityFail, stuck == 0,
+		fmt.Sprintf("processing 超过 %s 未更新：%d 条", g.Thresholds.stuckAfter(), stuck), stuckDetail)
+	if engineInactive(in) {
+		stuckCheck.Skipped = true
+		stuckCheck.SkipReason = "引擎暂停/无活跃阶段，processing 不代表卡住"
+	}
+	res.Checks = append(res.Checks, stuckCheck)
 
 	var unfinished int64
 	if err := in.DB.WithContext(ctx).Model(&models.CrawlerTask{}).
@@ -375,9 +411,17 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 		in.Degraded = append(in.Degraded, "framework state: 存留检查查询失败: "+err.Error())
 		return
 	}
-	res.Checks = append(res.Checks, obs.NewCheck("unfinished_tasks", obs.SeverityFail, unfinished == 0,
-		fmt.Sprintf("非轮询任务期末仍有 %d 条 pending/processing", unfinished),
-		"有界测试窗口结束时应为 0；轮询任务不计入"))
+	unfinishedDetail := "有界测试窗口结束时应为 0；轮询任务不计入"
+	if !hasEngineContext(in) {
+		unfinishedDetail += "（无引擎上下文，无法区分暂停与卡住）"
+	}
+	unfinishedCheck := obs.NewCheck("unfinished_tasks", obs.SeverityFail, unfinished == 0,
+		fmt.Sprintf("非轮询任务期末仍有 %d 条 pending/processing", unfinished), unfinishedDetail)
+	if engineInactive(in) {
+		unfinishedCheck.Skipped = true
+		unfinishedCheck.SkipReason = "暂停快照，期末=0 语义不适用"
+	}
+	res.Checks = append(res.Checks, unfinishedCheck)
 
 	var total, failed, done int64
 	type row struct {
@@ -410,6 +454,18 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 }
 
 /* ---------- 小工具 ---------- */
+
+// engineInactive 判断引擎是否处于暂停/空闲：暂停/空闲时「期末积压/卡住」不是故障。
+// 只在 snapshot 模式下这样判：acceptance 回答「这轮通过没」，仍按窗口末真实值判定。
+func engineInactive(in *obs.Input) bool {
+	return in != nil && in.Mode == obs.ModeSnapshot && in.Engine.Inactive()
+}
+
+// hasEngineContext 报告是否拿到了运行时的引擎上下文。
+// Source 为空或 none 表示离线/无 DB：此时不跳过，只在 detail 里注明无法区分暂停与卡住。
+func hasEngineContext(in *obs.Input) bool {
+	return in != nil && in.Engine.Source != "" && in.Engine.Source != "none"
+}
 
 func percentile(sorted []int64, p float64) int64 {
 	if len(sorted) == 0 {
