@@ -46,7 +46,7 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 	if !cfg.Enabled {
 		return 0, nil
 	}
-	n, err := e.processInBatches(e.recoverQueueQuery(), cfg.BatchSize, cfg.WorkerCount, e.requeueRecoverTask)
+	n, err := e.processInBatches(e.recoverQueueQuery(), cfg.BatchSize, cfg.WorkerCount, cfg.BatchPause, e.requeueRecoverTask)
 	if skipped := e.recoverSkippedUnregistered.Swap(0); skipped > 0 {
 		e.loggerSet.Engine.Warnf("recover queue: %d tasks skipped —— 它们所属的阶段没有再注册（声明改了？）", skipped)
 	}

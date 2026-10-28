@@ -49,9 +49,6 @@ func (e *Engine) spillTask(task *Task) {
 		}
 	}
 	e.spilled[key] = append(e.spilled[key], task)
-	site, stage := splitStageKey(key)
-	e.emit(events.Event{Type: events.TypeSpillChanged, Site: site, Stage: stage,
-		Source: "added", Counts: map[string]int{"added": 1}})
 }
 
 // startDrain 启动后台回灌协程：定期把溢出列表中的任务重新入队。

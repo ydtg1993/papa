@@ -58,6 +58,13 @@ type RecoverQueueConfig struct {
 	Enabled     bool `mapstructure:"enabled"`      // 有没有启动恢复（false 或没写 = 不跑）
 	WorkerCount int  `mapstructure:"worker_count"` // 并发重新入队的数量（开启时必填 > 0）
 	BatchSize   int  `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
+	// BatchPause 批间停顿：每处理完一批「可能还有下一批」的任务后停多久再继续。
+	//
+	// 默认 30m（见 applyDefaults）：启动恢复面对的是海量积压，一次性把几千条任务灌进各阶段队列
+	// 会把队列/溢出表/事件流同时打满；批间停顿把恢复摊到多个时间片里，让 worker 先消化一批。
+	// 停机信号（Engine.Stop 的 cancel）能立刻打断停顿，不会把优雅关停卡满 30 分钟。
+	// 写 0 或不写 = 默认 30m；要连续跑完请写很小的值（如 "1ms"）——默认值只在 0 时补，不提供"关掉"的开关。
+	BatchPause time.Duration `mapstructure:"batch_pause"`
 }
 
 // RepeatQueueConfig 周期轮询队列：config.yaml 的 `repeat_queue` 段。

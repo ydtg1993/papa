@@ -82,6 +82,17 @@ log:
   compress: true
   local_time: true
 
+# 运行观测（框架通用事件流；默认关）
+obs:
+  events:
+    enabled: false               # 打开后写 logs/events.jsonl（一行一个 JSON 事件）；本地排查/出报告时开
+    file: "events.jsonl"
+    buffer: 8192                 # 异步队列；满则丢弃并计数，绝不阻塞 worker
+    snapshot_interval: "30s"     # 阶段/队列周期快照事件间隔；"0" = 不发
+  report:                        # 报告引擎在后续版本实现（当前仅占位）
+    on_exit: false
+    dir: "./reports"
+
 # 统一 HTTP 服务（监控后台）
 server:
   enabled: true                  # 开则挂载 /monitor + /api/* + 表格页 + 自定义页；关则完全不监听
@@ -113,7 +124,8 @@ error_queue:
 recover_queue:
   enabled: true               # 启动恢复：重启时捡回上次中断留下的「未到终态」任务（只在启动跑一次）
   worker_count: 1
-  batch_size: 100
+  batch_size: 100             # 每批处理条数；0 = 默认 1000（分页流式）
+  batch_pause: "30m"          # 批间停顿（默认 30m）：每批投完先让 worker 消化，再继续下一批；要连续跑完写 1ms
 repeat_queue:
   enabled: true               # 周期轮询：把「到点的」repeatable 任务重投回各自阶段
   worker_count: 1

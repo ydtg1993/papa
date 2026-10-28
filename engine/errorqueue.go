@@ -44,7 +44,7 @@ func (e *Engine) ProcessErrorQueue() (int, error) {
 	cfg := e.cfg.ErrorQueue
 	query := e.errorQueueQuery()
 	e.beginQueueRun(QueueError)
-	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueFailedTask())
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueFailedTask())
 	e.endQueueRun(QueueError, n, err)
 	// 本轮到点即采样一次积压，监控页无需等下一轮采样周期
 	e.sampleQueueBacklogOne(QueueError, query)

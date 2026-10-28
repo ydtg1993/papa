@@ -131,7 +131,7 @@ func (e *Engine) repollRepeatQueue(force bool) (int, error) {
 		query = e.repeatForceQueueQuery()
 	}
 	e.beginQueueRun(QueueRepeat)
-	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueRepeatTask())
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueRepeatTask())
 	e.endQueueRun(QueueRepeat, n, err)
 	e.sampleQueueBacklogOne(QueueRepeat, query)
 	return n, err

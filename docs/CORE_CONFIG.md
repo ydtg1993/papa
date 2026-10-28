@@ -257,9 +257,12 @@ recover_queue:
   enabled: true               # 启动恢复；false / 不写 = 不跑
   worker_count: 1             # 并发重新入队的数量；开启时必填 > 0
   batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
+  batch_pause: "30m"          # 批间停顿；不写/0 = 默认 30m，要连续跑完写很小的正数
 ```
 
 > 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `interval` / `max_retry`。
+> 恢复是**分批**投递的：每批 `batch_size` 条投完停 `batch_pause`（默认 30m）再继续，
+> 避免重启瞬间把几千条积压一次灌进各阶段队列；停机信号可立即打断停顿。
 
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
 

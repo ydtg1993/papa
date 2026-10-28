@@ -91,7 +91,7 @@ func TestProcessInBatchesUsesKeysetCursor(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := make(map[uint]int)
-	n, err := e.processInBatches(e.recoverQueueQuery(), 1, 1, func(task *models.CrawlerTask) bool {
+	n, err := e.processInBatches(e.recoverQueueQuery(), 1, 1, 0, func(task *models.CrawlerTask) bool {
 		mu.Lock()
 		seen[task.ID]++
 		mu.Unlock()
