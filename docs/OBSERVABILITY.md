@@ -146,7 +146,7 @@ papa report list -c configs/config.yaml
 | --- | --- | --- |
 | `report.md` | 人 | 头部含**生成时间（最近一次更新）**与**模式**；判定、问题清单（含证据）、运行概览、队列/耗时、失败分组、**引擎状态**、**积压与老化（含 ETA）**、各检查段 |
 | `report.json` | 机器/看板 | 同源结构化数据：`generated_at`（生成时间）/ `mode` / `verdict` / `verdict_reason` / `run` / `events` / `logs` / `degraded` / `engine` / `inputs`（自证：版本、阈值、事件覆盖）/ `sections` / `checks` / `problems` |
-| `ai-brief.md` | AI / 接手排查的人 | 头部含**生成时间**；边界（只读、修复后必须复验）、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、已知陷阱、未知项、下一步 |
+| `ai-brief.md` | AI / 接手排查的人 | 头部含**生成时间**；边界（只读、修复后必须复验；snapshot 报告追加「不要当验收结论，修完用 acceptance 复验」）、环境事实、问题证据 + 假设 + 验证命令 + 修复方向、已知陷阱、未知项、下一步（最多 8 条；没有假设的 check 类问题按首条证据定位） |
 | `ai-brief.json` | AI 工具链 | 同源结构化版本（含 `generated_at`） |
 
 > **生成时间 = 最近一次更新时间**：定时报告每天覆盖同一目录，重复生成会刷新这个时间；
@@ -154,6 +154,10 @@ papa report list -c configs/config.yaml
 
 判定规则：任一 `fail` 级检查失败 → `fail`；只有 `warn` → `warn`；否则 `pass`。
 `degraded` 非空表示数据不全（例如事件文件缺失、日志索引失败、DB 查询失败），此时结论只能当参考。
+
+判定项表的结果列有四种：`✅ 通过` / `❌ 未通过`（只用于 `fail` / `warn`）、`ℹ️ 状态`
+（`info` 级：只陈述状态是否成立，不表示通过或失败，如活跃阶段池、引擎空闲、恢复进度、漏斗进度）、
+`➖ 不适用`（`skipped`，带原因）。不要把 `ℹ️ 状态` 当红绿灯读；判定只看 fail/warn。
 
 **未判定（`unknown`）**：三种情况会判未判定 —— 一个可判定的检查都没有（全被标成不适用或为空）、
 本来会判 `pass` 但 `degraded` 非空（数据不全是「没测到」，不是「没问题」）、`snapshot` 模式下引擎暂停/空闲
@@ -163,7 +167,9 @@ papa report list -c configs/config.yaml
 **`snapshot` 与 `acceptance` 的区别**：`acceptance`（验收）回答「这一轮通过没」—— 期末应当排空，
 暂停和历史积压照常判；`snapshot`（快照）回答「此刻怎样」—— 引擎暂停或没有活跃阶段时，
 `stuck_processing` / `unfinished_tasks` / `queue_drained` 这几项判不了，判定项里标 `➖ 不适用`
-（`report.json` 是 `"skipped": true` + `skip_reason`），既不参与判定、也不合成 Problem；引擎在跑时两者结论一致。
+（`report.json` 是 `"skipped": true` + `skip_reason`），既不参与判定、也不合成 Problem。
+引擎在跑时这两项（`stuck_processing` / `unfinished_tasks`）仍会报出来，但 severity 从 `fail` 降为 `warn`：
+常驻进程在跑批中本来就有积压，定时日报不该因此长期判「不通过」；`acceptance` 保持 `fail`。
 模式由触发方式定（定时=snapshot、退出/CLI=acceptance，`--snapshot` 强制，`obs.report.mode` 写死），
 报告头部与 `report.json` 的 `mode` 会写明。
 
@@ -191,11 +197,13 @@ batch2 起框架报告固定带三段排查信息，`report.md` 按注册顺序�
 
 - **站点状态**：每站一行 `站点 / 暂停 / 暂停时间 / 阶段数`。它只陈述「报告时刻是否暂停」，暂停原因看后台铃铛
   或事件里的 `pause_resumed`（`source=manual` / `breaker`）。
-- **阶段池（窗口内最后一次快照）**：`阶段 / 排队 / 在跑 / worker`，来自窗口内最后一条 `stage_snapshot`；
-  事件没开时这张表为空。
+- **阶段池（窗口内最后一次快照）**：`阶段 / 排队 / 未完成（含排队） / worker`，来自窗口内最后一条 `stage_snapshot`。
+  注意「未完成」= `submitted - completed - failed`，**已经包含仍排队的任务**，所以它可能大于 worker 数；
+  不要把它当"正在跑"的并发数。事件没开时这张表为空。
 - **恢复进度**：窗口内 `task_requeued` 按队列（`recover_queue` / `error_queue` / `repeat_queue`）计数与首末时间，
   外加「DB 旧 processing」—— `updated_at` 超过 `stuck_after` 仍是 processing 的行数。启动恢复是分批的：
-  processing 逐批变回 pending 是正常过程，不是卡死。
+  processing 逐批变回 pending 是正常过程，不是卡死。判定项 `recover_in_progress` 的说明会把
+  `recover_queue` 与其它队列的重投数分开写，避免把正常的轮询重投算进「恢复中」。
 
 数据来源：定时/退出报告用进程内实时快照（`source=engine`）；`papa report generate` 离线时读
 `crawler_config.sites` 的当前快照、并用窗口内事件推断阶段池（`source=db` / `events`）；两者都没有时摘要写
@@ -207,18 +215,27 @@ batch2 起框架报告固定带三段排查信息，`report.md` 按注册顺序�
 回答「还有多少、堆了多久、按当前速度还要多久」。两张表：
 
 - **积压分布（crawler_tasks）**：按 `站点 × 阶段 × 状态 × 是否轮询 × 年龄桶` 聚合，只统计**非终态**
-  （`待处理` / `处理中`）。年龄桶按 `updated_at` 划：`lt10m` / `10m-1h` / `1h-6h` / `gt6h` ——
-  待处理行的年龄 ≈ 排队等了多久；处理中行的年龄 ≈ 距最后一次更新多久（`gt6h` 的处理中行多半是上次进程
-  留下的孤儿，或彻底卡死）。
+  （`待处理` / `处理中`）。年龄桶：待处理行按 `created_at` 算（排队等了多久），处理中行按 `updated_at` 算
+  （距最后一次更新多久）。桶位是 `lt10m` / `10m-1h` / `1h-6h` / `gt6h`；`gt6h` 的处理中行多半是上次进程
+  留下的孤儿，或彻底卡死。
 - **吞吐与 ETA**：`站点/阶段 / 窗口完成数 / 吞吐(条/分) / 非轮询待处理 / ETA`。
-  窗口完成数 = 窗口内 `task_finished` + `task_failed` 事件数；吞吐 = 完成数 ÷ 窗口分钟数；
-  ETA = 该站该阶段非轮询待处理 ÷ 吞吐。**轮询（repeatable）待处理不计入 ETA** —— 它们按轮询周期反复处理，
-  算进去只会把 ETA 放大成没有意义的数。引擎暂停/空闲时 ETA 显示「ETA 不适用（引擎未运行）」。
+  窗口完成数 = 窗口内 `task_finished` + `task_failed` 事件数；吞吐 = 完成数 ÷ **有效运行时长**
+  （窗口时长 − 停机时长；停机 = `run_stopped` → 下一次 `run_started` 的区间，见运行边界表的
+  「有效运行时长（剔除停机）」）。ETA = 该站该阶段非轮询待处理 ÷ 吞吐；段摘要里的「预计」是**整体口径**
+  （全部非轮询待处理 ÷ 总吞吐），不是某一行阶段 ETA 的复述。**轮询（repeatable）待处理不计入 ETA** ——
+  它们按轮询周期反复处理，算进去只会把 ETA 放大成没有意义的数。引擎暂停/空闲时 ETA 显示
+  「ETA 不适用（引擎未运行）」。
   离线 `papa report generate` 的引擎状态取**当前** DB 快照：站点现在是暂停的，历史窗口的 ETA 也会标不适用
   （判定项同理），要算历史 ETA 得在引擎运行时用定时/退出报告。
 
 判定项 `throughput_zero`（warn）：有非轮询待处理、窗口吞吐却是 0 = 引擎在跑但没吃任务（worker/队列问题）；
-引擎暂停/空闲时该检查标不适用（这时 0 吞吐是正常的）。注意整段数字是**报告时刻的全库快照**，不是窗口末。
+有吞吐时说明行写实际吞吐，不再复用「0 吞吐」的失败句式；引擎暂停/空闲时该检查标不适用
+（这时 0 吞吐是正常的）。注意整段数字是**报告时刻的全库快照**，不是窗口末。
+
+**队列/溢出表**：报告只看 `stage_snapshot` 的队列与在途数，加上 `spill_changed` 的溢出表 backlog
+（引擎队列达高水位时任务先寄放在内存溢出表，`drain_interval` 再回灌）。所以 `queue_drained` 的
+「未完成」= `Σ未完成（含排队） + Σ治理队列 backlog + 溢出表 backlog`，不再把排队数重复加一遍；
+报告会单列一张「溢出表（spill，引擎内存）」小表，方便和 DB 的 pending 对上。
 
 ### 5.3 事件完整性（判定项 `event_coverage`）
 
@@ -227,6 +244,11 @@ batch2 起框架报告固定带三段排查信息，`report.md` 按注册顺序�
 或窗口起点之后超过阈值才有首条事件，`event_coverage` 就判未通过（warn），message 带断档起止时间，
 同时向 `degraded` 写「事件存在时间断层，事件口径可能不完整」。所以这项红了先怀疑事件文件缺了一段，
 不要拿这段时间的「0 失败 / 0 完成」当结论 —— 先补数据，再做判定。
+
+**停机不是丢事件**：如果最大断层刚好是一段 `run_stopped` → 下一次 `run_started`（起止秒级吻合），
+说明那段时间引擎没在跑，`event_coverage` 判通过，message 写「引擎停机 X（起 ~ 止），不是事件丢失」，
+且**不写 degraded**；运行边界表会给出「有效运行时长（剔除停机）」，吞吐/ETA 也按它算。
+只有无法用运行边界解释的断层才按上面的丢事件路径处理。
 
 引擎暂停/空闲时（`snapshot` 模式）该检查标不适用：暂停时本来就不产生事件，稀疏不代表丢失；
 `acceptance` 模式仍按窗口检查（验收要看这一轮事件全不全）。
@@ -294,11 +316,13 @@ if ev := app.Events(); ev != nil {
 - **事件不是审计日志**：异步、有界、可能丢；缺口的判据是 `seq` 不连续。
 - **`event_coverage` 只反映事件文件里能看到的**：进程被硬杀、轮转没接上导致的整段丢失只能靠上面的时间断层发现；
   事件本来就没开（`obs.events.enabled: false`）时报告已有「事件数据缺失」的 degraded，别指望这项兜底。
-- **ETA 是窗口吞吐的线性外推**：完成数取窗口内 `task_finished` + `task_failed`，再假设吞吐不变、剩余任务同质 ——
-  遇到限速、批次性失败、阶段切换会偏乐观或偏悲观；只作量级参考，别当 SLA。
+- **ETA 是有效运行时长内吞吐的线性外推**：完成数取窗口内 `task_finished` + `task_failed`，分母是
+  「窗口 − 停机」；再假设吞吐不变、剩余任务同质 —— 遇到限速、批次性失败、阶段切换会偏乐观或偏悲观；
+  只作量级参考，别当 SLA。
 - **`inputs.snapshot_at` 是取 DB 快照的时刻**，`generated_at` 是这份产物最后写出的时刻，两者可能差几秒
   （先取快照，再分析、渲染、落盘）。判断「数字是哪一刻的」看 `snapshot_at`，判断「文件新不新」看 `generated_at`。
-- 积压/年龄/ETA 是**报告时刻的全库快照**（不是窗口末）；待处理行的年龄按 `updated_at` 算，不是提交时间。
+- 积压/年龄/ETA 是**报告时刻的全库快照**（不是窗口末）；待处理行年龄按 `created_at` 算（排队时长），
+  处理中行按 `updated_at` 算（距上次更新）。
 - 日志证据窗口会前后放宽 5 分钟（事件毫秒精度 vs 日志秒精度）；非 logrus 格式的文件会记进
   `logs.unparsed`，不影响判定但会拉低日志证据质量。
 - **按天拆分看的是服务器本地时区**（`time.Local`）：零点前后的事件只落一天；日志证据也按天索引，

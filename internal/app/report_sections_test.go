@@ -53,3 +53,44 @@ func TestPeriodicReportIncludesEngineAndBacklogSections(t *testing.T) {
 		t.Fatalf("inputs.thresholds.stuck_after 应是可读时长（如 10m0s），实得 %q", v)
 	}
 }
+
+// EngineState.Recovering 必须逐日报源填：同一次 exit 报告里，有 recover 重投的那天为 true，
+// 没有的那天不能被污染 —— 进程级 engine 快照是共享的，只有逐源 fill 才正确。
+func TestDailyReportFillsRecoveringPerDaySource(t *testing.T) {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	evs := []map[string]any{
+		{"v": 1, "seq": 1, "ts": yesterdayStart.Add(time.Minute).Format(time.RFC3339Nano),
+			"run_id": "r-old", "type": "run_started"},
+		{"v": 1, "seq": 2, "ts": todayStart.Format(time.RFC3339Nano), "run_id": "r-new", "type": "run_started"},
+		{"v": 1, "seq": 3, "ts": todayStart.Add(time.Minute).Format(time.RFC3339Nano), "run_id": "r-new",
+			"type": "task_requeued", "site": "s", "stage": "detail", "task_id": 9,
+			"queue": "recover_queue", "source": "auto"},
+	}
+	a, cfg := newReportTestApp(t, now, evs)
+	a.Config.Obs.Report.OnExit = true
+
+	a.generateExitReport()
+
+	for _, tc := range []struct {
+		day  time.Time
+		want bool
+		why  string
+	}{
+		{todayStart, true, "当天有 recover_queue 重投，Recovering 应为 true"},
+		{yesterdayStart, false, "前一天没有 recover 事件，不该被今天的恢复状态污染"},
+	} {
+		dir := filepath.Join(cfg.Obs.Report.Dir, report.DayName(tc.day))
+		m := readReportJSON(t, dir)
+		eng, _ := m["engine"].(map[string]any)
+		if eng == nil {
+			t.Fatalf("%s 缺 engine 段：%v", report.DayName(tc.day), m)
+		}
+		got, _ := eng["recovering"].(bool)
+		if got != tc.want {
+			t.Fatalf("%s engine.recovering = %v, want %v（%s；engine=%v）",
+				report.DayName(tc.day), got, tc.want, tc.why, eng)
+		}
+	}
+}

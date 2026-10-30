@@ -314,12 +314,20 @@ func passText(ok bool) string {
 
 // checkResultText 是判定项表的结果列：不适用必须与"未通过"区分开，
 // 否则暂停/无阶段时会把不适用读成红。
+//
+// info 级检查表达的是「状态」（活跃阶段池/引擎空闲/恢复中/贯通进度），不是通过或失败：
+// 它们的 Passed 语义是「该状态是否成立」，渲染成 ✅/❌ 会出现「引擎空闲 ❌ 未通过」
+// 这种结果列与说明列互相打脸的行。所以 info 非 skipped 统一显示「ℹ️ 状态」，
+// 具体状态看说明列；判定只看 fail/warn（见 obs.VerdictOf）。
 func checkResultText(c obs.Check) string {
 	if c.Skipped {
 		if c.SkipReason != "" {
 			return "➖ 不适用（" + c.SkipReason + "）"
 		}
 		return "➖ 不适用"
+	}
+	if c.Severity == obs.SeverityInfo {
+		return "ℹ️ 状态"
 	}
 	return passText(c.Passed)
 }

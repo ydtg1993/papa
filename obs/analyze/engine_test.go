@@ -35,6 +35,17 @@ func TestEngineSectionPausedAndRecover(t *testing.T) {
 	if c := checkByID(res, "recover_in_progress"); c == nil || !c.Passed {
 		t.Fatalf("recover_in_progress 应通过（有 requeue + 旧 processing）：%+v", c)
 	}
+	// recover 与其它治理队列必须分开计数：旧实现把 repeat/error 队列的重投也算成 recover。
+	if c := checkByID(res, "recover_in_progress"); c == nil ||
+		!strings.Contains(c.Message, "recover 重投 1 次、其它队列重投 0 次") ||
+		!strings.Contains(c.Message, "DB 旧 processing 379 条") {
+		t.Fatalf("recover_in_progress 文案应分队列计数：%+v", c)
+	}
+	// 空闲时 engine_idle 应写空闲原因；passed 语义保持 true=空闲。
+	if c := checkByID(res, "engine_idle"); c == nil || !c.Passed ||
+		c.Message != "引擎空闲（无活跃阶段池，窗口内无任务完成/失败事件）" {
+		t.Fatalf("空闲时 engine_idle 文案不对：%+v", c)
+	}
 	for _, id := range []string{"stage_pools", "engine_idle"} {
 		if c := checkByID(res, id); c == nil {
 			t.Fatalf("缺少检查 %s", id)
@@ -48,6 +59,10 @@ func TestEngineSectionPausedAndRecover(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("引擎段应包含 %q：%s", want, joined)
 		}
+	}
+	// InProgress 是 submitted-completed-failed（含排队），列名必须写「未完成（含排队）」而不是「在跑」。
+	if tbl := tableByTitle(res, "阶段池（窗口内最后一次快照）"); tbl == nil || !columnsContain(tbl.Columns, "未完成（含排队）") {
+		t.Fatalf("阶段池第 3 列应改名为「未完成（含排队）」：%+v", tbl)
 	}
 }
 
@@ -89,5 +104,52 @@ func TestEngineSectionQuerierErrorDegrades(t *testing.T) {
 	}
 	if !siteErr || !oldErr {
 		t.Fatalf("降级信息不全：%v", in.Degraded)
+	}
+}
+
+// 非空闲时 engine_idle 不能再说「引擎空闲」：文案要给出活跃池与窗口内任务事件数。
+// passed 语义不变（true=空闲），所以这里 !Passed 是对的。
+func TestEngineIdleMessageWhenBusy(t *testing.T) {
+	in := engineInput()
+	now := in.Now
+	in.Engine.ActivePools = 3
+	in.Events = []events.Event{
+		{Type: events.TypeTaskFinished, TS: now.Add(-2 * time.Minute)},
+		{Type: events.TypeTaskFinished, TS: now.Add(-time.Minute)},
+		{Type: events.TypeTaskFailed, TS: now.Add(-time.Minute)},
+	}
+	res, err := (&EngineSection{Querier: &fakeQuerier{}}).Build(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := checkByID(res, "engine_idle")
+	if c == nil || c.Passed {
+		t.Fatalf("引擎非空闲时 engine_idle 不应通过（passed 语义=true 表示空闲）：%+v", c)
+	}
+	if c.Message != "引擎非空闲（活跃阶段池 3，窗口内任务事件 3 条）" {
+		t.Fatalf("非空闲文案不对：%q", c.Message)
+	}
+}
+
+// recover 重投与其它治理队列（repeat/error）要分开计数，不能把周期重投算成启动恢复。
+func TestEngineRecoverMessageSplitsQueues(t *testing.T) {
+	in := engineInput()
+	now := in.Now
+	in.Events = []events.Event{
+		{Type: events.TypeTaskRequeued, TS: now.Add(-40 * time.Minute), Queue: "recover_queue"},
+		{Type: events.TypeTaskRequeued, TS: now.Add(-30 * time.Minute), Queue: "recover_queue"},
+		{Type: events.TypeTaskRequeued, TS: now.Add(-20 * time.Minute), Queue: "repeat_queue"},
+		{Type: events.TypeTaskRequeued, TS: now.Add(-10 * time.Minute), Queue: "error_queue"},
+	}
+	res, err := (&EngineSection{Querier: &fakeQuerier{old: 7}}).Build(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := checkByID(res, "recover_in_progress")
+	if c == nil || !c.Passed {
+		t.Fatalf("有旧 processing 时 recover_in_progress 应通过：%+v", c)
+	}
+	if c.Message != "窗口内 recover 重投 2 次、其它队列重投 2 次，DB 旧 processing 7 条" {
+		t.Fatalf("recover_in_progress 分队列文案不对：%q", c.Message)
 	}
 }

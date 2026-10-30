@@ -13,16 +13,21 @@ import (
 
 // TestTaskBucketsQueryShape 只断言 SQL 形状（DryRun 不连库）：老化分桶的 CASE 与分组维度
 // 一旦写错，积压段的分桶口径就静默变了，所以这里按列名钉住。
+// 老化基准：pending 用 created_at（排队等了多久），processing 用 updated_at（距上次更新多久）。
 func TestTaskBucketsQueryShape(t *testing.T) {
 	db := gormfake.MustOpen(gormfake.New())
 	now := time.Date(2026, 10, 29, 0, 30, 0, 0, time.Local)
 	q := taskBucketsQuery(db, now)
 	stmt := q.Session(&gorm.Session{DryRun: true}).Find(&[]TaskBucket{}).Statement
-	sql := stmt.SQL.String()
-	for _, want := range []string{"crawler_tasks", "site", "stage", "status", "repeatable", "updated_at"} {
-		if !strings.Contains(strings.ToLower(sql), want) {
-			t.Fatalf("taskBucketsQuery SQL 缺 %q：%s", want, sql)
+	sql := strings.ToLower(stmt.SQL.String())
+	for _, want := range []string{"crawler_tasks", "site", "stage", "status", "repeatable", "created_at", "updated_at", "age_bucket"} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("taskBucketsQuery SQL 缺 %q：%s", want, stmt.SQL.String())
 		}
+	}
+	// pending/processing 必须真的分两套基准，而不是只把 updated_at 换成 created_at。
+	if !strings.Contains(sql, "when status = ? then case") {
+		t.Fatalf("老化 CASE 应按 status 分 pending/processing 两套基准：%s", stmt.SQL.String())
 	}
 }
 

@@ -639,6 +639,11 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 			a.Logger.Sys.Warnf("%s: 生成超时（%s），剩余日报跳过", trigger, timeout)
 			break
 		}
+		// Recovering 是「这一天窗口内有没有启动恢复」的逐日报事实：按源填，不能把
+		// 进程级 engine 快照原样复用，否则某一天的恢复会染到其它天的报告上。
+		// 口径与 analyze.LoadEngineState 的离线实现保持一致。
+		eng := engine
+		eng.Recovering = recoverRequeueSeen(src.Events)
 		rep, err := obs.Generate(ctx, obs.Options{
 			Run:         src.Run,
 			EventMeta:   src.EventMeta,
@@ -650,7 +655,7 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 			Sections:    sections,
 			Patterns:    patterns,
 			Mode:        mode,
-			Engine:      engine,
+			Engine:      eng,
 			Inputs:      a.obsReportInputs(),
 		})
 		if err != nil {
@@ -674,6 +679,18 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 	} else if len(removed) > 0 {
 		a.Logger.Sys.Infof("%s: 已清理过期报告 %d 份：%s", trigger, len(removed), strings.Join(removed, ", "))
 	}
+}
+
+// recoverRequeueSeen 判断这一天的窗口里是否出现过启动恢复重投
+// （task_requeued 且 queue 名含 recover）。与 analyze.LoadEngineState 的离线口径一致：
+// 离线报告能从事件看出的「正在恢复」，进程内报告也必须看出，否则同一份数据两种结论。
+func recoverRequeueSeen(evs []events.Event) bool {
+	for _, ev := range evs {
+		if ev.Type == events.TypeTaskRequeued && strings.Contains(strings.ToLower(ev.Queue), "recover") {
+			return true
+		}
+	}
+	return false
 }
 
 // obsEngineState 把引擎的只读快照转成 obs 的纯值上下文（obs 包不 import engine）。

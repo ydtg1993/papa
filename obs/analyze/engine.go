@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/obs"
@@ -66,7 +67,8 @@ func (s *EngineSection) Build(ctx context.Context, in *obs.Input) (*obs.SectionR
 	}
 	res.Tables = append(res.Tables, tbl)
 
-	// 阶段池表：窗口内最后一次带 stages 的快照。
+	// 阶段池表：窗口内最后一次带 stages 的快照。InProgress = submitted-completed-failed，
+	// 是「未完成（含排队）」而不是「正在跑」：worker 数常在 1-2，在跑不可能上百。
 	lastStages := map[string]events.StageSnapshot{}
 	for _, ev := range in.Events {
 		if ev.Type == events.TypeStageSnapshot && len(ev.Stages) > 0 {
@@ -78,7 +80,7 @@ func (s *EngineSection) Build(ctx context.Context, in *obs.Input) (*obs.SectionR
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	poolTbl := obs.Table{Title: "阶段池（窗口内最后一次快照）", Columns: []string{"阶段", "排队", "在跑", "worker"}}
+	poolTbl := obs.Table{Title: "阶段池（窗口内最后一次快照）", Columns: []string{"阶段", "排队", "未完成（含排队）", "worker"}}
 	for _, k := range keys {
 		st := lastStages[k]
 		poolTbl.Rows = append(poolTbl.Rows, []string{k, fmt.Sprintf("%d", st.QueueLen), fmt.Sprintf("%d", st.InProgress), fmt.Sprintf("%d", st.Workers)})
@@ -136,22 +138,46 @@ func (s *EngineSection) Build(ctx context.Context, in *obs.Input) (*obs.SectionR
 	pausedCheck := obs.NewCheck("engine_paused", obs.SeverityWarn, paused == 0,
 		fmt.Sprintf("%d/%d 个站点处于暂停", paused, len(sites)), "暂停期间「期末积压/卡住」不代表故障")
 	res.Checks = append(res.Checks, pausedCheck)
+	// recover 重投要分队列看：repeat_queue/error_queue 的周期重投不是「启动恢复」，
+	// 旧实现把它们一并算成 recover，会虚高恢复规模（2026-10-29 报告 961 = 800 recover + 161 repeat）。
+	recoverRequeued, otherRequeued := requeueSplit(rstats)
+	idleNow := idle(in)
+	idleMsg := fmt.Sprintf("引擎非空闲（活跃阶段池 %d，窗口内任务事件 %d 条）", in.Engine.ActivePools, countTaskEvents(in))
+	if idleNow {
+		idleMsg = "引擎空闲（无活跃阶段池，窗口内无任务完成/失败事件）"
+	}
 	res.Checks = append(res.Checks,
 		obs.NewCheck("stage_pools", obs.SeverityInfo, in.Engine.ActivePools > 0,
 			fmt.Sprintf("活跃阶段池 %d 个", in.Engine.ActivePools), "0 = 暂停或空闲"),
 		obs.NewCheck("recover_in_progress", obs.SeverityInfo, in.Engine.Recovering || oldProcessing > 0,
-			fmt.Sprintf("窗口内 recover 重投 %d 次，DB 旧 processing %d 条", totalRequeued(rstats), oldProcessing),
+			fmt.Sprintf("窗口内 recover 重投 %d 次、其它队列重投 %d 次，DB 旧 processing %d 条", recoverRequeued, otherRequeued, oldProcessing),
 			"启动恢复是分批的：processing 会逐批变回 pending，不代表卡死"),
-		obs.NewCheck("engine_idle", obs.SeverityInfo, idle(in),
-			"引擎空闲（无活跃池且窗口内无任务事件）", "空闲本身不是故障，只说明这一窗口没有产出"),
+		obs.NewCheck("engine_idle", obs.SeverityInfo, idleNow, idleMsg,
+			"空闲本身不是故障，只说明这一窗口没有产出"),
 	)
 	return res, nil
 }
 
-func totalRequeued(stats map[string]*requeueStat) int {
+// requeueSplit 把窗口内 task_requeued 拆成「启动恢复（recover）」与「其它治理队列」两档。
+// 判定 recover 用与引擎上下文一致的规则（队列名含 recover），避免两处口径漂移。
+func requeueSplit(stats map[string]*requeueStat) (recover, other int) {
+	for name, st := range stats {
+		if strings.Contains(strings.ToLower(name), "recover") {
+			recover += st.Count
+		} else {
+			other += st.Count
+		}
+	}
+	return recover, other
+}
+
+// countTaskEvents 数窗口内的任务完成/失败事件，供 engine_idle 的「非空闲」文案解释依据。
+func countTaskEvents(in *obs.Input) int {
 	n := 0
-	for _, st := range stats {
-		n += st.Count
+	for _, ev := range in.Events {
+		if ev.Type == events.TypeTaskFinished || ev.Type == events.TypeTaskFailed {
+			n++
+		}
 	}
 	return n
 }

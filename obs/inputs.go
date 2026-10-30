@@ -42,6 +42,74 @@ func ComputeEventCoverage(evs []events.Event) EventCoverage {
 	return out
 }
 
+// Downtime 是一次「进程不在运行」的区间：run_stopped 之后到下一次 run_started 之前。
+//
+// 停机期间没有事件是正常的，不能当成事件丢失；报告用它对 event_coverage 与吞吐/ETA 做剔除。
+type Downtime struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+}
+
+// ComputeDowntimes 从事件流还原停机区间：把 run_stopped 与它之后第一次 run_started 配对；
+// 末尾未闭合的 run_stopped 一直算到 to（窗口末/报告时刻）。
+//
+// 只认事件里能看到的边界：如果进程在窗口开始前就已经停机（窗口里只有 run_started、没有
+// run_stopped），这里还原不出那段缺口，仍交给 event_coverage 按普通断层处理——宁可报可疑，
+// 也不要凭「窗口前可能停过」去猜。
+func ComputeDowntimes(evs []events.Event, to time.Time) []Downtime {
+	sorted := make([]events.Event, 0, len(evs))
+	for _, ev := range evs {
+		if ev.TS.IsZero() {
+			continue
+		}
+		sorted = append(sorted, ev)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TS.Before(sorted[j].TS) })
+
+	var out []Downtime
+	var stoppedAt time.Time
+	for _, ev := range sorted {
+		switch ev.Type {
+		case events.TypeRunStopped:
+			// 同一段停机里重复的 run_stopped（理论不该有）只认第一次，避免把区间切碎。
+			if stoppedAt.IsZero() {
+				stoppedAt = ev.TS
+			}
+		case events.TypeRunStarted:
+			if stoppedAt.IsZero() {
+				continue
+			}
+			if ev.TS.After(stoppedAt) {
+				out = append(out, Downtime{From: stoppedAt, To: ev.TS})
+			}
+			stoppedAt = time.Time{}
+		}
+	}
+	if !stoppedAt.IsZero() && to.After(stoppedAt) {
+		out = append(out, Downtime{From: stoppedAt, To: to})
+	}
+	return out
+}
+
+// TotalDowntime 把停机区间按 [from,to] 裁剪后累加；from/to 零值表示该侧不裁剪。
+// 报告窗口外发生的停机不该从窗口里扣，所以调用方应把窗口边界传进来。
+func TotalDowntime(dts []Downtime, from, to time.Time) time.Duration {
+	var total time.Duration
+	for _, dt := range dts {
+		start, end := dt.From, dt.To
+		if !from.IsZero() && start.Before(from) {
+			start = from
+		}
+		if !to.IsZero() && end.After(to) {
+			end = to
+		}
+		if end.After(start) {
+			total += end.Sub(start)
+		}
+	}
+	return total
+}
+
 // Inputs 是报告的自证信息（渲染进 report.md/report.json）。
 type Inputs struct {
 	SnapshotAt       time.Time         `json:"snapshot_at"`

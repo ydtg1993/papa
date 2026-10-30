@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
 )
 
@@ -961,5 +963,297 @@ func TestStageHandlerPanicMarksTaskFailed(t *testing.T) {
 	}
 	if e.dedupCache.Get(task.Unique()) {
 		t.Fatal("panic 收尾应清掉活动去重键，否则同一 URL 本进程内再也进不来")
+	}
+}
+
+/* ---------- 停机排水：不再制造 processing 孤儿 ---------- */
+//
+// 回归点（2026-10-29 实机）：Engine.Stop 先 e.cancel()、再让各池排水；排水会把
+// **还没开始**的队列任务也交给 handler。旧实现照常 claimTask → fetch 一出手就被已取消的
+// ctx 打断 → 错误按 retryable 落回循环 → 退避 select 直接退出 → 行永远停在 processing。
+// 实测停机后 1004 条 status=1、trace 全是 retryable/context canceled。
+//
+// 现在的语义：ctx 已取消时**不认领**（行保持 pending，下次启动的启动恢复重新入队）；
+// 已经认领的，在任何一个"因 ctx 取消而退出"的分支上先回退成 pending，绝不落 failed。
+
+// statementIndexes 返回假库上「SQL 含 needle」的写语句序号（与 f.args 同序；0 起）。
+// 假库不解析 SQL 条件，认领/回退的区别只能落在"语句 + 绑定参数"上。
+func statementIndexes(f *fakeTaskDB, needle string) []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []int
+	for i, q := range f.execs {
+		if strings.Contains(q, needle) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// statementSQL 返回第 i 条写语句的 SQL 文本（越界返回空串）。
+func statementSQL(f *fakeTaskDB, i int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.execs) {
+		return ""
+	}
+	return f.execs[i]
+}
+
+// statementArgs 返回第 i 条写语句的绑定参数；写失败的语句不记参数，越界返回 nil。
+func statementArgs(f *fakeTaskDB, i int) []driver.Value {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.args) {
+		return nil
+	}
+	return f.args[i]
+}
+
+// conditionalStatusUpdates 收集「带 status 守卫」的 UPDATE（提交/认领/回退）的语句序号：
+// 它们都是 `... WHERE id = ? AND status = ?`。不带守卫的 status 写入是终态落库
+// （success/failed 只按 id 写），停机取消时一条都不该有 —— assertNoTerminalStatusWrite 反向钉住。
+func conditionalStatusUpdates(f *fakeTaskDB) []int {
+	var out []int
+	for _, i := range statementIndexes(f, "SET `status`=?") {
+		if strings.Contains(statementSQL(f, i), "AND status = ?") {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// isClaimStatement 认领：`SET `status`=?,`urgent`=?,`updated_at`=?`（认领顺带把 urgent 归零）。
+// 不能只找 "`urgent`" —— INSERT 的列清单里也有这一列。
+func isClaimStatement(q string) bool {
+	return strings.Contains(q, "`urgent`=?")
+}
+
+// isReleaseStatement 回退认领：只写 status（+ 自动的 updated_at），且带 status=processing 守卫。
+// 与「提交时把状态写回 pending」区分开：那条会连 `site` 一起写（submitUpdates）。
+func isReleaseStatement(q string) bool {
+	return strings.Contains(q, "SET `status`=?,`updated_at`=?") &&
+		strings.Contains(q, "AND status = ?") &&
+		!strings.Contains(q, "`site`=?")
+}
+
+// claimStatements 从写语句里挑出「认领」的那些。
+func claimStatements(f *fakeTaskDB) []int {
+	var out []int
+	for _, i := range conditionalStatusUpdates(f) {
+		if isClaimStatement(statementSQL(f, i)) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// releaseStatements 从写语句里挑出「回退认领」的那些。
+func releaseStatements(f *fakeTaskDB) []int {
+	var out []int
+	for _, i := range statementIndexes(f, "SET `status`=?,`updated_at`=?") {
+		if isReleaseStatement(statementSQL(f, i)) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// assertNoTerminalStatusWrite 断言停机取消路径没有把任务落成 success/failed。
+// failed 还会往 error 列追加文本（CONCAT），那条更容易看出来。
+func assertNoTerminalStatusWrite(t *testing.T, f *fakeTaskDB) {
+	t.Helper()
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatalf("停机取消不该落 failed（会往 error 列追加 context canceled）：\n%s", f.written())
+	}
+	for _, i := range statementIndexes(f, "SET `status`=?") {
+		if !strings.Contains(statementSQL(f, i), "AND status = ?") {
+			t.Fatalf("停机取消不该写终态（success/failed 只按 id 条件写）：\n%s", statementSQL(f, i))
+		}
+	}
+}
+
+// blockingFetcher 第一次调用就卡住，直到 ctx 被取消（停机）或测试放行。
+// 用它把唯一的 worker 钉在「已认领、正在跑」的那一条上，其余任务留在队列里等排水。
+type blockingFetcher struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu    sync.Mutex
+	calls int
+}
+
+func newBlockingFetcher() *blockingFetcher {
+	return &blockingFetcher{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (s *blockingFetcher) GetStage() string { return "stub" }
+
+func (s *blockingFetcher) FetchHandler(ctx context.Context, _ *Task, _ *Engine) error {
+	s.mu.Lock()
+	s.calls++
+	first := s.calls == 1
+	s.mu.Unlock()
+	if !first {
+		return nil
+	}
+	close(s.started)
+	select {
+	case <-s.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *blockingFetcher) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// ctx 取消后 Stop 排水：队列里还没开始的任务**不被认领**（fetcher 也不该被调用），
+// 在途那一条的认领要回退成 pending；Stop 仍然 drained=true。
+func TestStopDrainDoesNotClaimQueuedTasks(t *testing.T) {
+	f := newFakeTaskDB()
+	f.noRows = true // 全新任务：提交走 INSERT
+	e := newTestEngine(t, f)
+
+	fetcher := newBlockingFetcher()
+	t.Cleanup(func() { close(fetcher.release) }) // 用例中途失败也别把 worker 永久卡住
+	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8,
+		Delay: config.DurationRange{}}, fetcher, nil)
+	e.ApplyRegisterStage()
+
+	for i := 1; i <= 3; i++ {
+		if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: fmt.Sprintf("https://example.com/%d", i)}); err != nil {
+			t.Fatalf("SubmitTask(%d) = %v", i, err)
+		}
+	}
+	select {
+	case <-fetcher.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("第一条任务没有被 worker 取走")
+	}
+	// 此刻：第 1 条已被认领并卡在 fetch 里，第 2/3 条还在队列里排队。
+	done := make(chan struct{})
+	var (
+		drained bool
+		stats   map[string]StopStats
+	)
+	go func() {
+		drained, stats = e.Stop(2 * time.Second)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop 没有在预期时间内返回（排水卡住了？）")
+	}
+
+	if !drained || len(stats) != 0 {
+		t.Fatalf("队列里的任务没被认领、也没在跑，Stop 应当排空：drained=%v stats=%+v", drained, stats)
+	}
+	if got := fetcher.callCount(); got != 1 {
+		t.Fatalf("只有第 1 条该进 fetch（其余在停机时直接放弃），实得 %d 次", got)
+	}
+
+	claims := claimStatements(f)
+	if len(claims) != 1 {
+		t.Fatalf("停机时只该认领在途的那 1 条，实得 %d 条：\n%s", len(claims), f.written())
+	}
+	if st, ok := asInt64(statementArgs(f, claims[0])[0]); !ok || st != int64(models.TaskStatusProcessing) {
+		t.Fatalf("认领语句应把状态写成 processing，实得 %v", statementArgs(f, claims[0]))
+	}
+	releases := releaseStatements(f)
+	if len(releases) != 1 {
+		t.Fatalf("在途那条的认领应回退成 pending（1 条 UPDATE），实得 %d 条：\n%s", len(releases), f.written())
+	}
+	args := statementArgs(f, releases[0])
+	if st, ok := asInt64(args[0]); !ok || st != int64(models.TaskStatusPending) {
+		t.Fatalf("回退后的状态应是 pending(0)，实得 %v", args[0])
+	}
+	if gate, ok := asInt64(args[len(args)-1]); !ok || gate != int64(models.TaskStatusProcessing) {
+		t.Fatalf("回退的条件应是 `status = processing`（只回退认领过的行），实得 %v", args[len(args)-1])
+	}
+	assertNoTerminalStatusWrite(t, f)
+}
+
+// cancelInFetchFetcher 在 fetch 里把 ctx 取消再返回错误 —— 复现「任务跑到一半遇上停机」。
+// err 分别取可重试/不可重试：两条分支都不许把 context canceled 记成任务失败。
+type cancelInFetchFetcher struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (f *cancelInFetchFetcher) GetStage() string { return "stub" }
+
+func (f *cancelInFetchFetcher) FetchHandler(context.Context, *Task, *Engine) error {
+	f.cancel()
+	return f.err
+}
+
+// 已认领的任务在 ctx 取消后必须回退成 pending：SQL 上先看到认领、再看到回退，
+// 没有 failed 的白等，也没有终态落库。
+func TestStageHandlerReleasesClaimWhenCtxCancelledAfterFetch(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"可重试错误", errors.New("boom")},
+		{"不可重试错误", core.WrapNoRetryKind("structure", errors.New("页面结构变了"))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeTaskDB()
+			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			e.stages["stub:stub"].fetcher = &cancelInFetchFetcher{cancel: cancel, err: tc.err}
+
+			task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
+			err := e.stageHandler(e.stages["stub:stub"])(ctx, task)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("ctx 取消后应返回 context.Canceled（不是 fetcher 的错误），实得 %v", err)
+			}
+
+			if claims := claimStatements(f); len(claims) != 1 {
+				t.Fatalf("fetch 之前 ctx 还没取消，应当认领 1 次，实得 %d 次：\n%s", len(claims), f.written())
+			}
+			releases := releaseStatements(f)
+			if len(releases) != 1 {
+				t.Fatalf("ctx 取消后应把认领回退成 pending（1 条 UPDATE），实得 %d 条：\n%s", len(releases), f.written())
+			}
+			args := statementArgs(f, releases[0])
+			if st, ok := asInt64(args[0]); !ok || st != int64(models.TaskStatusPending) {
+				t.Fatalf("回退后的状态应是 pending(0)，实得 %v", args[0])
+			}
+			if gate, ok := asInt64(args[len(args)-1]); !ok || gate != int64(models.TaskStatusProcessing) {
+				t.Fatalf("回退的条件应是 `status = processing`，实得 %v", args[len(args)-1])
+			}
+			assertNoTerminalStatusWrite(t, f)
+		})
+	}
+}
+
+// 停机排水把队列任务原样交给 handler 时 ctx 已经取消：一条都不该认领，也不该碰 fetcher。
+func TestStageHandlerDoesNotClaimWhenCtxAlreadyCancelled(t *testing.T) {
+	f := newFakeTaskDB()
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	fetcher := &recordingFetcher{stage: "stub"}
+	e.stages["stub:stub"].fetcher = fetcher
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := e.stageHandler(e.stages["stub:stub"])(ctx,
+		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}); err != nil {
+		t.Fatalf("ctx 已取消时应直接放弃（返回 nil），实得 %v", err)
+	}
+	if got := len(fetcher.calls()); got != 0 {
+		t.Fatalf("ctx 已取消不该调用 fetcher，实得 %d 次", got)
+	}
+	if sql := f.written(); sql != "" {
+		t.Fatalf("ctx 已取消不该写任何语句（尤其不能认领），实得：\n%s", sql)
 	}
 }

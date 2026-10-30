@@ -54,6 +54,12 @@ func (q *gormQuerier) OldProcessing(ctx context.Context, before time.Time) (int6
 }
 
 // taskBucketsQuery 单独抽出来：单测用 DryRun 断言 SQL 形状（不连库）。
+//
+// 老化基准按「这个年龄在问什么」分两套（设计文档口径）：
+//   - pending：还没被 worker 取走 → `created_at`，年龄 ≈ 排队等了多久；
+//   - processing：已被取走 → `updated_at`，年龄 ≈ 距最后一次更新多久（孤儿/卡死会落 gt6h）。
+//
+// 用 updated_at 算 pending 会被 claim/重试反复覆盖，测出来的是「最近一次状态变化」而不是排队时长。
 func taskBucketsQuery(db *gorm.DB, now time.Time) *gorm.DB {
 	b10m := now.Add(-10 * time.Minute)
 	b1h := now.Add(-time.Hour)
@@ -61,12 +67,21 @@ func taskBucketsQuery(db *gorm.DB, now time.Time) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
 		Select(`site, stage, status, repeatable,
 			CASE
-				WHEN updated_at >= ? THEN 'lt10m'
-				WHEN updated_at >= ? THEN '10m-1h'
-				WHEN updated_at >= ? THEN '1h-6h'
-				ELSE 'gt6h'
+				WHEN status = ? THEN CASE
+					WHEN created_at >= ? THEN 'lt10m'
+					WHEN created_at >= ? THEN '10m-1h'
+					WHEN created_at >= ? THEN '1h-6h'
+					ELSE 'gt6h'
+				END
+				ELSE CASE
+					WHEN updated_at >= ? THEN 'lt10m'
+					WHEN updated_at >= ? THEN '10m-1h'
+					WHEN updated_at >= ? THEN '1h-6h'
+					ELSE 'gt6h'
+				END
 			END AS age_bucket,
-			COUNT(*) AS n`, b10m, b1h, b6h).
+			COUNT(*) AS n`,
+			models.TaskStatusPending, b10m, b1h, b6h, b10m, b1h, b6h).
 		Where("status IN ?", []models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing}).
 		Group("site, stage, status, repeatable, age_bucket")
 }

@@ -62,3 +62,52 @@ func TestSortedRunIDs(t *testing.T) {
 		t.Fatalf("SortedRunIDs = %v", got)
 	}
 }
+
+// info 级检查表达「状态」而不是通过/失败：结果列统一 ℹ️，避免
+// 「engine_idle ❌ 未通过」这种结果列与说明列互相打脸的行。
+func TestCheckResultTextInfoIsStateNotPassFail(t *testing.T) {
+	cases := []struct {
+		name string
+		c    obs.Check
+		want string
+	}{
+		{"info passed", obs.NewCheck("stage_pools", obs.SeverityInfo, true, "活跃阶段池 15 个", "0 = 暂停或空闲"), "ℹ️ 状态"},
+		{"info not passed", obs.NewCheck("engine_idle", obs.SeverityInfo, false, "引擎空闲（无活跃池且窗口内无任务事件）", "空闲本身不是故障"), "ℹ️ 状态"},
+		{"warn passed", obs.NewCheck("event_gaps", obs.SeverityWarn, true, "缺口 0", ""), "✅ 通过"},
+		{"warn failed", obs.NewCheck("queue_drained", obs.SeverityWarn, false, "2022 条", ""), "❌ 未通过"},
+		{"fail failed", obs.NewCheck("unfinished_tasks", obs.SeverityFail, false, "2267 条", ""), "❌ 未通过"},
+	}
+	for _, tt := range cases {
+		if got := checkResultText(tt.c); got != tt.want {
+			t.Fatalf("%s: checkResultText = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+	skipped := obs.Check{ID: "stuck_processing", Severity: obs.SeverityFail, Skipped: true, SkipReason: "引擎暂停"}
+	if got := checkResultText(skipped); got != "➖ 不适用（引擎暂停）" {
+		t.Fatalf("skipped 结果列不应变化：%q", got)
+	}
+}
+
+// 渲染出来后，判不了定的 info 行既不是红叉也不是绿勾。
+func TestMarkdownInfoCheckRendersStateColumn(t *testing.T) {
+	rep := sampleReport()
+	rep.Checks = append(rep.Checks, obs.NewCheck("engine_idle", obs.SeverityInfo, false,
+		"引擎空闲（无活跃池且窗口内无任务事件）", "空闲本身不是故障，只说明这一窗口没有产出"))
+	md := Markdown(rep)
+	var row string
+	for _, line := range strings.Split(md, "\n") {
+		if strings.Contains(line, "`engine_idle`") {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("判定项表缺 engine_idle 行：\n%s", md)
+	}
+	if !strings.Contains(row, "ℹ️ 状态") {
+		t.Fatalf("info 检查结果列应为 ℹ️ 状态：%q", row)
+	}
+	if strings.Contains(row, "❌") || strings.Contains(row, "✅") {
+		t.Fatalf("info 检查不该出现红叉/绿勾：%q", row)
+	}
+}

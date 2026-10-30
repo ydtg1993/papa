@@ -73,6 +73,10 @@ var briefBoundaries = []string{
 	"修复后必须重跑对应阶段，并用同一命令重新生成报告复验（见 next_actions 的验收项）。",
 }
 
+// snapshotBoundary 是 snapshot 模式追加的边界说明：快照只回答「现在怎样」，
+// 不是验收结论 —— 修完要回到 acceptance 报告复验，否则改成什么样都无法证明。
+const snapshotBoundary = "本报告为 snapshot 定时快照：不要当验收结论；修复后重启并等一轮业务跑完，再用 acceptance 报告（crawler-report 默认/退出报告）复验。"
+
 // BuildAIBrief 从报告生成 AI 排查任务包（确定性：不引入随机/当前时间）。
 func BuildAIBrief(rep *obs.Report) *AIBrief {
 	if rep == nil {
@@ -98,6 +102,14 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 		Boundaries:    briefBoundaries,
 		KnownPitfalls: genericPitfalls,
 	}
+	// snapshot 的边界要写在任务包里，否则接手人会把定时快照当验收结论。
+	// 不要直接 append 全局切片（会把这条串到下一次 BuildAIBrief）：复制一份再加。
+	if rep.Mode == obs.ModeSnapshot {
+		bounds := make([]string, 0, len(briefBoundaries)+1)
+		bounds = append(bounds, briefBoundaries...)
+		bounds = append(bounds, snapshotBoundary)
+		out.Boundaries = bounds
+	}
 	out.Snapshot.Mode = string(rep.Mode)
 	out.Snapshot.VerdictReason = rep.VerdictReason
 	out.Snapshot.ActivePools = rep.Engine.ActivePools
@@ -115,13 +127,24 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 			out.Snapshot.Backlog = m
 		}
 	}
+	// 每条 Problem 一条行动；上限 8（设计口径「按严重级排序取前 8」）。
+	// rep.Problems 已排序，按序截断即可保持确定性（同一输入两次生成结果一致）。
+	// check 合成的问题没有假设，硬写「按假设验证后修复」等于让人无凭据开工：
+	// 这类问题改为按首条证据定位（check id / 事件 task_id / 日志 file:line）。
 	for _, p := range rep.Problems {
-		action := fmt.Sprintf("%s：按假设验证后修复", p.ID)
+		var action string
+		if len(p.Hypotheses) > 0 {
+			action = fmt.Sprintf("`%s`：按假设验证后修复", p.ID)
+		} else if ref := firstEvidenceRef(p.Evidence); ref != "" {
+			action = fmt.Sprintf("`%s`：按证据定位后修复（%s）", p.ID, ref)
+		} else {
+			action = fmt.Sprintf("`%s`：按证据定位后修复", p.ID)
+		}
 		if p.Acceptance != "" {
 			action += "；验收：" + p.Acceptance
 		}
 		out.NextActions = append(out.NextActions, action)
-		if len(out.NextActions) >= 5 {
+		if len(out.NextActions) >= 8 {
 			break
 		}
 	}
@@ -143,6 +166,15 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 		"日志文案可能随版本变化：证据引用以 file:line 的原文为准",
 		"外部依赖（接收端/第三方服务）的行为需按真实失败分组核实，报告只给假设")
 	return out
+}
+
+// firstEvidenceRef 取首条证据的引用（check id / 事件 task_id / 日志 file:line），
+// 给没有假设的 check 类问题一个可执行的定位入口。
+func firstEvidenceRef(evs []obs.Evidence) string {
+	if len(evs) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(evs[0].Ref)
 }
 
 // AIBriefJSON 渲染 ai-brief.json（缩进、稳定）。

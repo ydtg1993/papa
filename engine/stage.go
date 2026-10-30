@@ -151,6 +151,33 @@ func (e *Engine) finishTask(task *Task) {
 	e.DelActiveTask(task)
 }
 
+// releaseClaim 把「本进程认领过、但没跑完就遇上下线」的任务退回「待处理」。
+//
+// 停机路径上 WorkerPool.Stop 会把两条队列的存量也交给 handler 排水
+// （workerpool.run 的注释解释了 worker 循环里为什么不能 select ctx.Done）——
+// 这些任务一旦被认领，后面的每一步（fetch / 退避 / 落终态）都会被已取消的 ctx 打断，
+// 而 stageHandler 在那些分支上只能直接返回；不在这里回退，行就永久停在「处理中」。
+// （2026-10-29 实测：14:02 停机后库里留下 1004 条 status=1，trace 全是
+// retryable/context canceled；重启后虽有启动恢复兜底，但那一小时里报告与后台
+// 都会先把它们当「卡死」。）
+//
+// 条件更新 `id=? AND status=processing`：只回退「还停在处理中」的这一行 ——
+// 这中间被运营标成功/标失败/删除、或已被重启后的启动恢复重投过的行，一律不覆盖；
+// RowsAffected=0 不是错误（它本来就是"轮不到回退"）。
+// 写库失败只记 Warn：停机路径要把剩下的任务排完，不能因为这一条回退失败而中断。
+// 行回到 pending 就够了 —— 下次启动的启动恢复（recoverqueue.go）会重新入队。
+func (e *Engine) releaseClaim(task *Task) {
+	if task.ID == 0 {
+		return
+	}
+	res := e.db.Model(&models.CrawlerTask{}).
+		Where("id = ? AND status = ?", uint(task.ID), models.TaskStatusProcessing).
+		Updates(map[string]any{"status": models.TaskStatusPending})
+	if res.Error != nil {
+		e.loggerSet.Engine.Warnf("release claim task %d: %s", task.ID, res.Error.Error())
+	}
+}
+
 // stageHandler 一个阶段 worker 的任务处理函数：认领 → 带重试地跑 handler → 落终态。
 // 从 ApplyRegisterStage 的第一趟提出来：池子懒建（首次 submit 才建），建的时候绑上同一个 handler。
 func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
@@ -161,6 +188,15 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	//（与下载器那边 max(MaxConcurrent, 1) 同一路数）。
 	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
+		// 停机时的排水（WorkerPool.Stop → drainAndExit）会把队列里**还没开始**的存量任务
+		// 也原样交给 handler，而它拿到的 ctx 在进 Stop 那一刻就取消了
+		//（Engine.Stop 先 e.cancel() 再 pool.Stop，所以 workerpool.run 才故意不 select ctx.Done）。
+		// 这时候认领没有任何意义：fetch 一出手就被 ctx 打断，回头只会在库里留一行「处理中」。
+		// 所以**不认领、直接放弃**：行仍是 pending，下次启动的启动恢复会重新入队
+		//（recoverqueue.go 的 recoverQueueQuery 捞的正是 pending/processing）。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil
+		}
 		// claimedAt 认领时刻：事件里的 duration_ms 用它算整段在途时间（成功/失败都算）。
 		var claimedAt time.Time
 		// panic 收尾：FetchHandler 一次尝试里 panic 会展开跳过下面整段「重试 + 落终态」。
@@ -195,6 +231,13 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		// 重试FetchHandler
 		var lastErr error
 		for attempt := 0; attempt < attempts; attempt++ {
+			// 首次尝试之前、以及每次重试之前再看一眼 ctx：认领与 fetch 之间还夹着
+			// 事件、退避、追踪这些步骤，停机就可能落在这一段里。此时同样不能把行留在
+			// processing —— 先回退成 pending，再如实返回 ctx 的错误。
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				e.releaseClaim(task)
+				return ctxErr
+			}
 			if attempt > 0 {
 				// 退避放在**下一次尝试之前**（与 m3u8 / filedown 的退避同一写法）。
 				// 它不能写在上一轮的末尾：那样最后一次尝试失败之后还要再睡满一个周期才落 failed，
@@ -202,6 +245,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				//（3 次尝试、30s 退避就是 120s；实测一个注定失败的 detail 任务从认领到终态 210s）。
 				select {
 				case <-ctx.Done():
+					// 退避被停机打断：不是任务失败，回退认领后退出。
+					e.releaseClaim(task)
 					return ctx.Err()
 				case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
 				}
@@ -232,6 +277,14 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				}
 				return nil
 			}
+			// 抓取返回错误后先看 ctx、再判错误：停机打断的那一次尝试不是「任务失败」——
+			// 它的错就是 context canceled，按 Retryable 会判真、随后在退避 select 里退出，
+			// 行就永远停在 processing。这里先回退成 pending，再如实返回 ctx 的错误；
+			// 不可重试分支也必须在它之后，否则一次停机取消会被当成「页面结构变了」记进 error 列。
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				e.releaseClaim(task)
+				return ctxErr
+			}
 			// 不可重试的错误：直接标 failed，不再空转重试
 			if !Retryable(err) {
 				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
@@ -241,6 +294,12 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				return fmt.Errorf("任务处理失败 task ID:%d	,error: %w", task.ID, err)
 			}
 			lastErr = err
+		}
+		// 重试耗尽的那一刻也可能正好赶上停机：这时落 failed 会把「没跑完」错记成
+		// 「任务失败」（error 列还会多一条 context canceled）。同样回退成 pending。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			e.releaseClaim(task)
+			return ctxErr
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
 		task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)

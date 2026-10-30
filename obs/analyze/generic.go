@@ -20,7 +20,7 @@ type Thresholds struct {
 	// StuckAfter 判"卡住"的阈值：processing 超过它仍未更新即视为卡住。
 	// 这是**报告口径**，不是引擎启动恢复判据（后者是 updated_at < startedAt）。
 	StuckAfter time.Duration
-	// CrawlFailRateMax 抓取终态失败率上限。
+	// CrawlFailRateMax 抓取失败事件率上限（事件尝试口径：分母=窗口内 task_finished+task_failed）。
 	CrawlFailRateMax float64
 	// EventMaxGap 事件流允许的最大相邻间隔：超过即认为存在时间断层（丢事件/进程被硬杀）。
 	EventMaxGap time.Duration
@@ -62,8 +62,10 @@ func (g *Generic) Build(ctx context.Context, in *obs.Input) (*obs.SectionResult,
 		return nil, fmt.Errorf("nil input")
 	}
 	res := &obs.SectionResult{}
-	g.addRuntime(in, res)
-	addEventCoverage(in, res, g.Thresholds.eventMaxGap())
+	// 停机区间只还原一次，运行边界与事件覆盖共用：两处对「窗口里哪段是停机」必须是同一口径。
+	dts := obs.ComputeDowntimes(in.Events, reportWindowTo(in))
+	g.addRuntime(in, res, dts)
+	addEventCoverage(in, res, g.Thresholds.eventMaxGap(), dts)
 	g.addQueue(in, res)
 	groups := g.addFailures(in, res)
 	g.addPerformance(in, res)
@@ -76,7 +78,7 @@ func (g *Generic) Build(ctx context.Context, in *obs.Input) (*obs.SectionResult,
 
 /* ---------- 运行边界 ---------- */
 
-func (g *Generic) addRuntime(in *obs.Input, res *obs.SectionResult) {
+func (g *Generic) addRuntime(in *obs.Input, res *obs.SectionResult, dts []obs.Downtime) {
 	var started, stopped int
 	for _, ev := range in.Events {
 		switch ev.Type {
@@ -86,20 +88,33 @@ func (g *Generic) addRuntime(in *obs.Input, res *obs.SectionResult) {
 			stopped++
 		}
 	}
+	rows := [][]string{
+		{"事件条数", fmt.Sprintf("%d", len(in.Events))},
+		{"运行启动次数", fmt.Sprintf("%d", started)},
+		{"运行结束事件", fmt.Sprintf("%d", stopped)},
+	}
+	// 有效运行时长 = 窗口 - 停机：吞吐/ETA 与 event_coverage 都按它读，读者不用自己再减。
+	if effective, downtime, ok := windowRuntime(in, dts); ok {
+		value := fmtSpan(effective)
+		if downtime > 0 {
+			value += "（剔除停机 " + fmtSpan(downtime) + "）"
+		}
+		rows = append(rows, []string{"有效运行时长（剔除停机）", value})
+	} else {
+		rows = append(rows, []string{"有效运行时长（剔除停机）", "-"})
+	}
+	rows = append(rows,
+		[]string{"事件文件数", fmt.Sprintf("%d", in.EventMeta.Files)},
+		[]string{"坏行数", fmt.Sprintf("%d", in.EventMeta.Unparsed)},
+		[]string{"重复事件", fmt.Sprintf("%d", in.EventMeta.Duplicates)},
+		[]string{"seq 缺口", fmt.Sprintf("%d", in.EventMeta.Gaps)},
+		[]string{"日志文件数", fmt.Sprintf("%d", in.Logs.Files)},
+		[]string{"日志坏行", fmt.Sprintf("%d", in.Logs.Unparsed)},
+	)
 	res.Tables = append(res.Tables, obs.Table{
 		Title:   "运行边界",
 		Columns: []string{"项", "值"},
-		Rows: [][]string{
-			{"事件条数", fmt.Sprintf("%d", len(in.Events))},
-			{"运行启动次数", fmt.Sprintf("%d", started)},
-			{"运行结束事件", fmt.Sprintf("%d", stopped)},
-			{"事件文件数", fmt.Sprintf("%d", in.EventMeta.Files)},
-			{"坏行数", fmt.Sprintf("%d", in.EventMeta.Unparsed)},
-			{"重复事件", fmt.Sprintf("%d", in.EventMeta.Duplicates)},
-			{"seq 缺口", fmt.Sprintf("%d", in.EventMeta.Gaps)},
-			{"日志文件数", fmt.Sprintf("%d", in.Logs.Files)},
-			{"日志坏行", fmt.Sprintf("%d", in.Logs.Unparsed)},
-		},
+		Rows:    rows,
 	})
 	res.Checks = append(res.Checks,
 		obs.NewCheck("event_gaps", obs.SeverityWarn, in.EventMeta.Gaps == 0,
@@ -135,20 +150,24 @@ type stageRow struct {
 func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 	latest := map[string]events.StageSnapshot{}
 	var lastQueues map[string]events.QueueSnapshot
-	var latestTS time.Time // 最近一次**含 stages** 的快照时间：queue_drained 的新鲜度判定
+	var lastSpill *events.Event // 窗口内最后一条 spill_changed：溢出表（引擎内存）现状
+	var latestTS time.Time      // 最近一次**含 stages** 的快照时间：queue_drained 的新鲜度判定
 	hasSnapshotEvent := false
-	for _, ev := range in.Events {
-		if ev.Type != events.TypeStageSnapshot {
-			continue
+	for i := range in.Events {
+		ev := &in.Events[i]
+		switch ev.Type {
+		case events.TypeStageSnapshot:
+			hasSnapshotEvent = true
+			if len(ev.Stages) > 0 {
+				latestTS = ev.TS
+			}
+			for k, v := range ev.Stages {
+				latest[k] = v
+			}
+			lastQueues = ev.Queues
+		case events.TypeSpillChanged:
+			lastSpill = ev
 		}
-		hasSnapshotEvent = true
-		if len(ev.Stages) > 0 {
-			latestTS = ev.TS
-		}
-		for k, v := range ev.Stages {
-			latest[k] = v
-		}
-		lastQueues = ev.Queues
 	}
 	if len(latest) == 0 {
 		// 暂停/空闲时「期末队列必须清空」不适用：明确跳过，而不是报红。
@@ -175,18 +194,21 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	tbl := obs.Table{Title: "队列快照（窗口内最后一次）", Columns: []string{"阶段键", "排队", "在跑", "worker", "完成", "失败", "提交"}}
-	var backlog int
+	// InProgress = submitted-completed-failed，**已包含还在队列里排队的**（workerpool.Stats），
+	// 所以这里只累加 InProgress，不能再加 QueueLen（旧实现两列相加，排队被算了两遍）。
+	tbl := obs.Table{Title: "队列快照（窗口内最后一次）", Columns: []string{"阶段键", "排队", "未完成（含排队）", "worker", "完成", "失败", "提交"}}
+	var outstanding int
 	for _, k := range keys {
 		s := latest[k]
 		tbl.Rows = append(tbl.Rows, []string{
 			k, fmt.Sprintf("%d", s.QueueLen), fmt.Sprintf("%d", s.InProgress), fmt.Sprintf("%d", s.Workers),
 			fmt.Sprintf("%d", s.Completed), fmt.Sprintf("%d", s.Failed), fmt.Sprintf("%d", s.Submitted),
 		})
-		backlog += s.QueueLen + s.InProgress
+		outstanding += s.InProgress
 	}
 	res.Tables = append(res.Tables, tbl)
 
+	govBacklog := 0
 	if lastQueues != nil {
 		qt := obs.Table{Title: "治理队列（窗口内最后一次）", Columns: []string{"队列", "启用", "运行中", "积压", "累计处理", "上次耗时ms", "上次错误"}}
 		qkeys := make([]string, 0, len(lastQueues))
@@ -200,9 +222,26 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 				k, boolText(q.Enabled), boolText(q.Running), fmt.Sprintf("%d", q.Backlog),
 				fmt.Sprintf("%d", q.TotalProcessed), fmt.Sprintf("%d", q.LastDurationMS), q.LastError,
 			})
-			backlog += int(q.Backlog)
+			govBacklog += int(q.Backlog)
 		}
 		res.Tables = append(res.Tables, qt)
+	}
+
+	// 溢出表（spill）是引擎内存里被高水位挤出来、等待每 drain_interval 回灌的任务：
+	// 它们不在内存队列里（QueueLen 看不到），但确实是没跑完的存量，单列一张小表并计入队列积压。
+	spillBacklog := 0
+	if lastSpill != nil {
+		spillBacklog = int(lastSpill.Backlog)
+		st := obs.Table{Title: "溢出表（spill，引擎内存）", Columns: []string{"最近时刻", "最近回灌", "当前积压"}}
+		st.Rows = append(st.Rows, []string{
+			fmtTime(lastSpill.TS), fmt.Sprintf("%d", lastSpill.Counts["drained"]), fmt.Sprintf("%d", spillBacklog),
+		})
+		res.Tables = append(res.Tables, st)
+	}
+
+	backlog := outstanding + govBacklog
+	if spillBacklog > 0 {
+		backlog += spillBacklog
 	}
 	if engineInactive(in) {
 		c := obs.NewCheck("queue_drained", obs.SeverityWarn, false, "", "")
@@ -210,16 +249,26 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		res.Checks = append(res.Checks, c)
 	} else {
 		stale := !latestTS.IsZero() && in.Now.Sub(latestTS) > g.Thresholds.stuckAfter()
-		msg := fmt.Sprintf("窗口末队列仍有 %d 条排队/在跑/积压", backlog)
+		msg := fmt.Sprintf("窗口末仍有 %d 条未完成/积压（未完成 %d、治理 %d、spill %d）",
+			backlog, outstanding, govBacklog, spillBacklog)
+		if backlog == 0 {
+			msg = "窗口末队列已收敛（未完成 0）"
+		}
 		if stale {
 			msg += fmt.Sprintf("（快照时间 %s，已陈旧）", latestTS.Format("15:04:05"))
 		}
 		res.Checks = append(res.Checks, obs.NewCheck("queue_drained", obs.SeverityWarn, backlog == 0, msg,
-			"有界测试窗口结束时应为 0；常驻进程应按当前负载判断"))
+			"有界测试窗口结束时应为 0；常驻进程应按当前负载判断；未完成=InProgress（已含排队）"))
 	}
 }
 
 /* ---------- 失败归因 ---------- */
+
+// failTaskStat 是失败组内某个 task_id 的失败次数与首次失败时间。
+type failTaskStat struct {
+	First time.Time
+	Count int
+}
 
 type failGroup struct {
 	Site, Stage, Kind string
@@ -228,6 +277,8 @@ type failGroup struct {
 	// Attempts 按 attempt 统计次数；Errors 按归一化模板（errorTemplate）统计次数。
 	Attempts map[int]int
 	Errors   map[string]int
+	// Tasks 按 task_id 去重统计：证据里要能看出「几个任务失败」而不是「首条任务失败几次」。
+	Tasks map[uint]*failTaskStat
 
 	SampleTask uint
 	SampleURL  string
@@ -246,7 +297,7 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 		if grp == nil {
 			grp = &failGroup{
 				Site: ev.Site, Stage: ev.Stage, Kind: ev.Kind,
-				Attempts: map[int]int{}, Errors: map[string]int{},
+				Attempts: map[int]int{}, Errors: map[string]int{}, Tasks: map[uint]*failTaskStat{},
 			}
 			groups[key] = grp
 		}
@@ -258,6 +309,16 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 			grp.LastTS = ev.TS
 		}
 		grp.Attempts[ev.Attempt]++
+		if ev.TaskID != 0 {
+			ts := grp.Tasks[ev.TaskID]
+			if ts == nil {
+				ts = &failTaskStat{First: ev.TS}
+				grp.Tasks[ev.TaskID] = ts
+			} else if ev.TS.Before(ts.First) {
+				ts.First = ev.TS
+			}
+			ts.Count++
+		}
 		if tpl := errorTemplate(ev.Error); tpl != "" {
 			grp.Errors[tpl]++
 		}
@@ -295,9 +356,8 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 			Scope:    grp.Site + "/" + grp.Stage,
 			Count:    grp.Count,
 			Evidence: []obs.Evidence{{
-				Type: "event",
-				Ref: fmt.Sprintf("task_failed task_id=%d（%s~%s，共%d次）",
-					grp.SampleTask, fmtTime(grp.FirstTS), fmtTime(grp.LastTS), grp.Count),
+				Type:    "event",
+				Ref:     failureTasksRef(grp),
 				Excerpt: truncate(grp.SampleMsg, 500),
 			}},
 		}
@@ -317,6 +377,33 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 		res.Problems = append(res.Problems, prob)
 	}
 	return len(groups)
+}
+
+// failureTasksRef 把失败组的事件证据写成「按 task_id 去重的失败任务清单」。
+//
+// 旧实现用「组内首条 task_id + 组首末时间 + 组次数」拼成一句「task_id=7（…~…，共N次）」，
+// 一个组里有两个不同任务时会被读成「同一个任务失败了 N 次」，证据是错的
+// （2026-10-29 报告：hgdju/catalog 组实际是 task 9676 与 9678 各 1 次，却写成 9676 共 2 次）。
+func failureTasksRef(grp *failGroup) string {
+	ids := make([]uint, 0, len(grp.Tasks))
+	for id := range grp.Tasks {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return fmt.Sprintf("失败事件 %d 次（事件未带 task_id）", grp.Count)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	// 组很大时只列前 5 个任务，避免证据行无限长；总数与总次数仍然给全。
+	const maxList = 5
+	parts := make([]string, 0, maxList+1)
+	for i, id := range ids {
+		if i >= maxList {
+			parts = append(parts, "…")
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%d@%s", id, fmtTime(grp.Tasks[id].First)))
+	}
+	return fmt.Sprintf("失败任务 %d 个：%s（共 %d 次）", len(ids), strings.Join(parts, "、"), grp.Count)
 }
 
 // errNumRE / errURLRE 在包级编译一次：errorTemplate 对每条失败事件都会调用。
@@ -467,8 +554,9 @@ func (g *Generic) addPerformance(in *obs.Input, res *obs.SectionResult) {
 		rate := float64(failCount) / float64(totalCount)
 		res.Checks = append(res.Checks, obs.NewCheck("crawl_fail_rate", obs.SeverityWarn,
 			rate <= g.Thresholds.crawlFailRateMax(),
-			fmt.Sprintf("抓取终态失败率 %.1f%%（%d/%d）", rate*100, failCount, totalCount),
-			fmt.Sprintf("阈值 ≤ %.0f%%（未校准，首轮后按真实数据调整）", g.Thresholds.crawlFailRateMax()*100)))
+			fmt.Sprintf("抓取失败事件率 %.1f%%（%d/%d 次尝试）", rate*100, failCount, totalCount),
+			fmt.Sprintf("事件尝试口径：分母=窗口内 task_finished+task_failed，含后续被重投的失败；终态失败（按任务行）看任务终态分布。阈值 ≤ %.0f%%（未校准，首轮后按真实数据调整）",
+				g.Thresholds.crawlFailRateMax()*100)))
 	}
 	if len(byStage) == 0 {
 		return
@@ -516,6 +604,11 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 	if engineInactive(in) {
 		stuckCheck.Skipped = true
 		stuckCheck.SkipReason = "引擎暂停/无活跃阶段，processing 不代表卡住"
+	} else if in.Mode == obs.ModeSnapshot {
+		// 快照回答「现在怎样」：常驻进程跑批中途 processing 非 0 是常态，不能按验收口径判 fail
+		//（2026-10-29 报告就是因为这类 check 在 snapshot 下给了 fail；prepare/push settled 已先这么做）。
+		stuckCheck.Severity = obs.SeverityWarn
+		stuckCheck.Detail += "（snapshot 快照不按验收口径判 fail）"
 	}
 	res.Checks = append(res.Checks, stuckCheck)
 
@@ -535,6 +628,10 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 	if engineInactive(in) {
 		unfinishedCheck.Skipped = true
 		unfinishedCheck.SkipReason = "暂停快照，期末=0 语义不适用"
+	} else if in.Mode == obs.ModeSnapshot {
+		// 同上：常驻进程的 pending 队列是「正在排队」，不是「这轮没跑完」。
+		unfinishedCheck.Severity = obs.SeverityWarn
+		unfinishedCheck.Detail += "（snapshot 快照不按验收口径判 fail）"
 	}
 	res.Checks = append(res.Checks, unfinishedCheck)
 
@@ -569,6 +666,37 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 }
 
 /* ---------- 小工具 ---------- */
+
+// reportWindowTo 返回报告窗口上界：Run.To 优先；没有窗口（单点报告）用报告时刻。
+func reportWindowTo(in *obs.Input) time.Time {
+	if !in.Run.To.IsZero() {
+		return in.Run.To
+	}
+	return in.Now
+}
+
+// windowRuntime 返回窗口 [Run.From, 上界] 内剔除停机后的有效运行时长与停机总时长。
+// 没有窗口（From 为零）时 ok=false，报告里显示 "-"。
+func windowRuntime(in *obs.Input, dts []obs.Downtime) (effective, downtime time.Duration, ok bool) {
+	from, to := in.Run.From, reportWindowTo(in)
+	if from.IsZero() || to.IsZero() || !to.After(from) {
+		return 0, 0, false
+	}
+	downtime = obs.TotalDowntime(dts, from, to)
+	effective = to.Sub(from) - downtime
+	if effective < 0 {
+		effective = 0
+	}
+	return effective, downtime, true
+}
+
+// fmtSpan 把时长按「秒级」渲染（报告不展示纳秒误差）；零/负值给 "0s"。
+func fmtSpan(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	return d.Round(time.Second).String()
+}
 
 // engineInactive 判断引擎是否处于暂停/空闲：暂停/空闲时「期末积压/卡住」不是故障。
 // 只在 snapshot 模式下这样判：acceptance 回答「这轮通过没」，仍按窗口末真实值判定。

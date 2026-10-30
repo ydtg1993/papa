@@ -160,7 +160,7 @@ papa report list [--out <dir>]
 
 - 数据源：`log.dir/events.jsonl`（含轮转备份与 `.gz`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `obs.events`）+ `log.dir/*.log` 的证据索引 + `crawler_tasks` 状态。
 - 产物：默认按**本地日历日拆分**，`<obs.report.dir 或 --out>/<2006-01-02>/` 下 4 个文件：`report.md`（人读）、`report.json`（机读指标）、`ai-brief.md`（AI 排查细则）、`ai-brief.json`（同构机读）；同一天重跑刷新当天那份。`--run <run_id>` 是例外：只出单份 `<obs.report.dir 或 --out>/<run_id>/`，不按天拆。生成后按 `obs.report.retention`（默认 7 天，负数 = 永久保留）清理过期目录，并打印「清理过期报告 N 份」。
-- 模式：默认按 `obs.report.mode`（`auto` = CLI 用 `acceptance` 验收口径）。`--snapshot` 强制快照语义：只出**单日**快照报告，缺省窗口 = 最后一个事件所在的本地日（显式 `--since/--until` 跨本地日会直接报错），回答「此刻怎样」而不是「这轮通过没」；暂停时 `stuck_processing` / `unfinished_tasks` / `queue_drained` 标「不适用」、不判 fail。模式写在 `report.md` 头部与 `report.json` 的 `mode`。
+- 模式：默认按 `obs.report.mode`（`auto` = CLI 用 `acceptance` 验收口径）。`--snapshot` 强制快照语义：只出**单日**快照报告，缺省窗口 = 最后一个事件所在的本地日（显式 `--since/--until` 跨本地日会直接报错），回答「此刻怎样」而不是「这轮通过没」；暂停时 `stuck_processing` / `unfinished_tasks` / `queue_drained` 标「不适用」、不判 fail；引擎在跑时 `stuck_processing` / `unfinished_tasks` 仍会报但降为 `warn`（常驻积压不判 fail）。模式写在 `report.md` 头部与 `report.json` 的 `mode`。
 - 判定：任一 `fail` 级检查未通过 → 不通过；只有 `warn` 未通过 → 带风险通过；一个可判定的检查都没有 / 数据降级（`degraded` 非空）全过 / 暂停快照全过 → **未判定**（`unknown`）；否则通过。`--fail-on-verdict` 让**任一日报**「不通过」**或「未判定」**时以非零码退出（CI / 自动化门禁；`warn` 仍放行）。
 - 只读：不写业务表、不重投任务、不调用接收端。
 - 业务报告段（如预处理 / 推送 / 数据一致性）只能在业务进程内注册 —— CLI 是独立编译的，拿不到业务模型。
