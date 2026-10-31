@@ -111,3 +111,16 @@ func TestMarkdownInfoCheckRendersStateColumn(t *testing.T) {
 		t.Fatalf("info 检查不该出现红叉/绿勾：%q", row)
 	}
 }
+
+func TestHistoricalReportExplainsCurrentSnapshotBoundary(t *testing.T) {
+	rep := sampleReport()
+	rep.Historical = true
+	text := string(Markdown(rep))
+	if !strings.Contains(text, "相关状态检查不参与历史判定") {
+		t.Fatal("historical snapshot boundary missing")
+	}
+	brief := BuildAIBrief(rep)
+	if !strings.Contains(strings.Join(brief.Unknowns, " "), "没有该日期末") {
+		t.Fatal("AI brief lost historical boundary")
+	}
+}

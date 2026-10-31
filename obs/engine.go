@@ -4,10 +4,12 @@ import "time"
 
 // SiteState 是报告时刻某站点的暂停快照（纯值类型，不依赖 engine 包）。
 type SiteState struct {
-	Key        string    `json:"key"`
-	Paused     bool      `json:"paused"`
-	PausedAt   time.Time `json:"paused_at,omitempty"`
-	StageCount int       `json:"stage_count"`
+	Key         string    `json:"key"`
+	Paused      bool      `json:"paused"`
+	PausedAt    time.Time `json:"paused_at,omitempty"`
+	PauseSource string    `json:"pause_source,omitempty"`
+	PauseReason string    `json:"pause_reason,omitempty"`
+	StageCount  int       `json:"stage_count"`
 }
 
 // EngineState 是报告生成时刻的运行上下文。

@@ -75,7 +75,7 @@ var briefBoundaries = []string{
 
 // snapshotBoundary 是 snapshot 模式追加的边界说明：快照只回答「现在怎样」，
 // 不是验收结论 —— 修完要回到 acceptance 报告复验，否则改成什么样都无法证明。
-const snapshotBoundary = "本报告为 snapshot 定时快照：不要当验收结论；修复后重启并等一轮业务跑完，再用 acceptance 报告（crawler-report 默认/退出报告）复验。"
+const snapshotBoundary = "本报告为 snapshot 运行报告，不代表批次验收结论；修复后按相关检查复验，需要批次验收时显式使用 --acceptance 或 obs.report.mode: acceptance。"
 
 // BuildAIBrief 从报告生成 AI 排查任务包（确定性：不引入随机/当前时间）。
 func BuildAIBrief(rep *obs.Report) *AIBrief {
@@ -109,6 +109,9 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 		bounds = append(bounds, briefBoundaries...)
 		bounds = append(bounds, snapshotBoundary)
 		out.Boundaries = bounds
+	}
+	if rep.Historical {
+		out.Unknowns = append(out.Unknowns, "历史窗口没有该日期末的 DB/引擎快照；当前状态仅供参考，相关状态检查不参与历史判定。")
 	}
 	out.Snapshot.Mode = string(rep.Mode)
 	out.Snapshot.VerdictReason = rep.VerdictReason

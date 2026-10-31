@@ -182,6 +182,9 @@ func TestStartupSnapshotWritesOnceForStartPaused(t *testing.T) {
 	if len(snap) != 2 || !snap[0].BreakerPaused || !snap[1].BreakerPaused {
 		t.Fatalf("快照里两个 StartPaused 站都该是暂停态：%+v", snap)
 	}
+	if snap[0].PauseSource != "startup" || snap[0].PauseReason != "站点声明 StartPaused" {
+		t.Fatalf("启动暂停应包含来源和原因：%+v", snap[0])
+	}
 	if !snap[0].BreakerPausedAt.After(old) {
 		t.Fatalf("暂停时间该按本次启动刷新：%+v", snap[0])
 	}
@@ -245,7 +248,7 @@ func TestPauseSiteWritesBreakerState(t *testing.T) {
 	if !e.PauseSite("a", "测试") {
 		t.Fatal("暂停应当成功")
 	}
-	if got := e.GetSiteStats()["a"]; !got.BreakerPaused || got.BreakerPausedAt.IsZero() {
+	if got := e.GetSiteStats()["a"]; !got.BreakerPaused || got.BreakerPausedAt.IsZero() || got.PauseSource != "manual" || got.PauseReason != "测试" {
 		t.Fatalf("快照应记下闸住状态：%+v", got)
 	}
 	// 没被动过的那一站不受影响（整块替换最容易在这里出错）
@@ -256,7 +259,7 @@ func TestPauseSiteWritesBreakerState(t *testing.T) {
 	if !e.ResumeSite("a") {
 		t.Fatal("放行应当成功")
 	}
-	if got := e.GetSiteStats()["a"]; got.BreakerPaused || !got.BreakerPausedAt.IsZero() {
+	if got := e.GetSiteStats()["a"]; got.BreakerPaused || !got.BreakerPausedAt.IsZero() || got.PauseSource != "" || got.PauseReason != "" {
 		t.Fatalf("放行后应清掉闸住状态：%+v", got)
 	}
 }

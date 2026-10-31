@@ -60,6 +60,8 @@ type SiteStat struct {
 
 	BreakerPaused   bool      `json:"breaker_paused"`
 	BreakerPausedAt time.Time `json:"breaker_paused_at"`
+	PauseSource     string    `json:"pause_source,omitempty"`
+	PauseReason     string    `json:"pause_reason,omitempty"`
 }
 
 // StopStats 关停超时那一刻，某个阶段的存留情况。

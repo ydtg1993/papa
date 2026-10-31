@@ -13,7 +13,7 @@ const (
 	ModeAcceptance Mode = "acceptance"
 )
 
-// Trigger 是报告的生成方式，auto 模式下用它决定默认 Mode。
+// Trigger 是报告的生成方式；auto 在所有已知触发方式下使用运行快照。
 type Trigger string
 
 const (
@@ -23,16 +23,14 @@ const (
 )
 
 // ResolveMode 把配置值与触发方式解析成生效模式。
-// configured: "auto"/空 = 按触发方式；"snapshot"/"acceptance" = 强制。
+// configured: "auto"/空 = 运行快照；"snapshot"/"acceptance" = 强制。
 func ResolveMode(configured string, trigger Trigger) (Mode, error) {
 	mode := Mode(strings.ToLower(strings.TrimSpace(configured)))
 	switch mode {
 	case "", "auto":
 		switch trigger {
-		case TriggerPeriodic:
+		case TriggerPeriodic, TriggerExit, TriggerCLI:
 			return ModeSnapshot, nil
-		case TriggerExit, TriggerCLI:
-			return ModeAcceptance, nil
 		default:
 			return "", fmt.Errorf("obs.report.mode: 未知触发方式 %q", trigger)
 		}

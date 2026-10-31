@@ -83,7 +83,7 @@ func TestPeriodicReportIsSnapshotAndOnlyToday(t *testing.T) {
 	}
 }
 
-func TestExitReportIsAcceptanceAndWritesAllDays(t *testing.T) {
+func TestExplicitExitAcceptanceWritesAllDays(t *testing.T) {
 	now := time.Now()
 	todayNoon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local)
 	yesterdayNoon := todayNoon.AddDate(0, 0, -1)
@@ -93,6 +93,7 @@ func TestExitReportIsAcceptanceAndWritesAllDays(t *testing.T) {
 	}
 	a, cfg := newReportTestApp(t, now, evs)
 	a.Config.Obs.Report.OnExit = true
+	a.Config.Obs.Report.Mode = "acceptance"
 
 	a.generateExitReport()
 
@@ -112,5 +113,22 @@ func TestObsEngineStateNilEngine(t *testing.T) {
 	st := a.obsEngineState()
 	if st.Source != "none" {
 		t.Fatalf("无引擎时 Source = %q, want none", st.Source)
+	}
+}
+
+func TestExitAutoReportIsSnapshotAndOnlyToday(t *testing.T) {
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	a, cfg := newReportTestApp(t, now, []map[string]any{
+		{"v": 1, "seq": 1, "ts": start.AddDate(0, 0, -1).Format(time.RFC3339Nano), "run_id": "old", "type": "run_started"},
+		{"v": 1, "seq": 2, "ts": start.Format(time.RFC3339Nano), "run_id": "today", "type": "run_started"},
+	})
+	cfg.Obs.Report.OnExit = true
+	a.generateExitReport()
+	if got := readReportJSON(t, filepath.Join(cfg.Obs.Report.Dir, report.DayName(start)))["mode"]; got != "snapshot" {
+		t.Fatalf("auto exit mode=%v", got)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Obs.Report.Dir, report.DayName(start.AddDate(0, 0, -1)))); !os.IsNotExist(err) {
+		t.Fatalf("auto exit must not rewrite history: %v", err)
 	}
 }

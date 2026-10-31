@@ -30,7 +30,7 @@ go install ./cmd/papa
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
 | `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
-| `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成一次运行报告（`report.md` + `report.json`）：读事件流 + 日志证据 + `crawler_tasks` 状态，输出判定/问题/表格；默认按本地日历日拆分（有事件的每天各写一份日报），生成后按 `obs.report.retention` 清理过期目录；`--snapshot` 只出单日快照。业务报告段需在业务进程内注册（CLI 只有框架通用段） |
+| `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；生成后按 `obs.report.retention` 清理过期目录。业务段由业务进程注册，papa CLI 只有框架通用段 |
 
 ### `papa new` 生成什么
 
@@ -154,13 +154,13 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 
 ```
 papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] \
-                     [--run <run_id>] [--snapshot] [--out <dir>] [--no-logs] [--fail-on-verdict]
+                     [--run <run_id>] [--snapshot | --acceptance] [--out <dir>] [--no-logs] [--fail-on-verdict]
 papa report list [--out <dir>]
 ```
 
 - 数据源：`log.dir/events.jsonl`（含轮转备份与 `.gz`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `obs.events`）+ `log.dir/*.log` 的证据索引 + `crawler_tasks` 状态。
 - 产物：默认按**本地日历日拆分**，`<obs.report.dir 或 --out>/<2006-01-02>/` 下 4 个文件：`report.md`（人读）、`report.json`（机读指标）、`ai-brief.md`（AI 排查细则）、`ai-brief.json`（同构机读）；同一天重跑刷新当天那份。`--run <run_id>` 是例外：只出单份 `<obs.report.dir 或 --out>/<run_id>/`，不按天拆。生成后按 `obs.report.retention`（默认 7 天，负数 = 永久保留）清理过期目录，并打印「清理过期报告 N 份」。
-- 模式：默认按 `obs.report.mode`（`auto` = CLI 用 `acceptance` 验收口径）。`--snapshot` 强制快照语义：只出**单日**快照报告，缺省窗口 = 最后一个事件所在的本地日（显式 `--since/--until` 跨本地日会直接报错），回答「此刻怎样」而不是「这轮通过没」；暂停时 `stuck_processing` / `unfinished_tasks` / `queue_drained` 标「不适用」、不判 fail；引擎在跑时 `stuck_processing` / `unfinished_tasks` 仍会报但降为 `warn`（常驻积压不判 fail）。模式写在 `report.md` 头部与 `report.json` 的 `mode`。
+- 模式：默认按 `obs.report.mode`，`auto` 在定时、退出和 CLI 中均为 `snapshot` 运行报告；配置明确写 `acceptance` 仍使用验收口径。`--acceptance` 强制检查「这轮是否通过」，`--snapshot` 强制运行快照，两者互斥，均优先于配置。默认有事件的每个本地日各生成一份；只有显式 `--snapshot` 保留单日用法（缺省取最后一个事件所在日；papa CLI 显式窗口跨本地日会报错）。`--run` 仍只生成单次运行报告。模式写在 `report.md` 头部和 `report.json` 的 `mode`。
 - 判定：任一 `fail` 级检查未通过 → 不通过；只有 `warn` 未通过 → 带风险通过；一个可判定的检查都没有 / 数据降级（`degraded` 非空）全过 / 暂停快照全过 → **未判定**（`unknown`）；否则通过。`--fail-on-verdict` 让**任一日报**「不通过」**或「未判定」**时以非零码退出（CI / 自动化门禁；`warn` 仍放行）。
 - 只读：不写业务表、不重投任务、不调用接收端。
 - 业务报告段（如预处理 / 推送 / 数据一致性）只能在业务进程内注册 —— CLI 是独立编译的，拿不到业务模型。

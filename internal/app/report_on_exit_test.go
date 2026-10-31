@@ -56,6 +56,7 @@ func TestGenerateExitReportWritesDailyFiles(t *testing.T) {
 	cfg.Log.Dir = logDir
 	cfg.Obs.Events.Enabled = true
 	cfg.Obs.Report.OnExit = true
+	cfg.Obs.Report.Mode = "acceptance"
 	cfg.Obs.Report.Dir = filepath.Join(dir, "reports")
 	cfg.Obs.Report.Retention = 168 * time.Hour
 	cfg.Obs.Report.Timeout = 5 * time.Second
@@ -128,6 +129,7 @@ func TestGenerateExitReportSplitsDaysAndPrunes(t *testing.T) {
 	cfg.Log.Dir = logDir
 	cfg.Obs.Events.Enabled = true
 	cfg.Obs.Report.OnExit = true
+	cfg.Obs.Report.Mode = "acceptance"
 	cfg.Obs.Report.Dir = reportsDir
 	cfg.Obs.Report.Retention = 168 * time.Hour
 	cfg.Obs.Report.Timeout = 10 * time.Second

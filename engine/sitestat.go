@@ -123,6 +123,8 @@ func (e *Engine) declaredSiteStats() []core.SiteStat {
 		if paused[key] {
 			row.BreakerPaused = true
 			row.BreakerPausedAt = now
+			row.PauseSource = "startup"
+			row.PauseReason = "站点声明 StartPaused"
 		}
 		rows = append(rows, row)
 	}
@@ -239,6 +241,13 @@ func (e *Engine) GetSiteStats() map[string]core.SiteStat {
 	}
 	out := make(map[string]core.SiteStat, len(rows))
 	for _, r := range rows {
+		st := e.breakerStatusOf(r.Key)
+		if st.Paused {
+			r.PauseSource, r.PauseReason = st.Source, st.Reason
+			if st.Reason == "站点声明 StartPaused" {
+				r.PauseSource = "startup"
+			}
+		}
 		out[r.Key] = r
 	}
 	return out
@@ -257,6 +266,7 @@ func (e *Engine) writeSiteBreakerState(site string, paused bool) {
 		return
 	}
 	at := time.Now()
+	st := e.breakerStatusOf(site)
 	err := e.siteStore.UpdateSites(func(rows []core.SiteStat) []core.SiteStat {
 		for i := range rows {
 			if rows[i].Key != site {
@@ -265,8 +275,10 @@ func (e *Engine) writeSiteBreakerState(site string, paused bool) {
 			rows[i].BreakerPaused = paused
 			if paused {
 				rows[i].BreakerPausedAt = at
+				rows[i].PauseSource, rows[i].PauseReason = st.Source, st.Reason
 			} else {
 				rows[i].BreakerPausedAt = time.Time{}
+				rows[i].PauseSource, rows[i].PauseReason = "", ""
 			}
 		}
 		return rows

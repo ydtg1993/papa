@@ -93,15 +93,15 @@ func (g *Generic) addRuntime(in *obs.Input, res *obs.SectionResult, dts []obs.Do
 		{"运行启动次数", fmt.Sprintf("%d", started)},
 		{"运行结束事件", fmt.Sprintf("%d", stopped)},
 	}
-	// 有效运行时长 = 窗口 - 停机：吞吐/ETA 与 event_coverage 都按它读，读者不用自己再减。
+	// 只统计有事件依据的运行区间（含暂停），已识别停机另列。
 	if effective, downtime, ok := windowRuntime(in, dts); ok {
 		value := fmtSpan(effective)
 		if downtime > 0 {
-			value += "（剔除停机 " + fmtSpan(downtime) + "）"
+			value += "（已识别停机 " + fmtSpan(downtime) + "）"
 		}
-		rows = append(rows, []string{"有效运行时长（剔除停机）", value})
+		rows = append(rows, []string{"有事件依据的运行时长（含暂停）", value})
 	} else {
-		rows = append(rows, []string{"有效运行时长（剔除停机）", "-"})
+		rows = append(rows, []string{"有事件依据的运行时长（含暂停）", "-"})
 	}
 	rows = append(rows,
 		[]string{"事件文件数", fmt.Sprintf("%d", in.EventMeta.Files)},
@@ -158,12 +158,9 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		switch ev.Type {
 		case events.TypeStageSnapshot:
 			hasSnapshotEvent = true
-			if len(ev.Stages) > 0 {
-				latestTS = ev.TS
-			}
-			for k, v := range ev.Stages {
-				latest[k] = v
-			}
+			latestTS = ev.TS
+			latest = ev.Stages // 完整快照，空值表示池已退出，不能保留上次队列。
+
 			lastQueues = ev.Queues
 		case events.TypeSpillChanged:
 			lastSpill = ev
@@ -257,7 +254,11 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		if stale {
 			msg += fmt.Sprintf("（快照时间 %s，已陈旧）", latestTS.Format("15:04:05"))
 		}
-		res.Checks = append(res.Checks, obs.NewCheck("queue_drained", obs.SeverityWarn, backlog == 0, msg,
+		severity := obs.SeverityWarn
+		if in.Mode == obs.ModeSnapshot {
+			severity = obs.SeverityInfo
+		}
+		res.Checks = append(res.Checks, obs.NewCheck("queue_drained", severity, backlog == 0, msg,
 			"有界测试窗口结束时应为 0；常驻进程应按当前负载判断；未完成=InProgress（已含排队）"))
 	}
 }
@@ -604,11 +605,12 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 	if engineInactive(in) {
 		stuckCheck.Skipped = true
 		stuckCheck.SkipReason = "引擎暂停/无活跃阶段，processing 不代表卡住"
-	} else if in.Mode == obs.ModeSnapshot {
+	}
+	if in.Mode == obs.ModeSnapshot {
 		// 快照回答「现在怎样」：常驻进程跑批中途 processing 非 0 是常态，不能按验收口径判 fail
 		//（2026-10-29 报告就是因为这类 check 在 snapshot 下给了 fail；prepare/push settled 已先这么做）。
-		stuckCheck.Severity = obs.SeverityWarn
-		stuckCheck.Detail += "（snapshot 快照不按验收口径判 fail）"
+		stuckCheck.Severity = obs.SeverityInfo
+		stuckCheck.Detail += "（仅表示长时间未更新；未确认执行者失活或恢复失败，不据此认定故障）"
 	}
 	res.Checks = append(res.Checks, stuckCheck)
 
@@ -628,10 +630,12 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 	if engineInactive(in) {
 		unfinishedCheck.Skipped = true
 		unfinishedCheck.SkipReason = "暂停快照，期末=0 语义不适用"
-	} else if in.Mode == obs.ModeSnapshot {
+	}
+	if in.Mode == obs.ModeSnapshot {
 		// 同上：常驻进程的 pending 队列是「正在排队」，不是「这轮没跑完」。
-		unfinishedCheck.Severity = obs.SeverityWarn
-		unfinishedCheck.Detail += "（snapshot 快照不按验收口径判 fail）"
+		unfinishedCheck.Severity = obs.SeverityInfo
+		unfinishedCheck.Message = fmt.Sprintf("当前非轮询任务有 %d 条 pending/processing", unfinished)
+		unfinishedCheck.Detail = "当前待处理进度，轮询任务不计入，不作为异常"
 	}
 	res.Checks = append(res.Checks, unfinishedCheck)
 
@@ -669,24 +673,21 @@ func (g *Generic) addFrameworkState(ctx context.Context, in *obs.Input, res *obs
 
 // reportWindowTo 返回报告窗口上界：Run.To 优先；没有窗口（单点报告）用报告时刻。
 func reportWindowTo(in *obs.Input) time.Time {
-	if !in.Run.To.IsZero() {
+	if !in.Run.To.IsZero() && (in.Now.IsZero() || in.Run.To.Before(in.Now)) {
 		return in.Run.To
 	}
 	return in.Now
 }
 
-// windowRuntime 返回窗口 [Run.From, 上界] 内剔除停机后的有效运行时长与停机总时长。
+// windowRuntime 返回窗口内有事件依据的运行时长（含暂停）与已识别停机时长。
 // 没有窗口（From 为零）时 ok=false，报告里显示 "-"。
 func windowRuntime(in *obs.Input, dts []obs.Downtime) (effective, downtime time.Duration, ok bool) {
 	from, to := in.Run.From, reportWindowTo(in)
 	if from.IsZero() || to.IsZero() || !to.After(from) {
 		return 0, 0, false
 	}
+	effective = obs.ObservedRuntime(in.Events, from, to)
 	downtime = obs.TotalDowntime(dts, from, to)
-	effective = to.Sub(from) - downtime
-	if effective < 0 {
-		effective = 0
-	}
 	return effective, downtime, true
 }
 
@@ -699,9 +700,9 @@ func fmtSpan(d time.Duration) string {
 }
 
 // engineInactive 判断引擎是否处于暂停/空闲：暂停/空闲时「期末积压/卡住」不是故障。
-// 只在 snapshot 模式下这样判：acceptance 回答「这轮通过没」，仍按窗口末真实值判定。
+// 暂停时不要求收敛；验收模式也不能把正常暂停当作失活。
 func engineInactive(in *obs.Input) bool {
-	return in != nil && in.Mode == obs.ModeSnapshot && in.Engine.Inactive()
+	return in != nil && in.Engine.Inactive()
 }
 
 // hasEngineContext 报告是否拿到了运行时的引擎上下文。

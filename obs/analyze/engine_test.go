@@ -29,8 +29,8 @@ func TestEngineSectionPausedAndRecover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := checkByID(res, "engine_paused"); c == nil || c.Passed {
-		t.Fatalf("engine_paused 应 warn 未通过：%+v", c)
+	if c := checkByID(res, "engine_paused"); c == nil || !c.Passed || c.Severity != obs.SeverityInfo {
+		t.Fatalf("未知来源的暂停只应提供状态信息：%+v", c)
 	}
 	if c := checkByID(res, "recover_in_progress"); c == nil || !c.Passed {
 		t.Fatalf("recover_in_progress 应通过（有 requeue + 旧 processing）：%+v", c)
@@ -77,8 +77,59 @@ func TestEngineSectionFallsBackToQuerierSites(t *testing.T) {
 	if !strings.Contains(tableText(res), "db-site") {
 		t.Fatalf("站点快照应回落到 Querier：%s", tableText(res))
 	}
-	if c := checkByID(res, "engine_paused"); c == nil || c.Passed {
-		t.Fatalf("DB 快照里有暂停站点时 engine_paused 不应通过：%+v", c)
+	if c := checkByID(res, "engine_paused"); c == nil || !c.Passed || c.Severity != obs.SeverityInfo {
+		t.Fatalf("DB 快照里来源未知的暂停不应告警：%+v", c)
+	}
+}
+
+func TestEnginePauseSourceControlsSeverity(t *testing.T) {
+	for _, tc := range []struct {
+		source   string
+		reason   string
+		severity obs.Severity
+		passed   bool
+	}{
+		{"manual", "人工维护", obs.SeverityInfo, true},
+		{"startup", "站点声明 StartPaused", obs.SeverityInfo, true},
+		{"", "旧快照未记录来源", obs.SeverityInfo, true},
+		{"breaker", "窗口内终态失败数达到阈值", obs.SeverityWarn, false},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			in := engineInput()
+			in.Engine.Sites[0].PauseSource = tc.source
+			in.Engine.Sites[0].PauseReason = tc.reason
+			res, err := (&EngineSection{Querier: &fakeQuerier{}}).Build(context.Background(), in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c := checkByID(res, "engine_paused")
+			if c == nil || c.Severity != tc.severity || c.Passed != tc.passed {
+				t.Fatalf("pause source=%q: %+v", tc.source, c)
+			}
+			if !strings.Contains(tableText(res), tc.reason) {
+				t.Fatalf("站点表丢失暂停原因: %s", tableText(res))
+			}
+			if tc.source != "" && !strings.Contains(tableText(res), tc.source) {
+				t.Fatalf("站点表丢失暂停来源: %s", tableText(res))
+			}
+		})
+	}
+}
+
+func TestEnginePauseFallbackPreservesSourceAndReason(t *testing.T) {
+	in := engineInput()
+	in.Engine.Sites = nil
+	res, err := (&EngineSection{Querier: &fakeQuerier{sites: []obs.SiteState{
+		{Key: "db-site", Paused: true, PauseSource: "manual", PauseReason: "运营检查"},
+	}}}).Build(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tableText(res), "manual") || !strings.Contains(tableText(res), "运营检查") {
+		t.Fatalf("DB fallback 不应丢失暂停原因: %s", tableText(res))
+	}
+	if c := checkByID(res, "engine_paused"); c == nil || c.Severity != obs.SeverityInfo || !c.Passed {
+		t.Fatalf("人工暂停 fallback 不应告警: %+v", c)
 	}
 }
 

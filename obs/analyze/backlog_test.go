@@ -48,7 +48,7 @@ func TestBacklogSectionAgingAndETA(t *testing.T) {
 		t.Fatalf("有吞吐时不该报 throughput_zero：%+v", c)
 	}
 	// 通过时文案必须写吞吐实况，不能仍写「窗口内 0 吞吐」（旧实现无条件写失败句式）。
-	if c := checkByID(res, "throughput_zero"); c == nil || c.Message != "窗口内吞吐 0.05 条/分（非轮询待处理 60 条）" {
+	if c := checkByID(res, "throughput_zero"); c == nil || c.Message != "窗口内吞吐 0.15 条/分（非轮询待处理 60 条）" {
 		t.Fatalf("throughput_zero 通过时应写实况吞吐：%+v", c)
 	}
 }
@@ -65,8 +65,8 @@ func TestThroughputZeroFailureMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := checkByID(res, "throughput_zero")
-	if c == nil || c.Passed || c.Skipped {
-		t.Fatalf("有非轮询待处理且 0 吞吐时应为未通过（非 skipped）：%+v", c)
+	if c == nil || c.Passed || !c.Skipped {
+		t.Fatalf("有非轮询待处理且 0 吞吐时缺少运行证据应为 skipped：%+v", c)
 	}
 	if c.Message != "有 60 条非轮询待处理但窗口内 0 吞吐" {
 		t.Fatalf("throughput_zero 失败文案不对：%q", c.Message)
@@ -100,6 +100,7 @@ func TestBacklogThroughputUsesEffectiveRuntime(t *testing.T) {
 		{Type: events.TypeRunStarted, TS: from},
 		{Type: events.TypeRunStopped, TS: stopped},
 		{Type: events.TypeRunStarted, TS: restarted},
+		{Type: events.TypeRunStopped, TS: now},
 	}
 	for i := 0; i < 60; i++ {
 		evs = append(evs, events.Event{Type: events.TypeTaskFinished, TS: restarted.Add(time.Duration(i) * time.Second), Site: "a", Stage: "detail"})
@@ -115,7 +116,7 @@ func TestBacklogThroughputUsesEffectiveRuntime(t *testing.T) {
 	if math.Abs(m.ThroughputPerMin-0.5) > 1e-9 {
 		t.Fatalf("吞吐 = %v, want 0.5 条/分（有效运行 2h 而不是窗口 4h）：%+v", m.ThroughputPerMin, m)
 	}
-	for _, want := range []string{"有效运行 2h0m0s", "剔除停机 2h0m0s"} {
+	for _, want := range []string{"观测运行（含暂停） 2h0m0s", "已识别停机 2h0m0s"} {
 		if !strings.Contains(res.Summary, want) {
 			t.Fatalf("summary 缺 %q：%s", want, res.Summary)
 		}
@@ -126,7 +127,7 @@ func TestBacklogThroughputUsesEffectiveRuntime(t *testing.T) {
 func TestBacklogSummaryETAUsesTotalThroughput(t *testing.T) {
 	now := time.Date(2026, 10, 29, 14, 0, 0, 0, time.Local)
 	from := now.Add(-time.Hour)
-	evs := []events.Event{}
+	evs := []events.Event{{Type: events.TypeStageSnapshot, TS: now}}
 	for i := 0; i < 30; i++ {
 		evs = append(evs, events.Event{Type: events.TypeTaskFinished, TS: from.Add(time.Duration(i) * time.Minute), Site: "a", Stage: "detail"})
 	}

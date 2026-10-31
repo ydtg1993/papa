@@ -70,6 +70,7 @@ func TestDailyReportFillsRecoveringPerDaySource(t *testing.T) {
 	}
 	a, cfg := newReportTestApp(t, now, evs)
 	a.Config.Obs.Report.OnExit = true
+	a.Config.Obs.Report.Mode = "acceptance"
 
 	a.generateExitReport()
 

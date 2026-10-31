@@ -20,7 +20,7 @@ import (
 )
 
 const reportUsage = `usage:
-  papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] [--run <run_id>] [--snapshot] [--out <dir>] [--no-logs] [--fail-on-verdict]
+  papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] [--run <run_id>] [--snapshot | --acceptance] [--out <dir>] [--no-logs] [--fail-on-verdict]
   papa report list [--out <dir>]
 
 生成一次运行报告（只读）：读事件流 + 日志证据 + 框架状态，输出 report.md / report.json / ai-brief.md / ai-brief.json。
@@ -28,7 +28,8 @@ const reportUsage = `usage:
   -c/--config       配置文件路径（默认 PAPA_CONFIG，再回退 configs/config.yaml）
   --since/--until   时间窗口（RFC3339）；缺省按事件里的最早/最晚时刻
   --run             只保留指定 run_id，输出单份报告（目录名 = run_id；兼容旧的"单次运行"排查用法）
-  --snapshot        强制快照模式：只出单日窗口的一份报告（跨天报错；验收请用默认 acceptance）
+  --snapshot        强制快照模式：只出单日窗口的一份报告（显式跨天窗口报错）
+  --acceptance      强制验收模式：检查本轮是否通过，与 --snapshot 互斥
   --out             输出根目录（默认 obs.report.dir，再回退 ./reports）
   --no-logs         跳过日志证据索引（事件缺失时反而更快）
   --fail-on-verdict 任一日报判定为 fail 或 unknown 时以非零码退出（供 CI/自动化门禁）
@@ -58,13 +59,10 @@ func runReportCmd(args []string) error {
 	if !ok {
 		return fmt.Errorf("读不到配置（用 -c 指定 configs/config.yaml，或设 PAPA_CONFIG）")
 	}
-	// 判定模式：配置 auto 时 CLI = acceptance（验收）；--snapshot 强制快照语义。
-	mode, err := obs.ResolveMode(cfg.Obs.Report.Mode, obs.TriggerCLI)
+	// 默认运行快照；显式 flag 优先于配置，验收需明确选择。
+	mode, err := resolveCLIReportMode(cfg.Obs.Report.Mode, opts)
 	if err != nil {
 		return err
-	}
-	if opts.snapshot {
-		mode = obs.ModeSnapshot
 	}
 
 	evFile := cfg.Obs.Events.File
@@ -100,13 +98,9 @@ func runReportCmd(args []string) error {
 		"events_file":  filepath.Join(cfg.Log.Dir, evFile),
 		"log_dir":      cfg.Log.Dir,
 	}
-	// 引擎上下文：先给零值语义的 Source=none（不据此做暂停跳过）；首次拿到事件时
-	// 再用 DB 快照 + 事件刷新一次（之后不再重复查库）。
-	engine := obs.EngineState{Source: "none"}
 	generate := func(src *obs.Sources) (*obs.Report, error) {
-		if engine.Source == "none" && len(src.Events) > 0 {
-			engine = analyze.LoadEngineState(context.Background(), db, src.Events, time.Now())
-		}
+		// 每份日报使用自己的事件，不能复用首日的暂停/运行状态。
+		engine := analyze.LoadEngineState(context.Background(), db, src.Events, time.Now())
 		degraded := append([]string(nil), src.Degraded...)
 		if dbErr != nil {
 			degraded = append(degraded, "数据库连接失败（跳过框架状态检查）: "+dbErr.Error())
@@ -162,7 +156,7 @@ func runReportCmd(args []string) error {
 		return nil
 	}
 
-	if mode == obs.ModeSnapshot && opts.runID == "" {
+	if opts.snapshot && opts.runID == "" {
 		// --snapshot（且没有 --run）：只出「最后一个事件所在本地日」的一份快照报告。
 		// 不能把全事件窗口直接交给 snapshotWindow —— 多天事件文件会误报跨天。
 		probeCfg := base
@@ -181,7 +175,7 @@ func runReportCmd(args []string) error {
 			day = time.Date(last.Year(), last.Month(), last.Day(), 0, 0, 0, 0, time.Local)
 			end = probe.Run.To
 		} else {
-			// 显式窗口：收紧到本地日；跨日直接指路 acceptance（多日报告）。
+			// 显式 --snapshot 窗口收紧到本地日；默认运行报告可按日拆分。
 			day, end, err = snapshotWindow(probe.Run.From, probe.Run.To, time.Local)
 			if err != nil {
 				return err
@@ -250,6 +244,7 @@ type reportArgs struct {
 	outDir        string
 	noLogs        bool
 	snapshot      bool
+	acceptance    bool
 	failOnVerdict bool
 }
 
@@ -315,6 +310,8 @@ func parseReportArgs(args []string) (reportArgs, error) {
 			out.runID = strings.TrimPrefix(a, "--run=")
 		case a == "--snapshot":
 			out.snapshot = true
+		case a == "--acceptance":
+			out.acceptance = true
 		case a == "--out":
 			v, ok := take(&i)
 			if !ok {
@@ -331,12 +328,28 @@ func parseReportArgs(args []string) (reportArgs, error) {
 			return out, fmt.Errorf("未知参数 %q\n\n%s", a, reportUsage)
 		}
 	}
+	if out.snapshot && out.acceptance {
+		return out, errors.New("--snapshot 与 --acceptance 不能同时使用")
+	}
 	return out, nil
+}
+
+func resolveCLIReportMode(configured string, opts reportArgs) (obs.Mode, error) {
+	if opts.snapshot && opts.acceptance {
+		return "", errors.New("--snapshot 与 --acceptance 不能同时使用")
+	}
+	if opts.snapshot {
+		return obs.ModeSnapshot, nil
+	}
+	if opts.acceptance {
+		return obs.ModeAcceptance, nil
+	}
+	return obs.ResolveMode(configured, obs.TriggerCLI)
 }
 
 // snapshotWindow 把窗口的起点收紧到**本地日**：返回当天 0 点与该窗口终点；跨日返回错误。
 //
-// snapshot 模式回答「现在这一刻的当天」，一份报告只覆盖一天 —— 多天窗口是 acceptance 语义。
+// 显式 --snapshot 保留单日用法；默认运行报告可按本地日拆分多天窗口。
 func snapshotWindow(from, to time.Time, loc *time.Location) (time.Time, time.Time, error) {
 	if loc == nil {
 		loc = time.Local
@@ -347,7 +360,7 @@ func snapshotWindow(from, to time.Time, loc *time.Location) (time.Time, time.Tim
 	t := to.In(loc)
 	endDay := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
 	if !endDay.Equal(day) {
-		return time.Time{}, time.Time{}, fmt.Errorf("snapshot 模式只支持单日窗口（%s ~ %s 跨天）；多日报告请用 acceptance 模式",
+		return time.Time{}, time.Time{}, fmt.Errorf("--snapshot 只支持单日窗口（%s ~ %s 跨天）；多日报告请省略 --snapshot",
 			from.Format("2006-01-02 15:04"), to.Format("2006-01-02 15:04"))
 	}
 	return day, to, nil

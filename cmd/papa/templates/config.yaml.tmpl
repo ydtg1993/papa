@@ -93,7 +93,7 @@ obs:
   report:
     on_exit: false               # 优雅退出时自动生成报告（在事件 flush 之后、关库之前）
     interval: "0"                # 定时生成报告：如 "30m" = 每 30 分钟刷新当天日报；0/不写 = 关（与 on_exit 独立，可只开定时）
-    # mode: auto              # auto（默认）= 定时出 snapshot、退出/CLI 出 acceptance；
+    # mode: auto              # auto（默认）= 定时/退出/CLI 均出 snapshot；验收显式选 acceptance；
                               # snapshot 不因常驻积压判 fail；acceptance 是验收口径
     dir: "./reports"             # 产物目录：<dir>/<2006-01-02>/（report.md / report.json / ai-brief.md / ai-brief.json）；后台「obs报告」页也读它
     retention: "168h"            # 报告保留期；默认 7 天；负数 = 永久保留（每次生成报告后清过期目录）

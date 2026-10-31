@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/obs"
 	"github.com/ydtg1993/papa/v3/obs/report"
 )
 
@@ -16,8 +18,10 @@ func writeReportTestEvents(t *testing.T, path string, now time.Time) {
 	lines := []string{
 		fmt.Sprintf(`{"v":1,"seq":1,"ts":%q,"run_id":"r-y","type":"run_started"}`, now.AddDate(0, 0, -1).Format(time.RFC3339Nano)),
 		fmt.Sprintf(`{"v":1,"seq":2,"ts":%q,"run_id":"r-y","type":"task_finished","site":"s","stage":"catalog","task_id":1,"outcome":"success","duration_ms":10}`, now.AddDate(0, 0, -1).Add(time.Minute).Format(time.RFC3339Nano)),
+		fmt.Sprintf(`{"v":1,"seq":3,"ts":%q,"run_id":"r-y","type":"stage_snapshot","stages":{"s:catalog":{"workers":1}}}`, now.AddDate(0, 0, -1).Add(time.Minute).Format(time.RFC3339Nano)),
 		fmt.Sprintf(`{"v":1,"seq":1,"ts":%q,"run_id":"r-t","type":"run_started"}`, now.Format(time.RFC3339Nano)),
 		fmt.Sprintf(`{"v":1,"seq":2,"ts":%q,"run_id":"r-t","type":"task_finished","site":"s","stage":"catalog","task_id":2,"outcome":"success","duration_ms":20}`, now.Add(time.Minute).Format(time.RFC3339Nano)),
+		fmt.Sprintf(`{"v":1,"seq":3,"ts":%q,"run_id":"r-t","type":"stage_snapshot","stages":{}}`, now.Add(time.Minute).Format(time.RFC3339Nano)),
 	}
 	body := ""
 	for _, line := range lines {
@@ -35,6 +39,7 @@ func writeReportTestConfig(t *testing.T, dir, logDir, reportsDir string) string 
 	body := fmt.Sprintf(`log:
   dir: %q
 db:
+  dsn: "invalid-dsn-for-offline-report-tests"
   max_idle_conns: 10
   max_open_conns: 100
 obs:
@@ -80,6 +85,24 @@ func TestReportGenerateSplitsDailyAndPrunes(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(reportsDir, day, name)); err != nil {
 				t.Fatalf("缺少日报 %s/%s：%v", day, name, err)
 			}
+		}
+		raw, err := os.ReadFile(filepath.Join(reportsDir, day, "report.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rep obs.Report
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			t.Fatal(err)
+		}
+		if rep.Mode != obs.ModeSnapshot {
+			t.Fatalf("默认日报 mode=%q, want snapshot", rep.Mode)
+		}
+		wantPools := 0
+		if day == report.DayName(now.AddDate(0, 0, -1)) {
+			wantPools = 1
+		}
+		if rep.Engine.ActivePools != wantPools {
+			t.Fatalf("%s 活跃池=%d, want %d（不能跨天缓存状态）", day, rep.Engine.ActivePools, wantPools)
 		}
 	}
 	if _, err := os.Stat(oldDayDir); !os.IsNotExist(err) {

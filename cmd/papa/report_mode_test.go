@@ -22,6 +22,35 @@ func TestParseReportArgsSnapshot(t *testing.T) {
 	}
 }
 
+func TestReportModeFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name, configured string
+		args             []string
+		want             obs.Mode
+	}{
+		{"default", "auto", nil, obs.ModeSnapshot},
+		{"configured acceptance", "acceptance", nil, obs.ModeAcceptance},
+		{"force acceptance", "snapshot", []string{"--acceptance"}, obs.ModeAcceptance},
+		{"force snapshot", "acceptance", []string{"--snapshot"}, obs.ModeSnapshot},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseReportArgs(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolveCLIReportMode(tc.configured, opts)
+			if err != nil || got != tc.want {
+				t.Fatalf("mode=%q err=%v, want %q", got, err, tc.want)
+			}
+		})
+	}
+	for _, args := range [][]string{{"--snapshot", "--acceptance"}, {"--acceptance", "--snapshot"}} {
+		if _, err := parseReportArgs(args); err == nil {
+			t.Fatalf("互斥参数应报错: %v", args)
+		}
+	}
+}
+
 func TestSnapshotWindowRejectsCrossDay(t *testing.T) {
 	loc := time.Local
 	from := time.Date(2026, 10, 28, 12, 0, 0, 0, loc)

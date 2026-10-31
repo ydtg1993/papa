@@ -420,7 +420,7 @@ var rules = []rule{
 		case "auto", "snapshot", "acceptance":
 			return nil
 		default:
-			return fmt.Errorf("  必须是 auto/snapshot/acceptance 之一（实得 %q）；auto = 定时 snapshot、退出/CLI acceptance", c.Obs.Report.Mode)
+			return fmt.Errorf("  必须是 auto/snapshot/acceptance 之一（实得 %q）；auto = 定时/退出/CLI 均 snapshot；验收显式选择 acceptance", c.Obs.Report.Mode)
 		}
 	}},
 

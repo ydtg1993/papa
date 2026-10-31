@@ -7,6 +7,7 @@ package pattern
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ydtg1993/papa/v3/obs"
@@ -50,7 +51,7 @@ func (p *EventLossPattern) Match(in *obs.Input) []obs.Problem {
 	}}
 }
 
-// ProcessRestartPattern：窗口内多次 run_started = 进程重启过。
+// ProcessRestartPattern 只提示缺少明确正常停止证据的重启。
 type ProcessRestartPattern struct{}
 
 func (p *ProcessRestartPattern) Key() string { return "process-restart" }
@@ -59,26 +60,62 @@ func (p *ProcessRestartPattern) Match(in *obs.Input) []obs.Problem {
 	if in == nil {
 		return nil
 	}
-	var starts int
+	var boundaries []events.Event
 	for _, ev := range in.Events {
-		if ev.Type == events.TypeRunStarted {
-			starts++
+		if ev.Type == events.TypeRunStarted || ev.Type == events.TypeRunStopped {
+			boundaries = append(boundaries, ev)
 		}
 	}
-	if starts <= 1 {
+	sort.SliceStable(boundaries, func(i, j int) bool { return boundaries[i].TS.Before(boundaries[j].TS) })
+	var previous *events.Event
+	var stopped *events.Event
+	var uncertain int
+	var evidence []obs.Evidence
+	for i := range boundaries {
+		ev := &boundaries[i]
+		if ev.Type == events.TypeRunStopped {
+			if previous != nil && ev.RunID == previous.RunID {
+				stopped = ev
+			}
+			continue
+		}
+		if previous != nil {
+			// 同一 run_id 的重复开始记录不能成为重启证据。
+			if ev.RunID != "" && ev.RunID == previous.RunID {
+				continue
+			}
+			if !normalStop(stopped) {
+				uncertain++
+				excerpt := "未找到匹配的 run_stopped，退出原因未知"
+				if stopped != nil {
+					excerpt = fmt.Sprintf("run_stopped outcome=%q unfinished=%d queued=%d error=%q",
+						stopped.Outcome, stopped.Counts["unfinished"], stopped.Counts["queued"], stopped.Error)
+				}
+				evidence = append(evidence, obs.Evidence{Type: "event",
+					Ref: fmt.Sprintf("run_id=%s → run_id=%s", previous.RunID, ev.RunID), Excerpt: excerpt})
+			}
+		}
+		previous, stopped = ev, nil
+	}
+	if uncertain == 0 {
 		return nil
 	}
 	return []obs.Problem{{
 		ID: "process-restarts", Severity: obs.SeverityWarn,
-		Title: fmt.Sprintf("窗口内进程启动 %d 次（发生过重启）", starts),
-		Count: starts,
+		Title: fmt.Sprintf("窗口内 %d 次重启缺少明确正常的停止证据", uncertain),
+		Count: uncertain, Evidence: evidence,
 		Hypotheses: []obs.Hypothesis{{
-			Text: "崩溃/被 OOM/被部署重启，而不是计划内重启", Confidence: "medium",
-			Verify:  "对照 run_stopped.outcome 与系统日志；看是否有未排空任务",
-			FixHint: "定位重启原因；重启后由 recover_queue 兜底重投",
+			Text: "结束事件缺失或退出记录有错误，当前证据不足以确定退出原因", Confidence: "low",
+			Verify:  "对照匹配 run_id 的 run_stopped.outcome、部署记录与系统日志；启动次数不能证明崩溃或 OOM",
+			FixHint: "确认退出与事件记录是否完整；未完成任务由 recover_queue 在下次启动恢复",
 		}},
-		Acceptance: "重跑窗口内只有 1 次 run_started",
+		Acceptance: "计划重启有匹配的正常 run_stopped；异常退出有独立证据说明原因",
 	}}
+}
+
+func normalStop(ev *events.Event) bool {
+	// partial 表示有明确的停止收尾，未完成任务留待下次恢复；存留数量本身不是异常退出证据。
+	return ev != nil && ev.Error == "" && (ev.Outcome == "drained" || ev.Outcome == "partial")
 }
 
 // QueueNotDrainingPattern：最后一次快照队列仍有积压，且窗口内没有轮次处理。
@@ -87,39 +124,61 @@ type QueueNotDrainingPattern struct{}
 func (p *QueueNotDrainingPattern) Key() string { return "queue-not-draining" }
 
 func (p *QueueNotDrainingPattern) Match(in *obs.Input) []obs.Problem {
-	if in == nil {
+	if in == nil || (in.Mode == obs.ModeSnapshot && in.Engine.Inactive()) {
 		return nil
 	}
 	var last *events.Event
 	var rounds int
+	activeSites := map[string]bool{}
+	pausedSites := map[string]bool{}
+	if in.Mode == obs.ModeSnapshot {
+		for _, site := range in.Engine.Sites {
+			pausedSites[site.Key] = site.Paused
+		}
+	}
 	for i := range in.Events {
 		ev := &in.Events[i]
-		if ev.Type == events.TypeStageSnapshot && len(ev.Stages) > 0 {
-			last = ev
+		if ev.Type == events.TypeStageSnapshot && (last == nil || !ev.TS.Before(last.TS)) {
+			last = ev // 空 stages 也代表有效的末次状态，不能使用更早的积压。
 		}
 		if ev.Type == events.TypeQueueRound {
 			rounds++
 		}
+		switch ev.Type {
+		case events.TypeTaskClaimed, events.TypeTaskFinished, events.TypeTaskFailed, events.TypeTaskRetry:
+			if !pausedSites[ev.Site] {
+				activeSites[ev.Site] = true
+			}
+		}
 	}
-	if last == nil {
+	if last == nil || len(activeSites) == 0 {
 		return nil
 	}
 	var backlog int
-	for _, s := range last.Stages {
-		backlog += s.QueueLen + s.InProgress
+	for key, s := range last.Stages {
+		site := s.Site
+		if site == "" {
+			site, _, _ = strings.Cut(key, ":")
+		}
+		if pausedSites[site] || (!activeSites[site] && !activeSites[""]) {
+			continue
+		}
+		backlog += s.InProgress // 已含 QueueLen，不能把排队再累加一遍。
 	}
 	for _, q := range last.Queues {
-		backlog += int(q.Backlog)
+		if q.Enabled || q.Running {
+			backlog += int(q.Backlog)
+		}
 	}
 	if backlog <= 0 || rounds > 0 {
 		return nil
 	}
 	return []obs.Problem{{
 		ID: "queue-not-draining", Severity: obs.SeverityWarn,
-		Title: fmt.Sprintf("队列末次快照仍有 %d 条积压/在跑，且窗口内没有队列轮次", backlog),
+		Title: fmt.Sprintf("有执行活动的队列末次快照仍有 %d 条未完成/积压，且窗口内没有队列轮次", backlog),
 		Count: backlog,
 		Hypotheses: []obs.Hypothesis{{
-			Text: "worker 被暂停/熔断闸住，或队列治理未在运行", Confidence: "medium",
+			Text: "执行窗口仍有未完成任务，需结合负载判断队列是否在收敛", Confidence: "low",
 			Verify:  "查 /api/monitor 的 queues/stages 与熔断状态；确认队列 enabled",
 			FixHint: "检查站点暂停/熔断、worker pool 回收、队列配置",
 		}},

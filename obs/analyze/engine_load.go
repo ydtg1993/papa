@@ -72,7 +72,10 @@ func parseSiteStates(raw []byte) ([]obs.SiteState, error) {
 	}
 	states := make([]obs.SiteState, 0, len(sites))
 	for _, s := range sites {
-		states = append(states, obs.SiteState{Key: s.Key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt, StageCount: s.StageCount})
+		states = append(states, obs.SiteState{
+			Key: s.Key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt,
+			PauseSource: s.PauseSource, PauseReason: s.PauseReason, StageCount: s.StageCount,
+		})
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].Key < states[j].Key })
 	return states, nil

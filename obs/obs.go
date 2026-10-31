@@ -169,16 +169,17 @@ type Baseline struct {
 
 // Input 是报告引擎给 Section/Pattern 的只读输入。
 type Input struct {
-	Run       RunMeta
-	EventMeta EventMeta
-	Events    []events.Event
-	Logs      LogSummary
-	DB        *gorm.DB
-	Baseline  Baseline
-	Degraded  []string
-	Now       time.Time
-	Mode      Mode
-	Engine    EngineState
+	Historical bool // 当前DB快照不能用于历史窗口的完成/一致性判定。
+	Run        RunMeta
+	EventMeta  EventMeta
+	Events     []events.Event
+	Logs       LogSummary
+	DB         *gorm.DB
+	Baseline   Baseline
+	Degraded   []string
+	Now        time.Time
+	Mode       Mode
+	Engine     EngineState
 	// Inputs 是本次报告的自证信息（Generate 已填好快照时刻/窗口/事件覆盖，其余由调用方提供）。
 	Inputs Inputs
 }
@@ -210,6 +211,7 @@ type Report struct {
 	Checks        []Check           `json:"checks"`
 	Problems      []Problem         `json:"problems"`
 	Mode          Mode              `json:"mode,omitempty"`
+	Historical    bool              `json:"historical,omitempty"`
 	VerdictReason string            `json:"verdict_reason,omitempty"`
 	Engine        EngineState       `json:"engine"`
 	// Inputs 是报告自证信息：这份报告基于哪一刻的快照、什么版本/配置/阈值、事件覆盖到哪。
@@ -253,16 +255,17 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 	inp.WindowTo = opts.Run.To
 	inp.Events = ComputeEventCoverage(opts.Events)
 	in := &Input{
-		Run:       opts.Run,
-		EventMeta: opts.EventMeta,
-		Events:    opts.Events,
-		Logs:      opts.Logs,
-		DB:        opts.DB,
-		Baseline:  opts.Baseline,
-		Now:       now,
-		Mode:      opts.Mode,
-		Engine:    opts.Engine,
-		Inputs:    inp,
+		Historical: isHistoricalWindow(opts.Run, now),
+		Run:        opts.Run,
+		EventMeta:  opts.EventMeta,
+		Events:     opts.Events,
+		Logs:       opts.Logs,
+		DB:         opts.DB,
+		Baseline:   opts.Baseline,
+		Now:        now,
+		Mode:       opts.Mode,
+		Engine:     opts.Engine,
+		Inputs:     inp,
 	}
 	rep := &Report{
 		SchemaVersion: SchemaVersion,
@@ -273,6 +276,7 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		Environment:   opts.Environment,
 		Degraded:      append([]string(nil), opts.Degraded...),
 		Mode:          opts.Mode,
+		Historical:    in.Historical,
 		Engine:        opts.Engine,
 		Inputs:        inp,
 	}
@@ -287,6 +291,9 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		}
 		if res == nil {
 			continue
+		}
+		if in.Historical {
+			skipHistoricalStateChecks(s.Key(), res)
 		}
 		rep.Sections = append(rep.Sections, SectionReport{
 			Key: s.Key(), Title: s.Title(), Summary: res.Summary,
@@ -329,14 +336,27 @@ func VerdictOf(checks []Check) Verdict {
 }
 
 // applyVerdictPolicy 在聚合判定之后做 fail-closed 收口：
-// 已经 fail 的不改；降级、无可判定检查或暂停快照下的 pass 一律降成 unknown。
+// 检查与异常模式共同参与结论；数据不足时不宣称通过。
 func applyVerdictPolicy(rep *Report) {
+	for _, p := range rep.Problems {
+		if p.Severity == SeverityFail && rep.Verdict != VerdictFail {
+			rep.Verdict = VerdictFail
+			rep.VerdictReason = "发现异常：" + p.Title
+		} else if p.Severity == SeverityWarn && rep.Verdict != VerdictFail && rep.Verdict != VerdictWarn {
+			rep.Verdict = VerdictWarn
+			rep.VerdictReason = "发现异常：" + p.Title
+		}
+	}
 	switch rep.Verdict {
 	case VerdictFail:
-		rep.VerdictReason = failReason(rep.Checks)
+		if rep.VerdictReason == "" {
+			rep.VerdictReason = failReason(rep.Checks)
+		}
 		return
 	case VerdictWarn:
-		rep.VerdictReason = warnReason(rep.Checks)
+		if rep.VerdictReason == "" {
+			rep.VerdictReason = warnReason(rep.Checks)
+		}
 		return
 	}
 	if !hasApplicableChecks(rep.Checks) {
@@ -349,10 +369,7 @@ func applyVerdictPolicy(rep *Report) {
 		rep.VerdictReason = "报告降级，数据不完整：" + rep.Degraded[0]
 		return
 	}
-	if rep.Mode == ModeSnapshot && rep.Engine.Inactive() {
-		rep.Verdict = VerdictUnknown
-		rep.VerdictReason = "引擎暂停/空闲，快照模式不评估运行健康"
-	}
+	rep.VerdictReason = "适用异常检查未发现异常；进度与待处理数量不代表故障"
 }
 
 // hasApplicableChecks 只把 fail/warn 当判定项；info 只是提示，不承担「已检查」的语义。
@@ -392,6 +409,11 @@ func synthesizeProblems(rep *Report) {
 	have := make(map[string]bool, len(rep.Problems))
 	for _, p := range rep.Problems {
 		have[p.ID] = true
+		for _, ev := range p.Evidence {
+			if ev.Type == "check" {
+				have["check-"+ev.Ref] = true
+			}
+		}
 	}
 	for _, c := range rep.Checks {
 		if c.Passed || c.Skipped || c.Severity == SeverityInfo {

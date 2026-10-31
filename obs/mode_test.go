@@ -11,11 +11,15 @@ func TestResolveMode(t *testing.T) {
 		wantErr    bool
 	}{
 		{"auto+periodic", "auto", TriggerPeriodic, ModeSnapshot, false},
-		{"auto+exit", "auto", TriggerExit, ModeAcceptance, false},
-		{"auto+cli", "auto", TriggerCLI, ModeAcceptance, false},
+		{"auto+exit", "auto", TriggerExit, ModeSnapshot, false},
+		{"auto+cli", "auto", TriggerCLI, ModeSnapshot, false},
 		{"empty+periodic", "", TriggerPeriodic, ModeSnapshot, false},
+		{"empty+exit", "", TriggerExit, ModeSnapshot, false},
+		{"empty+cli", "", TriggerCLI, ModeSnapshot, false},
 		{"force snapshot cli", "snapshot", TriggerCLI, ModeSnapshot, false},
 		{"force acceptance periodic", "acceptance", TriggerPeriodic, ModeAcceptance, false},
+		{"force acceptance exit", "acceptance", TriggerExit, ModeAcceptance, false},
+		{"force acceptance cli", "acceptance", TriggerCLI, ModeAcceptance, false},
 		{"trim space", "  snapshot  ", TriggerExit, ModeSnapshot, false},
 		{"bogus value", "weekly", TriggerCLI, "", true},
 		{"unknown trigger", "auto", Trigger("cron"), "", true},

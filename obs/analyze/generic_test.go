@@ -228,7 +228,7 @@ func TestCrawlFailRateMessageIsAttemptScope(t *testing.T) {
 	}
 }
 
-// 运行边界要给出「有效运行时长（剔除停机）」，口径与吞吐/ETA 的分母一致。
+// 运行边界要给出「有事件依据的运行时长（含暂停）」，口径与吞吐/ETA 的分母一致。
 func TestRuntimeTableShowsEffectiveDuration(t *testing.T) {
 	now := time.Date(2026, 10, 29, 14, 0, 0, 0, time.Local)
 	from := now.Add(-10 * time.Hour)
@@ -240,6 +240,7 @@ func TestRuntimeTableShowsEffectiveDuration(t *testing.T) {
 			{Type: events.TypeRunStopped, TS: stopped},
 			{Type: events.TypeRunStarted, TS: restarted},
 			{Type: events.TypeTaskFinished, TS: restarted.Add(time.Hour), Site: "a", Stage: "detail"},
+			{Type: events.TypeStageSnapshot, TS: now},
 		}}
 	res, err := (&Generic{}).Build(context.Background(), in)
 	if err != nil {
@@ -251,11 +252,32 @@ func TestRuntimeTableShowsEffectiveDuration(t *testing.T) {
 	}
 	var value string
 	for _, row := range tbl.Rows {
-		if len(row) == 2 && row[0] == "有效运行时长（剔除停机）" {
+		if len(row) == 2 && row[0] == "有事件依据的运行时长（含暂停）" {
 			value = row[1]
 		}
 	}
-	if value != "4h0m0s（剔除停机 6h0m0s）" {
-		t.Fatalf("有效运行时长 = %q, want 4h0m0s（剔除停机 6h0m0s）", value)
+	if value != "4h0m0s（已识别停机 6h0m0s）" {
+		t.Fatalf("有效运行时长 = %q, want 4h0m0s（已识别停机 6h0m0s）", value)
+	}
+}
+
+func TestFinalEmptySnapshotDoesNotRetainOldQueue(t *testing.T) {
+	now := time.Now()
+	first := stageSnapshot(now.Add(-time.Minute), 5)
+	stage := first.Stages["s:catalog"]
+	stage.InProgress = 5
+	first.Stages["s:catalog"] = stage
+	in := &obs.Input{Now: now, Events: []events.Event{first, {Type: events.TypeStageSnapshot, TS: now}}}
+	res := &obs.SectionResult{}
+	(&Generic{}).addQueue(in, res)
+	for _, tbl := range res.Tables {
+		if tbl.Title == "队列快照（窗口内最后一次）" {
+			t.Fatalf("empty final snapshot retained stale queue: %+v", tbl)
+		}
+	}
+	for _, p := range res.Problems {
+		if p.ID == "no-stage-snapshot" {
+			t.Fatal("empty snapshot is not missing snapshot")
+		}
 	}
 }

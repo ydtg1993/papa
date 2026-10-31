@@ -80,24 +80,15 @@ func (s *BacklogSection) Build(ctx context.Context, in *obs.Input) (*obs.Section
 		}
 		perf[ev.Site+"/"+ev.Stage]++
 	}
-	// 分母用**有效运行时长** = 窗口 - 停机区间。进程不在的时段没有事件，把它算进吞吐
-	// 会按比例压低速率、放大 ETA（2026-10-29 报告就是 9h47m 停机把 1.38/min 低报到真实
-	// 值的约三分之一）。停机区间由 obs.ComputeDowntimes 从 run_stopped↔run_started 还原。
-	to := in.Run.To
-	if to.IsZero() {
-		to = in.Now
-	}
-	window := to.Sub(in.Run.From)
-	if in.Run.From.IsZero() || window <= 0 {
-		window = time.Minute
-	}
+	// 分母仅使用各run可见事件区间的并集（含暂停），不把日历空白当作运行。
+	to := reportWindowTo(in)
 	dts := obs.ComputeDowntimes(in.Events, to)
 	downtime := obs.TotalDowntime(dts, in.Run.From, to)
-	effective := window - downtime
-	if effective <= 0 {
-		effective = window
-	}
+	effective := obs.ObservedRuntime(in.Events, in.Run.From, to)
 	effectiveMin := effective.Minutes()
+	if effectiveMin <= 0 {
+		effectiveMin = 1
+	}
 	pendingByStage := map[string]int64{}
 	for _, b := range buckets {
 		if b.Status == 0 && b.Repeatable == 0 {
@@ -105,7 +96,7 @@ func (s *BacklogSection) Build(ctx context.Context, in *obs.Input) (*obs.Section
 		}
 	}
 
-	idle := in.Engine.Inactive()
+	idle := in.Engine.Inactive() || in.Historical || effective <= 0
 	etaTbl := obs.Table{Title: "吞吐与 ETA", Columns: []string{"站点/阶段", "窗口完成数", "吞吐(条/分)", "非轮询待处理", "ETA"}}
 	keys := make([]string, 0, len(pendingByStage))
 	for k := range pendingByStage {
@@ -116,12 +107,22 @@ func (s *BacklogSection) Build(ctx context.Context, in *obs.Input) (*obs.Section
 	for _, k := range keys {
 		n := perf[k]
 		rate := float64(n) / effectiveMin
+		if effective <= 0 {
+			rate = 0
+		}
 		totalRate += rate
 		eta := "-"
 		if rate > 0 && !idle {
 			eta = fmtEta(time.Duration(float64(pendingByStage[k])/rate) * time.Minute)
 		} else if idle {
-			eta = "ETA 不适用（引擎未运行）"
+			switch {
+			case in.Historical:
+				eta = "ETA 不适用（当前积压与历史吞吐不能混算）"
+			case effective <= 0:
+				eta = "ETA 不适用（事件时长不足）"
+			default:
+				eta = "ETA 不适用（引擎未运行）"
+			}
 		}
 		etaTbl.Rows = append(etaTbl.Rows, []string{k, fmt.Sprintf("%d", n), fmt.Sprintf("%.2f", rate), fmt.Sprintf("%d", pendingByStage[k]), eta})
 	}
@@ -138,9 +139,9 @@ func (s *BacklogSection) Build(ctx context.Context, in *obs.Input) (*obs.Section
 		TotalPending: totalPending, TotalProcessing: totalProcessing,
 		NonRepeatablePending: nonRepeatablePending, ThroughputPerMin: totalRate, ETA: etaText,
 	}
-	runText := "有效运行 " + fmtSpan(effective)
+	runText := "观测运行（含暂停） " + fmtSpan(effective)
 	if downtime > 0 {
-		runText += "（剔除停机 " + fmtSpan(downtime) + "）"
+		runText += "（已识别停机 " + fmtSpan(downtime) + "）"
 	}
 	res.Summary = fmt.Sprintf("积压 %d 条（其中非轮询待处理 %d、处理中 %d），吞吐 %.2f 条/分（%s），预计 %s",
 		totalPending+totalProcessing, nonRepeatablePending, totalProcessing, totalRate, runText, orDash(etaText))
@@ -161,7 +162,11 @@ func (s *BacklogSection) Build(ctx context.Context, in *obs.Input) (*obs.Section
 	default:
 		zeroMsg = "窗口内 0 吞吐（无非轮询待处理）"
 	}
-	zero := obs.NewCheck("throughput_zero", obs.SeverityWarn, zeroPassed, zeroMsg, "引擎在跑但没吃任务，通常是 worker/队列问题")
+	severity := obs.SeverityWarn
+	if in.Mode == obs.ModeSnapshot {
+		severity = obs.SeverityInfo
+	}
+	zero := obs.NewCheck("throughput_zero", severity, zeroPassed, zeroMsg, "单窗口无产出只展示状态；排查异常需结合执行活动、持续停滞或失败证据")
 	if idle {
 		zero.Skipped, zero.SkipReason = true, "引擎暂停/空闲，ETA 与吞吐不适用"
 	}

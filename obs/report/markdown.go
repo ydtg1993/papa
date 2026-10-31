@@ -69,6 +69,9 @@ func Markdown(rep *obs.Report) string {
 	if !rep.Inputs.SnapshotAt.IsZero() {
 		fmt.Fprintf(&b, "- DB 快照时刻：%s（状态层数字取这一时刻的全库现状）\n", fmtTime(rep.Inputs.SnapshotAt))
 	}
+	if rep.Historical {
+		b.WriteString("- 历史窗口：当前 DB/引擎状态不代表该日期末，相关状态检查不参与历史判定；历史事件异常仍参与判定。\n")
+	}
 	if rep.Inputs.PapaVersion != "" {
 		fmt.Fprintf(&b, "- 版本：%s", rep.Inputs.PapaVersion)
 		if rep.Inputs.PapaCommit != "" {

@@ -575,12 +575,12 @@ func (a *App) generateDailyReports(trigger obs.Trigger) {
 	a.reportMu.Lock()
 	defer a.reportMu.Unlock()
 
-	// 触发方式决定默认语义：定时 = snapshot（现在怎样），退出 = acceptance（这轮通过没）。
-	// 配置可强制覆盖；未知值回退 acceptance（fail-closed：宁可按验收判红，也别漏判）。
+	// 触发方式决定默认语义：定时与正常退出均为 snapshot；验收须显式配置 acceptance。
+	// 配置可强制覆盖；未知值记录警告并回退运行快照。
 	mode, err := obs.ResolveMode(cfg.Obs.Report.Mode, trigger)
 	if err != nil {
-		a.Logger.Sys.Warnf("%s: 模式解析失败，回退 acceptance：%s", trigger, err.Error())
-		mode = obs.ModeAcceptance
+		a.Logger.Sys.Warnf("%s: 模式解析失败，回退 snapshot：%s", trigger, err.Error())
+		mode = obs.ModeSnapshot
 	}
 
 	timeout := cfg.Obs.Report.Timeout
@@ -704,7 +704,7 @@ func (a *App) obsEngineState() obs.EngineState {
 	stats := a.Engine.GetSiteStats()
 	sites := make([]obs.SiteState, 0, len(stats))
 	for key, s := range stats {
-		sites = append(sites, obs.SiteState{Key: key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt, StageCount: s.StageCount})
+		sites = append(sites, obs.SiteState{Key: key, Paused: s.BreakerPaused, PausedAt: s.BreakerPausedAt, StageCount: s.StageCount, PauseSource: s.PauseSource, PauseReason: s.PauseReason})
 	}
 	sort.Slice(sites, func(i, j int) bool { return sites[i].Key < sites[j].Key })
 	st.Source = "engine"

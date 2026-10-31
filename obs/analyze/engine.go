@@ -53,17 +53,28 @@ func (s *EngineSection) Build(ctx context.Context, in *obs.Input) (*obs.SectionR
 			in.Degraded = append(in.Degraded, "engine state: 站点快照查询失败: "+err.Error())
 		}
 	}
-	tbl := obs.Table{Title: "站点状态", Columns: []string{"站点", "暂停", "暂停时间", "阶段数"}}
-	paused := 0
+	tbl := obs.Table{Title: "站点状态", Columns: []string{"站点", "暂停", "暂停来源", "暂停原因", "暂停时间", "阶段数"}}
+	paused, breakerPaused := 0, 0
 	for _, st := range sites {
+		source, reason := "-", "-"
 		if st.Paused {
 			paused++
+			source, reason = st.PauseSource, st.PauseReason
+			if source == "" {
+				source = "未知"
+			}
+			if reason == "" {
+				reason = "未记录"
+			}
+			if strings.EqualFold(st.PauseSource, "breaker") {
+				breakerPaused++
+			}
 		}
 		at := "-"
 		if !st.PausedAt.IsZero() {
 			at = fmtTime(st.PausedAt)
 		}
-		tbl.Rows = append(tbl.Rows, []string{st.Key, boolText(st.Paused), at, fmt.Sprintf("%d", st.StageCount)})
+		tbl.Rows = append(tbl.Rows, []string{st.Key, boolText(st.Paused), source, reason, at, fmt.Sprintf("%d", st.StageCount)})
 	}
 	res.Tables = append(res.Tables, tbl)
 
@@ -135,8 +146,13 @@ func (s *EngineSection) Build(ctx context.Context, in *obs.Input) (*obs.SectionR
 	res.Tables = append(res.Tables, rt)
 
 	// Checks
-	pausedCheck := obs.NewCheck("engine_paused", obs.SeverityWarn, paused == 0,
-		fmt.Sprintf("%d/%d 个站点处于暂停", paused, len(sites)), "暂停期间「期末积压/卡住」不代表故障")
+	pauseSeverity := obs.SeverityInfo
+	if breakerPaused > 0 {
+		pauseSeverity = obs.SeverityWarn
+	}
+	pausedCheck := obs.NewCheck("engine_paused", pauseSeverity, breakerPaused == 0,
+		fmt.Sprintf("%d/%d 个站点处于暂停（熔断暂停 %d）", paused, len(sites), breakerPaused),
+		"人工/启动暂停是运行状态；熔断暂停需检查失败原因。暂停来源未知时不推断为熔断")
 	res.Checks = append(res.Checks, pausedCheck)
 	// recover 重投要分队列看：repeat_queue/error_queue 的周期重投不是「启动恢复」，
 	// 旧实现把它们一并算成 recover，会虚高恢复规模（2026-10-29 报告 961 = 800 recover + 161 repeat）。
