@@ -49,6 +49,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 			return e.logSubmitError(task, fmt.Errorf("load repeat task record: %w", err))
 		}
 		task.ID = int(record.ID)
+		task.Repeat = record.Repeat
 		e.submitIfActive(task, record)
 		return nil
 	}
@@ -59,6 +60,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 		e.dedupCache.Add(key)
 		wasNew := task.ID == 0
 		task.ID = int(record.ID)
+		task.Repeat = record.Repeat
 		// 仅「新任务」去重跳过；已带 ID 的重提交（如 RecoverJob）需继续入队
 		if !task.Repeatable && wasNew {
 			return nil
@@ -78,6 +80,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 		}
 		e.dedupCache.Add(key)
 		task.ID = int(record.ID)
+		task.Repeat = record.Repeat
 		return nil
 	}
 	e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
@@ -93,10 +96,10 @@ func (e *Engine) SubmitTask(task *Task) error {
 //   - 自定义幂等键 → `idempotency_hash`（唯一索引 idx_idempotency_hash；键原文 varchar(1000) 建不了索引）
 //   - 没有自定义键 → `url_hash + stage + site`（唯一索引 idx_site_stage_url_hash）
 //
-// 调用方只用 ID 与 Status（入队前判终态），所以只投影这两列：历史行的 error/meta 可能很宽，
+// 调用方需要 ID、Status 与 Repeat（入队前判终态、透传计数），只投影这三列：历史行的 error/meta 可能很宽，
 // 为了去重把整行读出来纯属浪费。
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return e.dedupScope(task).Select("id", "status").First(record).Error
+	return e.dedupScope(task).Select("id", "status", "repeat").First(record).Error
 }
 
 // dedupScope 给出"查已存在行"的条件（抽出来是为了能用 DryRun 把 SQL 形状钉住 —— 假库不解析 WHERE）。
@@ -175,6 +178,10 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 		e.spillTask(task)
 		return
 	}
+	task.Repeat = record.Repeat
+	if task.Repeatable && task.ID != 0 {
+		task.Repeat++
+	}
 	e.afterTaskPending(task)
 }
 
@@ -230,7 +237,7 @@ func (e *Engine) submitRecoveredTask(task *Task) error {
 	}
 	e.dedupCache.Add(task.Unique())
 	if task.Repeatable {
-		e.submitIfActive(task, models.CrawlerTask{ID: uint(task.ID), Status: models.TaskStatusPending})
+		e.submitIfActive(task, models.CrawlerTask{ID: uint(task.ID), Status: models.TaskStatusPending, Repeat: task.Repeat})
 		return nil
 	}
 	e.submitPendingTask(task)

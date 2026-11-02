@@ -75,6 +75,7 @@ type BreakerSpec struct {
 
 // StageSpec 一个阶段的完整声明。
 type StageSpec struct {
+	RepeatLimit int // 轮询队列上限：repeat >= 此值停止重投；0 不限，不影响恢复/错误队列。
 	// Fetcher 阶段的实现。名字取自它自己的 `GetStage()`，不在这里写第二遍。
 	// 实现了 engine.EntrySubmitter（`SubmitEntries`）的阶段，声明里写了 `Entry: true` 时启动那一趟投一轮。
 	Fetcher     engine.Fetcher
@@ -311,6 +312,9 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 			"两个站之间同名是允许的（各自一份池子与统计）。若你本意是同一个站，"+
 			"多半是复制站点文件后两份声明指向了同一个 fetcher", stage, siteLabel(site, 0))
 	}
+	if st.RepeatLimit < 0 {
+		return plan, fmt.Errorf("阶段 %q: RepeatLimit 不能为负数", stage)
+	}
 	if st.WorkerCount <= 0 {
 		return plan, fmt.Errorf("阶段 %q: WorkerCount 必须 > 0（为 0 时池子里没有 worker，任务会静静躺在队列里）", stage)
 	}
@@ -336,6 +340,7 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 		stage:   stage,
 		fetcher: st.Fetcher,
 		cfg: engine.StageConfig{
+			RepeatLimit: st.RepeatLimit,
 			MaxAttempts: attempts,
 			Backoff:     backoff,
 			WorkerCount: st.WorkerCount,

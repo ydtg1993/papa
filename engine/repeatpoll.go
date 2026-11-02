@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,12 +25,28 @@ type repeatQueueState struct {
 }
 
 // repeatBaseQuery 可轮询查询的底：可轮询、已完成。
-func (e *Engine) repeatBaseQuery() *gorm.DB { return repeatBaseQueryOn(e.db) }
+func (e *Engine) repeatBaseQuery() *gorm.DB { return e.withRepeatLimits(repeatBaseQueryOn(e.db)) }
 
 // repeatBaseQueryOn 同上，但接显式的 *gorm.DB：让"不连库渲染 SQL"的测试能拼出同一条语句。
 func repeatBaseQueryOn(db *gorm.DB) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
 		Where("repeatable = ? AND status IN ?", models.RepeatableYes, repeatDueStatuses)
+}
+
+// withRepeatLimits 只用于轮询队列，不改变 repeatable，也不约束其它重投入口。
+func (e *Engine) withRepeatLimits(q *gorm.DB) *gorm.DB {
+	keys := make([]string, 0, len(e.stages))
+	for key, info := range e.stages {
+		if info.config.RepeatLimit > 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		info := e.stages[key]
+		q = q.Where("NOT (site = ? AND stage = ? AND `repeat` >= ?)", info.config.Site, info.stage, info.config.RepeatLimit)
+	}
+	return q
 }
 
 // repeatDueStatuses 可轮询的两个终态。
@@ -66,7 +83,7 @@ func (e *Engine) repeatForceQueueQuery() func() *gorm.DB {
 // 没有可轮询的行、或查库出错 → false，调用方退回配置节拍。
 func (e *Engine) soonestRepeatIn() (time.Duration, bool) {
 	var row struct{ Epoch *int64 }
-	if err := soonestRepeatQueryOn(e.db).Scan(&row).Error; err != nil {
+	if err := e.withRepeatLimits(soonestRepeatQueryOn(e.db)).Scan(&row).Error; err != nil {
 		e.loggerSet.Engine.Warnf("soonest repeat query 查询失败，退回配置节拍：%s", err.Error())
 		return 0, false
 	}
@@ -163,7 +180,16 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	// 条件重置（不用 task.UpdateStatus：它无条件、且被 worker 等多处共用，不往它上面加条件）。
 	// 一条语句把三个字段一起写：状态、记录（上次轮询时刻）、判据（下次到点）。
 	// 0 行 = 这一行已经不该被重投了：跳过，不计数、也不标 failed —— 它不是"重投失败"。
-	res := repeatResetScope(e.db, uint(t.ID)).Updates(map[string]any{
+	info := e.stages[stageKeyOfRecord(t)]
+	limit := info.config.RepeatLimit
+	if limit > 0 && t.Repeat >= limit {
+		return false
+	}
+	reset := repeatResetScope(e.db, uint(t.ID))
+	if limit > 0 {
+		reset = reset.Where("`repeat` < ?", limit)
+	}
+	res := reset.Updates(map[string]any{
 		"status":         models.TaskStatusPending,
 		"last_repeat_at": gorm.Expr("NOW()"),
 		// 下次到点 = 现在 + 自己的周期（没定就用全局）。换算只在这一条写路径上做一次，

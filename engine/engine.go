@@ -166,6 +166,7 @@ type stageInfo struct {
 
 // StageConfig 阶段配置
 type StageConfig struct {
+	RepeatLimit int                  // repeat_queue 重投上限：repeat >= 此值不再重投；<=0 不限。
 	MaxAttempts int                  // Handler 最大尝试次数（含首次执行）
 	Backoff     time.Duration        // Handler 错误重试退避时间
 	Delay       config.DurationRange // 任务间隔延迟，支持随机区间

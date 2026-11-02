@@ -17,6 +17,7 @@ type Task struct {
 	PID        int    `json:"pid"` // 父级任务ID
 	URL        string // 要打开的 URL
 	Retry      int
+	Repeat     int    // 框架维护的入队计数（数据库 repeat），只读；不是成功轮询次数。
 	Stage      string // 阶段标识，如 "catalog", "detail", "video"
 	Site       string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
 	Repeatable bool
@@ -121,6 +122,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		Stage:          t.Stage,
 		Site:           t.Site,
 		Retry:          t.Retry,
+		Repeat:         t.Repeat,
 		Repeatable:     t.Repeatable == models.RepeatableYes,
 		RepeatInterval: time.Duration(t.RepeatInterval) * time.Second,
 		Urgent:         t.Urgent,
