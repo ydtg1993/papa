@@ -372,3 +372,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 - 标准 Go 时长字符串：`"500ms"` / `"5s"` / `"10m"` / `"6h"`。
 - 阶段 `delay` 额外支持区间：`"10s-30s"` 表示在该区间内随机取一个间隔（反爬更隐蔽）。
+
+### 阶段轮询次数上限
+
+轮询上限属于业务站点声明，不是 YAML 配置项：在 `papa.StageSpec` 上设置 `RepeatLimit: 30`。0 表示不限；达到数据库 `repeat` 计数上限后，该站该阶段的任务不再被自动或强制轮询，恢复及错误重投不受此限，不关闭任务的 `repeatable`。已有 `repeat` 列继续使用，不需要迁移。完整计数含义见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。

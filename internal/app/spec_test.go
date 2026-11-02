@@ -171,3 +171,21 @@ func TestBreakerSpecToConfig(t *testing.T) {
 		t.Fatal("窗口解析失败应当报错")
 	}
 }
+
+func TestStageRepeatLimitDeclaration(t *testing.T) {
+	for _, limit := range []int{0, 30, -1} {
+		plan, err := planStage(core.Site{Key: "s"}, StageSpec{Fetcher: namedFetcher{"detail"}, WorkerCount: 1, QueueSize: 8, RepeatLimit: limit}, map[string]string{})
+		if limit < 0 {
+			if err == nil {
+				t.Fatal("negative RepeatLimit accepted")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.cfg.RepeatLimit != limit {
+			t.Fatalf("limit not forwarded: %+v", plan.cfg)
+		}
+	}
+}

@@ -265,6 +265,8 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 
 **关于「开 / 停轮询 / 设轮询周期」**：某条任务**要不要周期性重跑**由任务行上的 `repeatable` 列决定、
 **多久一次**由 `repeat_interval`（秒，0 = 用全局 `repeat_queue.interval`）决定 —— 粒度都是任务，不是阶段。
+阶段声明的 `RepeatLimit` 也约束后台总按钮“轮询任务”：强制执行只忽略周期，不忽略次数上限。达上限不会关闭 `repeatable`，再次“开轮询”不会重置计数。需要继续周期轮询时调整阶段上限；单条“重投”、恢复队列和错误队列不受该上限限制。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
+
 首次提交时由 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}` 播种，之后就用这三个动作改
 （业务里等价的入口是 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)`，
 见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节。任务表上有对应的三列：**轮询周期(秒) / 上次轮询 / 下次轮询** ——
