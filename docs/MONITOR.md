@@ -395,7 +395,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 - 业务路由走的是同一道 `Monitor.Auth`：**不管路径是否以 `/api/` 开头**，白名单与令牌都要过
   （`NoAuth()` 的组除外），`Cache-Control: no-store` 也由它统一加上 —— 需要的话自己在 handler 里覆盖。
 
-`papa new` 生成的工程把这套东西放在 `monitor/` 包里分层：`router.go` 声明路由与中间件、
+`papa new` 生成的工程把这套东西放在 `internal/monitor/` 包里分层：`router.go` 声明路由与中间件、
 `controller/` 放 handler、`middleware.go` 放中间件、`tables.go` 放表格页、`view/` 放自定义页。
 表模型不在这层 —— 和 `fetcher/` 同级放在项目根的 `models` 包（建表清单 `models.Models()`），
 爬虫业务与后台服务共用。`main.go` 只需要 `monitor.Register(app)` 一行，各层分工见每个文件顶部的包注释。

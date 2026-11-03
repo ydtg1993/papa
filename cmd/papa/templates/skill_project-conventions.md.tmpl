@@ -8,11 +8,11 @@ where it has already diverged from current Papa.
 
 | Path | What goes there |
 | --- | --- |
-| `sites/{{.Module}}.go` | site + stage declaration (Key / BaseURL / Headers / Breaker / Stages). Self-registers via `init()` + `papa.RegisterSite`. |
-| `fetcher/<site>/` | stage handlers and entry submission — one package per site once there is more than one |
-| `models/` | business structs and GORM table models; `models.Models()` is the migration list |
-| `monitor/` | back-office layers: `tables.go` / `controller/` / `view/` / `router.go` / `middleware.go` |
-| `docs/` | a copy of the framework manuals (may lag the framework — see `references/doc-map.md`) |
+| `{{.CodeDir}}sites/{{.Module}}.go` | site + stage declaration (Key / BaseURL / Headers / Breaker / Stages). Self-registers via `init()` + `papa.RegisterSite`. |
+| `{{.CodeDir}}fetcher/<site>/` | stage handlers and entry submission — one package per site once there is more than one |
+| `{{.CodeDir}}models/` | business structs and GORM table models; `models.Models()` is the migration list |
+| `{{.CodeDir}}monitor/` | back-office layers: `tables.go` / `controller/` / `view/` / `router.go` / `middleware.go` |
+| `{{.DocsDir}}/` | a copy of the framework manuals (may lag the framework — see `references/doc-map.md`) |
 | `.claude/skills/` | this skill. `papa new` writes it; `papa upgrade --write` refreshes `SKILL.md` + `references/{doc-map,implementation-patterns,review-checklist}.md` when they drift, but **never this file** (project-owned). |
 
 ## Conventions
@@ -22,8 +22,8 @@ where it has already diverged from current Papa.
   package and reuse them in `GetStage`, `Task.Stage`, tests and diagnostics. A duplicate *within one site*
   fails at startup and names the site.
 - Stage parameters (worker count, queue size, delay, retry, `Entry`, downloader overrides) live in the
-  `sites/` declaration — **not** in `config.yaml`.
-- `main.go` stays generic: `monitor.Register(app)` plus `app.RegisterSites(papa.Sites()...)`. Adding a
+  `{{.CodeDir}}sites/` declaration — **not** in `config.yaml`.
+- The application assembly (new layout: `internal/app/run.go`) stays generic: `monitor.Register(app)` plus `app.RegisterSites(papa.Sites()...)`. Adding a
   site is adding a file.
 - The three governance queues (`error_queue` / `recover_queue` / `repeat_queue`) are **global**, configured
   in `config.yaml`.

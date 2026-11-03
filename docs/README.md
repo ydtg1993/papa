@@ -16,12 +16,12 @@ cd mycrawler && go mod tidy
 2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
    之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled`）都要**再跑一次**，那两张表跟着开关走。
-3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `sites/<站名>.go`**（并发/队列/间隔/重试/
+3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（并发/队列/间隔/重试/
    入口开关都在那儿一份写全，各文件在自己的 `init()` 里登记），`main.go` 里只有 `app.RegisterSites(papa.Sites()...)`
    一行 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
    （见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.1）。
-4. 加数据模型写根目录 `models/` 包（`models/models.go` 里登记建表清单）；后台（`/monitor`）
-   要加表格页 / 自定义页 / 自己的接口，改 `monitor/` 包 ——
+4. 加数据模型写`internal/models/` 包（`internal/models/models.go` 里登记建表清单）；后台（`/monitor`）
+   要加表格页 / 自定义页 / 自己的接口，改 `internal/monitor/` 包 ——
    `main.go` 只有 `monitor.Register(app)` 一行（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
 5. `go run .`（配置路径默认 `configs/config.yaml`，要用别处就 `go run . --config=./config.yaml`）。
 
@@ -31,8 +31,10 @@ cd mycrawler && go mod tidy
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
 > `main.go` / `models.Models()` 里注册的模型，所以它在业务项目里会把迁移**转交**给项目自己
 > （`go run . -migrate` → `App.Migrate()`），两边都建。不在业务项目里跑时它只建框架自带的表。
-> 脚手架刚生成的项目没有业务表（框架只管调度状态，抓到的结果要在 `models/` 里建业务表来落），
+> 脚手架刚生成的项目没有业务表（框架只管调度状态，抓到的结果要在 `internal/models/` 里建业务表来落），
 > 所以起步阶段两条命令等价。判据与细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+
+新项目根入口只转交 `internal/app.Run`；应用导航在 `docs/README.md`，本套框架手册复制到 `docs/framework/`。旧项目的根级包与平铺文档继续受 `check` / `upgrade` 支持。
 
 ## 阅读路径
 

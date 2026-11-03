@@ -6,11 +6,11 @@ import (
 )
 
 // Tables 返回要显示在后台侧边栏的表格页 —— 这是「数据展示层」，只声明怎么展示，
-// 表模型不在这里：它们和 fetcher 同级放在项目根的 models 包里（建表清单见 models.Models）。
+// 表模型不在这里：它们和 fetcher 同级放在项目 internal 下的 models 包里（建表清单见 models.Models）。
 // 数据由你实现 oao.Source 提供 —— 怎么过滤、怎么排序、查库还是调接口，全由你决定
 // （组件只在中间做声明与转发）。
 //
-// 列 / 筛选 / 动作的完整字段见项目 docs/MONITOR.md 的「表格页（oao 组件）」。
+// 列 / 筛选 / 动作的完整字段见项目 docs/framework/MONITOR.md 的「表格页（oao 组件）」。
 // 示例（有表之后再解开，Source 照抄一个现成的改）：
 //
 //	func Tables(db *gorm.DB) []oao.Table {

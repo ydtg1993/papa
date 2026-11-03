@@ -18,7 +18,9 @@ import (
 var tmplFS embed.FS
 
 type scaffoldData struct {
-	Module string
+	CodeDir string
+	DocsDir string
+	Module  string
 	// SiteFunc 站点声明函数名（sites/<模块名>.go 里的 `func xxx() papa.SiteSpec`）。
 	// 模块名可能带连字符/大写，这里归一成合法标识符。
 	SiteFunc string
@@ -147,7 +149,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "    --boot 再往前一步：连库把启动路径跑到 RegisterSites（不 Run，不抓取）")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa upgrade [目录] [--write]")
-	fmt.Fprintln(os.Stderr, "    把**已经生成过的**项目升到当前脚手架：刷新框架副本（docs/）+ 几项不用起库的检查")
+	fmt.Fprintln(os.Stderr, "    把**已经生成过的**项目升到当前脚手架：刷新框架副本（docs/framework/，旧布局为 docs/）+ 几项不用起库的检查")
 	fmt.Fprintln(os.Stderr, "    默认只报告不落盘；业务文件（main.go / monitor / models / fetcher /")
 	fmt.Fprintln(os.Stderr, "    sites / config.yaml / go.mod）一律不碰 —— 照模板覆盖会抹掉你的改动")
 	fmt.Fprintln(os.Stderr, "")
@@ -203,25 +205,29 @@ func runNew(name string, args []string) error {
 		replacePath = filepath.ToSlash(replacePath) // 兼容 Windows 反斜杠路径
 	}
 
-	data := scaffoldData{Module: name, SiteFunc: sanitizeIdent(name)}
+	data := scaffoldData{Module: name, SiteFunc: sanitizeIdent(name), CodeDir: "internal/", DocsDir: "docs/framework"}
 
 	files := []fileSpec{
 		{"go.mod.tmpl", "go.mod"},
 		{"gitignore.tmpl", ".gitignore"},
 		{"main.go.tmpl", "main.go"},
+		{"app_run.go.tmpl", filepath.Join("internal", "app", "run.go")},
+		{"README.md.tmpl", "README.md"},
+		{"docs_README.md.tmpl", filepath.Join("docs", "README.md")},
+		{"docs_DEVELOPMENT.md.tmpl", filepath.Join("docs", "operations", "DEVELOPMENT.md")},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml.example")},
-		{"configs_sites_site.go.tmpl", filepath.Join("sites", "{{.Module}}.go")},
-		{"fetch_catalog.go.tmpl", filepath.Join("fetcher", "fetch_catalog.go")},
-		{"models_models.go.tmpl", filepath.Join("models", "models.go")},
-		{"monitor_register.go.tmpl", filepath.Join("monitor", "register.go")},
-		{"monitor_router.go.tmpl", filepath.Join("monitor", "router.go")},
-		{"monitor_middleware.go.tmpl", filepath.Join("monitor", "middleware.go")},
-		{"monitor_tables.go.tmpl", filepath.Join("monitor", "tables.go")},
-		{"monitor_controller_ping.go.tmpl", filepath.Join("monitor", "controller", "ping.go")},
-		{"monitor_view.go.tmpl", filepath.Join("monitor", "view", "view.go")},
-		{"Dockerfile.tmpl", filepath.Join("docker", "Dockerfile")},
-		{"docker-compose.yml.tmpl", filepath.Join("docker", "docker-compose.yml")},
+		{"configs_sites_site.go.tmpl", filepath.Join("internal", "sites", "{{.Module}}.go")},
+		{"fetch_catalog.go.tmpl", filepath.Join("internal", "fetcher", "fetch_catalog.go")},
+		{"models_models.go.tmpl", filepath.Join("internal", "models", "models.go")},
+		{"monitor_register.go.tmpl", filepath.Join("internal", "monitor", "register.go")},
+		{"monitor_router.go.tmpl", filepath.Join("internal", "monitor", "router.go")},
+		{"monitor_middleware.go.tmpl", filepath.Join("internal", "monitor", "middleware.go")},
+		{"monitor_tables.go.tmpl", filepath.Join("internal", "monitor", "tables.go")},
+		{"monitor_controller_ping.go.tmpl", filepath.Join("internal", "monitor", "controller", "ping.go")},
+		{"monitor_view.go.tmpl", filepath.Join("internal", "monitor", "view", "view.go")},
+		{"Dockerfile.tmpl", filepath.Join("deploy", "docker", "Dockerfile")},
+		{"docker-compose.yml.tmpl", filepath.Join("deploy", "docker", "docker-compose.yml")},
 		{"Makefile.tmpl", "Makefile"},
 	}
 	// 随项目携带的开发技能（Claude Code 从 <项目>/.claude/skills/ 自动发现 —— 见 docs/CLI.md 的生成树）：
@@ -242,7 +248,7 @@ func runNew(name string, args []string) error {
 	}
 
 	// docs：复制使用手册，方便查用法 / 喂给 Claude 写 fetcher、model
-	if err := copyDocs(filepath.Join(name, "docs")); err != nil {
+	if err := copyDocs(filepath.Join(name, "docs", "framework")); err != nil {
 		return err
 	}
 

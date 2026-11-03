@@ -4,7 +4,7 @@ services:
     build: .
     container_name: {{.Module}}
     volumes:
-      - ..:/app                    # 挂载整个业务项目源码目录到容器 /app
+      - ../..:/app                    # 挂载整个业务项目源码目录到容器 /app
       - go-mod-cache:/go/pkg/mod   # 缓存 Go 依赖，避免每次重下
       - rod-cache:/root/.cache/rod # 缓存 Rod 自带的 Chromium（binary: rod 时；容器重建不必重下）
     ports:

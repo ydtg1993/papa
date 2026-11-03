@@ -31,17 +31,17 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 		filepath.Join(".claude", "skills", "papa-crawler-development", "references", "project-conventions.md"),
 		filepath.Join("configs", "config.yaml"),
 		filepath.Join("configs", "config.yaml.example"),
-		filepath.Join("sites", "demo.go"),
-		filepath.Join("fetcher", "fetch_catalog.go"),
-		filepath.Join("models", "models.go"),
-		filepath.Join("monitor", "register.go"),
-		filepath.Join("monitor", "router.go"),
-		filepath.Join("monitor", "middleware.go"),
-		filepath.Join("monitor", "tables.go"),
-		filepath.Join("monitor", "controller", "ping.go"),
-		filepath.Join("monitor", "view", "view.go"),
-		filepath.Join("docker", "Dockerfile"),
-		filepath.Join("docker", "docker-compose.yml"),
+		filepath.Join("internal", "sites", "demo.go"),
+		filepath.Join("internal", "fetcher", "fetch_catalog.go"),
+		filepath.Join("internal", "models", "models.go"),
+		filepath.Join("internal", "monitor", "register.go"),
+		filepath.Join("internal", "monitor", "router.go"),
+		filepath.Join("internal", "monitor", "middleware.go"),
+		filepath.Join("internal", "monitor", "tables.go"),
+		filepath.Join("internal", "monitor", "controller", "ping.go"),
+		filepath.Join("internal", "monitor", "view", "view.go"),
+		filepath.Join("deploy", "docker", "Dockerfile"),
+		filepath.Join("deploy", "docker", "docker-compose.yml"),
 		filepath.Join("logs", ".gitkeep"),
 	}
 	for _, f := range wantFiles {
@@ -56,7 +56,7 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	// 模板变量确实被替换过：main.go 里不该再留着 {{.Module}} 之类的占位
-	mainGo := readFile(t, filepath.Join("demo", "main.go"))
+	mainGo := readFile(t, filepath.Join("demo", "internal", "app", "run.go"))
 	if strings.Contains(mainGo, "{{") {
 		t.Errorf("main.go 里还有未替换的模板占位：\n%s", mainGo)
 	}
@@ -69,7 +69,7 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	// 使用手册要一起复制过去（用户和 Claude 都靠它写 fetcher / model）
-	docs, err := os.ReadDir(filepath.Join("demo", "docs"))
+	docs, err := os.ReadDir(filepath.Join("demo", "docs", "framework"))
 	if err != nil {
 		t.Fatalf("读 docs: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 
 	// 阶段参数已搬进 Go 声明：配置里**不再有** crawler.stages 段（上面的 Load 成功就是证明 ——
 	// 模板若还留着那段，未知配置键会直接 panic），站点与阶段改由 sites/<站名>.go 声明。
-	siteSpec := readFile(t, filepath.Join("demo", "sites", "demo.go"))
+	siteSpec := readFile(t, filepath.Join("demo", "internal", "sites", "demo.go"))
 	// 三队列已回 config.yaml：站点声明里**不该再有**这三段
 	for _, want := range []string{"papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
 		if strings.Contains(siteSpec, want) {
@@ -148,10 +148,10 @@ func TestScaffoldedConfigLoads(t *testing.T) {
 	if !strings.Contains(siteSpec, "papa.RegisterSite(") {
 		t.Errorf("sites/demo.go 应当在 init 里自登记")
 	}
-	if _, err := os.Stat(filepath.Join("demo", "sites", "sites.go")); err == nil {
+	if _, err := os.Stat(filepath.Join("demo", "internal", "sites", "sites.go")); err == nil {
 		t.Errorf("不该再生成 sites.go 汇总清单（各站点文件自己登记）")
 	}
-	fetcher := readFile(t, filepath.Join("demo", "fetcher", "fetch_catalog.go"))
+	fetcher := readFile(t, filepath.Join("demo", "internal", "fetcher", "fetch_catalog.go"))
 	if strings.Contains(fetcher, "site.Entries") {
 		t.Errorf("生成的 fetcher 不应读取 site.Entries：\n%s", fetcher)
 	}
@@ -348,7 +348,7 @@ func TestRunNewKeywordNameGeneratesCompilableGo(t *testing.T) {
 	if err := runNew("type", nil); err != nil {
 		t.Fatalf("关键字名字应当被后缀兜住，而不是报错：%v", err)
 	}
-	src := readFile(t, filepath.Join("type", "sites", "type.go"))
+	src := readFile(t, filepath.Join("type", "internal", "sites", "type.go"))
 	if !strings.Contains(src, "func typeSite() papa.SiteSpec") {
 		t.Fatalf("站点函数名应当是 typeSite：\n%s", src)
 	}

@@ -158,6 +158,9 @@ func runCheckCmd(args []string) error {
 			fmt.Fprintf(os.Stderr, "提示：临时目录没删掉，手动删掉即可：%s（%v）\n", tmp, err)
 		}
 	}()
+	if siteDirectory(root) == filepath.Join("internal", "sites") {
+		module += "/internal"
+	}
 	src := checkProgram(module, cfgPath)
 	if boot {
 		src = bootProgram(module, cfgPath)

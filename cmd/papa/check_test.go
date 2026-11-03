@@ -94,7 +94,7 @@ func TestCheckEndToEnd(t *testing.T) {
 	}
 
 	// 把一个阶段的 WorkerCount 改成 0 → 必须拦住
-	site := filepath.Join("demo", "sites", "demo.go")
+	site := filepath.Join("demo", "internal", "sites", "demo.go")
 	src := readFile(t, site)
 	replaced := strings.Replace(src, "WorkerCount: 1,", "WorkerCount: 0,", 1)
 	if replaced == src {

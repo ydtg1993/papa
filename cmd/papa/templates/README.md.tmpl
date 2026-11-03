@@ -1,0 +1,17 @@
+# {{.Module}}
+
+基于 Papa 的采集应用。
+
+```bash
+go mod tidy
+go test ./...
+go build ./...
+papa check .
+papa migrate
+go run .
+```
+
+先填写 `configs/config.yaml` 的数据库与后台配置。迁移需显式执行，正常启动不会自动建表。
+
+根 `main.go` 只转交启动；业务代码在 `internal/`，部署文件在 `deploy/`。
+详见 [文档导航](docs/framework/README.md) 和 [开发手册](docs/operations/DEVELOPMENT.md)。

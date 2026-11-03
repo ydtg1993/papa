@@ -8,7 +8,7 @@ import (
 )
 
 // Ping 最小示例：GET /api/demo/ping → {"pong": true, "at": "<服务端时间>"}。
-// 自定义页 demo 会调它（见 monitor/view）。
+// 自定义页 demo 会调它（见 internal/monitor/view）。
 //
 // 需要 app 里的东西（DB / Engine / Logger）时，把 handler 写成闭包再交给路由：
 //

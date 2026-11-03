@@ -1,6 +1,6 @@
 ---
 name: papa-crawler-development
-description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v3—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
+description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v3—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM {{.CodeDir}}models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
 compatibility: Go 1.25+, Papa v3 business projects; shell and Go toolchain recommended for validation.
 ---
 
@@ -22,7 +22,7 @@ This skill targets **business integration**, not Papa engine internals. If the r
    - current exported types and executable tests,
    - current framework `docs/`,
    - current business code,
-   - copied/generated business `docs/` only as a convenience.
+   - copied/generated business `{{.DocsDir}}/` only as a convenience.
 6. When documents and code disagree, call out the conflict and verify the exported API. Do not silently combine versions.
 
 Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [references/project-conventions.md](references/project-conventions.md) for the repository-specific architecture and known drift traps.
@@ -31,33 +31,33 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 
 | Request | Primary locations | Read first |
 | --- | --- | --- |
-| Add or change a site | `sites/<site>.go`, `fetcher/<site>/` | Fetcher guide, core config |
-| Parse pages or choose HTML/Rod | `fetcher/<site>/`, samples/tests | Fetcher guide, CLI |
-| Persist results | `models/`, fetcher repository calls | Data landing guide |
+| Add or change a site | `{{.CodeDir}}sites/<site>.go`, `{{.CodeDir}}fetcher/<site>/` | Fetcher guide, core config |
+| Parse pages or choose HTML/Rod | `{{.CodeDir}}fetcher/<site>/`, samples/tests | Fetcher guide, CLI |
+| Persist results | `{{.CodeDir}}models/`, fetcher repository calls | Data landing guide |
 | Change retries/recovery/repeat polling | site stage declaration, `configs/config.yaml`, task fields | Error/recover/repeat queue manuals |
-| Add monitor table/action/API/page | `monitor/`, possibly `models/` | Monitor manual and oao README |
+| Add monitor table/action/API/page | `{{.CodeDir}}monitor/`, possibly `{{.CodeDir}}models/` | Monitor manual and oao README |
 | Diagnose startup or behavior | declarations, config, archived HTML, traces, tests | CLI, development, relevant queue manual |
 
 ## Workflow
 
 ### 1. Inspect before proposing code
 
-- Read `go.mod`, `main.go`, `configs/config.yaml`, existing `sites/*.go`, and the nearest fetcher package.
+- Read `go.mod`, `main.go`, `configs/config.yaml`, existing `{{.CodeDir}}sites/*.go`, and the nearest fetcher package.
 - Search exported API names rather than guessing signatures.
 - For selector work, look for saved HTML under `docs/samples/` or archived failure pages. If no representative HTML or reachable URL exists, request one or clearly mark selectors as placeholders.
-- Results go into the project’s own GORM tables under `models/`; the framework task table carries scheduling state only (url / stage / site / status / retry / repeat / `meta`) and has no result columns.
+- Results go into the project’s own GORM tables under `{{.CodeDir}}models/`; the framework task table carries scheduling state only (url / stage / site / status / retry / repeat / `meta`) and has no result columns.
 
 ### 2. Design the site pipeline
 
 Keep each site self-contained:
 
 ```text
-sites/<site>.go              site identity, headers, breaker/download overrides, StageSpec values
-fetcher/<site>/site.go        stage constants and site lookup helper
-fetcher/<site>/fetch_*.go     stage handlers and entry submission
-fetcher/<site>/*_test.go      parser/URL/task behavior tests using saved HTML
-models/                       shared business data and repositories
-monitor/                      presentation, actions, routes, and pages
+{{.CodeDir}}sites/<site>.go              site identity, headers, breaker/download overrides, StageSpec values
+{{.CodeDir}}fetcher/<site>/site.go        stage constants and site lookup helper
+{{.CodeDir}}fetcher/<site>/fetch_*.go     stage handlers and entry submission
+{{.CodeDir}}fetcher/<site>/*_test.go      parser/URL/task behavior tests using saved HTML
+{{.CodeDir}}models/                       shared business data and repositories
+{{.CodeDir}}monitor/                      presentation, actions, routes, and pages
 ```
 
 A stage name is unique **within its site** — two sites may each declare `catalog`. The engine keys a stage by `site:stage`, so pools, stats, archive directories and the DB unique index stay separate. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
@@ -117,9 +117,9 @@ After a fetch:
 
 ### 6. Persist at the correct layer
 
-Persist results into dedicated tables (one entity per table under root `models/`):
+Persist results into dedicated tables (one entity per table under root `{{.CodeDir}}models/`):
 
-- put one GORM model per file under root `models/`;
+- put one GORM model per file under root `{{.CodeDir}}models/`;
 - register it in `models.Models()` — unregistered models are never created by `papa migrate`;
 - give every table a unique key identifying the business row (include the site when several sites run in one process), otherwise requeues and polling insert duplicates;
 - put queries/upserts in repository files, not scattered through fetchers;
@@ -131,7 +131,7 @@ Call `monitor.Register(app)` before the `-migrate` branch if that function insta
 
 ### 7. Extend the monitor without crossing boundaries
 
-Papa monitor integration belongs in `monitor/`:
+Papa monitor integration belongs in `{{.CodeDir}}monitor/`:
 
 - `tables.go`: `oao.Table`, columns, filters, actions;
 - a business `Source`: list/filter/sort data;
@@ -165,7 +165,7 @@ For repository review requests, do not stop after scanning the named fetcher fil
 
 1. **Executable configuration:** compare every top-level YAML key and behavior comment with current `CORE_CONFIG.md` and configuration structs.
 2. **Identity and lifecycle contracts:** inspect stage constants, submitted `Task` fields, recovery/repeat behavior, and adjacent repository comments—especially claims about whether `Task.Meta` persists.
-3. **Presentation and operations:** inspect monitor/Oao boundaries, migration instructions, hot-reload claims, and logging/tracing advice.
+3. **Presentation and operations:** inspect {{.CodeDir}}monitor/Oao boundaries, migration instructions, hot-reload claims, and logging/tracing advice.
 
 Use [references/review-checklist.md](references/review-checklist.md). Always cross-check this project's own drift list in [references/project-conventions.md](references/project-conventions.md) — it records where this repository has diverged from current Papa, and it is the first place to look when something in the project contradicts the manuals. Treat the user’s named paths as the review focus, not a reason to ignore supporting files whose comments govern those paths.
 

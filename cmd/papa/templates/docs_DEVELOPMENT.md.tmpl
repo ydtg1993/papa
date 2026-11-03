@@ -1,0 +1,21 @@
+# {{.Module}} 开发手册
+
+| 位置 | 职责 |
+| --- | --- |
+| `main.go` | 薄启动入口，保留 `go run .` 与迁移转交 |
+| `internal/app/run.go` | 命令行、初始化、后台和采集服务组装 |
+| `internal/sites/` | 站点及阶段声明，每个文件自行注册 |
+| `internal/fetcher/` | 采集实现 |
+| `internal/models/` | 业务模型、迁移清单与存储操作 |
+| `internal/monitor/` | 后台声明；controller 处理接口，view 提供页面 |
+| `configs/` | 配置与示例 |
+| `deploy/docker/` | Dockerfile、Compose |
+| `docs/framework/` | 可由 Papa 刷新的框架文档 |
+
+新增业务能力按职责建包；共享数据契约单独归属，避免服务之间为复用数据类型而互相依赖。
+仅在需要独立命令时新增 `cmd/<命令>/`，不预建空的业务目录。
+
+运行 `go test ./...`、`go vet ./...`、`go build ./...`；`papa check .` 只检查配置和站点，不连库。
+`papa check --boot` 会连接数据库。迁移使用 `papa migrate` 或 `go run . -migrate`。
+
+配置来源保持 `--config` → `PAPA_CONFIG` → `configs/config.yaml`，框架参考见 [配置手册](../framework/CORE_CONFIG.md)。

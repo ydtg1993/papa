@@ -2,7 +2,7 @@ package sites
 
 import (
 	"github.com/ydtg1993/papa/v3"
-	"{{.Module}}/fetcher"
+	"{{.Module}}/internal/fetcher"
 )
 
 // 本站的声明：并发、队列、间隔、重试、要不要投入口、熔断阈值都在这里一份写全。
@@ -10,7 +10,7 @@ import (
 // **加一个站**：复制这个文件改名（如 siteb.go），改 Key / BaseURL / 阶段参数 —— 但**别只改这一个文件**：
 // 阶段是由 fetcher 定义的，阶段名取自它的 GetStage()（不在本文件里）。新站要是还指向原来那个 fetcher，
 // 两个站会跑同一份 fetcher（选择器与入口路由都是照旧站写的，抓出来是错的却不报错），
-// 所以每站要有自己的 fetcher（或按站点分包：fetcher/<站点>/）。
+// 所以每站要有自己的 fetcher（或按站点分包：internal/fetcher/<站点>/）。
 // 阶段名**只在本站内唯一**：两个站同名是允许的（引擎按 `site:stage` 分组，池子/统计/归档各归各的），
 // 不必为了避开重名去加站点前缀。
 // 框架自己收集（下面的 init），没有汇总清单要维护；站点键（**必填**）或**同一站内**的阶段名重复
@@ -25,7 +25,7 @@ func {{.SiteFunc}}() papa.SiteSpec {
 		// 三个治理队列（error_queue / recover_queue / repeat_queue）现在是**全局一段**，写在
 		// configs/config.yaml 里，不在这里 —— 站点声明只管"这一站是谁 + 有哪些阶段"。
 		// 入口路由表（"要抓哪些分类"）不在这里：它属于 fetcher 的站点逻辑，
-		// 写在 fetcher/fetch_catalog.go 的 SubmitEntries 旁边（见那里的包级路由表）。
+		// 写在 internal/fetcher/fetch_catalog.go 的 SubmitEntries 旁边（见那里的包级路由表）。
 
 		// 本站的请求头**写在这里**：这个站的任务抓任何页面都自动带上（静态与浏览器两条路都认），
 		// **下载也认**（fetcher 用 filedown.OptionsFromRequest(ctx, …) 带进下载选项）；

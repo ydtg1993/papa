@@ -21,14 +21,14 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含根 `models/` 数据层与 `monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节）。`<name>` 同时是 module 路径与目录名：只允许字母、数字与 `._~+-`，分隔用 `/`（例如 `mycrawler` 或 `example.com/mycrawler`）；带空格/冒号这类字符的名字会在**写任何文件之前**被拒 |
+| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含 `internal/models/` 数据层与 `internal/monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节）。`<name>` 同时是 module 路径与目录名：只允许字母、数字与 `._~+-`，分隔用 `/`（例如 `mycrawler` 或 `example.com/mycrawler`）；带空格/冒号这类字符的名字会在**写任何文件之前**被拒 |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
-| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
+| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（新布局 `docs/framework/`、旧布局 `docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 | `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；生成后按 `obs.report.retention` 清理过期目录。业务段由业务进程注册，papa CLI 只有框架通用段 |
 
@@ -36,25 +36,26 @@ go install ./cmd/papa
 
 ```
 mycrawler/
-  main.go                  装配：monitor.Register → （可选）SetProxy → RegisterSites(papa.Sites()...) → Run
-                           （下载器不在这里配：框架按 DefaultConfig 备好基座，要各站/各阶段不同就写在站点声明里）
-  configs/
-    config.yaml            配置（先把 db.dsn 指向你的库）
-    config.yaml.example    配置范本（进版本库，新同事照它抄一份）
-  sites/
-    <项目名>.go            ★站点与阶段声明：Key / BaseURL / Headers
-                           + 每个阶段的 worker_count / queue_size / delay / retry / Entry
-  fetcher/                 抓取实现（一个阶段一个 fetcher；想按站点分包也行，加站不必先分包）
-  models/                  业务表模型 + 建表清单（models.go）
-  monitor/                 后台分层：表格页 / 控制器 / 视图 / 路由与中间件（见 MONITOR.md 第 5 节）
-  docs/                    这套手册的副本（离线可查）
-  .claude/skills/          开发技能（Claude Code 从 <项目>/.claude/skills/ 自动加载，见下面要点）
-  docker/ · Makefile · logs/ · .gitignore
+  main.go                  薄入口：app.Run(os.Args[1:])
+  internal/
+    app/run.go             CLI、模型注册、迁移分支、后台及站点组装
+    sites/<项目名>.go      站点与阶段声明，init 自登记
+    fetcher/               抓取与入口提交
+    models/models.go       业务模型与迁移清单
+    monitor/               tables、router、middleware、controller、view
+  configs/                 config.yaml（本机）、config.yaml.example（范本）
+  deploy/docker/           Dockerfile、docker-compose.yml
+  docs/
+    README.md              应用文档导航（项目所有）
+    operations/DEVELOPMENT.md  应用目录与开发说明（项目所有）
+    framework/             Papa 手册副本（upgrade 可刷新）
+  README.md · Makefile · logs/ · .gitignore
+  .claude/skills/          开发技能（通用文件可刷新，项目约定不覆盖）
 ```
 
 几句要点：
 
-- **加一个站 = 加一个 `sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
+- **加一个站 = 加一个 `internal/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
   `papa.Sites()` 收集，`main.go` 不用动（站点键必填；阶段名只在本站内唯一，两个站可以同名）。
 - **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
   yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
@@ -75,7 +76,7 @@ papa check [目录] [-c <配置路径>]              # 目录默认当前目录�
 papa check [目录] --boot                       # 再往前一步：连库跑到 RegisterSites（不 Run）
 ```
 
-站点与阶段声明是**项目自己的 Go 代码**（`sites/*.go` 在 `init()` 里自登记），而框架那套
+站点与阶段声明是**项目自己的 Go 代码**（新结构 `internal/sites/*.go`、旧结构 `sites/*.go` 在 `init()` 里自登记），而框架那套
 「声明有问题启动即失败」的校验平时要连库、建池才跑得到。`papa check` 把这两件事解开：
 
 - 它在你项目里临时生成一个 **一次性校验程序**（`<目录>/.papa-check-<随机后缀>/main.go`，
@@ -108,6 +109,8 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 > `require`（那是 `tidy` 的事），校验程序要编译就得先把依赖落下来。
 
 ### `papa upgrade` 升级已有项目
+
+新布局只刷新 `docs/framework/`，保留应用 `docs/README.md` 与业务/运维文档；旧布局继续刷新原 `docs/`，不会自动搬迁业务文件。站点检查优先读取 `internal/sites/`，兼容旧 `sites/`。
 
 ```bash
 papa upgrade [目录] [--write]      # 目录默认当前目录

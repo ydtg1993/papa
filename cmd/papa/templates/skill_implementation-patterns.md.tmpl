@@ -82,7 +82,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 
     result, err := parseDetail(page.Selection(), page.URL.String())
     if err != nil { return papa.WrapNoRetryKind("structure", err) }
-    // Results land in the project's own table (see models/); Upsert conflict-updates and backfills the PK.
+    // Results land in the project's own table (see {{.CodeDir}}models/); Upsert conflict-updates and backfills the PK.
     return engine.Upsert(&models.Series{Site: task.Site, SourceKey: result.Key, Title: result.Title},
         []string{"site", "source_key"}, []string{"title"})
 }

@@ -3,19 +3,19 @@
 //
 // 分层：
 //
-//	tables.go   展示层：把根目录 models 包里的表，声明成后台表格页
+//	tables.go   展示层：把internal/models 包里的表，声明成后台表格页
 //	controller/ 控制层：HTTP handler（自定义页调用的 JSON 接口、表格动作）
 //	view/       视图层：自定义页（UsePage）与注入的 JS/CSS
 //	router.go   路由表：把 controller 挂到路径上，装配中间件
 //
-// 表模型（gorm struct 与建表清单）不在 monitor 里 —— 它们和 fetcher 同级放在项目根的
+// 表模型（gorm struct 与建表清单）不在 monitor 里 —— 它们和 fetcher 同级放在项目 internal 下的
 // models 包，爬虫业务与后台服务共用。这里只管「怎么展示 / 怎么调用」。
 package monitor
 
 import (
 	"github.com/ydtg1993/papa/v3"
-	"{{.Module}}/models"
-	"{{.Module}}/monitor/view"
+	"{{.Module}}/internal/models"
+	"{{.Module}}/internal/monitor/view"
 )
 
 // Register 在 papa.New 之后、调 Run（或 Migrate）之前调用一次，把 monitor 各层接进后台。

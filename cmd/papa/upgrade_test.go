@@ -28,17 +28,17 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 	}
 
 	// ① 框架副本：改一份（内容漂了）、删一份（缺了）、再加一份自己的
-	writeFileT(t, filepath.Join("demo", "docs", "CORE_CONFIG.md"), "# 本地乱改过的\n")
-	if err := os.Remove(filepath.Join("demo", "docs", "MONITOR.md")); err != nil {
+	writeFileT(t, filepath.Join("demo", "docs", "framework", "CORE_CONFIG.md"), "# 本地乱改过的\n")
+	if err := os.Remove(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
 		t.Fatal(err)
 	}
-	writeFileT(t, filepath.Join("demo", "docs", "notes.md"), "# 我自己的笔记\n")
-	writeFileT(t, filepath.Join("demo", "docs", "samples", "keep.md"), "# 子目录不动\n")
+	writeFileT(t, filepath.Join("demo", "docs", "framework", "notes.md"), "# 我自己的笔记\n")
+	writeFileT(t, filepath.Join("demo", "docs", "framework", "samples", "keep.md"), "# 子目录不动\n")
 
 	// ② config.yaml：脚手架自带的三个队列段是合法的（队列已回 config.yaml，不是"已退休"的旧段）
 
 	// ③ 站点声明写成升级前的样子：还带着旧类型名
-	writeFileT(t, filepath.Join("demo", "sites", "demo.go"), `package sites
+	writeFileT(t, filepath.Join("demo", "internal", "sites", "demo.go"), `package sites
 
 import "github.com/ydtg1993/papa/v3"
 
@@ -89,16 +89,16 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 		t.Fatalf("runNew = %v", err)
 	}
 
-	coredoc := filepath.Join("demo", "docs", "CORE_CONFIG.md")
+	coredoc := filepath.Join("demo", "docs", "framework", "CORE_CONFIG.md")
 	writeFileT(t, coredoc, "# 本地乱改过的\n")
-	if err := os.Remove(filepath.Join("demo", "docs", "MONITOR.md")); err != nil {
+	if err := os.Remove(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
 		t.Fatal(err)
 	}
-	writeFileT(t, filepath.Join("demo", "docs", "notes.md"), "# 我自己的笔记\n")
+	writeFileT(t, filepath.Join("demo", "docs", "framework", "notes.md"), "# 我自己的笔记\n")
 
 	mainBefore := readFile(t, filepath.Join("demo", "main.go"))
 	cfgBefore := readFile(t, filepath.Join("demo", "configs", "config.yaml"))
-	siteBefore := readFile(t, filepath.Join("demo", "sites", "demo.go"))
+	siteBefore := readFile(t, filepath.Join("demo", "internal", "sites", "demo.go"))
 	// 技能是刚生成的，与框架逐字一致 → 升级不该动它（幂等）
 	skillBefore := readFile(t, filepath.Join("demo", skillPath(t, "SKILL.md")))
 
@@ -108,7 +108,7 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 			t.Fatalf("upgrade = %v", err)
 		}
 	})
-	if !strings.Contains(out, "更新  docs/CORE_CONFIG.md") || !strings.Contains(out, "新增  docs/MONITOR.md") {
+	if !strings.Contains(out, "更新  docs/framework/CORE_CONFIG.md") || !strings.Contains(out, "新增  docs/framework/MONITOR.md") {
 		t.Fatalf("报告里应当列出要改的副本：\n%s", out)
 	}
 	if got := readFile(t, coredoc); got != "# 本地乱改过的\n" {
@@ -128,10 +128,10 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	if got := readFile(t, coredoc); got != string(want) {
 		t.Error("--write 之后副本应当与框架逐字一致")
 	}
-	if _, err := os.Stat(filepath.Join("demo", "docs", "MONITOR.md")); err != nil {
+	if _, err := os.Stat(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
 		t.Errorf("缺的副本应当补上：%v", err)
 	}
-	if got := readFile(t, filepath.Join("demo", "docs", "notes.md")); got != "# 我自己的笔记\n" {
+	if got := readFile(t, filepath.Join("demo", "docs", "framework", "notes.md")); got != "# 我自己的笔记\n" {
 		t.Error("自己加的文档不该被删或改")
 	}
 	if got := readFile(t, filepath.Join("demo", skillPath(t, "SKILL.md"))); got != skillBefore {
@@ -140,7 +140,7 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	for _, c := range []struct{ name, before string }{
 		{"main.go", mainBefore},
 		{"configs/config.yaml", cfgBefore},
-		{"sites/demo.go", siteBefore},
+		{"internal/sites/demo.go", siteBefore},
 	} {
 		if got := readFile(t, filepath.Join("demo", filepath.FromSlash(c.name))); got != c.before {
 			t.Errorf("业务文件 %s 不该被动过", c.name)

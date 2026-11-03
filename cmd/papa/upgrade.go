@@ -135,20 +135,22 @@ func printUpgradePlan(p *upgradePlan) {
 		fmt.Printf("  项目依赖：go.mod 里还没有 papa 的 require（`go mod tidy` 之后就位）\n")
 	}
 
-	fmt.Printf("\n【框架副本：docs/】\n")
+	docDir, _ := filepath.Rel(p.Root, frameworkDocsDir(p.Root))
+	docDir = filepath.ToSlash(docDir)
+	fmt.Printf("\n【框架副本：%s/】\n", docDir)
 	if len(p.DocAdds)+len(p.DocUpdates) == 0 {
 		fmt.Printf("  已是最新（%d 份手册与框架一致）\n", len(embeddedDocs()))
 	} else {
 		for _, f := range p.DocAdds {
-			fmt.Printf("  新增  docs/%s\n", f)
+			fmt.Printf("  新增  %s/%s\n", docDir, f)
 		}
 		for _, f := range p.DocUpdates {
-			fmt.Printf("  更新  docs/%s\n", f)
+			fmt.Printf("  更新  %s/%s\n", docDir, f)
 		}
 		fmt.Printf("  （加 --write 落盘；这些是框架的逐字副本，以框架为准）\n")
 	}
 	for _, f := range p.DocStale {
-		fmt.Printf("  保留  docs/%s（框架里没有这份了 —— 你自己加的，不动）\n", f)
+		fmt.Printf("  保留  %s/%s（框架里没有这份了 —— 你自己加的，不动）\n", docDir, f)
 	}
 
 	fmt.Printf("\n【开发技能：.claude/skills/%s/】\n", skillName)
@@ -202,7 +204,7 @@ func printUpgradePlan(p *upgradePlan) {
 
 // writeDocs 把框架手册写进项目 docs/（只写框架有的那份；项目自己加的文件不动）。
 func writeDocs(p *upgradePlan) error {
-	dir := filepath.Join(p.Root, "docs")
+	dir := frameworkDocsDir(p.Root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -269,7 +271,7 @@ func writeSkill(p *upgradePlan) error {
 
 // planDocs 比对框架手册与项目 docs/：返回 要新增的 / 要更新的 / 项目独有的（只报告，不删）。
 func planDocs(root string) (adds, updates, stale []string) {
-	dir := filepath.Join(root, "docs")
+	dir := frameworkDocsDir(root)
 	embedded := embeddedDocs()
 	for _, name := range embedded {
 		data, err := docs.Files.ReadFile(name)
@@ -342,7 +344,7 @@ func checkConfig(path string) (report string, ok bool) {
 // checkSiteDeclarations 对 sites/*.go 做**文本级**检查（不改不解析）：
 // 旧类型名还在不在、三条队列声明有没有出现过。只是提醒 —— 真正的校验在启动时（RegisterSites）。
 func checkSiteDeclarations(root string) (files []string, notes []string) {
-	paths, err := filepath.Glob(filepath.Join(root, "sites", "*.go"))
+	paths, err := filepath.Glob(filepath.Join(root, siteDirectory(root), "*.go"))
 	if err != nil {
 		return nil, nil
 	}

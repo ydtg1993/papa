@@ -62,7 +62,12 @@ func skillContent(tmplName string, data scaffoldData) ([]byte, error) {
 // skillData 渲染技能模板用的数据：`project-conventions.md` 里要写进项目自己的阶段前缀（`{{.Module}}`）。
 func skillData(root string) scaffoldData {
 	m := moduleName(root)
-	return scaffoldData{Module: m, SiteFunc: sanitizeIdent(m)}
+	codeDir := ""
+	if siteDirectory(root) == filepath.Join("internal", "sites") {
+		codeDir = "internal/"
+	}
+	docsDir, _ := filepath.Rel(root, frameworkDocsDir(root))
+	return scaffoldData{Module: m, SiteFunc: sanitizeIdent(m), CodeDir: codeDir, DocsDir: filepath.ToSlash(docsDir)}
 }
 
 // moduleName 从项目 go.mod 的 `module` 行取项目名；读不到就退回目录名。
