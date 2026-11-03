@@ -38,7 +38,7 @@ func Read(paths []string, from, to time.Time) (Result, error) {
 		}
 	}
 	sortEvents(res.Events)
-	res.Gaps = countGaps(res.Events)
+	res.Gaps = CountGaps(res.Events)
 	return res, nil
 }
 
@@ -124,9 +124,9 @@ func sortEvents(evs []events.Event) {
 	})
 }
 
-// countGaps 统计每个 run_id 内相邻 seq 的缺口总数（seq 差 - 1 之和）。
+// CountGaps 统计每个 run_id 内相邻 seq 的缺口总数（seq 差 - 1 之和）。
 // 事件先按 run_id 分组、组内按 seq 排序再算，因此输入乱序不影响结果。
-func countGaps(evs []events.Event) int {
+func CountGaps(evs []events.Event) int {
 	if len(evs) < 2 {
 		return 0
 	}

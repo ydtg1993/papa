@@ -60,10 +60,14 @@ func LoadSources(sc SourceConfig) (*Sources, error) {
 		return nil, fmt.Errorf("读取事件: %w", err)
 	}
 	evs := res.Events
+	gaps := res.Gaps
+	i
 	if sc.RunID != "" {
 		evs = FilterRunID(evs, sc.RunID)
 		if len(evs) == 0 {
 			return nil, fmt.Errorf("事件里没有 run_id=%s 的记录", sc.RunID)
+
+		
 		}
 	}
 	from, to := sc.Since, sc.Until
@@ -77,7 +81,7 @@ func LoadSources(sc SourceConfig) (*Sources, error) {
 		}
 	}
 
-	out := &Sources{
+		EventMeta: EventMeta{Count: len(evs), Files: res.Files, Gaps: gaps, Unparsed: res.Unparsed, Duplicates: res.Duplicates},
 		Run:       RunMeta{RunIDs: CollectRunIDs(evs), From: from, To: to},
 		EventMeta: EventMeta{Count: len(evs), Files: res.Files, Gaps: res.Gaps, Unparsed: res.Unparsed, Duplicates: res.Duplicates},
 		Events:    evs,
