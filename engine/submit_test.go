@@ -491,6 +491,7 @@ func TestSubmitTasksEmptyAndValidation(t *testing.T) {
 func TestSubmitTasksBatchInsertsThenEnqueues(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 两条都是全新的
+	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
@@ -526,6 +527,7 @@ func TestSubmitTasksSkipsDedupedRows(t *testing.T) {
 	fresh := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/fresh"}
 	e.dedupCache.Add(dup.Unique()) // 内存里已有 → 非轮询直接跳过
 	f.noRows = true                // fresh 在库里是全新的
+	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
 
 	if err := e.SubmitTasks([]*Task{dup, fresh}); err != nil {
 		t.Fatalf("SubmitTasks = %v", err)
@@ -541,6 +543,7 @@ func TestSubmitTasksSkipsDedupedRows(t *testing.T) {
 func TestSubmitTasksHonoursDelay(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 两条都当作全新任务，才会走到"延迟 vs 立即"这一步
+	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 

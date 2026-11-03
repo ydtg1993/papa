@@ -332,6 +332,7 @@ func (e *Engine) submitToStage(task *Task) error {
 
 // SubmitTasks 批量提交任务：先按 Unique 做批内去重，再批量入库、逐个入队。
 // 同键保留首次出现的任务参数，重复项回填相同 ID 和 Repeat，不重复投递。
+// 逐条插入失败时继续处理其它行，成功项照常投递，最后汇总返回失败信息。
 func (e *Engine) SubmitTasks(tasks []*Task) error {
 	if len(tasks) == 0 {
 		return nil
@@ -398,20 +399,21 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 	}
 
 	// 批量入库（单条多行 INSERT），失败退到逐条
-	var conflicted map[string]struct{}
+	var conflicted, failed map[string]struct{}
+	var submitErrors []error
 	if len(toInsert) > 0 {
 		var err error
-		conflicted, err = e.insertTasks(toInsert)
+		conflicted, failed, err = e.insertTasks(toInsert)
 		if err != nil {
-			err = fmt.Errorf("insert crawler tasks: %w", err)
-			e.loggerSet.Engine.Errorf("submit tasks failed: %v", err)
-			return err
+			submitErrors = append(submitErrors, fmt.Errorf("insert crawler tasks: %w", err))
 		}
 	}
 
-	// 逐个入队（含延迟投递）。这里没有"投递失败"要收集：投不进去的任务会进溢出表等回灌，
-	// 真正会失败的只有前面那道批量插入（它已经返回了）。
+	// 成功项逐个入队（含延迟投递），失败项不缓存、不投递，允许调用方以后重试。
 	for _, t := range toProcess {
+		if _, hit := failed[t.Unique()]; hit {
+			continue
+		}
 		// 并发撞车的那几条：库里那行已经被另一路入库并入队了，别再入一次（与 SubmitTask 同一处理）
 		if _, hit := conflicted[t.Unique()]; hit {
 			e.dedupCache.Add(t.Unique())
@@ -419,7 +421,19 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		}
 		e.dedupCache.Add(t.Unique())
 		var record models.CrawlerTask
-		e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record)
+		if err := e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record).Error; err != nil {
+			submitErrors = append(submitErrors, fmt.Errorf("reload task %d before enqueue: %w", t.ID, err))
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				// 已经落库的行不能因读库瞬态错误失去投递责任；回灌重读后再投。
+				if at := t.deliverAt(); !at.IsZero() && at.After(time.Now()) {
+					// 尚未到期的任务仍进延迟堆，不能通过回灌提前执行。
+					e.enqueueDelayed(at, t, models.CrawlerTask{ID: uint(t.ID)})
+				} else {
+					e.spillTask(t)
+				}
+			}
+			continue
+		}
 		if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 			continue
 		}
@@ -429,10 +443,14 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		}
 		e.submitToPool(t, record)
 	}
-	return nil
+	err := errors.Join(submitErrors...)
+	if err != nil {
+		e.loggerSet.Engine.Errorf("submit tasks failed: %v", err)
+	}
+	return err
 }
 
-// insertTasks 批量入库并回填 ID，返回其中「撞了唯一索引、复用了库里已有行」的那些任务的去重键。
+// insertTasks 批量入库并回填 ID，分别返回外部冲突、实际失败的去重键及汇总错误。
 //
 // 快路径就是一条多行 INSERT —— SubmitTasks 本来就是冲着减少 DB 往返来的。
 //
@@ -441,10 +459,10 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 //
 // 这里不去分辨"批量失败是不是因为重复键"：逐条那条路自己会分辨 —— 插不进去就按唯一索引
 // `idx_site_stage_url_hash` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
-// 把同样的 site|stage|url 写进去了），回填它的 ID、记进返回的集合；查不到说明插入是真的失败了，
-// 原样把插入的那个错报出去（它比"没查到"更有信息量）。
+// 把同样的 site|stage|url 写进去了），回填它的 ID、记进冲突集合；查不到则记录插入错误，
+// 继续处理后面的行，最终汇总失败信息，成功行仍由调用方负责投递。
 // 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
-func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
+func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, map[string]struct{}, error) {
 	records := make([]models.CrawlerTask, 0, len(tasks))
 	for _, t := range tasks {
 		records = append(records, t.toModel())
@@ -454,11 +472,13 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
 		for i, t := range tasks {
 			t.ID = int(records[i].ID)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	e.loggerSet.Engine.Warnf("batch insert failed, falling back to per-row insert (%d tasks)", len(tasks))
 	conflicted := make(map[string]struct{})
+	failed := make(map[string]struct{})
+	var insertErrors []error
 	for _, t := range tasks {
 		rec := t.toModel()
 		ierr := e.db.Create(&rec).Error
@@ -470,10 +490,12 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, error) {
 		// 而只查一条时"键文本变过"那种情况会把它报成插入失败。
 		var existed models.CrawlerTask
 		if serr := e.findTaskRecordFallback(t, &existed); serr != nil {
-			return nil, fmt.Errorf("insert task %q: %w", t.URL, ierr)
+			failed[t.Unique()] = struct{}{}
+			insertErrors = append(insertErrors, fmt.Errorf("insert task %q: %w", t.URL, ierr))
+			continue
 		}
 		t.ID = int(existed.ID)
 		conflicted[t.Unique()] = struct{}{}
 	}
-	return conflicted, nil
+	return conflicted, failed, errors.Join(insertErrors...)
 }

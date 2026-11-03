@@ -234,6 +234,10 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 批内重复提交回归在 `engine/submit_batch_dedup_test.go`：覆盖同 URL、相同幂等键、轮询任务、重复指针、混合批次首次参数保留、已有状态不重置、满池寄放及延迟投递。外部唯一冲突回查沿用 `TestSubmitTasksSkipsConflictingRows`。
 
+批量部分成功回归在 `engine/submit_partial_test.go`：覆盖首/中/尾行失败、多行与全批失败、成功项不重复投递、失败项可重试、延迟项保持等待，以及落库后读取失败仍保留投递责任。
+
 后台报告切换回归在 `admin/server/obsreport_race_test.go` 的 `TestObsReportLatestRequestWins`：有 Node.js 时执行 `testdata/obs_report_race_test.js`，以受控响应顺序运行真实的报告加载函数，覆盖响应头/正文晚到、旧请求失败、文件切换、A→B→A 和空报告。没有 Node.js 的环境跳过该行为测试；可直接运行 `node admin/server/testdata/obs_report_race_test.js admin/server/static/mo.js`。
+
+报告运行筛选回归在 `obs/load_run_scope_test.go` 的 `TestLoadSourcesGapCountFollowsRunAndWindow`：从临时 JSONL 与 gzip 轮转文件加载交错、多运行、重复及乱序事件，验证单次运行的缺口和 `event_gaps` 检查、全量汇总及时间窗口边界；文件读取诊断仍保留原范围。
 
 验证包含 `TestScaffoldBuildsAndUpgradePreservesAppDocs`（生成真实项目并 tidy/build）、`TestCheckEndToEnd`（新站点目录校验及非法声明拒绝）、`TestLayoutDetectionAndLegacyUpgrade`（旧布局与优先级）及 `TestUpgradeWriteOnlyTouchesFrameworkCopies`（升级只写框架副本）。

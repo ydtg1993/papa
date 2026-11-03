@@ -105,6 +105,7 @@ func TestSubmitTasksDuplicateBatchKeepsNewTaskScheduled(t *testing.T) {
 func TestSubmitTasksMixedBatchKeepsFirstOccurrence(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
+	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 	first := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a", Meta: map[string]string{"version": "first"}}
