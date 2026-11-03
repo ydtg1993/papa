@@ -8,7 +8,7 @@ where it has already diverged from current Papa.
 
 | Path | What goes there |
 | --- | --- |
-| `{{.CodeDir}}sites/{{.Module}}.go` | site + stage declaration (Key / BaseURL / Headers / Breaker / Stages). Self-registers via `init()` + `papa.RegisterSite`. |
+| `{{.CodeDir}}sites/{{.Project}}.go` | site + stage declaration (Key / BaseURL / Headers / Breaker / Stages). Self-registers via `init()` + `papa.RegisterSite`. |
 | `{{.CodeDir}}fetcher/<site>/` | stage handlers and entry submission — one package per site once there is more than one |
 | `{{.CodeDir}}models/` | business structs and GORM table models; `models.Models()` is the migration list |
 | `{{.CodeDir}}monitor/` | back-office layers: `tables.go` / `controller/` / `view/` / `router.go` / `middleware.go` |

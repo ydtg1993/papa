@@ -20,7 +20,7 @@ import (
 // 参数再放另一份文件，等于加一个阶段要改两处、想看全貌要翻两个地方。
 func {{.SiteFunc}}() papa.SiteSpec {
 	site := papa.SiteSpec{
-		Key:     "{{.Module}}",          // 站点键：熔断 scope、日志/监控维度、任务的 site 列
+		Key:     "{{.Project}}",          // 站点键：熔断 scope、日志/监控维度、任务的 site 列
 		BaseURL: "https://example.com/", // 站点根地址；框架不拿它当限制，方便 handler 取用
 		// 三个治理队列（error_queue / recover_queue / repeat_queue）现在是**全局一段**，写在
 		// configs/config.yaml 里，不在这里 —— 站点声明只管"这一站是谁 + 有哪些阶段"。

@@ -17,7 +17,7 @@ type Task struct {
 	PID        int    `json:"pid"` // 父级任务ID
 	URL        string // 要打开的 URL
 	Retry      int
-	Repeat     int    // 框架维护的入队计数（数据库 repeat），只读；不是成功轮询次数。
+	Repeat     int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮回灌不重复计数。
 	Stage      string // 阶段标识，如 "catalog", "detail", "video"
 	Site       string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
 	Repeatable bool
@@ -34,6 +34,10 @@ type Task struct {
 	// Trace 本次尝试的步骤记录器，由 worker 在调用 FetchHandler 前挂上。
 	// 追踪未开启时为 nil，Step/Fail 是安全的 no-op。handler 无需判空。
 	Trace *Trace
+
+	// repeatCounted 标记本轮提交已成功写回 pending 并计数。
+	// 溢出回灌复用 Task，只重试投递；下一轮从 DB 重建 Task 时该进程内标记归零。
+	repeatCounted bool
 }
 
 // deliverAt 返回任务的延迟投递时间；无延迟时返回零值 time.Time。

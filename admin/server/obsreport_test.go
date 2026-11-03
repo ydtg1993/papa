@@ -301,7 +301,8 @@ func TestObsReportPageWired(t *testing.T) {
 		"data-obs-file",
 		"function downloadObsReport(",
 		"'/api/obs/report?run='",
-		"pre.textContent = await resp.text()",
+		"var content = await resp.text()",
+		"pre.textContent = content",
 		"if (name === 'obs') { fetchObsReports(); }",
 	} {
 		if !strings.Contains(js, want) {

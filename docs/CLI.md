@@ -34,6 +34,8 @@ go install ./cmd/papa
 
 ### `papa new` 生成什么
 
+完整 module 路径用于 `go.mod` 与 Go import；模块最后一段作为本地项目名，用于站点文件、默认站点键、构建产物和 Compose 服务/容器名称。例如 `papa new example.com/demo` 在 `example.com/demo/` 下生成项目，站点为 `internal/sites/demo.go`，产物为 `bin/demo`（Windows 为 `demo.exe`），import 仍是 `example.com/demo/internal/...`。`papa new example.com/demo/v2` 的本地项目名为 `v2`。已有项目不会被自动改名或迁移。
+
 ```
 mycrawler/
   main.go                  薄入口：app.Run(os.Args[1:])

@@ -179,8 +179,11 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 		return
 	}
 	task.Repeat = record.Repeat
-	if task.Repeatable && task.ID != 0 {
+	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
 		task.Repeat++
+		// 写库成功才记为本轮已计数：写库失败后的回灌仍需补计一次，
+		// 写库成功后因队满或池回收而回灌则只重试投递，不重复消耗轮询上限。
+		task.repeatCounted = true
 	}
 	e.afterTaskPending(task)
 }
@@ -274,7 +277,7 @@ func (e *Engine) claimTask(task *Task) (bool, error) {
 // 这个坑真踩过（v3.1.0 起，只有真库跑得出来，假库测试看不见）。
 func submitUpdates(task *Task) map[string]any {
 	updates := map[string]any{"status": models.TaskStatusPending}
-	if task.Repeatable && task.ID != 0 {
+	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
 		// 轮询代数交给 SQL 自增：读出来 +1 再写回，并发下会丢别人的增量。
 		// 列名必须加引号（`repeat` 是保留字，见函数注释）。
 		updates["repeat"] = gorm.Expr("`repeat` + 1")
@@ -327,7 +330,8 @@ func (e *Engine) submitToStage(task *Task) error {
 	return pool.Submit(task)
 }
 
-// SubmitTasks 批量提交任务：一次性批量入库（减少 DB 往返），再逐个入队。
+// SubmitTasks 批量提交任务：先按 Unique 做批内去重，再批量入库、逐个入队。
+// 同键保留首次出现的任务参数，重复项回填相同 ID 和 Repeat，不重复投递。
 func (e *Engine) SubmitTasks(tasks []*Task) error {
 	if len(tasks) == 0 {
 		return nil
@@ -344,8 +348,24 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 	// 两阶段去重与 repeatable 处理，收集需入库/入队的任务
 	var toInsert []*Task
 	var toProcess []*Task
+	batch := make(map[string]*Task, len(tasks))
+	defer func() {
+		// 同批重复项没有独立插入，但调用方仍可读取它对应的任务身份。
+		for _, t := range tasks {
+			if first := batch[t.Unique()]; first != nil && first != t {
+				t.ID, t.Repeat = first.ID, first.Repeat
+				t.repeatCounted = first.repeatCounted
+			}
+		}
+	}()
 	for _, t := range tasks {
 		key := t.Unique()
+		if _, exists := batch[key]; exists {
+			continue
+		}
+		// 不写进全局缓存：只有后续落库成功，任务才真正归我们负责。
+		// 批内先排除重复，避免本批插入的首条被后续重复项标成外部冲突。
+		batch[key] = t
 		if e.dedupCache.Get(key) {
 			if !t.Repeatable {
 				continue // 去重命中：跳过

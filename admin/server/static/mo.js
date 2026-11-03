@@ -1173,7 +1173,7 @@
     // 后端只列报告目录、把单份产物当纯文本吐回来；这里做「选报告 → 切文件 → 看原文 / 下载」。
     // 报告里会带日志与 URL（不可信文本），一律用 textContent 放进 <pre>，不渲染 markdown。
     var OBS_FILES = ['report.md', 'report.json', 'ai-brief.md', 'ai-brief.json'];
-    var obsState = { dir: '', runs: [], run: '', file: '' };
+    var obsState = { dir: '', runs: [], run: '', file: '', requestSeq: 0 };
 
     // obsVerdict 把 report.json 里的 verdict 翻成后台的徽标；未知/读不到都算「未判定」。
     function obsVerdict(raw) {
@@ -1266,15 +1266,25 @@
     }
 
     async function loadObsReport() {
+        // 每次选择都作废旧请求，包括没有产物的报告。
+        var seq = ++obsState.requestSeq;
         var pre = document.getElementById('obs-content');
         if (!pre) return;
         if (!obsState.run || !obsState.file) { pre.textContent = '这份报告没有可看的产物'; return; }
         pre.textContent = '加载中…';
         var url = '/api/obs/report?run=' + encodeURIComponent(obsState.run)
             + '&file=' + encodeURIComponent(obsState.file);
-        var resp = await apiFetch(url);
-        if (!resp) { pre.textContent = '读取失败（报告可能已被清理）'; return; }
-        pre.textContent = await resp.text();
+        try {
+            var resp = await apiFetch(url);
+            if (seq !== obsState.requestSeq) return;
+            if (!resp) { pre.textContent = '读取失败（报告可能已被清理）'; return; }
+            var content = await resp.text();
+            // 响应头先到不代表正文已经读完，读取正文期间也可能切换。
+            if (seq !== obsState.requestSeq) return;
+            pre.textContent = content;
+        } catch (_) {
+            if (seq === obsState.requestSeq) pre.textContent = '读取失败（报告可能已被清理）';
+        }
     }
 
     async function downloadObsReport() {

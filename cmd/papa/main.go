@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -20,8 +21,9 @@ var tmplFS embed.FS
 type scaffoldData struct {
 	CodeDir string
 	DocsDir string
-	Module  string
-	// SiteFunc 站点声明函数名（sites/<模块名>.go 里的 `func xxx() papa.SiteSpec`）。
+	Module  string // 完整 Go module 路径，仅用于 module 声明、import 与展示。
+	Project string // module 最后一段，用于文件名、构建产物和默认站点/容器名。
+	// SiteFunc 站点声明函数名（sites/<项目名>.go 里的 `func xxx() papa.SiteSpec`）。
 	// 模块名可能带连字符/大写，这里归一成合法标识符。
 	SiteFunc string
 }
@@ -56,7 +58,7 @@ func sanitizeIdent(s string) string {
 
 // validateModuleName 校验项目名（它就是 go.mod 里的 module 路径）。
 //
-// 同一个名字还会变成：项目目录名、`sites/<名字>.go` 的文件名、以及生成代码里的 import 前缀 ——
+// 同一个名字还会变成项目目录路径和生成代码里的 import 前缀，最后一段用于文件名 ——
 // 所以规则比 Go 的模块路径再严一点：空格、引号、冒号、问号这些在文件名里非法的字符一律不收。
 //
 // **必须在写任何文件之前拦**：不拦的话，名字里的空格要到 `format.Source` 那一步才炸，报出来的是
@@ -205,7 +207,8 @@ func runNew(name string, args []string) error {
 		replacePath = filepath.ToSlash(replacePath) // 兼容 Windows 反斜杠路径
 	}
 
-	data := scaffoldData{Module: name, SiteFunc: sanitizeIdent(name), CodeDir: "internal/", DocsDir: "docs/framework"}
+	project := path.Base(name)
+	data := scaffoldData{Module: name, Project: project, SiteFunc: sanitizeIdent(project), CodeDir: "internal/", DocsDir: "docs/framework"}
 
 	files := []fileSpec{
 		{"go.mod.tmpl", "go.mod"},
@@ -217,7 +220,7 @@ func runNew(name string, args []string) error {
 		{"docs_DEVELOPMENT.md.tmpl", filepath.Join("docs", "operations", "DEVELOPMENT.md")},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml.example")},
-		{"configs_sites_site.go.tmpl", filepath.Join("internal", "sites", "{{.Module}}.go")},
+		{"configs_sites_site.go.tmpl", filepath.Join("internal", "sites", "{{.Project}}.go")},
 		{"fetch_catalog.go.tmpl", filepath.Join("internal", "fetcher", "fetch_catalog.go")},
 		{"models_models.go.tmpl", filepath.Join("internal", "models", "models.go")},
 		{"monitor_register.go.tmpl", filepath.Join("internal", "monitor", "register.go")},

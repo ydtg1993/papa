@@ -67,7 +67,7 @@ func skillData(root string) scaffoldData {
 		codeDir = "internal/"
 	}
 	docsDir, _ := filepath.Rel(root, frameworkDocsDir(root))
-	return scaffoldData{Module: m, SiteFunc: sanitizeIdent(m), CodeDir: codeDir, DocsDir: filepath.ToSlash(docsDir)}
+	return scaffoldData{Module: m, Project: m, SiteFunc: sanitizeIdent(m), CodeDir: codeDir, DocsDir: filepath.ToSlash(docsDir)}
 }
 
 // moduleName 从项目 go.mod 的 `module` 行取项目名；读不到就退回目录名。
