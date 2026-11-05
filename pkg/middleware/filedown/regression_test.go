@@ -94,8 +94,12 @@ func TestDownloadSingleKeepsPreviousOnFailure(t *testing.T) {
 	if string(got) != "OLD-GOOD" {
 		t.Fatalf("失败后上一份好文件被毁掉了，实得 %q", got)
 	}
-	if _, err := os.Stat(abs + ".tmp"); !os.IsNotExist(err) {
-		t.Fatal("失败的下载不该留下 .tmp")
+	entries, err := os.ReadDir(filepath.Dir(abs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(abs) {
+		t.Fatalf("失败的下载不该留下临时文件，目录内容：%v", entries)
 	}
 }
 

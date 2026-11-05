@@ -85,6 +85,7 @@ func (m *Manager) Register(key Key, cfg Config) error {
 		}
 	}
 	e := &entry{config: cfg, key: key, origins: map[string]bool{}, authHeaders: map[string]bool{"Authorization": true, "X-Csrf-Token": true}, slots: make(chan struct{}, cfg.MaxConcurrent), browserSlot: make(chan struct{}, 1)}
+	e.autoBridge = autoBridge
 	for _, raw := range cfg.Origins {
 		o, err := origin(raw)
 		if err != nil {
@@ -246,6 +247,14 @@ func cloneCredentials(c *Credentials) *Credentials {
 }
 
 func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version uint64, err error) {
+	// Automatic Rod authentication owns the browser slot through HTTP verification
+	// and publication. Register this cleanup before finalization so it runs last.
+	browserLocked := false
+	defer func() {
+		if browserLocked {
+			<-e.browserSlot
+		}
+	}()
 	e.mu.Lock()
 	if e.paused {
 		e.mu.Unlock()
@@ -276,6 +285,7 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 	f := &flight{done: make(chan struct{})}
 	e.flight = f
 	revision := e.revision
+	browserRevision := e.browserRevision
 	oldVersion := e.version
 	old := cloneCredentials(e.current)
 	seed := maps.Clone(e.seed)
@@ -302,7 +312,6 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			if !finished {
 				e.current = nil
 				e.version++
-				e.revision++
 				credentials = nil
 				err = &Failure{Code: "authentication-finalize-aborted"}
 			}
@@ -311,7 +320,8 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			close(f.done)
 			e.mu.Unlock()
 		}()
-		if e.revision != revision || e.paused {
+		if e.revision != revision || e.version != oldVersion || e.paused ||
+			(err == nil && loggedIn && credentials.BrowserState != nil && e.browserRevision != browserRevision) {
 			err = ErrSuperseded
 		}
 		if err == nil {
@@ -320,11 +330,11 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			e.lastCheck = time.Now()
 			if loggedIn {
 				e.version++
-				e.revision++
 				e.lastLogin = e.lastCheck
 				if credentials.BrowserState != nil {
 					e.pageState = credentials.BrowserState
 					e.browserCheck = e.lastCheck
+					e.browserRevision++
 				}
 			}
 			e.failure = nil
@@ -335,7 +345,6 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 				e.current = nil
 				e.lastCheck = time.Time{}
 				e.version++
-				e.revision++
 			}
 		}
 		if err != nil {
@@ -346,6 +355,7 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			}
 			if errors.Is(err, ErrChallenge) {
 				e.paused = true
+				e.revision++
 			}
 		}
 		finished = true
@@ -373,24 +383,64 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 	if candidate.Values == nil {
 		candidate.Values = map[string]string{}
 	}
-	if err = e.config.Login(ctx, candidate); err != nil {
-		return nil, 0, &Failure{Code: "login-failed", Cause: err}
+	if e.autoBridge {
+		if err = e.enterBrowser(ctx); err != nil {
+			return nil, 0, err
+		}
+		browserLocked = true
+		e.mu.Lock()
+		if e.revision != revision || e.version != oldVersion || e.paused {
+			e.mu.Unlock()
+			return nil, 0, ErrSuperseded
+		}
+		if e.failure != nil && time.Now().Before(e.retryAt) {
+			err = e.failure
+			e.mu.Unlock()
+			return nil, 0, err
+		}
+		candidate.BrowserState, err = clonePageState(e.pageState)
+		browserRevision = e.browserRevision
+		e.mu.Unlock()
+		if err != nil {
+			return nil, 0, &Failure{Code: "invalid-browser-state", Cause: err}
+		}
 	}
-	if err = e.checkCredentials(candidate); err != nil {
-		return nil, 0, &Failure{Code: "invalid-credentials", Cause: err}
+	for attempt := 0; attempt < 2; attempt++ {
+		restored := false
+		if e.autoBridge {
+			restored, err = browserLoginState(ctx, candidate, *e.config.Browser)
+		} else {
+			err = e.config.Login(ctx, candidate)
+		}
+		if err != nil {
+			return nil, 0, &Failure{Code: "login-failed", Cause: err}
+		}
+		if err = e.checkCredentials(candidate); err != nil {
+			return nil, 0, &Failure{Code: "invalid-credentials", Cause: err}
+		}
+		valid, checkErr := e.config.Check(ctx, candidate)
+		if checkErr != nil {
+			return nil, 0, &Failure{Code: "verification-failed", Cause: checkErr}
+		}
+		if !valid {
+			if restored && attempt == 0 {
+				// A browser-valid snapshot may lack an HTTP token or a cookie on
+				// another configured origin. Retry once with a clean login candidate.
+				candidate = &Credentials{Session: htmlfetch.NewSession(), Headers: map[string]string{}, Values: maps.Clone(seed)}
+				if candidate.Values == nil {
+					candidate.Values = map[string]string{}
+				}
+				continue
+			}
+			return nil, 0, ErrExpired
+		}
+		if err = e.checkCredentials(candidate); err != nil {
+			return nil, 0, &Failure{Code: "invalid-credentials", Cause: err}
+		}
+		loggedIn = true
+		return candidate, 0, nil
 	}
-	valid, checkErr := e.config.Check(ctx, candidate)
-	if checkErr != nil {
-		return nil, 0, &Failure{Code: "verification-failed", Cause: checkErr}
-	}
-	if !valid {
-		return nil, 0, ErrExpired
-	}
-	if err = e.checkCredentials(candidate); err != nil {
-		return nil, 0, &Failure{Code: "invalid-credentials", Cause: err}
-	}
-	loggedIn = true
-	return candidate, 0, nil
+	return nil, 0, ErrExpired
 }
 
 // Invalidate affects only the HTTP credential generation actually used. A late
@@ -409,7 +459,6 @@ func (m *Manager) Invalidate(key Key, version uint64) bool {
 	e.current = nil
 	e.lastCheck = time.Time{}
 	e.version++
-	e.revision++
 	e.failure = nil
 	e.retryAt = time.Time{}
 	return true
@@ -578,7 +627,6 @@ func (e *entry) observe(ctx context.Context, version uint64, response *htmlfetch
 		}
 		if !reflect.DeepEqual(candidate.Headers, e.current.Headers) || !reflect.DeepEqual(candidate.Values, e.current.Values) {
 			e.version++
-			e.revision++
 			e.current = candidate
 			e.seed = maps.Clone(candidate.Values)
 		}

@@ -28,13 +28,14 @@ import (
 type fakeTaskDB struct {
 	mu sync.Mutex
 
-	row      fakeRow  // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
-	noRows   bool     // true 时 SELECT 返回空结果集（模拟行不存在）
-	affected int64    // UPDATE 的 RowsAffected，用来模拟条件没匹配上
-	failNext int      // 让接下来的 N 次写失败（模拟批量插入撞唯一索引等）
-	execs    []string // 执行过的写语句
-	args     [][]driver.Value
-	queries  []string
+	row          fakeRow  // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
+	noRows       bool     // true 时 SELECT 返回空结果集（模拟行不存在）
+	insertedTask bool     // newly inserted task has default round counters, even when noRows models the initial dedup miss
+	affected     int64    // UPDATE 的 RowsAffected，用来模拟条件没匹配上
+	failNext     int      // 让接下来的 N 次写失败（模拟批量插入撞唯一索引等）
+	execs        []string // 执行过的写语句
+	args         [][]driver.Value
+	queries      []string
 
 	// rows 多行结果集（测分页用）。非 nil 时取代 row：按 `id > ?` 过滤后返回全部。
 	// **只实现 `id > ?` 这一个条件** —— 够验分页游标，不是通用 SQL 引擎。
@@ -203,6 +204,9 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 		f.failNext--
 		return nil, errors.New("fake: duplicate entry")
 	}
+	if strings.HasPrefix(q, "INSERT INTO `crawler_tasks`") {
+		f.insertedTask = true
+	}
 	vals := make([]driver.Value, len(args))
 	for i, a := range args {
 		vals[i] = a.Value
@@ -261,6 +265,13 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	}
 	if f.rows == nil {
 		if f.noRows {
+			// Existing end-to-end fixtures keep noRows=true to model every new
+			// URL's initial dedup miss. A successful INSERT still has real zero
+			// counters for the post-claim version read. This is not a SQL parser;
+			// state/WHERE/transaction semantics remain explicitly simulated.
+			if f.insertedTask && strings.HasPrefix(q, "SELECT `repeat`,`reprocess` FROM `crawler_tasks`") {
+				return &fakeRows{cols: []string{"repeat", "reprocess"}, all: [][]driver.Value{{int64(0), int64(0)}}}, nil
+			}
 			return &fakeRows{cols: fakeTaskColumns}, nil // 一行都没有 → gorm 回 ErrRecordNotFound
 		}
 		return &fakeRows{cols: fakeTaskColumns, all: [][]driver.Value{rowValues(f.row)}}, nil

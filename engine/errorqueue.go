@@ -83,7 +83,8 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	}
 
 	task := e.taskFromRecord(t)
-	task.Retry = 0 // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
+	task.repeatCounted = true // retry this round; spill must not consume another polling round
+	task.Retry = 0            // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitToStage(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {

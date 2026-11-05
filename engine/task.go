@@ -156,6 +156,10 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 	if t.ID == 0 {
 		return false
 	}
+	return db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(taskStatusUpdates(status, err)).Error == nil
+}
+
+func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {
 	updates := map[string]any{"status": status}
 	if status == models.TaskStatusFailed {
 		var errMsg string
@@ -164,7 +168,7 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 		}
 		updates["error"] = gorm.Expr("CONCAT(COALESCE(error, ''), ?)", errMsg+"\n")
 	}
-	return db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(updates).Error == nil
+	return updates
 }
 
 // Unique 进程内去重键（也是"任务身份"的规范文本）：`site:stage:url`。

@@ -33,9 +33,19 @@ func browserOrigin(page *rod.Page, rawURL string) error {
 // Rod and copy configured URL cookies. Export optionally supplies token headers.
 func browserLogin(cfg BrowserConfig) func(context.Context, *Credentials) error {
 	return func(ctx context.Context, c *Credentials) error {
-		return useBrowser(ctx, &cfg, nil, func(page *rod.Page) error {
-			if err := cfg.Login(ctx, page); err != nil {
-				return err
+		_, err := browserLoginState(ctx, c, cfg)
+		return err
+	}
+}
+
+func browserLoginState(ctx context.Context, c *Credentials, cfg BrowserConfig) (restored bool, err error) {
+	state := c.BrowserState
+	for attempt := 0; attempt < 2; attempt++ {
+		err := useBrowser(ctx, &cfg, state, func(page *rod.Page) error {
+			if state == nil {
+				if err := cfg.Login(ctx, page); err != nil {
+					return err
+				}
 			}
 			if err := browserOrigin(page, cfg.URL); err != nil {
 				return err
@@ -45,6 +55,9 @@ func browserLogin(cfg BrowserConfig) func(context.Context, *Credentials) error {
 				return err
 			}
 			if !valid {
+				if state != nil {
+					return errRestoreExpired
+				}
 				return ErrExpired
 			}
 			if err := browserOrigin(page, cfg.URL); err != nil {
@@ -67,13 +80,66 @@ func browserLogin(cfg BrowserConfig) func(context.Context, *Credentials) error {
 			if err := browserOrigin(page, cfg.URL); err != nil {
 				return err
 			}
-			c.BrowserState, err = browser.ExportPageState(page)
+			c.BrowserState, err = exportBrowserState(page, &cfg)
 			return err
 		})
+		if errors.Is(err, errRestoreExpired) {
+			state = nil
+			continue
+		}
+		return state != nil, err
 	}
+	return false, ErrExpired
 }
 
 var errRestoreExpired = errors.New("restored browser login expired")
+
+// Preserve same-origin bridge cookies even when their paths do not match the
+// bootstrap page. ExportPageState deliberately exports only the current URL.
+func exportBrowserState(page *rod.Page, cfg *BrowserConfig) (*browser.PageState, error) {
+	state, err := browser.ExportPageState(page)
+	if err != nil {
+		return nil, err
+	}
+	var urls []string
+	for _, raw := range cfg.CookieURLs {
+		if o, err := origin(raw); err == nil && o == state.Origin {
+			urls = append(urls, raw)
+		}
+	}
+	if len(urls) == 0 {
+		return state, nil
+	}
+	cookies, err := page.Cookies(urls)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	for _, cookie := range state.Cookies {
+		seen[cookie.Name+"\x00"+cookie.Domain+"\x00"+cookie.Path] = true
+	}
+	for _, cookie := range cookies {
+		key := cookie.Name + "\x00" + cookie.Domain + "\x00" + cookie.Path
+		if !seen[key] {
+			state.Cookies = append(state.Cookies, cookie)
+			seen[key] = true
+		}
+	}
+	return state, browser.ValidatePageState(state)
+}
+
+func (e *entry) enterBrowser(ctx context.Context) error {
+	select {
+	case e.browserSlot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-e.browserSlot
+		return err
+	}
+	return nil
+}
 
 // WithBrowser serializes browser operations for this account. Each operation
 // restores state into a fresh context and verifies it. Expired restored state
@@ -97,10 +163,8 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 		return err
 	}
 	defer e.leave()
-	select {
-	case e.browserSlot <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
+	if err = e.enterBrowser(ctx); err != nil {
+		return err
 	}
 	defer func() { <-e.browserSlot }()
 	if err = e.load(ctx); err != nil {
@@ -118,6 +182,7 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 	}
 	state, err := clonePageState(e.pageState)
 	revision := e.revision
+	browserRevision := e.browserRevision
 	e.mu.Unlock()
 	if err != nil {
 		return &Failure{Code: "invalid-browser-state", Cause: err}
@@ -163,7 +228,7 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 			if err := browserOrigin(page, e.config.Browser.URL); err != nil {
 				return err
 			}
-			saved, err = browser.ExportPageState(page)
+			saved, err = exportBrowserState(page, e.config.Browser)
 			if err != nil {
 				return err
 			}
@@ -183,7 +248,7 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.revision != revision || e.paused {
+	if e.revision != revision || e.browserRevision != browserRevision || e.paused {
 		return ErrSuperseded
 	}
 	if err != nil {
@@ -196,8 +261,9 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 			e.retryAt = time.Now().Add(e.config.FailureCooldown)
 			if errors.Is(err, ErrChallenge) {
 				e.paused = true
+				e.revision++
 			}
-			e.revision++
+			e.browserRevision++
 		}
 		return err
 	}
@@ -206,7 +272,7 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 	if loggedIn {
 		e.lastLogin = e.browserCheck
 	}
-	e.revision++
+	e.browserRevision++
 	e.failure = nil
 	e.retryAt = time.Time{}
 	return e.saveLocked(ctx)

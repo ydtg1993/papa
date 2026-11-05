@@ -127,7 +127,8 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	}
 
 	task := e.taskFromRecord(t)
-	task.Retry = 0 // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
+	task.repeatCounted = true // manual reprocess keeps the current polling round
+	task.Retry = 0            // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitToStage(task); err != nil {
 		// 队列达高水位：与正常投递一致，溢出到 DB 由 drain 回灌，不算失败
@@ -187,6 +188,7 @@ func (e *Engine) UrgentTask(id uint) error {
 
 	// Urgent 必须显式置真：上面的条件更新改的是库里的行，这里读到的 t 是更新**之前**的快照。
 	task := e.taskFromRecord(t)
+	task.repeatCounted = true // urgency changes position, never polling count
 	task.Urgent = true
 	e.dedupCache.Add(task.Unique())
 	if err := e.submitToStage(task); err != nil {

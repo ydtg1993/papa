@@ -67,7 +67,7 @@ func TestOverlayFields(t *testing.T) {
 	}
 }
 
-// With：配置独立、状态共享 —— 和 m3u8 那份同一个约定（共享状态里那个 execMu 才是
+// With：配置独立、状态共享 —— 和 m3u8 那份同一个约定（共享状态里的 outputLocks 才是
 // "同一目标文件不并发执行"的落点）。
 func TestWithSharesStateAndIsolatesConfig(t *testing.T) {
 	base := NewDownloader(DefaultConfig())

@@ -41,10 +41,10 @@ type Downloader struct {
 }
 
 // state 一份实例的**可变内部状态**。抽出来只有一个目的：让 `With` 造出来的实例能**共用**它 ——
-// 于是"随用随生成、配置各不同"与下面这三条保证可以同时成立：
+// 于是"随用随生成、配置各不同"与下面这些保证可以同时成立：
 //
-//   - `labors`：同一个目标文件（键 = 源|目录|文件名）只对应一条 labor，labor 里的 execMu
-//     确保**同一任务不并发执行** —— 两条并发下载写同一个文件、同一份断点状态，就靠它挡；
+//   - `outputLocks`：按最终输出路径串行写入，断点文件与分片目录也共用这套可取消锁；
+//   - `labors`：按源|目录|文件名保留任务参数，换源不会复用另一源的 URL 或断点身份；
 //   - `keyCache`：AES 密钥复用（同一条流的分片共用一把钥，不必每片取一次）；
 //   - `proxyClients`：每个代理一条连接池。
 //
@@ -58,6 +58,7 @@ type state struct {
 	keyCache     sync.Map                // 密钥缓存: key -> *cachedKey
 	labors       map[string]*labor       // 任务专用锁管理
 	laborMu      sync.RWMutex            // 保护 labors map
+	outputLocks  middleware.OutputLocks
 }
 
 type cachedKey struct {
@@ -70,7 +71,6 @@ type labor struct {
 	filename string
 	source   string
 	resumeMu sync.Mutex // 保护 resumeState 的修改
-	execMu   sync.Mutex
 	// waiters 正在使用或排队等这条 labor 的下载数。只在 laborMu 下读写 —— 引用计数，见 acquire/release。
 	waiters int
 }
@@ -369,9 +369,7 @@ type DownloadResult struct {
 	Error      error
 }
 
-// acquireLabor 取（或建）这一任务的 labor，并把引用数 +1。引用数保证"只要还有人排队，
-// 这条 labor 就不从表里删"，同键后来者排在同一条 labor 的 execMu 后面 —— 老写法"用完无条件 delete"
-// 会在 A 结束删条目后，让 B（还排在旧锁上）与新建的 C 各拿一条锁并发写同一个文件。
+// acquireLabor 取（或建）这一任务的 labor，并把引用数 +1；实际执行互斥由 outputLocks 按磁盘路径负责。
 func (d *Downloader) acquireLabor(key, source, outDir, fileName string) *labor {
 	d.st.laborMu.Lock()
 	defer d.st.laborMu.Unlock()
@@ -500,8 +498,6 @@ func (d *Downloader) Download(ctx context.Context, m3u8URL, outputDir, outputFil
 }
 
 func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOptions) *DownloadResult {
-	la.execMu.Lock()
-	defer la.execMu.Unlock()
 	result := &DownloadResult{}
 	cfg := d.config
 	// 这一次生效的产物形态与它的两个细节：逐次 options 覆盖实例配置（nil = 用实例那份）
@@ -521,6 +517,22 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	m3u8URL := la.source
 	outputDir := la.outDir
 	outputFile := la.filename
+	outputPath := filepath.Join(cfg.OutputDir, outputDir, outputFile)
+	lockPath := outputPath
+	if mode != OutputPlaylist && mode != OutputSegments && cfg.AutoMerge {
+		// movie.ts 与 movie.m3u8 都可能写 movie.mp4，锁必须使用最终产物路径。
+		lockPath = strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + mergeExt
+	}
+	paths := []string{lockPath}
+	if mode != OutputPlaylist {
+		paths = append(paths, d.getStateFilePath(la), d.segDir(la))
+	}
+	unlock, err := d.st.outputLocks.Lock(ctx, paths...)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	defer unlock()
 
 	// 1. 获取播放列表
 	playlist, baseURL, err := d.fetchPlaylist(ctx, m3u8URL, opts)
@@ -545,7 +557,6 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 
 	// 2.5 只要播放列表：把选中的那份原文落盘就结束 —— 不下分片（断点状态也不碰）
 	if mode == OutputPlaylist {
-		outputPath := filepath.Join(cfg.OutputDir, outputDir, outputFile)
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 			result.Error = fmt.Errorf("mkdir output dir: %w", err)
 			return result
@@ -572,7 +583,6 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	}
 
 	// 4. 确定输出路径
-	outputPath := filepath.Join(cfg.OutputDir, outputDir, outputFile)
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		result.Error = fmt.Errorf("mkdir output dir: %w", err)
 		return result

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -21,10 +22,10 @@ import (
 // cookies are not cleared. A nil state starts without restoring credentials,
 // while retaining the same target-origin checks. URLs with userinfo are rejected.
 //
-// LocalStorage is replaced only in the matching main-frame origin. A temporary,
-// random sessionStorage marker prevents repeated restoration during redirects;
-// it and the initialization script are removed after initial load, before waits,
-// Interact, or fn. Later navigation therefore preserves site updates. A different
+// LocalStorage is replaced once, only in the matching main-frame origin. A
+// page-scoped CDP handshake removes the initializer before site scripts run;
+// completion does not depend on site-owned storage. Redirects and later
+// navigation therefore preserve site updates. A different
 // final origin is rejected, but redirects and normal cookie domain/path rules
 // still apply: this helper is not a network sandbox.
 //
@@ -91,48 +92,46 @@ func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageS
 		state = &normalized
 	}
 
-	var remove func() error
-	var marker string
+	var initialized <-chan error
+	var cleanupInitializer func() error
 	if state != nil {
 		if err := page.SetCookies(stateNavigationCookies(state)); err != nil {
 			return fmt.Errorf("restore state cookies: %w", err)
 		}
-		marker = "__papa_restore_" + rand.Text()
-		source, err := stateNavigationScript(state, marker)
+		initialized, cleanupInitializer, err = installStateInitializer(page, state)
 		if err != nil {
 			return err
 		}
-		remove, err = page.EvalOnNewDocument(source)
-		if err != nil {
-			return fmt.Errorf("install state initializer: %w", err)
-		}
+		defer func() {
+			if cleanupInitializer != nil {
+				err = errors.Join(err, cleanupInitializer())
+			}
+		}()
 	}
 	if err := page.Navigate(rawURL); err != nil {
 		return fmt.Errorf("navigate: %w", err)
 	}
-	if err := page.WaitLoad(); err != nil {
+	if err := waitStatePageLoad(page); err != nil {
 		return fmt.Errorf("wait load: %w", err)
-	}
-	if state != nil {
-		if err := remove(); err != nil {
-			return fmt.Errorf("remove state initializer: %w", err)
-		}
 	}
 	if err := checkStatePageOrigin(page, origin); err != nil {
 		return err
 	}
 	if state != nil {
-		result, err := page.Eval(`(origin, key) => {
-			if (location.origin !== origin) return false;
-			const restored = sessionStorage.getItem(key) === 'ready';
-			sessionStorage.removeItem(key);
-			return restored;
-		}`, state.Origin, marker)
-		if err != nil {
-			return fmt.Errorf("verify state initializer: %w", err)
+		select {
+		case err := <-initialized:
+			if err != nil {
+				return err
+			}
+		case <-navCtx.Done():
+			return navCtx.Err()
 		}
-		if !result.Value.Bool() {
-			return fmt.Errorf("initialize page local storage failed")
+		// Join the observer and disable its debugger before any user waits or
+		// callbacks. The deferred cleanup handles every earlier failure path.
+		cleanupErr := cleanupInitializer()
+		cleanupInitializer = nil
+		if cleanupErr != nil {
+			return cleanupErr
 		}
 	}
 	if err := applyWaits(page, opts); err != nil {
@@ -166,6 +165,20 @@ func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageS
 		return err
 	}
 	return fn(page)
+}
+
+func waitStatePageLoad(page *rod.Page) error {
+	for {
+		err := page.WaitLoad()
+		// An immediate client redirect destroys the promise used by Rod's
+		// WaitLoad. Continue waiting in the replacement document, under navCtx.
+		if !errors.Is(err, cdp.ErrCtxDestroyed) {
+			return err
+		}
+		if err := page.GetContext().Err(); err != nil {
+			return err
+		}
+	}
 }
 
 func stateNavigationOrigin(page *rod.Page, rawURL string) (string, error) {
@@ -213,31 +226,97 @@ func stateNavigationCookies(state *PageState) []*proto.NetworkCookieParam {
 	return cookies
 }
 
-func stateNavigationScript(state *PageState, marker string) (string, error) {
+// The initializer pauses its own isolated world after restoring storage. The
+// controller removes the script before resuming, so even an immediate client
+// redirect cannot run it twice. Only this page's CDP session enables Debugger.
+func installStateInitializer(page *rod.Page, state *PageState) (<-chan error, func() error, error) {
+	name := "papaRestore_" + rand.Text()
+	source, err := stateNavigationScript(state, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	script, err := (proto.PageAddScriptToEvaluateOnNewDocument{Source: source, WorldName: name}).Call(page)
+	if err != nil {
+		return nil, nil, fmt.Errorf("install state initializer: %w", err)
+	}
+	observer, cancel := page.WithCancel()
+	result := make(chan error, 1)
+	stopped := make(chan struct{})
+	removed := false // read by cleanup only after the observer has stopped
+	wait := observer.EachEvent(func(event *proto.DebuggerPaused) bool {
+		if len(event.CallFrames) == 0 || event.CallFrames[0].FunctionName != name {
+			_ = (proto.DebuggerResume{}).Call(observer)
+			return false
+		}
+		var initErr error
+		value, err := (proto.DebuggerEvaluateOnCallFrame{
+			CallFrameID: event.CallFrames[0].CallFrameID, Expression: "restored", Silent: true, ReturnByValue: true,
+		}).Call(observer)
+		if err != nil {
+			initErr = fmt.Errorf("verify state initializer: %w", err)
+		} else if value.ExceptionDetails != nil || value.Result == nil || !value.Result.Value.Bool() {
+			initErr = fmt.Errorf("initialize page local storage failed")
+		}
+		if err := (proto.PageRemoveScriptToEvaluateOnNewDocument{Identifier: script.Identifier}).Call(observer); err != nil {
+			initErr = errors.Join(initErr, fmt.Errorf("remove state initializer: %w", err))
+		} else {
+			removed = true
+		}
+		if err := (proto.DebuggerResume{}).Call(observer); err != nil {
+			initErr = errors.Join(initErr, fmt.Errorf("resume state page: %w", err))
+		}
+		result <- initErr
+		return true
+	})
+	go func() {
+		defer close(stopped)
+		wait()
+	}()
+	cleanup := func() error {
+		cancel()
+		<-stopped
+		ctx, stop := context.WithTimeout(context.WithoutCancel(page.GetContext()), 3*time.Second)
+		defer stop()
+		p := page.Context(ctx)
+		var err error
+		if !removed {
+			err = (proto.PageRemoveScriptToEvaluateOnNewDocument{Identifier: script.Identifier}).Call(p)
+		}
+		// Disabling also releases a paused page if cancellation interrupted the
+		// handshake; the enclosing WithStatePage then closes the page.
+		err = errors.Join(err, (proto.DebuggerDisable{}).Call(p))
+		if err != nil {
+			return fmt.Errorf("clean up state initializer: %w", err)
+		}
+		return nil
+	}
+	return result, cleanup, nil
+}
+
+func stateNavigationScript(state *PageState, name string) (string, error) {
 	data, err := json.Marshal(struct {
 		Origin string            `json:"origin"`
 		Values map[string]string `json:"values"`
-		Marker string            `json:"marker"`
-	}{state.Origin, state.LocalStorage, marker})
+	}{state.Origin, state.LocalStorage})
 	if err != nil {
 		return "", fmt.Errorf("encode state initializer failed")
 	}
 	// Parse JSON rather than embed an object literal, so a storage key named
 	// __proto__ is data and does not change JavaScript object-literal semantics.
 	quoted, _ := json.Marshal(string(data))
-	return `((state) => {
+	return `(function ` + name + `(state) {
 		if (window !== window.top || location.origin !== state.origin) return;
+		let restored = false;
 		try {
-			if (sessionStorage.getItem(state.marker) !== null) return;
-			sessionStorage.setItem(state.marker, 'pending');
 			localStorage.clear();
 			for (const [key, value] of Object.entries(state.values || {})) {
 				localStorage.setItem(key, value);
 			}
-			sessionStorage.setItem(state.marker, 'ready');
+			restored = true;
 		} catch (_) {
-			// Verification after load detects failure without exposing credentials
+			// The controller detects failure without exposing credentials
 			// or an unhandled exception containing the initializer source.
 		}
+		debugger;
 	})(JSON.parse(` + string(quoted) + `));`, nil
 }

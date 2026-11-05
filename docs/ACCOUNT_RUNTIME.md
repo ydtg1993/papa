@@ -54,6 +54,8 @@ Check 必须验证真实账号身份。明确未登录返回 `false, nil`；网�
 
 CheckInterval 为 0 时逐次检查，正数允许近期有效结果复用；实际业务请求仍分类处理失效。MaxConcurrent 默认 1，设大后同账号 HTTP 可以并发，但站点必须允许同时操作和 Cookie 更新。需要严格 Token 顺序时保持 1。浏览器回调始终在账号内串行执行。
 
+自动 Rod→HTTP 登录桥接与 `WithBrowser` 共用同一账号浏览器锁；桥接持锁直到 HTTP 复验、快照保存和状态发布完成。等待者拿锁后读取最新浏览器状态，避免重复登录或覆盖刚发布的状态。缓存命中和仅 HTTP 检查不占用浏览器锁，等待锁可以独立取消。
+
 ## 3. 过期、限制与 Token 轮换
 
 默认只把完整 HTTP 401 判定为过期，403 判定为权限不足；网络/读取错误不自动当过期。站点若用 200 登录页或 JSON 业务码，可通过 `Config.Classify(response, err)` 返回 `Valid`、`Expired`、`Forbidden`、`Challenge` 或 `Unknown`。判断前应检查 err，不能将不完整正文识别为过期。
@@ -90,9 +92,9 @@ FileStore 使用外部 32 字节密钥、随机 nonce 和 AES-GCM；账号 Key �
 
 Config.Browser 配置账号专用或明确共享策略的 Pool、URL、Login、Check。URL 是稳定的同源 bootstrap 页面。Manager.WithBrowser 为每次操作创建新隔离上下文，恢复快照、检查登录、必要时在新的干净上下文登录，然后执行业务回调一次；成功后保存当前页面 Cookie/LocalStorage。失败的业务回调不会自动重放。
 
-`Browser.WithStatePage` 已支持 Cookie 在首次导航前设置、LocalStorage 在主 frame 第一段脚本前恢复；加载后卸载初始化脚本，后续导航不覆盖新 token。nil state 也检查最终 origin，跨源重定向不能进入账号登录回调。Login、Check、Export 和业务回调返回时须回到 bootstrap origin；跨域 SSO 可由业务编排中间导航，但本工具不提供全浏览器的网络出口隔离。
+`Browser.WithStatePage` 支持 Cookie 在首次导航前设置、LocalStorage 在主 frame 第一段脚本前恢复。初始化完成通过独立执行环境中的 CDP 握手确认，先卸载初始化脚本再继续网站脚本；网站清空 sessionStorage 不影响确认，立即重定向也不会重新覆盖新 token。握手监听和 Debugger 在交互及业务回调前关闭。nil state 也检查最终 origin，跨源重定向不能进入账号登录回调。Login、Check、Export 和业务回调返回时须回到 bootstrap origin；跨域 SSO 可由业务编排中间导航，但本工具不提供全浏览器的网络出口隔离。
 
-只有 Browser 配置、没有 HTTP 回调的账号可以纯 Rod 使用。如果提供 HTTP Check 与 Browser，而不提供 HTTP Login，管理器会自动通过 Rod 登录，再按 `Browser.CookieURLs` 复制适用 Cookie 到候选 HTTP 会话（默认仅 Browser.URL）。`Browser.Export(ctx,page,credentials)` 可显式提取 LocalStorage Token 或 CSRF，随后 HTTP Check 必须复验桥接是否有效。
+只有 Browser 配置、没有 HTTP 回调的账号可以纯 Rod 使用。如果提供 HTTP Check 与 Browser，而不提供 HTTP Login，管理器会自动恢复并检查已有 Rod 状态，必要时登录，再按 `Browser.CookieURLs` 复制适用 Cookie 到候选 HTTP 会话（默认仅 Browser.URL）。`Browser.Export(ctx,page,credentials)` 可显式提取 LocalStorage Token 或 CSRF，随后 HTTP Check 必须复验桥接是否有效。恢复的浏览器状态通过检查但 HTTP 明确未登录时，额外尝试一次干净上下文登录；检查网络错误不当作过期，也不触发这次重登。
 
 ```go
 err := engine.WithAccountBrowser(ctx, key, func(page *rod.Page) error {
@@ -102,7 +104,7 @@ err := engine.WithAccountBrowser(ctx, key, func(page *rod.Page) error {
 })
 ```
 
-HTTP 和浏览器后续凭据变化不自动双向同步；自动桥接仅发生在该 HTTP 账号需要登录时。快照仍只包含当前 URL 适用 Cookie 与当前 origin LocalStorage，不含 IndexedDB/sessionStorage/多 origin 状态。这里复用的是账号状态，不是长期占用池中的常驻 Chrome。回调结束即销毁上下文，页面不能带出回调。
+HTTP 和浏览器后续凭据变化不自动双向同步；自动桥接仅发生在该 HTTP 账号需要登录时。账号快照包含当前 URL 及同源 `Browser.CookieURLs` 适用 Cookie 的并集、当前 origin LocalStorage；低层 `ExportPageState` 仍只导出当前 URL 适用 Cookie。快照不含 IndexedDB/sessionStorage/多 origin 状态。这里复用的是账号状态，不是长期占用池中的常驻 Chrome。回调结束即销毁上下文，页面不能带出回调。
 
 HTTP 的 ProxyURL 固定该账号出口，空值固定直连；与 context 的显式代理冲突会报错。浏览器使用 Browser.Pool 的出口，Direct 可选直连池；HTTP ProxyURL 不会应用到 Rod。需要两端同 IP/设备时，应由应用配置相应专用池和 UA/设备，框架不会猜测或偷偷轮换。
 

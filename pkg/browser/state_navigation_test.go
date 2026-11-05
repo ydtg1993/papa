@@ -26,6 +26,56 @@ func navigationState(rawURL, account string) *PageState {
 	}
 }
 
+func TestWithStatePageSurvivesSiteStorageClearAndRedirect(t *testing.T) {
+	for _, redirect := range []bool{false, true} {
+		t.Run(fmt.Sprint(redirect), func(t *testing.T) {
+			seen := make(chan string, 4)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/seen" {
+					seen <- r.URL.Query().Get("token")
+					return
+				}
+				w.Header().Set("Content-Type", "text/html")
+				if r.URL.Path == "/start" && redirect {
+					_, _ = io.WriteString(w, `<script>debugger;sessionStorage.clear();localStorage.setItem('token','rotated');location.replace('/end')</script>`)
+					return
+				}
+				_, _ = io.WriteString(w, `<script>debugger;window.firstToken=localStorage.getItem('token');sessionStorage.clear();document.write('<img src="/seen?token='+encodeURIComponent(firstToken)+'">')</script>`)
+			}))
+			defer srv.Close()
+			pool := newLivePool(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			called := false
+			want := "saved"
+			if redirect {
+				want = "rotated"
+			}
+			err := pool.WithIsolatedBrowser(ctx, func(b *Browser) error {
+				return b.WithStatePage(ctx, srv.URL+"/start", navigationState(srv.URL, "saved"), PageOptions{WaitJS: "window.firstToken !== undefined"}, func(page *rod.Page) error {
+					called = true
+					value, err := page.Eval(`() => { debugger; return firstToken; }`)
+					if err == nil && value.Value.Str() != want {
+						return fmt.Errorf("first script token=%q, want %q", value.Value.Str(), want)
+					}
+					return err
+				})
+			})
+			select {
+			case token := <-seen:
+				if token != want {
+					t.Errorf("site observed stale token=%q, want %q", token, want)
+				}
+			case <-ctx.Done():
+				t.Error("site did not report first-script token", ctx.Err())
+			}
+			if err != nil || !called {
+				t.Fatalf("site sessionStorage.clear rejected restored state: callback=%v err=%v", called, err)
+			}
+		})
+	}
+}
+
 func TestWithStatePageFirstRequestAndScript(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

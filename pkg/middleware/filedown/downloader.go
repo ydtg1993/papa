@@ -3,6 +3,7 @@ package filedown
 import (
 	"context"
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,10 +33,10 @@ type Downloader struct {
 }
 
 // state 一份实例的**可变内部状态**。抽出来只有一个目的：让 `With` 造出来的实例能**共用**它 ——
-// 于是"随用随生成、配置各不同"与下面两条保证可以同时成立：
+// 于是"随用随生成、配置各不同"与下面这些保证可以同时成立：
 //
-//   - `labors`：同一个目标文件（键 = 源|目录|文件名）只对应一条 labor，labor 里的 execMu
-//     确保**同一任务不并发执行** —— 两条并发下载写同一个文件、同一份断点状态，就靠它挡；
+//   - `outputLocks`：按完整输出路径串行写入，断点文件与分片目录也共用这套可取消锁；
+//   - `labors`：按源|目录|文件名保留任务参数，换源不会复用另一源的 URL 或断点身份；
 //   - `proxyClients`：每个代理一条连接池。
 //
 // 想要独立配置不必连这些也独立（用 With）；真要一座互不共享的孤岛，才用 NewDownloader。
@@ -46,6 +47,7 @@ type state struct {
 	trackQueue   *msgqueue.MsgQueue[any]
 	labors       map[string]*labor
 	laborMu      sync.RWMutex
+	outputLocks  middleware.OutputLocks
 }
 
 // labor 每个下载任务的私有数据
@@ -53,7 +55,6 @@ type labor struct {
 	url       string
 	outputDir string
 	filename  string
-	execMu    sync.Mutex // 确保同一任务不并发执行
 	resumeMu  sync.Mutex // 保护 resumeState 的修改
 	// waiters 正在使用或排队等这条 labor 的下载数。只在 laborMu 下读写 —— 它是"这条 labor
 	// 能不能从表里删"的引用计数，见 acquireLabor / releaseLabor。
@@ -248,9 +249,7 @@ func (d *Downloader) saveResumeState(la *labor, state *ResumeState) error {
 // cleanResumeState 清理状态文件
 // acquireLabor 取（或建）这一任务的 labor，并把引用数 +1。
 //
-// 引用数保证一条不变量：**只要还有人排队，这条 labor 就不从表里删**。于是同键的后来者排在同一条
-// labor 的 execMu 后面，绝不会各自拿到一条新 labor 并发写同一份产物 —— 老写法是"用完无条件 delete"，
-// A 结束删掉条目后、B 还排在旧 labor 的锁上，此时 C 又能建一条新的，B/C 就各拿一条锁并发写同一个文件。
+// 引用数保证同键调用仍在使用时不会删掉 labor；实际执行互斥由 outputLocks 按磁盘路径负责。
 func (d *Downloader) acquireLabor(key, url, outputDir, fileName string) *labor {
 	d.st.laborMu.Lock()
 	defer d.st.laborMu.Unlock()
@@ -316,10 +315,17 @@ func (d *Downloader) Download(ctx context.Context, fileURL, outputDir, fileName 
 
 // download 内部实现
 func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig) *DownloadResult {
-	la.execMu.Lock()
-	defer la.execMu.Unlock()
-
 	cfgGlobal := d.config
+	paths := []string{filepath.Join(cfgGlobal.OutputDir, la.outputDir, la.filename)}
+	if !cfg.direct {
+		// With 可以改变输出根却共用断点根；这时仍需保护同一源的状态和分片。
+		paths = append(paths, d.getStateFilePath(la), d.segDir(la))
+	}
+	unlock, err := d.st.outputLocks.Lock(ctx, paths...)
+	if err != nil {
+		return &DownloadResult{Error: err}
+	}
+	defer unlock()
 
 	// 分块大小走兜底：<= 0 见 chunkSizeOrDefault 的说明（那是个"会卡死"的值）
 	chunkSize := chunkSizeOrDefault(cfgGlobal.ChunkSize)
@@ -681,8 +687,10 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 	// 先写临时文件、成功后整体改名：直接 os.Create(absOutput) 会**先截断**目标 —— 中途任何失败
 	//（读错 / 写错 / 磁盘满 / 长度不符）都留下半截文件，还把上一份好文件一起毁掉。
 	// 分片路径的每片本来就是"临时文件 + 改名"，这里对齐。
-	tmpPath := absOutput + ".tmp"
-	file, err := os.Create(tmpPath)
+	// 唯一临时文件也避免与另一次合法下载的 "name.tmp" 目标相撞。
+	// O_EXCL 防止覆盖已有文件；0666 保持原 os.Create 的权限与 umask 语义。
+	tmpPath := filepath.Join(filepath.Dir(absOutput), ".papa-download-"+rand.Text()+".tmp")
+	file, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0666)
 	if err != nil {
 		return &DownloadResult{Error: err}
 	}

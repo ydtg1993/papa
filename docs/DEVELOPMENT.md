@@ -87,6 +87,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   task.go      Task 结构与状态更新（Insert / UpdateStatus / IncrRetry / Unique）
                + 两个 fetcher 接口：Fetcher（GetStage / FetchHandler）与 EntrySubmitter（可选的入口任务）
   stage.go     阶段装配与 worker 循环（ApplyRegisterStage / runAttempt）
+  persistence.go 认领/终态写入重试、轮次条件守卫与关停未确认状态统计
   pools.go     活池登记表（懒建 / 空闲回收 / 关停都从这里取池）
   submit.go    提交路径（去重 → 落库 → 入队 → 认领）
   spill.go     高水位溢出与回灌
@@ -138,6 +139,7 @@ pkg/                             可独立复用的件
   account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
   crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON 执行；fixture.go 样本验收；registry.go 激活与回滚
   loggers/ notify/ middleware/{proxy,m3u8,filedown}
+  middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染

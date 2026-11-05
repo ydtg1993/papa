@@ -37,6 +37,9 @@ type Engine struct {
 	// 「本进程启动之后被写过的行」= 本进程碰过的行 → 恢复不重投它们。
 	startedAt time.Time
 	cancel    context.CancelFunc
+	// Cancelled database state retries remain visible in the shutdown report.
+	persistenceMu sync.Mutex
+	unsettled     map[int]string
 	// stages 阶段登记表：**键是 `core.StageKey(site, stage)`**，不是裸的阶段名 ——
 	// 阶段名只在本站内唯一（两个站可以各有自己的 catalog）。凡是按阶段取东西的地方都用这个键。
 	stages map[string]*stageInfo
@@ -573,6 +576,13 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		stats[key] = st
 	}
 	e.spillMu.Unlock()
+	e.persistenceMu.Lock()
+	for _, key := range e.unsettled {
+		st := stats[key]
+		st.Unfinished++
+		stats[key] = st
+	}
+	e.persistenceMu.Unlock()
 	drained = len(stats) == 0
 	// 动态 ticker（错误/恢复/每站的轮询队列）也要等在途的那一跳跑完：它们同样会写库。
 	// 与阶段池共用同一个 timeout（并发计），等不到就如实说"没排空"。

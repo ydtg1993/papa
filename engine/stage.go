@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -164,7 +165,7 @@ func (e *Engine) finishTask(task *Task) {
 // 条件更新 `id=? AND status=processing`：只回退「还停在处理中」的这一行 ——
 // 这中间被运营标成功/标失败/删除、或已被重启后的启动恢复重投过的行，一律不覆盖；
 // RowsAffected=0 不是错误（它本来就是"轮不到回退"）。
-// 写库失败只记 Warn：停机路径要把剩下的任务排完，不能因为这一条回退失败而中断。
+// 写库失败记录 Warn 和未确认任务：停机不无限等待，但 Stop 不能谎报已排空。
 // 行回到 pending 就够了 —— 下次启动的启动恢复（recoverqueue.go）会重新入队。
 func (e *Engine) releaseClaim(task *Task) {
 	if task.ID == 0 {
@@ -175,6 +176,7 @@ func (e *Engine) releaseClaim(task *Task) {
 		Updates(map[string]any{"status": models.TaskStatusPending})
 	if res.Error != nil {
 		e.loggerSet.Engine.Warnf("release claim task %d: %s", task.ID, res.Error.Error())
+		e.rememberUnsettled(task)
 	}
 }
 
@@ -199,6 +201,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		}
 		// claimedAt 认领时刻：事件里的 duration_ms 用它算整段在途时间（成功/失败都算）。
 		var claimedAt time.Time
+		var runVersion taskRunVersion
 		// panic 收尾：FetchHandler 一次尝试里 panic 会展开跳过下面整段「重试 + 落终态」。
 		// runAttempt 只负责 trace/归档（记完原样抛回），workerpool 只负责计数 —— 谁都不碰任务行，
 		// 于是行会永远停在 processing、错误队列与失败通知都不触发、活动任务也没清掉。
@@ -206,24 +209,30 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		defer func() {
 			if r := recover(); r != nil {
 				err := fmt.Errorf("panic: %v", r)
-				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
-				e.emitTaskFailed(task, err, claimedAt)
-				e.notifyFailure(ctx, task, err)
-				e.finishTask(task)
+				if !claimedAt.IsZero() {
+					if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
+						e.loggerSet.Engine.Errorf("panic task %d terminal write unconfirmed: %s", task.ID, writeErr)
+					} else {
+						e.emitTaskFailed(task, err, claimedAt)
+						e.notifyFailure(ctx, task, err)
+						e.finishTask(task)
+					}
+				}
 				panic(r)
 			}
 		}()
 		// 认领：把「待处理」置为「处理中」，让运营侧能看出这条归谁管，
 		// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
 		// 运营已经动过它（标失败/删除），或同一行的另一份副本（后台「加急」会另投一份）先认领了。
-		claimed, err := e.claimTask(task)
+		claimed, version, err := e.claimForExecution(ctx, task)
 		if err != nil {
-			e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
+			return err
 		} else if !claimed {
 			e.loggerSet.Engine.Debugf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
 			return nil
 		}
 		claimedAt = time.Now()
+		runVersion = version
 		e.emit(events.Event{
 			Type: events.TypeTaskClaimed, Site: task.Site, Stage: task.Stage,
 			TaskID: uint(task.ID), URL: task.URL, Attempt: 0,
@@ -258,7 +267,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			}
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if err == nil {
-				task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
+				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusSuccess, nil); writeErr != nil {
+					return writeErr
+				}
 				e.emit(events.Event{
 					Type: events.TypeTaskFinished, Site: task.Site, Stage: task.Stage,
 					TaskID: uint(task.ID), Outcome: "success", Attempt: attempt,
@@ -287,7 +298,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			}
 			// 不可重试的错误：直接标 failed，不再空转重试
 			if !Retryable(err) {
-				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
+					return errors.Join(err, writeErr)
+				}
 				e.emitTaskFailed(task, err, claimedAt)
 				e.notifyFailure(ctx, task, err)
 				e.finishTask(task)
@@ -302,7 +315,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			return ctxErr
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
-		task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
+		if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, lastErr); writeErr != nil {
+			return errors.Join(lastErr, writeErr)
+		}
 		e.emitTaskFailed(task, lastErr, claimedAt)
 		e.notifyFailure(ctx, task, lastErr)
 		e.finishTask(task)

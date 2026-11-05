@@ -883,9 +883,13 @@ func (s *Monitor) logsDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "log dir not configured", http.StatusNotFound)
 		return
 	}
-	name := filepath.Base(r.URL.Query().Get("file"))
-	if name != "" && name != "." && name != ".." && name != string(filepath.Separator) {
-		http.ServeFile(w, r, filepath.Join(dir, name))
+	if name := r.URL.Query().Get("file"); name != "" {
+		f, info := s.openLogFile(w, name)
+		if f == nil {
+			return
+		}
+		defer f.Close()
+		http.ServeContent(w, r, name, info.ModTime(), f)
 		return
 	}
 	zipLogs(w, dir)

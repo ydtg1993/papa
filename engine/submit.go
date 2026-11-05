@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -252,13 +253,16 @@ func (e *Engine) submitRecoveredTask(task *Task) error {
 // 这里拿不到行，任务就不再执行 —— 这正是「标失败」对排队中任务的拦截力。
 // 顺带把 urgent 归零：加急是「排队位置」的概念，跑过一次就完成使命，
 // 不清的话失败重投会让加急任务越积越多、快车道被老任务长期占住。
-// 返回 (是否认领成功, 错误)：DB 抖动不当成"认领失败"，由调用方记日志后继续执行，
-// 免得一次抖动让任务永远没人跑。
+// 返回 (是否认领成功, 错误)：出错不能当作执行许可；worker 保留责任并重试认领。
 func (e *Engine) claimTask(task *Task) (bool, error) {
+	return e.claimTaskContext(context.Background(), task)
+}
+
+func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error) {
 	if task.ID == 0 {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
-	res := claimScope(e.db, uint(task.ID)).Updates(map[string]any{
+	res := claimScope(e.db.WithContext(ctx), uint(task.ID)).Updates(map[string]any{
 		"status": models.TaskStatusProcessing,
 		"urgent": false,
 	})

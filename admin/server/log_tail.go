@@ -47,56 +47,66 @@ func (s *Monitor) logsTailHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.URL.Query().Get("file")
-	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, "/\\\x00:") {
-		http.Error(w, "无效日志文件名", 400)
-		return
-	}
-	if !isLogFileName(name) {
-		http.Error(w, "仅支持日志文件", 400)
-		return
-	}
-	if s.cfg.LogDir == "" {
-		http.Error(w, "未配置日志目录", 404)
-		return
-	}
-	root, err := os.OpenRoot(s.cfg.LogDir)
-	if err != nil {
-		http.Error(w, "日志目录不可用", 404)
-		return
-	}
-	defer root.Close()
-	info, err := root.Lstat(name)
-	if err != nil {
-		http.Error(w, "文件不存在或已轮转，请刷新列表", 404)
-		return
-	}
-	if !info.Mode().IsRegular() {
-		http.Error(w, "仅支持普通日志文件", 400)
-		return
-	}
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".gz", ".zip", ".bz2", ".xz":
-		http.Error(w, "压缩日志请使用全部打包下载", 400)
-		return
-	}
-	f, err := root.Open(name)
-	if err != nil {
-		http.Error(w, "无法读取日志文件", 404)
+	f, info := s.openLogFile(w, name)
+	if f == nil {
 		return
 	}
 	defer f.Close()
-	current, err := f.Stat()
-	if err != nil || !current.Mode().IsRegular() || !os.SameFile(info, current) {
-		http.Error(w, "文件已变化，请刷新重试", 409)
+	if strings.EqualFold(filepath.Ext(name), ".gz") {
+		http.Error(w, "压缩日志请使用全部打包下载", 400)
 		return
 	}
-	tail, err := readLogTail(f, current.Size())
+	tail, err := readLogTail(f, info.Size())
 	if err != nil {
 		http.Error(w, "日志读取失败或文件正在轮转，请重试", 409)
 		return
 	}
 	tail.Name = name
 	writeJSON(w, tail)
+}
+
+// openLogFile 为查看和下载共用同一条安全边界。失败时已写 HTTP 错误；
+// 成功时由调用方关闭文件。根目录约束和打开后的身份核对防止轮转/替换越界。
+func (s *Monitor) openLogFile(w http.ResponseWriter, name string) (*os.File, os.FileInfo) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, "/\\\x00:") {
+		http.Error(w, "无效日志文件名", 400)
+		return nil, nil
+	}
+	if !isLogFileName(name) {
+		http.Error(w, "仅支持日志文件", 400)
+		return nil, nil
+	}
+	if s.cfg.LogDir == "" {
+		http.Error(w, "未配置日志目录", 404)
+		return nil, nil
+	}
+	root, err := os.OpenRoot(s.cfg.LogDir)
+	if err != nil {
+		http.Error(w, "日志目录不可用", 404)
+		return nil, nil
+	}
+	defer root.Close()
+	info, err := root.Lstat(name)
+	if err != nil {
+		http.Error(w, "文件不存在或已轮转，请刷新列表", 404)
+		return nil, nil
+	}
+	if !info.Mode().IsRegular() {
+		http.Error(w, "仅支持普通日志文件", 400)
+		return nil, nil
+	}
+	f, err := root.Open(name)
+	if err != nil {
+		http.Error(w, "无法读取日志文件", 404)
+		return nil, nil
+	}
+	current, err := f.Stat()
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		f.Close()
+		http.Error(w, "文件已变化，请刷新重试", 409)
+		return nil, nil
+	}
+	return f, current
 }
 
 // Read backwards from a size snapshot: appends do not extend this request.

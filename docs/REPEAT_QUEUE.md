@@ -48,6 +48,8 @@ repeat_queue:
 
 **多久一次**：`repeat_interval`（秒；**0 = 用全局的** `interval`）同样是任务行上的列，只在首次入库时由 `papa.Task{RepeatInterval: 10 * time.Minute}` 播种；之后用下面两条路改（提交不再覆盖它 —— 否则每次启动重投入口任务都会把运营改的周期冲掉）。
 
+`reprocess` 与 `repeat` 分开计数：错误队列重投增加 `reprocess`，不新开轮询轮次；后台单条重投、加急也不增加 `repeat`。这些路径无论直接入队还是先溢出再回灌，都保留同一轮计数，不会因队列满或暂停额外消耗轮询上限。
+
 | 做什么 | 后台任务表 | 代码 |
 | --- | --- | --- |
 | 开 / 停轮询 | 行内动作「开轮询」/「停轮询」 | `engine.SetTaskRepeatable(id, on)` |

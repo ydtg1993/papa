@@ -128,11 +128,13 @@ type entry struct {
 	authHeaders                                 map[string]bool
 	slots                                       chan struct{}
 	browserSlot                                 chan struct{}
+	autoBridge                                  bool
 	current                                     *Credentials
 	seed                                        map[string]string
 	pageState                                   *browser.PageState
 	version                                     uint64
-	revision                                    uint64 // lifecycle epoch, independent of HTTP generation
+	revision                                    uint64 // lifecycle epoch (load, pause, logout), independent of credential changes
+	browserRevision                             uint64 // browser snapshot epoch, independent of HTTP generation
 	loaded                                      bool
 	paused                                      bool
 	flight                                      *flight

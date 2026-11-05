@@ -3,7 +3,7 @@
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
-> 不涉及声明式策略（那类东西尚未实现）。
+> 本文聚焦 Go Fetcher；声明式 HTML/JSON 规则、离线样本验收与内存版本切换见 [CRAWL_RULES.md](./CRAWL_RULES.md)，通用联网 RuleFetcher 尚未提供。
 >
 > 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
@@ -15,7 +15,7 @@
 papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / monitor / config / docker / docs / Makefile / logs）
   -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v3）
   -> 在 sites/<站名>.go 里声明阶段（并发/队列/间隔/重试）与该阶段的 fetcher，起始 URL 由 fetcher 的 SubmitEntries 提交
-  -> 任务被 worker 池调度执行，结果通过结果 API 写入 crawler_tasks 表
+  -> 任务被 worker 池调度执行，结果通过 Upsert 写入业务表，crawler_tasks 只维护调度状态
 ```
 
 整个过程 AI 不修改框架代码，只在你自己的项目里新增/修改 fetcher 与**站点声明**（`sites/<站名>.go`：阶段参数 + 入口开关都在那儿），`config.yaml` 只放全局配置（如 `db.dsn`、`browser.enable`）。
@@ -58,6 +58,7 @@ type Fetcher interface {
   }
   ```
 - **不要**在 fetcher 里自己调 `task.UpdateStatus`，状态由引擎自动维护；你只负责提取结果并写库。
+- **认领与终态必须确认落库**：认领数据库错误时不执行 Fetcher；状态操作以 100ms 起步、最多 2s 间隔退避重试，等待可取消并占用当前 worker 形成背压。业务完成后只重试终态写入，不重跑业务；确认终态前不发送完成事件。取消或认领回执不明确的任务计入关停未完成统计，需依靠后续恢复处理。这不提供跨进程租约或业务 exactly-once，进程崩溃后的恢复仍要求业务写入幂等。
 - **日志由框架兜底**：`FetchHandler` 返回的 error 会由引擎结构化记入日志并触发告警（`stage/task_id/url/retry/kind`），你**不需要**再自己拼日志。同样，`engine.SubmitTask` / `SubmitTasks` 的提交类错误（非法 stage、入库失败、入队失败）框架也会自动记录——你只需在返回值上做控制流判断（要不要继续、要不要 abort），不用再记一遍。
 
 ### 1.2 Task 结构
@@ -350,7 +351,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    默认词表扫**可见正文 + 标题**（captcha / verify you are human / access denied / 访问受限 / 验证码 /
    Cloudflare 的 checking your browser · just a moment / Google 的 unusual traffic），业务可用
    `SiteSpec.RestrictedKeywords` 追加本站文案。它**不扫整段 HTML** —— 内联脚本与 style 里的
-   `captcha` 字面量很常见，扫原始 HTML 会把好页面判成受限页（`RestrictedReason` 内部先摘掉 script/style）。
+   `captcha` 字面量很常见，扫原始 HTML 会把好页面判成受限页。`RestrictedReason` 只读遍历原 DOM，排除 script/style；template、hidden、未打开的 dialog 和关闭 details 仅按 HTML namespace 的固有语义处理，关闭 details 只取首个 HTML 直接子 summary。SVG 的 hidden 属性不按 HTML 隐藏规则处理，foreignObject 内的 HTML 节点仍遵循 HTML 规则。标题只取 head 直属 title；不计算 CSS 可见性，也不把 aria-hidden/inert 当成视觉隐藏。
    词表刻意**宁少勿多**：命中之后通常返回不可重试错误、任务直接判死，假阳性的代价是任务白死。
    拿不准就先只观察：`task.Trace.Warn("疑似受限页", nil, map[string]string{"marker": reason})`。
 2. 每一项的标题和 `href` 都必须非空；出现一个残缺条目就返回 error，避免把不完整目录标记为成功。
@@ -925,6 +926,8 @@ SiteSpec{ M3U8: &papa.M3U8Spec{
 ```
 
 m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
+
+filedown 与 m3u8 各自的下载器基座及 `With` 派生实例共享目标路径锁：不同 URL 写同一目标也会串行，目录资源与其子路径也互斥（例如分片目录 `movie/` 与另一下载的 `movie/segment_00000.ts`）。一次取得整组资源，等待时不占用其中一部分，支持 context 取消。m3u8 按最终合并扩展名确定目标，并对共享断点状态文件和切片目录加锁；仅共享父目录的不同文件、独立目标与独立断点目录可以并发。路径以规范化绝对路径识别，Windows 忽略大小写；不解析符号链接/硬链接别名，不跨独立 `NewDownloader` 实例或进程协调。filedown 单文件临时输出使用独占创建的随机文件名，避免固定 `.tmp` 与其它下载目标冲突。
 
 ### 5.3 静态页 / 普通文件用 filedown
 
