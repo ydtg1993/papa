@@ -241,6 +241,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
 	mux.HandleFunc("/api/logs/download", s.wrap(s.logsDownloadHandler))
+	mux.HandleFunc("/api/logs/tail", s.wrap(s.logsTailHandler))
 	mux.HandleFunc("/api/task/page", s.wrap(s.taskPageHandler))
 	// obs 报告页：列历史报告 + 读单份产物原文（download=1 下载）。目录来自 obs.report.dir。
 	mux.HandleFunc("/api/obs/reports", s.wrap(s.obsReportListHandler))

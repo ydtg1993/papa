@@ -1139,9 +1139,10 @@
             nm.className = 'nm'; nm.textContent = f.name;
             var sz = document.createElement('span');
             sz.className = 'sz'; sz.textContent = fmtBytes(f.size);
-            var a = document.createElement('a');
-            a.textContent = '下载';
-            a.onclick = function () { downloadLog(f.name); };
+            var a = document.createElement('button');
+            a.type = 'button'; a.className = 'log-view';
+            a.textContent = '查看';
+            a.onclick = function () { viewLog(f.name); };
             row.appendChild(nm); row.appendChild(sz); row.appendChild(a);
             el.appendChild(row);
         });
@@ -1166,7 +1167,28 @@
         a.remove();
         URL.revokeObjectURL(a.href);
     }
-    async function downloadLog(name) { await downloadFile('/api/logs/download?file=' + encodeURIComponent(name)); }
+    function viewLog(name) {
+        var busy = false;
+        Dialog.open({title: name + ' · 最后 200 行',
+            body: '<p class="hint" id="log-tail-status" role="status">正在读取…</p><pre class="log-tail-text" id="log-tail-text"></pre>',
+            actions: [{label:'刷新', onClick:function(){ refresh(); return false; }}, {label:'关闭',value:true}]});
+        var status = document.getElementById('log-tail-status'), content = document.getElementById('log-tail-text');
+        async function refresh() {
+            if (busy || !content.isConnected) return;
+            busy = true; status.textContent = '正在读取…';
+            try {
+                var response = await apiFetch('/api/logs/tail?file=' + encodeURIComponent(name));
+                if (!response) throw new Error('读取失败，请检查登录状态');
+                if (!response.ok) throw new Error((await response.text()).trim() || '读取日志失败');
+                var data = await response.json();
+                content.textContent = data.text || '暂无日志';
+                status.textContent = '显示最后 ' + data.lines + ' 行' + (data.truncated ? '（达到 1 MiB 上限，开头内容已截断）' : '');
+                content.scrollTop = content.scrollHeight;
+            } catch (error) { content.textContent = ''; status.textContent = error.message; }
+            finally { busy = false; }
+        }
+        refresh();
+    }
     async function downloadLogs() { await downloadFile('/api/logs/download'); }
 
     /* ============ obs 报告（obs.report.dir） ============ */
