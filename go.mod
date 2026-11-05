@@ -4,10 +4,12 @@ go 1.25.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.2
+	github.com/andybalholm/cascadia v1.3.3
 	github.com/go-rod/rod v0.116.2
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/sirupsen/logrus v1.9.4
+	github.com/temoto/robotstxt v1.1.2
 	github.com/ydtg1993/oao v1.3.4
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/time v0.15.0
@@ -19,7 +21,6 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/andybalholm/cascadia v1.3.3 // indirect
 	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -165,56 +164,11 @@ func (c *Client) SetConfig(cfg Config) {
 
 // Fetch downloads and parses one static HTML page.
 func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
-	if strings.TrimSpace(rawURL) == "" {
-		return nil, fmt.Errorf("url is empty")
-	}
-
-	c.mu.RLock()
-	cfg := c.config
-	c.mu.RUnlock()
-
-	// 逐请求超时，支持 SetConfig 热更 timeout
-	if cfg.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, cfg.Timeout)
-		defer cancel()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	resp, err := c.do(ctx, Request{URL: rawURL}, false)
 	if err != nil {
-		return nil, fmt.Errorf("create html request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("User-Agent", cfg.UserAgent)
-	for key, value := range cfg.Headers {
-		req.Header.Set(key, value)
-	}
-	// 逐请求覆盖（`core.WithHeaders`，站点级 + 单次请求两层）：同键覆盖，空值表示删掉那个头。
-	// 放在配置之后 —— 越靠近这次请求的越优先。
-	for key, value := range core.HeadersFrom(ctx) {
-		if value == "" {
-			req.Header.Del(key)
-			continue
-		}
-		req.Header.Set(key, value)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch html: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, &StatusError{Code: resp.StatusCode}
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, cfg.MaxBodySize+1))
-	if err != nil {
-		return nil, fmt.Errorf("read html response: %w", err)
-	}
-	if int64(len(body)) > cfg.MaxBodySize {
-		return nil, &BodyTooLargeError{MaxBodySize: cfg.MaxBodySize}
-	}
+	body := resp.Body
 
 	document, err := goquery.NewDocumentFromReader(bytes.NewReader(body))
 	if err != nil {
@@ -222,7 +176,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 	}
 
 	return &Page{
-		URL:         resp.Request.URL,
+		URL:         resp.URL,
 		StatusCode:  resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 		HTML:        string(body),

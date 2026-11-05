@@ -27,6 +27,8 @@ type Browser struct {
 	// 从池配置中继承的默认值（固定，不可热更）
 	defaultDevice  *devices.Device
 	defaultCookies []*proto.NetworkCookieParam
+	// Non-nil only for scoped isolated contexts; never inherit shared credentials.
+	isolatedHeaders map[string]string
 
 	// aliveOverride 测试钩子：非 nil 时 IsAlive 直接返回其值，跳过真实 CDP 探测。
 	// 仅同包测试使用，生产环境恒为 nil。
@@ -292,7 +294,11 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 // newPageBase 创建空白页面并应用设备模拟、请求头、Cookies（导航前的公共准备逻辑）。
 // 任何一步失败都先把刚建的页面关掉再返回 —— 调用方拿到 nil 就没法关了。
 func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
-	page, err := b.Browser.Page(proto.TargetCreateTarget{})
+	return b.newPageBaseContext(b.Browser.GetContext(), opts)
+}
+
+func (b *Browser) newPageBaseContext(ctx context.Context, opts PageOptions) (*rod.Page, error) {
+	page, err := b.Browser.Context(ctx).Page(proto.TargetCreateTarget{})
 	if err != nil {
 		return nil, fmt.Errorf("open page: %w", err)
 	}
@@ -300,12 +306,12 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 	// 1. 设备模拟（优先使用 opts.Device，否则使用默认设备）
 	if device := opts.Device; device != nil {
 		if err := page.Emulate(*device); err != nil {
-			_ = page.Close()
+			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 			return nil, fmt.Errorf("emulate device: %w", err)
 		}
 	} else if b.defaultDevice != nil {
 		if err := page.Emulate(*b.defaultDevice); err != nil {
-			_ = page.Close()
+			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 			return nil, fmt.Errorf("emulate device: %w", err)
 		}
 	}
@@ -314,10 +320,14 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 	// 键一律按 HTTP 语义规范化：header 名大小写不敏感，站点级默认头可能是 `Authorization`、
 	// 逐请求覆盖/删除写的却是 `authorization`—— map 按精确键删的话删不掉，旧凭据照发。
 	// 规范化后 set/remove 与默认头落到同一个键上，覆盖/删除才按大小写不敏感生效。
-	headerArgs := mergeExtraHeaders(b.pool.headersSnapshot(), opts.Headers, opts.RemoveHeaders)
+	defaults := b.isolatedHeaders
+	if defaults == nil {
+		defaults = b.pool.headersSnapshot()
+	}
+	headerArgs := mergeExtraHeaders(defaults, opts.Headers, opts.RemoveHeaders)
 	if len(headerArgs) > 0 {
 		if _, err := page.SetExtraHeaders(headerArgs); err != nil {
-			_ = page.Close()
+			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 			return nil, fmt.Errorf("set extra headers: %w", err)
 		}
 	}
@@ -328,14 +338,14 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 	cookies = append(cookies, opts.Cookies...)
 	if len(cookies) > 0 {
 		if err := page.SetCookies(cookies); err != nil {
-			_ = page.Close()
+			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 			return nil, fmt.Errorf("set cookies: %w", err)
 		}
 	}
 
 	// 4. 本页资源拦截（必须在导航前；见 BlockOptions 的两种机制）
 	if err := applyBlock(page, opts.Block); err != nil {
-		_ = page.Close()
+		_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 		return nil, err
 	}
 	return page, nil

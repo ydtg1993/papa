@@ -9,12 +9,23 @@ import (
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/app"
+	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
 type App = app.App
+
+// HTTPRequest / HTTPResponse 通用 HTTP/API 抓取的请求与响应。
+type HTTPRequest = htmlfetch.Request
+type HTTPResponse = htmlfetch.Response
+
+// HTTPSession 独立账号的内存 Cookie 会话，不自动持久化。
+type HTTPSession = htmlfetch.Session
+
+var NewHTTPSession = htmlfetch.NewSession
+var WithHTTPSession = htmlfetch.WithSession
 
 // Option 应用初始化选项，传给 New。
 type Option = app.Option

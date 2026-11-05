@@ -1,0 +1,37 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/ydtg1993/papa/v3/pkg/browser"
+)
+
+// RecordNetwork observes one browser page under a bounded recording budget.
+// Raw network evidence stays in memory; no automatic credential-bearing archive.
+func (e *Engine) RecordNetwork(ctx context.Context, rawURL string, opts browser.RecordOptions) (*browser.NetworkRecording, error) {
+	if err := browserProxyError(ctx); err != nil {
+		return nil, err
+	}
+	if e.browserPool == nil {
+		return nil, fmt.Errorf("browser pool is not configured (browser.enable=false)")
+	}
+	opts.Page = mergeBrowserOptions(ctx, opts.Page)
+	var record *browser.NetworkRecording
+	err := e.browserPool.WithBrowser(ctx, func(b *browser.Browser) error {
+		var err error
+		record, err = b.RecordNetwork(ctx, rawURL, opts)
+		return err
+	})
+	data := map[string]any{}
+	if record != nil {
+		data["entries"] = len(record.Entries)
+		data["dropped"] = record.Dropped
+	}
+	if err != nil {
+		traceFromCtx(ctx).Fail("网络录制", fmt.Errorf("network recording failed"), data)
+	} else {
+		traceFromCtx(ctx).Step("网络录制", data)
+	}
+	return record, err
+}

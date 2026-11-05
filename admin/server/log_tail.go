@@ -7,9 +7,27 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
+
+// Only log files and numeric rotations belong in the viewer/export.
+func isLogFileName(name string) bool {
+	name = strings.ToLower(name)
+	if strings.HasPrefix(name, ".") {
+		return false
+	}
+	name = strings.TrimSuffix(name, ".gz")
+	if strings.HasSuffix(name, ".log") {
+		return true
+	}
+	if i := strings.LastIndex(name, ".log."); i >= 0 {
+		n, err := strconv.Atoi(name[i+5:])
+		return err == nil && n >= 0
+	}
+	return false
+}
 
 const logTailLines = 200
 const logTailBytes = 1 << 20
@@ -31,6 +49,10 @@ func (s *Monitor) logsTailHandler(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("file")
 	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, "/\\\x00:") {
 		http.Error(w, "无效日志文件名", 400)
+		return
+	}
+	if !isLogFileName(name) {
+		http.Error(w, "仅支持日志文件", 400)
 		return
 	}
 	if s.cfg.LogDir == "" {
