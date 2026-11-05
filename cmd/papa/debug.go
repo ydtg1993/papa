@@ -351,6 +351,7 @@ func runRod(rawURL string, df debugFlags) error {
 	}
 
 	pool, err := browser.NewPool(browser.PoolConfig{
+		TempDir:        cfg.Browser.TempDir,
 		Size:           1,
 		DirectSize:     0,
 		MaxIdleTime:    0,
@@ -455,6 +456,7 @@ func runDiff(rawURL string, df debugFlags) error {
 		headless = true
 	}
 	pool, err := browser.NewPool(browser.PoolConfig{
+		TempDir:        cfg.Browser.TempDir,
 		Size:           1,
 		DirectSize:     0,
 		Headless:       headless,

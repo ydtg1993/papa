@@ -248,6 +248,21 @@ var rules = []rule{
 		return nil
 	}},
 
+	{"browser.temp_dir", func(c *Config) error {
+		if c.Browser.TempDir == "" {
+			return nil
+		}
+		if strings.TrimSpace(c.Browser.TempDir) == "" {
+			return fmt.Errorf("temp_dir 不能仅包含空白")
+		}
+		for key := range c.Browser.Flags {
+			name := strings.TrimLeft(key, "-")
+			if name == "user-data-dir" || name == "disk-cache-dir" {
+				return fmt.Errorf("temp_dir 不能与 flags.%s 同时配置", key)
+			}
+		}
+		return nil
+	}},
 	{"browser.binary", func(c *Config) error {
 		b := c.Browser
 		switch b.Binary {

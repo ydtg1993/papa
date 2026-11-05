@@ -487,3 +487,12 @@ func TestEditDistance(t *testing.T) {
 		}
 	}
 }
+func TestBrowserTempDirConfig(t *testing.T) {
+	cfg := loadString(t, baseConfig+"browser:\n  temp_dir: /dev/shm/crawler\n")
+	if cfg.Browser.TempDir != "/dev/shm/crawler" {
+		t.Fatal(cfg.Browser.TempDir)
+	}
+	for _, body := range []string{"  temp_dir: '   '\n", "  temp_dir: /dev/shm/crawler\n  flags:\n    user-data-dir: /tmp/fixed\n", "  temp_dir: /dev/shm/crawler\n  flags:\n    disk-cache-dir: /tmp/cache\n"} {
+		assertPanicNamesKey(t, "browser.temp_dir", func() { Load(mustWrite(t, baseConfig+"browser:\n"+body)) })
+	}
+}

@@ -216,6 +216,7 @@ func (e *Engine) SetBrowserPool() {
 		return
 	}
 	pool, err := browser.NewPool(browser.PoolConfig{
+		TempDir:        e.cfg.Browser.TempDir,
 		Size:           e.cfg.Browser.PoolSize,
 		DirectSize:     e.cfg.Browser.DirectSize,
 		MaxIdleTime:    e.browserMaxIdle(),

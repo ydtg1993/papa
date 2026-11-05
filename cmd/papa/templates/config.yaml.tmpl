@@ -44,6 +44,7 @@ browser:
   # leakless 默认关，**别开**：rod 的 leakless 辅助程序会被 Windows Defender 直接拦掉
   #（实测报 "contains a virus or potentially unwanted software"）。要写就写 leakless: false。
   binary: rod                  # rod=Rod 自动下载并管理（服务器不用手装）；system=系统已安装的；path=用 browser_path
+  temp_dir: ""                 # 临时目录根路径；Linux 可设 /dev/shm/crawler，空值使用系统临时目录；重启生效
   browser_path: ""             # 仅 binary: path（或 binary 留空）时生效；binary: rod/system 时写它会被拒绝
   self_check: false            # true = 启动时真实启动一次浏览器（rod 模式会触发下载），起不来就启动失败
   flags: {}                    # 额外 Chromium 开关；键=开关名，值为空 = 布尔开关；数字要加引号，如 {disable-gpu: "", renderer-process-limit: "2"}

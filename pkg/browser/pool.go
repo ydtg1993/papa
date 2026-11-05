@@ -3,6 +3,8 @@ package browser
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +54,7 @@ const (
 
 // PoolConfig 浏览器池配置
 type PoolConfig struct {
+	TempDir      string         // Profile root; empty preserves Rod's OS temporary directory default.
 	Size         int            // 代理浏览器并发上限（按需创建）
 	DirectSize   int            // 强制直连浏览器并发上限（不经过代理）
 	MaxIdleTime  time.Duration  // 最大空闲时间，0 表示无限制
@@ -109,6 +112,13 @@ func resolveBrowserBinary(source, path string) (string, string, error) {
 
 // NewPool 创建浏览器池
 func NewPool(cfg PoolConfig) (*Pool, error) {
+	if cfg.TempDir != "" {
+		for key := range cfg.Flags {
+			if strings.TrimLeft(key, "-") == "user-data-dir" || strings.TrimLeft(key, "-") == "disk-cache-dir" {
+				return nil, fmt.Errorf("browser.temp_dir conflicts with browser.flags.%s", key)
+			}
+		}
+	}
 	if cfg.Size < 0 || cfg.DirectSize < 0 {
 		return nil, fmt.Errorf("invalid pool size: %d/%d", cfg.Size, cfg.DirectSize)
 	}
@@ -119,6 +129,11 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		return nil, err
 	}
 	cfg.BinarySource, cfg.BrowserPath = source, bin
+	root, err := PrepareTempDir(cfg.TempDir)
+	if err != nil {
+		return nil, err
+	}
+	cfg.TempDir = root
 	if cfg.Flags == nil {
 		cfg.Flags = make(map[string]string)
 	}
@@ -187,6 +202,33 @@ func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 // newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
 func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	l := p.newLauncher(useProxy)
+	// Preserve legacy fixed profile flags when temp_dir is not configured.
+	// NewPool rejects these flags together with an explicit temp_dir.
+	legacyProfile := false
+	for key := range p.cfg.Flags {
+		if strings.TrimLeft(key, "-") == "user-data-dir" {
+			legacyProfile = true
+		}
+	}
+	dir := ""
+	if !legacyProfile {
+		var err error
+		dir, err = NewTempProfile(l, p.cfg.TempDir, "browser-")
+		if err != nil {
+			return nil, err
+		}
+	}
+	success := false
+	defer func() {
+		if !success {
+			if l.PID() != 0 {
+				l.Kill()
+			}
+			if dir != "" {
+				_ = os.RemoveAll(dir)
+			}
+		}
+	}()
 
 	url, err := l.Launch()
 	if err != nil {
@@ -197,9 +239,9 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	// 该返回错误而不是把整个流程炸掉。连不上还要把刚拉起来的 Chrome 收掉，否则进程泄漏。
 	browser := rod.New().ControlURL(url)
 	if err := browser.Connect(); err != nil {
-		l.Kill()
 		return nil, fmt.Errorf("connect browser: %w", err)
 	}
+	success = true
 	return &Browser{
 		Browser:        browser,
 		launcher:       l,

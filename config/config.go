@@ -254,6 +254,7 @@ const (
 
 // BrowserConfig 浏览器池配置（go-rod 驱动）
 type BrowserConfig struct {
+	TempDir     string        `mapstructure:"temp_dir"`         // 临时用户数据根目录；空值使用系统临时目录，修改后重启。
 	Enable      bool          `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
 	PoolSize    int           `mapstructure:"pool_size"`        //浏览器并发上限（按需创建，非常驻数量；改需重启）
 	DirectSize  int           `mapstructure:"direct_pool_size"` //强制直连浏览器并发上限（不经过代理）
