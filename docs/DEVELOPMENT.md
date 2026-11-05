@@ -243,3 +243,16 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 验证包含 `TestScaffoldBuildsAndUpgradePreservesAppDocs`（生成真实项目并 tidy/build）、`TestCheckEndToEnd`（新站点目录校验及非法声明拒绝）、`TestLayoutDetectionAndLegacyUpgrade`（旧布局与优先级）及 `TestUpgradeWriteOnlyTouchesFrameworkCopies`（升级只写框架副本）。
 
 浏览器临时目录：`pkg/browser/temp_dir.go` 统一解析、写入验证和独立子目录创建；`pool.go` 保存实际根目录。配置入口为 `config.BrowserConfig.TempDir`，引擎与调试 CLI 均传入池。
+
+
+### v3 熔断维护补丁的模块
+
+- `internal/breaker/breaker.go`：Reset 清零窗口，保留配置。
+- `engine/breaker_diagnostics.go` / `breaker_diagnostics_test.go`：有界采样与冻结现场、恢复隔离、并发和保留上限回归。
+- `obs/incident/incident.go` / `classify.go` / `incident_test.go`：共享分组、原因假设、脱敏及文本导出；仅依赖标准库与通用脱敏工具。
+- `pkg/redact/redact.go` / `redact_test.go`：诊断副本脱敏，不改写请求或任务身份；不引入外部依赖。
+- `obs/analyze/breaker.go` / `breaker_test.go`：历史事件按运行、站点与窗口关联，缺少窗口时显式降级。
+- `admin/server/breaker_analysis.go` / `breaker_analysis_test.go`：只读 API、导出、空态、过期和访问校验。
+- `admin/server/breaker_analysis_ui_test.go` / `breaker_analysis_browser_test.go`：Node 请求竞态与 Chromium 桌面/窄屏测试；v3 自带界面通过凭据/站点/模块与弹窗代次隔离异步结果。
+
+验证此维护分支时使用 `GOWORK=off`，避免同级 v4 或本地 oao 替代发布依赖；验证业务可使用独立临时 go.work 显式包含本模块与业务模块。不要为补丁升级到 v4 的模块路径。

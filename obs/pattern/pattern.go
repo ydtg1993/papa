@@ -211,12 +211,12 @@ func (p *BreakerNoisePattern) Match(in *obs.Input) []obs.Problem {
 	}
 	return []obs.Problem{{
 		ID: "breaker-noise", Severity: obs.SeverityWarn,
-		Title: fmt.Sprintf("窗口内熔断触发 %d 次（可能阈值过低或坏 URL 集中）", total),
+		Title: fmt.Sprintf("报告窗口内熔断触发 %d 次，需逐次对照失败现场", total),
 		Count: total,
 		Hypotheses: []obs.Hypothesis{{
-			Text: "坏 URL/页面结构错误集中触发熔断，阈值偏低掩盖了真实失败率", Confidence: "medium",
+			Text: "可能存在持续失败或恢复后再次失败；仅凭熔断次数不能判断阈值过低", Confidence: "low",
 			Verify:  "对照失败分组：熔断窗口内的失败是否集中在少数 URL",
-			FixHint: "crawler.breaker.threshold/window 或先修失败源",
+			FixHint: "先按本次熔断分析中的错误证据验证失败源，再评估阈值",
 		}},
 		Acceptance: "修复失败源后熔断触发次数下降，且不误伤正常抓取",
 	}}

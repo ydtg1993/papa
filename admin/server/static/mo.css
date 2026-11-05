@@ -394,15 +394,17 @@ textarea { width: 100%; font-family: var(--font-mono); resize: vertical; }
 }
 .kv .v { padding: 9px 12px; background: var(--card); flex: 1; font-family: var(--font-mono); word-break: break-all; }
 
-.log-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-.log-row {
-    display: flex; justify-content: space-between; align-items: center;
-    border: 2px solid var(--border-color); box-shadow: 3px 3px 0 0 var(--shadow-color);
-    padding: 9px 12px; background: var(--card);
-}
-.log-row .nm { font-family: var(--font-mono); word-break: break-all; }
-.log-row .sz { font-family: var(--font-mono); color: var(--muted-foreground); font-size: 12px; margin: 0 12px; flex-shrink: 0; }
-.log-row a { cursor: pointer; color: var(--foreground); font-weight: 800; text-decoration: underline; flex-shrink: 0; }
+.logs-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.logs-heading h2 { margin:0; }
+.logs-heading .btn { padding:5px 10px; font-size:12px; }
+.logs-card { padding:6px 10px; }
+.log-list { display:flex; flex-direction:column; max-height:260px; overflow:auto; }
+.log-row { display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border-color); }
+.log-row:last-child { border-bottom:0; }
+.log-row .nm { font-family:var(--font-mono); font-size:12px; overflow-wrap:anywhere; min-width:0; flex:1; }
+.log-row .sz { font-family:var(--font-mono); color:var(--muted-foreground); font-size:12px; flex-shrink:0; }
+.log-view { background:none; border:0; padding:4px; cursor:pointer; color:var(--foreground); text-decoration:underline; font:inherit; font-size:12px; flex-shrink:0; }
+.log-tail-text { max-height:55vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.5 var(--font-mono); margin:8px 0 0; }
 
 /* ---- obs 报告页：四文件 Tab + 原文查看 ---- */
 .obs-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -704,3 +706,8 @@ input[type="checkbox"]:focus-visible { box-shadow: 2px 2px 0 0 var(--primary); }
 .breaker-row + .breaker-row { margin-top: 10px; }
 /* .btn 默认那条 margin-top 是给纵向排布的（表单里按钮自己占一行）—— 放进这种横排里会偏下 */
 .breaker-row .btn { flex: 0 0 auto; margin-top: 0; }
+
+#breaker-analysis-select { width: 100%; max-width: 100%; margin: 8px 0 14px; }
+#breaker-analysis-body { overflow-wrap: anywhere; }
+.breaker-analysis-table { overflow-x: auto; margin: 12px 0; }
+.breaker-analysis-table table { min-width: 440px; }

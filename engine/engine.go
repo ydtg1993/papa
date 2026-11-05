@@ -10,6 +10,7 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/database"
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/obs/incident"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/events"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
@@ -112,8 +113,11 @@ type Engine struct {
 	//
 	// 它**不再是闸门**：达到阈值只是"该停了"，停这个动作由 notifyFailure 写进暂停信号、
 	// 由取任务点的闸门与入队点的寄放去执行（见 pause.go）。
-	breakerMu   sync.Mutex
-	siteBreaker map[string]*breaker.Breaker
+	breakerMu          sync.Mutex
+	siteBreaker        map[string]*breaker.Breaker
+	breakerSamples     map[string]*breakerEvidence
+	breakerIncidents   []incident.Capture
+	breakerIncidentSeq uint64
 	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
 	// 框架只把它当标签，不做任何限制（见 core.Site 的注释）。
 	sites map[string]core.Site
@@ -361,6 +365,7 @@ func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	// 这里只登记**计数配置**：熔断器不再持有暂停状态、也不发告警 ——
 	// 达到阈值之后由 notifyFailure 写一条暂停信号（Source=breaker）并发 AlertCritical。
 	e.siteBreaker[site] = breaker.New(cfg)
+	delete(e.breakerSamples, site)
 }
 
 // breakerFor 取某个站点的熔断计数器；没这个站（或没给它 SetSiteBreaker）返回 nil。
@@ -487,8 +492,15 @@ func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 // 为什么合成：暂停状态现在只有一处（pause.go），而后台的历史契约是"一条记录里既有熔断阈值
 // 又有暂停现场"。合成让 payload 的字段形状一个字都不变（只多一个 Source）。
 func (e *Engine) breakerStatusOf(site string) BreakerStatus {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	return e.breakerStatusOfLocked(site)
+}
+
+// breakerStatusOfLocked 调用方持有 breakerMu，快照不会被恢复/新熔断拆开。
+func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
 	var st BreakerStatus
-	if b := e.breakerFor(site); b != nil {
+	if b := e.siteBreaker[site]; b != nil {
 		st.Enabled = b.Enabled()
 		st.Window = b.Window()
 		st.Threshold = b.Threshold()

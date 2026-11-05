@@ -181,6 +181,9 @@ func (e *Engine) clearScope(scope pauseScope) bool {
 // 横幅还是红的、再点一次却回"当前不在暂停态"，界面上就成了"卡住且没出路"
 // （`engine/sitestat.go` 里那个残留 true 的坑就是同一类）。
 func (e *Engine) clearSite(site string) bool {
+	// 与终态失败的计数/写暂停串行化，不能让旧判定跨过恢复重新关闸。
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	cleared := false
@@ -193,6 +196,8 @@ func (e *Engine) clearSite(site string) bool {
 		}
 	}
 	if cleared {
+		e.siteBreaker[site].Reset()
+		e.resetBreakerEvidenceLocked(site)
 		e.broadcastPauseLocked()
 	}
 	return cleared
@@ -200,12 +205,17 @@ func (e *Engine) clearSite(site string) bool {
 
 // clearAllPauses 放行所有站点（后台横幅上那个「全部恢复」）。
 func (e *Engine) clearAllPauses() bool {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	if len(e.paused) == 0 {
 		return false
 	}
 	for sc, st := range e.paused {
+		// 同站多条暂停重复清零无副作用；运行中的站点不受影响。
+		e.siteBreaker[sc.Site].Reset()
+		e.resetBreakerEvidenceLocked(sc.Site)
 		delete(e.paused, sc)
 		e.recordResumeLocked(sc)
 		e.emit(events.Event{Type: events.TypePauseResumed, Site: sc.Site, Stage: sc.Stage, Source: st.Source})

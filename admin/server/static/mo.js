@@ -27,8 +27,8 @@
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
-    function saveKey(k) { localStorage.setItem(KEY_STORAGE, k); }
-    function clearKey() { localStorage.removeItem(KEY_STORAGE); }
+    function saveKey(k) { invalidateBreakerAnalysis(); localStorage.setItem(KEY_STORAGE, k); }
+    function clearKey() { invalidateBreakerAnalysis(); localStorage.removeItem(KEY_STORAGE); }
     // 服务端在 <html data-auth-required> 上下发「当前是否设了访问令牌」。
     // 一条都没设时后端本来就把 /api/* 当开放，前端不要弹登录（否则本地开发每次刷新闪一下）。
     function authRequired() { return document.documentElement.getAttribute('data-auth-required') === '1'; }
@@ -50,6 +50,7 @@
     }
 
     function switchModule(name) {
+        invalidateBreakerAnalysis();
         currentModule = name;
         document.querySelectorAll('.module').forEach(function (m) { m.classList.remove('active'); });
         document.getElementById('mod-' + name).classList.add('active');
@@ -626,6 +627,7 @@
     }
 
     function switchSite(site) {
+        invalidateBreakerAnalysis();
         currentSite = site;
         if (lastData) renderAll(lastData); // 手上有快照就直接重画，不必等下一次轮询
         // 正开着某张表时，也按新站点重画它 —— 切站点 tab 就该连表里的筛选一起跟着换
@@ -733,6 +735,7 @@
             '<div class="bell-head">' +
             '<span class="bell-where">站点 ' + esc(b.site || '') + '</span>' +
             '<span class="bell-head-text">' + head + '</span>' +
+            (tripped ? '<button class="btn" data-site="' + esc(b.site || '') + '" onclick="openBreakerAnalysis(this.dataset.site)">分析原因</button>' : '') +
             '<button class="btn" data-scope="' + esc(b.site || '') +
             '" onclick="resumeCrawling(this.dataset.scope)">恢复</button>' +
             '</div>' +
@@ -821,9 +824,66 @@
                 (paused ? '恢复整站' : '暂停整站') + '</button>';
             return '<div class="card"><div class="breaker-row">' +
                 '<span class="breaker-text"><b>' + esc(siteLabel(site)) + '</b>' +
-                (paused ? '｜<b>已暂停</b>' : '｜运行中') + '</span>' + toggle + '</div></div>';
+                (paused ? '｜<b>已暂停</b>' : '｜运行中') + '</span>' + '<button class="btn" data-site="' + esc(site) + '" onclick="openBreakerAnalysis(this.dataset.site)">熔断分析</button>' + toggle + '</div></div>';
         }).join('');
         sec.hidden = false;
+    }
+
+    // Scope diagnostics only: do not import v4 monitor session machinery.
+    function invalidateBreakerAnalysis() {
+        if (typeof breakerAnalysisSeq !== 'number') return;
+        breakerAnalysisSeq++;
+        if (document.getElementById('breaker-analysis-body') && typeof Dialog !== 'undefined') Dialog.close();
+    }
+    function captureBreakerAnalysisView() {
+        var key = loadKey(), module = currentModule, site = currentSite, epoch = breakerAnalysisSeq;
+        return function () { return key === loadKey() && module === currentModule && site === currentSite && epoch === breakerAnalysisSeq; };
+    }
+    var breakerAnalysisSeq = 0;
+    async function openBreakerAnalysis(site) {
+        var seq = ++breakerAnalysisSeq, viewCurrent = captureBreakerAnalysisView(), selected = null;
+        Dialog.close();
+        var dialog = Dialog.open({title: site + ' · 熔断分析',
+            body: '<p class="hint" id="breaker-analysis-status" role="status">正在读取熔断现场…</p>' +
+                '<label>熔断记录 <select id="breaker-analysis-select" aria-label="熔断记录"></select></label>' +
+                '<div id="breaker-analysis-body"></div>',
+            actions: [
+                {label:'复制报告',onClick:function(){if(selected && current())copyText(selected.text);return false;}},
+                {label:'下载文本',onClick:function(){download('text');return false;}},
+                {label:'下载 JSON',onClick:function(){download('json');return false;}},
+                {label:'关闭',value:true}
+            ]});
+        var status = document.getElementById('breaker-analysis-status'), select = document.getElementById('breaker-analysis-select'), body = document.getElementById('breaker-analysis-body');
+        var current = function(){return seq === breakerAnalysisSeq && viewCurrent() && body.isConnected;};
+        dialog.then(function(){if(seq===breakerAnalysisSeq)breakerAnalysisSeq++;});
+        async function download(format) {
+            if (!selected || !current()) return;
+            try { await downloadFile('/api/breaker/analysis?scope='+encodeURIComponent(site)+'&id='+encodeURIComponent(selected.id)+'&format='+format,current); } catch(error) { if(current())status.textContent=error.message; }
+        }
+        function render(report) {
+            if (!current()) return;
+            selected = report;
+            var rows = report.groups.map(function(g){return '<tr><td>'+esc(g.stage)+'</td><td>'+esc(g.category)+'</td><td>'+g.count+'</td><td>'+g.percent.toFixed(1)+'%</td><td>'+g.tasks+'</td></tr>';}).join('');
+            body.innerHTML = '<p><strong>'+esc(report.summary)+'</strong></p>'+
+                '<p>'+esc(report.complete?'样本数量与触发计数一致，未截断':'证据不完整，请结合下方说明排查')+'</p>'+
+                (report.groups.length ? '<p><b>优先核查（未验证）：</b>'+esc(report.groups[0].hypothesis || '')+'</p><p><b>验证步骤：</b>'+esc(report.groups[0].verify || '')+'</p>' : '')+
+                '<div class="breaker-analysis-table"><table><thead><tr><th>阶段</th><th>错误类型</th><th>次数</th><th>采样占比</th><th>任务数</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+                '<details><summary>展开完整证据与各组验证步骤</summary><pre class="log-tail-text"></pre></details>';
+            body.querySelector('pre').textContent = report.text;
+        }
+        try {
+            var response = await apiFetch('/api/breaker/analysis?scope='+encodeURIComponent(site),{current:current});
+            if (!current()) return;
+            if (!response) throw new Error('读取失败，请检查登录状态');
+            if (!response.ok) throw new Error((await response.text()).trim() || '读取熔断分析失败');
+            var data = await response.json();
+            if (!current()) return;
+            status.textContent = data.retention;
+            if (!data.reports.length) {status.textContent += ' 当前没有记录；旧版本产生的熔断无法补录实时现场。';select.disabled=true;return;}
+            select.innerHTML = data.reports.map(function(r,i){return '<option value="'+i+'">'+esc(r.at)+' · '+r.failures+' 次</option>';}).join('');
+            select.onchange = function(){render(data.reports[Number(select.value)]);};
+            render(data.reports[0]);
+        } catch(error) {if(current()){status.textContent=error.message;select.disabled=true;}}
     }
 
     // 暂停抓取：只给 site = 整站那一层（框架自带界面走的就是这一档 —— 站点控制卡上那个按钮）；
@@ -841,15 +901,18 @@
     }
 
     /* ============ 取数 ============ */
-    async function apiFetch(url) {
+    async function apiFetch(url, options) {
+        var current = options && options.current ? options.current : function(){return true;};
+        if (!current()) return null;
         var headers = {};
         var key = loadKey();
         if (key) headers['Authorization'] = 'Bearer ' + key;
         var resp;
         try { resp = await fetch(url, { headers: headers }); }
-        catch (e) { setStatus(false, '连接失败'); return null; }
+        catch (e) { if(current())setStatus(false, '连接失败'); return null; }
+        if (!current()) return null;
         if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
-        if (!resp.ok) return null;
+        if (!resp.ok && !options) return null;
         return resp;
     }
     async function apiPost(url, body) {
@@ -1139,21 +1202,26 @@
             nm.className = 'nm'; nm.textContent = f.name;
             var sz = document.createElement('span');
             sz.className = 'sz'; sz.textContent = fmtBytes(f.size);
-            var a = document.createElement('a');
-            a.textContent = '下载';
-            a.onclick = function () { downloadLog(f.name); };
+            var a = document.createElement('button');
+            a.type = 'button'; a.className = 'log-view';
+            a.textContent = '查看';
+            a.onclick = function () { viewLog(f.name); };
             row.appendChild(nm); row.appendChild(sz); row.appendChild(a);
             el.appendChild(row);
         });
     }
-    async function downloadFile(url) {
+    async function downloadFile(url, current) {
+        current = current || function(){return true;};
+        if (!current()) return;
         var headers = {};
         var key = loadKey();
         if (key) headers['Authorization'] = 'Bearer ' + key;
         var resp = await fetch(url, { headers: headers });
+        if (!current()) return;
         if (resp.status === 401) { clearKey(); showLogin(true); return; }
         if (!resp.ok) { alert('下载失败 HTTP ' + resp.status); return; }
         var blob = await resp.blob();
+        if (!current()) return;
         var cd = resp.headers.get('Content-Disposition') || '';
         var name = 'logs.zip';
         var m = /filename="?([^";]+)"?/.exec(cd);
@@ -1166,7 +1234,28 @@
         a.remove();
         URL.revokeObjectURL(a.href);
     }
-    async function downloadLog(name) { await downloadFile('/api/logs/download?file=' + encodeURIComponent(name)); }
+    function viewLog(name) {
+        var busy = false;
+        Dialog.open({title: name + ' · 最后 200 行',
+            body: '<p class="hint" id="log-tail-status" role="status">正在读取…</p><pre class="log-tail-text" id="log-tail-text"></pre>',
+            actions: [{label:'刷新', onClick:function(){ refresh(); return false; }}, {label:'关闭',value:true}]});
+        var status = document.getElementById('log-tail-status'), content = document.getElementById('log-tail-text');
+        async function refresh() {
+            if (busy || !content.isConnected) return;
+            busy = true; status.textContent = '正在读取…';
+            try {
+                var response = await apiFetch('/api/logs/tail?file=' + encodeURIComponent(name));
+                if (!response) throw new Error('读取失败，请检查登录状态');
+                if (!response.ok) throw new Error((await response.text()).trim() || '读取日志失败');
+                var data = await response.json();
+                content.textContent = data.text || '暂无日志';
+                status.textContent = '显示最后 ' + data.lines + ' 行' + (data.truncated ? '（达到 1 MiB 上限，开头内容已截断）' : '');
+                content.scrollTop = content.scrollHeight;
+            } catch (error) { content.textContent = ''; status.textContent = error.message; }
+            finally { busy = false; }
+        }
+        refresh();
+    }
     async function downloadLogs() { await downloadFile('/api/logs/download'); }
 
     /* ============ obs 报告（obs.report.dir） ============ */

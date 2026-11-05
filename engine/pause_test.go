@@ -4,12 +4,99 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 )
+
+func TestResumeSiteStartsFreshFailureWindow(t *testing.T) {
+	e := newTestEngine(t, newFakeTaskDB())
+	for _, site := range []string{"a", "b"} {
+		e.SetSiteBreaker(site, breaker.Config{Enabled: true, Window: time.Hour, Threshold: 2})
+	}
+	fail := func(site string) {
+		e.notifyFailure(context.Background(), &Task{Site: site, Stage: "catalog"}, errors.New("synthetic failure"))
+	}
+	fail("a")
+	fail("a")
+	fail("b")
+	if !e.ResumeSite("a") || e.breakerSum("a") != 0 {
+		t.Fatal("恢复整站必须清零旧窗口")
+	}
+	if e.breakerSum("b") != 1 {
+		t.Fatal("恢复 a 不得清除 b 的计数")
+	}
+	fail("a")
+	if e.pauseInfoOf("a").Paused || e.ResumeSite("a") || e.breakerSum("a") != 1 {
+		t.Fatal("首次新失败不得熔断，重复恢复不得清零")
+	}
+	fail("a")
+	if !e.pauseInfoOf("a").Paused {
+		t.Fatal("新窗口达到阈值仍必须熔断")
+	}
+}
+
+func TestResumeAllResetsOnlyPausedSites(t *testing.T) {
+	e := newTestEngine(t, newFakeTaskDB())
+	for _, site := range []string{"a", "b", "running"} {
+		e.SetSiteBreaker(site, breaker.Config{Enabled: true, Window: time.Hour, Threshold: 3})
+		e.breakerFor(site).RecordFailure()
+	}
+	e.PauseSite("a", "manual")
+	e.PauseStage("b", "catalog", "manual")
+	if !e.ResumeCrawling() || e.breakerSum("a") != 0 || e.breakerSum("b") != 0 || e.breakerSum("running") != 1 {
+		t.Fatal("全部恢复只能清零实际恢复的站点，含只有阶段暂停的站点")
+	}
+	if e.ResumeCrawling() || e.breakerSum("running") != 1 {
+		t.Fatal("空恢复不得清零运行中站点")
+	}
+	e.PauseStage("running", "catalog", "manual")
+	if !e.ResumeStage("running", "catalog") || e.breakerSum("running") != 1 {
+		t.Fatal("单阶段恢复不得清零整站计数")
+	}
+}
+
+func TestConcurrentResumeAndFailure(t *testing.T) {
+	e := newTestEngine(t, newFakeTaskDB())
+	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Hour, Threshold: 2})
+	for i := 0; i < 100; i++ {
+		e.PauseSite("a", "manual")
+		e.breakerFor("a").RecordFailure()
+		e.breakerFor("a").RecordFailure()
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; e.ResumeSite("a") }()
+		go func() {
+			defer wg.Done()
+			<-start
+			e.notifyFailure(context.Background(), &Task{Site: "a", Stage: "catalog"}, errors.New("synthetic failure"))
+		}()
+		close(start)
+		wg.Wait()
+		if e.pauseInfoOf("a").Paused || e.breakerSum("a") > 1 {
+			t.Fatalf("旧判定不得跨过恢复重新暂停：%+v", e.breakerStatusOf("a"))
+		}
+	}
+}
+
+func TestBreakerTripSnapshotSurvivesResume(t *testing.T) {
+	e := newTestEngine(t, newFakeTaskDB())
+	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Hour, Threshold: 1})
+	st, tripped := e.recordBreakerFailure(&Task{Site: "a", Stage: "catalog"})
+	if !tripped || !e.ResumeSite("a") {
+		t.Fatal("expected trip followed by resume")
+	}
+	if !st.Paused || st.Site != "a" || st.Stage != "catalog" || st.Failures != 1 || st.Reason == "" {
+		t.Fatalf("恢复不得擦除待发送的熔断现场：%+v", st)
+	}
+	if current := e.breakerStatusOf("a"); current.Paused || current.InWindow != 0 {
+		t.Fatalf("恢复后当前状态应独立清零：%+v", current)
+	}
+}
 
 // 暂停信号的三种查询语义（别混用）：精确 scope（闸门与提交点）· 该站任意一条（后台状态）· 全部（ResumeCrawling）。
 func TestPauseScopeSemantics(t *testing.T) {
