@@ -864,7 +864,7 @@ func (s *Monitor) logsListHandler(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.LogDir != "" {
 		if entries, err := os.ReadDir(s.cfg.LogDir); err == nil {
 			for _, e := range entries {
-				if e.IsDir() {
+				if !isLogFileName(e.Name()) || !e.Type().IsRegular() {
 					continue
 				}
 				if info, err := e.Info(); err == nil {
@@ -899,7 +899,7 @@ func zipLogs(w http.ResponseWriter, dir string) {
 	defer zw.Close()
 
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || !d.Type().IsRegular() || !isLogFileName(d.Name()) {
 			return nil
 		}
 		rel, err := filepath.Rel(dir, path)

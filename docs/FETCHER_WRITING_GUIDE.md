@@ -142,6 +142,8 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
 | `engine.FetchRenderedPage(ctx, url, waitSelector)` | 同上，但返回 `*htmlfetch.Page`（与 `FetchHTML` 同一种）—— 走浏览器的阶段要接着做受限页判定、或按 `page.Selection()` 解析时用它 |
 | `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{...})` | 同上，另支持 `WaitSelector` / `WaitJS` / `WaitRequestIdle` / `Block`（按页拦资源） |
+| `engine.FetchHTTP(ctx, papa.HTTPRequest{...})` | 通用 HTTP/API、限长响应与 JSON 解码，见 §3.3 |
+| `engine.CaptureResponse(ctx, url, browser.ResponseOptions{...})` | 捕获浏览器 API 响应，见 §3.4 |
 | `engine.GetHTMLClient()` / `engine.FetchHTML(ctx, url)` | 静态 HTML 抓取（goquery），不启动浏览器，适合服务端渲染页 |
 | `engine.M3U8ForTask(task)` / `M3U8ForStage(stage)` | m3u8 下载器：**阶段 > 站点 > 基座**，一行拿到"这一阶段该用的那个"（见 §5.4） |
 | `engine.GetM3U8()` / `GetFiledown()` | 基座那份（框架按 `DefaultConfig` 备好）—— 按站点/阶段配过的那份要用上面的 `For*` 取 |
@@ -417,6 +419,214 @@ if len(items) == 0 {
 需要下拉、滚动或点击时，先完成操作并等待新节点出现，再提取；m3u8 这类只在播放后产生的资源，必须先通过 `EachEvent` 挂好网络监听，再点击播放。Rod 的 `Must*` 方法遇到节点缺失会 panic，因此生产 fetcher 更适合使用返回 `error` 的 API 或预先检查元素存在性，保证错误交给引擎重试。
 
 ---
+
+### 3.3 HTTP/API、JSON 与独立会话
+
+采集 JSON API、POST 表单、GraphQL 或原始响应，使用 `engine.FetchHTTP`。它复用 `html.enable`、超时、响应体上限、代理及站点/逐请求头，不需要浏览器。
+
+```go
+response, err := engine.FetchHTTP(ctx, papa.HTTPRequest{
+    URL: "https://example.com/api/search",
+    Method: "POST",
+    Headers: map[string]string{
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    },
+    Body: []byte(`{"page":2}`),
+})
+if err != nil { return err }
+var result struct {
+    Items []struct { ID string `json:"id"` } `json:"items"`
+}
+if err := response.DecodeJSON(&result); err != nil { return err }
+```
+
+- `Method` 留空为 GET。表单用 `url.Values.Encode()` 生成 Body，并设 `Content-Type: application/x-www-form-urlencoded`。
+- `Headers` 优先于 context/站点头和客户端默认头，空值删除对应头。URL 查询参数使用 `net/url` 构建。
+- `Response` 包含最终 `URL`、`StatusCode`、完整 `Header` 和限长 `Body`。非 2xx 返回响应和 `StatusError`，可在判错后读取接口错误正文；正文超限时 Body 为空，返回 `BodyTooLargeError`。状态错误可与读错误并存，使用 `errors.As` / `htmlfetch.StatusCode` 判断。
+- `DecodeJSON` 要求恰好一份 JSON，拒绝尾随垃圾；解到 `any` 时数字是 `json.Number`，避免长整数被转成 float64。它不强制 Content-Type，也不替业务校验字段。
+- 本封装不增加重试循环，标准库 transport 的重试规则仍适用；307/308 跟随重定向时可重放 Body。Fetcher 返回错误后，阶段重试仍然生效：有副作用的 POST 要自行设置幂等键或返回不可重试错误，不能把网络超时当作服务器未处理。
+- `engine.FetchHTTP` 的自动 trace 只保存方法、状态、字节数，不保存 URL、请求头或响应正文；返回的 error 仍可能包含 URL，业务自行处理敏感信息。此路径不写 HTML 归档。
+- 可直接调用 `engine.GetHTMLClient().Do(ctx, request)`，但没有 Engine trace，且需自行确认客户端已启用。原 `FetchHTML` 保持 HTML 解析与归档行为。
+
+**Cookie 会话：** 每个账号创建并复用独立 Session。默认 HTTP 客户端不保存 Cookie。
+
+```go
+session := papa.NewHTTPSession() // 在账号生命周期内保存，不能每个请求都重新创建
+accountCtx := papa.WithHTTPSession(ctx, session)
+response, err := engine.FetchHTTP(accountCtx, papa.HTTPRequest{URL: "https://example.com/account"})
+```
+
+Session 自动接收 Set-Cookie，按域名/路径/Secure/有效期发送 Cookie，并使用 public suffix 列表。`WithHTTPSession(ctx, nil)` 禁用继承的会话。Session 只隔离 Jar，不隔离站点配置中的 Authorization/Cookie：不要给共享配置填某个账号的凭据，也不要混用显式 Cookie 与另一个账号的 Jar。Session 不持久化、不自动刷新登录态、不绑定代理；net/http CookieJar 不模拟浏览器 SameSite 上下文。
+
+浏览器登录完成后，在你持有的页面回调中调用 `browser.CopyCookiesToSession(page, session, targetURL)`。只复制适用于该 URL 的 Cookie；保留 host-only 作用域，拒绝分区 Cookie，不复制 LocalStorage。调用方使用 §3.4.1 的隔离入口管理浏览器账号；创建 HTTP Session 本身不会自动隔离浏览器。该操作是一次快照，后续变化不会自动同步。
+
+**页面内嵌 JSON：** `page.Document.JSONBlocks("script[type='application/ld+json']")` 返回按 DOM 顺序排列的 `[]json.RawMessage`，可继续用 `htmlfetch.DecodeJSON` 解码。缺少节点、非法选择器或任何一块非法 JSON 都报错；不会执行 `window.x=...` 等 JavaScript。
+
+### 3.4 捕获浏览器 API 响应
+
+已有 `engine.CaptureRequest` 用于尽早取得媒体请求地址。需要查看 API 响应正文时用独立的 `engine.CaptureResponse`：
+
+```go
+response, err := engine.CaptureResponse(ctx, task.URL, browser.ResponseOptions{
+    Timeout: 15 * time.Second,
+    MaxBodySize: 1 << 20,
+    Match: func(r browser.CapturedResponse) bool {
+        return strings.Contains(r.Request.URL, "/api/list") &&
+            strings.Contains(r.Header.Get("Content-Type"), "application/json")
+    },
+})
+if err != nil { return err }
+// 捕获到 4xx/5xx 也可能是有效诊断结果，调用方检查 response.StatusCode。
+var payload any
+if err := htmlfetch.DecodeJSON(response.Body, &payload); err != nil { return err }
+```
+
+监听在导航前建立，匹配第一条响应后等待同一请求完成，再读取 Body；其他请求不会串入。默认超时 30 秒，正文上限 10 MiB；超时/取消会关闭页面。Match 只看到元数据，必须快速返回，不能在回调中调用浏览器方法。请求元数据暂存最多 256 条，超出后 Method 可能为空，URL 和资源类型仍来自响应事件。
+
+这条路径用于有限大小的 API 响应，不用于下载和长连接。CDP 读取完整正文后才能检查解码后大小，上限限制返回值，**不是 Chrome 内存的硬限制**。响应头和正文仅返回调用方，自动 trace 不落原文；需要保存样本时由业务先脱敏。它不会自动回放接口或复制 Cookie。`RequestHeader` 和 `RequestBody` 保存对应 CDP 请求事件的头与正文；`MaxRequestBodySize` 默认 64 KiB，超限仅保留前缀。`RequestBodyIncomplete` 为 true 表示截断、Chrome 未提供正文或请求事件未被保留，不能把这类样本当作完整请求重放。`Page` 使用设备、请求头、Cookie、资源拦截和导航 Timeout；WaitSelector/WaitJS/WaitRequestIdle 不作为捕获完成条件。
+
+### 3.4.1 按账号隔离浏览器上下文
+
+需要登录的抓取使用 `pool.WithIsolatedBrowser`；强制直连使用 `WithDirectIsolatedBrowser`。每次调用创建独立 Chromium Incognito 上下文，回调内多个页面共享该账号的 Cookie 和 LocalStorage，与默认上下文及其他隔离调用分开。
+
+```go
+session := papa.NewHTTPSession()
+err := engine.GetBrowserPool().WithIsolatedBrowser(ctx, func(account *browser.Browser) error {
+    return account.WithNavigatedPage(ctx, loginURL, browser.PageOptions{
+        Timeout: 30 * time.Second,
+    }, func(page *rod.Page) error {
+        // 在这个上下文内完成你的登录流程，再读取适用于 API 地址的 Cookie。
+        return browser.CopyCookiesToSession(page, session, apiURL)
+    })
+})
+if err != nil { return err }
+// 回调结束后浏览器账号状态已销毁；显式复制出的 HTTP Session 仍可使用。
+response, err := engine.FetchHTTP(papa.WithHTTPSession(ctx, session), papa.HTTPRequest{URL: apiURL})
+```
+
+- 一个回调占用一个池中浏览器名额；在同一回调内完成该账号的一组操作。再次调用会创建新会话，不能按账号名找回前次状态。
+- 新入口不继承池默认 Headers/Cookies，避免共享凭据进入隔离账号；请求头和 Cookie 通过 `PageOptions` 显式传入，设备设置仍继承。池级头热更新也不会覆盖该隔离上下文。
+- Cookie、LocalStorage 属于独立浏览器上下文；代理出口仍沿用借到的浏览器进程。隔离上下文不是独立进程，不提供独立代理配置。
+- 成功、错误、panic 均先销毁上下文再归还进程；取消时浏览器操作受 ctx 中断，回调退出后仍用独立清理超时销毁上下文。回调必须配合 ctx，框架不能强制终止任意 Go 代码。
+- 销毁失败会关闭并淘汰父浏览器进程，普通返回路径合并清理错误；panic 保持原值向上传播。
+- 不要把回调参数或页面带出回调，也不要对它调用池的 Put；若回调启动 goroutine，必须等它们退出再返回。
+- 隔离上下文本身是临时的；跨进程恢复使用 §3.4.2 的显式加密快照，检查和登录的站点逻辑由业务提供，可用 §3.4.3 的 SessionGuard 协调刷新。旧 `WithBrowser` 保持原有默认上下文行为。
+
+### 3.4.2 加密保存和恢复页面登录态
+
+`browser.ExportPageState(page)` 导出隔离页面当前 URL 适用的 Cookie（含 HttpOnly）以及当前 origin 的 LocalStorage。普通默认上下文被拒绝，分区 Cookie 被拒绝。导出期间应停止该账号的并发导航和存储写入，快照不是跨两种存储的原子事务。
+
+快照包含凭据，不能当作 §3.5 的脱敏样本。使用 `WritePageState(writer, state, key)` / `ReadPageState(reader, key)` 加密保存、验证并读取：密钥必须是调用方管理的 32 字节随机密钥，AES-GCM 每次使用新 nonce，版本头同时参与认证；文件里不包含密钥，错误密钥、篡改和截断都会失败。明文快照和加密输入均有约 8 MiB 上限（加密输入额外允许 envelope 开销）。
+
+```go
+// 在隔离账号回调内，登录完成后：
+state, err := browser.ExportPageState(page)
+if err != nil { return err }
+if err := browser.WritePageState(destination, state, key); err != nil { return err }
+
+// 新进程/新隔离上下文内，先打开同源页面，再恢复：
+state, err = browser.ReadPageState(source, key)
+if err != nil { return err }
+if err := browser.RestorePageState(page, state); err != nil { return err }
+if err := page.Reload(); err != nil { return err }
+if err := page.WaitLoad(); err != nil { return err }
+```
+
+恢复会合并快照 Cookie、替换当前 origin 的 LocalStorage；不会清除快照之外的 Cookie，因此建议使用全新的隔离上下文。恢复前检查版本及同源关系，执行脚本时再次检查 origin；调用方仍需避免同时导航。恢复过程中失败可能已有部分写入，应丢弃该隔离上下文。页面必须设置 ctx/Timeout。
+
+此版本先打开页面再写 LocalStorage，站点首轮脚本已经运行；恢复后需要重新加载，且初始打开的地址不能跳转到另一个登录域。如果站点要求首次请求前已有 Cookie 或跨域认证，需要业务单独编排，不能直接套用该例。
+
+文件与密钥管理由应用控制：接口只读写 Reader/Writer，不默认落盘；密钥应独立于状态文件保存，并在重启后仍可取回。Writer 失败可能留下半份文件，由应用以临时文件和原子发布处理。不要记录 PageState、Cookie 值或明文 JSON。
+
+范围只包含当前 URL 可用 Cookie 和当前 origin 的 LocalStorage，不包含其他路径 Cookie、IndexedDB、sessionStorage、Service Worker 或缓存。持久化不会延长服务端登录有效期，快照接口不自动刷新账号登录；恢复后可由 §3.4.3 的 SessionGuard 调用业务检查与登录流程。
+
+### 3.4.3 登录态检查与刷新协调
+
+本节的 `SessionGuard` 是兼容保留的低层 HTTP Cookie 协调器。需要站点＋账号注册、Token/CSRF、业务响应过期处理、加密重启恢复和 Rod 账号运行时，使用 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) 的 `account.Manager` 与 `Engine.FetchAccountHTTP / FetchAccountHTML / WithAccountBrowser`；新入口显式选择账号，不改变旧入口。
+
+每个账号创建并长期复用一个 `htmlfetch.SessionGuard`，在业务请求前调用 `Ensure(ctx)`。它返回已经复验的独立 HTTP Session；没有当前会话时先登录，有当前会话时先 Check，明确返回 `false, nil` 才重新登录。网络错误必须返回 error，不能误判成登录过期。
+
+```go
+client := engine.GetHTMLClient() // html.enable 必须开启
+// accountLogin 是业务实现：把此账号登录得到的 Cookie 写入 candidate。
+// 可以使用 WithIsolatedBrowser 登录，再 CopyCookiesToSession(page, candidate, apiURL)。
+guard, err := htmlfetch.NewSessionGuard(htmlfetch.SessionGuardConfig{
+    Check: func(ctx context.Context, session *htmlfetch.Session) (bool, error) {
+        response, err := client.Do(htmlfetch.WithSession(ctx, session), htmlfetch.Request{
+            URL: accountProbeURL,
+        })
+        // 此例约定该站账号检查接口用 401 表示未登录；其他站应按自己的业务响应判断。
+        if response != nil && response.StatusCode == 401 { return false, nil }
+        if err != nil { return false, err }
+        var result struct { LoggedIn bool `json:"logged_in"` }
+        if err := response.DecodeJSON(&result); err != nil { return false, err }
+        return result.LoggedIn, nil
+    },
+    Login: accountLogin, // func(context.Context, *htmlfetch.Session) error
+    Timeout: 30 * time.Second,
+    FailureCooldown: 5 * time.Second,
+})
+if err != nil { return err }
+// guard 应在账号初始化时保存，不能在每次 FetchHandler 里重建。
+session, err := guard.Ensure(ctx)
+if err != nil { return err }
+response, err := engine.FetchHTTP(papa.WithHTTPSession(ctx, session), papa.HTTPRequest{URL: apiURL})
+```
+
+新登录始终使用全新的 CookieJar，复验成功才发布；失败不会把半登录状态覆盖到原会话，Ensure 返回错误而不返回旧会话。Login 只操作传入的候选会话，Check 只读取会话，回调不得重入同一个 Guard。CookieJar 自身线程安全，但业务回调中的其他共享状态仍需自行同步。
+
+同一 Guard 的并发调用共享一轮检查/登录结果。首调用者执行回调并控制整轮 context，首调用者取消会影响等待者；等待者可以独立取消自己的等待。默认整轮超时 30 秒（零值使用默认，负值拒绝），回调必须配合 ctx；任意阻塞 Go 代码不能被框架强行终止。
+
+普通失败结果默认冷却 5 秒（零值使用默认，负值拒绝），期间直接返回同一失败，防止重复登录风暴；取消和超时不缓存。登录后 Check 仍无效时返回 `ErrSessionRejected`。回调 panic 会释放等待者，等待者拿到 `ErrSessionCallbackPanic`，首调用者继续向上传播原 panic。
+
+这不是周期保活器：不会启动后台登录任务，不跨进程协调，也不自动重发业务请求。Ensure 成功后服务端仍可能随时使令牌失效；业务响应失效时应返回明确错误，按业务幂等规则决定是否再调用 Ensure。尤其不要自动重放付款/提交等有副作用的 POST。登录凭据、验证码、加密快照保存时机和账号级代理绑定由业务负责；默认只管理内存 Cookie 会话。
+
+### 3.5 显式脱敏样本与离线解析
+
+账号浏览器的首次导航前恢复可使用 `Browser.WithStatePage`；它在初次请求前设置 Cookie、在主 frame 首段脚本前恢复 LocalStorage，加载后卸载初始化器。旧 `RestorePageState` 的「先导航再恢复」语义保持不变。统一账号入口会自动使用前者，见 [账号手册](./ACCOUNT_RUNTIME.md)。
+
+`htmlfetch.WriteSample(writer, request, response, policy)` 将一次 HTTP 交换输出为版本化 JSON。它不创建文件，也不自动发送网络请求。默认省略所有头、查询参数及正文，并删除 URL userinfo 和 fragment；URL 路径仍保留，路径包含账号或签名时用 `RedactURL` 处理。
+
+`SamplePolicy.Headers` / `QueryKeys` 是显式白名单，保留的值仍须由调用方确认。Authorization、Proxy-Authorization、Cookie、Set-Cookie 即使误入白名单也不会导出。`RedactBody(requestSide, body)` 在私有副本上处理正文；未提供时省略正文，提供时以其返回值为准。普通关键字过滤不能保证任意业务数据已脱敏，建议按已知 JSON schema 挑选可保留字段。
+
+```go
+// response 来自已检查错误的 FetchHTTP，request 是对应 HTTPRequest。
+var sample bytes.Buffer
+err := htmlfetch.WriteSample(&sample, request, response, htmlfetch.SamplePolicy{
+    Headers: []string{"Content-Type"},
+    QueryKeys: []string{"page"},
+    RedactBody: func(requestSide bool, body []byte) ([]byte, error) {
+        if requestSide { return []byte(`{}`), nil } // 不保留请求数据
+        var source struct {
+            Items []struct {
+                ID json.Number `json:"id"`
+                Title string `json:"title"`
+            } `json:"items"`
+        }
+        if err := htmlfetch.DecodeJSON(body, &source); err != nil { return nil, err }
+        return json.Marshal(source) // 只保留显式声明的字段
+    },
+})
+if err != nil { return err }
+// 此时 sample.Bytes() 可作为脱敏测试夹具保存；文件权限与原子写入由调用方管理。
+fixture, err := htmlfetch.ReadSample(bytes.NewReader(sample.Bytes()), 16<<20)
+if err != nil { return err }
+offline, err := fixture.OfflineResponse()
+if err != nil { return err }
+var result any
+if err := offline.DecodeJSON(&result); err != nil { return err }
+```
+
+所有脱敏回调成功后才开始编码给 Writer；回调报错不会向 Writer 输出数据，错误消息也不会复制回调中的敏感文本。Writer 自身写失败仍可能留下半份文件，需由调用方负责临时文件/原子发布。
+
+`ReadSample` 默认输入上限 16 MiB，拒绝超限、未知版本、尾随 JSON；`OfflineResponse` 返回独立响应副本，仅供解析器测试。省略正文的样本会明确报错，不冒充空响应。样本 Body 在 JSON 文件中使用 base64 编码，编码不是脱敏。该能力不做实时请求回放，也不模拟浏览器状态。
+
+浏览器样本先检查 `RequestBodyIncomplete`，再用 `CapturedResponse.Request` 的 URL/Method、RequestHeader/RequestBody 构造 HTTPRequest，以捕获到的 Header/Body/StatusCode 构造 htmlfetch.Response 后导出。这里的请求头来自 CDP 常规事件，不能当作包含 Cookie 等所有线上头的完整网络记录。普通 HTTPRequest 则是调用参数，不包含客户端最终合并的默认头。
+
+### 3.6 网络录制、内容发现与质量治理
+
+多响应录制使用 `Engine.RecordNetwork`；增量 GET 使用 `Engine.FetchIncremental`。`pkg/discovery` 提供链接/订阅源/robots 解析与分页停止判定，`pkg/extract` 提供字段和批次质量校验。完整用法、预算、状态语义与边界见 [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md)。
 
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
@@ -907,6 +1117,8 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
+登录账号按 `account.Key{Site, ID}` 进一步划分；任务只在既有 Meta 中保存账号标识，Fetcher 显式选择账号入口。账号暂停不会自动暂停站点队列，两者是不同作用域，见 [账号手册](./ACCOUNT_RUNTIME.md)。
+
 一站一个文件放进 `sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
 框架把它们收在 `papa.Sites()` 里，**项目里没有汇总清单要维护**：
 
@@ -1001,6 +1213,9 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 
 ## 8. 常见坑
 
+HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状态和必填字段。有副作用的请求必须考虑阶段重试与重定向重放，Cookie 会话必须按账号复用并隔离。
+
+
 1. **同一个站里阶段名重复** → `RegisterSites` 直接 panic 并点出是这个站的哪两个阶段（多半是复制站点文件后两份声明指向了同一个 fetcher）。两个站用同一个阶段名**不是**错误 —— 那是这一版的常态，不必为了避开重名去硬加前缀。
 2. **浏览器池容量规划**：`browser.pool_size` 是浏览器抓取的全局并发上限，不必机械地大于等于所有阶段 `worker_count` 之和。容量较小时，超出的 browser worker 会在 `pool.Get(ctx)` 等待实例，这是正常背压；应按机器资源、目标站承载能力和可接受等待时间调优。`browser.enable: true` 时 `pool_size` 必须 > 0，配置加载会拒绝零/负值。
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.OptionsFromRequest(ctx, task.URL)` 一步带上（站点头/逐请求头/代理一起过来），或自己写 `m3u8.DownloadOptions{Referer: ...}`。
@@ -1018,6 +1233,11 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 ---
 
 ## 9. API 速查
+
+通用 API：`FetchHTTP` / `HTTPRequest` / `HTTPResponse.DecodeJSON`；会话：`NewHTTPSession` / `WithHTTPSession`；浏览器响应：`CaptureResponse` / `browser.CopyCookiesToSession`。用法和边界见 §3.3–3.4。
+
+账号运行：`NewAccountManager` / `AccountKey` / `AccountConfig`、`engine.SetAccountManager`、`FetchAccountHTTP` / `FetchAccountHTML` / `WithAccountBrowser` / `AccountStatus`，见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。离线规则：`crawlrule.Parse/Compile`、`Compiled.Evaluate/Verify`、`Registry.Activate/Rollback`，见 [CRAWL_RULES.md](./CRAWL_RULES.md)。
+
 
 **go-rod（页面操作）**
 - `bw.Browser.MustPage("")` 建空白页；`page.Close()` 关页。

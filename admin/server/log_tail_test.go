@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -126,5 +128,42 @@ func TestLogTailRequiresAuthentication(t *testing.T) {
 	rr := serve(m, http.MethodGet, "/api/logs/tail?file=a.log", nil)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("unprotected tail endpoint: %d", rr.Code)
+	}
+}
+func TestLogListAndArchiveExcludeNonLogs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"sys.log", "mediawave-webhook.log", "sys-2026-11-05.log.gz", "sys.log.1", ".gitkeep", "crawler.pid", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("test"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	rr := serve(m, http.MethodGet, "/api/logs", nil)
+	files := decodeJSON(t, rr)["files"].([]any)
+	if len(files) != 4 {
+		t.Fatalf("unexpected list: %v", files)
+	}
+	rr = serve(m, http.MethodGet, "/api/logs/download", nil)
+	archive, err := zip.NewReader(bytes.NewReader(rr.Body.Bytes()), int64(rr.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archive.File) != 4 {
+		t.Fatalf("archive has %d entries", len(archive.File))
+	}
+	for _, f := range archive.File {
+		if !isLogFileName(f.Name) {
+			t.Fatalf("unexpected archive entry %s", f.Name)
+		}
+	}
+}
+
+func TestLogListUsesCompactGrid(t *testing.T) {
+	css, err := os.ReadFile("static/mo.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), "grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr))") {
+		t.Fatal("log list must use responsive columns")
 	}
 }

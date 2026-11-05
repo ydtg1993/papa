@@ -44,6 +44,52 @@ func TestWithHeadersLayersAndDeletes(t *testing.T) {
 	}
 }
 
+func TestWithHeadersCaseInsensitiveCredentialRemoval(t *testing.T) {
+	ctx := WithHeaders(context.Background(), map[string]string{
+		"authorization": "Bearer inherited",
+		"cookie":        "sid=inherited",
+		"accept":        "application/json",
+	})
+	ctx = WithHeaders(ctx, map[string]string{"Authorization": "", "Cookie": ""})
+	got := HeadersFrom(ctx)
+	if len(got) != 3 || got["Accept"] != "application/json" {
+		t.Fatalf("case variants survived or unrelated header was lost: %v", got)
+	}
+	for _, name := range []string{"Authorization", "Cookie"} {
+		if value, exists := got[name]; !exists || value != "" {
+			t.Errorf("%s removal marker missing: %v", name, got)
+		}
+	}
+}
+
+func TestWithHeadersCaseInsensitiveOverrides(t *testing.T) {
+	for _, test := range []struct{ inherited, override string }{
+		{"authorization", "Authorization"},
+		{"Authorization", "authorization"},
+		{"COOKIE", "cookie"},
+		{"cookie", "Cookie"},
+	} {
+		t.Run(test.inherited+"/"+test.override, func(t *testing.T) {
+			// Also cover an existing context map that has not been canonicalized.
+			original := map[string]string{test.inherited: "old"}
+			ctx := context.WithValue(context.Background(), headersCtxKey{}, original)
+			ctx = WithHeaders(ctx, map[string]string{test.override: "new"})
+			got := HeadersFrom(ctx)
+			if len(got) != 1 {
+				t.Fatalf("case-insensitive override left duplicate keys: %v", got)
+			}
+			for _, value := range got {
+				if value != "new" {
+					t.Fatalf("override failed: %v", got)
+				}
+			}
+			if original[test.inherited] != "old" {
+				t.Fatal("inherited context map was mutated")
+			}
+		})
+	}
+}
+
 // ApplyHeaders 是给"手里已经有一份 map"的路径用的（静态抓取把配置头合并进来时）。
 func TestApplyHeaders(t *testing.T) {
 	base := map[string]string{"User-Agent": "cfg", "Accept": "*/*", "Referer": "old"}

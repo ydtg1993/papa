@@ -97,6 +97,9 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
   stats.go     监控快照
   fetch.go     浏览器池 / 静态 HTML 客户端 / 渲染等待与 FetchRenderedPageWith
+  record.go    有界网络录制门面（仅摘要 trace）
+  http.go      通用 HTTP/API、增量与浏览器响应捕获门面（只记录摘要 trace）
+  account.go   显式账号管理器接线、认证 HTTP/HTML/浏览器和无凭据状态快照
   capture.go   浏览器网络请求捕获的引擎层包装（trace 步骤 + 归档登记）
   downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
@@ -122,7 +125,19 @@ pkg/                             可独立复用的件
   events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
   browser/                       池与页面生命周期（pool.go / rod.go）、网络请求捕获（capture.go）、
                                  等待条件（wait.go）、按页资源拦截（block.go）
-  htmlfetch/ loggers/ notify/ middleware/{proxy,m3u8,filedown}
+  browser/record.go              多交换网络录制、预算与显式脱敏导出
+  browser/state.go               同源隔离页面登录态快照、AES-GCM 加密读写与恢复
+  browser/state_navigation.go    首次导航前 Cookie/LocalStorage 恢复与 origin 检查
+  browser/isolation.go           回调式独立 Chromium 上下文、取消与异常清理
+  browser/response.go            按响应匹配并等待正文；session.go 提供浏览器 Cookie 到 HTTP 会话的显式桥接
+  htmlfetch/                     client.go HTML；request.go 通用请求；json.go 严格 JSON/内嵌 JSON；session.go 独立 CookieJar；session_guard.go 每账号检查/刷新并发协调；sample.go 显式脱敏样本与离线响应
+  discovery/                    links.go URL/HTML；xml.go 订阅源；robots.go 规则；pagination.go 分页停止
+  extract/validate.go            JSON 字段与批次唯一性校验
+  htmlfetch/incremental.go       条件 GET、304 与内容指纹
+  htmlfetch/session_state.go     完整 Cookie 属性追踪、版本化快照与受限恢复
+  account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
+  crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON 执行；fixture.go 样本验收；registry.go 激活与回滚
+  loggers/ notify/ middleware/{proxy,m3u8,filedown}
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染
@@ -173,6 +188,8 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 （`:catalog`）查不到任何已声明的阶段，三条治理队列会跳过后打 WARN，要救就自己把 `site` 补上。
 
 ### 已按站点切
+
+可选 `pkg/account.Manager` 进一步按站点＋账号管理登录态、请求预算和暂停。它通过显式 Engine 账号入口接入，不改变站点队列暂停规则，也不向框架任务表增加凭据列。详见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |

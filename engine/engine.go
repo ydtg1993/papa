@@ -10,6 +10,7 @@ import (
 	"github.com/ydtg1993/papa/v3/internal/database"
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v3/pkg/account"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/events"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
@@ -46,6 +47,7 @@ type Engine struct {
 	cfg                *config.Config
 	browserPool        *browser.Pool
 	htmlClient         *htmlfetch.Client
+	accountManager     *account.Manager                    // optional explicit account runtime, guarded by mu
 	statsQueue         map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
 	stageTotals        map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
 	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它

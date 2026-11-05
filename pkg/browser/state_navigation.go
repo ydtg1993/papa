@@ -1,0 +1,243 @@
+package browser
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
+)
+
+// WithStatePage restores state before the first request and site script, then
+// calls fn with the loaded page. It requires an isolated browser context; callers
+// must use a fresh context for each account and discard it on any restore error.
+// Cookies are merged with PageOptions cookies (state wins); existing context
+// cookies are not cleared. A nil state starts without restoring credentials,
+// while retaining the same target-origin checks. URLs with userinfo are rejected.
+//
+// LocalStorage is replaced only in the matching main-frame origin. A temporary,
+// random sessionStorage marker prevents repeated restoration during redirects;
+// it and the initialization script are removed after initial load, before waits,
+// Interact, or fn. Later navigation therefore preserves site updates. A different
+// final origin is rejected, but redirects and normal cookie domain/path rules
+// still apply: this helper is not a network sandbox.
+//
+// Timeout (default 30s) bounds setup, navigation, and waits together. Interact and
+// fn use ctx and must cooperate with cancellation. The page is closed even after
+// errors, cancellation, or panic; neither the page nor browser may escape its
+// enclosing WithIsolatedBrowser scope.
+func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageState, opts PageOptions, fn func(*rod.Page) error) (err error) {
+	if fn == nil {
+		return fmt.Errorf("state page: callback required")
+	}
+	if b == nil || b.Browser == nil || b.Browser.BrowserContextID == "" {
+		return fmt.Errorf("page state requires an isolated browser context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("state page requires an HTTP URL")
+	}
+	if u.User != nil {
+		return fmt.Errorf("state page URL must not contain userinfo")
+	}
+	if state != nil {
+		if err := validatePageState(state); err != nil {
+			return err
+		}
+	}
+
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	navCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	page, err := b.newPageBaseContext(navCtx, opts)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer stop()
+		if closeErr := page.Context(cleanup).Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close state page: %w", closeErr))
+		}
+	}()
+	// Use the browser's URL parser before navigation, on the untouched blank
+	// page. This matches location.origin for default ports, IDN, and IPv6 too.
+	origin, err := stateNavigationOrigin(page, rawURL)
+	if err != nil {
+		return err
+	}
+	if state != nil {
+		stateOrigin, err := stateNavigationOrigin(page, state.Origin)
+		if err != nil {
+			return err
+		}
+		if stateOrigin != origin {
+			return fmt.Errorf("page state origin mismatch")
+		}
+		normalized := *state
+		normalized.Origin = origin
+		state = &normalized
+	}
+
+	var remove func() error
+	var marker string
+	if state != nil {
+		if err := page.SetCookies(stateNavigationCookies(state)); err != nil {
+			return fmt.Errorf("restore state cookies: %w", err)
+		}
+		marker = "__papa_restore_" + rand.Text()
+		source, err := stateNavigationScript(state, marker)
+		if err != nil {
+			return err
+		}
+		remove, err = page.EvalOnNewDocument(source)
+		if err != nil {
+			return fmt.Errorf("install state initializer: %w", err)
+		}
+	}
+	if err := page.Navigate(rawURL); err != nil {
+		return fmt.Errorf("navigate: %w", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		return fmt.Errorf("wait load: %w", err)
+	}
+	if state != nil {
+		if err := remove(); err != nil {
+			return fmt.Errorf("remove state initializer: %w", err)
+		}
+	}
+	if err := checkStatePageOrigin(page, origin); err != nil {
+		return err
+	}
+	if state != nil {
+		result, err := page.Eval(`(origin, key) => {
+			if (location.origin !== origin) return false;
+			const restored = sessionStorage.getItem(key) === 'ready';
+			sessionStorage.removeItem(key);
+			return restored;
+		}`, state.Origin, marker)
+		if err != nil {
+			return fmt.Errorf("verify state initializer: %w", err)
+		}
+		if !result.Value.Bool() {
+			return fmt.Errorf("initialize page local storage failed")
+		}
+	}
+	if err := applyWaits(page, opts); err != nil {
+		return err
+	}
+	if opts.Wait > 0 {
+		timer := time.NewTimer(opts.Wait)
+		defer timer.Stop()
+		select {
+		case <-navCtx.Done():
+			return navCtx.Err()
+		case <-timer.C:
+		}
+	}
+	if err := navCtx.Err(); err != nil {
+		return err
+	}
+	if err := checkStatePageOrigin(page, origin); err != nil {
+		return err
+	}
+	page = page.Context(ctx)
+	if opts.Interact != nil {
+		if err := opts.Interact(ctx, page); err != nil {
+			return fmt.Errorf("interact: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := checkStatePageOrigin(page, origin); err != nil {
+		return err
+	}
+	return fn(page)
+}
+
+func stateNavigationOrigin(page *rod.Page, rawURL string) (string, error) {
+	result, err := page.Eval(`(raw) => {
+		try {
+			const target = new URL(raw);
+			if ((target.protocol !== 'http:' && target.protocol !== 'https:') || target.username || target.password) return '';
+			return target.origin;
+		} catch (_) { return ''; }
+	}`, rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse state page origin: %w", err)
+	}
+	if origin := result.Value.Str(); origin != "" && origin != "null" {
+		return origin, nil
+	}
+	return "", fmt.Errorf("state page requires an HTTP URL without userinfo")
+}
+
+func checkStatePageOrigin(page *rod.Page, origin string) error {
+	result, err := page.Eval(`() => location.origin`)
+	if err != nil {
+		return fmt.Errorf("read state page origin: %w", err)
+	}
+	if result.Value.Str() != origin {
+		return fmt.Errorf("page state origin mismatch")
+	}
+	return nil
+}
+
+func stateNavigationCookies(state *PageState) []*proto.NetworkCookieParam {
+	cookies := make([]*proto.NetworkCookieParam, 0, len(state.Cookies))
+	for _, c := range state.Cookies {
+		p := &proto.NetworkCookieParam{Name: c.Name, Value: c.Value, Path: c.Path, Secure: c.Secure, HTTPOnly: c.HTTPOnly, SameSite: c.SameSite}
+		if strings.HasPrefix(c.Domain, ".") {
+			p.Domain = c.Domain
+		} else {
+			p.URL = state.Origin + c.Path
+		}
+		if !c.Session {
+			p.Expires = c.Expires
+		}
+		cookies = append(cookies, p)
+	}
+	return cookies
+}
+
+func stateNavigationScript(state *PageState, marker string) (string, error) {
+	data, err := json.Marshal(struct {
+		Origin string            `json:"origin"`
+		Values map[string]string `json:"values"`
+		Marker string            `json:"marker"`
+	}{state.Origin, state.LocalStorage, marker})
+	if err != nil {
+		return "", fmt.Errorf("encode state initializer failed")
+	}
+	// Parse JSON rather than embed an object literal, so a storage key named
+	// __proto__ is data and does not change JavaScript object-literal semantics.
+	quoted, _ := json.Marshal(string(data))
+	return `((state) => {
+		if (window !== window.top || location.origin !== state.origin) return;
+		try {
+			if (sessionStorage.getItem(state.marker) !== null) return;
+			sessionStorage.setItem(state.marker, 'pending');
+			localStorage.clear();
+			for (const [key, value] of Object.entries(state.values || {})) {
+				localStorage.setItem(key, value);
+			}
+			sessionStorage.setItem(state.marker, 'ready');
+		} catch (_) {
+			// Verification after load detects failure without exposing credentials
+			// or an unhandled exception containing the initializer source.
+		}
+	})(JSON.parse(` + string(quoted) + `));`, nil
+}

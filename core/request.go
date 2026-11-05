@@ -1,6 +1,9 @@
 package core
 
-import "context"
+import (
+	"context"
+	"net/http"
+)
 
 // 本文件是**逐请求请求头**：一次抓取带上自己的头，而不动全局配置。
 //
@@ -18,7 +21,7 @@ type headersCtxKey struct{}
 
 // WithHeaders 给这次抓取（及其派生 ctx 上的后续抓取）带上/覆盖请求头。nil 或空 map 原样返回。
 //
-// **同键覆盖**，值为空串表示**删掉**那个键（比如不想要框架默认的 `User-Agent`）；
+// **同键覆盖（不区分大小写）**，值为空串表示**删掉**那个键（比如不想要框架默认的 `User-Agent`）；
 // 它是**叠加**的：站点级已挂在 ctx 上时，这里只覆盖你给的那几个键，其余留着。
 func WithHeaders(ctx context.Context, h map[string]string) context.Context {
 	if len(h) == 0 {
@@ -26,10 +29,10 @@ func WithHeaders(ctx context.Context, h map[string]string) context.Context {
 	}
 	merged := make(map[string]string, len(h))
 	for k, v := range HeadersFrom(ctx) { // 已有的（站点级）先铺底
-		merged[k] = v
+		merged[http.CanonicalHeaderKey(k)] = v
 	}
 	for k, v := range h {
-		merged[k] = v
+		merged[http.CanonicalHeaderKey(k)] = v
 	}
 	return context.WithValue(ctx, headersCtxKey{}, merged)
 }
