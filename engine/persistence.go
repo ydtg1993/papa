@@ -17,6 +17,17 @@ type taskRunVersion struct {
 	Reprocess int
 }
 
+type taskRunVersionKey struct{}
+
+func withTaskRunVersion(ctx context.Context, version taskRunVersion) context.Context {
+	return context.WithValue(ctx, taskRunVersionKey{}, version)
+}
+
+func taskRunVersionFrom(ctx context.Context) (taskRunVersion, bool) {
+	version, ok := ctx.Value(taskRunVersionKey{}).(taskRunVersion)
+	return version, ok
+}
+
 // retryTaskState retains responsibility in the current worker. It retries only
 // the state operation, never the FetchHandler. Persistent outages apply bounded
 // backpressure (100ms up to 2s between attempts) until cancellation.

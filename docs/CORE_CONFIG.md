@@ -38,7 +38,7 @@
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | 将 6 张规则仓库表纳入显式迁移和启动缺表检查；不会自动创建 Repository、切换 RuleFetcher、验收或发布规则 |
+| `enabled` | bool | `false` | 将 7 张规则与周期状态表纳入显式迁移和启动缺表检查；不会自动创建 Repository、切换 RuleFetcher、验收或发布规则 |
 | `sample_dir` | string | 无 | 开启时必填，拒绝空串/纯空白；宿主传给 `rulestore.NewFileBlobs` 的长期样本目录，配置加载本身不创建目录 |
 
 ```yaml
@@ -420,7 +420,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、规则仓库表（`rules.enabled`）、分析审计表（`agent.enabled`）和质量反馈表（`quality.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
-`rules.enabled` 包含 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`。关闭开关不删除已存在的规则、样本或发布历史。普通启动只检查表；`rulestore.New` 也不隐式迁移。任务的完整规则绑定与 release 身份继续放在既有 `crawler_tasks.meta`，不为它们新增任务列。
+`rules.enabled` 包含 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`、`crawler_rule_schedules`。关闭开关不删除已存在的规则、样本、发布历史或周期状态。普通启动只检查表；`rulestore.New` 和 `NewRuleSchedule` 也不隐式迁移。已启用规则仓库的旧库升级后须再运行一次 `papa migrate` 补齐周期状态表。任务的完整规则绑定、release 与 batch 身份继续放在既有 `crawler_tasks.meta`，不为它们新增任务列；控制进度独立保存在新表。自动周期采集还须配置 `repeat_queue`，见 [RULE_FETCHER.md](./RULE_FETCHER.md#完整周期采集批次)。
 
 `agent.enabled` 额外包含 `crawler_agent_runs`、`crawler_agent_steps`，并依赖 `rules.enabled=true`。关闭后不会删除已有审计；普通启动和 `agentstore.New` 均不建表或接管未完成运行。恢复时先确认旧执行者已结束，再显式中断，不能自动重发状态不明的模型/网站请求，见 [SITE_AGENT.md](./SITE_AGENT.md)。
 

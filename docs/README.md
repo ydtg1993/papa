@@ -49,7 +49,7 @@ cd mycrawler && go mod tidy
 | 持久保存规则/样本，发布整组阶段版本并回滚 | [RULE_STORE.md](./RULE_STORE.md) | MySQL 元数据＋文件样本、显式验收、发布竞争、Catalog 恢复与影子评估 |
 | 在受控范围内分析网站并生成待审核规则 | [SITE_AGENT.md](./SITE_AGENT.md) | 有限模型工具循环、独立样本验收、运行审计、回放/兼容模型示例；只产候选，发布由宿主显式执行 |
 | 检查线上规则质量，并按需发起一次复分析 | [RULE_QUALITY.md](./RULE_QUALITY.md) | 旁路摘要、固定版本窗口、重试折叠、覆盖与异常类别、显式复分析；报告只覆盖已记录观测，不自动调用模型或发布 |
-| 把规则接成列表、详情与 URL/POST 游标分页采集 | [RULE_FETCHER.md](./RULE_FETCHER.md) | 通用执行器、版本固定、账号接线、幂等保存和完整示例 |
+| 把规则接成列表、详情与 URL/POST 游标分页采集 | [RULE_FETCHER.md](./RULE_FETCHER.md) | 通用执行器、版本固定、账号接线、幂等保存；RuleSchedule 完整周期批次与恢复示例 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
 | 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |

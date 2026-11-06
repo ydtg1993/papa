@@ -31,6 +31,8 @@ type RuleLink struct {
 // RulePage is accepted data and its provenance. Save may be called again after a
 // partial failure and must upsert using business identity, not append blindly.
 type RulePage struct {
+	// BatchID identifies a RuleSchedule run; empty for one-shot tasks.
+	BatchID string
 	// EvidenceID correlates this result with the attempt's snapshot and Trace.
 	// It is empty without an archive context; an ID alone does not mean a body
 	// was retained (failure mode deliberately omits successful observations).
@@ -96,4 +98,5 @@ const (
 	ruleCheckpointMeta = "_rule_checkpoint"
 	ruleAccountMeta    = "_rule_account"
 	ruleReleaseMeta    = "_rule_release"
+	ruleBatchMeta      = "_rule_batch"
 )

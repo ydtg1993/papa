@@ -98,6 +98,7 @@ func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, r
 		return out, ruleSourceInvalid("extraction or validation exceeded its budget")
 	}
 	out.Rule = RuleRef{ID: task.Meta["rule_id"], Version: task.Meta["rule_version"]}
+	out.BatchID = task.Meta[ruleBatchMeta]
 	return out, nil
 }
 

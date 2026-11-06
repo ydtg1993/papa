@@ -365,6 +365,9 @@ func (f *RuleFetcher) ruleChildren(ctx context.Context, task *Task, bindings map
 				return nil, fmt.Errorf("rule fetcher: invalid detail link")
 			}
 			meta := map[string]string{}
+			if batch := task.Meta[ruleBatchMeta]; batch != "" {
+				meta[ruleBatchMeta] = batch
+			}
 			if release := task.Meta[ruleReleaseMeta]; release != "" {
 				meta[ruleReleaseMeta] = release
 			}

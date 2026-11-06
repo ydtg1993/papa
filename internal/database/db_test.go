@@ -97,7 +97,7 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	if got := names(c); !reflect.DeepEqual(got, []string{
 		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_task_trace",
 		"crawler_rule_versions", "crawler_rule_samples", "crawler_rule_sample_sets",
-		"crawler_rule_verifications", "crawler_rule_releases", "crawler_rule_sites",
+		"crawler_rule_verifications", "crawler_rule_releases", "crawler_rule_sites", "crawler_rule_schedules",
 	}) {
 		t.Fatalf("启用规则仓库后的清单 = %v", got)
 	}
@@ -107,7 +107,7 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	if got := names(c); !reflect.DeepEqual(got, []string{
 		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_task_trace",
 		"crawler_rule_versions", "crawler_rule_samples", "crawler_rule_sample_sets",
-		"crawler_rule_verifications", "crawler_rule_releases", "crawler_rule_sites",
+		"crawler_rule_verifications", "crawler_rule_releases", "crawler_rule_sites", "crawler_rule_schedules",
 		"crawler_agent_runs", "crawler_agent_steps",
 	}) {
 		t.Fatalf("启用 Agent 后的清单 = %v", got)

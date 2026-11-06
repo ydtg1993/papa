@@ -233,6 +233,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		}
 		claimedAt = time.Now()
 		runVersion = version
+		ctx = withTaskRunVersion(ctx, version)
 		e.emit(events.Event{
 			Type: events.TypeTaskClaimed, Site: task.Site, Stage: task.Stage,
 			TaskID: uint(task.ID), URL: task.URL, Attempt: 0,

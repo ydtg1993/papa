@@ -30,6 +30,8 @@ papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetch
 
 已经有通过样本验收的 HTML/JSON 规则时，可直接使用 `papa.NewRuleFetcher`；它实现同一个 Fetcher 接口，复用网络、账号和队列，支持列表到详情及 URL/POST 游标分页。入口须用 `NewTask` 固定规则版本，Save 必须幂等，详见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 
+完整周期重采用 `papa.NewRuleSchedule` 注册独立控制阶段，固定每批规则发布并向该站所有详情/分页传播 BatchID。只轮询控制任务，失败批次先沿原任务修复；需 `rules.enabled` 显式迁移新状态表和启用 `repeat_queue`。普通入口单独设置 Repeatable 不会自动更新整条任务图，接线见 [完整周期批次](./RULE_FETCHER.md#完整周期采集批次)。
+
 RuleFetcher 可通过 `RuleFetcherConfig.Quality` 接入 `pkg/rulequality.Collector`；手写 Fetcher 可显式调用同一 Collector 上报有界、无字段值的 Observation。质量库写入失败不应作为 FetchHandler 的业务错误返回，否则会把观测故障变成业务重试。MySQL 先开启独立的 `quality.enabled` 并显式迁移三表；开关不自动接线、生成报告或调用 Agent，完整契约见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 框架对外是一个门面包 `github.com/ydtg1993/papa/v3`，fetcher 只需 import 它：
@@ -945,6 +947,8 @@ SiteSpec{ M3U8: &papa.M3U8Spec{
 ```
 
 m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
+
+播放列表重定向后，variant、分片、KEY 和 MAP 引用均以成功响应的最终完整 URL 为基准，按标准 URL 引用语义解析；支持 `../`、根路径、查询参数及 `//host/path`。网络路径引用保留所写的主机和端口、继承当前协议，不会拼成原站点的普通路径。请求 URL 已转义的路径也保持正确语义。
 
 filedown 与 m3u8 各自的下载器基座及 `With` 派生实例共享目标路径锁：不同 URL 写同一目标也会串行，目录资源与其子路径也互斥（例如分片目录 `movie/` 与另一下载的 `movie/segment_00000.ts`）。一次取得整组资源，等待时不占用其中一部分，支持 context 取消。m3u8 按最终合并扩展名确定目标，并对共享断点状态文件和切片目录加锁；仅共享父目录的不同文件、独立目标与独立断点目录可以并发。路径以规范化绝对路径识别，Windows 忽略大小写；不解析符号链接/硬链接别名，不跨独立 `NewDownloader` 实例或进程协调。filedown 单文件临时输出使用独占创建的随机文件名，避免固定 `.tmp` 与其它下载目标冲突。
 

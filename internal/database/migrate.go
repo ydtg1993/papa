@@ -41,6 +41,7 @@ func FrameworkModels(cfg *config.Config) []Model {
 			Model{Name: "crawler_rule_verifications", Value: &models.RuleVerification{}},
 			Model{Name: "crawler_rule_releases", Value: &models.RuleRelease{}},
 			Model{Name: "crawler_rule_sites", Value: &models.RuleSite{}},
+			Model{Name: "crawler_rule_schedules", Value: &models.RuleSchedule{}},
 		)
 	}
 	if cfg.Agent.Enabled {

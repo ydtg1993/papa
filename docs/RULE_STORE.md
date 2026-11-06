@@ -29,7 +29,7 @@ rules:
 
 | 项 | 行为 |
 | --- | --- |
-| `rules.enabled` | 默认 `false`；控制框架迁移及启动缺表检查是否包含规则仓库的 6 张表 |
+| `rules.enabled` | 默认 `false`；控制框架迁移及启动缺表检查是否包含规则与周期状态的 7 张表 |
 | `rules.sample_dir` | 开启时必填，空串或纯空白会在加载配置时失败；不自动补默认值 |
 | `papa migrate` / `App.Migrate()` | 显式创建规则表；普通启动、`rulestore.New` 和 `NewFileBlobs` 都不迁移数据库 |
 | 宿主接线 | 开关不会自动构造 Repository、注册规则或把 fetcher 切到 Catalog，须由业务代码完成 |
@@ -47,7 +47,9 @@ if err != nil { return err }
 
 `NewFileBlobs` 创建并打开目录；配置加载本身不创建它。元数据使用已有 MySQL 连接，构造器拒绝非 MySQL、DryRun 或 `db.Begin()` 等外层事务连接。发布必须拥有最外层事务的 COMMIT，不能把保存点释放当成持久提交。普通连接与开启 PrepareStmt 的普通连接均可使用。关闭进程时先结束相关操作，再关闭文件库与数据库。
 
-6 张表分别为 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`。关闭开关后再迁移不会删除已有表或发布历史，也不会使手工持有的 Repository 停止工作。
+7 张表分别为 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`、`crawler_rule_schedules`。最后一张供 [RuleSchedule](./RULE_FETCHER.md#完整周期采集批次) 保存控制任务的批次序号、固定入口和摘要；不会保存页面正文。已启用 rules 的旧库升级后也要再显式迁移一次补表。关闭开关后再迁移不会删除已有表或发布历史，也不会使手工持有的 Repository 停止工作。
+
+周期采集每个新批读取一次当前完整发布；上一批重试或重启恢复继续使用已持久化的版本快照。发布和回滚均不改写运行中的批次，也不会自动使失败批次跳过。
 
 如需模型辅助生成候选，再开启 `agent.enabled`（依赖 `rules.enabled`）并显式迁移两张审计表 `crawler_agent_runs`、`crawler_agent_steps`。宿主通过 `crawlagent.New` 复用此仓库的样本、草稿与 Verify，通过 `agentstore.New` 保存运行/步骤；构造器不建表，开关不自动分析。接线和回放/真实模型示例见 [SITE_AGENT.md](./SITE_AGENT.md)。
 

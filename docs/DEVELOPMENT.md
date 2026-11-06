@@ -44,6 +44,8 @@
 
 运行质量模块可单独执行 `go test ./pkg/rulequality`，引擎接线执行 `go test ./engine -run 'RuleQuality|RuleFetcher|RuleSnapshot'`。持久化和迁移集成分别使用 `PAPA_QUALITY_MYSQL_TEST_DSN`、`PAPA_QUALITY_MIGRATION_TEST_DSN`，库名必须包含 `quality_test`；没有专用库时跳过不代表真库验证通过。纯报告测试不调用模型，复分析回放也不验证真实供应商质量或账单；入口和边界见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
+周期批次执行 `go test ./engine -run 'RuleSchedule|RuleBatch|RunVersion'`。真实 MySQL 用 `PAPA_RULE_SCHEDULE_TEST_DSN`，库名严格为 `papa_rule_test_schedule`；完整两批示例用 `PAPA_RULE_SCHEDULE_EXAMPLE_TEST_DSN`，应指向另一个专用库（推荐 `papa_rule_test_schedule_example`）。DSN 开启 `parseTime=True`，不要让迁移测试与引擎/示例共用数据库。示例走真实 repeat_queue，至少运行 10 秒；同样运行 race。没有 DSN 的跳过结果不能代表重启、行锁、JSON 查询和提交不明路径已验证。
+
 ## 2. 业务项目（`papa new` 生成）
 
 生成的 `Makefile` 在框架基础上多几个目标：
@@ -110,6 +112,11 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   rulefetcher_tasks.go          固定版本/账号、请求身份、持久化分页检查点与来源范围
   rulefetcher_source.go         HTTP/账号/Rod 来源适配、失败分类与安全错误
   rulefetcher_catalog.go        持久 Catalog 版本解析、完整绑定检查与固定发布身份
+  ruleschedule.go              完整周期批次控制 Fetcher、构造与状态 API
+  ruleschedule_payload.go      静态控制身份、固定批次入口、版本化载荷与摘要校验
+  ruleschedule_store.go        MySQL 控制行锁/CAS、先持久后投递、真实成员完成判定
+  ruleschedule*_test.go        周期状态、并发、重启与未知提交；rulefetcher_batch_test.go 验证跨阶段传播
+  stage_runversion_test.go     普通 worker 认领版本传递、重试固定和旧轮次终态拒绝
   rulequality.go               可选执行质量旁路、原始提取摘要与终止环节分类；rulequality_test.go 覆盖故障不重放业务
   rule_snapshot_types.go        规则页面观察清单：规则/尝试、双摘要、正文引用与省略原因
   rule_snapshot.go              尝试登记、显式脱敏、预算、EvidenceID 与最小 Trace 引用
@@ -171,6 +178,8 @@ obs/                             运行报告引擎（通用、只读）：obs.g
                                  pattern/ 内置模式库 / report/ 4 产物渲染
 models/                          框架自带的表结构
 models/rule_publication.go       可选规则/样本/集合/验收/发布/站点指针 6 表，按 rules.enabled 纳入显式迁移
+models/rule_schedule.go          可选完整周期批次状态，第 7 张 rules.enabled 表；不改变任务列
+internal/database/rule_schedule_models_test.go 周期表主键/类型/注释与可选注册；rules_migrate_mysql_test.go 覆盖旧规则库补表
 models/agent.go                  可选运行/步骤审计 2 表，按 agent.enabled 纳入显式迁移
 models/rule_quality.go           可选观测/报告/复分析请求 3 表，独立按 quality.enabled 纳入显式迁移
 internal/database/quality_migrate_mysql_test.go 质量开关独立性、普通启动不建表与重复显式迁移的真库回归
@@ -180,6 +189,7 @@ examples/rulecrawl/              main.go 本地 HTML / JSON POST 游标完整流
 examples/rulepublish/            main.go 专用 MySQL＋本机 HTTP 的验收/发布/恢复/影子/回滚示例；main_test.go 入口约束验证
 examples/siteagent/              main.go 本地静态/DOM/GET JSON 分析与审计重开；main_test.go MySQL＋Chromium 回放验收；README.md 真实模型显式接线
 examples/rulequality/            本地网站质量场景、固定报告与显式复分析回放；入口见 RULE_QUALITY.md
+examples/ruleperiodic/           真实 Engine/MySQL 两批列表、详情、分页及幂等业务更新
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
 ```
 
@@ -246,6 +256,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
 | 落盘 | 原始 HTML 归档按 `{dir}/{site}/{stage}/` 分两层；RuleFetcher 观察清单记录 `site/stage`，同一归档根下的脱敏正文按内容共用 | `engine/archive.go` 的 `relPath`；`engine/rule_snapshot*.go` |
 | 发布 | 一个站点的完整 stage→规则版本表在事务中切换，generation 防止并发覆盖；任务固定整组绑定及发布身份 | `pkg/rulestore/repository_release.go`、`engine/rulefetcher_catalog.go` |
+| 周期批次 | 每个控制任务独立持久化批次、规则快照和完成门槛，批次传播到该站点所有派生规则任务 | `engine/ruleschedule*.go`、`models/rule_schedule.go` |
 | 质量 | 报告固定站点、阶段、规则版本与 release 的观测窗口；只覆盖已记录数据，重试不放大逻辑页面数 | `pkg/rulequality/aggregate.go`、`engine/rulequality.go` |
 
 ### 全局，且**有意**如此（别想着分站）

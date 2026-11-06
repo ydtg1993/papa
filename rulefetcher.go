@@ -10,3 +10,13 @@ type RuleLink = engine.RuleLink
 type RulePage = engine.RulePage
 
 var NewRuleFetcher = engine.NewRuleFetcher
+
+type RuleSchedule = engine.RuleSchedule
+type RuleScheduleConfig = engine.RuleScheduleConfig
+type RuleScheduleStatus = engine.RuleScheduleStatus
+
+var NewRuleSchedule = engine.NewRuleSchedule
+var ErrRuleScheduleInvalid = engine.ErrRuleScheduleInvalid
+var ErrRuleScheduleCorrupt = engine.ErrRuleScheduleCorrupt
+var ErrRuleScheduleConflict = engine.ErrRuleScheduleConflict
+var ErrRuleScheduleUnconfirmed = engine.ErrRuleScheduleUnconfirmed
