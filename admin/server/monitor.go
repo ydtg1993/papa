@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,10 @@ type QueueProcessEvent struct {
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
+	RuleAdmin          RuleAdministration
+	OnRuleChange       func(RuleChangeEvent)
+	RuleSchedules      func(context.Context, string, uint) (engine.RuleScheduleList, error)
+	RuleScheduleDetail func(context.Context, uint, uint, string, bool) (engine.RuleScheduleDetail, error)
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 表示不校验（未配置凭据）。
 	// 由宿主注入（papa 用 admin/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
@@ -230,6 +235,9 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("/monitor", s.wrap(s.htmlHandler))
 	mux.HandleFunc("/api/monitor", s.wrap(s.apiHandler))
+	mux.HandleFunc("/api/rule-schedules", s.wrap(s.ruleScheduleHandler))
+	mux.HandleFunc("/api/rule-schedules/detail", s.wrap(s.ruleScheduleHandler))
+	mux.HandleFunc("/api/rules/", s.wrap(s.ruleAdminHandler))
 	mux.HandleFunc("/api/settings", s.wrap(s.settingsHandler))
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))

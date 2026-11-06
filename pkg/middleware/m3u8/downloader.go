@@ -171,11 +171,18 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 // 两层各退各的；代价是故障源上请求量被放大，属可接受的上界，不是失控重试。别为了"省请求"把某层
 // 去掉，那会把"临时抖动"变成"整段失败"。
 func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opts *DownloadOptions) ([]byte, error) {
+	data, _, err := d.doRequestWithURL(ctx, url, rangeHeader, opts)
+	return data, err
+}
+
+// doRequestWithURL also returns the successful response's final URL, so playlist
+// references use the same resource that supplied the body after redirects.
+func (d *Downloader) doRequestWithURL(ctx context.Context, url, rangeHeader string, opts *DownloadOptions) ([]byte, string, error) {
 	var lastErr error
 	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		default:
 		}
 		if attempt > 0 {
@@ -192,7 +199,7 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 			// （那两件事正是在 drained=false 时故意不做的）。与 engine/stage.go 的退避同一写法。
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, "", ctx.Err()
 			case <-time.After(sleepTime):
 			}
 			d.st.trackQueue.SendError(fmt.Errorf("重试 %s (第 %d 次)", url, attempt))
@@ -272,9 +279,13 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 			lastErr = err
 			continue
 		}
-		return data, nil
+		finalURL := req.URL.String()
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalURL = resp.Request.URL.String()
+		}
+		return data, finalURL, nil
 	}
-	return nil, fmt.Errorf("failed after %d retries: %w", d.config.MaxRetries, lastErr)
+	return nil, "", fmt.Errorf("failed after %d retries: %w", d.config.MaxRetries, lastErr)
 }
 
 // checkContentRange 核对 206 响应的 Content-Range 起止是否等于请求区间（"bytes 起-止/总长"）。
@@ -986,19 +997,13 @@ func (d *Downloader) getTotalSize(files []string) int64 {
 
 // ==================== 辅助函数（原有函数增强） ====================
 
-// fetchPlaylist 获取 M3U8 内容及 base URL
+// fetchPlaylist 返回 M3U8 内容及完整的最终 URL；所有引用都以这份列表的 URL 为基准。
 func (d *Downloader) fetchPlaylist(ctx context.Context, m3u8URL string, opts *DownloadOptions) (string, string, error) {
-	data, err := d.doRequest(ctx, m3u8URL, "", opts)
+	data, finalURL, err := d.doRequestWithURL(ctx, m3u8URL, "", opts)
 	if err != nil {
 		return "", "", err
 	}
-	playlist := string(data)
-	u, err := neturl.Parse(m3u8URL)
-	if err != nil {
-		return "", "", err
-	}
-	baseURL := u.Scheme + "://" + u.Host + path.Dir(u.Path) + "/"
-	return playlist, baseURL, nil
+	return string(data), finalURL, nil
 }
 
 // prepareKey 取回解密用的密钥与 IV。mediaSeq 是该片段的媒体序号，仅在密钥标签不带 IV 时用于推导 IV。
@@ -1237,20 +1242,19 @@ func (d *Downloader) parseKeyTag(tag, baseURL string) *KeyInfo {
 }
 
 func (d *Downloader) resolveURL(raw, base string) string {
-	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
-		return raw
-	}
 	if base == "" {
 		return raw
 	}
-	if strings.HasPrefix(raw, "/") {
-		u, err := neturl.Parse(base)
-		if err == nil {
-			u.Path = raw
-			return u.String()
-		}
+	baseURL, err := neturl.Parse(base)
+	if err != nil {
+		return raw
 	}
-	return base + raw
+	reference, err := neturl.Parse(raw)
+	if err != nil {
+		// Keep malformed input intact so request construction reports its error.
+		return raw
+	}
+	return baseURL.ResolveReference(reference).String()
 }
 
 // selectBestStream 选择最高码率流

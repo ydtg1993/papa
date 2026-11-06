@@ -11,7 +11,7 @@
 
 - `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
 - 抓到的内容要落库，就在项目的 `models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
-- 启用持久规则时，`rules.enabled` 将 6 张规则仓库表纳入显式迁移；这些表保存规则、样本元信息、验收、发布历史和站点指针，不代替业务结果表。样本正文仍在独立文件目录，见 [RULE_STORE.md](./RULE_STORE.md)。
+- 启用持久规则时，`rules.enabled` 将 7 张规则与周期状态表纳入显式迁移；这些表保存规则、样本元信息、验收、发布历史、站点指针和周期批次，不代替业务结果表。样本正文仍在独立文件目录，见 [RULE_STORE.md](./RULE_STORE.md)。
 - `agent.enabled` 依赖 `rules.enabled`，额外纳入两张运行/步骤审计表；分析只产生待审核候选，不调用业务 Save 或生产发布，见 [SITE_AGENT.md](./SITE_AGENT.md)。
 - `quality.enabled` 独立控制三张质量反馈表；观测保存计数与证据引用，不保存字段值或响应正文，也不代替业务结果表，见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
@@ -39,11 +39,14 @@
 | 样本元信息与固定预期 | `crawler_rule_samples` / `crawler_rule_sample_sets` | MySQL 存摘要、来源与预期，不存正文 |
 | 验收记录 | `crawler_rule_verifications` | 成功、失败均保留，绑定规则/集合摘要与验收器版本 |
 | 发布历史与当前指针 | `crawler_rule_releases` / `crawler_rule_sites` | 完整站点绑定和逐阶段验收报告 ID 事务提交，generation 检查竞争，回滚增加历史 |
+| 周期采集状态 | `crawler_rule_schedules` | 控制任务 ID 为非自增主键；保存 revision、固定入口 JSON 与摘要，重启和重试复用同一批 |
 | 脱敏样本正文 | `rules.sample_dir` 下的摘要文件 | 独立长期保留，没有自动 GC，不随 archive 保留期删除 |
 
 启用配置后显式运行 `papa migrate`；普通启动和 `rulestore.New` 不建表，配置开关也不自动创建 Repository。MySQL 与文件库不是一个跨资源事务：先发布完整正文再写元数据，数据库失败可能留下无引用文件，不立即删除以免误删共用正文。恢复和备份同时覆盖元数据库与样本目录。
 
 规则仓库须传普通 MySQL 连接，不接受外层事务连接；发布自行完成最外层提交。样本元数据列为 LONGTEXT，仍受应用预算约束；若已建成第三批早期的 TEXT 列，再显式迁移一次完成扩容，原数据保留。
+
+周期状态表也由 `rules.enabled` 控制，已部署规则仓库仍需显式迁移补表。其 `payload_json` 为 LONGTEXT，框架限制 2 MiB；不修改任务表。状态先提交，才允许投递根任务；提交回执不明确时等待同批恢复。活动批成员必须保留至完成，不能用清理任务来强行跳过失败。周期查询使用站点、根 ID 下界和 Meta 中的批次标识，历史量较大时需评估扫描成本。具体接线与操作边界见 [RULE_FETCHER.md](./RULE_FETCHER.md#完整周期采集批次)。
 
 规则任务的完整绑定、发布 ID/generation 存在既有 `crawler_tasks.meta`；业务不要重写这些保留键。Save 可选择把 `RulePage.Rule`、`ReleaseID/ReleaseGeneration` 与 `EvidenceID` 一起落入业务结果表，记录“哪次发布、哪个页面观察产生了结果”。这不改变 Save 必须幂等、业务保存与任务提交不组成单个事务的约定。
 

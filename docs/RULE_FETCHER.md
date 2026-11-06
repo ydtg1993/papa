@@ -159,7 +159,7 @@ Next 只收到已通过校验、去重和条目预算过滤的数据副本，以
 
 ItemKey 指定业务身份字段，缺失时失败；省略则以完整记录的规范 JSON 摘要作为身份。分页检查点保存请求、正文和条目摘要，随下一页任务进入原 Meta 列；当前任务的输入不推进，保存或提交失败后仍从相同位置重试。条目去重作用于当前分页链，不代替数据库业务唯一键，也不是整个多阶段任务图的全局预算。
 
-任务 URL 带 `#papa-rule=<摘要>`，用于把固定版本、Catalog 发布身份、账号、业务元数据和请求游标纳入既有数据库 URL 唯一索引。真实请求 URL 在保留元数据中；网络不会收到身份 fragment。必须用 `NewTask` 或 `NewTaskContext` 建入口，不要覆盖其 URL/IdempotencyKey、`rule_id`、`rule_version` 或 `_rule_*`。普通 Task 的身份语义和任务表结构不变；可选持久规则仓库的 6 张表仍须按 `rules.enabled` 显式迁移。
+任务 URL 带 `#papa-rule=<摘要>`，用于把固定版本、Catalog 发布身份、账号、业务元数据、请求游标及可选批次纳入既有数据库 URL 唯一索引。真实请求 URL 在保留元数据中；网络不会收到身份 fragment。必须用 `NewTask` 或 `NewTaskContext` 建入口，不要覆盖其 URL/IdempotencyKey、`rule_id`、`rule_version` 或 `_rule_*`。普通 Task 的身份语义和任务表结构不变；可选规则与周期状态的 7 张表须按 `rules.enabled` 显式迁移。
 
 ## 保存、重试与恢复
 
@@ -191,4 +191,56 @@ Catalog 新入口和恢复执行会提前检查当前阶段的固定规则与宿
 
 当前具备确定性的执行、验证、追踪、可选持久发布与运行质量反馈：MySQL 事务保护完整站点发布，generation 检查发布竞争，任务固定版本。宿主可显式调用 [Agent](./SITE_AGENT.md) 生成或修正规则候选，再通过同一套独立验收和人工发布入口。尚未包括审核后台、自动识别 API 分页结构或 HTML 嵌套子列表的声明式映射；JSON 字段可以原样保留嵌套 object/array。质量报告不自动修复、暂停或回滚站点。
 
-入口默认一次性任务。当前没有自动的全流程周期批次机制；仅设置入口 Repeatable 不会重采已经成功且命中去重的详情/后续页。周期重采需要后续补充独立批次及子任务身份传播，不能把错误重试或恢复能力当成完整的周期采集。
+入口默认一次性任务。需要周期重采整个任务图时使用下面的 `RuleSchedule`；仅给普通入口设置 Repeatable 仍不会重采已命中去重的详情/后续页。
+
+## 完整周期采集批次
+
+`RuleSchedule` 是独立控制阶段，沿用 `repeat_queue`。每次新批创建一个新的入口身份，列表、详情、多级子任务及分页都继承同一 `BatchID`；同批错误重试和恢复保持身份不变。`RulePage.BatchID` 可和业务记录、规则版本、`EvidenceID` 一起保存，普通一次性任务该字段为空。业务 upsert 的唯一键仍使用业务身份，不能改用 BatchID，否则每批都会插入重复业务记录。
+
+先开启 `rules.enabled` 并显式运行 `papa migrate`，创建 `crawler_rule_schedules`；即使原来已启用规则仓库，升级后也须再迁移一次。使用内存 Registry 的周期流程也需要这张 MySQL 状态表。自动运行还要开启并配置 `repeat_queue`。
+
+重启续跑已入库的 pending/processing 成员还需启用 [recover_queue](./RECOVER_QUEUE.md)，并在恢复前登记控制阶段及全部采集阶段。RuleSchedule 不接管旧成员的 worker 责任：它只重放尚未入库的固定根任务、判断整批进度；已入库但提交回执丢失的成员沿原启动恢复机制处理。关闭恢复时，重启后旧批可能一直等待未被重新投递的成员。失败成员需要原 error_queue 或显式失败重试。
+
+```go
+schedule, err := papa.NewRuleSchedule(papa.RuleScheduleConfig{
+    Stage: "catalog_schedule", Entry: catalogFetcher,
+    Interval: 10 * time.Minute,
+})
+if err != nil { return err }
+// 将 schedule 注册为 catalog_schedule 的 Fetcher；catalogFetcher 和
+// detailFetcher 仍分别注册在 catalog、detail，三个阶段名称不能冲突。
+task, err := schedule.NewTask(papa.RuleRequest{
+    URL: "https://example.com/products",
+}, nil)
+if err != nil { return err }
+return engine.SubmitTask(task)
+```
+
+`Interval` 必须是至少 10 秒的整秒时长，只负责首次提交时播种控制任务的周期；之后用原有任务轮询开关/周期 API 调整。只让控制任务 Repeatable，采集子任务保持一次性。不要让有限的 `RepeatLimit` 意外停掉控制阶段；该计数包含控制器等待、恢复和轮询，不能当成成功批次数。
+
+| 场景 | 行为 |
+| --- | --- |
+| 首次执行 | 创建序号 1；先持久化整批入口快照，再提交入口 |
+| 当前批仍有 pending/processing | 等待下一次控制器检查，不创建新批 |
+| 当前批有 failed | 阻止新批；通过原错误队列或失败任务重投修复同批 |
+| 整批全部 success，后续轮询到来 | 创建下一批；Catalog 读取最新完整发布，Registry 使用构造时的绑定 |
+| 提交入口报错、回执丢失、进程重启或重复 SubmitEntries | 恢复已保存的相同入口和规则快照，不重新绑定 Current |
+| 状态损坏、根任务缺失但仍有成员、未知任务状态或查询失败 | 明确失败，不将空集合当作已完成，也不静默跳批 |
+
+发布或回滚发生在一批执行期间时，该批仍固定原 release；新批才采纳新 generation。控制器以数据库 `LastRepeatAt` 识别新的轮询，不使用可能因恢复而增长的 `Task.Repeat`。当前轮询写入的时刻精度为秒，同秒的多次强制触发会保守合并，不能将每次点击视为一次新批。到期时上批未完成会等待，周期不是严格日历调度，也不补跑错过的所有时段。
+
+调度状态独立于控制任务 Meta，因此启动时重新提交相同入口不会覆盖正在进行的批次。保持控制阶段、入口 URL、账号和业务 Meta 稳定；修改这些身份会创建另一个控制任务。切换入口时应先停用旧控制任务，避免两套计划并行。Catalog 的当前发布不参与控制任务身份，可以正常发布新版本。
+
+控制器须由真实 Engine worker 调用，不能直接调用 `FetchHandler` 来模拟执行；worker 认领时绑定的 Repeat/Reprocess 版本会与数据库核对，旧执行轮次不获得新批派发权限。查询 `Status` 不要求执行上下文，仍可由宿主直接调用。
+
+`schedule.Status(ctx, engine, taskID)` 返回当前 `Sequence`、`BatchID`、`RootID`、release 和各任务状态计数，以及 `Complete`；未开始时 BatchID 为空。使用有超时的 context。状态只描述已持久化的当前批，控制任务自己成功不代表采集已完成。
+
+当前批成员通过任务 Meta 中受保护的 `_rule_batch` 查询，配合站点和根任务 ID 下界；没有独立批次成员索引。任务历史很大时应评估查询成本并制定归档策略；活动批完成前不能清理其成员。状态载荷上限 2 MiB，不保存正文或运行时凭据。
+
+保证范围为正常单进程引擎流程，不提供分布式执行租约或跨库 exactly-once。Engine 的通用任务操作已保护批次：禁止删除控制任务或成员（含历史批次），禁止给成员开独立轮询或设周期，只允许失败且不可轮询的成员原批重投；状态条件进入 UPDATE，重复请求不会重复投递。若旧版本误开启了成员轮询，仍可先「停轮询」修复。直接修改数据库、改写 Meta 或绕开 Engine 的业务清理不在保护范围内；需要清理历史批次时应另行设计完整生命周期。原失败快照和 Trace 仍按已有策略工作，批次不额外复制 HTML。
+
+后台「周期批次」按站点列出持久控制任务，点击后查看当前批次、固定发布/规则、成员计数和失败成员；操作复用任务 API 的保护与审计。列表每页 20 条、成员每页 50 条，按需读取，不随监控的 3 秒刷新反复聚合。详情是单次一致快照，分页期间新批已启动则返回 409，需刷新第一页。没有批次历史列表，也没有强制越过失败或自动发布。入口与 API 见 [MONITOR.md §11](MONITOR.md#11-周期批次中心)。
+
+控制标记和成员标记不能同时出现；这类异常 Meta 受到保守保护，不允许借控制角色绕开成员约束。成员原批重投在同一 UPDATE 中检查失败状态、不可轮询标记和 reprocess，读后发生竞争也会拒绝过期操作。后台 JSON 的任务 ID 和批次代次使用十进制字符串；Go 状态查询的字段类型不变。
+
+完整真实 Engine/MySQL 两批示例见框架仓库 `examples/ruleperiodic/README.md`；示例只访问本地 HTTP，验证两批列表、详情、分页均执行，业务记录按原 ID 更新，并重开连接读取批次状态。

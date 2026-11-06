@@ -17,13 +17,17 @@ var TRACE_ACTION_PATH = '/task/action/trace';
 
 (function () {
     var nativeFetch = window.fetch;
+    var traceSequence = 0;
 
     window.fetch = function (input, init) {
         var id = sniffTraceID(input, init);
+        var sequence = id === null ? traceSequence : ++traceSequence, epoch = authGeneration;
         var promise = nativeFetch.apply(this, arguments);
         if (id !== null) {
             // 动作本身的成败与抽屉无关（动作只是入口），失败也要让 oao 照常走它的错误分支
-            promise.then(function () { openTrace(id); }, function () {});
+            promise.then(function (response) {
+                if (response.ok && sequence === traceSequence && epoch === authGeneration) openTrace(id, sequence, epoch);
+            }, function () {});
         }
         return promise;
     };
@@ -45,51 +49,21 @@ var TRACE_ACTION_PATH = '/task/action/trace';
     }
 
     /** 拉追踪数据并弹时间线。 */
-    async function openTrace(id) {
-        var resp = await traceFetch('/api/task/trace?id=' + encodeURIComponent(id));
-        if (resp.error) {
-            alertTrace(id, resp.error);
-            return;
-        }
-        Dialog.open({
-            title: '任务追踪 #' + id,
-            body: renderSteps(resp.data.steps || []),
-            actions: [{ label: '关闭', value: 'close' }]
-        });
-    }
-
-    function alertTrace(id, msg) {
-        Dialog.alert({
-            title: '任务追踪 #' + id,
-            body: '<p>' + esc(String(msg)) + '</p>'
-        });
-    }
-
-    /**
-     * 自己走一遍鉴权取数，而不是用 mo.js 的 apiFetch：后者把所有非 2xx 都吞成 null，
-     * 而这里正需要把服务端那句「步骤追踪未开启」原样给操作人看（tokenadmin 的 tokenWrite 同理）。
-     */
-    async function traceFetch(url) {
-        var headers = {};
-        var key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp;
+    async function openTrace(id, sequence, epoch) {
+        var current = function () { return sequence === traceSequence && epoch === authGeneration; };
         try {
-            resp = await fetch(url, { headers: headers });
+            var resp = await apiFetch('/api/task/trace?id=' + encodeURIComponent(id), { current: current });
+            if (!resp || !current()) return;
+            var data = await resp.json();
+            if (!current()) return;
+            Dialog.open({
+                title: '任务追踪 #' + id,
+                body: renderSteps(data.steps || []),
+                actions: [{ label: '关闭', value: 'close' }]
+            });
         } catch (e) {
-            return { error: '连接失败' };
+            if (current()) Toast.err('追踪响应读取失败，请重试');
         }
-        if (resp.status === 401) {
-            clearKey();
-            setStatus(false, '需要密钥');
-            showLogin(true);
-            return { error: '需要密钥' };
-        }
-        if (!resp.ok) {
-            var msg = (await resp.text()).trim();
-            return { error: msg || ('HTTP ' + resp.status) };
-        }
-        return { data: await resp.json() };
     }
 
     /** 按尝试分组渲染时间线。 */

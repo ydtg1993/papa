@@ -25,6 +25,24 @@ type operationRequest struct {
 	ExpectedGeneration uint64               `json:"expected_generation"`
 	Bindings           map[string]Reference `json:"bindings,omitempty"`
 	Actor              Actor                `json:"actor"`
+	ReviewedProofs     map[string]string    `json:"reviewed_proofs,omitempty"`
+}
+
+// PublishReviewed pins the latest verification identities the operator reviewed.
+// A re-verification while confirmation is open must invalidate that review.
+func (r *Repository) PublishReviewed(ctx context.Context, opID, site string, generation uint64, bindings map[string]Reference, proofs map[string]string, actor Actor) (Release, error) {
+	if err := validateBindings(bindings); err != nil {
+		return Release{}, err
+	}
+	if len(proofs) != len(bindings) {
+		return Release{}, ErrReviewConflict
+	}
+	for stage := range bindings {
+		if validateText("verification ID", proofs[stage], 64) != nil {
+			return Release{}, ErrReviewConflict
+		}
+	}
+	return r.changeRelease(ctx, opID, operationRequest{Kind: "publish", Site: site, ExpectedGeneration: generation, Bindings: bindings, Actor: actor, ReviewedProofs: proofs})
 }
 
 func validateBindings(bindings map[string]Reference) error {
@@ -180,7 +198,7 @@ func (r *Repository) changeRelease(ctx context.Context, opID string, request ope
 			verificationIDs = release.VerificationIDs
 			previous = target.PreviousReleaseID
 		}
-		verificationIDs, err = verifyBindings(tx, bindings, verificationIDs)
+		verificationIDs, err = verifyBindings(tx, bindings, verificationIDs, request.ReviewedProofs)
 		if err != nil {
 			return err
 		}
@@ -226,7 +244,7 @@ func advanceSite(tx *gorm.DB, site string, generation uint64, releaseID string) 
 		Updates(map[string]any{"generation": gorm.Expr("`generation` + 1"), "current_release_id": releaseID})
 }
 
-func verifyBindings(tx *gorm.DB, bindings map[string]Reference, historicalProofs map[string]string) (map[string]string, error) {
+func verifyBindings(tx *gorm.DB, bindings map[string]Reference, historicalProofs map[string]string, reviewedProofs map[string]string) (map[string]string, error) {
 	// Acquire version locks in a deterministic order across different sites.
 	refs := make([]Reference, 0, len(bindings))
 	seen := map[Reference]bool{}
@@ -266,6 +284,13 @@ func verifyBindings(tx *gorm.DB, bindings map[string]Reference, historicalProofs
 				return nil, ErrNotPublished
 			}
 		} else {
+			if reviewedProofs != nil {
+				for stage, bound := range bindings {
+					if bound == ref && reviewedProofs[stage] != version.VerificationID {
+						return nil, ErrReviewConflict
+					}
+				}
+			}
 			proofByRef[ref] = version.VerificationID
 		}
 		if proofByRef[ref] == "" {

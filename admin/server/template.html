@@ -22,6 +22,9 @@
     </script>
     <link rel="stylesheet" href="/static/mo.css">
     <link rel="stylesheet" href="/static/oao/oao.css">
+    <link rel="stylesheet" href="/static/schedules.css">
+    <link rel="stylesheet" href="/static/rules.css">
+    <link rel="stylesheet" href="/static/workbench.css">
     <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
     <link rel="stylesheet" href="/static/custom.css">
 </head>
@@ -39,10 +42,13 @@
 <div class="shell" id="app">
     <aside class="sidebar">
         <div class="brand">Papa监控</div>
-        <nav>
+        <button class="nav-toggle btn" id="nav-toggle" aria-expanded="false" aria-controls="main-nav" onclick="toggleNavigation()">菜单</button>
+        <nav id="main-nav">
             <div class="nav-section">Menu</div>
-            <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">Dashboard</button>
+            <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">运营首页</button>
             <button class="nav-item" data-module="queues" onclick="switchModule('queues')">队列治理</button>
+            <button class="nav-item" data-module="schedules" onclick="switchModule('schedules')">周期批次</button>
+            <button class="nav-item" data-module="rules" onclick="switchModule('rules')">规则运维</button>
             <div id="oao-nav"></div>
             <div class="nav-section">General</div>
             <!-- 内置表格页：菜单固定在这里（不跟业务表格挤在一起），渲染仍交给表格组件。
@@ -58,7 +64,7 @@
 
     <main class="content">
         <header class="content-top">
-            <h1 id="moduleTitle">Dashboard</h1>
+            <h1 id="moduleTitle">运营首页</h1>
             <div class="top-right">
                 <!-- 暂停与告警铃铛：徽标数字 = 被闸住的 scope 数（含声明期的 StartPaused），
                      颜色分语义（有熔断触发就红、只有手动/声明期就琥珀）。点开在下方列出细节
@@ -88,23 +94,74 @@
         <div class="site-tabs" id="site-tabs" hidden></div>
         <div class="site-meta" id="site-meta" hidden></div>
 
+        <div class="module" id="mod-rules">
+            <section>
+                <h2>规则版本库 <small>全局共享</small></h2>
+                <p class="hint">先审阅规则与验收依据，再向目标站点发布完整阶段清单。版本库全局共享；曾发布不表示当前生效，以站点发布为准。发布与回滚需要具名登录。</p>
+                <div class="rule-toolbar"><label>规则 ID（精确筛选）<input id="rule-filter" placeholder="留空查看全部规则"></label><button class="btn" onclick="loadRuleVersions(true)">查询版本</button></div>
+                <div id="rule-versions" class="rule-panel"></div>
+                <div class="schedule-actions"><button class="btn" id="rule-versions-prev" disabled onclick="pageRuleVersions(false)">版本上一页</button><button class="btn" id="rule-versions-next" disabled onclick="pageRuleVersions(true)">版本下一页</button></div>
+                <div id="rule-detail" class="rule-panel" tabindex="-1" hidden></div>
+            </section>
+            <section>
+                <h2>站点发布</h2>
+                <div id="rule-pending" class="rule-panel rule-pending" hidden></div>
+                <div id="rule-result" role="status" tabindex="-1"></div>
+                <div class="rule-toolbar"><label>目标站点<input id="rule-site" placeholder="填写站点标识" oninput="editRuleSite()" onchange="ruleSiteChanged()"></label><button class="btn" onclick="loadRuleReleases(true)">刷新发布</button><span>当前代次：<strong id="rule-generation">—</strong></span></div>
+                <div id="rule-releases" class="rule-panel"></div>
+                <div class="schedule-actions"><button class="btn" id="rule-history-prev" disabled onclick="pageRuleHistory(false)">历史上一页</button><button class="btn" id="rule-history-next" disabled onclick="pageRuleHistory(true)">历史下一页</button></div>
+                <div class="rule-panel">
+                    <h3>准备完整阶段清单</h3>
+                    <p class="hint">每个键是阶段名，值包含规则 id 和 version。提交的是完整清单，遗漏的现有阶段会被移除；不会修改业务部署中的阶段配置。</p>
+                    <button class="btn" onclick="fillRuleBindings()">填入当前发布清单</button>
+                    <label for="rule-bindings">阶段与规则版本（JSON）</label>
+                    <textarea id="rule-bindings" class="rule-manifest" spellcheck="false" oninput="invalidateRulePreview()" placeholder='{"list":{"id":"catalog","version":"v2"}}'></textarea>
+                    <div class="rule-toolbar"><button class="btn" id="rule-publish-preview" onclick="previewRuleChange('publish')">预览发布</button><button class="btn" id="rule-rollback-preview" disabled onclick="previewRuleChange('rollback')">预览回滚到前驱</button></div>
+                </div>
+                <div id="rule-preview" class="rule-panel" hidden></div>
+            </section>
+        </div>
+        <div class="module" id="mod-schedules">
+            <section>
+                <div class="schedule-heading"><h2>周期批次 <small id="schedule-scope">全部站点</small></h2><button class="btn" onclick="loadSchedules(true)">刷新列表</button></div>
+                <p class="hint">查看当前持久批次与固定规则；按需刷新，不自动扫描成员。控制任务成功表示本次调度结束，不代表整批采集完成。</p>
+                <div class="card" id="schedule-list" aria-live="polite"></div>
+                <div class="schedule-actions"><button class="btn" id="schedule-list-prev" disabled onclick="pageSchedules(false)">上一页</button><button class="btn" id="schedule-list-next" disabled onclick="pageSchedules(true)">下一页</button></div>
+            </section>
+            <section id="schedule-detail" hidden>
+                <div class="schedule-heading"><h2>当前批次</h2><button class="btn" onclick="refreshScheduleDetail()">刷新当前批次</button></div>
+                <label><input type="checkbox" id="schedule-failed" onchange="refreshScheduleDetail()"> 只看失败成员</label>
+                <div class="card" id="schedule-detail-body" aria-live="polite"></div>
+                <div class="schedule-actions"><button class="btn" id="schedule-member-prev" disabled onclick="pageScheduleMembers(false)">成员上一页</button><button class="btn" id="schedule-member-next" disabled onclick="pageScheduleMembers(true)">成员下一页</button></div>
+            </section>
+        </div>
         <div class="module active" id="mod-dashboard">
             <section>
-                <h2>系统负载</h2>
-                <div class="grid" id="dash-sys"></div>
+                <div class="workbench-heading"><div><h2>运行概览</h2><p id="workbench-coverage">等待快照</p></div><span class="workbench-scope" id="workbench-scope">全部站点</span></div>
+                <p id="workbench-freshness" role="status">尚未获得监控快照</p>
+                <div class="workbench-kpis" id="workbench-kpis"></div>
+                <p class="hint">计数来自活跃阶段的内存快照；完成、失败为累计次数，不代表数据库当前存量。「—」表示统计未提供。</p>
             </section>
             <section>
-                <h2>业务目录占用</h2>
-                <div class="grid" id="dash-dirs"></div>
+                <h2 class="workbench-section-title">需要关注 <span id="workbench-issue-count">—</span></h2>
+                <div class="workbench-panel" id="workbench-issues"></div>
+                <p class="hint">暂停按当前站点范围展示；治理队列为全部站点，积压以标注的采样时间为准。</p>
             </section>
             <section>
+                <h2>站点概况</h2>
+                <div class="workbench-panel" id="workbench-sites"></div>
+            </section>
+            <details class="workbench-disclosure" id="workbench-stage-details">
+                <summary>阶段与 Worker 明细</summary>
+                <section>
                 <h2>任务队列概览</h2>
                 <!-- 原「任务队列」模块已并入这里（侧边栏不再单列）：概览（全部）下按站点分卡片
                      （阶段压成一行）；切到某站点 Tab 时显示该站的多阶段详情 —— 五格大数字 +
                      累计耗时 + Worker 明细表（就是原模块的内容）。两种形态都由 mo.js 的
                      renderQueueSummary 画。 -->
                 <div id="dash-queue"></div>
-            </section>
+                </section>
+            </details>
             <!-- 站点控制：一站一行（站点名 + 运行中/已暂停 + 暂停/恢复整站）。
                  数据来自 /api/monitor 的 sites（跟着站点 Tab 过滤）与 breakers（暂停状态）；
                  两个都没有时整个区块隐藏，前端不额外发请求。
@@ -114,11 +171,17 @@
                 <h2>站点控制</h2>
                 <div class="grid" id="dash-site-ctl"></div>
             </section>
+            <details class="workbench-disclosure" id="workbench-resources">
+                <summary>系统资源与目录 · 进程全局</summary>
+                <section><h2>系统负载</h2><div class="grid" id="dash-sys"></div></section>
+                <section><h2>业务目录占用</h2><div class="grid" id="dash-dirs"></div></section>
+            </details>
         </div>
 
         <div class="module" id="mod-queues">
+            <p class="hint">作用范围：全部站点。立即执行不受顶部站点筛选影响。</p>
             <section>
-                <h2>治理队列</h2>
+                <h2>治理队列 · 全部站点</h2>
                 <div class="card">
                     <p class="hint">失败重投（error_queue）/ 周期轮询（repeat_queue）两个后台队列的运行状态。
                         「待处理」为低频采样的积压快照（server.queue_sample_interval），其余字段为内存计数，均非实时。</p>
@@ -208,7 +271,12 @@
 </div>
 
 <script src="/static/oao/oao.js"></script>
+<script src="/static/table-links.js"></script>
+<script src="/static/requests.js"></script>
+<script src="/static/workbench.js"></script>
 <script src="/static/mo.js"></script>
+<script src="/static/schedules.js"></script>
+<script src="/static/rules.js"></script>
 <!-- 任务步骤追踪抽屉：嗅探 oao 的「追踪」动作请求取任务 id，再拉 /api/task/trace。
      必须在 mo.js 之后（用它的 Dialog / esc / loadKey 等全局件）。 -->
 <script src="/static/trace.js"></script>

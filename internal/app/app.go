@@ -1020,7 +1020,15 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		VerifyToken: tokenCounter.Verifier(a.Logger.Sys),
+		RuleAdmin: a.ruleAdministration(),
+		OnRuleChange: func(ev server.RuleChangeEvent) {
+			if rec != nil {
+				rec.RecordEvent(oplog.Event{Table: "rules", Action: ev.Request.Kind, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"site": ev.Request.Site, "operation_id": ev.Request.OperationID, "expected_generation": ev.Request.Generation, "release_id": ev.ReleaseID}})
+			}
+		},
+		RuleSchedules:      a.Engine.ListRuleSchedules,
+		RuleScheduleDetail: a.Engine.RuleScheduleDetail,
+		VerifyToken:        tokenCounter.Verifier(a.Logger.Sys),
 		// 后台页面首帧用：令牌表一条都没有时后端本来就是开放的，前端也不必弹登录框。
 		AuthRequired: tokenCounter.Required,
 		Whitelist:    whitelist,

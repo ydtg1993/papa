@@ -1527,11 +1527,15 @@ func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
 	for _, want := range []string{
 		"function authRequired()",
 		"if (authRequired() && !loadKey())",
-		"function startPolling()",
+		"startPolling();",
 	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("mo.js 里缺少 %q", want)
 		}
+	}
+	requests, err := fs.ReadFile(staticFS, "static/requests.js")
+	if err != nil || !strings.Contains(string(requests), "function startPolling()") {
+		t.Fatalf("独立轮询模块缺失: %v", err)
 	}
 	if strings.Contains(raw, "if (loadKey()) hideLogin(); else showLogin(false);") {
 		t.Error("mo.js 还留着「没 key 就无条件弹登录」的旧逻辑 —— 0 令牌环境每次刷新都会闪登录框")

@@ -29,7 +29,7 @@ rules:
 
 | 项 | 行为 |
 | --- | --- |
-| `rules.enabled` | 默认 `false`；控制框架迁移及启动缺表检查是否包含规则仓库的 6 张表 |
+| `rules.enabled` | 默认 `false`；控制框架迁移及启动缺表检查是否包含规则与周期状态的 7 张表 |
 | `rules.sample_dir` | 开启时必填，空串或纯空白会在加载配置时失败；不自动补默认值 |
 | `papa migrate` / `App.Migrate()` | 显式创建规则表；普通启动、`rulestore.New` 和 `NewFileBlobs` 都不迁移数据库 |
 | 宿主接线 | 开关不会自动构造 Repository、注册规则或把 fetcher 切到 Catalog，须由业务代码完成 |
@@ -47,7 +47,9 @@ if err != nil { return err }
 
 `NewFileBlobs` 创建并打开目录；配置加载本身不创建它。元数据使用已有 MySQL 连接，构造器拒绝非 MySQL、DryRun 或 `db.Begin()` 等外层事务连接。发布必须拥有最外层事务的 COMMIT，不能把保存点释放当成持久提交。普通连接与开启 PrepareStmt 的普通连接均可使用。关闭进程时先结束相关操作，再关闭文件库与数据库。
 
-6 张表分别为 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`。关闭开关后再迁移不会删除已有表或发布历史，也不会使手工持有的 Repository 停止工作。
+7 张表分别为 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`、`crawler_rule_schedules`。最后一张供 [RuleSchedule](./RULE_FETCHER.md#完整周期采集批次) 保存控制任务的批次序号、固定入口和摘要；不会保存页面正文。已启用 rules 的旧库升级后也要再显式迁移一次补表。关闭开关后再迁移不会删除已有表或发布历史，也不会使手工持有的 Repository 停止工作。
+
+周期采集每个新批读取一次当前完整发布；上一批重试或重启恢复继续使用已持久化的版本快照。发布和回滚均不改写运行中的批次，也不会自动使失败批次跳过。
 
 如需模型辅助生成候选，再开启 `agent.enabled`（依赖 `rules.enabled`）并显式迁移两张审计表 `crawler_agent_runs`、`crawler_agent_steps`。宿主通过 `crawlagent.New` 复用此仓库的样本、草稿与 Verify，通过 `agentstore.New` 保存运行/步骤；构造器不建表，开关不自动分析。接线和回放/真实模型示例见 [SITE_AGENT.md](./SITE_AGENT.md)。
 
@@ -153,6 +155,11 @@ if err != nil { return err }
 | 未验收/验收不匹配 | 返回 `ErrUnverified`；不能用 Shadow 代替正式验收 |
 
 回滚调用 `repo.Rollback(ctx, operationID, site, expectedGeneration, actor)`，也创建新发布记录并递增 generation。它沿当前版本的前驱继续回退：先发布 A、B、C 后，两次回滚依次得到 B、A，不会在 B/C 之间来回切换。无更早前驱返回 `ErrNoRollback`。回滚目标必须曾经发布；它不撤销旧版本的可执行资格。`History(ctx, site, limit)` 返回按 generation 倒序的发布与回滚历史。
+
+人工后台发布可使用 `PublishReviewed(ctx, operationID, site, expectedGeneration, bindings, verificationIDs, actor)`：`verificationIDs` 必须为每个阶段固定本次审阅的验收 ID。事务持有版本锁后核对最新指针，重验导致依据变化会返回 `ErrReviewConflict`，即使新报告也通过也须重新审阅。此映射进入幂等摘要，同 ID 改变审阅依据会冲突；原 `Publish` API 保持原语义。
+
+`rulestore.NewAdmin(db)` 提供元数据管理门面，包括 `Versions`、`Inspect`、`Releases`、`Verification`、`Preview`、`Change`、`Operation`；需要普通 MySQL 连接，不接受事务或 DryRun，不创建样本目录、不暴露导入/验收方法。列表固定每页 20 条，`Inspect` 另给最近 5 条验收；预览与当前发布/历史使用只读一致快照。调用方仍须提供有界 context 与鉴权，`Actor` 只是审计信息。标准 App 的后台用法、操作 ID 恢复与 HTTP 接口见 [MONITOR §13](MONITOR.md#13-规则运维)。
+
 
 ## 6. 接到 RuleFetcher，并恢复旧任务
 

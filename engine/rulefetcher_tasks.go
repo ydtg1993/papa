@@ -134,6 +134,10 @@ func (f *RuleFetcher) makeTaskIdentity(stage string, request RuleRequest, meta m
 		return nil, fmt.Errorf("rule task: target stage has no pinned rule")
 	}
 	releaseText := meta[ruleReleaseMeta]
+	batch, hasBatch := meta[ruleBatchMeta]
+	if hasBatch && !validRuleBatch(batch) {
+		return nil, fmt.Errorf("rule task: invalid batch identity")
+	}
 	if _, err := decodeRuleRelease(releaseText); err != nil {
 		return nil, err
 	}
@@ -151,6 +155,9 @@ func (f *RuleFetcher) makeTaskIdentity(stage string, request RuleRequest, meta m
 	if releaseText != "" {
 		values[ruleReleaseMeta] = releaseText
 	}
+	if batch != "" {
+		values[ruleBatchMeta] = batch
+	}
 	// The fragment is a queue identity only; HTTP and Rod always use request.URL.
 	// Existing database URL uniqueness therefore also distinguishes POST cursors,
 	// account partitions and versions, without changing ordinary Task semantics.
@@ -165,6 +172,18 @@ func (f *RuleFetcher) makeTaskIdentity(stage string, request RuleRequest, meta m
 		return nil, fmt.Errorf("rule task: metadata exceeds 2 MiB")
 	}
 	return &Task{Site: f.config.Site, Stage: stage, URL: taskURL, Meta: values}, nil
+}
+
+func validRuleBatch(batch string) bool {
+	if len(batch) != 64 {
+		return false
+	}
+	for _, c := range batch {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneRuleTask(t *Task) *Task { copied := *t; copied.Meta = maps.Clone(t.Meta); return &copied }

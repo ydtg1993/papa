@@ -30,18 +30,28 @@ type Repository struct {
 var _ crawlrule.Catalog = (*Repository)(nil)
 
 func New(db *gorm.DB, blobs *FileBlobs) (*Repository, error) {
-	if db == nil || db.Dialector == nil || db.Dialector.Name() != "mysql" || blobs == nil {
+	if blobs == nil {
 		return nil, errors.New("rulestore: MySQL database and sample blob directory required")
 	}
+	if err := validateDB(db); err != nil {
+		return nil, err
+	}
+	return &Repository{db: db, blobs: blobs}, nil
+}
+
+func validateDB(db *gorm.DB) error {
+	if db == nil || db.Dialector == nil || db.Dialector.Name() != "mysql" {
+		return errors.New("rulestore: MySQL database required")
+	}
 	if db.DryRun {
-		return nil, errors.New("rulestore: dry-run database cannot persist rules")
+		return errors.New("rulestore: dry-run database cannot persist rules")
 	}
 	if db.Statement != nil {
 		if _, transactional := db.Statement.ConnPool.(gorm.TxCommitter); transactional {
-			return nil, errors.New("rulestore: caller-owned transaction cannot provide durable publication commits")
+			return errors.New("rulestore: caller-owned transaction cannot provide durable publication commits")
 		}
 	}
-	return &Repository{db: db, blobs: blobs}, nil
+	return nil
 }
 
 func validateText(name, s string, max int) error {

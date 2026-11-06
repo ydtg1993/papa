@@ -16,6 +16,8 @@
 
 ## 1. 配置
 
+使用 [RuleSchedule 完整周期批次](./RULE_FETCHER.md#完整周期采集批次) 时，重启也依赖本恢复入口重新投递已入库的 pending/processing 成员。调度器只保留批次与固定规则快照，不替代 worker 恢复；先注册控制阶段和全部采集阶段，再执行启动恢复。已失败成员仍交给 error_queue，不会以新批跳过。
+
 写在 `configs/config.yaml` 的全局段（**不再按站点拆**）：
 
 ```yaml

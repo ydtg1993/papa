@@ -1,10 +1,32 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/ydtg1993/oao"
 )
+
+func TestDemoTaskSiteFilter(t *testing.T) {
+	table := fakeTaskTable()
+	for _, site := range []string{"shop", "blog", "missing"} {
+		rows, total, err := table.Source.List(context.Background(), oao.Query{Page: 1, Size: 100, Filter: map[string]string{"site": site}})
+		want := int64(30)
+		if site == "missing" {
+			want = 0
+		}
+		if err != nil || total != want || int64(len(rows)) != want {
+			t.Fatalf("%s: rows=%d total=%d err=%v", site, len(rows), total, err)
+		}
+		for _, row := range rows {
+			if row["site"] != site {
+				t.Fatalf("wrong site: %v", row)
+			}
+		}
+	}
+}
 
 // demo 默认只监听回环地址：绑全网卡 + 随机令牌等于把后台开放给所有能读到日志/猜到令牌的人。
 // 这里钉住"默认监听地址是 127.0.0.1"，防止谁改回 :9090 又没意识到暴露范围。

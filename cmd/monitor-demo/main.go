@@ -49,6 +49,7 @@ func main() {
 	// 访问令牌：内存存储，登录校验与「访问令牌」页共用它（后台新建的令牌当场就能登录）
 	demoToken := randomDemoToken()
 	tokens := newDemoTokens(demoToken)
+	schedules := &demoSchedules{}
 
 	// obs 报告页的假数据：临时目录里造两份带四份产物的报告（真实项目由定时/退出/`papa report` 写入 obs.report.dir）
 	reportDir := demoReportDir()
@@ -57,7 +58,10 @@ func main() {
 	}
 
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
-		VerifyToken: tokens.verify,
+		RuleAdmin:          &demoRules{},
+		RuleSchedules:      schedules.list,
+		RuleScheduleDetail: schedules.detail,
+		VerifyToken:        tokens.verify,
 		// 关停要求把令牌再输一遍（与 internal/app 的装配一致）
 		VerifyTokenValue: tokens.confirm,
 		QueueStats:       fakeQueueStats,
@@ -78,7 +82,7 @@ func main() {
 		Logger: stdLogger{},
 		Auth:   mon.Auth,
 		Tables: []oao.Table{
-			fakeTaskTable(), fakeStageTable(),
+			schedules.table(), fakeStageTable(),
 			fakeOrderTable(), // 4 个动作 → 看「更多 ▾」折叠
 			fakeOplogTable(), // 「操作日志」页，看「操作人」列
 		},
@@ -281,8 +285,8 @@ func matchRow(r map[string]any, q oao.Query) bool {
 			if v, _ := r["url"].(string); !strings.Contains(v, val) {
 				return false
 			}
-		case "stage": // OpEq
-			if v, _ := r["stage"].(string); v != val {
+		case "stage", "site": // OpEq
+			if v, _ := r[name].(string); v != val {
 				return false
 			}
 		case "status": // OpIn，"0,1,2"
@@ -365,6 +369,7 @@ func fakeTaskTable() oao.Table {
 	for i := 1; i <= 60; i++ {
 		rows = append(rows, map[string]any{
 			"id":         i,
+			"site":       []string{"blog", "shop"}[i%2],
 			"stage":      stages[i%3],
 			"url":        fmt.Sprintf("https://example.com/%s/%d", stages[i%3], i),
 			"title":      fmt.Sprintf("第 %d 条：标题可能比较长，用来验证省略号与悬停展开", i),
@@ -381,6 +386,7 @@ func fakeTaskTable() oao.Table {
 		Source: fakeRowsSource{rows: rows, delay: 150 * time.Millisecond},
 		Columns: []oao.Column{
 			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px"},
+			{Field: "site", Label: "站点"},
 			{Field: "stage", Label: "阶段"},
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}"},
 			{Field: "title", Label: "标题"},
@@ -393,6 +399,7 @@ func fakeTaskTable() oao.Table {
 			{Field: "updated_at", Label: "更新时间", Kind: oao.KindTime},
 		},
 		Filters: []oao.Filter{
+			{Field: "site", Label: "站点", Op: oao.OpEq},
 			{Field: "url", Label: "URL", Op: oao.OpLike},
 			{Field: "stage", Label: "阶段"},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber, Op: oao.OpIn,

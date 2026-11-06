@@ -109,11 +109,15 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	if err != nil {
 		return err
 	}
+	role := RuleTaskRole(t.Meta)
+	if role == "invalid" || (role == "member" && (t.Status != models.TaskStatusFailed || t.Repeatable != models.RepeatableNo)) {
+		return ErrTaskBatchProtected
+	}
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
-	res := retryScope(e.db, id, wasReprocess).
+	res := taskRetryScope(e.db, t, wasReprocess).
 		Updates(map[string]any{
 			"status":    models.TaskStatusPending,
 			"retry":     0,
@@ -208,11 +212,18 @@ func (e *Engine) UrgentTask(id uint) error {
 // 开与停都在下一轮 repeat_queue 扫描时生效（想立刻跑一次用「重投」）。
 // 这一列原先只有首次插入时写（`Task.toModel`），所以"提交后再想改"没有任何路径。
 //
-// 判断条件全在那条 UPDATE 里（影响 0 行时交给 whyRepeatRejected 冷路径回查把原因说清楚），
-// 但**开轮询之后要叫醒"它所属站点"那条轮询队列** —— 那需要行上的 site，所以在这里多查一次
-// （一条主键 SELECT，只在人工点按钮时发生）。叫本站而不是扇出所有站：每条唤醒都会让被叫到的
-// 队列跑一次整表 MIN 聚合，扇出的代价随站点数增长。
+// 开启前读取持久 Meta 识别批次成员；普通任务与控制任务的旧开关值仍在 UPDATE
+// 中原子比较（影响 0 行时由 whyRepeatRejected 回查原因）。开启后叫醒全局轮询队列。
 func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
+	if on {
+		t, err := e.loadTask(id)
+		if err != nil {
+			return err
+		}
+		if role := RuleTaskRole(t.Meta); role == "member" || role == "invalid" {
+			return ErrTaskBatchProtected
+		}
+	}
 	want, was := models.RepeatableYes, models.RepeatableNo
 	if !on {
 		want, was = models.RepeatableNo, models.RepeatableYes
@@ -246,6 +257,13 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
+	}
+	t, err := e.loadTask(id)
+	if err != nil {
+		return err
+	}
+	if role := RuleTaskRole(t.Meta); role == "member" || role == "invalid" {
+		return ErrTaskBatchProtected
 	}
 	eff := int64(seconds)
 	if eff == 0 {
@@ -335,6 +353,9 @@ func (e *Engine) DeleteTask(id uint) error {
 	t, err := e.loadTask(id) // 先取 URL/Stage，删除后就没法算去重键了
 	if err != nil {
 		return err
+	}
+	if RuleTaskRole(t.Meta) != "ordinary" {
+		return ErrTaskBatchProtected
 	}
 	if t.Status == models.TaskStatusProcessing {
 		return ErrTaskProcessing

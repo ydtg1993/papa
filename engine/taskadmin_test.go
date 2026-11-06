@@ -351,10 +351,9 @@ func TestSetTaskRepeatableHappyPath(t *testing.T) {
 					t.Fatalf("绑定参数里的整数 = %v, want %v", got, want)
 				}
 			}
-			// 判断条件全写在那条 UPDATE 里（守卫断言在上面）；这里唯一允许的 SELECT 是
-			// 「取行的 site，好叫醒它所属站点的轮询队列」—— 只读一列、不参与任何判断。
-			if read := f.readSQL(); read != "" && !strings.Contains(read, "SELECT `site` FROM `crawler_tasks`") {
-				t.Fatalf("除了取 site，开关不该先查再写，实得 SELECT：\n%s", read)
+			// 开启前读取持久 Meta 识别批次；开关旧值仍在 UPDATE 内原子比对。
+			if tc.on && !strings.Contains(f.readSQL(), "SELECT * FROM `crawler_tasks`") {
+				t.Fatal("开轮询前应读取持久任务角色")
 			}
 			// 只改标记，不投任务（开了也不立刻重跑一次）
 			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -419,7 +418,7 @@ func TestSetTaskRepeatableRejections(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
-			if sql := f.written(); !strings.Contains(sql, "WHERE id = ? AND repeatable = ?") {
+			if sql := f.written(); !errors.Is(err, ErrTaskNotFound) && !strings.Contains(sql, "WHERE id = ? AND repeatable = ?") {
 				t.Fatalf("守卫应写在语句里（被拒也不该是先查再写）：\n%s", sql)
 			}
 			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
@@ -534,7 +533,7 @@ func TestSetTaskRepeatIntervalRejections(t *testing.T) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
 			// 校验不通过的那两条：一条 SQL 都不该发
-			if errors.Is(err, ErrRepeatIntervalBad) {
+			if errors.Is(err, ErrRepeatIntervalBad) || errors.Is(err, ErrTaskNotFound) {
 				if sql := f.written(); sql != "" {
 					t.Fatalf("非法周期不该写库：\n%s", sql)
 				}

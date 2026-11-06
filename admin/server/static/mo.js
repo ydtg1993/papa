@@ -23,12 +23,13 @@
 
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
-    var MODULE_TITLES = { dashboard: 'Dashboard', queues: '队列治理', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: 'obs报告', settings: '设置' };
+    var authGeneration = 0;
+    var MODULE_TITLES = { dashboard: '运营首页', queues: '队列治理', schedules: '周期批次', rules: '规则运维', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: 'obs报告', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
-    function saveKey(k) { localStorage.setItem(KEY_STORAGE, k); }
-    function clearKey() { localStorage.removeItem(KEY_STORAGE); }
+    function saveKey(k) { authGeneration++; localStorage.setItem(KEY_STORAGE, k); }
+    function clearKey() { authGeneration++; localStorage.removeItem(KEY_STORAGE); stopPolling(); }
     // 服务端在 <html data-auth-required> 上下发「当前是否设了访问令牌」。
     // 一条都没设时后端本来就把 /api/* 当开放，前端不要弹登录（否则本地开发每次刷新闪一下）。
     function authRequired() { return document.documentElement.getAttribute('data-auth-required') === '1'; }
@@ -43,13 +44,28 @@
     function hideLogin() { document.documentElement.classList.remove('need-login'); }
     // 输密钥后除了拉数据，也要重建两个动态菜单 —— 否则首次访问输完密钥，
     // 侧边栏的表格页与自定义页都是空的，要手动刷新才出来
-    function submitKey() { saveKey(document.getElementById('key').value); startPolling(); }
+    var pendingLoginRefresh = false;
+    function submitKey() { saveKey(document.getElementById('key').value); pendingLoginRefresh = true; startPolling(); }
+    function refreshAfterLogin() {
+        if (!pendingLoginRefresh) return;
+        pendingLoginRefresh = false;
+        if (currentModule === 'schedules') loadSchedules(true);
+        if (currentModule === 'rules') loadRules();
+        if (currentModule === 'tables' && currentTable) openTable(currentTable, document.getElementById('moduleTitle').textContent);
+        if (currentModule === 'settings') { fetchSettings(); fetchLogs(); }
+        if (currentModule === 'tokens') fetchTokens();
+        if (currentModule === 'obs') fetchObsReports();
+    }
     function setStatus(ok, text) {
         document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
         document.getElementById('statusText').textContent = text;
+        if (typeof setWorkbenchConnection === 'function') setWorkbenchConnection(ok, text);
     }
 
     function switchModule(name) {
+        setNavigationOpen(false);
+        if (typeof invalidateSchedules === 'function') invalidateSchedules();
+        if (typeof invalidateRules === 'function') invalidateRules();
         currentModule = name;
         document.querySelectorAll('.module').forEach(function (m) { m.classList.remove('active'); });
         document.getElementById('mod-' + name).classList.add('active');
@@ -60,6 +76,16 @@
         if (name === 'settings') { fetchSettings(); fetchLogs(); }
         if (name === 'tokens') { fetchTokens(); }
         if (name === 'obs') { fetchObsReports(); }
+        if (name === 'schedules') { loadSchedules(true); }
+        if (name === 'rules') { loadRules(); }
+    }
+
+    function setNavigationOpen(open) {
+        document.getElementById('main-nav').classList.toggle('nav-open', open);
+        document.getElementById('nav-toggle').setAttribute('aria-expanded', String(open));
+    }
+    function toggleNavigation() {
+        setNavigationOpen(document.getElementById('nav-toggle').getAttribute('aria-expanded') !== 'true');
     }
 
     /* ============ 表格（oao 组件） ============ */
@@ -100,20 +126,25 @@
      * key → 按钮 id；按钮在表没注册时藏起来（比如没开 operation_log）。
      */
     var BUILTIN_TABLES = { operation_log: 'nav-oplog' };
+    var navRequestSeq = 0;
 
     /** 侧边栏动态菜单：表格页与自定义页**合并**，按 group 首次出现的顺序分组
      *  （与 oao 的 mount 同一约定 —— 分开渲染会让同名的组裂成两段） */
     async function renderNav() {
         var nav = document.getElementById('oao-nav');
         if (!nav) return;
+        var seq = ++navRequestSeq, epoch = authGeneration;
+        var current = function () { return seq === navRequestSeq && epoch === authGeneration; };
 
         var tables = [];
         try { tables = (await Oao.list(true)) || []; } catch (e) { tables = []; }
+        if (!current()) return;
         var pages = [];
-        var resp = await apiFetch('/api/pages');
+        var resp = await apiFetch('/api/pages', { current: current });
         if (resp) {
             try { pages = (await resp.json()).pages || []; } catch (e) { pages = []; }
         }
+        if (!current()) return;
 
         // 固定菜单项：注册了就显示（标题也以表声明为准，省得两处各写一遍），没注册就藏
         Object.keys(BUILTIN_TABLES).forEach(function (key) {
@@ -227,20 +258,30 @@
     var Dialog = (function () {
         var mask = null, elTitle = null, elBody = null, elActions = null;
         var settle = null;   // 当前 Promise 的 resolve
+        var returnFocus = null;
 
         function ensure() {
             if (mask) return;
             mask = document.createElement('div');
             mask.className = 'dlg-mask';
-            mask.innerHTML = '<div class="dlg" role="dialog" aria-modal="true">'
-                + '<h3></h3><div class="dlg-body"></div><div class="dlg-actions"></div></div>';
+            mask.innerHTML = '<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="papa-dialog-title" tabindex="-1">'
+                + '<h3 id="papa-dialog-title"></h3><div class="dlg-body"></div><div class="dlg-actions"></div></div>';
             mask.addEventListener('mousedown', function (e) { if (e.target === mask) close(null); });
             document.body.appendChild(mask);
             elTitle = mask.querySelector('h3');
             elBody = mask.querySelector('.dlg-body');
             elActions = mask.querySelector('.dlg-actions');
             document.addEventListener('keydown', function (e) {
-                if (e.key === 'Escape' && mask.classList.contains('open')) close(null);
+                if (!mask.classList.contains('open')) return;
+                if (e.key === 'Escape') { e.preventDefault(); close(null); }
+                if (e.key === 'Tab') {
+                    var targets = Array.from(mask.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter(function (el) { return el.offsetParent !== null; });
+                    var first = targets[0], last = targets[targets.length - 1];
+                    if (!first) { e.preventDefault(); mask.querySelector('.dlg').focus(); }
+                    else if (!mask.contains(document.activeElement) || (e.shiftKey && document.activeElement === first) || (!e.shiftKey && document.activeElement === last)) {
+                        e.preventDefault(); (e.shiftKey ? last : first).focus();
+                    }
+                }
             });
         }
 
@@ -249,11 +290,20 @@
             mask.classList.remove('open');
             var done = settle;
             settle = null;
+            if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+            // The opener may have been replaced by a render. A hidden dialog
+            // must not retain focus while the caller restores its new button.
+            if (mask.contains(document.activeElement)) document.activeElement.blur();
+            returnFocus = null;
             if (done) done(value);
         }
 
         function open(opts) {
             ensure();
+            // A late Trace can replace a pending confirmation. Always settle the
+            // displaced dialog so callers release their operation locks.
+            close(null);
+            returnFocus = document.activeElement;
             opts = opts || {};
             mask.querySelector('.dlg').classList.toggle('danger', !!opts.danger);
             elTitle.textContent = opts.title || '提示';
@@ -528,25 +578,35 @@
                     // 队列名是运行期才知道的，所以走 data-* + 从 dataset 取 ——
                     // 与熔断那个「恢复」按钮同一套写法：内联属性里只有固定代码，运行期值不拼进 JS 字符串
                     + '<td><button class="btn" style="margin-top:0" data-queue="' + esc(name)
-                    + '" onclick="triggerQueue(this.dataset.queue)">立即执行</button></td>'
+                    + '" onclick="triggerQueue(this.dataset.queue)"' + (queueFlights[name] ? ' disabled' : '') + '>立即执行</button></td>'
                     + '</tr>';
             }).join('')
             + '</tbody></table>';
     }
+    var queueFlights = Object.create(null);
     async function triggerQueue(name) {
         var m = queueMeta(name);
-        if (!m) return;
+        if (!m || queueFlights[name]) return;
+        queueFlights[name] = true;
         var el = document.getElementById('queue-gov-msg');
-        el.textContent = m.label + '处理中...';
-        var resp = await apiPost(m.url, {});
-        el.textContent = '';
-        if (!resp || !resp.ok) {
-            Toast.err(m.label + '处理失败');
-            return;
+        var buttons = function (disabled) {
+            document.querySelectorAll('[data-queue]').forEach(function (button) { if (button.dataset.queue === name) button.disabled = disabled; });
+        };
+        buttons(true);
+        el.textContent = m.label + '处理中（全部站点）...';
+        try {
+            var resp = await apiPost(m.url, {});
+            if (!resp || !resp.ok) return;
+            var data = await resp.json();
+            Toast.ok(m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务（全部站点）');
+            fetchData();
+        } catch (e) {
+            Toast.err('响应读取失败，操作结果尚未确认，请刷新队列状态');
+        } finally {
+            el.textContent = '';
+            delete queueFlights[name];
+            buttons(false);
         }
-        var data = await resp.json();
-        Toast.ok(m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务');
-        fetchData();
     }
     /* ============ 站点 Tab（多站点时按站点把面板分开） ============ */
     // currentSite：null = 概览（全部）；其余 = 站点键（站点是必填维度，没有"空键"那一档）。
@@ -585,7 +645,7 @@
         var el = document.getElementById('site-tabs');
         if (!el) return;
         var sites = (data && data.sites) || {};
-        var keys = Object.keys(sites).sort(); // 站点键本身就是字典序的显示名
+        var keys = buildWorkbench(data, null).rows.map(function (row) { return row.site; }).sort();
         if (keys.length === 0) { // 还没有站点快照（老引擎 / 没播种）：整排隐藏，不占位
             el.hidden = true;
             document.getElementById('site-meta').hidden = true;
@@ -593,13 +653,13 @@
         }
         if (currentSite !== null && keys.indexOf(currentSite) < 0) currentSite = null; // 站点没了回概览
         el.innerHTML = ['<button class="site-tab' + (currentSite === null ? ' active' : '') +
-            '" data-site="__all__">概览（全部）</button>'].concat(keys.map(function (k) {
+            '" data-all="true">概览（全部）</button>'].concat(keys.map(function (k) {
                 return '<button class="site-tab' + (currentSite === k ? ' active' : '') +
                     '" data-site="' + esc(k) + '">' + esc(siteLabel(k)) + '</button>';
             })).join('');
         // 与队列按钮同一套：data-* 带运行期值，内联属性里只有固定代码（站点名不拼进 JS 字符串）
         el.querySelectorAll('.site-tab').forEach(function (b) {
-            b.onclick = function () { switchSite(b.dataset.site === '__all__' ? null : b.dataset.site); };
+            b.onclick = function () { switchSite(b.dataset.all === 'true' ? null : b.dataset.site); };
         });
         el.hidden = false;
         renderSiteMeta(sites);
@@ -608,7 +668,7 @@
     function renderSiteMeta(sites) {
         var meta = document.getElementById('site-meta');
         if (!meta) return;
-        var stat = currentSite === null ? null : sites[currentSite];
+        var stat = currentSite === null || !Object.prototype.hasOwnProperty.call(sites, currentSite) ? null : sites[currentSite];
         if (!stat) { meta.hidden = true; meta.innerHTML = ''; return; }
         var parts = [
             '<b>' + esc(siteLabel(stat.key)) + '</b>',
@@ -632,6 +692,8 @@
         if (currentModule === 'tables' && currentTable) {
             Oao.render(document.getElementById('oao-view'), currentTable, tableFilterOpts());
         }
+        if (currentModule === 'schedules') loadSchedules(true);
+        if (currentModule === 'rules') loadRules();
     }
 
     var lastData = null;
@@ -639,6 +701,7 @@
     function renderAll(data) {
         lastData = data;
         renderSiteTabs(data);
+        renderWorkbench(data);
         var view = siteView(data.stages, data.queues, data.sites);
         renderSystem(data.system);
         renderDirs(data.system && data.system.dirs);
@@ -771,7 +834,7 @@
         var body = site ? { scope: site } : {};
         if (site && stage) body.stage = stage;
         var resp = await apiPost('/api/breaker/resume', body);
-        if (!resp || !resp.ok) { Toast.err('恢复失败'); return; }
+        if (!resp || !resp.ok) return;
         var data = null;
         try { data = await resp.json(); } catch (e) { /* 拿不到 body 不影响放行结果 */ }
         // resumed=false 说明本来就没闸住（比如另一个人先点了）—— 说清楚，别报个含糊的成功
@@ -832,7 +895,7 @@
         var body = { scope: site };
         if (stage) body.stage = stage;
         var resp = await apiPost('/api/breaker/pause', body);
-        if (!resp || !resp.ok) { Toast.err('暂停失败'); return; }
+        if (!resp || !resp.ok) return;
         var data = null;
         try { data = await resp.json(); } catch (e) { /* 拿不到 body 不影响暂停结果 */ }
         if (data && data.paused === false) Toast.info(stage ? '该阶段（或整站）本来就在暂停态' : '该站点本来就在暂停态');
@@ -841,43 +904,7 @@
     }
 
     /* ============ 取数 ============ */
-    async function apiFetch(url) {
-        var headers = {};
-        var key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp;
-        try { resp = await fetch(url, { headers: headers }); }
-        catch (e) { setStatus(false, '连接失败'); return null; }
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
-        if (!resp.ok) return null;
-        return resp;
-    }
-    async function apiPost(url, body) {
-        var headers = { 'Content-Type': 'application/json' };
-        var key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp;
-        try { resp = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body || {}) }); }
-        catch (e) { setStatus(false, '连接失败'); return null; }
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
-        if (!resp.ok) return null;
-        return resp;
-    }
-    async function fetchData() {
-        var key = loadKey();
-        var headers = {};
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp;
-        try { resp = await fetch('/api/monitor', { headers: headers }); }
-        catch (e) { setStatus(false, '连接失败'); return; }
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return; }
-        if (!resp.ok) { setStatus(false, 'HTTP ' + resp.status); return; }
-        var data = await resp.json();
-        hideLogin();
-        setStatus(true, '已连接');
-        document.getElementById('refreshTime').textContent = '刷新于 ' + new Date().toLocaleTimeString();
-        renderAll(data);
-    }
+    // API 与监控轮询由 requests.js 提供。
 
     /* ============ 设置 ============ */
     async function fetchSettings() {
@@ -894,7 +921,6 @@
         var resp = await apiPost('/api/settings/whitelist', { whitelist: lines });
         document.getElementById('wl-msg').textContent = resp && resp.ok ? '已保存' : '';
         if (resp && resp.ok) Toast.ok('白名单已保存');
-        else Toast.err('白名单保存失败');
     }
     /* ============ 访问令牌 ============ */
     /**
@@ -1031,22 +1057,12 @@
         fetchTokens();
     }
 
-    /**
-     * 令牌页的写操作。刻意不用 apiPost：那个"失败即 null"会吞掉服务端的话术，
-     * 而这里的失败原因要让人看见（"操作人不能为空"、"该令牌状态已变，请刷新后重试"）。
-     */
+    /** 令牌写入复用正文超时、认证代次和服务端错误提示。 */
     async function tokenWrite(url, body) {
-        var headers = { 'Content-Type': 'application/json' };
-        var key = loadKey();
-        if (key) headers['Authorization'] = 'Bearer ' + key;
-        var resp;
-        try { resp = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body || {}) }); }
-        catch (e) { Toast.err('连接失败'); return null; }
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return null; }
-        var data = {};
-        try { data = await resp.json(); } catch (e) { /* 没 body 也能报状态码 */ }
-        if (!resp.ok) { Toast.err(data.error || ('操作失败 HTTP ' + resp.status)); return null; }
-        return data;
+        var resp = await apiPost(url, body);
+        if (!resp) return null;
+        try { return await resp.json(); }
+        catch (e) { Toast.err('响应读取失败，操作结果尚未确认，请刷新后查看'); return null; }
     }
 
     /** 复制到剪贴板；明文令牌是长串随机字符，靠手抄容易错一位 */
@@ -1100,27 +1116,9 @@
         if (!token) return;
 
         document.getElementById('shutdown-msg').textContent = '正在关闭...';
-        // 不用 apiPost：它把非 2xx 一律吞成 null，而这里正需要把服务端那句"访问令牌不正确"显示出来
-        var resp;
-        try {
-            var headers = { 'Content-Type': 'application/json' };
-            var key = loadKey();
-            if (key) headers['Authorization'] = 'Bearer ' + key;
-            resp = await fetch('/api/settings/shutdown', {
-                method: 'POST', headers: headers, body: JSON.stringify({ token: token })
-            });
-        } catch (e) {
-            Toast.err('连接失败');
-            return;
-        }
-        if (resp.ok) {
-            Toast.info('已触发优雅退出');
-            return;
-        }
-        if (resp.status === 401) { clearKey(); setStatus(false, '需要密钥'); showLogin(true); return; }
-        var msg = '';
-        try { msg = (await resp.text()).trim(); } catch (e) { msg = ''; }
-        Toast.err(msg || ('退出请求失败（HTTP ' + resp.status + '）'));
+        var resp = await apiPost('/api/settings/shutdown', { token: token });
+        document.getElementById('shutdown-msg').textContent = resp ? '已触发优雅退出' : '请求未确认，请查看提示';
+        if (resp) Toast.info('已触发优雅退出');
     }
 
     /* ============ 日志 ============ */
@@ -1149,12 +1147,16 @@
     }
     async function downloadFile(url) {
         var headers = {};
-        var key = loadKey();
+        var key = loadKey(), epoch = authGeneration;
+        var current = function () { return epoch === authGeneration && key === loadKey(); };
         if (key) headers['Authorization'] = 'Bearer ' + key;
+        try {
         var resp = await fetch(url, { headers: headers });
+        if (!current()) return;
         if (resp.status === 401) { clearKey(); showLogin(true); return; }
-        if (!resp.ok) { alert('下载失败 HTTP ' + resp.status); return; }
+        if (!resp.ok) { Toast.err('下载失败 HTTP ' + resp.status); return; }
         var blob = await resp.blob();
+        if (!current()) return;
         var cd = resp.headers.get('Content-Disposition') || '';
         var name = 'logs.zip';
         var m = /filename="?([^";]+)"?/.exec(cd);
@@ -1166,6 +1168,7 @@
         a.click();
         a.remove();
         URL.revokeObjectURL(a.href);
+        } catch (e) { if (current()) Toast.err('下载失败，请检查网络后重试'); }
     }
     function viewLog(name) {
         var busy = false;
@@ -1342,24 +1345,11 @@
         },
         // 密钥失效时和其它接口保持一致：清掉旧密钥、弹登录，而不是只在表格区留一行错误
         // （返回 false 表示没换成新凭据，组件就把 401 如实抛出来）
-        onUnauthorized: function () {
-            clearKey();
-            setStatus(false, '需要密钥');
-            showLogin(true);
-            return false;
-        }
+        onUnauthorized: handleTableUnauthorized
     });
 
     // 有本地凭据或服务端根本没配置令牌 → 直接进；需要令牌且本地没凭据 → 停在登录框，
     // 等登录成功后再开始轮询/渲染菜单（避免未登录状态下每 3 秒刷一次 401）。
-    function startPolling() {
-        if (!startPolling.started) {
-            startPolling.started = true;
-            setInterval(fetchData, 3000);
-        }
-        fetchData();
-        renderNav();
-    }
     if (authRequired() && !loadKey()) {
         showLogin(false);
     } else {

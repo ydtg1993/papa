@@ -87,6 +87,102 @@ func TestRulesMigrationMySQL(t *testing.T) {
 		}
 	}
 
+	t.Run("existing_rule_schema_adds_schedule_without_data_loss", func(t *testing.T) {
+		// All tables here belong to this test. Remove only the new schedule table
+		// to reproduce an already-migrated rules database from before this feature.
+		if err := db.Migrator().DropTable(&models.RuleSchedule{}); err != nil {
+			t.Fatal(err)
+		}
+		probe := models.RuleSite{Site: "schedule-migration-probe", Generation: 7, CurrentReleaseID: "preserved-release"}
+		if err := db.Create(&probe).Error; err != nil {
+			t.Fatal(err)
+		}
+		cfg.Rules.Enabled = false
+		if err := Migrate(db, cfg); err != nil {
+			t.Fatal("disabled migration of existing rules database:", err)
+		}
+		if db.Migrator().HasTable(&models.RuleSchedule{}) {
+			t.Fatal("disabled rules created the new schedule table")
+		}
+		cfg.Rules.Enabled = true
+		if err := Migrate(db, cfg); err != nil {
+			t.Fatal("add schedule to existing rules database:", err)
+		}
+		if !db.Migrator().HasTable(&models.RuleSchedule{}) {
+			t.Fatal("explicit migration did not add the schedule table")
+		}
+		var restored models.RuleSite
+		if err := db.Where("site = ?", probe.Site).Take(&restored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if restored != probe {
+			t.Fatalf("migration changed existing rule site: %+v", restored)
+		}
+	})
+
+	// The snapshot can exceed MySQL TEXT's 64 KiB limit and the revision can
+	// exceed uint32. Repeated and subsequently disabled migrations retain both.
+	payload := `{"root":"` + strings.Repeat("x", 70*1024) + `"}`
+	schedule := models.RuleSchedule{TaskID: 91, Revision: 1<<40 + 7, PayloadSHA256: models.UrlHash(payload), PayloadJSON: payload}
+	if err := db.Create(&schedule).Error; err != nil {
+		t.Fatal("persist large schedule snapshot:", err)
+	}
+	for pass := 1; pass <= 2; pass++ {
+		if err := Migrate(db, cfg); err != nil {
+			t.Fatalf("repeat schedule migration pass %d: %v", pass, err)
+		}
+	}
+	assertSchedule := func() {
+		t.Helper()
+		var restored models.RuleSchedule
+		if err := db.Where("task_id = ?", schedule.TaskID).Take(&restored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if restored != schedule {
+			t.Fatalf("migration changed schedule snapshot: task=%d revision=%d digest=%q bytes=%d", restored.TaskID, restored.Revision, restored.PayloadSHA256, len(restored.PayloadJSON))
+		}
+	}
+	assertSchedule()
+	var scheduleColumns []struct {
+		ColumnName    string
+		DataType      string
+		ColumnType    string
+		ColumnKey     string
+		Extra         string
+		ColumnComment string
+	}
+	if err := db.Raw("SELECT COLUMN_NAME,DATA_TYPE,COLUMN_TYPE,COLUMN_KEY,EXTRA,COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='crawler_rule_schedules'").Scan(&scheduleColumns).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(scheduleColumns) != 4 {
+		t.Fatalf("schedule columns = %d, want 4", len(scheduleColumns))
+	}
+	for _, column := range scheduleColumns {
+		if column.ColumnComment == "" {
+			t.Fatalf("missing schedule SQL comment: %+v", column)
+		}
+		switch column.ColumnName {
+		case "task_id":
+			if column.ColumnKey != "PRI" || strings.Contains(column.Extra, "auto_increment") {
+				t.Fatalf("schedule must use the supplied control task ID: %+v", column)
+			}
+		case "revision":
+			if column.DataType != "bigint" || !strings.Contains(column.ColumnType, "unsigned") {
+				t.Fatalf("schedule revision must preserve uint64: %+v", column)
+			}
+		case "payload_sha256":
+			if column.ColumnType != "char(64)" {
+				t.Fatalf("unexpected schedule digest type: %+v", column)
+			}
+		case "payload_json":
+			if column.DataType != "longtext" {
+				t.Fatalf("unexpected schedule payload type: %+v", column)
+			}
+		default:
+			t.Fatalf("unexpected schedule column: %+v", column)
+		}
+	}
+
 	t.Run("existing_sample_metadata_text_is_widened_without_data_loss", func(t *testing.T) {
 		// Simulate a schema created by the earlier third-batch implementation.
 		// This dedicated database is empty at test entry and cleaned at exit.
@@ -126,4 +222,5 @@ func TestRulesMigrationMySQL(t *testing.T) {
 			t.Fatalf("disabling rules deleted %s", model.Name)
 		}
 	}
+	assertSchedule()
 }
