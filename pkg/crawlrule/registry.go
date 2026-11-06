@@ -1,6 +1,13 @@
 package crawlrule
 
-import "sync"
+import (
+	"errors"
+	"sync"
+)
+
+// ErrUnverifiedRule means the registered version has never passed activation
+// fixtures in this registry.
+var ErrUnverifiedRule = errors.New("crawlrule: version has not passed activation fixtures")
 
 // Registry stores immutable compiled versions and an activation history per ID.
 // Its zero value is ready for use. State is in-memory and local to this process;
@@ -11,6 +18,7 @@ type Registry struct {
 	mu       sync.RWMutex
 	versions map[string]map[string]*Compiled
 	history  map[string][]string
+	verified map[string]map[string]bool
 }
 
 func NewRegistry() *Registry { return &Registry{} }
@@ -41,13 +49,31 @@ func (r *Registry) Register(rule Rule) error {
 }
 
 // Get returns an immutable compiled version, including versions not yet verified.
-// Use Active when evaluating production data. Call Rule for an editable copy.
+// Use Active or Verified when evaluating production data. Call Rule for an
+// editable copy.
 func (r *Registry) Get(id, version string) (*Compiled, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	c := r.versions[id][version]
 	if c == nil {
 		return nil, ErrVersionNotFound
+	}
+	return c, nil
+}
+
+// Verified returns a version that has passed a successful Activate call. Unlike
+// Active, it accepts a pinned version and remains available after rollback or a
+// later failed activation, so already submitted tasks keep their verified rule.
+// Direct calls to Compiled.Verify do not publish a version to this registry.
+func (r *Registry) Verified(id, version string) (*Compiled, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	c := r.versions[id][version]
+	if c == nil {
+		return nil, ErrVersionNotFound
+	}
+	if !r.verified[id][version] {
+		return nil, ErrUnverifiedRule
 	}
 	return c, nil
 }
@@ -76,6 +102,13 @@ func (r *Registry) Activate(id, version string, fixtures []Fixture) (FixtureRepo
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.verified == nil {
+		r.verified = make(map[string]map[string]bool)
+	}
+	if r.verified[id] == nil {
+		r.verified[id] = make(map[string]bool)
+	}
+	r.verified[id][version] = true
 	history := r.history[id]
 	if len(history) == 0 || history[len(history)-1] != version {
 		r.history[id] = append(history, version)

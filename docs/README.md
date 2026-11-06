@@ -46,6 +46,7 @@ cd mycrawler && go mod tidy
 | 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
 | 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
 | 编写 HTML/JSON 规则并用样本验收、激活与回滚 | [CRAWL_RULES.md](./CRAWL_RULES.md) | 声明式离线提取、校验与版本注册 |
+| 把规则接成列表、详情与 URL/POST 游标分页采集 | [RULE_FETCHER.md](./RULE_FETCHER.md) | 通用执行器、版本固定、账号接线、幂等保存和完整示例 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
 | 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |

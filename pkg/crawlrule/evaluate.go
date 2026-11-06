@@ -15,11 +15,31 @@ import (
 // Result owns its records. Truncated means the row budget was exceeded; the
 // validation report covers retained records only. A body over budget is rejected
 // whole, without parsing a prefix. Validation.Truncated separately caps issues.
+// EvidenceTruncated only reports omitted provenance entries; all retained
+// records still undergo every configured transform and validation.
 type Result struct {
-	Records    []map[string]any `json:"records"`
-	NextURL    string           `json:"next_url,omitempty"`
-	Validation extract.Report   `json:"validation"`
-	Truncated  bool             `json:"truncated"`
+	Records           []map[string]any `json:"records"`
+	Evidence          []FieldEvidence  `json:"evidence,omitempty"`
+	NextURL           string           `json:"next_url,omitempty"`
+	NextCursor        string           `json:"next_cursor,omitempty"`
+	Validation        extract.Report   `json:"validation"`
+	Truncated         bool             `json:"truncated"`
+	EvidenceTruncated bool             `json:"evidence_truncated"`
+}
+
+// FieldEvidence identifies each retained record's configured field and source.
+// Record is zero-based. Present distinguishes missing fields from explicit null.
+// Steps contains successfully applied transforms; null and missing fields have
+// no steps. Evidence deliberately excludes field values and response bodies.
+type FieldEvidence struct {
+	Record    int      `json:"record"`
+	Field     string   `json:"field"`
+	Selector  string   `json:"selector,omitempty"`
+	Attribute string   `json:"attribute,omitempty"`
+	Pointer   string   `json:"pointer,omitempty"`
+	Present   bool     `json:"present"`
+	SourceURL string   `json:"source_url"`
+	Steps     []string `json:"steps,omitempty"`
 }
 
 // Evaluate processes a caller-owned, complete offline response. Non-2xx status,
@@ -34,23 +54,46 @@ func (c *Compiled) Evaluate(response *htmlfetch.Response) (Result, error) {
 	if response == nil || response.URL == nil {
 		return out, fmt.Errorf("crawlrule: response and final URL required")
 	}
-	base, err := discovery.CanonicalURL(response.URL.String(), "")
-	if err != nil {
-		return out, fmt.Errorf("crawlrule: response URL must be absolute HTTP(S)")
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return out, fmt.Errorf("crawlrule: response status %d is not successful", response.StatusCode)
 	}
-	if len(response.Body) > c.rule.MaxBodyBytes {
+	return c.evaluate(response.URL.String(), response.Body)
+}
+
+// EvaluateRendered evaluates HTML obtained from an already rendered browser
+// page. rawURL must be the page's final HTTP(S) URL. The HTTP status is unknown:
+// this method neither fabricates a successful status nor checks it. Callers with
+// an HTTP response should use Evaluate for its status check. JSON rules are not
+// supported because a rendered DOM cannot preserve the original JSON response.
+func (c *Compiled) EvaluateRendered(rawURL string, body []byte) (Result, error) {
+	if c == nil || c.validator == nil {
+		return Result{}, fmt.Errorf("crawlrule: compiled rule required")
+	}
+	if c.rule.Format != "html" {
+		return Result{}, fmt.Errorf("crawlrule: rendered evaluation requires HTML format")
+	}
+	return c.evaluate(rawURL, body)
+}
+
+func (c *Compiled) evaluate(rawURL string, body []byte) (Result, error) {
+	var out Result
+	base, err := discovery.CanonicalURL(rawURL, "")
+	if err != nil {
+		return out, fmt.Errorf("crawlrule: response URL must be absolute HTTP(S) without userinfo")
+	}
+	if len(body) > c.rule.MaxBodyBytes {
 		return out, ErrBodyTooLarge
 	}
 	var next string
 	if c.rule.Format == "html" {
-		next, err = c.evaluateHTML(response.Body, &out)
+		next, err = c.evaluateHTML(body, &out)
 	} else {
-		next, err = c.evaluateJSON(response.Body, &out)
+		next, err = c.evaluateJSON(body, &out)
 	}
 	if err != nil {
+		return out, err
+	}
+	if err := c.transformRecords(base, &out); err != nil {
 		return out, err
 	}
 	out.Validation = c.validator.Validate(out.Records, c.rule.MaxIssues)
@@ -65,7 +108,12 @@ func (c *Compiled) Evaluate(response *htmlfetch.Response) (Result, error) {
 			return out, fmt.Errorf("%w: a row matched no configured fields", ErrNoRecords)
 		}
 	}
-	if strings.TrimSpace(next) != "" {
+	if c.rule.Next != nil && c.rule.Next.Mode == "cursor" {
+		if len(next) > MaxNextCursorBytes {
+			return out, ErrNextCursor
+		}
+		out.NextCursor = next
+	} else if strings.TrimSpace(next) != "" {
 		out.NextURL, err = discovery.CanonicalURL(base, next)
 		if err != nil || out.NextURL == base || (!c.rule.Next.AllowExternal && !discovery.SameOrigin(base, out.NextURL)) {
 			out.NextURL = ""
@@ -73,6 +121,45 @@ func (c *Compiled) Evaluate(response *htmlfetch.Response) (Result, error) {
 		}
 	}
 	return out, nil
+}
+
+func (c *Compiled) transformRecords(base string, out *Result) error {
+	for row, record := range out.Records {
+		for _, field := range c.fields {
+			value, present := record[field.field.Name]
+			collectEvidence := len(out.Evidence) < c.rule.MaxEvidence
+			var evidence FieldEvidence
+			if collectEvidence {
+				evidence = FieldEvidence{
+					Record: row, Field: field.field.Name, Selector: field.field.Selector,
+					Attribute: field.field.Attribute, Pointer: field.field.Pointer,
+					Present: present, SourceURL: base,
+				}
+			} else {
+				out.EvidenceTruncated = true
+			}
+			if present && value != nil {
+				for step, transform := range field.field.Transforms {
+					transformed, err := transformValue(value, transform, base)
+					if err != nil {
+						if collectEvidence {
+							out.Evidence = append(out.Evidence, evidence)
+						}
+						return fmt.Errorf("%w: row %d field %q step %d (%s): %w", ErrTransform, row, field.field.Name, step, transform.Op, err)
+					}
+					value = transformed
+					if collectEvidence {
+						evidence.Steps = append(evidence.Steps, transform.Op)
+					}
+				}
+				record[field.field.Name] = value
+			}
+			if collectEvidence {
+				out.Evidence = append(out.Evidence, evidence)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Compiled) evaluateHTML(body []byte, out *Result) (string, error) {
@@ -85,7 +172,7 @@ func (c *Compiled) evaluateHTML(body []byte, out *Result) (string, error) {
 			out.Truncated = true
 			return false
 		}
-		record := make(map[string]any, len(c.fields))
+		record := make(map[string]any)
 		for _, field := range c.fields {
 			node := row
 			if field.selector != nil {
@@ -134,7 +221,7 @@ func (c *Compiled) evaluateJSON(body []byte, out *Result) (string, error) {
 		rows = rows[:c.rule.MaxRows]
 	}
 	for _, row := range rows {
-		record := make(map[string]any, len(c.fields))
+		record := make(map[string]any)
 		for _, field := range c.fields {
 			if v, found := lookup(row, field.tokens); found {
 				record[field.field.Name] = v
@@ -151,6 +238,9 @@ func (c *Compiled) evaluateJSON(body []byte, out *Result) (string, error) {
 	}
 	link, ok := value.(string)
 	if !ok {
+		if c.rule.Next.Mode == "cursor" {
+			return "", fmt.Errorf("%w: JSON next pointer must select a string or null", ErrNextCursor)
+		}
 		return "", fmt.Errorf("%w: JSON next pointer must select a string or null", ErrNextURL)
 	}
 	return link, nil

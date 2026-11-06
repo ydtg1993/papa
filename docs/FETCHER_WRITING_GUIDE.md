@@ -26,6 +26,8 @@ papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetch
 
 ### 1.1 Fetcher 接口
 
+已经有通过样本验收的 HTML/JSON 规则时，可直接使用 `papa.NewRuleFetcher`；它实现同一个 Fetcher 接口，复用网络、账号和队列，支持列表到详情及 URL/POST 游标分页。入口须用 `NewTask` 固定规则版本，Save 必须幂等，详见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+
 框架对外是一个门面包 `github.com/ydtg1993/papa/v3`，fetcher 只需 import 它：
 
 ```go
@@ -628,6 +630,10 @@ if err := offline.DecodeJSON(&result); err != nil { return err }
 ### 3.6 网络录制、内容发现与质量治理
 
 多响应录制使用 `Engine.RecordNetwork`；增量 GET 使用 `Engine.FetchIncremental`。`pkg/discovery` 提供链接/订阅源/robots 解析与分页停止判定，`pkg/extract` 提供字段和批次质量校验。完整用法、预算、状态语义与边界见 [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md)。
+
+### 3.7 规则执行器
+
+RuleFetcher 把 `crawlrule` 提取/转换/校验接到实际任务流程，支持 HTTP HTML/JSON 与隔离 Rod，设置 AccountID 后显式复用账号运行时。保存和后续任务提交分开执行；任务重试会重新保存，因此回调必须按业务键 upsert。示例、分页与子任务预算、根级 cursor、来源证据、版本恢复和登录态边界见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
@@ -1236,6 +1242,8 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 ---
 
 ## 9. API 速查
+
+规则流程：`NewRuleFetcher` / `RuleFetcherConfig` / `RuleRef` / `RuleRequest` / `RuleLink` / `RulePage`；`NewTask` 建固定版本入口，`FetchHandler` 供引擎调用，`RunHTTP` 用于无数据库的匿名 HTTP 内嵌队列。纯规则另有 `Compiled.EvaluateRendered`、字段 `Transforms`、`Registry.Verified`，见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 
 通用 API：`FetchHTTP` / `HTTPRequest` / `HTTPResponse.DecodeJSON`；会话：`NewHTTPSession` / `WithHTTPSession`；浏览器响应：`CaptureResponse` / `browser.CopyCookiesToSession`。用法和边界见 §3.3–3.4。
 

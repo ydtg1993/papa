@@ -19,19 +19,25 @@ const (
 	DefaultMaxRows      = 1000
 	DefaultMaxBodyBytes = 4 << 20
 	DefaultMaxIssues    = 100
+	DefaultMaxEvidence  = 10000
 	// Hard limits also apply to explicitly configured budgets.
-	MaxRowsLimit      = 100000
-	MaxBodyBytesLimit = 64 << 20
-	MaxIssuesLimit    = 10000
-	MaxFieldsLimit    = 256
-	MaxRuleBytes      = 1 << 20
+	MaxRowsLimit       = 100000
+	MaxBodyBytesLimit  = 64 << 20
+	MaxIssuesLimit     = 10000
+	MaxEvidenceLimit   = 100000
+	MaxFieldsLimit     = 256
+	MaxTransformsLimit = 16
+	MaxRuleBytes       = 1 << 20
+	MaxNextCursorBytes = 16 << 10
 )
 
 var (
 	ErrNoRecords       = errors.New("crawlrule: no records extracted")
 	ErrValidation      = errors.New("crawlrule: field validation failed")
+	ErrTransform       = errors.New("crawlrule: field transform failed")
 	ErrBodyTooLarge    = errors.New("crawlrule: response exceeds body budget")
 	ErrNextURL         = errors.New("crawlrule: invalid or out-of-scope next URL")
+	ErrNextCursor      = errors.New("crawlrule: invalid or oversized next cursor")
 	ErrVersionConflict = errors.New("crawlrule: version already registered")
 	ErrVersionNotFound = errors.New("crawlrule: version not found")
 	ErrNoFixtures      = errors.New("crawlrule: explicit fixtures required")
@@ -53,21 +59,25 @@ type Rule struct {
 	MaxRows       int     `json:"max_rows,omitempty"`
 	MaxBodyBytes  int     `json:"max_body_bytes,omitempty"`
 	MaxIssues     int     `json:"max_issues,omitempty"`
+	MaxEvidence   int     `json:"max_evidence,omitempty"`
 }
 
 // Field produces one top-level record key. HTML selects the first matching
 // descendant (or the row itself for an empty selector), reads text unless
-// Attribute is set, and trims surrounding whitespace. JSON preserves types.
+// Attribute is set, and trims surrounding whitespace. JSON extraction preserves
+// types. Transforms then run in order, before validation, for either format.
 type Field struct {
-	Name       string     `json:"name"`
-	Selector   string     `json:"selector,omitempty"`
-	Attribute  string     `json:"attribute,omitempty"`
-	Pointer    string     `json:"pointer,omitempty"`
-	Validation Validation `json:"validation,omitempty"`
+	Name       string      `json:"name"`
+	Selector   string      `json:"selector,omitempty"`
+	Attribute  string      `json:"attribute,omitempty"`
+	Pointer    string      `json:"pointer,omitempty"`
+	Validation Validation  `json:"validation,omitempty"`
+	Transforms []Transform `json:"transforms,omitempty"`
 }
 
 // Validation applies pkg/extract.Validator to this field's output key.
-// Kind defaults to string for HTML and any for JSON. Required checks presence;
+// Kind defaults to the last transform's output kind, or string for untransformed
+// HTML and any for untransformed JSON. Required checks presence;
 // use MinLength: 1 as well when a required string must not be empty.
 type Validation struct {
 	Kind      string `json:"kind,omitempty"`
@@ -78,11 +88,15 @@ type Validation struct {
 	Unique    bool   `json:"unique,omitempty"`
 }
 
-// Next selects a link from the whole document, not from an extracted row.
+// Next selects pagination from the whole document, not from an extracted row.
+// Mode defaults to url. Cursor mode is JSON-only and selects an opaque string
+// of at most MaxNextCursorBytes bytes; it forbids AllowExternal. Missing, null or
+// empty cursors mean no next page; nonempty cursors retain whitespace verbatim.
 // HTML requires Selector and defaults Attribute to href. JSON uses Pointer.
 // Missing, null or blank links mean no next page. The final response URL is the
 // resolution base; HTML <base> elements are deliberately ignored.
 type Next struct {
+	Mode          string `json:"mode,omitempty"` // url or cursor
 	Selector      string `json:"selector,omitempty"`
 	Attribute     string `json:"attribute,omitempty"`
 	Pointer       string `json:"pointer,omitempty"`
@@ -109,6 +123,9 @@ type Compiled struct {
 
 func cloneRule(rule Rule) Rule {
 	rule.Fields = append([]Field(nil), rule.Fields...)
+	for i := range rule.Fields {
+		rule.Fields[i].Transforms = append([]Transform(nil), rule.Fields[i].Transforms...)
+	}
 	if rule.Next != nil {
 		next := *rule.Next
 		rule.Next = &next
@@ -163,6 +180,7 @@ func Compile(rule Rule) (*Compiled, error) {
 		{"max_rows", &rule.MaxRows, DefaultMaxRows, MaxRowsLimit},
 		{"max_body_bytes", &rule.MaxBodyBytes, DefaultMaxBodyBytes, MaxBodyBytesLimit},
 		{"max_issues", &rule.MaxIssues, DefaultMaxIssues, MaxIssuesLimit},
+		{"max_evidence", &rule.MaxEvidence, DefaultMaxEvidence, MaxEvidenceLimit},
 	} {
 		if *budget.ptr < 0 || *budget.ptr > budget.max {
 			return nil, fmt.Errorf("crawlrule: %s outside supported budget", budget.name)
@@ -191,10 +209,17 @@ func Compile(rule Rule) (*Compiled, error) {
 			return nil, fmt.Errorf("crawlrule: field names must be unique, trimmed, and 1..128 bytes")
 		}
 		seen[field.Name] = true
+		kind, err := compileTransforms(field.Transforms)
+		if err != nil {
+			return nil, fmt.Errorf("crawlrule: field %q: %w", field.Name, err)
+		}
 		if field.Validation.Kind == "" {
 			field.Validation.Kind = "any"
 			if rule.Format == "html" {
 				field.Validation.Kind = "string"
+			}
+			if kind != "" {
+				field.Validation.Kind = kind
 			}
 		}
 		cf := compiledField{field: field}
@@ -224,6 +249,15 @@ func Compile(rule Rule) (*Compiled, error) {
 		})
 	}
 	if rule.Next != nil {
+		if rule.Next.Mode == "" {
+			rule.Next.Mode = "url"
+		}
+		if rule.Next.Mode != "url" && rule.Next.Mode != "cursor" {
+			return nil, fmt.Errorf("crawlrule: unsupported next mode %q", rule.Next.Mode)
+		}
+		if rule.Next.Mode == "cursor" && (rule.Format != "json" || rule.Next.AllowExternal) {
+			return nil, fmt.Errorf("crawlrule: cursor next requires JSON format and forbids allow_external")
+		}
 		if rule.Format == "html" {
 			if rule.Next.Pointer != "" || strings.TrimSpace(rule.Next.Selector) == "" {
 				return nil, fmt.Errorf("crawlrule: HTML next requires selector and forbids pointer")

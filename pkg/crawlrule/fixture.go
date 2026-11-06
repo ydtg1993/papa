@@ -20,13 +20,14 @@ type Fixture struct {
 }
 
 // Expectations requires a positive exact RowCount and at least one field value.
-// NextURL is compared exactly (empty explicitly expects no next page).
+// NextURL and NextCursor are compared exactly (empty explicitly expects none).
 // Truncated defaults to false, so silently partial results cannot be activated.
 type Expectations struct {
-	RowCount  int
-	Fields    []FieldExpectation
-	NextURL   string
-	Truncated bool
+	RowCount   int
+	Fields     []FieldExpectation
+	NextURL    string
+	NextCursor string
+	Truncated  bool
 }
 
 // FieldExpectation uses a zero-based row index and a JSON Pointer into the
@@ -83,6 +84,9 @@ func (c *Compiled) Verify(fixtures []Fixture) (FixtureReport, error) {
 			}
 			if out.NextURL != fixture.Expect.NextURL {
 				fail("next URL mismatch")
+			}
+			if out.NextCursor != fixture.Expect.NextCursor {
+				fail("next cursor mismatch")
 			}
 			if out.Truncated != fixture.Expect.Truncated {
 				fail("row truncation mismatch")

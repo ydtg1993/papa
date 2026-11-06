@@ -134,6 +134,8 @@ return engine.SubmitTask(&papa.Task{
 
 ### 4.3 写入必须幂等
 
+使用 RuleFetcher 时，同一个 `Save(ctx, task, RulePage)` 可能在保存成功、子任务提交失败后再次执行；请按业务唯一键 upsert，并按需要保存 Rule、SourceURL、BodySHA256 和 Result.Evidence。校验和子任务规划先完成，Save 成功后才开始提交详情/下一页；业务库与队列不构成跨库事务。详见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+
 任务会被重投、轮询会重跑、后台会「重投 / 加急」——**同一个 handler 可能对同一份数据跑好几次**。所以：
 
 - 一律 `Upsert`（或带唯一键的 INSERT），不要裸 `Create`；

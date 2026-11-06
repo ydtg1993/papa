@@ -77,7 +77,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 ## 6. 包结构（改代码前先看这个）
 
 ```
-papa.go · task.go · errors.go   门面：全是 type/var 别名，没有实现
+papa.go · task.go · errors.go · rulefetcher.go   门面：全是 type/var 别名，没有实现
 core/                           零依赖叶子包：跨包流动的纯值 + 不依赖任何内部包的纯函数
                                 （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定、
                                 页面身份与任务幂等键 identity.go、站点地址回钉 siteurl.go）
@@ -101,6 +101,10 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   record.go    有界网络录制门面（仅摘要 trace）
   http.go      通用 HTTP/API、增量与浏览器响应捕获门面（只记录摘要 trace）
   account.go   显式账号管理器接线、认证 HTTP/HTML/浏览器和无凭据状态快照
+  rulefetcher_types.go          规则流程配置、固定版本引用和保存结果契约
+  rulefetcher.go                通用 Fetcher、校验后保存、详情与分页、受限子任务规划
+  rulefetcher_tasks.go          固定版本/账号、请求身份、持久化分页检查点与来源范围
+  rulefetcher_source.go         HTTP/账号/Rod 来源适配、失败分类与安全错误
   capture.go   浏览器网络请求捕获的引擎层包装（trace 步骤 + 归档登记）
   downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
@@ -137,13 +141,14 @@ pkg/                             可独立复用的件
   htmlfetch/incremental.go       条件 GET、304 与内容指纹
   htmlfetch/session_state.go     完整 Cookie 属性追踪、版本化快照与受限恢复
   account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
-  crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON 执行；fixture.go 样本验收；registry.go 激活与回滚
+  crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON/DOM 与受限证据；transform.go 确定性转换；fixture.go 样本/根级游标验收；registry.go 激活、Verified 与回滚
   loggers/ notify/ middleware/{proxy,m3u8,filedown}
   middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染
 models/                          框架自带的表结构
+examples/rulecrawl/              main.go 本地 HTML / JSON POST 游标完整流程；main_test.go 示例验收；README.md 生产接线
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
 ```
 
