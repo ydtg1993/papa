@@ -74,6 +74,12 @@ db:
   # SQL 日志级别：silent / error / warn / info；留空按 app.env 推（dev=info，其它=warn 且隐去参数值）。
   # log_level: "info"
 
+# 可选的持久规则仓库：MySQL 元数据与长期文件样本。开关开启后先运行 papa migrate。
+# 普通启动只检查表，不自动迁移；宿主用 rules.sample_dir 创建 rulestore 样本库。
+rules:
+  enabled: false
+  sample_dir: "./rule-samples" # enabled=true 时必填；独立于短期 crawler.archive，不自动清理
+
 # 日志
 log:
   dir: "./logs"

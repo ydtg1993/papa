@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -58,13 +59,48 @@ func (f *RuleFetcher) allowedURL(raw string) (string, error) {
 }
 
 func (f *RuleFetcher) NewTask(request RuleRequest, meta map[string]string) (*Task, error) {
+	return f.NewTaskContext(context.Background(), request, meta)
+}
+
+// NewTaskContext pins the current publication in one read before constructing a
+// task. Use a bounded context when Catalog accesses a database. Publishing later
+// does not rebind this task or any children it creates.
+func (f *RuleFetcher) NewTaskContext(ctx context.Context, request RuleRequest, meta map[string]string) (*Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for key := range meta {
 		if ruleReserved(key) {
 			return nil, fmt.Errorf("rule task: reserved metadata key")
 		}
 	}
+	bindings := f.config.Bindings
+	if f.config.Catalog != nil {
+		snapshot, err := f.config.Catalog.Snapshot(ctx, f.config.Site)
+		if err != nil {
+			return nil, err
+		}
+		if snapshot.Site != f.config.Site || snapshot.ID == "" || len(snapshot.ID) > 128 || snapshot.Generation == 0 {
+			return nil, fmt.Errorf("rule task: invalid catalog publication")
+		}
+		if len(snapshot.Bindings) == 0 || len(snapshot.Bindings) > 32 {
+			return nil, fmt.Errorf("rule task: catalog binding count outside budget")
+		}
+		bindings = make(map[string]RuleRef, len(snapshot.Bindings))
+		for stage, ref := range snapshot.Bindings {
+			bindings[stage] = RuleRef{ID: ref.ID, Version: ref.Version}
+		}
+		if err := f.checkCatalogBindings(ctx, bindings); err != nil {
+			return nil, err
+		}
+		meta = maps.Clone(meta)
+		if meta == nil {
+			meta = map[string]string{}
+		}
+		meta[ruleReleaseMeta] = ruleJSON(ruleReleaseIdentity{ID: snapshot.ID, Generation: snapshot.Generation})
+	}
 	checkpoint := ruleCheckpoint{MaxPages: f.config.MaxPages, MaxItems: f.config.MaxItems}
-	return f.makeTask(f.config.Stage, request, meta, f.config.Bindings, f.config.AccountID, checkpoint)
+	return f.makeTask(f.config.Stage, request, meta, bindings, f.config.AccountID, checkpoint)
 }
 
 func (f *RuleFetcher) makeTask(stage string, request RuleRequest, meta map[string]string, bindings map[string]RuleRef, account string, checkpoint ruleCheckpoint) (*Task, error) {
@@ -80,7 +116,13 @@ func (f *RuleFetcher) makeTask(stage string, request RuleRequest, meta map[strin
 	if !ok {
 		return nil, fmt.Errorf("rule task: target stage has no pinned rule")
 	}
-	if _, err := f.config.Registry.Verified(ref.ID, ref.Version); err != nil {
+	if f.config.Registry != nil {
+		if _, err := f.config.Registry.Verified(ref.ID, ref.Version); err != nil {
+			return nil, err
+		}
+	}
+	releaseText := meta[ruleReleaseMeta]
+	if _, err := decodeRuleRelease(releaseText); err != nil {
 		return nil, err
 	}
 	values := maps.Clone(meta)
@@ -94,6 +136,9 @@ func (f *RuleFetcher) makeTask(stage string, request RuleRequest, meta map[strin
 	}
 	values["rule_id"], values["rule_version"] = ref.ID, ref.Version
 	values[ruleBindingsMeta], values[ruleRequestMeta], values[ruleAccountMeta] = ruleJSON(bindings), ruleJSON(request), account
+	if releaseText != "" {
+		values[ruleReleaseMeta] = releaseText
+	}
 	// The fragment is a queue identity only; HTTP and Rod always use request.URL.
 	// Existing database URL uniqueness therefore also distinguishes POST cursors,
 	// account partitions and versions, without changing ordinary Task semantics.
@@ -129,7 +174,12 @@ func (f *RuleFetcher) taskState(task *Task) (RuleRequest, map[string]RuleRef, ru
 		return fail()
 	}
 	for stage, ref := range bindings {
-		if stage == "" || ref.ID == "" || ref.Version == "" {
+		if stage == "" || ref.ID == "" || ref.Version == "" || len(stage) > 128 || len(ref.ID) > 128 || len(ref.Version) > 128 {
+			return fail()
+		}
+	}
+	for _, link := range f.config.Links {
+		if _, exists := bindings[link.Stage]; !exists {
 			return fail()
 		}
 	}

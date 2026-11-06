@@ -42,11 +42,12 @@ type Trace struct {
 	taskID  int
 	attempt int
 
-	mu      sync.Mutex
-	steps   []models.TaskTrace
-	lastAt  time.Time
-	succeed bool // 本次尝试的结局；只有 handler 返回 nil 才置 true
-	done    bool // finish 幂等标记
+	mu           sync.Mutex
+	steps        []models.TaskTrace
+	lastAt       time.Time
+	succeed      bool         // 本次尝试的结局；只有 handler 返回 nil 才置 true
+	done         bool         // finish 幂等标记
+	referenceSeq map[int]bool // small framework-owned evidence references survive success
 }
 
 // newTrace 构造一次尝试的记录器。
@@ -184,7 +185,7 @@ func (t *Trace) flush() []models.TaskTrace {
 			// 而这条信息没有第二次机会 —— 下一个成功的尝试里它照样只是 warn，不会变成一次
 			// 失败的尝试来把 data 带上（剥掉它等于把 warn 的 payload 永远丢掉）。
 			// 量不成问题：warn 按定义是异常，不是每步都有。
-			if records[i].Status == models.TraceWarn {
+			if records[i].Status == models.TraceWarn || t.referenceSeq[records[i].Seq] {
 				continue
 			}
 			records[i].Data = nil

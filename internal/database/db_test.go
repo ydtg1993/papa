@@ -63,7 +63,7 @@ func TestParseSQLLogLevel(t *testing.T) {
 	}
 }
 
-// 框架自有表的清单：两张总是建，另两张跟着开关走。
+// 框架自有表的清单：三张总是建，其它跟着开关走。
 // 这份清单同时喂给 App.Migrate()（脚手架的 `make migrate`）和 CLI 的 `papa migrate` —— 它错了两边一起错。
 func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	names := func(cfg *config.Config) []string {
@@ -91,6 +91,15 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_task_trace",
 	}) {
 		t.Fatalf("两个开关都开后的清单 = %v", got)
+	}
+
+	c.Rules.Enabled = true
+	if got := names(c); !reflect.DeepEqual(got, []string{
+		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_task_trace",
+		"crawler_rule_versions", "crawler_rule_samples", "crawler_rule_sample_sets",
+		"crawler_rule_verifications", "crawler_rule_releases", "crawler_rule_sites",
+	}) {
+		t.Fatalf("启用规则仓库后的清单 = %v", got)
 	}
 
 	// 清单里的名字是给人看的提示（`papa migrate` 会打印它），必须和模型的实际表名一致；

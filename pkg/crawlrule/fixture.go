@@ -16,6 +16,9 @@ import (
 type Fixture struct {
 	Name     string
 	Response *htmlfetch.Response
+	// Rendered selects HTML DOM verification. Its Response must have status 0,
+	// because a rendered snapshot does not establish an HTTP success status.
+	Rendered bool
 	Expect   Expectations
 }
 
@@ -74,7 +77,17 @@ func (c *Compiled) Verify(fixtures []Fixture) (FixtureReport, error) {
 		if len(fixture.Expect.Fields) == 0 {
 			fail("at least one expected field value required")
 		}
-		out, err := c.Evaluate(fixture.Response)
+		var out Result
+		var err error
+		if fixture.Rendered {
+			if fixture.Response == nil || fixture.Response.URL == nil || fixture.Response.StatusCode != 0 {
+				err = fmt.Errorf("crawlrule: rendered fixture requires URL and unknown HTTP status")
+			} else {
+				out, err = c.EvaluateRendered(fixture.Response.URL.String(), fixture.Response.Body)
+			}
+		} else {
+			out, err = c.Evaluate(fixture.Response)
+		}
 		result.Rows, result.InvalidRows, result.Truncated = len(out.Records), out.Validation.InvalidRows, out.Truncated
 		if err != nil {
 			fail("evaluation failed: " + err.Error())

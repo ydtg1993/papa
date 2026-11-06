@@ -195,6 +195,7 @@ func frameworkColumns(t *testing.T) map[string]bool {
 	cfg := &config.Config{}
 	cfg.Server.OperationLog = true // 把两个开关都打开，五张表全算进来
 	cfg.Crawler.Trace.Enabled = true
+	cfg.Rules.Enabled = true
 	out := map[string]bool{}
 	cache := &sync.Map{}
 	for _, m := range database.FrameworkModels(cfg) {

@@ -7,10 +7,11 @@
 
 ## 0. 一句话
 
-框架只管**调度状态**，业务数据**自己建表、自己写**：
+采集结果由业务**自己建表、自己写**；框架保存调度状态，并可选保存规则发布元数据：
 
 - `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
 - 抓到的内容要落库，就在项目的 `models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
+- 启用持久规则时，`rules.enabled` 将 6 张规则仓库表纳入显式迁移；这些表保存规则、样本元信息、验收、发布历史和站点指针，不代替业务结果表。样本正文仍在独立文件目录，见 [RULE_STORE.md](./RULE_STORE.md)。
 
 > **升级提醒**：v3.3.2 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
 > `SaveResult` / `SaveContent` / `GetResult` 三个 API，**已全部删除**。迁移步骤见 §6。
@@ -27,6 +28,22 @@
 | 形状 | 固定的几个列 | 一类数据一张表，字段你定 |
 
 把它们分开的好处很实在：业务表能建唯一键、外键、按业务维度建索引，后台能单独给它开一张表格页；而任务行被重投或清理时，业务数据不会跟着遭殃。
+
+### 可选规则元数据与样本
+
+| 数据 | 保存位置 | 生命周期 |
+| --- | --- | --- |
+| 不可变规则版本 | `crawler_rule_versions` | 相同 ID/版本不可覆盖，曾发布版本保留供固定任务恢复 |
+| 样本元信息与固定预期 | `crawler_rule_samples` / `crawler_rule_sample_sets` | MySQL 存摘要、来源与预期，不存正文 |
+| 验收记录 | `crawler_rule_verifications` | 成功、失败均保留，绑定规则/集合摘要与验收器版本 |
+| 发布历史与当前指针 | `crawler_rule_releases` / `crawler_rule_sites` | 完整站点绑定和逐阶段验收报告 ID 事务提交，generation 检查竞争，回滚增加历史 |
+| 脱敏样本正文 | `rules.sample_dir` 下的摘要文件 | 独立长期保留，没有自动 GC，不随 archive 保留期删除 |
+
+启用配置后显式运行 `papa migrate`；普通启动和 `rulestore.New` 不建表，配置开关也不自动创建 Repository。MySQL 与文件库不是一个跨资源事务：先发布完整正文再写元数据，数据库失败可能留下无引用文件，不立即删除以免误删共用正文。恢复和备份同时覆盖元数据库与样本目录。
+
+规则仓库须传普通 MySQL 连接，不接受外层事务连接；发布自行完成最外层提交。样本元数据列为 LONGTEXT，仍受应用预算约束；若已建成第三批早期的 TEXT 列，再显式迁移一次完成扩容，原数据保留。
+
+规则任务的完整绑定、发布 ID/generation 存在既有 `crawler_tasks.meta`；业务不要重写这些保留键。Save 可选择把 `RulePage.Rule`、`ReleaseID/ReleaseGeneration` 与 `EvidenceID` 一起落入业务结果表，记录“哪次发布、哪个页面观察产生了结果”。这不改变 Save 必须幂等、业务保存与任务提交不组成单个事务的约定。
 
 ---
 

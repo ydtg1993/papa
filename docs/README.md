@@ -15,7 +15,7 @@ cd mycrawler && go mod tidy
    照它抄一份自己的 `config.yaml`）。
 2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
-   之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled`）都要**再跑一次**，那两张表跟着开关走。
+   之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled` / `rules.enabled`）都要**再跑一次**，对应表跟着开关走。
 3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（并发/队列/间隔/重试/
    入口开关都在那儿一份写全，各文件在自己的 `init()` 里登记），`main.go` 里只有 `app.RegisterSites(papa.Sites()...)`
    一行 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
@@ -31,7 +31,7 @@ cd mycrawler && go mod tidy
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
 > `main.go` / `models.Models()` 里注册的模型，所以它在业务项目里会把迁移**转交**给项目自己
 > （`go run . -migrate` → `App.Migrate()`），两边都建。不在业务项目里跑时它只建框架自带的表。
-> 脚手架刚生成的项目没有业务表（框架只管调度状态，抓到的结果要在 `internal/models/` 里建业务表来落），
+> 脚手架刚生成的项目没有业务表（框架任务表不存采集结果，抓到的结果要在 `internal/models/` 里建业务表来落），
 > 所以起步阶段两条命令等价。判据与细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
 
 新项目根入口只转交 `internal/app.Run`；应用导航在 `docs/README.md`，本套框架手册复制到 `docs/framework/`。旧项目的根级包与平铺文档继续受 `check` / `upgrade` 支持。
@@ -46,6 +46,7 @@ cd mycrawler && go mod tidy
 | 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
 | 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
 | 编写 HTML/JSON 规则并用样本验收、激活与回滚 | [CRAWL_RULES.md](./CRAWL_RULES.md) | 声明式离线提取、校验与版本注册 |
+| 持久保存规则/样本，发布整组阶段版本并回滚 | [RULE_STORE.md](./RULE_STORE.md) | MySQL 元数据＋文件样本、显式验收、发布竞争、Catalog 恢复与影子评估 |
 | 把规则接成列表、详情与 URL/POST 游标分页采集 | [RULE_FETCHER.md](./RULE_FETCHER.md) | 通用执行器、版本固定、账号接线、幂等保存和完整示例 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
 | 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |

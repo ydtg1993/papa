@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/pkg/account"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/discovery"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -54,6 +56,7 @@ func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, r
 		out.Rendered = true
 		if err == nil {
 			out.Result, err = compiled.EvaluateRendered(out.SourceURL, body)
+			recordRuleSnapshotValidation(ctx, out.Result.Validation)
 			if err != nil {
 				err = core.WrapNoRetryKind("rule-extraction", ruleSourceFailure("rendered extraction", err))
 			}
@@ -66,6 +69,7 @@ func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, r
 			out.StatusCode = response.StatusCode
 			body = response.Body
 			out.Result, err = compiled.Evaluate(response)
+			recordRuleSnapshotValidation(ctx, out.Result.Validation)
 			if err != nil {
 				err = core.WrapNoRetryKind("rule-extraction", ruleSourceFailure("HTTP extraction", err))
 			}
@@ -127,6 +131,13 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 	}
 	var oversized *htmlfetch.BodyTooLargeError
 	if errors.As(err, &oversized) {
+		// Preserve the existing budget error precedence, but never attach even
+		// unavailable-response metadata to an unvalidated final URL.
+		if response != nil && response.URL != nil {
+			if finalURL, scopeErr := f.allowedURL(response.URL.String()); scopeErr == nil && finalURL == canonical {
+				recordRuleSnapshotUnavailable(ctx, finalURL, response.StatusCode, false, "response-body-too-large")
+			}
+		}
 		return nil, core.WrapNoRetryKind("rule-source", ruleSourceFailure("response body budget", err))
 	}
 	if response != nil {
@@ -139,6 +150,16 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 		}
 		if finalURL != canonical {
 			return nil, ruleSourceInvalid("HTTP transport changed URL despite redirect prohibition")
+		}
+		// htmlfetch.Do assigns Body only after a complete read. A successful
+		// empty response has a non-nil empty slice; nil means a failed/partial
+		// read, including when account classification masks the transport error.
+		// Record before status/account checks so rejected responses retain their
+		// actual failure page without issuing another request.
+		if response.Body == nil {
+			recordRuleSnapshotUnavailable(ctx, finalURL, response.StatusCode, false, "response-body-unavailable")
+		} else {
+			recordRuleSnapshot(ctx, finalURL, response.StatusCode, false, response.Body)
 		}
 	}
 	// The account manager's explicit classification takes precedence over the
@@ -196,12 +217,48 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 		if err != nil {
 			return ruleSourceInvalid("browser final URL is outside configured origins")
 		}
+		if !discovery.SameOrigin(rawURL, finalURL) {
+			// WithStatePage previously checked origin after the selector wait.
+			// Keep that boundary after moving the wait into its callback, and
+			// do not retain an account's cross-origin DOM before its manager
+			// performs its own post-callback origin check.
+			return ruleSourceFailure("browser origin check", errors.New("page state origin mismatch"))
+		}
 		html, err := page.HTML()
 		if err != nil {
 			return ruleSourceFailure("browser DOM read", err)
 		}
 		body = []byte(html)
+		recordRuleSnapshot(ctx, finalURL, 0, true, body)
 		return nil
+	}
+	// A failed wait commonly leaves a useful captcha/error DOM. The caller's
+	// context may already be canceled, so permit only a short independent read
+	// before the page owner closes it. Evidence failures never replace the
+	// original navigation/wait error or trust the requested URL as the final URL.
+	readFailure := func(page *rod.Page) {
+		if ruleObservationFrom(ctx) == nil {
+			return
+		}
+		captureCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer stop()
+		page = page.Context(captureCtx)
+		// Rod's Page.Info uses the original Browser context, even on a page
+		// clone. Rebind its equivalent protocol call too after cancellation.
+		info, infoErr := (proto.TargetGetTargetInfo{TargetID: page.TargetID}).Call(page.Browser().Context(captureCtx))
+		if infoErr != nil {
+			return
+		}
+		actualURL, scopeErr := f.allowedURL(info.TargetInfo.URL)
+		if scopeErr != nil || !discovery.SameOrigin(rawURL, actualURL) {
+			return
+		}
+		html, htmlErr := page.HTML()
+		if htmlErr != nil {
+			recordRuleSnapshotUnavailable(ctx, actualURL, 0, true, "browser-dom-unavailable")
+			return
+		}
+		recordRuleSnapshot(ctx, actualURL, 0, true, []byte(html))
 	}
 	var err error
 	if id := task.Meta[ruleAccountMeta]; id != "" {
@@ -223,10 +280,12 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 				return err
 			}
 			if err := page.WaitLoad(); err != nil {
+				readFailure(page)
 				return err
 			}
 			if f.config.WaitSelector != "" {
 				if _, err := page.Element(f.config.WaitSelector); err != nil {
+					readFailure(page)
 					return err
 				}
 			}
@@ -236,9 +295,21 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 		if e.browserPool == nil {
 			return "", nil, ruleSourceInvalid("browser pool is not configured")
 		}
-		opts := mergeBrowserOptions(ctx, browser.PageOptions{WaitSelector: f.config.WaitSelector, Timeout: 30 * time.Second})
+		opts := mergeBrowserOptions(ctx, browser.PageOptions{Timeout: 30 * time.Second})
 		err = e.browserPool.WithIsolatedBrowser(ctx, func(b *browser.Browser) error {
-			return b.WithStatePage(ctx, rawURL, nil, opts, read)
+			return b.WithStatePage(ctx, rawURL, nil, opts, func(page *rod.Page) error {
+				// Run this wait while the page is still available to us. The
+				// enclosing 30 s context retains the original overall deadline.
+				started := time.Now()
+				if f.config.WaitSelector != "" {
+					if _, waitErr := page.Element(f.config.WaitSelector); waitErr != nil {
+						elapsed := time.Since(started)
+						readFailure(page)
+						return &browser.WaitError{Stage: "selector", Err: fmt.Errorf("selector %q: %w", f.config.WaitSelector, waitErr), Elapsed: elapsed}
+					}
+				}
+				return read(page)
+			})
 		})
 	}
 	if err != nil {

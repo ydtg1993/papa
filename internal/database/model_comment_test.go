@@ -9,11 +9,12 @@ import (
 )
 
 // TestFrameworkModelColumnsHaveComment 守住“框架模型字段必须写 COMMENT”的约定：
-// comment tag 会随 AutoMigrate 进库。两个带开关的表也一起打开检查。
+// comment tag 会随 AutoMigrate 进库。所有带开关的表也一起打开检查。
 func TestFrameworkModelColumnsHaveComment(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Server.OperationLog = true
 	cfg.Crawler.Trace.Enabled = true
+	cfg.Rules.Enabled = true
 	namer := schema.NamingStrategy{}
 	for _, model := range FrameworkModels(cfg) {
 		parsed, err := schema.Parse(model.Value, &sync.Map{}, namer)

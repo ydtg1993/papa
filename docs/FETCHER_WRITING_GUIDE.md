@@ -3,7 +3,7 @@
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
-> 本文聚焦 Go Fetcher；声明式 HTML/JSON 规则、离线样本验收与内存版本切换见 [CRAWL_RULES.md](./CRAWL_RULES.md)，通用联网 RuleFetcher 尚未提供。
+> 本文聚焦 Go Fetcher；声明式 HTML/JSON 规则、离线样本验收与内存版本切换见 [CRAWL_RULES.md](./CRAWL_RULES.md)，联网执行、保存、分页及失败快照见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 >
 > 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
@@ -125,8 +125,9 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
   - `Step(name, data)` —— 这一步做完了，耗时 = 距上一个 `Step`（首步距本次尝试开始）的间隔；
   - `Fail(name, err, data)` —— 这一步失败了，带上错误分类与现场数据；
   - `Warn(name, err, data)` —— **非致命**：出了点事，但不该把任务判失败。典型是附带产物 —— 封面没下下来、附件缺了、某个可选字段没解析出来，而任务本身是成功的（用 `Fail` 会把"任务失败了"的信号发出去）。它**不影响任务终态**，只写进追踪，后台用橙色和红色的失败步骤分开显示。
-- **`data` 只在失败的尝试里落库**：成功的尝试（绝大多数）一条 `data` 都不写，写入量按失败率走。传 `nil` 也完全可以，只留步骤骨架。
+- **普通步骤的 `data` 只在失败的尝试里落库**：成功尝试只留步骤骨架，传 `nil` 也完全可以。
   **例外**：`Warn` 步骤的 `data` 在成功的尝试里也保留 —— 它记的正是"任务成功了、但这一步降级了"，而下一次成功的尝试里它照样只是 warn，剥掉就等于把这条唯一的线索永远丢掉（warn 按定义是异常，量不成问题）。
+  RuleFetcher 的「规则页面证据」也保留框架生成的最小引用（ID、状态及已发布文件路径等），用于和 Save 的 `RulePage.EvidenceID` 对应；不在 Trace 里复制正文。普通 `Step` 不因此保留成功时的 data。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
@@ -634,6 +635,12 @@ if err := offline.DecodeJSON(&result); err != nil { return err }
 ### 3.7 规则执行器
 
 RuleFetcher 把 `crawlrule` 提取/转换/校验接到实际任务流程，支持 HTTP HTML/JSON 与隔离 Rod，设置 AccountID 后显式复用账号运行时。保存和后续任务提交分开执行；任务重试会重新保存，因此回调必须按业务键 upsert。示例、分页与子任务预算、根级 cursor、来源证据、版本恢复和登录态边界见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+
+规则来源可选内存 `Registry + Bindings`，或 `RuleFetcherConfig.Catalog`；两者互斥。`pkg/rulestore.Repository` 用 MySQL 元数据与独立文件样本提供持久 Catalog，验收后通过显式 Go API 发布完整站点绑定。`NewTaskContext` 为新入口读取一次完整发布，执行、详情、下一页和恢复都沿用固定版本。`rules.enabled` 仅登记迁移和缺表检查，须先 `papa migrate`，再由宿主构造仓库与 fetcher。教程和可运行示例见 [RULE_STORE.md](./RULE_STORE.md)。
+
+动态规则与当前阶段的 ItemKey、链接/Meta 字段、详情 URL 类型和 browser/HTML 约束会在入口及执行前核对；不兼容时不请求页面或调用 Save。自定义 Catalog 用 `crawlrule.ErrInvalidVersion` 标明永久无效版本，普通数据库错误保留重试语义。构造 `rulestore.Repository` 应传普通连接，不可传外层事务连接。
+
+引擎尝试中开启 `crawler.archive` 后，RuleFetcher 自动登记页面观察；正文仍需通过 `RuleFetcherConfig.SnapshotPolicy.RedactBody` 显式允许或脱敏，默认只存元信息。Save 可保存 `RulePage.EvidenceID`，与 Trace「规则页面证据」及观察清单关联。ID 不保证文件存在，尤其 `failure` 模式的成功尝试只留 `not-retained` 引用。重复尝试的相同脱敏正文共用内容文件；HTTP/账号/Rod 的规则路径都使用同一快照机制，普通 `FetchHTTP` 的既有行为不变。直接 `Run` / `RunHTTP` 不自动创建归档上下文。
 
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
@@ -1160,7 +1167,7 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
   改完要重启，没有热更）。没写哪段 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
-- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
+- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与原始 HTML 归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
   站点多了想按站点分包（`fetcher/<站点>/`，如 `fetcher/example/`）也行。硬要求只有一条 ——
@@ -1179,7 +1186,11 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
   入口路由表正相反：它**只**声明在 `fetcher/<站点>/fetch_catalog.go`（包级 `catalogRoutes` 那类，例见 §7.1），
   入口投递与 handler 反推任务的 key 共用同一张表 —— 别在 handler 里再抄一份 key → 路由的映射。
 
-已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、原始 HTML 归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+
+RuleFetcher 快照的站点/阶段保存在观察清单中，文件统一位于 `{dir}/.rule-snapshots/`，同一归档根内的脱敏正文按内容共用。正文策略由各 fetcher 的 `SnapshotPolicy` 显式配置；归档开关、体积预算和保留期仍是进程级配置。多进程使用各自的归档目录，不能依赖此存储跨进程协调。
+
+持久规则发布按站点原子切换完整阶段绑定，发布竞争由 MySQL generation 控制；规则版本和样本 ID 是整个仓库中的唯一标识，建议按业务命名。`rules.enabled/sample_dir` 属于应用级仓库配置，样本正文长期保存、没有自动 GC，与各站点短期 archive 生命周期分开。Catalog 任务的 `RulePage.ReleaseID/ReleaseGeneration` 可随业务结果保存，并自动进入规则快照；子任务继承发布身份。
 
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
@@ -1243,7 +1254,9 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 ## 9. API 速查
 
-规则流程：`NewRuleFetcher` / `RuleFetcherConfig` / `RuleRef` / `RuleRequest` / `RuleLink` / `RulePage`；`NewTask` 建固定版本入口，`FetchHandler` 供引擎调用，`RunHTTP` 用于无数据库的匿名 HTTP 内嵌队列。纯规则另有 `Compiled.EvaluateRendered`、字段 `Transforms`、`Registry.Verified`，见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+规则流程：`NewRuleFetcher` / `RuleFetcherConfig` / `RuleRef` / `RuleRequest` / `RuleLink` / `RulePage`；`NewTask` 建静态固定版本入口，Catalog 可用 `NewTaskContext(ctx, request, meta)` 为数据库访问指定时限。`FetchHandler` 供引擎调用，`RunHTTP` 用于不创建任务数据库 Engine 的匿名 HTTP 内嵌队列（Catalog 本身仍可访问元数据库）。`RuleFetcherConfig.SnapshotPolicy` 控制引擎尝试中的响应快照，`RulePage.EvidenceID` 供业务与 Trace 关联，`ReleaseID/ReleaseGeneration` 标明任务固定发布。纯规则另有 `Compiled.EvaluateRendered`、字段 `Transforms`、`Registry.Verified`，见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+
+持久规则：`rulestore.NewFileBlobs/New`、`Repository.CreateDraft/AddSample/ImportSnapshot/CreateSampleSet/Verify/Publish/Rollback/Current/LookupOperation/History`；只验收不发布，只对比不自动保存影子报告。`CompareRules/Shadow` 仅处理已经取得的规则与页面，不调用 Save 或提交任务，见 [RULE_STORE.md](./RULE_STORE.md)。
 
 通用 API：`FetchHTTP` / `HTTPRequest` / `HTTPResponse.DecodeJSON`；会话：`NewHTTPSession` / `WithHTTPSession`；浏览器响应：`CaptureResponse` / `browser.CopyCookiesToSession`。用法和边界见 §3.3–3.4。
 

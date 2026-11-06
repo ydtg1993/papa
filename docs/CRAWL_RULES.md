@@ -4,6 +4,8 @@
 
 本包不发请求、不执行 JavaScript、不登录、不运行模型、不自动生成或发布规则。需要把规则接入获取页面、业务保存、详情与下一页任务时，使用 [RuleFetcher](./RULE_FETCHER.md)。离线执行仍由调用方提供完整响应；认证样本应先脱敏。
 
+需要重启后保留规则、样本和发布历史时，使用 [持久规则仓库](./RULE_STORE.md) 的 `pkg/rulestore`；它复用本包的编译与离线验收，通过 MySQL 发布完整站点绑定。下文 `Registry.Activate/Rollback` 仍是原来的进程内用法。
+
 ## HTML 规则
 
 ```json
@@ -182,6 +184,26 @@ _ = err
 Registry 不持久化样本、激活状态或历史，也不跨进程协调。进程重启后应重新加载规则并用显式样本激活。通过有限样本不能证明网站所有页面都兼容，建议至少覆盖正常页、末页、不同字段形态，并对运行中的 `ErrNoRecords`、校验错误和截断建立业务监测。
 
 `Registry.Get(id, version)` 允许读取尚未验证的候选；生产固定版本用 `Registry.Verified(id, version)`，候选返回 `ErrUnverifiedRule`。只有成功的 `Activate` 会登记已验证版本；直接调用 `Compiled.Verify` 不发布。回滚 Active 不撤销曾验证版本，已排队任务仍能执行原版本；重启后须重新加载并验证这些版本。
+
+### 持久验收与站点发布
+
+`rulestore.Repository.CreateDraft` 保存不可变版本，`AddSample/CreateSampleSet` 保存经明确脱敏策略允许的长期样本与固定预期，`Verify` 将规则摘要、样本集摘要和验收器版本绑定成持久报告。失败报告也保存；数据库错误不会被当成验收成功。`Verify` 通过后仍须显式 `Publish`，不能把 `verified` 当作当前线上状态。
+
+`crawlrule.Catalog` 提供 `Snapshot(ctx, site)` 与 `Resolve(ctx, id, version)`。Repository 的 Snapshot 读取整组当前发布；Resolve 读取曾发布的固定版本，回滚不会让旧任务失去解析依据。内存 Registry 与持久 Catalog 是两种接入方式，详见 [RULE_STORE.md](./RULE_STORE.md)。
+
+切换来源不会自动迁移内存 Registry。已有待执行任务引用的旧 ID/版本，应先导入仓库、验收并至少发布一次，再切换 fetcher；当前发布随后可以指向新版，旧版本仍可 Resolve。
+
+`rulestore.CompareRules` 返回规范结构的差异路径与摘要，不复制字段或选择器值；`Shadow` 在同一份已取得的响应/DOM 上评估当前与候选规则，不请求网站、不 Save、不提交任务。影子结果当前不自动持久化，也不替代样本预期验收或自动发布。
+
+## 从运行失败快照补充样本
+
+在线 RuleFetcher 可将业务保存结果、任务 Trace 和响应快照通过 `RulePage.EvidenceID` 关联；启用条件、正文脱敏策略与文件布局见 [RULE_FETCHER.md](./RULE_FETCHER.md)。这与 `Result.Evidence` 的字段来源不同：后者说明每个字段如何提取，前者定位本次页面观察及可能保留的正文。
+
+排查时先看「规则页面证据」步骤的 `state`，再读取观察清单。仅有 ID 不代表存在正文：默认未设置 `SnapshotPolicy.RedactBody` 时只保留元信息，`failure` 模式的成功尝试连清单也不落盘。取得 `body_file` 后，按清单的 `format`、`source_url` 与实际 `status_code` 构造离线响应；渲染 DOM 使用 `EvaluateRendered`，保留 `StatusCode=0`，不要伪造 HTTP 200。非 2xx 快照可用于排查响应失败，但不能直接作为要求 2xx 的 `Evaluate` 成功样本。
+
+正文是业务策略允许保留的脱敏内容，可能已删除字段或改变链接；先确认它仍能表达待验证场景，再手动添加明确的 fixture 断言。清单的 `body_sha256` 校验落盘字节，`original_sha256` 标识脱敏前页面，不能混用。快照清单不是 `htmlfetch.WriteSample` 的 JSON 格式，不支持直接 `ReadSample`；保留期也不同于业务仓库长期保存的 fixture。快照不会自动注册、修改、激活或回滚规则。
+
+长期保存选中的快照可调用 `repo.ImportSnapshot(ctx, archiveDir, evidenceID, policy, actor)`：它检查正文与摘要，再应用必须显式提供的 `RedactBody`，写入独立样本目录并保留 EvidenceID。默认不导入全部快照；只有元信息或已经过期的快照不能作为完整样本。用法见 [RULE_STORE.md](./RULE_STORE.md)。
 
 ## 验证命令
 

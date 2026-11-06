@@ -105,6 +105,10 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   rulefetcher.go                通用 Fetcher、校验后保存、详情与分页、受限子任务规划
   rulefetcher_tasks.go          固定版本/账号、请求身份、持久化分页检查点与来源范围
   rulefetcher_source.go         HTTP/账号/Rod 来源适配、失败分类与安全错误
+  rulefetcher_catalog.go        持久 Catalog 版本解析、完整绑定检查与固定发布身份
+  rule_snapshot_types.go        规则页面观察清单：规则/尝试、双摘要、正文引用与省略原因
+  rule_snapshot.go              尝试登记、显式脱敏、预算、EvidenceID 与最小 Trace 引用
+  rule_snapshot_store.go        脱敏正文按内容共用、原子发布与按存活清单引用回收
   capture.go   浏览器网络请求捕获的引擎层包装（trace 步骤 + 归档登记）
   downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
@@ -141,14 +145,20 @@ pkg/                             可独立复用的件
   htmlfetch/incremental.go       条件 GET、304 与内容指纹
   htmlfetch/session_state.go     完整 Cookie 属性追踪、版本化快照与受限恢复
   account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
-  crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON/DOM 与受限证据；transform.go 确定性转换；fixture.go 样本/根级游标验收；registry.go 激活、Verified 与回滚
+  crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON/DOM 与受限证据；transform.go 确定性转换；fixture.go 样本/根级游标验收；registry.go 激活、Verified 与回滚；catalog.go 持久发布读取契约
+  rulestore/                    types.go 数据契约；repository.go 不可变规则与固定版本解析；repository_samples.go 样本/集合/验收；repository_release.go 完整站点发布、CAS、幂等与回滚
+  rulestore/blobs.go             长期正文按内容保存、原子发布、完整性校验；sample.go 显式脱敏；snapshot.go 选定快照导入；compare.go 结构对比与离线影子评估
+  rulestore/review_*_test.go     constructor 外层事务；release 并发/提交故障；rollback 历史凭据；verification 样本/验收一致性真库回归
   loggers/ notify/ middleware/{proxy,m3u8,filedown}
   middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染
 models/                          框架自带的表结构
+models/rule_publication.go       可选规则/样本/集合/验收/发布/站点指针 6 表，按 rules.enabled 纳入显式迁移
+engine/review_catalog_test.go     动态规则与宿主兼容、持久任务恢复、永久/临时错误分类回归
 examples/rulecrawl/              main.go 本地 HTML / JSON POST 游标完整流程；main_test.go 示例验收；README.md 生产接线
+examples/rulepublish/            main.go 专用 MySQL＋本机 HTTP 的验收/发布/恢复/影子/回滚示例；main_test.go 入口约束验证
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
 ```
 
@@ -165,6 +175,7 @@ papa 门面 ──► internal/app ──► engine ──► internal/{workerpo
                  └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
                          └──► tasksource/oplog 还依赖 admin/gormsource
 pkg/notify ──► core
+pkg/rulestore ──► pkg/crawlrule + pkg/htmlfetch + models + GORM（不依赖 engine；通过 Catalog 接入）
 obs ──► pkg/events + models（只读；不依赖 engine / admin / app，业务项目可直接 import 扩展）
 ```
 
@@ -209,7 +220,8 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | 统计 | 站点快照（**内存是源**：启动读 `crawler_config` 的 `sites` 键（没有就按声明生成）、按声明对齐；`StartPaused` 也在这**一次**写里落成暂停态，手动暂停/恢复整块回写） | `engine/sitestat.go`、`admin/configstore/sites.go` |
 | 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
 | 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
-| 落盘 | 页面归档按 `{dir}/{site}/{stage}/` 分两层（同名阶段不再混在一起） | `engine/archive.go` 的 `relPath` |
+| 落盘 | 原始 HTML 归档按 `{dir}/{site}/{stage}/` 分两层；RuleFetcher 观察清单记录 `site/stage`，同一归档根下的脱敏正文按内容共用 | `engine/archive.go` 的 `relPath`；`engine/rule_snapshot*.go` |
+| 发布 | 一个站点的完整 stage→规则版本表在事务中切换，generation 防止并发覆盖；任务固定整组绑定及发布身份 | `pkg/rulestore/repository_release.go`、`engine/rulefetcher_catalog.go` |
 
 ### 全局，且**有意**如此（别想着分站）
 
@@ -220,6 +232,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 - **代理出口**：框架只提供 `engine.NextProxy()` 这个"随用随取"，**不替业务决定**用哪个 ——
   按站点分流出口是业务自己的事（`papa.WithProxyURL`）。
 - **操作日志/访问令牌**：与站点无关（前者记的是后台动作，后者是后台的凭据）。
+- **规则仓库与样本目录**：`rules.enabled/sample_dir` 是应用级配置，规则 ID/版本与样本标识在仓库内唯一；正文按内容共用且不自动 GC。发布指针按站点切分，短期 archive 仍使用独立目录和保留期。
 
 ### 按站点切的进度：三队列已**并回全局**；`crawler` 那四项**有意**保持全局
 
@@ -227,10 +240,11 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
   各一段写在 `config.yaml` 里，后台各占一行。当初按站点拆没有收益（三队列本质都是对
   `crawler_tasks` 表的一次复查），反而让"一个阶段占一个协程空等"的多站开销被放大 —— 已并回全局。
 - **`crawler` 的四项有意留在 `config.yaml`（定过的，不是待办）**：`queue_watermark`（`engine/stage.go`
-  建池那行）、`archive.*`（`engine/archive.go`，落盘路径按 `{site}/{stage}/` 分两层）、`trace.*`
+  建池那行）、`archive.*`（原始 HTML 按 `{site}/{stage}/` 分层，规则快照在 `.rule-snapshots/` 下按观察和正文组织）、`trace.*`
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
   它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
+- RuleFetcher 的 `SnapshotPolicy` 是业务侧的响应脱敏策略，不增加站点或 YAML 配置。`RulePage.EvidenceID` 只是 Save 可自行保存的关联值，不增加框架数据库列。快照清单和 Trace 共同引用正文文件，原始摘要与脱敏摘要分开记录；存储发布和引用回收只在同进程协调，多个进程不能共用一个规则快照目录。契约与预算见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 - **`dedupCache` 是"按 key 分、预算共享"**：key 是 `site:stage:url`（`Task.Unique()`；缺 site 时以空段出现），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
   不影响正确性 —— 想每站一份预算就是"去重缓存按站点"那一项。

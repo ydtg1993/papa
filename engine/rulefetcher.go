@@ -14,8 +14,11 @@ import (
 )
 
 func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
-	if strings.TrimSpace(cfg.Site) == "" || strings.TrimSpace(cfg.Stage) == "" || cfg.Registry == nil || cfg.Save == nil {
-		return nil, fmt.Errorf("rule fetcher: site, stage, registry and idempotent Save required")
+	if strings.TrimSpace(cfg.Site) == "" || strings.TrimSpace(cfg.Stage) == "" || (cfg.Registry == nil && cfg.Catalog == nil) || cfg.Save == nil {
+		return nil, fmt.Errorf("rule fetcher: site, stage, registry/catalog and idempotent Save required")
+	}
+	if cfg.Catalog != nil && (cfg.Registry != nil || len(cfg.Bindings) != 0) {
+		return nil, fmt.Errorf("rule fetcher: Catalog is mutually exclusive with Registry and static Bindings")
 	}
 	if utf8.RuneCountInString(cfg.Site) > 128 || utf8.RuneCountInString(cfg.Stage) > 128 {
 		return nil, fmt.Errorf("rule fetcher: site and stage exceed database column limits")
@@ -29,12 +32,18 @@ func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
 	if cfg.Transport == "browser" && cfg.BuildRequest != nil {
 		return nil, fmt.Errorf("rule fetcher: browser does not accept BuildRequest")
 	}
-	if len(cfg.Origins) == 0 || len(cfg.Origins) > 32 || len(cfg.Bindings) == 0 || len(cfg.Bindings) > 32 {
+	if len(cfg.Origins) == 0 || len(cfg.Origins) > 32 || (cfg.Catalog == nil && len(cfg.Bindings) == 0) || len(cfg.Bindings) > 32 {
 		return nil, fmt.Errorf("rule fetcher: bounded origins and bindings required")
 	}
 	cfg.Origins = slices.Clone(cfg.Origins)
 	cfg.Bindings = maps.Clone(cfg.Bindings)
 	cfg.Links = slices.Clone(cfg.Links)
+	if cfg.SnapshotPolicy != nil {
+		policy := *cfg.SnapshotPolicy
+		policy.Headers = nil // response/request headers are not part of snapshots
+		policy.QueryKeys = slices.Clone(policy.QueryKeys)
+		cfg.SnapshotPolicy = &policy
+	}
 	for i, origin := range cfg.Origins {
 		u, err := discovery.CanonicalURL(origin, "")
 		if err != nil {
@@ -57,7 +66,7 @@ func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
 	if cfg.MaxChildren < 1 || cfg.MaxChildren > 10000 {
 		return nil, fmt.Errorf("rule fetcher: invalid child task budget")
 	}
-	if _, ok := cfg.Bindings[cfg.Stage]; !ok {
+	if _, ok := cfg.Bindings[cfg.Stage]; !ok && cfg.Catalog == nil {
 		return nil, fmt.Errorf("rule fetcher: stage binding required")
 	}
 	for stage, ref := range cfg.Bindings {
@@ -79,7 +88,7 @@ func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
 		if link.Field == "" || link.Stage == "" || link.Stage == cfg.Stage {
 			return nil, fmt.Errorf("rule fetcher: link field and different target stage required")
 		}
-		if _, ok := cfg.Bindings[link.Stage]; !ok {
+		if _, ok := cfg.Bindings[link.Stage]; !ok && cfg.Catalog == nil {
 			return nil, fmt.Errorf("rule fetcher: link stage has no binding")
 		}
 		for key, field := range link.Meta {
@@ -128,14 +137,21 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 		return nil
 	}
 	ref := bindings[task.Stage]
-	compiled, err := f.config.Registry.Verified(ref.ID, ref.Version)
+	compiled, err := f.resolveRule(ctx, ref)
 	if err != nil {
+		return err
+	}
+	if err := f.checkRuleContract(compiled); err != nil {
 		return core.WrapNoRetry(err)
 	}
+	ctx = f.beginRuleSnapshot(ctx, task, req, compiled.Rule().Format)
 	page, err := f.readRulePage(ctx, cloneRuleTask(task), e, req, compiled)
 	if err != nil {
 		return err
 	}
+	page.EvidenceID = ruleSnapshotID(ctx)
+	release, _ := decodeRuleRelease(task.Meta[ruleReleaseMeta]) // checked by taskState
+	page.ReleaseID, page.ReleaseGeneration = release.ID, release.Generation
 	page.Rule = ref
 	page.Page = len(cp.Requests) + 1
 	if slices.Contains(cp.Bodies, page.BodySHA256) {
@@ -210,6 +226,15 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 			if slices.Contains(cp.Requests, ruleDigest([]byte(ruleJSON(next)))) {
 				next = nil
 				page.StopReason = "request-cycle"
+			}
+		}
+	}
+	// Resolve linked stages once before Save. A database outage must not become
+	// a permanent planning failure or allow partially accepted business output.
+	if f.config.Catalog != nil {
+		for _, link := range f.config.Links {
+			if _, err := f.resolveRule(ctx, bindings[link.Stage]); err != nil {
+				return err
 			}
 		}
 	}
@@ -296,6 +321,9 @@ func (f *RuleFetcher) ruleChildren(task *Task, bindings map[string]RuleRef, cp r
 				return nil, fmt.Errorf("rule fetcher: invalid detail link")
 			}
 			meta := map[string]string{}
+			if release := task.Meta[ruleReleaseMeta]; release != "" {
+				meta[ruleReleaseMeta] = release
+			}
 			for key, field := range link.Meta {
 				value, ok := record[field]
 				if !ok || value == nil {

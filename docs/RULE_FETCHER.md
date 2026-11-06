@@ -45,6 +45,26 @@ return engine.SubmitTask(task) // 先为 catalog、detail 登记各自的 StageS
 
 `RuleFetcher` 不自动投入口；显式 `NewTask + SubmitTask`，或自行包装 `SubmitEntries`。详情阶段也要创建 RuleFetcher，并配置自己的 Save、Origins 和传输方式。链接与元数据映射都是显式字段名；映射值为字符串时原样保存，其余 JSON 值编码为 JSON 文本。不自动复制父任务的全部业务 Meta。
 
+### 使用持久 Catalog
+
+需要整组发布和重启恢复时，将已构造的 `rulestore.Repository` 传给 `RuleFetcherConfig.Catalog`，同时省略 `Registry` 与 `Bindings`；两种配置互斥。`rules.enabled` 只控制迁移/缺表检查，不自动创建仓库或切换 fetcher。配置、显式迁移、样本验收和完整示例见 [RULE_STORE.md](./RULE_STORE.md)。
+
+```go
+fetcher, err := papa.NewRuleFetcher(papa.RuleFetcherConfig{
+    Site: "shop", Stage: "catalog", Catalog: repo,
+    Origins: []string{"https://example.com"},
+    Links: []papa.RuleLink{{Field: "url", Stage: "detail"}},
+    Save: savePage,
+})
+if err != nil { return err }
+task, err := fetcher.NewTaskContext(ctx,
+    papa.RuleRequest{URL: "https://example.com/products"}, nil)
+if err != nil { return err }
+return engine.SubmitTask(task)
+```
+
+`NewTaskContext` 每个新入口读取一次完整发布快照，并验证其中的固定版本；为数据库调用使用有超时的 context。之后执行、派生子任务与重试不查当前指针。任务保留整组 bindings、ReleaseID 和 generation，新发布不会使正在运行的流程混用版本；同一组版本再次发布后的新 generation 也进入入口身份。原 `NewTask` 包装此方法并使用 `context.Background()`，静态 Registry 用法保持兼容。
+
 ## 获取页面与登录状态
 
 | 配置 | 行为 |
@@ -56,9 +76,70 @@ return engine.SubmitTask(task) // 先为 catalog、detail 登记各自的 StageS
 
 `Origins` 必填，按 scheme/主机/有效端口限制请求及结果，不是 URL 路径前缀。详情链接和下一页都要通过范围校验。HTTP 一律禁止跟随重定向（包括同源），3xx 明确失败；请配置最终地址。浏览器沿用页面状态工具的 origin 检查，不能充当阻断所有跨源子资源/重定向的网络沙箱。账号 Rod 只导航到账号 bootstrap 所在 origin，回调不替换账号管理器的认证请求头。
 
-HTTP 客户端和浏览器池仍需按原配置启用；规则执行器不自动启动它们。账号信息由任务固定，不会因运行时修改默认 AccountID 而切换已有任务。任务 Meta/规则/cursor 只能存非凭据数据；Cookie、Authorization、CSRF 放入账号管理器或运行时 BuildRequest。账号入口和本执行器不自动归档响应正文。
+HTTP 客户端和浏览器池仍需按原配置启用；规则执行器不自动启动它们。账号信息由任务固定，不会因运行时修改默认 AccountID 而切换已有任务。任务 Meta/规则/cursor 只能存非凭据数据；Cookie、Authorization、CSRF 放入账号管理器或运行时 BuildRequest。账号入口本身不自动归档响应正文；RuleFetcher 的响应快照须开启归档，并显式配置下文的正文策略。
 
-`RulePage` 带最终 `SourceURL`、规则版本、`BodySHA256`、字段证据及分页序号。HTTP 带实际 StatusCode，Rod 为 `Rendered=true / StatusCode=0`，不把渲染成功冒充 HTTP 200。
+`RulePage` 带最终 `SourceURL`、规则版本、原始响应的 `BodySHA256`、字段证据及分页序号；Catalog 任务还带 `ReleaseID/ReleaseGeneration`，静态 Registry 任务为零值。存在引擎归档上下文时还带 `EvidenceID`。HTTP 带实际 StatusCode，Rod 为 `Rendered=true / StatusCode=0`，不把渲染成功冒充 HTTP 200。
+
+## 失败快照与业务证据关联
+
+生产 `FetchHandler` 由 Engine 执行时，开启 `crawler.archive.enabled` 即接入本次尝试的快照缓冲，沿用 `archive.dir / mode / retention / max_file_mb`，没有新增 YAML 配置或框架数据库列。直接调用 `Run` / `RunHTTP` 不会自行创建归档上下文，通常既不自动归档，也不产生 `EvidenceID`。
+
+`failure` 模式在尝试失败（包括 handler panic）时落盘；`always` 模式也保留成功尝试。覆盖已经获取的 HTTP 非 2xx 页面、解析/校验失败、Save 或子任务提交失败，以及 Rod 等待失败时仍可读取且已确认来源的 DOM。未取得响应、正文读取不完整、无法确认浏览器来源或无法读取 DOM 时，只保留可确认的元信息与省略原因，不伪造正文或 HTTP 状态。
+
+### 明确决定可以保存哪些响应数据
+
+`RuleFetcherConfig.SnapshotPolicy` 使用 `*htmlfetch.SamplePolicy`（导入 `github.com/ydtg1993/papa/v3/pkg/htmlfetch`）：
+
+| 策略 | 快照行为 |
+| --- | --- |
+| `nil` 或 `RedactBody == nil` | 省略正文；匿名页面也一样。需要保留的尝试仍写元信息清单 |
+| `RedactBody` | 收到响应正文的私有副本，`requestSide` 始终为 `false`；只有返回的字节可以落盘 |
+| `QueryKeys` | URL 查询参数白名单；默认全部去掉。保留值须由业务确认可公开 |
+| `RedactURL` | 在默认去掉 userinfo、fragment 及未允许的查询参数之后处理 URL；路径包含账号、签名等信息时在此脱敏 |
+| `Headers` | 此处不使用；请求头、响应头和请求正文均不进入规则快照 |
+
+例如，给已确认不含凭据、账号信息或用户数据的公开页面显式允许正文归档，在创建 fetcher 前设置：
+
+```go
+cfg.SnapshotPolicy = &htmlfetch.SamplePolicy{
+    QueryKeys: []string{"page"},
+    RedactBody: func(_ bool, body []byte) ([]byte, error) {
+        return body, nil // 原样保留的明确授权，不执行自动脱敏。
+    },
+}
+```
+
+登录页面或业务 API 应按已知结构删除敏感字段，再返回允许保存的内容；普通关键词替换不能保证任意页面已脱敏。URL/正文脱敏回调报错或 panic 时不写原文，只记录固定的省略原因。快照策略仅处理归档副本，`Save` 收到的 `SourceURL`、记录和字段证据仍是采集结果，业务落库时须另行决定保留范围。回调需要支持并发调用。
+
+### 用同一 ID 找到业务记录、Trace 和文件
+
+Save 可以把 `page.EvidenceID` 和业务记录一起保存；引擎在尝试结束时写入 Trace 的「规则页面证据」步骤和快照清单，三处使用同一个 ID。每次重新抓取生成新的观察 ID；幂等 upsert 应明确是覆盖当前证据引用，还是另存每次尝试的关联历史。
+
+`EvidenceID` 是关联键，不是落盘承诺：Save 执行时尚不知道最终结果，`failure` 模式的成功尝试只在 Trace 留 `not-retained` 引用，不创建清单或正文。开启 `crawler.trace.enabled` 才写 Trace；即使 Trace 关闭，已启用的快照归档仍独立工作。成功尝试只额外保留这条框架生成的最小引用，普通 `Step` 的 data 仍沿用既有保留规则。
+
+| Trace 的 `state` | 含义 |
+| --- | --- |
+| `stored` | 清单与脱敏正文均已发布，`files` 给出相对路径 |
+| `metadata-only` | 清单已发布，正文因策略、预算或不可取得等原因省略；查看 `body_omitted` |
+| `not-retained` | `failure` 模式的成功尝试，没有归档文件 |
+| `write-failed` | 归档发布失败，只保留最小引用并记 WARN，不提供未发布文件的链接 |
+
+文件均在 `archive.dir` 下：
+
+```text
+.rule-snapshots/observations/<32位十六进制 EvidenceID>.json
+.rule-snapshots/bodies/<脱敏正文 SHA-256>.body
+```
+
+`.rule-snapshots` 是保留的点号前缀目录，避免与既有按站点命名的 HTML 归档目录冲突。
+
+清单记录规则 ID/版本、Catalog 任务的 release ID/generation、任务/站点/阶段、attempt/retry/repeat、脱敏 URL、规则声明的 HTML/JSON `format`、状态码、是否渲染、失败标记和受限校验报告。`RulePage.BodySHA256` 对应原文；清单在来源处理成功、原文可取得且未超过输入预算时记录同一 `original_sha256`，`body_sha256` 则只计算脱敏后的实际文件字节，两者可能不同。`.body` 保存实际响应或 DOM 字节；失败响应可能不符合规则格式，例如 JSON 接口返回 HTML 登录页。清单不是 `htmlfetch.WriteSample` 的样本格式，不能直接交给 `ReadSample`。
+
+相同脱敏正文在不同尝试间共用一份内容文件；不同观察各有清单，Trace 仅保存 ID、状态、摘要和路径，不复制正文。清单最后原子发布；写盘失败不改变任务结局。正文输入与脱敏输出分别受 `archive.max_file_mb` 限制，每次尝试最多 32 个规则观察，单份清单最多 256 KiB，校验问题最多保留 100 条。超限不截断正文冒充完整响应。
+
+保留期清理先删除过期观察，再检查存活清单的引用；仍被引用的正文不会因自身修改时间较旧而删除。无法读取或识别存活清单时，本轮保守跳过正文回收。发布与清理只在同一进程内协调，多进程必须使用各自的归档目录。现有 `FetchHTML` 等原始 HTML 归档仍保留原来的文件名和行为，不追溯去重；RuleFetcher 使用上述快照存储，不额外生成一份旧式 HTML 归档。
+
+选中的已保留快照可通过 `rulestore.Repository.ImportSnapshot` 提升为长期样本。它验证文件与摘要，并要求新的显式脱敏策略，将正文保存到独立 `rules.sample_dir`；后续 archive 清理不影响该样本。短期快照不会自动变成长期样本或验收凭据，见 [RULE_STORE.md](./RULE_STORE.md)。
 
 ## 分页、游标和预算
 
@@ -78,7 +159,7 @@ Next 只收到已通过校验、去重和条目预算过滤的数据副本，以
 
 ItemKey 指定业务身份字段，缺失时失败；省略则以完整记录的规范 JSON 摘要作为身份。分页检查点保存请求、正文和条目摘要，随下一页任务进入原 Meta 列；当前任务的输入不推进，保存或提交失败后仍从相同位置重试。条目去重作用于当前分页链，不代替数据库业务唯一键，也不是整个多阶段任务图的全局预算。
 
-任务 URL 带 `#papa-rule=<摘要>`，用于把固定版本、账号、业务元数据和请求游标纳入既有数据库 URL 唯一索引。真实请求 URL 在保留元数据中；网络不会收到身份 fragment。必须用 NewTask 建入口，不要覆盖其 URL/IdempotencyKey、`rule_id`、`rule_version` 或 `_rule_*`。普通 Task 的身份语义和数据库结构不变，无需新增迁移。
+任务 URL 带 `#papa-rule=<摘要>`，用于把固定版本、Catalog 发布身份、账号、业务元数据和请求游标纳入既有数据库 URL 唯一索引。真实请求 URL 在保留元数据中；网络不会收到身份 fragment。必须用 `NewTask` 或 `NewTaskContext` 建入口，不要覆盖其 URL/IdempotencyKey、`rule_id`、`rule_version` 或 `_rule_*`。普通 Task 的身份语义和任务表结构不变；可选持久规则仓库的 6 张表仍须按 `rules.enabled` 显式迁移。
 
 ## 保存、重试与恢复
 
@@ -88,10 +169,14 @@ Save 必须按业务唯一键 upsert，支持并发与重复调用。分页过�
 
 非法规则/任务绑定、越界地址、提取/校验失败、数据行或校验报告截断、不可重放方法不重试。HTTP 408/429/5xx、网络失败、Save/提交失败保留重试；其它非 2xx 不重试。账号分类优先于通用 HTTP 状态：明确过期可在下一轮恢复，暂停/未知账号/权限不足/人工验证等不盲重试。BuildRequest、Next、Save 的业务错误保留 Retryable 分类，可显式 WrapNoRetry；回调需要自己保证并发安全。
 
-重启恢复任务前，应重新加载并验证所有尚有任务引用的规则版本；Registry 当前仅在内存中。已回滚的旧版本仍可供固定版本任务执行。不要在同一个版本号下修改规则，任务依赖的传输、Next、链接映射等业务代码也应保持兼容；当前固定的是规则版本，不是整套 Go 代码快照。
+使用内存 Registry 时，重启恢复任务前应重新加载并验证所有尚有任务引用的规则版本。使用持久 Catalog 时，重建 Repository 后按任务固定版本读取 MySQL，不需要重新 Activate，也不重新读取当前发布指针。无 release 元数据的旧任务保持原绑定语义；缺失版本、内容损坏等情况明确失败，不改绑到最新版本。曾发布的旧版本在回滚后仍可供固定任务执行。不要在同一个版本号下修改规则，任务依赖的传输、Next、链接映射等业务代码也应保持兼容；当前固定的是规则版本，不是整套 Go 代码快照。
+
+把旧 Registry fetcher 换成 Catalog 前，先按原 ID/版本将所有待执行任务引用的旧规则导入 MySQL，验收并发布，保证每个旧引用都能 `Resolve`；再发布最新版作为 Current。不会自动迁移 Registry 的内存内容。若旧版本仅在 Registry 中、在 MySQL 缺失或从未发布，Catalog 执行明确返回不可重试错误，不发 HTTP 或调用 Save。
+
+Catalog 新入口和恢复执行会提前检查当前阶段的固定规则与宿主配置：browser 必须配 HTML，ItemKey、Links.Field/Meta 引用的字段必须存在，详情 URL 不能声明为非字符串或最终转换为 number/bool。不兼容返回不可重试错误，不触发页面请求、Save 或提交。内容损坏通过 `crawlrule.ErrInvalidVersion` 归为永久失败；数据库故障与超时仍可重试。此检查使用任务固定版本，不会借此改绑当前发布。
 
 ## 当前边界
 
-当前具备确定性的执行、验证和追踪基础。尚未包括规则发布持久化/审核后台、分布式规则一致性、自动识别 API 分页结构、HTML 嵌套子列表的声明式映射或模型自动生成/修正规则。JSON 字段可以原样保留嵌套 object/array。后续 Agent 应先产出规则与样本，再通过同一套验证和执行入口。
+当前具备确定性的执行、验证、追踪和可选持久发布：MySQL 事务保护完整站点发布，generation 检查发布竞争，任务固定版本。尚未包括审核后台、自动识别 API 分页结构、HTML 嵌套子列表的声明式映射或模型自动生成/修正规则。JSON 字段可以原样保留嵌套 object/array。后续 Agent 应先产出规则与样本，再通过同一套显式验收与发布入口；宿主自行控制发布权限。
 
 入口默认一次性任务。当前没有自动的全流程周期批次机制；仅设置入口 Repeatable 不会重采已经成功且命中去重的详情/后续页。周期重采需要后续补充独立批次及子任务身份传播，不能把错误重试或恢复能力当成完整的周期采集。
