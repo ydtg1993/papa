@@ -14,10 +14,13 @@
 
 /* 只认内置「任务」表的 trace 动作，避免误伤业务表里同名的动作 */
 var TRACE_ACTION_PATH = '/task/action/trace';
+// Shared read-only entry for native panels; retains Trace's session/order guard.
+var showTaskTrace;
 
 (function () {
     var nativeFetch = window.fetch;
     var traceSequence = 0;
+    showTaskTrace = function(id,stillCurrent) { return openTrace(String(id),++traceSequence,authGeneration,stillCurrent); };
 
     window.fetch = function (input, init) {
         var id = sniffTraceID(input, init);
@@ -49,8 +52,8 @@ var TRACE_ACTION_PATH = '/task/action/trace';
     }
 
     /** 拉追踪数据并弹时间线。 */
-    async function openTrace(id, sequence, epoch) {
-        var current = function () { return sequence === traceSequence && epoch === authGeneration; };
+    async function openTrace(id, sequence, epoch, stillCurrent) {
+        var current = function () { return sequence === traceSequence && epoch === authGeneration && (!stillCurrent || stillCurrent()); };
         try {
             var resp = await apiFetch('/api/task/trace?id=' + encodeURIComponent(id), { current: current });
             if (!resp || !current()) return;

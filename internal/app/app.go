@@ -1020,7 +1020,8 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		RuleAdmin: a.ruleAdministration(),
+		QualityAdmin: a.qualityAdministration(),
+		RuleAdmin:    a.ruleAdministration(),
 		OnRuleChange: func(ev server.RuleChangeEvent) {
 			if rec != nil {
 				rec.RecordEvent(oplog.Event{Table: "rules", Action: ev.Request.Kind, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"site": ev.Request.Site, "operation_id": ev.Request.OperationID, "expected_generation": ev.Request.Generation, "release_id": ev.ReleaseID}})

@@ -105,6 +105,12 @@ function setup() {
         if(mode==='body-error')body.reject(new Error('old trace body'));
         await flush();assert.deepEqual(dialogs.map(d=>d.title),mode==='401'?[]:['任务追踪 #2']);assert.equal(s.messages.includes('login'),false);
     }
+    // Native quality panels open Trace with GET only; leaving the panel cancels display.
+    {const s=setup(),dialogs=[];s.c.window=s.c;s.c.esc=String;s.c.Dialog={open:d=>dialogs.push(d)};
+     vm.runInContext(fs.readFileSync(path.join(process.argv[2],'trace.js'),'utf8'),s.c);
+     let current=true;const p=s.c.showTaskTrace('9007199254740993',()=>current);
+     assert.equal(s.requests.length,1);assert.equal(s.requests[0].url,'/api/task/trace?id=9007199254740993');
+     current=false;s.requests[0].resolve(response({steps:[]}));await p;assert.equal(dialogs.length,0);}
     // Successful re-authentication reloads a batch page that lost its old request.
     {const s=setup(),mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
      const a=mo.indexOf('    var pendingLoginRefresh ='),b=mo.indexOf('    function setStatus(',a);vm.runInContext(mo.slice(a,b),s.c);

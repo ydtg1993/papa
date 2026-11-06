@@ -86,7 +86,8 @@ agent:
   enabled: false
 
 # 可选的运行质量摘要：独立于 rules/agent，开启后显式运行 papa migrate。
-# 只登记观测/固定报告/复分析请求表；宿主显式接入 Collector，不自动调用模型或清理数据。
+# 登记观测/固定报告/复分析请求表并接通后台只读质量查询。
+# 宿主显式接入 Collector；不自动保存报告、调用模型或清理数据。
 quality:
   enabled: false
 

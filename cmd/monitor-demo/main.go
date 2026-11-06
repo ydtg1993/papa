@@ -58,6 +58,8 @@ func main() {
 	}
 
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
+		QualityAdmin:       newDemoQuality(),
+		TaskTrace:          demoQualityTrace,
 		RuleAdmin:          &demoRules{},
 		RuleSchedules:      schedules.list,
 		RuleScheduleDetail: schedules.detail,
