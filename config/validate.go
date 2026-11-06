@@ -337,6 +337,13 @@ var rules = []rule{
 		return nil
 	}},
 
+	{"agent.enabled", func(c *Config) error {
+		if c.Agent.Enabled && !c.Rules.Enabled {
+			return fmt.Errorf("  受控分析 Agent 需要 rules.enabled=true；启用后请显式运行 papa migrate")
+		}
+		return nil
+	}},
+
 	{"rules.sample_dir", func(c *Config) error {
 		if c.Rules.Enabled && strings.TrimSpace(c.Rules.SampleDir) == "" {
 			return fmt.Errorf("  启用持久规则仓库时必须给出长期样本目录，如 ./rule-samples；创建规则表请显式运行 papa migrate")

@@ -15,6 +15,8 @@ func TestFrameworkModelColumnsHaveComment(t *testing.T) {
 	cfg.Server.OperationLog = true
 	cfg.Crawler.Trace.Enabled = true
 	cfg.Rules.Enabled = true
+	cfg.Agent.Enabled = true
+	cfg.Quality.Enabled = true
 	namer := schema.NamingStrategy{}
 	for _, model := range FrameworkModels(cfg) {
 		parsed, err := schema.Parse(model.Value, &sync.Map{}, namer)

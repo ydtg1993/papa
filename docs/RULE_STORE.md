@@ -1,7 +1,7 @@
 # 持久规则仓库、样本与发布
 
 > 面向：希望在重启后保留规则、验收记录与发布历史，并让新入口使用已发布版本的业务。
-> 配套：[离线规则](./CRAWL_RULES.md)、[规则执行器](./RULE_FETCHER.md)、[配置与迁移](./CORE_CONFIG.md)、[数据落地](./DATA_LANDING_GUIDE.md)。
+> 配套：[离线规则](./CRAWL_RULES.md)、[规则执行器](./RULE_FETCHER.md)、[受控网站分析](./SITE_AGENT.md)、[配置与迁移](./CORE_CONFIG.md)、[数据落地](./DATA_LANDING_GUIDE.md)。
 
 `pkg/rulestore` 使用 MySQL 保存规则与发布元数据，使用 `FileBlobs` 保存经明确脱敏策略允许的样本正文。仓库实现 `crawlrule.Catalog`，可交给 `RuleFetcherConfig.Catalog`。原来的内存 `Registry` 与静态 `Bindings` 仍可使用。
 
@@ -48,6 +48,8 @@ if err != nil { return err }
 `NewFileBlobs` 创建并打开目录；配置加载本身不创建它。元数据使用已有 MySQL 连接，构造器拒绝非 MySQL、DryRun 或 `db.Begin()` 等外层事务连接。发布必须拥有最外层事务的 COMMIT，不能把保存点释放当成持久提交。普通连接与开启 PrepareStmt 的普通连接均可使用。关闭进程时先结束相关操作，再关闭文件库与数据库。
 
 6 张表分别为 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`。关闭开关后再迁移不会删除已有表或发布历史，也不会使手工持有的 Repository 停止工作。
+
+如需模型辅助生成候选，再开启 `agent.enabled`（依赖 `rules.enabled`）并显式迁移两张审计表 `crawler_agent_runs`、`crawler_agent_steps`。宿主通过 `crawlagent.New` 复用此仓库的样本、草稿与 Verify，通过 `agentstore.New` 保存运行/步骤；构造器不建表，开关不自动分析。接线和回放/真实模型示例见 [SITE_AGENT.md](./SITE_AGENT.md)。
 
 样本 `metadata_json` 使用 LONGTEXT，应用仍限制元数据大小。若已经用第三批早期代码建成 TEXT 列，需再显式运行一次 `papa migrate` 扩容；已在 MySQL 验证保留原记录。普通启动不会执行类型升级，已有较大样本表应安排低峰期迁移。
 
@@ -201,4 +203,6 @@ HTTP 使用 `ShadowInput{Response: response}`；渲染 DOM 使用 `Rendered: tru
 | 规则结构差异 | 最多 128 项，超出用 Truncated 标记 |
 | 影子结果 | 10 万字段单元、16 MiB 序列化预算，另有嵌套和遍历预算 |
 
-仓库负责持久数据与事务一致性，宿主负责身份授权、选择样本、脱敏、备份、上线策略和调用时机。当前提供 Go API 与完整示例，没有发布 HTTP 后台、专用发布 CLI、自动 Agent、模型生成/修正规则或自动影子报告入库，也不自动授予生产发布权限。
+仓库负责持久数据与事务一致性，宿主负责身份授权、选择样本、脱敏、备份、上线策略和调用时机。当前提供 Go API 与完整示例，没有发布 HTTP 后台或专用发布 CLI，也不自动授予生产发布权限。
+
+[受控分析 Agent](./SITE_AGENT.md) 可在宿主范围和预算内生成/修正规则候选，使用预先固定的训练样本与独立验收集。它只调用仓库的样本、草稿、查询和 Verify 接口；`awaiting_review`、`verified=true` 表示独立验收通过待审阅，缺少独立样本则为 `needs_fixtures`。发布仍由宿主审阅后显式调用 Publish，并使用实际 generation 与新 operationID；Agent 不改变 Current。

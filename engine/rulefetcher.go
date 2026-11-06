@@ -11,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/pkg/discovery"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/pkg/rulequality"
 )
 
 func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
@@ -123,7 +124,7 @@ func (f *RuleFetcher) RunHTTP(ctx context.Context, task *Task, client *htmlfetch
 // FetchHandler uses Engine.SubmitTask; embedded/offline demos can use a bounded
 // local queue. A nil error from submit must mean the task is durably accepted or
 // already exists. The business Save and queue are not one atomic transaction.
-func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit func(*Task) error) error {
+func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit func(*Task) error) (runErr error) {
 	if e == nil || submit == nil {
 		return core.WrapNoRetry(fmt.Errorf("rule fetcher: engine and submit required"))
 	}
@@ -132,11 +133,30 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 		return core.WrapNoRetry(err)
 	}
 	requestHash := ruleDigest([]byte(ruleJSON(req)))
+	ref := bindings[task.Stage]
+	ctx, quality := f.beginRuleQuality(ctx, task, ref, requestHash, len(cp.Requests)+1)
+	if quality != nil {
+		defer func() {
+			p := recover()
+			quality.finish(ctx, runErr, p != nil)
+			if p != nil {
+				panic(p)
+			}
+		}()
+	}
+	// Registry availability used to be checked while rebuilding task identity.
+	// Keep its error/no-retry precedence over pagination stops, but record it
+	// only after the pinned metadata and identity have independently validated.
+	if f.config.Registry != nil {
+		if _, err := f.config.Registry.Verified(ref.ID, ref.Version); err != nil {
+			return core.WrapNoRetry(err)
+		}
+	}
 	if slices.Contains(cp.Requests, requestHash) {
+		quality.stop("request-cycle")
 		task.Trace.Step("规则分页停止", map[string]any{"reason": "request-cycle"})
 		return nil
 	}
-	ref := bindings[task.Stage]
 	compiled, err := f.resolveRule(ctx, ref)
 	if err != nil {
 		return err
@@ -144,7 +164,11 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 	if err := f.checkRuleContract(compiled); err != nil {
 		return core.WrapNoRetry(err)
 	}
+	if quality != nil {
+		quality.value.FieldSchemaSHA256 = rulequality.FieldSchemaDigest(compiled.Rule())
+	}
 	ctx = f.beginRuleSnapshot(ctx, task, req, compiled.Rule().Format)
+	quality.phase("source", rulequality.FailureRule)
 	page, err := f.readRulePage(ctx, cloneRuleTask(task), e, req, compiled)
 	if err != nil {
 		return err
@@ -155,6 +179,7 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 	page.Rule = ref
 	page.Page = len(cp.Requests) + 1
 	if slices.Contains(cp.Bodies, page.BodySHA256) {
+		quality.stop("repeated-content")
 		task.Trace.Step("规则分页停止", map[string]any{"reason": "repeated-content"})
 		return nil
 	}
@@ -162,6 +187,7 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 	cp.Bodies = append(cp.Bodies, page.BodySHA256)
 	// Keep only novel, budgeted records; the original extraction was validated
 	// before filtering. Evidence indices are remapped to the retained rows.
+	quality.phase("deduplicate", rulequality.FailureValidation)
 	keep := map[int]int{}
 	records := page.Result.Records[:0]
 	for i, record := range page.Result.Records {
@@ -185,6 +211,9 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 		records = append(records, record)
 	}
 	page.Result.Records = records
+	if quality != nil {
+		quality.value.NewRows = len(records)
+	}
 	page.Result.Validation.Rows = len(records)
 	evidence := page.Result.Evidence[:0]
 	for _, ev := range page.Result.Evidence {
@@ -195,10 +224,12 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 	}
 	page.Result.Evidence = evidence
 	if len(records) == 0 {
+		quality.stop("no-new-items")
 		task.Trace.Step("规则分页停止", map[string]any{"reason": "no-new-items"})
 		return nil
 	}
 	var next *RuleRequest
+	quality.phase("planning", rulequality.FailurePlanning)
 	if len(cp.Items) >= cp.MaxItems {
 		page.StopReason = "item-limit"
 	} else if len(cp.Requests) >= cp.MaxPages {
@@ -229,31 +260,41 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 			}
 		}
 	}
+	quality.stop(page.StopReason)
 	// Resolve linked stages once before Save. A database outage must not become
 	// a permanent planning failure or allow partially accepted business output.
 	if f.config.Catalog != nil {
 		for _, link := range f.config.Links {
 			if _, err := f.resolveRule(ctx, bindings[link.Stage]); err != nil {
+				quality.phase("planning", rulequality.FailureRule)
 				return err
 			}
 		}
 	}
-	children, err := f.ruleChildren(task, bindings, cp, page, next)
+	children, err := f.ruleChildren(ctx, task, bindings, cp, page, next)
 	if err != nil {
 		return core.WrapNoRetry(err)
+	}
+	if quality != nil {
+		quality.value.PlannedChildren = len(children)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	quality.phase("save", rulequality.FailureSave)
 	if err := f.config.Save(ctx, cloneRuleTask(task), page); err != nil {
 		return fmt.Errorf("rule fetcher: save: %w", err)
 	}
 	for _, child := range children {
+		quality.phase("submit", rulequality.FailureSubmit)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := submit(child); err != nil {
 			return fmt.Errorf("rule fetcher: submit child: %w", err)
+		}
+		if quality != nil {
+			quality.value.SubmittedChildren++
 		}
 	}
 	task.Trace.Step("规则采集完成", map[string]any{"rule_id": ref.ID, "rule_version": ref.Version, "records": len(records), "page": page.Page, "children": len(children), "stop_reason": page.StopReason})
@@ -294,7 +335,7 @@ func cloneRulePage(page RulePage) RulePage {
 	return page
 }
 
-func (f *RuleFetcher) ruleChildren(task *Task, bindings map[string]RuleRef, cp ruleCheckpoint, page RulePage, next *RuleRequest) ([]*Task, error) {
+func (f *RuleFetcher) ruleChildren(ctx context.Context, task *Task, bindings map[string]RuleRef, cp ruleCheckpoint, page RulePage, next *RuleRequest) ([]*Task, error) {
 	children := []*Task{}
 	seen := map[string]bool{}
 	plannedBytes := 0
@@ -302,6 +343,7 @@ func (f *RuleFetcher) ruleChildren(task *Task, bindings map[string]RuleRef, cp r
 		if !seen[t.URL+"\x00"+t.Stage] {
 			plannedBytes += len(t.URL) + len(ruleJSON(t.Meta))
 			if len(children) >= f.config.MaxChildren || plannedBytes > 8<<20 {
+				ruleQualityFrom(ctx).phase("planning", rulequality.FailureBudget)
 				return fmt.Errorf("rule fetcher: child plan exceeds task or metadata budget")
 			}
 			seen[t.URL+"\x00"+t.Stage] = true

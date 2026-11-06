@@ -104,6 +104,23 @@ func (f *RuleFetcher) NewTaskContext(ctx context.Context, request RuleRequest, m
 }
 
 func (f *RuleFetcher) makeTask(stage string, request RuleRequest, meta map[string]string, bindings map[string]RuleRef, account string, checkpoint ruleCheckpoint) (*Task, error) {
+	task, err := f.makeTaskIdentity(stage, request, meta, bindings, account, checkpoint)
+	if err != nil {
+		return nil, err
+	}
+	if f.config.Registry != nil {
+		ref := bindings[stage]
+		if _, err := f.config.Registry.Verified(ref.ID, ref.Version); err != nil {
+			return nil, err
+		}
+	}
+	return task, nil
+}
+
+// makeTaskIdentity validates and rebuilds persisted identity without requiring
+// the rule version to be loaded. Restored tasks must pass this check before a
+// missing version can safely be attributed to their quality observation.
+func (f *RuleFetcher) makeTaskIdentity(stage string, request RuleRequest, meta map[string]string, bindings map[string]RuleRef, account string, checkpoint ruleCheckpoint) (*Task, error) {
 	var err error
 	request.URL, err = f.allowedURL(request.URL)
 	if err != nil {
@@ -115,11 +132,6 @@ func (f *RuleFetcher) makeTask(stage string, request RuleRequest, meta map[strin
 	ref, ok := bindings[stage]
 	if !ok {
 		return nil, fmt.Errorf("rule task: target stage has no pinned rule")
-	}
-	if f.config.Registry != nil {
-		if _, err := f.config.Registry.Verified(ref.ID, ref.Version); err != nil {
-			return nil, err
-		}
 	}
 	releaseText := meta[ruleReleaseMeta]
 	if _, err := decodeRuleRelease(releaseText); err != nil {
@@ -200,7 +212,7 @@ func (f *RuleFetcher) taskState(task *Task) (RuleRequest, map[string]RuleRef, ru
 			seen[v] = true
 		}
 	}
-	expected, err := f.makeTask(task.Stage, req, task.Meta, bindings, task.Meta[ruleAccountMeta], cp)
+	expected, err := f.makeTaskIdentity(task.Stage, req, task.Meta, bindings, task.Meta[ruleAccountMeta], cp)
 	if err != nil {
 		return req, nil, cp, err
 	}

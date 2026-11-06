@@ -40,6 +40,10 @@
   正是被它拦下才改成调 `quote()` 的）。它与上一条的分工：上一条问"这个名字是不是保留字"，这一条问
   "这个名字有没有加引号"—— 判据不重叠，所以两条都要在。来历见框架仓库的 `docs/issues/changes.md`（同上，不随脚手架复制）。
 
+受控分析模块可单独验证：`go test ./pkg/crawlagent/... ./pkg/agentstore ./pkg/webaccess ./examples/siteagent`。模型测试使用本地模拟服务/回放；真实审计与 runner 集成需要 `PAPA_AGENT_MYSQL_TEST_DSN`，完整示例需要 `PAPA_AGENT_EXAMPLE_TEST_DSN` 和本机 Chromium，均使用专用测试库。缺少依赖的跳过不代表已验证该路径，入口与具体边界见 [SITE_AGENT.md](./SITE_AGENT.md) 和框架仓库的 `examples/siteagent/README.md`。
+
+运行质量模块可单独执行 `go test ./pkg/rulequality`，引擎接线执行 `go test ./engine -run 'RuleQuality|RuleFetcher|RuleSnapshot'`。持久化和迁移集成分别使用 `PAPA_QUALITY_MYSQL_TEST_DSN`、`PAPA_QUALITY_MIGRATION_TEST_DSN`，库名必须包含 `quality_test`；没有专用库时跳过不代表真库验证通过。纯报告测试不调用模型，复分析回放也不验证真实供应商质量或账单；入口和边界见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
+
 ## 2. 业务项目（`papa new` 生成）
 
 生成的 `Makefile` 在框架基础上多几个目标：
@@ -106,6 +110,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   rulefetcher_tasks.go          固定版本/账号、请求身份、持久化分页检查点与来源范围
   rulefetcher_source.go         HTTP/账号/Rod 来源适配、失败分类与安全错误
   rulefetcher_catalog.go        持久 Catalog 版本解析、完整绑定检查与固定发布身份
+  rulequality.go               可选执行质量旁路、原始提取摘要与终止环节分类；rulequality_test.go 覆盖故障不重放业务
   rule_snapshot_types.go        规则页面观察清单：规则/尝试、双摘要、正文引用与省略原因
   rule_snapshot.go              尝试登记、显式脱敏、预算、EvidenceID 与最小 Trace 引用
   rule_snapshot_store.go        脱敏正文按内容共用、原子发布与按存活清单引用回收
@@ -149,6 +154,16 @@ pkg/                             可独立复用的件
   rulestore/                    types.go 数据契约；repository.go 不可变规则与固定版本解析；repository_samples.go 样本/集合/验收；repository_release.go 完整站点发布、CAS、幂等与回滚
   rulestore/blobs.go             长期正文按内容保存、原子发布、完整性校验；sample.go 显式脱敏；snapshot.go 选定快照导入；compare.go 结构对比与离线影子评估
   rulestore/review_*_test.go     constructor 外层事务；release 并发/提交故障；rollback 历史凭据；verification 样本/验收一致性真库回归
+  crawlagent/                   types.go/config.go 宿主契约；run.go/action.go/tools.go 有限工具循环；evidence.go/url.go/selector_budget.go 证据隔离与预算；audit.go 审计引用
+  crawlagent/*_test.go           回放修正、权限/预算/隐藏样本隔离、审计失败与真实 MySQL runner 重开回归
+  crawlagent/run_identity_test.go 宿主 RunWithID 身份、额外证据与隐藏样本隔离回归
+  crawlagent/model/             model.go Provider 契约；compatible.go 有界兼容 HTTP 客户端；replay.go 确定性回放；对应测试不调用真实模型
+  agentstore/                   types.go/state.go 运行/步骤与 revision；memory.go 内存实现；mysql.go 事务持久化；store_test.go/mysql_test.go 审计一致性与重开验证
+  rulequality/                  types.go/validation.go 摘要、窗口、策略与状态契约；summary.go 无值字段统计；collector.go 有界旁路与失败计数；aggregate.go 固定窗口报告
+  rulequality/{aggregate,collector,summary}_test.go 字段分母、重试折叠、基线兼容、缺失覆盖及旁路超时/panic/race 回归
+  rulequality/memory.go          内存 Store；mysql.go 不可变观测/报告、请求 CAS 与显式有界清理；对应 *_test.go 验证重开、并发与未知提交
+  rulequality/reanalysis.go      宿主显式复分析、选定快照导入与固定 Agent RunID；reanalysis_test.go 验证幂等、证据和授权边界
+  webaccess/                    policy.go/session.go 范围与预算；http.go 受控 GET/robots/重定向；render.go 独立 Chromium 出口；*_test.go 拒绝边界回归
   loggers/ notify/ middleware/{proxy,m3u8,filedown}
   middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
@@ -156,9 +171,15 @@ obs/                             运行报告引擎（通用、只读）：obs.g
                                  pattern/ 内置模式库 / report/ 4 产物渲染
 models/                          框架自带的表结构
 models/rule_publication.go       可选规则/样本/集合/验收/发布/站点指针 6 表，按 rules.enabled 纳入显式迁移
+models/agent.go                  可选运行/步骤审计 2 表，按 agent.enabled 纳入显式迁移
+models/rule_quality.go           可选观测/报告/复分析请求 3 表，独立按 quality.enabled 纳入显式迁移
+internal/database/quality_migrate_mysql_test.go 质量开关独立性、普通启动不建表与重复显式迁移的真库回归
+internal/database/quality_models_test.go 三张可选模型与任务表字段边界守卫；config/quality_test.go 独立开关校验
 engine/review_catalog_test.go     动态规则与宿主兼容、持久任务恢复、永久/临时错误分类回归
 examples/rulecrawl/              main.go 本地 HTML / JSON POST 游标完整流程；main_test.go 示例验收；README.md 生产接线
 examples/rulepublish/            main.go 专用 MySQL＋本机 HTTP 的验收/发布/恢复/影子/回滚示例；main_test.go 入口约束验证
+examples/siteagent/              main.go 本地静态/DOM/GET JSON 分析与审计重开；main_test.go MySQL＋Chromium 回放验收；README.md 真实模型显式接线
+examples/rulequality/            本地网站质量场景、固定报告与显式复分析回放；入口见 RULE_QUALITY.md
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
 ```
 
@@ -176,6 +197,9 @@ papa 门面 ──► internal/app ──► engine ──► internal/{workerpo
                          └──► tasksource/oplog 还依赖 admin/gormsource
 pkg/notify ──► core
 pkg/rulestore ──► pkg/crawlrule + pkg/htmlfetch + models + GORM（不依赖 engine；通过 Catalog 接入）
+pkg/crawlagent ──► pkg/{crawlagent/model,webaccess,agentstore,crawlrule,htmlfetch,rulestore}（不依赖 engine；无生产发布/业务保存接口）
+pkg/agentstore ──► models + GORM（构造不迁移，不自动接管运行）
+pkg/rulequality ──► pkg/{crawlrule,crawlagent,agentstore,rulestore,htmlfetch} + models + GORM（不依赖 engine；采集旁路不调用模型）
 obs ──► pkg/events + models（只读；不依赖 engine / admin / app，业务项目可直接 import 扩展）
 ```
 
@@ -222,6 +246,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
 | 落盘 | 原始 HTML 归档按 `{dir}/{site}/{stage}/` 分两层；RuleFetcher 观察清单记录 `site/stage`，同一归档根下的脱敏正文按内容共用 | `engine/archive.go` 的 `relPath`；`engine/rule_snapshot*.go` |
 | 发布 | 一个站点的完整 stage→规则版本表在事务中切换，generation 防止并发覆盖；任务固定整组绑定及发布身份 | `pkg/rulestore/repository_release.go`、`engine/rulefetcher_catalog.go` |
+| 质量 | 报告固定站点、阶段、规则版本与 release 的观测窗口；只覆盖已记录数据，重试不放大逻辑页面数 | `pkg/rulequality/aggregate.go`、`engine/rulequality.go` |
 
 ### 全局，且**有意**如此（别想着分站）
 
@@ -233,6 +258,8 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
   按站点分流出口是业务自己的事（`papa.WithProxyURL`）。
 - **操作日志/访问令牌**：与站点无关（前者记的是后台动作，后者是后台的凭据）。
 - **规则仓库与样本目录**：`rules.enabled/sample_dir` 是应用级配置，规则 ID/版本与样本标识在仓库内唯一；正文按内容共用且不自动 GC。发布指针按站点切分，短期 archive 仍使用独立目录和保留期。
+- **受控分析**：`agent.enabled` 是应用级审计表开关；Goal 的 Site/Stages、允许 origin/路径和预算由宿主逐次提供，使用独立访问客户端和浏览器。分析 run 不参与引擎三队列，也不自动发布或提交业务任务；完整契约见 [SITE_AGENT.md](./SITE_AGENT.md)。
+- **质量反馈**：`quality.enabled` 是独立的应用级三表开关，不要求开启 rules/agent。宿主显式构造 Collector、生成固定 Report，随后才可选择创建并执行复分析；旁路失败不改变任务终态。Collector 失败计数仅覆盖本实例生命周期，不能证明进程重启前或其它入口的完整覆盖，见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 ### 按站点切的进度：三队列已**并回全局**；`crawler` 那四项**有意**保持全局
 

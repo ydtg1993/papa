@@ -103,6 +103,17 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	}
 
 	// 清单里的名字是给人看的提示（`papa migrate` 会打印它），必须和模型的实际表名一致；
+	c.Agent.Enabled = true
+	if got := names(c); !reflect.DeepEqual(got, []string{
+		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_task_trace",
+		"crawler_rule_versions", "crawler_rule_samples", "crawler_rule_sample_sets",
+		"crawler_rule_verifications", "crawler_rule_releases", "crawler_rule_sites",
+		"crawler_agent_runs", "crawler_agent_steps",
+	}) {
+		t.Fatalf("启用 Agent 后的清单 = %v", got)
+	}
+
+	// 清单里的名字必须和模型的实际表名一致。
 	// CrawlerTask 例外 —— 它没实现 TableName，表名靠复数化规则推成 crawler_tasks。
 	for _, m := range FrameworkModels(c) {
 		if m.Name == "crawler_tasks" {

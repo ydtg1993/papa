@@ -39,6 +39,18 @@ func TestReadSnapshotChecksBodyAndKeepsRenderedSemantics(t *testing.T) {
 	if err != nil || !input.Rendered || input.StatusCode != 0 || input.EvidenceID != id || string(input.Body) != string(body) {
 		t.Fatalf("read %+v,%v", input, err)
 	}
+	// A report hashes the original response, not these sanitized retained bytes.
+	original := strings.Repeat("c", 64)
+	m["original_sha256"] = original
+	write()
+	if _, err := ReadSnapshotMatching(context.Background(), dir, id, original); err != nil {
+		t.Fatalf("matching original digest rejected: %v", err)
+	}
+	for _, expected := range []string{"", "invalid", digest} {
+		if _, err := ReadSnapshotMatching(context.Background(), dir, id, expected); err == nil {
+			t.Fatalf("accepted mismatched original digest %q", expected)
+		}
+	}
 	for _, key := range []string{"version", "body_file", "body_sha256", "body_omitted", "body_bytes", "status_code", "source_url"} {
 		old, exists := m[key]
 		switch key {

@@ -49,6 +49,32 @@ rules:
 
 元数据复用 `db`，经显式脱敏策略批准的正文保存在独立样本文件中，不写入 MySQL。开启后先运行 `papa migrate`，再由宿主构造 `rulestore.New(db, blobs)` 并传给 `RuleFetcherConfig.Catalog`。样本目录不受 `crawler.archive.retention` 管理，没有自动 GC；不要把会到期的 archive 正文路径当作长期样本。完整接线与发布过程见 [RULE_STORE.md](./RULE_STORE.md)。
 
+### agent —— 受控分析运行审计
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | 开启要求 `rules.enabled=true`；将 `crawler_agent_runs`、`crawler_agent_steps` 纳入显式迁移和启动缺表检查 |
+
+```yaml
+agent:
+  enabled: false
+```
+
+开启前同时配置 `rules.enabled` 与 `rules.sample_dir`，再显式运行 `papa migrate`。该开关不创建 Agent、不调用模型或自动恢复旧运行。宿主通过 `agentstore.New(db)` 与 `crawlagent.New(Config)` 接线；访问策略、预算、模型端点/名称、密钥环境变量名和 `AllowRecordAPI` 都由 Go 配置提供，不是 `agent` 下的 YAML 键。Agent 只生成待审核候选，详见 [SITE_AGENT.md](./SITE_AGENT.md)。
+
+### quality —— 规则运行质量反馈
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | 将观测、固定报告、复分析请求三张表纳入显式迁移与启动缺表检查；独立于 `rules.enabled` 和 `agent.enabled` |
+
+```yaml
+quality:
+  enabled: false
+```
+
+开启后先显式执行 `papa migrate`，再由宿主构造 `rulequality.New(db)`、`NewCollector` 并接入 `RuleFetcherConfig.Quality`。开关本身不收集数据、不生成报告、不调用模型。报告窗口、质量策略、基线和 Collector 超时通过 Go API 提供，不是 `quality` 下的 YAML 键。纯质量观测可以独立使用；显式复分析还需要规则仓库与 Agent。接线及覆盖边界见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
+
 ### app —— 环境
 
 | 键 | 类型 | 说明 |
@@ -391,10 +417,14 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 —— `papa migrate` 不会替你改。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config` 总是建；
-`crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）和规则仓库表（`rules.enabled`）
+`crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、规则仓库表（`rules.enabled`）、分析审计表（`agent.enabled`）和质量反馈表（`quality.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
 `rules.enabled` 包含 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`。关闭开关不删除已存在的规则、样本或发布历史。普通启动只检查表；`rulestore.New` 也不隐式迁移。任务的完整规则绑定与 release 身份继续放在既有 `crawler_tasks.meta`，不为它们新增任务列。
+
+`agent.enabled` 额外包含 `crawler_agent_runs`、`crawler_agent_steps`，并依赖 `rules.enabled=true`。关闭后不会删除已有审计；普通启动和 `agentstore.New` 均不建表或接管未完成运行。恢复时先确认旧执行者已结束，再显式中断，不能自动重发状态不明的模型/网站请求，见 [SITE_AGENT.md](./SITE_AGENT.md)。
+
+`quality.enabled` 独立包含 `crawler_rule_observations`、`crawler_rule_quality_reports`、`crawler_rule_reanalysis_requests`；不新增任务表字段。普通启动与 `rulequality.New` 不迁移，关闭开关也不删除历史报告或请求。只有宿主显式创建并执行复分析请求才可能调用 Agent，见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 若已用第三批早期代码创建 `crawler_rule_samples.metadata_json TEXT`，本版须再执行一次 `papa migrate` 扩为 LONGTEXT，保留原记录以容纳合法 URL 的 JSON 转义结果。普通启动不升级列类型；已有较大样本表建议低峰期执行。该扩容已用专用 MySQL 验证。
 

@@ -17,6 +17,7 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
 	"github.com/ydtg1993/papa/v3/pkg/discovery"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/pkg/rulequality"
 )
 
 // ruleSourceError preserves error identity without copying URLs, provider
@@ -39,6 +40,7 @@ func ruleSourceInvalid(message string) error {
 
 func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, req RuleRequest, compiled *crawlrule.Compiled) (RulePage, error) {
 	var out RulePage
+	quality := ruleQualityFrom(ctx)
 	if task == nil || e == nil || compiled == nil {
 		return out, ruleSourceInvalid("task, engine and compiled rule required")
 	}
@@ -55,7 +57,11 @@ func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, r
 		out.SourceURL, body, err = f.readRuleBrowser(ctx, task, e, req.URL)
 		out.Rendered = true
 		if err == nil {
+			quality.phase("extract", rulequality.FailureExtraction)
 			out.Result, err = compiled.EvaluateRendered(out.SourceURL, body)
+			if quality != nil {
+				quality.evaluated(compiled.Rule(), out.Result, err)
+			}
 			recordRuleSnapshotValidation(ctx, out.Result.Validation)
 			if err != nil {
 				err = core.WrapNoRetryKind("rule-extraction", ruleSourceFailure("rendered extraction", err))
@@ -68,22 +74,30 @@ func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, r
 			out.SourceURL = response.URL.String()
 			out.StatusCode = response.StatusCode
 			body = response.Body
+			quality.phase("extract", rulequality.FailureExtraction)
 			out.Result, err = compiled.Evaluate(response)
+			if quality != nil {
+				quality.evaluated(compiled.Rule(), out.Result, err)
+			}
 			recordRuleSnapshotValidation(ctx, out.Result.Validation)
 			if err != nil {
 				err = core.WrapNoRetryKind("rule-extraction", ruleSourceFailure("HTTP extraction", err))
 			}
 		}
 	}
+	// Keep a failed evaluation's internal report and original body identity.
+	// Run returns on error before deduplication, planning or the business Save.
+	if body != nil {
+		digest := sha256.Sum256(body)
+		out.BodySHA256 = hex.EncodeToString(digest[:])
+	}
 	if err != nil {
-		return RulePage{}, err
+		return out, err
 	}
 	if out.Result.Truncated || out.Result.Validation.Truncated {
-		return RulePage{}, ruleSourceInvalid("extraction or validation exceeded its budget")
+		return out, ruleSourceInvalid("extraction or validation exceeded its budget")
 	}
 	out.Rule = RuleRef{ID: task.Meta["rule_id"], Version: task.Meta["rule_version"]}
-	digest := sha256.Sum256(body)
-	out.BodySHA256 = hex.EncodeToString(digest[:])
 	return out, nil
 }
 
@@ -93,6 +107,7 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 		var err error
 		request, err = f.config.BuildRequest(ctx, cloneRuleTask(task), req)
 		if err != nil {
+			ruleQualityFrom(ctx).phase("source", rulequality.FailurePlanning)
 			return nil, ruleSourceFailure("request construction", err)
 		}
 	}
@@ -120,17 +135,25 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 	var response *htmlfetch.Response
 	if id := task.Meta[ruleAccountMeta]; id != "" {
 		if e.GetAccountManager() == nil {
+			ruleQualityFrom(ctx).phase("source", rulequality.FailureHost)
 			return nil, ruleSourceInvalid("account manager is not configured")
 		}
 		response, err = e.FetchAccountHTTP(ctx, account.Key{Site: task.Site, ID: id}, request)
 	} else {
 		if e.htmlClient == nil {
+			ruleQualityFrom(ctx).phase("source", rulequality.FailureHost)
 			return nil, ruleSourceInvalid("HTTP client is not configured")
 		}
 		response, err = e.FetchHTTP(ctx, request)
 	}
+	if response != nil {
+		// Capture status and complete-body identity even for rejected responses.
+		// No URL, credentials, headers or body bytes enter the quality record.
+		ruleQualityFrom(ctx).response(response.StatusCode, false, response.Body)
+	}
 	var oversized *htmlfetch.BodyTooLargeError
 	if errors.As(err, &oversized) {
+		ruleQualityFrom(ctx).phase("source", rulequality.FailureBudget)
 		// Preserve the existing budget error precedence, but never attach even
 		// unavailable-response metadata to an unvalidated final URL.
 		if response != nil && response.URL != nil {
@@ -167,11 +190,13 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 	// inside Manager.Do; a replay-safe task must be able to refresh next attempt.
 	for _, outcome := range []error{account.ErrUnknown, account.ErrPaused, account.ErrExpired, account.ErrForbidden, account.ErrChallenge, account.ErrSuperseded, account.ErrUnsupported} {
 		if errors.Is(err, outcome) {
+			ruleQualitySourceFailure(ctx, err, 0, rulequality.FailureNetwork)
 			return nil, ruleSourceTransportError("account HTTP exchange", err)
 		}
 	}
 	if response != nil {
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			ruleQualitySourceFailure(ctx, err, response.StatusCode, rulequality.FailureHTTP)
 			statusErr := fmt.Errorf("rule fetcher: HTTP status %d", response.StatusCode)
 			if response.StatusCode >= 500 || response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests {
 				return nil, statusErr
@@ -180,9 +205,11 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 		}
 	}
 	if err != nil {
+		ruleQualitySourceFailure(ctx, err, 0, rulequality.FailureNetwork)
 		return nil, ruleSourceTransportError("HTTP exchange", err)
 	}
 	if response == nil {
+		ruleQualityFrom(ctx).phase("source", rulequality.FailureHost)
 		return nil, ruleSourceInvalid("HTTP transport returned no response")
 	}
 	return response, nil
@@ -229,6 +256,7 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 			return ruleSourceFailure("browser DOM read", err)
 		}
 		body = []byte(html)
+		ruleQualityFrom(ctx).response(0, true, body)
 		recordRuleSnapshot(ctx, finalURL, 0, true, body)
 		return nil
 	}
@@ -237,7 +265,7 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 	// before the page owner closes it. Evidence failures never replace the
 	// original navigation/wait error or trust the requested URL as the final URL.
 	readFailure := func(page *rod.Page) {
-		if ruleObservationFrom(ctx) == nil {
+		if ruleObservationFrom(ctx) == nil && ruleQualityFrom(ctx) == nil {
 			return
 		}
 		captureCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
@@ -255,14 +283,17 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 		}
 		html, htmlErr := page.HTML()
 		if htmlErr != nil {
+			ruleQualityFrom(ctx).response(0, true, nil)
 			recordRuleSnapshotUnavailable(ctx, actualURL, 0, true, "browser-dom-unavailable")
 			return
 		}
+		ruleQualityFrom(ctx).response(0, true, []byte(html))
 		recordRuleSnapshot(ctx, actualURL, 0, true, []byte(html))
 	}
 	var err error
 	if id := task.Meta[ruleAccountMeta]; id != "" {
 		if e.GetAccountManager() == nil {
+			ruleQualityFrom(ctx).phase("source", rulequality.FailureHost)
 			return "", nil, ruleSourceInvalid("account manager is not configured")
 		}
 		err = e.WithAccountBrowser(ctx, account.Key{Site: task.Site, ID: id}, func(page *rod.Page) error {
@@ -293,6 +324,7 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 		})
 	} else {
 		if e.browserPool == nil {
+			ruleQualityFrom(ctx).phase("source", rulequality.FailureHost)
 			return "", nil, ruleSourceInvalid("browser pool is not configured")
 		}
 		opts := mergeBrowserOptions(ctx, browser.PageOptions{Timeout: 30 * time.Second})
@@ -313,6 +345,7 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 		})
 	}
 	if err != nil {
+		ruleQualitySourceFailure(ctx, err, 0, rulequality.FailureRender)
 		return "", nil, ruleSourceTransportError("browser navigation", err)
 	}
 	return finalURL, body, nil

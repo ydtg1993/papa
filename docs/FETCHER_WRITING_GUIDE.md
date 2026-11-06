@@ -4,6 +4,8 @@
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
 > 本文聚焦 Go Fetcher；声明式 HTML/JSON 规则、离线样本验收与内存版本切换见 [CRAWL_RULES.md](./CRAWL_RULES.md)，联网执行、保存、分页及失败快照见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+> 需要让模型在受控范围内分析网站、生成并修正规则候选时，使用 [SITE_AGENT.md](./SITE_AGENT.md) 的 Go API；独立验收后仍由宿主审阅发布，再交给 RuleFetcher 执行。
+> 需要按版本检查线上字段质量、区分环境故障并显式发起复分析时，见 [RULE_QUALITY.md](./RULE_QUALITY.md)；该报告只覆盖实际记录的观测。
 >
 > 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
@@ -27,6 +29,8 @@ papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetch
 ### 1.1 Fetcher 接口
 
 已经有通过样本验收的 HTML/JSON 规则时，可直接使用 `papa.NewRuleFetcher`；它实现同一个 Fetcher 接口，复用网络、账号和队列，支持列表到详情及 URL/POST 游标分页。入口须用 `NewTask` 固定规则版本，Save 必须幂等，详见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
+
+RuleFetcher 可通过 `RuleFetcherConfig.Quality` 接入 `pkg/rulequality.Collector`；手写 Fetcher 可显式调用同一 Collector 上报有界、无字段值的 Observation。质量库写入失败不应作为 FetchHandler 的业务错误返回，否则会把观测故障变成业务重试。MySQL 先开启独立的 `quality.enabled` 并显式迁移三表；开关不自动接线、生成报告或调用 Agent，完整契约见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 框架对外是一个门面包 `github.com/ydtg1993/papa/v3`，fetcher 只需 import 它：
 
@@ -1075,6 +1079,8 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 ## 7. 如何驱动任务（提交 + 监控）
 
+接站分析由宿主调用 `crawlagent.Agent.Run(ctx, goal)`，显式提供 Site/Stages、访问范围、脱敏策略与预算。它不调用 `SubmitTask` 或业务 Save，也不随 `agent.enabled` 自动启动；分析结束后按 [SITE_AGENT.md](./SITE_AGENT.md) 审阅候选和验收记录，生产任务仍按下述入口驱动。
+
 Papa 没有 MCP 了，任务驱动靠四处：
 
 1. **初始任务**：让 fetcher 自己实现 `SubmitEntries(*papa.Engine, papa.Site)`（见 1.1 的可选接口），框架在启动时自动调它，
@@ -1257,6 +1263,8 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 规则流程：`NewRuleFetcher` / `RuleFetcherConfig` / `RuleRef` / `RuleRequest` / `RuleLink` / `RulePage`；`NewTask` 建静态固定版本入口，Catalog 可用 `NewTaskContext(ctx, request, meta)` 为数据库访问指定时限。`FetchHandler` 供引擎调用，`RunHTTP` 用于不创建任务数据库 Engine 的匿名 HTTP 内嵌队列（Catalog 本身仍可访问元数据库）。`RuleFetcherConfig.SnapshotPolicy` 控制引擎尝试中的响应快照，`RulePage.EvidenceID` 供业务与 Trace 关联，`ReleaseID/ReleaseGeneration` 标明任务固定发布。纯规则另有 `Compiled.EvaluateRendered`、字段 `Transforms`、`Registry.Verified`，见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 
 持久规则：`rulestore.NewFileBlobs/New`、`Repository.CreateDraft/AddSample/ImportSnapshot/CreateSampleSet/Verify/Publish/Rollback/Current/LookupOperation/History`；只验收不发布，只对比不自动保存影子报告。`CompareRules/Shadow` 仅处理已经取得的规则与页面，不调用 Save 或提交任务，见 [RULE_STORE.md](./RULE_STORE.md)。
+
+受控分析直接使用子包 `pkg/crawlagent`：`New(Config)`、`Agent.Run(ctx, Goal)`；配套 `pkg/crawlagent/model.New` 和 `pkg/agentstore.New`。开启审计先设置 `agent.enabled` 与 `rules.enabled` 并显式迁移；完整本地示例为框架仓库的 `examples/siteagent`，见 [SITE_AGENT.md](./SITE_AGENT.md)。这些 API 不属于根包 Fetcher 门面，也不授予自动发布权限。
 
 通用 API：`FetchHTTP` / `HTTPRequest` / `HTTPResponse.DecodeJSON`；会话：`NewHTTPSession` / `WithHTTPSession`；浏览器响应：`CaptureResponse` / `browser.CopyCookiesToSession`。用法和边界见 §3.3–3.4。
 

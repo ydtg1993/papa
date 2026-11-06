@@ -5,6 +5,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v3/pkg/rulequality"
 )
 
 // RuleRef pins a fixture-verified rule version. Active is never resolved by a worker.
@@ -68,6 +69,9 @@ type RuleFetcherConfig struct {
 	// Request bodies/headers are never captured. Requires crawler.archive enabled
 	// and an Engine attempt context; direct RunHTTP does not create an archive.
 	SnapshotPolicy *htmlfetch.SamplePolicy
+	// Quality receives bounded, value-free observations as an optional side
+	// channel. Nil disables quality work; recorder failures never fail a task.
+	Quality *rulequality.Collector
 	// BuildRequest must be deterministic for a RuleRequest and must not change URL.
 	// Its credentials are transient. POST requires ReplaySafe because the whole
 	// handler, including a successful request followed by failed Save, can repeat.

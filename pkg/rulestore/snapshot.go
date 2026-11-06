@@ -17,6 +17,20 @@ import (
 // The result must still pass an explicit SamplePolicy before sample insertion.
 // It never fetches the source URL or changes the short-lived archive's retention.
 func ReadSnapshot(ctx context.Context, archiveDir, evidenceID string) (SampleInput, error) {
+	return readSnapshot(ctx, archiveDir, evidenceID, "")
+}
+
+// ReadSnapshotMatching additionally binds an archive manifest to the original
+// response digest in a quality report. The retained, redacted body has its own
+// digest, so hashing it cannot verify the original response identity.
+func ReadSnapshotMatching(ctx context.Context, archiveDir, evidenceID, originalSHA256 string) (SampleInput, error) {
+	if !snapshotHex(originalSHA256, 64) {
+		return SampleInput{}, errors.New("rulestore: invalid original response digest")
+	}
+	return readSnapshot(ctx, archiveDir, evidenceID, originalSHA256)
+}
+
+func readSnapshot(ctx context.Context, archiveDir, evidenceID, originalSHA256 string) (SampleInput, error) {
 	if err := ctx.Err(); err != nil {
 		return SampleInput{}, err
 	}
@@ -59,18 +73,22 @@ func ReadSnapshot(ctx context.Context, archiveDir, evidenceID string) (SampleInp
 	// The envelope's extra metadata is deliberately ignored. Version and body
 	// location/digest are strict; a future schema cannot be mistaken for v1.
 	var m struct {
-		Version     int    `json:"version"`
-		EvidenceID  string `json:"evidence_id"`
-		SourceURL   string `json:"source_url"`
-		StatusCode  int    `json:"status_code"`
-		Rendered    bool   `json:"rendered"`
-		BodyFile    string `json:"body_file"`
-		BodySHA256  string `json:"body_sha256"`
-		BodyBytes   int    `json:"body_bytes"`
-		BodyOmitted string `json:"body_omitted"`
+		Version        int    `json:"version"`
+		EvidenceID     string `json:"evidence_id"`
+		SourceURL      string `json:"source_url"`
+		StatusCode     int    `json:"status_code"`
+		Rendered       bool   `json:"rendered"`
+		BodyFile       string `json:"body_file"`
+		BodySHA256     string `json:"body_sha256"`
+		BodyBytes      int    `json:"body_bytes"`
+		BodyOmitted    string `json:"body_omitted"`
+		OriginalSHA256 string `json:"original_sha256"`
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	if d.Decode(&m) != nil || d.Decode(new(any)) != io.EOF || m.Version != 1 || m.EvidenceID != evidenceID || m.BodyOmitted != "" || !snapshotHex(m.BodySHA256, 64) || m.BodyFile != ".rule-snapshots/bodies/"+m.BodySHA256+".body" || m.BodyBytes < 0 || m.BodyBytes > MaxSampleBodyBytes {
+		return SampleInput{}, invalid
+	}
+	if originalSHA256 != "" && m.OriginalSHA256 != originalSHA256 {
 		return SampleInput{}, invalid
 	}
 	body, err := read(m.BodyFile, MaxSampleBodyBytes)

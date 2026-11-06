@@ -19,6 +19,10 @@ type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	// Rules 可选的持久规则仓库；启用后须显式运行 papa migrate，普通启动不建表。
 	Rules RulesConfig `mapstructure:"rules"`
+	// Agent 受控分析运行审计；默认关闭，启用后须显式迁移。
+	Agent AgentConfig `mapstructure:"agent"`
+	// Quality 运行质量摘要；独立于 rules/agent，启用后须显式迁移三张表。
+	Quality QualityConfig `mapstructure:"quality"`
 	// Obs 运行观测：事件流（JSONL）与报告产物。**默认全关**，不写这段时行为与没有观测体系时一致。
 	// 这里只放**通用**的运行数据；业务指标与业务阈值属于业务仓库，不进框架配置。
 	Obs ObsConfig `mapstructure:"obs"`
@@ -46,6 +50,18 @@ type Config struct {
 type RulesConfig struct {
 	Enabled   bool   `mapstructure:"enabled"`    // 默认 false；关闭时不要求规则仓库表。
 	SampleDir string `mapstructure:"sample_dir"` // 启用时必填；长期样本目录，由宿主传给 rulestore。
+}
+
+// AgentConfig gates durable audit tables, not automatic execution or recovery.
+// The controlled runner uses the persistent rules and evidence repository.
+type AgentConfig struct {
+	Enabled bool `mapstructure:"enabled"` // 默认 false；启用时要求 rules.enabled。
+}
+
+// QualityConfig only gates schema checks/migration, never collection or analysis.
+// Hosts explicitly connect a Collector; reanalysis additionally requires an Agent.
+type QualityConfig struct {
+	Enabled bool `mapstructure:"enabled"` // 默认 false；不要求 rules.enabled 或 agent.enabled。
 }
 
 // ErrorQueueConfig 错误队列（失败任务重投）：config.yaml 的 `error_queue` 段。
