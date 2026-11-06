@@ -353,11 +353,14 @@ func (r *Reanalyzer) Reconcile(ctx context.Context, id string, revision uint64, 
 	if err != nil {
 		return out, ErrUnconfirmed
 	}
+	reason := "reconciled_from_agent_audit"
 	if run.Status == agentstore.Running {
-		if _, err = r.config.Audit.Interrupt(ctx, run.ID, run.Revision); err != nil {
+		if run, err = r.config.Audit.Interrupt(ctx, run.ID, run.Revision); err != nil {
 			return out, ErrUnconfirmed
 		}
-		return r.finish(out, Interrupted, "executor_stopped", nil)
+		// An interrupted run still owns its durable input snapshot. Recover
+		// imported sample references just as after a lost Interrupt response.
+		reason = "executor_stopped"
 	}
 	if len(run.ResultJSON) > agentstore.MaxJSONBytes || json.Unmarshal([]byte(run.ResultJSON), &out.Analysis) != nil {
 		return out, ErrCorrupt
@@ -383,5 +386,5 @@ func (r *Reanalyzer) Reconcile(ctx context.Context, id string, revision uint64, 
 	if run.Status == agentstore.NeedsFixtures {
 		out.Gaps = append(out.Gaps, CapabilityGap{"insufficient_evidence", "independent_fixtures_required"})
 	}
-	return r.finish(out, analysisStatus(run.Status), "reconciled_from_agent_audit", nil)
+	return r.finish(out, analysisStatus(run.Status), reason, nil)
 }

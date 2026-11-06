@@ -841,6 +841,8 @@ func deref(s *string) string {
 > `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{WaitSelector: ..., WaitJS: ...,
 > WaitRequestIdle: ...})`；要按页拦图片/统计脚本用 `browser.PageOptions{Block: ...}`。
 
+`CaptureRequest` 失败或调用方取消后，使用独立、最长 3 秒的 DOM 协议读取现场，随后用独立短时上下文关页；不会因为取证失败替换原捕获错误。HTML 为空表示当时未能读到完整现场，请结合 Seen 请求样本判断。`WaitLoad=true` 会先等待已发起的导航结束，再等待加载，避免与导航并发使用 Rod 的 JavaScript helper 缓存。
+
 ### 5.1 关键点：先挂监听，再点播放
 
 m3u8 地址是点播放后才产生的网络请求，所以**必须在导航后、点击前**用 Rod 的 `EachEvent` 监听网络请求。

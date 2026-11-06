@@ -57,6 +57,9 @@ func (s *MemoryStore) Record(ctx context.Context, o Observation) (Observation, e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Observation{}, err
+	}
 	if old, ok := s.observations[o.ID]; ok {
 		if !sameObservation(o, old) {
 			return Observation{}, ErrConflict
@@ -88,6 +91,9 @@ func (s *MemoryStore) Query(ctx context.Context, q Query) (Window, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Window{}, err
+	}
 	w := Window{Query: q, Observations: []Observation{}}
 	for _, o := range s.observations {
 		if o.Scope == q.Scope && !o.CreatedAt.Before(q.From) && o.CreatedAt.Before(q.Until) {
@@ -128,6 +134,9 @@ func (s *MemoryStore) SaveReport(ctx context.Context, r Report) (Report, error) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
 	if old, ok := s.reports[r.ID]; ok {
 		if !sameReport(r, old) {
 			return Report{}, ErrConflict
@@ -138,6 +147,9 @@ func (s *MemoryStore) SaveReport(ctx context.Context, r Report) (Report, error) 
 		return Report{}, ErrInvalid
 	}
 	r.CreatedAt = s.now()
+	if _, _, err := encodePayload(r); err != nil {
+		return Report{}, err
+	}
 	s.reports[r.ID] = detached(r)
 	return detached(r), nil
 }
@@ -147,6 +159,9 @@ func (s *MemoryStore) Report(ctx context.Context, id string) (Report, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
 	r, ok := s.reports[id]
 	if !ok {
 		return Report{}, ErrNotFound
@@ -163,6 +178,9 @@ func (s *MemoryStore) CreateRequest(ctx context.Context, r Request) (Request, er
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Request{}, err
+	}
 	if id, ok := s.operations[r.OperationID]; ok {
 		old := s.requests[id]
 		if !requestEquivalent(r, old) {
@@ -192,6 +210,9 @@ func (s *MemoryStore) Request(ctx context.Context, id string) (Request, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Request{}, err
+	}
 	r, ok := s.requests[id]
 	if !ok {
 		return Request{}, ErrNotFound
@@ -204,6 +225,9 @@ func (s *MemoryStore) RequestByOperation(ctx context.Context, id string) (Reques
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Request{}, err
+	}
 	key, ok := s.operations[id]
 	if !ok {
 		return Request{}, ErrNotFound
@@ -216,6 +240,9 @@ func (s *MemoryStore) mutateRequest(ctx context.Context, id string, rev uint64, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Request{}, err
+	}
 	r, ok := s.requests[id]
 	if !ok {
 		return Request{}, ErrNotFound
@@ -242,6 +269,9 @@ func (s *MemoryStore) PruneObservations(ctx context.Context, before time.Time, l
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	var rows []Observation
 	for _, o := range s.observations {
 		if o.CreatedAt.Before(before) {

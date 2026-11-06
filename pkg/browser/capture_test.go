@@ -60,6 +60,7 @@ setTimeout(function(){ fetch('/media/a.m3u8?auth_key=xyz&v=2'); }, 50);
 			},
 			CaptureTimeout: 10 * time.Second,
 			Page:           PageOptions{Timeout: 10 * time.Second},
+			WaitLoad:       true,
 		})
 		return cerr
 	})

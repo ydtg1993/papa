@@ -342,3 +342,54 @@ func TestReanalysisUpstreamOnlyReportCannotPrepareRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReanalysisInterruptPreservesImportedSampleReferences(t *testing.T) {
+	b, s, audit, replay, _, request, _ := bridgeHarness(t, nil)
+	ctx := context.Background()
+	started, err := s.StartRequest(ctx, request.ID, request.Revision, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = audit.Start(ctx, agentstore.Run{ID: request.RunID, SnapshotJSON: `{"Goal":{"evidence_samples":["imported-sample"]}}`, UsageJSON: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.Reconcile(ctx, request.ID, started.Revision, true)
+	run, readErr := audit.Get(ctx, request.RunID)
+	if err != nil || readErr != nil || out.Request.Status != q.Interrupted || run.Status != agentstore.Interrupted || len(out.SampleIDs) != 1 || out.SampleIDs[0] != "imported-sample" || !strings.Contains(out.Request.ResultJSON, "imported-sample") || len(replay.Calls()) != 0 {
+		t.Fatalf("interruption lost durable imported sample references: out=%+v audit=%+v err=%v/%v", out, run, err, readErr)
+	}
+}
+
+type bridgeUnknownInterrupt struct{ agentstore.Store }
+
+func (a bridgeUnknownInterrupt) Interrupt(ctx context.Context, id string, revision uint64) (agentstore.Run, error) {
+	if _, err := a.Store.Interrupt(ctx, id, revision); err != nil {
+		return agentstore.Run{}, err
+	}
+	return agentstore.Run{}, errors.New("injected lost Interrupt commit response")
+}
+
+func TestReanalysisUnknownInterruptCanReconcileWithoutModelReplay(t *testing.T) {
+	b, s, audit, replay, _, request, _ := bridgeHarness(t, func(c *q.ReanalysisConfig) {
+		c.Audit = bridgeUnknownInterrupt{Store: c.Audit}
+	})
+	ctx := context.Background()
+	started, err := s.StartRequest(ctx, request.ID, request.Revision, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = audit.Start(ctx, agentstore.Run{ID: request.RunID, SnapshotJSON: `{"Goal":{"evidence_samples":["imported-sample"]}}`, UsageJSON: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.Reconcile(ctx, request.ID, started.Revision, true); !errors.Is(err, q.ErrUnconfirmed) {
+		t.Fatalf("unknown interrupt was treated as confirmed: %v", err)
+	}
+	stored, err := s.Request(ctx, request.ID)
+	if err != nil || stored.Status != q.Running || stored.Revision != started.Revision {
+		t.Fatalf("unknown interrupt completed request: %+v %v", stored, err)
+	}
+	out, err := b.Reconcile(ctx, request.ID, stored.Revision, true)
+	if err != nil || out.Request.Status != q.Interrupted || len(out.SampleIDs) != 1 || out.SampleIDs[0] != "imported-sample" || len(replay.Calls()) != 0 {
+		t.Fatalf("unknown interruption could not recover references: %+v %v", out, err)
+	}
+}

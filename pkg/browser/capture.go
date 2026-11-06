@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 )
 
@@ -76,12 +77,17 @@ func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts Captu
 	if opts.Match == nil {
 		return nil, fmt.Errorf("capture %s: Match is required", pageURL)
 	}
-	page, err := b.newPageBase(opts.Page)
+	pageCtx, cancelPage := context.WithCancel(ctx)
+	defer cancelPage()
+	page, err := b.newPageBaseContext(pageCtx, opts.Page)
 	if err != nil {
 		return nil, err
 	}
-	page = page.Context(ctx)
-	defer func() { _ = page.Close() }()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), captureHTMLTimeout)
+		defer cancel()
+		_ = page.Context(cleanup).Close()
+	}()
 
 	navTimeout := opts.Page.Timeout
 	if navTimeout <= 0 {
@@ -127,10 +133,7 @@ func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts Captu
 	start := time.Now()
 	// 失败收尾：先尽力读一次页面 HTML（带短上限），再带上样本与耗时。
 	fail := func() *CaptureResult {
-		html := ""
-		if h, herr := page.Timeout(captureHTMLTimeout).HTML(); herr == nil {
-			html = h
-		}
+		html := captureFailureHTML(ctx, page)
 		s, total := snapshot()
 		return &CaptureResult{
 			HTML:      html,
@@ -142,7 +145,9 @@ func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts Captu
 	}
 
 	navErr := make(chan error, 1)
+	navFinished := make(chan struct{})
 	go func() {
+		defer close(navFinished)
 		// 带缓冲：命中提前返回后，这个 goroutine 不会被无人接收的发送卡住。
 		navErr <- page.Timeout(navTimeout).Navigate(pageURL)
 	}()
@@ -155,7 +160,13 @@ func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts Captu
 		case req := <-captured:
 			if opts.WaitLoad {
 				// 捕获已经拿到；WaitLoad 失败不推翻结果（日志价值大于错误价值）。
-				_ = page.Timeout(navTimeout).WaitLoad()
+				// Navigate 返回前会重置 JS context；等既有导航结束后再使用
+				// WaitLoad 的 Rod helper，避免与该重置并发。导航仍受 navTimeout 限制。
+				select {
+				case <-navFinished:
+					_ = page.Timeout(navTimeout).WaitLoad()
+				case <-ctx.Done():
+				}
 			}
 			s, total := snapshot()
 			return &CaptureResult{
@@ -194,4 +205,29 @@ func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts Captu
 			return fail(), fmt.Errorf("capture: %w", ctx.Err())
 		}
 	}
+}
+
+// Failure evidence must survive caller cancellation and an in-flight navigation.
+// Page.HTML uses Rod's cached JS helpers, which navigation can invalidate between
+// helper lookup and insertion. Read the DOM directly without those helper maps.
+// Unavailable evidence stays empty; it never replaces the original capture error
+// or the recorded request samples, including if the evidence reader panics.
+func captureFailureHTML(ctx context.Context, page *rod.Page) (html string) {
+	defer func() {
+		if recover() != nil {
+			html = ""
+		}
+	}()
+	evidenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), captureHTMLTimeout)
+	defer cancel()
+	evidence := page.Context(evidenceCtx)
+	document, err := (proto.DOMGetDocument{}).Call(evidence)
+	if err != nil || document == nil || document.Root == nil || document.Root.NodeID == 0 {
+		return ""
+	}
+	result, err := (proto.DOMGetOuterHTML{NodeID: document.Root.NodeID}).Call(evidence)
+	if err != nil || result == nil {
+		return ""
+	}
+	return result.OuterHTML
 }

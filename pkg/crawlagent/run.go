@@ -99,6 +99,11 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		}
 	}()
 	if err = e.loadFixtures(ctx); err != nil {
+		// Repository and disclosure failures use stable evidence errors, but
+		// cancellation remains the cause when the load was interrupted.
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return e.stop(err)
 	}
 	w := a.config.Web

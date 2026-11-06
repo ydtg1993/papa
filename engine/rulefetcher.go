@@ -187,7 +187,9 @@ func (f *RuleFetcher) Run(ctx context.Context, task *Task, e *Engine, submit fun
 	cp.Bodies = append(cp.Bodies, page.BodySHA256)
 	// Keep only novel, budgeted records; the original extraction was validated
 	// before filtering. Evidence indices are remapped to the retained rows.
-	quality.phase("deduplicate", rulequality.FailureValidation)
+	// Extraction validation already passed. A missing ItemKey breaks this
+	// fetcher's processing contract, not the parser's validation result.
+	quality.phase("deduplicate", rulequality.FailureRule)
 	keep := map[int]int{}
 	records := page.Result.Records[:0]
 	for i, record := range page.Result.Records {

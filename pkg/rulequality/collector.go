@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -30,8 +30,9 @@ type CollectorStats struct{ Attempted, Failed uint64 }
 type Collector struct {
 	recorder  Recorder
 	timeout   time.Duration
-	attempted atomic.Uint64
-	failed    atomic.Uint64
+	statsMu   sync.Mutex
+	attempted uint64
+	failed    uint64
 }
 
 func NewCollector(recorder Recorder, timeout time.Duration) (*Collector, error) {
@@ -51,13 +52,17 @@ func (c *Collector) Observe(ctx context.Context, observation Observation) (err e
 	if c == nil {
 		return ErrInvalid
 	}
-	c.attempted.Add(1)
+	c.statsMu.Lock()
+	c.attempted++
+	c.statsMu.Unlock()
 	defer func() {
 		if recover() != nil {
 			err = ErrObservationPanic
 		}
 		if err != nil {
-			c.failed.Add(1)
+			c.statsMu.Lock()
+			c.failed++
+			c.statsMu.Unlock()
 		}
 	}()
 	if ctx == nil {
@@ -86,7 +91,9 @@ func (c *Collector) Stats() CollectorStats {
 	if c == nil {
 		return CollectorStats{}
 	}
-	return CollectorStats{Attempted: c.attempted.Load(), Failed: c.failed.Load()}
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	return CollectorStats{Attempted: c.attempted, Failed: c.failed}
 }
 
 type logicalKeyContext struct{}

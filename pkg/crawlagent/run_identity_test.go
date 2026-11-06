@@ -9,6 +9,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/pkg/agentstore"
 	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v3/pkg/rulestore"
 	"github.com/ydtg1993/papa/v3/pkg/webaccess"
 )
 
@@ -109,5 +110,79 @@ func TestHostRunCleanupPanicPreservesDurableResult(t *testing.T) {
 	run, readErr := audit.Get(context.Background(), result.RunID)
 	if !errors.Is(err, crawlagent.ErrBudget) || readErr != nil || result.Status != agentstore.Exhausted || run.Status != result.Status {
 		t.Fatalf("cleanup lost durable outcome: result=%+v audit=%+v err=%v/%v", result, run, err, readErr)
+	}
+}
+
+type canceledHostEvidence struct {
+	crawlagent.Repository
+	cancel context.CancelFunc
+}
+
+func (r canceledHostEvidence) Sample(ctx context.Context, id string) (rulestore.Sample, error) {
+	r.cancel()
+	return r.Repository.Sample(ctx, id)
+}
+
+func TestHostRunCancellationWhileLoadingEvidenceIsCanceled(t *testing.T) {
+	for _, mode := range []string{"observation", "training", "holdout"} {
+		t.Run(mode, func(t *testing.T) {
+			replay := replayActions(`{"tool":"finish"}`)
+			cfg, goal, repo, source, audit := runnerHarness(t, replay)
+			sample := addRunnerFixture(t, repo, "fixtures", "https://site.example/observation", "<article><b>PUBLIC</b></article>", "PUBLIC")
+			switch mode {
+			case "observation":
+				goal.EvidenceSamples = []string{sample.ID}
+			case "training":
+				goal.Stages[0].TrainingSet = "fixtures"
+			case "holdout":
+				goal.Stages[0].HoldoutSet = "fixtures"
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cfg.Repository = canceledHostEvidence{Repository: repo, cancel: cancel}
+			a, err := crawlagent.New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := a.RunWithID(ctx, "cancel-during-evidence", goal)
+			run, readErr := audit.Get(context.Background(), result.RunID)
+			if !errors.Is(err, context.Canceled) || readErr != nil || result.Status != agentstore.Canceled || run.Status != agentstore.Canceled || len(replay.Calls()) != 0 || source.calls.Load() != 0 {
+				t.Fatalf("canceled evidence load recorded as failure: result=%+v audit=%+v err=%v/%v", result, run, err, readErr)
+			}
+		})
+	}
+}
+
+type unconfirmedHostStart struct {
+	agentstore.Store
+	lost bool
+}
+
+func (s *unconfirmedHostStart) Start(ctx context.Context, run agentstore.Run) (agentstore.Run, error) {
+	out, err := s.Store.Start(ctx, run)
+	if err == nil && s.lost {
+		return agentstore.Run{}, errors.New("injected lost Start commit response")
+	}
+	return out, err
+}
+
+func TestHostRunUnknownStartCommitNeverCallsModel(t *testing.T) {
+	replay := replayActions(`{"tool":"finish"}`)
+	cfg, goal, _, source, audit := runnerHarness(t, replay)
+	uncertain := &unconfirmedHostStart{Store: audit, lost: true}
+	cfg.Audit = uncertain
+	a, err := crawlagent.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.RunWithID(context.Background(), "unconfirmed-start", goal)
+	if !errors.Is(err, crawlagent.ErrAudit) || result.Status != agentstore.Interrupted || result.RunID != "unconfirmed-start" {
+		t.Fatalf("unknown commit did not retain audit identity: %+v %v", result, err)
+	}
+	uncertain.lost = false
+	_, err = a.RunWithID(context.Background(), result.RunID, goal)
+	run, readErr := audit.Get(context.Background(), result.RunID)
+	if !errors.Is(err, crawlagent.ErrAudit) || readErr != nil || run.Status != agentstore.Running || len(replay.Calls()) != 0 || source.calls.Load() != 0 {
+		t.Fatalf("unknown Start authorized replay: audit=%+v err=%v/%v calls=%d", run, err, readErr, len(replay.Calls()))
 	}
 }

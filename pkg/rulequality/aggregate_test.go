@@ -107,6 +107,7 @@ func TestAggregateZeroRowsAndNoNewRowsAreNotDrift(t *testing.T) {
 				o.Fields = nil
 				o.ExtractionOK = false
 				o.FailureKind = FailureExtraction
+				o.StopReason = "no_records"
 			}
 		}
 		r, err := Aggregate(w, DefaultPolicy(), nil)
@@ -160,8 +161,6 @@ func TestAggregateBaselineCompatibilityAndDrops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A baseline can itself be built before selection; unavailable comparison is insufficient.
-	base.Verdict = ObservedOK
 	w := metricWindow(20)
 	for i := range w.Observations {
 		w.Observations[i].Fields[0].NonEmpty = 0
@@ -362,5 +361,121 @@ func TestAggregateBaselineWithoutEvaluatedSchemaKeepsDiagnosticReport(t *testing
 		if _, err := Aggregate(w, p, &wrong); !errors.Is(err, ErrIncompatible) {
 			t.Fatalf("unknown schema hid incompatible policy: %v", err)
 		}
+	}
+}
+
+func TestAggregateZeroRowsOnlyExemptsExplicitNoRecords(t *testing.T) {
+	for _, stop := range []string{"", "no_records"} {
+		t.Run("stop_"+stop, func(t *testing.T) {
+			w := metricWindow(20)
+			for i := range w.Observations {
+				o := &w.Observations[i]
+				o.RawRows, o.NewRows = 0, 0
+				o.Fields = []FieldStat{{Name: "title", Kind: "string"}}
+				o.ExtractionOK, o.FailureKind = false, FailureExtraction
+				o.StopReason = stop
+			}
+			r, err := Aggregate(w, DefaultPolicy(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stop == "" && (r.Verdict != SuspectedDrift || r.Metrics.ExtractionFailures != 20) {
+				t.Fatalf("parse failures treated as ordinary empty results: verdict=%s extraction_failures=%d", r.Verdict, r.Metrics.ExtractionFailures)
+			}
+			if stop == "no_records" && (r.Verdict != Partial || r.Metrics.ExtractionFailures != 0) {
+				t.Fatalf("explicit empty result misclassified: verdict=%s extraction_failures=%d", r.Verdict, r.Metrics.ExtractionFailures)
+			}
+		})
+	}
+}
+
+func TestBuildReportRelativePoliciesCanUseFirstSavedBaseline(t *testing.T) {
+	for _, threshold := range []string{"rows", "fields"} {
+		t.Run(threshold, func(t *testing.T) {
+			store := NewMemoryStore()
+			w := metricWindow(20)
+			p := DefaultPolicy()
+			if threshold == "rows" {
+				p.MaxRowsDrop = metricFloat(.2)
+			} else {
+				p.MaxFieldDrop = metricFloat(.2)
+			}
+			saveWindow := func(w Window) {
+				t.Helper()
+				for _, o := range w.Observations {
+					createdAt := o.CreatedAt
+					store.now = func() time.Time { return createdAt }
+					o.CreatedAt, o.Sequence = time.Time{}, 0
+					if _, err := store.Record(context.Background(), o); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			saveWindow(w)
+			baseline, err := BuildReport(context.Background(), store, w.Query, p, "")
+			if err != nil || baseline.Verdict != Insufficient {
+				t.Fatalf("first report must retain unavailable comparison: verdict=%s err=%v", baseline.Verdict, err)
+			}
+			w.Query.From, w.Query.Until = w.Query.From.Add(time.Hour), w.Query.Until.Add(time.Hour)
+			for i := range w.Observations {
+				o := &w.Observations[i]
+				o.ID += "-current"
+				o.CreatedAt = o.CreatedAt.Add(time.Hour)
+				o.Fields[0].NonEmpty = 0
+				if threshold == "rows" {
+					o.RawRows, o.NewRows = 0, 0
+					o.Fields[0].Rows, o.Fields[0].Present = 0, 0
+				}
+			}
+			saveWindow(w)
+			r, err := BuildReport(context.Background(), store, w.Query, p, baseline.ID)
+			if err != nil {
+				t.Fatalf("first complete saved report cannot seed relative comparison: %v", err)
+			}
+			if r.Verdict != SuspectedDrift || r.BaselineID != baseline.ID {
+				t.Fatalf("relative drop missing: verdict=%s baseline=%s", r.Verdict, r.BaselineID)
+			}
+		})
+	}
+}
+
+func TestAggregateRelativeBaselineStillRequiresCompleteIndependentSample(t *testing.T) {
+	p := DefaultPolicy()
+	p.MaxRowsDrop = metricFloat(.2)
+	for name, mutate := range map[string]func(*Window){
+		"few_pages":             func(w *Window) { w.Observations = w.Observations[:1] },
+		"lost":                  func(w *Window) { w.Query.LostObservations = 1 },
+		"truncated_window":      func(w *Window) { w.Truncated = true },
+		"truncated_extraction":  func(w *Window) { w.Observations[0].Truncated = true },
+		"missing_field_summary": func(w *Window) { w.Observations[0].Fields = nil },
+		"incomplete_validation": func(w *Window) { w.Observations[0].FieldsIncomplete = true },
+		"mixed_schema":          func(w *Window) { w.Observations[0].FieldSchemaSHA256 = metricHash("other-schema") },
+		"few_evaluated_requests": func(w *Window) {
+			for i := range w.Observations {
+				o := &w.Observations[i]
+				if i < 20 {
+					o.RequestSHA256 = metricHash("only-evaluated-request")
+				} else {
+					o.Evaluated, o.ExtractionOK, o.CompleteResponse = false, false, false
+					o.RawRows, o.NewRows, o.Fields = 0, 0, nil
+					o.FailureKind = FailureNetwork
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := metricWindow(40)
+			mutate(&w)
+			baseline, err := Aggregate(w, p, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if baseline.Verdict != Insufficient {
+				t.Fatalf("baseline_required should retain insufficient verdict: %s", baseline.Verdict)
+			}
+			if _, err := Aggregate(metricWindow(20), p, &baseline); !errors.Is(err, ErrIncompatible) {
+				t.Fatalf("incomplete first report accepted as baseline: %v", err)
+			}
+		})
 	}
 }

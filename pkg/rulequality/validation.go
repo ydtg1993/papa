@@ -213,7 +213,7 @@ func checkedKey(ctx context.Context, id string) error {
 	return nil
 }
 func validResult(s string) bool {
-	if len(s) > MaxResultBytes {
+	if len(s) > MaxResultBytes || !utf8.ValidString(s) {
 		return false
 	}
 	if s == "" {
@@ -295,6 +295,9 @@ func changeRequest(r Request, rev uint64, start bool, status, input string, now 
 	}
 	r.Revision++
 	r.UpdatedAt = now
+	if _, _, err := encodePayload(r); err != nil {
+		return Request{}, err
+	}
 	return r, nil
 }
 func checkedPrune(ctx context.Context, before time.Time, limit int) error {

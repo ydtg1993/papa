@@ -38,6 +38,8 @@ fetcher, err := engine.NewRuleFetcher(fetcherConfig)
 
 Collector 默认超时 500ms，最大 3s，无后台队列、goroutine 或重试。自定义 Recorder 是可信宿主代码，必须响应 context；超时不是强制终止任意 Go 函数。计数仅覆盖该 Collector 实例的生命周期，重启归零不能视为全局“无丢失”。
 
+`Stats()` 成对读取一致快照，保证 Failed 不大于 Attempted；尚在进行的写入可以只计入 Attempted。读取计数的短锁不覆盖 Recorder 调用。
+
 观测包括站点/阶段/规则版本/release、任务轮次、请求摘要、状态/渲染标记、正文完整性、原始与去重后行数、字段计数、分页停止原因、计划/已提交子任务数、终止环节和稳定错误类别。不保存 URL、Cookie、账号、请求头、正文或字段值。
 
 `RawRows`、字段摘要和校验结果在去重、Next、Save 之前冻结；`NewRows` 单独记录。失败提取仍可产生摘要，但不会因此进入 Save。429、认证/挑战、网络、渲染、保存及任务提交错误分别归类，不凭错误字符串判断。
@@ -88,7 +90,11 @@ Scope 全字段精确匹配；空 ReleaseID 也只匹配无 release 的观测，
 
 多个问题可同时出现在 Signals 和 FailureCounts；主 Verdict 不是唯一诊断。重试后成功仍保留之前的尝试错误。零新增、重复分页、正常结束和零行本身不证明改版；没有最低行数预期时，不自动推断“应该至少一行”。
 
+普通零行必须有明确的 `StopReason=no_records`。损坏 JSON、JSON rows 不是数组等解析失败即使没有输出行，也计入提取失败比例。提取成功后若缺少 Fetcher 的 ItemKey，按 `rule_contract` / `processing_failure` 记录，不会返回 observed_ok，也不会冒充提取校验失败。
+
 基线由宿主明确选择，不自动选第一份数据。默认同站点/阶段/RuleID/Version、相同策略、完整字段校验摘要才可比较；不同 release 可以各自报告后比较。跨版本必须两份报告都采用相同的 `CompareAcrossVersions=true` 策略，且整个字段校验契约一致。摘要包含类型、Required、AllowNull、长度、正则及 Unique，排除选择器/JSON Pointer，因此选择器修正仍可比较。真实范围/策略/schema 不匹配返回 `ErrIncompatible`。当前全是上游失败、尚无 schema 时保留诊断报告并标记 `comparison_unavailable`，不执行漂移比较。
+
+首次启用 MaxRowsDrop/MaxFieldDrop 时，用该策略生成首份报告会标记 `insufficient`＋`baseline_required`，因为还无法比较下降幅度。如果它的页面/独立请求数量充分、字段摘要完整、没有丢失/截断/零行不确定性，宿主可以明确选择这份已保存报告作为下一窗口的基线。不要修改报告 Verdict 来绕过兼容检查；真实样本不足或不完整报告仍不能作为基线。这也不表示首份数据已经被证明健康。
 
 ## 证据与保留
 
@@ -130,6 +136,8 @@ pending → dismissed
 Agent `RunWithID(ctx, id, goal)` 只接受 1–64 个 ASCII 字母、数字、下划线或连字符。它复用原子 Audit.Start；已有 ID、未知提交结果都不能重复模型调用。原 `Run` 继续自行生成新 ID。
 
 遇到 `ErrUnconfirmed` 先按请求 ID/operation ID 查询，不能因为读到 running 就取得执行权，也不能换 operation ID 重试付费请求。重启不自动接管。宿主确认原执行者已经结束后，显式调用 `bridge.Reconcile(ctx, id, revision, true)`：读取 Agent 审计，必要时中断未完成审计，或回填已完成的候选/样本引用；绝不重放 Complete。`workerStopped=true` 是宿主事实声明，不是分布式租约检测。
+
+主动中断 running 审计和中断回执丢失后的对账，都会保留该审计快照中的已导入样本引用。读取观察样本、训练集或隐藏验收集期间被取消时，Agent 终态为 canceled。Store 的结果 JSON 必须是合法 UTF-8、原文不超过 64KiB，最终编码的完整请求/报告不超过 256KiB；编码转义及存储时间戳也计入预算。MemoryStore 与 MySQLStore 使用相同写入边界，MemoryStore 等锁期间取消后不会继续读写或推进 revision。
 
 即使返回 awaiting_review 且 Verified=true，也只产生候选。现行 Current、版本发布和回滚均由人工调用原规则仓库接口决定。
 

@@ -3,6 +3,7 @@ package rulequality
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -115,4 +116,42 @@ func TestCollectorLogicalKeyNeverRetainsRawKey(t *testing.T) {
 	if LogicalKey(context.Background()) != "" || LogicalKey(WithLogicalKey(ctx, "")) != "" {
 		t.Fatal("empty host key must clear folding key")
 	}
+}
+
+func TestCollectorStatsConcurrentSnapshotCannotHaveMoreFailuresThanAttempts(t *testing.T) {
+	previous := runtime.GOMAXPROCS(2)
+	defer runtime.GOMAXPROCS(previous)
+	collector, err := NewCollector(collectorRecorderFunc(func(_ context.Context, o Observation) (Observation, error) {
+		return o, nil
+	}), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200000; i++ {
+			_ = collector.Observe(ctx, Observation{})
+		}
+	}()
+	var invalid CollectorStats
+	for {
+		stats := collector.Stats()
+		if stats.Failed > stats.Attempted {
+			invalid = stats
+			break
+		}
+		select {
+		case <-done:
+			if final := collector.Stats(); final.Attempted != 200000 || final.Failed != final.Attempted {
+				t.Fatalf("lost completed attempts: %+v", final)
+			}
+			return
+		default:
+		}
+	}
+	<-done
+	t.Fatalf("inconsistent health snapshot: attempted=%d failed=%d", invalid.Attempted, invalid.Failed)
 }

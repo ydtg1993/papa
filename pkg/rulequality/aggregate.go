@@ -154,7 +154,7 @@ func Aggregate(window Window, policy Policy, baseline *Report) (Report, error) {
 		}
 		// ErrNoRecords alone is not evidence of a changed site. This also keeps
 		// an empty optional result from silently enabling a minimum-row policy.
-		zeroOnly := observation.RawRows == 0 && observation.InvalidRows == 0 && observation.FailureKind == FailureExtraction
+		zeroOnly := observation.RawRows == 0 && observation.InvalidRows == 0 && observation.FailureKind == FailureExtraction && observation.StopReason == "no_records"
 		if !observation.ExtractionOK && zeroOnly {
 			zeroUnknown = true
 			aggregateSignal(&report, "zero_rows", "", 1)
@@ -363,13 +363,23 @@ func aggregateBaselineCompatible(report, baseline Report) (bool, error) {
 	if a.Site != b.Site || a.Stage != b.Stage || a.RuleID != b.RuleID || (!report.Policy.CompareAcrossVersions && a.Version != b.Version) || !reflect.DeepEqual(report.Policy, baseline.Policy) {
 		return false, ErrIncompatible
 	}
-	if baseline.ID == "" || baseline.Coverage != "recorded_observations_only" || baseline.Truncated || baseline.Query.LostObservations != 0 || baseline.Verdict == Partial || baseline.Verdict == Insufficient || baseline.Metrics.EvaluatedPages < report.Policy.MinPages || baseline.Metrics.DistinctRequests < report.Policy.MinRequests {
+	if baseline.ID == "" || baseline.Coverage != "recorded_observations_only" || baseline.Truncated || baseline.Query.LostObservations != 0 || baseline.Verdict == Partial || baseline.Metrics.Pages < report.Policy.MinPages || baseline.Metrics.EvaluatedPages < report.Policy.MinPages || baseline.Metrics.DistinctRequests < report.Policy.MinRequests {
 		return false, ErrIncompatible
 	}
+	// Relative policies need a first report without a baseline. Its verdict is
+	// insufficient only because that comparison was unavailable; a complete,
+	// adequately sampled report can still seed the host's explicit baseline.
+	baselineRequired := false
 	for _, signal := range baseline.Signals {
-		if signal.Code == "sample_evaluated_requests" {
+		switch signal.Code {
+		case "baseline_required":
+			baselineRequired = true
+		case "sample_pages", "sample_requests", "sample_evaluated_pages", "sample_evaluated_requests", "incomplete_fields", "truncated_extraction", "mixed_field_schema", "truncated_observations", "lost_observations", "comparison_unavailable", "zero_rows":
 			return false, ErrIncompatible
 		}
+	}
+	if baseline.Verdict == Insufficient && (!baselineRequired || baseline.BaselineID != "" || baseline.Policy.MaxRowsDrop == nil && baseline.Policy.MaxFieldDrop == nil) {
+		return false, ErrIncompatible
 	}
 	if baseline.FieldSchemaSHA256 == "" {
 		return false, ErrIncompatible
