@@ -226,3 +226,7 @@ return engine.SubmitTask(&papa.Task{
 | 防重复投递 | 任务的 `(url_hash, stage, site)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
 | 复杂查询 / 事务 | `engine.GetDB()` |
 | 查任务运行态 | 后台「任务」表格页（重投 / 加急 / 追踪 / 开停轮询） |
+
+## 调度运行关系
+
+可选 crawler_task_flows 保存运行策略和修订；crawler_tasks 的 flow_id/flow_lane/flow_branch/flow_path 保存关系。启用 task_flow.enabled 并显式 papa migrate；任务列是本版本共同 schema，默认任务使用空标识。禁止绕过 API 修改/删除关系，详见 [动态阶段调度](TASK_FLOW.md)。

@@ -997,6 +997,10 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mux := http.NewServeMux()
+	if a.Config.TaskFlow.Enabled {
+		a.UseCSS(server.TaskFlowCSS)
+		a.UsePage(Page{Key: "task-flow-policy", Label: "运行调度策略", Group: "调度", Section: "flow", Script: server.TaskFlowScript})
+	}
 
 	getter := func() map[string]engine.StageStats {
 		return a.Engine.GetStageStats()
@@ -1033,6 +1037,11 @@ func (a *App) httpServer(ctx context.Context) {
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
 		AgentAdmin: a.agentAdministration(),
+		OnTaskFlowAction: func(ev server.AgentActionEvent) {
+			if rec != nil {
+				rec.RecordEvent(oplog.Event{Table: "crawler_task_flows", Action: ev.Action, RowID: ev.ID, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err})
+			}
+		},
 		OnAgentAction: func(ev server.AgentActionEvent) {
 			if rec != nil {
 				rec.RecordEvent(oplog.Event{Table: "agent_center", Action: ev.Action, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"id": ev.ID, "operation_id": ev.OperationID}})
@@ -1045,6 +1054,8 @@ func (a *App) httpServer(ctx context.Context) {
 				rec.RecordEvent(oplog.Event{Table: "rules", Action: ev.Request.Kind, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"site": ev.Request.Site, "operation_id": ev.Request.OperationID, "expected_generation": ev.Request.Generation, "release_id": ev.ReleaseID}})
 			}
 		},
+		TaskFlow:           a.Engine.TaskFlow,
+		UpdateTaskFlow:     a.Engine.UpdateTaskFlow,
 		RuleSchedules:      a.Engine.ListRuleSchedules,
 		RuleScheduleDetail: a.Engine.RuleScheduleDetail,
 		VerifyToken:        tokenCounter.Verifier(a.Logger.Sys),

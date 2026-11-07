@@ -444,3 +444,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 ### 阶段轮询次数上限
 
 轮询上限属于业务站点声明，不是 YAML 配置项：在 `papa.StageSpec` 上设置 `RepeatLimit: 30`。0 表示不限；达到数据库 `repeat` 计数上限后，该站该阶段的任务不再被自动或强制轮询，恢复及错误重投不受此限，不关闭任务的 `repeatable`。已有 `repeat` 列继续使用，不需要迁移。完整计数含义见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
+
+## 动态调度开关
+
+`task_flow.enabled` 默认 false；启用后显式 `papa migrate` 创建运行策略表。升级本版本须迁移 crawler_tasks 的四个调度列（关闭开关也需要），普通启动不迁移。用法、限制与动态切换见 [动态阶段调度](TASK_FLOW.md)。

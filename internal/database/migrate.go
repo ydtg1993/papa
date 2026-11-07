@@ -18,6 +18,7 @@ type Model struct {
 // optional features. It is for inspection only; migration uses FrameworkModels.
 func AllFrameworkModels() []Model {
 	cfg := &config.Config{}
+	cfg.TaskFlow.Enabled = true
 	cfg.Server.OperationLog = true
 	cfg.Crawler.Trace.Enabled = true
 	cfg.Rules.Enabled = true
@@ -38,6 +39,9 @@ func FrameworkModels(cfg *config.Config) []Model {
 		// 运行期配置（来源 IP 白名单、站点快照等）。**无条件登记**：它是后台设置页与站点页的落点，
 		// 而且"表在不在"不该取决于某个开关 —— 时有时无会让排查变成猜谜。
 		{Name: "crawler_config", Value: &models.Config{}},
+	}
+	if cfg.TaskFlow.Enabled {
+		out = append(out, Model{Name: "crawler_task_flows", Value: &models.TaskFlow{}})
 	}
 	if cfg.Server.OperationLog {
 		out = append(out, Model{Name: "crawler_operation_log", Value: &models.OperationLog{}})

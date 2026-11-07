@@ -8,15 +8,20 @@ import (
 	yaml "go.yaml.in/yaml/v3"
 )
 
+type TaskFlowConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 type Config struct {
-	App     AppConfig     `mapstructure:"app"`
-	Log     LogConfig     `mapstructure:"log"`
-	Crawler CrawlerConfig `mapstructure:"crawler"`
-	Browser BrowserConfig `mapstructure:"browser"`
-	HTML    HTMLConfig    `mapstructure:"html"`
-	Proxy   ProxyConfig   `mapstructure:"proxy"`
-	DB      DBConfig      `mapstructure:"db"`
-	Server  ServerConfig  `mapstructure:"server"`
+	TaskFlow TaskFlowConfig `mapstructure:"task_flow"`
+	App      AppConfig      `mapstructure:"app"`
+	Log      LogConfig      `mapstructure:"log"`
+	Crawler  CrawlerConfig  `mapstructure:"crawler"`
+	Browser  BrowserConfig  `mapstructure:"browser"`
+	HTML     HTMLConfig     `mapstructure:"html"`
+	Proxy    ProxyConfig    `mapstructure:"proxy"`
+	DB       DBConfig       `mapstructure:"db"`
+	Server   ServerConfig   `mapstructure:"server"`
 	// Rules 可选的持久规则仓库；启用后须显式运行 papa migrate，普通启动不建表。
 	Rules RulesConfig `mapstructure:"rules"`
 	// Agent 受控分析运行审计；默认关闭，启用后须显式迁移。

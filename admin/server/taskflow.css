@@ -1,0 +1,41 @@
+/* Scoped to the dynamic policy page; appearance and colour mode belong to host. */
+.taskflow-panel {
+  display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px 12px;
+  max-width:1040px; padding:28px; margin-top:8px;
+  border:var(--border-width) solid var(--border-color); border-radius:var(--radius);
+  background:var(--card); color:var(--foreground); min-width:0;
+}
+.taskflow-panel > :not(.taskflow-run-input):not(.taskflow-query) { grid-column:1 / -1; }
+.taskflow-panel [hidden] { display:none !important; }
+.taskflow-panel .taskflow-title { font:700 18px/1.4 var(--font-body); margin:0; }
+.taskflow-panel .taskflow-intro { font-size:13px; color:var(--muted-foreground); line-height:1.8; margin:-6px 0 4px; }
+.taskflow-panel input,.taskflow-panel select { width:100%; min-width:0; box-sizing:border-box; font:500 14px/1.5 var(--font-body); border-radius:var(--radius); min-height:44px; }
+.taskflow-panel .taskflow-run-input { font-family:var(--font-mono); padding:11px 14px; }
+.taskflow-panel .btn { margin:0; min-height:44px; padding:10px 20px; border-radius:var(--radius); white-space:normal; letter-spacing:0; }
+.taskflow-panel .taskflow-query { min-width:116px; }
+.taskflow-panel .taskflow-apply { justify-self:end; }
+.taskflow-panel .btn:disabled { opacity:.45; cursor:not-allowed; transform:none; box-shadow:none; }
+.taskflow-panel :is(button,input,select):focus-visible { outline:2px solid var(--foreground); outline-offset:3px; }
+.taskflow-panel .taskflow-status { margin:0; font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
+.taskflow-panel .taskflow-status:empty,.taskflow-panel .taskflow-editor:empty,.taskflow-panel .taskflow-results:empty { display:none; }
+.taskflow-panel .taskflow-empty { padding:32px 24px 24px; margin-top:8px; border-top:1px solid var(--border-color); background:var(--muted-fill); border-radius:var(--radius); }
+.taskflow-panel h4 { font:650 15px/1.5 var(--font-body); margin:0 0 8px; }
+.taskflow-panel .taskflow-empty p,.taskflow-panel .taskflow-results>p,.taskflow-panel .taskflow-editor>p:not(.taskflow-lane) { color:var(--muted-foreground); font-size:13px; line-height:1.8; margin:0; }
+.taskflow-panel .taskflow-guide { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:28px; padding-top:20px; border-top:1px solid var(--border-color); }
+.taskflow-panel .taskflow-guide strong { display:block; font-size:13px; margin-bottom:6px; }
+.taskflow-panel .taskflow-guide strong::before { content:''; display:inline-block; width:8px; height:8px; margin-right:8px; background:var(--primary); border:1px solid var(--border-color); }
+.taskflow-panel .taskflow-lane { display:grid; grid-template-columns:minmax(0,1fr) auto 96px; align-items:end; gap:14px; margin:0 0 16px; padding:20px; border:1px solid var(--border-color); border-radius:var(--radius); }
+.taskflow-panel .taskflow-lane label { display:grid; gap:10px; font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+.taskflow-panel .taskflow-lane>span { color:var(--muted-foreground); font-size:13px; padding-bottom:12px; }
+.taskflow-panel .taskflow-results { padding-top:24px; margin-top:4px; border-top:1px solid var(--border-color); overflow-x:auto; }
+.taskflow-panel table { width:100%; text-align:left; border-collapse:collapse; font-size:13px; }
+.taskflow-panel :is(th,td) { padding:12px 10px; border-bottom:1px solid var(--border-color); overflow-wrap:anywhere; }
+:where(html[data-appearance="classic"]) .taskflow-panel { box-shadow:4px 4px 0 var(--shadow-color); }
+@media(max-width:600px) {
+  .taskflow-panel { grid-template-columns:minmax(0,1fr); padding:20px 16px; gap:12px; }
+  .taskflow-panel .taskflow-guide { grid-template-columns:1fr; gap:16px; }
+  .taskflow-panel .taskflow-empty { padding:24px 16px; }
+  .taskflow-panel .taskflow-lane { grid-template-columns:minmax(0,1fr) 96px; padding:16px; }
+  .taskflow-panel .taskflow-lane label { grid-column:1 / -1; }
+  .taskflow-panel .taskflow-apply { justify-self:stretch; }
+}

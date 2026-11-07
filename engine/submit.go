@@ -33,6 +33,9 @@ func (e *Engine) validateTask(task *Task) error {
 
 // SubmitTask 任务提交
 func (e *Engine) SubmitTask(task *Task) error {
+	if task != nil && task.FlowID != "" {
+		return ErrFlowInvalid
+	}
 	if err := e.validateTask(task); err != nil {
 		return e.logSubmitError(task, err)
 	}
@@ -259,10 +262,13 @@ func (e *Engine) claimTask(task *Task) (bool, error) {
 }
 
 func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error) {
+	if task.FlowID != "" {
+		return e.claimFlowTask(ctx, task)
+	}
 	if task.ID == 0 {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
-	res := claimScope(e.db.WithContext(ctx), uint(task.ID)).Updates(map[string]any{
+	res := claimScope(e.db.WithContext(ctx), uint(task.ID)).Where("flow_id = ?", "").Updates(map[string]any{
 		"status": models.TaskStatusProcessing,
 		"urgent": false,
 	})
@@ -338,6 +344,11 @@ func (e *Engine) submitToStage(task *Task) error {
 // 同键保留首次出现的任务参数，重复项回填相同 ID 和 Repeat，不重复投递。
 // 逐条插入失败时继续处理其它行，成功项照常投递，最后汇总返回失败信息。
 func (e *Engine) SubmitTasks(tasks []*Task) error {
+	for _, task := range tasks {
+		if task != nil && task.FlowID != "" {
+			return ErrFlowInvalid
+		}
+	}
 	if len(tasks) == 0 {
 		return nil
 	}

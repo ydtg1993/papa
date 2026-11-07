@@ -18,3 +18,8 @@ type Task = engine.Task
 
 // StageConfig 阶段配置。
 type StageConfig = engine.StageConfig
+
+// Dynamic task-flow policy types.
+type FlowPolicy = engine.FlowPolicy
+type FlowLane = engine.FlowLane
+type TaskFlowView = engine.TaskFlowView

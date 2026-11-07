@@ -52,6 +52,9 @@ type QueueProcessEvent struct {
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
+	OnTaskFlowAction   func(AgentActionEvent)
+	TaskFlow           func(context.Context, string) (engine.TaskFlowView, error)
+	UpdateTaskFlow     func(context.Context, string, uint64, engine.FlowPolicy) error
 	QualityAdmin       QualityAdministration
 	AgentAdmin         AgentAdministration
 	OnAgentAction      func(AgentActionEvent)
@@ -241,6 +244,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("/monitor", s.wrap(s.htmlHandler))
 	mux.HandleFunc("/api/monitor", s.wrap(s.apiHandler))
+	mux.HandleFunc("/api/task-flow", s.wrap(s.taskFlowHandler))
 	mux.HandleFunc("/api/rule-schedules", s.wrap(s.ruleScheduleHandler))
 	mux.HandleFunc("/api/rule-schedules/detail", s.wrap(s.ruleScheduleHandler))
 	mux.HandleFunc("/api/rules/", s.wrap(s.ruleAdminHandler))

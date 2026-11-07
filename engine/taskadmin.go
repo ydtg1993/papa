@@ -216,6 +216,15 @@ func (e *Engine) UrgentTask(id uint) error {
 // 中原子比较（影响 0 行时由 whyRepeatRejected 回查原因）。开启后叫醒全局轮询队列。
 func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 	if on {
+		row, err := e.loadTask(id)
+		if err != nil {
+			return err
+		}
+		if row.FlowID != "" {
+			return ErrTaskBatchProtected
+		}
+	}
+	if on {
 		t, err := e.loadTask(id)
 		if err != nil {
 			return err
@@ -354,7 +363,7 @@ func (e *Engine) DeleteTask(id uint) error {
 	if err != nil {
 		return err
 	}
-	if RuleTaskRole(t.Meta) != "ordinary" {
+	if t.FlowID != "" || RuleTaskRole(t.Meta) != "ordinary" {
 		return ErrTaskBatchProtected
 	}
 	if t.Status == models.TaskStatusProcessing {

@@ -412,3 +412,7 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 - `appearance_layout_test.go`：主题根变量隔离、导航/浮层覆盖及动效结构守卫。`testdata/appearance_test.js` 执行首帧、实际主题/设置代码，覆盖7组状态行为；`storage_startup_test.js` 完整执行后台启动，4项验证存储读取失败仍保持未登录、无请求与无旧凭据复用。两者均由 `ui_behavior_test.go` 自动执行。
 
 主题切换不改Go API、数据库或oao版本。业务适配在业务模块内，不能把站点类名写入Papa。浏览器需另验经典/简约×浅色/深色、390窄屏、表格浮层、原生弹窗、草稿与焦点；截图不能代替迟到请求/存储异常的确定性回归。
+
+## 动态阶段调度实现
+
+engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go 管理 MySQL 运行锁/CAS/同步派生；claimTaskContext 统一检查新投递、加急、重试与恢复。终态通知仅唤醒回灌，不作为持久真相。测试包括独立 MySQL 并发与恢复、策略纯函数、后台请求与生产页面组件。见 [动态阶段调度](TASK_FLOW.md)。

@@ -26,8 +26,12 @@ const (
 )
 
 type CrawlerTask struct {
-	ID  uint `gorm:"primarykey;comment:任务ID"`
-	PID uint `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
+	FlowID     string `gorm:"type:varchar(64);not null;default:'';index;comment:调度运行ID"`
+	FlowLane   string `gorm:"type:varchar(64);not null;default:'';comment:调度范围"`
+	FlowBranch uint   `gorm:"not null;default:0;comment:分支根任务"`
+	FlowPath   string `gorm:"type:varchar(700);not null;default:'';comment:稳定前序路径"`
+	ID         uint   `gorm:"primarykey;comment:任务ID"`
+	PID        uint   `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
 	// Stage 阶段名（fetcher 的 GetStage() 原值，**不带站点前缀**）。只在本站内唯一 ——
 	// 两个站可以各有自己的 catalog，所以它与 Site 一起才构成"哪个阶段"，唯一索引三者都带。
 	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_site_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`

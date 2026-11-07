@@ -13,6 +13,11 @@ import (
 )
 
 type Task struct {
+	// Flow identity is assigned only by SubmitFlowTask and restored from storage.
+	FlowID     string
+	FlowLane   string
+	FlowBranch uint
+	FlowPath   string
 	ID         int    `json:"id"`  // 数据库记录 ID
 	PID        int    `json:"pid"` // 父级任务ID
 	URL        string // 要打开的 URL
@@ -64,6 +69,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		repeat = models.RepeatableYes
 	}
 	return models.CrawlerTask{
+		FlowID: t.FlowID, FlowLane: t.FlowLane, FlowBranch: t.FlowBranch, FlowPath: t.FlowPath,
 		PID:            uint(t.PID),
 		URL:            t.URL,
 		Stage:          t.Stage,
@@ -120,6 +126,7 @@ func (e *Engine) metaFromJSON(raw datatypes.JSON) map[string]string {
 // 行里 retry 刚被归零的那两条路要把内存副本跟上。这里不塞分支 —— 重建的字段是确定的。
 func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 	return &Task{
+		FlowID: t.FlowID, FlowLane: t.FlowLane, FlowBranch: t.FlowBranch, FlowPath: t.FlowPath,
 		ID:             int(t.ID),
 		PID:            int(t.PID),
 		URL:            t.URL,

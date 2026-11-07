@@ -1370,3 +1370,7 @@ app.UseReportSection(sections.All()...)   // 业务自己的分析段
 
 **边界**：papa 不认任何业务语义（没有 prepare / push / 站点名 / 业务表）；业务阈值放 `business` 段
 （`app.Config.BusinessSection`），不要塞进框架配置。
+
+## 按阶段组合动态调度
+
+普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务；受控 RuleFetcher 自动接入。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](TASK_FLOW.md)。

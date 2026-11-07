@@ -107,6 +107,9 @@ func (f *RuleFetcher) FetchHandler(ctx context.Context, task *Task, e *Engine) e
 	if e == nil {
 		return core.WrapNoRetry(fmt.Errorf("rule fetcher: engine required"))
 	}
+	if task.FlowID != "" {
+		return f.Run(ctx, task, e, func(child *Task) error { return e.SubmitFlowTask(ctx, task.FlowID, uint(task.ID), child) })
+	}
 	return f.Run(ctx, task, e, e.SubmitTask)
 }
 

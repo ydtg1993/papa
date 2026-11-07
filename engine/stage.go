@@ -145,6 +145,9 @@ func (e *Engine) stageKeys() []string {
 // 轮询任务则要留在去重表里等 repeat_queue 重新捞；唤醒只对轮询任务有意义（它有下次到点，
 // 落终态后 soonestRepeatIn 要立刻把它算进节拍，否则 ticker 还睡在上一次算出的全局 interval 上）。
 func (e *Engine) finishTask(task *Task) {
+	if task.FlowID != "" {
+		e.wakeDrainNow()
+	}
 	if task.Repeatable {
 		e.wakeRepeatQueue()
 		return
