@@ -75,7 +75,8 @@ function setup() {
     assert.equal(entries.find(item => item.key === 'task').group, '', 'framework table groups must not contradict their fixed section');
     assert.equal(entries.find(item => item.key === 'operation_log').group, '');
     const section = key => entries.find(item => item.key === key).section;
-    ['schedules', 'rules', 'agents', 'queues', 'task', 'workbench'].forEach(key => assert.equal(section(key), 'flow'));
+    ['schedules', 'rules', 'agents', 'queues', 'workbench'].forEach(key => assert.equal(section(key), 'flow'));
+    assert.equal(section('task'), 'data');
     ['dashboard', 'quality', 'obs', 'logs'].forEach(key => assert.equal(section(key), 'monitor'));
     ['settings', 'tokens', 'operation_log'].forEach(key => assert.equal(section(key), 'system'));
     ['result', 'plain', 'legacy', 'unknown', 'prototype'].forEach(key => assert.equal(section(key), 'data'));
@@ -228,5 +229,30 @@ function setup() {
         race.c.switchModule('dashboard'); race.c.switchModule(kind); oldView.resolve(data('old-visit')); await detached;
         assert.doesNotMatch(read(), /old-visit/, kind + ' reader accepted a response from its previous visit');
     }
-    console.log('PASS four-section production navigation, draft guards, native session/view isolation, site scope and log lifecycle');
+    // Framework read-only data uses a server-owned marker, never just a name prefix.
+    const catalog = setup(), cc = catalog.c;
+    cc.setMonitorNavigation([
+        { key: 'crawler_tasks', label: '任务数据', header: '<div data-papa-framework-table></div>', filters: [{ name: 'site' }] },
+        { key: 'crawler_config', label: '配置数据', header: '<div data-papa-framework-table></div>' },
+        { key: 'crawler_business', label: '业务自注册' }
+    ], []);
+    assert.equal(cc.monitorNavigationItems().find(x => x.key === 'crawler_tasks').section, 'data');
+    await cc.openTable('crawler_business');
+    assert.equal(catalog.requests.length, 0, 'prefix-only business table was auto-probed');
+    const older = cc.openTable('crawler_tasks'), newer = cc.openTable('crawler_config');
+    catalog.requests[1].resolve({ ok: true, json: async () => ({ state: 'missing', message: '尚未迁移，请执行 papa migrate' }) }); await newer;
+    catalog.requests[0].resolve({ ok: true, json: async () => ({ state: 'available' }) }); await older;
+    assert.match(catalog.nodes['oao-view'].textContent, /尚未迁移/);
+    assert.equal(catalog.calls.filter(x => x[0] === 'render').length, 1, 'late probe rendered an old table');
+    const retry = cc.openTable('crawler_config');
+    catalog.requests[2].resolve({ ok: true, json: async () => ({ state: 'available' }) }); await retry;
+    assert.equal(catalog.calls.filter(x => x[0] === 'render').length, 2, 'recovered table did not render');
+    const pendingBody = deferred(), authRace = cc.openTable('crawler_tasks');
+    catalog.requests[3].resolve({ ok: true, json: () => pendingBody.promise }); await tick();
+    cc.saveKey('replacement'); pendingBody.resolve({ state: 'available' }); await authRace;
+    assert.equal(catalog.calls.filter(x => x[0] === 'render').length, 2, 'old identity probe rendered data');
+    const leaveRace = cc.openTable('crawler_config'); cc.switchModule('dashboard');
+    catalog.requests[catalog.requests.length - 1].resolve({ ok: true, json: async () => ({ state: 'missing', message: 'old-view' }) }); await leaveRace;
+    assert.notEqual(catalog.nodes['oao-view'].textContent, 'old-view');
+    console.log('PASS four-section navigation, catalog probes/recovery/identity races, draft guards, site scope and log lifecycle');
 })().catch(error => { console.error(error); process.exitCode = 1; });

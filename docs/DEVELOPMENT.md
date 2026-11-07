@@ -152,11 +152,16 @@ admin/                          ★后台模块：**对外公开**，业务项�
   tasksource/   内置「任务」表，动作接线的参考实现
     rule_state.go / rule_state_test.go  数据源派生角色，不下发 Meta；动作展示与脱敏回归
   gormsource/   配置驱动的 oao.Source，业务表格页直接复用
+  frameworkdata/ 按显式选表生成只读查询；后台不默认挂载通用目录，不扫描业务表
+    tables.go / source.go  模型列、受限 SQL 投影、联合主键稳定分页、查询超时
+    sanitize.go / status.go  有界脱敏、鉴权状态探测（未迁移/不可用/可查询）
+    tables_test.go / mysql_test.go  HTTP/SQL/并发回归与显式只读 MySQL 验证
   configstore/  运行期配置存储（crawler_config 表）+ 读缓存层（内存 / TTL 装饰器）
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
+    data_tables.go / data_tables_test.go  只接入可操作任务，Trace 走行内弹窗；保留 task API 和动作保护
     quality_admin.go            quality.enabled 接通查询与显式固化，不安装 Collector
     agent_admin.go              App.UseAgentCenter 接线、只读默认值与停机等待
 pkg/                             可独立复用的件

@@ -263,11 +263,25 @@
         // 旧 oao 没有销毁/请求代次保护，隔离旧节点使其晚到渲染无法写入新视图。
         if (typeof Oao.destroy !== 'function') retireTableView();
         var view = document.getElementById('oao-view'), epoch = ++tableViewEpoch, identity = authGeneration;
+        var credential = loadKey();
+        var current = function () { return epoch === tableViewEpoch && identity === authGeneration && credential === loadKey() && currentModule === 'tables' && currentTable === key && view === document.getElementById('oao-view'); };
         try {
+            // A server-owned marker distinguishes catalog tables from explicitly registered business tables.
+            var entry = typeof monitorNavigation !== 'undefined' && monitorNavigation.tables.find(function (item) { return item.key === key; });
+            if (entry && entry.frameworkData) {
+                if (typeof Oao.destroy === 'function') Oao.destroy(view);
+                view.textContent = '正在检查框架表…';
+                var response = await apiFetch('/api/framework-tables/' + encodeURIComponent(key), { current: current });
+                if (!current()) return;
+                if (!response || !response.ok) { view.textContent = '框架表状态读取失败，请重新打开此表重试。'; return; }
+                var status = await response.json();
+                if (!current()) return;
+                if (status.state !== 'available') { view.textContent = status.message || '框架表暂不可用，请重新打开此表重试。'; return; }
+            }
             // 第三个参数 = oao 的预置筛选（需要 oao ≥ 带 opts.filter 的那版；老版本会忽略它）
             await Oao.render(view, key, tableFilterOpts());
         } catch (e) {
-            if (epoch === tableViewEpoch && identity === authGeneration && currentModule === 'tables' && view === document.getElementById('oao-view')) {
+            if (current()) {
                 view.innerHTML = '<div class="empty">表格加载失败：' + esc(e && e.message || '请求失败') + '</div>';
             }
         }

@@ -19,7 +19,7 @@ var MONITOR_MODULE_NAV = [
 function monitorSection(section) {
     return typeof section === 'string' && Object.prototype.hasOwnProperty.call(MONITOR_SECTIONS, section) ? section : 'data';
 }
-function monitorTableSection(key) { return key === 'task' ? 'flow' : key === 'operation_log' ? 'system' : 'data'; }
+function monitorTableSection(key) { return key === 'operation_log' ? 'system' : 'data'; }
 function monitorTableSupportsSite(key) {
     var table = monitorNavigation.tables.filter(function (item) { return item.key === key; })[0];
     // The task table has a stable framework-owned site filter even before menus arrive.
@@ -27,13 +27,13 @@ function monitorTableSupportsSite(key) {
 }
 function monitorNavigationItems() {
     var tables = monitorNavigation.tables.map(function (item) {
-        return { kind: 'table', key: item.key, label: item.key === 'task' ? '采集任务' : item.label,
+        return { kind: 'table', key: item.key, label: item.key === 'task' ? '采集任务（crawler_tasks）' : item.label,
             group: item.key === 'task' || item.key === 'operation_log' ? '' : item.group, section: monitorTableSection(item.key) };
     });
     var pages = monitorNavigation.pages.map(function (item) {
         return { kind: 'page', key: item.key, label: item.label, group: item.group, section: monitorSection(item.section) };
     });
-    // A business workbench and the framework task table precede flow operations.
+    // Business workbenches precede flow operations; task operations belong to data.
     return pages.filter(function (item) { return item.section === 'flow'; })
         .concat(tables.filter(function (item) { return item.key === 'task'; }))
         .concat(MONITOR_MODULE_NAV.map(function (item) { return Object.assign({ kind: 'module' }, item); }))
@@ -48,7 +48,8 @@ function setMonitorNavigation(tables, pages) {
             seen[item.key] = true; return true;
         }).map(function (item) {
             return { key: item.key, label: typeof item.label === 'string' && item.label ? item.label : item.key,
-                group: typeof item.group === 'string' ? item.group : '', section: monitorSection(item.section), filters: item.filters };
+                group: typeof item.group === 'string' ? item.group : '', section: monitorSection(item.section), filters: item.filters,
+                frameworkData: typeof item.header === 'string' && item.header.indexOf('data-papa-framework-table') !== -1 };
         });
     }
     monitorNavigation.tables = clean(tables); monitorNavigation.pages = clean(pages);

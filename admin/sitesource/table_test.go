@@ -29,7 +29,7 @@ func buildTable(t *testing.T) *oao.TableInfo {
 func TestTableDeclaration(t *testing.T) {
 	info := buildTable(t)
 
-	if info.Key != "site" || info.Group != "数据" {
+	if info.Key != "site" || info.Group != "运行快照（内存）" || info.Label != "站点运行快照" {
 		t.Fatalf("key/group = %q/%q", info.Key, info.Group)
 	}
 	if info.IDField != "key" {

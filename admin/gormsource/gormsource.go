@@ -24,6 +24,13 @@ type Config struct {
 	// Search 全局搜索命中的列（OR LIKE）。oao 不声明"哪些字段可搜"，
 	// 所以这一项仍由业务给。
 	Search []string
+
+	// Select is an optional, code-owned SQL projection. Never use HTTP input here.
+	// It applies to row reads only; Count always counts matching rows.
+	Select []string
+	// TieBreakers are code-owned column names appended after requested sorts.
+	// They provide stable pagination for compound keys and equal sort values.
+	TieBreakers []string
 }
 
 // Source 声明驱动的数据源。
@@ -70,6 +77,12 @@ func (s *Source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64
 		db = db.Order(quote(sf.Field) + " " + dir)
 	}
 	rows := []map[string]any{}
+	for _, field := range s.cfg.TieBreakers {
+		db = db.Order(quote(field) + " ASC")
+	}
+	if len(s.cfg.Select) > 0 {
+		db = db.Select(s.cfg.Select)
+	}
 	if err := db.Offset((q.Page - 1) * q.Size).Limit(q.Size).Find(&rows).Error; err != nil {
 		return nil, 0, err
 	}

@@ -14,6 +14,18 @@ type Model struct {
 	Value any
 }
 
+// AllFrameworkModels returns the framework-owned catalog, including disabled
+// optional features. It is for inspection only; migration uses FrameworkModels.
+func AllFrameworkModels() []Model {
+	cfg := &config.Config{}
+	cfg.Server.OperationLog = true
+	cfg.Crawler.Trace.Enabled = true
+	cfg.Rules.Enabled = true
+	cfg.Agent.Enabled = true
+	cfg.Quality.Enabled = true
+	return FrameworkModels(cfg)
+}
+
 // FrameworkModels 返回框架自带、需要建表的模型。带开关的按配置决定要不要包含 ——
 // 开关关闭就不要求对应表（server.operation_log / crawler.trace.enabled / rules.enabled / agent.enabled / quality.enabled）。
 //

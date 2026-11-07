@@ -33,7 +33,7 @@ type memSource struct {
 // snapshot 由宿主给（papa 传的是 `Engine.GetSiteStats` 的那份内存快照）。
 func Table(snapshot func() map[string]core.SiteStat) oao.Table {
 	return oao.Table{
-		Key: "site", Label: "站点", Group: "数据",
+		Key: "site", Label: "站点运行快照", Group: "运行快照（内存）",
 		Source:  &memSource{snapshot: snapshot, search: []string{"key", "base_url"}},
 		IDField: "key", // 主键用「站点键」而不是自增 ID：与熔断 scope 一脉相承
 		Columns: []oao.Column{

@@ -13,9 +13,7 @@ import (
 	"github.com/ydtg1993/papa/v3/admin/configstore"
 	"github.com/ydtg1993/papa/v3/admin/oplog"
 	"github.com/ydtg1993/papa/v3/admin/server"
-	"github.com/ydtg1993/papa/v3/admin/sitesource"
 	"github.com/ydtg1993/papa/v3/admin/sysinfo"
-	"github.com/ydtg1993/papa/v3/admin/tasksource"
 	"github.com/ydtg1993/papa/v3/admin/tokenadmin"
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
@@ -113,7 +111,8 @@ func (a *App) UseModels(models ...any) {
 
 // UseTables 注册监控后台的表格页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
 // 表格声明与数据来源见组件库 github.com/ydtg1993/oao：业务声明"显示什么、
-// 怎么显示"并实现 oao.Source 提供数据，框架不碰数据层。
+// 怎么显示"并实现 oao.Source 提供数据，框架不自动扫描业务表。
+// Key 不得与 task/operation_log 重复。
 // 放在 New 之后是为了能用 app.DB 构造 Source。
 func (a *App) UseTables(tables ...oao.Table) {
 	a.tables = append(a.tables, tables...)
@@ -1153,12 +1152,9 @@ func (a *App) httpServer(ctx context.Context) {
 	// 多实例 / 运维直接改 SQL 的收敛：定期把库里的白名单同步进判定缓存
 	go a.reloadWhitelistLoop(ctx, whitelistReader, mon)
 
-	// 表格组件：内置「任务」表 + 业务用 UseTables 注册的表。
-	// 它不碰数据层，只把请求转给各自的 Source；写操作转给业务 Handler。
-	tables := append([]oao.Table{
-		tasksource.Table(a.DB, a.Engine),
-		sitesource.Table(a.Engine.GetSiteStats), // 站点信息（只读：内存快照，不走 SQL）
-	}, a.tables...)
+	// Data/resources is a task operations workspace, not a system table browser.
+	tables := taskDataTables(a.DB, a.Engine)
+	tables = append(tables, a.tables...)
 	cfgOao := oao.Config{
 		Tables: tables,
 		Logger: a.Logger.Sys,
