@@ -18,7 +18,7 @@ func TestOperationsJavaScriptBehavior(t *testing.T) {
 		t.Skip("Node.js is required for UI behavior tests")
 	}
 	dir := t.TempDir()
-	for _, name := range []string{"requests.js", "table-links.js", "schedules.js", "mo.js", "trace.js", "workbench.js", "rules.js", "quality.js"} {
+	for _, name := range []string{"requests.js", "table-links.js", "schedules.js", "mo.js", "trace.js", "workbench.js", "rules.js", "quality.js", "quality-write.js", "agents.js"} {
 		b, err := staticFS.ReadFile("static/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -38,7 +38,7 @@ func TestOperationsJavaScriptBehavior(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "oao.js"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, script := range []string{"monitor_requests_test.js", "table_links_test.js", "schedules_test.js", "dialog_test.js", "workbench_test.js", "rules_test.js", "quality_test.js"} {
+	for _, script := range []string{"monitor_requests_test.js", "table_links_test.js", "schedules_test.js", "dialog_test.js", "workbench_test.js", "rules_test.js", "quality_test.js", "quality_write_test.js", "agents_test.js"} {
 		t.Run(script, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()

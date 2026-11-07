@@ -27,6 +27,7 @@ import (
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/database"
 	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v3/pkg/agentadmin"
 	"github.com/ydtg1993/papa/v3/pkg/agentstore"
 	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
 	"github.com/ydtg1993/papa/v3/pkg/crawlagent/model"
@@ -116,6 +117,7 @@ type scenarioResult struct {
 }
 
 type demoResult struct {
+	CenterReviewed                bool                      `json:"center_reviewed"`
 	Site                          string                    `json:"site"`
 	Mode                          string                    `json:"mode"`
 	Scenarios                     []scenarioResult          `json:"scenarios"`
@@ -327,9 +329,10 @@ func run(ctx context.Context, db *gorm.DB, dir string) (result demoResult, err e
 		return result, errors.New("quality failure changed business execution")
 	}
 	provider := model.NewReplay(replaySteps()...)
-	agent, err := crawlagent.New(crawlagent.Config{Model: provider, ModelName: "deterministic-replay", Audit: audit, Repository: repo, Blobs: blobs, Actor: actor, SamplePolicy: policy,
+	agentConfig := crawlagent.Config{Model: provider, ModelName: "deterministic-replay", Audit: audit, Repository: repo, Blobs: blobs, Actor: actor, SamplePolicy: policy,
 		Web:     webaccess.Config{Policy: webaccess.Policy{Origins: []webaccess.Origin{{URL: srv.URL, AllowPrivateNetwork: true}}}},
-		Budgets: crawlagent.Budgets{MaxModelCalls: 4, MaxDuration: 30 * time.Second}})
+		Budgets: crawlagent.Budgets{MaxModelCalls: 4, MaxDuration: 30 * time.Second}}
+	agent, err := crawlagent.New(agentConfig)
 	if err != nil {
 		return result, err
 	}
@@ -346,29 +349,78 @@ func run(ctx context.Context, db *gorm.DB, dir string) (result demoResult, err e
 		_, err := bridge.Prepare(ctx, scenario.Report.ID, result.Site+"-reject-"+scenario.Name)
 		result.UnrelatedReportsRejected = result.UnrelatedReportsRejected && errors.Is(err, q.ErrNotActionable)
 	}
-	request, err := bridge.Prepare(ctx, drift.ID, result.Site+"-explicit-review")
-	if err != nil {
-		return result, err
-	}
-	duplicate, err := bridge.Prepare(ctx, drift.ID, result.Site+"-explicit-review")
-	if err != nil || duplicate.ID != request.ID || duplicate.RunID != request.RunID {
-		return result, errors.New("explicit operation was not idempotent")
-	}
 	goal := crawlagent.Goal{Site: result.Site, Seeds: []string{srv.URL + "/missing/0"}, Stages: []crawlagent.StageGoal{{Stage: "list", RuleID: ruleID, Transport: "http", ItemKey: "id", Existing: &ref,
 		Fields: []crawlagent.FieldGoal{{Name: "id", Kind: "string", Required: true}, {Name: "title", Kind: "string"}}, TrainingSet: sets.training, HoldoutSet: sets.holdout}}}
 	if len(drift.Evidence) == 0 || drift.Evidence[0].EvidenceID == "" {
 		return result, errors.New("real worker evidence was not retained")
 	}
 	input := q.ReanalysisInput{Goal: goal, EvidenceIDs: []string{drift.Evidence[0].EvidenceID}}
-	outcome, err := bridge.Execute(ctx, request.ID, request.Revision, input)
+	admin, err := rulestore.NewAdmin(db)
 	if err != nil {
-		return result, fmt.Errorf("explicit replay reanalysis: %w", err)
+		return result, err
 	}
-	result.Request, result.Run, result.Verified = outcome.Request, outcome.Analysis, outcome.Analysis.Verified
-	if len(outcome.Analysis.Candidates) != 1 {
+	center, err := agentadmin.New(agentadmin.Config{Audit: audit, Quality: store, Rules: admin, Profiles: []agentadmin.Profile{{ID: "loopback", Revision: "1", Label: "Authored loopback replay", Agent: agentConfig, ArchiveDir: cfg.Crawler.Archive.Dir, Goal: func(context.Context, q.Report) (crawlagent.Goal, error) { return goal, nil }}}})
+	if err != nil {
+		return result, err
+	}
+	defer center.Close(context.Background())
+	selection := agentadmin.Selection{ReportID: drift.ID, ProfileID: "loopback", EvidenceIDs: input.EvidenceIDs}
+	preview, err := center.Preview(ctx, selection, actor.Operator)
+	if err != nil {
+		return result, err
+	}
+	prepare := agentadmin.PrepareInput{Selection: selection, Digest: preview.Digest, OperationID: result.Site + "-explicit-review"}
+	reserved, err := center.Prepare(ctx, prepare, actor.Operator)
+	if err != nil {
+		return result, err
+	}
+	duplicate, err := center.Prepare(ctx, prepare, actor.Operator)
+	if err != nil || duplicate.ID != reserved.ID || duplicate.RunID != reserved.RunID {
+		return result, errors.New("center prepare not idempotent")
+	}
+	_, err = center.Start(ctx, agentadmin.StartInput{Selection: selection, Digest: preview.Digest, ID: reserved.ID, Revision: reserved.Revision}, actor.Operator)
+	if err != nil {
+		return result, err
+	}
+	for {
+		status, e := center.Request(ctx, reserved.ID)
+		if e != nil {
+			return result, e
+		}
+		if !status.Active {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	request, err := store.Request(ctx, reserved.ID)
+	if err != nil {
+		return result, err
+	}
+	auditRun, err := audit.Get(ctx, reserved.RunID)
+	if err != nil {
+		return result, err
+	}
+	if err = json.Unmarshal([]byte(auditRun.ResultJSON), &result.Run); err != nil {
+		return result, err
+	}
+	result.Request, result.Verified = request, result.Run.Verified
+	if len(result.Run.Candidates) != 1 {
 		return result, errors.New("expected one independently checked candidate")
 	}
-	result.Candidate = outcome.Analysis.Candidates[0].Reference
+	result.Candidate = result.Run.Candidates[0].Reference
+	review, err := center.Review(ctx, reserved.RunID, result.Candidate)
+	if err != nil || !review.Publishable || review.Holdout == nil || review.Training == nil || review.Comparison == nil {
+		return result, fmt.Errorf("center candidate review failed: %v", err)
+	}
+	plan, err := center.Publication(ctx, reserved.RunID, result.Candidate)
+	if err != nil || plan.Bindings["list"] != result.Candidate || plan.Generation != "1" {
+		return result, fmt.Errorf("center publication handoff failed: %v", err)
+	}
+	result.CenterReviewed = true
 	version, err := repo.Get(ctx, result.Candidate)
 	if err != nil || version.EverPublished || !result.Verified || result.Request.Status != q.AwaitingReview {
 		return result, errors.New("candidate was unverified or unexpectedly published")
@@ -415,7 +467,7 @@ func run(ctx context.Context, db *gorm.DB, dir string) (result demoResult, err e
 	}
 	result.ReleaseUnchanged = result.InitialRelease.ID == result.CurrentRelease.ID && result.InitialRelease.Generation == result.CurrentRelease.Generation && result.CurrentRelease.Bindings["list"] == ref
 	result.ReplayCalls = len(provider.Calls())
-	if !result.ReleaseUnchanged || !result.ReplayRejected || !result.ReopenedRequest || !result.UnrelatedReportsRejected || result.ReplayCalls != 4 {
+	if !result.CenterReviewed || !result.ReleaseUnchanged || !result.ReplayRejected || !result.ReopenedRequest || !result.UnrelatedReportsRejected || result.ReplayCalls != 4 {
 		return result, errors.New("feedback workflow invariants failed")
 	}
 	return result, nil

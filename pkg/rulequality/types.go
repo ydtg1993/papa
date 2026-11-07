@@ -172,6 +172,8 @@ type EvidenceRef struct {
 
 type Report struct {
 	ID                string        `json:"id"`
+	Operator          string        `json:"operator,omitempty"`
+	OperationID       string        `json:"operation_id,omitempty"`
 	CreatedAt         time.Time     `json:"created_at"`
 	Query             Query         `json:"query"`
 	Cutoff            uint64        `json:"cutoff"`

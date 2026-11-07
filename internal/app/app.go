@@ -25,6 +25,7 @@ import (
 	"github.com/ydtg1993/papa/v3/obs/analyze"
 	"github.com/ydtg1993/papa/v3/obs/pattern"
 	"github.com/ydtg1993/papa/v3/obs/report"
+	"github.com/ydtg1993/papa/v3/pkg/agentadmin"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/events"
 	"github.com/ydtg1993/papa/v3/pkg/loggers"
@@ -43,6 +44,7 @@ import (
 )
 
 type App struct {
+	agentCenter *agentadmin.Service
 	Config      *config.Config
 	Logger      *loggers.LoggerSet // 自定义一个结构，包含各类logger
 	DB          *gorm.DB
@@ -790,6 +792,7 @@ func (a *App) Run(ctx context.Context) {
 	// 顺序要紧：先把 HTTP 停下来、等在途请求（比如日志下载）跑完，再动引擎和数据库。
 	// 反过来的话，正在下载日志的请求会在读到大半时被关掉的连接 / 关掉的库打断。
 	a.shutdownHTTP()
+	agentDrained := a.stopAgentCenter(a.Config.Crawler.StopTimeoutOrDefault())
 
 	// 引擎排空：Engine.Stop 内部先 e.cancel()，再等各阶段 worker 把队列跑完（上限 crawler.stop_timeout）。
 	// 各阶段是并发等的，所以这里最多等一个 stopTimeout。
@@ -821,7 +824,7 @@ func (a *App) Run(ctx context.Context) {
 	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
 	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
 	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
-	if drained {
+	if drained && agentDrained {
 		if a.Engine.GetBrowserPool() != nil {
 			a.Engine.GetBrowserPool().Close()
 		}
@@ -1020,6 +1023,12 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
+		AgentAdmin: a.agentAdministration(),
+		OnAgentAction: func(ev server.AgentActionEvent) {
+			if rec != nil {
+				rec.RecordEvent(oplog.Event{Table: "agent_center", Action: ev.Action, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"id": ev.ID, "operation_id": ev.OperationID}})
+			}
+		},
 		QualityAdmin: a.qualityAdministration(),
 		RuleAdmin:    a.ruleAdministration(),
 		OnRuleChange: func(ev server.RuleChangeEvent) {

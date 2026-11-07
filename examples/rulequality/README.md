@@ -51,3 +51,5 @@ go test -race ./examples/rulequality -count=1
 ```
 
 Replay 用于验证状态机、真实持久化、快照接线和独立验收，不衡量真实模型修正规则的能力或计费。此示例没有真实模型开关。
+
+中心链路也包含在本例：注册受信任 Profile → Preview → 幂等 Prepare → Start → 查询原请求 → 固定候选 Review → Publication 生成完整人工发布清单。结果增加 `center_reviewed=true`；不会执行正式发布，Current 保持初始版本。

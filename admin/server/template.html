@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="/static/schedules.css">
     <link rel="stylesheet" href="/static/rules.css">
     <link rel="stylesheet" href="/static/quality.css">
+    <link rel="stylesheet" href="/static/agents.css">
     <link rel="stylesheet" href="/static/workbench.css">
     <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
     <link rel="stylesheet" href="/static/custom.css">
@@ -51,6 +52,7 @@
             <button class="nav-item" data-module="schedules" onclick="switchModule('schedules')">周期批次</button>
             <button class="nav-item" data-module="rules" onclick="switchModule('rules')">规则运维</button>
             <button class="nav-item" data-module="quality" onclick="switchModule('quality')">质量监控</button>
+            <button class="nav-item" data-module="agents" onclick="switchModule('agents')">Agent 审阅</button>
             <div id="oao-nav"></div>
             <div class="nav-section">General</div>
             <!-- 内置表格页：菜单固定在这里（不跟业务表格挤在一起），渲染仍交给表格组件。
@@ -98,7 +100,8 @@
 
         <div class="module" id="mod-quality">
             <h2>运行质量 <small>已记录观测</small></h2>
-            <p class="quality-notice">按顶部站点筛选，检查规则与发布范围内的运行表现。未查到数据不表示质量正常：需启用 quality.enabled 并由宿主接入 Collector。本页只读，不调用模型、不发布规则。</p>
+            <p class="quality-notice">按顶部站点筛选，检查规则与发布范围内的运行表现。未查到数据不表示质量正常：需启用 quality.enabled 并由宿主接入 Collector。固化报告后可进入 Agent 审阅；正式发布仍由人工执行。</p>
+            <div id="quality-pending" class="rule-panel" aria-live="polite"></div>
             <form onsubmit="event.preventDefault();queryQuality(true)">
                 <div class="quality-filters" oninput="editQuality()" onchange="editQuality()">
                     <label>数据来源<select id="quality-mode"><option value="observations">采集观测</option><option value="reports">持久报告</option></select></label>
@@ -112,6 +115,18 @@
             </form>
             <div id="quality-list" aria-live="polite"></div>
             <div class="rule-panel" id="quality-detail" tabindex="-1" aria-live="polite"></div>
+        </div>
+        <div class="module" id="mod-agents">
+            <h2>Agent 运行与候选审阅</h2>
+            <p id="agent-notice" class="quality-notice" role="status"></p>
+            <div id="agent-pending" class="rule-panel" aria-live="polite"></div>
+            <section><h3>01 · 固化报告与分析配置</h3>
+                <div class="quality-filters"><label>固化报告 ID<input id="agent-report-id" maxlength="128" oninput="invalidateAgentPreview()" placeholder="从质量监控带入，或输入报告 ID"></label><label>宿主批准的配置<select id="agent-profile" onchange="invalidateAgentPreview()"></select></label></div>
+                <button class="btn" onclick="agentLoadReport()">读取报告与证据</button><div id="agent-evidence" class="rule-panel"></div>
+                <button class="btn btn-primary" onclick="previewAgent()">预览分析范围与预算</button><div id="agent-preview" class="rule-panel" aria-live="polite"></div>
+            </section>
+            <section><h3>02 · 持久运行与请求</h3><form onsubmit="event.preventDefault();agentLists(true)"><div class="quality-filters" oninput="editAgentFilters()"><label>运行开始时间<input id="agent-from" type="datetime-local" step="1" required></label><label>运行结束时间（不含，最多 7 天）<input id="agent-until" type="datetime-local" step="1" required></label><label>运行状态<select id="agent-status"><option value="">全部状态</option><option>running</option><option>awaiting_review</option><option>needs_fixtures</option><option>failed</option><option>interrupted</option><option>canceled</option><option>exhausted</option></select></label></div><button class="btn" type="submit">刷新运行与请求</button> <button class="btn" type="button" onclick="recentAgents()">最近 24 小时</button><p class="hint">刷新保留指定窗口；查看刚启动的运行请更新结束时间，或点“最近 24 小时”。</p></form><div id="agent-list" aria-live="polite"></div></section>
+            <section><h3>03 · 请求、步骤与候选依据</h3><div id="agent-detail" class="rule-panel" tabindex="-1" aria-live="polite"></div></section>
         </div>
         <div class="module" id="mod-rules">
             <section>
@@ -297,6 +312,8 @@
 <script src="/static/schedules.js"></script>
 <script src="/static/rules.js"></script>
 <script src="/static/quality.js"></script>
+<script src="/static/quality-write.js"></script>
+<script src="/static/agents.js"></script>
 <!-- 任务步骤追踪抽屉：嗅探 oao 的「追踪」动作请求取任务 id，再拉 /api/task/trace。
      必须在 mo.js 之后（用它的 Dialog / esc / loadKey 等全局件）。 -->
 <script src="/static/trace.js"></script>

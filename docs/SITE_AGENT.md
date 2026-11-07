@@ -151,10 +151,37 @@ Prices 使用宿主给定的每百万 token 单价和整数微货币单位，调
 
 Agent 不会修改站点 Current，也不改变已有任务固定的 release/版本。已有线上规则可通过 StageGoal.Existing 提供用于只读对比，Shadow 使用同一份已批准证据，无额外请求或业务写入。
 
-没有审核后台或通用 `papa agent` CLI；入口是 Go API 和可运行示例。也没有真实模型质量基准、自动漂移修复、自动发布、账号接管或跨进程调度。
+OA 已提供运行与候选审阅中心（见下文 §11）；仍没有通用 `papa agent` CLI。也没有真实模型质量基准、自动漂移修复、自动发布、账号接管或跨进程调度。
 
 ## 10. 从运行质量报告显式复分析
 
 宿主可先用 `rulequality.BuildReport` 固定已记录观测，再对 `suspected_rule_drift` 报告显式调用 `Reanalyzer.Prepare`、`Execute`。创建请求不会调用模型；执行前校验当前发布版本、所选保留证据、目标和预算，成功持久化请求状态后才运行 Agent。缺失或过期正文会返回需要证据，不为补齐现场偷偷重发生产请求。训练/独立验收集仍由宿主提供，不能从异常线上输出反推正确预期。
 
 `quality.enabled` 独立控制三张质量表的显式迁移与启动检查；仅开这个开关不会调用 Agent。复分析沿用本章的 rules/agent 接线、当前脱敏策略和人工发布流程，重复 operationID 关联原请求与 RunID；未知提交与重启先查询对账，不自动重放模型请求。完整使用顺序与能力缺口见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
+
+## 11. 接入 OA 运行与候选审阅中心
+
+仅启用 `agent.enabled` 会为标准 App 接通历史审计查询，不赋予网页执行任意分析的能力。开启 rules、agent、quality 并完成显式迁移后，在 `Run` 前注册：
+
+```go
+// 以下 app、agentConfig、goalForReport 均由宿主初始化。
+// agentConfig.Repository 与 App 必须使用同一套权威规则/质量库。
+err := app.UseAgentCenter(agentadmin.Options{
+    MaxConcurrent: 1,
+    Profiles: []agentadmin.Profile{{
+        ID: "catalog", Revision: "1", Label: "目录规则分析",
+        Agent: agentConfig,
+        ArchiveDir: archiveDir,
+        Goal: goalForReport, // func(context.Context, rulequality.Report) (crawlagent.Goal, error)
+    }},
+})
+if err != nil { return err }
+```
+
+导入 `github.com/ydtg1993/papa/v3/pkg/agentadmin`。`agentConfig` 沿用 §2 的模型/Repository/FileBlobs/当前脱敏策略与 webaccess/budgets 配置；审计 Store 和操作人由 App/具名 HTTP 身份绑定，不接受浏览器覆盖。Profile ID 和 Revision 不含冒号；改变目标生成、披露策略、模型或权限时升级 Revision。Goal 回调只能根据固化报告及可信业务配置构造目标，须可重入、确定性、有界并遵守 context；不得在回调中调用模型或改变发布。
+
+`Agent.Plan(goal)` 返回实际生效默认预算与经过披露策略处理的种子，返回值与内部配置分离。中心预览额外隐藏 Context 和 EvidenceSamples；摘要仍绑定完整宿主输入、配置版本、操作人及证据选择。模型 API Key 不进入 Plan。`ForActor` 克隆固定能力并绑定具名操作者。
+
+`Options.WorkerStopped` 默认不配置；只有宿主能证明旧执行者在所有实例均停止时才注册。它不是租约或自动恢复。守卫不在中心全局锁内运行，可以查询中心状态；仍须遵守 context，且只有真实停止证明才能返回 true。App 的关闭等待同时覆盖后台分析与在途恢复检查，超时保留依赖；App.Run 返回后可再次调用 `App.CloseAgentCenter(ctx)` 确认。中心总运行时限从受理开始，包含导入证据的准备阶段，不会在 Agent.Run 开始时重新获得完整时长。完整操作、错误与恢复边界见 [MONITOR §15](MONITOR.md#15-agent-运行与候选审阅中心)。
+
+`examples/rulequality` 使用真实 MySQL、实际失败现场与确定性回放，现经中心完成预览、重复准备、后台执行、固定候选审阅与完整发布清单生成，并验证 Current 不变。真实供应商质量/账单仍需宿主另行显式验收。

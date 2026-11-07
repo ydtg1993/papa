@@ -81,12 +81,12 @@ rules:
   sample_dir: "./rule-samples" # enabled=true 时必填；独立于短期 crawler.archive，不自动清理
 
 # 可选的受控网站分析审计：要求 rules.enabled=true，再显式运行 papa migrate。
-# 只登记运行/步骤表；不会自动运行 Agent 或接管中断运行。模型凭据由宿主环境提供。
+# 登记运行/步骤表并接通审计查询；执行需宿主 UseAgentCenter，不自动接管运行。
 agent:
   enabled: false
 
 # 可选的运行质量摘要：独立于 rules/agent，开启后显式运行 papa migrate。
-# 登记观测/固定报告/复分析请求表并接通后台只读质量查询。
+# 登记观测/固定报告/复分析请求表，接通后台查询与具名报告固化。
 # 宿主显式接入 Collector；不自动保存报告、调用模型或清理数据。
 quality:
   enabled: false

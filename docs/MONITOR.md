@@ -799,7 +799,7 @@ SiteSpec{ Key: "example",
 
 请求正文最多 64 KiB，严格拒绝未知字段与尾随 JSON，数据库请求期限 5 秒。原生客户端期限覆盖完整正文；不会因 401 自动重放写入。已知错误使用 400/403/404/409/504，原始数据库错误只进服务端日志。`X-Rule-Outcome: rejected` 只标记可确定未完成写入的拒绝，不把提交后读取异常归为已拒绝。
 
-自定义 Monitor 在 `MonitorConfig.RuleAdmin` 注入 `rulestore.NewAdmin(db)` 的结果，必要时设置 `OnRuleChange` 记录尝试。此元数据门面不打开样本目录、不触发文件权限修改、不执行模型或网络采集。未接线明确返回未启用；质量报告查看见 §14，Agent 候选审阅、规则编辑、样本导入和重新验收仍由现有 Go 接口负责，尚未接到此页面。
+自定义 Monitor 在 `MonitorConfig.RuleAdmin` 注入 `rulestore.NewAdmin(db)` 的结果，必要时设置 `OnRuleChange` 记录尝试。此元数据门面不打开样本目录、不触发文件权限修改、不执行模型或网络采集。未接线明确返回未启用；质量报告查看见 §14，Agent 运行与候选审阅见 §15；规则编辑、样本导入和重新验收仍由现有 Go 接口负责。
 
 ## 14. 质量监控中心
 
@@ -812,7 +812,7 @@ SiteSpec{ Key: "example",
 - 无记录显示原因提示，不判定质量正常。「已记录范围内未见异常」也不代表覆盖全站或字段语义正确；未记录量未知。已有报告沿用生成时的策略、基线和失落数，不从当前 Collector 猜历史数据。
 - 观测详情展示证据 ID/原始响应摘要；持久报告引用需与观测完整匹配，记录过期返回 404，完整性/关联错误返回 409。Trace 走既有 GET 接口，按任务展示并要求核对尝试编号；页面不直接读取任意证据文件，也不另存 HTML。
 
-API 全部 GET，沿用 Monitor 认证/白名单、`Cache-Control: no-store`，其它方法 405，错误不暴露 SQL/DSN。未知或重复参数、非法十进制和范围均拒绝。所有序号、截止值、发布代次与任务 ID 在 JSON 中以字符串输出，浏览器不得转为 Number。
+上述查询 API 全部 GET，沿用 Monitor 认证/白名单、`Cache-Control: no-store`，其它方法 405，错误不暴露 SQL/DSN。未知或重复参数、非法十进制和范围均拒绝。所有序号、截止值、发布代次与任务 ID 在 JSON 中以字符串输出，浏览器不得转为 Number。
 
 | 路径 | 参数与结果 |
 | --- | --- |
@@ -822,4 +822,49 @@ API 全部 GET，沿用 Monitor 认证/白名单、`Cache-Control: no-store`，�
 | `/api/quality/report` | 必须 `id`；返回持久报告，保留原观测窗口/策略/证据 |
 | `/api/quality/summary` | 必须 `site/stage/rule_id/version/from/until`；传原 `release_id/release_generation`，未绑定时省略或为空/0；返回 `id=""` 的临时汇总 |
 
-页面使用手动刷新；筛选修改、切站点、离开模块和重新登录会使旧请求失效，新查询先清除旧详情。错误保持在对应面板，不继续展示上一范围的统计。不包含报告写入、模型复分析、自动发布、告警推送或权限角色配置。
+页面使用手动刷新；筛选修改、切站点、离开模块和重新登录会使旧请求失效，新查询先清除旧详情。错误保持在对应面板，不继续展示上一范围的统计。报告固化与显式复分析见 §15；没有自动发布、告警推送或权限角色配置。
+
+## 15. Agent 运行与候选审阅中心
+
+标准 App 在 `agent.enabled=true` 时提供运行审计查询。要从页面执行复分析，宿主还需启用并迁移 rules/quality，且在 `Run` 前调用 `App.UseAgentCenter(agentadmin.Options)` 注册批准配置。没有配置时仍可查询历史，执行入口明确显示未接线。本批复用现有表，不增加迁移、模型 YAML 字段或权限角色。
+
+### 操作顺序
+
+1. 在「质量监控」查看观测并生成临时汇总，核对窗口、范围、截断和覆盖后点击「固化当前汇总为报告」。服务端重新查询并比较输入摘要，变化返回 409；只接受查询与摘要，不接收浏览器计算的统计。固化沿用 DefaultPolicy、无基线、最多 1000 条、失落数量未知的已有覆盖语义。报告保存操作人和操作 ID，重复操作返回原报告；原观测被清理后仍可按操作 ID 查询。
+2. 从持久报告进入「Agent 审阅」，选择宿主批准的配置和 1～8 个报告证据。预览显示实际默认值归一化后的目标、模型、访问限制、预算与独立样本集。只有 `suspected_rule_drift` 且当前发布仍匹配的报告可进入复分析；持久报告来自 Go API 时可以保留原策略及基线。
+3. 勾选审阅，具名确认「创建待执行请求」。此步骤只固定请求 ID、RunID、报告与操作人，不调用模型。再次具名确认「启动当前待执行请求」才提交后台执行；服务端重算预览摘要，核对原请求 revision，数据库 CAS 决定唯一执行者。202 仅表示本机受理，请刷新原请求查看持久状态。
+4. 页面、HTTP 超时或离开模块不会取消已受理任务。后台运行从受理起受预览的总时限控制，包含证据读取、导入和 Agent 调用；审计收尾另有既定短期限。可显式取消本机任务，尚未开始的请求可 CAS 撤回。每实例默认并发 1，可设 1～4；这不是跨实例总配额。重启只读查询，不自动接管运行；`active=false` 不能证明旧执行器已停止。
+5. 查看运行步骤和最终候选，核对固定训练/独立验收、规则摘要、差异与影子报告。独立验收缺失/失败、报告和规则或样本集不匹配、当前最新验收变化都会阻止交接。步骤中未完成的候选引用仅供核查，不代表最终验收通过。
+6. 「带入人工发布页」读取当前完整阶段清单，只替换候选对应阶段，保留其他阶段并带上当前代次。页面仍要求人工预览全部阶段、勾选审阅和确认发布；Agent 中心没有发布写接口。正式发布沿用 §13 的 generation、验收 ID 与 operation ID 检查。
+
+### 未确认结果与停机
+
+报告固化和请求准备发送前，先把原操作与完整参数存入同标签页 `sessionStorage`；存储失败则不发送。刷新不会重发，只提供按原操作查询、人工重发同一准备请求。准备因旧摘要等条件无法完成时，先核对原操作，再为同一报告/配置重新预览，使用「按本次预览重试原准备」；保持原 operation ID，不创建替代标识，且不能用于已发送启动的未知结果。并发已有请求仍由持久幂等检查决定，冲突后查询原操作。
+
+启动保存原 request/revision，不能因 404、超时或 500 创建替代执行。关闭标签页或跨设备后，可从持久列表查看原 pending 请求，重新读取原报告、选择配置、预览并确认启动；页面以该请求的 operation ID 重建本地恢复记录，不再次 Prepare。恢复记录尚关联其他操作时仍需先核对它。待执行请求可撤回，运行中的请求只有真实终态才能解除原操作恢复约束。切换请求、运行或候选详情时先清除旧操作对象，加载中的旧详情不能继续被启动或交接。
+
+请求运行中但执行器确已停止时，宿主可注册 `WorkerStopped(ctx, request)`，必须证明**所有实例**的原执行者已经退出。检查应有界、遵守 context；本机 map 不存在、超时或页面确认都不足以证明。守卫与数据库 I/O 不占用中心全局锁；同请求恢复互斥，每实例恢复检查并发也受 MaxConcurrent 限制。Close 同时取消并等待分析任务和恢复检查，超时保留依赖，可再次等待；不响应取消的守卫返回后也不能继续补记。显式补记终态仍校验操作人、revision 和本机活动状态，只读取/中断原审计并关联原样本，不重放任何模型/网络动作。未注册该守卫时不提供此能力。
+
+App 先停止 HTTP、取消并等待自己管理的 Agent 任务，再释放依赖；任务未排空时保留数据库/浏览器资源到进程退出。宿主拥有的模型、Repository 和 FileBlobs 应在 App.Run 返回后，再用 `App.CloseAgentCenter(ctx)` 确认任务完全停止才关闭；超时后可重复等待。自定义 Monitor 应自行调用 `Service.Close(ctx)` 并处理超时。
+
+### 接口与接线
+
+全部沿用认证、来源白名单和 no-store；管理请求 5 秒，写请求体最多 64 KiB，未知字段、重复 JSON 键、额外/重复查询参数拒绝。操作人只取具名令牌。revision、序号、发布代次保留十进制字符串。公开运行/步骤采用结构化白名单，不返回原 SnapshotJSON、输入、输出、凭据或完整模型回复。开启 operation_log 后记录固化、准备、启动、撤回、取消与补记尝试；实际执行终态仍以持久请求和运行审计为准。
+
+| 接口 | 用途 |
+| --- | --- |
+| GET `/api/quality/capabilities` | 是否支持具名报告固化 |
+| POST `/api/quality/freeze` | `operation_id/query/input_sha256`；query 中 release_generation 为字符串 |
+| GET `/api/quality/report-operation?id=...` | 核对原固化结果 |
+| GET `/api/agents/capabilities` | 宿主批准的配置 ID/版本/名称及可用能力 |
+| GET `/api/agents/runs` | 必须 from/until，最多 7 天；可选 site/status/before；每页扫描 50 候选；刷新保留窗口，最近 24 小时更新截止时间 |
+| GET `/api/agents/run?id=...&after=0` | 一个一致性快照内读取运行和最多 100 步；next 为下一页游标 |
+| GET `/api/agents/requests` | 可选 report_id/before；20 条请求，按报告而非顶部站点过滤 |
+| GET `/api/agents/request?id=...`、`operation?id=...` | 查询原请求或操作 ID，永不启动 |
+| POST `/api/agents/preview` | report_id/profile_id/evidence_ids |
+| POST `/api/agents/prepare` | 同上，加 digest/operation_id |
+| POST `/api/agents/start` | 同预览选择，加 digest/id/revision；202 受理 |
+| POST `/api/agents/dismiss`、`cancel`、`reconcile` | id/revision/confirmed；撤回、取消、停止事实校验后补记 |
+| GET `/api/agents/review`、`publication` | run_id/id/version；固定候选依据或完整发布预填清单，只读 |
+
+自定义 Monitor 注入 `MonitorConfig.AgentAdmin`、可选 `OnAgentAction`。原 `QualityAdministration` 保持兼容：报告固化通过可选 `QualityReportWriter` 接口提供；不实现时旧查询继续可用。宿主接线示例见 [SITE_AGENT §11](SITE_AGENT.md#11-接入-oa-运行与候选审阅中心)。

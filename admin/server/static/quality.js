@@ -12,6 +12,7 @@ function recentQuality() {
     return queryQuality(true);
 }
 function loadQuality() {
+    if(typeof loadQualityWrites==='function')loadQualityWrites();
     if (!qualityNode('from').value) {var now=new Date();qualityNode('until').value=qualityLocalTime(now);qualityNode('from').value=qualityLocalTime(new Date(now.getTime()-86400000));}
     return queryQuality(true);
 }
@@ -92,7 +93,7 @@ function qualityReport(r,persisted) {
         '<div class="quality-metrics">'+stats.map(function(s){return '<div><span>'+esc(s[0])+'</span><strong>'+esc(s[1])+'</strong></div>';}).join('')+'</div>'+qualityFields(m.fields||[])+
         '<details open><summary>失败分类与判定信号</summary><pre class="rule-json">'+esc(JSON.stringify({failures:m.failure_counts,signals:r.signals||[]},null,2))+'</pre></details>'+
         '<details><summary>策略、覆盖与输入摘要</summary><pre class="rule-json">'+esc(JSON.stringify({policy:r.policy,baseline_id:r.baseline_id||'',coverage:r.coverage,folding:r.folding,input_sha256:r.input_sha256,field_schema_sha256:r.field_schema_sha256,lost_observations:r.query.lost_observations},null,2))+'</pre></details>'+
-        '<h4>证据关联 <small>最多保留 64 个引用</small></h4><p class="hint">持久报告独立于观测保留期。点击时重新校验关联；历史观测或正文可能已清理。</p><ul class="quality-refs">'+refs+'</ul>';
+        '<h4>证据关联 <small>最多保留 64 个引用</small></h4><p class="hint">持久报告独立于观测保留期。点击时重新校验关联；历史观测或正文可能已清理。</p><ul class="quality-refs">'+refs+'</ul>'+qualityReportActions(r,persisted);
 }
 document.addEventListener('click',function(e){
     var b=e.target.closest('[data-quality-action]');if(!b||currentModule!=='quality')return;

@@ -52,6 +52,8 @@ type QueueProcessEvent struct {
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
 	QualityAdmin       QualityAdministration
+	AgentAdmin         AgentAdministration
+	OnAgentAction      func(AgentActionEvent)
 	RuleAdmin          RuleAdministration
 	OnRuleChange       func(RuleChangeEvent)
 	RuleSchedules      func(context.Context, string, uint) (engine.RuleScheduleList, error)
@@ -240,6 +242,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/rule-schedules/detail", s.wrap(s.ruleScheduleHandler))
 	mux.HandleFunc("/api/rules/", s.wrap(s.ruleAdminHandler))
 	mux.HandleFunc("/api/quality/", s.wrap(s.qualityHandler))
+	mux.HandleFunc("/api/agents/", s.wrap(s.agentHandler))
 	mux.HandleFunc("/api/settings", s.wrap(s.settingsHandler))
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))

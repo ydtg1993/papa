@@ -156,3 +156,12 @@ Agent `RunWithID(ctx, id, goal)` 只接受 1–64 个 ASCII 字母、数字、�
 持久报告的观测链接重新校验引用 ID、原始正文摘要、范围、时间与截止序号；已清理返回不可用，摘要损坏或串联返回校验失败。页面证据显示 EvidenceID / 原始 BodySHA256，不新增正文副本，不通过任意文件路径读取页面；任务 Trace 使用原有只读入口，并提示按尝试核对及保留期限制。未留存正文时仅有历史关联标识。
 
 自定义 Monitor 可将 `rulequality.New(db)` 返回的 Store 注入 `MonitorConfig.QualityAdmin`。该接口只读，不启动 Collector、模型或规则发布。HTTP 与页面交互约束见 [MONITOR §14](MONITOR.md#14-质量监控中心)。
+
+
+## OA 报告固化与显式复分析
+
+质量中心的临时汇总仍是只读；具名点击固化时，`FreezeReport` 用原查询复算输入摘要，变化返回 `ErrReportChanged`。操作 ID 确定唯一报告 ID，已有报告要求查询/摘要/操作人完全匹配，可通过 `ReportByOperation` 在观测清理后核对。重算期间同一操作被并发提交时，以已保存且身份/查询/摘要匹配的原报告为准；不因后来观测变化拒绝已完成的同一操作。保存的是服务端统计与证据引用，不重复存储 HTML；可选 Operator/OperationID 保存在现有报告 payload，旧报告省略字段仍可读取，无表结构迁移。
+
+报告可交给宿主注册的 `agentadmin.Profile`。预览只校验范围和所选引用；执行仍在原 Reanalyzer 中重新校验当前发布、正文摘要和当前披露策略，缺失正文进入 needs_evidence，不调用模型。固定训练/独立样本集由宿主提供，异常观测不能充当正确预期。详见 [MONITOR §15](MONITOR.md#15-agent-运行与候选审阅中心) 与 [SITE_AGENT §11](SITE_AGENT.md#11-接入-oa-运行与候选审阅中心)。
+
+重启后的请求列表和 operation 查询不调用模型；同一 RunID/CAS 仍是执行的最后一道检查。`ReconcileStopped` 只供已证明旧执行器结束的可信宿主使用；不要把传 true 或本机无任务当成停止证明。OA 通过额外 WorkerStopped 守卫与具名 revision 控制补记，保持人工发布边界。

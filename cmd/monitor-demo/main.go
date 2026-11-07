@@ -57,10 +57,15 @@ func main() {
 		defer os.RemoveAll(reportDir)
 	}
 
+	quality := newDemoQuality()
+	rules := &demoRules{}
+	agents := newDemoAgent(quality, rules)
+	defer agents.Close(context.Background())
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
-		QualityAdmin:       newDemoQuality(),
+		AgentAdmin:         agents,
+		QualityAdmin:       quality,
 		TaskTrace:          demoQualityTrace,
-		RuleAdmin:          &demoRules{},
+		RuleAdmin:          rules,
 		RuleSchedules:      schedules.list,
 		RuleScheduleDetail: schedules.detail,
 		VerifyToken:        tokens.verify,

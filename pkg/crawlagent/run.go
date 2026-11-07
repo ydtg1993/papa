@@ -56,29 +56,13 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 	}
 	ctx, cancel := context.WithTimeout(parent, a.config.Budgets.MaxDuration)
 	defer cancel()
-	safeGoal := goal
-	safeGoal.Seeds = make([]string, len(goal.Seeds))
-	for i, seed := range goal.Seeds {
-		policy := a.config.SamplePolicy
-		policy.RedactBody = func(_ bool, b []byte) ([]byte, error) { return b, nil }
-		safe, cleanErr := rulestore.SanitizeSample(rulestore.SampleInput{URL: seed, StatusCode: 200}, policy)
-		if cleanErr != nil {
-			return result, ErrInvalid
-		}
-		safeGoal.Seeds[i] = safe.URL
+	snapshot, err := a.Plan(goal)
+	if err != nil {
+		return result, err
 	}
+	safeGoal := snapshot.Goal
 	e := &execution{agent: a, goal: goal, candidates: map[string]Candidate{}, counts: map[string]int{}, hiddenDigests: map[string]bool{}, hiddenURLs: map[string]bool{}}
 	e.usage.CostKnown = a.config.Budgets.Prices.InputPerMillionMicros > 0 && a.config.Budgets.Prices.OutputPerMillionMicros > 0
-	snapshot := struct {
-		Goal           Goal
-		Policy         webaccess.Policy
-		Budgets        Budgets
-		Model          string
-		Actor          rulestore.Actor
-		WebBudgets     webaccess.Budgets
-		Renderer       webaccess.RendererConfig
-		AllowRecordAPI bool
-	}{safeGoal, a.config.Web.Policy, a.config.Budgets, a.config.ModelName, a.config.Actor, a.config.Web.Budgets, a.config.Web.Renderer, a.config.AllowRecordAPI}
 	e.run, err = a.config.Audit.Start(ctx, agentstore.Run{ID: runID, SnapshotJSON: encode(snapshot), UsageJSON: encode(e.usage)})
 	if err != nil {
 		return Result{RunID: runID, Status: agentstore.Interrupted, Reason: "audit_unconfirmed"}, ErrAudit

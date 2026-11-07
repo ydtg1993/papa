@@ -24,7 +24,7 @@
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
     var authGeneration = 0;
-    var MODULE_TITLES = { dashboard: '运营首页', queues: '队列治理', schedules: '周期批次', rules: '规则运维', quality: '质量监控', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: 'obs报告', settings: '设置' };
+    var MODULE_TITLES = { dashboard: '运营首页', queues: '队列治理', schedules: '周期批次', rules: '规则运维', quality: '质量监控', agents: 'Agent 审阅', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: 'obs报告', settings: '设置' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
@@ -52,6 +52,7 @@
         if (currentModule === 'schedules') loadSchedules(true);
         if (currentModule === 'rules') loadRules();
         if (currentModule === 'quality') loadQuality();
+        if (currentModule === 'agents') loadAgents();
         if (currentModule === 'tables' && currentTable) openTable(currentTable, document.getElementById('moduleTitle').textContent);
         if (currentModule === 'settings') { fetchSettings(); fetchLogs(); }
         if (currentModule === 'tokens') fetchTokens();
@@ -68,6 +69,7 @@
         if (typeof invalidateSchedules === 'function') invalidateSchedules();
         if (typeof invalidateRules === 'function') invalidateRules();
         if (typeof invalidateQuality === 'function') invalidateQuality();
+        if (typeof invalidateAgents === 'function') invalidateAgents();
         currentModule = name;
         document.querySelectorAll('.module').forEach(function (m) { m.classList.remove('active'); });
         document.getElementById('mod-' + name).classList.add('active');
@@ -81,6 +83,7 @@
         if (name === 'schedules') { loadSchedules(true); }
         if (name === 'rules') { loadRules(); }
         if (name === 'quality') { loadQuality(); }
+        if (name === 'agents') { loadAgents(); }
     }
 
     function setNavigationOpen(open) {
@@ -657,6 +660,7 @@
         if (currentSite !== null && keys.indexOf(currentSite) < 0) {
             currentSite = null; // 站点没了回概览
             if (currentModule === 'quality') loadQuality();
+            if (currentModule === 'agents') loadAgents();
         }
         el.innerHTML = ['<button class="site-tab' + (currentSite === null ? ' active' : '') +
             '" data-all="true">概览（全部）</button>'].concat(keys.map(function (k) {
@@ -701,6 +705,7 @@
         if (currentModule === 'schedules') loadSchedules(true);
         if (currentModule === 'rules') loadRules();
         if (currentModule === 'quality') loadQuality();
+        if (currentModule === 'agents') loadAgents();
     }
 
     var lastData = null;

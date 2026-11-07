@@ -16,6 +16,8 @@ import (
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
+// Run 前通过 UseAgentCenter 注册宿主批准的分析配置。
+// 关闭宿主依赖前，可用 CloseAgentCenter 等待后台分析完全结束。
 type App = app.App
 
 // HTTPRequest / HTTPResponse 通用 HTTP/API 抓取的请求与响应。

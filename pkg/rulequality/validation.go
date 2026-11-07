@@ -134,6 +134,9 @@ func validateObservation(o Observation) error {
 	return validateFields(o.Fields, o.RawRows)
 }
 func validateReport(r Report) error {
+	if (r.Operator == "") != (r.OperationID == "") || r.Operator != "" && (!validText(r.Operator, 128) || !validCode(r.OperationID, 128)) {
+		return ErrInvalid
+	}
 	q, err := normalizeQuery(r.Query)
 	if err != nil || q.Limit != r.Query.Limit || !validCode(r.ID, 128) || !validSHA(r.InputSHA256, false) || !validSHA(r.FieldSchemaSHA256, true) || validatePolicy(r.Policy) != nil || r.Coverage != "recorded_observations_only" || !validText(r.Folding, 256) {
 		return ErrInvalid

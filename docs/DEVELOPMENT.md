@@ -137,12 +137,14 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用
   server/       监控后台（HTML / API / 静态资源）
     ruleschedule.go / ruleschedule_test.go  注入式批次只读 API、认证/参数/错误映射
-    quality.go / quality_test.go  只读质量接口、范围/精度/认证/错误映射
+    quality.go / quality_test.go  质量查询、范围/精度/认证/错误映射
+    quality_write.go / agents.go / agents_test.go  具名固化/运行控制、严格 DTO 与操作审计
     ui_behavior_test.go        Node 执行生产 JS 与依赖真实 renderer 的行为回归入口
     static/requests.js         原生 API 错误、轮询代次/超时/退避/可见性管理
     static/table-links.js      oao v1.3.4 整值 URL 兼容适配（table-loaded 扩展点）
     static/schedules.js / schedules.css  周期批次页与窄屏导航样式
-    static/quality.js / quality.css / testdata/quality_test.js  质量查询、报告、证据与竞态回归
+    static/quality.js / quality-write.js / quality.css / testdata/quality_test.js  查询、固化与证据
+    static/agents.js / agents.css / testdata/agents_test.js  分析预览、运行、候选、会话恢复与竞态
     testdata/monitor_requests_test.js / table_links_test.js / schedules_test.js
   auth/         访问令牌校验与操作人身份
   tokenadmin/   令牌 CRUD 接口
@@ -155,7 +157,8 @@ admin/                          ★后台模块：**对外公开**，业务项�
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
-    quality_admin.go            quality.enabled 接通后台只读 Store，不安装 Collector
+    quality_admin.go            quality.enabled 接通查询与显式固化，不安装 Collector
+    agent_admin.go              App.UseAgentCenter 接线、只读默认值与停机等待
 pkg/                             可独立复用的件
   events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
   browser/                       池与页面生命周期（pool.go / rod.go）、网络请求捕获（capture.go）、
@@ -179,6 +182,11 @@ pkg/                             可独立复用的件
   crawlagent/*_test.go           回放修正、权限/预算/隐藏样本隔离、审计失败与真实 MySQL runner 重开回归
   crawlagent/run_identity_test.go 宿主 RunWithID 身份、额外证据与隐藏样本隔离回归
   crawlagent/model/             model.go Provider 契约；compatible.go 有界兼容 HTTP 客户端；replay.go 确定性回放；对应测试不调用真实模型
+  agentadmin/                   types.go/service.go/execution.go/review.go：宿主配置、幂等执行、具名控制、固定候选审阅；review_test.go
+  crawlagent/plan.go             生效预算/披露种子的不可变预览与操作者绑定
+  agentstore/admin.go / admin_memory.go / admin_test.go  有界运行/步骤快照分页、SQL 与真库重开
+  rulequality/report_admin.go / admin_memory.go  报告固化、操作查询和请求分页
+  rulequality/reanalysis_preview.go / agent_admin_test.go  显式预览与停止核对、跨中心 CAS/取消/恢复回归
   agentstore/                   types.go/state.go 运行/步骤与 revision；memory.go 内存实现；mysql.go 事务持久化；store_test.go/mysql_test.go 审计一致性与重开验证
   rulequality/                  types.go/validation.go 摘要、窗口、策略与状态契约；summary.go 无值字段统计；collector.go 有界旁路与失败计数；aggregate.go 固定窗口报告
   rulequality/{aggregate,collector,summary}_test.go 字段分母、重试折叠、基线兼容、缺失覆盖及旁路超时/panic/race 回归
@@ -205,6 +213,7 @@ examples/rulepublish/            main.go 专用 MySQL＋本机 HTTP 的验收/�
 examples/siteagent/              main.go 本地静态/DOM/GET JSON 分析与审计重开；main_test.go MySQL＋Chromium 回放验收；README.md 真实模型显式接线
 examples/rulequality/            本地网站质量场景、固定报告与显式复分析回放；入口见 RULE_QUALITY.md
 cmd/monitor-demo/quality_demo.go / quality_demo_test.go 模拟观测、真实聚合演示及 Trace
+cmd/monitor-demo/agent_demo.go    不接模型或站点的运行审阅 UI 模拟
 examples/ruleperiodic/           真实 Engine/MySQL 两批列表、详情、分页及幂等业务更新
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
 ```
@@ -224,6 +233,7 @@ papa 门面 ──► internal/app ──► engine ──► internal/{workerpo
 pkg/notify ──► core
 pkg/rulestore ──► pkg/crawlrule + pkg/htmlfetch + models + GORM（不依赖 engine；通过 Catalog 接入）
 pkg/crawlagent ──► pkg/{crawlagent/model,webaccess,agentstore,crawlrule,htmlfetch,rulestore}（不依赖 engine；无生产发布/业务保存接口）
+pkg/agentadmin ──► pkg/{rulequality,crawlagent,agentstore,rulestore}（不持有发布能力）
 pkg/agentstore ──► models + GORM（构造不迁移，不自动接管运行）
 pkg/rulequality ──► pkg/{crawlrule,crawlagent,agentstore,rulestore,htmlfetch} + models + GORM（不依赖 engine；采集旁路不调用模型）
 obs ──► pkg/events + models（只读；不依赖 engine / admin / app，业务项目可直接 import 扩展）
@@ -337,7 +347,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 浏览器临时目录：`pkg/browser/temp_dir.go` 统一解析、写入验证和独立子目录创建；`pool.go` 保存实际根目录。配置入口为 `config.BrowserConfig.TempDir`，引擎与调试 CLI 均传入池。
 
 
-OA 行为回归 `TestOperationsJavaScriptBehavior` 调用七个 Node 脚本，直接执行嵌入资源与当前 oao 依赖的 renderer/request；没有 Node 时显式跳过。覆盖监控响应/正文乱序、401/超时/隐藏页、退避、队列重复点击、整值 URL 协议与参数编码，以及批次页状态切换和动作确认。复核用例还包含原生正文停滞、oao 旧登录 401 与验证合并且不重放写入、Trace/菜单乱序、登录恢复、弹窗替换取消与键盘焦点、成员误开轮询和大 ID 展示。`TestRuleScheduleDetailJSONPreservesIntegers` 验证 JSON 精度；`TestRuleBatchAdminMySQLRetryChecksLatestState` 在真实 MySQL 中将竞争更新插入读与 CAS 之间。`cmd/monitor-demo/schedule_demo.go` 提供显式模拟批次、停/开轮询与成员重试数据，独立于数据库和生产任务。
+OA 行为回归 `TestOperationsJavaScriptBehavior` 调用九个 Node 脚本，直接执行嵌入资源与当前 oao 依赖的 renderer/request；没有 Node 时显式跳过。覆盖监控响应/正文乱序、401/超时/隐藏页、退避、队列重复点击、整值 URL 协议与参数编码，以及批次页状态切换和动作确认。复核用例还包含原生正文停滞、oao 旧登录 401 与验证合并且不重放写入、Trace/菜单乱序、登录恢复、弹窗替换取消与键盘焦点、成员误开轮询和大 ID 展示。`TestRuleScheduleDetailJSONPreservesIntegers` 验证 JSON 精度；`TestRuleBatchAdminMySQLRetryChecksLatestState` 在真实 MySQL 中将竞争更新插入读与 CAS 之间。`cmd/monitor-demo/schedule_demo.go` 提供显式模拟批次、停/开轮询与成员重试数据，独立于数据库和生产任务。
 
 运营首页位于 `admin/server/static/workbench.js` / `workbench.css`；`buildWorkbench` 只派生当前监控快照，`renderWorkbench` 与 `setWorkbenchConnection` 分别接到现有渲染及连接状态。`workbench_test.js` 覆盖统计口径、站点并集、缺失数据、采样时间、XSS、导航作用域、同名按钮焦点、折叠状态和 `__all__` 站点名；`TestWorkbenchTemplateKeepsOperationsAndDetails` 验证模板及嵌入资源接线；`TestDemoTaskSiteFilter` 让演示数据能真实验证本站任务跳转。此路径不增加 HTTP 请求或数据库读取。
 
@@ -348,3 +358,6 @@ OA 行为回归 `TestOperationsJavaScriptBehavior` 调用七个 Node 脚本，�
 新增回归：`TestQualityAdminSQLKeysetsAreBounded` 验证生产查询参数与 LIMIT；`TestQualityAdminMySQLCutoffFilteringRecoveryAndEvidence`、`TestQualityAdminMySQLReportsAndCorruption` 验证真实 MySQL 翻页/重开/引用/清理/损坏；`TestQualityHTTPGuardsPrecisionAndErrors` 验证认证、方法、范围、期限和脱敏；`TestOperationsJavaScriptBehavior/quality_test.js` 与 `monitor_requests_test.js` 验证乱序、迟到正文、身份/筛选切换、精度、转义和 Trace 取消。`PAPA_QUALITY_MYSQL_TEST_DSN` 必须指向专用 `papa_quality_test`，缺失则显式跳过，不能称真库通过。
 
 新增 `TestAdminPlanAndSQLBounds`、`TestAdminMySQLReviewCASRecoveryAndPagination`、`TestAdminMySQLSnapshotAndUnknownCommit`、`TestAdminMySQLFailedReverifyRemainsVisible` 验证 SQL 形状、分页、旧审阅拒绝、并发唯一提交、重开/未知提交和验收记录；`TestRuleAdminHTTPGuardsAuditAndPrecision` 验证 HTTP 边界；`rules_test.js` 执行生产前端，覆盖旧请求/确认、存储失败、重复点击、凭据切换、恢复与安全随机 ID 的兼容路径。`TestDemoRuleOperationsAndIsolation` 验证模拟仓库的幂等与返回值隔离。真实仓库测试依然显式要求专用 `PAPA_RULE_MYSQL_TEST_DSN`；不能用 demo 的内存状态代替数据库一致性证据。
+
+
+OA Agent 中心定向验证：`go test ./pkg/agentadmin ./pkg/agentstore ./pkg/rulequality ./admin/server ./internal/app ./cmd/monitor-demo ./examples/rulequality`，并发路径加 `-race`。报告固化与分页真库沿用 PAPA_QUALITY_MYSQL_TEST_DSN / PAPA_AGENT_MYSQL_TEST_DSN；完整中心候选回放沿用 PAPA_QUALITY_EXAMPLE_TEST_DSN。前端生产 JS 的 Node 回归由 ui_behavior_test.go 自动运行（现九个脚本）。App 退出先排空后台 Agent 再关闭 DB；无法排空时保留依赖，不把超时视为 worker 已停止。

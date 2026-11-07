@@ -36,6 +36,10 @@ func qualityUint(q url.Values, key string) (uint64, error) {
 }
 func (s *Monitor) qualityHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Path == "/api/quality/freeze" || r.URL.Path == "/api/quality/report-operation" || r.URL.Path == "/api/quality/capabilities" {
+		s.qualityWrite(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		http.Error(w, "method not allowed", 405)
@@ -117,17 +121,20 @@ func (s *Monitor) qualityHandler(w http.ResponseWriter, r *http.Request) {
 		s.qualityError(w, err)
 		return
 	}
+	writeQualityJSON(w, result)
+}
+func writeQualityJSON(w http.ResponseWriter, result any) {
 	// Preserve all 64-bit identifiers across JSON.parse; never convert via float64.
 	raw, err := json.Marshal(result)
 	if err != nil {
-		s.qualityError(w, err)
+		http.Error(w, "质量响应编码失败", 500)
 		return
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var value any
 	if err = dec.Decode(&value); err != nil {
-		s.qualityError(w, err)
+		http.Error(w, "质量响应编码失败", 500)
 		return
 	}
 	qualityIdentifiers(value)
