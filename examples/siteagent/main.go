@@ -35,6 +35,7 @@ type options struct {
 	Migrate, Render, RealModel, LegacyMaxTokens       bool
 	WorkerStopped                                     bool
 	Evaluate                                          bool
+	EvalHistory                                       string
 	EvalCompare, PriceVersion, Currency               string
 	InputPrice, OutputPrice, MaxCost                  int64
 }
@@ -54,6 +55,7 @@ func main() {
 	flag.StringVar(&opts.InterruptRun, "interrupt-run", "", "explicitly mark a stopped run interrupted; never resume it")
 	flag.BoolVar(&opts.WorkerStopped, "worker-stopped", false, "confirm the previous executor has stopped before interruption")
 	flag.BoolVar(&opts.Evaluate, "evaluate", false, "run fixed HTML/DOM/JSON evaluation: 3 repetitions each, no publication")
+	flag.StringVar(&opts.EvalHistory, "eval-history", "", "explicit paired evaluation: none or published; installs a synthetic history prerequisite in both arms")
 	flag.StringVar(&opts.EvalCompare, "eval-compare", "", "compare with a complete evaluation JSON report of identical identity")
 	flag.StringVar(&opts.PriceVersion, "price-version", "", "host price schedule version; required for real-model evaluation")
 	flag.StringVar(&opts.Currency, "currency", "", "price currency label; required for real-model evaluation")

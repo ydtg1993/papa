@@ -28,6 +28,8 @@ type execution struct {
 	hiddenDigests map[string]bool
 	hiddenURLs    map[string]bool
 	pending       *agentstore.Step
+	history       map[string]rulestore.Version
+	historyViews  []historyView
 }
 
 // Run creates a fresh analysis. Interrupted runs are inspected/interrupted via
@@ -91,6 +93,9 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		return e.stop(err)
 	}
 	w := a.config.Web
+	if err = e.loadHistory(ctx); err != nil {
+		return e.stop(err)
+	}
 	previousRequest, previousBytes := w.OnRequest, w.OnBytes
 	w.OnRequest = func(c context.Context) error {
 		if previousRequest != nil {
@@ -148,7 +153,8 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		Evidence     []Evidence        `json:"evidence"`
 		SeedURLs     map[string]string `json:"seed_urls"`
 		Capabilities map[string]bool   `json:"capabilities"`
-	}{publicGoal, e.evidence, seedURLs, map[string]bool{"render": a.config.Web.Renderer.Enabled, "record_api": a.config.Web.Renderer.Enabled && a.config.AllowRecordAPI}})}}
+		History      []historyView     `json:"history,omitempty"`
+	}{publicGoal, e.evidence, seedURLs, map[string]bool{"render": a.config.Web.Renderer.Enabled, "record_api": a.config.Web.Renderer.Enabled && a.config.AllowRecordAPI}, e.historyViews})}}
 	for {
 		if err = ctx.Err(); err != nil {
 			return e.stop(err)

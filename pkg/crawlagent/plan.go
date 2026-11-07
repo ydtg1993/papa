@@ -17,6 +17,9 @@ type Plan struct {
 	WebBudgets     webaccess.Budgets
 	Renderer       webaccess.RendererConfig
 	AllowRecordAPI bool
+	// HistoryEnabled makes disclosure explicit in host review/digest and audit
+	// snapshots. It declares intent, not that approval or a model call succeeded.
+	HistoryEnabled bool `json:",omitempty"`
 }
 
 func (a *Agent) Plan(goal Goal) (Plan, error) {
@@ -33,7 +36,7 @@ func (a *Agent) Plan(goal Goal) (Plan, error) {
 		}
 		safe.Seeds[i] = sample.URL
 	}
-	p := Plan{safe, a.config.Web.Policy, a.config.Budgets, a.config.ModelName, a.config.Actor, a.config.Web.Budgets, a.config.Web.Renderer, a.config.AllowRecordAPI}
+	p := Plan{Goal: safe, Policy: a.config.Web.Policy, Budgets: a.config.Budgets, Model: a.config.ModelName, Actor: a.config.Actor, WebBudgets: a.config.Web.Budgets, Renderer: a.config.Web.Renderer, AllowRecordAPI: a.config.AllowRecordAPI, HistoryEnabled: a.config.HistoryPolicy != nil}
 	// Detached slices/maps: a review caller cannot widen the Agent's permissions.
 	b, err := json.Marshal(p)
 	if err != nil {

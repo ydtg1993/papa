@@ -126,6 +126,11 @@ type Config struct {
 	// It must enforce Web policy and invoke the supplied accounting callbacks.
 	// The model cannot configure or replace it.
 	SourceFactory func(webaccess.Config) (Source, error)
+	// HistoryPolicy explicitly authorizes model disclosure of a selected,
+	// published Existing rule. Nil preserves comparison-only behavior. The host
+	// must check same-site/stage authority and sensitive selector/pointer literals;
+	// a rule version has no inherent site ownership. It cannot add authority.
+	HistoryPolicy func(context.Context, HistoryRequest) error
 }
 
 type Candidate struct {

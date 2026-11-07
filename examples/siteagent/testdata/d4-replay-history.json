@@ -1,0 +1,1201 @@
+{
+  "corpus_version": "synthetic-18-v1",
+  "manifest": [
+    {
+      "Scenario": "static-html",
+      "Split": "training",
+      "Name": "train-1",
+      "SHA256": "2efc5826d40152b40c00998a79598bb3e5e8d027a07a450641438e919921cfbc"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "training",
+      "Name": "train-2",
+      "SHA256": "392caf54ae90a50e56a6eecdbcfcd855c068219a35c698cd52f0330a8fa0bd66"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "training",
+      "Name": "train-empty",
+      "SHA256": "9e09cad2eb15bc0c1f8632d2b941fd34cb5b29a9a7e89369eca8108fd8f401fd"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "holdout",
+      "Name": "holdout-1",
+      "SHA256": "4d59a27473096a3ca39d534af5ee29d15b18befbcff4ccd04c17170de9f902cf"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "holdout",
+      "Name": "holdout-2",
+      "SHA256": "1a10fb4d52bc39005c95c09100c12c59fc1cbee60bcf5bb78bd5621dd035e165"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "holdout",
+      "Name": "holdout-empty",
+      "SHA256": "42ddf4072f316b2857edc9e3d673e78c1c70e59a6a1a5eab3384504b77c1f182"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "training",
+      "Name": "train-1",
+      "SHA256": "990d1caee0bf9710f92fc70ec84fdd5633619b8e07eeab2db56dc6a88331dc0d"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "training",
+      "Name": "train-2",
+      "SHA256": "025e72665cb3202c256ea8aac6d20839422a7ec430c20f6824e020fd6fa3b8cb"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "training",
+      "Name": "train-empty",
+      "SHA256": "7e779a137113cebae94b7df1d1198373664dbc63ed54f0c09ed88d4b3aec5e07"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "holdout",
+      "Name": "holdout-1",
+      "SHA256": "eb971f382a1c33e8a4975bf947ea7241a5f06bf53e96f2d4d0d13c45e3c52e12"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "holdout",
+      "Name": "holdout-2",
+      "SHA256": "afc2941dd3274c862b3471d4d23de30e6bd2d978e0a180251388628e68a5cd98"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "holdout",
+      "Name": "holdout-empty",
+      "SHA256": "29d04d1d4efcb884d43e1d1e8c0dfcb7d6428d9488e46056416a86ad6907c17d"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "training",
+      "Name": "train-1",
+      "SHA256": "ed56cbda08fa8f6844207c05ab783ef76dba0995ac0c17c97e8e870856d269ca"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "training",
+      "Name": "train-2",
+      "SHA256": "c17433d69840a6842d77d6ca527a7f4070746b83d6311c9cb878b980822abad6"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "training",
+      "Name": "train-empty",
+      "SHA256": "c57c7fe8e219cf9c3a24c6f521b127897bbb28f265d49a6fe385a3a7d1e470f9"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "holdout",
+      "Name": "holdout-1",
+      "SHA256": "54e667de24c98c22d8c1a17ffd4dfb262471a7978fdeb600d22e0330f09cdd22"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "holdout",
+      "Name": "holdout-2",
+      "SHA256": "125a84de8082d302df38435f1f48076d6a34eb3228612c34388e16fcfbbf268e"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "holdout",
+      "Name": "holdout-empty",
+      "SHA256": "e26ec684221b0a5f24c9f282f88e59e1d9f7ee4d7667d1b773f2ebeb47450791"
+    }
+  ],
+  "report": {
+    "identity": {
+      "Protocol": "papa-fixed-evaluation-v1",
+      "CorpusSHA256": "020638f035c044d7f8d59f1b46dce99f3390a9ff61cf9a0ff8e988b8e5692f6f",
+      "PromptSHA256": "d5d83133e48308d9b76ffbfbf51bdf2c8f2bb7b797f7a748347afc177ede7ea9",
+      "ToolProtocol": "crawlagent-tools-v2-render-wait",
+      "Mode": "replay",
+      "Model": "deterministic-replay",
+      "EndpointSHA256": "c2276922dd308d0a2a2ac8bc206e6a4f7c7cec700864e48d3e04b99321e5e03b",
+      "OutputTokenField": "max_completion_tokens",
+      "PriceVersion": "",
+      "Currency": "",
+      "Budgets": {
+        "MaxDuration": 180000000000,
+        "MaxModelCalls": 12,
+        "MaxCandidatesPerStage": 3,
+        "MaxOutputTokens": 4096,
+        "MaxInputBytes": 131072,
+        "MaxTotalInputBytes": 1048576,
+        "Prices": {
+          "input_per_million_micros": 0,
+          "output_per_million_micros": 0,
+          "max_micros": 0
+        }
+      },
+      "WebBudgets": {
+        "MaxPages": 8,
+        "MaxRequests": 128,
+        "MaxResponseBytes": 2097152,
+        "MaxTotalBytes": 16777216,
+        "MaxDuration": 180000000000,
+        "MaxRedirects": 8
+      },
+      "Scenarios": [
+        "static-html",
+        "rendered-dom",
+        "json-pagination"
+      ],
+      "Repetitions": 3,
+      "HistoryMode": "published",
+      "HistoryFixtureSHA256": "e97943a1ab1eef5bfcbdacf620cca315a5308f18905bae0cf8ea7aa5e0de5ac9"
+    },
+    "runs": [
+      {
+        "scenario": "static-html",
+        "repetition": 1,
+        "run_id": "eval-2ffb1d7b-7c11-4d57-83ae-41dfda554562",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-2ffb1d7b-7c11-4d57-83ae-41dfda554562-train",
+        "TrainingDigest": "f22a8ff802cc4259669387c94fb2473d39bda59c5cf41af5e7bbdbaa0123a198",
+        "HoldoutSet": "eval-2ffb1d7b-7c11-4d57-83ae-41dfda554562-holdout",
+        "HoldoutDigest": "d42f585d12406834fed13a260c11880934afe586261d0db9fa7f8ae2d9ec567c",
+        "candidate": {
+          "id": "eval-2ffb1d7b-7c11-4d57-83ae-41dfda554562-rule",
+          "version": "eval-2ffb1d7b-7c11-4d57-83ae-41dfda554562-1"
+        },
+        "CandidateDigest": "97f493a64f6635f9925a7d36116af5002332475f48dc6624f4f3842d6a6cb2df",
+        "TrainingReportID": "a707075c-3efa-4d43-975b-d8985ccfd06e",
+        "HoldoutReportID": "42d63076-3abd-4763-8d42-bb9486b984aa",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "static-html",
+              "reference": {
+                "id": "eval-2ffb1d7b-7c11-4d57-83ae-41dfda554562-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "ed824e324ed25ab71a5d0a7c0ab26df2b0ebca4713ac11840d9dd9be1c81aabf",
+              "view_sha256": "6e9defa9134c89222f6c759ffde577603e1fb6adffd07d02b963f85d124ce0a2",
+              "state": "published",
+              "view_bytes": 267
+            }
+          ]
+        },
+        "model_input_bytes": 63275,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 235
+        },
+        "elapsed_ms": 237,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "static-html",
+        "repetition": 2,
+        "run_id": "eval-1e1130e1-d4e6-4dc7-b0d6-d5f4aff6aa8e",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-1e1130e1-d4e6-4dc7-b0d6-d5f4aff6aa8e-train",
+        "TrainingDigest": "cee739e8f5066b21fdaba133d2e2db4649b9db7caeb3d10539d4ff02f3677072",
+        "HoldoutSet": "eval-1e1130e1-d4e6-4dc7-b0d6-d5f4aff6aa8e-holdout",
+        "HoldoutDigest": "4ef022bbbd38c3a3fbf9db857c3de264850fae6ab14d831cdeb299f093aef43f",
+        "candidate": {
+          "id": "eval-1e1130e1-d4e6-4dc7-b0d6-d5f4aff6aa8e-rule",
+          "version": "eval-1e1130e1-d4e6-4dc7-b0d6-d5f4aff6aa8e-1"
+        },
+        "CandidateDigest": "2072013fd4f0de189ba7c1b586cc41a4aae2693a1f7cbbf6bcaef889346c1d64",
+        "TrainingReportID": "09edd979-78ca-4c5f-bd3d-73316f5f4fdb",
+        "HoldoutReportID": "320782cd-93e4-4d45-a303-13e4947d91da",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "static-html",
+              "reference": {
+                "id": "eval-1e1130e1-d4e6-4dc7-b0d6-d5f4aff6aa8e-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "a889fbe881fcdcac3c2e224909eafaeaeec4793cdcd85dd04f86718cd94e66a9",
+              "view_sha256": "6e9defa9134c89222f6c759ffde577603e1fb6adffd07d02b963f85d124ce0a2",
+              "state": "published",
+              "view_bytes": 267
+            }
+          ]
+        },
+        "model_input_bytes": 63275,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 235
+        },
+        "elapsed_ms": 244,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "static-html",
+        "repetition": 3,
+        "run_id": "eval-d48f63a3-8eea-451f-9137-3e06ac485e09",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-d48f63a3-8eea-451f-9137-3e06ac485e09-train",
+        "TrainingDigest": "a44b2a5197d28d8dbd6eeea5d557ad0d4ad450102f1a211ed30957d570c078ae",
+        "HoldoutSet": "eval-d48f63a3-8eea-451f-9137-3e06ac485e09-holdout",
+        "HoldoutDigest": "1a7617057b86a2bfee4d8a369a1d85bc85d1f2cd31832d6378338789540077f0",
+        "candidate": {
+          "id": "eval-d48f63a3-8eea-451f-9137-3e06ac485e09-rule",
+          "version": "eval-d48f63a3-8eea-451f-9137-3e06ac485e09-1"
+        },
+        "CandidateDigest": "fca5749ded56fb85b20adadab08b6735795d8215c8345df273f97309683b3496",
+        "TrainingReportID": "621dbd35-de4b-4245-b08d-c858931b3698",
+        "HoldoutReportID": "2d8f233e-4ed2-4e66-90bc-36fc9659ece9",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "static-html",
+              "reference": {
+                "id": "eval-d48f63a3-8eea-451f-9137-3e06ac485e09-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "a7ee22935cef17278acbed99703485f9908a6d89d1e70b6752bdcaa7c1feff1a",
+              "view_sha256": "6e9defa9134c89222f6c759ffde577603e1fb6adffd07d02b963f85d124ce0a2",
+              "state": "published",
+              "view_bytes": 267
+            }
+          ]
+        },
+        "model_input_bytes": 63275,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 235
+        },
+        "elapsed_ms": 327,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "rendered-dom",
+        "repetition": 1,
+        "run_id": "eval-49824380-3b5b-4aa7-8386-d85afb9ce9d4",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-49824380-3b5b-4aa7-8386-d85afb9ce9d4-train",
+        "TrainingDigest": "72ed93fc644a133bffe29ddab737af9e3e634559d4ff228d9ca9d27e9da959bc",
+        "HoldoutSet": "eval-49824380-3b5b-4aa7-8386-d85afb9ce9d4-holdout",
+        "HoldoutDigest": "27c765d8354c4ad9c199124d264c5b69696358b0caa27ef5f1d1ae261a0ab140",
+        "candidate": {
+          "id": "eval-49824380-3b5b-4aa7-8386-d85afb9ce9d4-rule",
+          "version": "eval-49824380-3b5b-4aa7-8386-d85afb9ce9d4-1"
+        },
+        "CandidateDigest": "7bcf6a4ddc333ad18cb5b31bde2b8ad76a0fc90085faf08e1a515b6f4b5a21d2",
+        "TrainingReportID": "714f997e-2dc2-4baa-82a6-baf92a62189b",
+        "HoldoutReportID": "1592fa94-74dc-4ae1-a5dc-ed4303034e2f",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "rendered-dom",
+              "reference": {
+                "id": "eval-49824380-3b5b-4aa7-8386-d85afb9ce9d4-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "4a1f4589f2c0c3ed81f655492fb6148355371e7c10244393d2c71cd90453bf9e",
+              "view_sha256": "bc0e233ae817bd36d6c77e5fc1112f04cb3ec5000b679bbbe37a80e8d5b92b5e",
+              "state": "published",
+              "view_bytes": 267
+            }
+          ]
+        },
+        "model_input_bytes": 68369,
+        "web_usage": {
+          "Requests": 5,
+          "Pages": 2,
+          "Bytes": 1521
+        },
+        "elapsed_ms": 4879,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "rendered-dom",
+        "repetition": 2,
+        "run_id": "eval-1a571a8a-62b8-445e-9143-95a93fb06dae",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-1a571a8a-62b8-445e-9143-95a93fb06dae-train",
+        "TrainingDigest": "21b2ace554f84e6a28b62dcf8a8a80412ae5d5a5522f7a2364f20403633ce5db",
+        "HoldoutSet": "eval-1a571a8a-62b8-445e-9143-95a93fb06dae-holdout",
+        "HoldoutDigest": "98d79eb4731cfdfe29586cdce1d1756412a615608298358ff3a8d5ddf1725064",
+        "candidate": {
+          "id": "eval-1a571a8a-62b8-445e-9143-95a93fb06dae-rule",
+          "version": "eval-1a571a8a-62b8-445e-9143-95a93fb06dae-1"
+        },
+        "CandidateDigest": "7f856ac2baabf547f18085cc0d4341c367f48d78b703204939c8e2df486f6f00",
+        "TrainingReportID": "0d073c9c-0319-4c78-a9cd-457d6bee7a4c",
+        "HoldoutReportID": "ef1edc13-2e0a-4595-9297-386ab0d24a70",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "rendered-dom",
+              "reference": {
+                "id": "eval-1a571a8a-62b8-445e-9143-95a93fb06dae-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "2153ce3ee84579c47d694d5f7cd7215f92793aa5705256c3b7384a62a881beee",
+              "view_sha256": "bc0e233ae817bd36d6c77e5fc1112f04cb3ec5000b679bbbe37a80e8d5b92b5e",
+              "state": "published",
+              "view_bytes": 267
+            }
+          ]
+        },
+        "model_input_bytes": 68369,
+        "web_usage": {
+          "Requests": 5,
+          "Pages": 2,
+          "Bytes": 1521
+        },
+        "elapsed_ms": 5003,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "rendered-dom",
+        "repetition": 3,
+        "run_id": "eval-bddbfe44-3522-4d25-b085-3d3552238ecd",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-bddbfe44-3522-4d25-b085-3d3552238ecd-train",
+        "TrainingDigest": "f6d2c01c840bf6ee32ed6e791e8898a1df1a2a5b7883bbd456420cf0761bbe6c",
+        "HoldoutSet": "eval-bddbfe44-3522-4d25-b085-3d3552238ecd-holdout",
+        "HoldoutDigest": "37614dd0e531843335999b967cb9a0463679122cc0cd1cf089f01f2b6be3368c",
+        "candidate": {
+          "id": "eval-bddbfe44-3522-4d25-b085-3d3552238ecd-rule",
+          "version": "eval-bddbfe44-3522-4d25-b085-3d3552238ecd-1"
+        },
+        "CandidateDigest": "69292efaef8edee7472935c00fdc2f28753c5cfba9f3b6eb811dd0b77c66d378",
+        "TrainingReportID": "83a6b6d6-5a45-44ab-bf8f-e24246fc3b1c",
+        "HoldoutReportID": "f80dce00-f938-436d-8f54-25b134371bb8",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "rendered-dom",
+              "reference": {
+                "id": "eval-bddbfe44-3522-4d25-b085-3d3552238ecd-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "9630dfcadf2ddae2f36bf87fa06a2c4e94f1be89f9aa59149f3b93a5de1f9f69",
+              "view_sha256": "bc0e233ae817bd36d6c77e5fc1112f04cb3ec5000b679bbbe37a80e8d5b92b5e",
+              "state": "published",
+              "view_bytes": 267
+            }
+          ]
+        },
+        "model_input_bytes": 68369,
+        "web_usage": {
+          "Requests": 5,
+          "Pages": 2,
+          "Bytes": 1521
+        },
+        "elapsed_ms": 4858,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "json-pagination",
+        "repetition": 1,
+        "run_id": "eval-1681a526-7670-4681-a668-d432ab07cef1",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-1681a526-7670-4681-a668-d432ab07cef1-train",
+        "TrainingDigest": "4c138cd72f8d58a2eeb800ec974cfd4514212025c4c09dea6ca0c7b681274696",
+        "HoldoutSet": "eval-1681a526-7670-4681-a668-d432ab07cef1-holdout",
+        "HoldoutDigest": "aaa81e75e7c327075ea5c6dea6e9fe67db6fbe500c214b1896d857357977c58a",
+        "candidate": {
+          "id": "eval-1681a526-7670-4681-a668-d432ab07cef1-rule",
+          "version": "eval-1681a526-7670-4681-a668-d432ab07cef1-1"
+        },
+        "CandidateDigest": "5f10ee21a3e9235969e90d03980cbc1fd9cb5f104473b1fc689eb3a7d470c34a",
+        "TrainingReportID": "385ab396-8fd2-4e28-a502-7a3faa84cff9",
+        "HoldoutReportID": "9ec1de20-290a-4773-9814-9b22c4d0c2ff",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "json-pagination",
+              "reference": {
+                "id": "eval-1681a526-7670-4681-a668-d432ab07cef1-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "1f27a5705579f7d898f86e7a60ab8fdeee43605c1e3fb4e813a6ef801725e4d4",
+              "view_sha256": "e9098f8f425ab4ed879fb4a577e34adf372d053113278f56bab79a78c10d2725",
+              "state": "published",
+              "view_bytes": 303
+            }
+          ]
+        },
+        "model_input_bytes": 63546,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 238
+        },
+        "elapsed_ms": 277,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "json-pagination",
+        "repetition": 2,
+        "run_id": "eval-4db9aefc-e39f-48f5-85af-cacbf8742696",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-4db9aefc-e39f-48f5-85af-cacbf8742696-train",
+        "TrainingDigest": "28e6686e5906cca78ef3289c6a359782848571cf1a0953ca031d41f1cd3f3abd",
+        "HoldoutSet": "eval-4db9aefc-e39f-48f5-85af-cacbf8742696-holdout",
+        "HoldoutDigest": "ef1b6aa3ad0b4e29b72ba4be825e690c10e5e3aee386585803c9c57bd8eddb39",
+        "candidate": {
+          "id": "eval-4db9aefc-e39f-48f5-85af-cacbf8742696-rule",
+          "version": "eval-4db9aefc-e39f-48f5-85af-cacbf8742696-1"
+        },
+        "CandidateDigest": "21a5d010e2dcfb83f34fbdb6450715ccb3566fdcc4d99471f97d6449a05939f0",
+        "TrainingReportID": "3899779b-1a92-4f42-bde3-526427f029e5",
+        "HoldoutReportID": "d895eb9a-bb37-450d-99b8-bb3e85bacb8b",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "json-pagination",
+              "reference": {
+                "id": "eval-4db9aefc-e39f-48f5-85af-cacbf8742696-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "ea25aa923fe9f9b84ba54455f6814728092155ffc4d9241297b95497629a8742",
+              "view_sha256": "e9098f8f425ab4ed879fb4a577e34adf372d053113278f56bab79a78c10d2725",
+              "state": "published",
+              "view_bytes": 303
+            }
+          ]
+        },
+        "model_input_bytes": 63546,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 238
+        },
+        "elapsed_ms": 253,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "json-pagination",
+        "repetition": 3,
+        "run_id": "eval-a4f10ba9-e45c-4b67-bb73-45142402e197",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-a4f10ba9-e45c-4b67-bb73-45142402e197-train",
+        "TrainingDigest": "c03b064376bada8ea7e40ceb6f30970fcb824d4199754bc77c17b411d7314d74",
+        "HoldoutSet": "eval-a4f10ba9-e45c-4b67-bb73-45142402e197-holdout",
+        "HoldoutDigest": "d767b6c63d5c691f88b6e4b67c9a0c9da46f360bd94b60fcac3417ac3ef079ef",
+        "candidate": {
+          "id": "eval-a4f10ba9-e45c-4b67-bb73-45142402e197-rule",
+          "version": "eval-a4f10ba9-e45c-4b67-bb73-45142402e197-1"
+        },
+        "CandidateDigest": "dc981092afb820788b405482034ef3c9d31d816e78814364e8d1283f06e4351c",
+        "TrainingReportID": "4f66763f-ca49-40d5-b9b1-11775282e230",
+        "HoldoutReportID": "c51fdbd1-463d-41b8-8f55-0f3b962f82e0",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0,
+          "history": [
+            {
+              "stage": "json-pagination",
+              "reference": {
+                "id": "eval-a4f10ba9-e45c-4b67-bb73-45142402e197-history",
+                "version": "seed-v1"
+              },
+              "rule_sha256": "6fec8df4290e996631f1c8b70557d9cc730fac3b0bddcc0a8ec5a868111dc140",
+              "view_sha256": "e9098f8f425ab4ed879fb4a577e34adf372d053113278f56bab79a78c10d2725",
+              "state": "published",
+              "view_bytes": 303
+            }
+          ]
+        },
+        "model_input_bytes": 63546,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 238
+        },
+        "elapsed_ms": 223,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      }
+    ]
+  },
+  "summary": [
+    {
+      "Scenario": "static-html",
+      "SampleRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "FieldRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "NegativeRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "Corrections": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "ElapsedMS": {
+        "Min": 237,
+        "Max": 327,
+        "Mean": 269.3333333333333
+      },
+      "ToolErrorRate": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "InfrastructureFailures": 0,
+      "ModelCalls": {
+        "Min": 7,
+        "Max": 7,
+        "Mean": 7
+      },
+      "InputBytes": {
+        "Min": 63275,
+        "Max": 63275,
+        "Mean": 63275
+      },
+      "HistoryBytes": {
+        "Min": 267,
+        "Max": 267,
+        "Mean": 267
+      }
+    },
+    {
+      "Scenario": "rendered-dom",
+      "SampleRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "FieldRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "NegativeRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "Corrections": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "ElapsedMS": {
+        "Min": 4858,
+        "Max": 5003,
+        "Mean": 4913.333333333333
+      },
+      "ToolErrorRate": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "InfrastructureFailures": 0,
+      "ModelCalls": {
+        "Min": 7,
+        "Max": 7,
+        "Mean": 7
+      },
+      "InputBytes": {
+        "Min": 68369,
+        "Max": 68369,
+        "Mean": 68369
+      },
+      "HistoryBytes": {
+        "Min": 267,
+        "Max": 267,
+        "Mean": 267
+      }
+    },
+    {
+      "Scenario": "json-pagination",
+      "SampleRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "FieldRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "NegativeRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "Corrections": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "ElapsedMS": {
+        "Min": 223,
+        "Max": 277,
+        "Mean": 251
+      },
+      "ToolErrorRate": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "InfrastructureFailures": 0,
+      "ModelCalls": {
+        "Min": 7,
+        "Max": 7,
+        "Mean": 7
+      },
+      "InputBytes": {
+        "Min": 63546,
+        "Max": 63546,
+        "Mean": 63546
+      },
+      "HistoryBytes": {
+        "Min": 303,
+        "Max": 303,
+        "Mean": 303
+      }
+    }
+  ],
+  "comparison": {
+    "Before": [
+      {
+        "Scenario": "static-html",
+        "SampleRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "FieldRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "NegativeRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "Corrections": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "ElapsedMS": {
+          "Min": 224,
+          "Max": 350,
+          "Mean": 267
+        },
+        "ToolErrorRate": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "InfrastructureFailures": 0,
+        "ModelCalls": {
+          "Min": 7,
+          "Max": 7,
+          "Mean": 7
+        },
+        "InputBytes": {
+          "Min": 60538,
+          "Max": 60538,
+          "Mean": 60538
+        },
+        "HistoryBytes": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        }
+      },
+      {
+        "Scenario": "rendered-dom",
+        "SampleRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "FieldRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "NegativeRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "Corrections": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "ElapsedMS": {
+          "Min": 4887,
+          "Max": 4944,
+          "Mean": 4918
+        },
+        "ToolErrorRate": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "InfrastructureFailures": 0,
+        "ModelCalls": {
+          "Min": 7,
+          "Max": 7,
+          "Mean": 7
+        },
+        "InputBytes": {
+          "Min": 65625,
+          "Max": 65625,
+          "Mean": 65625
+        },
+        "HistoryBytes": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        }
+      },
+      {
+        "Scenario": "json-pagination",
+        "SampleRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "FieldRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "NegativeRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "Corrections": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "ElapsedMS": {
+          "Min": 217,
+          "Max": 271,
+          "Mean": 239.33333333333334
+        },
+        "ToolErrorRate": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "InfrastructureFailures": 0,
+        "ModelCalls": {
+          "Min": 7,
+          "Max": 7,
+          "Mean": 7
+        },
+        "InputBytes": {
+          "Min": 60459,
+          "Max": 60459,
+          "Mean": 60459
+        },
+        "HistoryBytes": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        }
+      }
+    ],
+    "After": [
+      {
+        "Scenario": "static-html",
+        "SampleRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "FieldRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "NegativeRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "Corrections": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "ElapsedMS": {
+          "Min": 237,
+          "Max": 327,
+          "Mean": 269.3333333333333
+        },
+        "ToolErrorRate": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "InfrastructureFailures": 0,
+        "ModelCalls": {
+          "Min": 7,
+          "Max": 7,
+          "Mean": 7
+        },
+        "InputBytes": {
+          "Min": 63275,
+          "Max": 63275,
+          "Mean": 63275
+        },
+        "HistoryBytes": {
+          "Min": 267,
+          "Max": 267,
+          "Mean": 267
+        }
+      },
+      {
+        "Scenario": "rendered-dom",
+        "SampleRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "FieldRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "NegativeRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "Corrections": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "ElapsedMS": {
+          "Min": 4858,
+          "Max": 5003,
+          "Mean": 4913.333333333333
+        },
+        "ToolErrorRate": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "InfrastructureFailures": 0,
+        "ModelCalls": {
+          "Min": 7,
+          "Max": 7,
+          "Mean": 7
+        },
+        "InputBytes": {
+          "Min": 68369,
+          "Max": 68369,
+          "Mean": 68369
+        },
+        "HistoryBytes": {
+          "Min": 267,
+          "Max": 267,
+          "Mean": 267
+        }
+      },
+      {
+        "Scenario": "json-pagination",
+        "SampleRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "FieldRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "NegativeRate": {
+          "Min": 1,
+          "Max": 1,
+          "Mean": 1
+        },
+        "Corrections": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "ElapsedMS": {
+          "Min": 223,
+          "Max": 277,
+          "Mean": 251
+        },
+        "ToolErrorRate": {
+          "Min": 0,
+          "Max": 0,
+          "Mean": 0
+        },
+        "InfrastructureFailures": 0,
+        "ModelCalls": {
+          "Min": 7,
+          "Max": 7,
+          "Mean": 7
+        },
+        "InputBytes": {
+          "Min": 63546,
+          "Max": 63546,
+          "Mean": 63546
+        },
+        "HistoryBytes": {
+          "Min": 303,
+          "Max": 303,
+          "Mean": 303
+        }
+      }
+    ]
+  }
+}

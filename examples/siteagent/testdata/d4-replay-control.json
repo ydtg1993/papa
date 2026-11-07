@@ -1,0 +1,784 @@
+{
+  "corpus_version": "synthetic-18-v1",
+  "manifest": [
+    {
+      "Scenario": "static-html",
+      "Split": "training",
+      "Name": "train-1",
+      "SHA256": "2efc5826d40152b40c00998a79598bb3e5e8d027a07a450641438e919921cfbc"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "training",
+      "Name": "train-2",
+      "SHA256": "392caf54ae90a50e56a6eecdbcfcd855c068219a35c698cd52f0330a8fa0bd66"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "training",
+      "Name": "train-empty",
+      "SHA256": "9e09cad2eb15bc0c1f8632d2b941fd34cb5b29a9a7e89369eca8108fd8f401fd"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "holdout",
+      "Name": "holdout-1",
+      "SHA256": "4d59a27473096a3ca39d534af5ee29d15b18befbcff4ccd04c17170de9f902cf"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "holdout",
+      "Name": "holdout-2",
+      "SHA256": "1a10fb4d52bc39005c95c09100c12c59fc1cbee60bcf5bb78bd5621dd035e165"
+    },
+    {
+      "Scenario": "static-html",
+      "Split": "holdout",
+      "Name": "holdout-empty",
+      "SHA256": "42ddf4072f316b2857edc9e3d673e78c1c70e59a6a1a5eab3384504b77c1f182"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "training",
+      "Name": "train-1",
+      "SHA256": "990d1caee0bf9710f92fc70ec84fdd5633619b8e07eeab2db56dc6a88331dc0d"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "training",
+      "Name": "train-2",
+      "SHA256": "025e72665cb3202c256ea8aac6d20839422a7ec430c20f6824e020fd6fa3b8cb"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "training",
+      "Name": "train-empty",
+      "SHA256": "7e779a137113cebae94b7df1d1198373664dbc63ed54f0c09ed88d4b3aec5e07"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "holdout",
+      "Name": "holdout-1",
+      "SHA256": "eb971f382a1c33e8a4975bf947ea7241a5f06bf53e96f2d4d0d13c45e3c52e12"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "holdout",
+      "Name": "holdout-2",
+      "SHA256": "afc2941dd3274c862b3471d4d23de30e6bd2d978e0a180251388628e68a5cd98"
+    },
+    {
+      "Scenario": "rendered-dom",
+      "Split": "holdout",
+      "Name": "holdout-empty",
+      "SHA256": "29d04d1d4efcb884d43e1d1e8c0dfcb7d6428d9488e46056416a86ad6907c17d"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "training",
+      "Name": "train-1",
+      "SHA256": "ed56cbda08fa8f6844207c05ab783ef76dba0995ac0c17c97e8e870856d269ca"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "training",
+      "Name": "train-2",
+      "SHA256": "c17433d69840a6842d77d6ca527a7f4070746b83d6311c9cb878b980822abad6"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "training",
+      "Name": "train-empty",
+      "SHA256": "c57c7fe8e219cf9c3a24c6f521b127897bbb28f265d49a6fe385a3a7d1e470f9"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "holdout",
+      "Name": "holdout-1",
+      "SHA256": "54e667de24c98c22d8c1a17ffd4dfb262471a7978fdeb600d22e0330f09cdd22"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "holdout",
+      "Name": "holdout-2",
+      "SHA256": "125a84de8082d302df38435f1f48076d6a34eb3228612c34388e16fcfbbf268e"
+    },
+    {
+      "Scenario": "json-pagination",
+      "Split": "holdout",
+      "Name": "holdout-empty",
+      "SHA256": "e26ec684221b0a5f24c9f282f88e59e1d9f7ee4d7667d1b773f2ebeb47450791"
+    }
+  ],
+  "report": {
+    "identity": {
+      "Protocol": "papa-fixed-evaluation-v1",
+      "CorpusSHA256": "020638f035c044d7f8d59f1b46dce99f3390a9ff61cf9a0ff8e988b8e5692f6f",
+      "PromptSHA256": "d5d83133e48308d9b76ffbfbf51bdf2c8f2bb7b797f7a748347afc177ede7ea9",
+      "ToolProtocol": "crawlagent-tools-v2-render-wait",
+      "Mode": "replay",
+      "Model": "deterministic-replay",
+      "EndpointSHA256": "c2276922dd308d0a2a2ac8bc206e6a4f7c7cec700864e48d3e04b99321e5e03b",
+      "OutputTokenField": "max_completion_tokens",
+      "PriceVersion": "",
+      "Currency": "",
+      "Budgets": {
+        "MaxDuration": 180000000000,
+        "MaxModelCalls": 12,
+        "MaxCandidatesPerStage": 3,
+        "MaxOutputTokens": 4096,
+        "MaxInputBytes": 131072,
+        "MaxTotalInputBytes": 1048576,
+        "Prices": {
+          "input_per_million_micros": 0,
+          "output_per_million_micros": 0,
+          "max_micros": 0
+        }
+      },
+      "WebBudgets": {
+        "MaxPages": 8,
+        "MaxRequests": 128,
+        "MaxResponseBytes": 2097152,
+        "MaxTotalBytes": 16777216,
+        "MaxDuration": 180000000000,
+        "MaxRedirects": 8
+      },
+      "Scenarios": [
+        "static-html",
+        "rendered-dom",
+        "json-pagination"
+      ],
+      "Repetitions": 3,
+      "HistoryMode": "none",
+      "HistoryFixtureSHA256": "e97943a1ab1eef5bfcbdacf620cca315a5308f18905bae0cf8ea7aa5e0de5ac9"
+    },
+    "runs": [
+      {
+        "scenario": "static-html",
+        "repetition": 1,
+        "run_id": "eval-1c63f219-9820-46fd-a8f7-a638a27e0630",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-1c63f219-9820-46fd-a8f7-a638a27e0630-train",
+        "TrainingDigest": "33132e44a2e767ea1d1cd999e4f54b5a92aca05eb4f7fe2351bb38c5f63a11ee",
+        "HoldoutSet": "eval-1c63f219-9820-46fd-a8f7-a638a27e0630-holdout",
+        "HoldoutDigest": "e53d2250bf5a56ea2ce912b81100a346320fe3585964c74b7ea29d459aeab86f",
+        "candidate": {
+          "id": "eval-1c63f219-9820-46fd-a8f7-a638a27e0630-rule",
+          "version": "eval-1c63f219-9820-46fd-a8f7-a638a27e0630-1"
+        },
+        "CandidateDigest": "5fa2d689eb1d539d58f792c37910c848a443658db0fe7d643c131b86a67e110c",
+        "TrainingReportID": "029931a0-45a6-4821-9840-905bb3d2316b",
+        "HoldoutReportID": "16e582aa-b9a8-4adc-a187-e2e7cdd46656",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 60538,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 235
+        },
+        "elapsed_ms": 350,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "static-html",
+        "repetition": 2,
+        "run_id": "eval-05cfda56-3e8e-422f-8582-ee77d6f8cb00",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-05cfda56-3e8e-422f-8582-ee77d6f8cb00-train",
+        "TrainingDigest": "c7f2ab6dd5cb7f81219055c20ce4fddd2e78b3ae3a2168818a21feec96e96110",
+        "HoldoutSet": "eval-05cfda56-3e8e-422f-8582-ee77d6f8cb00-holdout",
+        "HoldoutDigest": "ff58a990b3dd481865dd9adf649a7f044b964c67bd92a5f498d795acf10f73b5",
+        "candidate": {
+          "id": "eval-05cfda56-3e8e-422f-8582-ee77d6f8cb00-rule",
+          "version": "eval-05cfda56-3e8e-422f-8582-ee77d6f8cb00-1"
+        },
+        "CandidateDigest": "c4376695b10642d9851174963afb0eadd3513b13ce09fba356fdf64755a44690",
+        "TrainingReportID": "6a27b7f1-dba1-4259-9ed0-aedfaa8b11b4",
+        "HoldoutReportID": "776b9630-76d0-479f-8428-8ea4ac44dcb3",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 60538,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 235
+        },
+        "elapsed_ms": 227,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "static-html",
+        "repetition": 3,
+        "run_id": "eval-028ecef5-76c3-4b79-b70f-1b3c5e61fec4",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-028ecef5-76c3-4b79-b70f-1b3c5e61fec4-train",
+        "TrainingDigest": "d1dfeff0b9c318bef89a8b0a589482e0d5031c210fbaac1e96cb1cba29d3c731",
+        "HoldoutSet": "eval-028ecef5-76c3-4b79-b70f-1b3c5e61fec4-holdout",
+        "HoldoutDigest": "af204fd41853906808b007e59773b5f0a28bd14cc5335eee45d530e5fc63e4c9",
+        "candidate": {
+          "id": "eval-028ecef5-76c3-4b79-b70f-1b3c5e61fec4-rule",
+          "version": "eval-028ecef5-76c3-4b79-b70f-1b3c5e61fec4-1"
+        },
+        "CandidateDigest": "452a5b8c3ecb64478f3dca8c21265c14267e00eb1dc41282ba30784224d4df5c",
+        "TrainingReportID": "89040282-9c69-422f-a9d6-43a1c1c01518",
+        "HoldoutReportID": "75acef4a-7eb8-412f-8a85-3f9555f466ac",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 60538,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 235
+        },
+        "elapsed_ms": 224,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "rendered-dom",
+        "repetition": 1,
+        "run_id": "eval-83990fae-370b-4717-b02f-7e6fc856ee9c",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-83990fae-370b-4717-b02f-7e6fc856ee9c-train",
+        "TrainingDigest": "4d2dd13ef366b0671a42a9388858dcaba4ecac2e8e71aeb7cf37788cf828bdfe",
+        "HoldoutSet": "eval-83990fae-370b-4717-b02f-7e6fc856ee9c-holdout",
+        "HoldoutDigest": "158bb88abfbac4073089fb1f8340281172832bf0387133a9205b9f9427575569",
+        "candidate": {
+          "id": "eval-83990fae-370b-4717-b02f-7e6fc856ee9c-rule",
+          "version": "eval-83990fae-370b-4717-b02f-7e6fc856ee9c-1"
+        },
+        "CandidateDigest": "c3cf6daddf670191bf627c5fe159884fb490fb09f44f26976ae9c4f25dc6cab8",
+        "TrainingReportID": "089d2fc0-902c-4943-987d-b790b55b3fb1",
+        "HoldoutReportID": "3c250544-cdd1-4406-b69f-cd077bca7862",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 65625,
+        "web_usage": {
+          "Requests": 5,
+          "Pages": 2,
+          "Bytes": 1521
+        },
+        "elapsed_ms": 4944,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "rendered-dom",
+        "repetition": 2,
+        "run_id": "eval-ea9172df-7c0e-4603-a3e6-03e46635fd9a",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-ea9172df-7c0e-4603-a3e6-03e46635fd9a-train",
+        "TrainingDigest": "8beae43d02674ca2d0e9889a210d01811fda8da9f8d9bb2781f3d581b7186174",
+        "HoldoutSet": "eval-ea9172df-7c0e-4603-a3e6-03e46635fd9a-holdout",
+        "HoldoutDigest": "6f4e75075a36101ccd6ef1dad50bff1d7f2c9a185ce8d45219e1e450d55e2a76",
+        "candidate": {
+          "id": "eval-ea9172df-7c0e-4603-a3e6-03e46635fd9a-rule",
+          "version": "eval-ea9172df-7c0e-4603-a3e6-03e46635fd9a-1"
+        },
+        "CandidateDigest": "48caca99bd9ad5a2ee92d092c1fb15a2b8ded6d06d75a9adf2c9c155f3ffe716",
+        "TrainingReportID": "41811ea4-576f-436f-b429-74ef848df9c3",
+        "HoldoutReportID": "3636d87e-600d-43b2-a313-ea2d6dec64f6",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 65625,
+        "web_usage": {
+          "Requests": 5,
+          "Pages": 2,
+          "Bytes": 1521
+        },
+        "elapsed_ms": 4887,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "rendered-dom",
+        "repetition": 3,
+        "run_id": "eval-371e1da0-dbf8-4c33-bc36-eb5f8903e3c8",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-371e1da0-dbf8-4c33-bc36-eb5f8903e3c8-train",
+        "TrainingDigest": "148052fc54c146e638ec446928378a625cd38dced084e6a868c590a972ccbe0c",
+        "HoldoutSet": "eval-371e1da0-dbf8-4c33-bc36-eb5f8903e3c8-holdout",
+        "HoldoutDigest": "da4fb0ed2042bf522a2115d6f038a64c1157dda2f7cf9c75fac3f168b8f897c0",
+        "candidate": {
+          "id": "eval-371e1da0-dbf8-4c33-bc36-eb5f8903e3c8-rule",
+          "version": "eval-371e1da0-dbf8-4c33-bc36-eb5f8903e3c8-1"
+        },
+        "CandidateDigest": "2ad42c6bcc9945b8b31d1abc19559abe3332e6ed4e91c3a5708575ca9d1694c7",
+        "TrainingReportID": "bbf504df-3f5b-4c78-8e39-869292baf7db",
+        "HoldoutReportID": "c6a6af5a-afa6-4c1b-a99e-1601bcb5e251",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 65625,
+        "web_usage": {
+          "Requests": 5,
+          "Pages": 2,
+          "Bytes": 1521
+        },
+        "elapsed_ms": 4923,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "json-pagination",
+        "repetition": 1,
+        "run_id": "eval-7522c9c4-6a55-4e41-b36f-126c8e75c275",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-7522c9c4-6a55-4e41-b36f-126c8e75c275-train",
+        "TrainingDigest": "d9f02588037b20ccf07e80b433dc519b4eb1a88dec3d475aa922264c8c7336ff",
+        "HoldoutSet": "eval-7522c9c4-6a55-4e41-b36f-126c8e75c275-holdout",
+        "HoldoutDigest": "e76ee1dd2683c1d26593fee898ecc4192437dd112eed82b6c6f61b839185bae5",
+        "candidate": {
+          "id": "eval-7522c9c4-6a55-4e41-b36f-126c8e75c275-rule",
+          "version": "eval-7522c9c4-6a55-4e41-b36f-126c8e75c275-1"
+        },
+        "CandidateDigest": "97870450c8c6f4d0c4e22ef9c745c41b1d0e0e35aae44faa130540168b4330df",
+        "TrainingReportID": "3753155d-e684-4c5d-8a46-544ab44adb6e",
+        "HoldoutReportID": "fa0b59f2-fa50-4020-bd8c-591f58ba5e93",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 60459,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 238
+        },
+        "elapsed_ms": 271,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "json-pagination",
+        "repetition": 2,
+        "run_id": "eval-4201716d-65f9-49f8-b57b-35771827647e",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-4201716d-65f9-49f8-b57b-35771827647e-train",
+        "TrainingDigest": "7cdacd6cab0bf34b49cd3a6f6d1a83aeceedb47b8152efdcca016332a3744cab",
+        "HoldoutSet": "eval-4201716d-65f9-49f8-b57b-35771827647e-holdout",
+        "HoldoutDigest": "78841e44354b90b2f8894459d14cca5ddb5aeea6bc045caae2ff764d8738d566",
+        "candidate": {
+          "id": "eval-4201716d-65f9-49f8-b57b-35771827647e-rule",
+          "version": "eval-4201716d-65f9-49f8-b57b-35771827647e-1"
+        },
+        "CandidateDigest": "214fa48285209a02daecb9e4a42a9f8bc03dfc8d7115bd66fd9fd9a8d27a5072",
+        "TrainingReportID": "d8161060-4903-4486-ad62-9787fcf9bd11",
+        "HoldoutReportID": "95d08fe8-329c-4a68-9677-a7c8d5e8ad10",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 60459,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 238
+        },
+        "elapsed_ms": 217,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      },
+      {
+        "scenario": "json-pagination",
+        "repetition": 3,
+        "run_id": "eval-26d6e43c-50ce-4de8-bb44-462902909726",
+        "status": "awaiting_review",
+        "TrainingSet": "eval-26d6e43c-50ce-4de8-bb44-462902909726-train",
+        "TrainingDigest": "07523442d3e4aefe296fd3b94bb024612653b834d21a921e7cd1bbb95dfd8699",
+        "HoldoutSet": "eval-26d6e43c-50ce-4de8-bb44-462902909726-holdout",
+        "HoldoutDigest": "344e7a2e2a73ab19e0ccef4653eba509a36df732c946cf76cf8080e97eae5c72",
+        "candidate": {
+          "id": "eval-26d6e43c-50ce-4de8-bb44-462902909726-rule",
+          "version": "eval-26d6e43c-50ce-4de8-bb44-462902909726-1"
+        },
+        "CandidateDigest": "429d85a3c33c6251f5d6b117347a0e07f75b9b84a1bf594a449a7c2d2dff1980",
+        "TrainingReportID": "7b8eee54-4fe1-4bc2-b309-bd4cc6da8594",
+        "HoldoutReportID": "6f49077e-bad6-424e-b6eb-abbf557801b3",
+        "scores": {
+          "samples": {
+            "matched": 3,
+            "total": 3
+          },
+          "required_field_assertions": {
+            "matched": 4,
+            "total": 4
+          },
+          "negative": {
+            "matched": 1,
+            "total": 1
+          },
+          "execution_failures": 0
+        },
+        "audit": {
+          "tool_errors": {
+            "matched": 0,
+            "total": 7
+          },
+          "correction_attempts": 0,
+          "model_calls": 7,
+          "tokens": null,
+          "incomplete": false,
+          "infrastructure_failures": 0
+        },
+        "model_input_bytes": 60459,
+        "web_usage": {
+          "Requests": 3,
+          "Pages": 2,
+          "Bytes": 238
+        },
+        "elapsed_ms": 230,
+        "infrastructure_failure": false,
+        "ready_for_review": true,
+        "estimated_micros": null
+      }
+    ]
+  },
+  "summary": [
+    {
+      "Scenario": "static-html",
+      "SampleRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "FieldRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "NegativeRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "Corrections": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "ElapsedMS": {
+        "Min": 224,
+        "Max": 350,
+        "Mean": 267
+      },
+      "ToolErrorRate": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "InfrastructureFailures": 0,
+      "ModelCalls": {
+        "Min": 7,
+        "Max": 7,
+        "Mean": 7
+      },
+      "InputBytes": {
+        "Min": 60538,
+        "Max": 60538,
+        "Mean": 60538
+      },
+      "HistoryBytes": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      }
+    },
+    {
+      "Scenario": "rendered-dom",
+      "SampleRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "FieldRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "NegativeRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "Corrections": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "ElapsedMS": {
+        "Min": 4887,
+        "Max": 4944,
+        "Mean": 4918
+      },
+      "ToolErrorRate": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "InfrastructureFailures": 0,
+      "ModelCalls": {
+        "Min": 7,
+        "Max": 7,
+        "Mean": 7
+      },
+      "InputBytes": {
+        "Min": 65625,
+        "Max": 65625,
+        "Mean": 65625
+      },
+      "HistoryBytes": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      }
+    },
+    {
+      "Scenario": "json-pagination",
+      "SampleRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "FieldRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "NegativeRate": {
+        "Min": 1,
+        "Max": 1,
+        "Mean": 1
+      },
+      "Corrections": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "ElapsedMS": {
+        "Min": 217,
+        "Max": 271,
+        "Mean": 239.33333333333334
+      },
+      "ToolErrorRate": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      },
+      "InfrastructureFailures": 0,
+      "ModelCalls": {
+        "Min": 7,
+        "Max": 7,
+        "Mean": 7
+      },
+      "InputBytes": {
+        "Min": 60459,
+        "Max": 60459,
+        "Mean": 60459
+      },
+      "HistoryBytes": {
+        "Min": 0,
+        "Max": 0,
+        "Mean": 0
+      }
+    }
+  ]
+}

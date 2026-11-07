@@ -219,3 +219,5 @@ HTTP 使用 `ShadowInput{Response: response}`；渲染 DOM 使用 `Rendered: tru
 仓库负责持久数据与事务一致性，宿主负责身份授权、选择样本、脱敏、备份、上线策略和调用时机。当前提供 Go API、完整示例及 [OA 规则运维中心](MONITOR.md#13-规则运维)的人工发布/回滚入口；HTTP 操作需要具名身份、当前代次和操作 ID，不自动授予生产发布权限。尚无专用发布 CLI。
 
 [受控分析 Agent](./SITE_AGENT.md) 可在宿主范围和预算内生成/修正规则候选，使用预先固定的训练样本与独立验收集。它只调用仓库的样本、草稿、查询和 Verify 接口；`awaiting_review`、`verified=true` 表示独立验收通过待审阅，缺少独立样本则为 `needs_fixtures`。发布仍由宿主审阅后显式调用 Publish，并使用实际 generation 与新 operationID；Agent 不改变 Current。
+
+D4 可通过 `StageGoal.Existing` 与显式 `Config.HistoryPolicy` 把所选已发布规则的最小结构提供给模型。Reference/Version 没有站点所有权，EverPublished 只说明发布状态；宿主必须核对该站点/阶段的 Current 或已授权历史 release 绑定，审阅选择器等字面量再批准披露。Runner 固定引用和摘要，后续发布不改变本次历史；该上下文不替代本次训练、独立验收与人工发布。具体限额、隔离与审计见 [SITE_AGENT §13](SITE_AGENT.md#13-受限历史上下文d4)。没有新增仓库表或迁移。

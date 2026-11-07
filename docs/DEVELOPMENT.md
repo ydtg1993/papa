@@ -54,6 +54,10 @@ D2 负样本回归：`go test -race ./pkg/crawlrule ./pkg/rulestore ./pkg/crawla
 
 D3 固定评测：`go test -race ./pkg/agenteval ./pkg/crawlrule ./pkg/crawlagent ./examples/siteagent -count=1`。`TestFixedEvaluationMySQLAndChromium` 使用 `PAPA_AGENT_EXAMPLE_TEST_DSN` 的专用 agent_test 库与沙箱 Chromium，实际运行三类各三次、再执行一次完整基线比较，检查审计重开、预算不兼容时零模型调用和无自动发布；无 DSN 跳过不算验收。普通测试验证固定 18 样本、隔离、字段分母、未知用量、比较身份与完整重复次数。正式保存基线使用 `go run ./examples/siteagent -evaluate ...`，见示例 README；不是 Go benchmark，也不默认付费。
 
+D4 回归沿用上述命令。`TestRunnerHistory*` 验证默认不披露、宿主范围授权、最小投影、限额/取消/审计失败、隐藏 URL 和快照冻结；`TestHistoryComparisonAllowsOnlyExplicitTreatment` 防止放宽普通比较。专用库下 `go test -race ./examples/siteagent -run '^TestHistoryEvaluationMySQLAndChromium$' -count=1 -v` 实际跑无/有历史各 9 次，检查审计重开和宿主合成发布指针不变。`TestRecordedHistoryComparisonContract` 校验双组存档；Replay 不能衡量真实模型收益。Windows 若 go run 使用工作区 GOCACHE 中缓存的 exe 导致 Chrome 启动失败，可将相同源码构建到系统默认 TEMP 后运行作对照，不关闭沙箱。
+
+D4 review 补测：`TestHistoryDisclosureChangesReviewedPlan` 与后台 agents 脚本验证披露状态可见且进入审阅快照；`TestRunnerHistoryRejectsEquivalentHiddenURL` 验证等价 URL 隔离；`TestRunnerHistoryUsesOriginalInputAndCostBudgets` 用刚好可容纳无历史输入的额度验证历史确实消耗原预算；`TestRunnerConcurrentHistorySnapshots` 验证同 Agent 的 8 个并发运行隔离。`PAPA_AGENT_MYSQL_TEST_DSN` 配置专用 papa_agent_test 后，`TestRunnerMySQLHistoryAuditRecoveryWithoutReplay` 实际验证 history 写入失败→重开 pending→明确旧执行器停止后 Interrupt 为 unknown→同 RunID 不可重放，Current 不变。
+
 ## 2. 业务项目（`papa new` 生成）
 
 生成的 `Makefile` 在框架基础上多几个目标：
@@ -194,6 +198,8 @@ pkg/                             可独立复用的件
   crawlrule/fixture_contract.go / fixture_negative_test.go 显式正/负预期、严格分类、整组正样本门槛与非法输入/资源边界回归
   crawlrule/field_match.go / field_match_test.go 诊断字段精确匹配计数；missing/null、JSON Pointer 和大整数边界
   agenteval/                    score.go 固定分母评分；report.go 审计指标、未知用量、完整性与严格基线比较；score_test.go 失败/部分匹配/不可比报告回归
+  agenteval/history.go / history_test.go 仅显式历史处理差异的双组比较、合法摘要与处理记录校验
+  crawlagent/history.go / runner_history_test.go 已发布引用的宿主披露批准、投影/限额、冻结与安全审计
   rulestore/negative_contract_test.go / negative_mysql_test.go 旧 JSON/报告兼容、负样本报告完整性、并发验收、真库重开与人工发布/回滚
   crawlagent/runner_negative_test.go / runner_negative_mysql_test.go 混合样本训练/隐藏集隔离、模型前置校验、持久审计与不自动发布
   rulestore/                    types.go 数据契约；repository.go 不可变规则与固定版本解析；repository_samples.go 样本/集合/验收；repository_release.go 完整站点发布、CAS、幂等与回滚
@@ -239,6 +245,7 @@ examples/rulecrawl/              main.go 本地 HTML / JSON POST 游标完整流
 examples/rulepublish/            main.go 专用 MySQL＋本机 HTTP 的验收/发布/恢复/影子/回滚示例；main_test.go 入口约束验证
 examples/siteagent/              main.go 本地静态/DOM/GET JSON 分析与审计重开；main_test.go MySQL＋Chromium 回放验收；README.md 真实模型显式接线
 examples/siteagent/evaluation_{fixtures,run}.go 固定 18 合成样本、9 次受控评测、显式付费预算与报告比较；evaluation_test.go 样本协议/隔离、真库浏览器和无发布验证
+examples/siteagent/evaluation_history.go / evaluation_history_test.go 宿主合成已发布种子、显式双组对照、真库/Chromium 和存档契约
 examples/rulequality/            本地网站质量场景、固定报告与显式复分析回放；入口见 RULE_QUALITY.md
 cmd/monitor-demo/quality_demo.go / quality_demo_test.go 模拟观测、真实聚合演示及 Trace
 cmd/monitor-demo/agent_demo.go    不接模型或站点的运行审阅 UI 模拟

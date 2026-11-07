@@ -11,6 +11,8 @@ const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{p
 const selection={report_id:'report',profile_id:'approved',evidence_ids:['evidence']};
 const preview={selection,profile:{label:'approved'},digest:'sha',plan:{}};
 (async()=>{
+ assert.ok(c.agentPlanHTML({}).includes('未启用'),'legacy preview must not imply historical disclosure');
+ assert.ok(c.agentPlanHTML({HistoryEnabled:true}).includes('已启用（仍须逐项批准）'),'history disclosure must be visible before confirmation');
  c.agentView.caps={profiles:[],quality:true};c.agentView.report={id:'report'};node('agent-report-id').value='report';node('agent-profile').value='approved';c.agentView.preview=preview;
  await c.agentMutate('prepare');assert.equal(calls.length,1);assert.ok(storage.get('papa-agent-operation-v1'));assert.equal(c.agentView.request.id,'request');
  await c.agentMutate('prepare');assert.equal(calls.length,1,'cannot overwrite pending operation');

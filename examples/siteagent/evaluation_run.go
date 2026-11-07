@@ -34,13 +34,16 @@ var errEvaluationQuality = errors.New("evaluation candidate/model quality failed
 
 func validateEvaluationOptions(o options) error {
 	if !o.Evaluate {
-		if o.EvalCompare != "" || o.PriceVersion != "" || o.Currency != "" || o.InputPrice != 0 || o.OutputPrice != 0 || o.MaxCost != 0 {
+		if o.EvalHistory != "" || o.EvalCompare != "" || o.PriceVersion != "" || o.Currency != "" || o.InputPrice != 0 || o.OutputPrice != 0 || o.MaxCost != 0 {
 			return errors.New("evaluation pricing/comparison flags require -evaluate")
 		}
 		return nil
 	}
 	if !o.Render || o.InspectRun != "" || o.InterruptRun != "" {
 		return errors.New("fixed evaluation requires rendering and cannot inspect/interrupt a run")
+	}
+	if o.EvalHistory != "" && o.EvalHistory != "none" && o.EvalHistory != "published" {
+		return errors.New("eval-history must be none or published")
 	}
 	if o.RealModel {
 		if len(o.PriceVersion) == 0 || len(o.PriceVersion) > 64 || len(o.Currency) < 3 || len(o.Currency) > 16 || o.InputPrice <= 0 || o.OutputPrice <= 0 || o.MaxCost <= 0 || o.InputPrice > 1_000_000_000 || o.OutputPrice > 1_000_000_000 || o.MaxCost > 1_000_000_000 {
@@ -88,7 +91,8 @@ func evaluationReplay(base string, s evaluationScenario) []model.ReplayStep {
 		}
 		actions = append(actions, a, map[string]any{"tool": "read_evidence", "evidence_id": "latest", "limit": 16384})
 	}
-	// The oracle is used only by Replay, never injected into real model prompts.
+	// Replay alone uses this as its scripted answer. D4's explicitly approved
+	// published-history arm may separately disclose the host-authored structure.
 	raw, _ := json.Marshal(s.Oracle)
 	var rule map[string]any
 	_ = json.Unmarshal(raw, &rule)
@@ -165,7 +169,11 @@ cases:
 		finalErr = err
 	}
 	if baseline != nil {
-		comparison, err := agenteval.Compare(baseline.Report, out.Report)
+		compare := agenteval.Compare
+		if o.EvalHistory == "published" && baseline.Report.Identity.HistoryMode == "none" {
+			compare = agenteval.CompareHistory
+		}
+		comparison, err := compare(baseline.Report, out.Report)
 		if err != nil {
 			if finalErr == nil {
 				finalErr = err
@@ -209,7 +217,8 @@ func runEvaluationCase(ctx context.Context, repo *rulestore.Repository, blobs *r
 	if o.RealModel {
 		budgets.Prices = crawlagent.Prices{InputPerMillionMicros: o.InputPrice, OutputPerMillionMicros: o.OutputPrice, MaxMicros: o.MaxCost}
 	}
-	agent, err := crawlagent.New(crawlagent.Config{Model: provider, ModelName: name, Audit: audit, Repository: repo, Blobs: blobs, Actor: actor, SamplePolicy: policy, Web: webaccess.Config{Policy: webaccess.Policy{Origins: []webaccess.Origin{origin}, ResourceOrigins: []webaccess.Origin{origin}}, Renderer: webaccess.RendererConfig{Enabled: true, ExecutablePath: o.BrowserPath, GlobalConcurrency: 1}}, Budgets: budgets})
+	agentConfig := crawlagent.Config{Model: provider, ModelName: name, Audit: audit, Repository: repo, Blobs: blobs, Actor: actor, SamplePolicy: policy, Web: webaccess.Config{Policy: webaccess.Policy{Origins: []webaccess.Origin{origin}, ResourceOrigins: []webaccess.Origin{origin}}, Renderer: webaccess.RendererConfig{Enabled: true, ExecutablePath: o.BrowserPath, GlobalConcurrency: 1}}, Budgets: budgets}
+	agent, err := crawlagent.New(agentConfig)
 	if err != nil {
 		return entry, identity, errors.New("evaluation host configuration failed")
 	}
@@ -218,6 +227,10 @@ func runEvaluationCase(ctx context.Context, repo *rulestore.Repository, blobs *r
 		return entry, identity, err
 	}
 	identity = agenteval.Identity{Protocol: agenteval.ProtocolVersion, CorpusSHA256: corpusDigest(), PromptSHA256: crawlagent.PromptDigest(), ToolProtocol: crawlagent.ToolProtocolVersion, Mode: "replay", Model: name, EndpointSHA256: evaluationDigest("local-replay"), OutputTokenField: "max_completion_tokens", PriceVersion: o.PriceVersion, Currency: o.Currency, Budgets: plan.Budgets, WebBudgets: plan.WebBudgets, Scenarios: []string{"static-html", "rendered-dom", "json-pagination"}, Repetitions: 3}
+	if o.EvalHistory != "" {
+		identity.HistoryMode = o.EvalHistory
+		identity.HistoryFixtureSHA256 = evaluationHistoryDigest()
+	}
 	if o.LegacyMaxTokens {
 		identity.OutputTokenField = "max_tokens"
 	}
@@ -225,7 +238,7 @@ func runEvaluationCase(ctx context.Context, repo *rulestore.Repository, blobs *r
 		identity.Mode = "real-compatible-model"
 		identity.EndpointSHA256, _ = evaluationEndpoint(o.BaseURL)
 	}
-	if baseline != nil && !reflect.DeepEqual(baseline.Report.Identity, identity) {
+	if baseline != nil && !reflect.DeepEqual(baseline.Report.Identity, identity) && !(o.EvalHistory == "published" && agenteval.ComparableHistoryIdentity(baseline.Report.Identity, identity)) {
 		entry.Failure = "incomparable_baseline"
 		return entry, identity, errors.New("baseline identity differs; no model call made")
 	}
@@ -252,6 +265,22 @@ func runEvaluationCase(ctx context.Context, repo *rulestore.Repository, blobs *r
 			entry.TrainingSet, entry.TrainingDigest = saved.ID, saved.Digest
 		} else {
 			entry.HoldoutSet, entry.HoldoutDigest = saved.ID, saved.Digest
+		}
+	}
+	var initialRelease rulestore.Release
+	if o.EvalHistory != "" {
+		seed, release, seedErr := installEvaluationHistory(ctx, repo, prefix, s.ID, stage.TrainingSet, s.Oracle, actor)
+		if seedErr != nil {
+			return entry, identity, errors.New("synthetic history prerequisite failed")
+		}
+		initialRelease = release
+		goal.Stages[0].Existing = &seed.Reference
+		if o.EvalHistory == "published" {
+			agentConfig.HistoryPolicy = approveEvaluationHistory(repo, prefix, s.ID, seed)
+			agent, err = crawlagent.New(agentConfig)
+			if err != nil {
+				return entry, identity, errors.New("history configuration failed")
+			}
 		}
 	}
 	result, runErr := agent.RunWithID(ctx, prefix, goal)
@@ -289,8 +318,13 @@ func runEvaluationCase(ctx context.Context, repo *rulestore.Repository, blobs *r
 			return entry, identity, err
 		}
 	}
-	if _, currentErr := repo.Current(readCtx, prefix); !errors.Is(currentErr, rulestore.ErrNoRelease) {
-		return entry, identity, errors.New("evaluation unexpectedly has a release")
+	current, currentErr := repo.Current(readCtx, prefix)
+	if o.EvalHistory == "" {
+		if !errors.Is(currentErr, rulestore.ErrNoRelease) {
+			return entry, identity, errors.New("evaluation unexpectedly has a release")
+		}
+	} else if currentErr != nil || current.ID != initialRelease.ID || current.Generation != initialRelease.Generation {
+		return entry, identity, errors.New("evaluation changed the host's synthetic release")
 	}
 	entry.InfrastructureFailure = entry.Scores.ExecutionFailures > 0 || entry.Audit.Incomplete || entry.Audit.InfrastructureFailures > 0
 	if entry.InfrastructureFailure {

@@ -25,16 +25,19 @@ type Identity struct {
 	WebBudgets                                         webaccess.Budgets
 	Scenarios                                          []string
 	Repetitions                                        int
+	HistoryMode                                        string `json:",omitempty"` // empty is legacy; none or published for paired history evaluation
+	HistoryFixtureSHA256                               string `json:",omitempty"`
 }
 
 type Tokens struct{ Input, Output int64 }
 type AuditMetrics struct {
-	Tools                  Count   `json:"tool_errors"` // Matched counts non-successful reserved tools.
-	Corrections            int     `json:"correction_attempts"`
-	ModelCalls             int     `json:"model_calls"`
-	Tokens                 *Tokens `json:"tokens"` // null if any call omitted/failed usage.
-	Incomplete             bool    `json:"incomplete"`
-	InfrastructureFailures int     `json:"infrastructure_failures"`
+	Tools                  Count                      `json:"tool_errors"` // Matched counts non-successful reserved tools.
+	Corrections            int                        `json:"correction_attempts"`
+	ModelCalls             int                        `json:"model_calls"`
+	Tokens                 *Tokens                    `json:"tokens"` // null if any call omitted/failed usage.
+	Incomplete             bool                       `json:"incomplete"`
+	InfrastructureFailures int                        `json:"infrastructure_failures"`
+	History                []crawlagent.HistoryRecord `json:"history,omitempty"`
 }
 
 // MeasureAudit counts reserved attempts, not just successful calls. Tool parse
@@ -44,6 +47,14 @@ func MeasureAudit(steps []agentstore.Step) AuditMetrics {
 	tokens := Tokens{}
 	known, submits := true, 0
 	for _, s := range steps {
+		if s.Kind == "history" && s.Status == agentstore.StepSucceeded {
+			var record crawlagent.HistoryRecord
+			if json.Unmarshal([]byte(s.OutputJSON), &record) != nil || !validHistoryRecord(record) {
+				m.Incomplete = true
+			} else {
+				m.History = append(m.History, record)
+			}
+		}
 		if s.Status == agentstore.StepPending || s.Status == agentstore.StepUnknown {
 			m.Incomplete = true
 		}
@@ -129,6 +140,18 @@ func (r Report) ValidateComplete() error {
 	if i.Protocol != ProtocolVersion || len(i.CorpusSHA256) != 64 || len(i.PromptSHA256) != 64 || i.ToolProtocol == "" || i.Model == "" || i.Mode == "" || len(i.EndpointSHA256) != 64 || i.Repetitions < 1 || i.Repetitions > 3 || len(i.Scenarios) == 0 || len(i.Scenarios) > 64 || len(r.Runs) != len(i.Scenarios)*i.Repetitions {
 		return errors.New("agenteval: incomplete report identity or repetitions")
 	}
+	if i.HistoryMode != "" && i.HistoryMode != "none" && i.HistoryMode != "published" {
+		return errors.New("agenteval: unknown history treatment")
+	}
+	if (i.HistoryMode == "") != (i.HistoryFixtureSHA256 == "") || (i.HistoryFixtureSHA256 != "" && len(i.HistoryFixtureSHA256) != 64) {
+		return errors.New("agenteval: missing history fixture identity")
+	}
+	historyViews := map[string]crawlagent.HistoryRecord{}
+	if i.HistoryFixtureSHA256 != "" {
+		if _, err := hex.DecodeString(i.HistoryFixtureSHA256); err != nil {
+			return errors.New("agenteval: invalid history fixture digest")
+		}
+	}
 	for _, digest := range []string{i.CorpusSHA256, i.PromptSHA256, i.EndpointSHA256} {
 		if _, err := hex.DecodeString(digest); err != nil {
 			return errors.New("agenteval: invalid identity digest")
@@ -144,6 +167,23 @@ func (r Report) ValidateComplete() error {
 		seen[s] = map[int]bool{}
 	}
 	for _, run := range r.Runs {
+		if i.HistoryMode != "published" && len(run.Audit.History) > 0 {
+			return errors.New("agenteval: unexpected historical disclosure")
+		}
+		if i.HistoryMode == "published" {
+			if len(run.Audit.History) > 1 || (len(run.Audit.History) == 0 && (!run.InfrastructureFailure || run.Audit.ModelCalls != 0)) {
+				return errors.New("agenteval: history treatment not observed")
+			}
+			for _, h := range run.Audit.History {
+				if !validHistoryRecord(h) || h.Stage != run.Scenario {
+					return errors.New("agenteval: inconsistent history audit")
+				}
+				if old, ok := historyViews[run.Scenario]; ok && (old.ViewSHA256 != h.ViewSHA256 || old.ViewBytes != h.ViewBytes) {
+					return errors.New("agenteval: historical view changed between repetitions")
+				}
+				historyViews[run.Scenario] = h
+			}
+		}
 		if !allowed[run.Scenario] || run.Repetition < 1 || run.Repetition > i.Repetitions || seen[run.Scenario][run.Repetition] || run.RunID == "" || ids[run.RunID] || run.ElapsedMS < 0 {
 			return errors.New("agenteval: duplicate or missing run")
 		}
@@ -160,7 +200,7 @@ func (r Report) ValidateComplete() error {
 			return errors.New("agenteval: repetitions have different denominators")
 		}
 		denominators[run.Scenario] = d
-		if run.Scores.ExecutionFailures < 0 || run.Scores.ExecutionFailures > run.Scores.Samples.Total || run.Audit.InfrastructureFailures < 0 || run.Audit.ModelCalls < 0 || run.Audit.Corrections < 0 || (run.Audit.Tokens != nil && (run.Audit.Tokens.Input < 0 || run.Audit.Tokens.Output < 0)) {
+		if run.InputBytes < 0 || run.Scores.ExecutionFailures < 0 || run.Scores.ExecutionFailures > run.Scores.Samples.Total || run.Audit.InfrastructureFailures < 0 || run.Audit.ModelCalls < 0 || run.Audit.Corrections < 0 || (run.Audit.Tokens != nil && (run.Audit.Tokens.Input < 0 || run.Audit.Tokens.Output < 0)) {
 			return errors.New("agenteval: invalid diagnostic metrics")
 		}
 		if !run.InfrastructureFailure && (run.Scores.ExecutionFailures > 0 || run.Audit.Incomplete || run.Audit.InfrastructureFailures > 0) {
@@ -183,6 +223,7 @@ type Summary struct {
 	SampleRate, FieldRate, NegativeRate, Corrections, ElapsedMS Spread
 	ToolErrorRate                                               *Spread
 	InfrastructureFailures                                      int
+	ModelCalls, InputBytes, HistoryBytes                        Spread
 }
 
 func spread(values []float64) Spread {
@@ -202,7 +243,7 @@ func (r Report) Summaries() ([]Summary, error) {
 	}
 	var result []Summary
 	for _, name := range r.Identity.Scenarios {
-		var samples, fields, negative, tools, corrections, elapsed []float64
+		var samples, fields, negative, tools, corrections, elapsed, calls, input, history []float64
 		s := Summary{Scenario: name}
 		for _, run := range r.Runs {
 			if run.Scenario == name {
@@ -215,6 +256,13 @@ func (r Report) Summaries() ([]Summary, error) {
 				}
 				corrections = append(corrections, float64(run.Audit.Corrections))
 				elapsed = append(elapsed, float64(run.ElapsedMS))
+				calls = append(calls, float64(run.Audit.ModelCalls))
+				input = append(input, float64(run.InputBytes))
+				historyBytes := 0
+				for _, h := range run.Audit.History {
+					historyBytes += h.ViewBytes
+				}
+				history = append(history, float64(historyBytes))
 				if run.InfrastructureFailure {
 					s.InfrastructureFailures++
 				}
@@ -225,6 +273,9 @@ func (r Report) Summaries() ([]Summary, error) {
 		s.NegativeRate = spread(negative)
 		s.Corrections = spread(corrections)
 		s.ElapsedMS = spread(elapsed)
+		s.ModelCalls = spread(calls)
+		s.InputBytes = spread(input)
+		s.HistoryBytes = spread(history)
 		if len(tools) > 0 {
 			v := spread(tools)
 			s.ToolErrorRate = &v
@@ -261,6 +312,12 @@ func Compare(before, after Report) (Comparison, error) {
 	for i := range a {
 		if a[i].Scores.Samples.Total != b[i].Scores.Samples.Total || a[i].Scores.Fields.Total != b[i].Scores.Fields.Total || a[i].Scores.Negative.Total != b[i].Scores.Negative.Total {
 			return Comparison{}, errors.New("agenteval: metric denominators differ")
+		}
+		if before.Identity.HistoryMode == "published" && len(a[i].Audit.History) == 1 && len(b[i].Audit.History) == 1 {
+			old, current := a[i].Audit.History[0], b[i].Audit.History[0]
+			if old.ViewSHA256 != current.ViewSHA256 || old.ViewBytes != current.ViewBytes {
+				return Comparison{}, errors.New("agenteval: historical view differs")
+			}
 		}
 	}
 	x, _ := before.Summaries()

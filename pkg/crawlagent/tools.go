@@ -180,7 +180,11 @@ func (e *execution) submit(ctx context.Context, a action) (any, error) {
 	candidate := Candidate{Stage: stage.Stage, Reference: v.Reference}
 	e.candidates[stage.Stage] = candidate
 	if stage.Existing != nil {
-		current, err := e.agent.config.Repository.Get(ctx, *stage.Existing)
+		current, frozen := e.history[stage.Stage]
+		var err error
+		if !frozen {
+			current, err = e.agent.config.Repository.Get(ctx, *stage.Existing)
+		}
 		if err != nil || !current.EverPublished {
 			return nil, ErrEvidence
 		}

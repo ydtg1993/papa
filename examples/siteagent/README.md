@@ -128,3 +128,32 @@ go test -race ./examples/siteagent -run '^TestFixedEvaluationMySQLAndChromium$' 
 ```
 
 固定样本与宿主目标的摘要由 `evaluation_fixtures.go` 生成并被测试固定；正文、预期、目标或渲染延迟变动时须升级样本协议与基线，不能只修改旧结果。存档 Replay 基线见 `testdata/d3-replay-baseline.json`；它证明框架接线，不证明模型生成质量。基线引用的本机专用库和样本目录不随仓库分发；其它机器用固定语料重跑建立自己的审计记录。
+
+## D4：无历史／已发布历史对照
+
+新增可选 `-eval-history none|published`，只供 `-evaluate` 使用。**省略此参数仍走原 D3 路径，不安装任何历史发布**。显式指定后，两组均由示例宿主安装一份同样的合成已发布规则，且只用训练样本验收；none 组只作候选差异/影子比较，published 组另以 `HistoryPolicy` 批准提供最小规则结构给模型。这个合成发布只是专用测试库的前提，Agent 没有发布工具，生成的候选不得更改测试发布指针。
+
+在相同代码、模型、预算、价格、语料和运行环境下分别执行两组：
+
+```powershell
+go run ./examples/siteagent -evaluate -eval-history none -browser $env:PAPA_EVAL_BROWSER -sample-dir ./evaluation-samples > ./history-control.json
+go run ./examples/siteagent -evaluate -eval-history published -browser $env:PAPA_EVAL_BROWSER -sample-dir ./evaluation-samples -eval-compare ./history-control.json > ./history-treatment.json
+```
+
+每条命令各运行三场景×三次，单组仍最多 108 调用/30 分钟；不会自动启动第二组或失败补跑。真实模型沿用 D3 的显式参数与费用上限，两组须分别授权执行并预留两份预算。历史每阶段最多一个版本，每次最多 4 个，单视图 8KiB/合计 16KiB，计入原模型预算。规则 ID/版本、验证 Pattern、资源上限不进入模型视图，完整规则仍用于后续比较；样本、报告、凭据和隐藏答案不被当作历史导入。
+
+报告新增历史模式、配方摘要、每次审计的引用/视图摘要/字节；汇总展示实际调用数、累计输入字节和单次历史视图字节。`CompareHistory` 只放行 none→published，普通基线比较仍完全一致。D4 系统提示摘要与旧 D3 存档不同，必须重跑当前版本 control，不能直接拿旧 D3 报告充当无历史组。历史视图在各次消息请求中重复计入输入，故累计输入增量不等于单份视图大小。
+
+同一场景各次历史视图的摘要/字节必须一致；两个 published 报告也逐项核对视图，防止配方声明相同却实际上下文改变。历史准备失败的重复继续保留；只有没有模型调用时才能没有成功 history 记录。披露意图、准备结果和实际调用分别由 Plan.HistoryEnabled、history 与 model 审计说明，不混为同一状态。2026-11-08 review 未改变提示或投影视图，原 D4 存档仍可比较；真库测试另检查新运行快照中的披露标记。
+
+存档：`testdata/d4-replay-control.json` 与 `testdata/d4-replay-history.json`。每组隐藏样本 27/27、必填字段 36/36、负样本 9/9，均每次 7 次调用、0 次修正、无工具错误；历史组单次视图 267/267/303 字节，累计输入分别增加 2737/2744/3087 字节。token/费用未知为 null。Replay 输出固定，**这不是历史提高真实模型质量的证据**，因此暂不扩展自动历史检索、候选/失败报告导入或独立记忆库。真实站点的历史选择和效果验收留在业务模块。
+
+专项验证：
+
+```powershell
+go test -race ./pkg/crawlagent ./pkg/agenteval ./examples/siteagent -count=1
+# 已安全配置 PAPA_AGENT_EXAMPLE_TEST_DSN 的专用 agent_test 库，并安装支持沙箱的 Chromium：
+go test -race ./examples/siteagent -run '^TestHistoryEvaluationMySQLAndChromium$' -count=1 -v
+```
+
+本机 Windows 曾观察到 go run 复用工作区 GOCACHE 中 exe 后 Chromium 无法启动；同源码构建到系统默认 TEMP 的独立命令双组通过。可用 `go build -o "$env:TEMP\papa-siteagent.exe" ./examples/siteagent` 后运行该程序排查，保持 TEMP/TMP/GOTMPDIR 默认，不关闭沙箱或修改 ACL。失败报告应完整保留并标记环境差异，不能删除失败重复制造提升。审计数据库和正文目录不随存档分发；其它机器重跑建立自己的记录。
