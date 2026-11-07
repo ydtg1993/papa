@@ -124,7 +124,9 @@ func (a *App) RegisterSites(sites ...SiteSpec) {
 			a.Engine.SetSiteBreaker(p.site.Key, *p.breaker)
 		}
 		for _, sp := range p.stages {
-			a.applyStagePlan(sp)
+			if err := a.applyStagePlan(sp); err != nil {
+				panic(err)
+			}
 		}
 	}
 }
@@ -373,16 +375,19 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 }
 
 // applyStagePlan 落地一条计划（注册阶段 + 打它带来的那句话）。
-func (a *App) applyStagePlan(plan stagePlan) {
-	a.Engine.AddStage(plan.stage, plan.cfg, plan.fetcher, plan.sub)
+func (a *App) applyStagePlan(plan stagePlan) error {
+	if err := a.Engine.AddStage(plan.stage, plan.cfg, plan.fetcher, plan.sub); err != nil {
+		return err
+	}
 	if plan.note == "" {
-		return
+		return nil
 	}
 	if plan.warn {
 		a.Logger.Engine.Warn(plan.note)
-		return
+		return nil
 	}
 	a.Logger.Engine.Info(plan.note)
+	return nil
 }
 
 // entryFunc 从 fetcher 上取入口回调：实现了 EntrySubmitter 就用它（把本站声明的快照一并交给它），

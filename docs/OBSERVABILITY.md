@@ -25,6 +25,16 @@
 
 报告是**只读**的：只读事件文件、日志目录、数据库；不写业务表、不重新投递任务、不调用外部接收端。
 
+### 诊断输出的脱敏边界
+
+框架 `LoggerSet` 的文件/控制台格式化、JSONL 事件、任务失败 error 列、Webhook 告警正文、日志索引和四份报告产物使用 `pkg/redact` 处理诊断副本。已知键包括 token/sign/sig/key/api_key/access_token/session/password/authorization/cookie/dsn 等，大小写不敏感；URL userinfo 会去除，已知查询参数值变成 `***`，Authorization/Cookie 行与常见 MySQL DSN 也会遮盖。JSON 的 `attrs/fields/headers/environment` 属性包中，敏感键的数字、对象、数组同样整体遮盖；结构化站点/报表的普通 `key` 保持原值。历史 logfmt 先解码再脱敏，发生遮盖的 Raw 样本会重建为等价 logfmt，因此字段顺序/引号可能不同，定位仍看 file:line。
+
+实际请求 URL、任务身份/去重键、数据库中的任务 URL 和断点恢复内容不被改写，Webhook 的签名目标 URL 也原样请求。自定义 logger/formatter/sink/notifier 不自动继承这些出口约束。此机制不会清除任意正文中的秘密或未知字段，更不能替代业务采样脱敏；Trace 的任意 data、原始 HTML 归档、SQL 字面量和历史原文件不属于自动清洗承诺范围。敏感原文件仍需访问与保留期管理。
+
+事件的 `counts/stages/queues` 字典键是指标或阶段名称，即使叫 `token/session` 也保留原名和数字/快照类型；队列错误与阶段描述文字单独在副本中脱敏。凭据字段与指标名称不能混为一谈。错误已经截断、缺少闭引号时仍遮盖可识别的凭据片段；URI userinfo 内的单引号、MySQL DSN 密码内的 `@` 也不会使匹配提前停止。异步 Emit 仍要求调用方在排空前不并发修改传入 map，本批没有改变该所有权契约。
+
+`report.md` 与 `ai-brief.md` 的动态标题、表格、摘要和证据按文本上下文转义，换行不再改变表格或注入新标题；复杂代码引用用固定 code 元素包裹已转义文本。报告 JSON 仅脱敏，不混入 Markdown 转义；输入报告对象保持不变。是否允许 HTML 执行仍由具体 Markdown 渲染器决定，这项修复不等同于宣称所有渲染器的 XSS 防护。
+
 ### 1.1 RuleFetcher 的页面证据
 
 RuleFetcher 在引擎尝试中使用 `crawler.archive` 保存响应观察；业务 `Save` 可将 `RulePage.EvidenceID` 与记录一起保存，任务 Trace 的「规则页面证据」步骤及观察清单使用同一个 ID。Trace 需要单独开启 `crawler.trace.enabled`，归档不依赖它。这里的 ID 关联具体抓取观察，不替代业务记录唯一键或字段级 `Result.Evidence`。

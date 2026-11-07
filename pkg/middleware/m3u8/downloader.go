@@ -39,6 +39,8 @@ type Downloader struct {
 	config *Config
 	client *http.Client
 	st     *state
+	// keyCache belongs only to the private receiver copy for one download.
+	keyCache *sync.Map
 }
 
 // state 一份实例的**可变内部状态**。抽出来只有一个目的：让 `With` 造出来的实例能**共用**它 ——
@@ -46,7 +48,6 @@ type Downloader struct {
 //
 //   - `outputLocks`：按最终输出路径串行写入，断点文件与分片目录也共用这套可取消锁；
 //   - `labors`：按源|目录|文件名保留任务参数，换源不会复用另一源的 URL 或断点身份；
-//   - `keyCache`：AES 密钥复用（同一条流的分片共用一把钥，不必每片取一次）；
 //   - `proxyClients`：每个代理一条连接池。
 //
 // 也就是说：**想要独立配置，不必（也不该）连这些也独立** —— 用 With；真要一座互不共享的孤岛，
@@ -56,7 +57,6 @@ type state struct {
 	proxyMu      sync.Mutex
 	proxyClients map[string]*http.Client
 	trackQueue   *msgqueue.MsgQueue[any] // 系统消息队列
-	keyCache     sync.Map                // 密钥缓存: key -> *cachedKey
 	labors       map[string]*labor       // 任务专用锁管理
 	laborMu      sync.RWMutex            // 保护 labors map
 	outputLocks  middleware.OutputLocks
@@ -99,7 +99,7 @@ func (d *Downloader) SetClient(client *http.Client) {
 	d.client = egress.Client(client, d.config.Network)
 }
 
-// With 在**本实例的配置**之上叠一层，返回一个**新实例**：配置是新的，`labors`/密钥缓存/
+// With 在**本实例的配置**之上叠一层，返回一个**新实例**：配置是新的，`labors`/
 // 代理连接池/消息队列**共用同一份**（见 state 的注释）—— "随用随生成、配置互不干扰"，但不会
 // 因此丢掉"同一目标文件串行"与缓存复用。原实例一字不改。
 //
@@ -516,6 +516,11 @@ func (d *Downloader) Download(ctx context.Context, m3u8URL, outputDir, outputFil
 }
 
 func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOptions) *DownloadResult {
+	// Separate downloads may use the same key URI with different credentials or
+	// updated key material. Share cached keys only among this call's segments.
+	run := *d
+	run.keyCache = &sync.Map{}
+	d = &run
 	result := &DownloadResult{}
 	cfg := d.config
 	// 这一次生效的产物形态与它的两个细节：逐次 options 覆盖实例配置（nil = 用实例那份）
@@ -529,6 +534,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 		if opts.KeepSegments != nil {
 			keepSegments = *opts.KeepSegments
+		}
+	}
+	if mode != OutputPlaylist && mode != OutputSegments && cfg.AutoMerge {
+		if err := validateMergeExtension(mergeExt); err != nil {
+			result.Error = err
+			return result
 		}
 	}
 	// 从 labor 中获取任务参数
@@ -637,6 +648,15 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 
 	// 6. 准备临时目录（存放单个片段文件；按源隔离，见 segDir）
 	tempDir := d.segDir(la)
+	// Persisted paths are untrusted metadata. Every filesystem consumer below
+	// receives the path derived from the current task and segment index instead.
+	for index, stored := range resumeState.SegmentFiles {
+		canonical := filepath.Join(tempDir, fmt.Sprintf("segment_%05d.ts", index))
+		if stored != "" && stored != canonical {
+			d.st.trackQueue.SendError(fmt.Errorf("resume segment path mismatch at index %d; using indexed path", index))
+		}
+		resumeState.SegmentFiles[index] = canonical
+	}
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
 		result.Error = fmt.Errorf("mkdir temp dir: %w", err)
 		return result
@@ -924,14 +944,14 @@ func (d *Downloader) mergeToMP4(ctx context.Context, initSegmentPath string, seg
 	var listContent strings.Builder
 	if initSegmentPath != "" {
 		absPath, _ := filepath.Abs(initSegmentPath)
-		listContent.WriteString(fmt.Sprintf("file '%s'\n", absPath))
+		listContent.WriteString(fmt.Sprintf("file '%s'\n", strings.ReplaceAll(absPath, "'", "'\\''")))
 	}
 	for _, f := range segmentFiles {
 		if f == "" {
 			continue
 		}
 		absPath, _ := filepath.Abs(f)
-		listContent.WriteString(fmt.Sprintf("file '%s'\n", absPath))
+		listContent.WriteString(fmt.Sprintf("file '%s'\n", strings.ReplaceAll(absPath, "'", "'\\''")))
 	}
 	if err := os.WriteFile(listFilePath, []byte(listContent.String()), 0644); err != nil {
 		return err
@@ -1030,14 +1050,18 @@ func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, mediaSeq 
 		binary.BigEndian.PutUint64(ivData[8:], uint64(mediaSeq))
 	}
 	// 缓存只放密钥本身（同一 URI 的所有片段共用一把），IV 随片段返回
-	if cached, ok := d.st.keyCache.Load(keyInfo.URL); ok {
-		return cached.(*cachedKey).key, ivData, nil
+	if d.keyCache != nil {
+		if cached, ok := d.keyCache.Load(keyInfo.URL); ok {
+			return cached.(*cachedKey).key, ivData, nil
+		}
 	}
 	keyData, err := d.doRequest(ctx, keyInfo.URL, "", opts)
 	if err != nil {
 		return nil, nil, err
 	}
-	d.st.keyCache.Store(keyInfo.URL, &cachedKey{key: keyData})
+	if d.keyCache != nil {
+		d.keyCache.Store(keyInfo.URL, &cachedKey{key: keyData})
+	}
 	return keyData, ivData, nil
 }
 
@@ -1147,6 +1171,7 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 	// 子区间是"同一个媒体资源上的第几段"：省略 @起点 时，起点接着**同一 URL** 上一段的末尾
 	//（RFC 8216 §4.3.2.2）。键是解析后的分片 URL —— 换了资源就要从头算。
 	byteRangeEnd := make(map[string]int64)
+	var pendingRange string
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1164,30 +1189,34 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 		case strings.HasPrefix(line, "#EXT-X-MAP:"):
 			initSegment = d.parseMapTag(line, baseURL)
 		case strings.HasPrefix(line, "#EXT-X-KEY:"):
-			currentKey = d.parseKeyTag(line, baseURL)
+			var err error
+			currentKey, err = d.parseKeyTag(line, baseURL)
+			if err != nil {
+				return nil, nil, nil, err
+			}
 		case strings.HasPrefix(line, "#EXT-X-BYTERANGE:"):
-			spec := strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-BYTERANGE:"))
-			if scanner.Scan() {
-				urlLine := strings.TrimSpace(scanner.Text())
-				if !strings.HasPrefix(urlLine, "#") {
-					segURL := d.resolveURL(urlLine, baseURL)
-					rng, err := parseByteRange(spec, byteRangeEnd[segURL])
-					if err != nil {
-						// 解析不出来就硬报错：照老写法原样塞进 Range 头的话，请求会静默退化成
-						// "整段下载"，拼出来的文件是错的，而且没人会发现。
-						return nil, nil, nil, fmt.Errorf("invalid EXT-X-BYTERANGE %q: %w", spec, err)
-					}
-					byteRangeEnd[segURL] = rng.end + 1
-					segments = append(segments, &SegmentInfo{URL: segURL, Range: rng.String(), Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)})
-					segmentKeys = append(segmentKeys, currentKey)
-					segmentIndex++
-				}
+			if pendingRange != "" {
+				return nil, nil, nil, fmt.Errorf("EXT-X-BYTERANGE missing segment URI")
+			}
+			pendingRange = strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-BYTERANGE:"))
+			if pendingRange == "" {
+				return nil, nil, nil, fmt.Errorf("empty EXT-X-BYTERANGE")
 			}
 		case strings.HasPrefix(line, "#"):
 			// 其他标签忽略
 		default:
 			segURL := d.resolveURL(line, baseURL)
-			segments = append(segments, &SegmentInfo{URL: segURL, Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)})
+			seg := &SegmentInfo{URL: segURL, Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)}
+			if pendingRange != "" {
+				rng, err := parseByteRange(pendingRange, byteRangeEnd[segURL])
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("invalid EXT-X-BYTERANGE %q: %w", pendingRange, err)
+				}
+				seg.Range = rng.String()
+				byteRangeEnd[segURL] = rng.end + 1
+				pendingRange = ""
+			}
+			segments = append(segments, seg)
 			segmentKeys = append(segmentKeys, currentKey)
 			segmentIndex++
 		}
@@ -1195,6 +1224,9 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 	if err := scanner.Err(); err != nil {
 		// 超长行让 Scan 停下：只拿到前缀片段，绝不能当完整播放列表返回（会合并出半截文件还报成功）
 		return nil, nil, nil, fmt.Errorf("read playlist: %w", err)
+	}
+	if pendingRange != "" {
+		return nil, nil, nil, fmt.Errorf("EXT-X-BYTERANGE missing segment URI")
 	}
 	return initSegment, segments, segmentKeys, nil
 }
@@ -1226,29 +1258,39 @@ func (d *Downloader) parseMapTag(tag, baseURL string) *SegmentInfo {
 	return seg
 }
 
-func (d *Downloader) parseKeyTag(tag, baseURL string) *KeyInfo {
-	uriStart := strings.Index(tag, "URI=\"")
-	if uriStart == -1 {
-		return nil
-	}
-	uriStart += 5
-	uriEnd := strings.Index(tag[uriStart:], "\"")
-	if uriEnd == -1 {
-		return nil
-	}
-	uri := tag[uriStart : uriStart+uriEnd]
-	url := d.resolveURL(uri, baseURL)
-	iv := ""
-	if ivStart := strings.Index(tag, "IV="); ivStart != -1 {
-		ivPart := tag[ivStart+3:]
-		ivEnd := strings.IndexAny(ivPart, ", \t\n\r")
-		if ivEnd == -1 {
-			iv = ivPart
-		} else {
-			iv = ivPart[:ivEnd]
+func (d *Downloader) parseKeyTag(tag, baseURL string) (*KeyInfo, error) {
+	// Attribute separators inside a quoted URI are not tag attributes.
+	attrs := make(map[string]string)
+	raw := strings.TrimPrefix(tag, "#EXT-X-KEY:")
+	start, quoted := 0, false
+	for i := 0; i <= len(raw); i++ {
+		if i < len(raw) && raw[i] == '"' {
+			quoted = !quoted
+		}
+		if i == len(raw) || (raw[i] == ',' && !quoted) {
+			name, value, ok := strings.Cut(strings.TrimSpace(raw[start:i]), "=")
+			if ok {
+				attrs[name] = value
+			}
+			start = i + 1
 		}
 	}
-	return &KeyInfo{URL: url, IV: iv}
+	if quoted {
+		return nil, fmt.Errorf("invalid EXT-X-KEY: unterminated quoted attribute")
+	}
+	switch attrs["METHOD"] {
+	case "NONE":
+		return nil, nil
+	case "AES-128":
+		// Supported whole-segment CBC encryption.
+	default:
+		return nil, fmt.Errorf("unsupported EXT-X-KEY METHOD %q", attrs["METHOD"])
+	}
+	uri := attrs["URI"]
+	if len(uri) < 3 || uri[0] != '"' || uri[len(uri)-1] != '"' {
+		return nil, fmt.Errorf("AES-128 EXT-X-KEY requires a quoted nonempty URI")
+	}
+	return &KeyInfo{URL: d.resolveURL(uri[1:len(uri)-1], baseURL), IV: attrs["IV"]}, nil
 }
 
 func (d *Downloader) resolveURL(raw, base string) string {

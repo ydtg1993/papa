@@ -1,6 +1,8 @@
 package logidx
 
 import (
+	"github.com/ydtg1993/papa/v3/pkg/redact"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +44,32 @@ func parseLine(line string, loc *time.Location, file, logger string, lineNo int)
 		return Entry{}, false
 	}
 
+	// Decode first: credentials inside a logfmt-quoted JSON message may contain
+	// escaped quotes and cannot safely be masked by matching the encoded line.
+	changed := false
+	for k, v := range fields {
+		masked := redact.Text(v)
+		if redact.SensitiveKey(k) {
+			masked = redact.Mask
+		}
+		if masked != v {
+			changed = true
+			fields[k] = masked
+		}
+	}
+	raw := line
+	if changed {
+		keys := make([]string, 0, len(fields))
+		for k := range fields {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+"="+strconv.Quote(fields[k]))
+		}
+		raw = strings.Join(parts, " ")
+	}
 	var extra map[string]string
 	for k, v := range fields {
 		switch k {
@@ -62,7 +90,7 @@ func parseLine(line string, loc *time.Location, file, logger string, lineNo int)
 		Logger: logger,
 		Msg:    fields[fieldMessage],
 		Fields: extra,
-		Raw:    truncateRaw(line),
+		Raw:    truncateRaw(raw),
 	}, true
 }
 

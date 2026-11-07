@@ -79,6 +79,7 @@ const snapshotBoundary = "本报告为 snapshot 运行报告，不代表批次�
 
 // BuildAIBrief 从报告生成 AI 排查任务包（确定性：不引入随机/当前时间）。
 func BuildAIBrief(rep *obs.Report) *AIBrief {
+	rep = diagnosticReport(rep)
 	if rep == nil {
 		return &AIBrief{SchemaVersion: obs.SchemaVersion, Verdict: string(obs.VerdictPass)}
 	}
@@ -189,11 +190,11 @@ func AIBriefJSON(rep *obs.Report) ([]byte, error) {
 func AIBriefMarkdown(rep *obs.Report) string {
 	b := BuildAIBrief(rep)
 	var s strings.Builder
-	fmt.Fprintf(&s, "# AI 排查任务包 · %s\n\n", strings.Join(b.Run.RunIDs, ", "))
-	fmt.Fprintf(&s, "**判定：%s**（%s）\n\n", VerdictLabel(obs.Verdict(b.Verdict)), b.Verdict)
+	fmt.Fprintf(&s, "# AI 排查任务包 · %s\n\n", markdownText(strings.Join(b.Run.RunIDs, ", ")))
+	fmt.Fprintf(&s, "**判定：%s**（%s）\n\n", markdownText(VerdictLabel(obs.Verdict(b.Verdict))), markdownText(b.Verdict))
 	fmt.Fprintf(&s, "- 模式：%s\n", modeText(obs.Mode(b.Mode)))
 	if b.VerdictReason != "" {
-		fmt.Fprintf(&s, "- 判定原因：%s\n", b.VerdictReason)
+		fmt.Fprintf(&s, "- 判定原因：%s\n", markdownText(b.VerdictReason))
 	}
 	fmt.Fprintf(&s, "- 窗口：%s ~ %s\n- 事件：%d 条 · seq 缺口 %d\n- 生成时间：%s（最近一次更新）\n\n",
 		b.Run.From, b.Run.To, b.Run.Events, b.Run.EventGaps, b.GeneratedAt)
@@ -206,7 +207,7 @@ func AIBriefMarkdown(rep *obs.Report) string {
 		}
 		sortStrings(keys)
 		for _, k := range keys {
-			fmt.Fprintf(&s, "- `%s`: %s\n", k, b.Environment[k])
+			fmt.Fprintf(&s, "- %s: %s\n", markdownCode(k), markdownText(b.Environment[k]))
 		}
 		s.WriteString("\n")
 	}
@@ -216,18 +217,18 @@ func AIBriefMarkdown(rep *obs.Report) string {
 	if b.Snapshot.hasContent() {
 		s.WriteString("## 现在怎样（快照摘要）\n\n")
 		if len(b.Snapshot.PausedSites) > 0 {
-			fmt.Fprintf(&s, "- 暂停站点：%s\n", strings.Join(b.Snapshot.PausedSites, "、"))
+			fmt.Fprintf(&s, "- 暂停站点：%s\n", markdownText(strings.Join(b.Snapshot.PausedSites, "、")))
 		}
 		fmt.Fprintf(&s, "- 活跃阶段池：%d\n", b.Snapshot.ActivePools)
 		if b.Snapshot.Backlog != (obs.BacklogSummary{}) {
-			fmt.Fprintf(&s, "- 积压：%s\n", backlogText(b.Snapshot.Backlog))
+			fmt.Fprintf(&s, "- 积压：%s\n", markdownText(backlogText(b.Snapshot.Backlog)))
 		}
 		s.WriteString("\n")
 	}
 
 	s.WriteString("## 边界（先读）\n\n")
 	for _, x := range b.Boundaries {
-		fmt.Fprintf(&s, "- %s\n", x)
+		fmt.Fprintf(&s, "- %s\n", markdownText(x))
 	}
 	s.WriteString("\n")
 
@@ -236,55 +237,55 @@ func AIBriefMarkdown(rep *obs.Report) string {
 		s.WriteString("无。\n\n")
 	}
 	for i, p := range b.Problems {
-		fmt.Fprintf(&s, "### P%d %s\n\n", i+1, p.Title)
-		fmt.Fprintf(&s, "- 级别：%s", p.Severity)
+		fmt.Fprintf(&s, "### P%d %s\n\n", i+1, markdownText(p.Title))
+		fmt.Fprintf(&s, "- 级别：%s", markdownText(string(p.Severity)))
 		if p.Scope != "" {
-			fmt.Fprintf(&s, " · 范围：%s", p.Scope)
+			fmt.Fprintf(&s, " · 范围：%s", markdownText(p.Scope))
 		}
 		if p.Count > 0 {
 			fmt.Fprintf(&s, " · 次数：%d", p.Count)
 		}
 		s.WriteString("\n")
 		for _, ev := range p.Evidence {
-			fmt.Fprintf(&s, "- 证据（%s）：`%s`", ev.Type, ev.Ref)
+			fmt.Fprintf(&s, "- 证据（%s）：%s", markdownText(ev.Type), markdownCode(ev.Ref))
 			if ev.Excerpt != "" {
-				fmt.Fprintf(&s, " — %s", oneLine(ev.Excerpt, 300))
+				fmt.Fprintf(&s, " — %s", markdownText(oneLine(ev.Excerpt, 300)))
 			}
 			s.WriteString("\n")
 		}
 		for _, h := range p.Hypotheses {
-			fmt.Fprintf(&s, "- 假设（%s）：%s", h.Confidence, h.Text)
+			fmt.Fprintf(&s, "- 假设（%s）：%s", markdownText(h.Confidence), markdownText(h.Text))
 			if h.Verify != "" {
-				fmt.Fprintf(&s, " · 验证：%s", h.Verify)
+				fmt.Fprintf(&s, " · 验证：%s", markdownText(h.Verify))
 			}
 			if h.FixHint != "" {
-				fmt.Fprintf(&s, " · 修复方向：%s", h.FixHint)
+				fmt.Fprintf(&s, " · 修复方向：%s", markdownText(h.FixHint))
 			}
 			s.WriteString("\n")
 		}
 		if p.Acceptance != "" {
-			fmt.Fprintf(&s, "- 验收：%s\n", p.Acceptance)
+			fmt.Fprintf(&s, "- 验收：%s\n", markdownText(p.Acceptance))
 		}
 		s.WriteString("\n")
 	}
 
 	s.WriteString("## 已知陷阱\n\n")
 	for _, x := range b.KnownPitfalls {
-		fmt.Fprintf(&s, "- %s\n", x)
+		fmt.Fprintf(&s, "- %s\n", markdownText(x))
 	}
 	s.WriteString("\n")
 
 	if len(b.Unknowns) > 0 {
 		s.WriteString("## 未知项（需运行时确认）\n\n")
 		for _, x := range b.Unknowns {
-			fmt.Fprintf(&s, "- %s\n", x)
+			fmt.Fprintf(&s, "- %s\n", markdownText(x))
 		}
 		s.WriteString("\n")
 	}
 	if len(b.NextActions) > 0 {
 		s.WriteString("## 下一步动作\n\n")
 		for _, x := range b.NextActions {
-			fmt.Fprintf(&s, "- %s\n", x)
+			fmt.Fprintf(&s, "- %s\n", markdownText(x))
 		}
 		s.WriteString("\n")
 	}

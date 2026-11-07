@@ -3,13 +3,13 @@ package notify
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v3/pkg/redact"
 )
 
 // Webhook 通过 HTTP POST 将告警事件以 JSON 发送到指定 URL（可接钉钉/webhook 网关）。
@@ -29,7 +29,7 @@ func (w *Webhook) Notify(ctx context.Context, event core.AlertEvent) error {
 	if w.URL == "" {
 		return fmt.Errorf("webhook url is empty")
 	}
-	body, err := json.Marshal(event)
+	body, err := redact.JSON(event)
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func (w *Webhook) Notify(ctx context.Context, event core.AlertEvent) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("webhook %s returned status %d", w.URL, resp.StatusCode)
+		return fmt.Errorf("webhook %s returned status %d", redact.URL(w.URL), resp.StatusCode)
 	}
 	return nil
 }

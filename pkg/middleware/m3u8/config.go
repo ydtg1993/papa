@@ -2,6 +2,7 @@ package m3u8
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
@@ -38,11 +39,25 @@ type Config struct {
 	// 断点续传相关
 	ResumeStateDir         string // 状态文件存储目录，默认 "./downloads/.resume"
 	AutoMerge              bool   // 自动合并为 MP4，默认 true
-	MergeOutputExt         string // 合并后的扩展名，默认 ".mp4"
+	MergeOutputExt         string // 合并扩展名：点号 + 1–16 位 ASCII 字母/数字，默认 ".mp4"；下载前验证
 	KeepSegmentsAfterMerge bool   // 合并后是否保留原始 TS 文件，默认 false
 	FfmpegPath             string // ffmpeg 可执行文件路径，留空则自动查找 PATH
 	// 系统消息队列（活动/错误上报）容量，默认 100
 	QueueSize int
+}
+
+// validateMergeExtension runs after all configuration overlays and request
+// options have been resolved, before the extension can affect a filesystem path.
+func validateMergeExtension(ext string) error {
+	if len(ext) < 2 || len(ext) > 17 || ext[0] != '.' {
+		return fmt.Errorf("invalid merge extension %q: expected dot followed by 1-16 ASCII letters or digits", ext)
+	}
+	for _, c := range ext[1:] {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return fmt.Errorf("invalid merge extension %q: expected dot followed by 1-16 ASCII letters or digits", ext)
+		}
+	}
+	return nil
 }
 
 // DownloadOptions 单次下载的请求级配置
@@ -58,7 +73,7 @@ type DownloadOptions struct {
 	// 以下三项**逐次覆盖**实例配置（nil = 用实例那份）：产物形态与它的两个细节。
 	// 与别处同一套指针语义：区分"没写"和"写了零值"。
 	Output       *OutputMode // 产物形态（合并 / 只留切片 / 只存播放列表）
-	MergeExt     *string     // 覆盖 MergeOutputExt（.mp4 / .mkv / .ts…）
+	MergeExt     *string     // 覆盖 MergeOutputExt，遵循相同的扩展名格式；最终生效值在下载前验证
 	KeepSegments *bool       // 覆盖 KeepSegmentsAfterMerge
 }
 

@@ -66,6 +66,9 @@ func (r *poolRegistry) getOrCreate(key string, create func() *workerpool.WorkerP
 		return p
 	}
 	p := create()
+	if p == nil {
+		return nil
+	}
 	r.pools[key] = p
 	r.lastSubmit[key] = now
 	return p

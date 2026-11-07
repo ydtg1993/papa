@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/ydtg1993/papa/v3/pkg/redact"
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
@@ -171,7 +172,7 @@ func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {
 	if status == models.TaskStatusFailed {
 		var errMsg string
 		if err != nil {
-			errMsg = err.Error()
+			errMsg = redact.Text(err.Error())
 		}
 		updates["error"] = gorm.Expr("CONCAT(COALESCE(error, ''), ?)", errMsg+"\n")
 	}

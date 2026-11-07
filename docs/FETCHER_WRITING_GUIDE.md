@@ -166,6 +166,8 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
 
+直接使用低层 `Engine.AddStage(stage, cfg, fetcher, sub)` 时须检查返回的 `error`：`WorkerCount` 与 `QueueSize` 必须大于 0，非法阶段不会登记。站点声明层会传播错误并沿用启动失败的 panic 契约。普通调用语句仍可编译；若将方法绑定到旧的无返回值函数类型，或用旧无返回值方法声明接口，升级时需调整签名。无表结构迁移。
+
 ### 1.5 写结果到数据库
 
 **结果表由业务自己建、自己写** —— 框架只管任务状态（`crawler_tasks`：URL / 阶段 / 状态 / 重试 / 轮询 / 业务键），不替你决定数据长什么样。
@@ -947,6 +949,10 @@ SiteSpec{ M3U8: &papa.M3U8Spec{
 ```
 
 m3u8 下载器能力：并发下载片段、AES-128 解密、断点续传、限速、合并（`concatTSFiles` 或 ffmpeg 转 mp4）。`Download` 是同步阻塞的，返回 `DownloadResult{OutputFile, Segments, Size, Error}`。
+
+启用自动合并时，最终生效的 `MergeExt` 必须为 `.` 加 1–16 位 ASCII 字母或数字（如 `.mp4`）；配置、Overlay、逐次 Options 合并后在请求前检查，失败通过 `DownloadResult.Error` 返回。未使用扩展名的 playlist/segments/纯 TS 拼接模式不受影响。合法绝对输出目录仍支持，FFmpeg concat 条目会转义路径中的单引号。
+
+断点状态中的 `SegmentFiles` 不再作为读写路径来源：按当前任务目录和分片索引重建，避免篡改 JSON 后读取、移动或删除外部文件。这不防御本地目录/符号链接被另行替换。密钥只在单次下载内缓存，跨 `Download`/`With` 并发不共用；不自动检测同一次下载内同 URI 密钥轮换。支持 `METHOD=NONE` 与 `AES-128`，其他方法和缺少分片 URI 的尾部 BYTERANGE 明确报错。
 
 播放列表重定向后，variant、分片、KEY 和 MAP 引用均以成功响应的最终完整 URL 为基准，按标准 URL 引用语义解析；支持 `../`、根路径、查询参数及 `//host/path`。网络路径引用保留所写的主机和端口、继承当前协议，不会拼成原站点的普通路径。请求 URL 已转义的路径也保持正确语义。
 

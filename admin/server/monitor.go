@@ -836,7 +836,31 @@ func (s *Monitor) taskPageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	b, err := os.ReadFile(abs)
+	// 字符串校验只处理请求格式；实际打开必须由根目录句柄约束，
+	// 防止父目录/最终文件的链接以及检查后替换把读取带出归档目录。
+	root, err := os.OpenRoot(s.cfg.ArchiveDir)
+	if err != nil {
+		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
+		return
+	}
+	defer root.Close()
+	inside, err := filepath.Rel(s.cfg.ArchiveDir, abs)
+	if err != nil {
+		http.Error(w, "file 参数越界", http.StatusBadRequest)
+		return
+	}
+	f, err := root.Open(inside)
+	if err != nil {
+		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
+		return
+	}
+	b, err := io.ReadAll(f)
 	if err != nil {
 		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
 		return

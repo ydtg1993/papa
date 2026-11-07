@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
@@ -201,13 +202,18 @@ type StageConfig struct {
 // AddStage 登记一个阶段。**键由 config.Site + stage 拼出来**（`core.StageKey`）——
 // 站点归属取自声明层的 `StageConfig.Site`，所以调用方不可能"忘了带站点"。
 // 阶段名只在本站内唯一：两个站登记各自的 `catalog` 是两条独立记录（各自的池子与统计）。
-func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
+// WorkerCount/QueueSize 必须 > 0；非法配置返回错误且不登记阶段。
+func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) error {
+	if err := workerpool.ValidateConfig(config.WorkerCount, config.QueueSize); err != nil {
+		return fmt.Errorf("stage %q: %w", core.StageKey(config.Site, stage), err)
+	}
 	e.stages[core.StageKey(config.Site, stage)] = &stageInfo{
 		stage:      stage,
 		config:     config,
 		fetcher:    fetcher,
 		submitFunc: subFunc,
 	}
+	return nil
 }
 
 // NewEngine 创建引擎
@@ -531,12 +537,18 @@ func (e *Engine) breakerStatusOf(site string) BreakerStatus {
 // 内停下；没排空时 stats 是那一刻的存留情况（已排空的阶段不会出现在 map 里）。ticker 也算在内，
 // / 是因为它们同样会写库 —— 不等它们就关库，在途的那一跳会报 `sql: database is closed`。
 //
-// 各阶段的 timeout 是**并发**计的，所以总等待约等于一个 timeout，而不是「阶段数 × timeout」。
+// 各阶段与 ticker 从 Stop 入口共用同一个 deadline；不为后等待的对象重新计时。
 //
 // 拿到 drained=false 时，调用方**不该接着关数据库 / 关浏览器池**：worker goroutine 还活着
 // （Go 杀不掉它，见 workerpool.Stop），关掉只会让在途的写入全部报 "sql: database is closed"。
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]StopStats) {
+	deadline := time.Now().Add(timeout)
 	e.cancel()
+	tickersDone := make(chan struct{})
+	go func() {
+		e.tickerWG.Wait()
+		close(tickersDone)
+	}()
 	var (
 		wg sync.WaitGroup
 		mu sync.Mutex
@@ -551,7 +563,7 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		wg.Add(1)
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()
-			d, inFlight := pool.Stop(timeout)
+			d, inFlight := pool.Stop(max(0, time.Until(deadline)))
 			if d {
 				return
 			}
@@ -586,16 +598,15 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	drained = len(stats) == 0
 	// 动态 ticker（错误/恢复/每站的轮询队列）也要等在途的那一跳跑完：它们同样会写库。
 	// 与阶段池共用同一个 timeout（并发计），等不到就如实说"没排空"。
-	tickersDone := make(chan struct{})
-	go func() {
-		e.tickerWG.Wait()
-		close(tickersDone)
-	}()
 	select {
 	case <-tickersDone:
-	case <-time.After(timeout):
-		drained = false
-		e.loggerSet.Engine.Warn("dynamic tickers still running after timeout")
+	default:
+		select {
+		case <-tickersDone:
+		case <-time.After(max(0, time.Until(deadline))):
+			drained = false
+			e.loggerSet.Engine.Warn("dynamic tickers still running after timeout")
+		}
 	}
 	if drained {
 		e.loggerSet.Engine.Info("all workers stopped")

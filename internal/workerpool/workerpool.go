@@ -42,8 +42,23 @@ type WorkerPool[T Tasker] struct {
 	trackQueue  *msgqueue.MsgQueue[Activity] //系统消息队列
 }
 
-// NewWorkerPool 创建工作池；watermark 为队列高水位比例(0-1)，非法值回退 0.75。
+// ValidateConfig 拒绝无法工作的池尺寸，不把非法值静默改成默认值。
+func ValidateConfig(workers, queueSize int) error {
+	if workers <= 0 {
+		return fmt.Errorf("WorkerCount must be > 0 (got %d)", workers)
+	}
+	if queueSize <= 0 {
+		return fmt.Errorf("QueueSize must be > 0 (got %d)", queueSize)
+	}
+	return nil
+}
+
+// NewWorkerPool 创建工作池；workers/queueSize <= 0 返回 nil，调用方须检查。
+// 详细原因可用 ValidateConfig 获取。watermark 为队列高水位比例(0-1)，非法值回退 0.75。
 func NewWorkerPool[T Tasker](workers, queueSize int, watermark float64) *WorkerPool[T] {
+	if ValidateConfig(workers, queueSize) != nil {
+		return nil
+	}
 	if watermark <= 0 || watermark > 1 {
 		watermark = 0.75
 	}

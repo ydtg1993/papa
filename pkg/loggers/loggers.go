@@ -1,7 +1,11 @@
 package loggers
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"github.com/sirupsen/logrus"
+	"github.com/ydtg1993/papa/v3/pkg/redact"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"os"
 	"path/filepath"
@@ -80,7 +84,7 @@ func NewLoggerSet(cfg LoggerConfig) LoggerSet {
 
 func newLogger(cfg LoggerConfig, filename string, formatter logrus.Formatter) *logrus.Logger {
 	logger := logrus.New()
-	logger.SetFormatter(formatter)
+	logger.SetFormatter(redactingFormatter{formatter})
 	logger.SetLevel(cfg.logrusLevel())
 	logger.SetOutput(&lumberjack.Logger{
 		Filename:   filename,
@@ -110,6 +114,46 @@ func (cfg LoggerConfig) logrusLevel() logrus.Level {
 }
 
 type consoleHook struct{}
+
+// Format a copy so hooks/callers retain their original diagnostic data.
+type redactingFormatter struct{ base logrus.Formatter }
+
+func (f redactingFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	copy := *entry
+	copy.Message = redact.Text(entry.Message)
+	copy.Data = make(logrus.Fields, len(entry.Data))
+	for k, v := range entry.Data {
+		if redact.SensitiveKey(k) {
+			copy.Data[k] = redact.Mask
+			continue
+		}
+		switch value := v.(type) {
+		case string:
+			copy.Data[k] = redact.Text(value)
+		case error:
+			copy.Data[k] = redact.Text(fmt.Sprint(value))
+		case fmt.Stringer:
+			copy.Data[k] = redact.Text(fmt.Sprint(value))
+		case nil, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			copy.Data[k] = v
+		default:
+			// Serialize nested diagnostic fields independently of the caller's
+			// map; never mutate shared maps/slices or round large IDs to float64.
+			raw, err := redact.JSON(map[string]any{"fields": map[string]any{k: v}})
+			var masked struct {
+				Fields map[string]any `json:"fields"`
+			}
+			dec := json.NewDecoder(bytes.NewReader(raw))
+			dec.UseNumber()
+			if err != nil || dec.Decode(&masked) != nil {
+				copy.Data[k] = "[unserializable diagnostic field]"
+			} else {
+				copy.Data[k] = masked.Fields[k]
+			}
+		}
+	}
+	return f.base.Format(&copy)
+}
 
 func (h *consoleHook) Levels() []logrus.Level {
 	return logrus.AllLevels

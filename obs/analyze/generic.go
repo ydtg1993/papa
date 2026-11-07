@@ -5,6 +5,7 @@ package analyze
 import (
 	"context"
 	"fmt"
+	"github.com/ydtg1993/papa/v3/pkg/redact"
 	"regexp"
 	"sort"
 	"strings"
@@ -320,13 +321,13 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 			}
 			ts.Count++
 		}
-		if tpl := errorTemplate(ev.Error); tpl != "" {
+		if tpl := errorTemplate(redact.Text(ev.Error)); tpl != "" {
 			grp.Errors[tpl]++
 		}
 		if grp.SampleTask == 0 && ev.TaskID != 0 {
 			grp.SampleTask = ev.TaskID
-			grp.SampleURL = ev.URL
-			grp.SampleMsg = ev.Error
+			grp.SampleURL = redact.URL(ev.URL)
+			grp.SampleMsg = redact.Text(ev.Error)
 		}
 	}
 	if len(groups) == 0 {
@@ -371,7 +372,7 @@ func (g *Generic) addFailures(in *obs.Input, res *obs.SectionResult) int {
 		if sample, ok := findLogSampleForGroup(in, grp); ok {
 			prob.Evidence = append(prob.Evidence, obs.Evidence{
 				Type: "log", Ref: fmt.Sprintf("%s:%d", sample.File, sample.Line),
-				Excerpt: truncate(sample.Msg, 500),
+				Excerpt: truncate(redact.Text(sample.Msg), 500),
 			})
 		}
 		prob.Acceptance = "重跑该阶段，同 kind 的失败数下降或归零"

@@ -200,6 +200,7 @@ pkg/                             可独立复用的件
   rulequality/reanalysis.go      宿主显式复分析、选定快照导入与固定 Agent RunID；reanalysis_test.go 验证幂等、证据和授权边界
   webaccess/                    policy.go/session.go 范围与预算；http.go 受控 GET/robots/重定向；render.go 独立 Chromium 出口；*_test.go 拒绝边界回归
   loggers/ notify/ middleware/{proxy,m3u8,filedown}
+  redact/                       诊断副本 URL/Text/JSON 已知凭据遮盖（不改请求、任务身份与恢复数据）
   middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /

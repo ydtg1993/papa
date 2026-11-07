@@ -334,6 +334,10 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
 	cfg := info.config
 	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
+	if pool == nil {
+		e.loggerSet.Engine.Errorf("cannot build stage %q: %v", key, workerpool.ValidateConfig(cfg.WorkerCount, cfg.QueueSize))
+		return nil
+	}
 	// 闸门绑**这个池自己的 scope**（站点 + 阶段）：它问的是暂停信号，所以"整站暂停"与
 	// "某个阶段暂停"由同一个适配器回答，不需要在池子上串两道闸。
 	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。

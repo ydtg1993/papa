@@ -47,7 +47,7 @@ type Overlay struct {
 	OutputDir      *string     // 输出目录（DownloadResult.OutputFile 相对它）
 	ResumeStateDir *string     // 断点续传状态根目录。**换它 = 已经下了一半的片子从头再来**（状态按 源|目录|文件名 哈希存在它下面）
 	Output         *OutputMode // 产物形态（见 OutputMode）
-	MergeExt       *string     // 合并输出的扩展名（.mp4 / .mkv / .ts…）—— remux 到哪个容器由它决定
+	MergeExt       *string     // 点号 + 1–16 位 ASCII 字母/数字（.mp4 / .mkv / .ts）；最终生效值在下载前验证
 	KeepSegments   *bool       // 合并后是否保留分片（OutputSegments 恒为保留）
 	MaxConcurrent  *int        // 并发下载分片数
 	SegmentTimeout *int        // 单分片超时（秒）

@@ -2,6 +2,7 @@
 package report
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,8 +10,10 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v3/pkg/redact"
 )
 
 // VerdictLabel 把判定转成中文标签。
@@ -43,6 +46,7 @@ func modeText(m obs.Mode) string {
 
 // Markdown 渲染人读报告。
 func Markdown(rep *obs.Report) string {
+	rep = diagnosticReport(rep)
 	if rep == nil {
 		return "# 运行报告\n\n（无数据）\n"
 	}
@@ -57,11 +61,11 @@ func Markdown(rep *obs.Report) string {
 	case !rep.Run.From.IsZero():
 		title += fmt.Sprintf(" · %s · %d 个 run", rep.Run.From.Format("2006-01-02"), len(rep.Run.RunIDs))
 	}
-	fmt.Fprintf(&b, "# %s\n\n", title)
-	fmt.Fprintf(&b, "**判定：%s**（%s）\n\n", VerdictLabel(rep.Verdict), rep.Verdict)
+	fmt.Fprintf(&b, "# %s\n\n", markdownText(title))
+	fmt.Fprintf(&b, "**判定：%s**（%s）\n\n", markdownText(VerdictLabel(rep.Verdict)), markdownText(string(rep.Verdict)))
 	fmt.Fprintf(&b, "- 模式：%s\n", modeText(rep.Mode))
 	if rep.VerdictReason != "" {
-		fmt.Fprintf(&b, "- 判定原因：%s\n", rep.VerdictReason)
+		fmt.Fprintf(&b, "- 判定原因：%s\n", markdownText(rep.VerdictReason))
 	}
 	fmt.Fprintf(&b, "- 生成时间：%s（最近一次更新）\n", fmtTime(rep.GeneratedAt))
 	// 自证块：报告要能被独立复核 —— 数字取自哪一刻的库、由什么版本+配置+阈值算出、事件覆盖到哪。
@@ -73,31 +77,31 @@ func Markdown(rep *obs.Report) string {
 		b.WriteString("- 历史窗口：当前 DB/引擎状态不代表该日期末，相关状态检查不参与历史判定；历史事件异常仍参与判定。\n")
 	}
 	if rep.Inputs.PapaVersion != "" {
-		fmt.Fprintf(&b, "- 版本：%s", rep.Inputs.PapaVersion)
+		fmt.Fprintf(&b, "- 版本：%s", markdownText(rep.Inputs.PapaVersion))
 		if rep.Inputs.PapaCommit != "" {
-			fmt.Fprintf(&b, " (commit %s)", rep.Inputs.PapaCommit)
+			fmt.Fprintf(&b, " (commit %s)", markdownText(rep.Inputs.PapaCommit))
 		}
 		b.WriteString("\n")
 	}
 	if rep.Inputs.ConfigFile != "" {
-		fmt.Fprintf(&b, "- 配置：%s\n", rep.Inputs.ConfigFile)
+		fmt.Fprintf(&b, "- 配置：%s\n", markdownText(rep.Inputs.ConfigFile))
 	}
 	if len(rep.Inputs.Thresholds) > 0 {
-		fmt.Fprintf(&b, "- 阈值来源：%s（%s）\n", rep.Inputs.ThresholdsSource, thresholdText(rep.Inputs.Thresholds))
+		fmt.Fprintf(&b, "- 阈值来源：%s（%s）\n", markdownText(rep.Inputs.ThresholdsSource), markdownText(thresholdText(rep.Inputs.Thresholds)))
 	}
 	if !rep.Inputs.Events.FirstTS.IsZero() {
 		fmt.Fprintf(&b, "- 事件覆盖：%s ~ %s，最大事件间隔 %s\n",
 			fmtTime(rep.Inputs.Events.FirstTS), fmtTime(rep.Inputs.Events.LastTS), rep.Inputs.Events.MaxGap)
 	}
 	fmt.Fprintf(&b, "- 窗口：%s ~ %s\n", fmtTime(rep.Run.From), fmtTime(rep.Run.To))
-	fmt.Fprintf(&b, "- 运行：%s\n", strings.Join(rep.Run.RunIDs, ", "))
+	fmt.Fprintf(&b, "- 运行：%s\n", markdownText(strings.Join(rep.Run.RunIDs, ", ")))
 	fmt.Fprintf(&b, "- 事件：%d 条（文件 %d、seq 缺口 %d、坏行 %d、重复 %d）\n\n",
 		rep.EventMeta.Count, rep.EventMeta.Files, rep.EventMeta.Gaps, rep.EventMeta.Unparsed, rep.EventMeta.Duplicates)
 
 	if len(rep.Degraded) > 0 {
 		b.WriteString("## 降级说明\n\n")
 		for _, d := range rep.Degraded {
-			fmt.Fprintf(&b, "- %s\n", d)
+			fmt.Fprintf(&b, "- %s\n", markdownText(d))
 		}
 		b.WriteString("\n")
 	}
@@ -105,8 +109,8 @@ func Markdown(rep *obs.Report) string {
 	if len(rep.Checks) > 0 {
 		b.WriteString("## 判定项\n\n| 检查 | 级别 | 结果 | 说明 | 口径 |\n| --- | --- | --- | --- | --- |\n")
 		for _, c := range rep.Checks {
-			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s |\n",
-				c.ID, c.Severity, checkResultText(c), checkMessageText(c), c.Detail)
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
+				markdownCode(c.ID), markdownText(string(c.Severity)), markdownText(checkResultText(c)), markdownText(checkMessageText(c)), markdownText(c.Detail))
 		}
 		b.WriteString("\n")
 	}
@@ -114,43 +118,43 @@ func Markdown(rep *obs.Report) string {
 	if len(rep.Problems) > 0 {
 		b.WriteString("## 问题清单\n\n")
 		for i, p := range rep.Problems {
-			fmt.Fprintf(&b, "### %d. %s\n\n", i+1, p.Title)
-			fmt.Fprintf(&b, "- 级别：%s", p.Severity)
+			fmt.Fprintf(&b, "### %d. %s\n\n", i+1, markdownText(p.Title))
+			fmt.Fprintf(&b, "- 级别：%s", markdownText(string(p.Severity)))
 			if p.Scope != "" {
-				fmt.Fprintf(&b, " · 范围：%s", p.Scope)
+				fmt.Fprintf(&b, " · 范围：%s", markdownText(p.Scope))
 			}
 			if p.Count > 0 {
 				fmt.Fprintf(&b, " · 次数：%d", p.Count)
 			}
 			b.WriteString("\n")
 			for _, ev := range p.Evidence {
-				fmt.Fprintf(&b, "- 证据（%s）：`%s`", ev.Type, ev.Ref)
+				fmt.Fprintf(&b, "- 证据（%s）：%s", markdownText(ev.Type), markdownCode(ev.Ref))
 				if ev.Excerpt != "" {
-					fmt.Fprintf(&b, " — %s", oneLine(ev.Excerpt, 200))
+					fmt.Fprintf(&b, " — %s", markdownText(oneLine(ev.Excerpt, 200)))
 				}
 				b.WriteString("\n")
 			}
 			for _, h := range p.Hypotheses {
-				fmt.Fprintf(&b, "- 假设（%s）：%s", h.Confidence, h.Text)
+				fmt.Fprintf(&b, "- 假设（%s）：%s", markdownText(h.Confidence), markdownText(h.Text))
 				if h.Verify != "" {
-					fmt.Fprintf(&b, " · 验证：%s", h.Verify)
+					fmt.Fprintf(&b, " · 验证：%s", markdownText(h.Verify))
 				}
 				if h.FixHint != "" {
-					fmt.Fprintf(&b, " · 修复方向：%s", h.FixHint)
+					fmt.Fprintf(&b, " · 修复方向：%s", markdownText(h.FixHint))
 				}
 				b.WriteString("\n")
 			}
 			if p.Acceptance != "" {
-				fmt.Fprintf(&b, "- 验收：%s\n", p.Acceptance)
+				fmt.Fprintf(&b, "- 验收：%s\n", markdownText(p.Acceptance))
 			}
 			b.WriteString("\n")
 		}
 	}
 
 	for _, sec := range rep.Sections {
-		fmt.Fprintf(&b, "## %s\n\n", sec.Title)
+		fmt.Fprintf(&b, "## %s\n\n", markdownText(sec.Title))
 		if sec.Summary != "" {
-			fmt.Fprintf(&b, "%s\n\n", sec.Summary)
+			fmt.Fprintf(&b, "%s\n\n", markdownText(sec.Summary))
 		}
 		for _, t := range sec.Tables {
 			renderTable(&b, t)
@@ -164,22 +168,112 @@ func Markdown(rep *obs.Report) string {
 
 func renderTable(b *strings.Builder, t obs.Table) {
 	if t.Title != "" {
-		fmt.Fprintf(b, "### %s\n\n", t.Title)
+		fmt.Fprintf(b, "### %s\n\n", markdownText(t.Title))
 	}
 	if len(t.Columns) == 0 {
 		return
 	}
-	fmt.Fprintf(b, "| %s |\n", strings.Join(t.Columns, " | "))
+	fmt.Fprintf(b, "| %s |\n", markdownCells(t.Columns))
 	fmt.Fprintf(b, "|%s\n", strings.Repeat(" --- |", len(t.Columns)))
 	for _, row := range t.Rows {
-		fmt.Fprintf(b, "| %s |\n", strings.Join(row, " | "))
+		fmt.Fprintf(b, "| %s |\n", markdownCells(row))
 	}
 	b.WriteString("\n")
 }
 
+// markdownText renders an untrusted value as one inline text fragment, including
+// in headings and GFM tables. Entities are decoded as text, never reparsed as
+// Markdown syntax. Escape '&' too so existing entities cannot introduce syntax.
+func markdownText(value string) string {
+	value = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(value))
+	var out strings.Builder
+	runes := []rune(value)
+	word := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }
+	for i, r := range runes {
+		escape := strings.ContainsRune("&<>|`\\[]*#~", r)
+		// CommonMark does not interpret intraword underscores as emphasis.
+		if r == '_' && !(i > 0 && i+1 < len(runes) && word(runes[i-1]) && word(runes[i+1])) {
+			escape = true
+		}
+		// Keep a paragraph-leading list/rule marker literal; periods elsewhere
+		// (URLs, file names, versions) retain their ordinary readable form.
+		if i == 0 && strings.ContainsRune("-+=", r) {
+			escape = true
+		}
+		if r == '.' || r == ')' {
+			prefix := string(runes[:i])
+			if prefix != "" && strings.Trim(prefix, "0123456789") == "" {
+				escape = true
+			}
+		}
+		if escape {
+			fmt.Fprintf(&out, "&#%d;", r)
+		} else {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+// Backslashes do not escape backticks inside CommonMark code spans. Use a
+// fixed HTML code element with entity-escaped content for special values;
+// ordinary IDs and file:line references keep the compact backtick notation.
+func markdownCode(value string) string {
+	if value == "" || strings.ContainsAny(value, "`|&<>[]\\\r\n") {
+		return "<code>" + markdownText(value) + "</code>"
+	}
+	return "`" + value + "`"
+}
+
+func markdownCells(values []string) string {
+	cells := make([]string, len(values))
+	for i, value := range values {
+		cells[i] = markdownText(value)
+	}
+	return strings.Join(cells, " | ")
+}
+
 // JSON 渲染机读报告（缩进、稳定）。
 func JSON(rep *obs.Report) ([]byte, error) {
-	return json.MarshalIndent(rep, "", "  ")
+	raw, err := redact.JSON(rep)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	if err = json.Indent(&out, raw, "", "  "); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// Copy through the report's JSON contract; never mutate the source used for
+// request identity or analysis. Invalid diagnostic values fail closed.
+func diagnosticReport(rep *obs.Report) *obs.Report {
+	if rep == nil {
+		return nil
+	}
+	// Human rendering and the AI brief do not consume arbitrary section metrics.
+	// Keep them out of this copy so an unrelated non-JSON business metric cannot
+	// suppress the report text. JSON(rep) still validates the complete contract.
+	view := *rep
+	view.Sections = append([]obs.SectionReport(nil), rep.Sections...)
+	for i := range view.Sections {
+		view.Sections[i].Metrics = nil
+	}
+	raw, err := redact.JSON(&view)
+	var copy obs.Report
+	if err != nil || json.Unmarshal(raw, &copy) != nil {
+		return &obs.Report{Verdict: obs.VerdictUnknown, VerdictReason: "report diagnostic serialization unavailable"}
+	}
+	// JSON decodes interface metrics as maps. Keep the concrete framework
+	// backlog value consumed by BuildAIBrief, with its only text field masked.
+	for i, sec := range rep.Sections {
+		if metrics, ok := sec.Metrics.(obs.BacklogSummary); ok {
+			metrics.ETA = redact.Text(metrics.ETA)
+			copy.Sections[i].Metrics = metrics
+		}
+	}
+	return &copy
 }
 
 // Write 把 report.md / report.json / ai-brief.md / ai-brief.json 写进 dir，返回写出的文件路径。
