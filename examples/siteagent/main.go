@@ -34,6 +34,9 @@ type options struct {
 	InspectRun, InterruptRun                          string
 	Migrate, Render, RealModel, LegacyMaxTokens       bool
 	WorkerStopped                                     bool
+	Evaluate                                          bool
+	EvalCompare, PriceVersion, Currency               string
+	InputPrice, OutputPrice, MaxCost                  int64
 }
 
 func main() {
@@ -50,8 +53,19 @@ func main() {
 	flag.StringVar(&opts.InspectRun, "inspect-run", "", "read a persisted run and its steps without executing it")
 	flag.StringVar(&opts.InterruptRun, "interrupt-run", "", "explicitly mark a stopped run interrupted; never resume it")
 	flag.BoolVar(&opts.WorkerStopped, "worker-stopped", false, "confirm the previous executor has stopped before interruption")
+	flag.BoolVar(&opts.Evaluate, "evaluate", false, "run fixed HTML/DOM/JSON evaluation: 3 repetitions each, no publication")
+	flag.StringVar(&opts.EvalCompare, "eval-compare", "", "compare with a complete evaluation JSON report of identical identity")
+	flag.StringVar(&opts.PriceVersion, "price-version", "", "host price schedule version; required for real-model evaluation")
+	flag.StringVar(&opts.Currency, "currency", "", "price currency label; required for real-model evaluation")
+	flag.Int64Var(&opts.InputPrice, "input-price-micros", 0, "micro currency units per million input tokens")
+	flag.Int64Var(&opts.OutputPrice, "output-price-micros", 0, "micro currency units per million output tokens")
+	flag.Int64Var(&opts.MaxCost, "max-run-micros", 0, "estimated cost ceiling per analysis; whole evaluation reserves at most 9 times this")
 	flag.Parse()
-	ctx, cancel := context.WithTimeout(context.Background(), 210*time.Second)
+	deadline := 210 * time.Second
+	if opts.Evaluate {
+		deadline = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	if err := command(ctx, os.Stdout, opts); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -60,6 +74,9 @@ func main() {
 }
 
 func command(ctx context.Context, output io.Writer, opts options) error {
+	if err := validateEvaluationOptions(opts); err != nil {
+		return err
+	}
 	if opts.InspectRun != "" && opts.InterruptRun != "" {
 		return errors.New("choose only one of -inspect-run and -interrupt-run")
 	}
@@ -106,6 +123,9 @@ func command(ctx context.Context, output io.Writer, opts options) error {
 			return err
 		}
 		return printJSON(output, view)
+	}
+	if opts.Evaluate {
+		return runEvaluation(ctx, output, db, opts)
 	}
 	return run(ctx, output, db, opts)
 }
@@ -174,7 +194,21 @@ func run(ctx context.Context, output io.Writer, db *gorm.DB, opts options) error
 			if err != nil {
 				return err
 			}
-			if err := repo.CreateSampleSet(ctx, set.id, []rulestore.StoredFixture{{Name: stage.Stage, SampleID: sample.ID, Expect: set.want}}, actor); err != nil {
+			emptyInput := set.input
+			emptyInput.URL += "/empty"
+			emptyInput.Body = []byte("<main>Empty fixture " + set.id + "</main>")
+			if fixture.rule.Format == "json" {
+				emptyInput.Body, _ = json.Marshal(map[string]any{"items": []any{}, "marker": set.id})
+			}
+			empty, err := repo.AddSample(ctx, emptyInput, policy, actor)
+			if err != nil {
+				return err
+			}
+			fixtures := []rulestore.StoredFixture{
+				{Name: stage.Stage, SampleID: sample.ID, Expect: set.want},
+				{Name: stage.Stage + "-empty", SampleID: empty.ID, Expect: crawlrule.Expectations{Kind: "empty"}},
+			}
+			if err := repo.CreateSampleSet(ctx, set.id, fixtures, actor); err != nil {
 				return err
 			}
 		}
@@ -401,7 +435,7 @@ func newLocalSite() *httptest.Server {
 		case "/detail/alpha":
 			_, _ = io.WriteString(w, `<article><h1>Alpha detail</h1><p class="summary">A public summary.</p></article>`)
 		case "/render":
-			_, _ = io.WriteString(w, `<html><body><div id="mount"></div><script>document.getElementById('mount').innerHTML='<section class="card"><h2>Rendered Alpha</h2></section>';</script></body></html>`)
+			_, _ = io.WriteString(w, `<html><body><div id="mount"></div><script>setTimeout(()=>{document.getElementById('mount').innerHTML='<section class="card"><h2>Rendered Alpha</h2></section>'},800);</script></body></html>`)
 		case "/json":
 			_, _ = io.WriteString(w, `<html><body><div id="api-result"></div><script>fetch('/api/items?page=1').then(r=>r.json()).then(data=>document.getElementById('api-result').textContent=data.items[0].title);</script></body></html>`)
 		case "/api/items":
@@ -431,7 +465,11 @@ func replaySteps(base string, fixtures []stageFixture, render bool) []model.Repl
 			if fixture.goal.Transport == "browser" {
 				mode = "render"
 			}
-			add(map[string]any{"tool": "fetch_page", "url": base + fixture.seed, "mode": mode})
+			action := map[string]any{"tool": "fetch_page", "url": base + fixture.seed, "mode": mode}
+			if mode == "render" {
+				action["wait"] = map[string]any{"selector": "section.card > h2", "state": "visible", "timeout_ms": 3000}
+			}
+			add(action)
 		}
 		add(map[string]any{"tool": "read_evidence", "evidence_id": "latest", "limit": 16384})
 		if fixture.goal.Stage == "json" {

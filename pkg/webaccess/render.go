@@ -102,10 +102,18 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 	if !s.renderer.Enabled {
 		return Response{}, nil, ErrRendererUnavailable
 	}
+	if opts.Wait != nil {
+		if opts.ObserveDuration != 0 || ValidateRenderWait(*opts.Wait) != nil {
+			return Response{}, nil, ErrWaitInvalid
+		}
+		// Detach caller-owned options for the lifetime of this render.
+		wait := *opts.Wait
+		opts.Wait = &wait
+	}
 	if opts.ObserveDuration < 0 || opts.ObserveDuration > 30*time.Second {
 		return Response{}, nil, ErrBudget
 	}
-	if opts.ObserveDuration == 0 {
+	if opts.ObserveDuration == 0 && opts.Wait == nil {
 		opts.ObserveDuration = 500 * time.Millisecond
 	}
 	ctx, cancel := s.operation(ctx)
@@ -244,6 +252,13 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 		}
 		r, headers, err := s.fetch(eventCtx, e.Request.URL, !isTop)
 		if err != nil {
+			// Snapshot completion deliberately stops unfinished resource fetches.
+			// This internal cancellation is not a transport failure. Keep actual
+			// policy/budget/audit errors and outer cancellation fail-closed; retain
+			// all charges already incurred and never record an incomplete body.
+			if errors.Is(err, ErrCanceled) && eventCtx.Err() != nil && ctx.Err() == nil {
+				return
+			}
 			if errors.Is(err, ErrCanceled) && ctx.Err() == nil {
 				err = ErrTransport
 			}
@@ -270,7 +285,14 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 			responseHeaders = append(responseHeaders, &proto.FetchHeaderEntry{Name: "Location", Value: next.String()})
 		}
 		responseHeaders = append(responseHeaders, &proto.FetchHeaderEntry{Name: "Cache-Control", Value: "no-store"})
-		if err = (proto.FetchFulfillRequest{RequestID: e.RequestID, ResponseCode: r.StatusCode, ResponseHeaders: responseHeaders, Body: r.Body}).Call(page); err != nil {
+		// CDP expects a base64 string, including "" for an empty response.
+		// Rod serializes nil []byte as null, which Chromium rejects. Keep the
+		// normalization at this boundary; source evidence/accounting is unchanged.
+		body := r.Body
+		if body == nil {
+			body = []byte{}
+		}
+		if err = (proto.FetchFulfillRequest{RequestID: e.RequestID, ResponseCode: r.StatusCode, ResponseHeaders: responseHeaders, Body: body}).Call(page); err != nil {
 			fail(renderError(ctx, err))
 			return
 		}
@@ -299,8 +321,14 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 	if err = page.WaitLoad(); err != nil {
 		return Response{}, nil, renderError(ctx, err)
 	}
-	if err = waitUntil(ctx, time.Now().Add(opts.ObserveDuration)); err != nil {
-		return Response{}, nil, renderError(ctx, err)
+	if opts.Wait != nil {
+		if err = waitRenderDOM(ctx, page, rootFrame, *opts.Wait); err != nil {
+			return Response{}, nil, err
+		}
+	} else {
+		if err = waitUntil(ctx, time.Now().Add(opts.ObserveDuration)); err != nil {
+			return Response{}, nil, renderError(ctx, err)
+		}
 	}
 	// Freeze outbound work before extracting the bounded DOM and returning
 	// usage. No handler may continue charging requests after Render returns.

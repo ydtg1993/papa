@@ -332,7 +332,7 @@ func (a *Admin) Preview(ctx context.Context, p RulePlan) (RulePreview, error) {
 				detail.Verification = &proof
 			}
 			proof := detail.Verification
-			if proof == nil || !proof.Passed || proof.Reference != ref || proof.RuleDigest != detail.Version.Digest || proof.VerifierVersion != VerifierVersion {
+			if proof == nil || !proof.Passed || proof.Reference != ref || proof.RuleDigest != detail.Version.Digest || !supportedVerifierVersion(proof.VerifierVersion) {
 				return ErrUnverified
 			}
 			var setRow models.RuleSampleSet

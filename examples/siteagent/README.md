@@ -56,6 +56,10 @@ go run ./examples/siteagent -interrupt-run '<unfinished run ID>' -worker-stopped
 
 ## 验证
 
+每个阶段的训练集、独立验收集现在各有一个正样本和一个 `Kind: "empty"` 负样本；空 HTML/JSON/DOM 预期由宿主预先定义，正文标记互不相同，避免训练与隐藏样本重复。模型不能修改类型或预期。原 HTTP 14 次、浏览器 18 次回放决策和 180 秒总预算不变；这只是本地合成验收示例，不是 D3 固定模型质量评测。
+
+浏览器场景在 800ms 后创建 `section.card > h2`，回放动作使用 `wait: {selector: "section.card > h2", state: "visible", timeout_ms: 3000}` 等待后再取证。等待仍受原 180 秒总预算约束，不增加模型调用次数；HTTP 和 GET JSON 录制动作保持原协议。详细条件、错误与审计口径见 [SITE_AGENT](../../docs/SITE_AGENT.md#同次渲染中的有界等待)。示例只包含本地合成站点，真实网站策略留在业务模块。
+
 ```powershell
 go test ./examples/siteagent -count=1
 # 数据库名必须包含 agent_test；使用独立、可丢弃的测试数据库。
@@ -66,3 +70,61 @@ go test -race ./examples/siteagent -count=1
 ```
 
 未提供测试 DSN 时，只运行离线 fixture、回放默认值和参数保护测试，真实 MySQL/Chromium 集成测试会明确跳过。提供 DSN 后会实际运行 HTTP 与受控浏览器两条路径、独立验收、重复只读检查及中断审计；缺少 Chromium 会失败。测试不调用任何真实模型。示例保留不可变数据库记录；请由操作者管理专用数据库和长期样本目录。
+
+受控渲染专项验证（在 Papa 模块目录）：
+
+```powershell
+go test ./pkg/webaccess -run '^TestRealChromium' -count=1 -v
+$env:CGO_ENABLED = '1'
+go test -race ./pkg/webaccess -count=1
+# 下项使用另一套专用库：PAPA_AGENT_MYSQL_TEST_DSN 的数据库名必须是 papa_agent_test。
+# 在本机安全设置 DSN 后运行，不把密码写进文档或命令历史。
+go test -race ./pkg/crawlagent -run '^TestRunnerMySQL' -count=1 -v
+```
+
+真实浏览器回归包含空正文页面/脚本/重定向、请求/DOM/总字节/页面/重定向预算，以及实际请求开始后的取消、会话关闭/期限到期和全局名额释放。Runner 真库回归另验证渲染超限/取消后的审计收尾、训练证据保留、没有伪成功渲染证据、没有自动发布。
+
+D1 另覆盖延迟出现、隐藏后显示、首个匹配语义、隔离世界抗网页函数覆盖、等待超时、等待中取消/会话关闭/期限、网络策略和预算退出、排队取消与名额复用。`TestRunnerMySQLChromiumWaitReopen` 在真实浏览器和专用 MySQL 上验证条件成功后的实际 DOM、候选与审计重开，以及等待超时不新增成功页面证据、不自动发布。
+
+Windows 启动失败时，先保留系统默认 `TEMP/TMP/GOTMPDIR` 做环境对照；本机将三者或仅 GOTMPDIR 指向工作区目录时均无法取得 Chrome 调试连接，具体宿主限制尚未确定。不要以关闭沙箱或降低出口控制来让测试变绿。成功的回放验收证明框架接线与约束，不能替代真实模型生成质量评测。
+
+## D3：固定评测与基线
+
+这是本示例的 `-evaluate` 模式，不是新增的 Papa CLI 子命令。静态 HTML、延迟渲染 DOM、JSON 两页各有 6 个固定合成样本：训练 2 正＋1 空负例，独立隐藏集同数、不同正文，共 18 个。每场景运行 3 次，保留全部 9 次。DOM 实际通过沙箱 Chromium 等待 800ms 延迟内容；JSON 检查第一页 next 与第二页结束。HTTP 服务只提供训练页，不提供隐藏页。
+
+先在本机设置专用库 `PAPA_AGENT_DSN`（含 parseTime=True），沿用上文显式迁移；不要使用生产库。以下在 Papa 模块目录执行，`$env:PAPA_EVAL_BROWSER` 是本机已验证的 Chromium 可执行文件路径：
+
+```powershell
+# 第一次使用既有 rules/agent 表时加 -migrate；已有表不用重复迁移。
+go run ./examples/siteagent -evaluate -browser $env:PAPA_EVAL_BROWSER -sample-dir ./evaluation-samples > ./evaluation-baseline.json
+# 相同协议、模型、预算、价格再次跑全部 9 次，输出逐次结果及前后汇总。
+go run ./examples/siteagent -evaluate -browser $env:PAPA_EVAL_BROWSER -sample-dir ./evaluation-samples -eval-compare ./evaluation-baseline.json > ./evaluation-current.json
+```
+
+默认使用 Replay，不读取模型 Key；`-render=false` 在固定评测中拒绝，不能跳过 DOM 场景后声称完成三类验收。默认的非 evaluate 示例行为不变。可选 `-browser` 留空走宿主自动发现；启动失败应保留失败报告并排查环境，不能仅凭离线候选通过把渲染失败算作成功。
+
+每次分析上限 12 次模型调用、180 秒、3 个候选，原网络/字节/输入输出预算保持；整轮顺序运行至多 9 次、108 次调用、30 分钟，不追加重试批次。评测统计见 [SITE_AGENT §12](../../docs/SITE_AGENT.md#12-固定评测与基线d3)。报告包含每次 run ID、样本集 ID/摘要、候选 ID/版本/摘要、验收 ID、预算与实际用量；没有原始正文、隐藏答案、完整端点或 Key。时间包括样本安装、分析与评分，不是模型独立性能基准。
+
+真实模型须显式加 `-real-model`，同时提供既有 `-model-base-url`、`-model`、`-api-key-env` 与以下参数；不设置时拒绝付费评测：
+
+| 参数 | 含义 |
+|---|---|
+| `-price-version` | 宿主核实的价格表版本/日期标签 |
+| `-currency` | 价格币种，如 CNY 或 USD，不能混币比较 |
+| `-input-price-micros` | 每百万输入 token 的微货币单位单价（1 货币单位 = 1,000,000 微单位） |
+| `-output-price-micros` | 每百万输出 token 的微货币单位单价 |
+| `-max-run-micros` | 每次分析的保守估算费用上限；整轮至多预留其 9 倍 |
+
+供应商未返回用量，或任一次调用用量不完整时，`tokens` 与 `estimated_micros` 为 null，不能解释为零成本。保守预留照常限制后续调用；框架估算不替代供应商账单/余额限额。真实模型不接收 Replay oracle，隐藏预期也不会发给模型。首次真实模型报告独立建立基线，不能拿 Replay 当质量对照。
+
+`-eval-compare` 限制输入报告不超过 4MiB；协议、样本、模型、端点摘要、提示、预算、价格和 token 参数必须相同，否则在新模型调用前停止。中途失败仍输出已收集记录，全部重复完成才能汇总/比较；失败重复不删除、不挑最好值。基础设施失败使该次 `ready_for_review=false`，即使固定样本验收恰巧通过也一样。报告本身没有发布能力，正式发布仍由人工从原规则流程执行。
+
+回归：
+
+```powershell
+go test -race ./pkg/agenteval ./pkg/crawlrule ./pkg/crawlagent ./examples/siteagent -count=1
+# PAPA_AGENT_EXAMPLE_TEST_DSN 指向专用 agent_test 数据库，有实际 Chromium：
+go test -race ./examples/siteagent -run '^TestFixedEvaluationMySQLAndChromium$' -count=1 -v
+```
+
+固定样本与宿主目标的摘要由 `evaluation_fixtures.go` 生成并被测试固定；正文、预期、目标或渲染延迟变动时须升级样本协议与基线，不能只修改旧结果。存档 Replay 基线见 `testdata/d3-replay-baseline.json`；它证明框架接线，不证明模型生成质量。基线引用的本机专用库和样本目录不随仓库分发；其它机器用固定语料重跑建立自己的审计记录。

@@ -52,5 +52,10 @@ const preview={selection,profile:{label:'approved'},digest:'sha',plan:{}};
  c.apiFetch=async()=>null;await c.loadAgents();assert.equal(c.agentView.request,null);assert.equal(node('agent-detail').innerHTML,'');assert.equal(node('agent-evidence').innerHTML,'');
  c.editAgentFilters();assert.ok(node('agent-list').textContent.includes('筛选已改变'));
  let recent=false;c.agentLists=async reset=>{recent=reset;};await c.recentAgents();assert.equal(recent,true);assert.ok(new Date(node('agent-until').value)-new Date(node('agent-from').value)===86400000);
+ // Candidate report rendering uses the shared summary when present and keeps
+ // the standalone/older asset fallback as escaped JSON.
+ assert.ok(c.agentJSON({Report:{Passed:false,Results:[]}}).includes('rule-json'));
+ c.ruleFixtureSummary=()=>'<p>negative-summary</p>';
+ assert.ok(c.agentJSON({Report:{Passed:true,Results:[]}}).startsWith('<p>negative-summary</p>'));
  console.log('agent behavior passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -42,9 +42,17 @@
 
 受控分析模块可单独验证：`go test ./pkg/crawlagent/... ./pkg/agentstore ./pkg/webaccess ./examples/siteagent`。模型测试使用本地模拟服务/回放；真实审计与 runner 集成需要 `PAPA_AGENT_MYSQL_TEST_DSN`，完整示例需要 `PAPA_AGENT_EXAMPLE_TEST_DSN` 和本机 Chromium，均使用专用测试库。缺少依赖的跳过不代表已验证该路径，入口与具体边界见 [SITE_AGENT.md](./SITE_AGENT.md) 和框架仓库的 `examples/siteagent/README.md`。
 
+D0 受控浏览器回归可执行 `go test -race ./pkg/webaccess -run '^TestRealChromium' -count=1 -v`。`render_acceptance_test.go` 覆盖空正文 CDP 兼容、预算与取消后的资源释放；`pkg/crawlagent/runner_render_mysql_test.go` 使用专用 `papa_agent_test` 验证真实渲染失败/取消的持久审计与人工发布边界。Windows 保留系统默认临时目录作为验收基线；本机仅覆盖工作区 GOTMPDIR 也会启动失败，不能用禁用沙箱替代。真实 MySQL 用例缺少 DSN 时会跳过，不能计入通过。
+
+D1 等待回归：`go test -race ./pkg/webaccess -run 'TestRenderWait|TestRealChromiumRenderWait' -count=1 -v`；`go test -race ./pkg/crawlagent -run 'TestRenderWaitActionContract|TestRunnerRenderWait' -count=1` 验证协议、转交、超时修正与审计脱敏。配置专用库后执行 `go test -race ./pkg/crawlagent -run '^TestRunnerMySQLChromiumWaitReopen$' -count=2 -v`，实际验证等待成功/超时、候选验收、重开读取与未自动发布。默认回放示例包含 800ms 延迟 DOM 和显式可见等待，工具调用次数/总预算保持不变。
+
+D2 负样本回归：`go test -race ./pkg/crawlrule ./pkg/rulestore ./pkg/crawlagent -count=1`。真库分别设置 `PAPA_RULE_MYSQL_TEST_DSN`（库名包含 rule_test）与 `PAPA_AGENT_MYSQL_TEST_DSN`（papa_agent_test），验证混合验收、v2 纯正样本历史兼容、报告类型/状态与集合绑定、并发最新凭据和人工发布边界。`TestMySQLNegativeFixturesLegacyReleaseAndRecovery`、`TestRunnerMySQLNegativeFixturesReopenWithoutPublication` 为专项入口；无 DSN 的 skip 不算真库通过。前端沿用 `TestOperationsJavaScriptBehavior` 的 rules/agents 行为测试。
+
 运行质量模块可单独执行 `go test ./pkg/rulequality`，引擎接线执行 `go test ./engine -run 'RuleQuality|RuleFetcher|RuleSnapshot'`。持久化和迁移集成分别使用 `PAPA_QUALITY_MYSQL_TEST_DSN`、`PAPA_QUALITY_MIGRATION_TEST_DSN`，库名必须包含 `quality_test`；没有专用库时跳过不代表真库验证通过。纯报告测试不调用模型，复分析回放也不验证真实供应商质量或账单；入口和边界见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 周期批次执行 `go test ./engine -run 'RuleSchedule|RuleBatch|RunVersion'`。真实 MySQL 用 `PAPA_RULE_SCHEDULE_TEST_DSN`，库名严格为 `papa_rule_test_schedule`；完整两批示例用 `PAPA_RULE_SCHEDULE_EXAMPLE_TEST_DSN`，应指向另一个专用库（推荐 `papa_rule_test_schedule_example`）。DSN 开启 `parseTime=True`，不要让迁移测试与引擎/示例共用数据库。示例走真实 repeat_queue，至少运行 10 秒；同样运行 race。没有 DSN 的跳过结果不能代表重启、行锁、JSON 查询和提交不明路径已验证。
+
+D3 固定评测：`go test -race ./pkg/agenteval ./pkg/crawlrule ./pkg/crawlagent ./examples/siteagent -count=1`。`TestFixedEvaluationMySQLAndChromium` 使用 `PAPA_AGENT_EXAMPLE_TEST_DSN` 的专用 agent_test 库与沙箱 Chromium，实际运行三类各三次、再执行一次完整基线比较，检查审计重开、预算不兼容时零模型调用和无自动发布；无 DSN 跳过不算验收。普通测试验证固定 18 样本、隔离、字段分母、未知用量、比较身份与完整重复次数。正式保存基线使用 `go run ./examples/siteagent -evaluate ...`，见示例 README；不是 Go benchmark，也不默认付费。
 
 ## 2. 业务项目（`papa new` 生成）
 
@@ -161,6 +169,7 @@ admin/                          ★后台模块：**对外公开**，业务项�
   configstore/  运行期配置存储（crawler_config 表）+ 读缓存层（内存 / TTL 装饰器）
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
+  selectorbudget/css.go         Agent 规则与受控渲染等待共用的保守 CSS 校验；旧规则契约保持不变
   workerpool/ database/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
     data_tables.go / data_tables_test.go  只接入可操作任务，Trace 走行内弹窗；保留 task API 和动作保护
@@ -182,11 +191,21 @@ pkg/                             可独立复用的件
   htmlfetch/session_state.go     完整 Cookie 属性追踪、版本化快照与受限恢复
   account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
   crawlrule/                    rule.go 规则编译；evaluate.go HTML/JSON/DOM 与受限证据；transform.go 确定性转换；fixture.go 样本/根级游标验收；registry.go 激活、Verified 与回滚；catalog.go 持久发布读取契约
+  crawlrule/fixture_contract.go / fixture_negative_test.go 显式正/负预期、严格分类、整组正样本门槛与非法输入/资源边界回归
+  crawlrule/field_match.go / field_match_test.go 诊断字段精确匹配计数；missing/null、JSON Pointer 和大整数边界
+  agenteval/                    score.go 固定分母评分；report.go 审计指标、未知用量、完整性与严格基线比较；score_test.go 失败/部分匹配/不可比报告回归
+  rulestore/negative_contract_test.go / negative_mysql_test.go 旧 JSON/报告兼容、负样本报告完整性、并发验收、真库重开与人工发布/回滚
+  crawlagent/runner_negative_test.go / runner_negative_mysql_test.go 混合样本训练/隐藏集隔离、模型前置校验、持久审计与不自动发布
   rulestore/                    types.go 数据契约；repository.go 不可变规则与固定版本解析；repository_samples.go 样本/集合/验收；repository_release.go 完整站点发布、CAS、幂等与回滚
   rulestore/blobs.go             长期正文按内容保存、原子发布、完整性校验；sample.go 显式脱敏；snapshot.go 选定快照导入；compare.go 结构对比与离线影子评估
   rulestore/review_*_test.go     constructor 外层事务；release 并发/提交故障；rollback 历史凭据；verification 样本/验收一致性真库回归
   crawlagent/                   types.go/config.go 宿主契约；run.go/action.go/tools.go 有限工具循环；evidence.go/url.go/selector_budget.go 证据隔离与预算；audit.go 审计引用
   crawlagent/*_test.go           回放修正、权限/预算/隐藏样本隔离、审计失败与真实 MySQL runner 重开回归
+  crawlagent/runner_render_mysql_test.go 真实 Chromium 超限/取消、MySQL 审计收尾和发布不变
+  crawlagent/action_wait_test.go / runner_wait_test.go 等待严格参数、转交、默认兼容、超时修正、权限与审计脱敏
+  crawlagent/runner_wait_mysql_test.go 真实 Chromium 延迟 DOM/超时、MySQL 重开、候选验收和人工发布边界
+  webaccess/render_acceptance_test.go 空正文响应、实际渲染预算、排队/在途取消与并发名额回收
+  webaccess/render_wait.go / render_wait_test.go 有界 CSS 等待、隔离执行、页面关闭、取消/期限/网络预算、排队回收与快照主动取消在途资源
   crawlagent/run_identity_test.go 宿主 RunWithID 身份、额外证据与隐藏样本隔离回归
   crawlagent/model/             model.go Provider 契约；compatible.go 有界兼容 HTTP 客户端；replay.go 确定性回放；对应测试不调用真实模型
   agentadmin/                   types.go/service.go/execution.go/review.go：宿主配置、幂等执行、具名控制、固定候选审阅；review_test.go
@@ -219,6 +238,7 @@ engine/review_catalog_test.go     动态规则与宿主兼容、持久任务恢�
 examples/rulecrawl/              main.go 本地 HTML / JSON POST 游标完整流程；main_test.go 示例验收；README.md 生产接线
 examples/rulepublish/            main.go 专用 MySQL＋本机 HTTP 的验收/发布/恢复/影子/回滚示例；main_test.go 入口约束验证
 examples/siteagent/              main.go 本地静态/DOM/GET JSON 分析与审计重开；main_test.go MySQL＋Chromium 回放验收；README.md 真实模型显式接线
+examples/siteagent/evaluation_{fixtures,run}.go 固定 18 合成样本、9 次受控评测、显式付费预算与报告比较；evaluation_test.go 样本协议/隔离、真库浏览器和无发布验证
 examples/rulequality/            本地网站质量场景、固定报告与显式复分析回放；入口见 RULE_QUALITY.md
 cmd/monitor-demo/quality_demo.go / quality_demo_test.go 模拟观测、真实聚合演示及 Trace
 cmd/monitor-demo/agent_demo.go    不接模型或站点的运行审阅 UI 模拟

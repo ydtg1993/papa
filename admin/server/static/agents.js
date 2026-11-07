@@ -2,7 +2,7 @@
 var agentView={seq:0,detailSeq:0,planSeq:0,caps:null,report:null,preview:null,request:null,anchor:null,busy:false,locked:false,runs:[],requests:[],runNext:'',requestNext:'',run:null,review:null};
 var agentPendingKey='papa-agent-operation-v1';
 function agentNode(id){return document.getElementById('agent-'+id);}
-function agentJSON(v){return '<pre class="rule-json">'+esc(JSON.stringify(v==null?'未配置或没有记录':v,null,2))+'</pre>';}
+function agentJSON(v){return (typeof ruleFixtureSummary==='function'?ruleFixtureSummary(v):'')+'<pre class="rule-json">'+esc(JSON.stringify(v==null?'未配置或没有记录':v,null,2))+'</pre>';}
 function agentButton(label,action,attrs){return '<button class="btn" type="button" data-agent-action="'+action+'" '+(attrs||'')+'>'+esc(label)+'</button>';}
 function invalidateAgents(){agentView.seq++;agentView.detailSeq++;invalidateAgentPreview();}
 function resetAgentsSession(){

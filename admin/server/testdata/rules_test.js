@@ -43,5 +43,8 @@ function review(){form();const data={plan:plan(),stages:[],verification_ids:{lis
  // Report/rule values are always escaped, never active HTML.
  c.apiFetch=async()=>response({version:{Digest:'sha',Rule:{selector:'<img onerror=bad>'}},verification:null});await c.inspectRule('<script>','1');assert.ok(!node('rule-detail').innerHTML.includes('<script>'));assert.ok(node('rule-detail').innerHTML.includes('&lt;img'));
  const inflight=deferred();c.apiFetch=()=>inflight.promise;const inspecting=c.inspectRule('late','1');const before=node('rule-detail').innerHTML;c.authGeneration++;inflight.resolve(response({version:{Digest:'late',Rule:{}},verification:null}));await inspecting;assert.equal(node('rule-detail').innerHTML,before);
+ const fixtureReport={Report:{Passed:true,Results:[{Name:'old',Passed:true,Rows:1},{Name:'<img onerror=bad>',Kind:'empty',ErrorKind:'no_records',Passed:true,Rows:0},{Name:'denied',Kind:'reject',ErrorKind:'http_status',StatusCode:403,Passed:true,Rows:0}]}};
+ const fixtureHTML=c.ruleJSON(fixtureReport);assert.ok(fixtureHTML.includes('正样本 1 · 负样本 2'));assert.ok(fixtureHTML.includes('预期零结果'));assert.ok(fixtureHTML.includes('HTTP 状态拒绝 · 403'));assert.ok(fixtureHTML.includes('&lt;img'));assert.ok(!fixtureHTML.includes('<img onerror'));
+ assert.ok(c.ruleJSON({Report:{Passed:true,Results:[{Name:'legacy',Passed:true,Rows:1}]}}).includes('正样本 1 · 负样本 0'));
  console.log('rule operation behavior passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -173,9 +173,25 @@ _ = result
 _ = err
 ```
 
-每个样本必须有非空且集合内唯一的名称、正数精确行数和至少一个字段值断言。字段断言中的 `Row` 从 0 开始，`Pointer` 针对提取后的输出记录；缺失字段不等于 null。大整数断言使用 `json.Number("9007199254740993")`，不能先放进已丢精度的 `float64`。数值在受限长度/指数内按精确数学值比较，`1000` 与 `1e3` 相等。
+每个样本必须有非空且集合内唯一的名称。`Expect.Kind` 为空或 `positive` 时保留正样本契约：正数精确行数和至少一个字段值断言。字段断言中的 `Row` 从 0 开始，`Pointer` 针对提取后的输出记录；缺失字段不等于 null。大整数断言使用 `json.Number("9007199254740993")`，不能先放进已丢精度的 `float64`。数值在受限长度/指数内按精确数学值比较，`1000` 与 `1e3` 相等。
 
-`Expect.NextURL` 总是精确比较，空字符串明确要求没有下一页。默认 `Expect.Truncated: false` 禁止未预期的部分结果；确需测试行预算可显式设置 true。`compiled.Verify(fixtures)` 可只做预验收；`Activate` 仍要求本次提供完整样本集，空集返回 `ErrNoFixtures`。多个样本会全部执行，任一提取、校验或断言失败都返回 `ErrFixtureFailed`，现行版本与回滚历史保持不变。
+负样本由人工或宿主显式定义，不能让模型看到失败后改写预期：
+
+| Kind | 预期 | 示例 |
+|---|---|---|
+| 空 / `positive` | 精确正行数＋字段值 | `Expectations{RowCount: 1, Fields: fields}` |
+| `empty` | 完整、无分页的零结果 | `Expectations{Kind: "empty"}` |
+| `reject` | 明确匹配拒绝类别 | `Expectations{Kind: "reject", ErrorKind: "http_status", StatusCode: 403}` |
+
+`reject.ErrorKind` 仅支持 `http_status`（还须指定精确 400..599 状态）、`no_records`（无匹配/缺失行路径或完全空字段记录）和 `validation`（字段校验失败）。其它种类、状态冲突和负样本携带正行数、字段、下一页或截断预期均拒绝。`empty` 不接受 JSON 行路径缺失、非数组、空字段行、错误分页或仍有下一页的结果。渲染 DOM 没有 HTTP 状态，不能伪造 `http_status` 通过。
+
+解析/转换/非法输入、正文超预算、截断结果或截断的拒绝诊断不能当作成功负样本。框架离线验收不会访问网络；网络超时、取消、样本丢失和数据库错误不属于预期拒绝。登录、受限、错误、结构不符页面如何处理，由宿主明确选择 empty 或 reject，框架不自动猜测页面性质。
+
+整组至少有一个正样本，且所有断言通过，才可激活或作为发布依据。单个负样本的 `Results[i].Passed=true` 只表示该断言满足；全负集合的 `report.Passed=false`，`report.Failures` 说明缺少正样本。报告的 `Positive` / `Negative` 为样本总数（不是通过数），结果携带 `Kind` / `ErrorKind` / HTTP 拒绝时的 `StatusCode`。执行失败统一归 `execution`，不泄漏正文。
+
+这些类型只控制验收预期，不会让生产 `Evaluate` 或 RuleFetcher 自动接受空页面；生产空结果仍报 `ErrNoRecords`。非 2xx 现在可通过 `errors.Is(err, crawlrule.ErrHTTPStatus)` 分类。空列表也校验分页：错误下一页优先返回分页错误，正常零结果保持 ErrNoRecords。
+
+正样本 `Expect.NextURL` 总是精确比较，空字符串明确要求没有下一页。默认 `Expect.Truncated: false` 禁止未预期的部分结果；正样本确需测试行预算可显式设置 true。`compiled.Verify(fixtures)` 可只做预验收；`Activate` 仍要求本次提供完整样本集，空集返回 `ErrNoFixtures`。多个样本会全部执行，任何不符合显式预期的结果或缺失正样本均返回 `ErrFixtureFailed`，现行版本与回滚历史保持不变。
 
 只有样本全部通过才原子切换现行版本。`registry.Get(id, version)` 可以查看未激活版本，生产读取使用 `Active(id)`。`registry.Rollback(id)` 回到前一次成功激活的版本；重复回滚逐次向前回退，不会切到未通过样本的版本。只有一个成功版本时返回 `ErrNoRollback`。当前版本重复成功激活不增加一条虚假回滚记录；回滚后再激活将建立新的历史末尾。
 
@@ -206,6 +222,8 @@ Registry 不持久化样本、激活状态或历史，也不跨进程协调。�
 长期保存选中的快照可调用 `repo.ImportSnapshot(ctx, archiveDir, evidenceID, policy, actor)`：它检查正文与摘要，再应用必须显式提供的 `RedactBody`，写入独立样本目录并保留 EvidenceID。默认不导入全部快照；只有元信息或已经过期的快照不能作为完整样本。用法见 [RULE_STORE.md](./RULE_STORE.md)。
 
 ## 验证命令
+
+固定评测可调用 `crawlrule.CountMatchingFields(records, expectations)` 统计逐字段精确匹配数量。它沿用 JSON Pointer 和大整数比较，missing 不等于 null；仅供诊断，不检查整行、分页或样本通过资格，不能代替 `Verify`/`Activate`。输入仍须为宿主提供的有界断言；必填字段准确率的分母由宿主固定，不能根据候选遗漏字段而减少。完整评测入口见 [SITE_AGENT §12](SITE_AGENT.md#12-固定评测与基线d3)。
 
 ```powershell
 go test ./pkg/crawlrule

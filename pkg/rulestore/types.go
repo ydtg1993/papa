@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	VerifierVersion  = "crawlrule-fixtures-v2"
+	VerifierVersion  = "crawlrule-fixtures-v3"
 	MaxFixtures      = 64
 	MaxExpectations  = 4096
 	MaxSetBytes      = 32 << 20

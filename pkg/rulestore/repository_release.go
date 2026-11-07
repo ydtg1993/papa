@@ -303,7 +303,7 @@ func verifyBindings(tx *gorm.DB, bindings map[string]Reference, historicalProofs
 		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("id = ?", proofByRef[ref]).Take(&proof).Error; err != nil {
 			return nil, err
 		}
-		if !proof.Passed || proof.RuleID != ref.ID || proof.Version != ref.Version || proof.RuleDigest != version.Digest || proof.VerifierVersion != VerifierVersion {
+		if !proof.Passed || proof.RuleID != ref.ID || proof.Version != ref.Version || proof.RuleDigest != version.Digest || !supportedVerifierVersion(proof.VerifierVersion) {
 			return nil, ErrUnverified
 		}
 		verification, err := publicVerification(proof)

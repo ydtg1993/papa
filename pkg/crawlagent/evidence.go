@@ -24,6 +24,9 @@ func (e *execution) loadFixtures(ctx context.Context) error {
 			if err != nil {
 				return ErrEvidence
 			}
+			if err := checkFixedSet(set); err != nil {
+				return err
+			}
 			for _, f := range set.Fixtures {
 				fixtureCount++
 				if fixtureCount > 64 {
@@ -58,6 +61,9 @@ func (e *execution) loadFixtures(ctx context.Context) error {
 			set, err := e.agent.config.Repository.SampleSet(ctx, stage.TrainingSet)
 			if err != nil {
 				return ErrEvidence
+			}
+			if err := checkFixedSet(set); err != nil {
+				return err
 			}
 			for _, f := range set.Fixtures {
 				fixtureCount++
@@ -251,8 +257,8 @@ func (e *execution) checkFixtureEvaluation(ctx context.Context, ref rulestore.Re
 	if err != nil {
 		return ErrEvidence
 	}
-	if len(set.Fixtures) > 64 {
-		return ErrBudget
+	if err := checkFixedSet(set); err != nil {
+		return err
 	}
 	for _, fixture := range set.Fixtures {
 		s, err := e.agent.config.Repository.Sample(ctx, fixture.SampleID)
@@ -266,6 +272,23 @@ func (e *execution) checkFixtureEvaluation(ctx context.Context, ref rulestore.Re
 		if err := checkEvaluationBudget(v.Rule, body); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func checkFixedSet(set rulestore.SampleSet) error {
+	if len(set.Fixtures) > 64 {
+		return ErrBudget
+	}
+	positive := false
+	for _, f := range set.Fixtures {
+		if crawlrule.ValidateExpectations(f.Expect) != nil {
+			return ErrInvalid
+		}
+		positive = positive || f.Expect.Kind == "" || f.Expect.Kind == "positive"
+	}
+	if !positive {
+		return ErrInvalid
 	}
 	return nil
 }

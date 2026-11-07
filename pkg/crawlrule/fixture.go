@@ -22,10 +22,13 @@ type Fixture struct {
 	Expect   Expectations
 }
 
-// Expectations requires a positive exact RowCount and at least one field value.
-// NextURL and NextCursor are compared exactly (empty explicitly expects none).
-// Truncated defaults to false, so silently partial results cannot be activated.
+// Expectations defaults to a positive exact RowCount and field assertions.
+// Explicit empty/reject kinds are host-defined negative fixtures; they cannot
+// replace positive coverage. NextURL/NextCursor are exact for positive fixtures.
 type Expectations struct {
+	Kind       string `json:",omitempty"` // empty defaults to positive; otherwise positive, empty or reject
+	ErrorKind  string `json:",omitempty"` // reject: http_status, no_records or validation
+	StatusCode int    `json:",omitempty"` // reject/http_status: exact 400..599 status
 	RowCount   int
 	Fields     []FieldExpectation
 	NextURL    string
@@ -43,6 +46,9 @@ type FieldExpectation struct {
 }
 
 type FixtureResult struct {
+	Kind        string `json:",omitempty"`
+	ErrorKind   string `json:",omitempty"`
+	StatusCode  int    `json:",omitempty"`
 	Name        string
 	Passed      bool
 	Rows        int
@@ -52,12 +58,16 @@ type FixtureResult struct {
 }
 
 type FixtureReport struct {
-	Passed  bool
-	Results []FixtureResult
+	Passed   bool
+	Results  []FixtureResult
+	Positive int      `json:",omitempty"`
+	Negative int      `json:",omitempty"`
+	Failures []string `json:",omitempty"`
 }
 
-// Verify evaluates every fixture. Empty fixture sets, empty expectations and
-// any extraction/validation/expectation failure reject the verification.
+// Verify evaluates every fixture. At least one positive fixture and all fixture
+// expectations must pass. Only explicitly allowed rejection kinds can succeed
+// as negative fixtures; input/resource/execution errors never qualify.
 func (c *Compiled) Verify(fixtures []Fixture) (FixtureReport, error) {
 	if len(fixtures) == 0 {
 		return FixtureReport{}, ErrNoFixtures
@@ -65,31 +75,38 @@ func (c *Compiled) Verify(fixtures []Fixture) (FixtureReport, error) {
 	report := FixtureReport{Passed: true}
 	names := map[string]bool{}
 	for _, fixture := range fixtures {
-		result := FixtureResult{Name: fixture.Name}
+		result := FixtureResult{Name: fixture.Name, Kind: fixture.Expect.Kind}
 		fail := func(message string) { result.Failures = append(result.Failures, message) }
 		if strings.TrimSpace(fixture.Name) == "" || names[fixture.Name] {
 			fail("fixture name must be nonblank and unique")
 		}
 		names[fixture.Name] = true
-		if fixture.Expect.RowCount <= 0 {
-			fail("positive expected row count required")
-		}
-		if len(fixture.Expect.Fields) == 0 {
-			fail("at least one expected field value required")
+		if err := ValidateExpectations(fixture.Expect); err != nil {
+			fail(err.Error())
 		}
 		var out Result
 		var err error
-		if fixture.Rendered {
-			if fixture.Response == nil || fixture.Response.URL == nil || fixture.Response.StatusCode != 0 {
-				err = fmt.Errorf("crawlrule: rendered fixture requires URL and unknown HTTP status")
-			} else {
-				out, err = c.EvaluateRendered(fixture.Response.URL.String(), fixture.Response.Body)
-			}
+		if err = c.validateFixtureInput(fixture); err != nil {
+			// Invalid metadata or resource limits are never expected rejection.
+		} else if fixture.Rendered {
+			out, err = c.EvaluateRendered(fixture.Response.URL.String(), fixture.Response.Body)
 		} else {
 			out, err = c.Evaluate(fixture.Response)
 		}
 		result.Rows, result.InvalidRows, result.Truncated = len(out.Records), out.Validation.InvalidRows, out.Truncated
-		if err != nil {
+		result.ErrorKind = fixtureErrorKind(err)
+		if result.ErrorKind == "http_status" {
+			result.StatusCode = fixture.Response.StatusCode
+		}
+		if fixture.Expect.Kind == "empty" {
+			if err != ErrNoRecords || len(out.Records) != 0 || out.Validation.InvalidRows != 0 || out.Truncated || out.NextURL != "" || out.NextCursor != "" {
+				fail("expected complete empty result")
+			}
+		} else if fixture.Expect.Kind == "reject" {
+			if err == nil || result.ErrorKind != fixture.Expect.ErrorKind || !allowedFixtureError(result.ErrorKind) || out.Truncated || out.Validation.Truncated || (result.ErrorKind == "http_status" && result.StatusCode != fixture.Expect.StatusCode) {
+				fail("expected rejection mismatch")
+			}
+		} else if err != nil {
 			fail("evaluation failed: " + err.Error())
 		} else {
 			if len(out.Records) != fixture.Expect.RowCount {
@@ -131,6 +148,7 @@ func (c *Compiled) Verify(fixtures []Fixture) (FixtureReport, error) {
 		report.Passed = report.Passed && result.Passed
 		report.Results = append(report.Results, result)
 	}
+	report = SummarizeFixtures(report.Results)
 	if !report.Passed {
 		return report, ErrFixtureFailed
 	}

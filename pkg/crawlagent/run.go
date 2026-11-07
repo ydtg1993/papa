@@ -167,6 +167,9 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 			continue
 		}
 		input := map[string]any{"tool": act.Tool, "action_sha256": hashBytes([]byte(reply.Content))}
+		if act.Wait != nil {
+			input["wait"] = map[string]any{"selector_sha256": hashBytes([]byte(act.Wait.Selector)), "state": act.Wait.State, "timeout_ms": act.Wait.TimeoutMS}
+		}
 		if act.Tool == "submit_candidate" {
 			if stage, ok := e.stage(act.Stage); ok {
 				input["candidate_reference"] = rulestore.Reference{ID: stage.RuleID, Version: e.run.ID + "-" + strconv.Itoa(e.counts[stage.Stage]+1)}
@@ -176,6 +179,7 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		if beginErr != nil {
 			return e.stop(beginErr)
 		}
+		toolStarted := time.Now()
 		observation, terminal, toolErr := e.dispatch(ctx, act)
 		if ctx.Err() != nil {
 			toolErr = ctx.Err()
@@ -186,6 +190,13 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		}
 		// Evidence values remain in the approved model conversation, not the audit.
 		meta := map[string]any{"tool": act.Tool, "observation_sha256": hashBytes([]byte(encode(observation))), "error": errorKind(toolErr)}
+		if act.Wait != nil {
+			outcome := errorKind(toolErr)
+			if toolErr == nil {
+				outcome = "succeeded"
+			}
+			meta["render_wait"] = map[string]any{"tool_elapsed_ms": time.Since(toolStarted).Milliseconds(), "outcome": outcome}
+		}
 		meta["references"] = e.auditReferences()
 		endCtx := ctx
 		var endCancel context.CancelFunc
@@ -349,7 +360,7 @@ func errorKind(err error) string {
 	for _, entry := range []struct {
 		err  error
 		kind string
-	}{{ErrInvalid, "invalid_contract"}, {ErrAction, "invalid_action"}, {ErrEvidence, "unavailable_evidence"}, {ErrBudget, "budget_exhausted"}, {ErrAudit, "audit_failed"}, {webaccess.ErrPolicy, "access_denied"}, {webaccess.ErrRobots, "robots_denied"}, {webaccess.ErrBudget, "budget_exhausted"}, {webaccess.ErrCanceled, "canceled"}, {context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"}} {
+	}{{ErrInvalid, "invalid_contract"}, {ErrAction, "invalid_action"}, {ErrEvidence, "unavailable_evidence"}, {ErrBudget, "budget_exhausted"}, {ErrAudit, "audit_failed"}, {webaccess.ErrWaitInvalid, "invalid_render_wait"}, {webaccess.ErrWaitTimeout, "render_wait_timeout"}, {webaccess.ErrPolicy, "access_denied"}, {webaccess.ErrRobots, "robots_denied"}, {webaccess.ErrBudget, "budget_exhausted"}, {webaccess.ErrCanceled, "canceled"}, {context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"}} {
 		if errors.Is(err, entry.err) {
 			return entry.kind
 		}

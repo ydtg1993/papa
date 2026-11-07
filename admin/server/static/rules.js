@@ -4,7 +4,19 @@ var ruleOps = { listSeq:0, detailSeq:0, releaseSeq:0, previewSeq:0, after:null, 
 var rulePendingKey = 'papa-rule-operation-v1';
 function ruleNode(id) { return document.getElementById('rule-' + id); }
 function ruleMessage(id, message) { ruleNode(id).innerHTML = '<p class="empty" role="status">' + esc(message) + '</p>'; }
-function ruleJSON(value) { return '<pre class="rule-json">' + esc(JSON.stringify(value,null,2)) + '</pre>'; }
+function ruleJSON(value) { return ruleFixtureSummary(value) + '<pre class="rule-json">' + esc(JSON.stringify(value,null,2)) + '</pre>'; }
+function ruleFixtureSummary(value) {
+    var report=value&&value.Report;
+    if(!report||!Array.isArray(report.Results))return '';
+    var rows=report.Results,negative=rows.filter(function(r){return r.Kind==='empty'||r.Kind==='reject';}).length;
+    var kinds={positive:'正样本',empty:'预期零结果',reject:'预期拒绝'};
+    var errors={http_status:'HTTP 状态拒绝',no_records:'无匹配记录',validation:'字段校验失败',execution:'输入或执行失败'};
+    return '<p>正样本 '+esc(rows.length-negative)+' · 负样本 '+esc(negative)+' · '+(report.Passed?'验收通过':'验收未通过')+'</p>'+
+        (Array.isArray(report.Failures)&&report.Failures.length?'<p class="hint">'+esc(report.Failures.join('；'))+'</p>':'')+
+        '<table><thead><tr><th>样本</th><th>类型</th><th>验收</th><th>结果行数</th><th>实际分类</th></tr></thead><tbody>'+rows.map(function(r){
+            return '<tr><td>'+esc(r.Name)+'</td><td>'+esc(kinds[r.Kind||'positive']||r.Kind)+'</td><td>'+(r.Passed?'通过':'未通过')+'</td><td>'+esc(r.Rows)+'</td><td>'+esc((errors[r.ErrorKind]||r.ErrorKind||'无错误')+(r.StatusCode?' · '+r.StatusCode:''))+'</td></tr>';
+        }).join('')+'</tbody></table>';
+}
 function ruleAction(label,action,attrs) { return '<button type="button" class="btn" data-rule-action="' + action + '"' + (attrs || '') + '>' + label + '</button>'; }
 function ruleTime(value) { return value ? new Date(value).toLocaleString('zh-CN',{hour12:false}) : '—'; }
 function ruleState(value){return ({draft:'待验收',pending:'验收未通过',verified:'验收通过',published:'曾发布'})[value]||value;}

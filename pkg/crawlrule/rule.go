@@ -33,6 +33,7 @@ const (
 
 var (
 	ErrNoRecords       = errors.New("crawlrule: no records extracted")
+	ErrHTTPStatus      = errors.New("crawlrule: unsuccessful HTTP status")
 	ErrValidation      = errors.New("crawlrule: field validation failed")
 	ErrTransform       = errors.New("crawlrule: field transform failed")
 	ErrBodyTooLarge    = errors.New("crawlrule: response exceeds body budget")

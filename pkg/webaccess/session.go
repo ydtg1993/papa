@@ -29,6 +29,8 @@ type RendererConfig struct {
 type RenderOptions struct {
 	ObserveDuration time.Duration
 	RecordAPI       bool
+	// Wait replaces ObserveDuration; the two cannot be specified together.
+	Wait *RenderWait
 }
 type Response struct {
 	URL         string

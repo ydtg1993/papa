@@ -61,7 +61,12 @@ func (e *execution) dispatch(ctx context.Context, a action) (any, *Result, error
 		var captured []webaccess.Response
 		var err error
 		if a.Mode == "render" || a.Tool == "record_api" {
-			response, captured, err = e.source.Render(ctx, a.URL, webaccess.RenderOptions{ObserveDuration: 500 * time.Millisecond, RecordAPI: a.Tool == "record_api"})
+			opts := webaccess.RenderOptions{ObserveDuration: 500 * time.Millisecond, RecordAPI: a.Tool == "record_api"}
+			if a.Wait != nil {
+				wait := a.Wait.options()
+				opts.Wait, opts.ObserveDuration = &wait, 0
+			}
+			response, captured, err = e.source.Render(ctx, a.URL, opts)
 		} else {
 			response, err = e.source.Get(ctx, a.URL)
 		}
@@ -281,9 +286,9 @@ func compactReport(report crawlrule.FixtureReport) any {
 		for i, f := range failures {
 			safe[i] = clip(f, 512)
 		}
-		results = append(results, map[string]any{"name": r.Name, "passed": r.Passed, "rows": r.Rows, "invalid_rows": r.InvalidRows, "failures": safe})
+		results = append(results, map[string]any{"name": r.Name, "kind": r.Kind, "error_kind": r.ErrorKind, "status_code": r.StatusCode, "passed": r.Passed, "rows": r.Rows, "invalid_rows": r.InvalidRows, "failures": safe})
 	}
-	return map[string]any{"passed": report.Passed, "results": results}
+	return map[string]any{"passed": report.Passed, "positive": report.Positive, "negative": report.Negative, "failures": report.Failures, "results": results}
 }
 
 func (e *execution) validate(ctx context.Context, name string) (any, error) {

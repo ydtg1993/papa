@@ -55,7 +55,7 @@ func (c *Compiled) Evaluate(response *htmlfetch.Response) (Result, error) {
 		return out, fmt.Errorf("crawlrule: response and final URL required")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return out, fmt.Errorf("crawlrule: response status %d is not successful", response.StatusCode)
+		return out, fmt.Errorf("%w: response status %d is not successful", ErrHTTPStatus, response.StatusCode)
 	}
 	return c.evaluate(response.URL.String(), response.Body)
 }
@@ -98,6 +98,11 @@ func (c *Compiled) evaluate(rawURL string, body []byte) (Result, error) {
 	}
 	out.Validation = c.validator.Validate(out.Records, c.rule.MaxIssues)
 	if len(out.Records) == 0 {
+		// Even an empty list must validate pagination; malformed/out-of-scope
+		// next links must not become successful negative fixtures.
+		if err := c.setNext(base, next, &out); err != nil {
+			return out, err
+		}
 		return out, ErrNoRecords
 	}
 	if out.Validation.InvalidRows > 0 {
@@ -108,19 +113,27 @@ func (c *Compiled) evaluate(rawURL string, body []byte) (Result, error) {
 			return out, fmt.Errorf("%w: a row matched no configured fields", ErrNoRecords)
 		}
 	}
+	if err := c.setNext(base, next, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c *Compiled) setNext(base, next string, out *Result) error {
 	if c.rule.Next != nil && c.rule.Next.Mode == "cursor" {
 		if len(next) > MaxNextCursorBytes {
-			return out, ErrNextCursor
+			return ErrNextCursor
 		}
 		out.NextCursor = next
 	} else if strings.TrimSpace(next) != "" {
+		var err error
 		out.NextURL, err = discovery.CanonicalURL(base, next)
 		if err != nil || out.NextURL == base || (!c.rule.Next.AllowExternal && !discovery.SameOrigin(base, out.NextURL)) {
 			out.NextURL = ""
-			return out, ErrNextURL
+			return ErrNextURL
 		}
 	}
-	return out, nil
+	return nil
 }
 
 func (c *Compiled) transformRecords(base string, out *Result) error {

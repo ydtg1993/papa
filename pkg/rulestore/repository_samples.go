@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
 
 	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
@@ -126,10 +127,13 @@ func (r *Repository) CreateSampleSet(ctx context.Context, id string, fixtures []
 		if err := validateText("fixture name", f.Name, 128); err != nil {
 			return err
 		}
-		if names[f.Name] || f.Expect.RowCount <= 0 || f.Expect.RowCount > crawlrule.MaxRowsLimit || len(f.Expect.Fields) == 0 || len(f.Expect.Fields) > 1024 {
+		if names[f.Name] || crawlrule.ValidateExpectations(f.Expect) != nil {
 			return fmt.Errorf("rulestore: fixture names must be unique with bounded explicit expectations")
 		}
 		names[f.Name] = true
+		if f.Expect.Kind != "" {
+			stored.SchemaVersion = 2
+		}
 		expectations += len(f.Expect.Fields)
 		if expectations > MaxExpectations {
 			return fmt.Errorf("rulestore: sample set exceeds %d field expectations", MaxExpectations)
@@ -151,6 +155,9 @@ func (r *Repository) CreateSampleSet(ctx context.Context, id string, fixtures []
 		}
 		stored.Fixtures = append(stored.Fixtures, fixtureEncoding{StoredFixture: f, BodyDigest: row.Digest, MetadataDigest: digest([]byte(row.MetadataJSON))})
 	}
+	if !hasPositiveFixtures(stored) {
+		return fmt.Errorf("rulestore: at least one positive fixture required")
+	}
 	data, err := encode(stored, MaxMetadataBytes)
 	if err != nil {
 		return err
@@ -167,10 +174,36 @@ func decodeSet(row models.RuleSampleSet) (setEncoding, error) {
 	if err := decode(row.FixturesJSON, &set, MaxMetadataBytes); err != nil {
 		return set, err
 	}
-	if set.SchemaVersion != 1 || len(set.Fixtures) == 0 || len(set.Fixtures) > MaxFixtures {
+	if (set.SchemaVersion != 1 && set.SchemaVersion != 2) || len(set.Fixtures) == 0 || len(set.Fixtures) > MaxFixtures {
+		return set, ErrCorrupt
+	}
+	names := map[string]bool{}
+	for _, f := range set.Fixtures {
+		if validateText("fixture name", f.Name, 128) != nil || names[f.Name] || crawlrule.ValidateExpectations(f.Expect) != nil {
+			return set, ErrCorrupt
+		}
+		if set.SchemaVersion == 1 && (f.Expect.Kind != "" || f.Expect.ErrorKind != "" || f.Expect.StatusCode != 0) {
+			return set, ErrCorrupt
+		}
+		names[f.Name] = true
+	}
+	if !hasPositiveFixtures(set) {
 		return set, ErrCorrupt
 	}
 	return set, nil
+}
+
+func hasPositiveFixtures(set setEncoding) bool {
+	for _, f := range set.Fixtures {
+		if f.Expect.Kind == "" || f.Expect.Kind == "positive" {
+			return true
+		}
+	}
+	return false
+}
+
+func supportedVerifierVersion(version string) bool {
+	return version == VerifierVersion || version == "crawlrule-fixtures-v2"
 }
 
 func (r *Repository) SampleSet(ctx context.Context, id string) (SampleSet, error) {
@@ -238,7 +271,7 @@ func (r *Repository) Verify(ctx context.Context, ref Reference, setID string, ac
 		body, loadErr := r.blobs.Get(ctx, row.Digest, MaxSampleBodyBytes)
 		var result crawlrule.FixtureResult
 		if loadErr != nil || len(body) != s.BodyBytes {
-			result = crawlrule.FixtureResult{Name: f.Name, Failures: []string{"sample body unavailable or failed integrity validation"}}
+			result = crawlrule.FixtureResult{Name: f.Name, Kind: f.Expect.Kind, ErrorKind: "execution", Failures: []string{"sample body unavailable or failed integrity validation"}}
 		} else {
 			u, _ := url.Parse(s.URL)
 			part, _ := c.Verify([]crawlrule.Fixture{{Name: f.Name, Response: &htmlfetch.Response{URL: u, StatusCode: s.StatusCode, Body: body}, Rendered: s.Rendered, Expect: f.Expect}})
@@ -247,6 +280,7 @@ func (r *Repository) Verify(ctx context.Context, ref Reference, setID string, ac
 		report.Results = append(report.Results, result)
 		report.Passed = report.Passed && result.Passed
 	}
+	report = crawlrule.SummarizeFixtures(report.Results)
 	data, err := encode(report, MaxMetadataBytes)
 	if err != nil {
 		return Verification{}, err
@@ -299,29 +333,93 @@ func publicVerification(row models.RuleVerification) (Verification, error) {
 		if validateText("fixture name", result.Name, 128) != nil || names[result.Name] || result.Passed != (len(result.Failures) == 0) || result.Rows < 0 || result.InvalidRows < 0 {
 			return Verification{}, ErrCorrupt
 		}
+		if row.VerifierVersion == "crawlrule-fixtures-v2" && (result.Kind != "" || result.ErrorKind != "" || result.StatusCode != 0) {
+			return Verification{}, ErrCorrupt
+		}
+		if row.VerifierVersion == VerifierVersion && !validFixtureResult(result) {
+			return Verification{}, ErrCorrupt
+		}
 		names[result.Name] = true
 		allPassed = allPassed && result.Passed
 	}
-	if allPassed != report.Passed {
+	if row.VerifierVersion == VerifierVersion {
+		summary := crawlrule.SummarizeFixtures(report.Results)
+		if summary.Passed != report.Passed || summary.Positive != report.Positive || summary.Negative != report.Negative || !reflect.DeepEqual(summary.Failures, report.Failures) {
+			return Verification{}, ErrCorrupt
+		}
+	} else if allPassed != report.Passed || len(report.Failures) != 0 || report.Positive != 0 || report.Negative != 0 {
 		return Verification{}, ErrCorrupt
 	}
 	return Verification{ID: row.ID, Reference: Reference{ID: row.RuleID, Version: row.Version}, RuleDigest: row.RuleDigest, SetID: row.SetID, SetDigest: row.SetDigest, VerifierVersion: row.VerifierVersion, Passed: row.Passed, Report: report, Actor: Actor{row.Operator, row.Source}, CreatedAt: row.CreatedAt}, nil
+}
+
+func validFixtureResult(r crawlrule.FixtureResult) bool {
+	if r.Kind != "" && r.Kind != "positive" && r.Kind != "empty" && r.Kind != "reject" {
+		return false
+	}
+	if r.ErrorKind != "" && r.ErrorKind != "execution" && r.ErrorKind != "http_status" && r.ErrorKind != "no_records" && r.ErrorKind != "validation" {
+		return false
+	}
+	if r.ErrorKind == "http_status" {
+		if r.StatusCode < 100 || r.StatusCode > 599 || (r.StatusCode >= 200 && r.StatusCode < 300) || r.Rows != 0 || r.InvalidRows != 0 {
+			return false
+		}
+	} else if r.StatusCode != 0 {
+		return false
+	}
+	if !r.Passed {
+		return true
+	}
+	switch r.Kind {
+	case "", "positive":
+		return r.Rows > 0 && r.InvalidRows == 0 && r.ErrorKind == ""
+	case "empty":
+		return r.Rows == 0 && r.InvalidRows == 0 && !r.Truncated && r.ErrorKind == "no_records"
+	case "reject":
+		if r.Truncated {
+			return false
+		}
+		switch r.ErrorKind {
+		case "http_status":
+			return r.StatusCode >= 400
+		case "no_records":
+			return r.InvalidRows == 0
+		case "validation":
+			return r.InvalidRows > 0 && r.InvalidRows <= r.Rows
+		}
+	}
+	return false
 }
 
 // validateVerificationSet binds a structurally valid report to the exact
 // ordered fixture set it claims to verify. A self-consistent passing report
 // must not authorize publication when fixture results are missing or changed.
 func validateVerificationSet(report crawlrule.FixtureReport, set setEncoding) error {
-	if len(report.Results) != len(set.Fixtures) {
+	if len(report.Results) != len(set.Fixtures) || !hasPositiveFixtures(set) {
 		return ErrCorrupt
 	}
 	for i, result := range report.Results {
 		fixture := set.Fixtures[i]
-		if result.Name != fixture.Name {
+		if result.Name != fixture.Name || result.Kind != fixture.Expect.Kind {
 			return ErrCorrupt
 		}
-		if result.Passed && (result.Rows != fixture.Expect.RowCount || result.Truncated != fixture.Expect.Truncated || result.InvalidRows != 0) {
-			return ErrCorrupt
+		if result.Passed {
+			switch fixture.Expect.Kind {
+			case "", "positive":
+				if result.Rows != fixture.Expect.RowCount || result.Truncated != fixture.Expect.Truncated || result.InvalidRows != 0 || result.ErrorKind != "" || result.StatusCode != 0 {
+					return ErrCorrupt
+				}
+			case "empty":
+				if result.Rows != 0 || result.InvalidRows != 0 || result.Truncated || result.ErrorKind != "no_records" || result.StatusCode != 0 {
+					return ErrCorrupt
+				}
+			case "reject":
+				if result.ErrorKind != fixture.Expect.ErrorKind || result.StatusCode != fixture.Expect.StatusCode || result.Truncated {
+					return ErrCorrupt
+				}
+			default:
+				return ErrCorrupt
+			}
 		}
 	}
 	return nil
