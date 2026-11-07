@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 断点状态与磁盘对不上（状态说"全下好了"、分片却一个都不在）时：
@@ -31,6 +33,7 @@ func TestDownloadSelfHealsStaleResumeState(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxConcurrent = 1
@@ -97,6 +100,7 @@ func TestDownloadCleansStateFileAfterSuccess(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxConcurrent = 1

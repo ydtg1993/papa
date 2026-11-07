@@ -17,12 +17,13 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
-func accountBrowserPool(t *testing.T) *browser.Pool {
+func accountBrowserPool(t *testing.T, origins ...string) *browser.Pool {
 	t.Helper()
-	pool, err := browser.NewPool(browser.PoolConfig{Size: 1, Headless: true, NoSandbox: true, Leakless: false})
+	pool, err := browser.NewPool(browser.PoolConfig{Network: egress.Config{PrivateOrigins: origins}, Size: 1, Headless: true, NoSandbox: true, Leakless: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ type accountBrowserSite struct {
 
 func newAccountBrowserSite(t *testing.T) *accountBrowserSite {
 	t.Helper()
-	s := &accountBrowserSite{client: htmlfetch.NewClient(htmlfetch.Config{})}
+	s := &accountBrowserSite{}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if r.URL.Path == "/api/check" {
@@ -73,6 +74,7 @@ func newAccountBrowserSite(t *testing.T) *accountBrowserSite {
 		}
 		_, _ = fmt.Fprintf(w, `<script>window.firstAccount=localStorage.getItem('account')||'';window.firstSID=%s;</script>`, quotedSID)
 	}))
+	s.client = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{s.server.URL}}})
 	t.Cleanup(s.server.Close)
 	return s
 }
@@ -151,7 +153,7 @@ func accountBrowserStatus(t *testing.T, m *Manager, key Key) Status {
 
 func TestAccountBrowserStateReuseIsolationAndPause(t *testing.T) {
 	s := newAccountBrowserSite(t)
-	pool := accountBrowserPool(t)
+	pool := accountBrowserPool(t, s.server.URL)
 	m := NewManager(nil) // A browser-only account requires no HTTP client/provider.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -197,7 +199,7 @@ func TestAccountBrowserCallbackErrorIsNotReplayedOrSaved(t *testing.T) {
 	s := newAccountBrowserSite(t)
 	m := NewManager(nil)
 	key := Key{Site: "browser", ID: "alice"}
-	register(t, m, key, s.config(accountBrowserPool(t), key.ID))
+	register(t, m, key, s.config(accountBrowserPool(t, s.server.URL), key.ID))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := m.WithBrowser(ctx, key, func(page *rod.Page) error {
@@ -242,7 +244,7 @@ func TestAccountBrowserCallbackErrorIsNotReplayedOrSaved(t *testing.T) {
 
 func TestAccountBrowserStoreRestart(t *testing.T) {
 	s := newAccountBrowserSite(t)
-	pool := accountBrowserPool(t)
+	pool := accountBrowserPool(t, s.server.URL)
 	store, err := NewFileStore(t.TempDir(), bytes.Repeat([]byte{7}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +279,7 @@ func TestAccountBrowserHTTPBridgeAndGeneration(t *testing.T) {
 	s := newAccountBrowserSite(t)
 	m := NewManager(s.client)
 	key := Key{Site: "bridge", ID: "alice"}
-	cfg := s.bridgeConfig(accountBrowserPool(t), key.ID)
+	cfg := s.bridgeConfig(accountBrowserPool(t, s.server.URL), key.ID)
 	check := cfg.Check
 	stateAtCheck := false
 	cfg.Check = func(ctx context.Context, c *Credentials) (bool, error) {
@@ -323,7 +325,7 @@ func TestAccountBrowserHTTPBridgeRejectsUnverifiedToken(t *testing.T) {
 	s := newAccountBrowserSite(t)
 	m := NewManager(s.client)
 	key := Key{Site: "bridge", ID: "alice"}
-	cfg := s.bridgeConfig(accountBrowserPool(t), key.ID)
+	cfg := s.bridgeConfig(accountBrowserPool(t, s.server.URL), key.ID)
 	cfg.Browser.Export = func(_ context.Context, _ *rod.Page, c *Credentials) error {
 		c.Headers["Authorization"] = "Bearer wrong-token"
 		return nil
@@ -344,7 +346,7 @@ func TestAccountBrowserHTTPBridgeRejectsUnverifiedToken(t *testing.T) {
 
 func TestAccountBrowserOriginBoundaries(t *testing.T) {
 	s := newAccountBrowserSite(t)
-	pool := accountBrowserPool(t)
+	pool := accountBrowserPool(t, s.server.URL)
 	var foreignRequests atomic.Int32
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		foreignRequests.Add(1)
@@ -455,12 +457,12 @@ func TestAccountBrowserBootstrapRedirectNeverRunsLogin(t *testing.T) {
 		http.Redirect(w, r, other.URL, http.StatusFound)
 	}))
 	defer bootstrap.Close()
-	pool := accountBrowserPool(t)
+	pool := accountBrowserPool(t, bootstrap.URL, other.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for _, bridge := range []bool{false, true} {
 		t.Run(fmt.Sprint(bridge), func(t *testing.T) {
-			m := NewManager(htmlfetch.NewClient(htmlfetch.Config{}))
+			m := NewManager(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{other.URL, bootstrap.URL}}}))
 			key := Key{Site: "redirect", ID: fmt.Sprint(bridge)}
 			callbacks := 0
 			cfg := Config{Origins: []string{bootstrap.URL}, Browser: &BrowserConfig{

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 带 Range 的请求：期望长度就写在 Range 里，据此设上界。
@@ -20,6 +22,7 @@ func TestOversizedRangeResponseIsRejected(t *testing.T) {
 	defer srv.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{srv.URL}}
 	cfg.MaxRetries = 0 // 不重试，直接把错误抛出来
 	d := NewDownloader(cfg)
 
@@ -43,6 +46,7 @@ func TestRangeResponseWithinLimitIsAccepted(t *testing.T) {
 	defer srv.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{srv.URL}}
 	cfg.MaxRetries = 0
 	d := NewDownloader(cfg)
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -27,7 +28,7 @@ func TestCaptureResponseXHRBodyLimitAndTimeout(t *testing.T) {
 		_, _ = io.WriteString(w, `<script>fetch('/noise');setTimeout(()=>fetch('/api',{method:'POST',body:'hello'}),40);</script>`)
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		match := func(r CapturedResponse) bool { return strings.HasSuffix(r.Request.URL, "/api") }
 		res, err := b.CaptureResponse(context.Background(), srv.URL, ResponseOptions{Match: match, Timeout: 5 * time.Second, MaxBodySize: int64(len(body))})
@@ -93,7 +94,7 @@ func TestBrowserCookieTransferLive(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	session := htmlfetch.NewSession()
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		p, err := b.newPageBase(PageOptions{})
@@ -113,7 +114,7 @@ func TestBrowserCookieTransferLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := htmlfetch.NewClient(htmlfetch.Config{}).Do(htmlfetch.WithSession(context.Background(), session), htmlfetch.Request{URL: srv.URL})
+	r, err := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}).Do(htmlfetch.WithSession(context.Background(), session), htmlfetch.Request{URL: srv.URL})
 	if err != nil || string(r.Body) != "account-a" {
 		t.Fatalf("cookie replay: %+v %v", r, err)
 	}

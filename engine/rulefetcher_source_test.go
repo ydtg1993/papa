@@ -22,6 +22,7 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/account"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -59,7 +60,7 @@ func TestRuleSourceHTTPHTMLAndJSONProvenance(t *testing.T) {
 			}))
 			defer srv.Close()
 			f := &RuleFetcher{config: RuleFetcherConfig{Origins: []string{srv.URL}}}
-			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 			ctx := core.WithHeaders(context.Background(), map[string]string{"X-Test": "context"})
 			got, err := f.readRulePage(ctx, ruleSourceTestTask(), e, RuleRequest{URL: srv.URL + "/"}, ruleSourceTestRule(t, format, 0))
 			if err != nil {
@@ -93,7 +94,7 @@ func TestRuleSourceRedirectNeverForwardsCredentials(t *testing.T) {
 	f := &RuleFetcher{config: RuleFetcherConfig{Origins: []string{srv.URL, target.URL}, BuildRequest: func(_ context.Context, _ *Task, r RuleRequest) (htmlfetch.Request, error) {
 		return htmlfetch.Request{URL: r.URL, Headers: map[string]string{"Authorization": "Bearer private-token"}}, nil
 	}}}
-	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{target.URL, srv.URL}}})}
 	_, err := f.readRulePage(context.Background(), ruleSourceTestTask(), e, RuleRequest{URL: srv.URL}, ruleSourceTestRule(t, "html", 0))
 	if err == nil || core.Retryable(err) || redirected.Load() != 0 || strings.Contains(err.Error(), "private-") {
 		t.Fatalf("redirect followed or unsafe error: followed=%d err=%v", redirected.Load(), err)
@@ -107,7 +108,7 @@ func TestRuleSourceRequestValidationBeforeNetwork(t *testing.T) {
 		_, _ = io.WriteString(w, `<article><h2>Title</h2></article>`)
 	}))
 	defer srv.Close()
-	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 	compiled := ruleSourceTestRule(t, "html", 0)
 	for _, tc := range []struct {
 		name, method, target string
@@ -164,7 +165,7 @@ func TestRuleSourceHTTPStatusAndBudgets(t *testing.T) {
 			}))
 			defer srv.Close()
 			f := &RuleFetcher{config: RuleFetcherConfig{Origins: []string{srv.URL}}}
-			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{MaxBodySize: tc.limit})}
+			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, MaxBodySize: tc.limit})}
 			_, err := f.readRulePage(context.Background(), ruleSourceTestTask(), e, RuleRequest{URL: srv.URL}, ruleSourceTestRule(t, "json", tc.rows))
 			if err == nil || core.Retryable(err) != tc.retryable || strings.Contains(err.Error(), "private-") {
 				t.Fatalf("classification or redaction failed: %v", err)
@@ -194,8 +195,8 @@ func TestRuleSourceAccountSnapshotAndNoRawArchive(t *testing.T) {
 		_, _ = io.WriteString(w, `<article><h2>private-body</h2></article>`)
 	}))
 	defer srv.Close()
-	e, _, _ := archiveEngine(t, config.ArchiveModeAlways)
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{})
+	e, _, _ := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
+	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	m := account.NewManager(e.htmlClient)
 	if err := m.Register(account.Key{Site: "site", ID: "pinned"}, account.Config{Origins: []string{srv.URL}, Login: func(_ context.Context, c *account.Credentials) error {
 		c.Headers["Authorization"] = "Bearer private-token"
@@ -234,7 +235,7 @@ func TestRuleSourceBuildRequestCannotChangePinnedAccount(t *testing.T) {
 		_, _ = io.WriteString(w, `<article><h2>Title</h2></article>`)
 	}))
 	defer srv.Close()
-	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 	m := account.NewManager(e.htmlClient)
 	if err := m.Register(account.Key{Site: "site", ID: "pinned"}, account.Config{Origins: []string{srv.URL}, Login: func(_ context.Context, c *account.Credentials) error {
 		c.Headers["Authorization"] = "Bearer pinned"
@@ -277,7 +278,7 @@ func TestRuleSourceReplaySafePOSTRefreshesAccountOnNextAttempt(t *testing.T) {
 		_, _ = io.WriteString(w, `<article><h2>Title</h2></article>`)
 	}))
 	defer srv.Close()
-	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+	e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 	m := account.NewManager(e.htmlClient)
 	err := m.Register(account.Key{Site: "site", ID: "pinned"}, account.Config{Origins: []string{srv.URL}, Login: func(_ context.Context, c *account.Credentials) error {
 		c.Headers["Authorization"] = "Bearer refreshed"
@@ -311,7 +312,7 @@ func TestRuleSourceAccountClassificationOverridesRetryableStatus(t *testing.T) {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(status) }))
 			defer srv.Close()
-			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 			m := account.NewManager(e.htmlClient)
 			err := m.Register(account.Key{Site: "site", ID: "pinned"}, account.Config{
 				Origins:  []string{srv.URL},
@@ -335,11 +336,6 @@ func TestRuleSourceAccountClassificationOverridesRetryableStatus(t *testing.T) {
 }
 
 func TestRuleSourceBrowserRenderedAndAccount(t *testing.T) {
-	pool, err := browser.NewPool(browser.PoolConfig{Size: 1, Headless: true, NoSandbox: true, Leakless: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 	var contextHeader atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/catalog" && r.Header.Get("X-Test") == "context" {
@@ -349,7 +345,13 @@ func TestRuleSourceBrowserRenderedAndAccount(t *testing.T) {
 		_, _ = io.WriteString(w, `<body><script>setTimeout(() => { document.body.innerHTML='<article><h2>Rendered</h2></article>'; }, 25)</script></body>`)
 	}))
 	defer srv.Close()
-	e, _, _ := archiveEngine(t, config.ArchiveModeAlways)
+	pool, err := browser.NewPool(browser.PoolConfig{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, Size: 1, Headless: true, NoSandbox: true, Leakless: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	e, _, _ := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	e.browserPool = pool
 	f := &RuleFetcher{config: RuleFetcherConfig{Origins: []string{srv.URL}, Transport: "browser", WaitSelector: "article h2"}}
 	task := ruleSourceTestTask()
@@ -364,7 +366,7 @@ func TestRuleSourceBrowserRenderedAndAccount(t *testing.T) {
 	if !page.Rendered || page.StatusCode != 0 || page.Result.Records[0]["title"] != "Rendered" || !contextHeader.Load() || len(archive.pages) != 0 {
 		t.Fatalf("rendered provenance/header/archive mismatch: %+v", page)
 	}
-	m := account.NewManager(htmlfetch.NewClient(htmlfetch.Config{}))
+	m := account.NewManager(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
 	err = m.Register(account.Key{Site: "site", ID: "pinned"}, account.Config{Origins: []string{srv.URL}, Browser: &account.BrowserConfig{
 		Pool: pool, URL: srv.URL + "/bootstrap",
 		Login: func(context.Context, *rod.Page) error { return nil },

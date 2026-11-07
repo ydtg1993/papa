@@ -143,16 +143,16 @@ func TestVerifiedQueryShape(t *testing.T) {
 	}
 }
 
-// 没配过令牌（表是空的）→ 放行，视为"未配置凭据"；DryRun 下计数恒为 0，正好覆盖这一支。
-func TestVerifierUnconfiguredAllows(t *testing.T) {
+// 未配置凭据或数据库不可用都不能匿名放行。
+func TestVerifierUnconfiguredDenies(t *testing.T) {
 	v := Verifier(dryDB(t), nil)
 	req := httptest.NewRequest("GET", "/api/x", nil)
-	if _, ok := v(req); !ok {
-		t.Fatal("表为空时应放行（未配置凭据）")
+	if _, ok := v(req); ok {
+		t.Fatal("表为空时应拒绝（未配置凭据）")
 	}
 	// nil db 视同未配置
-	if _, ok := Verifier(nil, nil)(req); !ok {
-		t.Fatal("db 为 nil 时应放行（未配置凭据）")
+	if _, ok := Verifier(nil, nil)(req); ok {
+		t.Fatal("db 为 nil 时应拒绝（未配置凭据）")
 	}
 }
 
@@ -171,13 +171,8 @@ func TestWarnIfNoToken(t *testing.T) {
 	WarnIfNoToken(dryDB(t), nil) // nil logger 不该 panic
 }
 
-// 关停的二次确认：**表里一条令牌都没配时放行** —— 与中间件同一语义，
-// 否则"还没配凭据"的部署会出现"能进后台却关不掉服务"的死角（只能 Ctrl+C）。
-//
-// "配过之后必须给对的"那一支见 auth_db_test.go（用 internal/gormfake 造出"表里有令牌"的结果）；
-// HTTP 层的整个契约在 admin/server 的 TestShutdownHandlerRequiresToken 里用桩函数覆盖
-// （错令牌 403 / 没带 403 / 对的放行 / 没配校验器 404）。
-func TestConfirmerAllowsWhenNoTokenConfigured(t *testing.T) {
+// 高危确认与入口认证都默认拒绝。
+func TestConfirmerDeniesWhenNoTokenConfigured(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		db   *gorm.DB
@@ -185,8 +180,8 @@ func TestConfirmerAllowsWhenNoTokenConfigured(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := Confirmer(tc.db, nil)
 			op, ok := c("随便什么")
-			if !ok {
-				t.Fatalf("还没配凭据时应放行，实得 ok=%v", ok)
+			if ok {
+				t.Fatalf("还没配凭据时应拒绝，实得 ok=%v", ok)
 			}
 			if op != "" {
 				t.Fatalf("没配凭据时谈不上操作人，实得 %q", op)

@@ -13,10 +13,12 @@ import (
 	"github.com/go-rod/rod/lib/devices"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // Browser 封装一个 rod实例
 type Browser struct {
+	gateway  *egress.Proxy
 	Browser  *rod.Browser       // rod 浏览器对象
 	launcher *launcher.Launcher // 启动器，用于关闭
 	useProxy bool               // 是否走代理（false 为强制直连）
@@ -57,6 +59,9 @@ const browserCleanupTimeout = 5 * time.Second
 //	   PID 拿不到时 Kill 什么都不做（rod 里 `l.PID() == 0` 直接 return），Cleanup 就还是那个永久等待。
 //	   到点就放弃等待、留一条日志：调用方可能正握着池锁，最坏留一个 goroutine，绝不把池与停机拖死。
 func (b *Browser) Close() {
+	if b.gateway != nil {
+		b.gateway.Close()
+	}
 	if b.launcher != nil {
 		b.launcher.Kill()
 	}
@@ -166,6 +171,9 @@ func (b *Browser) NewPage(ctx context.Context, url string) (*rod.Page, error) {
 // NewPageWithOptions 创建页面并应用自定义配置。
 // 失败时**必须把页面收掉** —— 页面挂在池化浏览器上，漏一个就少一个标签页。
 func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageOptions) (page *rod.Page, err error) {
+	if err := validateNavigation(url); err != nil {
+		return nil, err
+	}
 	page, err = b.newPageBase(opts)
 	if err != nil {
 		return nil, err
@@ -205,6 +213,9 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 // 相比 NewPageWithOptions，额外采集主文档响应状态码与 MIME 类型，并支持截图。
 // 失败时同样要把页面收掉（见 NewPageWithOptions）。
 func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (res *FetchResult, err error) {
+	if err := validateNavigation(url); err != nil {
+		return nil, err
+	}
 	page, err := b.newPageBase(opts)
 	if err != nil {
 		return nil, err

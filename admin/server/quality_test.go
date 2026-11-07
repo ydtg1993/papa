@@ -86,7 +86,7 @@ func TestQualityHTTPGuardsPrecisionAndErrors(t *testing.T) {
 			t.Fatalf("mapped error: %d %s", w.Code, w.Body)
 		}
 	}
-	disabled := NewMonitor(fakeStageStats, testLogger{t}, MonitorConfig{})
+	disabled := NewMonitor(fakeStageStats, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
 	w = httptest.NewRecorder()
 	disabled.qualityHandler(w, httptest.NewRequest("GET", "/api/quality/observations", nil))
 	if w.Code != 404 {

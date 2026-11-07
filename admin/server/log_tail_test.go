@@ -69,7 +69,7 @@ func TestLogTailEndpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.log"), []byte("<script>alert(1)</script>\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 	rr := serve(m, http.MethodGet, "/api/logs/tail?file=a.log", nil)
 	if rr.Code != 200 || rr.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal(rr.Code, rr.Body.String())
@@ -137,7 +137,7 @@ func TestLogListAndArchiveExcludeNonLogs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 	rr := serve(m, http.MethodGet, "/api/logs", nil)
 	files := decodeJSON(t, rr)["files"].([]any)
 	if len(files) != 4 {

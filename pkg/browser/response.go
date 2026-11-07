@@ -38,6 +38,9 @@ type CapturedResponse struct {
 // API responses, not downloads or streams. MaxBodySize limits the returned body;
 // CDP retrieves complete bodies, so it is not a hard Chrome memory limit.
 func (b *Browser) CaptureResponse(ctx context.Context, pageURL string, opts ResponseOptions) (*CapturedResponse, error) {
+	if err := validateNavigation(pageURL); err != nil {
+		return nil, err
+	}
 	if opts.Match == nil {
 		return nil, fmt.Errorf("capture response: Match is required")
 	}

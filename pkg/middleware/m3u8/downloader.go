@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ydtg1993/papa/v3/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/middleware"
 	"time"
 )
@@ -80,11 +81,12 @@ func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
+	copyConfig := *cfg
+	copyConfig.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	cfg = &copyConfig
 	return &Downloader{
 		config: cfg,
-		client: &http.Client{
-			Timeout: cfg.SegmentTimeout,
-		},
+		client: egress.Client(&http.Client{Timeout: cfg.SegmentTimeout}, cfg.Network),
 		st: &state{
 			trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
 			labors:     make(map[string]*labor),
@@ -94,7 +96,7 @@ func NewDownloader(cfg *Config) *Downloader {
 
 // SetClient 允许外部替换 HTTP 客户端（可选）
 func (d *Downloader) SetClient(client *http.Client) {
-	d.client = client
+	d.client = egress.Client(client, d.config.Network)
 }
 
 // With 在**本实例的配置**之上叠一层，返回一个**新实例**：配置是新的，`labors`/密钥缓存/
@@ -106,17 +108,21 @@ func (d *Downloader) SetClient(client *http.Client) {
 // 想要**完全隔离**的一份（谁也不共享）用 NewDownloader —— 代价是并发写同一个目标文件时
 // 串行由你自己负责，缓存/连接池也各自一份。
 func (d *Downloader) With(o Overlay) *Downloader {
-	cfg := o.Apply(*d.config)
+	cfg := o.Apply(d.Config())
 	return &Downloader{
 		config: &cfg,
-		client: &http.Client{Timeout: cfg.SegmentTimeout},
+		client: egress.Client(&http.Client{Timeout: cfg.SegmentTimeout}, cfg.Network),
 		st:     d.st,
 	}
 }
 
 // Config 返回这份实例当前生效的配置（副本；改它不影响实例）。
 // 给自查用：`papa check` 与启动日志要把"这一层到底生效了什么"打出来。
-func (d *Downloader) Config() Config { return *d.config }
+func (d *Downloader) Config() Config {
+	cfg := *d.config
+	cfg.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	return cfg
+}
 
 // GetErrors 获取错误通道（全局）
 func (d *Downloader) GetErrors() <-chan error {
@@ -146,7 +152,7 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	proxyURL, err := neturl.Parse(opts.Proxy)
 	if err != nil {
 		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", opts.Proxy, err))
-		return d.client
+		proxyURL = &neturl.URL{Scheme: "invalid"}
 	}
 	if d.st.proxyClients == nil {
 		d.st.proxyClients = make(map[string]*http.Client)
@@ -160,6 +166,7 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	// `Do` 会永久阻塞：不报错、不重试，分片 goroutine 到不了 wg.Done()，worker 抱着并发位挂死。
 	// 非代理那份一直带 `Timeout: cfg.SegmentTimeout`，这里对齐它。
 	c := &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
+	c = egress.Client(c, d.config.Network)
 	d.st.proxyClients[opts.Proxy] = c
 	return c
 }
@@ -936,6 +943,9 @@ func (d *Downloader) mergeToMP4(ctx context.Context, initSegmentPath string, seg
 		ffmpegPath = "ffmpeg"
 	}
 	cmd := exec.CommandContext(ctx, ffmpegPath,
+		// Inputs are already downloaded/decrypted. Never let a nested format
+		// cause ffmpeg to open a network URL outside the guarded HTTP client.
+		"-protocol_whitelist", "file",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", listFilePath,

@@ -46,7 +46,7 @@ setTimeout(function () { fetch('/api/ping').catch(function(){}); }, 100);
 // WaitSelector：等元素出现后才把页面交给回调。
 func TestWaitSelector(t *testing.T) {
 	srv := newWaitServer(t)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), srv.URL+"/selector", PageOptions{
 			Timeout:      5 * time.Second,
@@ -66,7 +66,7 @@ func TestWaitSelector(t *testing.T) {
 // WaitJS：等 JS 表达式变为 truthy。
 func TestWaitJS(t *testing.T) {
 	srv := newWaitServer(t)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), srv.URL+"/js", PageOptions{
 			Timeout: 5 * time.Second,
@@ -107,7 +107,7 @@ setTimeout(function () { fetch('/api/ping'); }, 100);
 		http.NotFound(w, r)
 	}))
 	defer proxy.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, proxy.URL)
 
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), proxy.URL+"/idle", PageOptions{
@@ -131,7 +131,7 @@ func TestWaitTimeoutKeepsEvidence(t *testing.T) {
 		_, _ = w.Write([]byte(`<html><body>` + marker + `</body></html>`))
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), srv.URL, PageOptions{

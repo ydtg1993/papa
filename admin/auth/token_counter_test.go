@@ -92,7 +92,7 @@ func TestTokenCounterInvalidateForcesReload(t *testing.T) {
 	}
 }
 
-// 读失败不缓存：一次库抖动不能被固化成“0 条令牌”，否则后台会悄悄变成开放。
+// 读失败不缓存，避免管理计数被一次库抖动固化成零；此缓存不参与鉴权。
 func TestTokenCounterDoesNotCacheErrors(t *testing.T) {
 	f := gormfake.New()
 	f.SetCounts(1, 1)
@@ -151,28 +151,26 @@ func TestTokenCounterStillVerifiesEachToken(t *testing.T) {
 			t.Fatalf("第 %d 次校验 = (%q, %v)", i+1, op, ok)
 		}
 	}
-	if got := countHits(f); got != 1 {
-		t.Fatalf("令牌数量查库次数 = %d，want 1；实际 SQL：\n%s", got, f.Written())
+	if got := countHits(f); got != 0 {
+		t.Fatalf("令牌数量查库次数 = %d，want 0；实际 SQL：\n%s", got, f.Written())
 	}
 	if got := strings.Count(strings.ToLower(f.Written()), "token_hash"); got != 3 {
 		t.Fatalf("令牌校验次数 = %d，want 3（每个请求都要查）；实际 SQL：\n%s", got, f.Written())
 	}
 }
 
-// Verifier 的“表为空 → 放行”分支也要吃缓存：这是用户日志里 COUNT 刷屏的源头。
-func TestTokenCounterVerifierUsesCachedCounts(t *testing.T) {
+// Missing credentials are rejected without count queries.
+func TestTokenCounterVerifierRejectsWithoutCounting(t *testing.T) {
 	f := gormfake.New()
 	f.SetCounts(0, 0)
 	_, counter, _ := fixedTarget(f)
-
 	for i := 0; i < 5; i++ {
-		r := httptest.NewRequest("GET", "/api/monitor", nil)
-		if _, ok := counter.Verifier(nil)(r); !ok {
-			t.Fatalf("第 %d 次：一条令牌都没有时应放行", i+1)
+		if _, ok := counter.Verifier(nil)(httptest.NewRequest("GET", "/api/monitor", nil)); ok {
+			t.Fatal("anonymous request authorized")
 		}
 	}
-	if got := countHits(f); got != 2 {
-		t.Fatalf("5 次校验共查库 %d 次，want 2（enabled + total 各一次）；实际 SQL：\n%s", got, f.Written())
+	if got := countHits(f); got != 0 {
+		t.Fatalf("authorization queried counts %d times", got)
 	}
 }
 
@@ -185,15 +183,15 @@ func TestTokenCounterNilDatabase(t *testing.T) {
 	if n, err := counter.CountAll(); n != 0 || err != nil {
 		t.Fatalf("nil db CountAll = (%d, %v)", n, err)
 	}
-	if counter.Required() {
-		t.Fatal("nil db 时 Required 应为 false")
+	if !counter.Required() {
+		t.Fatal("nil db 时 Required 应为 true")
 	}
 	r := httptest.NewRequest("GET", "/api/monitor", nil)
-	if _, ok := counter.Verifier(nil)(r); !ok {
-		t.Fatal("nil db 时 Verifier 应放行（未配置凭据）")
+	if _, ok := counter.Verifier(nil)(r); ok {
+		t.Fatal("nil db 时 Verifier 应拒绝（未配置凭据）")
 	}
-	if _, ok := counter.Confirmer(nil)("whatever"); !ok {
-		t.Fatal("nil db 时 Confirmer 应放行（未配置凭据）")
+	if _, ok := counter.Confirmer(nil)("whatever"); ok {
+		t.Fatal("nil db 时 Confirmer 应拒绝（未配置凭据）")
 	}
 
 	var nilCounter *TokenCounter

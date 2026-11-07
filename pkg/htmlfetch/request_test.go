@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func TestDoPostHeadersAndJSONPrecision(t *testing.T) {
@@ -27,7 +28,7 @@ func TestDoPostHeadersAndJSONPrecision(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":9007199254740993}`)
 	}))
 	defer srv.Close()
-	c := NewClient(Config{Headers: map[string]string{"X-Value": "config", "Authorization": "secret"}})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, Headers: map[string]string{"X-Value": "config", "Authorization": "secret"}})
 	ctx := core.WithHeaders(context.Background(), map[string]string{"X-Value": "context", "authorization": ""})
 	r, err := c.Do(ctx, Request{URL: srv.URL, Method: "POST", Headers: map[string]string{"Content-Type": "application/json", "X-Value": "request"}, Body: []byte(`{"page":2}`)})
 	if err != nil {
@@ -60,7 +61,7 @@ func TestDoErrorBodyLimitAndRedirect(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := NewClient(Config{MaxBodySize: 4})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, MaxBodySize: 4})
 	r, err := c.Do(context.Background(), Request{URL: srv.URL + "/error"})
 	if code, ok := StatusCode(err); !ok || code != 429 || string(r.Body) != "slow" {
 		t.Fatalf("error response: %+v %v", r, err)
@@ -79,8 +80,8 @@ func TestDoErrorBodyLimitAndRedirect(t *testing.T) {
 func TestDoCanceledAndHotConfig(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer srv.Close()
-	c := NewClient(Config{})
-	c.SetConfig(Config{Timeout: 20 * time.Millisecond})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
+	c.SetConfig(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, Timeout: 20 * time.Millisecond})
 	_, err := c.Do(context.Background(), Request{URL: srv.URL})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline: %v", err)
@@ -105,7 +106,7 @@ func TestSessionsIsolateConcurrentAccountsAndDefault(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := NewClient(Config{})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	var wg sync.WaitGroup
 	for _, account := range []string{"alice", "bob"} {
 		wg.Add(1)

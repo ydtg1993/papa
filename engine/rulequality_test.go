@@ -18,6 +18,7 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/account"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/rulequality"
 )
@@ -112,7 +113,7 @@ func TestRuleQualityFailureNeverReplaysSave(t *testing.T) {
 			f := ruleTestFetcher(t, cfg)
 			task := ruleTestTask(t, f, RuleRequest{URL: srv.URL})
 			task.Trace = newTrace(nil, logrus.New(), 1, 0)
-			err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{}), func(*Task) error { submits++; return nil })
+			err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}), func(*Task) error { submits++; return nil })
 			if err != nil || saves != 1 || submits != 1 || cfg.Quality.Stats() != (rulequality.CollectorStats{Attempted: 1, Failed: 1}) {
 				t.Fatalf("storage side channel changed effects: saves=%d submits=%d err=%v stats=%+v", saves, submits, err, cfg.Quality.Stats())
 			}
@@ -153,7 +154,7 @@ func TestRuleQualitySeparatesPaginationStopAndTransportFailure(t *testing.T) {
 			got := qualityTestCapture(t, &cfg)
 			f := ruleTestFetcher(t, cfg)
 			task := ruleTestTask(t, f, RuleRequest{URL: srv.URL})
-			err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{MaxBodySize: tc.maxBody}), func(*Task) error { return nil })
+			err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, MaxBodySize: tc.maxBody}), func(*Task) error { return nil })
 			if err == nil || len(*got) != 1 {
 				t.Fatalf("err=%v observations=%d", err, len(*got))
 			}
@@ -232,7 +233,7 @@ func TestRuleQualityOriginalSummarySurvivesCallbacksAndPartialSubmit(t *testing.
 	task := ruleTestTask(t, f, RuleRequest{URL: srv.URL})
 	submitted := 0
 	cause := errors.New("queue unavailable")
-	err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{}), func(*Task) error {
+	err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}), func(*Task) error {
 		submitted++
 		if submitted == 2 {
 			return cause
@@ -291,7 +292,7 @@ func TestRuleQualitySavePlanningCancelAndPanic(t *testing.T) {
 			if mode == "rule" {
 				f.config.ItemKey = "not-in-pinned-rule"
 			}
-			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 			if mode == "host" {
 				e.htmlClient = nil
 			}
@@ -331,7 +332,7 @@ func TestRuleQualityLogicalIdentityAndAttemptWithoutTrace(t *testing.T) {
 	f := ruleTestFetcher(t, cfg)
 	task := ruleTestTask(t, f, RuleRequest{URL: srv.URL})
 	task.ID, task.Repeat, task.Retry = 42, 3, 4
-	e := &Engine{cfg: &config.Config{}, htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+	e := &Engine{cfg: &config.Config{}, htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 	for _, attempt := range []int{0, 2} {
 		if err := e.runAttempt(context.Background(), f, task, attempt); err != nil {
 			t.Fatal(err)
@@ -378,7 +379,7 @@ func TestRuleQualityAccountClassificationUsesIdentity(t *testing.T) {
 			cfg.BuildRequest = func(_ context.Context, _ *Task, r RuleRequest) (htmlfetch.Request, error) {
 				return htmlfetch.Request{URL: r.URL, Method: "POST"}, nil
 			}
-			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{})}
+			e := &Engine{htmlClient: htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})}
 			manager := account.NewManager(e.htmlClient)
 			if err := manager.Register(account.Key{Site: "rules", ID: cfg.AccountID}, account.Config{
 				Origins: []string{srv.URL}, Login: func(_ context.Context, c *account.Credentials) error {
@@ -414,7 +415,7 @@ func TestRuleQualityEvidenceAndPinnedRelease(t *testing.T) {
 		fmt.Fprint(w, `{"rows":[{"id":"1"}]}`)
 	}))
 	defer srv.Close()
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = ruleSnapshotSourcePolicy()
 	got := qualityTestCapture(t, &cfg)
@@ -445,11 +446,6 @@ func TestRuleQualityEvidenceAndPinnedRelease(t *testing.T) {
 }
 
 func TestRuleQualityBrowserResponseAndRenderFailure(t *testing.T) {
-	pool, err := browser.NewPool(browser.PoolConfig{Size: 1, Headless: true, NoSandbox: true, Leakless: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
 	for _, fail := range []bool{false, true} {
 		t.Run(fmt.Sprint("render-failure=", fail), func(t *testing.T) {
 			const html = `<html><body><article><h2>Local title</h2></article></body></html>`
@@ -465,6 +461,12 @@ func TestRuleQualityBrowserResponseAndRenderFailure(t *testing.T) {
 				fmt.Fprint(w, html)
 			}))
 			defer srv.Close()
+			pool, err := browser.NewPool(browser.PoolConfig{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, Size: 1, Headless: true, NoSandbox: true, Leakless: false})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+
 			reg := crawlrule.NewRegistry()
 			rule := ruleSourceTestRule(t, "html", 0).Rule()
 			if err := reg.Register(rule); err != nil {
@@ -479,7 +481,7 @@ func TestRuleQualityBrowserResponseAndRenderFailure(t *testing.T) {
 			f := ruleTestFetcher(t, cfg)
 			task := ruleTestTask(t, f, RuleRequest{URL: srv.URL})
 			e := &Engine{browserPool: pool}
-			err := f.Run(context.Background(), task, e, func(*Task) error { return nil })
+			err = f.Run(context.Background(), task, e, func(*Task) error { return nil })
 			if len(*got) != 1 || !(*got)[0].Rendered || (*got)[0].HTTPStatus != 0 {
 				t.Fatalf("browser quality: err=%v records=%+v", err, *got)
 			}
@@ -508,7 +510,7 @@ func TestRuleQualityNestedDisabledFetcherCannotChangeParent(t *testing.T) {
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	inner := ruleTestFetcher(t, cfg)
 	innerTask := ruleTestTask(t, inner, RuleRequest{URL: srv.URL + "/inner"})
-	client := htmlfetch.NewClient(htmlfetch.Config{})
+	client := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	got := qualityTestCapture(t, &cfg)
 	cfg.Save = func(ctx context.Context, _ *Task, _ RulePage) error {
 		return inner.RunHTTP(ctx, innerTask, client, func(*Task) error { return nil })
@@ -527,7 +529,7 @@ func TestRuleQualityNestedEarlyStopDoesNotBorrowParentEvidence(t *testing.T) {
 		fmt.Fprint(w, `{"rows":[{"id":"outer"}]}`)
 	}))
 	defer srv.Close()
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = ruleSnapshotSourcePolicy()
 	got := qualityTestCapture(t, &cfg)
@@ -610,7 +612,7 @@ func TestRuleQualityMissingRestoredRegistryVersionStillObserved(t *testing.T) {
 			t.Fatal(err)
 		}
 		oldTask.ID = 712
-		err = after.RunHTTP(context.Background(), oldTask, htmlfetch.NewClient(htmlfetch.Config{}), func(*Task) error { submitted++; return nil })
+		err = after.RunHTTP(context.Background(), oldTask, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}), func(*Task) error { submitted++; return nil })
 		if !errors.Is(err, crawlrule.ErrVersionNotFound) || core.Retryable(err) {
 			t.Fatalf("cycle=%v missing rule error or retry semantics changed: %v", cycle, err)
 		}
@@ -627,7 +629,7 @@ func TestRuleQualityMissingRestoredRegistryVersionStillObserved(t *testing.T) {
 			bad := cloneRuleTask(oldTask)
 			corrupt(bad)
 			count, stats := len(*got), cfg.Quality.Stats()
-			if err := after.RunHTTP(context.Background(), bad, htmlfetch.NewClient(htmlfetch.Config{}), func(*Task) error { submitted++; return nil }); err == nil || core.Retryable(err) {
+			if err := after.RunHTTP(context.Background(), bad, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}), func(*Task) error { submitted++; return nil }); err == nil || core.Retryable(err) {
 				t.Fatalf("bad identity accepted: %v", err)
 			}
 			if len(*got) != count || cfg.Quality.Stats() != stats {

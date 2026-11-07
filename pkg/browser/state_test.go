@@ -77,7 +77,7 @@ func TestPageStateLiveRestoreAndOriginGuard(t *testing.T) {
 	defer other.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL, other.URL)
 	var saved bytes.Buffer
 	key := bytes.Repeat([]byte{1}, 32)
 	if err := pool.WithIsolatedBrowser(ctx, func(b *Browser) error {

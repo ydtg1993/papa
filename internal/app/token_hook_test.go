@@ -15,8 +15,7 @@ func countHits(f *gormfake.DB) int {
 	return strings.Count(strings.ToLower(f.Written()), "count(")
 }
 
-// 令牌页写成功后必须让数量缓存失效：否则新建第一把令牌后后台仍会按“还没配凭据”
-// 开放到 TTL 到期，登录遮罩也不会出现。
+// 令牌页写成功后使管理计数失效；认证和登录遮罩不再依赖数量缓存。
 func TestTokenWriteHookInvalidatesCountCache(t *testing.T) {
 	f := gormfake.New()
 	f.SetCounts(1, 1)

@@ -8,8 +8,8 @@
          这两件事 mo.js 也会做，但它在 </body> 前、还要等外部脚本加载完 —— 那之前浏览器
          已经能画第一帧了：深色用户会闪一下白底，有凭据的人每次刷新会闪一下登录框。
          内联在这里（样式表之前）就不会。外观默认简约，与浅深色独立；键名与 appearance.js / mo.js 保持一致。
-         data-auth-required 由服务端下发：一条访问令牌都没配置时后端本来就开放，
-         前端不能再看“本地没有 key”就弹登录（那会让本地开发每次刷新都闪登录框）。 -->
+         data-auth-required 默认要求登录；已有本地凭据时避免遮罩闪烁。
+         首次部署也要求认证，第一把令牌在服务器本机通过 CLI 创建。 -->
     <script>
         (function () {
             var d = document.documentElement;
@@ -43,6 +43,7 @@
         <input id="key" type="password" placeholder="访问密钥" autocomplete="off">
         <button class="btn" onclick="submitKey()">登录</button>
         <div class="err" id="err">密钥错误，请重试</div>
+        <p class="hint">首次使用或无可用令牌时，在服务器本机执行<br><code>papa token add --operator &lt;名字&gt;</code></p>
     </div>
 </div>
 
@@ -242,8 +243,8 @@
                 <div class="card">
                     <p class="hint">每条令牌属于一个操作人：登录后用它的写操作都会记下「谁干的」（操作日志页的「操作人」列）。
                         令牌只存 sha256，<b>明文只在创建时显示这一次</b>，过后找不回来。</p>
-                    <p class="hint">表里一条都没有时，/api/* 对白名单内的来源完全开放（启动日志会警告）；
-                        有令牌但全被停用则会拒绝所有人 —— 那种情况只能靠 <code>papa token add</code> 补一把。</p>
+                    <p class="hint">管理接口始终要求有效令牌。没有令牌或全部停用时，请在服务器本机执行
+                        <code>papa token add --operator &lt;名字&gt;</code> 创建或恢复访问凭据。</p>
                     <div class="toolbar">
                         <button class="btn" onclick="openNewToken()">新增令牌</button>
                     </div>

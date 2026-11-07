@@ -42,7 +42,7 @@ func TestMonitorObservationMetadataIsStablePerInstance(t *testing.T) {
 }
 
 func TestMonitorUnsampledSystemMetadataDoesNotClaimZeroSuccess(t *testing.T) {
-	monitor := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{SysInfo: sysinfo.NewCollector(30*time.Second, nil)})
+	monitor := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, SysInfo: sysinfo.NewCollector(30*time.Second, nil)})
 	body := decodeJSON(t, serve(monitor, http.MethodGet, "/api/monitor", nil))
 	system, ok := body["system"].(map[string]any)
 	if !ok {

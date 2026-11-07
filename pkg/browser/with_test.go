@@ -67,7 +67,7 @@ func TestWithNavigatedPageClosesOnReturn(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	var page *rod.Page
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), srv.URL, PageOptions{Timeout: 10 * time.Second}, func(p *rod.Page) error {

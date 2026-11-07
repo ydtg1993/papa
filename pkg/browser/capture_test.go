@@ -8,13 +8,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // newLivePool 起一个只含一个真浏览器的池。捕获相关用例必须真起 Chromium：
 // 事件时序（导航前订阅、请求在 load 前后发出）是假对象模拟不出来的。
-func newLivePool(t *testing.T) *Pool {
+func newLivePool(t *testing.T, origins ...string) *Pool {
 	t.Helper()
-	pool, err := NewPool(PoolConfig{
+	pool, err := NewPool(PoolConfig{Network: egress.Config{PrivateOrigins: origins},
 		Size:      1,
 		Headless:  true,
 		NoSandbox: true,
@@ -49,7 +51,7 @@ func TestCaptureRequestReturnsFirstMatch(t *testing.T) {
 fetch('/api/health').catch(function(){});
 setTimeout(function(){ fetch('/media/a.m3u8?auth_key=xyz&v=2'); }, 50);
 </script></body></html>`)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 
 	var res *CaptureResult
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
@@ -86,7 +88,7 @@ func TestCaptureRequestBeforeNavigationListener(t *testing.T) {
 	srv := capturePageServer(t, `<html><body><script>
 fetch('/media/early.m3u8');
 </script></body></html>`)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 
 	var res *CaptureResult
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
@@ -111,7 +113,7 @@ func TestCaptureRequestTimeoutKeepsEvidence(t *testing.T) {
 	srv := capturePageServer(t, `<html><body>`+marker+`<script>
 fetch('/api/health').catch(function(){});
 </script></body></html>`)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 
 	var res *CaptureResult
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
@@ -172,7 +174,7 @@ func TestCaptureRequestNavigationError(t *testing.T) {
 // ctx 取消：返回 context 错误，页面照样关掉（下一次 Get 能拿到实例）。
 func TestCaptureRequestContextCanceled(t *testing.T) {
 	srv := capturePageServer(t, `<html><body>no media here</body></html>`)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -194,7 +196,7 @@ func TestCaptureRequestSeenBounded(t *testing.T) {
 	srv := capturePageServer(t, `<html><body><script>
 for (var i = 0; i < 30; i++) { fetch('/noise/' + i).catch(function(){}); }
 </script></body></html>`)
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 
 	var res *CaptureResult
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {

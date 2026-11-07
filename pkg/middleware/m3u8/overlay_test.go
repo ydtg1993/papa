@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 叠加层：nil = 不动；写了就连零值也认（0 并发、0 限速、false 这些都得能表达）。
@@ -149,6 +151,7 @@ func TestDownloadPlaylistModeWritesPlaylistOnly(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	dl := NewDownloader(cfg)
@@ -193,6 +196,7 @@ func TestDownloadSegmentsModeKeepsSegmentDir(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxConcurrent = 1

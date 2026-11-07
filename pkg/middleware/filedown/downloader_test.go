@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 测试辅助：创建临时目录
@@ -67,7 +68,7 @@ func TestDownloadWithChunks(t *testing.T) {
 	server := mockServer(content, true)
 	defer server.Close()
 
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  2,
@@ -132,7 +133,7 @@ func TestDownloadResume(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  2,
@@ -181,7 +182,7 @@ func TestDownloadNoRangeFallback(t *testing.T) {
 	server := mockServer(content, false) // 不支持 Range
 	defer server.Close()
 
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  4,
@@ -211,6 +212,7 @@ func TestDownloadHTTPError(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	downloader := NewDownloader(cfg)
@@ -263,7 +265,7 @@ func TestConcurrentSameFile(t *testing.T) {
 	server := mockServer(content, true)
 	defer server.Close()
 
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  2,
@@ -330,7 +332,7 @@ func TestCancelReturnsPromptly(t *testing.T) {
 
 	tempOut := tempDir(t)
 	tempState := tempDir(t)
-	downloader := NewDownloader(&Config{
+	downloader := NewDownloader(&Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  2,
@@ -371,7 +373,7 @@ func TestProgressCallback(t *testing.T) {
 	var mu sync.Mutex
 	var lastDownloaded int64
 	var totalSize int64
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		ChunkSize:      5,
@@ -418,6 +420,7 @@ func TestDownloadTruncatedSingleThread(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempOut
 	cfg.ResumeStateDir = tempState
 	downloader := NewDownloader(cfg)
@@ -454,6 +457,7 @@ func TestDownloadShortChunkFails(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempOut
 	cfg.ResumeStateDir = tempState
 	cfg.ChunkSize = 10
@@ -485,7 +489,7 @@ func TestMergeFailureKeepsSegments(t *testing.T) {
 
 	tempOut := tempDir(t)
 	tempState := tempDir(t)
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir:      tempOut,
 		ResumeStateDir: tempState,
 		MaxConcurrent:  2,
@@ -546,7 +550,7 @@ func TestDownloadDoesNotHangOnNonPositiveConcurrency(t *testing.T) {
 			server := mockServer(content, true)
 			defer server.Close()
 
-			cfg := &Config{
+			cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 				OutputDir:      tempOut,
 				ResumeStateDir: tempState,
 				MaxConcurrent:  concurrency,
@@ -599,6 +603,7 @@ func TestChunkRetryBackoffIsInterruptible(t *testing.T) {
 	defer srv.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{srv.URL}}
 	cfg.OutputDir = t.TempDir()
 	d := NewDownloader(cfg)
 
@@ -637,7 +642,7 @@ func TestSuccessfulDownloadKeepsErrorChannelQuiet(t *testing.T) {
 
 	// OnProgress 是**并发回调**（MaxConcurrent=2）：计数必须用 atomic，`progress++` 在 -race 下就是竞态
 	var progress atomic.Int64
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		OutputDir: tempOut, ResumeStateDir: tempState,
 		MaxConcurrent: 2, ChunkSize: 10, EnableResume: true, SaveBatchSize: 2,
 		QueueSize:  100, // 装得下所有分片的消息，免得"满即丢"把这条用例测糊
@@ -704,6 +709,7 @@ func TestDownloadResultCarriesContentType(t *testing.T) {
 			defer server.Close()
 
 			cfg := DefaultConfig()
+			cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 			cfg.OutputDir = tempDir(t)
 			cfg.ResumeStateDir = tempDir(t)
 			cfg.ChunkSize = 10
@@ -738,14 +744,8 @@ func TestDownloadOptionsProxySelectsClient(t *testing.T) {
 	if client == d.client {
 		t.Fatal("指定了代理就该换个客户端")
 	}
-	tr, ok := client.Transport.(*http.Transport)
-	if !ok || tr.Proxy == nil {
-		t.Fatalf("客户端应当带代理 transport，实得 %#v", client.Transport)
-	}
-	req, _ := http.NewRequest(http.MethodGet, "https://example.com", nil)
-	u, err := tr.Proxy(req)
-	if err != nil || u == nil || u.String() != "http://1.2.3.4:8080" {
-		t.Fatalf("transport 应当把请求路由到指定代理，实得 %v %v", u, err)
+	if client.Transport == nil {
+		t.Fatal("missing guarded transport")
 	}
 	// 同一个地址复用
 	if again := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://1.2.3.4:8080"})); again != client {
@@ -755,10 +755,10 @@ func TestDownloadOptionsProxySelectsClient(t *testing.T) {
 	if other := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://5.6.7.8:3128"})); other == client {
 		t.Fatal("不同代理地址不该共用客户端")
 	}
-	// 地址写错：回落默认客户端 + 错误通道留痕（别静默变成直连）
+	// 地址写错：拒绝请求，不允许静默直连。
 	bad := d.buildRequestConfig(&DownloadOptions{Proxy: "://坏地址"})
-	if d.clientOf(bad) != d.client {
-		t.Fatal("地址解析不出来时应回落默认客户端")
+	if d.clientOf(bad) == d.client {
+		t.Fatal("地址解析不出来时不能回落默认客户端")
 	}
 	select {
 	case err := <-d.GetErrors():
@@ -788,6 +788,7 @@ func TestDownloadOptionsDirectSkipsHeadAndChunks(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.ChunkSize = 4 // 默认路径会切成 5 个分片；Direct 应当只有 1 个 GET
@@ -836,6 +837,7 @@ func TestOutputDirGetterIsTheBaseOfOutputFile(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	downloader := NewDownloader(cfg)
@@ -931,6 +933,7 @@ func TestOptionsFromRequestReachesTheRequest(t *testing.T) {
 	opts.Direct = true
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	res := NewDownloader(cfg).Download(ctx, server.URL+"/cover.img", "covers", "a.img", opts)

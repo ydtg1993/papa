@@ -473,13 +473,21 @@ func TestCompatibleCancellationAndTimeout(t *testing.T) {
 func TestCompatibleTransportIsPrivateAndDoesNotInheritProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://proxy.invalid:1")
 	t.Setenv("HTTPS_PROXY", "http://proxy.invalid:1")
-	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, validResponse) }, nil)
-	transport, ok := provider.client.Transport.(*http.Transport)
-	if !ok || transport == http.DefaultTransport || transport.Proxy != nil || !transport.DisableKeepAlives || !transport.DisableCompression {
-		t.Fatal("transport inherits settings or permits implicit retries/decompression")
+	var addresses []string
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("Accept-Encoding"); v != "" && v != "identity" {
+			t.Error("transport enables implicit decompression")
+		}
+		addresses = append(addresses, r.RemoteAddr)
+		writeJSON(w, validResponse)
+	}, nil)
+	for i := 0; i < 2; i++ {
+		if _, err := provider.Complete(context.Background(), testMessages(), 12); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := provider.Complete(context.Background(), testMessages(), 12); err != nil {
-		t.Fatal(err)
+	if len(addresses) != 2 || addresses[0] == addresses[1] {
+		t.Fatal("transport reused an attempt connection")
 	}
 	for _, format := range []string{"%v", "%+v", "%#v"} {
 		if strings.Contains(fmt.Sprintf(format, provider), testKey) || strings.Contains(fmt.Sprintf(format, *provider), testKey) {

@@ -23,7 +23,7 @@ func TestIsolatedBrowserStorageAndHeaders(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	pool.SetHeaders(map[string]string{"Authorization": "shared-secret", "X-Shared": "global"})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

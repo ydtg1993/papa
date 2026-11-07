@@ -48,7 +48,7 @@ func (d *demoTokens) verify(r *http.Request) (string, bool) {
 }
 
 // confirm 顶替真实现里的 auth.Confirmer：关停前要求把令牌再输一遍，
-// demo 里没接数据库，所以表为空时也按"还没配凭据"放行（与正式实现同语义）。
+// demo 使用内存令牌校验；表为空或令牌失效时同样拒绝。
 func (d *demoTokens) confirm(token string) (string, bool) {
 	return d.store.Verify(token)
 }

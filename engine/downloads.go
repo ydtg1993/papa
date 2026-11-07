@@ -116,10 +116,18 @@ func mergeFileDown(site, stage *filedown.Overlay) filedown.Overlay {
 // 重复调用是幂等的（已经建过就不动）。
 func (e *Engine) InitDownloaders() {
 	if e.filedown == nil {
-		e.filedown = filedown.NewDownloader(filedown.DefaultConfig())
+		cfg := filedown.DefaultConfig()
+		if e.cfg != nil {
+			cfg.Network = e.cfg.Network
+		}
+		e.filedown = filedown.NewDownloader(cfg)
 	}
 	if e.m3u8 == nil {
-		e.m3u8 = m3u8.NewDownloader(m3u8.DefaultConfig())
+		cfg := m3u8.DefaultConfig()
+		if e.cfg != nil {
+			cfg.Network = e.cfg.Network
+		}
+		e.m3u8 = m3u8.NewDownloader(cfg)
 	}
 }
 

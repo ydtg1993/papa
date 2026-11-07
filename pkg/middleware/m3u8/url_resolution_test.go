@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 type referenceRequests struct {
@@ -41,9 +44,14 @@ func (r *referenceRequests) require(t *testing.T, want ...string) {
 	}
 }
 
-func requireReferenceDownload(t *testing.T, playlistURL string) {
+func requireReferenceDownload(t *testing.T, playlistURL string, extraOrigins ...string) {
 	t.Helper()
 	cfg := DefaultConfig()
+	u, err := url.Parse(playlistURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Network = egress.Config{PrivateOrigins: append(extraOrigins, u.Scheme+"://"+u.Host)}
 	cfg.OutputDir = t.TempDir()
 	cfg.ResumeStateDir = t.TempDir()
 	cfg.MaxConcurrent = 1
@@ -157,7 +165,7 @@ func TestDownloadNetworkPathReferencesAcrossPorts(t *testing.T) {
 					fmt.Fprint(w, "WRONG")
 				}
 			})
-			requireReferenceDownload(t, origin.URL+"/start/list.m3u8")
+			requireReferenceDownload(t, origin.URL+"/start/list.m3u8", remote.URL)
 			originRequests.require(t, wantOrigin...)
 			remoteRequests.require(t, wantRemote...)
 		})

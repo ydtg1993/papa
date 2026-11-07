@@ -29,7 +29,7 @@ go install ./cmd/papa
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
 | `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（新布局 `docs/framework/`、旧布局 `docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
-| `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 建一把后台访问令牌（明文只打印一次），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
+| `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 | `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；生成后按 `obs.report.retention` 清理过期目录。业务段由业务进程注册，papa CLI 只有框架通用段 |
 
 ### `papa new` 生成什么
@@ -356,3 +356,8 @@ papa rod "https://example.com" --proxy --ua "Mozilla/5.0 ..." --json
   进程仍退 0；`html` / `select`（走 htmlfetch）对非 2xx 会报错退 1。要在脚本里判状态码，读 JSON 的 `status`。
 - **`--header` 格式**：`--header "User-Agent=xxx"`（`key=value`），可多次传入。
 - **`-o` 与 `--json`**：`-o` 把 HTML 落盘；带 `--json` 时 JSON 走 stdout、HTML 落盘。
+
+
+### debug 的出口授权
+
+`papa html`、`papa rod`、`papa diff` 和在线 `papa select` 都使用配置中的 `network.private_origins`。测试内网服务前，在业务自己的配置中填完整 origin；代理列表 API 的内网地址也须列入。不会因为调试命令、localhost 或使用代理而自动放行。`papa check`/配置加载会拒绝畸形授权，详见 CORE_CONFIG 的网络出口段。本次没有数据库迁移。

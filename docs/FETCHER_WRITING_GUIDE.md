@@ -1374,3 +1374,18 @@ app.UseReportSection(sections.All()...)   // 业务自己的分析段
 ## 按阶段组合动态调度
 
 普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务；受控 RuleFetcher 自动接入。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](TASK_FLOW.md)。
+
+
+### 网络出口与内网采集
+
+框架的 FetchHTTP、HTMLClient、Rod 浏览器、filedown 和 m3u8 共享默认公网出口限制。内网任务先在应用配置中设置 `network.private_origins`，见 [CORE_CONFIG.md](./CORE_CONFIG.md)；阶段下载器 `.With(...)` 不会取消该限制，`SetClient` 也不能绕过它。重定向、M3U8 变体/分片/密钥/初始化片段和浏览器子资源分别检查目的地。签名 URL 的路径和 query 保持原样。
+
+独立使用底层库时显式传入配置：
+
+```go
+client := htmlfetch.NewClient(htmlfetch.Config{
+    Network: papa.NetworkConfig{PrivateOrigins: []string{"http://127.0.0.1:8123"}},
+})
+```
+
+零配置不允许本地服务，测试 fixture 也需授权。`egress.ErrDenied` 表示目标不被授权；不要通过改用 `http.Get`、原生浏览器导航或外部下载工具绕过失败。网络策略不替代账号隔离、站点规则边界或业务写入权限。网络错误不会由浏览器网关伪造成成功的采集文档。

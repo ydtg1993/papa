@@ -71,6 +71,9 @@ func fakeStageStats() map[string]core.StageStats {
 	}
 }
 
+// Explicit authorization fixture for handler tests; production has no anonymous fallback.
+func allowUnrestrictedTestRequests(*http.Request) (string, bool) { return "", true }
+
 // newFakeMonitor 组装一个带全套假数据的监控路由。
 func newFakeMonitor(t *testing.T) *Monitor {
 	t.Helper()
@@ -78,7 +81,7 @@ func newFakeMonitor(t *testing.T) *Monitor {
 	return NewMonitor(
 		fakeStageStats,
 		testLogger{t: t},
-		MonitorConfig{},
+		MonitorConfig{VerifyToken: allowUnrestrictedTestRequests},
 	)
 }
 
@@ -269,15 +272,12 @@ func TestAPIResponsesNotCached(t *testing.T) {
 	}
 }
 
-// 没注入校验器（未配置凭据）时 /api/* 放行 —— 与"没配任何凭据"同义
+// Missing verification dependencies must never authorize management requests.
 func TestAuthNoVerifier(t *testing.T) {
 	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
-	mux := http.NewServeMux()
-	m.Register(mux)
-	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/monitor", nil))
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	rr := serve(m, http.MethodGet, "/api/monitor", nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=401", rr.Code)
 	}
 }
 
@@ -305,7 +305,7 @@ func (s *whitelistStoreStub) saved() [][]string { return s.calls }
 func (s *whitelistStoreStub) savedCount() int { return len(s.calls) }
 
 func TestWhitelist(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{Whitelist: []string{"10.0.0.0/8"}})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, Whitelist: []string{"10.0.0.0/8"}})
 	mux := http.NewServeMux()
 	m.Register(mux)
 
@@ -332,7 +332,7 @@ func TestWhitelist(t *testing.T) {
 // 所以断言从"文件内容"改成了"存储收到了什么"—— 文件那条路已经不存在了。
 func TestWhitelistHandler(t *testing.T) {
 	store := &whitelistStoreStub{}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 		Whitelist:     []string{"10.0.0.0/8"},
 		SaveWhitelist: store.save,
 	})
@@ -407,7 +407,7 @@ func TestWhitelistHandler(t *testing.T) {
 // 没接配置存储的宿主（admin/server 被直接使用时）：保存返回 404 说明原因，
 // 而不是"静默只改内存、重启就没了"。
 func TestWhitelistHandlerWithoutStore(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
 	rr := serve(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(`{"whitelist":["10.0.0.0/8"]}`))
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404（%s）", rr.Code, rr.Body.String())
@@ -416,7 +416,7 @@ func TestWhitelistHandlerWithoutStore(t *testing.T) {
 func TestSettingsHandler(t *testing.T) {
 	dir := t.TempDir()
 	store := &whitelistStoreStub{}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 		Whitelist:     []string{"10.0.0.0/8"},
 		SaveWhitelist: store.save,
 		LogDir:        dir,
@@ -438,7 +438,7 @@ func TestSettingsHandler(t *testing.T) {
 
 // 没接存储的宿主：whitelist_source 为空串 —— 前端据此显示"改动仅本次运行有效"。
 func TestSettingsHandlerWithoutStore(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{Whitelist: []string{"10.0.0.0/8"}})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, Whitelist: []string{"10.0.0.0/8"}})
 	rr := serveAllowed(m, http.MethodGet, "/api/settings", nil)
 	if got := decodeJSON(t, rr)["whitelist_source"]; got != "" {
 		t.Fatalf("没接存储时 whitelist_source 应为空串，实得 %v", got)
@@ -453,7 +453,7 @@ func TestLogsListHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 	rr := serve(m, http.MethodGet, "/api/logs", nil)
 	body := decodeJSON(t, rr)
 
@@ -478,7 +478,7 @@ func TestLogsDownloadHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 
 	rr := serve(m, http.MethodGet, "/api/logs/download?file=a.log", nil)
 	if rr.Code != http.StatusOK {
@@ -511,7 +511,7 @@ func TestHTMLHandler(t *testing.T) {
 // 关停是高危操作：body 里必须带一个校验得过的令牌，否则不触发。
 func TestShutdownHandlerRequiresToken(t *testing.T) {
 	newMon := func(fired chan struct{}) *Monitor {
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			OnShutdown: func() { close(fired) },
 			VerifyTokenValue: func(token string) (string, bool) {
 				if token == "good" {
@@ -574,7 +574,7 @@ func TestShutdownHandlerRequiresToken(t *testing.T) {
 	})
 
 	t.Run("没配校验器 → 不支持关停（fail closed）", func(t *testing.T) {
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{OnShutdown: func() {}})
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, OnShutdown: func() {}})
 		rr := serve(m, http.MethodPost, "/api/settings/shutdown", strings.NewReader(`{"token":"good"}`))
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", rr.Code)
@@ -645,7 +645,7 @@ func TestTaskTraceHandler(t *testing.T) {
 		{Attempt: 0, Seq: 0, Step: "打开列表页", Status: "ok", Duration: 12 * time.Millisecond},
 		{Attempt: 0, Seq: 1, Step: "解析详情", Status: "failed", Kind: "no-retry", Message: "selector not found"},
 	}
-	withTrace := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{
+	withTrace := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 		TaskTrace: func(id int) ([]core.TraceStep, error) {
 			if id != 7 {
 				t.Errorf("handler 透传的 id = %d, want 7", id)
@@ -678,7 +678,7 @@ func TestTaskTraceHandler(t *testing.T) {
 
 	// 业务原因（追踪未开启）要原样回给前端，不能糊成 500
 	t.Run("业务错误原样带回", func(t *testing.T) {
-		m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{
+		m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			TaskTrace: func(int) ([]core.TraceStep, error) {
 				return nil, errors.New("步骤追踪未开启（core.trace.enabled）")
 			},
@@ -731,7 +731,7 @@ func TestBreakerEndpoints(t *testing.T) {
 		}
 	}
 	newMon := func() *Monitor {
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			BreakerStatuses: func() map[string]core.BreakerStatus {
 				return map[string]core.BreakerStatus{"sitea": status("sitea"), "siteb": status("siteb")}
 			},
@@ -805,7 +805,7 @@ func TestBreakerEndpoints(t *testing.T) {
 		if scopes, _ := body["resumed_scopes"].([]any); len(scopes) != 1 || scopes[0] != "sitea" {
 			t.Fatalf("resumed_scopes = %v，应当只有被闸住的 sitea", body["resumed_scopes"])
 		}
-		// 测试请求没走鉴权中间件，所以操作人是空串 —— 这里要的是"回调被调了一次、且带上了站点"。
+		// 测试显式注入的校验桩返回空操作人 —— 这里要的是"回调被调了一次、且带上了站点"。
 		if len(resumedBy) != 1 || resumedBy[0] != "@sitea/" {
 			t.Fatalf("OnBreakerResume 收到 %v，want [@sitea/]（操作人@站点/阶段）", resumedBy)
 		}
@@ -890,7 +890,7 @@ func TestAdminJSONHandlersRejectOversizedBody(t *testing.T) {
 
 	t.Run("whitelist 超限：400 且不落存储", func(t *testing.T) {
 		store := &whitelistStoreStub{}
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{SaveWhitelist: store.save})
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, SaveWhitelist: store.save})
 		rr := serve(m, http.MethodPost, "/api/settings/whitelist", strings.NewReader(oversized("whitelist")))
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400（body %d 字节）", rr.Code, rr.Body.Len())
@@ -926,7 +926,7 @@ func TestWhitelistHandlerAcceptsLargeButBoundedBody(t *testing.T) {
 	}
 
 	store := &whitelistStoreStub{}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{SaveWhitelist: store.save})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, SaveWhitelist: store.save})
 
 	rr := serve(m, http.MethodPost, "/api/settings/whitelist", bytes.NewReader(body))
 	if rr.Code != http.StatusOK {
@@ -966,7 +966,7 @@ func TestTaskPageEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	newMon := func(archiveDir string) *Monitor {
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ArchiveDir: archiveDir})
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ArchiveDir: archiveDir})
 	}
 
 	t.Run("正常下载：附件形式、内容原样", func(t *testing.T) {
@@ -1037,7 +1037,7 @@ func TestRepeatQueueProcess(t *testing.T) {
 	var called int
 	newMon := func() *Monitor {
 		called = 0
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			ProcessRepeatQueue: func() (int, error) { called++; return 3, nil },
 		})
 	}
@@ -1059,7 +1059,7 @@ func TestErrorQueueProcess(t *testing.T) {
 	var called int
 	newMon := func() *Monitor {
 		called = 0
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			ProcessErrorQueue: func() (int, error) { called++; return 5, nil },
 		})
 	}
@@ -1106,7 +1106,7 @@ func TestQueuePanelHasGlobalQueues(t *testing.T) {
 // /api/monitor 要带上站点快照（后台的站点 Tab 与站点概要靠它）。键是 sites（复数），
 // 与 breakers 同一约定；没配回调时不该出现这个键（与 queues/system 一致）。
 func TestAPIMonitorCarriesSites(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 		SiteStats: func() map[string]core.SiteStat {
 			return map[string]core.SiteStat{
 				"":      {Key: "", StageCount: 1},
@@ -1129,7 +1129,7 @@ func TestAPIMonitorCarriesSites(t *testing.T) {
 	}
 
 	// 没配 SiteStats 的宿主：这个键应当缺席（前端据此隐藏整排 tab）
-	plain := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+	plain := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
 	if _, ok := decodeJSON(t, serve(plain, http.MethodGet, "/api/monitor", nil))["sites"]; ok {
 		t.Fatal("没配 SiteStats 时不该有 sites 键")
 	}
@@ -1143,7 +1143,7 @@ func TestBreakerPauseEndpoint(t *testing.T) {
 	var pausedBy []string
 	var stagePaused []string
 	newMon := func() *Monitor {
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			BreakerStatuses: func() map[string]core.BreakerStatus {
 				return map[string]core.BreakerStatus{"sitea": {Site: "sitea"}, "siteb": {Site: "siteb"}}
 			},
@@ -1255,7 +1255,7 @@ func TestBreakerPauseEndpoint(t *testing.T) {
 
 	t.Run("没配回调：404", func(t *testing.T) {
 		reset()
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
 		rr := serve(m, http.MethodPost, "/api/breaker/pause", strings.NewReader(`{"scope":"a"}`))
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", rr.Code)
@@ -1394,7 +1394,7 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 	var events []QueueProcessEvent
 	newMon := func() *Monitor {
 		events = nil
-		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		return NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			ProcessRepeatQueue: func() (int, error) { return 7, nil },
 			ProcessErrorQueue:  func() (int, error) { return 5, nil },
 			OnQueueProcess:     func(ev QueueProcessEvent) { events = append(events, ev) },
@@ -1427,7 +1427,7 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 
 	t.Run("处理失败：也要记一条", func(t *testing.T) {
 		events = nil
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			ProcessRepeatQueue: func() (int, error) { return 0, fmt.Errorf("db down") },
 			OnQueueProcess:     func(ev QueueProcessEvent) { events = append(events, ev) },
 		})
@@ -1441,7 +1441,7 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 
 	t.Run("接口没配置（404）：没跑过就不该记", func(t *testing.T) {
 		events = nil
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 			OnQueueProcess: func(ev QueueProcessEvent) { events = append(events, ev) },
 		})
 		if rr := serve(m, http.MethodPost, "/api/repeatqueue/process", nil); rr.Code != http.StatusNotFound {
@@ -1457,7 +1457,7 @@ func TestQueueProcessWritesAuditEvent(t *testing.T) {
 // 只有显式 [] 才是清空 —— 防止一次字段名写错或手抖的请求把后台放开。
 func TestWhitelistHandlerRejectsMissingOrNull(t *testing.T) {
 	store := &whitelistStoreStub{}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
 		Whitelist:     []string{"10.0.0.0/8"},
 		SaveWhitelist: store.save,
 	})
@@ -1494,8 +1494,7 @@ func TestResumeCrawlingRejectsStageWithoutSite(t *testing.T) {
 	}
 }
 
-// /monitor 首帧的登录框由服务端下发的 data-auth-required 决定：一条令牌都没配置时后端本来就开放，
-// 不能仅仅因为浏览器 localStorage 没有 key 就弹登录（否则本地开发每次刷新都闪一下登录框）。
+// 首帧默认要求登录；宿主的显示回调不参与 API 放行。
 func TestMonitorTemplateAuthRequiredFlag(t *testing.T) {
 	verify := func(*http.Request) (string, bool) { return "", true }
 	for _, tt := range []struct {
@@ -1503,8 +1502,8 @@ func TestMonitorTemplateAuthRequiredFlag(t *testing.T) {
 		cfg  MonitorConfig
 		want string
 	}{
-		{"未注入校验器（等价于没配凭据）", MonitorConfig{}, `data-auth-required="0"`},
-		{"宿主报告令牌表为空", MonitorConfig{VerifyToken: verify, AuthRequired: func() bool { return false }}, `data-auth-required="0"`},
+		{"未注入校验器仍要求登录", MonitorConfig{}, `data-auth-required="1"`},
+		{"宿主显式定制登录界面（不影响接口认证）", MonitorConfig{VerifyToken: verify, AuthRequired: func() bool { return false }}, `data-auth-required="0"`},
 		{"有令牌", MonitorConfig{VerifyToken: verify, AuthRequired: func() bool { return true }}, `data-auth-required="1"`},
 		{"只给校验器时保守要求登录", MonitorConfig{VerifyToken: verify}, `data-auth-required="1"`},
 	} {
@@ -1521,7 +1520,7 @@ func TestMonitorTemplateAuthRequiredFlag(t *testing.T) {
 }
 
 // mo.js 的启动分支要跟着服务端的 auth-required 走：
-// 0 令牌时不要停在登录页；需要令牌且没有本地凭据才停在登录框，登录成功后再启动轮询。
+// 默认需要令牌且没有本地凭据时停在登录框，登录成功后再启动轮询；保留宿主展示定制。
 func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
 	js, err := fs.ReadFile(staticFS, "static/mo.js")
 	if err != nil {
@@ -1542,7 +1541,7 @@ func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
 		t.Fatalf("独立轮询模块缺失: %v", err)
 	}
 	if strings.Contains(raw, "if (loadKey()) hideLogin(); else showLogin(false);") {
-		t.Error("mo.js 还留着「没 key 就无条件弹登录」的旧逻辑 —— 0 令牌环境每次刷新都会闪登录框")
+		t.Error("mo.js 忽略宿主的登录界面定制")
 	}
 }
 

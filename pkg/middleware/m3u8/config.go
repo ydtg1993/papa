@@ -5,10 +5,12 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // Config M3U8 下载器全局配置
 type Config struct {
+	Network egress.Config `mapstructure:"network"`
 	// 输出目录，默认 "./downloads"
 	OutputDir string
 	// 最大并发下载片段数，默认 5

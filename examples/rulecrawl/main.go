@@ -16,6 +16,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -148,7 +149,7 @@ func run(ctx context.Context, output io.Writer, mode string) error {
 	if err := submit(entry); err != nil {
 		return err
 	}
-	client := htmlfetch.NewClient(htmlfetch.Config{Timeout: 2 * time.Second, MaxBodySize: 64 << 10})
+	client := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}, Timeout: 2 * time.Second, MaxBodySize: 64 << 10})
 	fetchers := map[string]*engine.RuleFetcher{"catalog": list, "detail": detail}
 	var replay *engine.Task
 	for len(queue) != 0 {

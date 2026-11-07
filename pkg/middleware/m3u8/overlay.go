@@ -42,7 +42,7 @@ func (m OutputMode) String() string {
 //   - fetcher 里 `engine.M3U8ForTask(task).With(overlay)`（临时一份，只给这次调用用）；
 //   - 想完全自己拼配置时：`m3u8.NewDownloader(&cfg)`，不受这里任何约束。
 //
-// **没有"不许改"的字段**：`ResumeStateDir` 也能改，代价写在它自己的注释里（换了 = 断点续传从头来）。
+// 网络授权固定于构造时，不可通过 Overlay 修改；`ResumeStateDir` 可改（换了 = 断点续传从头来）。
 type Overlay struct {
 	OutputDir      *string     // 输出目录（DownloadResult.OutputFile 相对它）
 	ResumeStateDir *string     // 断点续传状态根目录。**换它 = 已经下了一半的片子从头再来**（状态按 源|目录|文件名 哈希存在它下面）

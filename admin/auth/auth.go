@@ -49,7 +49,7 @@ func verifiedQuery(db *gorm.DB, token string) *gorm.DB {
 // Verify 按令牌查表校验：命中且启用返回操作人。
 // 查不到（令牌不存在 / 已停用）返回 ok=false，不算错误；DB 故障才返回 err。
 func Verify(db *gorm.DB, token string) (operator string, ok bool, err error) {
-	if db == nil || token == "" {
+	if db == nil || db.DryRun || token == "" {
 		return "", false, nil
 	}
 	var t models.AccessToken
@@ -60,10 +60,13 @@ func Verify(db *gorm.DB, token string) (operator string, ok bool, err error) {
 	if err != nil {
 		return "", false, err
 	}
+	if strings.TrimSpace(t.Operator) == "" {
+		return "", false, nil
+	}
 	return t.Operator, true, nil
 }
 
-// CountEnabled 返回启用的令牌数；用于启动时判断"后台是不是对白名单完全开放"。
+// CountEnabled 返回启用的令牌数；用于启动时提示是否存在可用凭据。
 func CountEnabled(db *gorm.DB) (int64, error) {
 	if db == nil {
 		return 0, nil
@@ -83,14 +86,8 @@ func CountAll(db *gorm.DB) (int64, error) {
 	return n, err
 }
 
-// Required 报告后台当前是否强制需要访问令牌：表里存在任何一条令牌（启用或停用）都算需要。
-//
-// 用途只有一个：`/monitor` 页面首帧据此决定要不要显示登录遮罩。表里一条都没有时后端本来就把
-// `/api/*` 当“还没配凭据”开放（见 Verifier），前端再弹登录只会让本地开发每次刷新闪一下。
-// 查库失败按 true 处理（fail closed）：宁可多弹一次登录，也不把需要凭据的环境画成开放。
-//
-// 这是不带缓存的便捷入口（启动期/一次性调用用）；每个请求都要走的路径用
-// NewTokenCounter(db, ttl).Required，免得首帧渲染把 COUNT(*) 刷进日志。
+// Required always requires login, including first deployment without tokens.
+// Bootstrap using the local papa token add command; HTTP never bootstraps trust.
 func Required(db *gorm.DB) bool {
 	return NewTokenCounter(db, 0).Required()
 }
@@ -100,30 +97,14 @@ type Logger interface {
 	Errorf(format string, args ...any)
 }
 
-// Verifier 造一个可直接喂给 server.MonitorConfig.VerifyToken 的校验闭包：
-// 从请求里取令牌 → 查表 → 返回操作人。
-//
-// 三种边界要分清：
-//   - **表里一条令牌都没有** → 放行（视为"还没配凭据"，与本项目既有语义一致；WarnIfNoToken 会在启动时喊出来）；
-//   - **有令牌但全被停用** → 拒绝（fail closed）—— 否则"停用最后一条"会等于把后台悄悄敞开；
-//   - **查库出错** → 拒绝并记日志（fail closed）。
-//
-// 这是不带缓存的便捷入口；每个 /api/* 请求都会走它，所以 app 装配时用
-// NewTokenCounter(db, ttl).Verifier —— 令牌数量按 TTL 缓存，令牌本身仍逐请求查库。
+// Verifier extracts the credential and verifies its hash and enabled state on
+// every request. Empty stores, nil DB and database errors never authorize.
 func Verifier(db *gorm.DB, log Logger) func(r *http.Request) (string, bool) {
 	return NewTokenCounter(db, 0).Verifier(log)
 }
 
-// Confirmer 造一个「要求调用方把令牌重新输一遍」的校验闭包，给关停这类高危操作做二次确认用。
-//
-// 语义与 Verifier 保持一致（否则会出现"能进后台却关不掉"的死角）：
-//   - 表里一条令牌都没有 = 还没配凭据 → 放行（启动时 WarnIfNoToken 已经喊过）；
-//   - 配过就必须要一个对的。
-//
-// **这不是新的安全边界**：调用方手里本来就有能过中间件的令牌。它的作用是让"关停"这个动作
-// 必须由人再确认一次（误点、开着页面走开都不至于把服务停掉），顺带把操作人记下来。
-//
-// 这是不带缓存的便捷入口；app 装配时用 NewTokenCounter(db, ttl).Confirmer。
+// Confirmer requires a valid token again for explicit destructive confirmation.
+// Empty stores do not bypass this check. It is not a separate authorization role.
 func Confirmer(db *gorm.DB, log Logger) func(token string) (operator string, ok bool) {
 	return NewTokenCounter(db, 0).Confirmer(log)
 }
@@ -148,7 +129,7 @@ func WarnIfNoToken(db *gorm.DB, log Logger) {
 	}
 	switch {
 	case total == 0:
-		log.Errorf("警告：还没有任何访问令牌 —— /api/* 对白名单内的来源完全开放；请执行 papa token add --operator <名字>")
+		log.Errorf("警告：还没有任何访问令牌 —— 管理接口默认拒绝访问；请在服务器本机执行 papa token add --operator <名字>")
 	case enabled == 0:
 		log.Errorf("警告：%d 条访问令牌全部被停用 —— /api/* 现在对所有人拒绝；请执行 papa token add 补一条", total)
 	}

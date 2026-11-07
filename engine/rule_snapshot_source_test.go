@@ -25,6 +25,7 @@ import (
 	"github.com/ydtg1993/papa/v3/pkg/account"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -108,8 +109,8 @@ func TestRuleSnapshotSourceHTTPFailures(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer srv.Close()
-			e, _, dir := archiveEngine(t, config.ArchiveModeFailure)
-			e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{MaxBodySize: tc.limit})
+			e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+			e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, MaxBodySize: tc.limit})
 			cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 			cfg.SnapshotPolicy = ruleSnapshotSourcePolicy()
 			cfg.Save = func(context.Context, *Task, RulePage) error { t.Error("failed response reached Save"); return nil }
@@ -155,7 +156,7 @@ func TestRuleSnapshotSourceAccountFailureAndMaskedPartialBody(t *testing.T) {
 				_, _ = io.WriteString(w, body)
 			}))
 			defer srv.Close()
-			e, _, dir := archiveEngine(t, config.ArchiveModeFailure)
+			e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 			m := account.NewManager(e.htmlClient)
 			if err := m.Register(account.Key{Site: "rules", ID: "pinned"}, account.Config{
 				Origins: []string{srv.URL},
@@ -199,7 +200,7 @@ func TestRuleSnapshotSourceAccountFailureAndMaskedPartialBody(t *testing.T) {
 func TestRuleSnapshotSourceNetworkErrorHasNoFabricatedBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close()
-	e, _, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = ruleSnapshotSourcePolicy()
 	f := ruleTestFetcher(t, cfg)
@@ -216,17 +217,6 @@ func TestRuleSnapshotSourceNetworkErrorHasNoFabricatedBody(t *testing.T) {
 }
 
 func TestRuleSnapshotSourceBrowserWaitFailure(t *testing.T) {
-	pool, err := browser.NewPool(browser.PoolConfig{Size: 1, Headless: true, NoSandbox: true, Leakless: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	// Separate browser startup from the deliberately short selector deadline.
-	warm, err := pool.Get(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool.Put(warm)
 	for _, authenticated := range []bool{false, true} {
 		t.Run(fmt.Sprint("account=", authenticated), func(t *testing.T) {
 			var calls atomic.Int32
@@ -238,6 +228,17 @@ func TestRuleSnapshotSourceBrowserWaitFailure(t *testing.T) {
 				_, _ = io.WriteString(w, `<html><body><article><h2>Local wait failure page</h2></article></body></html>`)
 			}))
 			defer srv.Close()
+			pool, err := browser.NewPool(browser.PoolConfig{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, Size: 1, Headless: true, NoSandbox: true, Leakless: false})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pool.Close()
+			warm, err := pool.Get(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool.Put(warm)
+
 			reg := crawlrule.NewRegistry()
 			rule := ruleSourceTestRule(t, "html", 0).Rule()
 			if err := reg.Register(rule); err != nil {
@@ -247,7 +248,7 @@ func TestRuleSnapshotSourceBrowserWaitFailure(t *testing.T) {
 			if _, err := reg.Activate(rule.ID, rule.Version, []crawlrule.Fixture{{Name: "local", Response: &htmlfetch.Response{URL: u, StatusCode: 200, Body: []byte(`<article><h2>Local fixture</h2></article>`)}, Expect: crawlrule.Expectations{RowCount: 1, Fields: []crawlrule.FieldExpectation{{Pointer: "/title", Value: "Local fixture"}}}}}); err != nil {
 				t.Fatal(err)
 			}
-			e, _, dir := archiveEngine(t, config.ArchiveModeFailure)
+			e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 			e.browserPool = pool
 			cfg := RuleFetcherConfig{Site: "rules", Stage: "catalog", Registry: reg, Bindings: map[string]RuleRef{"catalog": {ID: rule.ID, Version: rule.Version}}, Origins: []string{srv.URL}, Transport: "browser", WaitSelector: "#never-appears", SnapshotPolicy: ruleSnapshotSourcePolicy(), Save: func(context.Context, *Task, RulePage) error { t.Error("failed wait reached Save"); return nil }}
 			if authenticated {
@@ -267,7 +268,7 @@ func TestRuleSnapshotSourceBrowserWaitFailure(t *testing.T) {
 			task.ID = 734
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			err := e.runAttempt(ctx, f, task, 0)
+			err = e.runAttempt(ctx, f, task, 0)
 			if !errors.Is(err, context.DeadlineExceeded) || !core.Retryable(err) || calls.Load() != 1 {
 				t.Fatalf("browser wait classification or request count changed: calls=%d err=%v", calls.Load(), err)
 			}

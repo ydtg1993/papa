@@ -12,6 +12,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 )
 
@@ -63,6 +64,7 @@ func proxyFunc(manager *proxy.Manager) func(*http.Request) (*url.URL, error) {
 
 // Config controls static HTML requests.
 type Config struct {
+	Network      egress.Config `mapstructure:"network"`
 	Timeout      time.Duration
 	MaxBodySize  int64
 	UserAgent    string
@@ -130,7 +132,7 @@ func NewClient(cfg Config) *Client {
 	transport.Proxy = proxyFunc(cfg.ProxyManager)
 
 	return &Client{
-		httpClient: &http.Client{Transport: transport},
+		httpClient: egress.Client(&http.Client{Transport: transport}, cfg.Network),
 		config:     cfg,
 	}
 }
@@ -158,6 +160,7 @@ func (c *Client) SetConfig(cfg Config) {
 	applyConfigDefaults(&cfg)
 	c.mu.Lock()
 	cfg.ProxyManager = c.config.ProxyManager
+	cfg.Network = c.config.Network
 	c.config = cfg
 	c.mu.Unlock()
 }

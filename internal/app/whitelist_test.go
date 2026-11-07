@@ -14,7 +14,7 @@ import (
 
 // 生效白名单为空时**必须喊出来**：它和"配了却没生效"从行为上分不出来，
 // 而后者正是"后台怎么谁都能打开"这类排查里最难想到的方向。
-// 两道门（来源 IP + 访问令牌）都空就是完全开放，各自都有一条启动警告。
+// 来源白名单为空仍有启动警告；管理接口独立要求有效令牌。
 func TestWarnIfOpenToAll(t *testing.T) {
 	newLog := func() (*logrus.Logger, *bytes.Buffer) {
 		var buf bytes.Buffer

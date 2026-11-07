@@ -56,7 +56,7 @@ func Run(args []string) {
 	// 2. 可选：设置代理（需在 RegisterSites 之前）。
 	//    **下载器不在这里配**：框架已按 DefaultConfig 备好基座，要按站点/阶段各配一份就写在
 	//    internal/sites/<站名>.go 的 SiteSpec.FileDown / M3U8 上（解析顺序：阶段 > 站点）。
-	// app.Engine.SetProxy(proxy.NewManager(app.Config.Proxy.APIURL, 8*time.Minute))
+	// app.Engine.SetProxy(proxy.NewManagerWithNetwork(app.Config.Proxy.APIURL, 8*time.Minute, app.Config.Network))
 
 	// 3. 注册站点与阶段：站点在 internal/sites/ 下一站一个文件（自己登记），框架把它们收在
 	//    papa.Sites() 里 —— 加一个站只加文件，main 不用动。并发/队列/间隔/重试/要不要投入口/

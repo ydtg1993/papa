@@ -216,6 +216,7 @@ func (e *Engine) SetBrowserPool() {
 		return
 	}
 	pool, err := browser.NewPool(browser.PoolConfig{
+		Network:        e.cfg.Network,
 		TempDir:        e.cfg.Browser.TempDir,
 		Size:           e.cfg.Browser.PoolSize,
 		DirectSize:     e.cfg.Browser.DirectSize,
@@ -311,6 +312,7 @@ func (e *Engine) htmlConfig() htmlfetch.Config {
 	delete(headers, "User-Agent")
 
 	return htmlfetch.Config{
+		Network:      e.cfg.Network,
 		Timeout:      e.cfg.HTML.Timeout,
 		MaxBodySize:  e.cfg.HTML.MaxBodySize,
 		UserAgent:    userAgent,

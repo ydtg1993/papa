@@ -74,6 +74,9 @@ type CaptureResult struct {
 // 失败时返回的 CaptureResult 仍带现场：HTML（尽力读到的页面）、Seen（未命中请求样本）
 // 与 Elapsed —— 上层据此登记归档、写 trace，而不是只拿到一句错误。
 func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts CaptureOptions) (*CaptureResult, error) {
+	if err := validateNavigation(pageURL); err != nil {
+		return nil, err
+	}
 	if opts.Match == nil {
 		return nil, fmt.Errorf("capture %s: Match is required", pageURL)
 	}

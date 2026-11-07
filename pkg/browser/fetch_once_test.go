@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // FetchOnce **成功路径**也必须把页面关掉。
@@ -28,7 +29,7 @@ func TestFetchOnceClosesPageOnSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	pool, err := NewPool(PoolConfig{Size: 1, Headless: true, Leakless: false, NoSandbox: true})
+	pool, err := NewPool(PoolConfig{Network: egress.Config{PrivateOrigins: []string{srv.URL}}, Size: 1, Headless: true, Leakless: false, NoSandbox: true})
 	if err != nil {
 		t.Fatalf("NewPool: %v", err)
 	}

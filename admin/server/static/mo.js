@@ -155,8 +155,8 @@
         if ((event.key !== KEY_STORAGE && event.key !== null) || event.storageArea !== localStorage) return;
         syncMonitorCredential();
     });
-    // 服务端在 <html data-auth-required> 上下发「当前是否设了访问令牌」。
-    // 一条都没设时后端本来就把 /api/* 当开放，前端不要弹登录（否则本地开发每次刷新闪一下）。
+    // 服务端默认要求登录；自定义身份提供方可调整登录遮罩的展示。
+    // 此标记只影响页面展示，不改变服务端对每个管理请求的认证。
     function authRequired() { return document.documentElement.getAttribute('data-auth-required') === '1'; }
 
     function showLogin(showErr) {
@@ -1083,8 +1083,8 @@
     function renderTokens(rows) {
         var el = document.getElementById('token-table');
         if (!rows.length) {
-            el.innerHTML = '<div class="empty">还没有任何访问令牌 —— 此时 /api/* 对白名单内的来源完全开放。'
-                + '点上面的「新增令牌」建一把。</div>';
+            el.innerHTML = '<div class="empty">还没有任何访问令牌，管理接口默认拒绝访问。'
+                + '请在服务器本机执行 papa token add --operator &lt;名字&gt; 创建凭据。</div>';
             return;
         }
         var html = '<table><thead><tr><th>ID</th><th>操作人</th><th>状态</th><th>备注</th>'
@@ -1540,7 +1540,7 @@
 
     if (typeof syncMonitorNavigation === 'function') syncMonitorNavigation();
 
-    // 有本地凭据或服务端根本没配置令牌 → 直接进；需要令牌且本地没凭据 → 停在登录框，
+    // 有本地凭据或宿主使用自定义登录界面时开始加载；默认无凭据时停在登录框，
     // 等登录成功后再开始轮询/渲染菜单（避免未登录状态下每 3 秒刷一次 401）。
     if (authRequired() && !loadKey()) {
         showLogin(false);

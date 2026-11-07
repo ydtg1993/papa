@@ -1,9 +1,11 @@
 package htmlfetch
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 )
 
@@ -26,7 +29,7 @@ func TestClientFetchAndQuery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		Timeout:   time.Second,
 		UserAgent: "test-agent",
 		Headers:   map[string]string{"X-Test": "ok"},
@@ -65,7 +68,7 @@ func TestClientRejectsOversizedResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{MaxBodySize: 5})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}, MaxBodySize: 5})
 	_, err := client.Fetch(context.Background(), server.URL)
 	if err == nil || !strings.Contains(err.Error(), "exceeds 5 bytes") {
 		t.Fatalf("Fetch() error = %v, want response size error", err)
@@ -78,16 +81,7 @@ func TestClientUsesProxyManager(t *testing.T) {
 	}))
 	defer target.Close()
 
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.IsAbs() == false {
-			t.Errorf("proxy request URL is not absolute: %s", r.URL.String())
-		}
-		if strings.TrimRight(r.URL.String(), "/") != strings.TrimRight(target.URL, "/") {
-			t.Errorf("proxy request URL = %q, want %q", r.URL.String(), target.URL)
-		}
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><p>through proxy</p></body></html>`))
-	}))
+	proxyServer := syntheticProxy(t, target.URL, "through proxy")
 	defer proxyServer.Close()
 
 	proxyURL, err := url.Parse(proxyServer.URL)
@@ -102,8 +96,8 @@ func TestClientUsesProxyManager(t *testing.T) {
 	}))
 	defer proxyAPI.Close()
 
-	proxyManager := proxy.NewManager(proxyAPI.URL, time.Minute)
-	client := NewClient(Config{ProxyManager: proxyManager})
+	proxyManager := proxy.NewManagerWithNetwork(proxyAPI.URL, time.Minute, egress.Config{PrivateOrigins: []string{proxyAPI.URL}})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{target.URL, proxyServer.URL, proxyAPI.URL}}, ProxyManager: proxyManager})
 
 	page, err := client.Fetch(context.Background(), target.URL)
 	if err != nil {
@@ -121,10 +115,7 @@ func TestClientPerRequestProxyToggle(t *testing.T) {
 	}))
 	defer target.Close()
 
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte(`<html><body><p>through-proxy</p></body></html>`))
-	}))
+	proxyServer := syntheticProxy(t, target.URL, "through-proxy")
 	defer proxyServer.Close()
 
 	proxyURL, err := url.Parse(proxyServer.URL)
@@ -139,8 +130,8 @@ func TestClientPerRequestProxyToggle(t *testing.T) {
 	}))
 	defer proxyAPI.Close()
 
-	proxyManager := proxy.NewManager(proxyAPI.URL, time.Minute)
-	client := NewClient(Config{ProxyManager: proxyManager})
+	proxyManager := proxy.NewManagerWithNetwork(proxyAPI.URL, time.Minute, egress.Config{PrivateOrigins: []string{proxyAPI.URL}})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{target.URL, proxyServer.URL, proxyAPI.URL}}, ProxyManager: proxyManager})
 
 	// 默认：配置了代理则走代理
 	page, err := client.Fetch(context.Background(), target.URL)
@@ -168,7 +159,7 @@ func TestClientSetConfigHotReload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		Timeout:   time.Second,
 		UserAgent: "agent-1",
 		Headers:   map[string]string{"X-Test": "v1"},
@@ -181,7 +172,7 @@ func TestClientSetConfigHotReload(t *testing.T) {
 		t.Fatalf("initial body = %q, want agent-1|v1", page.HTML)
 	}
 
-	client.SetConfig(Config{
+	client.SetConfig(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		Timeout:   time.Second,
 		UserAgent: "agent-2",
 		Headers:   map[string]string{"X-Test": "v2"},
@@ -203,7 +194,7 @@ func TestFetchStatusErrorIsTyped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{Timeout: time.Second})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}, Timeout: time.Second})
 	_, err := client.Fetch(context.Background(), server.URL)
 	if err == nil {
 		t.Fatal("404 应当报错")
@@ -233,7 +224,7 @@ func TestBodyTooLargeIsNotAStatusError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{MaxBodySize: 404})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}, MaxBodySize: 404})
 	_, err := client.Fetch(context.Background(), server.URL)
 	if err == nil {
 		t.Fatal("超出 max_body_size 应当报错")
@@ -265,7 +256,7 @@ func TestFetchAppliesPerRequestHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(Config{
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}},
 		Timeout:   time.Second,
 		UserAgent: "cfg-ua",
 		Headers:   map[string]string{"X-From-Config": "1", "X-Gone": "yes", "X-Kept": "keep"},
@@ -353,7 +344,7 @@ func TestRestrictedReason(t *testing.T) {
 					_, _ = w.Write([]byte(c.html))
 				}))
 				defer server.Close()
-				p, err := NewClient(Config{Timeout: time.Second}).Fetch(context.Background(), server.URL)
+				p, err := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}, Timeout: time.Second}).Fetch(context.Background(), server.URL)
 				if err != nil {
 					t.Fatalf("Fetch = %v", err)
 				}
@@ -387,7 +378,7 @@ func TestSelectionServesBothPageAndTestDocument(t *testing.T) {
 		return ids
 	}
 
-	client := NewClient(Config{Timeout: time.Second})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}, Timeout: time.Second})
 	page, err := client.Fetch(context.Background(), server.URL)
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
@@ -449,4 +440,32 @@ func TestNewRenderedPage(t *testing.T) {
 	if _, err := NewRenderedPage("://bad", "<html></html>"); err == nil {
 		t.Fatal("非法地址应当报错")
 	}
+}
+
+func syntheticProxy(t *testing.T, target, text string) *httptest.Server {
+	t.Helper()
+	u, _ := url.Parse(target)
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "CONNECT" || r.Host != u.Host {
+			t.Error("proxy did not receive pinned CONNECT")
+			http.Error(w, "denied", 403)
+			return
+		}
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		rw.Flush()
+		request, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		request.Body.Close()
+		body := "<html><body><p>" + text + "</p></body></html>"
+		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+	}))
 }

@@ -2,10 +2,13 @@ package filedown
 
 import (
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // Config 文件下载器配置
 type Config struct {
+	Network                egress.Config `mapstructure:"network"`
 	OutputDir              string        // 输出目录，默认 "./downloads"
 	ResumeStateDir         string        // 断点续传状态存储目录，默认 "./.resume"
 	MaxRetries             int           // 重试次数，默认 3

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 断点状态与磁盘对不上（状态说"分片都下好了"、临时分片却不在）时：
@@ -28,6 +30,7 @@ func TestDownloadSelfHealsStaleResumeState(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.ChunkSize = 40 // 100 字节 → 三段（0/40/80），与下面手造的状态对齐
@@ -91,6 +94,7 @@ func TestDownloadCleansStateAndTempAfterSuccess(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.ChunkSize = 40
@@ -125,6 +129,7 @@ func TestResumeIgnoresOffBoundaryOffsets(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.ChunkSize = 40
@@ -179,6 +184,7 @@ func TestResumeDoesNotTrustStateFilePaths(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.ChunkSize = 40
@@ -242,6 +248,7 @@ func TestResumeRejectsTruncatedSegment(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.ChunkSize = 40

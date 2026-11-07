@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func TestSessionGuardHTTPExpiryAndConcurrentLogin(t *testing.T) {
@@ -27,7 +29,7 @@ func TestSessionGuardHTTPExpiryAndConcurrentLogin(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	client := NewClient(Config{})
+	client := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	g, err := NewSessionGuard(SessionGuardConfig{
 		Check: func(ctx context.Context, s *Session) (bool, error) {
 			r, err := client.Do(WithSession(ctx, s), Request{URL: srv.URL})

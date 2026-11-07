@@ -22,7 +22,7 @@ func TestLogDownloadRejectsNonLogsAndPaths(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "folder.log"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 	for _, name := range []string{"private.txt", "crawler.pid", ".private.log", "folder.log", "../a.log", `..\a.log`, "/a.log", ".", "..", "a.log:secret", "a.log\x00"} {
 		t.Run(name, func(t *testing.T) {
 			rr := serve(m, http.MethodGet, "/api/logs/download?file="+url.QueryEscape(name), nil)
@@ -45,7 +45,7 @@ func TestLogDownloadRejectsSymlinks(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "linked.log")); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 	for _, endpoint := range []string{"download", "tail"} {
 		rr := serve(m, http.MethodGet, "/api/logs/"+endpoint+"?file=linked.log", nil)
 		if rr.Code != http.StatusBadRequest || strings.Contains(rr.Body.String(), "outside-private-content") {
@@ -72,7 +72,7 @@ func TestLogDownloadPreservesCompressedFilesAndHTTPFeatures(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{LogDir: dir})
+		m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, LogDir: dir})
 		rr := serve(m, http.MethodGet, "/api/logs/download?file="+name, nil)
 		if rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), data) {
 			t.Fatalf("download %s: status=%d body=%q", name, rr.Code, rr.Body.String())

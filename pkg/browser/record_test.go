@@ -31,7 +31,7 @@ func TestRecordNetworkExchangesRedirectsAndSample(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		record, err := b.RecordNetwork(context.Background(), srv.URL, RecordOptions{ObserveFor: 300 * time.Millisecond, Timeout: 5 * time.Second, Page: PageOptions{Interact: func(ctx context.Context, p *rod.Page) error {
 			_, err := p.Eval(`() => document.querySelector('#go').click()`)
@@ -84,7 +84,7 @@ func TestRecordNetworkBudgetsAndCancellation(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	if err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		r, err := b.RecordNetwork(context.Background(), srv.URL, RecordOptions{MaxEntries: 2, MaxTotalBodySize: 10, ObserveFor: 200 * time.Millisecond, Timeout: 5 * time.Second})
 		if err != nil {

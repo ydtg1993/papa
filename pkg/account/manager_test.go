@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -95,7 +96,7 @@ func newAuthSite(t *testing.T) *authSite {
 		}
 	}))
 	t.Cleanup(s.server.Close)
-	s.client = htmlfetch.NewClient(htmlfetch.Config{})
+	s.client = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{s.server.URL}}})
 	return s
 }
 func (s *authSite) cfg(name string) Config {
@@ -393,7 +394,7 @@ func TestAccountTokenRotationAndCheckErrors(t *testing.T) {
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer srv.Close()
-	m := NewManager(htmlfetch.NewClient(htmlfetch.Config{}))
+	m := NewManager(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
 	key := Key{"site", "token"}
 	var logins atomic.Int32
 	cfg := Config{Origins: []string{" " + srv.URL + " "}, CheckInterval: time.Hour, Login: func(_ context.Context, c *Credentials) error {

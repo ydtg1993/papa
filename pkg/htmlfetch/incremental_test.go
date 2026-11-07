@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func TestIncrementalETag304AndHash(t *testing.T) {
@@ -18,7 +20,7 @@ func TestIncrementalETag304AndHash(t *testing.T) {
 		_, _ = io.WriteString(w, "data")
 	}))
 	defer srv.Close()
-	c := NewClient(Config{})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	first, err := c.FetchIncremental(context.Background(), srv.URL, nil)
 	if err != nil || !first.Changed {
 		t.Fatalf("first: %+v %v", first, err)
@@ -54,7 +56,7 @@ func TestIncrementalRedirectAndUnexpectedStatuses(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := NewClient(Config{})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	for _, path := range []string{"/redirect", "/partial", "/unexpected"} {
 		if _, err := c.FetchIncremental(context.Background(), srv.URL+path, nil); err == nil {
 			t.Fatalf("accepted %s", path)
@@ -80,7 +82,7 @@ func TestIncrementalLastModifiedAndURLScope(t *testing.T) {
 		w.WriteHeader(304)
 	}))
 	defer srv.Close()
-	c := NewClient(Config{})
+	c := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	previous := &Representation{URL: srv.URL, LastModified: "Wed, 21 Oct 2015 07:28:00 GMT"}
 	if r, err := c.FetchIncremental(context.Background(), srv.URL, previous); err != nil || !r.NotModified {
 		t.Fatal(r, err)

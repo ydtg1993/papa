@@ -18,6 +18,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -60,7 +61,11 @@ func ruleTestTask(t *testing.T, f *RuleFetcher, req RuleRequest) *Task {
 func ruleTestRun(t *testing.T, f *RuleFetcher, task *Task) ([]*Task, error) {
 	t.Helper()
 	var children []*Task
-	err := f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{}), func(child *Task) error { children = append(children, child); return nil })
+	u, err := url.Parse(task.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.RunHTTP(context.Background(), task, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{u.Scheme + "://" + u.Host}}}), func(child *Task) error { children = append(children, child); return nil })
 	return children, err
 }
 
@@ -209,7 +214,7 @@ func TestRuleFetcherPartialSubmitReplaysIdempotentSave(t *testing.T) {
 		}
 		return nil
 	}
-	client := htmlfetch.NewClient(htmlfetch.Config{})
+	client := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	if err := f.RunHTTP(context.Background(), task, client, submit); err == nil || !core.Retryable(err) {
 		t.Fatalf("submit failure: %v", err)
 	}
@@ -356,7 +361,7 @@ func TestRuleFetcherEngineQueueEndToEnd(t *testing.T) {
 	fake := newFakeTaskDB()
 	fake.noRows = true
 	e := newTestEngine(t, fake)
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{})
+	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	stage := StageConfig{Site: "rules", WorkerCount: 1, QueueSize: 8, MaxAttempts: 1}
 	e.AddStage("list", stage, list, nil)
 	e.AddStage("detail", stage, detail, nil)

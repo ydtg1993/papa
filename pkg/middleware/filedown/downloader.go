@@ -22,6 +22,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/middleware"
 )
 
@@ -66,11 +67,12 @@ func NewDownloader(cfg *Config) *Downloader {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
+	copyConfig := *cfg
+	copyConfig.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	cfg = &copyConfig
 	return &Downloader{
 		config: cfg,
-		client: &http.Client{
-			Timeout: cfg.Timeout,
-		},
+		client: egress.Client(&http.Client{Timeout: cfg.Timeout}, cfg.Network),
 		st: &state{
 			trackQueue: msgqueue.NewMsgQueue[any](cfg.QueueSize),
 			labors:     make(map[string]*labor),
@@ -80,7 +82,7 @@ func NewDownloader(cfg *Config) *Downloader {
 
 // SetClient 替换 HTTP 客户端
 func (d *Downloader) SetClient(client *http.Client) {
-	d.client = client
+	d.client = egress.Client(client, d.config.Network)
 }
 
 // GetErrors 获取错误通道
@@ -92,17 +94,21 @@ func (d *Downloader) SetClient(client *http.Client) {
 //
 // 想要**完全隔离**的一份用 NewDownloader —— 代价是并发写同一个目标文件时，串行由你自己负责。
 func (d *Downloader) With(o Overlay) *Downloader {
-	cfg := o.Apply(*d.config)
+	cfg := o.Apply(d.Config())
 	return &Downloader{
 		config: &cfg,
-		client: &http.Client{Timeout: cfg.Timeout},
+		client: egress.Client(&http.Client{Timeout: cfg.Timeout}, cfg.Network),
 		st:     d.st,
 	}
 }
 
 // Config 返回这份实例当前生效的配置（副本；改它不影响实例）。
 // 给自查用：`papa check` 与启动日志要把"这一层到底生效了什么"打出来。
-func (d *Downloader) Config() Config { return *d.config }
+func (d *Downloader) Config() Config {
+	cfg := *d.config
+	cfg.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	return cfg
+}
 
 func (d *Downloader) GetErrors() <-chan error {
 	return d.st.trackQueue.Errors()
@@ -832,8 +838,7 @@ func (d *Downloader) clientOf(cfg *requestConfig) *http.Client {
 // clientForProxy 返回走指定代理的 HTTP 客户端；同一个地址复用同一个（连接池不白扔）。
 //
 // 代理地址来自调用方（fetcher），所以数量由业务决定 —— 这里不做上限，也不清理。
-// 地址解析不出来时返回默认客户端并记一条错误：让这次下载走直连总比整个失败好，
-// 但错误通道上留痕（"代理配错了"不该静默变成"直连"）。
+// 地址解析失败会记录错误并返回拒绝请求的客户端，绝不回落直连。
 func (d *Downloader) clientForProxy(addr string) *http.Client {
 	d.st.proxyMu.Lock()
 	defer d.st.proxyMu.Unlock()
@@ -843,7 +848,7 @@ func (d *Downloader) clientForProxy(addr string) *http.Client {
 	proxyURL, err := url.Parse(addr)
 	if err != nil {
 		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", addr, err))
-		return d.client
+		proxyURL = &url.URL{Scheme: "invalid"}
 	}
 	if d.st.proxyClients == nil {
 		d.st.proxyClients = make(map[string]*http.Client)
@@ -856,6 +861,7 @@ func (d *Downloader) clientForProxy(addr string) *http.Client {
 		Timeout:   d.config.Timeout,
 		Transport: transport,
 	}
+	c = egress.Client(c, d.config.Network)
 	d.st.proxyClients[addr] = c
 	return c
 }

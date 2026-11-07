@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 换源重写到同一个输出路径时，不能复用上一源的旧分片。
@@ -25,7 +27,7 @@ func TestDownloadCrossSourceDoesNotReuseSegments(t *testing.T) {
 
 	tempOut := tempDir(t)
 	tempState := tempDir(t)
-	cfg := &Config{
+	cfg := &Config{Network: egress.Config{PrivateOrigins: []string{serverA.URL, serverB.URL}},
 		OutputDir:              tempOut,
 		ResumeStateDir:         tempState,
 		ChunkSize:              10,
@@ -80,6 +82,7 @@ func TestDownloadSingleKeepsPreviousOnFailure(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempOut
 	dl := NewDownloader(cfg)
 

@@ -893,15 +893,15 @@ func (a *App) mdMsgListener(ctx context.Context) {
 // 空白名单是**合法**配置（脚手架生成的 whitelist 文件初始就只有一行注释），但必须说出来：
 // 它和"配了却没生效"从行为上分不出来 —— 而后者正是"后台怎么谁都能打开"这类排查里
 // 最难想到的方向。按 Error 级打，与 auth.WarnIfNoToken 一个路数（一个是来源那道门，
-// 一个是凭据那道门，两道都空就是完全开放）。
+// 一个是凭据那道门；令牌缺失时管理接口仍拒绝访问）。
 //
 // 抽成独立函数是为了能离线断言这条警告确实会发 —— 它的调用点在 httpServer 里，那一步要真库真端口。
 func warnIfOpenToAll(log *logrus.Logger, whitelist []string) {
 	if len(whitelist) > 0 {
 		return
 	}
-	log.Errorf("警告：生效的来源 IP 白名单为空 —— /monitor 与 /api/* 对**任何来源**开放" +
-		"（第二道门是访问令牌）；要限制来源，去后台设置页写 IP/CIDR（存在 crawler_config 表的 ip_whitelist 行）")
+	log.Errorf("警告：生效的来源 IP 白名单为空 —— /monitor 与 /api/* 不限制**任何来源**" +
+		"（管理接口仍强制校验访问令牌）；要限制来源，去后台设置页写 IP/CIDR（存在 crawler_config 表的 ip_whitelist 行）")
 }
 
 // whitelistReloadInterval 白名单的重载间隔。
@@ -920,10 +920,8 @@ const whitelistCacheTTL = 5 * time.Minute
 
 // tokenCountCacheTTL 是「访问令牌数量」的进程内缓存时长（auth.TokenCounter 的 TTL）。
 //
-// 每个 /api/* 请求都要 COUNT 一次启用令牌数，`/monitor` 首帧还要 COUNT 总数 —— 而令牌
-// 数量几乎不变。它比白名单的 5 分钟短得多：enabled=0 时后台按"还没配凭据"放行，缓存
-// 太旧会让刚用 `papa token add` 建的令牌在 TTL 内不生效（后台仍敞开）。
-// 本进程后台令牌页的写操作会立即 Invalidate（见 tokenWriteHook）；CLI/直接改库最迟 TTL 可见。
+// 数量缓存仅保留管理统计用途，不能参与鉴权。Verifier/Confirmer 每次查库，Required 恒为 true。
+// 本进程令牌页写操作仍使计数失效；跨进程的令牌创建、停用和删除无需等待此 TTL 即可影响下一次鉴权。
 const tokenCountCacheTTL = time.Minute
 
 // loadIPWhitelist 从配置存储读一次白名单（启动那一次与定期重载都走这里）。
@@ -959,8 +957,7 @@ func (a *App) reloadWhitelistLoop(ctx context.Context, reader configstore.String
 
 // tokenWriteHook 接「访问令牌」页的写操作：成功后让令牌数量缓存失效，同时按开关记审计。
 //
-// 为什么必须失效：新建第一把令牌后，后台要立刻从"还没配凭据（开放）"切到"需要登录"；
-// 不失效就得等 tokenCountCacheTTL，期间页面还是开放状态。失败事件不失效（数据没变）。
+// 成功写入后更新管理计数；失败事件不失效（数据没变）。鉴权独立逐请求查库，不依赖此 hook。
 //
 // 抽成独立函数是为了能离线断言"写成功确实 Invalidate"——它的调用点在 httpServer 里，
 // 那一步要真库真端口。
@@ -1024,7 +1021,7 @@ func (a *App) httpServer(ctx context.Context) {
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
 
-	// 令牌数量缓存：Verifier / Required / Confirmer 都会被每个请求问到，别让它变成 COUNT 刷屏。
+	// 共享令牌服务：鉴权逐请求查库，数量缓存仅用于管理统计兼容。
 	tokenCounter := auth.NewTokenCounter(a.DB, tokenCountCacheTTL)
 
 	// 操作日志：开启时，oao 表格页的动作、后台自带的「访问令牌」页、以及熔断放行都往这里记。
@@ -1059,7 +1056,7 @@ func (a *App) httpServer(ctx context.Context) {
 		RuleSchedules:      a.Engine.ListRuleSchedules,
 		RuleScheduleDetail: a.Engine.RuleScheduleDetail,
 		VerifyToken:        tokenCounter.Verifier(a.Logger.Sys),
-		// 后台页面首帧用：令牌表一条都没有时后端本来就是开放的，前端也不必弹登录框。
+		// 后台页面首帧始终要求登录；首次令牌由本机 CLI 创建。
 		AuthRequired: tokenCounter.Required,
 		Whitelist:    whitelist,
 		// 设置页保存白名单 → 落 crawler_config；成功后 admin/server 自己换判定缓存（本进程即时生效）。
@@ -1191,7 +1188,7 @@ func (a *App) httpServer(ctx context.Context) {
 	// 「访问令牌」页是后台自带的模块，不走表格组件 —— 它要「新增」，
 	// 而表格组件的动作只回 {"status":"ok"}，没法把服务端生成的明文令牌交给操作人。
 	// 写操作与表格页一样记进操作日志（用条件更新防重复点击，见 admin/tokenadmin）。
-	// hook 同时负责让令牌数量缓存失效（否则刚建的令牌要等 TTL 才生效）。
+	// hook 同时使管理计数失效；令牌鉴权不依赖数量缓存。
 	tokenHook := tokenWriteHook(tokenCounter, rec)
 	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
 

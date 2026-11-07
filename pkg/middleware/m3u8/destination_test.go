@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func receiveDownload(t *testing.T, result <-chan *DownloadResult) *DownloadResult {
@@ -40,6 +42,7 @@ func TestDifferentSourcesSameDestination(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 	cfg.AutoMerge = false
 	heldA, heldB := make(chan struct{}), make(chan struct{})
@@ -108,6 +111,7 @@ func TestDestinationWaitCanBeCanceled(t *testing.T) {
 			defer server.Close()
 			defer once.Do(func() { close(release) })
 			cfg := DefaultConfig()
+			cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 			cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 			cfg.OutputMode = OutputPlaylist
 			d := NewDownloader(cfg)
@@ -151,6 +155,7 @@ func TestDestinationLockUsesMergeExtension(t *testing.T) {
 	defer server.Close()
 	defer once.Do(func() { close(release) })
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 	cfg.OnProgress = func(_, _, _ int, _, _ int64) { close(held); <-release }
 	d := NewDownloader(cfg)
@@ -204,6 +209,7 @@ func TestSegmentsDirectoryBlocksChildDestination(t *testing.T) {
 	defer once.Do(func() { close(release) })
 	var callbacks atomic.Int32
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 	cfg.AutoMerge = false
 	cfg.OnProgress = func(_, _, _ int, _, _ int64) {

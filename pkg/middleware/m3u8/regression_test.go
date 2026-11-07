@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 状态文件里 SegmentFiles 被改短（段数对得上、数组却短一截）时，不能越界 panic，而是当作状态损坏重来。
@@ -29,6 +31,7 @@ func TestResumeShortSegmentFilesRestarts(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxConcurrent = 1
@@ -73,6 +76,7 @@ func TestOutputSegmentsIncludesInitSegment(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxConcurrent = 1

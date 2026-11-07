@@ -14,7 +14,7 @@ import (
 // （那是"漏了不报错、只是静默失效"的路）。这条同时钉住 stage 的取值与错误分类。
 func TestRestrictedErrorUsesSiteKeywords(t *testing.T) {
 	srv := serveBody(t, `<html><body><h1>本站专属拦截话术</h1></body></html>`)
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	e.SetSite(core.Site{Key: "a", RestrictedKeywords: []string{"本站专属拦截话术"}})
 	e.SetSite(core.Site{Key: "b"}) // 没声明词表的站
 
@@ -61,7 +61,7 @@ func TestRestrictedErrorUsesSiteKeywords(t *testing.T) {
 // 干净页面返回 nil；page 为 nil 也不 panic（调用点常常是 `if err := …; err != nil { return err }`）。
 func TestRestrictedErrorOnCleanPage(t *testing.T) {
 	srv := serveBody(t, `<html><body><h1>正常的剧集详情页</h1></body></html>`)
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	e.SetSite(core.Site{Key: "a", RestrictedKeywords: []string{"本站专属拦截话术"}})
 
 	page, err := e.FetchHTML(context.Background(), srv.URL)

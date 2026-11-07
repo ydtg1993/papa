@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -17,7 +18,7 @@ func TestAccountBridgeAndBrowserSerializeAndReusePublishedState(t *testing.T) {
 	for _, first := range []string{"bridge-login", "bridge-verification", "browser"} {
 		t.Run(first, func(t *testing.T) {
 			s := newAccountBrowserSite(t)
-			pool, err := browser.NewPool(browser.PoolConfig{Size: 2, Headless: true, NoSandbox: true, Leakless: false})
+			pool, err := browser.NewPool(browser.PoolConfig{Network: egress.Config{PrivateOrigins: []string{s.server.URL}}, Size: 2, Headless: true, NoSandbox: true, Leakless: false})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,7 +131,7 @@ func TestAccountBrowserSlotCancellationAndHTTPFastPath(t *testing.T) {
 	s := newAccountBrowserSite(t)
 	m := NewManager(s.client)
 	key := Key{Site: "concurrent", ID: "cancel"}
-	cfg := s.bridgeConfig(accountBrowserPool(t), "alice")
+	cfg := s.bridgeConfig(accountBrowserPool(t, s.server.URL), "alice")
 	cfg.MaxConcurrent = 2
 	cfg.Update = func(c *Credentials, _ *htmlfetch.Response) error {
 		c.Values["updated"] += "x"
@@ -209,7 +210,7 @@ func TestAccountBrowserBridgeRetriesHTTPExpiredSnapshotOnce(t *testing.T) {
 	s := newAccountBrowserSite(t)
 	m := NewManager(s.client)
 	key := Key{Site: "bridge", ID: "expired-http"}
-	register(t, m, key, s.bridgeConfig(accountBrowserPool(t), "alice"))
+	register(t, m, key, s.bridgeConfig(accountBrowserPool(t, s.server.URL), "alice"))
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := m.WithBrowser(ctx, key, func(page *rod.Page) error {

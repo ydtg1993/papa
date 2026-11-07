@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	yaml "go.yaml.in/yaml/v3"
 )
 
@@ -13,6 +14,7 @@ type TaskFlowConfig struct {
 }
 
 type Config struct {
+	Network  egress.Config  `mapstructure:"network"`
 	TaskFlow TaskFlowConfig `mapstructure:"task_flow"`
 	App      AppConfig      `mapstructure:"app"`
 	Log      LogConfig      `mapstructure:"log"`

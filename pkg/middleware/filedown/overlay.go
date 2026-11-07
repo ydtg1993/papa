@@ -14,7 +14,7 @@ import (
 //   - 想完全自己拼配置时：`filedown.NewDownloader(&cfg)`，不受这里任何约束。
 //
 // 与 m3u8 那份是**同一套约定**（那边多一个产物形态 OutputMode，文件下载没有这一维）。
-// **没有"不许改"的字段**：`ResumeStateDir` 也能改，代价写在它自己的注释里（换了 = 断点续传从头来）。
+// 网络授权固定于构造时，不可通过 Overlay 修改；`ResumeStateDir` 可改（换了 = 断点续传从头来）。
 type Overlay struct {
 	OutputDir              *string // 输出目录（DownloadResult.OutputFile 相对它）
 	ResumeStateDir         *string // 断点续传状态根目录。**换它 = 已经下了一半的文件从头再来**

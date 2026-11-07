@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // Webhook 通过 HTTP POST 将告警事件以 JSON 发送到指定 URL（可接钉钉/webhook 网关）。
 type Webhook struct {
-	URL    string
-	Client *http.Client
+	Network egress.Config
+	URL     string
+	Client  *http.Client
 }
 
 // NewWebhook 创建 webhook 通知器。
@@ -41,7 +43,9 @@ func (w *Webhook) Notify(ctx context.Context, event core.AlertEvent) error {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	resp, err := client.Do(req)
+	guarded := egress.Client(client, w.Network)
+	defer guarded.CloseIdleConnections()
+	resp, err := guarded.Do(req)
 	if err != nil {
 		return err
 	}

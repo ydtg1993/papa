@@ -10,6 +10,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/app"
 	"github.com/ydtg1993/papa/v3/pkg/account"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
@@ -20,6 +21,9 @@ import (
 // 业务后台任务通过 UseShutdown 注册关库前的取消与排空回调。
 // 关闭宿主依赖前，可用 CloseAgentCenter 等待后台分析完全结束。
 type App = app.App
+
+// NetworkConfig 默认只允许公网 HTTP(S)；PrivateOrigins 显式授权内网 origin。
+type NetworkConfig = egress.Config
 
 // HTTPRequest / HTTPResponse 通用 HTTP/API 抓取的请求与响应。
 type HTTPRequest = htmlfetch.Request

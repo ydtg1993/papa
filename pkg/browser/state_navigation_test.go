@@ -43,7 +43,7 @@ func TestWithStatePageSurvivesSiteStorageClearAndRedirect(t *testing.T) {
 				_, _ = io.WriteString(w, `<script>debugger;window.firstToken=localStorage.getItem('token');sessionStorage.clear();document.write('<img src="/seen?token='+encodeURIComponent(firstToken)+'">')</script>`)
 			}))
 			defer srv.Close()
-			pool := newLivePool(t)
+			pool := newLivePool(t, srv.URL)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			called := false
@@ -92,7 +92,7 @@ if(location.pathname==='/first') localStorage.setItem('token','rotated');
 </script><iframe src="/frame"></iframe><div id="ready"></div>`, cookie)
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	err := pool.WithIsolatedBrowser(ctx, func(b *Browser) error {
@@ -139,7 +139,7 @@ func TestWithStatePageIsolatesAccountsAndAllowsNilState(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `<script>window.initial=(localStorage.getItem('token')||'')+'|'+%s;</script>`, cookie)
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for _, account := range []string{"alice", "bob", ""} {
@@ -220,7 +220,7 @@ func TestWithStatePageNilStateOriginGuard(t *testing.T) {
 		_, _ = io.WriteString(w, "<html>account origin</html>")
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, other.URL, srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for _, mode := range []string{"redirect", "interact"} {
@@ -278,6 +278,7 @@ func TestWithStatePageNormalizesBrowserOrigin(t *testing.T) {
 	}))
 	defer srv.Close()
 	canonical := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+	pool = newLivePool(t, canonical)
 	originalOrigin := strings.Replace(canonical, "localhost", "LOCALHOST", 1)
 	state := navigationState(originalOrigin, "saved")
 	if err := pool.WithIsolatedBrowser(ctx, func(b *Browser) error {
@@ -321,7 +322,7 @@ func TestWithStatePageRedirects(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, other.URL, srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, path := range []string{"/same", "/script", "/cross"} {
@@ -373,7 +374,7 @@ func TestWithStatePageCleanupAfterFailureCancelAndPanic(t *testing.T) {
 		_, _ = io.WriteString(w, "<html>ready</html>")
 	}))
 	defer srv.Close()
-	pool := newLivePool(t)
+	pool := newLivePool(t, srv.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, mode := range []string{"error", "cancel", "panic", "navigation", "wait", "pre-cancel"} {

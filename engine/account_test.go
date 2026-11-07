@@ -12,6 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/pkg/account"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
 
@@ -23,8 +24,8 @@ func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
 		_, _ = io.WriteString(w, "<h1>private-body</h1>")
 	}))
 	defer srv.Close()
-	e, _, _ := archiveEngine(t, config.ArchiveModeAlways)
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{})
+	e, _, _ := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
+	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	m := account.NewManager(e.htmlClient)
 	key := account.Key{Site: "site", ID: "alice"}
 	if err := m.Register(key, account.Config{Origins: []string{srv.URL}, Login: func(_ context.Context, c *account.Credentials) error {

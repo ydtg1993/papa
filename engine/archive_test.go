@@ -16,6 +16,7 @@ import (
 
 	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -24,7 +25,7 @@ import (
 /* ---------- 辅助 ---------- */
 
 // archiveEngine 造一个开了归档的引擎：stub 库（trace 走它能读回 SQL）+ HTML 客户端 + 归档目录。
-func archiveEngine(t *testing.T, mode string) (*Engine, *stubConnPool, string) {
+func archiveEngine(t *testing.T, mode string, origins ...string) (*Engine, *stubConnPool, string) {
 	t.Helper()
 	pool := &stubConnPool{}
 	db, err := gorm.Open(mysql.New(mysql.Config{
@@ -36,7 +37,7 @@ func archiveEngine(t *testing.T, mode string) (*Engine, *stubConnPool, string) {
 	}
 
 	dir := t.TempDir()
-	e := &Engine{db: db, loggerSet: testLoggerSet(), cfg: &config.Config{}}
+	e := &Engine{db: db, loggerSet: testLoggerSet(), cfg: &config.Config{Network: egress.Config{PrivateOrigins: origins}}}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
 
@@ -116,7 +117,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 		`<noscript><img src="/lazy-cover.webp"></noscript>  多余的空格  </body></html>`
 	srv := serveBody(t, body)
 
-	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 7, Stage: "stub", URL: srv.URL}
 	f := &pageFetcher{urls: []string{srv.URL}, err: errors.New("解析失败：选择器没匹配到")}
 
@@ -176,7 +177,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 // 默认模式（failure）下成功的尝试不落盘：写入量按失败率走，与 trace「只在失败尝试写 data」同构。
 func TestArchiveSkipsSuccessfulAttemptByDefault(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 7, Stage: "stub", URL: srv.URL}
 
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL}}, task, 0); err != nil {
@@ -193,7 +194,7 @@ func TestArchiveSkipsSuccessfulAttemptByDefault(t *testing.T) {
 // always 模式：每次尝试都落（排查期开）。
 func TestArchiveAlwaysModeWritesOnSuccess(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	task := &Task{ID: 7, Stage: "stub", URL: srv.URL}
 
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL}}, task, 0); err != nil {
@@ -208,7 +209,7 @@ func TestArchiveAlwaysModeWritesOnSuccess(t *testing.T) {
 // 且 panic 必须原样抛给 workerpool。
 func TestArchiveOnPanic(t *testing.T) {
 	srv := serveBody(t, "<html>boom</html>")
-	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 8, Stage: "stub", URL: srv.URL}
 
 	defer func() {
@@ -232,7 +233,7 @@ func TestArchiveOnPanic(t *testing.T) {
 // 而"第一次是登录墙、第三次正常"恰好是排查的关键信息。
 func TestArchiveKeepsEveryAttemptSeparate(t *testing.T) {
 	srv := serveBody(t, "<html>wall</html>")
-	e, _, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 9, Stage: "stub", URL: srv.URL}
 
 	f := func() *pageFetcher { return &pageFetcher{urls: []string{srv.URL}, err: errors.New("boom")} }
@@ -258,7 +259,7 @@ func TestArchiveKeepsEveryAttemptSeparate(t *testing.T) {
 // 不留下两个同名文件互相覆盖。
 func TestArchiveSameURLTwiceKeepsOneFile(t *testing.T) {
 	srv := serveBody(t, "<html>twice</html>")
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	task := &Task{ID: 10, Stage: "stub", URL: srv.URL}
 
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL, srv.URL}}, task, 0); err != nil {
@@ -272,7 +273,7 @@ func TestArchiveSameURLTwiceKeepsOneFile(t *testing.T) {
 // 超过单页上限的页面不归档（判据在**登记**时就生效，顺带把内存兜住）。
 func TestArchiveSkipsPageOverLimit(t *testing.T) {
 	srv := serveBody(t, strings.Repeat("x", (1<<20)+1)) // 1MB + 1 字节
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	e.cfg.HTML.MaxBodySize = 4 << 20 // 抓得下来，但归档上限是 1MB
 	e.cfg.Crawler.Archive.MaxFileMB = 1
 	e.SetHTMLClient()
@@ -289,7 +290,7 @@ func TestArchiveSkipsPageOverLimit(t *testing.T) {
 // 没开归档时：FetchHTML 照常工作，一个文件都不写（所有归档方法对 nil 安全）。
 func TestArchiveDisabledIsNoop(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, pool, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	e.cfg.Crawler.Archive.Enabled = false
 	e.cfg.Crawler.Archive.Dir = ""
 
@@ -405,7 +406,7 @@ func headerRecorder(t *testing.T) (*httptest.Server, func() http.Header) {
 func TestSiteHeadersFollowTheTask(t *testing.T) {
 	srv, seen := headerRecorder(t)
 
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure) // 复用：配好 HTML 客户端 + stub 库
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL) // 复用：配好 HTML 客户端 + stub 库
 	e.cfg.HTML.Headers = map[string]string{"X-From-Config": "cfg", "X-Keep": "keep"}
 	e.SetHTMLClient()
 	e.SetSite(core.Site{Key: "a", Headers: map[string]string{"User-Agent": "ua-a", "Cookie": "sid=a"}})
@@ -440,7 +441,7 @@ func TestSiteHeadersFollowTheTask(t *testing.T) {
 func TestPerRequestHeadersOverrideSiteHeaders(t *testing.T) {
 	srv, seen := headerRecorder(t)
 
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	e.SetHTMLClient()
 	e.SetSite(core.Site{Key: "a", Headers: map[string]string{"User-Agent": "ua-a", "Referer": "https://site-a/"}})
 

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func receiveDownload(t *testing.T, result <-chan *DownloadResult) *DownloadResult {
@@ -45,6 +47,7 @@ func TestDifferentSourcesSameDestination(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := DefaultConfig()
+			cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 			cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 			cfg.ChunkSize = 4
 			heldA, heldB := make(chan struct{}), make(chan struct{})
@@ -110,6 +113,7 @@ func TestDestinationWaitCanBeCanceled(t *testing.T) {
 			}))
 			defer server.Close()
 			cfg := DefaultConfig()
+			cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 			cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 			held, release := make(chan struct{}), make(chan struct{})
 			var once sync.Once
@@ -163,6 +167,7 @@ func TestWithIndependentOutputAndResumeRootsRunConcurrently(t *testing.T) {
 	var once sync.Once
 	defer once.Do(func() { close(release) })
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 	d := NewDownloader(cfg)
 	otherRoot, otherResume := t.TempDir(), t.TempDir()
@@ -194,6 +199,7 @@ func TestTemporaryFileDoesNotOverwriteAnotherDestination(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir, cfg.ResumeStateDir = t.TempDir(), t.TempDir()
 	held, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once

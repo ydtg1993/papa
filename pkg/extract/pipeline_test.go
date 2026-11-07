@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/extract"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 )
@@ -25,7 +26,7 @@ func TestIncrementalValidatedSamplePipeline(t *testing.T) {
 		_, _ = io.WriteString(w, `[{"id":9007199254740993,"title":"中文标题","token":"private"}]`)
 	}))
 	defer srv.Close()
-	client := htmlfetch.NewClient(htmlfetch.Config{})
+	client := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	r, err := client.FetchIncremental(context.Background(), srv.URL, nil)
 	if err != nil {
 		t.Fatal(err)

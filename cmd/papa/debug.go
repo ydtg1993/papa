@@ -223,7 +223,7 @@ func newProxyManager(cfg *config.Config) *proxy.Manager {
 	if cfg.Proxy.APIURL == "" {
 		return nil
 	}
-	return proxy.NewManager(cfg.Proxy.APIURL, cfg.Proxy.RefreshInterval)
+	return proxy.NewManagerWithNetwork(cfg.Proxy.APIURL, cfg.Proxy.RefreshInterval, cfg.Network)
 }
 
 // mergeHeaders 按 内置默认 < 配置 < --header 覆盖 的顺序合并请求头。
@@ -285,7 +285,7 @@ func runHTML(rawURL string, df debugFlags) error {
 		pm = newProxyManager(cfg)
 	}
 
-	client := htmlfetch.NewClient(htmlfetch.Config{
+	client := htmlfetch.NewClient(htmlfetch.Config{Network: cfg.Network,
 		Timeout:      parseTimeout(df.timeout, cfg.HTML.Timeout),
 		MaxBodySize:  cfg.HTML.MaxBodySize,
 		UserAgent:    ua,
@@ -350,7 +350,7 @@ func runRod(rawURL string, df debugFlags) error {
 		pm = newProxyManager(cfg)
 	}
 
-	pool, err := browser.NewPool(browser.PoolConfig{
+	pool, err := browser.NewPool(browser.PoolConfig{Network: cfg.Network,
 		TempDir:        cfg.Browser.TempDir,
 		Size:           1,
 		DirectSize:     0,
@@ -438,7 +438,7 @@ func runDiff(rawURL string, df debugFlags) error {
 		pm = newProxyManager(cfg)
 	}
 
-	htmlClient := htmlfetch.NewClient(htmlfetch.Config{
+	htmlClient := htmlfetch.NewClient(htmlfetch.Config{Network: cfg.Network,
 		Timeout:      parseTimeout(df.timeout, cfg.HTML.Timeout),
 		MaxBodySize:  cfg.HTML.MaxBodySize,
 		UserAgent:    ua,
@@ -455,7 +455,7 @@ func runDiff(rawURL string, df debugFlags) error {
 	if !loaded {
 		headless = true
 	}
-	pool, err := browser.NewPool(browser.PoolConfig{
+	pool, err := browser.NewPool(browser.PoolConfig{Network: cfg.Network,
 		TempDir:        cfg.Browser.TempDir,
 		Size:           1,
 		DirectSize:     0,
@@ -551,7 +551,7 @@ func runSelect(css string, target string, df debugFlags) error {
 		if df.proxy {
 			pm = newProxyManager(cfg)
 		}
-		client := htmlfetch.NewClient(htmlfetch.Config{
+		client := htmlfetch.NewClient(htmlfetch.Config{Network: cfg.Network,
 			Timeout:      parseTimeout(df.timeout, cfg.HTML.Timeout),
 			MaxBodySize:  cfg.HTML.MaxBodySize,
 			UserAgent:    ua,

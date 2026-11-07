@@ -75,7 +75,7 @@ func waitDone(t *testing.T, p *rod.Page) {
 // 按资源类型拦图片：图片请求不发出，脚本 / XHR 照常。
 func TestBlockResourceTypesPreventsImageRequest(t *testing.T) {
 	f := newBlockFixture(t)
-	pool := newLivePool(t)
+	pool := newLivePool(t, f.srv.URL)
 
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), f.srv.URL+"/page", PageOptions{
@@ -113,7 +113,7 @@ func TestBlockResourceTypesPreventsImageRequest(t *testing.T) {
 // URL 模式拦截统计脚本：命中模式的不发出，其它照常。
 func TestBlockURLPatterns(t *testing.T) {
 	f := newBlockFixture(t)
-	pool := newLivePool(t)
+	pool := newLivePool(t, f.srv.URL)
 
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
 		return b.WithNavigatedPage(context.Background(), f.srv.URL+"/page", PageOptions{

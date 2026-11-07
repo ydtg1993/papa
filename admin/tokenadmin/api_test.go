@@ -166,7 +166,7 @@ func TestRemove(t *testing.T) {
 		t.Errorf("删一把后应剩 1 行：%+v", rows)
 	}
 
-	// 最后一条不能删：表归零会让 auth 把"一条都没有"当成"还没配凭据"→ 后台只剩 IP 白名单
+	// 最后一条不能删：保留既有误操作保护；空表鉴权也默认拒绝。
 	w := do(t, mux, http.MethodPost, "/api/tokens/remove", `{"id":1}`)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("删最后一条应返回 409，得到 %d：%s", w.Code, w.Body.String())

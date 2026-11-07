@@ -70,7 +70,7 @@ func TestStoreCreateRejectsEmptyOperator(t *testing.T) {
 }
 
 // 删除的守卫必须写在语句里：删这一条的前提是"还存在别的令牌"。
-// 否则把最后一条删掉 → 表归零 → auth 把"一条都没有"当成"还没配凭据"→ 后台只剩 IP 白名单。
+// 保留最后一条的误操作保护；空表仍拒绝认证，恢复需本机 CLI。
 // （停用最后一条是拒绝，删除却敞开，这就是要修的不对称。）
 func TestDeleteScopeRefusesLastToken(t *testing.T) {
 	sql := dryDB(t).ToSQL(func(tx *gorm.DB) *gorm.DB {

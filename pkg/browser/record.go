@@ -61,6 +61,9 @@ func (e NetworkEntry) WriteSample(w io.Writer, policy htmlfetch.SamplePolicy) er
 // or every worker. Raw data stays in memory. CDP may allocate full bodies before
 // the returned-body limits can be checked. Incomplete entries remain explicit.
 func (b *Browser) RecordNetwork(ctx context.Context, rawURL string, opts RecordOptions) (*NetworkRecording, error) {
+	if err := validateNavigation(rawURL); err != nil {
+		return nil, err
+	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 30 * time.Second
 	}

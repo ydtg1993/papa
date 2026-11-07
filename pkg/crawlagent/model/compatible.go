@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // OutputTokenField is selected by the host, never by fallback requests.
@@ -39,6 +41,7 @@ const (
 // /chat/completions and never inserts /v1. AllowHTTP permits only explicit local
 // loopback test endpoints. APIKeyEnv names an environment variable, not a key.
 type Config struct {
+	Network          egress.Config `mapstructure:"network"`
 	BaseURL          string
 	Model            string
 	APIKeyEnv        string
@@ -161,6 +164,13 @@ func newCompatible(config Config, credentials func() (string, error)) (*Compatib
 	if u.RawPath != "" {
 		u.RawPath = strings.TrimRight(u.RawPath, "/") + "/chat/completions"
 	}
+	network := config.Network
+	if config.AllowHTTP && u.Scheme == "http" {
+		network.PrivateOrigins = append(append([]string(nil), network.PrivateOrigins...), u.Scheme+"://"+u.Host)
+	}
+	if network.Validate() != nil {
+		return nil, ErrConfig
+	}
 	transport := &http.Transport{
 		Proxy:                  nil,
 		DialContext:            (&net.Dialer{Timeout: config.Timeout, KeepAlive: -1}).DialContext,
@@ -180,10 +190,10 @@ func newCompatible(config Config, credentials func() (string, error)) (*Compatib
 		thinkingMode:     config.ThinkingMode,
 		maxInputBytes:    config.MaxInputBytes, maxResponseBytes: config.MaxResponseBytes,
 		maxOutputTokens: config.MaxOutputTokens,
-		client: &http.Client{
+		client: egress.Client(&http.Client{
 			Transport: transport, Timeout: config.Timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		}, network),
 	}, nil
 }
 

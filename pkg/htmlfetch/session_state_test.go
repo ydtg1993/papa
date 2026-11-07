@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func sessionTestURL(raw string) *url.URL {
@@ -179,7 +181,7 @@ func TestSessionStateRecordsAutomaticResponseCookies(t *testing.T) {
 	}))
 	defer server.Close()
 	session := NewSession()
-	_, err := NewClient(Config{}).Do(WithSession(context.Background(), session), Request{URL: server.URL + "/account/login"})
+	_, err := NewClient(Config{Network: egress.Config{PrivateOrigins: []string{server.URL}}}).Do(WithSession(context.Background(), session), Request{URL: server.URL + "/account/login"})
 	if err != nil {
 		t.Fatal(err)
 	}

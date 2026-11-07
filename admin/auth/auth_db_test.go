@@ -24,10 +24,10 @@ func TestVerifierFailClosed(t *testing.T) {
 		wantOK bool
 	}{
 		{
-			name:   "一条令牌都没配 → 放行（还没配凭据）",
+			name:   "一条令牌都没配 → 拒绝",
 			setup:  func(f *gormfake.DB) { f.SetCounts(0, 0) },
 			header: map[string]string{"Authorization": "Bearer whatever"},
-			wantOK: true,
+			wantOK: false,
 		},
 		{
 			name:   "配过但全被停用 → 拒绝（fail closed：停用最后一条不等于敞开）",
@@ -56,14 +56,14 @@ func TestVerifierFailClosed(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "统计启用的令牌出错 → 拒绝（fail closed）",
-			setup:  func(f *gormfake.DB) { f.SetCounts(1, 1); f.SetQueryError("count(", "db down") },
+			name:   "令牌查询出错 → 拒绝（fail closed）",
+			setup:  func(f *gormfake.DB) { f.SetCounts(1, 1); f.SetQueryError("token_hash", "db down") },
 			header: map[string]string{"Authorization": "Bearer good"},
 			wantOK: false,
 		},
 		{
-			name:   "一条都没配时，第二次统计（总数）出错 → 拒绝",
-			setup:  func(f *gormfake.DB) { f.SetCounts(0, 0); f.SetQueryError("count(", "db down") },
+			name:   "空表时查询失败 → 拒绝",
+			setup:  func(f *gormfake.DB) { f.SetCounts(0, 0); f.SetQueryError("token_hash", "db down") },
 			header: map[string]string{"Authorization": "Bearer good"},
 			wantOK: false,
 		},
@@ -85,7 +85,7 @@ func TestVerifierFailClosed(t *testing.T) {
 	}
 }
 
-// 取令牌那一句自己出错（数数正常）→ 也要拒绝。这条单独测，因为它的错误来自另一条语句。
+// 令牌查询失败必须拒绝，不能退回匿名身份。
 func TestVerifierDeniesWhenTokenLookupFails(t *testing.T) {
 	f := gormfake.New()
 	f.SetCounts(1, 1)
@@ -101,11 +101,11 @@ func TestVerifierDeniesWhenTokenLookupFails(t *testing.T) {
 
 // 二次确认（关停这类高危操作）：语义必须与 Verifier 一致，否则会出现"能进后台却关不掉"的死角。
 func TestConfirmerMatchesVerifierSemantics(t *testing.T) {
-	t.Run("一条都没配 → 放行（不看传什么）", func(t *testing.T) {
+	t.Run("一条都没配 → 拒绝", func(t *testing.T) {
 		f := gormfake.New()
 		f.SetCounts(0, 0)
-		if op, ok := Confirmer(gormfake.MustOpen(f), nil)(""); !ok || op != "" {
-			t.Fatalf("还没配凭据时应当放行，实得 (%q, %v)", op, ok)
+		if op, ok := Confirmer(gormfake.MustOpen(f), nil)(""); ok || op != "" {
+			t.Fatalf("还没配凭据时应当拒绝，实得 (%q, %v)", op, ok)
 		}
 	})
 	t.Run("配过 + 对的令牌 → 放行并带出操作人", func(t *testing.T) {
@@ -124,16 +124,16 @@ func TestConfirmerMatchesVerifierSemantics(t *testing.T) {
 			t.Fatalf("令牌不对应当拒绝，实得 (%q, %v)", op, ok)
 		}
 	})
-	t.Run("统计出错 → 拒绝", func(t *testing.T) {
+	t.Run("令牌查询出错 → 拒绝", func(t *testing.T) {
 		f := gormfake.New()
-		f.SetQueryError("count(", "db down")
+		f.SetQueryError("token_hash", "db down")
 		if op, ok := Confirmer(gormfake.MustOpen(f), nil)("good"); ok || op != "" {
 			t.Fatalf("查库出错应当拒绝，实得 (%q, %v)", op, ok)
 		}
 	})
 }
 
-// 启动警告：一条都没有 → 喊一声"对白名单完全开放"；有令牌 → 不喊；查库出错 → 记 Error。
+// 启动警告：空表提示本机 CLI 创建令牌；有可用令牌不喊；查库出错记 Error。
 func TestWarnIfNoTokenBranches(t *testing.T) {
 	t.Run("一条都没有 → 警告", func(t *testing.T) {
 		f := gormfake.New()
@@ -164,14 +164,14 @@ func TestWarnIfNoTokenBranches(t *testing.T) {
 	})
 }
 
-// Required 报告后台首帧要不要弹登录框：令牌表一条都没有 = 不要求；存在任意一条（含停用）= 要求；
-// 查库失败 fail closed（宁可多弹一次登录，也不把需要凭据的环境画成开放）。
+// Required 始终要求登录：空表、已有令牌（含停用）都不能匿名；
+// 不读取数据库，因此库不可用时也不隐藏登录。
 func TestRequired(t *testing.T) {
 	for name, tc := range map[string]struct {
 		setup func(*gormfake.DB)
 		want  bool
 	}{
-		"一条都没有 → 不要求":           {setup: func(f *gormfake.DB) { f.SetCounts(0, 0) }, want: false},
+		"一条都没有 → 要求":            {setup: func(f *gormfake.DB) { f.SetCounts(0, 0) }, want: true},
 		"有启用令牌 → 要求":            {setup: func(f *gormfake.DB) { f.SetCounts(1, 1) }, want: true},
 		"全部停用（表里还有行）→ 要求":       {setup: func(f *gormfake.DB) { f.SetCounts(0, 2) }, want: true},
 		"查库失败 → fail closed 要求": {setup: func(f *gormfake.DB) { f.SetQueryError("count(", "db down") }, want: true},

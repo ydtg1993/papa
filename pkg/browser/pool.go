@@ -14,6 +14,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
 )
 
@@ -54,6 +55,7 @@ const (
 
 // PoolConfig 浏览器池配置
 type PoolConfig struct {
+	Network      egress.Config  `mapstructure:"network"`
 	TempDir      string         // Profile root; empty preserves Rod's OS temporary directory default.
 	Size         int            // 代理浏览器并发上限（按需创建）
 	DirectSize   int            // 强制直连浏览器并发上限（不经过代理）
@@ -112,6 +114,10 @@ func resolveBrowserBinary(source, path string) (string, string, error) {
 
 // NewPool 创建浏览器池
 func NewPool(cfg PoolConfig) (*Pool, error) {
+	if err := cfg.Network.Validate(); err != nil {
+		return nil, err
+	}
+	cfg.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
 	if cfg.TempDir != "" {
 		for key := range cfg.Flags {
 			if strings.TrimLeft(key, "-") == "user-data-dir" || strings.TrimLeft(key, "-") == "disk-cache-dir" {
@@ -202,6 +208,18 @@ func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 // newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
 func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	l := p.newLauncher(useProxy)
+	upstream := l.Get(flags.Flag("proxy-server"))
+	gateway, err := egress.NewProxy(p.cfg.Network, upstream)
+	if err != nil {
+		return nil, err
+	}
+	success := false
+	defer func() {
+		if !success {
+			gateway.Close()
+		}
+	}()
+	secureLauncher(l, gateway.URL)
 	// Preserve legacy fixed profile flags when temp_dir is not configured.
 	// NewPool rejects these flags together with an explicit temp_dir.
 	legacyProfile := false
@@ -218,7 +236,6 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 			return nil, err
 		}
 	}
-	success := false
 	defer func() {
 		if !success {
 			if l.PID() != 0 {
@@ -244,6 +261,7 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	success = true
 	return &Browser{
 		Browser:        browser,
+		gateway:        gateway,
 		launcher:       l,
 		useProxy:       useProxy,
 		defaultDevice:  p.cfg.DefaultDevice,

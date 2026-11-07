@@ -416,3 +416,23 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 ## 动态阶段调度实现
 
 engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go 管理 MySQL 运行锁/CAS/同步派生；claimTaskContext 统一检查新投递、加急、重试与恢复。终态通知仅唤醒回灌，不作为持久真相。测试包括独立 MySQL 并发与恢复、策略纯函数、后台请求与生产页面组件。见 [动态阶段调度](TASK_FLOW.md)。
+
+
+### 后台默认鉴权回归（2026-11-07）
+
+`admin/auth` 的 Verifier/Confirmer 逐请求查库，不允许用令牌数量缓存授权；Required 恒为 true。`admin/server` 未注入 VerifyToken 时拒绝受保护接口，AuthRequired 仅影响登录框。首次令牌通过本机 CLI 创建，业务扩展继续默认套 Monitor.Auth。
+
+新增 `TestDefaultAuthenticationNeverAuthorizesEmptyStore`、`TestAuthenticationIgnoresStaleZeroCounts`、`TestDefaultAuthProtectsManagementAndExtensionRoutes`、`TestFirstTokenImmediatelyAuthenticatesAndRevocationImmediatelyDenies`。无关 handler 测试显式注入测试身份校验器，不借用生产匿名放行；HTTP 扩展测试用桩处理器验证鉴权前无副作用，并不替代各业务 API 自身的回归。
+
+
+### 网络出口实现与验证（2026-11-07）
+
+新增 `pkg/egress`：`policy.go` 规范化 URL、编译私网 origin 授权并解析地址，`ip.go` 统一公网分类，`http.go` 固定已验证 IP 建连，`proxy.go` 提供浏览器网关与上游隧道。策略在构造时复制，无全局可变授权。浏览器的 `egress.go` 固定安全参数，导航入口拒绝本地文件等 scheme；池拥有网关生命周期，隔离上下文共享父进程的网关。
+
+`egress_test.go` 覆盖默认拒绝、显式授权、混合 DNS 答案、固定 IP、重定向、上游 CONNECT、关闭隧道；`integration_test.go` 从实际 HTML/下载器/通知 API 验证目标无请求及 M3U8 四类依赖。`pkg/browser/egress_test.go` 覆盖入口/参数与真实 Chrome 子资源、跳转、弹窗；真实用例需 `PAPA_EGRESS_BROWSER_BIN` 指定本机可执行文件，未配置显式跳过。其余浏览器回归可用 Rod 的 `-rod=bin=<绝对路径>` 指定本机 Chrome。测试仅用合成站点，外网模型与真实业务不参与普通回归。
+
+调用方提供的代理和 Go 回调属于可信宿主配置，无法通过框架验证任意自定义网络代码；不要把这层等同于容器/系统防火墙。HTTPS 上游代理与明文 WebSocket 暂不支持的边界、代理连接复用代价写在 CORE_CONFIG 中。
+
+`TestDownloaderConfigCopiesCannotExpandPrivateGrant` 验证外部配置和 Config 副本不能改变 With/SetClient 授权；`TestHTMLHotReloadCannotGrantPrivateOrigin`、`TestInvalidDownloaderProxyNeverFallsBackToDirect` 验证热更与代理错误不会扩大权限。`pkg/middleware/m3u8/egress_ffmpeg_test.go` 的真实合并测试需 `PAPA_EGRESS_FFMPEG_BIN`，同时验证本地片段成功与嵌套网络清单被拒绝。
+
+本机普通浏览器与 Agent 的严格沙箱渲染器是不同验证路径；后者若报 `webaccess: controlled renderer unavailable`，不能用普通浏览器通过代替。不要为测试成功而取消 Agent 沙箱。Rod 的 `-rod` 参数仅适用于链接 Rod 的测试包，不能直接附加给所有 Go 包。

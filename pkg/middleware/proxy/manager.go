@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // defaultRefreshInterval 调用方传非正刷新间隔时兜底的默认值（与历史默认一致的 8 分钟）。
@@ -28,10 +29,15 @@ type Manager struct {
 
 // NewManager 创建代理管理器
 func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
+	return NewManagerWithNetwork(apiURL, refreshInterval, egress.Config{})
+}
+
+// NewManagerWithNetwork explicitly authorizes private proxy-list API origins.
+func NewManagerWithNetwork(apiURL string, refreshInterval time.Duration, network egress.Config) *Manager {
 	m := &Manager{
 		apiURL:     apiURL,
 		refresh:    refreshInterval,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		client:     egress.Client(&http.Client{Timeout: 10 * time.Second}, network),
 		trackQueue: msgqueue.NewMsgQueue[any](10),
 	}
 	if apiURL != "" {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/internal/msgqueue"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 没配 api_url 时不建连接、不起刷新协程，Next 返回空串 ——
@@ -30,7 +31,7 @@ func TestNewManagerFetchesAndRotates(t *testing.T) {
 		{"host": "5.6.7.8", "port": "3128"},
 	})
 
-	m := NewManager(srv.URL, time.Hour)
+	m := NewManagerWithNetwork(srv.URL, time.Hour, egress.Config{PrivateOrigins: []string{srv.URL}})
 
 	want := []string{
 		"http://1.2.3.4:8080",
@@ -56,7 +57,7 @@ func TestNewManagerFetchesAndRotates(t *testing.T) {
 // 出口会全部变成直连，目标站可能因此封 IP，而这件事在别处看不出来（Next 只是返回空串）。
 func TestRefreshProxiesEmptyListWarns(t *testing.T) {
 	srv := proxyServer(t, nil)
-	m := NewManager(srv.URL, time.Hour)
+	m := NewManagerWithNetwork(srv.URL, time.Hour, egress.Config{PrivateOrigins: []string{srv.URL}})
 
 	if got := m.Next(); got != "" {
 		t.Fatalf("空代理表时 Next = %q, want 空串", got)
@@ -74,7 +75,7 @@ func TestRefreshProxiesEmptyListWarns(t *testing.T) {
 // 空列表：Next 返回空串而不是 panic（索引取模前先判了长度）。
 func TestNextWithEmptyProxyList(t *testing.T) {
 	srv := proxyServer(t, nil)
-	m := NewManager(srv.URL, time.Hour)
+	m := NewManagerWithNetwork(srv.URL, time.Hour, egress.Config{PrivateOrigins: []string{srv.URL}})
 	if got := m.Next(); got != "" {
 		t.Fatalf("空代理表时 Next = %q, want 空串", got)
 	}
@@ -103,7 +104,7 @@ func TestRefreshProxiesErrorPaths(t *testing.T) {
 			srv := httptest.NewServer(c.handler)
 			defer srv.Close()
 
-			m := NewManager(srv.URL, time.Hour)
+			m := NewManagerWithNetwork(srv.URL, time.Hour, egress.Config{PrivateOrigins: []string{srv.URL}})
 			got := drainError(t, m)
 			if !strings.Contains(got, c.want) {
 				t.Fatalf("错误消息 = %q, want 含 %q", got, c.want)
@@ -171,7 +172,7 @@ func drainError(t *testing.T, m *Manager) string {
 // 构造时用默认值兜底，别把 panic 留给 goroutine。
 func TestNewManagerNonPositiveIntervalFallsBack(t *testing.T) {
 	srv := proxyServer(t, []map[string]string{{"host": "1.2.3.4", "port": "8080"}})
-	m := NewManager(srv.URL, 0)
+	m := NewManagerWithNetwork(srv.URL, 0, egress.Config{PrivateOrigins: []string{srv.URL}})
 	if m.refresh != defaultRefreshInterval {
 		t.Fatalf("非正间隔应用默认值兜底，实得 %v", m.refresh)
 	}

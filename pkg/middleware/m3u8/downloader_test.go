@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // 测试辅助：创建临时目录并自动清理
@@ -176,6 +177,7 @@ segment2.ts
 	stateDir := tempDir(t)
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = outDir
 	cfg.ResumeStateDir = stateDir
 	cfg.AutoMerge = false // 避免调用 ffmpeg
@@ -250,6 +252,7 @@ seg2.ts
 	outDir := tempDir(t)
 	stateDir := tempDir(t)
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = outDir
 	cfg.ResumeStateDir = stateDir
 	cfg.AutoMerge = false
@@ -310,6 +313,7 @@ seg.ts
 	outDir := tempDir(t)
 	stateDir := tempDir(t)
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = outDir
 	cfg.ResumeStateDir = stateDir
 	cfg.AutoMerge = false
@@ -403,6 +407,7 @@ segment3.ts
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.AutoMerge = false // 避免调用 ffmpeg
@@ -435,6 +440,7 @@ func TestPrepareKeyIV(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	d := NewDownloader(cfg)
@@ -568,6 +574,7 @@ func TestDownloadBadIVDoesNotPanic(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxRetries = 1 // 别在重试上耗时间，只验证「报错而不是崩」
@@ -619,6 +626,7 @@ func TestSegmentWriteIsAtomicOnFailure(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxRetries = 0
@@ -649,6 +657,7 @@ func TestSegmentWriteSucceedsWithoutResidue(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	d := NewDownloader(cfg)
@@ -704,6 +713,7 @@ func TestDownloadDoesNotHangOnNonPositiveConcurrency(t *testing.T) {
 			defer server.Close()
 
 			cfg := DefaultConfig()
+			cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 			cfg.OutputDir = tempDir(t)
 			cfg.ResumeStateDir = tempDir(t)
 			cfg.AutoMerge = false // 避免调用 ffmpeg
@@ -751,6 +761,7 @@ func TestRetryBackoffIsInterruptible(t *testing.T) {
 	defer srv.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{srv.URL}}
 	cfg.MaxRetries = 3
 	cfg.RetryInterval = 3 // 第 1 次退避 = 3s
 	d := NewDownloader(cfg)
@@ -804,6 +815,7 @@ segment2.ts
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.AutoMerge = false // 避免调用 ffmpeg
@@ -843,6 +855,7 @@ func TestOutputDirGetterIsTheBaseOfOutputFile(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.AutoMerge = false // 避免调用 ffmpeg
@@ -935,6 +948,7 @@ func TestOptionsFromRequestReachesSegmentRequest(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.AutoMerge = false

@@ -34,6 +34,9 @@ import (
 // errors, cancellation, or panic; neither the page nor browser may escape its
 // enclosing WithIsolatedBrowser scope.
 func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageState, opts PageOptions, fn func(*rod.Page) error) (err error) {
+	if err := validateNavigation(rawURL); err != nil {
+		return err
+	}
 	if fn == nil {
 		return fmt.Errorf("state page: callback required")
 	}
@@ -172,7 +175,7 @@ func waitStatePageLoad(page *rod.Page) error {
 		err := page.WaitLoad()
 		// An immediate client redirect destroys the promise used by Rod's
 		// WaitLoad. Continue waiting in the replacement document, under navCtx.
-		if !errors.Is(err, cdp.ErrCtxDestroyed) {
+		if !stateLoadContextReplaced(err) {
 			return err
 		}
 		if err := page.GetContext().Err(); err != nil {
@@ -319,4 +322,10 @@ func stateNavigationScript(state *PageState, name string) (string, error) {
 		}
 		debugger;
 	})(JSON.parse(` + string(quoted) + `));`, nil
+}
+
+// Chromium also reports this transient navigation race with a different CDP
+// message. Actual closed sessions return their own error on the next wait.
+func stateLoadContextReplaced(err error) bool {
+	return errors.Is(err, cdp.ErrCtxDestroyed) || errors.Is(err, &cdp.Error{Code: -32000, Message: "Inspected target navigated or closed"})
 }

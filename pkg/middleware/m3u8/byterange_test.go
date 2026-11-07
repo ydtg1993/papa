@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 // `#EXT-X-BYTERANGE` 的两种写法都要换算成**合法的 HTTP Range**，省略 @起点 的按
@@ -93,6 +95,7 @@ func TestDownloadByteRangeSegments(t *testing.T) {
 	defer server.Close()
 
 	cfg := DefaultConfig()
+	cfg.Network = egress.Config{PrivateOrigins: []string{server.URL}}
 	cfg.OutputDir = tempDir(t)
 	cfg.ResumeStateDir = tempDir(t)
 	cfg.MaxConcurrent = 1

@@ -18,6 +18,7 @@ import (
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/database"
 	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v3/pkg/rulestore"
 	"gorm.io/driver/mysql"
@@ -153,7 +154,7 @@ func run(ctx context.Context, output io.Writer, db *gorm.DB, dir string) error {
 		return err
 	}
 	result.ChangedRulePaths = len(diff.Changes)
-	response, err := htmlfetch.NewClient(htmlfetch.Config{}).Do(ctx, htmlfetch.Request{URL: srv.URL + "/page"})
+	response, err := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}).Do(ctx, htmlfetch.Request{URL: srv.URL + "/page"})
 	if err != nil {
 		return err
 	}
@@ -183,7 +184,7 @@ func run(ctx context.Context, output io.Writer, db *gorm.DB, dir string) error {
 		return err
 	}
 	runTask := func(task *engine.Task) error {
-		return f.RunHTTP(ctx, task, htmlfetch.NewClient(htmlfetch.Config{}), func(child *engine.Task) error {
+		return f.RunHTTP(ctx, task, htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}), func(child *engine.Task) error {
 			if child.Meta["rule_version"] == task.Meta["rule_version"] {
 				result.ChildPinned = true
 			} else {

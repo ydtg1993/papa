@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/pkg/egress"
 )
 
 func TestWebhookNotify(t *testing.T) {
@@ -26,7 +27,9 @@ func TestWebhookNotify(t *testing.T) {
 			Stage: "detail", TaskID: 3, URL: "http://x", Retry: 2, Kind: "structure", Message: "boom",
 		},
 	}
-	if err := NewWebhook(srv.URL).Notify(context.Background(), event); err != nil {
+	w := NewWebhook(srv.URL)
+	w.Network = egress.Config{PrivateOrigins: []string{srv.URL}}
+	if err := w.Notify(context.Background(), event); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
 	if method != http.MethodPost {
@@ -42,7 +45,9 @@ func TestWebhookErrorStatus(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	if err := NewWebhook(srv.URL).Notify(context.Background(), core.AlertEvent{}); err == nil {
+	w := NewWebhook(srv.URL)
+	w.Network = egress.Config{PrivateOrigins: []string{srv.URL}}
+	if err := w.Notify(context.Background(), core.AlertEvent{}); err == nil {
 		t.Fatal("expected error for 500 status")
 	}
 }

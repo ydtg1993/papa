@@ -77,6 +77,12 @@ quality:
 
 OA 质量中心复用上述三表，没有新增迁移或配置键；读取观测、已有报告及按需临时汇总；具名人工可固化汇总为报告，不自动保存或触发复分析。已启用并迁移过质量表的项目升级只需重新构建和重启；首次启用仍需显式迁移与 Collector 接线。查询限制与证据定位见 [MONITOR §14](MONITOR.md#14-质量监控中心)，显式执行与候选审阅见 §15。
 
+### network —— 采集出口
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `private_origins` | string[] | `[]` | 仅允许公网 HTTP(S)；内网按完整协议/主机/端口显式授权。不能带路径、查询、凭据或通配符，重启生效。完整用法与代理限制见文末「统一网络出口」 |
+
 ### app —— 环境
 
 | 键 | 类型 | 说明 |
@@ -227,7 +233,7 @@ OA 质量中心复用上述三表，没有新增迁移或配置键；读取观�
 | `port` | int | 监听端口 |
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
-| （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人）；用 `papa token add --operator <名字>` 创建 |
+| （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人）；管理接口始终要求有效令牌，空表也拒绝访问；首把或恢复令牌在服务器本机用 `papa token add --operator <名字>` 创建 |
 | `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌；表格动作、访问令牌页、队列「立即执行」、熔断放行四类都记），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
 | `read_header_timeout` | duration | `10s` | 只发请求头不发送体的慢连接会被掐掉 |
 | `read_timeout` | duration | `30s` | 读完整请求（含 body）的上限 |
@@ -448,3 +454,29 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 ## 动态调度开关
 
 `task_flow.enabled` 默认 false；启用后显式 `papa migrate` 创建运行策略表。升级本版本须迁移 crawler_tasks 的四个调度列（关闭开关也需要），普通启动不迁移。用法、限制与动态切换见 [动态阶段调度](TASK_FLOW.md)。
+
+
+## 统一网络出口（network）
+
+`network.private_origins` 默认 `[]`：框架采集出口只允许公网 HTTP(S)，拒绝回环、私网、链路本地、保留地址和非 HTTP(S) URL。内网采集必须显式配置完整 origin，不能带路径、查询、凭据或通配符：
+
+```yaml
+network:
+  private_origins:
+    - "https://intranet.example:8443"
+    - "http://127.0.0.1:8123"
+```
+
+授权仅匹配指定协议、主机和端口，`localhost` 与 `127.0.0.1` 是不同 origin；省略默认端口与显式 `:80`/`:443` 等价。它不自动授权子域或其他端口，也不限制路径；不要把整条任务 URL 填入。DNS 返回的全部 IP 都须通过检查，实际连接使用核准的 IP。入口获准不代表重定向、分片、密钥或页面子资源的其他 origin 获准。
+
+此配置下发给 Engine 的 HTML/FetchHTTP、浏览器池和两个内置下载器，也用于 `papa html`、`papa rod`、`papa diff`；重启生效，不支持 OA 热更或逐任务放宽。底层构造器的 `Network` 字段使用同一 `egress.Config`（门面别名 `papa.NetworkConfig`）。自行创建的下载器/客户端不会自动读取应用配置，宿主必须显式传入。构造时复制授权；下载器的 Config 副本、With 与 SetClient 不改变原授权。
+
+Webhook 使用 `Webhook.Network`；代理列表 API 使用 `proxy.NewManagerWithNetwork`。模型适配器使用 `model.Config.Network`，其既有 `AllowHTTP` 只为指定的回环 HTTP 模型端点提供明确授权。它们不会自动继承页面或 Agent 给出的授权。Agent 的 `webaccess` 保留独立的精确 origin/path 白名单、资源白名单与预算，不能由本配置放宽。
+
+兼容性：原先隐式访问内网的业务需补授权；标准自定义 `http.Client` 保留超时、Jar、重定向及 TLS 配置，但拨号与协议处理受框架控制，不接受自定义 RoundTripper。默认不继承环境代理。显式 HTTP/SOCKS5 上游代理须支持固定 IP 隧道（HTTP 代理必须支持 CONNECT，包括 HTTP 目标端口）；当前不支持 HTTPS 上游代理，失败不会转直连。经上游代理的请求暂不复用连接，存在额外握手成本。
+
+主机名使用 ASCII；国际化域名请先转换为 Punycode。拒绝尾点、旧式数字 IP、带作用域的 IPv6 等歧义形式。上游代理地址属于宿主显式配置的基础设施，不受目标站私网白名单限制；不能把页面、模型输出或未经验证的任务字段直接作为代理地址。
+
+M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理已经下载、解密的本地片段；不会因媒体中的嵌套清单再次联网。业务自行调用外部工具不在此约束内。
+
+浏览器安全参数覆盖冲突的用户启动参数，禁用直接 DNS、QUIC、非代理 WebRTC、扩展与相关旁路；仅为本机网关排除回环地址的 DNS 禁止规则，页面回环流量仍经过网关。每实例网关随浏览器关闭，普通 HTTP 升级（`ws://`）暂不支持，`wss://` 经过受控 CONNECT。用户自行使用原生 Rod/CDP、操作系统网络、外部程序或自定义业务 HTTP 客户端属于可信扩展，框架出口策略不是系统级沙箱，也不管理数据库等基础设施连接或浏览器二进制下载。

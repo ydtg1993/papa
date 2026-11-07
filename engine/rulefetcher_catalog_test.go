@@ -217,7 +217,7 @@ func TestRuleCatalogLegacyTasksAndConcurrentPublication(t *testing.T) {
 
 func TestRuleCatalogPublicationIdentityReachesEvidenceAndTrace(t *testing.T) {
 	srv := serveBody(t, `{"rows":[{"id":"A"}]}`)
-	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	reg := ruleTestRegistry(t, srv.URL)
 	catalog := &testRuleCatalog{registry: reg}
 	catalog.publish("v1", 7)

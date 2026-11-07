@@ -61,7 +61,7 @@ func newObsReportFixture(t *testing.T) string {
 // 报告列表：只认含已知产物的子目录，按生成时间倒序，带 report.json 的判定/模式/暂停/失败原因。
 func TestObsReportList(t *testing.T) {
 	root := newObsReportFixture(t)
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ReportDir: root})
 	rr := serve(m, http.MethodGet, "/api/obs/reports", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
@@ -138,7 +138,7 @@ func TestObsReportListSortsByGeneratedAt(t *testing.T) {
 	old := now.Add(-48 * time.Hour)
 	_ = os.Chtimes(filepath.Join(root, "old-mtime-but-new-report"), old, old)
 
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ReportDir: root})
 	rr := serve(m, http.MethodGet, "/api/obs/reports", nil)
 	body := decodeJSON(t, rr)
 	runs := body["runs"].([]any)
@@ -157,7 +157,7 @@ func TestObsReportListEmptyOrMissingDir(t *testing.T) {
 		{"目录不存在", filepath.Join(t.TempDir(), "nope")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: tc.dir})
+			m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ReportDir: tc.dir})
 			rr := serve(m, http.MethodGet, "/api/obs/reports", nil)
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
@@ -174,7 +174,7 @@ func TestObsReportListEmptyOrMissingDir(t *testing.T) {
 // 读单个产物：原文 + text/plain；download=1 时带 attachment 头。
 func TestObsReportFileReadAndDownload(t *testing.T) {
 	root := newObsReportFixture(t)
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ReportDir: root})
 
 	rr := serve(m, http.MethodGet, "/api/obs/report?run=run-old&file=report.md", nil)
 	if rr.Code != http.StatusOK {
@@ -206,7 +206,7 @@ func TestObsReportFileReadAndDownload(t *testing.T) {
 // 下载路径是**从请求里来的**：越界、未知文件名、不存在的报告都要挡在读取之前。
 func TestObsReportFileRejectsBadInput(t *testing.T) {
 	root := newObsReportFixture(t)
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ReportDir: root})
 	for _, tc := range []struct {
 		name string
 		url  string
@@ -231,7 +231,7 @@ func TestObsReportFileRejectsBadInput(t *testing.T) {
 
 // 没配置报告目录时读接口回 404（不是空 200）：页面里的「下载」不该静默拿到空文件。
 func TestObsReportFileWithoutReportDir(t *testing.T) {
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
 	rr := serve(m, http.MethodGet, "/api/obs/report?run=run-old&file=report.md", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404, body=%s", rr.Code, rr.Body.String())
@@ -256,7 +256,7 @@ func TestObsReportFileTooLarge(t *testing.T) {
 	}
 	_ = f.Close()
 
-	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{ReportDir: root})
+	m := NewMonitor(emptyGetter, testLogger{t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, ReportDir: root})
 	rr := serve(m, http.MethodGet, "/api/obs/report?run=big-run&file=report.json", nil)
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413, body=%s", rr.Code, rr.Body.String())

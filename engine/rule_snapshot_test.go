@@ -42,7 +42,7 @@ func readRuleObservations(t *testing.T, root string) []ruleSnapshotManifest {
 func runSnapshotFixture(t *testing.T, mode string, policy *htmlfetch.SamplePolicy, saveErr error) (*Engine, *stubConnPool, string, string, error) {
 	t.Helper()
 	srv := serveBody(t, `{"rows":[{"id":"A"}]}`)
-	e, trace, dir := archiveEngine(t, mode)
+	e, trace, dir := archiveEngine(t, mode, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = policy
 	id := ""
@@ -110,7 +110,7 @@ func TestRuleSnapshotSuccessRetentionModes(t *testing.T) {
 
 func TestRuleSnapshotRetriesShareBodyKeepDistinctObservations(t *testing.T) {
 	srv := serveBody(t, `{"rows":[{"id":"A"}]}`)
-	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = snapshotPolicy()
 	boom := errors.New("save failed")
@@ -169,7 +169,7 @@ func TestRuleSnapshotPolicyOmissionRedactionAndIsolation(t *testing.T) {
 		})
 	}
 	srv := serveBody(t, `{"rows":[{"id":"secret"}]}`)
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = &htmlfetch.SamplePolicy{QueryKeys: []string{"page"}, Headers: []string{"Cookie"}, RedactBody: func(request bool, b []byte) ([]byte, error) {
 		if request {
@@ -207,7 +207,7 @@ func TestRuleSnapshotPolicyOmissionRedactionAndIsolation(t *testing.T) {
 
 func TestRuleSnapshotWriteFailureDoesNotChangeTask(t *testing.T) {
 	srv := serveBody(t, `{"rows":[{"id":"A"}]}`)
-	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	blocked := filepath.Join(dir, "file")
 	if err := os.WriteFile(blocked, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestRuleSnapshotUnavailableWithoutAttemptOrDisabledArchive(t *testing.T) {
 	if _, err := ruleTestRun(t, f, task); err != nil {
 		t.Fatal(err)
 	}
-	e, _, dir := archiveEngine(t, config.ArchiveModeAlways)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	e.cfg.Crawler.Archive.Enabled = false
 	if err := e.runAttempt(context.Background(), f, task, 0); err != nil {
 		t.Fatal(err)
@@ -256,7 +256,7 @@ func TestRuleSnapshotUnavailableWithoutAttemptOrDisabledArchive(t *testing.T) {
 
 func TestRuleSnapshotPanicStillPersistsReadablePage(t *testing.T) {
 	srv := serveBody(t, `{"rows":[{"id":"A"}]}`)
-	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure)
+	e, trace, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	cfg := ruleTestConfig(ruleTestRegistry(t, srv.URL), srv.URL)
 	cfg.SnapshotPolicy = snapshotPolicy()
 	cfg.Save = func(context.Context, *Task, RulePage) error { panic("business panic") }
