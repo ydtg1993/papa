@@ -3,7 +3,9 @@ package engine
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ydtg1993/papa/v3/config"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -24,15 +26,42 @@ import (
 func TestReservedWordColumnsAreQuotedInRawSQL(t *testing.T) {
 	db := dryRunMySQL(t)
 
-	t.Run("提交可轮询任务：repeat 自增", func(t *testing.T) {
+	t.Run("提交可轮询任务：幂等初始化 repeat", func(t *testing.T) {
 		sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
 			return tx.Model(&models.CrawlerTask{}).Where("id = ?", 1).
 				Updates(submitUpdates(&Task{ID: 1, Repeatable: true}))
 		})
-		if !strings.Contains(sql, "`repeat`=`repeat` + 1") {
+		if !strings.Contains(sql, "`repeat`=CASE WHEN `repeat` = 0 THEN 1 ELSE `repeat` END") {
 			t.Errorf("`repeat` 是保留字，裸写会 1064；拼出来应当是带引号的：%s", sql)
 		}
 	})
+}
+
+func TestRepeatResetAtomicallyAdvancesQuotedRound(t *testing.T) {
+	db := dryRunMySQL(t)
+	var sql string
+	if err := db.Callback().Update().After("gorm:update").Register("test:repeat_reset_sql", func(tx *gorm.DB) {
+		sql = tx.Statement.SQL.String()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.RepeatQueue.Interval = time.Hour
+	e := &Engine{db: db, cfg: cfg, stages: map[string]*stageInfo{
+		"stub:stub": {stage: "stub", config: StageConfig{Site: "stub", RepeatLimit: 13}},
+	}}
+	row := actionRow(7, "stub")
+	row.Repeat, row.Repeatable, row.Status = 12, models.RepeatableYes, models.TaskStatusSuccess
+	// DryRun reports zero affected rows, so the production method renders its
+	// guarded reset then returns without enqueuing or emitting events.
+	if e.requeueRepeatTaskIn(row) {
+		t.Fatal("dry run unexpectedly enqueued")
+	}
+	for _, fragment := range []string{"`repeat`=`repeat` + 1", "`status`=?", "`last_repeat_at`=NOW()", "`next_repeat_at`=FROM_UNIXTIME", "repeatable = ? AND status IN", "`repeat` < ?"} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("missing atomic reset fragment %q: %s", fragment, sql)
+		}
+	}
 }
 
 // 去重查键必须**与唯一索引的列一致**：查的键与索引的键不一致时，插入撞索引后的回查会空手而归，

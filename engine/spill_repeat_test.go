@@ -10,7 +10,7 @@ import (
 	"github.com/ydtg1993/papa/v3/models"
 )
 
-func TestSpillRetriesCountRepeatOncePerSubmission(t *testing.T) {
+func TestSpillRetriesPreservePendingRepeat(t *testing.T) {
 	for _, failFirstWrite := range []bool{false, true} {
 		name := "queue-full"
 		if failFirstWrite {
@@ -24,7 +24,7 @@ func TestSpillRetriesCountRepeatOncePerSubmission(t *testing.T) {
 				f.failNext = 1
 			}
 			// The fake does not evaluate SQL expressions. Emulate only successful
-			// repeat increments emitted by the production submission path.
+			// new-round increments emitted by the production repeat reset.
 			f.onExec = func(n int) {
 				if f.failNext == 0 && strings.Contains(f.execs[n-1], "`repeat` + 1") {
 					f.row["repeat"] = f.row["repeat"].(int64) + 1
@@ -44,11 +44,11 @@ func TestSpillRetriesCountRepeatOncePerSubmission(t *testing.T) {
 			for i := 0; i < 40; i++ {
 				e.drainSpilled()
 			}
-			if got := f.row["repeat"]; got != int64(13) {
-				t.Fatalf("repeat after 40 full-queue drains = %v, want 13", got)
+			if got := f.row["repeat"]; got != int64(12) {
+				t.Fatalf("repeat after 40 full-queue drains = %v, want 12", got)
 			}
-			if task.Repeat != 13 {
-				t.Fatalf("in-memory repeat = %d, want 13", task.Repeat)
+			if task.Repeat != 12 {
+				t.Fatalf("in-memory repeat = %d, want 12", task.Repeat)
 			}
 			if e.spillBacklog() != 1 || queued(t, pool) != 1 {
 				t.Fatal("backpressure must retain exactly one pending task")
@@ -65,31 +65,31 @@ func TestSpillRetriesCountRepeatOncePerSubmission(t *testing.T) {
 			e.drainSpilled()
 			select {
 			case got := <-delivered:
-				if got.ID != 7 || got.Repeat != 13 {
+				if got.ID != 7 || got.Repeat != 12 {
 					t.Fatalf("delivered task id=%d repeat=%d", got.ID, got.Repeat)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("pending task not delivered after capacity became available")
 			}
-			if e.spillBacklog() != 0 || f.row["repeat"] != int64(13) {
+			if e.spillBacklog() != 0 || f.row["repeat"] != int64(12) {
 				t.Fatal("successful spill delivery changed the round count")
 			}
 			// A real new round must still increment and remain eligible for polling.
 			row := actionRow(7, "stub")
-			row.Repeat, row.Repeatable, row.Status = 13, models.RepeatableYes, models.TaskStatusSuccess
+			row.Repeat, row.Repeatable, row.Status = 12, models.RepeatableYes, models.TaskStatusSuccess
 			if !e.requeueRepeatTaskIn(row) {
 				t.Fatal("backpressure exhausted the polling limit")
 			}
 			select {
 			case got := <-delivered:
-				if got.Repeat != 14 {
-					t.Fatalf("next round repeat=%d, want 14", got.Repeat)
+				if got.Repeat != 13 {
+					t.Fatalf("next round repeat=%d, want 13", got.Repeat)
 				}
 			case <-time.After(2 * time.Second):
 				t.Fatal("next round not delivered")
 			}
-			if f.row["repeat"] != int64(14) {
-				t.Fatalf("next-round DB count=%v, want 14", f.row["repeat"])
+			if f.row["repeat"] != int64(13) {
+				t.Fatalf("next-round DB count=%v, want 13", f.row["repeat"])
 			}
 		})
 	}

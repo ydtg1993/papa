@@ -184,9 +184,11 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 	}
 	task.Repeat = record.Repeat
 	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
-		task.Repeat++
-		// 写库成功才记为本轮已计数：写库失败后的回灌仍需补计一次，
-		// 写库成功后因队满或池回收而回灌则只重试投递，不重复消耗轮询上限。
+		if task.Repeat == 0 {
+			task.Repeat = 1
+		}
+		// 首轮初始化是持久化幂等的；对象标记仅避免同一副本反复初始化。
+		// 已有 pending 轮次（包括重建对象/启动恢复）不得消耗新的轮询次数。
 		task.repeatCounted = true
 	}
 	e.afterTaskPending(task)
@@ -288,9 +290,9 @@ func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error)
 func submitUpdates(task *Task) map[string]any {
 	updates := map[string]any{"status": models.TaskStatusPending}
 	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
-		// 轮询代数交给 SQL 自增：读出来 +1 再写回，并发下会丢别人的增量。
-		// 列名必须加引号（`repeat` 是保留字，见函数注释）。
-		updates["repeat"] = gorm.Expr("`repeat` + 1")
+		// 这里只初始化首轮；并发/顺序重复提交同一 pending 行都保持原计数。
+		// 真正的下一轮在 repeat queue 的终态→pending 条件更新中原子递增。
+		updates["repeat"] = gorm.Expr("CASE WHEN `repeat` = 0 THEN 1 ELSE `repeat` END")
 	}
 	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
 	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，

@@ -116,6 +116,8 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   ruleschedule_payload.go      静态控制身份、固定批次入口、版本化载荷与摘要校验
   ruleschedule_store.go        MySQL 控制行锁/CAS、先持久后投递、真实成员完成判定
   ruleschedule*_test.go        周期状态、并发、重启与未知提交；rulefetcher_batch_test.go 验证跨阶段传播
+  repeat_submission_test.go   公共提交入口独立对象并发，同一 pending 轮次保持计数
+  repeat_submission_mysql_test.go 专用 MySQL 库：并发、首次初始化、恢复、限额、提交结果不确定
   stage_runversion_test.go     普通 worker 认领版本传递、重试固定和旧轮次终态拒绝
   rulequality.go               可选执行质量旁路、原始提取摘要与终止环节分类；rulequality_test.go 覆盖故障不重放业务
   rule_snapshot_types.go        规则页面观察清单：规则/尝试、双摘要、正文引用与省略原因
@@ -343,7 +345,9 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 脚手架区分完整 module 与本地项目名：module 用于 import，本地项目名取最后一段，用于站点文件和构建/部署名称。`cmd/papa/module_path_test.go` 的 `TestRunNewNamespacedModuleBuilds` 覆盖多级路径、连字符和 `/v2` 后缀，实际生成临时项目、tidy/build、构建入口二进制并运行纯站点校验。
 
-轮询回灌计数回归在 `engine/spill_repeat_test.go` 的 `TestSpillRetriesCountRepeatOncePerSubmission`：覆盖连续满池、首次写库失败、容量释放后投递和下一轮计数；SQL 方言与保留字仍由 `engine/sqlshape_test.go` 的 MySQL DryRun 验证。
+轮询回灌计数回归在 `engine/spill_repeat_test.go` 的 `TestSpillRetriesPreservePendingRepeat`：覆盖连续满池、首次写库失败、容量释放后投递和下一轮计数；SQL 方言与保留字仍由 `engine/sqlshape_test.go` 的 MySQL DryRun 验证。
+
+真实计数回归：配置 `PAPA_REPEAT_TEST_DSN` 后执行 `go test -race ./engine -run '^TestRepeatSubmissionMySQL' -count=1`。测试强制数据库名为 `papa_repeat_test`，需要预先建库并授予迁移表权限；自动迁移仅该库的任务表、按本次随机站点清理测试行，不接受业务库 DSN。覆盖 MySQL changed-rows/found-rows、首次并发、已有轮次重投、pending/processing 重启恢复、下一轮/上限，以及 UPDATE 已提交后注入错误的恢复。未配置时明确跳过。普通测试另用 MySQL DryRun 钉住初始化 CASE 与轮询 reset 的 SQL，fake 不代替真实数据库语义。
 
 批内重复提交回归在 `engine/submit_batch_dedup_test.go`：覆盖同 URL、相同幂等键、轮询任务、重复指针、混合批次首次参数保留、已有状态不重置、满池寄放及延迟投递。外部唯一冲突回查沿用 `TestSubmitTasksSkipsConflictingRows`。
 

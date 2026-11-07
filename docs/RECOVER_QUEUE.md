@@ -63,7 +63,7 @@ recover_queue:
 
 - `pending` 也要捞：它们可能是上次高水位溢出到 DB 的（溢出列表在内存里，随进程一起没了），
   也可能入库了但没来得及入队 —— 不捞就永远躺在「待处理」。
-- 重投走正常提交路径（`SubmitTask`），`Repeatable` / `Meta` 照抄行上的值，不会在恢复时丢掉这两个属性；
+- 重投从持久记录还原后走内部恢复入口，`Repeatable` / `Meta` 照抄行上的值；保留已有 `repeat`，不因恢复新增轮次。可轮询 pending 行尚为 0 时补首轮初始化为 1；
   `Urgent` **强制置真**（走加急快车道）—— 恢复的是上一轮没跑完的孤儿，插到队首先跑完，
   `claimTask` 认领时把 urgent 归零，所以它只是排队位置、跑过一次即变普通。
   其中 `Meta`（业务键，见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2）是要害：

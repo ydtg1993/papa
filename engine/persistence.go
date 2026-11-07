@@ -88,6 +88,9 @@ func (e *Engine) claimForExecution(ctx context.Context, task *Task) (bool, taskR
 	})
 	if err != nil {
 		e.releaseClaim(task)
+	} else {
+		// 队列副本可能早于首轮初始化或下一轮重置；交给 handler 的值以已认领行准。
+		task.Repeat = version.Repeat
 	}
 	return claimed, version, err
 }

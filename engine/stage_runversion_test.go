@@ -35,8 +35,11 @@ func TestStageHandlerCarriesClaimedRunVersion(t *testing.T) {
 			deadline, _ := ctx.Deadline()
 			calls := 0
 			info := e.stages["stub:stub"]
-			info.fetcher = stageRunVersionFetcher(func(fetchCtx context.Context, _ *Task, _ *Engine) error {
+			info.fetcher = stageRunVersionFetcher(func(fetchCtx context.Context, task *Task, _ *Engine) error {
 				calls++
+				if task.Repeat != want.Repeat {
+					t.Fatalf("fetcher received stale task repeat=%d, want %d", task.Repeat, want.Repeat)
+				}
 				got, ok := taskRunVersionFrom(fetchCtx)
 				if !ok || got != want {
 					t.Fatalf("fetcher received version=%+v present=%v, want claimed %+v", got, ok, want)

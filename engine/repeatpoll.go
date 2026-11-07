@@ -56,8 +56,7 @@ var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess, models.Tas
 //
 // 到点 = 未排期（NextRepeatAt 为 NULL：迁移前的老行、或从未被轮询过）或下次到点时间已过。
 // 这是一条纯比较谓词，走 idx_repeat_due（repeatable, status, next_repeat_at）；周期本身在
-// **写路径**换算成 NextRepeatAt（见 requeueRepeatTask 那条 UPDATE），读路径不做任何算术 ——
-// 函数谓词会让索引失效，而且本仓没有真库测试，SQL 里的算术验不了。
+// **写路径**换算成 NextRepeatAt（见 requeueRepeatTask 那条 UPDATE），读路径不做任何算术。
 func (e *Engine) repeatQueueQuery() func() *gorm.DB {
 	return func() *gorm.DB {
 		return e.repeatBaseQuery().
@@ -178,7 +177,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 		return false
 	}
 	// 条件重置（不用 task.UpdateStatus：它无条件、且被 worker 等多处共用，不往它上面加条件）。
-	// 一条语句把三个字段一起写：状态、记录（上次轮询时刻）、判据（下次到点）。
+	// 下一轮计数与状态、排期同一条语句落库；重复投递/重启恢复不再加次数。
 	// 0 行 = 这一行已经不该被重投了：跳过，不计数、也不标 failed —— 它不是"重投失败"。
 	info := e.stages[stageKeyOfRecord(t)]
 	limit := info.config.RepeatLimit
@@ -191,10 +190,11 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	}
 	res := reset.Updates(map[string]any{
 		"status":         models.TaskStatusPending,
+		"repeat":         gorm.Expr("`repeat` + 1"),
 		"last_repeat_at": gorm.Expr("NOW()"),
 		// 下次到点 = 现在 + 自己的周期（没定就用全局）。换算只在这一条写路径上做一次，
 		// 用 UNIX_TIMESTAMP 加法而不是 DATE_ADD(..., INTERVAL <表达式> SECOND)：后者把函数塞进
-		// INTERVAL 的写法有语法/优化器上的余地，而本仓没有真库测试去验。
+		// INTERVAL 的写法有语法/优化器上的余地；排期与计数由真库回归一起验证。
 		"next_repeat_at": gorm.Expr(
 			"FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + COALESCE(NULLIF(repeat_interval, 0), ?))",
 			int64(e.cfg.RepeatQueue.Interval/time.Second)),
@@ -209,6 +209,8 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	// Repeatable 显式置真：本队列捞出来的行本来就该是可轮询的，写死比照抄行上的值更少一层怀疑。
 	task := e.taskFromRecord(t)
 	task.Repeatable = true
+	task.Repeat = t.Repeat + 1
+	task.repeatCounted = true
 	// 刚做完条件重置，行已经是 pending：用恢复队列同一条路径投递，省掉 SubmitTask 的去重查库。
 	if err := e.submitRecoveredTask(task); err != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: submit task %d: %s", t.ID, err.Error())

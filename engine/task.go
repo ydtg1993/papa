@@ -41,8 +41,8 @@ type Task struct {
 	// 追踪未开启时为 nil，Step/Fail 是安全的 no-op。handler 无需判空。
 	Trace *Trace
 
-	// repeatCounted 标记本轮提交已成功写回 pending 并计数。
-	// 溢出回灌复用 Task，只重试投递；下一轮从 DB 重建 Task 时该进程内标记归零。
+	// repeatCounted 跳过当前副本的首轮初始化；幂等性由数据库 CASE/轮询条件更新保证。
+	// 后台重试、错误重投也置真，保持原轮次（包括历史零值）。
 	repeatCounted bool
 }
 
