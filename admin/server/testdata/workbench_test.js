@@ -60,10 +60,42 @@ const data={sites:{a:{stage_count:2,breaker_paused:false},b:{stage_count:1,break
 {
     const old={dataset:{workbenchAction:'queues',workbenchKey:'error_queue:backlog'}};
     const fresh={dataset:old.dataset,focus:()=>c.document.activeElement=fresh},other={dataset:{workbenchAction:'queues',workbenchKey:'repeat_queue:backlog'},focus:()=>c.document.activeElement=other};
-    const more={open:true},replacement={open:false};let replaced=false;
-    const el={contains:n=>n===old,querySelectorAll:s=>s==='[data-workbench-action]'?[fresh,other]:[replaced?replacement:more]};
-    Object.defineProperty(el,'innerHTML',{set:()=>replaced=true});c.document.activeElement=old;c.replaceWorkbenchHTML(el,'changed');
-    assert.equal(c.document.activeElement,fresh,'same-label queue button stole focus');assert.equal(replacement.open,true,'refresh collapsed expanded issues');
+    const el={contains:n=>n===old,querySelectorAll:s=>s==='[data-workbench-action]'?[fresh,other]:[]};
+    c.document.activeElement=old;c.replaceWorkbenchHTML(el,'changed');
+    assert.equal(c.document.activeElement,fresh,'same-label queue button stole focus');
+}
+{
+    const pauses=Array.from({length:5},(_,i)=>({site:'paused-'+i,paused:true,source:'breaker',reason:'pause '+i}));
+    const mixed={...data,breakers:pauses,queues:{error_queue:{last_error:'queue execution failed',backlog:9,backlog_at:'2026-11-06T01:00:00Z'}}};
+    c.currentSite=null;c.renderWorkbench(mixed);const html=nodes['workbench-issues'].innerHTML;
+    assert.equal((html.match(/<article /g)||[]).length,3,'overview must show at most three issues');
+    assert.equal(nodes['workbench-issue-count'].textContent,7);
+    assert.ok(!html.includes('<details'),'the remaining issues were hidden in another long disclosure');
+    assert.match(html,/查看队列异常/);assert.match(html,/查看暂停详情/);
+    assert.ok(!html.includes('查看全部异常'),'queue navigation misrepresents pause coverage');
+    c.renderWorkbench({...mixed,breakers:pauses.slice(0,3)});
+    assert.match(nodes['workbench-issues'].innerHTML,/查看队列异常/);assert.ok(!nodes['workbench-issues'].innerHTML.includes('查看暂停详情'));
+    c.renderWorkbench({...mixed,queues:undefined});
+    assert.match(nodes['workbench-issues'].innerHTML,/治理队列监控未提供/,'overflow hid an unavailable monitor field');
+    assert.ok(!nodes['workbench-issues'].innerHTML.includes('查看队列异常'));
+    c.renderWorkbench({...data,breakers:[{paused:true,source:'manual',reason:'global pause'}]});
+    assert.match(nodes['workbench-issues'].innerHTML,/data-workbench-action="pauses"/,'global pause has no reachable details');
+}
+{
+    // Use the production bell handler; a repeat click must keep the panel
+    // open, and the same click must not bubble into the outside-close handler.
+    const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
+    const a=mo.indexOf('    function toggleBell('),b=mo.indexOf('    function closeBell(',a);vm.runInContext(mo.slice(a,b),c);
+    let focused=0,stopped=0;nodes['bell-panel']={hidden:true};nodes.bell={setAttribute:(key,value)=>nodes.bell[key]=value,focus:()=>focused++};
+    c.currentModule='dashboard';c.navigateWorkbench('pauses',null,{stopPropagation:()=>stopped++});
+    assert.equal(nodes['bell-panel'].hidden,false);assert.equal(nodes.bell['aria-expanded'],'true');assert.equal(focused,1);assert.equal(stopped,1);
+    c.navigateWorkbench('pauses',null,{stopPropagation:()=>stopped++});assert.equal(nodes['bell-panel'].hidden,false);assert.equal(stopped,2);
+    let rendered;c.renderBell=list=>rendered=list;
+    c.lastData={sites:{legacy:{breaker_paused:true,pause_source:'manual',pause_reason:'legacy pause'}}};c.navigateWorkbench('pauses');
+    assert.equal(rendered[0].site,'legacy');assert.equal(rendered[0].reason,'legacy pause','pause details dropped the supported older snapshot shape');
+    c.lastData=data;
+    c.currentModule='settings';nodes['bell-panel'].hidden=true;c.navigateWorkbench('pauses');assert.equal(nodes['bell-panel'].hidden,true);
+    c.currentModule='dashboard';
 }
 {
     // Production tabs share the union of sites; navigation must not silently
@@ -71,7 +103,27 @@ const data={sites:{a:{stage_count:2,breaker_paused:false},b:{stage_count:1,break
     const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
     const a=mo.indexOf('    function renderSiteTabs('),b=mo.indexOf('    function switchSite(',a);vm.runInContext(mo.slice(a,b),c);
     c.siteLabel=String;c.fmtAgo=String;c.currentSite='orphan';
+    vm.runInContext(mo.slice(mo.indexOf('    function refreshSiteModule('),mo.indexOf('    var lastData =',mo.indexOf('    function refreshSiteModule('))),c);
     c.renderSiteTabs({...data,stages:{x:{site:'orphan',queue:q(0,0,0,0)}}});assert.equal(c.currentSite,'orphan');
     const all={dataset:{all:'true'}},named={dataset:{site:'__all__'}};nodes['site-tabs'].querySelectorAll=()=>[all,named];
     c.renderSiteTabs({...data,sites:{__all__:{key:'__all__'}}});named.onclick();assert.equal(c.currentSite,'__all__');all.onclick();assert.equal(c.currentSite,null);
+}
+
+// Polls must not rebuild tabs simply because the browser serialized aria-pressed.
+{
+    c.currentSite=null; const el=nodes['site-tabs']; let writes=0;
+    Object.defineProperty(el,'innerHTML',{configurable:true,get:()=>'<serialized with aria attributes>',set:()=>writes++});
+    c.renderSiteTabs(data);writes=0;c.renderSiteTabs(data);assert.equal(writes,0,'unchanged site buttons were rebuilt');
+}
+
+// A scope that disappears with the last site must not leave a hidden filter.
+{
+    c.currentSite='gone';c.renderSiteTabs({stages:{},sites:{},breakers:[]});
+    assert.equal(c.currentSite,null,'last site vanished but the hidden selection survived');
+}
+{
+    c.currentModule='tables';c.currentTable='tasks';c.currentSite='gone';
+    let reloaded=0;c.renderTableView=key=>{assert.equal(key,'tasks');assert.equal(c.currentSite,null);reloaded++;};
+    c.renderSiteTabs({stages:{},sites:{},breakers:[]});assert.equal(reloaded,1,'vanished site left stale table filters');
+    c.currentModule='dashboard';
 }

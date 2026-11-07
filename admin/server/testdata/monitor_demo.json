@@ -1,4 +1,6 @@
 {
+  "generated_at": "2026-11-07T00:00:00Z",
+  "instance_id": "synthetic-demo-instance",
   "stages": {
     "shop:catalog": {
       "global": {

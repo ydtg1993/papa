@@ -7,7 +7,7 @@
 
 ## 1. 先运行完整示例
 
-源码和参数见框架仓库 [examples/siteagent](../examples/siteagent/README.md)。默认使用确定性模型回放，不需要 API Key；网站访问、Chromium、MySQL、样本验收和审计都实际运行。
+源码和参数见框架仓库 [examples/siteagent](../examples/siteagent/README.md)。默认使用确定性模型回放，不需要 API Key；网站访问、Chromium、MySQL、样本验收和审计都实际运行。这个例程始终使用自建本地测试站。真实站点的访问策略、固定预期、模型/数据库接线及验收记录必须放在独立业务项目，通过公开 API 使用框架，不能将站点业务代码加入 Papa。
 
 ```powershell
 $env:GOWORK = 'off'
@@ -147,11 +147,15 @@ Prices 使用宿主给定的每百万 token 单价和整数微货币单位，调
 
 ## 9. 交给人工发布
 
+模型输出仍要求正文中的单个严格 JSON 动作；DSML/XML 原生函数调用标记、Markdown 和混合解释正文不会被自动剥离或执行。对明确支持 JSON 输出的兼容供应商，宿主可在 `model.Config` 设置 `JSONOutput: true`，发送 `response_format={"type":"json_object"}`。默认关闭，不影响已有端点；供应商拒绝参数时明确失败，不自动回退再发一次付费请求。输出选项计入请求大小预算，也不替代严格动作校验。
+
+`submit_candidate` 成功只表示草稿保存，观察结果明确包含 `validation_status=not_run` 和下一步 `validate_candidate`。`training_passed/holdout_passed=false` 不能在报告尚未生成时解释为失败。训练通过后返回 `training_passed_holdout_not_run`；全部目标阶段候选和训练检查就绪才建议 `finish`。独立验收仍只在结束步骤执行，模型不获得隐藏预期。动作协议和状态语义的通用修复及回归见 [框架修改说明](issues/2026-11-07-agent-protocol-release-summary.md)。
+
 通过独立验收的 Result 只表示候选待发布。将候选阶段引用、训练/独立报告、证据、CompareRules/Shadow 结果交给操作者，再显式调用第三批 Publish；传实际 Current generation 和新的 operationID。
 
 Agent 不会修改站点 Current，也不改变已有任务固定的 release/版本。已有线上规则可通过 StageGoal.Existing 提供用于只读对比，Shadow 使用同一份已批准证据，无额外请求或业务写入。
 
-OA 已提供运行与候选审阅中心（见下文 §11）；仍没有通用 `papa agent` CLI。也没有真实模型质量基准、自动漂移修复、自动发布、账号接管或跨进程调度。
+OA 已提供运行与候选审阅中心（见下文 §11）；仍没有通用 `papa agent` CLI。真实站点接入和生成质量验收由独立业务层承担，单站结果不构成跨站点质量基准；也没有自动漂移修复、自动发布、账号接管或跨进程调度。
 
 ## 10. 从运行质量报告显式复分析
 
@@ -185,3 +189,12 @@ if err != nil { return err }
 `Options.WorkerStopped` 默认不配置；只有宿主能证明旧执行者在所有实例均停止时才注册。它不是租约或自动恢复。守卫不在中心全局锁内运行，可以查询中心状态；仍须遵守 context，且只有真实停止证明才能返回 true。App 的关闭等待同时覆盖后台分析与在途恢复检查，超时保留依赖；App.Run 返回后可再次调用 `App.CloseAgentCenter(ctx)` 确认。中心总运行时限从受理开始，包含导入证据的准备阶段，不会在 Agent.Run 开始时重新获得完整时长。完整操作、错误与恢复边界见 [MONITOR §15](MONITOR.md#15-agent-运行与候选审阅中心)。
 
 `examples/rulequality` 使用真实 MySQL、实际失败现场与确定性回放，现经中心完成预览、重复准备、后台执行、固定候选审阅与完整发布清单生成，并验证 Current 不变。真实供应商质量/账单仍需宿主另行显式验收。
+
+
+### 供应商显式模式与宿主凭据管理
+
+`model.Config.ThinkingMode` 为空时不发送 thinking 参数，保持既有请求行为；`enabled` / `disabled` 显式发送 `thinking.type`，其它值拒绝。仅为支持该参数的兼容接口启用。参数计入输入字节预算，供应商不支持时返回错误，不自动降级、重试或修改模型响应。
+
+`model.New(config)` 继续只读取一次 APIKeyEnv。宿主已有加密凭据仓库时可调用 `model.NewWithKey(config, key)`，不读取或改写环境变量，也不发起网络请求。两者均冻结 endpoint、模型、思考模式和凭据；不要把 key 放进 Config、日志或前端。新配置应构造新 provider，在途操作保留原 provider。
+
+空白 assistant content 使用 `model.ErrEmptyResponse`，同时满足 `errors.Is(err, model.ErrInvalidResponse)`。Runner 仅记录已知安全分类（例如 model_empty_response、model_invalid_response、model_rate_limit、model_unauthorized、model_transport、model_truncated）；不把供应商错误正文、凭据或推理文本写入审计。未知错误仍记 operation_failed。分类有助于人工诊断，不构成重放付费请求的授权。

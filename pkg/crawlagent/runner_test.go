@@ -76,6 +76,46 @@ func TestRunnerCorrectsCandidateUsingFixedTrainingAndHiddenHoldout(t *testing.T)
 	}
 }
 
+func TestRunnerClassifiesModelFailureWithoutLeakingOrRetrying(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		reason string
+	}{
+		{model.ErrConfig, "model_config"}, {model.ErrCredentials, "model_credentials"},
+		{model.ErrInput, "model_input"}, {model.ErrInputLimit, "model_input_limit"},
+		{model.ErrOutputLimit, "model_output_limit"}, {model.ErrUnauthorized, "model_unauthorized"},
+		{model.ErrRateLimit, "model_rate_limit"}, {model.ErrHTTP, "model_http"},
+		{model.ErrRedirect, "model_redirect"}, {model.ErrTransport, "model_transport"},
+		{model.ErrResponseLimit, "model_response_limit"}, {model.ErrEmptyResponse, "model_empty_response"}, {model.ErrInvalidResponse, "model_invalid_response"},
+		{model.ErrRefusal, "model_refusal"}, {model.ErrTruncated, "model_truncated"},
+		{model.ErrToolCall, "model_tool_call"}, {model.ErrExhausted, "model_replay_exhausted"},
+		{model.ErrTimeout, "timeout"}, {model.ErrCanceled, "canceled"},
+		{errors.New("unknown provider failure"), "operation_failed"},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			const private = "private-provider-body-and-credential"
+			replay := model.NewReplay(model.ReplayStep{Err: errors.Join(tc.err, errors.New(private))})
+			cfg, goal, _, _, audit := runnerHarness(t, replay)
+			out, err := runAgent(t, cfg, goal)
+			if !errors.Is(err, tc.err) || out.Reason != tc.reason || out.Verified || len(replay.Calls()) != 1 {
+				t.Fatalf("reason=%s calls=%d", out.Reason, len(replay.Calls()))
+			}
+			run, e := audit.Get(context.Background(), out.RunID)
+			if e != nil {
+				t.Fatal(e)
+			}
+			steps, e := audit.Steps(context.Background(), out.RunID, 0)
+			if e != nil {
+				t.Fatal(e)
+			}
+			record := runnerJSON([]any{run, steps})
+			if strings.Contains(record, private) || !strings.Contains(run.ResultJSON, tc.reason) || len(steps) != 1 || !strings.Contains(steps[0].OutputJSON, tc.reason) {
+				t.Fatal("failure classification missing or unsafe error text persisted")
+			}
+		})
+	}
+}
+
 func TestRunnerWithoutIndependentFixturesOnlyNeedsFixtures(t *testing.T) {
 	replay := replayActions(`{"tool":"fetch_page","url":"https://site.example/list"}`, candidateAction("b"), `{"tool":"validate_candidate","stage":"catalog"}`, `{"tool":"finish"}`)
 	cfg, goal, repo, source, _ := runnerHarness(t, replay)
@@ -171,6 +211,71 @@ func TestRunnerRejectsPageInstructionsAndUnknownTools(t *testing.T) {
 	}
 	if strings.Contains(runnerJSON(steps), "PAGE_SAYS") {
 		t.Fatal("page body copied to audit")
+	}
+}
+
+func TestRunnerRejectsNativeToolMarkupAndRecoversWithPlainJSON(t *testing.T) {
+	// Shape observed from a real DeepSeek response: text containing DSML is
+	// neither a JSON action nor authority to invoke a browser/network tool.
+	markup := `<｜DSML｜calls><｜DSML｜invoke name="fetch_page"><｜DSML｜parameter name="url" string="true">https://private.example/UNTRUSTED_MARKUP_VALUE</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜calls>`
+	replay := replayActions(markup, candidateAction("b"), `{"tool":"validate_candidate","stage":"catalog"}`, `{"tool":"finish"}`)
+	cfg, goal, repo, source, audit := runnerHarness(t, replay)
+	addRunnerFixture(t, repo, "train", "https://site.example/train", "<article><b>train</b></article>", "train")
+	addRunnerFixture(t, repo, "hold", "https://site.example/hidden", "<article><b>hidden</b></article>", "hidden")
+	goal.Stages[0].TrainingSet, goal.Stages[0].HoldoutSet = "train", "hold"
+	result, err := runAgent(t, cfg, goal)
+	if err != nil || !result.Verified || result.Usage.ModelCalls != 4 || source.calls.Load() != 0 || len(repo.created) != 1 {
+		t.Fatalf("markup executed or JSON recovery failed: %+v %v requests=%d", result, err, source.calls.Load())
+	}
+	calls := replay.Calls()
+	repair := calls[1].Messages[len(calls[1].Messages)-1]
+	if repair.Role != "user" || !strings.Contains(repair.Content, "No native tools") || !strings.Contains(repair.Content, "DSML") || strings.Contains(runnerJSON(calls[1]), "UNTRUSTED_MARKUP_VALUE") {
+		t.Fatal("repair does not clarify the text protocol or repeats untrusted markup")
+	}
+	steps, err := audit.Steps(context.Background(), result.RunID, 0)
+	if err != nil || len(steps) != 7 || strings.Contains(runnerJSON(steps), "UNTRUSTED_MARKUP_VALUE") {
+		t.Fatalf("invalid action audit/budget: %d %v", len(steps), err)
+	}
+}
+
+func TestRunnerDraftFeedbackDistinguishesUnrunFromFailedValidation(t *testing.T) {
+	replay := replayActions(candidateAction("b"), `{"tool":"validate_candidate","stage":"catalog"}`, `{"tool":"finish"}`)
+	cfg, goal, repo, _, _ := runnerHarness(t, replay)
+	addRunnerFixture(t, repo, "train", "https://site.example/train", "<article><b>train</b></article>", "train")
+	addRunnerFixture(t, repo, "hold", "https://site.example/hidden", "<article><b>HIDDEN_EXPECTATION</b></article>", "HIDDEN_EXPECTATION")
+	goal.Stages[0].TrainingSet, goal.Stages[0].HoldoutSet = "train", "hold"
+	result, err := runAgent(t, cfg, goal)
+	if err != nil || !result.Verified {
+		t.Fatalf("run: %+v %v", result, err)
+	}
+	calls := replay.Calls()
+	draftFeedback := calls[1].Messages[len(calls[1].Messages)-1].Content
+	trainingFeedback := calls[2].Messages[len(calls[2].Messages)-1].Content
+	if !strings.Contains(draftFeedback, `"validation_status":"not_run"`) || !strings.Contains(draftFeedback, `"next_action":{"stage":"catalog","tool":"validate_candidate"}`) {
+		t.Fatalf("draft falsely implies validation failure: %s", draftFeedback)
+	}
+	if !strings.Contains(trainingFeedback, `"validation_status":"training_passed_holdout_not_run"`) || !strings.Contains(trainingFeedback, `"next_action":{"tool":"finish"}`) || strings.Contains(runnerJSON(calls), "HIDDEN_EXPECTATION") {
+		t.Fatalf("training state/holdout isolation: %s", trainingFeedback)
+	}
+}
+
+func TestRunnerTrainingFeedbackDoesNotFinishIncompleteStages(t *testing.T) {
+	replay := replayActions(candidateAction("b"), `{"tool":"validate_candidate","stage":"catalog"}`, `{"tool":"finish"}`)
+	cfg, goal, repo, _, _ := runnerHarness(t, replay)
+	addRunnerFixture(t, repo, "train", "https://site.example/train", "<article><b>train</b></article>", "train")
+	goal.Stages[0].TrainingSet = "train"
+	other := goal.Stages[0]
+	other.Stage, other.RuleID = "detail", "example-detail"
+	goal.Stages = append(goal.Stages, other)
+	cfg.Budgets.MaxModelCalls = 3
+	result, err := runAgent(t, cfg, goal)
+	if !errors.Is(err, crawlagent.ErrBudget) || result.Verified {
+		t.Fatalf("incomplete goal accepted: %+v %v", result, err)
+	}
+	calls := replay.Calls()
+	feedback := calls[2].Messages[len(calls[2].Messages)-1].Content
+	if !strings.Contains(feedback, `"validation_status":"training_passed_holdout_not_run"`) || strings.Contains(feedback, `"next_action"`) {
+		t.Fatalf("finish suggested before all stages exist: %s", feedback)
 	}
 }
 

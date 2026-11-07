@@ -3,6 +3,7 @@
 var workbenchConnection = { updatedAt: null, failed: false, message: '' };
 var workbenchMetrics = ['queued', 'running', 'completed', 'failed'];
 var workbenchHTML = new WeakMap();
+var workbenchKPIValues = [];
 
 function workbenchCount(value) { return Number.isSafeInteger(value) && value >= 0 ? value : null; }
 function workbenchAdd(a, b) { return a === null || b === null ? null : workbenchCount(a + b); }
@@ -11,6 +12,15 @@ function workbenchTime(value) {
     return value && !isNaN(d.getTime()) && d.getFullYear() >= 2000 ? d.toLocaleString('zh-CN', { hour12: false }) : null;
 }
 function workbenchNumber(value) { return value === null ? '—' : value.toLocaleString('zh-CN'); }
+function workbenchPauses(data) {
+    var sites = data.sites || {};
+    return Array.isArray(data.breakers) ? data.breakers.filter(function (pause) { return pause && pause.paused; }) : Object.keys(sites).filter(function (key) {
+        return sites[key] && sites[key].breaker_paused;
+    }).map(function (key) {
+        var site = sites[key];
+        return { site: key, paused: true, source: site.pause_source, reason: site.pause_reason, paused_at: site.breaker_paused_at };
+    });
+}
 
 function buildWorkbench(data, site) {
     data = data || {};
@@ -33,12 +43,7 @@ function buildWorkbench(data, site) {
             row[field] = workbenchAdd(row[field], workbenchCount(value));
         });
     });
-    var pauses = explicitPauses ? data.breakers.filter(function (p) { return p && p.paused; }) : Object.keys(sites).filter(function (key) {
-        return sites[key] && sites[key].breaker_paused;
-    }).map(function (key) {
-        var s = sites[key];
-        return { site: key, paused: true, source: s.pause_source, reason: s.pause_reason, paused_at: s.breaker_paused_at };
-    });
+    var pauses = workbenchPauses(data);
     pauses.forEach(function (pause) { rowFor(pause.site); });
     var issues = [];
     pauses.forEach(function (pause) {
@@ -49,8 +54,8 @@ function buildWorkbench(data, site) {
             }
         });
         if (site !== null && pause.site && pause.site !== site) return;
-        issues.push({ key: JSON.stringify(['pause', pause.site || '', pause.stage || '']), priority: pause.source === 'breaker' ? 4 : 2, tone: pause.source === 'breaker' ? 'danger' : 'warning',
-            title: pause.source === 'breaker' ? '熔断暂停' : '已暂停', scope: pause.site || '全部站点', site: pause.site || null, action: pause.site ? 'site' : null,
+        issues.push({ key: JSON.stringify(['pause', pause.site || '', pause.stage || '']), kind: 'pause', priority: pause.source === 'breaker' ? 4 : 2, tone: pause.source === 'breaker' ? 'danger' : 'warning',
+            title: pause.source === 'breaker' ? '熔断暂停' : '已暂停', scope: pause.site || '全部站点', site: pause.site || null, action: pause.site ? 'site' : 'pauses',
             detail: (pause.stage ? '阶段 ' + pause.stage + ' · ' : '') + (pause.reason || '请核对暂停原因后再恢复') + (workbenchTime(pause.paused_at) ? ' · 暂停于 ' + workbenchTime(pause.paused_at) : '') });
     });
     var queueNames = { error_queue: '错误队列', repeat_queue: '轮询队列' };
@@ -67,7 +72,7 @@ function buildWorkbench(data, site) {
     if (!data.queues) issues.push({ title: '治理队列监控未提供', detail: '此快照未包含治理队列统计，无法判断积压。', priority: 0, tone: 'notice', scope: '全部站点', site: null, action: null });
     var visible = Array.from(rows.values()).filter(function (row) { return site === null || row.site === site; });
     visible.forEach(function (row) {
-        row.state = row.paused ? (row.tone === 'danger' ? '熔断暂停' : '已暂停') : !row.pauseKnown ? '暂停状态未知' : !row.activeStages ? '暂无活跃阶段' : row.running === null || row.queued === null ? '统计不完整' : row.running > 0 ? '执行中' : row.queued > 0 ? '等待执行' : '空闲';
+        row.state = row.paused ? (row.tone === 'danger' ? '熔断暂停' : '已暂停') : !row.pauseKnown ? '暂停状态未知' : !row.activeStages ? '暂无活跃阶段' : row.running === null || row.queued === null ? '统计不完整' : row.running > 0 || row.queued > 0 ? '有未完成任务' : '空闲';
     });
     visible.sort(function (a, b) { return Number(b.paused) - Number(a.paused) || a.site.localeCompare(b.site); });
     var totals = { sites: visible.length, activeStages: 0, queued: 0, running: 0, completed: 0, failed: 0 };
@@ -83,10 +88,8 @@ function replaceWorkbenchHTML(el, html) {
     if (!el || workbenchHTML.get(el) === html) return false;
     var focused = el.contains(document.activeElement) ? document.activeElement : null;
     var target = focused && focused.dataset ? { action: focused.dataset.workbenchAction, site: focused.dataset.site, key: focused.dataset.workbenchKey } : null;
-    var more = Array.from(el.querySelectorAll('details[data-workbench-more]')).some(function (node) { return node.open; });
     el.innerHTML = html;
     workbenchHTML.set(el, html);
-    el.querySelectorAll('details[data-workbench-more]').forEach(function (node) { node.open = more; });
     if (target && target.action) el.querySelectorAll('[data-workbench-action]').forEach(function (button) {
         if (button.dataset.workbenchAction === target.action && button.dataset.site === target.site && button.dataset.workbenchKey === target.key) button.focus();
     });
@@ -97,12 +100,23 @@ function workbenchButton(label, action, site, key) {
 }
 function bindWorkbench(el) {
     el.querySelectorAll('[data-workbench-action]').forEach(function (button) {
-        button.addEventListener('click', function () { navigateWorkbench(button.dataset.workbenchAction, button.dataset.site); });
+        button.addEventListener('click', function (event) { navigateWorkbench(button.dataset.workbenchAction, button.dataset.site, event); });
     });
 }
-function navigateWorkbench(action, site) {
+function navigateWorkbench(action, site, event) {
     if (currentModule !== 'dashboard') return;
     if (action === 'queues') { switchModule('queues'); return; }
+    if (action === 'pauses') {
+        var panel = document.getElementById('bell-panel'), bell = document.getElementById('bell');
+        if (!panel || !bell || typeof toggleBell !== 'function') return;
+        // This button is outside bell-wrap; do not let the document's outside
+        // click handler close the panel during the same click.
+        if (event) event.stopPropagation();
+        if (typeof renderBell === 'function') renderBell(workbenchPauses(lastData || {}));
+        if (panel.hidden) toggleBell();
+        bell.focus();
+        return;
+    }
     if (['site', 'tasks', 'batches'].indexOf(action) < 0 || !buildWorkbench(lastData, null).rows.some(function (row) { return row.site === site; })) return;
     switchSite(site);
     if (action === 'tasks') openTable('task', '任务');
@@ -131,23 +145,36 @@ function renderWorkbench(data) {
     var model = buildWorkbench(data, currentSite), totals = model.totals;
     document.getElementById('workbench-scope').textContent = currentSite === null ? '全部站点' : currentSite;
     document.getElementById('workbench-coverage').textContent = totals.sites + ' 个站点 · ' + totals.activeStages + ' 个活跃阶段';
-    var cards = [['排队中', totals.queued, '活跃阶段内存队列'], ['执行中', totals.running, '当前在途任务'], ['累计完成', totals.completed, '活跃阶段累计'], ['累计失败', totals.failed, '累计次数，非当前失败存量']];
-    replaceWorkbenchHTML(document.getElementById('workbench-kpis'), cards.map(function (card) {
+    var cards = [['排队中', totals.queued, '活跃阶段内存队列'], ['未完成（含排队）', totals.running, '包含上项排队，不可相加'], ['累计完成', totals.completed, '活跃阶段累计'], ['累计失败', totals.failed, '累计次数，非当前失败存量']];
+    var kpiRoot = document.getElementById('workbench-kpis');
+    var kpiChanged = replaceWorkbenchHTML(kpiRoot, cards.map(function (card) {
         return '<div class="workbench-kpi"><span>' + card[0] + '</span><strong>' + workbenchNumber(card[1]) + '</strong><small>' + card[2] + '</small></div>';
     }).join(''));
+    if (kpiChanged && typeof Oao !== 'undefined' && Oao.motion) kpiRoot.querySelectorAll('strong').forEach(function (el,index) {
+        if (workbenchKPIValues[index] !== cards[index][1]) Oao.motion.animate(el);
+    });
+    workbenchKPIValues = cards.map(function (card) { return card[1]; });
     var issueRoot = document.getElementById('workbench-issues');
     document.getElementById('workbench-issue-count').textContent = model.issues.length;
     function issueHTML(issue) {
         return '<article class="workbench-issue" data-tone="' + issue.tone + '"><div><span class="workbench-scope">' + esc(issue.scope) + '</span><h3>' + esc(issue.title) + '</h3><p>' + esc(issue.detail) + '</p></div>'
-            + (issue.action ? workbenchButton(issue.action === 'queues' ? '查看队列' : '查看站点', issue.action, issue.site, issue.key) : '') + '</article>';
+            + (issue.action ? workbenchButton(issue.action === 'queues' ? '查看队列' : issue.action === 'pauses' ? '查看暂停详情' : '查看站点', issue.action, issue.site, issue.key) : '') + '</article>';
     }
-    var issueHTMLs = model.issues.map(issueHTML);
-    var content = issueHTMLs.slice(0, 8).join('');
-    if (issueHTMLs.length > 8) content += '<details data-workbench-more><summary>其余 ' + (issueHTMLs.length - 8) + ' 项</summary>' + issueHTMLs.slice(8).join('') + '</details>';
+    var content = model.issues.slice(0, 3).map(issueHTML).join(''), remaining = model.issues.slice(3);
+    if (remaining.length) {
+        content += '<div class="workbench-more"><p>另有 ' + remaining.length + ' 项提示';
+        // A missing monitor field has no destination that can explain it.
+        // Keep that uncertainty visible even when the summary is full.
+        remaining.filter(function (issue) { return !issue.action; }).forEach(function (issue) { content += ' · ' + esc(issue.title) + '：' + esc(issue.detail); });
+        content += '</p><div class="workbench-links">';
+        if (remaining.some(function (issue) { return issue.action === 'queues'; })) content += workbenchButton('查看队列异常', 'queues', null, 'more-queues');
+        if (remaining.some(function (issue) { return issue.kind === 'pause'; })) content += workbenchButton('查看暂停详情', 'pauses', null, 'more-pauses');
+        content += '</div></div>';
+    }
     if (!content) content = '<p class="workbench-empty">此快照未报告暂停或队列问题。累计失败不作为当前故障；任务明细请到任务表查看。</p>';
     if (replaceWorkbenchHTML(issueRoot, content)) bindWorkbench(issueRoot);
     var siteRoot = document.getElementById('workbench-sites');
-    content = model.rows.length ? '<div class="workbench-scroll"><table class="workbench-table"><thead><tr><th>站点 / 阶段</th><th>状态</th><th>排队 / 执行中</th><th>累计完成 / 失败</th><th>定位</th></tr></thead><tbody>' + model.rows.map(function (row) {
+    content = model.rows.length ? '<div class="workbench-scroll"><table class="workbench-table"><thead><tr><th>站点 / 阶段</th><th>状态</th><th>排队 / 未完成（含排队）</th><th>累计完成 / 失败</th><th>定位</th></tr></thead><tbody>' + model.rows.map(function (row) {
         return '<tr><td><strong>' + esc(row.site) + '</strong><small>' + row.activeStages + ' 个活跃阶段</small></td><td><span class="workbench-state" data-tone="' + row.tone + '">' + esc(row.state) + '</span></td><td>' + workbenchNumber(row.queued) + ' / ' + workbenchNumber(row.running) + '</td><td>' + workbenchNumber(row.completed) + ' / ' + workbenchNumber(row.failed) + '</td><td><div class="workbench-links">' + workbenchButton('阶段', 'site', row.site) + workbenchButton('任务', 'tasks', row.site) + workbenchButton('批次', 'batches', row.site) + '</div></td></tr>';
     }).join('') + '</tbody></table></div>' : '<p class="workbench-empty">当前范围没有站点快照。等待宿主提供站点或阶段统计。</p>';
     if (replaceWorkbenchHTML(siteRoot, content)) bindWorkbench(siteRoot);

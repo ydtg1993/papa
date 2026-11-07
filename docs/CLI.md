@@ -21,7 +21,7 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa new <name> [--replace <path>]` | 生成新爬虫项目骨架（含 `internal/models/` 数据层与 `internal/monitor/` 后台分层包，见 [MONITOR.md](./MONITOR.md) 第 5 节）。`<name>` 同时是 module 路径与目录名：只允许字母、数字与 `._~+-`，分隔用 `/`（例如 `mycrawler` 或 `example.com/mycrawler`）；带空格/冒号这类字符的名字会在**写任何文件之前**被拒 |
+| `papa new <name> [--replace <path>] [--missing-only]` | 生成新爬虫项目骨架（含 `internal/models/` 与 `internal/monitor/`）。默认拒绝已存在的目标；`--missing-only` 显式补齐缺失文件，保留已有文件。`<name>` 同时是 module 路径与目录名，只允许字母、数字与 `._~+-`，分隔用 `/`；非法名字在写文件前拒绝 |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
@@ -33,6 +33,10 @@ go install ./cmd/papa
 | `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；生成后按 `obs.report.retention` 清理过期目录。业务段由业务进程注册，papa CLI 只有框架通用段 |
 
 ### `papa new` 生成什么
+
+已有手工业务模块需要补齐骨架时，在父目录执行 `papa new <原模块名> --missing-only`。已有 go.mod 的 module 必须与项目名一致；现有配置、代码、文档、技能与 go.mod 均保持原样，`--replace` 只作用于本次新建的 go.mod。补齐不会合并代码或解析已有配置；新补的站点和入口仍是模板，需要按业务审阅后再启动。文件独占创建，链接路径拒绝写入；中途失败时已新建的文件保留，可修正后再次补齐。升级通用文档/技能使用 `papa upgrade --write`，不以 new 覆盖业务。
+
+路径保护包括 Windows junction 与异常 reparse point，不能通过目录联接写入其它位置。`--replace` 必须跟一个非空本地路径，不能把后面的选项当成路径；路径含空格时，在 shell 中将参数加引号，例如 `--replace "../local papa"`，CLI 会生成合法的 go.mod 引号。相对 replace 路径以生成项目的 go.mod 所在目录为基准。
 
 完整 module 路径用于 `go.mod` 与 Go import；模块最后一段作为本地项目名，用于站点文件、默认站点键、构建产物和 Compose 服务/容器名称。例如 `papa new example.com/demo` 在 `example.com/demo/` 下生成项目，站点为 `internal/sites/demo.go`，产物为 `bin/demo`（Windows 为 `demo.exe`），import 仍是 `example.com/demo/internal/...`。`papa new example.com/demo/v2` 的本地项目名为 `v2`。已有项目不会被自动改名或迁移。
 
@@ -54,6 +58,8 @@ mycrawler/
   README.md · Makefile · logs/ · .gitignore
   .claude/skills/          开发技能（通用文件可刷新，项目约定不覆盖）
 ```
+
+后台自定义页模板 `internal/monitor/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
 
 几句要点：
 

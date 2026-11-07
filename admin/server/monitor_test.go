@@ -614,10 +614,14 @@ func TestMonitorDemoJSON(t *testing.T) {
 	m := newFakeMonitor(t)
 	rr := serve(m, http.MethodGet, "/api/monitor", nil)
 
-	var v any
+	var v map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &v); err != nil {
 		t.Fatal(err)
 	}
+	// Keep this synthetic fixture reproducible; live metadata is covered by
+	// TestMonitorObservationMetadataIsStablePerInstance instead.
+	v["generated_at"] = "2026-11-07T00:00:00Z"
+	v["instance_id"] = "synthetic-demo-instance"
 	pretty, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		t.Fatal(err)

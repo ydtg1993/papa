@@ -145,7 +145,7 @@ Agent `RunWithID(ctx, id, goal)` 只接受 1–64 个 ASCII 字母、数字、�
 
 `CapabilityGaps(report)` 根据已有错误提供 `needs_authentication`、`insufficient_evidence`、`budget_exhausted`、`manual_investigation` 等建议；复分析也附加缺验收/预算诊断。不从普通渲染失败猜测“需要点击”，当前没有证据就不产生 needs_interaction / unsupported_source 结论。
 
-本模块没有新增点击/滚动/验证码处理、账号权限、代理轮换、任意 JS、自动模型调度、自动发布/回滚、外部通知或通用质量 CLI。后台已提供下述只读质量中心；需要其它能力时按实际站点证据单独扩展权限、预算和回归。
+本模块没有新增点击/滚动/验证码处理、账号权限、代理轮换、任意 JS、自动模型调度、自动发布/回滚、外部通知或通用质量 CLI。后台已提供质量查询、可选的报告固化和宿主配置下的显式复分析；查询本身不会触发写入或模型调用，接线要求见下文。需要其它能力时按实际站点证据单独扩展权限、预算和回归。
 
 ## OA 查询与证据定位
 
@@ -155,7 +155,7 @@ Agent `RunWithID(ctx, id, goal)` 只接受 1–64 个 ASCII 字母、数字、�
 
 持久报告的观测链接重新校验引用 ID、原始正文摘要、范围、时间与截止序号；已清理返回不可用，摘要损坏或串联返回校验失败。页面证据显示 EvidenceID / 原始 BodySHA256，不新增正文副本，不通过任意文件路径读取页面；任务 Trace 使用原有只读入口，并提示按尝试核对及保留期限制。未留存正文时仅有历史关联标识。
 
-自定义 Monitor 可将 `rulequality.New(db)` 返回的 Store 注入 `MonitorConfig.QualityAdmin`。该接口只读，不启动 Collector、模型或规则发布。HTTP 与页面交互约束见 [MONITOR §14](MONITOR.md#14-质量监控中心)。
+自定义 Monitor 可将 `rulequality.New(db)` 返回的 Store 注入 `MonitorConfig.QualityAdmin`。基础查询接口只读，不启动 Collector、模型或规则发布；Store 还实现可选的 `QualityReportWriter`，用于具名操作固化报告。复分析另需宿主注册 Agent 中心和 Profile，不能只靠开启质量查询触发。HTTP 与页面交互约束见 [MONITOR §14](MONITOR.md#14-质量监控中心)及下节。
 
 
 ## OA 报告固化与显式复分析

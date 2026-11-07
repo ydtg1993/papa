@@ -245,7 +245,7 @@ func TestRunNewWithoutReplaceLeavesGoModClean(t *testing.T) {
 	}
 }
 
-// 已经存在的目录里再生成一次：文件被覆盖而不是报错（重复跑脚手架应当幂等）。
+// 重复补齐只创建缺失文件，已存在的业务文件不能被覆盖。
 func TestRunNewIsIdempotent(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := runNew("demo", nil); err != nil {
@@ -253,8 +253,8 @@ func TestRunNewIsIdempotent(t *testing.T) {
 	}
 	first := readFile(t, filepath.Join("demo", "main.go"))
 
-	if err := runNew("demo", nil); err != nil {
-		t.Fatalf("重复生成应当成功：%v", err)
+	if err := runNew("demo", []string{"--missing-only"}); err != nil {
+		t.Fatalf("重复补齐应当成功：%v", err)
 	}
 	if second := readFile(t, filepath.Join("demo", "main.go")); second != first {
 		t.Fatal("重复生成的内容不一致")

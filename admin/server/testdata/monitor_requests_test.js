@@ -5,18 +5,18 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 const response = value => ({ok:true,status:200,json:async()=>value,text:async()=>JSON.stringify(value)});
 function setup() {
     let key = 'old', timerID = 0;
-    const requests=[], rendered=[], messages=[], timers=new Map(), events={};
+    const requests=[], rendered=[], observations=[], messages=[], timers=new Map(), events={};
     const c=vm.createContext({AbortController, Response, Date, JSON, Math, Object, encodeURIComponent,
         authGeneration:0, loadKey:()=>key,
         setTimeout:(fn,ms)=>{ timers.set(++timerID,{fn,ms}); return timerID; }, clearTimeout:id=>timers.delete(id),
         document:{hidden:false,addEventListener:(n,fn)=>events[n]=fn,getElementById:()=>({textContent:''})},
         fetch:(url,opts)=>{ const d=deferred(); requests.push({...d,url,opts}); return d.promise; },
-        renderAll:data=>rendered.push(data), hideLogin:()=>messages.push('hide'), showLogin:()=>messages.push('login'),
+        acceptMonitorObservation:data=>observations.push(data),renderAll:data=>rendered.push(data), hideLogin:()=>messages.push('hide'), showLogin:()=>messages.push('login'),
         setStatus:(ok,text)=>messages.push(text), Toast:{err:text=>messages.push(text)}, renderNav:()=>{},
     });
     c.clearKey=()=>{key='';c.authGeneration++;c.stopPolling();};
     vm.runInContext(source,c);
-    return {c,requests,rendered,messages,timers,events,login:()=>{key='new';c.authGeneration++;}};
+    return {c,requests,rendered,observations,messages,timers,events,login:()=>{key='new';c.authGeneration++;}};
 }
 (async()=>{
     // Old headers, old bodies, body failures and auth errors cannot replace newer state.
@@ -32,7 +32,7 @@ function setup() {
         if(kind==='body') body.resolve('old');
         if(kind==='body-error') body.reject(new Error('old body failure'));
         await first;
-        assert.deepEqual(s.rendered,['new']);assert.equal(s.messages.includes('login'),false);
+        assert.deepEqual(s.rendered,['new']);assert.deepEqual(s.observations,['new'],'obsolete response entered observation history');assert.equal(s.messages.includes('login'),false);
     }
     // Credentials change without a second monitor request: old 401 is still obsolete.
     { const s=setup(), done=s.c.fetchData();s.login();s.requests[0].resolve({status:401});await done;assert.equal(s.messages.length,0); }
@@ -45,7 +45,7 @@ function setup() {
     }
     // Timeout covers response body too and never renders late successful JSON.
     {const s=setup(),p=s.c.fetchData(),b=deferred();s.requests[0].resolve({ok:true,status:200,json:()=>b.promise});await flush();
-     [...s.timers.values()].find(t=>t.ms===10000).fn();b.resolve('late');await p;assert.deepEqual(s.rendered,[]);assert.ok(s.messages.some(m=>m.includes('超时')));}
+     [...s.timers.values()].find(t=>t.ms===10000).fn();b.resolve('late');await p;assert.deepEqual(s.rendered,[]);assert.deepEqual(s.observations,[]);assert.ok(s.messages.some(m=>m.includes('超时')));}
     // Malformed JSON is handled and schedules a retry, no unhandled rejection.
     {const s=setup(),p=s.c.fetchData();s.requests[0].resolve({ok:true,status:200,json:async()=>{throw new Error('bad json');}});await p;assert.ok(s.messages.includes('bad json'));}
     // Native errors retain actionable text; old-session errors cannot clear credentials.
@@ -66,7 +66,7 @@ function setup() {
     // log out a new session, and no write may be automatically replayed.
     {const s=setup(),oao=fs.readFileSync(path.join(process.argv[2],'oao.js'),'utf8');
      const a=oao.indexOf('    async function request('),b=oao.indexOf('    async function api(',a);
-     const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),init=mo.indexOf('    Oao.init({');
+     const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),init=mo.indexOf('    Oao.init({',mo.indexOf('// oao 表格组件：'));
      s.c.Oao={init:opts=>{s.c.authHeaders=opts.headers;s.c.onUnauthorized=opts.onUnauthorized;}};
      vm.runInContext(mo.slice(init,mo.indexOf('    });',init)+7),s.c);
      vm.runInContext(oao.slice(a,b),s.c);
@@ -119,9 +119,9 @@ function setup() {
      const q=s.c.fetchData();s.requests[1].resolve(response({}));await q;assert.equal(loads,1);}
     // Late menu failures from a previous login cannot clear a new menu.
     {const s=setup(),mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),lists=[],nav={innerHTML:'',querySelectorAll:()=>[]};
-     s.c.document.getElementById=id=>id==='oao-nav'?nav:null;s.c.esc=String;
+     s.c.setMonitorNavigation=(tables,pages)=>{nav.innerHTML=tables.concat(pages).map(item=>item.label).join(' ');};
      s.c.Oao={list:()=>{const d=deferred();lists.push(d);return d.promise;}};
-     const a=mo.indexOf('    var BUILTIN_TABLES ='),b=mo.indexOf('    /* ============ 自定义页',a);vm.runInContext(mo.slice(a,b),s.c);
+     const a=mo.indexOf('    var navRequestSeq ='),b=mo.indexOf('    /* ============ 自定义页',a);vm.runInContext(mo.slice(a,b),s.c);
      const p=s.c.renderNav();s.login();const q=s.c.renderNav();lists[1].resolve([{key:'new',label:'new menu'}]);await flush();
      s.requests[0].resolve(response({pages:[]}));await q;assert.ok(nav.innerHTML.includes('new menu'));
      lists[0].reject(new Error('old unauthorized'));await p;assert.ok(nav.innerHTML.includes('new menu'));assert.equal(s.requests.length,1);}

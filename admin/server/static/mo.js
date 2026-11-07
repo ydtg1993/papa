@@ -8,10 +8,10 @@
 
 /* ============ 主题切换 ============ */
     var themeKey = 'papa-theme';
-    function getTheme() { return localStorage.getItem(themeKey) || 'light'; }
+    function getTheme() { try { return localStorage.getItem(themeKey) || 'light'; } catch (_) { return document.documentElement.getAttribute('data-theme') || 'light'; } }
     function setTheme(t) {
         document.documentElement.setAttribute('data-theme', t);
-        localStorage.setItem(themeKey, t);
+        try { localStorage.setItem(themeKey, t); } catch (_) { /* Display remains usable without storage. */ }
         var btn = document.getElementById('theme-toggle');
         if (btn) btn.textContent = t === 'dark' ? '☀ 浅色' : '☾ 深色';
     }
@@ -24,12 +24,110 @@
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
     var authGeneration = 0;
-    var MODULE_TITLES = { dashboard: '运营首页', queues: '队列治理', schedules: '周期批次', rules: '规则运维', quality: '质量监控', agents: 'Agent 审阅', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: 'obs报告', settings: '设置' };
+    var MODULE_TITLES = { dashboard: '运行概览', queues: '异常处理', schedules: '周期批次', rules: '规则与发布', quality: '运行质量', agents: 'Agent 候选', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: '运行报告', logs: '运行日志', settings: '系统设置', section: '数据与资源' };
     var currentModule = 'dashboard';
 
     function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
-    function saveKey(k) { authGeneration++; localStorage.setItem(KEY_STORAGE, k); }
-    function clearKey() { authGeneration++; localStorage.removeItem(KEY_STORAGE); stopPolling(); }
+    var credentialSeen = loadKey(), tableViewEpoch = 0;
+    var legacyTableAdapter = false;
+    var LEGACY_TABLE_NOTICE = '当前表格组件版本较旧，仅支持查询；升级 oao 后可使用表格操作';
+    function installLegacyTableAdapter() {
+        if (legacyTableAdapter || typeof Oao.destroy === 'function') return;
+        legacyTableAdapter = true;
+        // Old oao has no action cancellation API. Give it a private, read-only
+        // transport instead of relying on hidden buttons or detached DOM nodes.
+        var prefix = '/api/papa-oao-readonly', nativeFetch = window.fetch;
+        var origin = new URL(window.location.href).origin;
+        window.fetch = function (input, init) {
+            var raw = typeof input === 'string' ? input : input && input.url;
+            var url;
+            try { url = new URL(raw, window.location.href); } catch (_) { return nativeFetch.apply(this, arguments); }
+            if (url.origin !== origin || url.pathname.indexOf(prefix + '/') !== 0) return nativeFetch.apply(this, arguments);
+            var suffix = url.pathname.slice(prefix.length), method = String(init && init.method || input && input.method || 'GET').toUpperCase();
+            // Only table metadata and a single table's list route are allowed.
+            // In particular no action, encoded separator, or subresource reaches the server.
+            if (method !== 'GET' || !/^\/[a-zA-Z0-9_-]+$/.test(suffix)) {
+                return Promise.resolve(new Response(LEGACY_TABLE_NOTICE, { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }));
+            }
+            var receiver = this;
+            return (async function () {
+                var epoch = authGeneration, key = loadKey();
+                var current = function () { return epoch === authGeneration && key === loadKey(); };
+                url.pathname = '/api/oao' + suffix;
+                var request = typeof Request !== 'undefined' && input instanceof Request ? new Request(url.href, input) : url.href;
+                var resp = await nativeFetch.call(receiver, request, init);
+                // A stale 401 must not invoke the old library's unauthorized hook.
+                if (!current()) return new Response('会话已变化，请重新查询', { status: 409 });
+                if (!resp.ok) return resp;
+                var data = await resp.json();
+                if (!current()) return new Response('会话已变化，请重新查询', { status: 409 });
+                if (data && Array.isArray(data.tables)) data.tables.forEach(function (table) { if (table) table.actions = []; });
+                if (data && typeof data === 'object') data.actions = [];
+                var headers = new Headers(resp.headers);
+                headers.delete('Content-Length'); headers.delete('Content-Encoding');
+                return new Response(JSON.stringify(data), { status: resp.status, statusText: resp.statusText, headers: headers });
+            })();
+        };
+        Oao.init({ base: prefix });
+        var view = document.getElementById('oao-view');
+        if (view && view.parentNode) {
+            var notice = document.createElement('p');
+            notice.id = 'legacy-table-notice'; notice.className = 'hint'; notice.setAttribute('role', 'status');
+            notice.textContent = LEGACY_TABLE_NOTICE;
+            view.parentNode.insertBefore(notice, view);
+        }
+    }
+    function retireTableView() {
+        tableViewEpoch++;
+        var el = document.getElementById('oao-view');
+        if (!el) return;
+        if (typeof Oao !== 'undefined' && typeof Oao.destroy === 'function') Oao.destroy(el);
+        else {
+            // Escape uses the legacy component's own cancellation handlers:
+            // pending confirmations settle and body-mounted selects close.
+            if (document.querySelector && document.querySelector('.oao-mask.open, .oao-select-content:not([hidden])')) {
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+            }
+            // Isolate late read responses; all legacy writes are blocked above.
+            if (el.parentNode && el.cloneNode) el.parentNode.replaceChild(el.cloneNode(false), el);
+            else el.innerHTML = '';
+        }
+    }
+    function resetMonitorSessionState() {
+        authGeneration++; stopPolling(); lastData = null; currentSite = null;
+        if (typeof invalidateLogs === 'function') invalidateLogs();
+        if (typeof resetMonitorNavigation === 'function') resetMonitorNavigation();
+        if (typeof resetMonitorObservations === 'function') resetMonitorObservations();
+        retireTableView();
+        if (typeof Papa !== 'undefined') Papa.leave(true);
+        if (typeof workbenchConnection !== 'undefined') workbenchConnection = { updatedAt: null, failed: false, message: '' };
+        if (typeof workbenchHTML !== 'undefined') workbenchHTML = new WeakMap();
+        if (typeof workbenchKPIValues !== 'undefined') workbenchKPIValues = [];
+        ['workbench-kpis','workbench-issues','workbench-sites','dash-queue','dash-sys','dash-dirs','dash-site-ctl','site-tabs','site-meta'].forEach(function (id) {
+            var el = document.getElementById(id); if (el) el.innerHTML = '';
+        });
+        var summaryDefaults = { 'workbench-scope': '全部站点', 'workbench-coverage': '等待快照', 'workbench-issue-count': '—' };
+        Object.keys(summaryDefaults).forEach(function (id) {
+            var el = document.getElementById(id); if (el) el.textContent = summaryDefaults[id];
+        });
+        var freshness = document.getElementById('workbench-freshness');
+        if (freshness) { freshness.textContent = '尚未获得监控快照'; freshness.classList.remove('is-stale'); }
+        if (typeof bellSeen !== 'undefined') bellSeen = null;
+        var bell = document.getElementById('bell'), badge = document.getElementById('bell-badge'), panel = document.getElementById('bell-panel');
+        if (bell) { bell.setAttribute('aria-expanded', 'false'); bell.classList.remove('pulse'); }
+        if (badge) { badge.textContent = '0'; badge.hidden = true; badge.className = 'bell-badge'; }
+        if (panel) { panel.innerHTML = ''; panel.hidden = true; }
+    }
+    function saveKey(k) { resetMonitorSessionState(); localStorage.setItem(KEY_STORAGE, k); credentialSeen = k; }
+    function clearKey() { resetMonitorSessionState(); localStorage.removeItem(KEY_STORAGE); credentialSeen = ''; }
+    window.addEventListener('storage', function (event) {
+        if ((event.key !== KEY_STORAGE && event.key !== null) || event.storageArea !== localStorage) return;
+        var key = loadKey();
+        if (key === credentialSeen) return;
+        resetMonitorSessionState(); credentialSeen = key; pendingLoginRefresh = true;
+        if (key || !authRequired()) startPolling();
+        else { setStatus(false, '需要密钥'); showLogin(false); }
+    });
     // 服务端在 <html data-auth-required> 上下发「当前是否设了访问令牌」。
     // 一条都没设时后端本来就把 /api/* 当开放，前端不要弹登录（否则本地开发每次刷新闪一下）。
     function authRequired() { return document.documentElement.getAttribute('data-auth-required') === '1'; }
@@ -54,7 +152,9 @@
         if (currentModule === 'quality') loadQuality();
         if (currentModule === 'agents') loadAgents();
         if (currentModule === 'tables' && currentTable) openTable(currentTable, document.getElementById('moduleTitle').textContent);
-        if (currentModule === 'settings') { fetchSettings(); fetchLogs(); }
+        if (currentModule === 'settings') { Papa.leave(true); Papa.renderSettings(document.getElementById('custom-settings')); fetchSettings(); }
+        if (currentModule === 'pages' && currentPage) openPage(currentPage.key, currentPage.label);
+        if (currentModule === 'logs') fetchLogs();
         if (currentModule === 'tokens') fetchTokens();
         if (currentModule === 'obs') fetchObsReports();
     }
@@ -62,33 +162,50 @@
         document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
         document.getElementById('statusText').textContent = text;
         if (typeof setWorkbenchConnection === 'function') setWorkbenchConnection(ok, text);
+        if (!ok && typeof setMonitorVisualConnection === 'function') setMonitorVisualConnection(false);
     }
 
-    function switchModule(name) {
+    function switchModule(name, view) {
+        var target = document.getElementById('mod-' + name);
+        if (!target) return false;
+        if (typeof Papa !== 'undefined' && !Papa.leave(false)) return false;
+        if (typeof destroyMonitorVisuals === 'function') destroyMonitorVisuals();
+        if (currentModule === 'tables') retireTableView();
         setNavigationOpen(false);
         if (typeof invalidateSchedules === 'function') invalidateSchedules();
         if (typeof invalidateRules === 'function') invalidateRules();
         if (typeof invalidateQuality === 'function') invalidateQuality();
         if (typeof invalidateAgents === 'function') invalidateAgents();
+        if (typeof invalidateLogs === 'function') invalidateLogs();
         currentModule = name;
+        if (view && view.table) currentTable = view.table;
+        if (view && view.page) currentPage = { key: view.page, label: view.label };
+        if (view && view.section && typeof currentSection !== 'undefined') currentSection = view.section;
         document.querySelectorAll('.module').forEach(function (m) { m.classList.remove('active'); });
         document.getElementById('mod-' + name).classList.add('active');
         document.querySelectorAll('.nav-item').forEach(function (b) {
             b.classList.toggle('active', b.dataset.module === name);
         });
-        document.getElementById('moduleTitle').textContent = MODULE_TITLES[name];
-        if (name === 'settings') { fetchSettings(); fetchLogs(); }
+        document.getElementById('moduleTitle').textContent = view && view.label || MODULE_TITLES[name];
+        if (typeof Oao !== 'undefined' && Oao.motion) Oao.motion.animate(document.getElementById('mod-' + name), 'enter');
+        if (name === 'dashboard' && lastData && typeof renderMonitorVisuals === 'function') renderMonitorVisuals(lastData);
+        if (name === 'settings') { Papa.renderSettings(document.getElementById('custom-settings')); fetchSettings(); }
+        if (name === 'logs') { fetchLogs(); }
         if (name === 'tokens') { fetchTokens(); }
         if (name === 'obs') { fetchObsReports(); }
         if (name === 'schedules') { loadSchedules(true); }
         if (name === 'rules') { loadRules(); }
         if (name === 'quality') { loadQuality(); }
         if (name === 'agents') { loadAgents(); }
+        if (typeof syncMonitorNavigation === 'function') syncMonitorNavigation(true);
+        return true;
     }
 
     function setNavigationOpen(open) {
-        document.getElementById('main-nav').classList.toggle('nav-open', open);
-        document.getElementById('nav-toggle').setAttribute('aria-expanded', String(open));
+        var nav = document.getElementById('main-nav'), toggle = document.getElementById('nav-toggle');
+        if (nav) nav.classList.toggle('nav-open', open);
+        if (toggle) toggle.setAttribute('aria-expanded', String(open));
+        if (open && nav) { var active = nav.querySelector('.nav-category.active') || nav.querySelector('.nav-category'); if (active) active.focus(); }
     }
     function toggleNavigation() {
         setNavigationOpen(document.getElementById('nav-toggle').getAttribute('aria-expanded') !== 'true');
@@ -102,88 +219,45 @@
      * 预置筛选打开（oao 会把它填进筛选栏，用户能改能清）。概览不预设 —— 它本来就是看全部。
      */
     function tableFilterOpts() {
-        if (currentSite === null) return { filter: {} };
+        if (currentSite === null || (typeof monitorTableSupportsSite === 'function' && !monitorTableSupportsSite(currentTable))) return { filter: {} };
         return { filter: { site: currentSite } };
     }
 
     /** 打开某张表：切到表格模块、点亮对应菜单项，再让 oao 渲染 */
     async function openTable(key, label, btn) {
-        switchModule('tables');
-        currentTable = key;
-        document.getElementById('moduleTitle').textContent = label || '数据';
-        if (btn) {
-            // switchModule 会按 data-module 清空高亮，这里把当前表重新点亮
-            document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.remove('active'); });
-            btn.classList.add('active');
-        }
+        if (!switchModule('tables', { table: key, label: label || '数据' })) return false;
+        await renderTableView(key);
+        return true;
+    }
+
+    async function renderTableView(key) {
+        // 旧 oao 没有销毁/请求代次保护，隔离旧节点使其晚到渲染无法写入新视图。
+        if (typeof Oao.destroy !== 'function') retireTableView();
+        var view = document.getElementById('oao-view'), epoch = ++tableViewEpoch, identity = authGeneration;
         try {
             // 第三个参数 = oao 的预置筛选（需要 oao ≥ 带 opts.filter 的那版；老版本会忽略它）
-            await Oao.render(document.getElementById('oao-view'), key, tableFilterOpts());
+            await Oao.render(view, key, tableFilterOpts());
         } catch (e) {
-            document.getElementById('oao-view').innerHTML =
-                '<div class="empty">表格加载失败：' + esc(e.message) + '</div>';
+            if (epoch === tableViewEpoch && identity === authGeneration && currentModule === 'tables' && view === document.getElementById('oao-view')) {
+                view.innerHTML = '<div class="empty">表格加载失败：' + esc(e && e.message || '请求失败') + '</div>';
+            }
         }
     }
 
-    /** 按 Group 分组渲染侧边栏的动态菜单 */
-    /**
-     * 内置表格页的固定菜单：这些表的菜单项写在 template.html 的侧边栏里
-     * （框架自带功能，不该混在业务表格的分组里），动态分组里就不重复出。
-     * key → 按钮 id；按钮在表没注册时藏起来（比如没开 operation_log）。
-     */
-    var BUILTIN_TABLES = { operation_log: 'nav-oplog' };
+    /** 按 Group 分组渲染当前分类的动态菜单；固定分类不依赖 oao 的挂载节点。 */
     var navRequestSeq = 0;
-
-    /** 侧边栏动态菜单：表格页与自定义页**合并**，按 group 首次出现的顺序分组
-     *  （与 oao 的 mount 同一约定 —— 分开渲染会让同名的组裂成两段） */
     async function renderNav() {
-        var nav = document.getElementById('oao-nav');
-        if (!nav) return;
-        var seq = ++navRequestSeq, epoch = authGeneration;
-        var current = function () { return seq === navRequestSeq && epoch === authGeneration; };
-
+        var seq = ++navRequestSeq, epoch = authGeneration, key = loadKey();
+        var current = function () { return seq === navRequestSeq && epoch === authGeneration && key === loadKey(); };
         var tables = [];
         try { tables = (await Oao.list(true)) || []; } catch (e) { tables = []; }
         if (!current()) return;
-        var pages = [];
-        var resp = await apiFetch('/api/pages', { current: current });
+        var pages = [], resp = await apiFetch('/api/pages', { current: current });
         if (resp) {
             try { pages = (await resp.json()).pages || []; } catch (e) { pages = []; }
         }
         if (!current()) return;
-
-        // 固定菜单项：注册了就显示（标题也以表声明为准，省得两处各写一遍），没注册就藏
-        Object.keys(BUILTIN_TABLES).forEach(function (key) {
-            var btn = document.getElementById(BUILTIN_TABLES[key]);
-            if (!btn) return;
-            var t = tables.filter(function (x) { return x.key === key; })[0];
-            if (t) btn.textContent = t.label;
-            btn.classList.toggle('hidden', !t);
-        });
-
-        var items = tables.filter(function (t) { return !BUILTIN_TABLES[t.key]; })
-            .map(function (t) { return { key: t.key, label: t.label, group: t.group, page: false }; })
-            .concat(pages.map(function (p) { return { key: p.key, label: p.label, group: p.group, page: true }; }));
-        if (!items.length) { nav.innerHTML = ''; return; }
-
-        var groups = [];
-        items.forEach(function (it) {
-            var g = it.group || 'General';
-            if (groups.indexOf(g) === -1) groups.push(g);
-        });
-        nav.innerHTML = groups.map(function (g) {
-            return '<div class="nav-section">' + esc(g) + '</div>'
-                + items.filter(function (it) { return (it.group || 'General') === g; })
-                    .map(function (it) {
-                        var attr = it.page ? 'data-page' : 'data-oao';
-                        return '<button class="nav-item" ' + attr + '="' + esc(it.key) + '">' + esc(it.label) + '</button>';
-                    }).join('');
-        }).join('');
-
-        nav.querySelectorAll('.nav-item').forEach(function (b) {
-            if (b.dataset.page) b.onclick = function () { openPage(b.dataset.page, b.textContent, b); };
-            else b.onclick = function () { openTable(b.dataset.oao, b.textContent, b); };
-        });
+        if (typeof setMonitorNavigation === 'function') setMonitorNavigation(tables, pages);
     }
 
     /* ============ 自定义页（业务用 app.UsePage 注册） ============ */
@@ -192,33 +266,12 @@
      *   Papa.page('review', function (el, meta) { el.innerHTML = '…'; });
      * el 是 #page-view；Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 都是全局可用的。
      */
-    var Papa = (function () {
-        var renderers = {};
-        return {
-            page: function (key, fn) {
-                if (typeof fn === 'function') renderers[key] = fn;
-            },
-            has: function (key) { return typeof renderers[key] === 'function'; },
-            /** 调用某页的渲染函数；没注册返回 false */
-            render: function (key, el, meta) {
-                var fn = renderers[key];
-                if (typeof fn !== 'function') return false;
-                fn(el, meta || {});
-                return true;
-            },
-        };
-    })();
+    // Papa.page/settings and lifecycle handling are defined by extensions.js.
+    var currentPage = null;
 
     /** 打开某个自定义页：切到 pages 模块、点亮菜单项，再交给页脚本渲染 */
     function openPage(key, label, btn) {
-        switchModule('pages');
-        var title = document.getElementById('moduleTitle');
-        if (title) title.textContent = label || '自定义页';
-        if (btn) {
-            // switchModule 会按 data-module 清空高亮，这里把当前项重新点亮
-            document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.remove('active'); });
-            btn.classList.add('active');
-        }
+        if (!switchModule('pages', { page: key, label: label || '自定义页' })) return false;
         var view = document.getElementById('page-view');
         view.innerHTML = '';
         if (!Papa.render(key, view, { key: key, label: label })) {
@@ -226,6 +279,7 @@
                 + ' 没有注册渲染函数：检查 app.UsePage 的 Script 里是否调了 Papa.page("'
                 + esc(key) + '", fn)</div>';
         }
+        return true;
     }
 
     /* ============ UI 基础组件（阶段 0） ============ */
@@ -404,13 +458,16 @@
     function bar(cls, p) { return '<div class="bar ' + cls + '"><span style="width:' + p + '%"></span></div>'; }
 
     /* ============ 渲染 ============ */
-    function renderSystem(s) {
+    function renderSystem(s, generatedAt) {
         var el = document.getElementById('dash-sys');
         if (!s) { el.innerHTML = '<div class="empty">无系统指标</div>'; return; }
-        el.innerHTML =
-            '<div class="card"><div class="label">CPU</div><div class="value">' + (s.cpu_percent || 0).toFixed(1) + '%</div>' + bar('cpu', pct(s.cpu_percent)) + '</div>'
-            + '<div class="card"><div class="label">内存</div><div class="value">' + fmtBytes(s.mem_used) + '</div><div class="sub">共 ' + fmtBytes(s.mem_total) + '</div>' + bar('ram', pct(s.mem_percent)) + '</div>'
-            + '<div class="card"><div class="label">磁盘</div><div class="value">' + fmtBytes(s.disk_used) + '</div><div class="sub">共 ' + fmtBytes(s.disk_total) + '</div>' + bar('disk', pct(s.disk_percent)) + '</div>';
+        el.innerHTML = ['cpu','mem','disk'].map(function (key) {
+            var v = MonitorObservations.resource(s,key,MonitorObservations.time(generatedAt));
+            var label = {cpu:'CPU',mem:'内存',disk:'磁盘'}[key], valid = v.value !== null;
+            return '<div class="card"><div class="label">' + label + (key === 'disk' ? ' · 根文件系统' : ' · 系统采样') + '</div><div class="value">' + (valid ? v.value.toFixed(1) + '%' : '—') + '</div>'
+                + '<div class="sub">' + (valid && key!=='cpu' ? fmtBytes(s[key+'_used']) + ' / ' + fmtBytes(s[key+'_total']) : v.state) + '</div>'
+                + (valid ? bar(key,pct(v.value)) : '') + '</div>';
+        }).join('');
     }
     function renderDirs(dirs) {
         var el = document.getElementById('dash-dirs');
@@ -424,30 +481,30 @@
     function stageTiles(q) {
         q = q || {};
         return '<div class="tiles">'
-            + '<div class="tile queued"><div class="k">排队</div><div class="v">' + q.queue_len + '</div></div>'
-            + '<div class="tile running"><div class="k">执行中</div><div class="v">' + q.in_progress + '</div></div>'
-            + '<div class="tile done"><div class="k">完成</div><div class="v">' + q.completed + '</div></div>'
-            + '<div class="tile failed"><div class="k">错误</div><div class="v">' + q.failed + '</div></div>'
-            + '<div class="tile submitted"><div class="k">已提交</div><div class="v">' + q.submitted + '</div></div>'
+            + '<div class="tile queued"><div class="k">排队</div><div class="v">' + workbenchNumber(workbenchCount(q.queue_len)) + '</div></div>'
+            + '<div class="tile running"><div class="k">未完成（含排队）</div><div class="v">' + workbenchNumber(workbenchCount(q.in_progress)) + '</div></div>'
+            + '<div class="tile done"><div class="k">完成</div><div class="v">' + workbenchNumber(workbenchCount(q.completed)) + '</div></div>'
+            + '<div class="tile failed"><div class="k">错误</div><div class="v">' + workbenchNumber(workbenchCount(q.failed)) + '</div></div>'
+            + '<div class="tile submitted"><div class="k">已提交</div><div class="v">' + workbenchNumber(workbenchCount(q.submitted)) + '</div></div>'
             + '</div>';
     }
     // 概览里每个阶段压缩成一行：阶段名 + 三个关键数字 + 完成小字。
-    // 三个数字是「现在怎么样」（排队/执行中/错误），完成量是累计视角，放小字不占视线；
+    // 三个数字是「现在怎么样」（排队/未完成（含排队）/错误），完成量是累计视角，放小字不占视线；
     // 已提交=累计提交（≈完成+失败+在途），在概览里重复感太强，只在站点 Tab 的完整详情里出现。
     function stageLine(name, st) {
         var q = (st && st.queue) || {};
         function mini(cls, label, val) {
             return '<span class="mini ' + cls + '" title="' + label + '">' + '<i></i>' + label
-                + ' <b>' + (val || 0) + '</b></span>';
+                + ' <b>' + workbenchNumber(workbenchCount(val)) + '</b></span>';
         }
         return '<div class="stage-line">'
             + '<span class="stage-name">' + esc(stageLabel(name, st)) + '</span>'
             + '<span class="mini-group">'
             + mini('queued', '排队', q.queue_len)
-            + mini('running', '执行中', q.in_progress)
+            + mini('running', '未完成（含排队）', q.in_progress)
             + mini('failed', '错误', q.failed)
             + '</span>'
-            + '<span class="stage-done">完成 ' + (q.completed || 0) + '</span>'
+            + '<span class="stage-done">完成 ' + workbenchNumber(workbenchCount(q.completed)) + '</span>'
             + '</div>';
     }
     // 站点 Tab 里的完整阶段详情：五格大数字 + 累计耗时 + Worker 明细表。
@@ -500,7 +557,7 @@
                 var head = '<div class="site-card-head"><h3>' + esc(siteLabel(site)) + '</h3>'
                     + '<span class="muted">' + list.length + ' 个阶段</span></div>';
                 if (list.length === 0) {
-                    return '<div class="site-card">' + head + '<div class="empty">暂无运行中的阶段</div></div>';
+                    return '<div class="site-card">' + head + '<div class="empty">暂无活跃阶段</div></div>';
                 }
                 return '<div class="site-card">' + head
                     + '<div class="stage-lines">' + list.map(function (name) {
@@ -510,7 +567,7 @@
             return;
         }
         el.classList.remove('queue-site-grid');
-        if (names.length === 0) { el.innerHTML = '<div class="empty">暂无运行中的阶段</div>'; return; }
+        if (names.length === 0) { el.innerHTML = '<div class="empty">暂无活跃阶段</div>'; return; }
         el.innerHTML = names.map(function (name) {
             return stageDetail(name, stages[name]);
         }).join('');
@@ -564,6 +621,7 @@
     function renderQueues(queues) {
         var el = document.getElementById('queue-gov');
         var data = queues || {};
+        var focusedQueue = el.contains(document.activeElement) && document.activeElement.dataset ? document.activeElement.dataset.queue : null;
         el.innerHTML = '<table class="qtable"><thead><tr>'
             + '<th>队列</th><th>状态</th><th>上次执行</th><th>处理量</th><th>待处理</th><th>操作</th>'
             + '</tr></thead><tbody>'
@@ -571,7 +629,7 @@
                 var m = queueMeta(name);
                 var q = data[name] || {};
                 var ran = q.runs > 0;
-                var backlog = q.backlog || 0;
+                var backlog = workbenchTime(q.backlog_at) ? workbenchCount(q.backlog) : null;
                 return '<tr>'
                     + '<td><b>' + esc(m.label) + '</b><div class="muted">' + esc(name) + ' · ' + esc(m.desc) + '</div></td>'
                     + '<td>' + queueStatus(q) + '</td>'
@@ -579,7 +637,7 @@
                     + '<div class="muted">' + (ran ? ('耗时 ' + fmtDuration(q.last_duration)) : '尚未执行') + '</div></td>'
                     + '<td>' + (q.running ? (q.run_processed || 0) : (ran ? q.last_processed : 0))
                     + '<div class="muted">' + (q.running ? '本轮已处理' : '上次处理') + ' · 累计 ' + (q.total_processed || 0) + '</div></td>'
-                    + '<td>' + (backlog > 0 ? '<span class="badge warn">' + backlog + '</span>' : '0')
+                    + '<td>' + (backlog === null ? '—（未知）' : backlog > 0 ? '<span class="badge warn">' + backlog + '</span>' : '0')
                     + '<div class="muted">' + esc(fmtAgo(q.backlog_at)) + '采样</div></td>'
                     // 队列名是运行期才知道的，所以走 data-* + 从 dataset 取 ——
                     // 与熔断那个「恢复」按钮同一套写法：内联属性里只有固定代码，运行期值不拼进 JS 字符串
@@ -588,6 +646,7 @@
                     + '</tr>';
             }).join('')
             + '</tbody></table>';
+        if (focusedQueue) el.querySelectorAll('[data-queue]').forEach(function (b) { if (b.dataset.queue === focusedQueue && !b.disabled) b.focus(); });
     }
     var queueFlights = Object.create(null);
     async function triggerQueue(name) {
@@ -652,27 +711,34 @@
         if (!el) return;
         var sites = (data && data.sites) || {};
         var keys = buildWorkbench(data, null).rows.map(function (row) { return row.site; }).sort();
-        if (keys.length === 0) { // 还没有站点快照（老引擎 / 没播种）：整排隐藏，不占位
+        if (currentSite !== null && keys.indexOf(currentSite) < 0) {
+            currentSite = null; // 站点没了回概览
+            refreshSiteModule();
+        }
+        if (keys.length === 0) { // 还没有站点快照（老引擎 / 没播种）：清理失效范围后整排隐藏
+            el.innerHTML = '';
+            workbenchHTML.delete(el);
             el.hidden = true;
             document.getElementById('site-meta').hidden = true;
             return;
         }
-        if (currentSite !== null && keys.indexOf(currentSite) < 0) {
-            currentSite = null; // 站点没了回概览
-            if (currentModule === 'quality') loadQuality();
-            if (currentModule === 'agents') loadAgents();
-        }
-        el.innerHTML = ['<button class="site-tab' + (currentSite === null ? ' active' : '') +
+        var focus = el.contains(document.activeElement) && document.activeElement.dataset ? Object.assign({}, document.activeElement.dataset) : null;
+        if (focus && focus.site && keys.indexOf(focus.site) < 0) focus = {all:'true'};
+        var tabsHTML = ['<button class="site-tab' + (currentSite === null ? ' active' : '') +
             '" data-all="true">概览（全部）</button>'].concat(keys.map(function (k) {
                 return '<button class="site-tab' + (currentSite === k ? ' active' : '') +
                     '" data-site="' + esc(k) + '">' + esc(siteLabel(k)) + '</button>';
             })).join('');
+        if (workbenchHTML.get(el) !== tabsHTML) { el.innerHTML = tabsHTML; workbenchHTML.set(el, tabsHTML); }
         // 与队列按钮同一套：data-* 带运行期值，内联属性里只有固定代码（站点名不拼进 JS 字符串）
         el.querySelectorAll('.site-tab').forEach(function (b) {
             b.onclick = function () { switchSite(b.dataset.all === 'true' ? null : b.dataset.site); };
+            b.setAttribute && b.setAttribute('aria-pressed', String(b.dataset.all === 'true' ? currentSite === null : b.dataset.site === currentSite));
+            if (focus && focus.all === b.dataset.all && focus.site === b.dataset.site) b.focus();
         });
         el.hidden = false;
         renderSiteMeta(sites);
+        if (typeof syncMonitorSiteScope === 'function') syncMonitorSiteScope();
     }
 
     function renderSiteMeta(sites) {
@@ -688,9 +754,9 @@
             // 一次后台点的暂停会被显示成熔断，读的人会去找"哪来的失败"。
             stat.breaker_paused
                 ? '<b>已暂停</b>（' + esc(fmtAgo(stat.breaker_paused_at)) + '）'
-                : '运行中'
+                : '未暂停'
         ];
-        parts.push('<span class="muted">任务表在左侧菜单，进去后用「站点」筛选看本站的任务</span>');
+        parts.push('<span class="muted">在「采集任务流 → 采集任务」查看本站任务</span>');
         meta.innerHTML = parts.join(' ｜ ');
         meta.hidden = false;
     }
@@ -698,9 +764,13 @@
     function switchSite(site) {
         currentSite = site;
         if (lastData) renderAll(lastData); // 手上有快照就直接重画，不必等下一次轮询
+        refreshSiteModule();
+    }
+
+    function refreshSiteModule() {
         // 正开着某张表时，也按新站点重画它 —— 切站点 tab 就该连表里的筛选一起跟着换
-        if (currentModule === 'tables' && currentTable) {
-            Oao.render(document.getElementById('oao-view'), currentTable, tableFilterOpts());
+        if (currentModule === 'tables' && currentTable && (typeof monitorTableSupportsSite !== 'function' || monitorTableSupportsSite(currentTable))) {
+            renderTableView(currentTable);
         }
         if (currentModule === 'schedules') loadSchedules(true);
         if (currentModule === 'rules') loadRules();
@@ -714,8 +784,9 @@
         lastData = data;
         renderSiteTabs(data);
         renderWorkbench(data);
+        if (typeof renderMonitorVisuals === 'function') renderMonitorVisuals(data);
         var view = siteView(data.stages, data.queues, data.sites);
-        renderSystem(data.system);
+        renderSystem(data.system, data.generated_at);
         renderDirs(data.system && data.system.dirs);
         renderQueueSummary(view.stages, view.sites);
         renderQueues(view.queues);
@@ -855,7 +926,7 @@
         fetchData();
     }
 
-    /* ---- 站点控制：一站一行（站点名 + 运行中/已暂停 + 暂停/恢复整站） ---- */
+    /* ---- 站点控制：一站一行（站点名 + 未暂停/已暂停 + 暂停/恢复整站） ---- */
     // 为什么要有：**站点那一层**是唯一不需要站点知识的粒度（"这一站先别抓"），也是后台**唯一**
     // 主动暂停的入口 —— 熔断横幅只在已经闸住时才出现、只有「恢复」。声明了 `StartPaused` 的站
     // 启动就停在这一档上，操作人在这里点开（见 docs/MONITOR.md §10）。
@@ -896,7 +967,7 @@
                 (paused ? '恢复整站' : '暂停整站') + '</button>';
             return '<div class="card"><div class="breaker-row">' +
                 '<span class="breaker-text"><b>' + esc(siteLabel(site)) + '</b>' +
-                (paused ? '｜<b>已暂停</b>' : '｜运行中') + '</span>' + toggle + '</div></div>';
+                (paused ? '｜<b>已暂停</b>' : '｜未暂停') + '</span>' + toggle + '</div></div>';
         }).join('');
         sec.hidden = false;
     }
@@ -1134,12 +1205,29 @@
     }
 
     /* ============ 日志 ============ */
+    var logListSeq = 0, logViewSeq = 0, logDialogSeq = 0, logDialogOpen = false;
+    function invalidateLogs() {
+        logListSeq++; logViewSeq++; logDialogSeq++;
+        if (logDialogOpen && typeof Dialog !== 'undefined') Dialog.close();
+        logDialogOpen = false;
+        ['log-list', 'log-tail-text', 'log-tail-status'].forEach(function (id) {
+            var el = document.getElementById(id); if (el) el.textContent = '';
+        });
+    }
     async function fetchLogs() {
-        var resp = await apiFetch('/api/logs');
-        if (!resp) return;
-        var data = await resp.json();
         var el = document.getElementById('log-list');
-        var files = data.files || [];
+        if (!el || currentModule !== 'logs') return;
+        var seq = ++logListSeq, epoch = authGeneration, key = loadKey();
+        var current = function () { return seq === logListSeq && epoch === authGeneration && key === loadKey() && currentModule === 'logs'; };
+        el.innerHTML = '<div class="hint">正在读取日志列表…</div>';
+        var resp = await apiFetch('/api/logs', { current: current });
+        if (!current()) return;
+        if (!resp) { el.innerHTML = '<div class="hint">读取失败，请刷新重试</div>'; return; }
+        var data;
+        try { data = await resp.json(); }
+        catch (_) { if (current()) el.innerHTML = '<div class="hint">日志列表格式无效，请刷新重试</div>'; return; }
+        if (!current()) return;
+        var files = Array.isArray(data.files) ? data.files : [];
         el.innerHTML = '';
         if (files.length === 0) { el.innerHTML = '<div class="hint">日志目录为空</div>'; return; }
         files.forEach(function (f) {
@@ -1157,10 +1245,10 @@
             el.appendChild(row);
         });
     }
-    async function downloadFile(url) {
+    async function downloadFile(url, isCurrent) {
         var headers = {};
         var key = loadKey(), epoch = authGeneration;
-        var current = function () { return epoch === authGeneration && key === loadKey(); };
+        var current = function () { return epoch === authGeneration && key === loadKey() && (!isCurrent || isCurrent()); };
         if (key) headers['Authorization'] = 'Bearer ' + key;
         try {
         var resp = await fetch(url, { headers: headers });
@@ -1183,28 +1271,37 @@
         } catch (e) { if (current()) Toast.err('下载失败，请检查网络后重试'); }
     }
     function viewLog(name) {
-        var busy = false;
-        Dialog.open({title: name + ' · 最后 200 行',
+        if (currentModule !== 'logs') return;
+        var busy = false, seq = ++logDialogSeq, view = logViewSeq, epoch = authGeneration, key = loadKey();
+        var dialog = Dialog.open({title: name + ' · 最后 200 行',
             body: '<p class="hint" id="log-tail-status" role="status">正在读取…</p><pre class="log-tail-text" id="log-tail-text"></pre>',
             actions: [{label:'刷新', onClick:function(){ refresh(); return false; }}, {label:'关闭',value:true}]});
+        logDialogOpen = true;
         var status = document.getElementById('log-tail-status'), content = document.getElementById('log-tail-text');
+        var current = function () { return logDialogOpen && seq === logDialogSeq && view === logViewSeq && epoch === authGeneration && key === loadKey() && currentModule === 'logs' && content.isConnected; };
+        dialog.then(function () { if (seq === logDialogSeq) { logDialogOpen = false; logDialogSeq++; } });
         async function refresh() {
-            if (busy || !content.isConnected) return;
+            if (busy || !current()) return;
             busy = true; status.textContent = '正在读取…';
             try {
-                var response = await apiFetch('/api/logs/tail?file=' + encodeURIComponent(name));
+                var response = await apiFetch('/api/logs/tail?file=' + encodeURIComponent(name), { current: current });
+                if (!current()) return;
                 if (!response) throw new Error('读取失败，请检查登录状态');
                 if (!response.ok) throw new Error((await response.text()).trim() || '读取日志失败');
                 var data = await response.json();
+                if (!current()) return;
                 content.textContent = data.text || '暂无日志';
                 status.textContent = '显示最后 ' + data.lines + ' 行' + (data.truncated ? '（达到 1 MiB 上限，开头内容已截断）' : '');
                 content.scrollTop = content.scrollHeight;
-            } catch (error) { content.textContent = ''; status.textContent = error.message; }
+            } catch (error) { if (current()) { content.textContent = ''; status.textContent = error.message; } }
             finally { busy = false; }
         }
         refresh();
     }
-    async function downloadLogs() { await downloadFile('/api/logs/download'); }
+    async function downloadLogs() {
+        var view = logViewSeq;
+        await downloadFile('/api/logs/download', function () { return view === logViewSeq && currentModule === 'logs'; });
+    }
 
     /* ============ obs 报告（obs.report.dir） ============ */
     // 后端只列报告目录、把单份产物当纯文本吐回来；这里做「选报告 → 切文件 → 看原文 / 下载」。
@@ -1342,7 +1439,12 @@
         if (wrap && ev.target && wrap.contains(ev.target)) return;
         closeBell();
     });
-    document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeBell(); });
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Escape') return;
+        closeBell();
+        var toggle = document.getElementById('nav-toggle');
+        if (toggle && toggle.getAttribute('aria-expanded') === 'true') { setNavigationOpen(false); toggle.focus(); }
+    });
 
     // 表格动作的防重复提交由 oao 组件自己做（runAction 里的 inFlightActions，
     // key 用「表 + 动作 + 主键」）—— v1.2.3 及以前没有，v1.2.4 起有。
@@ -1359,6 +1461,9 @@
         // （返回 false 表示没换成新凭据，组件就把 401 如实抛出来）
         onUnauthorized: handleTableUnauthorized
     });
+    installLegacyTableAdapter();
+
+    if (typeof syncMonitorNavigation === 'function') syncMonitorNavigation();
 
     // 有本地凭据或服务端根本没配置令牌 → 直接进；需要令牌且本地没凭据 → 停在登录框，
     // 等登录成功后再开始轮询/渲染菜单（避免未登录状态下每 3 秒刷一次 401）。

@@ -79,6 +79,8 @@ type App struct {
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
 	configStore *configstore.Store
+
+	shutdownHooks []func(context.Context) error // Run 前注册，HTTP 退出后、关库前执行
 }
 
 // Option 应用初始化选项
@@ -141,7 +143,7 @@ func (a *App) UseRouter(fn func(*Router)) {
 	a.routers = append(a.routers, fn)
 }
 
-// Page 一个自定义后台页：清单进侧边栏，渲染由 Script 提供。
+// Page 一个自定义后台页：清单进入所属分类的导航，渲染由 Script 提供。
 // Script 是**受信任代码**，在里面调 Papa.page(Key, fn) 注册渲染函数：
 //
 //	app.UsePage(papa.Page{
@@ -151,14 +153,15 @@ func (a *App) UseRouter(fn func(*Router)) {
 //	    });`,
 //	})
 type Page struct {
-	Key    string // 菜单与 DOM 标识：字母、数字、下划线、连字符
-	Label  string // 菜单文案，留空用 Key
-	Group  string // 侧边栏分组，留空归 "General"
-	Script string // 受信任 JS，必须调 Papa.page(Key, fn) 注册渲染
+	Key     string // 菜单与 DOM 标识：字母、数字、下划线、连字符
+	Label   string // 菜单文案，留空用 Key
+	Group   string // 分类内的业务分组，留空归 "General"
+	Section string // 可选导航分类：flow / monitor / data / system；留空或未知值归 data
+	Script  string // 受信任 JS，必须调 Papa.page(Key, fn) 注册渲染
 }
 
 // UsePage 注册一个自定义页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
-// 声明有问题直接 panic：与 RegisterSites 同风格，启动即失败，别等点了菜单才发现。
+// Key 非法、重复或 Script 为空直接 panic；Section 留空或未知值兼容回退到 data。
 func (a *App) UsePage(p Page) {
 	if !validPageKey(p.Key) {
 		panic(fmt.Errorf("invalid page key %q: 只允许字母、数字、下划线、连字符", p.Key))
@@ -256,7 +259,13 @@ func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap Middleware) {
 		if group == "" {
 			group = "General"
 		}
-		pageList = append(pageList, map[string]string{"key": p.Key, "label": label, "group": group})
+		section := p.Section
+		switch section {
+		case "flow", "monitor", "data", "system":
+		default:
+			section = "data"
+		}
+		pageList = append(pageList, map[string]string{"key": p.Key, "label": label, "group": group, "section": section})
 	}
 	jsBody := strings.Join(a.extraJS, "\n;\n")
 	cssBody := strings.Join(a.extraCSS, "\n")
@@ -792,6 +801,7 @@ func (a *App) Run(ctx context.Context) {
 	// 顺序要紧：先把 HTTP 停下来、等在途请求（比如日志下载）跑完，再动引擎和数据库。
 	// 反过来的话，正在下载日志的请求会在读到大半时被关掉的连接 / 关掉的库打断。
 	a.shutdownHTTP()
+	businessDrained := a.stopExtensions(a.Config.Crawler.StopTimeoutOrDefault())
 	agentDrained := a.stopAgentCenter(a.Config.Crawler.StopTimeoutOrDefault())
 
 	// 引擎排空：Engine.Stop 内部先 e.cancel()，再等各阶段 worker 把队列跑完（上限 crawler.stop_timeout）。
@@ -824,7 +834,7 @@ func (a *App) Run(ctx context.Context) {
 	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
 	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
 	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
-	if drained && agentDrained {
+	if drained && agentDrained && businessDrained {
 		if a.Engine.GetBrowserPool() != nil {
 			a.Engine.GetBrowserPool().Close()
 		}

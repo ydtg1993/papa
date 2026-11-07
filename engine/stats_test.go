@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
@@ -47,5 +50,82 @@ func TestGetStageStatsAddsCumulative(t *testing.T) {
 	}
 	if got.Site != "a" {
 		t.Fatalf("Site 应照旧取站点，实得 %q", got.Site)
+	}
+}
+
+func completedStatsPool(t *testing.T) *workerpool.WorkerPool[*Task] {
+	t.Helper()
+	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool.Start(context.Background(), func(_ context.Context, task *Task) error {
+		if task.URL == "failed" {
+			return errors.New("synthetic failure")
+		}
+		return nil
+	})
+	t.Cleanup(func() { pool.Stop(time.Second) })
+	for _, url := range []string{"completed", "failed"} {
+		if err := pool.Submit(&Task{Stage: "stub", URL: url}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if drained, inFlight := pool.Stop(time.Second); !drained || inFlight != 0 {
+		t.Fatalf("synthetic pool did not finish: drained=%v inFlight=%d", drained, inFlight)
+	}
+	return pool
+}
+
+// Pausing immediately after harvest recreates a legal monitor-read interleaving
+// in the old reaper's two separate critical sections: totals already included
+// the old pool, but its live snapshot remained visible and was added twice.
+func TestHarvestStageTotalsRetiresCurrentSnapshotAtomically(t *testing.T) {
+	const key = "a:stub"
+	e := &Engine{}
+	pool := completedStatsPool(t)
+	e.setStatsQueue(key, track.NewStatsQueue(pool))
+	before := e.GetStageStats()[key].Queue
+	if before.Submitted != 2 || before.Completed != 1 || before.Failed != 1 {
+		t.Fatalf("unexpected completed-pool baseline: %+v", before)
+	}
+	e.harvestStageTotals(key, pool)
+	if stage, present := e.GetStageStats()[key]; present {
+		t.Fatalf("retired pool remained observable after harvest: before=%+v after=%+v (old totals must not be counted twice)", before, stage.Queue)
+	}
+	if got := e.stageTotals[key]; got != (stageTotals{Submitted: 2, Completed: 1, Failed: 1}) {
+		t.Fatalf("retiring the pool lost its cumulative totals: %+v", got)
+	}
+	newPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	if err := newPool.Submit(&Task{Stage: "stub", URL: "queued"}); err != nil {
+		t.Fatal(err)
+	}
+	stats := track.NewStatsQueue(newPool)
+	t.Cleanup(stats.Stop)
+	e.setStatsQueue(key, stats)
+	got := e.GetStageStats()[key].Queue
+	if got.Submitted != 3 || got.Completed != 1 || got.Failed != 1 || got.InProgress != 1 || got.QueueLen != 1 {
+		t.Fatalf("replacement pool must add its own work to retired totals exactly once: %+v", got)
+	}
+}
+
+func TestHarvestStageTotalsPreservesReplacementSnapshot(t *testing.T) {
+	const key = "a:stub"
+	e := &Engine{}
+	oldPool := completedStatsPool(t)
+	e.setStatsQueue(key, track.NewStatsQueue(oldPool))
+	newPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	if err := newPool.Submit(&Task{Stage: "stub", URL: "queued"}); err != nil {
+		t.Fatal(err)
+	}
+	newStats := track.NewStatsQueue(newPool)
+	t.Cleanup(newStats.Stop)
+	e.setStatsQueue(key, newStats)
+	// Lazy recreation can happen after the registry releases the retired pool
+	// and before the reaper publishes its final counters.
+	e.harvestStageTotals(key, oldPool)
+	if e.statsQueue[key] != newStats {
+		t.Fatal("harvesting the retired pool removed its replacement's statistics")
+	}
+	got := e.GetStageStats()[key].Queue
+	if got.Submitted != 3 || got.Completed != 1 || got.Failed != 1 || got.InProgress != 1 || got.QueueLen != 1 {
+		t.Fatalf("replacement snapshot lost old totals or counted them twice: %+v", got)
 	}
 }

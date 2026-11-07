@@ -6,12 +6,15 @@ require (
 	github.com/PuerkitoBio/goquery v1.10.2
 	github.com/andybalholm/cascadia v1.3.3
 	github.com/go-rod/rod v0.116.2
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/go-viper/mapstructure/v2 v2.4.0
+	github.com/google/uuid v1.6.0
 	github.com/shirou/gopsutil/v4 v4.26.8
 	github.com/sirupsen/logrus v1.9.4
 	github.com/temoto/robotstxt v1.1.2
-	github.com/ydtg1993/oao v1.3.4
+	github.com/ydtg1993/oao v1.4.0
 	go.yaml.in/yaml/v3 v3.0.4
+	golang.org/x/net v0.55.0
 	golang.org/x/time v0.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/datatypes v1.2.7
@@ -23,8 +26,6 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
@@ -38,7 +39,6 @@ require (
 	github.com/ysmood/gson v0.7.3 // indirect
 	github.com/ysmood/leakless v0.9.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect

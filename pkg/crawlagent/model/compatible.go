@@ -44,6 +44,12 @@ type Config struct {
 	APIKeyEnv        string
 	Timeout          time.Duration
 	OutputTokenField OutputTokenField
+	// JSONOutput opts into response_format=json_object on a known-compatible
+	// provider. It does not relax action validation or enable fallback requests.
+	JSONOutput bool
+	// ThinkingMode explicitly selects a known provider's thinking extension.
+	// Empty omits it; only enabled/disabled are accepted. No automatic fallback.
+	ThinkingMode     string
 	MaxInputBytes    int64
 	MaxResponseBytes int64
 	MaxOutputTokens  int
@@ -57,6 +63,8 @@ type Compatible struct {
 	model            string
 	key              string
 	outputTokenField OutputTokenField
+	jsonOutput       bool
+	thinkingMode     string
 	maxInputBytes    int64
 	maxResponseBytes int64
 	maxOutputTokens  int
@@ -73,6 +81,26 @@ func (p Compatible) GoString() string { return p.String() }
 // New freezes configuration and reads APIKeyEnv once. It performs no network
 // requests and never searches other environment variables for credentials.
 func New(config Config) (*Compatible, error) {
+	return newCompatible(config, func() (string, error) {
+		if !validEnvName(config.APIKeyEnv) {
+			return "", ErrConfig
+		}
+		key, ok := os.LookupEnv(config.APIKeyEnv)
+		if !ok {
+			return "", ErrCredentials
+		}
+		return key, nil
+	})
+}
+
+// NewWithKey freezes an explicitly supplied credential from a trusted host
+// secret store. It never reads or changes environment variables. APIKeyEnv is
+// ignored; the credential is not part of Config and must never be logged.
+func NewWithKey(config Config, key string) (*Compatible, error) {
+	return newCompatible(config, func() (string, error) { return key, nil })
+}
+
+func newCompatible(config Config, credentials func() (string, error)) (*Compatible, error) {
 	u, err := url.Parse(config.BaseURL)
 	if err != nil || u == nil || u.Opaque != "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(config.BaseURL, "#") {
 		return nil, ErrConfig
@@ -92,7 +120,10 @@ func New(config Config) (*Compatible, error) {
 			return nil, ErrConfig
 		}
 	}
-	if !validConfigText(config.Model, 256) || !validEnvName(config.APIKeyEnv) {
+	if !validConfigText(config.Model, 256) {
+		return nil, ErrConfig
+	}
+	if config.ThinkingMode != "" && config.ThinkingMode != "enabled" && config.ThinkingMode != "disabled" {
 		return nil, ErrConfig
 	}
 	if config.Timeout == 0 {
@@ -119,8 +150,11 @@ func New(config Config) (*Compatible, error) {
 	if config.MaxInputBytes < 1 || config.MaxInputBytes > HardMaxInputBytes || config.MaxResponseBytes < 1 || config.MaxResponseBytes > HardMaxResponseBytes || config.MaxOutputTokens < 1 || config.MaxOutputTokens > HardMaxOutputTokens {
 		return nil, ErrConfig
 	}
-	key, ok := os.LookupEnv(config.APIKeyEnv)
-	if !ok || !validHeaderSecret(key) {
+	key, credentialErr := credentials()
+	if credentialErr != nil {
+		return nil, credentialErr
+	}
+	if !validHeaderSecret(key) {
 		return nil, ErrCredentials
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/chat/completions"
@@ -142,6 +176,8 @@ func New(config Config) (*Compatible, error) {
 	return &Compatible{
 		endpoint: u.String(), model: config.Model, key: key,
 		outputTokenField: config.OutputTokenField,
+		jsonOutput:       config.JSONOutput,
+		thinkingMode:     config.ThinkingMode,
 		maxInputBytes:    config.MaxInputBytes, maxResponseBytes: config.MaxResponseBytes,
 		maxOutputTokens: config.MaxOutputTokens,
 		client: &http.Client{
@@ -220,12 +256,18 @@ func validHeaderSecret(key string) bool {
 }
 
 type completionRequest struct {
-	Model               string    `json:"model"`
-	Messages            []Message `json:"messages"`
-	N                   int       `json:"n"`
-	Stream              bool      `json:"stream"`
-	MaxCompletionTokens int       `json:"max_completion_tokens,omitempty"`
-	MaxTokens           int       `json:"max_tokens,omitempty"`
+	Model               string            `json:"model"`
+	Messages            []Message         `json:"messages"`
+	N                   int               `json:"n"`
+	Stream              bool              `json:"stream"`
+	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
+	MaxTokens           int               `json:"max_tokens,omitempty"`
+	ResponseFormat      *completionFormat `json:"response_format,omitempty"`
+	Thinking            *completionFormat `json:"thinking,omitempty"`
+}
+
+type completionFormat struct {
+	Type string `json:"type"`
 }
 
 // Complete sends at most one POST. The input ceiling includes the entire JSON
@@ -258,6 +300,12 @@ func (p *Compatible) Complete(ctx context.Context, messages []Message, maxOutput
 		rawSize += int64(len(message.Content))
 	}
 	request := completionRequest{Model: p.model, Messages: messages, N: 1}
+	if p.jsonOutput {
+		request.ResponseFormat = &completionFormat{Type: "json_object"}
+	}
+	if p.thinkingMode != "" {
+		request.Thinking = &completionFormat{Type: p.thinkingMode}
+	}
 	if p.outputTokenField == MaxTokens {
 		request.MaxTokens = maxOutputTokens
 	} else {
@@ -376,6 +424,9 @@ func decodeReply(body []byte) (Reply, error) {
 		return Reply{}, ErrTruncated
 	}
 	if choice.FinishReason != "stop" || choice.Message.Role != "assistant" || choice.Message.Content == nil || strings.TrimSpace(*choice.Message.Content) == "" {
+		if choice.FinishReason == "stop" && choice.Message.Role == "assistant" && choice.Message.Content != nil && strings.TrimSpace(*choice.Message.Content) == "" {
+			return Reply{}, ErrEmptyResponse
+		}
 		return Reply{}, ErrInvalidResponse
 	}
 	reply := Reply{Content: *choice.Message.Content}

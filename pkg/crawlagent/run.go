@@ -163,7 +163,7 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		}
 		act, parseErr := parseAction(reply.Content)
 		if parseErr != nil {
-			messages = append(messages, model.Message{Role: "user", Content: `{"error":"invalid_action","instruction":"Return exactly one allowed JSON action."}`})
+			messages = append(messages, model.Message{Role: "user", Content: `{"error":"invalid_action","instruction":"Return exactly one allowed JSON action as plain text in message.content. No native tools are registered. Do not emit DSML, XML, function-call markup, Markdown or commentary. Use the JSON property tool."}`})
 			continue
 		}
 		input := map[string]any{"tool": act.Tool, "action_sha256": hashBytes([]byte(reply.Content))}
@@ -350,6 +350,25 @@ func errorKind(err error) string {
 		err  error
 		kind string
 	}{{ErrInvalid, "invalid_contract"}, {ErrAction, "invalid_action"}, {ErrEvidence, "unavailable_evidence"}, {ErrBudget, "budget_exhausted"}, {ErrAudit, "audit_failed"}, {webaccess.ErrPolicy, "access_denied"}, {webaccess.ErrRobots, "robots_denied"}, {webaccess.ErrBudget, "budget_exhausted"}, {webaccess.ErrCanceled, "canceled"}, {context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"}} {
+		if errors.Is(err, entry.err) {
+			return entry.kind
+		}
+	}
+	// Classify only public sentinel errors. Never retain provider bodies, URLs,
+	// wrapped error text or credentials when diagnosing a failed paid request.
+	for _, entry := range []struct {
+		err  error
+		kind string
+	}{
+		{model.ErrConfig, "model_config"}, {model.ErrCredentials, "model_credentials"},
+		{model.ErrInput, "model_input"}, {model.ErrInputLimit, "model_input_limit"},
+		{model.ErrOutputLimit, "model_output_limit"}, {model.ErrUnauthorized, "model_unauthorized"},
+		{model.ErrRateLimit, "model_rate_limit"}, {model.ErrHTTP, "model_http"},
+		{model.ErrRedirect, "model_redirect"}, {model.ErrTransport, "model_transport"},
+		{model.ErrResponseLimit, "model_response_limit"}, {model.ErrEmptyResponse, "model_empty_response"}, {model.ErrInvalidResponse, "model_invalid_response"},
+		{model.ErrRefusal, "model_refusal"}, {model.ErrTruncated, "model_truncated"},
+		{model.ErrToolCall, "model_tool_call"}, {model.ErrExhausted, "model_replay_exhausted"},
+	} {
 		if errors.Is(err, entry.err) {
 			return entry.kind
 		}

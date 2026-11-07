@@ -216,11 +216,16 @@ cmd/monitor-demo/quality_demo.go / quality_demo_test.go 模拟观测、真实聚
 cmd/monitor-demo/agent_demo.go    不接模型或站点的运行审阅 UI 模拟
 examples/ruleperiodic/           真实 Engine/MySQL 两批列表、详情、分页及幂等业务更新
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
+  scaffold_safe.go               new 独占写入与链接路径保护；--missing-only 只补缺失文件
+  scaffold_safe_test.go          已有项目保护、module 冲突、链接路径与缺失文件回归
+  scaffold_review_test.go        Windows junction 越界、并发独占写、带空格 replace 与缺失参数回归
 ```
 
 > **`admin/` 与 `internal/` 的区别就一条**：Go 规定 `internal/` 下的包只能被 `internal/` 的
 > 父目录（也就是本模块）内的代码 import。所以业务项目**能** import `admin/gormsource`，
 > **不能** import `internal/workerpool` —— 后者是框架自己的实现细节，改了不算破坏性变更。
+
+**框架与业务边界**：真实网站的目标 URL、选择器/预期、脱敏策略、数据库/模型接线及外站验收均放在独立业务模块，通过 Papa 公开 API 接入。框架只保留通用库、通用修复/回归和本地合成 fixture 示例；业务模块不得导入 Papa 的 internal 包，也不得成为 Papa 的反向依赖。
 
 **依赖方向**（箭头 = import 方向，不允许反向）：
 
@@ -347,7 +352,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 浏览器临时目录：`pkg/browser/temp_dir.go` 统一解析、写入验证和独立子目录创建；`pool.go` 保存实际根目录。配置入口为 `config.BrowserConfig.TempDir`，引擎与调试 CLI 均传入池。
 
 
-OA 行为回归 `TestOperationsJavaScriptBehavior` 调用九个 Node 脚本，直接执行嵌入资源与当前 oao 依赖的 renderer/request；没有 Node 时显式跳过。覆盖监控响应/正文乱序、401/超时/隐藏页、退避、队列重复点击、整值 URL 协议与参数编码，以及批次页状态切换和动作确认。复核用例还包含原生正文停滞、oao 旧登录 401 与验证合并且不重放写入、Trace/菜单乱序、登录恢复、弹窗替换取消与键盘焦点、成员误开轮询和大 ID 展示。`TestRuleScheduleDetailJSONPreservesIntegers` 验证 JSON 精度；`TestRuleBatchAdminMySQLRetryChecksLatestState` 在真实 MySQL 中将竞争更新插入读与 CAS 之间。`cmd/monitor-demo/schedule_demo.go` 提供显式模拟批次、停/开轮询与成员重试数据，独立于数据库和生产任务。
+OA 行为回归 `TestOperationsJavaScriptBehavior` 调用 Node 行为脚本，直接执行嵌入资源与当前 oao 依赖的 renderer/request；没有 Node 时显式跳过。覆盖监控响应/正文乱序、401/超时/隐藏页、退避、队列重复点击、整值 URL 协议与参数编码，以及批次页状态切换和动作确认。复核用例还包含原生正文停滞、oao 旧登录 401 与验证合并且不重放写入、Trace/菜单乱序、登录恢复、弹窗替换取消与键盘焦点、成员误开轮询和大 ID 展示。`TestRuleScheduleDetailJSONPreservesIntegers` 验证 JSON 精度；`TestRuleBatchAdminMySQLRetryChecksLatestState` 在真实 MySQL 中将竞争更新插入读与 CAS 之间。`cmd/monitor-demo/schedule_demo.go` 提供显式模拟批次、停/开轮询与成员重试数据，独立于数据库和生产任务。
 
 运营首页位于 `admin/server/static/workbench.js` / `workbench.css`；`buildWorkbench` 只派生当前监控快照，`renderWorkbench` 与 `setWorkbenchConnection` 分别接到现有渲染及连接状态。`workbench_test.js` 覆盖统计口径、站点并集、缺失数据、采样时间、XSS、导航作用域、同名按钮焦点、折叠状态和 `__all__` 站点名；`TestWorkbenchTemplateKeepsOperationsAndDetails` 验证模板及嵌入资源接线；`TestDemoTaskSiteFilter` 让演示数据能真实验证本站任务跳转。此路径不增加 HTTP 请求或数据库读取。
 
@@ -360,4 +365,34 @@ OA 行为回归 `TestOperationsJavaScriptBehavior` 调用九个 Node 脚本，�
 新增 `TestAdminPlanAndSQLBounds`、`TestAdminMySQLReviewCASRecoveryAndPagination`、`TestAdminMySQLSnapshotAndUnknownCommit`、`TestAdminMySQLFailedReverifyRemainsVisible` 验证 SQL 形状、分页、旧审阅拒绝、并发唯一提交、重开/未知提交和验收记录；`TestRuleAdminHTTPGuardsAuditAndPrecision` 验证 HTTP 边界；`rules_test.js` 执行生产前端，覆盖旧请求/确认、存储失败、重复点击、凭据切换、恢复与安全随机 ID 的兼容路径。`TestDemoRuleOperationsAndIsolation` 验证模拟仓库的幂等与返回值隔离。真实仓库测试依然显式要求专用 `PAPA_RULE_MYSQL_TEST_DSN`；不能用 demo 的内存状态代替数据库一致性证据。
 
 
-OA Agent 中心定向验证：`go test ./pkg/agentadmin ./pkg/agentstore ./pkg/rulequality ./admin/server ./internal/app ./cmd/monitor-demo ./examples/rulequality`，并发路径加 `-race`。报告固化与分页真库沿用 PAPA_QUALITY_MYSQL_TEST_DSN / PAPA_AGENT_MYSQL_TEST_DSN；完整中心候选回放沿用 PAPA_QUALITY_EXAMPLE_TEST_DSN。前端生产 JS 的 Node 回归由 ui_behavior_test.go 自动运行（现九个脚本）。App 退出先排空后台 Agent 再关闭 DB；无法排空时保留依赖，不把超时视为 worker 已停止。
+OA Agent 中心定向验证：`go test ./pkg/agentadmin ./pkg/agentstore ./pkg/rulequality ./admin/server ./internal/app ./cmd/monitor-demo ./examples/rulequality`，并发路径加 `-race`。报告固化与分页真库沿用 PAPA_QUALITY_MYSQL_TEST_DSN / PAPA_AGENT_MYSQL_TEST_DSN；完整中心候选回放沿用 PAPA_QUALITY_EXAMPLE_TEST_DSN。前端生产 JS 的 Node 回归由 ui_behavior_test.go 自动运行（脚本清单以测试入口为准）。App 退出先排空后台 Agent 再关闭 DB；无法排空时保留依赖，不把超时视为 worker 已停止。
+
+
+后台通用扩展：`admin/server/static/extensions.js` 管理 Papa.page/settings、离页保护与销毁；`testdata/extensions_test.js` 执行真实脚本验证生命周期、令牌失效强制清理和旧 renderer 兼容。`internal/app/shutdown.go` 提供 UseShutdown，在关库前等待业务后台任务；测试覆盖逆序、失败、panic、超时。模型显式凭据 API 及思考模式位于 `pkg/crawlagent/model/compatible.go`，不引入业务设置表或站点配置。
+
+### 可视化与采样文件分工（2026-11-07）
+
+- `admin/server/visual_assets.go` / `visual_assets_test.go`：检测当前链接 oao 的成对静态资源；HTML 不引用旧依赖不存在的文件。`TestMonitorOptionalVisualReferencesMatchLinkedDependency` 在本地新版与发布旧版两配置下复验。
+- `admin/server/monitor_metadata_test.go`：Monitor 实例标识、响应时间、系统未采样元数据及旧字段兼容。
+- `admin/sysinfo/sysinfo.go` / `system_sampling_test.go`：CPU、内存和磁盘锁外采样、短锁发布；目录快照不丢失，可用性、成功时间、合法零值、采样失败与读取不阻塞回归。
+- `admin/server/static/visual-state.js`：纯内存、受限观测模型，按真实时间去重/断线/重置；`visuals.js/css`：首页图表接线和响应式样式；`appearance.js`：注册既有设置槽的浏览器本地动效偏好。
+- `testdata/visual_state_test.js` / `visuals_test.js`：真实生产 JS 的时间、身份、阶段集合、采样周期、同时间戳重连、旧响应、缺失值、前11项+其他总计、降级和销毁回归，由 `TestOperationsJavaScriptBehavior` 自动执行。`monitor_requests_test.js` 同时验证迟到/超时响应不进入观测历史。
+- 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不增加 SQL、真实站点或付费模型调用。
+
+集成验证必须分两次：`GOWORK=off` 验证 go.mod 中实际发布的 oao；临时 go.work 使用 Papa/oao 两个本地模块验证新增能力。不要修改发布模块的 replace 或编造新版 tag。目标包 `go test ./admin/... ./cmd/monitor-demo`，并发 `go test -race ./admin/server ./admin/sysinfo ./cmd/monitor-demo`，全包静态检查与构建 `go vet ./...` / `go build ./...`。Node 不存在时行为测试显式跳过，不能称前端行为验证通过。
+
+提交前二次复核新增 `monitor_identity_test.js`（外部凭据更换、晚到401、轮询恢复、新旧表格导航隔离），`workbench_test.js` 覆盖站点全部消失及当前模块清空筛选。`TestMonitorReducedMotionDisablesFeedbackTransforms` 守卫减弱动效下的反馈位移；`visuals_test.js` 核对系统资源范围。`TestCollectorSnapshotDirsAreIndependent` / `TestCollectorOwnsDirectoryConfig` 验证 map 所有权；`TestHarvestStageTotalsRetiresCurrentSnapshotAtomically` / `TestHarvestStageTotalsPreservesReplacementSnapshot` 以真实 worker pool 验证回收累计与重建身份。回收不在引擎锁内等待 worker 停止。
+
+oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` 覆盖迟到 POST、401重试、同步/异步 render 失败、清理重入与弹窗重入；这些脚本不由 oao 的 `go test` 自动执行。浏览器补验 CSS 跨宿主隔离、数据表滚动焦点、减弱动效与窄屏。完整审查证据和真实环境限制见 `docs/issues/2026-11-07-oao-monitor-visuals-review.md`。
+
+
+### 四类导航与概览简化
+
+`admin/server/static/navigation.js` 集中维护 module/table/page 的四类归属与二级菜单；`mo.js` 仍负责切页生命周期、鉴权、请求代次和日志弹窗。框架 task/operation_log 使用固定分类，普通表格默认 data；`Page.Section` 通过 `/api/pages` 输出，空/未知值回退 data。`Group` 仅用于类内分组，业务项目在自己的 UsePage 声明分类。`cmd/papa/templates/monitor_view.go.tmpl` 展示可选字段；已有项目不会被 upgrade 改写业务页面。
+
+`template.html` 保留旧模块根及操作入口，新增 `mod-logs`、`section-nav` 与空分类区域；`layout.css` 在原样式后、业务 custom.css 前加载，用于轻量布局，不覆盖 oao 通用组件源码。`visuals.js` 按 details 展开状态创建/销毁图表，toggle/恢复可见仅重绘已接受快照；`workbench.js` 限制关注项三条并保留队列/暂停的完整详情入口。
+
+`TestMonitorLayoutHasFourCategoriesAndSeparateLogs`、`TestMonitorOverviewHasOneDefaultChart` 守卫模板结构；`navigation_test.js`、`monitor_requests_test.js`、`monitor_identity_test.js` 执行真实生产 JS，覆盖四类映射、兼容回退、文本安全、未保存阻止导航、晚到清单/日志和凭据切换。`visuals_test.js` 覆盖 1→3→6 实例、折叠销毁、离页/后台不复活和旧依赖回退。`internal/app/page_sections_test.go` 通过真实 HTTP handler 验证 Section 契约，`cmd/papa/scaffold_page_sections_test.go` 检查新建模板。
+
+
+旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版断言不安装兼容包装。`mo.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。

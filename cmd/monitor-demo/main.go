@@ -1,12 +1,13 @@
 // 一次性监控后台演示入口，用于肉眼看页面渲染效果。
 // 运行：go run ./cmd/monitor-demo
-// 浏览器打开 http://127.0.0.1:9090/monitor（Ctrl+C 退出）。
+// 浏览器打开 http://127.0.0.1:9091/monitor（-port 可选端口，Ctrl+C 退出）。
 // 说明：用假阶段数据 + 真实系统指标起服务，无需 MySQL；验证完可整目录删除。
 // 默认只监听回环地址、令牌随机生成（打进日志）；对外演示需显式改 addr 与令牌。
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,6 +34,11 @@ func (stdLogger) Infof(format string, args ...any)  { log.Printf(format, args...
 func (stdLogger) Errorf(format string, args ...any) { log.Printf(format, args...) }
 
 func main() {
+	port := flag.Int("port", 9091, "loopback demo port (1-65535)")
+	flag.Parse()
+	if *port < 1 || *port > 65535 {
+		log.Fatal("port must be between 1 and 65535")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -44,7 +50,19 @@ func main() {
 	sc.Start(ctx)
 
 	// 阶段统计假数据
-	getter := func() map[string]core.StageStats { return fakeStageStats() }
+	started := time.Now()
+	getter := func() map[string]core.StageStats {
+		stages := fakeStageStats()
+		// Deliberately synthetic dynamics, confined to this local demo.
+		step := int(time.Since(started) / (3 * time.Second))
+		for key, stage := range stages {
+			stage.Queue.QueueLen = (step + len(key)) % 15
+			stage.Queue.InProgress = int64(stage.Queue.QueueLen + 2)
+			stage.Queue.Submitted = stage.Queue.Completed + stage.Queue.Failed + stage.Queue.InProgress
+			stages[key] = stage
+		}
+		return stages
+	}
 
 	// 访问令牌：内存存储，登录校验与「访问令牌」页共用它（后台新建的令牌当场就能登录）
 	demoToken := randomDemoToken()
@@ -112,7 +130,7 @@ func main() {
 
 	// 默认只监听回环地址：demo 的令牌随机生成并打进日志，绑到全网卡等于把后台开放给
 	// 所有能猜中/看到日志的人。要在别的机器上演示，显式改这里 + 把令牌换成已知值，并清楚暴露范围。
-	addr := "127.0.0.1:9090"
+	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	log.Printf("监控演示已启动：http://%s/monitor（Ctrl+C 退出）", addr)
 	log.Printf("  登录令牌：%s（登录框里填它；在「访问令牌」页新建的令牌也能登录）", demoToken)
 	log.Printf("  值得看：侧边栏 General 下的「访问令牌」（新增 → 明文只显示一次 → 拿它登录）")

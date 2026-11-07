@@ -220,7 +220,10 @@ func (e *execution) submit(ctx context.Context, a action) (any, error) {
 		}
 		e.candidates[stage.Stage] = candidate
 	}
-	return candidate, nil
+	// Saving an immutable draft has not run either verification. A bare
+	// Candidate's false booleans look like failed tests to a real model and
+	// can provoke repeated submissions without ever requesting validation.
+	return map[string]any{"candidate": candidate, "validation_status": "not_run", "next_action": map[string]string{"tool": "validate_candidate", "stage": stage.Stage}}, nil
 }
 
 func checkRuleGoal(rule crawlrule.Rule, stage StageGoal) error {
@@ -300,7 +303,22 @@ func (e *execution) validate(ctx context.Context, name string) (any, error) {
 		candidate.TrainingReportID = v.ID
 		candidate.TrainingPassed = v.Passed
 		e.candidates[name] = candidate
-		return map[string]any{"candidate": candidate, "verification": compactReport(v.Report), "scope": "fixed_training_expectations"}, nil
+		out := map[string]any{"candidate": candidate, "verification": compactReport(v.Report), "scope": "fixed_training_expectations", "validation_status": "training_failed"}
+		if v.Passed {
+			out["validation_status"] = "training_passed_holdout_not_run"
+			ready := true
+			for _, goal := range e.goal.Stages {
+				c, exists := e.candidates[goal.Stage]
+				if !exists || goal.TrainingSet != "" && !c.TrainingPassed {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				out["next_action"] = map[string]string{"tool": "finish"}
+			}
+		}
+		return out, nil
 	}
 	v, err := e.agent.config.Repository.Get(ctx, candidate.Reference)
 	if err != nil {

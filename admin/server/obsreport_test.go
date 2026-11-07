@@ -263,36 +263,24 @@ func TestObsReportFileTooLarge(t *testing.T) {
 	}
 }
 
-// 「obs报告」页接线：模板导航在「设置」上面、模块壳存在；mo.js 的列表/Tab/查看/下载都在；
+// 运行报告页接线：报告模块及查看/下载入口保留，导航归属由四类导航行为测试覆盖。
 // 前端没有测试框架，只能把接线与样式类钉在静态文件里，防止某次重构把页面弄成白板。
 func TestObsReportPageWired(t *testing.T) {
 	tpl, err := readTemplateFile(t)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`data-module="obs"`, `id="mod-obs"`, `id="obs-runs"`, `id="obs-tabs"`, `id="obs-content"`, `downloadObsReport()`} {
+	for _, want := range []string{`id="section-nav"`, `id="mod-obs"`, `id="obs-runs"`, `id="obs-tabs"`, `id="obs-content"`, `downloadObsReport()`} {
 		if !strings.Contains(tpl, want) {
 			t.Errorf("template.html 里缺少 %q", want)
 		}
 	}
-	// 菜单顺序：访问令牌 → obs报告 → 设置。
-	nav := tpl
-	posTokens := strings.Index(nav, `data-module="tokens"`)
-	posObs := strings.Index(nav, `data-module="obs"`)
-	posSettings := strings.Index(nav, `data-module="settings"`)
-	if posObs < 0 || posSettings < 0 || posTokens < 0 {
-		t.Fatalf("导航按钮缺失：tokens=%d obs=%d settings=%d", posTokens, posObs, posSettings)
-	}
-	if !(posObs < posSettings) {
-		t.Error("「obs报告」菜单必须排在「设置」上面")
-	}
-
 	js, err := readStaticFile(t, "static/mo.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`obs: 'obs报告'`,
+		`obs: '运行报告'`,
 		"function fetchObsReports(",
 		"'/api/obs/reports'",
 		"function renderObsReports(",

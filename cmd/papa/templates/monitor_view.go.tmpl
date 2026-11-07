@@ -5,7 +5,7 @@ import "github.com/ydtg1993/papa/v3"
 
 // Register 注册自定义页与注入内容。
 //
-// 一页 = 侧边栏一个菜单项 + 一段渲染脚本；脚本加载后调 Papa.page(key, fn) 注册渲染函数，
+// 一页 = 分类下一个菜单项 + 一段渲染脚本；脚本加载后调 Papa.page(key, fn) 注册渲染函数，
 // 里面可以直接用后台的全局件：Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 等
 // （清单见项目 docs/framework/MONITOR.md 的「自定义页与注入」）。
 //
@@ -16,6 +16,8 @@ func Register(app *papa.App) {
 
 	app.UsePage(papa.Page{
 		Key: "demo", Label: "示例页", Group: "业务",
+		// Section 可省略，默认 data（数据与资源）；也可用 flow（采集任务流）、monitor（运行监控）、system（系统管理）。
+		Section: "data",
 		Script: `
 			Papa.page("demo", function (el, meta) {
 				el.innerHTML = '<h2>' + esc(meta.label) + '</h2><p class="demo-badge">加载中…</p>';

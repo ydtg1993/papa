@@ -103,6 +103,7 @@ async function fetchData() {
         if (expired) throw new Error('请求超时');
         hideLogin(); setStatus(true, '已连接');
         document.getElementById('refreshTime').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+        if (typeof acceptMonitorObservation === 'function') acceptMonitorObservation(data);
         renderAll(data);
         if (typeof refreshAfterLogin === 'function') refreshAfterLogin();
         success = true;

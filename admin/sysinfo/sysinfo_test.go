@@ -108,10 +108,7 @@ func TestCollectorCollectDirsMissingPath(t *testing.T) {
 	}
 }
 
-// Snapshot 按值返回，但 Dirs 是 map —— 拷贝的是 map 头。
-// 它之所以稳定，是因为 collectDirs **整体替换** map 而不是原地改元素。
-// 这条把那个不变量钉住：一旦有人改成 `c.snapshot.Dirs[name] = ...`，
-// 已经发出去的快照就会跟着变（监控页读到"同一份数据自己变了"）。
+// 已返回的目录快照独立于采集器，后续采样不会改变旧快照。
 func TestCollectorSnapshotStaysStableAcrossSamples(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()

@@ -35,8 +35,8 @@ func TestDemoListensOnLoopbackByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read main.go: %v", err)
 	}
-	if !strings.Contains(string(src), `addr := "127.0.0.1:9090"`) {
-		t.Error("main.go 默认监听地址应是 127.0.0.1:9090（回环），不能是 :9090（全网卡）")
+	if !strings.Contains(string(src), `addr := fmt.Sprintf("127.0.0.1:%d", *port)`) || !strings.Contains(string(src), `flag.Int("port", 9091,`) {
+		t.Error("demo 必须在回环地址上使用可配置端口，默认9091避免占用现有后台")
 	}
 }
 

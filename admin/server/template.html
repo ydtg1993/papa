@@ -27,6 +27,10 @@
     <link rel="stylesheet" href="/static/quality.css">
     <link rel="stylesheet" href="/static/agents.css">
     <link rel="stylesheet" href="/static/workbench.css">
+    {{if .OaoCharts}}<link rel="stylesheet" href="/static/oao/oao-charts.css">{{end}}
+    {{if .OaoMotion}}<link rel="stylesheet" href="/static/oao/oao-motion.css">{{end}}
+    <link rel="stylesheet" href="/static/visuals.css">
+    <link rel="stylesheet" href="/static/layout.css">
     <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
     <link rel="stylesheet" href="/static/custom.css">
 </head>
@@ -43,24 +47,13 @@
 
 <div class="shell" id="app">
     <aside class="sidebar">
-        <div class="brand">Papa监控</div>
+        <div class="brand">PAPA <span>采集后台</span></div>
         <button class="nav-toggle btn" id="nav-toggle" aria-expanded="false" aria-controls="main-nav" onclick="toggleNavigation()">菜单</button>
-        <nav id="main-nav">
-            <div class="nav-section">Menu</div>
-            <button class="nav-item active" data-module="dashboard" onclick="switchModule('dashboard')">运营首页</button>
-            <button class="nav-item" data-module="queues" onclick="switchModule('queues')">队列治理</button>
-            <button class="nav-item" data-module="schedules" onclick="switchModule('schedules')">周期批次</button>
-            <button class="nav-item" data-module="rules" onclick="switchModule('rules')">规则运维</button>
-            <button class="nav-item" data-module="quality" onclick="switchModule('quality')">质量监控</button>
-            <button class="nav-item" data-module="agents" onclick="switchModule('agents')">Agent 审阅</button>
-            <div id="oao-nav"></div>
-            <div class="nav-section">General</div>
-            <!-- 内置表格页：菜单固定在这里（不跟业务表格挤在一起），渲染仍交给表格组件。
-                 开启 server.operation_log 才注册这张表，没注册时这个按钮由 renderNav 藏起来。 -->
-            <button class="nav-item hidden" id="nav-oplog" onclick="openTable('operation_log', this.textContent, this)">操作日志</button>
-            <button class="nav-item" data-module="tokens" onclick="switchModule('tokens')">访问令牌</button>
-            <button class="nav-item" data-module="obs" onclick="switchModule('obs')">obs报告</button>
-            <button class="nav-item" data-module="settings" onclick="switchModule('settings')">设置</button>
+        <nav id="main-nav" aria-label="后台分类">
+            <button class="nav-category" data-section="flow" onclick="switchSection('flow')"><span class="nav-index" aria-hidden="true">01</span><span>采集任务流</span></button>
+            <button class="nav-category active" data-section="monitor" onclick="switchSection('monitor')" aria-current="true"><span class="nav-index" aria-hidden="true">02</span><span>运行监控与报告</span></button>
+            <button class="nav-category" data-section="data" onclick="switchSection('data')"><span class="nav-index" aria-hidden="true">03</span><span>数据与资源</span></button>
+            <button class="nav-category" data-section="system" onclick="switchSection('system')"><span class="nav-index" aria-hidden="true">04</span><span>系统管理</span></button>
         </nav>
         <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
         <div class="side-status"><span class="dot" id="dot"></span><span id="statusText">未连接</span></div>
@@ -68,7 +61,7 @@
 
     <main class="content">
         <header class="content-top">
-            <h1 id="moduleTitle">运营首页</h1>
+            <div class="content-heading"><p id="section-title" class="section-label">运行监控与报告</p><h1 id="moduleTitle" tabindex="-1">运行概览</h1></div>
             <div class="top-right">
                 <!-- 暂停与告警铃铛：徽标数字 = 被闸住的 scope 数（含声明期的 StartPaused），
                      颜色分语义（有熔断触发就红、只有手动/声明期就琥珀）。点开在下方列出细节
@@ -91,6 +84,9 @@
                 <div class="refresh" id="refreshTime"></div>
             </div>
         </header>
+
+        <nav id="section-nav" aria-label="当前分类功能"></nav>
+        <div class="module" id="mod-section"><p class="empty" id="section-empty">当前分类暂无可用功能。</p></div>
 
         <!-- 站点 Tab：多站点时按站点把各面板分开（「概览」= 全部；默认 scope 单独一档）。
              数据来自 /api/monitor 的 sites（站点信息 + 慢变统计），由 mo.js 渲染。
@@ -170,44 +166,50 @@
             </section>
         </div>
         <div class="module active" id="mod-dashboard">
-            <section>
-                <div class="workbench-heading"><div><h2>运行概览</h2><p id="workbench-coverage">等待快照</p></div><span class="workbench-scope" id="workbench-scope">全部站点</span></div>
+            <section class="overview-summary">
+                <div class="workbench-heading"><p id="workbench-coverage">等待快照</p><span class="workbench-scope" id="workbench-scope">全部站点</span></div>
                 <p id="workbench-freshness" role="status">尚未获得监控快照</p>
                 <div class="workbench-kpis" id="workbench-kpis"></div>
-                <p class="hint">计数来自活跃阶段的内存快照；完成、失败为累计次数，不代表数据库当前存量。「—」表示统计未提供。</p>
+                <p class="hint overview-caption">未完成包含排队；完成与失败为活跃阶段累计次数。「—」表示暂无可信统计。</p>
             </section>
-            <section>
-                <h2 class="workbench-section-title">需要关注 <span id="workbench-issue-count">—</span></h2>
+            <section class="overview-issues">
+                <h2 class="workbench-section-title">待处理 <span id="workbench-issue-count">—</span></h2>
                 <div class="workbench-panel" id="workbench-issues"></div>
-                <p class="hint">暂停按当前站点范围展示；治理队列为全部站点，积压以标注的采样时间为准。</p>
+            </section>
+            <section aria-label="运行可视化" class="overview-trend">
+                <div class="visual-heading"><h2>采集趋势</h2><span class="visual-label">本次页面观测</span></div>
+                <p id="visual-observation-meta">等待新的监控快照</p>
+                <p id="visual-availability" hidden></p>
+                <div class="visual-grid"><div class="visual-panel visual-panel-wide" id="visual-queue-trend"></div></div>
             </section>
             <section>
                 <h2>站点概况</h2>
                 <div class="workbench-panel" id="workbench-sites"></div>
             </section>
+            <details class="workbench-disclosure" id="workbench-analysis">
+                <summary>详细分析 <span>阶段分布与累计结果</span></summary>
+                <section><div class="visual-grid">
+                    <div class="visual-panel" id="visual-stage-bars"></div>
+                    <div class="visual-panel" id="visual-results"></div>
+                </div></section>
+            </details>
             <details class="workbench-disclosure" id="workbench-stage-details">
                 <summary>阶段与 Worker 明细</summary>
-                <section>
-                <h2>任务队列概览</h2>
-                <!-- 原「任务队列」模块已并入这里（侧边栏不再单列）：概览（全部）下按站点分卡片
-                     （阶段压成一行）；切到某站点 Tab 时显示该站的多阶段详情 —— 五格大数字 +
-                     累计耗时 + Worker 明细表（就是原模块的内容）。两种形态都由 mo.js 的
-                     renderQueueSummary 画。 -->
-                <div id="dash-queue"></div>
-                </section>
+                <!-- 全部范围按站点分卡片；选择站点后展开该站多阶段与 Worker 详情。 -->
+                <section><h2>任务队列概览</h2><div id="dash-queue"></div></section>
+                <section id="dash-site-ctl-sec" hidden><h2>站点控制</h2><div class="grid" id="dash-site-ctl"></div></section>
             </details>
-            <!-- 站点控制：一站一行（站点名 + 运行中/已暂停 + 暂停/恢复整站）。
-                 数据来自 /api/monitor 的 sites（跟着站点 Tab 过滤）与 breakers（暂停状态）；
-                 两个都没有时整个区块隐藏，前端不额外发请求。
-                 这一档是**整站**的控制：声明了 SiteSpec.StartPaused 的站启动就停在这儿，
-                 等这里点「恢复整站」。阶段级那档是接口（端点带 stage），框架不做界面。 -->
-            <section id="dash-site-ctl-sec" hidden>
-                <h2>站点控制</h2>
-                <div class="grid" id="dash-site-ctl"></div>
-            </section>
             <details class="workbench-disclosure" id="workbench-resources">
-                <summary>系统资源与目录 · 进程全局</summary>
-                <section><h2>系统负载</h2><div class="grid" id="dash-sys"></div></section>
+                <summary>系统资源 <span>CPU、内存、磁盘与目录占用</span></summary>
+                <section>
+                    <div class="visual-resources">
+                        <div class="visual-panel"><strong class="visual-resource-value" id="visual-cpu-value">—</strong><span class="visual-resource-stamp" id="visual-cpu-stamp">尚未采样</span><div id="visual-cpu"></div></div>
+                        <div class="visual-panel"><strong class="visual-resource-value" id="visual-mem-value">—</strong><span class="visual-resource-stamp" id="visual-mem-stamp">尚未采样</span><div id="visual-mem"></div></div>
+                        <div class="visual-panel"><strong class="visual-resource-value" id="visual-disk-value">—</strong><span class="visual-resource-stamp" id="visual-disk-stamp">尚未采样</span><div id="visual-disk"></div></div>
+                    </div>
+                    <p class="hint">CPU/内存为当前运行环境的系统采样，不是 Papa 进程占用；磁盘为 / 所在文件系统（Windows 为当前盘根目录），不代表全部磁盘。趋势仅保存在本页内存。</p>
+                    <div class="grid" id="dash-sys"></div>
+                </section>
                 <section><h2>业务目录占用</h2><div class="grid" id="dash-dirs"></div></section>
             </details>
         </div>
@@ -276,7 +278,16 @@
             </section>
         </div>
 
+        <div class="module" id="mod-logs">
+            <section>
+                <div class="logs-heading"><h2>日志文件</h2><div><button class="btn" onclick="fetchLogs()">刷新列表</button><button class="btn" onclick="downloadLogs()">全部打包下载</button></div></div>
+                <p class="hint">查看最近日志或下载文件，定位当前运行的问题。</p>
+                <div class="card logs-card"><div class="log-list" id="log-list"></div></div>
+            </section>
+        </div>
+
         <div class="module" id="mod-settings">
+            <div id="custom-settings"></div>
             <section>
                 <h2>白名单</h2>
                 <div class="card">
@@ -285,12 +296,6 @@
                     <textarea id="wl-input" rows="5" placeholder="127.0.0.1&#10;10.0.0.0/8"></textarea>
                     <button class="btn" onclick="saveWhitelist()">保存白名单</button>
                     <div class="hint" id="wl-msg"></div>
-                </div>
-            </section>
-            <section>
-                <div class="logs-heading"><h2>日志</h2><button class="btn" onclick="downloadLogs()">全部打包下载</button></div>
-                <div class="card logs-card">
-                    <div class="log-list" id="log-list"></div>
                 </div>
             </section>
             <section>
@@ -305,9 +310,16 @@
 </div>
 
 <script src="/static/oao/oao.js"></script>
+{{if .OaoMotion}}<script src="/static/oao/oao-motion.js"></script>{{end}}
+{{if .OaoCharts}}<script src="/static/oao/oao-charts.js"></script>{{end}}
 <script src="/static/table-links.js"></script>
 <script src="/static/requests.js"></script>
 <script src="/static/workbench.js"></script>
+<script src="/static/visual-state.js"></script>
+<script src="/static/visuals.js"></script>
+<script src="/static/extensions.js"></script>
+<script src="/static/appearance.js"></script>
+<script src="/static/navigation.js"></script>
 <script src="/static/mo.js"></script>
 <script src="/static/schedules.js"></script>
 <script src="/static/rules.js"></script>

@@ -3,6 +3,7 @@ package server
 import (
 	"archive/zip"
 	"context"
+	"crypto/rand"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -115,12 +116,13 @@ type MonitorConfig struct {
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
 type Monitor struct {
-	getter    MonitorGetter
-	logger    Logger
-	cfg       MonitorConfig
-	template  *template.Template
-	parseOnce sync.Once
-	parseErr  error
+	instanceID string // 单次 Monitor 生命周期的观测身份；新实例生成新值。
+	getter     MonitorGetter
+	logger     Logger
+	cfg        MonitorConfig
+	template   *template.Template
+	parseOnce  sync.Once
+	parseErr   error
 
 	mu sync.RWMutex
 	// whitelist 解析后的白名单（每请求判定用它）；rawWhitelist 是**原样**的那一份（设置页回显用它，
@@ -139,6 +141,7 @@ type Logger interface {
 // NewMonitor 创建监控路由
 func NewMonitor(getter MonitorGetter, logger Logger, cfg MonitorConfig) *Monitor {
 	return &Monitor{
+		instanceID:   rand.Text(),
 		getter:       getter,
 		logger:       logger,
 		cfg:          cfg,
@@ -380,7 +383,8 @@ func (s *Monitor) loadTemplate() (*template.Template, error) {
 // apiHandler 返回 JSON 格式的监控数据
 func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
-		"stages": s.stageData(),
+		"instance_id": s.instanceID,
+		"stages":      s.stageData(),
 	}
 	if s.cfg.QueueStats != nil {
 		resp["queues"] = s.cfg.QueueStats()
@@ -398,6 +402,8 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()
 	}
+	// 这是响应组装时间；系统指标和治理积压仍各自携带真实采样时间。
+	resp["generated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
 	writeJSON(w, resp)
 }
 
@@ -955,9 +961,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 // monitorTemplateData 是渲染 /monitor HTML 时交给模板的唯一数据。
-// 目前只有“要不要弹登录框”这一项：一条访问令牌都没配置时不弹（见 AuthRequired）。
+// 登录门控和可选静态资源能力由服务端确定，避免页面请求当前依赖并未提供的脚本。
 type monitorTemplateData struct {
 	AuthRequired bool
+	OaoCharts    bool
+	OaoMotion    bool
 }
 
 // htmlHandler 返回 HTML 监控页面
@@ -969,7 +977,8 @@ func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, monitorTemplateData{AuthRequired: s.authRequired()}); err != nil {
+	charts, motion := optionalOaoAssets()
+	if err := tmpl.Execute(w, monitorTemplateData{AuthRequired: s.authRequired(), OaoCharts: charts, OaoMotion: motion}); err != nil {
 		s.logger.Errorf("execute monitor template: %s", err.Error())
 	}
 }

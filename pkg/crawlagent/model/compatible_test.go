@@ -40,6 +40,55 @@ func testMessages() []Message {
 	return []Message{{Role: "system", Content: "Only return one action."}, {Role: "user", Content: "untrusted prompt with secret marker"}}
 }
 
+func TestCompatibleThinkingModeIsExplicitBoundedAndNeverRetries(t *testing.T) {
+	for _, mode := range []string{"", "enabled", "disabled"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			var calls atomic.Int32
+			provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var body map[string]json.RawMessage
+				if e := json.NewDecoder(r.Body).Decode(&body); e != nil {
+					t.Error(e)
+				}
+				if mode == "" {
+					if _, ok := body["thinking"]; ok {
+						t.Error("default changed request shape")
+					}
+				} else if string(body["thinking"]) != `{"type":"`+mode+`"}` {
+					t.Error("incorrect explicit thinking mode")
+				}
+				w.WriteHeader(400)
+			}, func(c *Config) { c.ThinkingMode = mode })
+			if _, e := provider.Complete(context.Background(), testMessages(), 10); !errors.Is(e, ErrHTTP) || calls.Load() != 1 {
+				t.Fatal("fallback/retry or error mismatch")
+			}
+		})
+	}
+	t.Setenv(testKeyEnv, testKey)
+	if _, e := New(Config{BaseURL: "https://example.com", Model: "test", APIKeyEnv: testKeyEnv, ThinkingMode: "automatic"}); !errors.Is(e, ErrConfig) {
+		t.Fatal("invalid mode accepted")
+	}
+	var calls atomic.Int32
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); writeJSON(w, validResponse) }, func(c *Config) { c.ThinkingMode = "disabled" })
+	base, _ := json.Marshal(completionRequest{Model: provider.model, Messages: testMessages(), N: 1, MaxCompletionTokens: 10})
+	provider.maxInputBytes = int64(len(base))
+	if _, e := provider.Complete(context.Background(), testMessages(), 10); !errors.Is(e, ErrInputLimit) || calls.Load() != 0 {
+		t.Fatal("thinking omitted from request size budget")
+	}
+}
+
+func TestCompatibleBlankContentIsClassifiedAndNeverRetried(t *testing.T) {
+	var calls atomic.Int32
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, `{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"   "}}]}`)
+	}, nil)
+	reply, e := provider.Complete(context.Background(), testMessages(), 10)
+	if !errors.Is(e, ErrEmptyResponse) || !errors.Is(e, ErrInvalidResponse) || reply.Content != "" || calls.Load() != 1 {
+		t.Fatal("blank response accepted, retried, or broke error compatibility")
+	}
+}
+
 func writeJSON(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, _ = io.WriteString(w, body)
@@ -85,6 +134,47 @@ func TestCompatibleRequestShapeAndFrozenConfiguration(t *testing.T) {
 				t.Fatal("messages were changed")
 			}
 		})
+	}
+}
+
+func TestCompatibleJSONOutputIsExplicitAndDoesNotRetry(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var calls atomic.Int32
+			provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var request map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				if string(request["response_format"]) != `{"type":"json_object"}` {
+					t.Errorf("JSON-only output not requested: %s", request["response_format"])
+				}
+				if status != http.StatusOK {
+					w.WriteHeader(status)
+					return
+				}
+				writeJSON(w, validResponse)
+			}, func(c *Config) { c.JSONOutput = true })
+			_, err := provider.Complete(context.Background(), testMessages(), 123)
+			if status == http.StatusOK && err != nil || status != http.StatusOK && !errors.Is(err, ErrHTTP) || calls.Load() != 1 {
+				t.Fatalf("error=%v calls=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
+func TestCompatibleJSONOutputCountsTowardInputBudget(t *testing.T) {
+	var calls atomic.Int32
+	provider, _ := newTestProvider(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); writeJSON(w, validResponse) }, func(c *Config) { c.JSONOutput = true })
+	base, err := json.Marshal(completionRequest{Model: provider.model, Messages: testMessages(), N: 1, MaxCompletionTokens: 123})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.maxInputBytes = int64(len(base))
+	_, err = provider.Complete(context.Background(), testMessages(), 123)
+	if !errors.Is(err, ErrInputLimit) || calls.Load() != 0 {
+		t.Fatalf("JSON request escaped input limit: %v calls=%d", err, calls.Load())
 	}
 }
 

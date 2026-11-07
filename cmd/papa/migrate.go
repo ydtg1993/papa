@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ydtg1993/papa/v3/internal/database"
@@ -153,8 +154,20 @@ func requiresPapa(gomod string) bool {
 // modulePath 取 go.mod 里的 `module x` 行。
 func modulePath(gomod string) string {
 	for line := range strings.SplitSeq(gomod, "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return strings.TrimSpace(rest)
+		// Module paths cannot contain whitespace or //; these are directive
+		// formatting/comments, not part of the module identity.
+		line, _, _ = strings.Cut(line, "//")
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "module" {
+			value := fields[1]
+			if strings.HasPrefix(value, `"`) {
+				decoded, e := strconv.Unquote(value)
+				if e != nil {
+					return ""
+				}
+				value = decoded
+			}
+			return value
 		}
 	}
 	return ""

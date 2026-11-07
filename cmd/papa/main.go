@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -19,6 +20,7 @@ import (
 var tmplFS embed.FS
 
 type scaffoldData struct {
+	Replace string // New go.mod only; never appended to an existing module.
 	CodeDir string
 	DocsDir string
 	Module  string // 完整 Go module 路径，仅用于 module 声明、import 与展示。
@@ -96,7 +98,7 @@ func main() {
 	switch os.Args[1] {
 	case "new":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: papa new <project-name> [--replace <local-papa-path>]")
+			fmt.Fprintln(os.Stderr, "usage: papa new <project-name> [--replace <local-papa-path>] [--missing-only]")
 			os.Exit(1)
 		}
 		if err := runNew(os.Args[2], os.Args[3:]); err != nil {
@@ -141,9 +143,10 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  papa new <project-name> [--replace <local-papa-path>]")
+	fmt.Fprintln(os.Stderr, "  papa new <project-name> [--replace <local-papa-path>] [--missing-only]")
 	fmt.Fprintln(os.Stderr, "    生成一个新爬虫项目骨架")
 	fmt.Fprintln(os.Stderr, "    --replace  在 go.mod 加 replace 指向本地 papa 仓库（本地验证用，无需先发布）")
+	fmt.Fprintln(os.Stderr, "    --missing-only  显式补齐已有项目缺失文件；不覆盖配置、业务代码或 go.mod")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa check [目录] [--boot] [-c <配置路径>]")
 	fmt.Fprintln(os.Stderr, "    校验站点与阶段声明（不用起库）：阶段名重复、熔断阈值、")
@@ -187,28 +190,60 @@ func runNew(name string, args []string) error {
 
 	// 解析 --replace / -replace 或 --replace=<path>
 	replacePath := ""
+	missingOnly := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case a == "--missing-only":
+			missingOnly = true
 		case a == "--replace" || a == "-replace":
-			if i+1 >= len(args) {
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "--") {
 				return fmt.Errorf("--replace 后要跟本地 papa 仓库路径")
 			}
 			replacePath = args[i+1]
 			i++
 		case strings.HasPrefix(a, "--replace="):
 			replacePath = strings.TrimPrefix(a, "--replace=")
+			if strings.TrimSpace(replacePath) == "" {
+				return fmt.Errorf("--replace 后要跟本地 papa 仓库路径")
+			}
 		default:
 			// 未识别的参数：拼错选项、多传位置参数都该报错，别静默忽略还报"生成成功"
-			return fmt.Errorf("未知参数 %q（只支持 --replace <本地 papa 仓库路径>）", a)
+			return fmt.Errorf("未知参数 %q（支持 --replace <本地 papa 仓库路径> 与 --missing-only）", a)
 		}
 	}
 	if replacePath != "" {
+		if strings.ContainsAny(replacePath, "\x00\r\n") {
+			return fmt.Errorf("--replace 路径不能包含换行或 NUL")
+		}
 		replacePath = filepath.ToSlash(replacePath) // 兼容 Windows 反斜杠路径
+		// go.mod requires quoting a local path containing whitespace or quotes.
+		if strings.ContainsAny(replacePath, " \t\"") {
+			replacePath = strconv.Quote(replacePath)
+		}
+	}
+	if err := checkScaffoldPath(name); err != nil {
+		return err
+	}
+	if _, err := os.Stat(name); err == nil && !missingOnly {
+		return fmt.Errorf("目标 %s 已存在；拒绝覆盖。补齐缺失骨架请显式使用 --missing-only，升级通用文档请用 papa upgrade", name)
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	modPath := filepath.Join(name, "go.mod")
+	_, modErr := os.Stat(modPath)
+	if missingOnly && modErr == nil {
+		module, err := readModulePath(name)
+		if err != nil {
+			return err
+		}
+		if module != name {
+			return fmt.Errorf("已有 module %q 与项目名 %q 不一致，拒绝混合生成", module, name)
+		}
 	}
 
 	project := path.Base(name)
-	data := scaffoldData{Module: name, Project: project, SiteFunc: sanitizeIdent(project), CodeDir: "internal/", DocsDir: "docs/framework"}
+	data := scaffoldData{Module: name, Project: project, SiteFunc: sanitizeIdent(project), CodeDir: "internal/", DocsDir: "docs/framework", Replace: replacePath}
 
 	files := []fileSpec{
 		{"go.mod.tmpl", "go.mod"},
@@ -245,46 +280,29 @@ func runNew(name string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := render(f.tmpl, filepath.Join(name, dest), data); err != nil {
+		if err := render(f.tmpl, filepath.Join(name, dest), data, missingOnly); err != nil {
 			return err
 		}
 	}
 
 	// docs：复制使用手册，方便查用法 / 喂给 Claude 写 fetcher、model
-	if err := copyDocs(filepath.Join(name, "docs", "framework")); err != nil {
+	if err := copyDocs(filepath.Join(name, "docs", "framework"), missingOnly); err != nil {
 		return err
-	}
-
-	// 本地验证：把依赖指向本地 papa 仓库，避免先发布版本
-	if replacePath != "" {
-		if err := appendReplace(filepath.Join(name, "go.mod"), replacePath); err != nil {
-			return err
-		}
 	}
 
 	// logs 目录：日志由框架托管，这里只占位保证目录存在
-	if err := os.MkdirAll(filepath.Join(name, "logs"), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(name, "logs", ".gitkeep"), nil, 0o644); err != nil {
+	if err := writeScaffoldFile(filepath.Join(name, "logs", ".gitkeep"), nil, missingOnly); err != nil {
 		return err
 	}
 
 	fmt.Printf("project %q generated.\n", name)
+	if missingOnly {
+		fmt.Println("只补缺失文件；已有文件（含 go.mod、配置与业务代码）保持原样。请检查新补的站点声明与入口后再启动。")
+	}
 	fmt.Printf("next: cd %s && go mod tidy\n", name)
 	fmt.Printf("      建表：papa migrate（在项目目录里跑，会连业务模型一起建；等价于 make migrate）\n")
 	fmt.Printf("      要建令牌得先有表；后台登录：papa token add --operator <名字>\n")
 	return nil
-}
-
-func appendReplace(goModPath, replacePath string) error {
-	f, err := os.OpenFile(goModPath, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "\nreplace github.com/ydtg1993/papa/v3 => %s\n", replacePath)
-	return err
 }
 
 // renderStr 渲染一段（用于带 {{.Module}} 的文件名）。
@@ -300,38 +318,29 @@ func renderStr(s string, data scaffoldData) (string, error) {
 	return buf.String(), nil
 }
 
-func render(tmplName, dest string, data scaffoldData) error {
+func render(tmplName, dest string, data scaffoldData, missingOnly bool) error {
 	tmpl, err := template.ParseFS(tmplFS, "templates/"+tmplName)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
 		return err
 	}
-	f, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 
 	// 模板里的注释对齐不可能手写准，生成时过一遍 gofmt：脚手架产物是用户照抄的范本，
 	// 出来就该是格式正确的（go/format 在进程内，没有外部依赖）。
 	if strings.HasSuffix(dest, ".go") {
-		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, data); err != nil {
-			return err
-		}
 		src, err := format.Source(buf.Bytes())
 		if err != nil {
 			return fmt.Errorf("生成的 %s 不是合法 Go（模板改坏了？）：%w", dest, err)
 		}
-		_, err = f.Write(src)
-		return err
+		return writeScaffoldFile(dest, src, missingOnly)
 	}
-	return tmpl.Execute(f, data)
+	return writeScaffoldFile(dest, buf.Bytes(), missingOnly)
 }
 
-func copyDocs(destDir string) error {
+func copyDocs(destDir string, missingOnly bool) error {
 	entries, err := docs.Files.ReadDir(".")
 	if err != nil {
 		return err
@@ -345,10 +354,7 @@ func copyDocs(destDir string) error {
 			return err
 		}
 		dst := filepath.Join(destDir, e.Name())
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := writeScaffoldFile(dst, data, missingOnly); err != nil {
 			return err
 		}
 	}

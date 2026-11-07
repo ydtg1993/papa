@@ -210,6 +210,6 @@ HTTP 使用 `ShadowInput{Response: response}`；渲染 DOM 使用 `Rendered: tru
 | 规则结构差异 | 最多 128 项，超出用 Truncated 标记 |
 | 影子结果 | 10 万字段单元、16 MiB 序列化预算，另有嵌套和遍历预算 |
 
-仓库负责持久数据与事务一致性，宿主负责身份授权、选择样本、脱敏、备份、上线策略和调用时机。当前提供 Go API 与完整示例，没有发布 HTTP 后台或专用发布 CLI，也不自动授予生产发布权限。
+仓库负责持久数据与事务一致性，宿主负责身份授权、选择样本、脱敏、备份、上线策略和调用时机。当前提供 Go API、完整示例及 [OA 规则运维中心](MONITOR.md#13-规则运维)的人工发布/回滚入口；HTTP 操作需要具名身份、当前代次和操作 ID，不自动授予生产发布权限。尚无专用发布 CLI。
 
 [受控分析 Agent](./SITE_AGENT.md) 可在宿主范围和预算内生成/修正规则候选，使用预先固定的训练样本与独立验收集。它只调用仓库的样本、草稿、查询和 Verify 接口；`awaiting_review`、`verified=true` 表示独立验收通过待审阅，缺少独立样本则为 `needs_fixtures`。发布仍由宿主审阅后显式调用 Publish，并使用实际 generation 与新 operationID；Agent 不改变 Current。

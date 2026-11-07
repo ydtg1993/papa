@@ -203,13 +203,8 @@ func readModulePath(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读 %s：%w（站点声明要在项目里编译，得有 go.mod）", filepath.Join(root, "go.mod"), err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if after, ok := strings.CutPrefix(line, "module "); ok {
-			if p := strings.TrimSpace(after); p != "" {
-				return p, nil
-			}
-		}
+	if p := modulePath(string(data)); p != "" {
+		return p, nil
 	}
 	return "", fmt.Errorf("%s 里没有 module 行", filepath.Join(root, "go.mod"))
 }

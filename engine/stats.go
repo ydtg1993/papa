@@ -26,9 +26,10 @@ type stageTotals struct {
 	Failed    int64
 }
 
-// harvestStageTotals 把一份被回收池的最终吞吐计数累进该阶段（key = `core.StageKey`）的累计值。
-// 按具体的那份 pool 走（与 removeStageStats 的身份校验同一思路）：回收与收割之间池被重建，
-// 累进的仍是这份被回收池的计数，不会错加到新池头上。
+// harvestStageTotals 将被回收池的最终吞吐累进该阶段，并原子撤去该池的实时统计。
+// 两步必须同持 e.mu：否则 GetStageStats 可在累计已增加、旧统计尚未撤去时重复加上旧池。
+// 回收与收割之间可能懒建新池，因此仅撤去仍属于旧池的统计，不影响新池的实时计数。
+// 调用前池已由 reapIdle 停止；不能在 e.mu 内等待 pool.Stop，以免 handler 收尾需要同一把锁。
 func (e *Engine) harvestStageTotals(key string, pool *workerpool.WorkerPool[*Task]) {
 	submitted, completed, failed, _, _ := pool.Stats()
 	e.mu.Lock()
@@ -41,6 +42,10 @@ func (e *Engine) harvestStageTotals(key string, pool *workerpool.WorkerPool[*Tas
 	t.Completed += completed
 	t.Failed += failed
 	e.stageTotals[key] = t
+	if stats, ok := e.statsQueue[key]; ok && stats.WorkPool == pool {
+		stats.Stop() // 只关闭统计器停止信号，不等待 worker 或调用引擎回调。
+		delete(e.statsQueue, key)
+	}
 }
 
 // GetStageStats 返回各阶段统计快照（纯值类型，供监控页读取，不暴露内部实现）。

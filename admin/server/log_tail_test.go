@@ -113,7 +113,7 @@ func TestLogViewerUIContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"a.textContent = '查看'", "viewLog(f.name)", "/api/logs/tail?file=", "content.textContent = data.text", "label:'刷新'", "downloadFile('/api/logs/download')"} {
+	for _, want := range []string{"a.textContent = '查看'", "viewLog(f.name)", "/api/logs/tail?file=", "content.textContent = data.text", "label:'刷新'", "downloadFile('/api/logs/download',"} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("missing %s", want)
 		}

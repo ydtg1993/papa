@@ -17,6 +17,7 @@ import (
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
 // Run 前通过 UseAgentCenter 注册宿主批准的分析配置。
+// 业务后台任务通过 UseShutdown 注册关库前的取消与排空回调。
 // 关闭宿主依赖前，可用 CloseAgentCenter 等待后台分析完全结束。
 type App = app.App
 
@@ -48,6 +49,7 @@ type Router = app.Router
 type Middleware = app.Middleware
 
 // Page 一个自定义后台页，传给 App.UsePage。
+// Section 可选 flow / monitor / data / system，留空或未知值归 data；Group 保留分类内业务分组。
 type Page = app.Page
 
 // SiteSpec 站点声明（Key / BaseURL / StartPaused / 熔断阈值 / 阶段清单），传给 App.RegisterSites。

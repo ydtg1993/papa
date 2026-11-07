@@ -121,12 +121,16 @@ func fakeOplogTable() oao.Table {
 // 演示的自定义页与注入内容 —— 真实现是 app.UsePage / UseScript / UseCSS
 // （它们把内容拼进 /static/custom.js|custom.css 并给 /api/pages 提供清单）。
 const demoPageScript = `
+var demoNotice=document.createElement('p');
+demoNotice.className='hint';
+demoNotice.textContent='本地演示 · 阶段与业务数据为合成样本；系统资源来自当前机器。';
+document.querySelector('main').prepend(demoNotice);
 Papa.page('review', function (el, meta) {
   el.innerHTML = '<h2 class="demo-title">' + esc(meta.label) + '（自定义页）</h2>'
     + '<p class="demo-hint">这一页由 app.UsePage 的 Script 渲染，样式来自 app.UseCSS（演示数据）。</p>'
     + '<div class="demo-card"><div id="demo-who" class="demo-hint">当前用户：读取中…</div>'
     + '<p>访问令牌存在 crawler_access_token 表里，每条属于一个操作人；'
-    + '审计日志因此能记下"谁干的"（去「演示 → 操作日志」看「操作人」列）。</p></div>';
+    + '审计日志因此能记下"谁干的"（去「系统管理 → 操作日志」看「操作人」列）。</p></div>';
   apiFetch('/api/demo/whoami')
     .then(function (r) { return r.json(); })
     .then(function (d) {
@@ -145,7 +149,7 @@ const demoPageCSS = `
 
 // demoCustomPage 挂上自定义页需要的三条路由（与 internal/app 的 mountCustomRoutes 同构）。
 func demoCustomPage(mux *http.ServeMux, mon *server.Monitor) {
-	pages := []map[string]string{{"key": "review", "label": "审核", "group": "演示"}}
+	pages := []map[string]string{{"key": "review", "label": "审核", "group": "演示", "section": "flow"}}
 
 	mux.Handle("/static/custom.js", server.NoCache(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -162,7 +166,7 @@ func demoCustomPage(mux *http.ServeMux, mon *server.Monitor) {
 			if i > 0 {
 				_, _ = w.Write([]byte(","))
 			}
-			_, _ = fmt.Fprintf(w, `{"key":%q,"label":%q,"group":%q}`, p["key"], p["label"], p["group"])
+			_, _ = fmt.Fprintf(w, `{"key":%q,"label":%q,"group":%q,"section":%q}`, p["key"], p["label"], p["group"], p["section"])
 		}
 		_, _ = w.Write([]byte(`]}`))
 	})))
