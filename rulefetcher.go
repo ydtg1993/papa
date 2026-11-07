@@ -1,6 +1,6 @@
 package papa
 
-import "github.com/ydtg1993/papa/v3/engine"
+import "github.com/ydtg1993/papa/v4/engine"
 
 type RuleFetcher = engine.RuleFetcher
 type RuleFetcherConfig = engine.RuleFetcherConfig

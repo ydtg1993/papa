@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/obs"
 )
 
 func sampleReport() *obs.Report {

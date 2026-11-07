@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/engine"
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/models"
 )
 
 // Explicitly simulated state for browser verification; never contacts a DB/site.

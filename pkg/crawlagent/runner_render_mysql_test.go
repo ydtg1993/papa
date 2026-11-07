@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/launcher"
-	"github.com/ydtg1993/papa/v3/pkg/agentstore"
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
-	"github.com/ydtg1993/papa/v3/pkg/webaccess"
+	"github.com/ydtg1993/papa/v4/pkg/agentstore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/webaccess"
 )
 
 func TestRunnerMySQLChromiumFailureAudit(t *testing.T) {

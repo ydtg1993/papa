@@ -13,8 +13,8 @@ import (
 
 	"github.com/go-rod/rod/lib/launcher"
 	mysqldriver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/pkg/agenteval"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/agenteval"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
 )
 
 func TestFixedEvaluationCorpusAndHiddenIsolation(t *testing.T) {

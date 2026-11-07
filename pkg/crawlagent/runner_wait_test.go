@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/agentstore"
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
-	"github.com/ydtg1993/papa/v3/pkg/webaccess"
+	"github.com/ydtg1993/papa/v4/pkg/agentstore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/webaccess"
 )
 
 type waitRunnerSource struct {

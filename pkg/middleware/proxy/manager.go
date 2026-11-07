@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/msgqueue"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/internal/msgqueue"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // defaultRefreshInterval 调用方传非正刷新间隔时兜底的默认值（与历史默认一致的 8 分钟）。

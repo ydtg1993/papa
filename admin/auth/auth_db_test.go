@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // 门禁的 fail-closed 矩阵。

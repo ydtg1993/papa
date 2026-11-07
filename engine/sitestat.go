@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v4/core"
 )
 
 // sitesKeyName 站点快照在 crawler_config 里的键（admin/configstore 的 KeySites ——

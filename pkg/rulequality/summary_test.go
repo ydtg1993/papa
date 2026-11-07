@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/extract"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/extract"
 )
 
 func TestSummaryDistinguishesMissingNullEmptyAndZero(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"gorm.io/datatypes"
 )
 

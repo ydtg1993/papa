@@ -12,8 +12,8 @@ import (
 	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/engine"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
 )
 
 func TestRulePeriodicRejectsNonTestDatabase(t *testing.T) {

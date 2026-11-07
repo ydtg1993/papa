@@ -54,7 +54,7 @@ provider, err := model.New(model.Config{
 })
 ```
 
-这里的 model 包路径是 `github.com/ydtg1993/papa/v3/pkg/crawlagent/model`。密钥由环境变量读取，不把密钥放在 YAML、命令行参数或模型上下文。BaseURL 后只追加 `/chat/completions`，不自动插入 `/v1`；拒绝 userinfo/query/fragment，不跟随服务重定向、不自动重试、不继承环境代理。
+这里的 model 包路径是 `github.com/ydtg1993/papa/v4/pkg/crawlagent/model`。密钥由环境变量读取，不把密钥放在 YAML、命令行参数或模型上下文。BaseURL 后只追加 `/chat/completions`，不自动插入 `/v1`；拒绝 userinfo/query/fragment，不跟随服务重定向、不自动重试、不继承环境代理。
 
 默认发送 `max_completion_tokens`；旧兼容服务可显式设置 `OutputTokenField: model.MaxTokens`。接口参数是否支持须按所选供应商验证，不通过第二次真实请求自动试探。使用单次、非流式、一个 assistant 文本结果承载严格 JSON 动作；不要求兼容服务支持原生 function calling。拒绝截断、拒答、意外 tool call、多个结果、重复 JSON 键、非文本或超限响应。
 
@@ -221,7 +221,7 @@ err := app.UseAgentCenter(agentadmin.Options{
 if err != nil { return err }
 ```
 
-导入 `github.com/ydtg1993/papa/v3/pkg/agentadmin`。`agentConfig` 沿用 §2 的模型/Repository/FileBlobs/当前脱敏策略与 webaccess/budgets 配置；审计 Store 和操作人由 App/具名 HTTP 身份绑定，不接受浏览器覆盖。Profile ID 和 Revision 不含冒号；改变目标生成、披露策略、模型或权限时升级 Revision。Goal 回调只能根据固化报告及可信业务配置构造目标，须可重入、确定性、有界并遵守 context；不得在回调中调用模型或改变发布。
+导入 `github.com/ydtg1993/papa/v4/pkg/agentadmin`。`agentConfig` 沿用 §2 的模型/Repository/FileBlobs/当前脱敏策略与 webaccess/budgets 配置；审计 Store 和操作人由 App/具名 HTTP 身份绑定，不接受浏览器覆盖。Profile ID 和 Revision 不含冒号；改变目标生成、披露策略、模型或权限时升级 Revision。Goal 回调只能根据固化报告及可信业务配置构造目标，须可重入、确定性、有界并遵守 context；不得在回调中调用模型或改变发布。
 
 `Agent.Plan(goal)` 返回实际生效默认预算与经过披露策略处理的种子，返回值与内部配置分离。中心预览额外隐藏 Context 和 EvidenceSamples；摘要仍绑定完整宿主输入、配置版本、操作人及证据选择。模型 API Key 不进入 Plan。`ForActor` 克隆固定能力并绑定具名操作者。
 

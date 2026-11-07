@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 	yaml "go.yaml.in/yaml/v3"
 )
 

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // eventKey 是事件去重键：同一 run 内 seq 唯一。

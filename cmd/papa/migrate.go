@@ -8,11 +8,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v4/internal/database"
 )
 
 // papaModule 是框架自己的 module 路径 —— 用来区分「在业务项目里」和「在 papa 仓库里」。
-const papaModule = "github.com/ydtg1993/papa/v3"
+const papaModule = "github.com/ydtg1993/papa/v4"
 
 const migrateUsage = `usage: papa migrate [-c configs/config.yaml]
 
@@ -36,6 +36,9 @@ crawler_access_token，以及按开关启用的 crawler_operation_log、crawler_
 // 在业务项目里（cwd 的 go.mod 依赖 papa）转交 `go run . -migrate` —— 业务模型是在项目进程里
 // 注册的，只有那里拿得到；其余情况只建框架自带的表。
 func runMigrateCmd(args []string) error {
+	if err := rejectLegacyProject("."); err != nil {
+		return err
+	}
 	cfgPath := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]

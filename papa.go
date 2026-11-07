@@ -6,14 +6,14 @@
 package papa
 
 import (
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/internal/app"
-	"github.com/ydtg1993/papa/v3/pkg/account"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/app"
+	"github.com/ydtg1993/papa/v4/pkg/account"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。

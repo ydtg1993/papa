@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v4/config"
 )
 
 // 归档的几个取配置的口子：没配时要有**明确默认**，显式负数表示"永久保留"。

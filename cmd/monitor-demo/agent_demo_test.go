@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/v3/pkg/agentadmin"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/agentadmin"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 	"testing"
 )
 

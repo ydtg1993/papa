@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/obs/report"
-	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/obs/report"
+	"github.com/ydtg1993/papa/v4/pkg/loggers"
 )
 
 func newReportTestApp(t *testing.T, now time.Time, events []map[string]any) (*App, *config.Config) {

@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v3/internal/track"
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/internal/track"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
 // setStatsQueue 设置阶段统计信息管理器（key 是 `core.StageKey`：两个站的同名阶段各有各的统计）

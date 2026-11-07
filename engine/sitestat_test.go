@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/internal/breaker"
-	"github.com/ydtg1993/papa/v3/internal/track"
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/internal/track"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
 // fakeSiteStore 站点快照落点的假实现：引擎只认 SiteStore 接口，所以这里一份内存就够了。

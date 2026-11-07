@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 const maxStateBytes = 8 << 20

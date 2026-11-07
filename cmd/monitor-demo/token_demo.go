@@ -13,9 +13,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/ydtg1993/papa/v3/admin/auth"
-	"github.com/ydtg1993/papa/v3/admin/server"
-	"github.com/ydtg1993/papa/v3/admin/tokenadmin"
+	"github.com/ydtg1993/papa/v4/admin/auth"
+	"github.com/ydtg1993/papa/v4/admin/server"
+	"github.com/ydtg1993/papa/v4/admin/tokenadmin"
 )
 
 // randomDemoToken 每次启动生成一把随机演示令牌，只打印到本机日志里。

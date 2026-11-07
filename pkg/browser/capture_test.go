@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // newLivePool 起一个只含一个真浏览器的池。捕获相关用例必须真起 Chromium：

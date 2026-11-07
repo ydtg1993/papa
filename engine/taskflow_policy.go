@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/models"
 )
 
 var ErrFlowInvalid = errors.New("task flow: invalid input or unsupported execution")

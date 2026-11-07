@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // 断点状态与磁盘对不上（状态说"全下好了"、分片却一个都不在）时：

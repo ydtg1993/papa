@@ -15,7 +15,7 @@
 
 ```text
 papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetcher / models / monitor / config / docker / docs / Makefile / logs）
-  -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v3）
+  -> 你投喂目标站点，AI 在生成的 fetcher/fetch_catalog.go 里填抓取逻辑（只 import github.com/ydtg1993/papa/v4）
   -> 在 sites/<站名>.go 里声明阶段（并发/队列/间隔/重试）与该阶段的 fetcher，起始 URL 由 fetcher 的 SubmitEntries 提交
   -> 任务被 worker 池调度执行，结果通过 Upsert 写入业务表，crawler_tasks 只维护调度状态
 ```
@@ -34,7 +34,7 @@ papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetch
 
 RuleFetcher 可通过 `RuleFetcherConfig.Quality` 接入 `pkg/rulequality.Collector`；手写 Fetcher 可显式调用同一 Collector 上报有界、无字段值的 Observation。质量库写入失败不应作为 FetchHandler 的业务错误返回，否则会把观测故障变成业务重试。MySQL 先开启独立的 `quality.enabled` 并显式迁移三表；开关不自动接线、生成报告或调用 Agent，完整契约见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
-框架对外是一个门面包 `github.com/ydtg1993/papa/v3`，fetcher 只需 import 它：
+框架对外是一个门面包 `github.com/ydtg1993/papa/v4`，fetcher 只需 import 它：
 
 ```go
 type Fetcher interface {
@@ -697,7 +697,7 @@ import (
     "time"
 
     "github.com/go-rod/rod"
-    "github.com/ydtg1993/papa/v3"
+    "github.com/ydtg1993/papa/v4"
 )
 
 type FetchCatalog struct{}
@@ -774,7 +774,7 @@ import (
     "context"
     "time"
 
-    "github.com/ydtg1993/papa/v3"
+    "github.com/ydtg1993/papa/v4"
     "yourproject/models"
 )
 
@@ -863,8 +863,8 @@ import (
     "time"
 
     "github.com/go-rod/rod/lib/proto"
-    "github.com/ydtg1993/papa/v3"
-    "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+    "github.com/ydtg1993/papa/v4"
+    "github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
     "yourproject/models"
 )
 
@@ -939,7 +939,7 @@ func (f *FetchVideo) FetchHandler(ctx context.Context, task *papa.Task, engine *
 ### 5.2 下载器接线（main.go）
 
 ```go
-import "github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+import "github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 
 // 站点声明里（sites/<站>.go）—— 这就是全部的配置入口，没有"全局那层"：
 SiteSpec{ M3U8: &papa.M3U8Spec{
@@ -963,7 +963,7 @@ filedown 与 m3u8 各自的下载器基座及 `With` 派生实例共享目标路
 不需要浏览器、直接下载文件（图片、附件等）时用 `filedown`：
 
 ```go
-import "github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
+import "github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 
 dl := engine.GetFiledown()
 // OptionsFromRequest：站点级 + 逐请求头、显式代理一起带上（同 m3u8，下载器自己不读 ctx）
@@ -1041,7 +1041,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3"
+	"github.com/ydtg1993/papa/v4"
 )
 
 // FetchCatalog 阶段一：抓取目录/列表页。
@@ -1355,7 +1355,7 @@ if ev := app.Events(); ev != nil {
 }
 ```
 
-`events.Event` 来自 `github.com/ydtg1993/papa/v3/pkg/events`；打开 `obs.events.enabled` 后业务事件与框架事件
+`events.Event` 来自 `github.com/ydtg1993/papa/v4/pkg/events`；打开 `obs.events.enabled` 后业务事件与框架事件
 共用同一个 sink、同一个 `run_id` / `seq` 序列。事件关闭时 `app.Events()` 返回 no-op，不判空也能跑。
 
 **10.2 自定义报告段**

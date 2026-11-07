@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
 // RecordNetwork observes one browser page under a bounded recording budget.

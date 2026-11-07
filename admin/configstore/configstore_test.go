@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // 表不存在就报错，且报错里点名怎么修 —— 少了这张表白名单会**静默失效**（读不到 = 不限制来源），

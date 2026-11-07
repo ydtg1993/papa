@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/admin/configstore"
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/admin/configstore"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // 生效白名单为空时**必须喊出来**：它和"配了却没生效"从行为上分不出来，

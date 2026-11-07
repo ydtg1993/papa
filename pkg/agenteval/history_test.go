@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 func historyPair() (Report, Report) {

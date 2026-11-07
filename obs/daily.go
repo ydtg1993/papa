@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/obs/eventlog"
+	"github.com/ydtg1993/papa/v4/obs/eventlog"
 )
 
 // LoadDailySources 把一个事件窗口按**本地日历日**拆成多份 Sources（有事件的每天一份，按日期升序）。

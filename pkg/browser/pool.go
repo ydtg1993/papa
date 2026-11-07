@@ -14,8 +14,8 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 )
 
 // Pool Browser池封装管理多个rod。

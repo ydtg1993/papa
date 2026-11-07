@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // 事件是毫秒精度、日志是秒精度：窗口边界同一秒的日志必须被捞到（±5 分钟冗余）。

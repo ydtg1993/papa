@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v4/core"
 )
 
 // 站点表格的数据源：**内存快照**，不走 SQL。

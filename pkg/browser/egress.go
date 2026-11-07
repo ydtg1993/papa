@@ -3,7 +3,7 @@ package browser
 import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // Security flags are applied after user flags: no proxy/DNS bypass is allowed.

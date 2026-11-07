@@ -9,8 +9,8 @@ import (
 	"sync"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/admin/gormsource"
-	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v4/admin/gormsource"
+	"github.com/ydtg1993/papa/v4/internal/database"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"

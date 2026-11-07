@@ -13,7 +13,7 @@ import (
 	"github.com/go-rod/rod/lib/devices"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // Browser 封装一个 rod实例

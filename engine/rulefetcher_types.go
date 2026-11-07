@@ -3,9 +3,9 @@ package engine
 import (
 	"context"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 // RuleRef pins a fixture-verified rule version. Active is never resolved by a worker.

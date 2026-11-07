@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // 断点状态与磁盘对不上（状态说"分片都下好了"、临时分片却不在）时：

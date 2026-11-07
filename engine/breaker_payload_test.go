@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/breaker"
+	"github.com/ydtg1993/papa/v4/internal/breaker"
 )
 
 // 后台 payload 的**字段集合**要钉住：这一版把"暂停状态"从熔断器搬进了暂停信号，

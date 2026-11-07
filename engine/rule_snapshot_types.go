@@ -3,7 +3,7 @@ package engine
 import (
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/extract"
+	"github.com/ydtg1993/papa/v4/pkg/extract"
 )
 
 // Legacy site/stage sanitization replaces dots, so this namespace cannot

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/ydtg1993/papa/v3/docs"
+	"github.com/ydtg1993/papa/v4/docs"
 )
 
 //go:embed templates/*

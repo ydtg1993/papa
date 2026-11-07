@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/docs"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/docs"
 )
 
 // 本文件是 `papa upgrade`：把一个**已经生成过的**业务目录升到当前脚手架。
@@ -54,6 +54,9 @@ type upgradePlan struct {
 
 // buildUpgradePlan 把一次检查算出来；不打印、不写盘。
 func buildUpgradePlan(dir string) (*upgradePlan, error) {
+	if err := rejectLegacyProject(dir); err != nil {
+		return nil, err
+	}
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -194,7 +197,7 @@ func printUpgradePlan(p *upgradePlan) {
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
 		"config.yaml：三个治理队列（error_queue / recover_queue / repeat_queue）仍是全局段，缺省=那条队列不跑；本轮规则见 papa 仓库的 docs/issues/changes.md",
-		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>` 先跑起来",
+		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v4 => <本地 papa 仓库>` 先跑起来",
 		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改；动过的看 docs/issues/changes.md 里对应条目",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",
 	} {
@@ -385,11 +388,11 @@ func readPapaRequire(root string) (required, replacedTo string) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(line, "replace github.com/ydtg1993/papa/v3"):
+		case strings.HasPrefix(line, "replace github.com/ydtg1993/papa/v4"):
 			if i := strings.Index(line, "=>"); i >= 0 {
 				replacedTo = strings.TrimSpace(line[i+2:])
 			}
-		case strings.HasPrefix(line, "github.com/ydtg1993/papa/v3 "):
+		case strings.HasPrefix(line, "github.com/ydtg1993/papa/v4 "):
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
 				required = fields[1]

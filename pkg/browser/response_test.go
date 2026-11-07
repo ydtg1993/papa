@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 func TestCaptureResponseXHRBodyLimitAndTimeout(t *testing.T) {

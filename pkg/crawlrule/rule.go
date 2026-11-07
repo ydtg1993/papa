@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/andybalholm/cascadia"
-	"github.com/ydtg1993/papa/v3/pkg/extract"
+	"github.com/ydtg1993/papa/v4/pkg/extract"
 )
 
 const (

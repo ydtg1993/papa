@@ -4,7 +4,7 @@ import (
 	"database/sql/driver"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 func TestExistingTablesFiltersByRequestedNames(t *testing.T) {

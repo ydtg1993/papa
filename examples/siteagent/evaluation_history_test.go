@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-rod/rod/lib/launcher"
 	driver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/pkg/agenteval"
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/agenteval"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
 )
 
 func TestHistoryEvaluationOptionsAndRecipe(t *testing.T) {

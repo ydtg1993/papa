@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 	"sync"
 	"sync/atomic"
 	"testing"

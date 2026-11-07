@@ -1,7 +1,7 @@
 package logidx
 
 import (
-	"github.com/ydtg1993/papa/v3/pkg/redact"
+	"github.com/ydtg1993/papa/v4/pkg/redact"
 	"sort"
 	"strconv"
 	"strings"

@@ -12,10 +12,10 @@ import (
 
 	"github.com/go-rod/rod/lib/launcher"
 	mysqldriver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/pkg/agentstore"
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent/model"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/agentstore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent/model"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 func TestReplayDefaultNeverConstructsRealProvider(t *testing.T) {

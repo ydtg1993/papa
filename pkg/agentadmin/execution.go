@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 // Dismiss withdraws an unstarted request by CAS. A concurrent Start can win,

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/obs/report"
-	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/obs/report"
+	"github.com/ydtg1993/papa/v4/pkg/loggers"
 )
 
 // 定时报告与退出报告共用日报产物：调用一次就要有 4 个文件，目录按本地日期。

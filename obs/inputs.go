@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // EventCoverage 是事件时间覆盖与最大断层的摘要（报告自证 + event_coverage 检查共用）。

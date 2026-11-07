@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/internal/breaker"
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
 // `breaker_paused` **不跨重启**：暂停状态只活在内存里（引擎的暂停信号）。

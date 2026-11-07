@@ -16,8 +16,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/internal/database"
 	"gorm.io/gorm/schema"
 )
 

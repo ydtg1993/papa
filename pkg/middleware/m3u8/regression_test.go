@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // 状态文件里 SegmentFiles 被改短（段数对得上、数组却短一截）时，不能越界 panic，而是当作状态损坏重来。

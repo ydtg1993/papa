@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/ydtg1993/papa/v3/pkg/discovery"
-	"github.com/ydtg1993/papa/v3/pkg/extract"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/discovery"
+	"github.com/ydtg1993/papa/v4/pkg/extract"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // Result owns its records. Truncated means the row budget was exceeded; the

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v4/internal/database"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

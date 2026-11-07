@@ -36,13 +36,13 @@ func TestBusinessProject(t *testing.T) {
 	}
 
 	// 业务项目：module 不是 papa，且依赖（require 或 replace）papa。
-	dir := write(t, "module demo\n\ngo 1.25.0\n\nrequire github.com/ydtg1993/papa/v3 v2.5.3\n")
+	dir := write(t, "module demo\n\ngo 1.25.0\n\nrequire github.com/ydtg1993/papa/v4 v2.5.3\n")
 	if mod, ok := businessProject(dir); !ok || mod != "demo" {
 		t.Errorf("业务项目应被认出，got %q/%v", mod, ok)
 	}
 
 	// 本地 replace 验证的场景：require + replace 都指向本地 papa。
-	dir = write(t, "module hg\n\ngo 1.25.0\n\nrequire github.com/ydtg1993/papa/v3 v2.5.3\n\nreplace github.com/ydtg1993/papa/v3 => ../papa\n")
+	dir = write(t, "module hg\n\ngo 1.25.0\n\nrequire github.com/ydtg1993/papa/v4 v2.5.3\n\nreplace github.com/ydtg1993/papa/v4 => ../papa\n")
 	if mod, ok := businessProject(dir); !ok || mod != "hg" {
 		t.Errorf("replace 场景应被认出，got %q/%v", mod, ok)
 	}
@@ -66,7 +66,7 @@ go 1.25.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.2
-	github.com/ydtg1993/papa/v3 v3.4.5
+	github.com/ydtg1993/papa/v4 v4.2.1
 	gorm.io/gorm v1.31.2
 )
 
@@ -80,7 +80,7 @@ require (
 	}
 
 	// 注释 / replace 里提到 papa 不算依赖（只有 require 指令才算）。
-	dir = write(t, "module other\n\ngo 1.25.0\n\n// 待接 github.com/ydtg1993/papa/v3\nreplace github.com/ydtg1993/papa/v3 => ../papa\n")
+	dir = write(t, "module other\n\ngo 1.25.0\n\n// 待接 github.com/ydtg1993/papa/v4\nreplace github.com/ydtg1993/papa/v4 => ../papa\n")
 	if mod, ok := businessProject(dir); ok {
 		t.Errorf("只有注释/replace 提到 papa 不该算业务项目，got %q", mod)
 	}

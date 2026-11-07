@@ -3,7 +3,7 @@ package config
 import (
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 func TestNetworkPrivateOriginsAreExplicitAndValidated(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/obs"
 )
 
 func TestAIBriefIsDeterministic(t *testing.T) {

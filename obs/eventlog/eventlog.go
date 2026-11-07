@@ -10,7 +10,7 @@
 // 本包只读、只依赖标准库与 pkg/events，不含任何具体业务语义。
 package eventlog
 
-import "github.com/ydtg1993/papa/v3/pkg/events"
+import "github.com/ydtg1993/papa/v4/pkg/events"
 
 // Result 是一次 Read 的统计结果。
 type Result struct {

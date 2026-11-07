@@ -1,6 +1,6 @@
 package crawlagent
 
-import "github.com/ydtg1993/papa/v3/pkg/rulestore"
+import "github.com/ydtg1993/papa/v4/pkg/rulestore"
 
 // Each completed step is independently useful after a crash before Finish.
 // References reveal neither page contents/URLs nor hidden fixture values.

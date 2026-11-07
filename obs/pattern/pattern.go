@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/obs"
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // Builtin 返回框架内置模式（确定性顺序）。

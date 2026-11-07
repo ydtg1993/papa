@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/obs"
 )
 
 // addEventCoverage 检查事件时间覆盖：整段丢失不产生 seq 缺口，只能靠时间断层发现。

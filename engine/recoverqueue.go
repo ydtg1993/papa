@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 	"gorm.io/gorm"
 )
 

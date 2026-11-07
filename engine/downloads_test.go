@@ -3,8 +3,8 @@ package engine
 import (
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
 // 下载器覆盖层的解析：**阶段 > 站点 > 基座（框架默认那份）**；没任何覆盖的阶段直接用基座。

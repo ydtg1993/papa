@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/discovery"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/discovery"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 	"golang.org/x/net/idna"
 )
 

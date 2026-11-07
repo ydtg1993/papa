@@ -5,15 +5,15 @@ package analyze
 import (
 	"context"
 	"fmt"
-	"github.com/ydtg1993/papa/v3/pkg/redact"
+	"github.com/ydtg1993/papa/v4/pkg/redact"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/obs"
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // Thresholds 是通用判定阈值；零值取默认（可在后续版本接配置）。

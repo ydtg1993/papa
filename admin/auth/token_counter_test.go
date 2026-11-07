@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // countHits 统计假库收到的 COUNT 查询条数。

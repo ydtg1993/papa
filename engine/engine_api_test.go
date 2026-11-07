@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/launcher"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v3/pkg/loggers"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/loggers"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 )
 
 /* ---------- 门面 getter / setter ---------- */
@@ -243,6 +243,8 @@ func TestFetchRenderedPageEndToEnd(t *testing.T) {
 	srv := serveBody(t, `<html><head><title>渲染页</title></head><body><h1 class="hit">等 JS 才有的内容</h1></body></html>`)
 
 	cfg := &config.Config{}
+	// Explicitly authorize only the local fixture under the egress policy.
+	cfg.Network.PrivateOrigins = []string{srv.URL}
 	cfg.Browser.Enable = true
 	cfg.Browser.PoolSize = 1
 	cfg.Browser.Headless = true

@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/extract"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/extract"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // Exercise the actual API -> validator -> sanitized fixture -> offline parser

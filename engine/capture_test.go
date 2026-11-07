@@ -9,10 +9,10 @@ import (
 
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
 // decodeTraceData 把 trace 步骤的 JSON 列解出来断言。

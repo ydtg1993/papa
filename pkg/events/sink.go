@@ -2,7 +2,7 @@ package events
 
 import (
 	"encoding/json"
-	"github.com/ydtg1993/papa/v3/pkg/redact"
+	"github.com/ydtg1993/papa/v4/pkg/redact"
 	"io"
 	"sync"
 )

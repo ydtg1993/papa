@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // 事件流开启时：按配置写 log.dir/events.jsonl，一行一条，带 run_id；关闭时排空落盘。

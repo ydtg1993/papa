@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // ResponseOptions captures the first matching response, including non-2xx responses.

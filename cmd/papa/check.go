@@ -32,8 +32,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ydtg1993/papa/v3"
-	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v4"
+	"github.com/ydtg1993/papa/v4/config"
 
 	// 匿名导入：让各站点文件的 init() 跑起来（它们自己登记到框架）。
 	_ __SITES_IMPORT__
@@ -123,6 +123,9 @@ func runCheckCmd(args []string) error {
 
 	root, err := filepath.Abs(dir)
 	if err != nil {
+		return err
+	}
+	if err := rejectLegacyProject(root); err != nil {
 		return err
 	}
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
@@ -223,8 +226,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3"
-	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v4"
+	"github.com/ydtg1993/papa/v4/config"
 
 	// 匿名导入：让各站点文件的 init() 跑起来（它们自己登记到框架）。
 	_ __SITES_IMPORT__

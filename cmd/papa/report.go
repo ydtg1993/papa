@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/internal/database"
-	"github.com/ydtg1993/papa/v3/obs"
-	"github.com/ydtg1993/papa/v3/obs/analyze"
-	"github.com/ydtg1993/papa/v3/obs/pattern"
-	"github.com/ydtg1993/papa/v3/obs/report"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/internal/database"
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/obs/analyze"
+	"github.com/ydtg1993/papa/v4/obs/pattern"
+	"github.com/ydtg1993/papa/v4/obs/report"
 )
 
 const reportUsage = `usage:

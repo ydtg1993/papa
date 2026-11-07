@@ -7,6 +7,10 @@
 
 ## 0. 一句话
 
+本模块现为 `github.com/ydtg1993/papa/v4`。主版本迁移必须同时更新源码 import、CLI 的模块识别/临时校验程序、脚手架及手册；第三方模块和历史验收记录不改。`cmd/papa/module_version_test.go` 校验 v4 模块与模板一致，`module_compat.go` 在 check/upgrade/migrate 前拒绝仍引用 v3 的项目，防止误执行框架迁移。验证须使用 GOWORK=off，另外真实生成合成业务并 tidy/build/check，不能让 go.work 掩盖依赖问题。
+
+远端已有 v4.2.1 标签的模块声明错误，本地修复不等于远端可安装；待用户发布新的正确 v4 标签后，再验收不带 replace 的 go install/new/tidy。版本修复不需要数据库迁移。CLI 不能自动重写旧业务的 imports/require/replace。
+
 用 Makefile 统一日常命令。**必须在 Git Bash（POSIX sh）里跑**——Windows 的 cmd / PowerShell 不认 Makefile 里的 sh 语法（`VAR=1 cmd`、`rm -rf`）。
 
 ## 1. 框架仓库（papa 自身）

@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/proxy"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )

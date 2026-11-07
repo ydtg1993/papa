@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 const (

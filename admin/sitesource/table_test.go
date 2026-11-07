@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v4/core"
 )
 
 // buildTable 走一遍组件注册，顺带验证声明能被 oao 校验通过。

@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/engine"
-	"github.com/ydtg1993/papa/v3/pkg/loggers"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/pkg/loggers"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
 // CheckSites：不起库、不建池、不改状态，把启动时会 panic 的问题**一次收集全**（而不是报第一条就停）。

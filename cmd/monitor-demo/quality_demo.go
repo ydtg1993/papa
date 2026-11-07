@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 // Immutable simulated observations. Never visits a site, DB, or model service.

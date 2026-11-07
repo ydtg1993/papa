@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 	"gorm.io/gorm"
 )
 

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/msgqueue"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/internal/msgqueue"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // 没配 api_url 时不建连接、不起刷新协程，Next 返回空串 ——

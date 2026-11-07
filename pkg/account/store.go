@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/browser"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // Store must not reenter Manager. Calls are serialized by the account lock.

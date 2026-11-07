@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
 )
 
 // Summarize counts the original, pre-deduplication records without retaining any

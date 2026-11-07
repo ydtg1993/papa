@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
 // 空闲回收：lastSubmit 超了 idle 且空着 → 回收；队列非空 → 不回收。

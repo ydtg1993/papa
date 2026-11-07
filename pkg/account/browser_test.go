@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/ydtg1993/papa/v3/pkg/browser"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 func accountBrowserPool(t *testing.T, origins ...string) *browser.Pool {

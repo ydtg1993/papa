@@ -2,8 +2,8 @@ package app
 
 import (
 	"fmt"
-	"github.com/ydtg1993/papa/v3/admin/server"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/admin/server"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 func (a *App) ruleAdministration() server.RuleAdministration {

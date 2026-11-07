@@ -8,9 +8,9 @@ import (
 	"time"
 
 	driver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 func TestQualityMigrationIsExplicitAndOptIn(t *testing.T) {

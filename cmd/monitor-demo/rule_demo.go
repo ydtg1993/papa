@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 // Browser-only simulation. No database, model, remote site, or real release.

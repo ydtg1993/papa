@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/ydtg1993/papa/v3/obs"
-	"github.com/ydtg1993/papa/v3/pkg/redact"
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/pkg/redact"
 )
 
 // VerdictLabel 把判定转成中文标签。

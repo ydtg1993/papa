@@ -5,7 +5,7 @@ package agenteval
 import (
 	"errors"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
 )
 
 // Count retains the denominator, including failed or unattempted samples.

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 	"gorm.io/gorm"
 )
 

@@ -11,10 +11,10 @@ import (
 	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
-	"github.com/ydtg1993/papa/v3/pkg/agentstore"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	q "github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/agentstore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	q "github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 func TestRuleQualityExampleRequiresDedicatedInputs(t *testing.T) {

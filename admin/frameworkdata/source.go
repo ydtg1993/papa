@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/admin/gormsource"
+	"github.com/ydtg1993/papa/v4/admin/gormsource"
 	"gorm.io/gorm"
 )
 

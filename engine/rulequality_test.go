@@ -13,14 +13,14 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/account"
-	"github.com/ydtg1993/papa/v3/pkg/browser"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/account"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 type qualityRecordFunc func(context.Context, rulequality.Observation) (rulequality.Observation, error)

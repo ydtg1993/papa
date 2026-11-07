@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v4/core"
 )
 
 // entryFetcher 一个实现了 SubmitEntries 的假 fetcher：记下每次被投，以及拿到的是哪个站的快照。

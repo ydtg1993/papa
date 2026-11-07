@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // ReadSnapshot reads one complete, already retained RuleFetcher observation.

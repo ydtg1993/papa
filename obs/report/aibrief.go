@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/obs"
 )
 
 // AIBrief 是交给另一个 AI 的排查任务包（ai-brief.json 的根）。

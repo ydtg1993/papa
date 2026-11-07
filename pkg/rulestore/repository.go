@@ -14,8 +14,8 @@ import (
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
 	"gorm.io/gorm"
 )
 

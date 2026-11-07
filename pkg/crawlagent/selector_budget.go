@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ydtg1993/papa/v3/internal/selectorbudget"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/internal/selectorbudget"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
 	"golang.org/x/net/html"
 )
 

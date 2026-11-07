@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // testBase 是测试的固定基准时间：所有事件时间都由它偏移，测试不依赖真实时钟。

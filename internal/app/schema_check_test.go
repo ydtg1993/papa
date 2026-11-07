@@ -4,8 +4,8 @@ import (
 	"database/sql/driver"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // 启动期结构检查的三条结局：缺表 / 缺索引 / 查询失败。

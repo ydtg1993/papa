@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/ydtg1993/papa/v3/pkg/browser"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // FetchIncremental performs an account-scoped conditional GET. Persist the returned

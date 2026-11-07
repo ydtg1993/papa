@@ -12,10 +12,10 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 type profile struct {

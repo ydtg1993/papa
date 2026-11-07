@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/launcher"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // FetchOnce **成功路径**也必须把页面关掉。

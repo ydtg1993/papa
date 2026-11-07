@@ -3,7 +3,7 @@ package filedown
 import (
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // Config 文件下载器配置

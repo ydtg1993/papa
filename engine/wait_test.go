@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
 // 等待渲染失败：trace 里一条「等待渲染」失败步骤（带卡住的步骤/选择器/耗时），

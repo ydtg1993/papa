@@ -7,9 +7,13 @@
 
 ## 0. 安装
 
+v4 源码的模块路径为 `github.com/ydtg1993/papa/v4`。已发布的 v4.2.1 标签仍错误声明 /v3，Go 无法按 v4 安装该标签；本地修复不会改变远端内容，应提交修复后发布新的正确 v4 标签，不移动旧标签。在正确发布可用前，从本仓构建 CLI 并使用 `papa new <name> --replace <本地 Papa 路径>` 联调，标记为本地开发修正版。
+
+旧业务升级需同时修改 imports、go.mod 的 require/replace 为 /v4，require 版本必须为可安装的 v4 版本；tidy 后用 GOWORK=off 验证独立构建。同一业务不要混用 /v3 与 /v4 的任务类型和注册表。v4 CLI 的 check/upgrade/migrate 遇到 /v3 项目会在执行前拒绝；upgrade 不改业务源码与依赖。第三方 yaml/v3 等独立模块不随 Papa 改版本。
+
 ```bash
 # 免克隆安装（推荐）：直接装最新版，得到 papa 命令
-go install github.com/ydtg1993/papa/v3/cmd/papa@latest
+go install github.com/ydtg1993/papa/v4/cmd/papa@latest
 
 # 已在 papa 仓库内（贡献/调试）：装当前源码
 go install ./cmd/papa
@@ -157,7 +161,7 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
      见 docs/CORE_CONFIG.md
 ```
 
-> 框架版本还没发布时，`go.mod` 里用 `replace github.com/ydtg1993/papa/v3 => <本地 papa 仓库>`
+> 框架版本还没发布时，`go.mod` 里用 `replace github.com/ydtg1993/papa/v4 => <本地 papa 仓库>`
 > 先跑起来（`papa new --replace` 加的就是这行）；发布后改成 require 一个新版本号即可。
 >
 > 全局配置或站点/阶段声明改完（尤其是启用后要求字段齐全的三个治理队列）跑一次 **`papa check`**：它不用起库就能告诉你漏没漏，

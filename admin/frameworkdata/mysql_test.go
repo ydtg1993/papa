@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v4/internal/database"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

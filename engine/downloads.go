@@ -1,9 +1,9 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
 // 本文件是**下载器实例的解析与取用**：基座（框架默认）→ 站点一层覆盖 → 阶段一层覆盖。

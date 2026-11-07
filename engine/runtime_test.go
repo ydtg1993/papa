@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v4/config"
 )
 
 // 浏览器头与 HTML 客户端配置**只从 cfg 读**（运行期覆盖层已随热更一起取消：

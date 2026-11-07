@@ -20,8 +20,8 @@ func TestBreakerStaysPure(t *testing.T) {
 		t.Fatalf("读包目录：%v", err)
 	}
 	forbidden := map[string]string{
-		"github.com/ydtg1993/papa/v3/core":                "监控 DTO 属于 core；熔断器只该把失败数**返回**给引擎，由引擎去写暂停信号、发告警",
-		"github.com/ydtg1993/papa/v3/internal/workerpool": "池子那侧只声明自己要的最小接口；熔断器不该反过来认识池子（闸门已搬到 engine 的暂停信号）",
+		"github.com/ydtg1993/papa/v4/core":                "监控 DTO 属于 core；熔断器只该把失败数**返回**给引擎，由引擎去写暂停信号、发告警",
+		"github.com/ydtg1993/papa/v4/internal/workerpool": "池子那侧只声明自己要的最小接口；熔断器不该反过来认识池子（闸门已搬到 engine 的暂停信号）",
 	}
 	for _, e := range entries {
 		name := e.Name()

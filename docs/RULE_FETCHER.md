@@ -88,7 +88,7 @@ HTTP 客户端和浏览器池仍需按原配置启用；规则执行器不自动
 
 ### 明确决定可以保存哪些响应数据
 
-`RuleFetcherConfig.SnapshotPolicy` 使用 `*htmlfetch.SamplePolicy`（导入 `github.com/ydtg1993/papa/v3/pkg/htmlfetch`）：
+`RuleFetcherConfig.SnapshotPolicy` 使用 `*htmlfetch.SamplePolicy`（导入 `github.com/ydtg1993/papa/v4/pkg/htmlfetch`）：
 
 | 策略 | 快照行为 |
 | --- | --- |

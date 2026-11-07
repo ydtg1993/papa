@@ -1,6 +1,6 @@
 ---
 name: papa-crawler-development
-description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v3—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM {{.CodeDir}}models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
+description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v4—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM {{.CodeDir}}models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
 compatibility: Go 1.25+, Papa v3 business projects; shell and Go toolchain recommended for validation.
 ---
 
@@ -14,7 +14,7 @@ This skill targets **business integration**, not Papa engine internals. If the r
 
 ## Establish authority before editing
 
-1. Find the module importing `github.com/ydtg1993/papa/v3`; that is the business project.
+1. Find the module importing `github.com/ydtg1993/papa/v4`; that is the business project.
 2. Find the corresponding Papa framework checkout or module source.
 3. Read the framework’s current `docs/README.md`, then only the manuals relevant to the task.
 4. Inspect the nearest existing site/fetcher/model/monitor implementation before designing a new one.

@@ -9,10 +9,10 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andybalholm/cascadia"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
-	"github.com/ydtg1993/papa/v3/pkg/webaccess"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/webaccess"
 )
 
 func (e *execution) loadFixtures(ctx context.Context) error {

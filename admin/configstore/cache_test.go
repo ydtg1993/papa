@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // 缓存层（cache.go）的行为：命中不查库 · 懒加载只查一次 · 读不到不进缓存 ·

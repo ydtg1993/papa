@@ -7,9 +7,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/ydtg1993/papa/v3/pkg/account"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/account"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 // Attempt identity must remain available when both Trace and archive are off.

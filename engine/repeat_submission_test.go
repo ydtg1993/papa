@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/models"
 )
 
 // A second public submission is another delivery of the existing pending

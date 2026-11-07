@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // Recorder.Record 是 oao 表格动作 → 审计那一层的适配器（app 把它接在 oao.Config.OnAction 上）：

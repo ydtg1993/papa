@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/admin/auth"
-	"github.com/ydtg1993/papa/v3/pkg/agentadmin"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/admin/auth"
+	"github.com/ydtg1993/papa/v4/pkg/agentadmin"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 type QualityReportWriter interface {

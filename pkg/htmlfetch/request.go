@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v4/core"
 )
 
 // Request describes a bounded HTTP exchange. Empty Method means GET.

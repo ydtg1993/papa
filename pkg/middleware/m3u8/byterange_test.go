@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // `#EXT-X-BYTERANGE` 的两种写法都要换算成**合法的 HTTP Range**，省略 @起点 的按

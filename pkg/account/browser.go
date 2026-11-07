@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/browser"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
 func useBrowser(ctx context.Context, cfg *BrowserConfig, state *browser.PageState, fn func(*rod.Page) error) error {

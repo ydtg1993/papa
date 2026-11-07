@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/admin/sysinfo"
+	"github.com/ydtg1993/papa/v4/admin/sysinfo"
 )
 
 func TestMonitorObservationMetadataIsStablePerInstance(t *testing.T) {

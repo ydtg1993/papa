@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // 带 Range 的请求：期望长度就写在 Range 里，据此设上界。

@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/redact"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/redact"
 )
 
 // Webhook 通过 HTTP POST 将告警事件以 JSON 发送到指定 URL（可接钉钉/webhook 网关）。

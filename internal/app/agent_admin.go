@@ -3,13 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
-	"github.com/ydtg1993/papa/v3/admin/server"
+	"github.com/ydtg1993/papa/v4/admin/server"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/agentadmin"
-	"github.com/ydtg1993/papa/v3/pkg/agentstore"
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/agentadmin"
+	"github.com/ydtg1993/papa/v4/pkg/agentstore"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 // UseAgentCenter registers host-approved analysis profiles before Run. Reading

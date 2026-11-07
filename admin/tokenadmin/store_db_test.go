@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/gormfake"
 )
 
 // DBStore 的读写路径（List / Create / SetEnabled / Delete / whyRejected）。

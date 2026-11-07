@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/pkg/rulequality"
+	"github.com/ydtg1993/papa/v4/pkg/rulequality"
 )
 
 // QualityAdministration is an optional read-only view. It never starts an Agent.

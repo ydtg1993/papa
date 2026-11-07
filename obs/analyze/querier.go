@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/obs"
 	"gorm.io/gorm"
 )
 

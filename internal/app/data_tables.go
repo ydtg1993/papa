@@ -2,7 +2,7 @@ package app
 
 import (
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/admin/tasksource"
+	"github.com/ydtg1993/papa/v4/admin/tasksource"
 	"gorm.io/gorm"
 )
 

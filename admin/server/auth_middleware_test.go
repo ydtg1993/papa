@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/admin/auth"
+	"github.com/ydtg1993/papa/v4/admin/auth"
 )
 
 // Monitor.Auth 是给"挂在同一个 mux 上的外部组件"（oao 表格、业务自定义路由）复用的那道闸门 ——

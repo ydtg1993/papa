@@ -3,7 +3,7 @@ package analyze
 import (
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/obs"
 )
 
 // tableText 把一节的表格压成文本，方便断言"某一行/某个键出现在输出里"。

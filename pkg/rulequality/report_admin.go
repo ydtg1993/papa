@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/models"
 )
 
 var ErrReportChanged = errors.New("rulequality: reviewed observation window changed")

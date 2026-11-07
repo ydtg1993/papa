@@ -4,8 +4,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // 本文件是**暂停**的唯一定义：一处状态、两个消费者。

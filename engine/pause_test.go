@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/internal/breaker"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/breaker"
 )
 
 // 暂停信号的三种查询语义（别混用）：精确 scope（闸门与提交点）· 该站任意一条（后台状态）· 全部（ResumeCrawling）。

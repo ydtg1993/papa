@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/obs"
+	"github.com/ydtg1993/papa/v4/obs"
 )
 
 // 报告头部必须标注生成时间（= 最近一次更新时间）：定时报告每天覆盖同一目录时，

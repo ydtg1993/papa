@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 // Fixture is an explicit, already fetched and preferably redacted sample.

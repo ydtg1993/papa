@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/pkg/htmlfetch"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
 func snapshotPolicy() *htmlfetch.SamplePolicy {

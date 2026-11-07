@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/pkg/loggers"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

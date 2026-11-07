@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/config"
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/engine"
-	"github.com/ydtg1993/papa/v3/internal/breaker"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
-	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
 // 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `sites/<站名>.go`），

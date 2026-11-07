@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/engine"
+	"github.com/ydtg1993/papa/v4/engine"
 )
 
 func TestRuleScheduleHTTPGuardsAndErrors(t *testing.T) {

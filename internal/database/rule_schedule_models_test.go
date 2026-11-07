@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/config"
+	"github.com/ydtg1993/papa/v4/config"
 	"gorm.io/gorm/schema"
 )
 

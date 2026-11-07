@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 // This recipe identifies a synthetic, host-authored prerequisite, not a model

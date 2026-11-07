@@ -5,7 +5,7 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlagent"
+	"github.com/ydtg1993/papa/v4/pkg/crawlagent"
 )
 
 func validHistoryRecord(h crawlagent.HistoryRecord) bool {

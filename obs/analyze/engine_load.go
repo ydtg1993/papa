@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/models"
-	"github.com/ydtg1993/papa/v3/obs"
-	"github.com/ydtg1993/papa/v3/pkg/events"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 	"gorm.io/gorm"
 )
 

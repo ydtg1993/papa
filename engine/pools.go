@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
 // poolRegistry 活池登记表：阶段键 -> 当前活着的池。所有投递、关停、错误通道都从它取池，

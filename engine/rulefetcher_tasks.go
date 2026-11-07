@@ -11,8 +11,8 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/ydtg1993/papa/v3/pkg/crawlrule"
-	"github.com/ydtg1993/papa/v3/pkg/discovery"
+	"github.com/ydtg1993/papa/v4/pkg/crawlrule"
+	"github.com/ydtg1993/papa/v4/pkg/discovery"
 )
 
 const ruleMetaLimit = 2 << 20

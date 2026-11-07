@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v3/engine"
+	"github.com/ydtg1993/papa/v4/engine"
 )
 
 // ruleSource derives a small role hint without exposing task metadata, which

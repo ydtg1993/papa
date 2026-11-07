@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/models"
 )
 
 // 批间停顿必须在停机信号到来时立刻返回 false —— 启动恢复的协程在 tickerWG 里，

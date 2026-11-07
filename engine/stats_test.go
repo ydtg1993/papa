@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/track"
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/internal/track"
+	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
 // 收割把被回收池的最终吞吐累进该阶段的累计值，多次收割累加。

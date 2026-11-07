@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )

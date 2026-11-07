@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v3/docs"
+	"github.com/ydtg1993/papa/v4/docs"
 )
 
 func writeFileT(t *testing.T, path, content string) {
@@ -40,7 +40,7 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 	// ③ 站点声明写成升级前的样子：还带着旧类型名
 	writeFileT(t, filepath.Join("demo", "internal", "sites", "demo.go"), `package sites
 
-import "github.com/ydtg1993/papa/v3"
+import "github.com/ydtg1993/papa/v4"
 
 func init() {
 	papa.RegisterSite(papa.SiteSpec{
@@ -261,16 +261,16 @@ go 1.25.0
 
 require (
 	github.com/ydtg1993/oao v1.3.0
-	github.com/ydtg1993/papa/v3 v3.1.0
+	github.com/ydtg1993/papa/v4 v4.2.1
 )
 
-replace github.com/ydtg1993/papa/v3 => E:/go-project/test_papa/papa
+replace github.com/ydtg1993/papa/v4 => E:/go-project/test_papa/papa
 `)
 	p, err := buildUpgradePlan("p")
 	if err != nil {
 		t.Fatalf("buildUpgradePlan = %v", err)
 	}
-	if p.Required != "v3.1.0" || p.ReplacedTo != "E:/go-project/test_papa/papa" {
+	if p.Required != "v4.2.1" || p.ReplacedTo != "E:/go-project/test_papa/papa" {
 		t.Fatalf("require/replace 解析 = %q / %q", p.Required, p.ReplacedTo)
 	}
 	// 新脚手架的 go.mod 不带 require（靠 go mod tidy 落），那是正常的，不该报错

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // Config M3U8 下载器全局配置

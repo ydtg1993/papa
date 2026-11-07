@@ -23,9 +23,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/ydtg1993/papa/v3/internal/msgqueue"
-	"github.com/ydtg1993/papa/v3/pkg/egress"
-	"github.com/ydtg1993/papa/v3/pkg/middleware"
+	"github.com/ydtg1993/papa/v4/internal/msgqueue"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/middleware"
 	"time"
 )
 

@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ydtg1993/papa/v3/admin/auth"
-	"github.com/ydtg1993/papa/v3/pkg/rulestore"
+	"github.com/ydtg1993/papa/v4/admin/auth"
+	"github.com/ydtg1993/papa/v4/pkg/rulestore"
 )
 
 // RuleAdministration is optional. Writes require an authenticated operator;

@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/ydtg1993/papa/v3/internal/selectorbudget"
+	"github.com/ydtg1993/papa/v4/internal/selectorbudget"
 )
 
 var (

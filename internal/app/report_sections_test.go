@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/obs/report"
+	"github.com/ydtg1993/papa/v4/obs/report"
 )
 
 // TestPeriodicReportIncludesEngineAndBacklogSections 验证定时报告真的注册了

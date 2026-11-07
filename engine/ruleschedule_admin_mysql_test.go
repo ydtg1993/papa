@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/core"
-	"github.com/ydtg1993/papa/v3/models"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/gorm"
 )
 

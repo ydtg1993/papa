@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/obs"
-	"github.com/ydtg1993/papa/v3/obs/report"
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/obs/report"
 )
 
 // writeReportTestEvents 造一份跨两天的事件流（昨天 + 今天各一个 run）。
