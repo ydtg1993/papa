@@ -379,7 +379,7 @@ OA Agent 中心定向验证：`go test ./pkg/agentadmin ./pkg/agentstore ./pkg/r
 - `testdata/visual_state_test.js` / `visuals_test.js`：真实生产 JS 的时间、身份、阶段集合、采样周期、同时间戳重连、旧响应、缺失值、前11项+其他总计、降级和销毁回归，由 `TestOperationsJavaScriptBehavior` 自动执行。`monitor_requests_test.js` 同时验证迟到/超时响应不进入观测历史。
 - 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不增加 SQL、真实站点或付费模型调用。
 
-集成验证必须分两次：`GOWORK=off` 验证 go.mod 中实际发布的 oao；临时 go.work 使用 Papa/oao 两个本地模块验证新增能力。不要修改发布模块的 replace 或编造新版 tag。目标包 `go test ./admin/... ./cmd/monitor-demo`，并发 `go test -race ./admin/server ./admin/sysinfo ./cmd/monitor-demo`，全包静态检查与构建 `go vet ./...` / `go build ./...`。Node 不存在时行为测试显式跳过，不能称前端行为验证通过。
+当前默认以 `GOWORK=off` 验证 go.mod 中已发布的 oao v1.4.0。修改尚未发布的 oao 时再用临时 go.work 联调；旧版兼容用独立临时 modfile 指向真实发布版本，不修改正式依赖或模块缓存。目标包 `go test ./admin/... ./cmd/monitor-demo`，并发 `go test -race ./admin/server ./admin/sysinfo ./cmd/monitor-demo`，全包静态检查与构建 `go vet ./...` / `go build ./...`。Node 不存在时行为测试显式跳过，不能称前端行为验证通过。
 
 提交前二次复核新增 `monitor_identity_test.js`（外部凭据更换、晚到401、轮询恢复、新旧表格导航隔离），`workbench_test.js` 覆盖站点全部消失及当前模块清空筛选。`TestMonitorReducedMotionDisablesFeedbackTransforms` 守卫减弱动效下的反馈位移；`visuals_test.js` 核对系统资源范围。`TestCollectorSnapshotDirsAreIndependent` / `TestCollectorOwnsDirectoryConfig` 验证 map 所有权；`TestHarvestStageTotalsRetiresCurrentSnapshotAtomically` / `TestHarvestStageTotalsPreservesReplacementSnapshot` 以真实 worker pool 验证回收累计与重建身份。回收不在引擎锁内等待 worker 停止。
 
@@ -395,4 +395,15 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 `TestMonitorLayoutHasFourCategoriesAndSeparateLogs`、`TestMonitorOverviewHasOneDefaultChart` 守卫模板结构；`navigation_test.js`、`monitor_requests_test.js`、`monitor_identity_test.js` 执行真实生产 JS，覆盖四类映射、兼容回退、文本安全、未保存阻止导航、晚到清单/日志和凭据切换。`visuals_test.js` 覆盖 1→3→6 实例、折叠销毁、离页/后台不复活和旧依赖回退。`internal/app/page_sections_test.go` 通过真实 HTTP handler 验证 Section 契约，`cmd/papa/scaffold_page_sections_test.go` 检查新建模板。
 
 
-旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版断言不安装兼容包装。`mo.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。
+旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版执行真实 render、筛选、正常 POST、销毁确认与迟到401/正文隔离，并断言不安装兼容包装。`mo.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。
+
+`TestMonitorLinkedVisualsBehavior` 从当前链接 oao 的 StaticFS 读取真实图表与动效脚本，运行 `testdata/linked_visuals_test.js`，覆盖观测边界、图表折叠/离页、pagehide 迟到回调、KPI 动画和滚动焦点保留。`native_session_test.js` 纳入 `TestOperationsJavaScriptBehavior`，验证批次/规则/质量/Agent 身份清理、旧确认与恢复响应隔离；`monitor_identity_test.js` 联合真实 mo/requests 验证冻结页面漏收 storage 事件后的凭据核对。DOM、动画调度及请求仍为受控替身，浏览器排版与实际 BFCache 命中须另验。
+
+### 外观主题文件分工
+
+- `static/appearance.js`：浏览器外观偏好、设置控件、跨标签页/页面恢复同步与订阅清理；设置只更新根属性，不重新挂载业务。
+- `template.html`：CSS加载前恢复合法外观/明暗值；`static/mo.js` 保留明暗快捷入口和安全的凭据读取。显示选择以DOM当前状态为准，不能每次读取旧存储覆盖写入失败后的临时选择。
+- `static/layout.css`：共享导航/响应式规则与按外观限定的覆盖；原 `mo.css` 是经典基础。简约根条件使用低权重 `:where`，body中的oao浮层同样继承；`visuals.css` 保留减弱动效优先。
+- `appearance_layout_test.go`：主题根变量隔离、导航/浮层覆盖及动效结构守卫。`testdata/appearance_test.js` 执行首帧、实际主题/设置代码，覆盖7组状态行为；`storage_startup_test.js` 完整执行后台启动，4项验证存储读取失败仍保持未登录、无请求与无旧凭据复用。两者均由 `ui_behavior_test.go` 自动执行。
+
+主题切换不改Go API、数据库或oao版本。业务适配在业务模块内，不能把站点类名写入Papa。浏览器需另验经典/简约×浅色/深色、390窄屏、表格浮层、原生弹窗、草稿与焦点；截图不能代替迟到请求/存储异常的确定性回归。

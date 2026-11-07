@@ -29,4 +29,8 @@ const a=mo.indexOf('    var Dialog ='),b=mo.indexOf('    /* ============',a+10);
     events.keydown({key:'Escape',preventDefault:()=>{}});assert.equal(await p,false);
     const detached=element();doc.activeElement=detached;const replaced=c.Dialog.confirm({title:'re-rendered opener'});detached.isConnected=false;
     events.keydown({key:'Escape',preventDefault:()=>{}});await replaced;assert.equal(doc.activeElement,doc.body,'hidden dialog kept focus after opener was removed');
+    const secret=c.Dialog.confirm({title:'private identity',body:'plaintext-token'});
+    assert.equal(body.innerHTML,'plaintext-token');
+    c.Dialog.reset();assert.equal(await secret,false,'session reset left confirmation pending');
+    assert.equal(body.innerHTML,'','session reset retained hidden plaintext');assert.equal(actions.children.length,0);assert.equal(title.textContent,'');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -14,6 +14,15 @@ function ruleOperationID(){
     return 'oa-'+Array.from(bytes,function(b){return b.toString(16).padStart(2,'0');}).join('');
 }
 function invalidateRules() { ruleOps.listSeq++; ruleOps.detailSeq++; ruleOps.releaseSeq++; invalidateRulePreview(); }
+function resetRulesSession() {
+    invalidateRules();
+    Object.assign(ruleOps, { after:null, pages:[], next:null, before:'0', releasePages:[], releaseNext:'0', current:null, preview:null, pending:null, busy:false });
+    ['versions','detail','releases','preview','result','pending'].forEach(function(id){var el=ruleNode(id);if(el)el.innerHTML='';});
+    ['detail','preview','pending'].forEach(function(id){var el=ruleNode(id);if(el)el.hidden=true;});
+    ['site','filter','bindings'].forEach(function(id){var el=ruleNode(id);if(el)el.value='';});
+    ['versions-next','versions-prev','history-next','history-prev','publish-preview','rollback-preview'].forEach(function(id){var el=ruleNode(id);if(el)el.disabled=true;});
+    var generation=ruleNode('generation');if(generation)generation.textContent='—';
+}
 function invalidateRulePreview() {
     ruleOps.previewSeq++; ruleOps.preview=null;
     if (ruleNode('preview')) ruleNode('preview').hidden=true;
@@ -110,8 +119,8 @@ async function confirmRuleChange(){
         // Persist before dispatch. A storage failure must prevent the write.
         sessionStorage.setItem(rulePendingKey,JSON.stringify(request));ruleOps.pending=request;invalidateRulePreview();
         await sendRulePending();
-    }catch(_){Toast.err('无法保存操作恢复记录，未确认提交；请核对待处理操作。');}
-    finally{ruleOps.busy=false;renderRulePending();}
+    }catch(_){if(review.epoch===authGeneration)Toast.err('无法保存操作恢复记录，未确认提交；请核对待处理操作。');}
+    finally{if(review.epoch===authGeneration){ruleOps.busy=false;renderRulePending();}}
 }
 function finishRulePending(data,p){
     if(!data||data.operation_id!==p.operation_id||data.site!==p.site)throw new Error('operation mismatch');
@@ -138,8 +147,8 @@ async function resolveRulePending(resend){
     try{
         if(resend){if(!await Dialog.confirm({title:'重发同一操作',body:esc('站点 '+p.site+'，操作 ID '+p.operation_id+'。参数和代次保持原样；不会创建新的发布请求。')}))return;if(epoch!==authGeneration||ruleOps.pending!==p||currentModule!=='rules')return;await sendRulePending();}
         else{var resp=await apiFetch('/api/rules/operation?id='+encodeURIComponent(p.operation_id),{rawHTTPError:true});if(epoch!==authGeneration||ruleOps.pending!==p||!resp)return;if(resp.ok){var data=await resp.json();if(epoch===authGeneration&&ruleOps.pending===p)finishRulePending(data,p);}else{Toast.err(await responseError(resp));}}
-    }catch(_){Toast.err('结果仍未确认，已保留原操作 ID。');}
-    finally{ruleOps.busy=false;renderRulePending();}
+    }catch(_){if(epoch===authGeneration)Toast.err('结果仍未确认，已保留原操作 ID。');}
+    finally{if(epoch===authGeneration){ruleOps.busy=false;renderRulePending();}}
 }
 document.addEventListener('click',function(event){var b=event.target.closest('[data-rule-action]');if(!b||currentModule!=='rules'||b.disabled)return;
     var a=b.dataset.ruleAction;if(a==='inspect')inspectRule(b.dataset.id,b.dataset.version);else if(a==='proof')inspectRule('','',b.dataset.id);else if(a==='close-detail'){ruleOps.detailSeq++;ruleNode('detail').hidden=true;ruleNode('filter').focus();}else if(a==='confirm')confirmRuleChange();else if(a==='check')resolveRulePending(false);else if(a==='resend')resolveRulePending(true);

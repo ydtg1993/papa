@@ -25,7 +25,7 @@ function review(){form();const data={plan:plan(),stages:[],verification_ids:{lis
  // Cancel, changed form and changed authentication never dispatch a write.
  let writes=0;c.apiRequest=async()=>{writes++;return null;};review();c.Dialog.confirm=async()=>false;await c.confirmRuleChange();assert.equal(writes,0);
  review();c.Dialog.confirm=async()=>{node('rule-bindings').value='{}';return true;};await c.confirmRuleChange();assert.equal(writes,0);
- review();c.Dialog.confirm=async()=>{c.authGeneration++;return true;};await c.confirmRuleChange();assert.equal(writes,0);
+ review();c.Dialog.confirm=async()=>{c.authGeneration++;c.resetRulesSession();return true;};await c.confirmRuleChange();assert.equal(writes,0);
  review();c.Dialog.confirm=async()=>true;const originalSet=c.sessionStorage.setItem;c.sessionStorage.setItem=()=>{throw Error('denied');};await c.confirmRuleChange();assert.equal(writes,0);c.sessionStorage.setItem=originalSet;
  // Unknown outcome persists the exact operation before dispatch; double click
  // while confirmation is open cannot create a second operation.

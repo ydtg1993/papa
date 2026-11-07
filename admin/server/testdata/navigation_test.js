@@ -51,6 +51,7 @@ function setup() {
         apiFetch: (url, opts) => { const d = deferred(); requests.push({ url, opts, ...d }); return d.promise; },
         stopPolling() {}, startPolling() {}, handleTableUnauthorized() {}, loadSchedules() {}, loadRules() {}, loadQuality() {}, loadAgents() {} });
     ['extensions.js', 'navigation.js', 'mo.js'].forEach(name => vm.runInContext(source(name), c));
+    const native = { fetchSettings: c.fetchSettings, fetchTokens: c.fetchTokens, fetchObsReports: c.fetchObsReports };
     c.fetchSettings = () => calls.push(['settings']); c.fetchTokens = () => calls.push(['tokens']); c.fetchObsReports = () => calls.push(['obs']);
     let closeDialog;
     c.Dialog = { open(opts) {
@@ -58,7 +59,7 @@ function setup() {
         nodes['log-tail-text'] = new Element('pre'); nodes['log-tail-status'] = new Element('p');
         const d = deferred(); closeDialog = d.resolve; calls.push(['dialog', opts]); return d.promise;
     }, close() { if (closeDialog) closeDialog(); closeDialog = null; } };
-    return { c, nodes, node, calls, requests, lists, values, events, Element };
+    return { c, nodes, node, calls, requests, lists, values, events, Element, native };
 }
 
 (async () => {
@@ -96,6 +97,7 @@ function setup() {
     c.Papa.page('dirty', () => ({ beforeLeave: () => allow, destroy: () => destroys++ }));
     c.openPage('dirty', 'Unsaved');
     const title = nodes['moduleTitle'].textContent, current = c.currentSection;
+    assert.equal(c.switchSection(current), true); assert.equal(c.currentPage.key, 'dirty'); assert.equal(destroys, 0, 'same category click destroyed the active draft');
     c.setNavigationOpen(true); const priorFocus = c.document.activeElement;
     assert.equal(c.switchSection('system'), false); assert.equal(c.currentSection, current); assert.equal(nodes['moduleTitle'].textContent, title);
     assert.equal(nodes['nav-toggle'].getAttribute('aria-expanded'), 'true'); assert.equal(c.document.activeElement, priorFocus);
@@ -166,5 +168,65 @@ function setup() {
         identity.c.renderBell([{ site: 'new-site', paused: true, source: 'breaker' }]);
         assert.equal(identity.nodes.bell.classList.contains('pulse'), false, 'the first new-session snapshot must not compare alarms with the previous identity');
     }
-    console.log('PASS four-section production navigation, draft guards, safe dynamic entries, site scope and log lifecycle');
+    // A confirmation may already be resolved while its continuation has not run.
+    // It must never submit the old target using a replacement credential/view.
+    for (const action of ['remove', 'disable', 'shutdown']) {
+        for (const change of ['identity', 'navigation']) {
+            const old = setup(), confirmed = deferred(), writes = [];
+            old.c.currentModule = action === 'shutdown' ? 'settings' : 'tokens';
+            old.c.Dialog.confirm = () => confirmed.promise;
+            old.c.askShutdownToken = () => confirmed.promise;
+            old.c.apiPost = async (...args) => { writes.push(args); return { json: async () => ({}) }; };
+            old.c.Toast = { ok() {}, info() {}, err() {} };
+            old.node('shutdown-msg');
+            const pending = action === 'remove' ? old.c.removeToken(7) : action === 'disable' ? old.c.setTokenEnabled(7, false) : old.c.doShutdown();
+            confirmed.resolve(action === 'shutdown' ? 'old-secret' : true);
+            if (change === 'identity') old.c.saveKey('replacement'); else old.c.switchModule('dashboard');
+            await pending;
+            assert.equal(writes.length, 0, action + ' confirmation survived ' + change + ' change');
+        }
+    }
+    // A completed token creation under the previous identity must not disclose
+    // its one-time plaintext in the new identity's dialog.
+    for (const change of ['identity', 'navigation']) {
+        const old = setup(), confirmed = deferred(), response = deferred(), dialogs = [];
+        old.c.currentModule = 'tokens'; old.node('tk-operator').value = 'old-user'; old.node('tk-note').value = '';
+        old.c.Dialog.open = opts => { dialogs.push(opts); return confirmed.promise; };
+        old.c.apiPost = () => response.promise;
+        const pending = old.c.openNewToken(); confirmed.resolve('ok'); await tick();
+        if (change === 'identity') old.c.saveKey('replacement'); else old.c.switchModule('dashboard');
+        response.resolve({ json: async () => ({ token: 'old-plaintext-secret' }) }); await pending;
+        assert.equal(dialogs.length, 1, 'old token plaintext disclosed after ' + change + ' change');
+    }
+    // Logging in as another identity clears both visible and hidden native data.
+    const privateState = setup();
+    const privateNodes = ['token-table', 'wl-input', 'wl-file-info', 'wl-msg', 'shutdown-msg', 'obs-dir', 'obs-runs', 'obs-msg', 'obs-tabs', 'obs-meta', 'obs-content'];
+    privateNodes.forEach(id => { privateState.node(id).innerHTML = 'old-private-value'; privateState.nodes[id].value = 'old-private-value'; });
+    privateState.node('obs-viewer-sec').hidden = false;
+    privateState.c.obsState.runs = [{ name: 'old-run' }]; privateState.c.obsState.run = 'old-run'; privateState.c.obsState.file = 'report.md';
+    privateState.c.saveKey('replacement');
+    privateNodes.forEach(id => assert.doesNotMatch(privateState.nodes[id].innerHTML, /old-private-value/, 'identity reset retained ' + id));
+    assert.equal(privateState.nodes['wl-input'].value, ''); assert.equal(privateState.nodes['obs-viewer-sec'].hidden, true);
+    assert.equal(privateState.c.obsState.runs.length, 0); assert.equal(privateState.c.obsState.run, '');
+
+    // Native readers require latest request, view and identity through body completion.
+    for (const kind of ['tokens', 'settings', 'obs']) {
+        const race = setup(); race.c.currentModule = kind;
+        ['token-table', 'wl-input', 'wl-file-info', 'obs-runs', 'obs-dir', 'obs-content', 'obs-msg'].forEach(race.node);
+        const fetcher = race.native[kind === 'tokens' ? 'fetchTokens' : kind === 'settings' ? 'fetchSettings' : 'fetchObsReports'];
+        const data = marker => kind === 'tokens' ? { tokens: [{ id: 1, operator: marker }] } : kind === 'settings' ? { whitelist: [marker] } : { report_dir: marker, runs: [] };
+        const target = kind === 'tokens' ? 'token-table' : kind === 'settings' ? 'wl-input' : 'obs-dir';
+        const read = () => kind === 'settings' ? race.nodes[target].value : race.nodes[target].innerHTML;
+        const first = fetcher(), second = fetcher();
+        race.requests[1].resolve({ json: async () => data('newest') }); await second;
+        race.requests[0].resolve({ json: async () => data('old-value') }); await first;
+        assert.match(read(), /newest/); assert.doesNotMatch(read(), /old-value/, kind + ' list accepted stale request');
+        const body = deferred(), pending = fetcher(); race.requests[2].resolve({ json: () => body.promise }); await tick();
+        race.c.saveKey('replacement'); body.resolve(data('old-identity')); await pending;
+        assert.doesNotMatch(read(), /old-identity/, kind + ' reader accepted old identity body');
+        const oldView = deferred(), detached = fetcher(); race.requests[3].resolve({ json: () => oldView.promise }); await tick();
+        race.c.switchModule('dashboard'); race.c.switchModule(kind); oldView.resolve(data('old-visit')); await detached;
+        assert.doesNotMatch(read(), /old-visit/, kind + ' reader accepted a response from its previous visit');
+    }
+    console.log('PASS four-section production navigation, draft guards, native session/view isolation, site scope and log lifecycle');
 })().catch(error => { console.error(error); process.exitCode = 1; });

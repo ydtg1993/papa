@@ -2,6 +2,15 @@
 var qualityView = {seq:0, detailSeq:0, items:[], next:'', cutoff:'', filter:null, report:null, observation:null};
 function qualityNode(id) { return document.getElementById('quality-'+id); }
 function invalidateQuality() { qualityView.seq++; qualityView.detailSeq++; }
+function resetQualitySession() {
+    invalidateQuality();
+    Object.assign(qualityView, {items:[], next:'', cutoff:'', filter:null, report:null, observation:null});
+    ['list','detail'].forEach(function(id){var el=qualityNode(id);if(el)el.innerHTML='';});
+    ['stage','rule','version','from','until'].forEach(function(id){var el=qualityNode(id);if(el)el.value='';});
+    var mode=qualityNode('mode');if(mode)mode.value='observations';
+    var next=qualityNode('next');if(next)next.disabled=true;
+    if(typeof resetQualityWriteSession==='function')resetQualityWriteSession();
+}
 function editQuality() {
     invalidateQuality(); qualityView.items=[]; qualityView.report=null; qualityView.observation=null; qualityView.filter=null;
     qualityNode('list').textContent='筛选已更改，请查询。'; qualityNode('detail').innerHTML=''; qualityNode('next').disabled=true;

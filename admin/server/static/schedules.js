@@ -3,6 +3,15 @@
 var scheduleView = { listSeq: 0, detailSeq: 0, after: '0', history: [], next: '0', id: '', memberAfter: '0', memberHistory: [], data: null, items: [], busy: false };
 var scheduleStatusNames = ['待处理', '处理中', '成功', '失败'];
 function invalidateSchedules() { scheduleView.listSeq++; scheduleView.detailSeq++; }
+function resetSchedulesSession() {
+    invalidateSchedules();
+    Object.assign(scheduleView, { after:'0', history:[], next:'0', id:'', memberAfter:'0', memberHistory:[], data:null, items:[], busy:false });
+    ['schedule-list','schedule-detail-body'].forEach(function(id){var el=document.getElementById(id);if(el)el.innerHTML='';});
+    ['schedule-list-next','schedule-list-prev','schedule-member-next','schedule-member-prev'].forEach(function(id){var el=document.getElementById(id);if(el)el.disabled=true;});
+    var detail=document.getElementById('schedule-detail');if(detail)detail.hidden=true;
+    var scope=document.getElementById('schedule-scope');if(scope)scope.textContent='全部站点';
+    var failed=document.getElementById('schedule-failed');if(failed)failed.checked=false;
+}
 function scheduleTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未排期'; }
 function scheduleStatus(value) { return scheduleStatusNames[value] || '未知'; }
 function scheduleButton(label, action, id, disabled) {
@@ -126,13 +135,15 @@ async function scheduleTaskAction(action, id) {
         }
         if (epoch !== authGeneration || currentModule !== 'schedules' || scheduleView.data !== snapshot) return;
         var resp = await apiPost('/api/oao/task/action/' + action, { id: String(id), row: { reprocess: row.reprocess }, values: {} });
-        if (resp && action !== 'trace') {
+        if (resp && epoch === authGeneration && action !== 'trace') {
             Toast.ok('任务 #' + id + ' 操作已受理');
             if (currentModule === 'schedules' && scheduleView.id === viewID) refreshScheduleDetail();
         }
     } finally {
-        scheduleView.busy = false;
-        if (currentModule === 'schedules' && scheduleView.data) renderScheduleDetail(document.getElementById('schedule-detail-body'), scheduleView.data);
+        if (epoch === authGeneration) {
+            scheduleView.busy = false;
+            if (currentModule === 'schedules' && scheduleView.data) renderScheduleDetail(document.getElementById('schedule-detail-body'), scheduleView.data);
+        }
         // Rendering replaces the original button; restore keyboard focus only
         // if the user is still here and no newer dialog/input has taken focus.
         if (epoch === authGeneration && currentModule === 'schedules' && scheduleView.id === viewID && document.activeElement === document.body) {

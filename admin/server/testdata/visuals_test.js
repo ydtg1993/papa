@@ -61,7 +61,8 @@ toggle('workbench-analysis',false);toggle('workbench-analysis',true);toggle('wor
 c.document.hidden=true;documentEvents.visibilitychange();c.document.hidden=false;documentEvents.visibilitychange();count(0);
 c.currentModule='dashboard';c.renderMonitorVisuals(fresh);count(6);assert.match(nodes['visual-observation-meta'].textContent,/连接异常/);
 windowEvents.pagehide();count(0);const hiddenCreated=created;toggle('workbench-resources',true);assert.equal(created,hiddenCreated,'pagehide was undone by a queued toggle');
-c.renderMonitorVisuals(fresh);count(6);
+c.renderMonitorVisuals(fresh);c.setMonitorVisualConnection(false);count(0);
+c.resumeMonitorVisuals();count(6);
 c.resetMonitorObservations();count(0);assert.equal(c.MonitorObservations.size(),0);assert.equal(animated.size,0);
 for(const key of ['cpu','mem','disk']){assert.equal(nodes['visual-'+key+'-value'].textContent,'—');assert.equal(nodes['visual-'+key+'-stamp'].textContent,'尚无成功采样');}
 assert.equal(c.monitorVisuals.data,null);assert.equal(nodes['visual-observation-meta'].textContent,'等待新的监控快照');

@@ -1,6 +1,6 @@
 /* Shared native API handling and monitor polling. Loaded before mo.js. */
 'use strict';
-var monitorPoll = { seq: 0, timer: null, controller: null, enabled: false, delay: 3000 };
+var monitorPoll = { seq: 0, timer: null, controller: null, enabled: false, delay: 3000, suspended: false };
 
 function stopPolling() {
     monitorPoll.enabled = false;
@@ -81,7 +81,7 @@ function apiPost(url, body) {
 
 async function fetchData() {
     clearTimeout(monitorPoll.timer);
-    if (document.hidden) return;
+    if (document.hidden || monitorPoll.suspended) return;
     var seq = ++monitorPoll.seq, epoch = authGeneration, key = loadKey();
     if (monitorPoll.controller) monitorPoll.controller.abort();
     var controller = new AbortController();
@@ -121,6 +121,7 @@ async function fetchData() {
 function startPolling() {
     monitorPoll.enabled = true;
     monitorPoll.delay = 3000;
+    if (monitorPoll.suspended) return;
     fetchData();
     renderNav();
 }
@@ -131,3 +132,20 @@ document.addEventListener('visibilitychange', function () {
         if (monitorPoll.controller) monitorPoll.controller.abort();
     } else if (monitorPoll.enabled) fetchData();
 });
+if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', function () {
+        monitorPoll.suspended = true;
+        monitorPoll.seq++;
+        clearTimeout(monitorPoll.timer);
+        if (monitorPoll.controller) monitorPoll.controller.abort();
+    });
+    window.addEventListener('pageshow', function () {
+        if (!monitorPoll.suspended) return;
+        monitorPoll.suspended = false;
+        // A frozen BFCache document may not receive another tab's storage event.
+        // Clear the old identity before any cached chart can become visible.
+        var changed = typeof syncMonitorCredential === 'function' && syncMonitorCredential();
+        if (typeof resumeMonitorVisuals === 'function') resumeMonitorVisuals();
+        if (!changed && monitorPoll.enabled) startPolling();
+    });
+}

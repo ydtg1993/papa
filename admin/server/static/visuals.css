@@ -22,5 +22,8 @@ html[data-oao-motion="reduced"] *, html[data-oao-motion="reduced"] *::before, ht
 html[data-oao-motion="reduced"] :is(.nav-item,.theme-toggle,.site-tab,.card,.tile,.btn,.pager .pg,.bell):is(:hover,:active) { transform:none !important; }
 @media(prefers-reduced-motion:reduce) { *, *::before, *::after {animation:none !important;transition:none !important;scroll-behavior:auto !important;} }
 @media(prefers-reduced-motion:reduce) { :is(.nav-item,.theme-toggle,.site-tab,.card,.tile,.btn,.pager .pg,.bell):is(:hover,:active) { transform:none !important; } }
+/* New category controls and body-mounted oao buttons obey the same motion preference. */
+html[data-oao-motion="reduced"] :is(.nav-category,.oao-btn):is(:hover,:active) { transform:none !important; }
+@media(prefers-reduced-motion:reduce) { :is(.nav-category,.oao-btn):is(:hover,:active) { transform:none !important; } }
 @media(max-width:1100px) { .visual-resources { gap:12px; } .visual-panel { padding:14px; } }
 @media(max-width:700px) { .visual-grid,.visual-resources {grid-template-columns:minmax(0,1fr);} .visual-heading {gap:10px;flex-wrap:wrap;} }

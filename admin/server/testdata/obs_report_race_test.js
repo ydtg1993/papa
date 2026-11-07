@@ -20,6 +20,7 @@ function setup() {
     const requests = [];
     const context = vm.createContext({
         encodeURIComponent,
+        captureMonitorView: () => () => true,
         document: { getElementById: () => pre },
         apiFetch(url) { const request = deferred(); request.url = url; requests.push(request); return request.promise; },
     });

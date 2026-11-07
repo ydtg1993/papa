@@ -1,6 +1,6 @@
 /* Dashboard chart assembly; all data comes from accepted monitor snapshots. */
 'use strict';
-var monitorVisuals = { instances: new Map(), data: null, failed: false, active: false, disclosures: new WeakSet() };
+var monitorVisuals = { instances: new Map(), data: null, failed: false, active: false, suspended: false, disclosures: new WeakSet() };
 var monitorAnalysisCharts = ['visual-stage-bars', 'visual-results'];
 var monitorResourceCharts = ['visual-cpu', 'visual-mem', 'visual-disk'];
 function monitorChartsAvailable() { return typeof Oao !== 'undefined' && Oao.charts && typeof Oao.charts.create === 'function'; }
@@ -21,6 +21,13 @@ function destroyMonitorVisuals() {
     monitorVisuals.active = false;
     destroyMonitorChartGroup(Array.from(monitorVisuals.instances.keys()));
     cancelMonitorResourceMotion();
+    if (typeof cancelWorkbenchMotion === 'function') cancelWorkbenchMotion();
+}
+function resumeMonitorVisuals() {
+    // The polling owner checks the stored credential before calling this on
+    // pageshow. A reset during that check has already cleared the old data.
+    monitorVisuals.suspended = false;
+    if (monitorVisuals.data) renderMonitorVisuals(monitorVisuals.data);
 }
 function monitorDisclosureOpen(id) {
     var el = document.getElementById(id);
@@ -64,6 +71,7 @@ function showMonitorChart(id, options) {
     else monitorVisuals.instances.set(id, Oao.charts.create(el, options));
 }
 function renderMonitorVisuals(data) {
+    if (monitorVisuals.suspended) return;
     bindMonitorDisclosures();
     if (typeof currentModule !== 'undefined' && currentModule !== 'dashboard') { destroyMonitorVisuals(); return; }
     monitorVisuals.active = true;
@@ -123,7 +131,7 @@ function renderMonitorResources(data) {
             series:[{key:key,label:'使用率',points:MonitorObservations.resourceTrend(key)}],emptyText:'等待可用资源采样'});
     });
 }
-window.addEventListener('pagehide',destroyMonitorVisuals);
+window.addEventListener('pagehide', function () { monitorVisuals.suspended = true; destroyMonitorVisuals(); });
 document.addEventListener('visibilitychange', function () {
     if (document.hidden) cancelMonitorResourceMotion();
     else if (monitorVisuals.active && (typeof currentModule === 'undefined' || currentModule === 'dashboard')) renderMonitorVisuals(monitorVisuals.data);

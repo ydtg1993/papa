@@ -36,6 +36,21 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
     localStorage.removeItem('papa_monitor_key');events.storage({key:null,storageArea:localStorage});
     assert.equal(c.MonitorObservations.size(),0);assert.equal(c.monitorPoll.enabled,false);assert.equal(c.lastData,null);
     assert.equal(c.workbenchConnection.updatedAt,null,'old freshness survived identity reset');
+    // BFCache restoration must discover a missed cross-tab storage event before
+    // allowing the chart layer to display its cached identity snapshot.
+    for (const nextKey of ['restored-session', '']) {
+        c.saveKey('before-freeze'); c.lastData=data; c.MonitorObservations.accept(data); c.startPolling();
+        const oldRequest=requests.at(-1);events.pagehide({persisted:true});
+        if(nextKey)localStorage.setItem('papa_monitor_key',nextKey);else localStorage.removeItem('papa_monitor_key');
+        const count=requests.length;let resumes=0;
+        c.resumeMonitorVisuals=()=>{resumes++;assert.equal(c.lastData,null,'old snapshot visible before credential reconciliation');assert.equal(c.MonitorObservations.size(),0);};
+        events.pageshow({persisted:true});assert.equal(resumes,1);
+        assert.equal(oldRequest.opts.signal.aborted,true);oldRequest.resolve({status:401});await tick();
+        assert.equal(c.loadKey(),nextKey);assert.equal(requests.length,count+(nextKey?1:0));
+        if(nextKey){assert.equal(requests.at(-1).opts.headers.Authorization,'Bearer '+nextKey);requests.at(-1).resolve({ok:true,status:200,json:async()=>data});await tick();}
+        else assert.equal(c.monitorPoll.enabled,false);
+        c.stopPolling();
+    }
     // Old oao has no destroy API or stale response guard. Its pending render
     // may finish, but only against a detached node. A stale wrapper rejection
     // must not replace the next table in either dependency version.

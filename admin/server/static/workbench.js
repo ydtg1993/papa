@@ -88,12 +88,22 @@ function replaceWorkbenchHTML(el, html) {
     if (!el || workbenchHTML.get(el) === html) return false;
     var focused = el.contains(document.activeElement) ? document.activeElement : null;
     var target = focused && focused.dataset ? { action: focused.dataset.workbenchAction, site: focused.dataset.site, key: focused.dataset.workbenchKey } : null;
+    var scroll = Array.from(el.querySelectorAll('.workbench-scroll')).map(function (region) { return { left: region.scrollLeft, top: region.scrollTop }; });
+    // Replaced KPI nodes must retire their animations before leaving the DOM.
+    if (typeof Oao !== 'undefined' && Oao.motion && typeof Oao.motion.cancel === 'function') el.querySelectorAll('strong').forEach(function (value) { Oao.motion.cancel(value); });
     el.innerHTML = html;
     workbenchHTML.set(el, html);
+    el.querySelectorAll('.workbench-scroll').forEach(function (region, index) {
+        if (scroll[index]) { region.scrollLeft = scroll[index].left; region.scrollTop = scroll[index].top; }
+    });
     if (target && target.action) el.querySelectorAll('[data-workbench-action]').forEach(function (button) {
-        if (button.dataset.workbenchAction === target.action && button.dataset.site === target.site && button.dataset.workbenchKey === target.key) button.focus();
+        if (button.dataset.workbenchAction === target.action && button.dataset.site === target.site && button.dataset.workbenchKey === target.key) button.focus({ preventScroll: true });
     });
     return true;
+}
+function cancelWorkbenchMotion() {
+    var root = document.getElementById('workbench-kpis');
+    if (root && typeof Oao !== 'undefined' && Oao.motion && typeof Oao.motion.cancel === 'function') root.querySelectorAll('strong').forEach(function (el) { Oao.motion.cancel(el); });
 }
 function workbenchButton(label, action, site, key) {
     return '<button type="button" class="btn" data-workbench-action="' + action + '" data-workbench-key="' + esc(key || action) + '"' + (site === null ? '' : ' data-site="' + esc(site) + '"') + '>' + label + '</button>';
@@ -150,7 +160,8 @@ function renderWorkbench(data) {
     var kpiChanged = replaceWorkbenchHTML(kpiRoot, cards.map(function (card) {
         return '<div class="workbench-kpi"><span>' + card[0] + '</span><strong>' + workbenchNumber(card[1]) + '</strong><small>' + card[2] + '</small></div>';
     }).join(''));
-    if (kpiChanged && typeof Oao !== 'undefined' && Oao.motion) kpiRoot.querySelectorAll('strong').forEach(function (el,index) {
+    var canAnimate = currentModule === 'dashboard' && !document.hidden && (typeof monitorVisuals === 'undefined' || !monitorVisuals.suspended);
+    if (kpiChanged && canAnimate && typeof Oao !== 'undefined' && Oao.motion && typeof Oao.motion.animate === 'function') kpiRoot.querySelectorAll('strong').forEach(function (el,index) {
         if (workbenchKPIValues[index] !== cards[index][1]) Oao.motion.animate(el);
     });
     workbenchKPIValues = cards.map(function (card) { return card[1]; });

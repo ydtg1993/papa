@@ -8,14 +8,19 @@
 
 /* ============ 主题切换 ============ */
     var themeKey = 'papa-theme';
-    function getTheme() { try { return localStorage.getItem(themeKey) || 'light'; } catch (_) { return document.documentElement.getAttribute('data-theme') || 'light'; } }
-    function setTheme(t) {
+    function getTheme() { return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
+    function setTheme(t, persist) {
+        t = t === 'dark' ? 'dark' : 'light';
         document.documentElement.setAttribute('data-theme', t);
-        try { localStorage.setItem(themeKey, t); } catch (_) { /* Display remains usable without storage. */ }
+        if (persist !== false) {
+            if (typeof MonitorAppearance !== 'undefined') MonitorAppearance.persistTheme(t);
+            else { try { localStorage.setItem(themeKey, t); } catch (_) { /* Display remains usable without storage. */ } }
+        }
         var btn = document.getElementById('theme-toggle');
         if (btn) btn.textContent = t === 'dark' ? '☀ 浅色' : '☾ 深色';
+        if (typeof MonitorAppearance !== 'undefined') MonitorAppearance.refresh();
     }
-    setTheme(getTheme());
+    setTheme(getTheme(), false);
     var themeBtn = document.getElementById('theme-toggle');
     if (themeBtn) themeBtn.addEventListener('click', function () {
         setTheme(getTheme() === 'dark' ? 'light' : 'dark');
@@ -27,8 +32,15 @@
     var MODULE_TITLES = { dashboard: '运行概览', queues: '异常处理', schedules: '周期批次', rules: '规则与发布', quality: '运行质量', agents: 'Agent 候选', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: '运行报告', logs: '运行日志', settings: '系统设置', section: '数据与资源' };
     var currentModule = 'dashboard';
 
-    function loadKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
-    var credentialSeen = loadKey(), tableViewEpoch = 0;
+    function loadKey() {
+        try { return localStorage.getItem(KEY_STORAGE) || ''; }
+        catch (_) { return ''; } // Unavailable storage never supplies a credential.
+    }
+    var credentialSeen = loadKey(), tableViewEpoch = 0, monitorViewEpoch = 0;
+    function captureMonitorView() {
+        var view = monitorViewEpoch, identity = authGeneration, key = loadKey(), module = currentModule;
+        return function () { return view === monitorViewEpoch && identity === authGeneration && key === loadKey() && module === currentModule; };
+    }
     var legacyTableAdapter = false;
     var LEGACY_TABLE_NOTICE = '当前表格组件版本较旧，仅支持查询；升级 oao 后可使用表格操作';
     function installLegacyTableAdapter() {
@@ -94,10 +106,15 @@
         }
     }
     function resetMonitorSessionState() {
-        authGeneration++; stopPolling(); lastData = null; currentSite = null;
+        authGeneration++; monitorViewEpoch++; stopPolling(); lastData = null; currentSite = null;
+        if (typeof Dialog !== 'undefined' && typeof Dialog.reset === 'function') Dialog.reset();
         if (typeof invalidateLogs === 'function') invalidateLogs();
         if (typeof resetMonitorNavigation === 'function') resetMonitorNavigation();
         if (typeof resetMonitorObservations === 'function') resetMonitorObservations();
+        if (typeof resetSchedulesSession === 'function') resetSchedulesSession();
+        if (typeof resetRulesSession === 'function') resetRulesSession();
+        if (typeof resetQualitySession === 'function') resetQualitySession();
+        if (typeof resetAgentsSession === 'function') resetAgentsSession();
         retireTableView();
         if (typeof Papa !== 'undefined') Papa.leave(true);
         if (typeof workbenchConnection !== 'undefined') workbenchConnection = { updatedAt: null, failed: false, message: '' };
@@ -117,16 +134,26 @@
         if (bell) { bell.setAttribute('aria-expanded', 'false'); bell.classList.remove('pulse'); }
         if (badge) { badge.textContent = '0'; badge.hidden = true; badge.className = 'bell-badge'; }
         if (panel) { panel.innerHTML = ''; panel.hidden = true; }
+        ['token-table','wl-file-info','wl-msg','shutdown-msg','obs-dir','obs-runs','obs-msg','obs-tabs','obs-meta','obs-content'].forEach(function (id) {
+            var el = document.getElementById(id); if (el) el.textContent = '';
+        });
+        var whitelist = document.getElementById('wl-input'); if (whitelist) { whitelist.value = ''; whitelist.textContent = ''; }
+        var viewer = document.getElementById('obs-viewer-sec'); if (viewer) viewer.hidden = true;
+        if (typeof obsState !== 'undefined') obsState = { dir: '', runs: [], run: '', file: '', requestSeq: obsState.requestSeq + 1 };
     }
     function saveKey(k) { resetMonitorSessionState(); localStorage.setItem(KEY_STORAGE, k); credentialSeen = k; }
     function clearKey() { resetMonitorSessionState(); localStorage.removeItem(KEY_STORAGE); credentialSeen = ''; }
-    window.addEventListener('storage', function (event) {
-        if ((event.key !== KEY_STORAGE && event.key !== null) || event.storageArea !== localStorage) return;
+    function syncMonitorCredential() {
         var key = loadKey();
-        if (key === credentialSeen) return;
+        if (key === credentialSeen) return false;
         resetMonitorSessionState(); credentialSeen = key; pendingLoginRefresh = true;
         if (key || !authRequired()) startPolling();
         else { setStatus(false, '需要密钥'); showLogin(false); }
+        return true;
+    }
+    window.addEventListener('storage', function (event) {
+        if ((event.key !== KEY_STORAGE && event.key !== null) || event.storageArea !== localStorage) return;
+        syncMonitorCredential();
     });
     // 服务端在 <html data-auth-required> 上下发「当前是否设了访问令牌」。
     // 一条都没设时后端本来就把 /api/* 当开放，前端不要弹登录（否则本地开发每次刷新闪一下）。
@@ -169,6 +196,8 @@
         var target = document.getElementById('mod-' + name);
         if (!target) return false;
         if (typeof Papa !== 'undefined' && !Papa.leave(false)) return false;
+        monitorViewEpoch++;
+        if (typeof Dialog !== 'undefined' && typeof Dialog.reset === 'function') Dialog.reset();
         if (typeof destroyMonitorVisuals === 'function') destroyMonitorVisuals();
         if (currentModule === 'tables') retireTableView();
         setNavigationOpen(false);
@@ -407,7 +436,12 @@
                     ]
                 }).then(function (v) { return v === true; });
             },
-            close: function () { close(null); }
+            close: function () { close(null); },
+            reset: function () {
+                close(null);
+                if (!mask) return;
+                elTitle.textContent = ''; elBody.innerHTML = ''; elActions.innerHTML = '';
+            }
         };
     })();
 
@@ -990,18 +1024,25 @@
     // API 与监控轮询由 requests.js 提供。
 
     /* ============ 设置 ============ */
+    var settingsRequestSeq = 0, tokenRequestSeq = 0, obsListSeq = 0;
     async function fetchSettings() {
-        var resp = await apiFetch('/api/settings');
-        if (!resp) return;
-        var data = await resp.json();
+        var seq = ++settingsRequestSeq, viewCurrent = captureMonitorView();
+        var current = function () { return seq === settingsRequestSeq && viewCurrent(); };
+        var resp = await apiFetch('/api/settings', { current: current });
+        if (!resp || !current()) return;
+        var data;
+        try { data = await resp.json(); } catch (_) { if (current()) Toast.err('设置响应格式无效，请刷新重试'); return; }
+        if (!current()) return;
         document.getElementById('wl-input').value = (data.whitelist || []).join('\n');
         document.getElementById('wl-file-info').textContent = data.whitelist_source
             ? ('持久化在 ' + data.whitelist_source)
             : '这个宿主没接配置存储：改动仅本次运行有效';
     }
     async function saveWhitelist() {
+        var current = captureMonitorView();
         var lines = document.getElementById('wl-input').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
         var resp = await apiPost('/api/settings/whitelist', { whitelist: lines });
+        if (!current()) return;
         document.getElementById('wl-msg').textContent = resp && resp.ok ? '已保存' : '';
         if (resp && resp.ok) Toast.ok('白名单已保存');
     }
@@ -1013,10 +1054,15 @@
     async function fetchTokens() {
         var el = document.getElementById('token-table');
         if (!el) return;
+        var seq = ++tokenRequestSeq, viewCurrent = captureMonitorView();
+        var current = function () { return seq === tokenRequestSeq && viewCurrent(); };
         el.innerHTML = '<table><tbody>' + skeletonRows(7, 3) + '</tbody></table>';
-        var resp = await apiFetch('/api/tokens');
+        var resp = await apiFetch('/api/tokens', { current: current });
+        if (!current()) return;
         if (!resp) { el.innerHTML = '<div class="empty">读取失败，请稍后重试</div>'; return; }
-        var data = await resp.json();
+        var data;
+        try { data = await resp.json(); } catch (_) { if (current()) el.innerHTML = '<div class="empty">令牌响应格式无效，请刷新重试</div>'; return; }
+        if (!current()) return;
         renderTokens(data.tokens || []);
     }
 
@@ -1068,6 +1114,7 @@
 
     /** 新增：表单 → 服务端生成 → 弹窗把明文显示一次 */
     async function openNewToken() {
+        var current = captureMonitorView();
         var p = Dialog.open({
             title: '新增访问令牌',
             body: '<div class="field"><label for="tk-operator">操作人</label>'
@@ -1094,9 +1141,9 @@
         var operator = document.getElementById('tk-operator');
         var note = document.getElementById('tk-note');
 
-        if (await p !== 'ok') return;
-        var data = await tokenWrite('/api/tokens', { operator: operator.value, note: note.value });
-        if (!data || !data.token) return;
+        if (await p !== 'ok' || !current()) return;
+        var data = await tokenWrite('/api/tokens', { operator: operator.value, note: note.value }, current);
+        if (!data || !data.token || !current()) return;
 
         var token = data.token;
         await Dialog.open({
@@ -1109,10 +1156,11 @@
                 { label: '我已存好', value: null }
             ]
         });
-        fetchTokens();
+        if (current()) fetchTokens();
     }
 
     async function setTokenEnabled(id, enabled) {
+        var current = captureMonitorView();
         if (!enabled) {
             var ok = await Dialog.confirm({
                 title: '停用访问令牌',
@@ -1121,31 +1169,34 @@
                     + '那种情况只能用 <code>papa token add</code> 救回来。</p>',
                 danger: true, okLabel: '停用'
             });
-            if (!ok) return;
+            if (!ok || !current()) return;
         }
-        if (!await tokenWrite('/api/tokens/enabled', { id: id, enabled: enabled })) return;
+        if (!await tokenWrite('/api/tokens/enabled', { id: id, enabled: enabled }, current) || !current()) return;
         Toast.ok(enabled ? '已启用' : '已停用');
         fetchTokens();
     }
 
     async function removeToken(id) {
+        var current = captureMonitorView();
         var ok = await Dialog.confirm({
             title: '删除访问令牌',
             body: '<p>删除后无法恢复（这条令牌与它的哈希一起删掉）。</p><p>只是暂时不用的话，改用「停用」。</p>',
             danger: true, okLabel: '删除'
         });
-        if (!ok) return;
-        if (!await tokenWrite('/api/tokens/remove', { id: id })) return;
+        if (!ok || !current()) return;
+        if (!await tokenWrite('/api/tokens/remove', { id: id }, current) || !current()) return;
         Toast.ok('已删除');
         fetchTokens();
     }
 
     /** 令牌写入复用正文超时、认证代次和服务端错误提示。 */
-    async function tokenWrite(url, body) {
+    async function tokenWrite(url, body, current) {
+        current = current || captureMonitorView();
+        if (!current()) return null;
         var resp = await apiPost(url, body);
-        if (!resp) return null;
-        try { return await resp.json(); }
-        catch (e) { Toast.err('响应读取失败，操作结果尚未确认，请刷新后查看'); return null; }
+        if (!resp || !current()) return null;
+        try { var data = await resp.json(); return current() ? data : null; }
+        catch (e) { if (current()) Toast.err('响应读取失败，操作结果尚未确认，请刷新后查看'); return null; }
     }
 
     /** 复制到剪贴板；明文令牌是长串随机字符，靠手抄容易错一位 */
@@ -1195,11 +1246,13 @@
     }
 
     async function doShutdown() {
+        var current = captureMonitorView();
         var token = await askShutdownToken();
-        if (!token) return;
+        if (!token || !current()) return;
 
         document.getElementById('shutdown-msg').textContent = '正在关闭...';
         var resp = await apiPost('/api/settings/shutdown', { token: token });
+        if (!current()) return;
         document.getElementById('shutdown-msg').textContent = resp ? '已触发优雅退出' : '请求未确认，请查看提示';
         if (resp) Toast.info('已触发优雅退出');
     }
@@ -1328,12 +1381,17 @@
     async function fetchObsReports() {
         var el = document.getElementById('obs-runs');
         if (!el) return;
+        var seq = ++obsListSeq, viewCurrent = captureMonitorView();
+        var current = function () { return seq === obsListSeq && viewCurrent(); };
         el.innerHTML = '<table><tbody>' + skeletonRows(5, 3) + '</tbody></table>';
         var msg = document.getElementById('obs-msg');
         if (msg) msg.textContent = '';
-        var resp = await apiFetch('/api/obs/reports');
+        var resp = await apiFetch('/api/obs/reports', { current: current });
+        if (!current()) return;
         if (!resp) { el.innerHTML = '<div class="empty">读取失败，请稍后重试</div>'; return; }
-        renderObsReports(await resp.json());
+        var data;
+        try { data = await resp.json(); } catch (_) { if (current()) el.innerHTML = '<div class="empty">报告列表格式无效，请刷新重试</div>'; return; }
+        if (current()) renderObsReports(data);
     }
 
     function renderObsReports(data) {
@@ -1402,6 +1460,8 @@
     async function loadObsReport() {
         // 每次选择都作废旧请求，包括没有产物的报告。
         var seq = ++obsState.requestSeq;
+        var viewCurrent = captureMonitorView();
+        var current = function () { return seq === obsState.requestSeq && viewCurrent(); };
         var pre = document.getElementById('obs-content');
         if (!pre) return;
         if (!obsState.run || !obsState.file) { pre.textContent = '这份报告没有可看的产物'; return; }
@@ -1409,23 +1469,24 @@
         var url = '/api/obs/report?run=' + encodeURIComponent(obsState.run)
             + '&file=' + encodeURIComponent(obsState.file);
         try {
-            var resp = await apiFetch(url);
-            if (seq !== obsState.requestSeq) return;
+            var resp = await apiFetch(url, { current: current });
+            if (!current()) return;
             if (!resp) { pre.textContent = '读取失败（报告可能已被清理）'; return; }
             var content = await resp.text();
             // 响应头先到不代表正文已经读完，读取正文期间也可能切换。
-            if (seq !== obsState.requestSeq) return;
+            if (!current()) return;
             pre.textContent = content;
         } catch (_) {
-            if (seq === obsState.requestSeq) pre.textContent = '读取失败（报告可能已被清理）';
+            if (current()) pre.textContent = '读取失败（报告可能已被清理）';
         }
     }
 
     async function downloadObsReport() {
         if (!obsState.run || !obsState.file) return;
+        var current = captureMonitorView(), seq = obsState.requestSeq;
         var url = '/api/obs/report?run=' + encodeURIComponent(obsState.run)
             + '&file=' + encodeURIComponent(obsState.file) + '&download=1';
-        await downloadFile(url);
+        await downloadFile(url, function () { return current() && seq === obsState.requestSeq; });
     }
 
     /* ============ 启动 ============ */

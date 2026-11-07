@@ -10,6 +10,7 @@ function setup() {
         authGeneration:0, loadKey:()=>key,
         setTimeout:(fn,ms)=>{ timers.set(++timerID,{fn,ms}); return timerID; }, clearTimeout:id=>timers.delete(id),
         document:{hidden:false,addEventListener:(n,fn)=>events[n]=fn,getElementById:()=>({textContent:''})},
+        window:{addEventListener:(n,fn)=>events[n]=fn},
         fetch:(url,opts)=>{ const d=deferred(); requests.push({...d,url,opts}); return d.promise; },
         acceptMonitorObservation:data=>observations.push(data),renderAll:data=>rendered.push(data), hideLogin:()=>messages.push('hide'), showLogin:()=>messages.push('login'),
         setStatus:(ok,text)=>messages.push(text), Toast:{err:text=>messages.push(text)}, renderNav:()=>{},
@@ -19,6 +20,18 @@ function setup() {
     return {c,requests,rendered,observations,messages,timers,events,login:()=>{key='new';c.authGeneration++;}};
 }
 (async()=>{
+    // BFCache freeze can miss storage events. Retire all polling on pagehide,
+    // reconcile the credential before restoring visuals, then resume once.
+    {const s=setup(),order=[];s.c.startPolling();const first=s.requests[0];
+     assert.equal(typeof s.events.pagehide,'function','pagehide must retire monitor polling');
+     s.events.pagehide({persisted:true});assert.equal(first.opts.signal.aborted,true);
+     first.resolve(response('old'));await flush();assert.equal(s.rendered.length,0);assert.equal(s.observations.length,0);
+     const count=s.requests.length;await s.c.fetchData();assert.equal(s.requests.length,count,'hidden page restarted polling');
+     s.c.syncMonitorCredential=()=>{order.push('credential');s.login();s.c.startPolling();return true;};
+     s.c.resumeMonitorVisuals=()=>order.push('visuals');s.events.pageshow({persisted:true});
+     assert.deepEqual(order,['credential','visuals']);assert.equal(s.requests.length,count+1,'restore duplicated monitor polling');
+     assert.equal(s.requests.at(-1).opts.headers.Authorization,'Bearer new');s.requests.at(-1).resolve(response('restored'));await flush();
+     assert.deepEqual(s.rendered,['restored']);assert.ok([...s.timers.values()].some(t=>t.ms===3000));}
     // Old headers, old bodies, body failures and auth errors cannot replace newer state.
     for(const kind of ['headers','body','body-error','401','network']) {
         const s=setup(), first=s.c.fetchData();
