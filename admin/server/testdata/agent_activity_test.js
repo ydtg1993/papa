@@ -1,0 +1,24 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+const nodes={},charts=new Map();
+const node=id=>nodes[id]||(nodes[id]={id,hidden:false,textContent:'',innerHTML:'',querySelectorAll:()=>[],addEventListener(){}});
+const c=vm.createContext({document:{hidden:false,getElementById:node,addEventListener(){}},window:{addEventListener(){}},currentModule:'dashboard',currentSite:null,
+    esc:s=>String(s).replaceAll('<','&lt;'),Oao:{charts:{create(el,opts){charts.set(el.id,opts);return {update(o){charts.set(el.id,o);},destroy(){charts.delete(el.id);}};}}}});
+for(const file of ['workbench.js','visual-state.js','visuals.js','agent-activity.js']) vm.runInContext(fs.readFileSync(path.join(process.argv[2],file),'utf8'),c);
+const run={id:'one',site:'demo',status:'running',created_at:'2026-11-08T01:00:00Z',usage:{model_calls:2,input_tokens:30,output_tokens:4}};
+const data={instance_id:'test',generated_at:'2026-11-08T01:00:03Z',stages:{},agent_activity:{runs:[run],partial:false,detail:{run,steps:[{sequence:'1',kind:'model',started_at:run.created_at}],next:'0',candidates:[],verified:false}}};
+c.acceptMonitorObservation(data);c.renderMonitorVisuals(data);
+assert.equal(charts.get('visual-agent-tokens').data[0].value,34);
+assert.equal(charts.get('visual-agent-steps').data[0].value,3);
+assert.match(nodes['agent-activity-summary'].innerHTML,/分析中/);
+assert.equal(c.MonitorObservations.trend(null,'queued').some(p=>p.y>0),false,'audit counts must never become queue counts');
+data.generated_at='2026-11-08T01:00:05Z';data.agent_activity.detail.steps[0].finished_at='2026-11-08T01:00:04Z';run.status='awaiting_review';data.agent_activity.detail.verified=true;
+c.renderMonitorVisuals(data);
+assert.equal(charts.get('visual-agent-steps').data[0].value,4);
+assert.match(charts.get('visual-agent-steps').description,/不代表已正式发布/);
+c.currentSite='other';c.renderMonitorVisuals(data);assert.equal(charts.get('visual-agent-tokens').data.length,0);assert.equal(charts.get('visual-agent-steps').data.length,0);
+c.currentSite=null;c.currentModule='agents';c.renderMonitorVisuals(data);assert.equal(charts.size,0);
+c.currentModule='dashboard';c.renderMonitorVisuals(data);assert.ok(charts.size>0);
+c.renderAgentActivity(data,false);assert.equal(charts.has('visual-agent-tokens'),false);assert.match(nodes['agent-activity-summary'].innerHTML,/34/);
+data.agent_activity.error='audit_unavailable';data.agent_activity.runs=[];data.agent_activity.detail=null;c.renderMonitorVisuals(data);assert.match(charts.get('visual-agent-tokens').error,/审计暂不可用/);
+c.resetMonitorObservations();assert.equal(charts.size,0);assert.equal(nodes['agent-activity'].hidden,true);assert.equal(nodes['agent-activity-summary'].textContent,'');
+console.log('agent activity: real usage, running durations, site filtering, no queue mixing, cleanup, fallback and errors passed');
