@@ -139,6 +139,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   rule_snapshot_types.go        规则页面观察清单：规则/尝试、双摘要、正文引用与省略原因
   rule_snapshot.go              尝试登记、显式脱敏、预算、EvidenceID 与最小 Trace 引用
   rule_snapshot_store.go        脱敏正文按内容共用、原子发布与按存活清单引用回收
+  rule_snapshot_store_windows_test.go  固定重命名句柄窗口，验证 Windows 共享模式及完整/损坏/恢复读取
   capture.go   浏览器网络请求捕获的引擎层包装（trace 步骤 + 归档登记）
   downloads.go 下载器解析（阶段 > 站点 > 基座）
   archive.go   页面归档：失败那一刻的原始页面 + trace 步骤

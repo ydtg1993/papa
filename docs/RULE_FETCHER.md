@@ -141,6 +141,8 @@ Save 可以把 `page.EvidenceID` 和业务记录一起保存；引擎在尝试�
 
 选中的已保留快照可通过 `rulestore.Repository.ImportSnapshot` 提升为长期样本。它验证文件与摘要，并要求新的显式脱敏策略，将正文保存到独立 `rules.sample_dir`；后续 archive 清理不影响该样本。短期快照不会自动变成长期样本或验收凭据，见 [RULE_STORE.md](./RULE_STORE.md)。
 
+程序读取快照优先使用 `rulestore.ReadSnapshot` / `ReadSnapshotMatching`；后台下载已使用受归档根约束的文件句柄。Windows 下自行并发扫描归档时，应使用 `os.OpenRoot` 后的 `Root.Open` / `Root.ReadFile`：普通 `os.ReadFile` 不共享删除权限，在重命名已可见但重命名句柄尚未关闭的瞬间可能返回共享冲突，这不等于正文写了一半。根目录读取仍须检查错误及正文摘要，也不能防止保留期到期后的文件缺失；不要用无限重试或忽略错误来替代校验。
+
 ## 分页、游标和预算
 
 默认跟随规则输出的 `Result.NextURL`。根级 API 游标设置规则 `next.mode: cursor` 和 `next.pointer`，执行器将 `Result.NextCursor` 自动写入下一任务 State，并继续请求当前 URL。也可配置 `Next(ctx, task, page)` 返回 `*RuleRequest{URL, State}` 覆盖默认策略，nil 表示结束。State 是最多 16 KiB 的非秘密游标，BuildRequest 将它转换为请求体。读取型 POST 必须设置 `ReplaySafe: true`，因为请求成功后 Save 或提交子任务失败也会重跑整个 handler。账号管理器不在同一次调用内自动重放 POST；确认过期后由下一轮任务尝试刷新。

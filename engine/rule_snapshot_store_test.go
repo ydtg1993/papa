@@ -224,6 +224,11 @@ func TestRuleSnapshotStoreConcurrentWritersAndCleanup(t *testing.T) {
 	root := t.TempDir()
 	// Bootstrap directories before the read-only observer starts.
 	snapshotStoreWrite(t, root, 1, "body-0")
+	reader, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
 	const writers = 24
 	errs := make(chan error, writers+1)
 	stop := make(chan struct{})
@@ -245,21 +250,7 @@ func TestRuleSnapshotStoreConcurrentWritersAndCleanup(t *testing.T) {
 				if !strings.HasSuffix(entry.Name(), ".json") {
 					continue
 				}
-				data, err := os.ReadFile(filepath.Join(root, ruleSnapshotDir, "observations", entry.Name()))
-				var m ruleSnapshotManifest
-				if err == nil {
-					err = json.Unmarshal(data, &m)
-				}
-				if err == nil {
-					data, err = os.ReadFile(filepath.Join(root, filepath.FromSlash(m.BodyFile)))
-				}
-				if err == nil {
-					h := sha256.Sum256(data)
-					if hex.EncodeToString(h[:]) != m.BodySHA256 {
-						err = errors.New("published body is incomplete")
-					}
-				}
-				if err != nil {
+				if err := snapshotStoreObserve(reader, ruleSnapshotDir+"/observations/"+entry.Name()); err != nil {
 					errs <- fmt.Errorf("partially published observation: %w", err)
 					return
 				}
@@ -285,9 +276,84 @@ func TestRuleSnapshotStoreConcurrentWritersAndCleanup(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
-	if len(snapshotStoreEntries(t, root, "observations")) != writers+1 || len(snapshotStoreEntries(t, root, "bodies")) != 3 {
+	observations := snapshotStoreEntries(t, root, "observations")
+	if len(observations) != writers+1 || len(snapshotStoreEntries(t, root, "bodies")) != 3 {
 		t.Fatal("concurrent writes/GC lost an observation or duplicated a body")
 	}
+	// A final sweep covers every publication even if the live observer was
+	// descheduled or stopped before seeing the final writer's manifest.
+	for _, entry := range observations {
+		if err := snapshotStoreObserve(reader, ruleSnapshotDir+"/observations/"+entry.Name()); err != nil {
+			t.Errorf("final observation %s: %v", entry.Name(), err)
+		}
+	}
+}
+
+func TestRuleSnapshotStoreObserverRejectsIncompleteSnapshots(t *testing.T) {
+	for _, fault := range []string{"missing_manifest", "truncated_manifest", "missing_body", "truncated_body", "same_length_corruption", "wrong_body_length"} {
+		t.Run(fault, func(t *testing.T) {
+			dir := t.TempDir()
+			m, name := snapshotStoreWrite(t, dir, 1, "complete")
+			r, err := os.OpenRoot(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			if err := snapshotStoreObserve(r, name); err != nil {
+				t.Fatalf("valid observation: %v", err)
+			}
+			switch fault {
+			case "missing_manifest":
+				err = r.Remove(name)
+			case "truncated_manifest":
+				err = r.WriteFile(name, []byte(`{"version":`), 0o600)
+			case "missing_body":
+				err = r.Remove(m.BodyFile)
+			case "truncated_body":
+				err = r.WriteFile(m.BodyFile, []byte("complet"), 0o600)
+			case "same_length_corruption":
+				err = r.WriteFile(m.BodyFile, []byte("corrupt!"), 0o600)
+			case "wrong_body_length":
+				m.BodyBytes++ // Keep the actual body and its digest intact.
+				var data []byte
+				data, err = json.Marshal(m)
+				if err == nil {
+					err = r.WriteFile(name, data, 0o600)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := snapshotStoreObserve(r, name); err == nil {
+				t.Fatalf("observer accepted %s", fault)
+			}
+		})
+	}
+}
+
+// snapshotStoreObserve stays outside the publisher/GC mutex and verifies both
+// files. The Windows regression also runs this observer in a held rename window.
+func snapshotStoreObserve(r *os.Root, name string) error {
+	// Match production readers (archive download and rulestore.ReadSnapshot).
+	// On Windows Root reads share DELETE access with a still-open rename handle;
+	// os.ReadFile does not, and can reject a complete, already visible file.
+	data, err := r.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	var m ruleSnapshotManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	data, err = r.ReadFile(m.BodyFile)
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256(data)
+	if len(data) != m.BodyBytes || hex.EncodeToString(h[:]) != m.BodySHA256 {
+		return errors.New("published body is incomplete")
+	}
+	return nil
 }
 
 func TestRuleSnapshotCleanupRetainsReferencedOldBodyAcrossObservations(t *testing.T) {
