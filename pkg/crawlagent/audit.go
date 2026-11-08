@@ -6,6 +6,7 @@ import "github.com/ydtg1993/papa/v4/pkg/rulestore"
 // References reveal neither page contents/URLs nor hidden fixture values.
 func (e *execution) auditReferences() any {
 	type sampleRef struct {
+		Origin string `json:"origin,omitempty"`
 		ID     string `json:"id"`
 		Digest string `json:"digest"`
 	}
@@ -20,7 +21,7 @@ func (e *execution) auditReferences() any {
 		Candidates []candidateRef `json:"candidates"`
 	}{}
 	for _, item := range e.evidence {
-		out.Evidence = append(out.Evidence, sampleRef{item.ID, item.BodySHA256})
+		out.Evidence = append(out.Evidence, sampleRef{item.Origin, item.ID, item.BodySHA256})
 	}
 	for _, s := range e.goal.Stages {
 		if c, ok := e.candidates[s.Stage]; ok {

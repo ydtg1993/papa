@@ -308,3 +308,61 @@ func TestRunnerReviewProviderUsageOverOutputLimitStopsBeforeTool(t *testing.T) {
 		t.Fatalf("excess provider output usage continued: %+v %v calls=%d", result, err, len(replay.Calls()))
 	}
 }
+
+type reviewAPIOriginSource struct{ *runnerSource }
+
+func (s reviewAPIOriginSource) Render(ctx context.Context, raw string, opts webaccess.RenderOptions) (webaccess.Response, []webaccess.Response, error) {
+	page, err := s.Get(ctx, raw)
+	if err != nil {
+		return page, nil, err
+	}
+	page.Rendered = true
+	page.StatusCode = 0
+	api := webaccess.Response{URL: raw + "?api=1", StatusCode: 200, ContentType: "application/json", Body: []byte(`{"value":"live"}`)}
+	return page, []webaccess.Response{api}, nil
+}
+func TestRunnerEvidenceOriginsSurviveTerminalAndStepAudit(t *testing.T) {
+	cfg, goal, _, source, audit := runnerHarness(t, replayActions(`{"tool":"record_api","url":"seed:0"}`))
+	cfg.Web.Renderer.Enabled = true
+	cfg.AllowRecordAPI = true
+	cfg.Budgets.MaxModelCalls = 1
+	cfg.SourceFactory = func(c webaccess.Config) (crawlagent.Source, error) {
+		source.config = c
+		return reviewAPIOriginSource{source}, nil
+	}
+	result, err := runAgent(t, cfg, goal)
+	if !errors.Is(err, crawlagent.ErrBudget) || len(result.Evidence) != 2 || result.Verified {
+		t.Fatalf("%+v %v", result, err)
+	}
+	want := []string{"live_page", "live_api"}
+	run, err := audit.Get(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored crawlagent.Result
+	if err := json.Unmarshal([]byte(run.ResultJSON), &stored); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := audit.Steps(context.Background(), result.RunID, 0)
+	if err != nil || len(steps) != 2 {
+		t.Fatalf("%+v %v", steps, err)
+	}
+	var output struct {
+		References struct {
+			Evidence []struct {
+				Origin string `json:"origin"`
+			} `json:"evidence"`
+		} `json:"references"`
+	}
+	if err := json.Unmarshal([]byte(steps[1].OutputJSON), &output); err != nil || len(output.References.Evidence) != 2 {
+		t.Fatal("step provenance missing")
+	}
+	for i, origin := range want {
+		if result.Evidence[i].Origin != origin || stored.Evidence[i].Origin != origin || output.References.Evidence[i].Origin != origin {
+			t.Fatal("origin lost or changed")
+		}
+		if stored.Evidence[i].URL != "" {
+			t.Fatal("audit leaked URL")
+		}
+	}
+}

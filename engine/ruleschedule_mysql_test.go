@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -304,6 +305,10 @@ func (p *scheduleLostAckPool) BeginTx(ctx context.Context, o *sql.TxOptions) (go
 	if err != nil {
 		return nil, err
 	}
+	// This fault targets the state-write COMMIT receipt, not read-only snapshots.
+	if o != nil && o.ReadOnly {
+		return tx, nil
+	}
 	return &scheduleLostAckTx{Tx: tx, armed: p.armed}, nil
 }
 
@@ -390,5 +395,62 @@ func TestRuleScheduleMySQLUnknownCommitAndRootReceiptLoss(t *testing.T) {
 	second, err := s.Status(ctx, &Engine{db: db}, uint(task.ID))
 	if err != nil || second.Sequence != 2 || second.ReleaseID != "release-2" || catalog.snapshots != 2 {
 		t.Fatalf("update recovery: %+v snapshots=%d %v", second, catalog.snapshots, err)
+	}
+}
+
+// Insert a root after the root lookup, before the aggregate query. Both reads
+// must describe one snapshot, even if recovery commits through another connection.
+func TestRuleScheduleMySQLStatusSnapshotDuringRootRecovery(t *testing.T) {
+	testScheduleRecoverySnapshot(t, false)
+}
+func TestRuleScheduleMySQLExecutionSnapshotDuringRootRecovery(t *testing.T) {
+	testScheduleRecoverySnapshot(t, true)
+}
+func testScheduleRecoverySnapshot(t *testing.T, execution bool) {
+	db, s, _, task := scheduleMySQL(t)
+	e := &Engine{db: db}
+	var pending *Task
+	if err := scheduleRun(t, s, context.Background(), task, e, func(root *Task) error { pending = root; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil {
+		t.Fatal("no pending root")
+	}
+	type barrierKey struct{}
+	var inserted atomic.Bool
+	callback := "status-root-barrier"
+	if err := db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Context.Value(barrierKey{}) != true || !strings.Contains(tx.Statement.SQL.String(), "url_hash") || !inserted.CompareAndSwap(false, true) {
+			return
+		}
+		if err := pending.Insert(db.WithContext(context.Background())); err != nil {
+			t.Errorf("concurrent insert: %v", err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Callback().Query().Remove(callback)
+	ctx := context.WithValue(context.Background(), barrierKey{}, true)
+	var status RuleScheduleStatus
+	var err error
+	if execution {
+		err = scheduleRun(t, s, ctx, task, e, func(root *Task) error {
+			if root.URL != pending.URL {
+				t.Error("recovery changed root identity")
+			}
+			return nil
+		})
+	} else {
+		status, err = s.Status(ctx, e, uint(task.ID))
+	}
+	if !inserted.Load() {
+		t.Fatal("query barrier was not reached")
+	}
+	if err != nil || status.RootID != 0 || status.Total != 0 || status.Complete {
+		t.Fatalf("mixed snapshot: %+v err=%v", status, err)
+	}
+	next, err := s.Status(context.Background(), e, uint(task.ID))
+	if err != nil || next.RootID == 0 || next.Total != 1 || next.Pending != 1 {
+		t.Fatalf("next snapshot: %+v err=%v", next, err)
 	}
 }

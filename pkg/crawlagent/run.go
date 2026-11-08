@@ -366,7 +366,7 @@ func errorKind(err error) string {
 	for _, entry := range []struct {
 		err  error
 		kind string
-	}{{ErrInvalid, "invalid_contract"}, {ErrAction, "invalid_action"}, {ErrEvidence, "unavailable_evidence"}, {ErrBudget, "budget_exhausted"}, {ErrAudit, "audit_failed"}, {webaccess.ErrWaitInvalid, "invalid_render_wait"}, {webaccess.ErrWaitTimeout, "render_wait_timeout"}, {webaccess.ErrPolicy, "access_denied"}, {webaccess.ErrRobots, "robots_denied"}, {webaccess.ErrBudget, "budget_exhausted"}, {webaccess.ErrCanceled, "canceled"}, {context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"}} {
+	}{{ErrInvalid, "invalid_contract"}, {ErrAction, "invalid_action"}, {ErrEvidence, "unavailable_evidence"}, {ErrBudget, "budget_exhausted"}, {ErrAudit, "audit_failed"}, {webaccess.ErrWaitInvalid, "invalid_render_wait"}, {webaccess.ErrWaitTimeout, "render_wait_timeout"}, {webaccess.ErrRendererUnavailable, "renderer_unavailable"}, {webaccess.ErrTransport, "web_transport"}, {webaccess.ErrAudit, "audit_failed"}, {webaccess.ErrPolicy, "access_denied"}, {webaccess.ErrRobots, "robots_denied"}, {webaccess.ErrBudget, "budget_exhausted"}, {webaccess.ErrCanceled, "canceled"}, {context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"}} {
 		if errors.Is(err, entry.err) {
 			return entry.kind
 		}

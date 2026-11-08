@@ -98,7 +98,7 @@ func (e *execution) loadFixtures(ctx context.Context) error {
 		}
 		// Retention approval and disclosure to a model are separate decisions.
 		// Reapply this analysis's policy even for an existing training sample.
-		if _, err := e.saveEvidence(ctx, webaccess.Response{URL: s.URL, StatusCode: s.StatusCode, Rendered: s.Rendered, Body: body}); err != nil {
+		if _, err := e.saveEvidence(ctx, webaccess.Response{URL: s.URL, StatusCode: s.StatusCode, Rendered: s.Rendered, Body: body}, "host_sample"); err != nil {
 			return err
 		}
 	}
@@ -115,7 +115,7 @@ func fromSample(s rulestore.Sample, kind string) Evidence {
 	return Evidence{ID: s.ID, URL: s.URL, BodySHA256: s.BodySHA256, BodyBytes: s.BodyBytes, StatusCode: s.StatusCode, Rendered: s.Rendered, ContentType: clip(kind, 256)}
 }
 
-func (e *execution) saveEvidence(ctx context.Context, response webaccess.Response) (Evidence, error) {
+func (e *execution) saveEvidence(ctx context.Context, response webaccess.Response, origin string) (Evidence, error) {
 	if len(e.evidence) >= 64 || len(response.Body) > rulestore.MaxSampleBodyBytes {
 		return Evidence{}, ErrBudget
 	}
@@ -143,6 +143,7 @@ func (e *execution) saveEvidence(ctx context.Context, response webaccess.Respons
 		return Evidence{}, err
 	}
 	item := fromSample(s, response.ContentType)
+	item.Origin = origin
 	e.evidence = append(e.evidence, item)
 	return item, nil
 }

@@ -71,6 +71,9 @@ func TestRunnerMySQLChromiumWaitReopen(t *testing.T) {
 					t.Fatalf("missing live evidence/candidate: %+v", result)
 				}
 				live := result.Evidence[1]
+				if live.Origin != "live_page" || result.Evidence[0].Origin != "host_sample" {
+					t.Fatal("live and fixture provenance mixed")
+				}
 				sample, err := repo.Sample(context.Background(), live.ID)
 				if err != nil {
 					t.Fatal(err)
@@ -92,6 +95,11 @@ func TestRunnerMySQLChromiumWaitReopen(t *testing.T) {
 			var stored crawlagent.Result
 			if err = json.Unmarshal([]byte(run.ResultJSON), &stored); err != nil || stored.Verified != result.Verified || len(stored.Evidence) != len(result.Evidence) {
 				t.Fatalf("durable result: %+v err=%v", stored, err)
+			}
+			for i := range stored.Evidence {
+				if stored.Evidence[i].Origin != result.Evidence[i].Origin {
+					t.Fatal("provenance lost after reopen")
+				}
 			}
 			steps, err := reopened.Steps(context.Background(), result.RunID, 0)
 			if err != nil || len(steps) != 2*len(actions) {

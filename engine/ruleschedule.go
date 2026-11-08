@@ -2,11 +2,13 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/core"
+	"gorm.io/gorm"
 )
 
 var (
@@ -78,11 +80,23 @@ func (s *RuleSchedule) Status(ctx context.Context, e *Engine, taskID uint) (Rule
 	if err != nil {
 		return RuleScheduleStatus{}, err
 	}
-	control, state, err := s.readSchedule(ctx, db, taskID)
-	if err != nil {
-		return RuleScheduleStatus{}, err
-	}
-	return s.batchStatus(ctx, db, control, state)
+	_, _, status, err := s.readStatusSnapshot(ctx, db, taskID)
+	return status, err
+}
+
+// Only database reads belong inside this snapshot. Publication lookup and task
+// submission remain outside; commitBatch still checks the current claim by CAS.
+func (s *RuleSchedule) readStatusSnapshot(ctx context.Context, db *gorm.DB, taskID uint) (control scheduleControl, state *scheduleState, status RuleScheduleStatus, err error) {
+	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var readErr error
+		control, state, readErr = s.readSchedule(ctx, tx, taskID)
+		if readErr != nil {
+			return readErr
+		}
+		status, readErr = s.batchStatus(ctx, tx, control, state)
+		return readErr
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	return
 }
 
 func (s *RuleSchedule) FetchHandler(ctx context.Context, task *Task, e *Engine) error {
@@ -106,7 +120,7 @@ func (s *RuleSchedule) runSchedule(ctx context.Context, task *Task, e *Engine, s
 	}
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	control, state, err := s.readSchedule(bounded, db, uint(task.ID))
+	control, state, status, err := s.readStatusSnapshot(bounded, db, uint(task.ID))
 	if err != nil {
 		return err
 	}
@@ -117,10 +131,6 @@ func (s *RuleSchedule) runSchedule(ctx context.Context, task *Task, e *Engine, s
 		return ErrRuleScheduleConflict
 	}
 	if state != nil {
-		status, err := s.batchStatus(bounded, db, control, state)
-		if err != nil {
-			return err
-		}
 		if !status.Complete || state.payload.Tick == scheduleTick(control.LastRepeatAt) {
 			if status.RootID == 0 {
 				return submit(state.payload.Root.task())

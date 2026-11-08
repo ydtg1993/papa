@@ -74,13 +74,13 @@ func (e *execution) dispatch(ctx context.Context, a action) (any, *Result, error
 			return nil, nil, err
 		}
 		items := []Evidence{}
-		item, err := e.saveEvidence(ctx, response)
+		item, err := e.saveEvidence(ctx, response, "live_page")
 		if err != nil {
 			return nil, nil, err
 		}
 		items = append(items, item)
 		for _, r := range captured {
-			item, err = e.saveEvidence(ctx, r)
+			item, err = e.saveEvidence(ctx, r, "live_api")
 			if err != nil {
 				return nil, nil, err
 			}

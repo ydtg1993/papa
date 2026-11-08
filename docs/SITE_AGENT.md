@@ -5,6 +5,16 @@
 
 `pkg/crawlagent` 在宿主给定的访问范围和预算内取证、生成不可变候选、有限修正并运行独立验收。正式采集继续由 RuleFetcher 执行，Agent 不调用 Publish/Rollback、业务 Save 或 SubmitTask。
 
+### 样本通过与实时可用是两项检查
+
+`Result.Verified` 只表示独立固定样本验收通过，不代表本次访问网站成功，更不代表完整采集或发布成功。离线样本可以正常通过，而某次实时工具调用失败；不要把 verified 映射成「接站完成」。
+
+每个 `Evidence.origin` 由宿主写入：`host_sample` 表示本次加载的训练或批准观测样本（即使样本以前由浏览器产生），`live_page` 表示本次成功取证的页面，`live_api` 表示本次捕获的 API 响应。正式结果及步骤审计保留来源；旧审计没有 origin 时必须按未知处理，不推断为实时成功。不增加表或迁移。
+
+需要实时接站验收的业务应列出必需的 URL、页面/API 类型与渲染方式，检查匹配的本次实时证据、成功状态、非空正文与摘要，并确认调用没有返回错误。审计结果不保存 URL，重启后可按 evidence ID 从批准的样本库恢复元数据，不能据空 URL 猜测验收通过。通过这些检查仅表示可以进入完整采集测试；字段、分页、落库和人工发布仍需各自验证。
+
+Agent 对公开错误使用稳定分类：`renderer_unavailable`、`web_transport`、`render_wait_timeout`、`access_denied`、`robots_denied` 等，不将浏览器或网络异常中的原始地址、正文或秘密写入审计。基础设施问题应按错误类别排查，不以独立样本通过掩盖。
+
 ## 1. 先运行完整示例
 
 源码和参数见框架仓库 [examples/siteagent](../examples/siteagent/README.md)。默认使用确定性模型回放，不需要 API Key；网站访问、Chromium、MySQL、样本验收和审计都实际运行。这个例程始终使用自建本地测试站。真实站点的访问策略、固定预期、模型/数据库接线及验收记录必须放在独立业务项目，通过公开 API 使用框架，不能将站点业务代码加入 Papa。

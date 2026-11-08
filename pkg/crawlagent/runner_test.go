@@ -38,6 +38,11 @@ func TestRunnerCorrectsCandidateUsingFixedTrainingAndHiddenHoldout(t *testing.T)
 	if before != runnerJSON(repo.sets) {
 		t.Fatal("runner changed fixed expectations")
 	}
+	for _, item := range result.Evidence {
+		if item.Origin != "host_sample" {
+			t.Fatal("offline fixtures mislabeled as live")
+		}
+	}
 	if source.calls.Load() != 0 || source.closed.Load() != 1 {
 		t.Fatalf("unrequested fetch or unclosed source: %d/%d", source.calls.Load(), source.closed.Load())
 	}
@@ -81,6 +86,7 @@ func TestRunnerClassifiesModelFailureWithoutLeakingOrRetrying(t *testing.T) {
 		err    error
 		reason string
 	}{
+		{webaccess.ErrRendererUnavailable, "renderer_unavailable"}, {webaccess.ErrTransport, "web_transport"},
 		{model.ErrConfig, "model_config"}, {model.ErrCredentials, "model_credentials"},
 		{model.ErrInput, "model_input"}, {model.ErrInputLimit, "model_input_limit"},
 		{model.ErrOutputLimit, "model_output_limit"}, {model.ErrUnauthorized, "model_unauthorized"},
@@ -131,6 +137,9 @@ func TestRunnerWithoutIndependentFixturesOnlyNeedsFixtures(t *testing.T) {
 	}
 	if result.Usage.Requests != 1 || result.Usage.Bytes != int64(len(source.body)) {
 		t.Fatalf("request accounting: %+v", result.Usage)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Origin != "live_page" {
+		t.Fatal("live provenance missing")
 	}
 }
 

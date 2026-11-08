@@ -150,6 +150,9 @@ type ShadowSummary struct {
 }
 
 type Evidence struct {
+	// Origin is assigned by the host, never by the model. Empty on legacy records
+	// means unknown, not live. Values: host_sample, live_page, live_api.
+	Origin      string `json:"origin,omitempty"`
 	ID          string `json:"id"`
 	URL         string `json:"url"`
 	BodySHA256  string `json:"body_sha256"`
@@ -160,9 +163,10 @@ type Evidence struct {
 }
 
 type Result struct {
-	RunID      string      `json:"run_id"`
-	Status     string      `json:"status"`
-	Reason     string      `json:"reason"`
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+	// Verified means independent fixture validation passed, not live collection success.
 	Verified   bool        `json:"verified"`
 	Candidates []Candidate `json:"candidates"`
 	Evidence   []Evidence  `json:"evidence"`

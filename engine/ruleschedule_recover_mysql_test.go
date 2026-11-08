@@ -17,6 +17,7 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/egress"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -132,6 +133,9 @@ func TestRuleScheduleMySQLRecoverUnqueuedRootAcrossEngines(t *testing.T) {
 	}
 	engineConfig := func(recover bool) *config.Config {
 		return &config.Config{
+			// The synthetic fixture is local; retain default private-network denial
+			// everywhere else instead of weakening the production egress policy.
+			Network:      egress.Config{PrivateOrigins: []string{srv.URL}},
 			HTML:         config.HTMLConfig{Enable: true, Timeout: 2 * time.Second, MaxBodySize: 64 << 10},
 			Crawler:      config.CrawlerConfig{DrainInterval: 10 * time.Millisecond, DedupCacheSize: 1024},
 			RecoverQueue: config.RecoverQueueConfig{Enabled: recover, WorkerCount: 1, BatchSize: 16},
