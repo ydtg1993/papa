@@ -489,3 +489,9 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 MySQL CAS、重开连接读取与真实 Engine 多阶段/证据/清洗接线的集成验收放独立业务模块，以显式 opt-in 专用测试库运行，普通框架测试不访问真实站点或模型。
 
 `pkg/webaccess/robots_optional_test.go` 覆盖默认不请求 robots、显式遵守沿用旧测试、私网/请求/字节/限速保留，以及真实 Chromium 页面→脚本→API 录制。Policy.RespectRobots 为宿主冻结配置，默认 false；旧强制 robots 行为的调用者须显式设 true。
+
+### Agent 运行概览数据与图表
+
+`admin/server/agent_activity.go` 复用 `AgentAdministration.Runs/Run` 生成 `/api/monitor.agent_activity`，总超时 2 秒，最多一页运行与一页步骤，失败仅返回固定错误码；不携带原始错误、提示词、正文或密钥，不引入新表或业务站点。`agent_activity_test.go` 覆盖时间范围/超时、非时间序 ID 的排序、详情新快照对齐、读取失败隔离与空页。
+
+`static/agent-activity.js` 只消费主监控请求已经接受的快照，使用 `visuals.js` 的统一图表生命周期；无额外轮询或异步响应通道。`testdata/agent_activity_test.js` 纳入 `TestOperationsJavaScriptBehavior`，验证 Token 与队列口径分离、运行中/终态步骤耗时、人工发布提示、站点过滤、离页销毁、身份清空、旧图表降级与读取异常。真实业务的审计与页面效果在独立模块验证。

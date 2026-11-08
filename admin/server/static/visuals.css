@@ -5,6 +5,9 @@
 .visual-heading .visual-label { font-size:11px; letter-spacing:.1em; border-bottom:3px solid var(--primary); padding-bottom:3px; font-weight:800; }
 .visual-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:18px; }
 .visual-grid[hidden], .visual-resources[hidden] { display:none; }
+.agent-activity-charts { margin-top:16px; }
+#agent-activity-summary { overflow-x:auto; }
+#agent-activity-summary td { overflow-wrap:anywhere; }
 .visual-panel { min-width:0; background:var(--card); border:var(--border-width) solid var(--border-color); box-shadow:4px 4px 0 var(--shadow-color); padding:18px; }
 .visual-panel > .oao-chart, .visual-panel > div > .oao-chart { border:0; padding:0; }
 .visual-panel-wide { grid-column:1/-1; }

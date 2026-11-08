@@ -407,6 +407,9 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()
 	}
+	if s.cfg.AgentAdmin != nil {
+		resp["agent_activity"] = s.agentActivity(r.Context())
+	}
 	// 这是响应组装时间；系统指标和治理积压仍各自携带真实采样时间。
 	resp["generated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
 	writeJSON(w, resp)

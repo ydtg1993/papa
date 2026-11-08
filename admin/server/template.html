@@ -178,6 +178,15 @@
                 <h2 class="workbench-section-title">待处理 <span id="workbench-issue-count">—</span></h2>
                 <div class="workbench-panel" id="workbench-issues"></div>
             </section>
+            <section id="agent-activity" hidden aria-label="Agent 运行活动">
+                <div class="visual-heading"><h2>Agent 运行活动</h2><button class="btn" onclick="switchModule('agents')">查看运行与候选</button></div>
+                <p class="hint" id="agent-activity-note"></p>
+                <div class="workbench-panel" id="agent-activity-summary"></div>
+                <div class="visual-grid agent-activity-charts">
+                    <div class="visual-panel" id="visual-agent-tokens"></div>
+                    <div class="visual-panel" id="visual-agent-steps"></div>
+                </div>
+            </section>
             <section aria-label="运行可视化" class="overview-trend">
                 <div class="visual-heading"><h2>采集趋势</h2><span class="visual-label">本次页面观测</span></div>
                 <p id="visual-observation-meta">等待新的监控快照</p>
@@ -320,6 +329,7 @@
 <script src="/static/workbench.js"></script>
 <script src="/static/visual-state.js"></script>
 <script src="/static/visuals.js"></script>
+<script src="/static/agent-activity.js"></script>
 <script src="/static/extensions.js"></script>
 <script src="/static/appearance.js"></script>
 <script src="/static/navigation.js"></script>
