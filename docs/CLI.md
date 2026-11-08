@@ -81,6 +81,8 @@ mycrawler/
   （记本项目的布局与「已知漂移」），由你自己维护。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
 
+生成的 `.gitignore` 排除 `.papa-model.key`（OA 首次保存 API Key 自动创建的本机加密主密钥）。已有业务的 `.gitignore` 不被 upgrade 覆盖，使用 OA 直接 Key 时请自行保留该忽略规则，并将主密钥与数据库一起备份。
+
 `papa new` 生成的本机配置和 example 配置使用 `user:CHANGE_ME` 数据库凭据占位；请先在本机填真实连接，再执行 `papa migrate`。已有项目的 `papa upgrade --write` 只刷新框架手册/通用技能，不替换已配置的 DSN；`--missing-only` 同样保留现有配置。
 
 ### `papa check` 校验声明（不用起库）

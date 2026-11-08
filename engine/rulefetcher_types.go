@@ -78,7 +78,13 @@ type RuleFetcherConfig struct {
 	// Its credentials are transient. POST requires ReplaySafe because the whole
 	// handler, including a successful request followed by failed Save, can repeat.
 	BuildRequest func(context.Context, *Task, RuleRequest) (htmlfetch.Request, error)
-	ReplaySafe   bool
+	// HTTPSource optionally supplies a host-controlled anonymous HTTP exchange
+	// (for example a shared robots/rate/byte-budget session). It must enforce
+	// request.NoRedirect and complete-body semantics. Final URL, status, rule
+	// validation, snapshots and quality remain checked by RuleFetcher. It is
+	// mutually exclusive with browser transport and AccountID; no fallback runs.
+	HTTPSource func(context.Context, htmlfetch.Request) (*htmlfetch.Response, error)
+	ReplaySafe bool
 	// Next overrides Result.NextURL/NextCursor; nil means no next page.
 	// Return a canonical URL and optional non-secret State. No raw body is exposed.
 	Next               func(context.Context, *Task, RulePage) (*RuleRequest, error)

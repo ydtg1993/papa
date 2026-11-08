@@ -148,7 +148,7 @@ page, records, err := session.Render(ctx, targetURL, webaccess.RenderOptions{
 
 HTTP 每次重定向重新检查目标；DNS 检查全部地址并使用已校验 IP 建立连接，保留 Host/TLS 校验。默认拒绝私网、环回及其它特殊地址；测试或已授权内网站点只能按单个明确 origin 开启 `AllowPrivateNetwork`，模型不能调整。普通环境代理不会被隐式使用。
 
-固定 UA 为 `PapaSiteAgent/1.0`；执行本次运行内的 robots 判定、按 origin 调度、CrawlDelay 与 Retry-After。robots 异常/认证拒绝/不可用不会静默当允许。该调度不是跨进程站点配额或分布式限流。
+固定 UA 为 `PapaSiteAgent/1.0`。`webaccess.Policy.RespectRobots` 默认 false：不请求 robots.txt，不因 Disallow、文件状态或解析失败阻断。HTTP、浏览器页面/资源及 API 录制统一使用该策略。宿主显式设 true 才启用原先严格 robots 检查与 CrawlDelay；站点实际认证/HTTP 拒绝仍正常报错。origin、私网显式许可、MinInterval、Retry-After 和请求/字节预算始终生效。此策略由宿主决定，模型不能修改。
 
 浏览器使用独立临时 profile，页面 HTTP(S) 请求转交同一受控获取器；原生出口经拒绝代理兜底，并限制 DNS/QUIC/WebRTC 等旁路。实际测试覆盖导航、重定向、iframe、资源、worker、popup、WebSocket 和 POST。未支持的流量明确阻断；被拒绝或真实失败的已拦截资源会使渲染明确失败。达到观察期或等待条件后，取快照主动取消仍在途的资源请求属于正常收尾，不将它误记为网络失败；已发生用量仍计入预算，不返回未完成的 API 正文。DOM 快照不承诺页面全部异步工作已完成。
 
@@ -176,7 +176,7 @@ DOM 快照 `Rendered=true, StatusCode=0`；捕获的 JSON 响应保留真实 HTT
 | 单次 / 累计模型输入序列化字节 | 128 KiB / 1 MiB | 256 KiB / 4 MiB |
 | 动作 JSON / 证据读取片段 | 64 KiB / 16 KiB | 64 KiB / 32 KiB |
 
-网站请求计数包含 robots、重定向和子资源；正文预算保守计入压缩传输、解压结果、DOM 副本及失败读取，达到上限后不会继续外发。模型调用前预留次数、输入及费用额度，失败请求也占预算；供应商报告输出超过本次上限时停止后续动作。
+网站请求计数包含重定向和子资源，以及显式启用 robots 时发生的 robots 请求；正文预算保守计入压缩传输、解压结果、DOM 副本及失败读取，达到上限后不会继续外发。模型调用前预留次数、输入及费用额度，失败请求也占预算；供应商报告输出超过本次上限时停止后续动作。
 
 Prices 使用宿主给定的每百万 token 单价和整数微货币单位，调用前按输入字节保守上界和输出上限预留，收到 usage 后校正。缺单价或 usage 时费用标为未知/保留预留值，调用数和字节上限仍生效。这里的估算不是供应商最终账单保证。
 
@@ -244,7 +244,7 @@ if err != nil { return err }
 
 `model.Config.ThinkingMode` 为空时不发送 thinking 参数，保持既有请求行为；`enabled` / `disabled` 显式发送 `thinking.type`，其它值拒绝。仅为支持该参数的兼容接口启用。参数计入输入字节预算，供应商不支持时返回错误，不自动降级、重试或修改模型响应。
 
-`model.New(config)` 继续只读取一次 APIKeyEnv。宿主已有加密凭据仓库时可调用 `model.NewWithKey(config, key)`，不读取或改写环境变量，也不发起网络请求。两者均冻结 endpoint、模型、思考模式和凭据；不要把 key 放进 Config、日志或前端。新配置应构造新 provider，在途操作保留原 provider。
+`model.New(config)` 继续只读取一次 APIKeyEnv。宿主已有加密凭据仓库时可调用 `model.NewWithKey(config, key)`，不读取或改写环境变量，也不发起网络请求。两者均冻结 endpoint、模型、思考模式和凭据；不要把 key 放进 Config、日志或模型上下文；OA 仅使用只写密码框录入，不回显。新配置应构造新 provider，在途操作保留原 provider。
 
 空白 assistant content 使用 `model.ErrEmptyResponse`，同时满足 `errors.Is(err, model.ErrInvalidResponse)`。Runner 仅记录已知安全分类（例如 model_empty_response、model_invalid_response、model_rate_limit、model_unauthorized、model_transport、model_truncated）；不把供应商错误正文、凭据或推理文本写入审计。未知错误仍记 operation_failed。分类有助于人工诊断，不构成重放付费请求的授权。
 
@@ -300,3 +300,11 @@ if err != nil { return err }
 存档 Replay 两组均满分且调用/修正次数相同，仅输入字节增加；这证明流程与隔离，**尚未证明真实模型质量提升**。提示增加历史约束后摘要变化，原 D3 存档保留作历史记录，需用当前版本重新生成无/有历史对照。真实站点历史选择、授权 UI 和模型对照留在独立业务模块；本批不接入自动检索或长期记忆。
 
 兼容性：未配置 HistoryPolicy 的业务无需启用历史披露。`Config/Plan` 新字段使无字段名结构体字面量需改为具名字段；`agenteval.Identity/AuditMetrics/Summary` 同理。无 DDL 或 YAML 配置项，无需额外 migrate。Agent 中心宿主改变 HistoryPolicy 或选择规则的逻辑时必须升级 Profile.Revision，保留在途快照。
+
+## 按次冻结 OA 模型预算
+
+可选接入 `admin/configstore.ModelSettings`。每次接受新分析时读取一次 `LoadModelSettings(ctx)`，Enabled=false 时明确拒绝真实模型运行；使用 `store.NewModelProvider(ctx, settings, network)` 与 `settings.Budgets()` 构造新 Agent，前者解密该修订的已保存 Key，并在每次调用前检查共享日额度。保存 `settings.Revision`、计划和预算快照到业务运行资料，审计 Actor.Source 可使用 `settings.ModelRevision()`。保存配置与创建候选都不能调用正式发布。
+
+设置持久化、直接 Key 录入、北京时间日额度与并发修订规则见 [MONITOR.md](./MONITOR.md#模型设置)。固定 Profile 是已有 API，继续按原冻结行为运行。OA 模型与 Key 在新分析时冻结，但共享日额度和启用状态每次调用前读取最新配置，无需重启；不再依赖密钥环境变量。Provider 的 `model_daily_limit` / `model_daily_accounting` 为稳定审计错误类别，不含凭据。
+
+OA 简化设置只暴露连接信息与每次输出 Token 上限，不再用手填单价限制分析。低层 crawlagent.Budgets.Prices 仍供确有需要的宿主直接使用，不能把低层可选能力变成普通页面必填项。

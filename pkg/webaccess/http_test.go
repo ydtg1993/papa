@@ -198,7 +198,41 @@ func TestTransportErrorsRedactURLAndCloseCancels(t *testing.T) {
 }
 
 func localConfig(raw string) Config {
-	return Config{Policy: Policy{Origins: []Origin{{URL: raw, AllowPrivateNetwork: true}}}}
+	return Config{Policy: Policy{RespectRobots: true, Origins: []Origin{{URL: raw, AllowPrivateNetwork: true}}}}
+}
+
+func TestGetNoRedirectPreservesRobotsAndBudgets(t *testing.T) {
+	var target, robots atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			robots.Add(1)
+			fmt.Fprint(w, "User-agent: *\nDisallow: /denied\n")
+		case "/redirect":
+			http.Redirect(w, r, "/target", 302)
+		default:
+			target.Add(1)
+			fmt.Fprint(w, "unexpected")
+		}
+	}))
+	defer srv.Close()
+	cfg := localConfig(srv.URL)
+	cfg.Budgets.MaxPages = 2
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	r, err := s.GetNoRedirect(context.Background(), srv.URL+"/redirect")
+	if err != nil || r.StatusCode != 302 || target.Load() != 0 || robots.Load() != 1 {
+		t.Fatalf("response=%+v err=%v hits=%d", r, err, target.Load())
+	}
+	if _, err = s.GetNoRedirect(context.Background(), srv.URL+"/denied"); err == nil || target.Load() != 0 {
+		t.Fatalf("robots bypassed: %v", err)
+	}
+	if _, err = s.GetNoRedirect(context.Background(), srv.URL+"/target"); err == nil || target.Load() != 0 {
+		t.Fatalf("budget bypassed: %v", err)
+	}
 }
 
 func TestRedirectCannotReachDeniedOrigin(t *testing.T) {

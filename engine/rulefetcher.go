@@ -33,6 +33,9 @@ func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
 	if cfg.Transport == "browser" && cfg.BuildRequest != nil {
 		return nil, fmt.Errorf("rule fetcher: browser does not accept BuildRequest")
 	}
+	if cfg.HTTPSource != nil && (cfg.Transport != "http" || cfg.AccountID != "") {
+		return nil, fmt.Errorf("rule fetcher: HTTPSource requires anonymous HTTP transport")
+	}
 	if len(cfg.Origins) == 0 || len(cfg.Origins) > 32 || (cfg.Catalog == nil && len(cfg.Bindings) == 0) || len(cfg.Bindings) > 32 {
 		return nil, fmt.Errorf("rule fetcher: bounded origins and bindings required")
 	}

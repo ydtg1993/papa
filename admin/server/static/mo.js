@@ -115,6 +115,7 @@
         if (typeof resetRulesSession === 'function') resetRulesSession();
         if (typeof resetQualitySession === 'function') resetQualitySession();
         if (typeof resetAgentsSession === 'function') resetAgentsSession();
+        if (typeof window.resetModelSettingsSession === 'function') window.resetModelSettingsSession();
         retireTableView();
         if (typeof Papa !== 'undefined') Papa.leave(true);
         if (typeof workbenchConnection !== 'undefined') workbenchConnection = { updatedAt: null, failed: false, message: '' };
@@ -1040,6 +1041,7 @@
     /* ============ 设置 ============ */
     var settingsRequestSeq = 0, tokenRequestSeq = 0, obsListSeq = 0;
     async function fetchSettings() {
+		if (typeof window.fetchModelSettings === 'function') window.fetchModelSettings();
         var seq = ++settingsRequestSeq, viewCurrent = captureMonitorView();
         var current = function () { return seq === settingsRequestSeq && viewCurrent(); };
         var resp = await apiFetch('/api/settings', { current: current });

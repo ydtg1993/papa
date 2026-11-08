@@ -1057,8 +1057,9 @@ func (a *App) httpServer(ctx context.Context) {
 		RuleScheduleDetail: a.Engine.RuleScheduleDetail,
 		VerifyToken:        tokenCounter.Verifier(a.Logger.Sys),
 		// 后台页面首帧始终要求登录；首次令牌由本机 CLI 创建。
-		AuthRequired: tokenCounter.Required,
-		Whitelist:    whitelist,
+		AuthRequired:  tokenCounter.Required,
+		Whitelist:     whitelist,
+		ModelSettings: a.configStore,
 		// 设置页保存白名单 → 落 crawler_config；成功后 admin/server 自己换判定缓存（本进程即时生效）。
 		SaveWhitelist: func(entries []string, operator string) error {
 			if err := whitelistStore.Save(configstore.KeyIPWhitelist, entries, operator); err != nil {

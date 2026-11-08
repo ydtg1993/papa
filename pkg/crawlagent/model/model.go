@@ -38,6 +38,8 @@ type Provider interface {
 // Stable errors intentionally omit endpoint URLs, credentials, messages and
 // service bodies. Use errors.Is to classify failures.
 var (
+	ErrDailyLimit      = errors.New("model: daily token quota exhausted")
+	ErrDailyAccounting = errors.New("model: daily token accounting unavailable")
 	ErrConfig          = errors.New("model: invalid configuration")
 	ErrCredentials     = errors.New("model: credentials unavailable or invalid")
 	ErrInput           = errors.New("model: invalid input")

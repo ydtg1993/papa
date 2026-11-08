@@ -290,6 +290,7 @@
 
         <div class="module" id="mod-settings">
             <div id="custom-settings"></div>
+            <section id="model-settings"><h2>模型设置</h2><div class="card"><p class="hint">直接填写 API Key，每日额度默认 1,000,000 Token（输入与输出合计）。Key 保存后不回显，留空不修改；额度调整用于后续调用。</p><form id="model-settings-form"><fieldset id="model-settings-fields" style="border:0;padding:0;margin:0" disabled><div id="model-settings-inputs" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px"></div><div style="display:flex;gap:12px;margin-top:20px"><button class="btn" type="submit">保存模型配置</button></div></fieldset><button class="btn" type="button" id="model-settings-reload" style="margin-top:12px">重新加载</button></form><p id="model-settings-msg" class="hint" role="status">进入设置后加载。</p></div></section>
             <section>
                 <h2>白名单</h2>
                 <div class="card">
@@ -323,6 +324,7 @@
 <script src="/static/appearance.js"></script>
 <script src="/static/navigation.js"></script>
 <script src="/static/mo.js"></script>
+<script src="/static/model-settings.js"></script>
 <script src="/static/schedules.js"></script>
 <script src="/static/rules.js"></script>
 <script src="/static/quality.js"></script>

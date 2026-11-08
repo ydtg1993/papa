@@ -37,6 +37,8 @@ type Origin struct {
 }
 
 type Policy struct {
+	// RespectRobots opts into strict robots.txt checks. Default false performs no robots request.
+	RespectRobots   bool
 	Origins         []Origin
 	ResourceOrigins []Origin
 	MinInterval     time.Duration

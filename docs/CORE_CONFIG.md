@@ -482,3 +482,7 @@ Webhook 使用 `Webhook.Network`；代理列表 API 使用 `proxy.NewManagerWith
 M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理已经下载、解密的本地片段；不会因媒体中的嵌套清单再次联网。业务自行调用外部工具不在此约束内。
 
 浏览器安全参数覆盖冲突的用户启动参数，禁用直接 DNS、QUIC、非代理 WebRTC、扩展与相关旁路；仅为本机网关排除回环地址的 DNS 禁止规则，页面回环流量仍经过网关。每实例网关随浏览器关闭，普通 HTTP 升级（`ws://`）暂不支持，`wss://` 经过受控 CONNECT。用户自行使用原生 Rod/CDP、操作系统网络、外部程序或自定义业务 HTTP 客户端属于可信扩展，框架出口策略不是系统级沙箱，也不管理数据库等基础设施连接或浏览器二进制下载。
+
+### OA 模型凭据与日额度
+
+模型连接、API Key 和每日 Token 额度在 OA「系统设置」保存，无需新增 YAML 或 Key 环境变量。密钥加密值与每日用量复用 crawler_config；工作目录下自动生成的 configs/.papa-model.key 必须与数据库一起备份，不入版本。无新增 DDL；已有框架表可直接使用。参见 [MONITOR.md 模型设置](./MONITOR.md#模型设置)。

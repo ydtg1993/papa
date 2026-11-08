@@ -1395,3 +1395,7 @@ client := htmlfetch.NewClient(htmlfetch.Config{
 ```
 
 零配置不允许本地服务，测试 fixture 也需授权。`egress.ErrDenied` 表示目标不被授权；不要通过改用 `http.Get`、原生浏览器导航或外部下载工具绕过失败。网络策略不替代账号隔离、站点规则边界或业务写入权限。网络错误不会由浏览器网关伪造成成功的采集文档。
+
+### RuleFetcher 共享访问预算
+
+需要复用宿主 `webaccess.Session` 时，可使用 `RuleFetcherConfig.HTTPSource` 接入匿名受控 HTTP；用 `GetNoRedirect` 保持禁止跳转契约。账号和浏览器仍走原有入口。完整契约与限制见 [RULE_FETCHER.md](./RULE_FETCHER.md#宿主受控匿名-http-来源)。

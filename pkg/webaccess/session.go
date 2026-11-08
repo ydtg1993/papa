@@ -55,6 +55,7 @@ type Session struct {
 	onRequest          func(context.Context) error
 	onBytes            func(context.Context, int64) error
 	minInterval        time.Duration
+	respectRobots      bool
 	ctx                context.Context
 	cancel             context.CancelFunc
 	transport          *http.Transport
@@ -97,7 +98,7 @@ func New(cfg Config) (*Session, error) {
 		return nil, ErrBudget
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), b.MaxDuration)
-	s := &Session{origins: origins, resources: resources, budget: b, renderer: cfg.Renderer, onRequest: cfg.OnRequest, onBytes: cfg.OnBytes, minInterval: cfg.Policy.MinInterval, ctx: ctx, cancel: cancel, states: map[string]*originState{}, lookup: net.DefaultResolver.LookupNetIP, renderGate: make(chan struct{}, 1)}
+	s := &Session{origins: origins, resources: resources, budget: b, renderer: cfg.Renderer, onRequest: cfg.OnRequest, onBytes: cfg.OnBytes, minInterval: cfg.Policy.MinInterval, respectRobots: cfg.Policy.RespectRobots, ctx: ctx, cancel: cancel, states: map[string]*originState{}, lookup: net.DefaultResolver.LookupNetIP, renderGate: make(chan struct{}, 1)}
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	s.connect = dialer.DialContext
 	s.transport = &http.Transport{Proxy: nil, DialContext: s.dial, DisableCompression: true, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSHandshakeTimeout: 15 * time.Second, ResponseHeaderTimeout: 20 * time.Second, MaxResponseHeaderBytes: 64 << 10}

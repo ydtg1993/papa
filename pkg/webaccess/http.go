@@ -64,6 +64,21 @@ func (s *Session) Get(ctx context.Context, raw string) (Response, error) {
 	return s.follow(ctx, raw, false)
 }
 
+// GetNoRedirect applies the same origin, robots, rate and shared budgets as Get,
+// but returns the first response (including 3xx) without requesting Location.
+func (s *Session) GetNoRedirect(ctx context.Context, raw string) (Response, error) {
+	ctx, cancel := s.operation(ctx)
+	defer cancel()
+	if _, _, err := s.target(raw, false); err != nil {
+		return Response{}, err
+	}
+	if err := s.page(ctx); err != nil {
+		return Response{}, err
+	}
+	response, _, err := s.fetch(ctx, raw, false)
+	return response, err
+}
+
 func (s *Session) follow(ctx context.Context, raw string, resource bool) (Response, error) {
 	for hops := 0; ; hops++ {
 		resp, headers, err := s.fetch(ctx, raw, resource)
@@ -95,7 +110,7 @@ func redirect(status int) bool {
 	return status == 301 || status == 302 || status == 303 || status == 307 || status == 308
 }
 
-// fetch makes exactly one GET, including robots authorization. It is also the
+// fetch performs a guarded GET with optional robots checking. It is also the
 // browser response backend: no browser headers, Cookie or auth are forwarded.
 func (s *Session) fetch(ctx context.Context, raw string, resource bool) (Response, http.Header, error) {
 	u, permission, err := s.target(raw, resource)
@@ -109,6 +124,9 @@ func (s *Session) fetch(ctx context.Context, raw string, resource bool) (Respons
 		defer func() { <-st.gate }()
 	case <-ctx.Done():
 		return Response{}, nil, ErrCanceled
+	}
+	if !s.respectRobots {
+		return s.roundTrip(ctx, u, permission, st)
 	}
 	if !st.checked {
 		st.checked = true

@@ -90,6 +90,7 @@ func TestRunnerClassifiesModelFailureWithoutLeakingOrRetrying(t *testing.T) {
 		{model.ErrConfig, "model_config"}, {model.ErrCredentials, "model_credentials"},
 		{model.ErrInput, "model_input"}, {model.ErrInputLimit, "model_input_limit"},
 		{model.ErrOutputLimit, "model_output_limit"}, {model.ErrUnauthorized, "model_unauthorized"},
+		{model.ErrDailyLimit, "model_daily_limit"}, {model.ErrDailyAccounting, "model_daily_accounting"},
 		{model.ErrRateLimit, "model_rate_limit"}, {model.ErrHTTP, "model_http"},
 		{model.ErrRedirect, "model_redirect"}, {model.ErrTransport, "model_transport"},
 		{model.ErrResponseLimit, "model_response_limit"}, {model.ErrEmptyResponse, "model_empty_response"}, {model.ErrInvalidResponse, "model_invalid_response"},

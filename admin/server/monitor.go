@@ -52,6 +52,7 @@ type QueueProcessEvent struct {
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
+	ModelSettings      ModelSettingsStore
 	OnTaskFlowAction   func(AgentActionEvent)
 	TaskFlow           func(context.Context, string) (engine.TaskFlowView, error)
 	UpdateTaskFlow     func(context.Context, string, uint64, engine.FlowPolicy) error
@@ -250,6 +251,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/quality/", s.wrap(s.qualityHandler))
 	mux.HandleFunc("/api/agents/", s.wrap(s.agentHandler))
 	mux.HandleFunc("/api/settings", s.wrap(s.settingsHandler))
+	mux.HandleFunc("/api/settings/model", s.wrap(s.modelSettingsHandler))
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))

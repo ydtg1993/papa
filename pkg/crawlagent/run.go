@@ -379,6 +379,7 @@ func errorKind(err error) string {
 	}{
 		{model.ErrConfig, "model_config"}, {model.ErrCredentials, "model_credentials"},
 		{model.ErrInput, "model_input"}, {model.ErrInputLimit, "model_input_limit"},
+		{model.ErrDailyLimit, "model_daily_limit"}, {model.ErrDailyAccounting, "model_daily_accounting"},
 		{model.ErrOutputLimit, "model_output_limit"}, {model.ErrUnauthorized, "model_unauthorized"},
 		{model.ErrRateLimit, "model_rate_limit"}, {model.ErrHTTP, "model_http"},
 		{model.ErrRedirect, "model_redirect"}, {model.ErrTransport, "model_transport"},

@@ -134,7 +134,12 @@ func (f *RuleFetcher) readRuleHTTP(ctx context.Context, task *Task, e *Engine, r
 	// and leaves the exact same policy in force for authenticated requests.
 	request.NoRedirect = true
 	var response *htmlfetch.Response
-	if id := task.Meta[ruleAccountMeta]; id != "" {
+	if f.config.HTTPSource != nil {
+		if task.Meta[ruleAccountMeta] != "" {
+			return nil, ruleSourceInvalid("HTTPSource cannot bypass account handling")
+		}
+		response, err = f.config.HTTPSource(ctx, request)
+	} else if id := task.Meta[ruleAccountMeta]; id != "" {
 		if e.GetAccountManager() == nil {
 			ruleQualityFrom(ctx).phase("source", rulequality.FailureHost)
 			return nil, ruleSourceInvalid("account manager is not configured")

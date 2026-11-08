@@ -7,6 +7,8 @@
 
 ## 0. 一句话
 
+**长期架构定位：单实例大单体。** Papa 永远不规划多实例协同、分布式任务租约或横向扩容；这些不作为缺陷、路线图或生产验收门槛。能力建设聚焦单实例内的模块化、多站点/多阶段并发、资源预算、背压、持久化、进程崩溃恢复与纵向扩容。大单体不改变通用框架与独立业务模块的边界。
+
 本模块现为 `github.com/ydtg1993/papa/v4`。主版本迁移必须同时更新源码 import、CLI 的模块识别/临时校验程序、脚手架及手册；第三方模块和历史验收记录不改。`cmd/papa/module_version_test.go` 校验 v4 模块与模板一致，`module_compat.go` 在 check/upgrade/migrate 前拒绝仍引用 v3 的项目，防止误执行框架迁移。验证须使用 GOWORK=off，另外真实生成合成业务并 tidy/build/check，不能让 go.work 掩盖依赖问题。
 
 远端已有 v4.2.1 标签的模块声明错误，本地修复不等于远端可安装；待用户发布新的正确 v4 标签后，再验收不带 replace 的 go install/new/tidy。版本修复不需要数据库迁移。CLI 不能自动重写旧业务的 imports/require/replace。
@@ -473,3 +475,17 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 `TestDownloaderConfigCopiesCannotExpandPrivateGrant` 验证外部配置和 Config 副本不能改变 With/SetClient 授权；`TestHTMLHotReloadCannotGrantPrivateOrigin`、`TestInvalidDownloaderProxyNeverFallsBackToDirect` 验证热更与代理错误不会扩大权限。`pkg/middleware/m3u8/egress_ffmpeg_test.go` 的真实合并测试需 `PAPA_EGRESS_FFMPEG_BIN`，同时验证本地片段成功与嵌套网络清单被拒绝。
 
 本机普通浏览器与 Agent 的严格沙箱渲染器是不同验证路径；后者若报 `webaccess: controlled renderer unavailable`，不能用普通浏览器通过代替。不要为测试成功而取消 Agent 沙箱。Rod 的 `-rod` 参数仅适用于链接 Rod 的测试包，不能直接附加给所有 Go 包。
+
+### 模型配置与受控 HTTP 扩展文件
+
+- `admin/configstore/model.go` / `model_test.go`：模型设置、硬上限、快照转换、修订 CAS；复用 crawler_config，不新增迁移。
+- `admin/configstore/model_secret.go` / `model_secret_test.go`：只写 API Key、本机 AES-GCM 主密钥、冻结凭据与受额度约束的 Provider 构造。
+- `admin/configstore/model_quota.go` / `model_quota_test.go`：北京时间日用量、事务预留/结算、未知占用和跨日归属；真实 SQL/并发/重连验收由独立业务通过公开 API 执行。
+- `admin/server/model_settings.go` / `model_settings_test.go`：具名设置接口、严格 JSON、错误映射。
+- `admin/server/static/model-settings.js` / `testdata/model_settings_test.js`：设置表单与晚到响应、未保存输入、重复保存、身份清理回归，接入现有 `TestOperationsJavaScriptBehavior`。
+- `engine/rulefetcher_http_source_test.go`：受控回调与原来源校验/账号/浏览器边界；实现继续在 rulefetcher_source.go/types.go。
+- `pkg/webaccess/http.go` / `http_test.go`：GetNoRedirect 与 robots/预算/跳转回归。
+
+MySQL CAS、重开连接读取与真实 Engine 多阶段/证据/清洗接线的集成验收放独立业务模块，以显式 opt-in 专用测试库运行，普通框架测试不访问真实站点或模型。
+
+`pkg/webaccess/robots_optional_test.go` 覆盖默认不请求 robots、显式遵守沿用旧测试、私网/请求/字节/限速保留，以及真实 Chromium 页面→脚本→API 录制。Policy.RespectRobots 为宿主冻结配置，默认 false；旧强制 robots 行为的调用者须显式设 true。

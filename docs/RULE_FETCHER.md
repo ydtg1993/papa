@@ -252,3 +252,13 @@ return engine.SubmitTask(task)
 `RuleSchedule.Status` 在一个显式 REPEATABLE READ 只读事务中读取控制任务、批次快照、根任务与状态计数。恢复线程在查询期间插入根任务时，本次查询仍返回同一时点的数据，下次查询才看见提交；不会把新旧数据混合误报为孤儿批次。该快照不阻止后续状态变化，不代表采集完成；真实缺失根、损坏快照仍返回错误。本次修复不新增表、不需要迁移。
 
 执行前的周期状态判断也使用同一只读快照函数，避免恢复插根期间误报损坏；快照事务结束后才调用规则目录或提交任务，批次写入仍由原行锁/CAS 检查当前 claim。读取一致性不等于锁定后续执行状态。
+
+## 宿主受控匿名 HTTP 来源
+
+`RuleFetcherConfig.HTTPSource func(context.Context, htmlfetch.Request) (*htmlfetch.Response, error)` 可选接入共享访问策略、速率和累计请求/字节预算。未提供时继续使用原 HTMLClient/账号流程；此回调只用于匿名 HTTP，与 AccountID、浏览器传输互斥，任务携带账号引用也拒绝，不静默降级。
+
+回调必须遵守请求的 `NoRedirect`，返回实际最终 URL、状态、完整正文；未完整读完应返回错误，不得把截断内容作为成功。框架继续验证 URL/状态并执行规则提取、清洗、快照、质量观测、Save 和子任务规划。回调属于可信宿主代码，其网络权限与预算由宿主承担，不构成任意客户端的网络沙箱。
+
+`webaccess.Session.GetNoRedirect(ctx, url)` 使用与 Get 相同的 origin、可选 robots、速率和共享预算，但返回首个 3xx，不跟随 Location；适合在回调中适配无自定义头/正文的 GET。不要直接用会跟随跳转的 `Session.Get` 代替请求契约。会话在 Worker 完成后关闭，不逐任务重建来重置预算。
+
+robots 默认不请求/检查，不阻断采集；如需遵守，宿主创建会话时设置 `webaccess.Policy{RespectRobots: true, ...}`。该选择与独立出口防护、限速、预算无关。

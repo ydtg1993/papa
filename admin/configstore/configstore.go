@@ -49,6 +49,7 @@ type Spec struct {
 
 // registry 已知配置项。**只有这里的键能读能写** —— 键名打错时报错会把它列出来。
 var registry = map[string]Spec{
+	KeyAgentModel: {Key: KeyAgentModel, Doc: "模型与预算；使用 LoadModelSettings / SaveModelSettings 冻结读取与修订保存", Default: DefaultModelSettings(), Validate: validateModelSettingsValue},
 	KeyIPWhitelist: {
 		Key:      KeyIPWhitelist,
 		Doc:      "来源 IP/CIDR 白名单（字符串数组）；空数组 = 不限制来源",
@@ -123,7 +124,8 @@ func Keys() []string {
 //
 // 除了直连库的 Load / Save，它还有一层**内存缓存**（cache.go）：读优先走内存、写时先落库再更新内存。
 type Store struct {
-	db *gorm.DB
+	db           *gorm.DB
+	modelKeyFile string
 
 	// mu 保护 cache。**写锁要覆盖"读-改-写"的整段**（见 UpdateSites）——
 	// 值是一整块 JSON，RMW 分成两次加锁就会互相盖。
@@ -133,7 +135,13 @@ type Store struct {
 }
 
 // New 造一个读写口。不连库、不检查表 —— 表的存在性由 EnsureTable 单独把关（启动期那一步）。
-func New(db *gorm.DB) *Store { return &Store{db: db} }
+func New(db *gorm.DB) *Store { return NewWithModelKeyFile(db, "configs/.papa-model.key") }
+
+// NewWithModelKeyFile selects the local credential encryption key file.
+// Keep this path stable across restarts and back it up with the database.
+func NewWithModelKeyFile(db *gorm.DB, path string) *Store {
+	return &Store{db: db, modelKeyFile: path}
+}
 
 // EnsureTable 启动期自检：这张表不存在就直接报错，让调用方 fail fast。
 //
@@ -158,6 +166,9 @@ func (s *Store) EnsureTable() error {
 // Load 读一个键。found=false 表示**这一行不存在**（对白名单来说 = 运营没设过 = 不限制），
 // 与"读了但读出错"（err != nil）分开报 —— 后者是配置系统不可用，前者是正常的"没配"。
 func (s *Store) Load(key string) (val []byte, found bool, err error) {
+	if key == KeyAgentModel {
+		return nil, false, fmt.Errorf("use LoadModelSettings for public model configuration")
+	}
 	if _, err := SpecOf(key); err != nil {
 		return nil, false, err
 	}
@@ -207,6 +218,9 @@ func (s *Store) LoadStrings(key string) ([]string, error) {
 // 两道前置：键必须在注册表里、值的形状必须过这一项的 Validate —— 写坏一项运行期配置
 // 的代价是"限制悄悄放宽"这类安静的事故，而写入点就这么几个，拦在这里最便宜。
 func (s *Store) Save(key string, val any, operator string) error {
+	if key == KeyAgentModel {
+		return fmt.Errorf("use SaveModelSettings with a reviewed revision")
+	}
 	sp, err := SpecOf(key)
 	if err != nil {
 		return err

@@ -100,6 +100,7 @@ func TestRunnerMySQLFullLoopReopenLeavesPublicationUntouched(t *testing.T) {
 	createRunnerMySQLFixture(t, repo, prefix+"-holdout", site.URL+"/hidden", "HOLDOUT_DB_BODY")
 	replay := replayActions(`{"tool":"fetch_page","url":"seed:0"}`, candidateAction("b"), `{"tool":"validate_candidate","stage":"catalog"}`, `{"tool":"finish"}`)
 	cfg := crawlagent.Config{Model: replay, ModelName: "deterministic-mysql-replay", Audit: audit, Repository: repo, Blobs: blobs, Actor: runnerActor, SamplePolicy: runnerPolicy, Web: webaccess.Config{Policy: webaccess.Policy{Origins: []webaccess.Origin{{URL: site.URL, AllowPrivateNetwork: true}}}}, Budgets: crawlagent.Budgets{MaxDuration: 5 * time.Second}}
+	cfg.Web.Policy.RespectRobots = true // This test explicitly covers robots request accounting.
 	goal := crawlagent.Goal{Site: prefix, Seeds: []string{site.URL + "/list"}, Stages: []crawlagent.StageGoal{{Stage: "catalog", RuleID: prefix + "-catalog", TrainingSet: prefix + "-training", HoldoutSet: prefix + "-holdout", Fields: []crawlagent.FieldGoal{{Name: "title", Kind: "string", Required: true}}}}}
 	result, err := runAgent(t, cfg, goal)
 	if err != nil || !result.Verified || result.Status != agentstore.AwaitingReview || len(result.Candidates) != 1 {
