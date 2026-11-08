@@ -1598,18 +1598,21 @@ func TestDashboardQueueOverviewGroupsBySite(t *testing.T) {
 	}
 }
 
-// 「任务队列」模块已并入 Dashboard 的「任务队列概览」：菜单项与模块壳不能再回来，
-// 原模块的完整内容（五格 tiles + 累计耗时行 + Worker 明细表）要在站点 Tab 形态里画出来。
-// 前端没有测试框架，把「删掉的」和「必须有」的两边都钉住，否则下次重构会静默丢信息。
-func TestTaskQueueModuleMergedIntoDashboard(t *testing.T) {
+// 原 queue 模块不复活；queues 治理页现在有阶段详情，Dashboard 保留已有概览。
+func TestQueueGovernanceKeepsDashboardAndDedicatedDetails(t *testing.T) {
 	tpl, err := fs.ReadFile(templateFS, "template.html")
 	if err != nil {
 		t.Fatalf("read template.html: %v", err)
 	}
 	page := string(tpl)
-	for _, gone := range []string{`data-module="queue"`, `id="mod-queue"`, `id="queue-stages"`} {
+	for _, gone := range []string{`data-module="queue"`, `id="mod-queue"`} {
 		if strings.Contains(page, gone) {
 			t.Errorf("template.html 里还有 %q —— 「任务队列」模块已并入 Dashboard，菜单/模块壳不该回来", gone)
+		}
+	}
+	for _, want := range []string{`id="mod-queues"`, `id="queue-stages"`, `/static/queue-governance.js`, `/static/queue-governance.css`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("队列治理详情接线缺失：%s", want)
 		}
 	}
 

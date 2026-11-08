@@ -66,7 +66,7 @@ function setup() {
     const ownership=setup();
     ownership.c.setMonitorNavigation([], [
       {key:'plan',section:'flow',owns:['page:policy']},
-      {key:'lab',section:'flow',owns:['module:agents','module:queues']},
+      {key:'lab',section:'flow',owns:['module:agents']},
       {key:'versions',section:'flow',owns:['module:rules','module:schedules']},
       {key:'policy',section:'flow'}]);
     assert.deepEqual(Array.from(ownership.c.monitorNavigationItems().filter(x=>x.section==='flow'),x=>x.key),['plan','lab','versions']);
@@ -84,9 +84,9 @@ function setup() {
     assert.equal(entries.find(item => item.key === 'task').group, '', 'framework table groups must not contradict their fixed section');
     assert.equal(entries.find(item => item.key === 'operation_log').group, '');
     const section = key => entries.find(item => item.key === key).section;
-    ['schedules', 'rules', 'agents', 'queues', 'workbench'].forEach(key => assert.equal(section(key), 'flow'));
+    ['schedules', 'rules', 'agents', 'workbench'].forEach(key => assert.equal(section(key), 'flow'));
     assert.equal(section('task'), 'data');
-    ['dashboard', 'quality', 'obs', 'logs'].forEach(key => assert.equal(section(key), 'monitor'));
+    ['dashboard', 'quality', 'obs', 'logs', 'queues'].forEach(key => assert.equal(section(key), 'monitor'));
     ['settings', 'tokens', 'operation_log'].forEach(key => assert.equal(section(key), 'system'));
     ['result', 'plain', 'legacy', 'unknown', 'prototype'].forEach(key => assert.equal(section(key), 'data'));
     c.Papa.page('workbench', () => ({})); c.openPage('workbench', '采集方案');
@@ -101,7 +101,9 @@ function setup() {
     c.currentSite = 'site-a'; c.syncMonitorSiteScope(); assert.equal(nodes['site-tabs'].hidden, false);
     assert.equal(c.tableFilterOpts().filter.site, 'site-a');
     await c.openTable('plain', 'Plain'); assert.equal(nodes['site-tabs'].hidden, true); assert.equal(Object.keys(c.tableFilterOpts().filter).length, 0);
-    c.switchModule('queues'); assert.equal(nodes['site-tabs'].hidden, true); assert.equal(c.currentSite, 'site-a');
+    c.switchModule('queues'); assert.equal(nodes['site-tabs'].hidden, false); assert.equal(c.currentSite, 'site-a');
+    await c.openTable('task', '任务', null, {site:'site-a',stage:'detail'});
+    assert.equal(s.calls.filter(x=>x[0]==='render').at(-1)[3].filter.stage,'detail');
     c.switchModule('dashboard'); assert.equal(nodes['site-tabs'].hidden, false); assert.equal(c.currentSite, 'site-a');
     let allow = false, destroys = 0;
     c.Papa.page('dirty', () => ({ beforeLeave: () => allow, destroy: () => destroys++ }));

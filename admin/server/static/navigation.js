@@ -11,7 +11,7 @@ var MONITOR_MODULE_NAV = [
     { key: 'schedules', label: '周期批次', section: 'flow' },
     { key: 'rules', label: '规则与发布', section: 'flow' },
     { key: 'agents', label: 'Agent 候选', section: 'flow' },
-    { key: 'queues', label: '异常处理', section: 'flow' },
+    { key: 'queues', label: '队列治理', section: 'monitor' },
     { key: 'settings', label: '系统设置', section: 'system' },
     { key: 'tokens', label: '访问令牌', section: 'system' }
 ];
@@ -70,7 +70,7 @@ function monitorActiveNavigation() {
     return { kind: kind, key: key, section: currentModule === 'section' ? currentSection : kind === 'table' ? monitorTableSection(key) : 'data' };
 }
 function monitorSiteScoped() {
-    return ['dashboard', 'schedules', 'rules', 'quality', 'agents'].indexOf(currentModule) >= 0 ||
+    return ['dashboard', 'queues', 'schedules', 'rules', 'quality', 'agents'].indexOf(currentModule) >= 0 ||
         (currentModule === 'tables' && monitorTableSupportsSite(currentTable));
 }
 function syncMonitorSiteScope() {

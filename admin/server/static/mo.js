@@ -29,7 +29,7 @@
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
     var authGeneration = 0;
-    var MODULE_TITLES = { dashboard: '运行概览', queues: '异常处理', schedules: '周期批次', rules: '规则与发布', quality: '运行质量', agents: 'Agent 候选', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: '运行报告', logs: '运行日志', settings: '系统设置', section: '数据与资源' };
+    var MODULE_TITLES = { dashboard: '运行概览', queues: '队列治理', schedules: '周期批次', rules: '规则与发布', quality: '运行质量', agents: 'Agent 候选', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: '运行报告', logs: '运行日志', settings: '系统设置', section: '数据与资源' };
     var currentModule = 'dashboard';
 
     function loadKey() {
@@ -111,6 +111,7 @@
         if (typeof invalidateLogs === 'function') invalidateLogs();
         if (typeof resetMonitorNavigation === 'function') resetMonitorNavigation();
         if (typeof resetMonitorObservations === 'function') resetMonitorObservations();
+        if (typeof resetQueueGovernance === 'function') resetQueueGovernance();
         if (typeof resetSchedulesSession === 'function') resetSchedulesSession();
         if (typeof resetRulesSession === 'function') resetRulesSession();
         if (typeof resetQualitySession === 'function') resetQualitySession();
@@ -190,6 +191,7 @@
         document.getElementById('dot').className = ok ? 'dot ok' : 'dot';
         document.getElementById('statusText').textContent = text;
         if (typeof setWorkbenchConnection === 'function') setWorkbenchConnection(ok, text);
+        if (typeof setQueueGovernanceConnection === 'function') setQueueGovernanceConnection(ok, text);
         if (!ok && typeof setMonitorVisualConnection === 'function') setMonitorVisualConnection(false);
     }
 
@@ -227,6 +229,11 @@
         if (name === 'rules') { loadRules(); }
         if (name === 'quality') { loadQuality(); }
         if (name === 'agents') { loadAgents(); }
+        if (name === 'queues') {
+            var queueMessage = document.getElementById('queue-gov-msg');
+            if (queueMessage) queueMessage.textContent = '';
+            if (lastData) renderQueues(lastData.queues);
+        }
         if (typeof syncMonitorNavigation === 'function') syncMonitorNavigation(true);
         return true;
     }
@@ -254,13 +261,13 @@
     }
 
     /** 打开某张表：切到表格模块、点亮对应菜单项，再让 oao 渲染 */
-    async function openTable(key, label, btn) {
+    async function openTable(key, label, btn, initialFilter) {
         if (!switchModule('tables', { table: key, label: label || '数据' })) return false;
-        await renderTableView(key);
+        await renderTableView(key, initialFilter);
         return true;
     }
 
-    async function renderTableView(key) {
+    async function renderTableView(key, initialFilter) {
         // 旧 oao 没有销毁/请求代次保护，隔离旧节点使其晚到渲染无法写入新视图。
         if (typeof Oao.destroy !== 'function') retireTableView();
         var view = document.getElementById('oao-view'), epoch = ++tableViewEpoch, identity = authGeneration;
@@ -280,7 +287,7 @@
                 if (status.state !== 'available') { view.textContent = status.message || '框架表暂不可用，请重新打开此表重试。'; return; }
             }
             // 第三个参数 = oao 的预置筛选（需要 oao ≥ 带 opts.filter 的那版；老版本会忽略它）
-            await Oao.render(view, key, tableFilterOpts());
+            await Oao.render(view, key, initialFilter ? { filter: Object.assign({}, tableFilterOpts().filter, initialFilter) } : tableFilterOpts());
         } catch (e) {
             if (current()) {
                 view.innerHTML = '<div class="empty">表格加载失败：' + esc(e && e.message || '请求失败') + '</div>';
@@ -664,12 +671,14 @@
             return '<span class="badge running"' + title + '>运行中</span>'
                 + '<div class="muted">已执行 ' + (s === null ? '-' : fmtSpan(s)) + '</div>';
         }
-        if (!q.enabled) return '<span class="badge off"' + title + '>已停用</span>';
+        if (typeof q.enabled !== 'boolean' || typeof q.running !== 'boolean') return '<span class="badge off">状态未知</span>';
+        if (!q.enabled) return '<span class="badge off"' + title + '>自动轮询已停用</span>';
         return '<span class="badge ok"' + title + '>空闲</span>';
     }
     function renderQueues(queues) {
         var el = document.getElementById('queue-gov');
         var data = queues || {};
+        if (!queueKeys(data).length) { el.innerHTML = '<div class="empty">宿主尚未提供后台治理队列快照。</div>'; return; }
         var focusedQueue = el.contains(document.activeElement) && document.activeElement.dataset ? document.activeElement.dataset.queue : null;
         el.innerHTML = '<table class="qtable"><thead><tr>'
             + '<th>队列</th><th>状态</th><th>上次执行</th><th>处理量</th><th>待处理</th><th>操作</th>'
@@ -681,11 +690,11 @@
                 var backlog = workbenchTime(q.backlog_at) ? workbenchCount(q.backlog) : null;
                 return '<tr>'
                     + '<td><b>' + esc(m.label) + '</b><div class="muted">' + esc(name) + ' · ' + esc(m.desc) + '</div></td>'
-                    + '<td>' + queueStatus(q) + '</td>'
+                    + '<td>' + queueStatus(q) + (q.last_error ? '<div class="hint queue-error">上次错误：' + esc(q.last_error) + '</div>' : '') + '</td>'
                     + '<td title="完成于 ' + esc(absTime(q.last_finish_at)) + '">' + esc(fmtAgo(q.last_finish_at))
                     + '<div class="muted">' + (ran ? ('耗时 ' + fmtDuration(q.last_duration)) : '尚未执行') + '</div></td>'
-                    + '<td>' + (q.running ? (q.run_processed || 0) : (ran ? q.last_processed : 0))
-                    + '<div class="muted">' + (q.running ? '本轮已处理' : '上次处理') + ' · 累计 ' + (q.total_processed || 0) + '</div></td>'
+                    + '<td>' + workbenchNumber(workbenchCount(q.running ? q.run_processed : q.last_processed))
+                    + '<div class="muted">' + (q.running ? '本轮已处理' : '上次处理') + ' · 累计 ' + workbenchNumber(workbenchCount(q.total_processed)) + ' · 执行 ' + workbenchNumber(workbenchCount(q.runs)) + ' 轮</div></td>'
                     + '<td>' + (backlog === null ? '—（未知）' : backlog > 0 ? '<span class="badge warn">' + backlog + '</span>' : '0')
                     + '<div class="muted">' + esc(fmtAgo(q.backlog_at)) + '采样</div></td>'
                     // 队列名是运行期才知道的，所以走 data-* + 从 dataset 取 ——
@@ -700,26 +709,30 @@
     var queueFlights = Object.create(null);
     async function triggerQueue(name) {
         var m = queueMeta(name);
-        if (!m || queueFlights[name]) return;
-        queueFlights[name] = true;
+        if (!m || queueFlights[name] || currentModule !== 'queues') return;
+        var current = captureMonitorView(), flight = {};
+        queueFlights[name] = flight;
         var el = document.getElementById('queue-gov-msg');
-        var buttons = function (disabled) {
+        function buttons(disabled) {
             document.querySelectorAll('[data-queue]').forEach(function (button) { if (button.dataset.queue === name) button.disabled = disabled; });
-        };
+        }
         buttons(true);
-        el.textContent = m.label + '处理中（全部站点）...';
         try {
-            var resp = await apiPost(m.url, {});
-            if (!resp || !resp.ok) return;
+            var confirmed = await Dialog.confirm({ title: '执行' + m.label,
+                body: '<p>将扫描并重新投递符合条件的任务，作用于<b>全部站点</b>，不受当前站点筛选影响。</p><p>此操作可能启动实际采集，不是只刷新统计。</p>', okLabel: '确认全站执行' });
+            if (!confirmed || !current()) return;
+            el.textContent = m.label + '处理中（全部站点）...';
+            var resp = await apiRequest(m.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', current: current });
+            if (!resp || !resp.ok || !current()) return;
             var data = await resp.json();
+            if (!current()) return;
             Toast.ok(m.label + '：' + m.done + ' ' + (data[m.key] || 0) + ' 个任务（全部站点）');
             fetchData();
         } catch (e) {
-            Toast.err('响应读取失败，操作结果尚未确认，请刷新队列状态');
+            if (current()) Toast.err('响应读取失败，操作结果尚未确认，请刷新队列状态');
         } finally {
-            el.textContent = '';
-            delete queueFlights[name];
-            buttons(false);
+            if (queueFlights[name] === flight) delete queueFlights[name];
+            if (current()) { el.textContent = ''; buttons(false); }
         }
     }
     /* ============ 站点 Tab（多站点时按站点把面板分开） ============ */
@@ -805,7 +818,7 @@
                 ? '<b>已暂停</b>（' + esc(fmtAgo(stat.breaker_paused_at)) + '）'
                 : '未暂停'
         ];
-        parts.push('<span class="muted">在「采集任务流 → 采集任务」查看本站任务</span>');
+        parts.push('<span class="muted">在「数据与资源 → 采集任务」查看本站任务</span>');
         meta.innerHTML = parts.join(' ｜ ');
         meta.hidden = false;
     }
@@ -839,6 +852,7 @@
         renderDirs(data.system && data.system.dirs);
         renderQueueSummary(view.stages, view.sites);
         renderQueues(view.queues);
+        if (typeof renderQueueGovernance === 'function') renderQueueGovernance(data, currentSite);
         // 键名是**复数**：服务端 monitor.go 写的是 resp["breakers"]（数组，每站一条）。
         // 这里曾经写成 data.breaker，于是横幅永远拿不到数据、（list || []）把它吞成空数组，
         // 一个字都不报 —— 多站熔断横幅其实一直没显示过。

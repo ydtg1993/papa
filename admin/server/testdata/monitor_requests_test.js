@@ -97,7 +97,7 @@ function setup() {
     // Queue double click dispatches once and releases its lock on invalid JSON.
     {const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),s=setup(),nodes={textContent:''};
      s.c.queueMeta=()=>({label:'轮询队列',url:'/repeat',done:'处理',key:'count'});s.c.document.getElementById=()=>nodes;s.c.document.querySelectorAll=()=>[];
-     s.c.Toast.ok=()=>{};s.c.fetchData=()=>{};
+     s.c.Toast.ok=()=>{};s.c.fetchData=()=>{};s.c.currentModule='queues';s.c.captureMonitorView=()=>()=>true;s.c.Dialog={confirm:async()=>true};
      const a=mo.indexOf('    var queueFlights ='),b=mo.indexOf('    /* ============ 站点 Tab',a);assert.ok(a>0&&b>a);vm.runInContext(mo.slice(a,b),s.c);
      const p=s.c.triggerQueue('repeat');await s.c.triggerQueue('repeat');assert.equal(s.requests.length,1);s.requests[0].resolve({ok:true,status:200,text:async()=>'{broken'});await p;assert.equal(s.c.queueFlights.repeat,undefined);assert.ok(s.messages.some(m=>m.includes('结果尚未确认')));}
     // Trace responses are ordered from the click, not from arrival of headers.

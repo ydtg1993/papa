@@ -25,7 +25,7 @@ func TestOperationsJavaScriptBehavior(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "template.html"), template, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"agent-activity.js", "model-settings.js", "visual-state.js", "visuals.js", "appearance.js", "extensions.js", "navigation.js", "requests.js", "table-links.js", "schedules.js", "mo.js", "trace.js", "workbench.js", "rules.js", "quality.js", "quality-write.js", "agents.js"} {
+	for _, name := range []string{"queue-governance.js", "agent-activity.js", "model-settings.js", "visual-state.js", "visuals.js", "appearance.js", "extensions.js", "navigation.js", "requests.js", "table-links.js", "schedules.js", "mo.js", "trace.js", "workbench.js", "rules.js", "quality.js", "quality-write.js", "agents.js"} {
 		b, err := staticFS.ReadFile("static/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -45,7 +45,7 @@ func TestOperationsJavaScriptBehavior(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "oao.js"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, script := range []string{"agent_activity_test.js", "model_settings_test.js", "trace_dialog_test.js", "appearance_test.js", "storage_startup_test.js", "visual_state_test.js", "visuals_test.js", "navigation_test.js", "monitor_identity_test.js", "legacy_oao_test.js", "extensions_test.js", "monitor_requests_test.js", "native_session_test.js", "table_links_test.js", "schedules_test.js", "dialog_test.js", "workbench_test.js", "rules_test.js", "quality_test.js", "quality_write_test.js", "agents_test.js"} {
+	for _, script := range []string{"queue_governance_test.js", "agent_activity_test.js", "model_settings_test.js", "trace_dialog_test.js", "appearance_test.js", "storage_startup_test.js", "visual_state_test.js", "visuals_test.js", "navigation_test.js", "monitor_identity_test.js", "legacy_oao_test.js", "extensions_test.js", "monitor_requests_test.js", "native_session_test.js", "table_links_test.js", "schedules_test.js", "dialog_test.js", "workbench_test.js", "rules_test.js", "quality_test.js", "quality_write_test.js", "agents_test.js"} {
 		t.Run(script, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()

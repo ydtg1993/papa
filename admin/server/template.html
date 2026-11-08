@@ -34,6 +34,7 @@
     <link rel="stylesheet" href="/static/layout.css">
     <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
     <link rel="stylesheet" href="/static/custom.css">
+<link rel="stylesheet" href="/static/queue-governance.css">
 </head>
 <body>
 <div id="login">
@@ -226,16 +227,24 @@
         </div>
 
         <div class="module" id="mod-queues">
-            <p class="hint">作用范围：全部站点。立即执行不受顶部站点筛选影响。</p>
+            <p class="hint" id="queue-freshness" role="status">尚未获得监控快照。</p>
+            <div id="queue-overview" class="queue-overview"></div>
+            <section>
+                <h2>阶段采集队列</h2>
+                <p class="hint">按顶部站点筛选，展开查看 Worker 和关联任务。未完成包含排队，两者不能相加；累计计数不是数据库任务总数。暂停只阻止新投递，已运行任务可继续完成。</p>
+                <div id="queue-stages"></div>
+            </section>
             <section>
                 <h2>治理队列 · 全部站点</h2>
                 <div class="card">
                     <p class="hint">失败重投（error_queue）/ 周期轮询（repeat_queue）两个后台队列的运行状态。
-                        「待处理」为低频采样的积压快照（server.queue_sample_interval），其余字段为内存计数，均非实时。</p>
+                        「待处理」为低频采样的积压快照（server.queue_sample_interval），其余字段为本进程内存快照。此区始终为全部站点，不受站点筛选影响；立即执行会重新投递任务。</p>
                     <div class="table-wrap" id="queue-gov"></div>
-                    <div class="hint" id="queue-gov-msg"></div>
+                    <div class="hint" id="queue-gov-msg" role="status"></div>
                 </div>
             </section>
+            <p class="hint">覆盖范围：宿主上报的阶段采集队列及错误重投、周期轮询队列。启动恢复仅执行一次，请在运行报告或日志中核对；未上报的业务队列不在统计范围内。</p>
+            <div class="queue-related"><button class="btn" onclick="switchModule('obs')">查看运行报告</button><button class="btn" onclick="switchModule('logs')">查看运行日志</button></div>
         </div>
 
         <div class="module" id="mod-tables">
@@ -327,6 +336,7 @@
 <script src="/static/table-links.js"></script>
 <script src="/static/requests.js"></script>
 <script src="/static/workbench.js"></script>
+<script src="/static/queue-governance.js"></script>
 <script src="/static/visual-state.js"></script>
 <script src="/static/visuals.js"></script>
 <script src="/static/agent-activity.js"></script>
