@@ -25,6 +25,7 @@ function monitorTableSupportsSite(key) {
     // The task table has a stable framework-owned site filter even before menus arrive.
     return table ? Array.isArray(table.filters) && table.filters.some(function (filter) { return filter && filter.name === 'site'; }) : key === 'task';
 }
+function monitorNavigationOwner(kind,key){var owner=null;for(var i=0;i<monitorNavigation.pages.length;i++){var next=monitorNavigation.pages.find(function(p){return (p.owns||[]).indexOf(kind+':'+key)>=0;});if(!next)return owner;owner=next;kind='page';key=next.key;}return owner;}
 function monitorNavigationItems() {
     var tables = monitorNavigation.tables.map(function (item) {
         return { kind: 'table', key: item.key, label: item.key === 'task' ? '采集任务（crawler_tasks）' : item.label,
@@ -38,7 +39,8 @@ function monitorNavigationItems() {
         .concat(tables.filter(function (item) { return item.key === 'task'; }))
         .concat(MONITOR_MODULE_NAV.map(function (item) { return Object.assign({ kind: 'module' }, item); }))
         .concat(tables.filter(function (item) { return item.key !== 'task'; }))
-        .concat(pages.filter(function (item) { return item.section !== 'flow'; }));
+        .concat(pages.filter(function (item) { return item.section !== 'flow'; }))
+        .filter(function(item){return !monitorNavigationOwner(item.kind,item.key);});
 }
 function setMonitorNavigation(tables, pages) {
     function clean(items) {
@@ -48,7 +50,7 @@ function setMonitorNavigation(tables, pages) {
             seen[item.key] = true; return true;
         }).map(function (item) {
             return { key: item.key, label: typeof item.label === 'string' && item.label ? item.label : item.key,
-                group: typeof item.group === 'string' ? item.group : '', section: monitorSection(item.section), filters: item.filters,
+                group: typeof item.group === 'string' ? item.group : '', section: monitorSection(item.section), filters: item.filters, owns: Array.isArray(item.owns)?item.owns.filter(function(x){return typeof x==='string'&&/^(module|page):[a-zA-Z0-9_-]+$/.test(x);}):[],
                 frameworkData: typeof item.header === 'string' && item.header.indexOf('data-papa-framework-table') !== -1 };
         });
     }
@@ -64,6 +66,7 @@ function monitorActiveNavigation() {
     var key = kind === 'table' ? currentTable : kind === 'page' ? currentPage && currentPage.key : currentModule;
     var item = monitorNavigationItems().filter(function (entry) { return entry.kind === kind && entry.key === key; })[0];
     if (item) return item;
+    var owner=monitorNavigationOwner(kind,key);if(owner)return {kind:'page',key:owner.key,label:owner.label,section:owner.section};
     return { kind: kind, key: key, section: currentModule === 'section' ? currentSection : kind === 'table' ? monitorTableSection(key) : 'data' };
 }
 function monitorSiteScoped() {

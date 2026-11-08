@@ -63,6 +63,15 @@ function setup() {
 }
 
 (async () => {
+    const ownership=setup();
+    ownership.c.setMonitorNavigation([], [
+      {key:'plan',section:'flow',owns:['page:policy']},
+      {key:'lab',section:'flow',owns:['module:agents','module:queues']},
+      {key:'versions',section:'flow',owns:['module:rules','module:schedules']},
+      {key:'policy',section:'flow'}]);
+    assert.deepEqual(Array.from(ownership.c.monitorNavigationItems().filter(x=>x.section==='flow'),x=>x.key),['plan','lab','versions']);
+    ownership.c.currentModule='rules';assert.equal(ownership.c.monitorActiveNavigation().key,'versions');
+    ownership.c.resetMonitorNavigation();assert.ok(ownership.c.monitorNavigationItems().some(x=>x.key==='rules'),'default modules lost after identity reset');
     const s = setup(), { c, nodes } = s;
     assert.equal(c.currentSection, 'monitor'); assert.equal(nodes['section-title'].textContent, '运行监控与报告');
     assert.equal(nodes['main-nav'].children.length, 4); assert.equal(c.monitorNavigationItems().length, 10);

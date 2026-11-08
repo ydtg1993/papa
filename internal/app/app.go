@@ -152,11 +152,12 @@ func (a *App) UseRouter(fn func(*Router)) {
 //	    });`,
 //	})
 type Page struct {
-	Key     string // 菜单与 DOM 标识：字母、数字、下划线、连字符
-	Label   string // 菜单文案，留空用 Key
-	Group   string // 分类内的业务分组，留空归 "General"
-	Section string // 可选导航分类：flow / monitor / data / system；留空或未知值归 data
-	Script  string // 受信任 JS，必须调 Papa.page(Key, fn) 注册渲染
+	Owns    []string // 可选归属入口，例如 module:rules / page:operations；仅改变菜单，不改变权限。
+	Key     string   // 菜单与 DOM 标识：字母、数字、下划线、连字符
+	Label   string   // 菜单文案，留空用 Key
+	Group   string   // 分类内的业务分组，留空归 "General"
+	Section string   // 可选导航分类：flow / monitor / data / system；留空或未知值归 data
+	Script  string   // 受信任 JS，必须调 Papa.page(Key, fn) 注册渲染
 }
 
 // UsePage 注册一个自定义页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
@@ -173,6 +174,8 @@ func (a *App) UsePage(p Page) {
 	if strings.TrimSpace(p.Script) == "" {
 		panic(fmt.Errorf("page %q: Script 为空 —— 里面要调 Papa.page(%q, fn) 注册渲染", p.Key, p.Key))
 	}
+	validatePageOwnership(a.pages, p)
+	p.Owns = append([]string(nil), p.Owns...)
 	a.pages = append(a.pages, p)
 	a.extraJS = append(a.extraJS, p.Script)
 }
@@ -249,7 +252,7 @@ func operatorOf(ev oao.ActionEvent) string {
 // 三条路由**无条件注册**（没有内容时返回空体 / 空清单），这样 template.html 里的两个标签是静态的，
 // 宿主没注入东西也不会 404。抽成独立方法是为了能在没有数据库时单测（完整装配需要 MySQL）。
 func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap Middleware) {
-	pageList := make([]map[string]string, 0, len(a.pages))
+	pageList := make([]map[string]any, 0, len(a.pages))
 	for _, p := range a.pages {
 		label, group := p.Label, p.Group
 		if label == "" {
@@ -264,7 +267,11 @@ func (a *App) mountCustomRoutes(mux *http.ServeMux, wrap Middleware) {
 		default:
 			section = "data"
 		}
-		pageList = append(pageList, map[string]string{"key": p.Key, "label": label, "group": group, "section": section})
+		item := map[string]any{"key": p.Key, "label": label, "group": group, "section": section}
+		if len(p.Owns) > 0 {
+			item["owns"] = p.Owns
+		}
+		pageList = append(pageList, item)
 	}
 	jsBody := strings.Join(a.extraJS, "\n;\n")
 	cssBody := strings.Join(a.extraCSS, "\n")
