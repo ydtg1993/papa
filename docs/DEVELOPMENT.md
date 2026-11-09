@@ -278,6 +278,8 @@ papa 门面 ──► internal/app ──► engine ──► internal/{workerpo
                  └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
                          └──► tasksource/oplog 还依赖 admin/gormsource
 pkg/notify ──► core
+pkg/temporary ──► 标准库 + UUID（Files安全目录、Cleaner清理顺序；业务实现CleanupStore）
+pkg/testdb ──► 标准库（独占测试库创建/清理；不包含业务库白名单）
 pkg/rulestore ──► pkg/crawlrule + pkg/htmlfetch + models + GORM（不依赖 engine；通过 Catalog 接入）
 pkg/crawlagent ──► pkg/{crawlagent/model,webaccess,agentstore,crawlrule,htmlfetch,rulestore}（不依赖 engine；无生产发布/业务保存接口）
 pkg/agentadmin ──► pkg/{rulequality,crawlagent,agentstore,rulestore}（不持有发布能力）
@@ -497,3 +499,5 @@ MySQL CAS、重开连接读取与真实 Engine 多阶段/证据/清洗接线的�
 `static/agent-activity.js` 只消费主监控请求已经接受的快照，使用 `visuals.js` 的统一图表生命周期；无额外轮询或异步响应通道。`testdata/agent_activity_test.js` 纳入 `TestOperationsJavaScriptBehavior`，验证 Token 与队列口径分离、运行中/终态步骤耗时、人工发布提示、站点过滤、离页销毁、身份清空、旧图表降级与读取异常。真实业务的审计与页面效果在独立模块验证。
 
 导航归属：`internal/app/page_ownership.go` 校验 Page.Owns 的引用与无环性，`admin/server/static/navigation.js` 负责菜单归属和直接访问高亮；不改变后端授权。
+
+临时资源基础能力：`pkg/temporary/files.go` 负责宿主目录与UUID文件路径；`cleanup.go` 负责已授权删除的顺序与重试。业务独占同ID的写入/读出/删除锁并实现CleanupStore事务，框架不导入业务models。`pkg/testdb/schema.go` 只清理本次独占创建的测试库。回归 `go test -race ./pkg/temporary ./pkg/testdb`；契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。

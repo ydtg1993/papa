@@ -90,6 +90,10 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	}
 
 	coredoc := filepath.Join("demo", "docs", "framework", "CORE_CONFIG.md")
+	temporaryDoc := filepath.Join("demo", "docs", "framework", "TEMPORARY_RESOURCES.md")
+	if err := os.Remove(temporaryDoc); err != nil {
+		t.Fatal(err)
+	}
 	writeFileT(t, coredoc, "# 本地乱改过的\n")
 	if err := os.Remove(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
 		t.Fatal(err)
@@ -114,6 +118,9 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	if got := readFile(t, coredoc); got != "# 本地乱改过的\n" {
 		t.Error("dry-run 不该改文件")
 	}
+	if _, err := os.Stat(temporaryDoc); !os.IsNotExist(err) {
+		t.Fatal("dry-run created temporary resources manual", err)
+	}
 
 	// ② --write：刷回框架那份，缺的补上，自己加的留着；业务文件一个字节不动
 	captureStdout(t, func() {
@@ -127,6 +134,10 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 	}
 	if got := readFile(t, coredoc); got != string(want) {
 		t.Error("--write 之后副本应当与框架逐字一致")
+	}
+	temporaryWant, err := docs.Files.ReadFile("TEMPORARY_RESOURCES.md")
+	if err != nil || readFile(t, temporaryDoc) != string(temporaryWant) {
+		t.Fatal("temporary resources manual not upgraded", err)
 	}
 	if _, err := os.Stat(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
 		t.Errorf("缺的副本应当补上：%v", err)
