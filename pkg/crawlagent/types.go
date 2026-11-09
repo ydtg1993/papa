@@ -37,15 +37,16 @@ type LinkGoal struct {
 }
 
 type StageGoal struct {
-	Stage       string               `json:"stage"`
-	RuleID      string               `json:"rule_id"`
-	Fields      []FieldGoal          `json:"fields"`
-	Transport   string               `json:"transport"` // http or browser
-	ItemKey     string               `json:"item_key,omitempty"`
-	Links       []LinkGoal           `json:"links,omitempty"`
-	TrainingSet string               `json:"training_set,omitempty"`
-	HoldoutSet  string               `json:"holdout_set,omitempty"`
-	Existing    *rulestore.Reference `json:"existing,omitempty"`
+	Browser     *webaccess.BrowserPlan `json:"browser,omitempty"`
+	Stage       string                 `json:"stage"`
+	RuleID      string                 `json:"rule_id"`
+	Fields      []FieldGoal            `json:"fields"`
+	Transport   string                 `json:"transport"` // http or browser
+	ItemKey     string                 `json:"item_key,omitempty"`
+	Links       []LinkGoal             `json:"links,omitempty"`
+	TrainingSet string                 `json:"training_set,omitempty"`
+	HoldoutSet  string                 `json:"holdout_set,omitempty"`
+	Existing    *rulestore.Reference   `json:"existing,omitempty"`
 }
 
 type Goal struct {

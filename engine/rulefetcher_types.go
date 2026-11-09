@@ -84,7 +84,11 @@ type RuleFetcherConfig struct {
 	// validation, snapshots and quality remain checked by RuleFetcher. It is
 	// mutually exclusive with browser transport and AccountID; no fallback runs.
 	HTTPSource func(context.Context, htmlfetch.Request) (*htmlfetch.Response, error)
-	ReplaySafe bool
+	// BrowserSource is a host-controlled anonymous DOM capture. It must return
+	// the exact requested URL, StatusCode zero and a complete bounded Body.
+	// The host owns navigation, egress guards, resource budgets and isolation.
+	BrowserSource func(context.Context, string) (*htmlfetch.Response, error)
+	ReplaySafe    bool
 	// Next overrides Result.NextURL/NextCursor; nil means no next page.
 	// Return a canonical URL and optional non-secret State. No raw body is exposed.
 	Next               func(context.Context, *Task, RulePage) (*RuleRequest, error)

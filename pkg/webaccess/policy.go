@@ -183,6 +183,9 @@ func pathAllowed(a allowedOrigin, p string) bool {
 }
 
 func (s *Session) target(raw string, resource bool) (*url.URL, allowedOrigin, error) {
+	if s.checkURL != nil && s.checkURL(raw) != nil {
+		return nil, allowedOrigin{}, ErrPolicy
+	}
 	u, key, err := normalize(raw)
 	if err != nil {
 		return nil, allowedOrigin{}, err

@@ -33,6 +33,9 @@ func NewRuleFetcher(cfg RuleFetcherConfig) (*RuleFetcher, error) {
 	if cfg.Transport == "browser" && cfg.BuildRequest != nil {
 		return nil, fmt.Errorf("rule fetcher: browser does not accept BuildRequest")
 	}
+	if cfg.BrowserSource != nil && (cfg.Transport != "browser" || cfg.AccountID != "" || cfg.WaitSelector != "" || cfg.BuildRequest != nil) {
+		return nil, fmt.Errorf("rule fetcher: BrowserSource requires anonymous browser transport without request or wait overrides")
+	}
 	if cfg.HTTPSource != nil && (cfg.Transport != "http" || cfg.AccountID != "") {
 		return nil, fmt.Errorf("rule fetcher: HTTPSource requires anonymous HTTP transport")
 	}

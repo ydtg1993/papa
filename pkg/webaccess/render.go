@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
@@ -99,6 +100,10 @@ func guardedLauncher(ctx context.Context, bin, profile, proxy string) *launcher.
 }
 
 func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (Response, []Response, error) {
+	return s.render(ctx, raw, opts, nil)
+}
+
+func (s *Session) render(ctx context.Context, raw string, opts RenderOptions, walk *browserWalk) (Response, []Response, error) {
 	if !s.renderer.Enabled {
 		return Response{}, nil, ErrRendererUnavailable
 	}
@@ -293,6 +298,13 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 			body = []byte{}
 		}
 		if err = (proto.FetchFulfillRequest{RequestID: e.RequestID, ResponseCode: r.StatusCode, ResponseHeaders: responseHeaders, Body: body}).Call(page); err != nil {
+			// Navigation or page script can cancel a paused resource while the
+			// host is fetching it. It was already authorized and charged, but
+			// must not be recorded as delivered evidence. Never suppress a
+			// document failure or any preceding policy/budget/audit error.
+			if !isTop && canceledInterception(err) {
+				return
+			}
 			fail(renderError(ctx, err))
 			return
 		}
@@ -330,6 +342,31 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 			return Response{}, nil, renderError(ctx, err)
 		}
 	}
+	if walk != nil {
+		snapshot := func() (Response, error) {
+			mu.Lock()
+			result := top
+			saved := firstErr
+			mu.Unlock()
+			if saved != nil {
+				return Response{}, saved
+			}
+			// Read same-document history changes from the isolated world too.
+			var actual string
+			if err := evalBrowser(ctx, page, rootFrame, `location.href`, &actual); err != nil {
+				return Response{}, err
+			}
+			u, _, err := s.target(actual, false)
+			if err != nil {
+				return Response{}, err
+			}
+			result.URL = u.String()
+			return s.captureDOM(ctx, page, rootFrame, result)
+		}
+		if err := s.walkBrowser(ctx, page, rootFrame, walk, snapshot); err != nil {
+			return Response{}, nil, err
+		}
+	}
 	// Freeze outbound work before extracting the bounded DOM and returning
 	// usage. No handler may continue charging requests after Render returns.
 	stopEvents()
@@ -345,30 +382,38 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 	if result.URL == "" {
 		return Response{}, nil, ErrTransport
 	}
+	if walk != nil {
+		return result, captured, nil
+	}
+	result, err = s.captureDOM(ctx, page, rootFrame, result)
+	return result, captured, err
+}
+
+func (s *Session) captureDOM(ctx context.Context, page *rod.Page, rootFrame proto.PageFrameID, result Response) (Response, error) {
 	// Fixed extraction code in an isolated world: page scripts cannot replace
 	// DOM getters or TextEncoder to forge evidence or evade the CDP byte cap.
 	// No model-supplied code is accepted here.
 	world, err := (proto.PageCreateIsolatedWorld{FrameID: rootFrame, WorldName: "papa-bounded-dom"}).Call(page)
 	if err != nil {
-		return Response{}, nil, renderError(ctx, err)
+		return Response{}, renderError(ctx, err)
 	}
 	expression := fmt.Sprintf(`(() => { const s = document.documentElement.outerHTML; const limit = %d; return s.length > limit || new TextEncoder().encode(s).byteLength > limit ? null : s })()`, s.budget.MaxResponseBytes)
 	dom, err := (proto.RuntimeEvaluate{Expression: expression, ContextID: world.ExecutionContextID, ReturnByValue: true, Silent: true}).Call(page)
 	if err != nil {
-		return Response{}, nil, renderError(ctx, err)
+		return Response{}, renderError(ctx, err)
 	}
 	if dom.ExceptionDetails != nil || dom.Result == nil {
-		return Response{}, nil, ErrTransport
+		return Response{}, ErrTransport
 	}
 	if dom.Result.Value.Nil() {
-		return Response{}, nil, ErrBudget
+		return Response{}, ErrBudget
 	}
 	body := []byte(dom.Result.Value.Str())
 	if int64(len(body)) > s.budget.MaxResponseBytes {
-		return Response{}, nil, ErrBudget
+		return Response{}, ErrBudget
 	}
 	if err = s.bytes(ctx, int64(len(body))); err != nil {
-		return Response{}, nil, err
+		return Response{}, err
 	}
 	result.Body = body
 	result.Rendered = true
@@ -376,7 +421,7 @@ func (s *Session) Render(ctx context.Context, raw string, opts RenderOptions) (R
 	// sample/verification contracts intentionally use unknown status for DOM.
 	result.StatusCode = 0
 	result.ContentType = "text/html; charset=utf-8"
-	return result, captured, nil
+	return result, nil
 }
 
 func renderError(ctx context.Context, err error) error {
@@ -389,4 +434,9 @@ func renderError(ctx context.Context, err error) error {
 		return ErrCanceled
 	}
 	return ErrRendererUnavailable
+}
+
+func canceledInterception(err error) bool {
+	var protocol *cdp.Error
+	return errors.As(err, &protocol) && protocol.Code == -32602 && protocol.Message == "Invalid InterceptionId."
 }

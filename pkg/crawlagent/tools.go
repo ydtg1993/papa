@@ -39,6 +39,49 @@ func (e *execution) dispatch(ctx context.Context, a action) (any, *Result, error
 		if !validText(a.URL, 16<<10) || hidden || hiddenErr != nil {
 			return nil, nil, ErrAction
 		}
+		hasContract := false
+		for _, st := range e.goal.Stages {
+			hasContract = hasContract || st.Browser != nil
+		}
+		if !hasContract && a.Stage != "" {
+			return nil, nil, ErrAction
+		}
+		if hasContract {
+			st, ok := e.stage(a.Stage)
+			if a.Tool != "fetch_page" || !ok {
+				return nil, nil, ErrAction
+			}
+			if st.Browser != nil {
+				if a.Mode != "render" || a.Wait != nil || !e.agent.config.Web.Renderer.Enabled {
+					return nil, nil, ErrAction
+				}
+				source, ok := e.source.(interface {
+					Browse(context.Context, string, webaccess.BrowserPlan) (webaccess.BrowseResult, error)
+				})
+				if !ok {
+					return nil, nil, ErrAction
+				}
+				result, err := source.Browse(ctx, a.URL, *st.Browser)
+				if err != nil {
+					return nil, nil, err
+				}
+				if result.Truncated && !st.Browser.AllowTruncated {
+					return nil, nil, webaccess.ErrBudget
+				}
+				items := []Evidence{}
+				for _, response := range result.Pages {
+					item, err := e.saveEvidence(ctx, response, "live_page")
+					if err != nil {
+						return nil, nil, err
+					}
+					items = append(items, item)
+				}
+				return map[string]any{"evidence": items, "stop_reason": result.StopReason, "truncated": result.Truncated, "steps": result.Steps}, nil, nil
+			}
+			if a.Mode != "" && a.Mode != "http" {
+				return nil, nil, ErrAction
+			}
+		}
 		if (a.Mode == "render" || a.Tool == "record_api") && !e.agent.config.Web.Renderer.Enabled {
 			return nil, nil, ErrAction
 		}

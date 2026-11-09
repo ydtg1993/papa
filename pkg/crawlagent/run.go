@@ -96,6 +96,19 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 	if err = e.loadHistory(ctx); err != nil {
 		return e.stop(err)
 	}
+	previousURL := w.CheckURL
+	w.CheckURL = func(raw string) error {
+		if previousURL != nil {
+			if err := previousURL(raw); err != nil {
+				return err
+			}
+		}
+		hidden, err := e.isHiddenURL(raw)
+		if err != nil || hidden {
+			return ErrEvidence
+		}
+		return nil
+	}
 	previousRequest, previousBytes := w.OnRequest, w.OnBytes
 	w.OnRequest = func(c context.Context) error {
 		if previousRequest != nil {
@@ -187,6 +200,27 @@ func (a *Agent) RunWithID(parent context.Context, runID string, goal Goal) (resu
 		}
 		toolStarted := time.Now()
 		observation, terminal, toolErr := e.dispatch(ctx, act)
+		// Same-document pagination has no OnRequest callback. Persist its
+		// charged pages even on a failed/canceled tool before ending the audit.
+		if e.source != nil {
+			pages := e.source.Usage().Pages
+			e.mu.Lock()
+			changed := pages > e.usage.Pages
+			e.mu.Unlock()
+			if changed {
+				accountCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				syncErr := e.updateUsage(accountCtx, func(u *Usage) error {
+					if pages > u.Pages {
+						u.Pages = pages
+					}
+					return nil
+				})
+				stop()
+				if syncErr != nil {
+					return e.stop(syncErr)
+				}
+			}
+		}
 		if ctx.Err() != nil {
 			toolErr = ctx.Err()
 		}

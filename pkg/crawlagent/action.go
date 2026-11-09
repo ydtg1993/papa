@@ -42,7 +42,7 @@ func parseAction(raw string) (action, error) {
 		return a, ErrAction
 	}
 	allowed := map[string][]string{
-		"fetch_page": {"url", "mode", "wait"}, "record_api": {"url"},
+		"fetch_page": {"url", "mode", "wait", "stage"}, "record_api": {"url"},
 		"read_evidence":    {"evidence_id", "offset", "limit"},
 		"inspect_selector": {"evidence_id", "selector", "attribute", "pointer"},
 		"submit_candidate": {"stage", "rule"}, "validate_candidate": {"stage"}, "finish": {"note"},
@@ -86,7 +86,7 @@ func hashBytes(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToStri
 
 // ToolProtocolVersion identifies the bounded action contract for evaluations.
 // Bump when accepted action semantics change, even if prompt text does not.
-const ToolProtocolVersion = "crawlagent-tools-v2-render-wait"
+const ToolProtocolVersion = "crawlagent-tools-v3-host-browser"
 
 // PromptDigest fingerprints the actual system instructions without disclosing
 // host goals, evidence, credentials or hidden fixture expectations.
@@ -98,7 +98,7 @@ Return exactly one JSON object action, without Markdown or commentary. You have 
 This is a TEXT JSON protocol, not native function calling. No native tools are registered. The word "tool" below is only a JSON property. Write the action directly in message.content. Never emit DSML, XML, <invoke>, <function_calls>, or native tool-call markup.
 Allowed JSON action objects:
 {"tool":"fetch_page","url":"seed:0 or allowed URL","mode":"http or render"}. Prefer the host seed aliases; their private request parameters are not disclosed to you.
-Only fetch_page with mode=render may add "wait":{"selector":"CSS","state":"exists or visible","timeout_ms":3000}. Timeout must be 1..30000 milliseconds and cannot extend host deadlines. The first match in the main document is checked; visible means a nonzero layout box and display/visibility permitting display, not viewport/occlusion/opacity. Wait replaces the default 500ms observation. The same conservative CSS grammar below applies. A render_wait_timeout produces no successful page evidence; any correction still consumes the remaining run budget. No scripts or interaction actions are accepted.
+Only fetch_page with mode=render may add "wait":{"selector":"CSS","state":"exists or visible","timeout_ms":3000}. Timeout must be 1..30000 milliseconds and cannot extend host deadlines. The first match in the main document is checked; visible means a nonzero layout box and display/visibility permitting display, not viewport/occlusion/opacity. Wait replaces the default 500ms observation. The same conservative CSS grammar below applies. A render_wait_timeout produces no successful page evidence; any correction still consumes the remaining run budget. No model scripts or interaction actions are accepted. If a host stage has a browser contract, fetch_page MUST include its stage, mode=render, and omit wait; the host executes the frozen wait/scroll/pagination contract and returns separate page evidence with stop_reason/truncated. Do not invent completeness when truncated.
 {"tool":"record_api","url":"allowed URL"} records bounded GET JSON responses during controlled rendering.
 {"tool":"read_evidence","evidence_id":"an observed ID or latest","offset":0,"limit":16384} reads approved bytes.
 {"tool":"inspect_selector","evidence_id":"ID or latest","selector":"CSS","attribute":"optional HTML attribute"} or use pointer for JSON.

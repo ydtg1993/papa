@@ -177,6 +177,9 @@ func cloneGoal(goal Goal) (Goal, error) {
 		if !validText(s.Stage, 128) || !validText(s.RuleID, 128) || stages[s.Stage] || ruleIDs[s.RuleID] || (s.Transport != "http" && s.Transport != "browser") || len(s.Fields) == 0 || len(s.Fields) > 32 || len(s.Links) > 8 {
 			return Goal{}, ErrInvalid
 		}
+		if s.Browser != nil && (s.Transport != "browser" || s.Browser.Validate() != nil) {
+			return Goal{}, ErrInvalid
+		}
 		stages[s.Stage] = true
 		ruleIDs[s.RuleID] = true
 		fields := map[string]bool{}

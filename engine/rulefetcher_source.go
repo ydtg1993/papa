@@ -54,7 +54,11 @@ func (f *RuleFetcher) readRulePage(ctx context.Context, task *Task, e *Engine, r
 		if f.config.BuildRequest != nil || req.State != "" {
 			return out, ruleSourceInvalid("browser transport supports URL navigation only")
 		}
-		out.SourceURL, body, err = f.readRuleBrowser(ctx, task, e, req.URL)
+		if f.config.BrowserSource != nil {
+			out.SourceURL, body, err = f.readRuleBrowserSource(ctx, task, req.URL)
+		} else {
+			out.SourceURL, body, err = f.readRuleBrowser(ctx, task, e, req.URL)
+		}
 		out.Rendered = true
 		if err == nil {
 			quality.phase("extract", rulequality.FailureExtraction)
@@ -355,4 +359,24 @@ func (f *RuleFetcher) readRuleBrowser(ctx context.Context, task *Task, e *Engine
 		return "", nil, ruleSourceTransportError("browser navigation", err)
 	}
 	return finalURL, body, nil
+}
+
+func (f *RuleFetcher) readRuleBrowserSource(ctx context.Context, task *Task, raw string) (string, []byte, error) {
+	if task.Meta[ruleAccountMeta] != "" {
+		return "", nil, ruleSourceInvalid("BrowserSource cannot bypass account handling")
+	}
+	response, err := f.config.BrowserSource(ctx, raw)
+	if err != nil {
+		return "", nil, ruleSourceTransportError("host browser capture", err)
+	}
+	if response == nil || response.URL == nil || response.StatusCode != 0 || response.Body == nil {
+		return "", nil, ruleSourceInvalid("invalid host browser DOM response")
+	}
+	final, scopeErr := f.allowedURL(response.URL.String())
+	if scopeErr != nil || final != raw {
+		return "", nil, ruleSourceInvalid("host browser changed requested URL")
+	}
+	ruleQualityFrom(ctx).response(0, true, response.Body)
+	recordRuleSnapshot(ctx, final, 0, true, response.Body)
+	return final, response.Body, nil
 }

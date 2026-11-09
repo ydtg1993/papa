@@ -11,6 +11,9 @@ import (
 )
 
 type Config struct {
+	// CheckURL is a host-only guard applied before every document/resource/redirect request.
+	// It must be concurrency-safe; errors are reported as ErrPolicy.
+	CheckURL func(string) error
 	Policy   Policy
 	Budgets  Budgets
 	Renderer RendererConfig
@@ -49,6 +52,7 @@ type Usage struct {
 }
 
 type Session struct {
+	checkURL           func(string) error
 	origins, resources map[string]allowedOrigin
 	budget             Budgets
 	renderer           RendererConfig
@@ -98,7 +102,7 @@ func New(cfg Config) (*Session, error) {
 		return nil, ErrBudget
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), b.MaxDuration)
-	s := &Session{origins: origins, resources: resources, budget: b, renderer: cfg.Renderer, onRequest: cfg.OnRequest, onBytes: cfg.OnBytes, minInterval: cfg.Policy.MinInterval, respectRobots: cfg.Policy.RespectRobots, ctx: ctx, cancel: cancel, states: map[string]*originState{}, lookup: net.DefaultResolver.LookupNetIP, renderGate: make(chan struct{}, 1)}
+	s := &Session{checkURL: cfg.CheckURL, origins: origins, resources: resources, budget: b, renderer: cfg.Renderer, onRequest: cfg.OnRequest, onBytes: cfg.OnBytes, minInterval: cfg.Policy.MinInterval, respectRobots: cfg.Policy.RespectRobots, ctx: ctx, cancel: cancel, states: map[string]*originState{}, lookup: net.DefaultResolver.LookupNetIP, renderGate: make(chan struct{}, 1)}
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
 	s.connect = dialer.DialContext
 	s.transport = &http.Transport{Proxy: nil, DialContext: s.dial, DisableCompression: true, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSHandshakeTimeout: 15 * time.Second, ResponseHeaderTimeout: 20 * time.Second, MaxResponseHeaderBytes: 64 << 10}

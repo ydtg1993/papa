@@ -1399,3 +1399,6 @@ client := htmlfetch.NewClient(htmlfetch.Config{
 ### RuleFetcher 共享访问预算
 
 需要复用宿主 `webaccess.Session` 时，可使用 `RuleFetcherConfig.HTTPSource` 接入匿名受控 HTTP；用 `GetNoRedirect` 保持禁止跳转契约。账号和浏览器仍走原有入口。完整契约与限制见 [RULE_FETCHER.md](./RULE_FETCHER.md#宿主受控匿名-http-来源)。
+
+
+受控滚动/分页可复用 `pkg/webaccess.Session.Browse`（见 SITE_AGENT.md），不要在模型生成代码内创建 Rod 或自行绕过网络预算。已有 RuleFetcher 的宿主 DOM 接线可使用 BrowserSource（见 RULE_FETCHER.md）；此接口只接收宿主实现，不扩大模型权限。

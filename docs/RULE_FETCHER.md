@@ -262,3 +262,8 @@ return engine.SubmitTask(task)
 `webaccess.Session.GetNoRedirect(ctx, url)` 使用与 Get 相同的 origin、可选 robots、速率和共享预算，但返回首个 3xx，不跟随 Location；适合在回调中适配无自定义头/正文的 GET。不要直接用会跟随跳转的 `Session.Get` 代替请求契约。会话在 Worker 完成后关闭，不逐任务重建来重置预算。
 
 robots 默认不请求/检查，不阻断采集；如需遵守，宿主创建会话时设置 `webaccess.Policy{RespectRobots: true, ...}`。该选择与独立出口防护、限速、预算无关。
+
+
+### 宿主受控 DOM 来源
+
+`RuleFetcherConfig.BrowserSource func(context.Context, string) (*htmlfetch.Response, error)` 可接入宿主拥有的有界浏览器。仅用于匿名 browser transport；不能同时指定 AccountID、HTTPSource、BuildRequest 或 WaitSelector，也不接受游标 State。回调负责浏览器隔离、出口检查和预算，须返回完整正文、精确请求 URL、状态码 0。RuleFetcher 再检查 URL 与来源契约，调用 EvaluateRendered，复用规则证据、失败快照与质量统计。回调错误只输出稳定描述、保留错误链，不复制敏感异常文本。现有浏览器池和账号路径不变。不要把模型生成代码作为该宿主回调执行。

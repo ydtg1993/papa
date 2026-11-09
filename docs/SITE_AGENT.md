@@ -308,3 +308,23 @@ if err != nil { return err }
 设置持久化、直接 Key 录入、北京时间日额度与并发修订规则见 [MONITOR.md](./MONITOR.md#模型设置)。固定 Profile 是已有 API，继续按原冻结行为运行。OA 模型与 Key 在新分析时冻结，但共享日额度和启用状态每次调用前读取最新配置，无需重启；不再依赖密钥环境变量。Provider 的 `model_daily_limit` / `model_daily_accounting` 为稳定审计错误类别，不含凭据。
 
 OA 简化设置只暴露连接信息与每次输出 Token 上限，不再用手填单价限制分析。低层 crawlagent.Budgets.Prices 仍供确有需要的宿主直接使用，不能把低层可选能力变成普通页面必填项。
+
+
+## 宿主冻结的浏览器动作（2026-11-09）
+
+`webaccess.Session.Browse(ctx, url, BrowserPlan)` 在一个独立浏览器中执行声明式等待、主文档滚动和分页。每页返回独立 `Response`，DOM 始终 `Rendered=true/StatusCode=0`，不拼接多页 HTML。原 `Render` 接口保持兼容。
+
+| 配置 | 范围与语义 |
+| --- | --- |
+| wait | selector/state/timeout_ms；最长 30 秒；仍受会话总时限约束 |
+| scroll | item_selector、key_attribute(href/data-id/src/text)、max_rounds(1–12)、interval_ms(500–10000)、stable_rounds；以稳定键判断无新增，已有项重排不算进展 |
+| pagination | selector、mode(link/button)、max_pages(1–8)、wait_ms(500–10000)；按钮仅调用宿主固定 click，不接收代码 |
+| allow_truncated | 宿主明确接受有界取样；不能据此宣称全站完成 |
+
+停止原因包含 complete/no_next/page_limit/scroll_limit/repeated_url/repeated_content。截断与错误必须分别判断；`Browse` 在错误时可能返回部分结果，但调用者不得把它作为成功取证。页面、请求、网络正文和 DOM 字节共享 Session 预算，不因翻页重置；按钮同页转换计一页，若还触发文档导航可保守多计一页。固定 DOM 操作运行在隔离 world；选择器是数据，不执行模型 JS。
+
+`StageGoal.Browser` 可由宿主冻结上述契约。存在该契约时，Agent 的 fetch_page 必须指定 stage；浏览器阶段固定 render 且不接受模型 wait 覆盖，HTTP 阶段固定 HTTP。自定义 SourceFactory 需要额外实现 Browse 方法才可执行此契约；旧 Source/Render 接口不变。工具协议为 crawlagent-tools-v3-host-browser，旧无 Browser 的目标不接受无关 stage 字段。
+
+`webaccess.Config.CheckURL` 是宿主并发安全回调，在页面、资源及重定向请求之前执行；拒绝统一返回 ErrPolicy，不能替代 origin/DNS/预算检查。Agent 自动叠加隐藏样本 URL 身份保护，原宿主回调继续生效。页内改地址也在 DOM 留证前校验。已取消的非主文档 CDP 请求若回填得到精确的 `-32602 Invalid InterceptionId.`，不记录为已交付响应；其费用保留，主文档及策略/预算错误仍失败。
+
+链接分页按规范 URL 比较和导航，忽略片段；同一文档不同 `#fragment` 不算新链接页，会以 repeated_url 截断。需要同页状态切换时使用明确的 button 契约。Agent 在每个工具结束后同步 Session 实际页数，包括同页按钮翻页和失败/取消前已经消耗的页面；审计同步失败仍中断，不把无法持久化的用量当成功。
