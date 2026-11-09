@@ -1,6 +1,6 @@
 # 账号登录态与采集运行
 
-> 面向：需要按账号登录、跨 HTTP/浏览器采集和恢复会话的业务。配套：[Fetcher 手册](FETCHER_WRITING_GUIDE.md)、[采集工具](CRAWL_TOOLKIT.md)、[规则验收](CRAWL_RULES.md)。
+> 面向：需要按账号登录、跨 HTTP/浏览器采集和恢复会话的业务。配套：[Fetcher 手册](FETCHER_WRITING_GUIDE.md)、[采集工具](CRAWL_TOOLKIT.md)。
 
 ## 1. 入口与边界
 

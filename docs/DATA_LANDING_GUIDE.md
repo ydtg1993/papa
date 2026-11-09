@@ -7,13 +7,10 @@
 
 ## 0. 一句话
 
-采集结果由业务**自己建表、自己写**；框架保存调度状态，并可选保存规则发布元数据、分析审计与运行质量摘要：
+采集结果由业务**自己建表、自己写**；框架只保存调度状态：
 
 - `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
 - 抓到的内容要落库，就在项目的 `models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
-- 启用持久规则时，`rules.enabled` 将 7 张规则与周期状态表纳入显式迁移；这些表保存规则、样本元信息、验收、发布历史、站点指针和周期批次，不代替业务结果表。样本正文仍在独立文件目录，见 [RULE_STORE.md](./RULE_STORE.md)。
-- `agent.enabled` 依赖 `rules.enabled`，额外纳入两张运行/步骤审计表；分析只产生待审核候选，不调用业务 Save 或生产发布，见 [SITE_AGENT.md](./SITE_AGENT.md)。
-- `quality.enabled` 独立控制三张质量反馈表；观测保存计数与证据引用，不保存字段值或响应正文，也不代替业务结果表，见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 > **升级提醒**：v3.3.2 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
 > `SaveResult` / `SaveContent` / `GetResult` 三个 API，**已全部删除**。迁移步骤见 §6。
@@ -30,48 +27,6 @@
 | 形状 | 固定的几个列 | 一类数据一张表，字段你定 |
 
 把它们分开的好处很实在：业务表能建唯一键、外键、按业务维度建索引，后台能单独给它开一张表格页；而任务行被重投或清理时，业务数据不会跟着遭殃。
-
-### 可选规则元数据与样本
-
-| 数据 | 保存位置 | 生命周期 |
-| --- | --- | --- |
-| 不可变规则版本 | `crawler_rule_versions` | 相同 ID/版本不可覆盖，曾发布版本保留供固定任务恢复 |
-| 样本元信息与固定预期 | `crawler_rule_samples` / `crawler_rule_sample_sets` | MySQL 存摘要、来源与预期，不存正文 |
-| 验收记录 | `crawler_rule_verifications` | 成功、失败均保留，绑定规则/集合摘要与验收器版本 |
-| 发布历史与当前指针 | `crawler_rule_releases` / `crawler_rule_sites` | 完整站点绑定和逐阶段验收报告 ID 事务提交，generation 检查竞争，回滚增加历史 |
-| 周期采集状态 | `crawler_rule_schedules` | 控制任务 ID 为非自增主键；保存 revision、固定入口 JSON 与摘要，重启和重试复用同一批 |
-| 脱敏样本正文 | `rules.sample_dir` 下的摘要文件 | 独立长期保留，没有自动 GC，不随 archive 保留期删除 |
-
-启用配置后显式运行 `papa migrate`；普通启动和 `rulestore.New` 不建表，配置开关也不自动创建 Repository。MySQL 与文件库不是一个跨资源事务：先发布完整正文再写元数据，数据库失败可能留下无引用文件，不立即删除以免误删共用正文。恢复和备份同时覆盖元数据库与样本目录。
-
-规则仓库须传普通 MySQL 连接，不接受外层事务连接；发布自行完成最外层提交。样本元数据列为 LONGTEXT，仍受应用预算约束；若已建成第三批早期的 TEXT 列，再显式迁移一次完成扩容，原数据保留。
-
-周期状态表也由 `rules.enabled` 控制，已部署规则仓库仍需显式迁移补表。其 `payload_json` 为 LONGTEXT，框架限制 2 MiB；不修改任务表。状态先提交，才允许投递根任务；提交回执不明确时等待同批恢复。活动批成员必须保留至完成，不能用清理任务来强行跳过失败。周期查询使用站点、根 ID 下界和 Meta 中的批次标识，历史量较大时需评估扫描成本。具体接线与操作边界见 [RULE_FETCHER.md](./RULE_FETCHER.md#完整周期采集批次)。
-
-规则任务的完整绑定、发布 ID/generation 存在既有 `crawler_tasks.meta`；业务不要重写这些保留键。Save 可选择把 `RulePage.Rule`、`ReleaseID/ReleaseGeneration` 与 `EvidenceID` 一起落入业务结果表，记录“哪次发布、哪个页面观察产生了结果”。这不改变 Save 必须幂等、业务保存与任务提交不组成单个事务的约定。
-
-### 可选分析运行审计
-
-| 数据 | 保存位置 | 生命周期 |
-| --- | --- | --- |
-| 分析运行 | `crawler_agent_runs` | 保存脱敏目标/策略/预算快照、用量、状态和候选引用，以 revision 防止旧状态覆盖 |
-| 模型/工具步骤 | `crawler_agent_steps` | 外部动作前持久记录预留与 pending 步骤，结束时保存状态、摘要和证据/候选/报告引用 |
-
-两表仅在 `agent.enabled=true` 时纳入显式 `papa migrate` / `App.Migrate()`；开启必须同时启用 `rules.enabled`。`agentstore.New(db)` 接受普通 MySQL 连接并自行管理事务，拒绝外层事务和 DryRun；普通启动与构造器不建表。审计不复制网页正文、完整模型上下文或密钥，批准后的正文仍在 `rules.sample_dir`，候选与验收继续由规则仓库保存。
-
-每次分析创建新 run。进程退出后先查询 `Get/Steps`；宿主确认原执行者已结束，再按当前 revision 显式 `Interrupt`，未完成步骤标为 `unknown`，不自动重发状态不明的网络/模型请求。重开、候选审阅与完整示例见 [SITE_AGENT.md](./SITE_AGENT.md)。
-
-### 可选运行质量与复分析记录
-
-| 数据 | 保存位置 | 生命周期 |
-| --- | --- | --- |
-| 每次执行的有界摘要 | `crawler_rule_observations` | ObservationID 相同且内容相同幂等，异内容冲突；宿主可按截止时间和批量上限显式清理 |
-| 固定窗口质量报告 | `crawler_rule_quality_reports` | 保存输入截止点/摘要、策略、聚合指标和有界证据引用；原观测清理后仍保留 |
-| 显式复分析请求 | `crawler_rule_reanalysis_requests` | operationID 幂等，固定 Agent RunID，revision/CAS 防止重复执行；与报告一同保留审计 |
-
-三表只在 `quality.enabled=true` 时纳入显式迁移；纯观测不要求开启 `rules` 或 `agent`。`rulequality.New(db)` 接受普通 MySQL 连接，拒绝 DryRun 和外层事务，构造与普通启动均不建表。质量写入是旁路：故障不改变已执行的业务保存或任务终态，也不为补写观测重放业务动作。
-
-报告只覆盖已记录观测，不能代表全部生产任务。质量表不复制页面正文；引用的快照可能缺失或过期，重新分析前须完整性校验并按本次策略批准导入。清理观测不会删除固定报告、复分析请求或正文文件；没有自动清理与自动复分析。详细生命周期见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 ---
 
@@ -178,8 +133,6 @@ return engine.SubmitTask(&papa.Task{
 ```
 
 ### 4.3 写入必须幂等
-
-使用 RuleFetcher 时，同一个 `Save(ctx, task, RulePage)` 可能在保存成功、子任务提交失败后再次执行；请按业务唯一键 upsert，并按需要保存 Rule、SourceURL、BodySHA256 和 Result.Evidence。校验和子任务规划先完成，Save 成功后才开始提交详情/下一页；业务库与队列不构成跨库事务。详见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
 
 任务会被重投、轮询会重跑、后台会「重投 / 加急」——**同一个 handler 可能对同一份数据跑好几次**。所以：
 

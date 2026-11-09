@@ -3,9 +3,6 @@
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
-> 本文聚焦 Go Fetcher；声明式 HTML/JSON 规则、离线样本验收与内存版本切换见 [CRAWL_RULES.md](./CRAWL_RULES.md)，联网执行、保存、分页及失败快照见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
-> 需要让模型在受控范围内分析网站、生成并修正规则候选时，使用 [SITE_AGENT.md](./SITE_AGENT.md) 的 Go API；独立验收后仍由宿主审阅发布，再交给 RuleFetcher 执行。
-> 需要按版本检查线上字段质量、区分环境故障并显式发起复分析时，见 [RULE_QUALITY.md](./RULE_QUALITY.md)；该报告只覆盖实际记录的观测。
 >
 > 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
 
@@ -27,12 +24,6 @@ papa new <project-name>    # 用脚手架生成新项目骨架（main.go / fetch
 ## 1. 核心契约（AI 必须遵守的边界）
 
 ### 1.1 Fetcher 接口
-
-已经有通过样本验收的 HTML/JSON 规则时，可直接使用 `papa.NewRuleFetcher`；它实现同一个 Fetcher 接口，复用网络、账号和队列，支持列表到详情及 URL/POST 游标分页。入口须用 `NewTask` 固定规则版本，Save 必须幂等，详见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
-
-完整周期重采用 `papa.NewRuleSchedule` 注册独立控制阶段，固定每批规则发布并向该站所有详情/分页传播 BatchID。只轮询控制任务，失败批次先沿原任务修复；需 `rules.enabled` 显式迁移新状态表和启用 `repeat_queue`。普通入口单独设置 Repeatable 不会自动更新整条任务图，接线见 [完整周期批次](./RULE_FETCHER.md#完整周期采集批次)。
-
-RuleFetcher 可通过 `RuleFetcherConfig.Quality` 接入 `pkg/rulequality.Collector`；手写 Fetcher 可显式调用同一 Collector 上报有界、无字段值的 Observation。质量库写入失败不应作为 FetchHandler 的业务错误返回，否则会把观测故障变成业务重试。MySQL 先开启独立的 `quality.enabled` 并显式迁移三表；开关不自动接线、生成报告或调用 Agent，完整契约见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
 
 框架对外是一个门面包 `github.com/ydtg1993/papa/v4`，fetcher 只需 import 它：
 
@@ -133,7 +124,6 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
   - `Warn(name, err, data)` —— **非致命**：出了点事，但不该把任务判失败。典型是附带产物 —— 封面没下下来、附件缺了、某个可选字段没解析出来，而任务本身是成功的（用 `Fail` 会把"任务失败了"的信号发出去）。它**不影响任务终态**，只写进追踪，后台用橙色和红色的失败步骤分开显示。
 - **普通步骤的 `data` 只在失败的尝试里落库**：成功尝试只留步骤骨架，传 `nil` 也完全可以。
   **例外**：`Warn` 步骤的 `data` 在成功的尝试里也保留 —— 它记的正是"任务成功了、但这一步降级了"，而下一次成功的尝试里它照样只是 warn，剥掉就等于把这条唯一的线索永远丢掉（warn 按定义是异常，量不成问题）。
-  RuleFetcher 的「规则页面证据」也保留框架生成的最小引用（ID、状态及已发布文件路径等），用于和 Save 的 `RulePage.EvidenceID` 对应；不在 Trace 里复制正文。普通 `Step` 不因此保留成功时的 data。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
@@ -640,16 +630,6 @@ if err := offline.DecodeJSON(&result); err != nil { return err }
 
 多响应录制使用 `Engine.RecordNetwork`；增量 GET 使用 `Engine.FetchIncremental`。`pkg/discovery` 提供链接/订阅源/robots 解析与分页停止判定，`pkg/extract` 提供字段和批次质量校验。完整用法、预算、状态语义与边界见 [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md)。
 
-### 3.7 规则执行器
-
-RuleFetcher 把 `crawlrule` 提取/转换/校验接到实际任务流程，支持 HTTP HTML/JSON 与隔离 Rod，设置 AccountID 后显式复用账号运行时。保存和后续任务提交分开执行；任务重试会重新保存，因此回调必须按业务键 upsert。示例、分页与子任务预算、根级 cursor、来源证据、版本恢复和登录态边界见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
-
-规则来源可选内存 `Registry + Bindings`，或 `RuleFetcherConfig.Catalog`；两者互斥。`pkg/rulestore.Repository` 用 MySQL 元数据与独立文件样本提供持久 Catalog，验收后通过显式 Go API 发布完整站点绑定。`NewTaskContext` 为新入口读取一次完整发布，执行、详情、下一页和恢复都沿用固定版本。`rules.enabled` 仅登记迁移和缺表检查，须先 `papa migrate`，再由宿主构造仓库与 fetcher。教程和可运行示例见 [RULE_STORE.md](./RULE_STORE.md)。
-
-动态规则与当前阶段的 ItemKey、链接/Meta 字段、详情 URL 类型和 browser/HTML 约束会在入口及执行前核对；不兼容时不请求页面或调用 Save。自定义 Catalog 用 `crawlrule.ErrInvalidVersion` 标明永久无效版本，普通数据库错误保留重试语义。构造 `rulestore.Repository` 应传普通连接，不可传外层事务连接。
-
-引擎尝试中开启 `crawler.archive` 后，RuleFetcher 自动登记页面观察；正文仍需通过 `RuleFetcherConfig.SnapshotPolicy.RedactBody` 显式允许或脱敏，默认只存元信息。Save 可保存 `RulePage.EvidenceID`，与 Trace「规则页面证据」及观察清单关联。ID 不保证文件存在，尤其 `failure` 模式的成功尝试只留 `not-retained` 引用。重复尝试的相同脱敏正文共用内容文件；HTTP/账号/Rod 的规则路径都使用同一快照机制，普通 `FetchHTTP` 的既有行为不变。直接 `Run` / `RunHTTP` 不自动创建归档上下文。
-
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
 > 脚手架默认只生成单阶段 `catalog`。本节演示怎么扩成「列表 → 详情」两阶段 —— 写第二个 fetcher，在 `sites/<站名>.go` 里加一段 `StageSpec` 即可（main.go 不用动）。
@@ -1091,8 +1071,6 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 
 ## 7. 如何驱动任务（提交 + 监控）
 
-接站分析由宿主调用 `crawlagent.Agent.Run(ctx, goal)`，显式提供 Site/Stages、访问范围、脱敏策略与预算。它不调用 `SubmitTask` 或业务 Save，也不随 `agent.enabled` 自动启动；分析结束后按 [SITE_AGENT.md](./SITE_AGENT.md) 审阅候选和验收记录，生产任务仍按下述入口驱动。
-
 Papa 没有 MCP 了，任务驱动靠四处：
 
 1. **初始任务**：让 fetcher 自己实现 `SubmitEntries(*papa.Engine, papa.Site)`（见 1.1 的可选接口），框架在启动时自动调它，
@@ -1206,10 +1184,6 @@ main.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框架不需要"
 
 已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、原始 HTML 归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
-RuleFetcher 快照的站点/阶段保存在观察清单中，文件统一位于 `{dir}/.rule-snapshots/`，同一归档根内的脱敏正文按内容共用。正文策略由各 fetcher 的 `SnapshotPolicy` 显式配置；归档开关、体积预算和保留期仍是进程级配置。多进程使用各自的归档目录，不能依赖此存储跨进程协调。
-
-持久规则发布按站点原子切换完整阶段绑定，发布竞争由 MySQL generation 控制；规则版本和样本 ID 是整个仓库中的唯一标识，建议按业务命名。`rules.enabled/sample_dir` 属于应用级仓库配置，样本正文长期保存、没有自动 GC，与各站点短期 archive 生命周期分开。Catalog 任务的 `RulePage.ReleaseID/ReleaseGeneration` 可随业务结果保存，并自动进入规则快照；子任务继承发布身份。
-
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
 `engine.FetchHTML(papa.WithHeaders(ctx, map[string]string{...}), url)` 再覆盖（叠加，只覆盖给到的键）。
@@ -1272,15 +1246,9 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 ## 9. API 速查
 
-规则流程：`NewRuleFetcher` / `RuleFetcherConfig` / `RuleRef` / `RuleRequest` / `RuleLink` / `RulePage`；`NewTask` 建静态固定版本入口，Catalog 可用 `NewTaskContext(ctx, request, meta)` 为数据库访问指定时限。`FetchHandler` 供引擎调用，`RunHTTP` 用于不创建任务数据库 Engine 的匿名 HTTP 内嵌队列（Catalog 本身仍可访问元数据库）。`RuleFetcherConfig.SnapshotPolicy` 控制引擎尝试中的响应快照，`RulePage.EvidenceID` 供业务与 Trace 关联，`ReleaseID/ReleaseGeneration` 标明任务固定发布。纯规则另有 `Compiled.EvaluateRendered`、字段 `Transforms`、`Registry.Verified`，见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
-
-持久规则：`rulestore.NewFileBlobs/New`、`Repository.CreateDraft/AddSample/ImportSnapshot/CreateSampleSet/Verify/Publish/Rollback/Current/LookupOperation/History`；只验收不发布，只对比不自动保存影子报告。`CompareRules/Shadow` 仅处理已经取得的规则与页面，不调用 Save 或提交任务，见 [RULE_STORE.md](./RULE_STORE.md)。
-
-受控分析直接使用子包 `pkg/crawlagent`：`New(Config)`、`Agent.Run(ctx, Goal)`；配套 `pkg/crawlagent/model.New` 和 `pkg/agentstore.New`。开启审计先设置 `agent.enabled` 与 `rules.enabled` 并显式迁移；完整本地示例为框架仓库的 `examples/siteagent`，见 [SITE_AGENT.md](./SITE_AGENT.md)。这些 API 不属于根包 Fetcher 门面，也不授予自动发布权限。
-
 通用 API：`FetchHTTP` / `HTTPRequest` / `HTTPResponse.DecodeJSON`；会话：`NewHTTPSession` / `WithHTTPSession`；浏览器响应：`CaptureResponse` / `browser.CopyCookiesToSession`。用法和边界见 §3.3–3.4。
 
-账号运行：`NewAccountManager` / `AccountKey` / `AccountConfig`、`engine.SetAccountManager`、`FetchAccountHTTP` / `FetchAccountHTML` / `WithAccountBrowser` / `AccountStatus`，见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。离线规则：`crawlrule.Parse/Compile`、`Compiled.Evaluate/Verify`、`Registry.Activate/Rollback`，见 [CRAWL_RULES.md](./CRAWL_RULES.md)。
+账号运行：`NewAccountManager` / `AccountKey` / `AccountConfig`、`engine.SetAccountManager`、`FetchAccountHTTP` / `FetchAccountHTML` / `WithAccountBrowser` / `AccountStatus`，见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。
 
 
 **go-rod（页面操作）**
@@ -1379,7 +1347,7 @@ app.UseReportSection(sections.All()...)   // 业务自己的分析段
 
 ## 按阶段组合动态调度
 
-普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务；受控 RuleFetcher 自动接入。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](TASK_FLOW.md)。
+普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](TASK_FLOW.md)。
 
 
 ### 网络出口与内网采集
@@ -1395,10 +1363,3 @@ client := htmlfetch.NewClient(htmlfetch.Config{
 ```
 
 零配置不允许本地服务，测试 fixture 也需授权。`egress.ErrDenied` 表示目标不被授权；不要通过改用 `http.Get`、原生浏览器导航或外部下载工具绕过失败。网络策略不替代账号隔离、站点规则边界或业务写入权限。网络错误不会由浏览器网关伪造成成功的采集文档。
-
-### RuleFetcher 共享访问预算
-
-需要复用宿主 `webaccess.Session` 时，可使用 `RuleFetcherConfig.HTTPSource` 接入匿名受控 HTTP；用 `GetNoRedirect` 保持禁止跳转契约。账号和浏览器仍走原有入口。完整契约与限制见 [RULE_FETCHER.md](./RULE_FETCHER.md#宿主受控匿名-http-来源)。
-
-
-受控滚动/分页可复用 `pkg/webaccess.Session.Browse`（见 SITE_AGENT.md），不要在模型生成代码内创建 Rod 或自行绕过网络预算。已有 RuleFetcher 的宿主 DOM 接线可使用 BrowserSource（见 RULE_FETCHER.md）；此接口只接收宿主实现，不扩大模型权限。

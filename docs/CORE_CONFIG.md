@@ -236,7 +236,7 @@ crawler:
 | `dir` | 归档根目录。**开启时必填**（空串会拼成"文件系统根"下的 `{site}/{stage}/…`，见校验层） |
 | `mode` | `failure`（默认）= 只在**失败**的尝试落盘；`always` = 成功尝试也落盘。RuleFetcher 成功时的最小 Trace 引用不受此开关影响，但 `failure` 下没有对应归档文件 |
 | `retention` | 保留期；`0`/未写 = 默认 7 天（与 trace 对齐），**负数 = 永久保留** |
-| `max_file_mb` | 单页上限（**MB**）；`0`/未写 = 8。原始 HTML 归档超限时跳过并记 WARN；RuleFetcher 分别检查正文输入与脱敏输出，超限只保留元信息及省略原因 |
+| `max_file_mb` | 单页上限（**MB**）；`0`/未写 = 8。原始 HTML 归档超限时跳过并记 WARN |
 
 **原始 HTML 归档**：`FetchHTML` 等既有入口把「失败那一刻抓到的那一页」原样落到
 
@@ -260,22 +260,6 @@ crawler:
 > **后台能直接把那一页拿走**：「追踪」抽屉里带「下载这一页」按钮，走 `GET /api/task/page?file=<相对路径>` ——
 > 服务端按 `archive.dir` 解析、拒绝 `..` 与绝对路径，回的是**文件本身**（`Content-Disposition: attachment`）
 > 而不是内联渲染，拿去本地对着真实页面改选择器最省事。要按自己的路由暴露归档目录，用 `monitor/router.go` 的 `Routes(app)`。
-
-**RuleFetcher 快照**复用上面的全部配置，但采用独立的正文策略和文件格式：
-
-| 项目 | 行为 |
-| --- | --- |
-| 入口 | 由 Engine 执行的 RuleFetcher 自动登记，覆盖 HTTP HTML/JSON、账号入口与隔离 Rod；直接 `Run` / `RunHTTP` 不自行创建归档上下文 |
-| 正文策略 | Go 配置 `RuleFetcherConfig.SnapshotPolicy`；`nil` 或没有 `RedactBody` 时只留元信息，即使匿名抓取也不自动保存正文。请求正文和所有请求/响应头始终不保存 |
-| URL | 默认去除查询参数、userinfo、fragment；`QueryKeys` 明确允许查询参数，`RedactURL` 处理敏感路径 |
-| 观察清单 | `{dir}/.rule-snapshots/observations/<EvidenceID>.json`，包含任务/尝试、规则版本、来源、状态、校验摘要及正文引用或省略原因 |
-| 内容文件 | `{dir}/.rule-snapshots/bodies/<SHA-256>.body`；摘要基于脱敏后的实际字节，相同内容跨尝试共用；清单声明规则期望格式，错误响应可能不符合该格式 |
-| 关联 | `Save` 的 `RulePage.EvidenceID`、Trace「规则页面证据」与清单一致。ID 不保证文件存在；`failure` 下成功尝试为 `not-retained`，不写清单或正文 |
-| 预算 | 正文输入与脱敏输出各受 `max_file_mb` 限制；每次尝试最多 32 个观察，单清单最多 256 KiB，校验问题最多 100 条 |
-| 失败 | 脱敏失败只留固定省略原因；文件发布失败写 WARN 和 `write-failed` 引用，不改变任务结局，也不提供未发布文件链接 |
-| 保留期 | 沿用每小时清理，先删过期观察，再回收没有存活清单引用且已过期的正文；不能识别存活清单时保守跳过正文回收 |
-
-框架只为「规则页面证据」额外保留成功尝试的最小 Trace 引用；原有 `归档页面` 和普通 `Step` 的 data 策略不变。规则快照不再另写旧式 HTML 副本，已有 HTML 文件也不追溯去重。发布与回收只协调同一进程，多进程使用独立 `archive.dir`。策略示例和摘要含义见 [RULE_FETCHER.md](./RULE_FETCHER.md)；此功能无需新增数据库迁移。
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
@@ -384,16 +368,8 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 —— `papa migrate` 不会替你改。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config` 总是建；
-`crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、规则仓库表（`rules.enabled`）、分析审计表（`agent.enabled`）和质量反馈表（`quality.enabled`）
+`crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
-
-`rules.enabled` 包含 `crawler_rule_versions`、`crawler_rule_samples`、`crawler_rule_sample_sets`、`crawler_rule_verifications`、`crawler_rule_releases`、`crawler_rule_sites`、`crawler_rule_schedules`。关闭开关不删除已存在的规则、样本、发布历史或周期状态。普通启动只检查表；`rulestore.New` 和 `NewRuleSchedule` 也不隐式迁移。已启用规则仓库的旧库升级后须再运行一次 `papa migrate` 补齐周期状态表。任务的完整规则绑定、release 与 batch 身份继续放在既有 `crawler_tasks.meta`，不为它们新增任务列；控制进度独立保存在新表。自动周期采集还须配置 `repeat_queue`，见 [RULE_FETCHER.md](./RULE_FETCHER.md#完整周期采集批次)。
-
-`agent.enabled` 额外包含 `crawler_agent_runs`、`crawler_agent_steps`，并依赖 `rules.enabled=true`。关闭后不会删除已有审计；普通启动和 `agentstore.New` 均不建表或接管未完成运行。恢复时先确认旧执行者已结束，再显式中断，不能自动重发状态不明的模型/网站请求，见 [SITE_AGENT.md](./SITE_AGENT.md)。
-
-`quality.enabled` 独立包含 `crawler_rule_observations`、`crawler_rule_quality_reports`、`crawler_rule_reanalysis_requests`；不新增任务表字段。普通启动与 `rulequality.New` 不迁移，关闭开关也不删除历史报告或请求。只有宿主显式创建并执行复分析请求才可能调用 Agent，见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
-
-若已用第三批早期代码创建 `crawler_rule_samples.metadata_json TEXT`，本版须再执行一次 `papa migrate` 扩为 LONGTEXT，保留原记录以容纳合法 URL 的 JSON 转义结果。普通启动不升级列类型；已有较大样本表建议低峰期执行。该扩容已用专用 MySQL 验证。
 
 **业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是根 `models`
 包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。
@@ -430,7 +406,7 @@ network:
 
 此配置下发给 Engine 的 HTML/FetchHTTP、浏览器池和两个内置下载器，也用于 `papa html`、`papa rod`、`papa diff`；重启生效，不支持 OA 热更或逐任务放宽。底层构造器的 `Network` 字段使用同一 `egress.Config`（门面别名 `papa.NetworkConfig`）。自行创建的下载器/客户端不会自动读取应用配置，宿主必须显式传入。构造时复制授权；下载器的 Config 副本、With 与 SetClient 不改变原授权。
 
-Webhook 使用 `Webhook.Network`；代理列表 API 使用 `proxy.NewManagerWithNetwork`。模型适配器使用 `model.Config.Network`，其既有 `AllowHTTP` 只为指定的回环 HTTP 模型端点提供明确授权。它们不会自动继承页面或 Agent 给出的授权。Agent 的 `webaccess` 保留独立的精确 origin/path 白名单、资源白名单与预算，不能由本配置放宽。
+Webhook 使用 `Webhook.Network`；代理列表 API 使用 `proxy.NewManagerWithNetwork`。它们不会自动继承页面给出的授权。
 
 兼容性：原先隐式访问内网的业务需补授权；标准自定义 `http.Client` 保留超时、Jar、重定向及 TLS 配置，但拨号与协议处理受框架控制，不接受自定义 RoundTripper。默认不继承环境代理。显式 HTTP/SOCKS5 上游代理须支持固定 IP 隧道（HTTP 代理必须支持 CONNECT，包括 HTTP 目标端口）；当前不支持 HTTPS 上游代理，失败不会转直连。经上游代理的请求暂不复用连接，存在额外握手成本。
 
@@ -439,7 +415,3 @@ Webhook 使用 `Webhook.Network`；代理列表 API 使用 `proxy.NewManagerWith
 M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理已经下载、解密的本地片段；不会因媒体中的嵌套清单再次联网。业务自行调用外部工具不在此约束内。
 
 浏览器安全参数覆盖冲突的用户启动参数，禁用直接 DNS、QUIC、非代理 WebRTC、扩展与相关旁路；仅为本机网关排除回环地址的 DNS 禁止规则，页面回环流量仍经过网关。每实例网关随浏览器关闭，普通 HTTP 升级（`ws://`）暂不支持，`wss://` 经过受控 CONNECT。用户自行使用原生 Rod/CDP、操作系统网络、外部程序或自定义业务 HTTP 客户端属于可信扩展，框架出口策略不是系统级沙箱，也不管理数据库等基础设施连接或浏览器二进制下载。
-
-### OA 模型凭据与日额度
-
-模型连接、API Key 和每日 Token 额度在 OA「系统设置」保存，无需新增 YAML 或 Key 环境变量。密钥加密值与每日用量复用 crawler_config；工作目录下自动生成的 configs/.papa-model.key 必须与数据库一起备份，不入版本。无新增 DDL；已有框架表可直接使用。参见 [MONITOR.md 模型设置](./MONITOR.md#模型设置)。

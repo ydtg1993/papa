@@ -35,23 +35,6 @@
 
 `report.md` 与 `ai-brief.md` 的动态标题、表格、摘要和证据按文本上下文转义，换行不再改变表格或注入新标题；复杂代码引用用固定 code 元素包裹已转义文本。报告 JSON 仅脱敏，不混入 Markdown 转义；输入报告对象保持不变。是否允许 HTML 执行仍由具体 Markdown 渲染器决定，这项修复不等同于宣称所有渲染器的 XSS 防护。
 
-### 1.1 RuleFetcher 的页面证据
-
-RuleFetcher 在引擎尝试中使用 `crawler.archive` 保存响应观察；业务 `Save` 可将 `RulePage.EvidenceID` 与记录一起保存，任务 Trace 的「规则页面证据」步骤及观察清单使用同一个 ID。Trace 需要单独开启 `crawler.trace.enabled`，归档不依赖它。这里的 ID 关联具体抓取观察，不替代业务记录唯一键或字段级 `Result.Evidence`。
-
-排查时先看该步骤的 `state`：
-
-| 状态 | 该如何理解 |
-| --- | --- |
-| `stored` | `files` 指向已发布清单和脱敏正文 |
-| `metadata-only` | 只有清单，正文省略原因在 `body_omitted`；默认未配置正文脱敏回调也属于此状态 |
-| `not-retained` | `failure` 模式的成功尝试，没有文件可读，ID 仅用于关联 |
-| `write-failed` | 归档发布失败，任务结局不变；Trace 为 WARN，不提供未发布文件链接 |
-
-清单位于 `archive.dir/.rule-snapshots/observations/<EvidenceID>.json`，包含规则版本、task/site/stage、attempt/retry/repeat、脱敏 URL、状态码、是否渲染与受限校验报告。正文位于 `.rule-snapshots/bodies/<SHA-256>.body`，相同脱敏内容跨尝试共用一份；Trace 只存最小引用。`original_sha256` 对应规则读取的原文，`body_sha256` 对应实际落盘字节，分析时不要混用。浏览器 DOM 的状态码为 0；没有可读页面时，清单只描述已确认的元信息与省略原因。
-
-只有这条框架生成的引用额外保留在成功 Trace 中，普通步骤仍按原有策略保留 data。ID 不保证文件一直存在，清单与正文按归档保留期清理，正文回收会检查存活清单的引用。快照不是新的报告输入源，`papa report` 不自动读取这些正文或将它们送入规则修复流程。正文授权、URL 脱敏、失败覆盖范围和资源限制见 [RULE_FETCHER.md](./RULE_FETCHER.md)。
-
 ## 2. 事件契约（v1）
 
 一行一个 JSON 对象，字段分两组：**必填信封** + **可选载荷**。

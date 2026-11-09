@@ -27,7 +27,7 @@ err = e.SubmitFlowTask(ctx, "run-001", 0, root)
 err = e.SubmitFlowTask(ctx, task.FlowID, uint(task.ID), child)
 ```
 
-RuleFetcher.FetchHandler 自动为受控任务的派生任务使用 SubmitFlowTask；自定义 Fetcher 需要显式调用。不要启动一个异步 goroutine 派生任务后立即返回，父任务终态后新增子任务会被拒绝。重复登记同一运行/父任务下的同 URL 子任务返回既有任务，不重复抓取。
+自定义 Fetcher 需要显式调用 SubmitFlowTask。不要启动一个异步 goroutine 派生任务后立即返回，父任务终态后新增子任务会被拒绝。重复登记同一运行/父任务下的同 URL 子任务返回既有任务，不重复抓取。
 
 ## 策略语义
 

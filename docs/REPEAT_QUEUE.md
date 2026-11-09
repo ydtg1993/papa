@@ -13,8 +13,6 @@
 
 ## 1. 配置
 
-规则驱动的列表→详情→分页需要整批重采时，使用 [RuleSchedule](./RULE_FETCHER.md#完整周期采集批次)。只轮询控制任务，子任务保持一次性并继承批次 ID；上一批全部成功后，后续轮询才开启新批。单独给普通 RuleFetcher 入口设置 Repeatable 仍只重跑入口，已成功子任务会命中旧身份去重。周期状态另需 `rules.enabled` 和显式迁移 `crawler_rule_schedules`。
-
 写在 `configs/config.yaml` 的全局段（**不再按站点拆**）：
 
 ```yaml
