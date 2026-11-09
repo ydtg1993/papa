@@ -135,4 +135,4 @@ Report 给出 Rows、InvalidRows、TotalIssues 和限量 Issues（默认 100）�
 
 离线 JSON 重放应解码到新的结果变量。标准 `encoding/json` 复用非空 map 时，会保留本次 JSON 中没有出现的旧键；这会让已经脱敏删除的字段在旧内存结果中残留。`TestIncrementalValidatedSamplePipeline` 演示从 HTTP、校验、脱敏样本到离线重放与条件 304 的完整链路。
 
-账号统一运行与恢复见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。这些工具仍不提供网站自动理解、多进程任务租约、全站访问策略强制执行或自动业务数据库迁移。PDF/OCR/额外 JS 引擎属于有目标站点需求时选配的组件。
+账号统一运行与恢复见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。这些工具不自动识别网站业务语义或迁移业务数据库。实际网络访问由配置的网络出口策略约束，链接提取过滤不能替代出口检查。PDF/OCR/额外 JS 引擎属于有目标站点需求时选配的组件。

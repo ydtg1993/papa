@@ -79,7 +79,7 @@ repeat_queue:
 
 这条判据是纯比较、走 `idx_repeat_due`（`repeatable, status, next_repeat_at`）：**周期换算只发生在写路径**（重投那一条 UPDATE 算 `now + 周期`），读路径一行算术都没有 —— 函数谓词（`TIMESTAMPDIFF(...) >= 周期` 那类）会让索引失效，而且 SQL 里的算术没法在没有真库的测试里验。
 重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
-（`engine.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
+（`engine.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `success` / `failed`，
 于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
 
 

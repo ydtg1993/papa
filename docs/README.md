@@ -17,12 +17,12 @@ cd mycrawler && go mod tidy
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
    之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled` / `task_flow.enabled`）都要**再跑一次**，对应表跟着开关走。
 3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（并发/队列/间隔/重试/
-   入口开关都在那儿一份写全，各文件在自己的 `init()` 里登记），`main.go` 里只有 `app.RegisterSites(papa.Sites()...)`
-   一行 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
+   入口开关都在那儿一份写全，各文件在自己的 `init()` 里登记），`internal/app/run.go` 通过 `app.RegisterSites(papa.Sites()...)`
+   统一注册 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
    （见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.1）。
 4. 加数据模型写`internal/models/` 包（`internal/models/models.go` 里登记建表清单）；后台（`/monitor`）
    要加表格页 / 自定义页 / 自己的接口，改 `internal/monitor/` 包 ——
-   `main.go` 只有 `monitor.Register(app)` 一行（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
+   `internal/app/run.go` 通过 `monitor.Register(app)` 接入（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
 5. `go run .`（配置路径默认 `configs/config.yaml`，要用别处就 `go run . --config=./config.yaml`）。
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
@@ -42,8 +42,9 @@ cd mycrawler && go mod tidy
 
 | 我要… | 手册 | 手册在讲什么 |
 | --- | --- | --- |
-| 盘点会话/试验/策略重构的迁移范围 | [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) | 当前只读预检能力、业务清单、旧表处置边界 |
-| 管理实验临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
+| 核对旧版本数据库遗留表 | [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) | 只读表盘点、业务清单与旧表处置边界（新项目无需执行） |
+| 管理临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
+| 按阶段控制广度/深度与并行分支 | [TASK_FLOW.md](TASK_FLOW.md) | 可选任务树调度、持久化边界和策略更新 |
 | 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
 | 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
 | 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
@@ -53,7 +54,7 @@ cd mycrawler && go mod tidy
 | 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动时重投本进程启动前遗留的未终态任务 |
 | 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、到点才重投（周期可逐条定、后台可改） |
 | **加一个站 / 管多个站点**（站点维度都有什么） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §7、[DEVELOPMENT.md](./DEVELOPMENT.md) §7 | 一站一个文件（自登记）、站点键必填、阶段名按站点作用域（两个站可以同名）、站点级请求头/熔断/下载器；三个治理队列有意留在全局 |
-| 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/自定义页/自定义路由与中间件/站点 Tab 与队列治理/暂停铃铛/obs 报告/日志 API |
+| 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | 运行概览、令牌更新、浏览器诊断、设置与页面扩展、队列治理、暂停、报告和日志 API |
 | **查一轮跑得怎么样 / 出运行报告 / 给报告加业务段** | [OBSERVABILITY.md](./OBSERVABILITY.md) | 事件契约、`obs` 配置、`papa report` 4 产物、内置模式库、业务扩展点、局限与注意 |
 | 排查「页面抓到了啥」/ 生成新项目 / 升级已有项目 / 建令牌 | [CLI.md](./CLI.md) | `papa new` 脚手架、`html`/`rod`/`diff`/`select` 调试命令、`upgrade`（刷新框架副本+检查）、`check`（不用起库验声明）、`token add` |
 | 构建 / 测试 / 竞态检测（Makefile） | [DEVELOPMENT.md](./DEVELOPMENT.md) | make 目标、Windows 怎么跑、race 前置条件 |

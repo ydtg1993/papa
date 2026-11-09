@@ -10,7 +10,7 @@
 采集结果由业务**自己建表、自己写**；框架只保存调度状态：
 
 - `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
-- 抓到的内容要落库，就在项目的 `models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
+- 抓到的内容要落库，就在项目的 `internal/models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
 
 > **升级提醒**：v3.3.2 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
 > `SaveResult` / `SaveContent` / `GetResult` 三个 API，**已全部删除**。迁移步骤见 §6。
@@ -21,7 +21,7 @@
 
 | | 调度状态 | 业务结果 |
 | --- | --- | --- |
-| 存在哪 | `crawler_tasks`（框架的表） | 你自己的表（`models/` 里定义） |
+| 存在哪 | `crawler_tasks`（框架的表） | 你自己的表（`internal/models/` 里定义） |
 | 谁写 | 只有引擎 | 只有你（fetcher / 后台动作） |
 | 生命周期 | 任务跑完、被清理、被重投都归调度管 | 数据本身长期存在，与任务行无关 |
 | 形状 | 固定的几个列 | 一类数据一张表，字段你定 |

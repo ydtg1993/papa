@@ -51,7 +51,7 @@
 ### crawler —— 爬虫核心
 
 > **阶段参数不在这个文件里**：`worker_count` / `queue_size` / `delay` / `retry` / 入口开关 /
-> 站点归属都在 `sites/<站名>.go` 里一份写全（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）——
+> 站点归属都在 `internal/sites/<站名>.go` 里一份写全（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）——
 > 一个阶段的存在本来就离不开代码（必须有个 fetcher），参数再放另一份文件等于加一个阶段要改两处。
 > 配置里留着的 `crawler.stages` 段会被"未知配置键"拦下（**故意的**，见下面的校验层说明）。
 
@@ -69,7 +69,7 @@
 | `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.New` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
 
 > **熔断按站点分组**：这一节配的是**默认值**；每个站点可以在
-> `sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
+> `internal/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
 > 只关掉某一站）。每站一份计数是硬要求 —— 共用一份的话站点 A 被墙会把站点 B 一起闸住。
 >
 > **想"启动先别跑"不在这一节**：那是声明期的一道整站闸门 `SiteSpec.StartPaused: true`
@@ -97,7 +97,7 @@
 | `browser_path` | string | 可执行文件路径，仅在 `binary: path`（或 `binary` 留空）时生效 |
 | `flags` | map | 额外 Chromium 启动参数（launcher flags）：键是开关名（前导 `--` 可省），值为空 = 布尔开关（`--name`），否则拼成 `--name=value`。**值一律按字符串解码**，数字/布尔要加引号（`renderer-process-limit: "2"`）；不带值写 `disable-gpu:` 表示布尔开关。例：`disable-gpu:`、`blink-settings: imagesEnabled=false`。**只放 Chromium 自己的开关**：`headless` / `no_sandbox` / `leakless` / 代理各有配置键，flags 最后应用、会覆盖它们；`rod-` 前缀是 Rod 内部参数，写进来会被拒绝 |
 | `self_check` | bool | 启动自检，默认 `false`：建池时真实启动一次浏览器再关掉，起不来就启动失败。`true` 时 `rod` 模式会在**启动阶段**触发 Chromium 下载（Linux 下落在 `~/.cache/rod/browser`，Windows 是 `%APPDATA%\rod\browser`）—— 服务器部署建议打开，把「下载失败 / 缺系统库 / 路径写错」暴露在启动时，而不是第一次抓取时。注意它只验证浏览器二进制本身：Linux 上缺 `libnss3` 这类**系统共享库**仍要自己装（Rod 只下载 Chromium，不装 apt 包） |
-| `headers` | map | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用"的头 |
+| `headers` | map | **全局**默认请求头（与内置默认头合并，同名覆盖）。**通常不写这里**：与站点相关的头写在 `internal/sites/<站名>.go` 的 `Headers`（站点级）—— 它可被该层与**逐请求**（`papa.WithHeaders(ctx, …)`）覆盖，站点级写空值表示删掉那个头；这一层留给"与站点无关、所有站共用"的头 |
 
 ### html —— 静态 HTML 客户端
 
@@ -193,12 +193,12 @@
 | `monitor_dirs` | map | 监控页展示的业务目录占用 `name: path` |
 | `queue_sample_interval` | duration | 三个治理队列「待处理」积压数的采样间隔，默认 `1m`。监控页刷新只读内存快照，仅采样时查库；调大可降低 DB 压力 |
 | （无密钥字段） | — | 后台凭据是 `crawler_access_token` 表里的多条**访问令牌**（每条属于一个操作人）；管理接口始终要求有效令牌，空表也拒绝访问；首把或恢复令牌在服务器本机用 `papa token add --operator <名字>` 创建 |
-| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌；表格动作、访问令牌页、队列「立即执行」、熔断放行四类都记），侧边栏 General 分组多出一项「操作日志」（在「访问令牌」上方，只读表格页）；关闭时不建表、不写库，菜单项也不出现 |
-| `read_header_timeout` | duration | `10s` | 只发请求头不发送体的慢连接会被掐掉 |
-| `read_timeout` | duration | `30s` | 读完整请求（含 body）的上限 |
-| `write_timeout` | duration | `0`（不限） | **默认不限**：日志打包下载可能传很久，设上限等于掐断在途下载；要限制再显式配 |
-| `idle_timeout` | duration | `60s` | keep-alive 空闲连接的上限 |
-| `shutdown_timeout` | duration | `10s` | 优雅退出时等在途请求（如日志下载）跑完的上限，超时才强制断开 |
+| `operation_log` | bool | 操作日志开关，默认 `false`。开启后后台所有增删改操作写入 `crawler_operation_log` 表（含失败，并记下**操作人**——来自访问令牌；表格动作、访问令牌页、队列「立即执行」、熔断放行四类都记），「系统管理」显示「操作日志」只读表格页；关闭时不建表、不写库，菜单项也不出现 |
+| `read_header_timeout` | duration | 默认 `10s`；读取请求头的时间上限 |
+| `read_timeout` | duration | 默认 `30s`；读完整请求（含 body）的上限 |
+| `write_timeout` | duration | 默认 `0`（不限）；日志打包下载、浏览器诊断可能持续较久，显式设限时应覆盖这些请求的执行时间，否则连接可能提前结束 |
+| `idle_timeout` | duration | 默认 `60s`；keep-alive 空闲连接的上限 |
+| `shutdown_timeout` | duration | 默认 `10s`；优雅退出时等在途请求（如日志下载）跑完的上限，超时才强制断开 |
 
 ### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)）
 
@@ -356,7 +356,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 它拿不到 —— 只有项目自己的进程里有。判据是当前目录的 `go.mod` 依赖了 papa（业务项目必然
 直接 import 它，或本地 `replace` 它）。
 
-**转交的前提是项目自己的 main 认识 `-migrate`**：脚手架生成的 `main.go` 把 `App.Migrate()`
+**转交的前提是项目自己的 main 认识 `-migrate`**：脚手架生成的 `internal/app/run.go` 把 `App.Migrate()`
 接在这个参数上（Makefile 里是 `make migrate`）。自己写 main 的话记得照做 —— 否则
 `papa migrate` 转交过去，就等于把你的爬虫直接启动了。
 
@@ -364,14 +364,13 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 **框架不为更早版本的表结构负责**：`papa migrate` 只做 `AutoMigrate`（建表 / 补列 / 补索引），
 不再带任何"给旧库补课"的显式迁移（删旧索引、改列类型、回填、删死列那些都删掉了）。
-表结构差异只保证**当前版本新建的库**是对的；从更早版本升上来的库要么手工对齐，要么重建
-—— `papa migrate` 不会替你改。
+从更早版本升级时，应核对已有 schema 和数据。`AutoMigrate` 仍可能调整其支持的类型或约束，但不会执行上述历史专项修复，也不会代替业务的数据迁移脚本。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config` 总是建；
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
-**业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是根 `models`
+**业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是 `internal/models`
 包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。
 用脚手架就别去记两条命令 —— `papa migrate` 与 `make migrate` 等价。
 

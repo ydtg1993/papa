@@ -7,7 +7,7 @@
 
 ## 0. 安装
 
-v4 源码的模块路径为 `github.com/ydtg1993/papa/v4`。已发布的 v4.2.1 标签仍错误声明 /v3，Go 无法按 v4 安装该标签；本地修复不会改变远端内容，应提交修复后发布新的正确 v4 标签，不移动旧标签。在正确发布可用前，从本仓构建 CLI 并使用 `papa new <name> --replace <本地 Papa 路径>` 联调，标记为本地开发修正版。
+当前源码的模块路径为 `github.com/ydtg1993/papa/v4`。安装发布版本使用下方 Go 命令；验证本工作区代码时从仓库构建 CLI，并用 `papa new <name> --replace <本地 Papa 路径>` 指定本地依赖。`@latest` 由模块代理解析，不保证等同于工作区源码。
 
 旧业务升级需同时修改 imports、go.mod 的 require/replace 为 /v4，require 版本必须为可安装的 v4 版本；tidy 后用 GOWORK=off 验证独立构建。同一业务不要混用 /v3 与 /v4 的任务类型和注册表。v4 CLI 的 check/upgrade/migrate 遇到 /v3 项目会在执行前拒绝；upgrade 不改业务源码与依赖。第三方 yaml/v3 等独立模块不随 Papa 改版本。
 
@@ -25,7 +25,7 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa strategy-migrate inspect [-c <配置>] [--manifest <业务清单>] [--out <新报告>]` | 只读盘点旧会话/规则与目标策略表；不导入、不切换、不删表。缺表与空表区分，完整约束见 [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) |
+| `papa strategy-migrate inspect [-c <配置>] [--manifest <业务清单>] [--out <新报告>]` | 只读盘点历史数据库表；不导入、不切换、不删表。缺表与空表区分，完整约束见 [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) |
 | `papa new <name> [--replace <path>] [--missing-only]` | 生成新爬虫项目骨架（含 `internal/models/` 与 `internal/monitor/`）。默认拒绝已存在的目标；`--missing-only` 显式补齐缺失文件，保留已有文件。`<name>` 同时是 module 路径与目录名，只允许字母、数字与 `._~+-`，分隔用 `/`；非法名字在写文件前拒绝 |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
@@ -64,12 +64,12 @@ mycrawler/
   .claude/skills/          开发技能（通用文件可刷新，项目约定不覆盖）
 ```
 
-后台自定义页模板 `internal/monitor/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
+后台自定义页模板 `internal/monitor/view/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
 
 几句要点：
 
 - **加一个站 = 加一个 `internal/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
-  `papa.Sites()` 收集，`main.go` 不用动（站点键必填；阶段名只在本站内唯一，两个站可以同名）。
+  `papa.Sites()` 收集，`internal/app/run.go` 不用动（站点键必填；阶段名只在本站内唯一，两个站可以同名）。
 - **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
   yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
 - **三个治理队列（error_queue / recover_queue / repeat_queue）在 `config.yaml` 里全局配**：
@@ -82,7 +82,7 @@ mycrawler/
   （记本项目的布局与「已知漂移」），由你自己维护。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
 
-生成的 `.gitignore` 排除 `.papa-model.key`（OA 首次保存 API Key 自动创建的本机加密主密钥）。已有业务的 `.gitignore` 不被 upgrade 覆盖，使用 OA 直接 Key 时请自行保留该忽略规则，并将主密钥与数据库一起备份。
+生成的 `.gitignore` 仍包含历史文件名 `.papa-model.key` 的忽略项；当前框架没有模型配置或自动生成该密钥的功能。业务自行管理凭据文件和忽略规则，`upgrade` 不覆盖已有 `.gitignore`。
 
 `papa new` 生成的本机配置和 example 配置使用 `user:CHANGE_ME` 数据库凭据占位；请先在本机填真实连接，再执行 `papa migrate`。已有项目的 `papa upgrade --write` 只刷新框架手册/通用技能，不替换已配置的 DSN；`--missing-only` 同样保留现有配置。
 

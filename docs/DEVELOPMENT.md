@@ -124,7 +124,7 @@ admin/                          ★后台模块：**对外公开**，业务项�
     static/requests.js         原生 API 错误、轮询代次/超时/退避/可见性管理
     static/table-links.js      oao v1.3.4 整值 URL 兼容适配（table-loaded 扩展点）
   auth/         访问令牌校验与操作人身份
-  tokenadmin/   令牌 CRUD 接口
+  tokenadmin/   令牌列表、新增、启停、删除与更新接口
   oplog/        操作日志（异步写入器 + 只读表格页）
   tasksource/   内置「任务」表，动作接线的参考实现
   gormsource/   配置驱动的 oao.Source，业务表格页直接复用
@@ -137,6 +137,9 @@ admin/                          ★后台模块：**对外公开**，业务项�
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ msgqueue/ track/ breaker/
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
+    rod_diagnostics.go / rod_diagnostics_browser.go  鉴权诊断 handler、环境检查及隔离 Chromium/Rod 启动链路
+    rod_diagnostics_view.go / rod_diagnostics.js  系统管理诊断页与嵌入脚本
+    rod_diagnostics_test.go    启动失败、目录清理与脱敏回归
     data_tables.go / data_tables_test.go  只接入可操作任务，Trace 走行内弹窗；保留 task API 和动作保护
 pkg/                             可独立复用的件
   events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
@@ -160,7 +163,7 @@ obs/                             运行报告引擎（通用、只读）：obs.g
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染
 models/                          框架自带的表结构
-cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report）
+cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report / strategy-migrate inspect）
   scaffold_safe.go               new 独占写入与链接路径保护；--missing-only 只补缺失文件
   scaffold_safe_test.go          已有项目保护、module 冲突、链接路径与缺失文件回归
   scaffold_review_test.go        Windows junction 越界、并发独占写、带空格 replace 与缺失参数回归
@@ -307,7 +310,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 - `admin/sysinfo/sysinfo.go` / `system_sampling_test.go`：CPU、内存和磁盘锁外采样、短锁发布；目录快照不丢失，可用性、成功时间、合法零值、采样失败与读取不阻塞回归。
 - `admin/server/static/visual-state.js`：纯内存、受限观测模型，按真实时间去重/断线/重置；`visuals.js/css`：首页图表接线和响应式样式；`appearance.js`：注册既有设置槽的浏览器本地动效偏好。
 - `testdata/visual_state_test.js` / `visuals_test.js`：真实生产 JS 的时间、身份、阶段集合、采样周期、同时间戳重连、旧响应、缺失值、前11项+其他总计、降级和销毁回归，由 `TestOperationsJavaScriptBehavior` 自动执行。`monitor_requests_test.js` 同时验证迟到/超时响应不进入观测历史。
-- 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不增加 SQL、真实站点或付费模型调用。
+- 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不引入真实站点业务依赖。
 
 当前默认以 `GOWORK=off` 验证 go.mod 中已发布的 oao v1.4.0。修改尚未发布的 oao 时再用临时 go.work 联调；旧版兼容用独立临时 modfile 指向真实发布版本，不修改正式依赖或模块缓存。目标包 `go test ./admin/... ./cmd/monitor-demo`，并发 `go test -race ./admin/server ./admin/sysinfo ./cmd/monitor-demo`，全包静态检查与构建 `go vet ./...` / `go build ./...`。Node 不存在时行为测试显式跳过，不能称前端行为验证通过。
 
@@ -320,14 +323,14 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 `admin/server/static/navigation.js` 集中维护 module/table/page 的四类归属与二级菜单；`mo.js` 仍负责切页生命周期、鉴权、请求代次和日志弹窗。框架 task/operation_log 使用固定分类，普通表格默认 data；`Page.Section` 通过 `/api/pages` 输出，空/未知值回退 data。`Group` 仅用于类内分组，业务项目在自己的 UsePage 声明分类。`cmd/papa/templates/monitor_view.go.tmpl` 展示可选字段；已有项目不会被 upgrade 改写业务页面。
 
-`template.html` 保留旧模块根及操作入口，新增 `mod-logs`、`section-nav` 与空分类区域；`layout.css` 在原样式后、业务 custom.css 前加载，用于轻量布局，不覆盖 oao 通用组件源码。`visuals.js` 按 details 展开状态创建/销毁图表，toggle/恢复可见仅重绘已接受快照；`workbench.js` 限制关注项三条并保留队列/暂停的完整详情入口。
+`template.html` 提供当前监控模块根及操作入口，新增 `mod-logs`、`section-nav` 与空分类区域；`layout.css` 在原样式后、业务 custom.css 前加载，用于轻量布局，不覆盖 oao 通用组件源码。`visuals.js` 按 details 展开状态创建/销毁图表，toggle/恢复可见仅重绘已接受快照；`workbench.js` 限制关注项三条并保留队列/暂停的完整详情入口。
 
 `TestMonitorLayoutHasFourCategoriesAndSeparateLogs`、`TestMonitorOverviewHasOneDefaultChart` 守卫模板结构；`navigation_test.js`、`monitor_requests_test.js`、`monitor_identity_test.js` 执行真实生产 JS，覆盖四类映射、兼容回退、文本安全、未保存阻止导航、晚到清单/日志和凭据切换。`visuals_test.js` 覆盖 1→3→6 实例、折叠销毁、离页/后台不复活和旧依赖回退。`internal/app/page_sections_test.go` 通过真实 HTTP handler 验证 Section 契约，`cmd/papa/scaffold_page_sections_test.go` 检查新建模板。
 
 
 旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版执行真实 render、筛选、正常 POST、销毁确认与迟到401/正文隔离，并断言不安装兼容包装。`mo.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。
 
-`TestMonitorLinkedVisualsBehavior` 从当前链接 oao 的 StaticFS 读取真实图表与动效脚本，运行 `testdata/linked_visuals_test.js`，覆盖观测边界、图表折叠/离页、pagehide 迟到回调、KPI 动画和滚动焦点保留。`native_session_test.js` 纳入 `TestOperationsJavaScriptBehavior`，验证身份清理、旧确认与恢复响应隔离；`monitor_identity_test.js` 联合真实 mo/requests 验证冻结页面漏收 storage 事件后的凭据核对。DOM、动画调度及请求仍为受控替身，浏览器排版与实际 BFCache 命中须另验。
+`TestMonitorLinkedVisualsBehavior` 从当前链接 oao 的 StaticFS 读取真实图表与动效脚本，运行 `testdata/linked_visuals_test.js`，覆盖观测边界、图表折叠/离页、pagehide 迟到回调、KPI 动画和滚动焦点保留。`monitor_identity_test.js` 联合真实 mo/requests 验证冻结页面漏收 storage 事件后的凭据核对。DOM、动画调度及请求仍为受控替身，浏览器排版与实际 BFCache 命中须另验。
 
 ### 外观主题文件分工
 
@@ -365,7 +368,7 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 
 临时资源基础能力：`pkg/temporary/files.go` 负责宿主目录与UUID文件路径；`cleanup.go` 负责已授权删除的顺序与重试。业务独占同ID的写入/读出/删除锁并实现CleanupStore事务，框架不导入业务models。`pkg/testdb/schema.go` 只清理本次独占创建的测试库。回归 `go test -race ./pkg/temporary ./pkg/testdb`；契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。
 
-策略迁移P0：`pkg/strategymigrate/inspect.go`只读事务盘点表存在性及精确行数，`cmd/papa/strategy_migrate.go`提供inspect命令及64KiB业务manifest。未实现任何写模式，报告migration_ready=false。`inspect_test.go`检查只读事务、缺表非零行、错误不能冒充完成、表名/清单校验；CLI测试检查拒绝写命令和输出不覆盖。详见STRATEGY_MIGRATION.md。
+历史表盘点：`pkg/strategymigrate/inspect.go`只读事务盘点表存在性及行数，`cmd/papa/strategy_migrate.go`提供inspect命令及64KiB业务manifest。未实现任何写模式，报告migration_ready=false。`inspect_test.go`检查只读事务、缺表非零行、错误不能冒充完成、表名/清单校验；CLI测试检查拒绝写命令和输出不覆盖。详见STRATEGY_MIGRATION.md。
 
 ## 后台资源与移除功能的回归
 

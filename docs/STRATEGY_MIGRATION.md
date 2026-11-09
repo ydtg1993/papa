@@ -1,10 +1,10 @@
-# 会话、试验与正式策略：迁移预检
+# 历史表只读盘点
 
-本命令用于历史版本的迁移预检：清单中的 `crawler_agent_*` / `crawler_rule_*` 是待盘点的旧表名，`crawler_strategy_*` 是规划目标，不表示当前框架仍提供这些运行模块，也不会重新注册或创建这些表。
+> 面向：升级后需要核对历史数据库遗留表的维护者。新项目无需运行此命令。
 
-当前阶段为**P0设计与只读盘点**。统一策略存储、导入、切换、旧表删除尚未实现；本页不是已经迁移完成的操作说明。
+当前代码保留 `papa strategy-migrate inspect` 只读工具。`pkg/strategymigrate.FrameworkTables()` 中的 `crawler_agent_*`、`crawler_rule_*` 和 `crawler_strategy_*` 是历史盘点清单，不是当前模型清单；命令不会注册、创建或恢复这些表及功能。
 
-目标是会话组织需求，试验冻结一份方案/代码/配置并定量验证，正式版本保存同一份已通过验证的完整策略包。规则不再单独发布；正式发布和启动仍是两个不同的人工确认动作。
+本工具只统计表是否存在与行数。历史清单中的 `retain`、`adapt`、`target`、`retire_after_verified_migration` 仅是既有报告标签，不代表当前版本要求保留、改造、创建或删除对应模块，也不是后续开发路线图。
 
 ## 只读命令
 
@@ -30,10 +30,10 @@ papa strategy-migrate inspect -c configs/config.yaml --manifest docs/business/st
 
 命令仅连接MySQL开启只读事务，30秒内查询表是否存在与COUNT。`exists=false,rows=null`表示缺表；`exists=true,rows=0`表示空表。报告的migration_ready始终false：行数不能证明包摘要、文件、跨表引用、当前指针、活动作业和备份均已核对。数据库异常不会被当作空库继续。
 
-当前没有apply/import/drop/--write选项。普通`papa migrate`仍只增不减，不执行旧表清理。该命令不会启动业务应用、Agent、浏览器、任务或发布。
+当前没有apply/import/drop/--write选项。普通`papa migrate`仍只增不减，不执行旧表清理。该命令不会启动业务应用、浏览器或采集任务。
 
-## 后续迁移边界
+## 如何使用报告
 
-预期采用：盘点 → 完成替代存储与业务适配 → 维护窗口停止写入 → 数据库/文件一致备份 → 导入和内容/引用核验 → 一次切换 → 验收后精确删除旧表/旧逻辑。不长期双写，也不永久通过旧表fallback读取。
+缺表是有效结果，不需要为满足清单而创建表。`migration_ready=false` 不表示当前爬虫不可启动；它表示行数盘点无法证明任何数据迁移已完成。
 
-任务、Trace、调用审计、计量、周期状态和质量观测不是独立规则发布实体，不按crawler_rule_前缀一刀切。历史源码与规则只有半次发布的情况，不通过迁移自动补成正式版本。试验数据清理继续使用[TEMPORARY_RESOURCES](TEMPORARY_RESOURCES.md)，不能清理正式版本运行所需内容。
+清理遗留表前，由数据库维护者核对现有业务引用并备份，再执行单独审阅的 SQL。本命令没有删除能力，也不能依据表名前缀批准删除。当前框架建表由 `App.Migrate` 的模型注册与配置开关决定，见 [核心配置](CORE_CONFIG.md)；业务模型由业务模块登记。
