@@ -18,6 +18,16 @@ var TaskFlowScript string
 //go:embed taskflow.css
 var TaskFlowCSS string
 
+// agentBody 解码一个 JSON 请求体（有界）；解码失败时写 400 并返回错误。
+func agentBody(w http.ResponseWriter, r *http.Request, out any) error {
+	defer r.Body.Close()
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(out); err != nil {
+		http.Error(w, "请求体不是合法 JSON", http.StatusBadRequest)
+		return err
+	}
+	return nil
+}
+
 func (s *Monitor) taskFlowHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" && r.Method != "POST" {
 		w.Header().Set("Allow", "GET, POST")

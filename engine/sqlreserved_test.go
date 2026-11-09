@@ -193,11 +193,8 @@ func loadReservedWords(t *testing.T) map[string]bool {
 func frameworkColumns(t *testing.T) map[string]bool {
 	t.Helper()
 	cfg := &config.Config{}
-	cfg.Server.OperationLog = true // 把两个开关都打开，五张表全算进来
+	cfg.Server.OperationLog = true
 	cfg.Crawler.Trace.Enabled = true
-	cfg.Rules.Enabled = true
-	cfg.Agent.Enabled = true
-	cfg.Quality.Enabled = true
 	out := map[string]bool{}
 	cache := &sync.Map{}
 	for _, m := range database.FrameworkModels(cfg) {

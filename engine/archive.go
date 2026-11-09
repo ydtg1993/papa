@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/config"
@@ -90,8 +89,6 @@ type archiveBuffer struct {
 	pages   []archivedPage
 	byURL   map[string]int // 最终 URL → pages 下标（同一个 URL 抓了两次时后来者覆盖）
 	dropped int            // 超出上界 / 超过单页上限被丢掉的页数（只用于日志，见 finish）
-	rulesMu sync.Mutex
-	rules   []*ruleObservation
 }
 
 // newArchiveBuffer 为一次尝试建缓冲；归档没开时返回 nil（调用方不用判空）。
@@ -157,7 +154,6 @@ func (a *archiveBuffer) finish(failed bool) []string {
 	if a == nil {
 		return nil
 	}
-	a.finishRuleSnapshots(failed)
 	if len(a.pages) == 0 {
 		return nil
 	}
@@ -347,9 +343,6 @@ func (e *Engine) cleanupArchive(retention time.Duration) int {
 		default:
 		}
 		if d.IsDir() {
-			if path == filepath.Join(root, ruleSnapshotDir) {
-				return fs.SkipDir
-			}
 			return nil
 		}
 		info, ierr := d.Info()
@@ -363,7 +356,6 @@ func (e *Engine) cleanupArchive(retention time.Duration) int {
 		files++
 		return nil
 	})
-	files += cleanupRuleSnapshots(e.ctx, root, retention)
 	if err != nil {
 		e.loggerSet.Engine.Warnf("archive cleanup: %s", err.Error())
 	}

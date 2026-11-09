@@ -28,54 +28,11 @@
 > 1. **三个必填键**（**没有**「没写也合法」那一态）：`log.dir`（空串会去写文件系统根）、
 >    `db.max_idle_conns` / `db.max_open_conns`（0 在 `database/sql` 里是「不限」，与"漏写"是同一个数、分不开）。
 > 2. **一族「开着才必填」**：`crawler.breaker.threshold`、`html.max_body_size`、`browser.pool_size`、
->    `crawler.archive.dir`、`rules.sample_dir` —— 关掉对应开关时它们不参与校验（不许一个用不着的东西把人卡在启动上）。
+>    `crawler.archive.dir` —— 关掉对应开关时它们不参与校验（不许一个用不着的东西把人卡在启动上）。
 >
 > 各键见下面对应小节。
 >
 > 唯一的"不校验"的键是 **`business`**（见下）：框架不认它的语义，写什么键都不管 —— 那是留给业务自己的配置位，不是给框架配置的。
-
-### rules —— 持久规则仓库
-
-| 键 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `enabled` | bool | `false` | 将 7 张规则与周期状态表纳入显式迁移和启动缺表检查，并为标准 App 后台接入规则运维元数据接口；不会自动创建采集用 Repository、切换 RuleFetcher、验收或发布规则 |
-| `sample_dir` | string | 无 | 开启时必填，拒绝空串/纯空白；宿主传给 `rulestore.NewFileBlobs` 的长期样本目录，配置加载本身不创建目录 |
-
-```yaml
-rules:
-  enabled: false
-  sample_dir: ./rule-samples
-```
-
-元数据复用 `db`，经显式脱敏策略批准的正文保存在独立样本文件中，不写入 MySQL。开启后先运行 `papa migrate`，再由宿主构造 `rulestore.New(db, blobs)` 并传给 `RuleFetcherConfig.Catalog`。样本目录不受 `crawler.archive.retention` 管理，没有自动 GC；不要把会到期的 archive 正文路径当作长期样本。完整接线与发布过程见 [RULE_STORE.md](./RULE_STORE.md)。
-
-### agent —— 受控分析运行审计
-
-| 键 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `enabled` | bool | `false` | 开启要求 `rules.enabled=true`；将 `crawler_agent_runs`、`crawler_agent_steps` 纳入显式迁移和启动缺表检查，并接通标准 App 的 Agent 审计查询 |
-
-```yaml
-agent:
-  enabled: false
-```
-
-开启前同时配置 `rules.enabled` 与 `rules.sample_dir`，再显式运行 `papa migrate`。该开关只接通历史审计查询，不调用模型或自动恢复旧运行；执行能力需宿主显式注册 App.UseAgentCenter。宿主通过 `agentstore.New(db)` 与 `crawlagent.New(Config)` 接线；访问策略、预算、模型端点/名称、密钥环境变量名和 `AllowRecordAPI` 都由 Go 配置提供，不是 `agent` 下的 YAML 键。Agent 只生成待审核候选，详见 [SITE_AGENT.md](./SITE_AGENT.md)。
-
-### quality —— 规则运行质量反馈
-
-| 键 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `enabled` | bool | `false` | 将观测、固定报告、复分析请求三张表纳入显式迁移与启动缺表检查，并为标准 App 后台接通质量查询与具名报告固化；独立于 `rules.enabled` 和 `agent.enabled` |
-
-```yaml
-quality:
-  enabled: false
-```
-
-开启后先显式执行 `papa migrate`，再由宿主构造 `rulequality.New(db)`、`NewCollector` 并接入 `RuleFetcherConfig.Quality`。开关本身不收集数据、不生成报告、不调用模型。报告窗口、质量策略、基线和 Collector 超时通过 Go API 提供，不是 `quality` 下的 YAML 键。纯质量观测可以独立使用；显式复分析还需要规则仓库与 Agent。接线及覆盖边界见 [RULE_QUALITY.md](./RULE_QUALITY.md)。
-
-OA 质量中心复用上述三表，没有新增迁移或配置键；读取观测、已有报告及按需临时汇总；具名人工可固化汇总为报告，不自动保存或触发复分析。已启用并迁移过质量表的项目升级只需重新构建和重启；首次启用仍需显式迁移与 Collector 接线。查询限制与证据定位见 [MONITOR §14](MONITOR.md#14-质量监控中心)，显式执行与候选审阅见 §15。
 
 ### network —— 采集出口
 

@@ -25,6 +25,7 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
+| `papa strategy-migrate inspect [-c <配置>] [--manifest <业务清单>] [--out <新报告>]` | 只读盘点旧会话/规则与目标策略表；不导入、不切换、不删表。缺表与空表区分，完整约束见 [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) |
 | `papa new <name> [--replace <path>] [--missing-only]` | 生成新爬虫项目骨架（含 `internal/models/` 与 `internal/monitor/`）。默认拒绝已存在的目标；`--missing-only` 显式补齐缺失文件，保留已有文件。`<name>` 同时是 module 路径与目录名，只允许字母、数字与 `._~+-`，分隔用 `/`；非法名字在写文件前拒绝 |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |

@@ -67,7 +67,6 @@ func main() {
 	// 访问令牌：内存存储，登录校验与「访问令牌」页共用它（后台新建的令牌当场就能登录）
 	demoToken := randomDemoToken()
 	tokens := newDemoTokens(demoToken)
-	schedules := &demoSchedules{}
 
 	// obs 报告页的假数据：临时目录里造两份带四份产物的报告（真实项目由定时/退出/`papa report` 写入 obs.report.dir）
 	reportDir := demoReportDir()
@@ -75,18 +74,8 @@ func main() {
 		defer os.RemoveAll(reportDir)
 	}
 
-	quality := newDemoQuality()
-	rules := &demoRules{}
-	agents := newDemoAgent(quality, rules)
-	defer agents.Close(context.Background())
 	mon := server.NewMonitor(getter, stdLogger{}, server.MonitorConfig{
-		AgentAdmin:         agents,
-		QualityAdmin:       quality,
-		TaskTrace:          demoQualityTrace,
-		RuleAdmin:          rules,
-		RuleSchedules:      schedules.list,
-		RuleScheduleDetail: schedules.detail,
-		VerifyToken:        tokens.verify,
+		VerifyToken: tokens.verify,
 		// 关停要求把令牌再输一遍（与 internal/app 的装配一致）
 		VerifyTokenValue: tokens.confirm,
 		QueueStats:       fakeQueueStats,
@@ -107,7 +96,7 @@ func main() {
 		Logger: stdLogger{},
 		Auth:   mon.Auth,
 		Tables: []oao.Table{
-			schedules.table(), fakeStageTable(),
+			fakeStageTable(),
 			fakeOrderTable(), // 4 个动作 → 看「更多 ▾」折叠
 			fakeOplogTable(), // 「操作日志」页，看「操作人」列
 		},

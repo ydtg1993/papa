@@ -16,14 +16,10 @@ import (
 const flowTaskLimit = 10000
 
 func (e *Engine) flowDB() (*gorm.DB, error) {
-	if e == nil || e.cfg == nil || !e.cfg.TaskFlow.Enabled {
+	if e == nil || e.cfg == nil || !e.cfg.TaskFlow.Enabled || e.db == nil {
 		return nil, ErrFlowInvalid
 	}
-	db, err := scheduleDB(e)
-	if err != nil {
-		return nil, ErrFlowInvalid
-	}
-	return db, nil
+	return e.db, nil
 }
 func readFlow(db *gorm.DB, id string, lock bool) (models.TaskFlow, FlowPolicy, error) {
 	var row models.TaskFlow

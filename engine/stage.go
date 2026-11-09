@@ -558,7 +558,6 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	// （见 trace.go 的 traceCtxKey）。
 	ctx = withTrace(ctx, tr)
 	ctx = withArchive(ctx, ar)
-	ctx = withRuleAttempt(ctx, attempt)
 	// 站点请求头也挂在 ctx 上：这个站的任务抓任何页面都自动带上它的 UA/Cookie/Referer，
 	// handler 不用写代码；要对单次请求再改，用 `papa.WithHeaders(ctx, …)` 叠加（它只会覆盖给到的键）。
 	if h := e.siteHeaders(task.Site); len(h) > 0 {

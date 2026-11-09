@@ -50,11 +50,11 @@ type TaskActions interface {
 func Table(db *gorm.DB, acts TaskActions) oao.Table {
 	t := oao.Table{
 		Key: "task", Label: "任务", Group: "数据",
-		Source: ruleSource{gormsource.New(gormsource.Config{
+		Source: gormsource.New(gormsource.Config{
 			DB:     db,
 			Model:  &models.CrawlerTask{},
 			Search: []string{"url", "error"}, // 没有 title 列了：进这里就会拼出 `title LIKE ?` → 真库 1054
-		})},
+		}),
 		Columns: []oao.Column{
 			{Field: "id", Label: "ID", Kind: oao.KindNumber, Width: "70px", NoEdit: true},
 			// 列名必须是**数据库里的真实列名**：行数据的键来自 `SELECT *` 的结果集，对不上就永远渲染成空。
@@ -63,8 +63,6 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "p_id", Label: "父任务", Kind: oao.KindNumber, Width: "80px", NoEdit: true},
 			{Field: "stage", Label: "阶段"},
 			{Field: "site", Label: "站点", Width: "90px"}, // 多站时按站点分：熔断、日志、任务都按它
-			{Field: "rule_role", Label: "任务类型", NoSort: true, NoEdit: true, Render: oao.RenderEnum,
-				Enum: map[string]string{"ordinary": "普通任务", "schedule": "周期控制", "member": "批次成员", "invalid": "元数据异常"}},
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}", NewTab: true},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Render: oao.RenderEnum, Enum: taskStatusEnum, Tone: taskStatusTone},
@@ -96,10 +94,6 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 	}
 	if acts != nil {
 		t.Actions = taskActions(acts)
-		for i := range t.Actions {
-			key := t.Actions[i].Key
-			t.Actions[i].StateFunc = func(row map[string]any) oao.ActionState { return ruleActionState(key, row) }
-		}
 	}
 	return t
 }

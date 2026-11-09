@@ -15,7 +15,7 @@ cd mycrawler && go mod tidy
    照它抄一份自己的 `config.yaml`）。
 2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
-   之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled` / `rules.enabled` / `agent.enabled` / `quality.enabled`）都要**再跑一次**，对应表跟着开关走；`agent.enabled` 依赖 `rules.enabled`，`quality.enabled` 可独立启用。
+   之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled` / `task_flow.enabled`）都要**再跑一次**，对应表跟着开关走。
 3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（并发/队列/间隔/重试/
    入口开关都在那儿一份写全，各文件在自己的 `init()` 里登记），`main.go` 里只有 `app.RegisterSites(papa.Sites()...)`
    一行 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
@@ -42,15 +42,11 @@ cd mycrawler && go mod tidy
 
 | 我要… | 手册 | 手册在讲什么 |
 | --- | --- | --- |
+| 盘点会话/试验/策略重构的迁移范围 | [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) | 当前只读预检能力、业务清单、旧表处置边界 |
 | 管理实验临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
 | 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
 | 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
 | 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
-| 编写 HTML/JSON 规则并用样本验收、激活与回滚 | [CRAWL_RULES.md](./CRAWL_RULES.md) | 声明式离线提取、校验与版本注册 |
-| 持久保存规则/样本，发布整组阶段版本并回滚 | [RULE_STORE.md](./RULE_STORE.md) | MySQL 元数据＋文件样本、显式验收、发布竞争、Catalog 恢复与影子评估 |
-| 在受控范围内分析网站并生成待审核规则 | [SITE_AGENT.md](./SITE_AGENT.md) | 有限模型工具循环、独立样本验收、运行审计、回放/兼容模型示例；只产候选，发布由宿主显式执行 |
-| 检查线上规则质量，并按需发起一次复分析 | [RULE_QUALITY.md](./RULE_QUALITY.md) | 旁路摘要、固定版本窗口、重试折叠、覆盖与异常类别、显式复分析；报告只覆盖已记录观测，不自动调用模型或发布 |
-| 把规则接成列表、详情与 URL/POST 游标分页采集 | [RULE_FETCHER.md](./RULE_FETCHER.md) | 通用执行器、版本固定、账号接线、幂等保存；RuleSchedule 完整周期批次与恢复示例 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
 | 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |

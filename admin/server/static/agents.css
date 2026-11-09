@@ -1,9 +1,0 @@
-#mod-agents .agent-evidence{display:flex;align-items:center;gap:8px;margin:8px 0;overflow-wrap:anywhere}
-#mod-agents input[type=checkbox]{width:18px;height:18px;padding:0;flex:none}
-#mod-agents .rule-panel:empty{display:none}
-#mod-agents details{margin:12px 0}
-#mod-agents summary{cursor:pointer;font-weight:700}
-#mod-agents .rule-id{overflow-wrap:anywhere}
-#mod-agents .quality-filters{margin:16px 0}
-#agent-evidence{max-height:360px;overflow-y:auto}
-@media(max-width:600px){#mod-agents .quality-actions .btn{width:100%}#mod-agents .rule-panel{padding:12px}#mod-agents pre{max-height:420px}}

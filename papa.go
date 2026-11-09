@@ -17,9 +17,7 @@ import (
 )
 
 // App 应用容器，封装配置、日志、数据库、爬虫引擎。
-// Run 前通过 UseAgentCenter 注册宿主批准的分析配置。
 // 业务后台任务通过 UseShutdown 注册关库前的取消与排空回调。
-// 关闭宿主依赖前，可用 CloseAgentCenter 等待后台分析完全结束。
 type App = app.App
 
 // NetworkConfig 默认只允许公网 HTTP(S)；PrivateOrigins 显式授权内网 origin。

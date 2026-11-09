@@ -20,6 +20,7 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	wantFiles := []string{
+		filepath.Join("docs", "framework", "STRATEGY_MIGRATION.md"),
 		filepath.Join("docs", "framework", "TEMPORARY_RESOURCES.md"),
 		"go.mod",
 		".gitignore",

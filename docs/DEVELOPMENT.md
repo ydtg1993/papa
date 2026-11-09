@@ -278,6 +278,7 @@ papa 门面 ──► internal/app ──► engine ──► internal/{workerpo
                  └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
                          └──► tasksource/oplog 还依赖 admin/gormsource
 pkg/notify ──► core
+pkg/strategymigrate ──► database/sql + MySQL错误分类（只读旧表/目标表盘点；业务清单由宿主提供）
 pkg/temporary ──► 标准库 + UUID（Files安全目录、Cleaner清理顺序；业务实现CleanupStore）
 pkg/testdb ──► 标准库（独占测试库创建/清理；不包含业务库白名单）
 pkg/rulestore ──► pkg/crawlrule + pkg/htmlfetch + models + GORM（不依赖 engine；通过 Catalog 接入）
@@ -501,3 +502,5 @@ MySQL CAS、重开连接读取与真实 Engine 多阶段/证据/清洗接线的�
 导航归属：`internal/app/page_ownership.go` 校验 Page.Owns 的引用与无环性，`admin/server/static/navigation.js` 负责菜单归属和直接访问高亮；不改变后端授权。
 
 临时资源基础能力：`pkg/temporary/files.go` 负责宿主目录与UUID文件路径；`cleanup.go` 负责已授权删除的顺序与重试。业务独占同ID的写入/读出/删除锁并实现CleanupStore事务，框架不导入业务models。`pkg/testdb/schema.go` 只清理本次独占创建的测试库。回归 `go test -race ./pkg/temporary ./pkg/testdb`；契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。
+
+策略迁移P0：`pkg/strategymigrate/inspect.go`只读事务盘点表存在性及精确行数，`cmd/papa/strategy_migrate.go`提供inspect命令及64KiB业务manifest。未实现任何写模式，报告migration_ready=false。`inspect_test.go`检查只读事务、缺表非零行、错误不能冒充完成、表名/清单校验；CLI测试检查拒绝写命令和输出不覆盖。详见STRATEGY_MIGRATION.md。

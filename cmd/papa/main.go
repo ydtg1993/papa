@@ -115,6 +115,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "strategy-migrate":
+		if err := runStrategyMigrateCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "migrate":
 		if err := runMigrateCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -161,6 +166,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  papa migrate [-c configs/config.yaml]")
 	fmt.Fprintln(os.Stderr, "    建/补表。在业务项目目录里跑会转交 `go run . -migrate`（连业务模型一起建）；")
 	fmt.Fprintln(os.Stderr, "    其余情况只建框架自带的表。启动时不会自动迁移")
+	fmt.Fprintln(os.Stderr, "  papa strategy-migrate inspect [-c config.yaml] [--manifest business.json] [--out new-report.json]")
+	fmt.Fprintln(os.Stderr, "    只读盘点会话/试验/策略重构的旧表与目标表；不导入、不删表，不代表已通过迁移核验")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa token add --operator <名字>   创建一把后台访问令牌（明文只打印一次）")
 	fmt.Fprintln(os.Stderr, "")

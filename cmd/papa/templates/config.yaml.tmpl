@@ -75,23 +75,6 @@ db:
   # SQL 日志级别：silent / error / warn / info；留空按 app.env 推（dev=info，其它=warn 且隐去参数值）。
   # log_level: "info"
 
-# 可选的持久规则仓库：MySQL 元数据与长期文件样本。开关开启后先运行 papa migrate。
-# 普通启动只检查表，不自动迁移；宿主用 rules.sample_dir 创建 rulestore 样本库。
-rules:
-  enabled: false
-  sample_dir: "./rule-samples" # enabled=true 时必填；独立于短期 crawler.archive，不自动清理
-
-# 可选的受控网站分析审计：要求 rules.enabled=true，再显式运行 papa migrate。
-# 登记运行/步骤表并接通审计查询；执行需宿主 UseAgentCenter，不自动接管运行。
-agent:
-  enabled: false
-
-# 可选的运行质量摘要：独立于 rules/agent，开启后显式运行 papa migrate。
-# 登记观测/固定报告/复分析请求表，接通后台查询与具名报告固化。
-# 宿主显式接入 Collector；不自动保存报告、调用模型或清理数据。
-quality:
-  enabled: false
-
 # 可选动态阶段调度：启用后 papa migrate；普通任务默认不纳入调度。
 # 运行中策略经具名后台人工确认后生效；不会自动创建采集或发布。
 task_flow:

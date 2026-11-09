@@ -23,6 +23,7 @@ var (
 	ErrTaskRepeatOn       = errors.New("该任务的周期轮询已经开着")
 	ErrTaskRepeatOff      = errors.New("该任务的周期轮询本来就没开")
 	ErrRepeatIntervalBad  = errors.New("轮询周期要么是 0（用全局的周期），要么不小于 10 秒")
+	ErrTaskBatchProtected = errors.New("该任务是受控批次成员，不允许此操作")
 )
 
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
@@ -109,15 +110,11 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	if err != nil {
 		return err
 	}
-	role := RuleTaskRole(t.Meta)
-	if role == "invalid" || (role == "member" && (t.Status != models.TaskStatusFailed || t.Repeatable != models.RepeatableNo)) {
-		return ErrTaskBatchProtected
-	}
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
-	res := taskRetryScope(e.db, t, wasReprocess).
+	res := retryScope(e.db, id, wasReprocess).
 		Updates(map[string]any{
 			"status":    models.TaskStatusPending,
 			"retry":     0,
@@ -224,15 +221,6 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 			return ErrTaskBatchProtected
 		}
 	}
-	if on {
-		t, err := e.loadTask(id)
-		if err != nil {
-			return err
-		}
-		if role := RuleTaskRole(t.Meta); role == "member" || role == "invalid" {
-			return ErrTaskBatchProtected
-		}
-	}
 	want, was := models.RepeatableYes, models.RepeatableNo
 	if !on {
 		want, was = models.RepeatableNo, models.RepeatableYes
@@ -267,12 +255,9 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
 	}
-	t, err := e.loadTask(id)
+	_, err := e.loadTask(id)
 	if err != nil {
 		return err
-	}
-	if role := RuleTaskRole(t.Meta); role == "member" || role == "invalid" {
-		return ErrTaskBatchProtected
 	}
 	eff := int64(seconds)
 	if eff == 0 {
@@ -363,7 +348,7 @@ func (e *Engine) DeleteTask(id uint) error {
 	if err != nil {
 		return err
 	}
-	if t.FlowID != "" || RuleTaskRole(t.Meta) != "ordinary" {
+	if t.FlowID != "" {
 		return ErrTaskBatchProtected
 	}
 	if t.Status == models.TaskStatusProcessing {

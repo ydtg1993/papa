@@ -23,7 +23,6 @@ import (
 	"github.com/ydtg1993/papa/v4/obs/analyze"
 	"github.com/ydtg1993/papa/v4/obs/pattern"
 	"github.com/ydtg1993/papa/v4/obs/report"
-	"github.com/ydtg1993/papa/v4/pkg/agentadmin"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
@@ -42,7 +41,6 @@ import (
 )
 
 type App struct {
-	agentCenter *agentadmin.Service
 	Config      *config.Config
 	Logger      *loggers.LoggerSet // 自定义一个结构，包含各类logger
 	DB          *gorm.DB
@@ -808,7 +806,6 @@ func (a *App) Run(ctx context.Context) {
 	// 反过来的话，正在下载日志的请求会在读到大半时被关掉的连接 / 关掉的库打断。
 	a.shutdownHTTP()
 	businessDrained := a.stopExtensions(a.Config.Crawler.StopTimeoutOrDefault())
-	agentDrained := a.stopAgentCenter(a.Config.Crawler.StopTimeoutOrDefault())
 
 	// 引擎排空：Engine.Stop 内部先 e.cancel()，再等各阶段 worker 把队列跑完（上限 crawler.stop_timeout）。
 	// 各阶段是并发等的，所以这里最多等一个 stopTimeout。
@@ -840,7 +837,7 @@ func (a *App) Run(ctx context.Context) {
 	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
 	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
 	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
-	if drained && agentDrained && businessDrained {
+	if drained && businessDrained {
 		if a.Engine.GetBrowserPool() != nil {
 			a.Engine.GetBrowserPool().Close()
 		}
@@ -1040,33 +1037,17 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		AgentAdmin: a.agentAdministration(),
 		OnTaskFlowAction: func(ev server.AgentActionEvent) {
 			if rec != nil {
 				rec.RecordEvent(oplog.Event{Table: "crawler_task_flows", Action: ev.Action, RowID: ev.ID, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err})
 			}
 		},
-		OnAgentAction: func(ev server.AgentActionEvent) {
-			if rec != nil {
-				rec.RecordEvent(oplog.Event{Table: "agent_center", Action: ev.Action, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"id": ev.ID, "operation_id": ev.OperationID}})
-			}
-		},
-		QualityAdmin: a.qualityAdministration(),
-		RuleAdmin:    a.ruleAdministration(),
-		OnRuleChange: func(ev server.RuleChangeEvent) {
-			if rec != nil {
-				rec.RecordEvent(oplog.Event{Table: "rules", Action: ev.Request.Kind, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err, Values: map[string]any{"site": ev.Request.Site, "operation_id": ev.Request.OperationID, "expected_generation": ev.Request.Generation, "release_id": ev.ReleaseID}})
-			}
-		},
-		TaskFlow:           a.Engine.TaskFlow,
-		UpdateTaskFlow:     a.Engine.UpdateTaskFlow,
-		RuleSchedules:      a.Engine.ListRuleSchedules,
-		RuleScheduleDetail: a.Engine.RuleScheduleDetail,
-		VerifyToken:        tokenCounter.Verifier(a.Logger.Sys),
+		TaskFlow:       a.Engine.TaskFlow,
+		UpdateTaskFlow: a.Engine.UpdateTaskFlow,
+		VerifyToken:    tokenCounter.Verifier(a.Logger.Sys),
 		// 后台页面首帧始终要求登录；首次令牌由本机 CLI 创建。
-		AuthRequired:  tokenCounter.Required,
-		Whitelist:     whitelist,
-		ModelSettings: a.configStore,
+		AuthRequired: tokenCounter.Required,
+		Whitelist:    whitelist,
 		// 设置页保存白名单 → 落 crawler_config；成功后 admin/server 自己换判定缓存（本进程即时生效）。
 		SaveWhitelist: func(entries []string, operator string) error {
 			if err := whitelistStore.Save(configstore.KeyIPWhitelist, entries, operator); err != nil {

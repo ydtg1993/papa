@@ -50,19 +50,22 @@ type QueueProcessEvent struct {
 	At        time.Time
 }
 
+// AgentActionEvent 一次后台动作（任务流策略等）的结局，宿主拿它记操作日志。
+type AgentActionEvent struct {
+	Action      string
+	ID          string
+	OperationID string
+	Operator    string
+	IP          string
+	At          time.Time
+	Err         error
+}
+
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	ModelSettings      ModelSettingsStore
-	OnTaskFlowAction   func(AgentActionEvent)
-	TaskFlow           func(context.Context, string) (engine.TaskFlowView, error)
-	UpdateTaskFlow     func(context.Context, string, uint64, engine.FlowPolicy) error
-	QualityAdmin       QualityAdministration
-	AgentAdmin         AgentAdministration
-	OnAgentAction      func(AgentActionEvent)
-	RuleAdmin          RuleAdministration
-	OnRuleChange       func(RuleChangeEvent)
-	RuleSchedules      func(context.Context, string, uint) (engine.RuleScheduleList, error)
-	RuleScheduleDetail func(context.Context, uint, uint, string, bool) (engine.RuleScheduleDetail, error)
+	OnTaskFlowAction func(AgentActionEvent)
+	TaskFlow         func(context.Context, string) (engine.TaskFlowView, error)
+	UpdateTaskFlow   func(context.Context, string, uint64, engine.FlowPolicy) error
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 时拒绝访问。
 	// 由宿主注入（papa 用 admin/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
@@ -245,13 +248,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/monitor", s.wrap(s.htmlHandler))
 	mux.HandleFunc("/api/monitor", s.wrap(s.apiHandler))
 	mux.HandleFunc("/api/task-flow", s.wrap(s.taskFlowHandler))
-	mux.HandleFunc("/api/rule-schedules", s.wrap(s.ruleScheduleHandler))
-	mux.HandleFunc("/api/rule-schedules/detail", s.wrap(s.ruleScheduleHandler))
-	mux.HandleFunc("/api/rules/", s.wrap(s.ruleAdminHandler))
-	mux.HandleFunc("/api/quality/", s.wrap(s.qualityHandler))
-	mux.HandleFunc("/api/agents/", s.wrap(s.agentHandler))
 	mux.HandleFunc("/api/settings", s.wrap(s.settingsHandler))
-	mux.HandleFunc("/api/settings/model", s.wrap(s.modelSettingsHandler))
 	mux.HandleFunc("/api/settings/whitelist", s.wrap(s.whitelistHandler))
 	mux.HandleFunc("/api/settings/shutdown", s.wrap(s.shutdownHandler))
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
@@ -406,9 +403,6 @@ func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.cfg.SysInfo != nil {
 		resp["system"] = s.cfg.SysInfo.Snapshot()
-	}
-	if s.cfg.AgentAdmin != nil {
-		resp["agent_activity"] = s.agentActivity(r.Context())
 	}
 	// 这是响应组装时间；系统指标和治理积压仍各自携带真实采样时间。
 	resp["generated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
