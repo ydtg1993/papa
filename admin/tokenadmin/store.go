@@ -154,3 +154,26 @@ func (s *DBStore) whyRejected(id uint, fallback error) error {
 
 // 编译期确认 DBStore 满足接口。
 var _ Store = (*DBStore)(nil)
+
+// Rotate atomically replaces a token hash, retaining the row and enabled state.
+func (s *DBStore) Rotate(id uint, presented string) (string, bool, error) {
+	var row models.AccessToken
+	if err := s.db.First(&row, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, ErrNotFound
+		}
+		return "", false, err
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		return "", false, err
+	}
+	result := s.db.Model(&models.AccessToken{}).Where("id = ? AND token_hash = ?", id, row.TokenHash).Update("token_hash", auth.Hash(token))
+	if result.Error != nil {
+		return "", false, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return "", false, ErrChanged
+	}
+	return token, row.TokenHash == auth.Hash(presented), nil
+}

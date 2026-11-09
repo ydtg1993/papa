@@ -29,7 +29,7 @@ async function apiRequest(url, options) {
     var controller = new AbortController(), expired = false;
     var timeout;
     var deadline = new Promise(function (_, reject) {
-        timeout = setTimeout(function () { expired = true; controller.abort(); reject(new Error('timeout')); }, 10000);
+        timeout = setTimeout(function () { expired = true; controller.abort(); reject(new Error('timeout')); }, url === '/api/browser-diagnostics' ? 130000 : 10000);
     });
     try {
         // Buffer native API bodies within the same deadline. Returning at headers

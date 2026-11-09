@@ -1109,6 +1109,11 @@
             b.onclick = function () { setTokenEnabled(Number(b.dataset.tokenOn), true); };
         });
         el.querySelectorAll('[data-token-del]').forEach(function (b) {
+            var update = document.createElement('button'); update.className = 'btn'; update.textContent = '更新';
+            b.parentNode.insertBefore(update, b);
+            update.onclick = function () { rotateToken(Number(b.dataset.tokenDel), update); };
+        });
+        el.querySelectorAll('[data-token-del]').forEach(function (b) {
             b.onclick = function () { removeToken(Number(b.dataset.tokenDel)); };
         });
     }
@@ -1542,3 +1547,20 @@
         hideLogin();
         startPolling();
     }
+
+async function rotateToken(id, button) {
+    if (button.disabled) return;
+    button.disabled = true;
+    var current = captureMonitorView();
+    try {
+        if (!await Dialog.confirm({title:'更新访问令牌',body:'<p>更新后旧令牌立即失效。新令牌只显示一次，请及时保存。响应丢失时可用本机 papa token add 恢复访问。</p>',okLabel:'更新'}) || !current()) return;
+        stopPolling();
+        var data = await tokenWrite('/api/tokens/rotate', {id:id}, current);
+        if (!data || !data.token || !current()) return;
+        if (data.current) saveKey(data.token);
+        await Dialog.open({title:'新令牌（只显示一次）',body:'<div class="secret-box">'+esc(data.token)+'</div>',actions:[
+            {label:'复制',onClick:function(){copyText(data.token);return false;}},{label:'已保存',value:true}
+        ]});
+        fetchTokens();
+    } finally { button.disabled = false; startPolling(); }
+}

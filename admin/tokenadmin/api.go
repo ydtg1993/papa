@@ -3,6 +3,7 @@ package tokenadmin
 import (
 	"encoding/json"
 	"errors"
+	"github.com/ydtg1993/papa/v4/admin/auth"
 	"net"
 	"net/http"
 	"time"
@@ -46,6 +47,7 @@ func NewAPI(store Store, hook Hook, log Logger) *API {
 // Register 把路由挂到 mux 上。wrap 传监控后台的中间件（mon.Auth）——
 // 令牌管理接口本身也是 /api/*，同样要过白名单与令牌校验。
 func (a *API) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
+	mux.Handle("/api/tokens/rotate", wrap(http.HandlerFunc(a.handleRotate)))
 	mux.Handle("/api/tokens", wrap(http.HandlerFunc(a.handleTokens)))
 	mux.Handle("/api/tokens/enabled", wrap(http.HandlerFunc(a.handleEnabled)))
 	mux.Handle("/api/tokens/remove", wrap(http.HandlerFunc(a.handleRemove)))
@@ -204,4 +206,36 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (a *API) handleRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var body struct {
+		ID uint `json:"id"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.ID == 0 {
+		writeError(w, 400, "缺少令牌 ID")
+		return
+	}
+	rotator, ok := a.store.(interface {
+		Rotate(uint, string) (string, bool, error)
+	})
+	if !ok {
+		writeError(w, 501, "当前存储不支持更新令牌")
+		return
+	}
+	token, current, err := rotator.Rotate(body.ID, auth.Extract(r))
+	a.changed("rotate", body.ID, nil, err, r)
+	if err != nil {
+		a.failBody(w, r, err, "rotate")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"token": token, "current": current})
 }

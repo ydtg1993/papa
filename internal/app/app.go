@@ -997,6 +997,7 @@ func (a *App) httpServer(ctx context.Context) {
 		return
 	}
 
+	a.UsePage(Page{Key: "browser-diagnostics", Label: "浏览器诊断", Section: "system", Script: rodDiagnosticsScript})
 	mux := http.NewServeMux()
 	if a.Config.TaskFlow.Enabled {
 		a.UseCSS(server.TaskFlowCSS)
@@ -1180,6 +1181,7 @@ func (a *App) httpServer(ctx context.Context) {
 	// hook 同时使管理计数失效；令牌鉴权不依赖数量缓存。
 	tokenHook := tokenWriteHook(tokenCounter, rec)
 	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
+	mux.Handle("/api/browser-diagnostics", mon.Auth(RodDiagnostics(a)))
 
 	// 自定义页与注入（阶段 3 的逃生舱）
 	a.mountCustomRoutes(mux, mon.Auth)
