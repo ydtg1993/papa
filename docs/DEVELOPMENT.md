@@ -366,3 +366,13 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 临时资源基础能力：`pkg/temporary/files.go` 负责宿主目录与UUID文件路径；`cleanup.go` 负责已授权删除的顺序与重试。业务独占同ID的写入/读出/删除锁并实现CleanupStore事务，框架不导入业务models。`pkg/testdb/schema.go` 只清理本次独占创建的测试库。回归 `go test -race ./pkg/temporary ./pkg/testdb`；契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。
 
 策略迁移P0：`pkg/strategymigrate/inspect.go`只读事务盘点表存在性及精确行数，`cmd/papa/strategy_migrate.go`提供inspect命令及64KiB业务manifest。未实现任何写模式，报告migration_ready=false。`inspect_test.go`检查只读事务、缺表非零行、错误不能冒充完成、表名/清单校验；CLI测试检查拒绝写命令和输出不覆盖。详见STRATEGY_MIGRATION.md。
+
+## 后台资源与移除功能的回归
+
+后台只注册现有通用能力。`admin/server/ui_behavior_test.go` 的 `TestMonitorTemplateLocalAssetsExist` 检查模板引用的本地资源确实嵌入；`TestOperationsJavaScriptBehavior` 执行 Node 行为测试，覆盖导航、身份切换、草稿保护、队列及工作台。`navigation_test.js` 检查当前内置模块和对应页面，`taskflow.go` / `taskflow.js` 保留动态任务流入口。
+
+`admin/frameworkdata/tables_test.go` 使用现有框架模型验证只读目录、鉴权、查询投影、稳定排序、脱敏和缺表恢复，不依赖已删除的 Agent/规则模型。历史旧表仅在 `pkg/strategymigrate` 的只读预检清单中保留，不会自动迁移或删除。
+
+`admin/frameworkdata/tables.go` 根据 GORM schema 向 `source.go` 传递 JSON 列清单，查询结果按 JSON 递归脱敏，不仅依赖 `_json` 字段名后缀；现有任务流的 `policy` 同样受保护。
+
+移除无效的 `configstore.NewWithModelKeyFile` 后，配置存储统一使用 `configstore.New(db)`；任务流操作日志回调类型为 `server.TaskFlowActionEvent`。这不影响 `pkg/account` 的凭据加密存储。

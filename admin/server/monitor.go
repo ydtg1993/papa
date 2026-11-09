@@ -50,20 +50,19 @@ type QueueProcessEvent struct {
 	At        time.Time
 }
 
-// AgentActionEvent 一次后台动作（任务流策略等）的结局，宿主拿它记操作日志。
-type AgentActionEvent struct {
-	Action      string
-	ID          string
-	OperationID string
-	Operator    string
-	IP          string
-	At          time.Time
-	Err         error
+// TaskFlowActionEvent 一次任务流策略动作的结局，宿主拿它记操作日志。
+type TaskFlowActionEvent struct {
+	Action   string
+	ID       string
+	Operator string
+	IP       string
+	At       time.Time
+	Err      error
 }
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	OnTaskFlowAction func(AgentActionEvent)
+	OnTaskFlowAction func(TaskFlowActionEvent)
 	TaskFlow         func(context.Context, string) (engine.TaskFlowView, error)
 	UpdateTaskFlow   func(context.Context, string, uint64, engine.FlowPolicy) error
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 时拒绝访问。

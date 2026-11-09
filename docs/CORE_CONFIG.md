@@ -234,7 +234,7 @@ crawler:
 | --- | --- |
 | `enabled` | 是否开启；默认 `false` |
 | `dir` | 归档根目录。**开启时必填**（空串会拼成"文件系统根"下的 `{site}/{stage}/…`，见校验层） |
-| `mode` | `failure`（默认）= 只在**失败**的尝试落盘；`always` = 成功尝试也落盘。RuleFetcher 成功时的最小 Trace 引用不受此开关影响，但 `failure` 下没有对应归档文件 |
+| `mode` | `failure`（默认）= 只在**失败**的尝试落盘；`always` = 成功尝试也落盘 |
 | `retention` | 保留期；`0`/未写 = 默认 7 天（与 trace 对齐），**负数 = 永久保留** |
 | `max_file_mb` | 单页上限（**MB**）；`0`/未写 = 8。原始 HTML 归档超限时跳过并记 WARN |
 

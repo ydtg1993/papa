@@ -6,11 +6,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/oao"
 )
+
+// Every local asset referenced by the shipped page must be embedded. Custom
+// assets and optional oao bundles are served by their own handlers.
+func TestMonitorTemplateLocalAssetsExist(t *testing.T) {
+	b, err := templateFS.ReadFile("template.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := regexp.MustCompile(`(?:src|href)="/static/([^"]+)"`).FindAllSubmatch(b, -1)
+	if len(refs) == 0 {
+		t.Fatal("monitor has no asset references")
+	}
+	for _, ref := range refs {
+		name := string(ref[1])
+		if name == "custom.js" || name == "custom.css" || strings.HasPrefix(name, "oao/") {
+			continue
+		}
+		if _, err := staticFS.ReadFile("static/" + name); err != nil {
+			t.Errorf("template references unavailable asset %s: %v", name, err)
+		}
+	}
+}
 
 func TestOperationsJavaScriptBehavior(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -45,7 +69,7 @@ func TestOperationsJavaScriptBehavior(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "oao.js"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, script := range []string{"queue_governance_test.js", "trace_dialog_test.js", "appearance_test.js", "storage_startup_test.js", "visual_state_test.js", "visuals_test.js", "navigation_test.js", "monitor_identity_test.js", "legacy_oao_test.js", "extensions_test.js", "monitor_requests_test.js", "native_session_test.js", "table_links_test.js", "dialog_test.js", "workbench_test.js"} {
+	for _, script := range []string{"queue_governance_test.js", "trace_dialog_test.js", "appearance_test.js", "storage_startup_test.js", "visual_state_test.js", "visuals_test.js", "navigation_test.js", "monitor_identity_test.js", "legacy_oao_test.js", "extensions_test.js", "monitor_requests_test.js", "table_links_test.js", "dialog_test.js", "workbench_test.js"} {
 		t.Run(script, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()

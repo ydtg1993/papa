@@ -31,7 +31,16 @@ func TestTaskFlowHTTPExplicitCASAndAuthentication(t *testing.T) {
 		method, body string
 		auth         bool
 		want         int
-	}{{"POST", body, false, 401}, {"GET", "", true, 200}, {"DELETE", "", true, 405}, {"POST", `{"revision":0}`, true, 400}, {"POST", strings.Replace(body, `"revision":2`, `"revision":2,"revision":3`, 1), true, 400}, {"POST", body, true, 409}} {
+	}{
+		{"POST", body, false, 401}, {"GET", "", true, 200}, {"DELETE", "", true, 405},
+		{"POST", `{"revision":0}`, true, 400},
+		{"POST", strings.Replace(body, `"revision":2`, `"revision":2,"revision":3`, 1), true, 400},
+		{"POST", strings.Replace(body, `"parallel":1`, `"parallel":1,"parallel":2`, 1), true, 400},
+		{"POST", body + `{}`, true, 400},
+		{"POST", body + strings.Repeat(" ", 1<<20), true, 400},
+		{"POST", strings.Replace(body, `"revision":2`, `"revision":2,"unknown":true`, 1), true, 400},
+		{"POST", body, true, 409},
+	} {
 		r := httptest.NewRequest(tc.method, "/api/task-flow?id=run", strings.NewReader(tc.body))
 		if tc.auth {
 			r.Header.Set("Authorization", "Bearer test")

@@ -138,7 +138,7 @@ func TestFrameworkCatalogCoversAllModelsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := database.AllFrameworkModels()
-	if len(tables) != 18 || len(tables) != len(models) {
+	if len(tables) != 6 || len(tables) != len(models) {
 		t.Fatalf("catalog/model count = %d/%d", len(tables), len(models))
 	}
 	for i, table := range tables {
@@ -203,15 +203,12 @@ func TestFrameworkHTTPReadOnlyAuthAndBusinessIsolation(t *testing.T) {
 	}
 }
 
-func TestFrameworkSQLProjectionPaginationAndCompositeOrder(t *testing.T) {
+func TestFrameworkSQLProjectionPaginationAndStableOrder(t *testing.T) {
 	db, f := testDB(t)
 	mux := testMux(t, db)
-	for _, name := range []string{"crawler_access_token", "crawler_config", "crawler_tasks", "crawler_operation_log", "crawler_rule_versions", "crawler_agent_steps"} {
+	for _, name := range []string{"crawler_access_token", "crawler_config", "crawler_tasks", "crawler_operation_log", "crawler_task_flows", "crawler_task_trace"} {
 		f.queries = nil
 		params := url.Values{"page": {"2"}, "size": {"50"}, "sort": {"-status,evil"}, "filter[table]": {"task"}, "filter[token_hash]": {"forbidden"}}
-		if name == "crawler_rule_versions" {
-			params.Set("sort", "-rule_id")
-		}
 		w := request(mux, "GET", "/api/oao/"+name+"?"+params.Encode(), true)
 		if w.Code != 200 {
 			t.Fatal(w.Body.String())
@@ -234,10 +231,10 @@ func TestFrameworkSQLProjectionPaginationAndCompositeOrder(t *testing.T) {
 		if strings.Contains(f.queries[0], "ORDER BY") {
 			t.Fatal("count must not inherit tie breakers", q)
 		}
-		if name == "crawler_rule_versions" && !strings.Contains(q, "ORDER BY `rule_id` DESC,`rule_id` ASC,`version` ASC") {
-			t.Fatal("compound order", q)
+		if name == "crawler_task_flows" && !strings.Contains(q, "ORDER BY `id` ASC") {
+			t.Fatal("stable fallback order", q)
 		}
-		if name == "crawler_agent_steps" && !strings.Contains(q, "ORDER BY `status` DESC,`run_id` ASC,`sequence` ASC") {
+		if name == "crawler_tasks" && !strings.Contains(q, "ORDER BY `status` DESC,`id` ASC") {
 			t.Fatal("user sort/tiebreaker", q)
 		}
 	}
@@ -255,7 +252,7 @@ func TestFrameworkStatusMissingUnavailableAndRecovery(t *testing.T) {
 		{errors.New("private connection secret"), "unavailable"}, {nil, "available"},
 	} {
 		f.err = tc.err
-		w := request(mux, "GET", "/api/framework-tables/crawler_agent_runs", true)
+		w := request(mux, "GET", "/api/framework-tables/crawler_task_flows", true)
 		var status tableStatus
 		if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
 			t.Fatal(err)
@@ -271,19 +268,24 @@ func TestFrameworkStatusMissingUnavailableAndRecovery(t *testing.T) {
 
 func TestFrameworkResponseSanitizesNestedJSONAndBinaryIDs(t *testing.T) {
 	db, f := testDB(t)
-	f.columns = []string{"id", "snapshot_json", "usage_json"}
-	f.row = []driver.Value{[]byte("run-1"), []byte(`{"url":"https://user:pw@example.test/page?key=secret#token","nested":{"api_key":"must-hide","headers":{"Cookie":"must-hide"}},"count":9007199254740993}`), []byte(`invalid secret`)}
-	w := request(testMux(t, db), "GET", "/api/oao/crawler_agent_runs", true)
+	f.columns = []string{"id", "policy", "site"}
+	f.row = []driver.Value{[]byte("run-1"), []byte(`{"url":"https://user:pw@example.test/page?key=secret#token","nested":{"api_key":"must-hide","headers":{"Cookie":"must-hide"}},"count":9007199254740993}`), []byte(`Bearer must-hide`)}
+	w := request(testMux(t, db), "GET", "/api/oao/crawler_task_flows", true)
 	if w.Code != 200 {
 		t.Fatal(w.Body.String())
 	}
-	for _, bad := range []string{"must-hide", "user:pw", "?key=secret", "#token", "invalid secret"} {
+	for _, bad := range []string{"must-hide", "user:pw", "?key=secret", "#token"} {
 		if strings.Contains(w.Body.String(), bad) {
 			t.Fatal(w.Body.String())
 		}
 	}
 	if !strings.Contains(w.Body.String(), `"id":"run-1"`) || !strings.Contains(w.Body.String(), "9007199254740993") {
 		t.Fatal(w.Body.String())
+	}
+	f.row[1] = []byte(`invalid secret`)
+	w = request(testMux(t, db), "GET", "/api/oao/crawler_task_flows", true)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "invalid secret") || !strings.Contains(w.Body.String(), "无效 JSON") {
+		t.Fatal("invalid schema JSON was not omitted", w.Code, w.Body.String())
 	}
 }
 

@@ -10,8 +10,9 @@ import (
 )
 
 type source struct {
-	db    *gorm.DB
-	inner *gormsource.Source
+	db         *gorm.DB
+	inner      *gormsource.Source
+	jsonFields map[string]bool
 }
 
 func (s *source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64, error) {
@@ -39,7 +40,11 @@ func (s *source) List(ctx context.Context, q oao.Query) ([]map[string]any, int64
 	}
 	for _, row := range rows {
 		for k, v := range row {
-			row[k] = sanitizeValue(k, v, 0)
+			key := k
+			if s.jsonFields[k] {
+				key += "_json"
+			}
+			row[k] = sanitizeValue(key, v, 0)
 		}
 	}
 	return rows, total, nil

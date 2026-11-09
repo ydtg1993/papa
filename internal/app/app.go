@@ -1037,7 +1037,7 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
-		OnTaskFlowAction: func(ev server.AgentActionEvent) {
+		OnTaskFlowAction: func(ev server.TaskFlowActionEvent) {
 			if rec != nil {
 				rec.RecordEvent(oplog.Event{Table: "crawler_task_flows", Action: ev.Action, RowID: ev.ID, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err})
 			}

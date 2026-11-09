@@ -53,7 +53,7 @@ func TestTaskDataTablesOnlyTaskWithTraceAction(t *testing.T) {
 		mux.ServeHTTP(w, r)
 		return w.Code
 	}
-	if code := post("retry", `{"id":"7","row":{"reprocess":3,"rule_role":"ordinary"}}`); code != 200 || a.retried != 7 || a.version != 3 {
+	if code := post("retry", `{"id":"7","row":{"reprocess":3}}`); code != 200 || a.retried != 7 || a.version != 3 {
 		t.Fatalf("retry status=%d id=%d version=%d", code, a.retried, a.version)
 	}
 	a.retried = 0

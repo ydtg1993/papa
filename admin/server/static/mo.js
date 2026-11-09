@@ -29,7 +29,7 @@
     /* ============ 基础状态 ============ */
     var KEY_STORAGE = 'papa_monitor_key';
     var authGeneration = 0;
-    var MODULE_TITLES = { dashboard: '运行概览', queues: '队列治理', schedules: '周期批次', rules: '规则与发布', quality: '运行质量', agents: 'Agent 候选', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: '运行报告', logs: '运行日志', settings: '系统设置', section: '数据与资源' };
+    var MODULE_TITLES = { dashboard: '运行概览', queues: '队列治理', tables: '数据', pages: '自定义页', tokens: '访问令牌', obs: '运行报告', logs: '运行日志', settings: '系统设置', section: '数据与资源' };
     var currentModule = 'dashboard';
 
     function loadKey() {
@@ -112,11 +112,6 @@
         if (typeof resetMonitorNavigation === 'function') resetMonitorNavigation();
         if (typeof resetMonitorObservations === 'function') resetMonitorObservations();
         if (typeof resetQueueGovernance === 'function') resetQueueGovernance();
-        if (typeof resetSchedulesSession === 'function') resetSchedulesSession();
-        if (typeof resetRulesSession === 'function') resetRulesSession();
-        if (typeof resetQualitySession === 'function') resetQualitySession();
-        if (typeof resetAgentsSession === 'function') resetAgentsSession();
-        if (typeof window.resetModelSettingsSession === 'function') window.resetModelSettingsSession();
         retireTableView();
         if (typeof Papa !== 'undefined') Papa.leave(true);
         if (typeof workbenchConnection !== 'undefined') workbenchConnection = { updatedAt: null, failed: false, message: '' };
@@ -176,10 +171,6 @@
     function refreshAfterLogin() {
         if (!pendingLoginRefresh) return;
         pendingLoginRefresh = false;
-        if (currentModule === 'schedules') loadSchedules(true);
-        if (currentModule === 'rules') loadRules();
-        if (currentModule === 'quality') loadQuality();
-        if (currentModule === 'agents') loadAgents();
         if (currentModule === 'tables' && currentTable) openTable(currentTable, document.getElementById('moduleTitle').textContent);
         if (currentModule === 'settings') { Papa.leave(true); Papa.renderSettings(document.getElementById('custom-settings')); fetchSettings(); }
         if (currentModule === 'pages' && currentPage) openPage(currentPage.key, currentPage.label);
@@ -204,10 +195,6 @@
         if (typeof destroyMonitorVisuals === 'function') destroyMonitorVisuals();
         if (currentModule === 'tables') retireTableView();
         setNavigationOpen(false);
-        if (typeof invalidateSchedules === 'function') invalidateSchedules();
-        if (typeof invalidateRules === 'function') invalidateRules();
-        if (typeof invalidateQuality === 'function') invalidateQuality();
-        if (typeof invalidateAgents === 'function') invalidateAgents();
         if (typeof invalidateLogs === 'function') invalidateLogs();
         currentModule = name;
         if (view && view.table) currentTable = view.table;
@@ -225,10 +212,6 @@
         if (name === 'logs') { fetchLogs(); }
         if (name === 'tokens') { fetchTokens(); }
         if (name === 'obs') { fetchObsReports(); }
-        if (name === 'schedules') { loadSchedules(true); }
-        if (name === 'rules') { loadRules(); }
-        if (name === 'quality') { loadQuality(); }
-        if (name === 'agents') { loadAgents(); }
         if (name === 'queues') {
             var queueMessage = document.getElementById('queue-gov-msg');
             if (queueMessage) queueMessage.textContent = '';
@@ -834,10 +817,6 @@
         if (currentModule === 'tables' && currentTable && (typeof monitorTableSupportsSite !== 'function' || monitorTableSupportsSite(currentTable))) {
             renderTableView(currentTable);
         }
-        if (currentModule === 'schedules') loadSchedules(true);
-        if (currentModule === 'rules') loadRules();
-        if (currentModule === 'quality') loadQuality();
-        if (currentModule === 'agents') loadAgents();
     }
 
     var lastData = null;
@@ -1055,7 +1034,6 @@
     /* ============ 设置 ============ */
     var settingsRequestSeq = 0, tokenRequestSeq = 0, obsListSeq = 0;
     async function fetchSettings() {
-		if (typeof window.fetchModelSettings === 'function') window.fetchModelSettings();
         var seq = ++settingsRequestSeq, viewCurrent = captureMonitorView();
         var current = function () { return seq === settingsRequestSeq && viewCurrent(); };
         var resp = await apiFetch('/api/settings', { current: current });

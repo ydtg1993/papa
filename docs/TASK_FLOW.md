@@ -50,6 +50,8 @@ err = e.SubmitFlowTask(ctx, task.FlowID, uint(task.ID), child)
 
 启用后，现有后台「采集任务流 → 运行调度策略」可输入业务保存的运行 ID，查询并人工应用策略。页面不自动轮询覆盖编辑。接口为 GET/POST `/api/task-flow?id=...`；POST body 为 `{revision,policy}`，须具名令牌。变更接入既有操作日志（需开启 operation_log）。确认策略不发布规则，也不创建新任务。
 
+POST 请求体最多 1 MiB，只接受一份 JSON；重复键（包括嵌套对象）、未知字段和超过 64 层的嵌套会返回 400，不调用策略更新。自定义宿主通过 `OnTaskFlowAction func(server.TaskFlowActionEvent)` 接收操作结局。
+
 ## 持久化与限制
 
 - 策略更新、任务登记、认领锁定同一运行行，防并发越过策略。任务完成唤醒回灌；漏通知由原周期回灌兜底。恢复仍需启用已有 recover_queue；框架沿用单个活动引擎的恢复约定，不提供多实例任务租约。

@@ -53,7 +53,6 @@ function bindMonitorDisclosures() {
 function resetMonitorObservations() {
     MonitorObservations.reset(); monitorVisuals.data = null; monitorVisuals.failed = false;
     destroyMonitorVisuals();
-    if (typeof resetAgentActivity === 'function') resetAgentActivity();
     var meta = document.getElementById('visual-observation-meta');
     if (meta) meta.textContent = '等待新的监控快照';
     ['cpu','mem','disk'].forEach(function (key) {
@@ -84,7 +83,6 @@ function renderMonitorVisuals(data) {
     var dashboard = document.getElementById('mod-dashboard');
     if (dashboard) dashboard.querySelectorAll('.visual-grid,.visual-resources').forEach(function (el) { el.hidden = !available; });
     note.textContent = available ? '' : '当前 oao 版本未包含图表扩展。监控快照仍可查看；升级 oao 后启用图表。';
-    if (typeof renderAgentActivity === 'function') renderAgentActivity(data, available);
     if (!available || !data) {
         destroyMonitorChartGroup(Array.from(monitorVisuals.instances.keys()));
         cancelMonitorResourceMotion();
@@ -94,7 +92,7 @@ function renderMonitorVisuals(data) {
     meta.textContent = (monitorVisuals.failed ? '连接异常，保留上次观测 · ' : '') + scope + ' · ' + MonitorObservations.size() + ' 个快照 · 最近 10 分钟 / 最多 240 个 · 刷新页面后重新观察';
     var missing = latest ? null : '此服务未提供观测时间与实例标识，无法建立可信趋势';
     showMonitorChart('visual-queue-trend', {type:'line',title:'本次页面观测',unit:'项',xType:'time',error:missing,
-        emptyText:'当前没有本进程采集队列观测。' + (data.agent_activity ? '模型分析与候选验收请查看上方 Agent 运行活动。' : '请确认宿主已注册并运行采集阶段。'),
+        emptyText:'当前没有本进程采集队列观测。请确认宿主已注册并运行采集阶段。',
         description:'未完成包含排队；两条曲线不能相加。断线或阶段集合变化处留空。',
         series:[{key:'queued',label:'排队',points:MonitorObservations.trend(currentSite,'queued')},{key:'unfinished',label:'未完成（含排队）',points:MonitorObservations.trend(currentSite,'unfinished')}]});
     if (monitorDisclosureOpen('workbench-analysis')) renderMonitorAnalysis(data);

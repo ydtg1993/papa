@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"github.com/ydtg1993/papa/v4/admin/auth"
 	"github.com/ydtg1993/papa/v4/engine"
 	"gorm.io/gorm"
+	"io"
 	"net/http"
 	"time"
 )
@@ -18,14 +20,55 @@ var TaskFlowScript string
 //go:embed taskflow.css
 var TaskFlowCSS string
 
-// agentBody 解码一个 JSON 请求体（有界）；解码失败时写 400 并返回错误。
-func agentBody(w http.ResponseWriter, r *http.Request, out any) error {
+// taskFlowBody 拒绝超限、重复键、未知字段和多份 JSON，避免策略确认产生歧义。
+func taskFlowBody(w http.ResponseWriter, r *http.Request, out any) error {
 	defer r.Body.Close()
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(out); err != nil {
-		http.Error(w, "请求体不是合法 JSON", http.StatusBadRequest)
+	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
 		return err
 	}
-	return nil
+	if !json.Valid(b) {
+		return errors.New("invalid JSON")
+	}
+	if err := taskFlowUniqueKeys(json.NewDecoder(bytes.NewReader(b)), 0); err != nil {
+		return err
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	return d.Decode(out)
+}
+
+func taskFlowUniqueKeys(d *json.Decoder, depth int) error {
+	if depth > 64 {
+		return errors.New("JSON nesting exceeds limit")
+	}
+	token, err := d.Token()
+	if err != nil {
+		return err
+	}
+	delim, container := token.(json.Delim)
+	if !container {
+		return nil
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		if delim == '{' {
+			token, err := d.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := token.(string)
+			if !ok || seen[key] {
+				return errors.New("duplicate JSON key")
+			}
+			seen[key] = true
+		}
+		if err := taskFlowUniqueKeys(d, depth+1); err != nil {
+			return err
+		}
+	}
+	_, err = d.Token()
+	return err
 }
 
 func (s *Monitor) taskFlowHandler(w http.ResponseWriter, r *http.Request) {
@@ -56,13 +99,13 @@ func (s *Monitor) taskFlowHandler(w http.ResponseWriter, r *http.Request) {
 			Revision uint64            `json:"revision"`
 			Policy   engine.FlowPolicy `json:"policy"`
 		}
-		if agentBody(w, r, &input) != nil || input.Revision == 0 || input.Policy.Validate() != nil {
+		if taskFlowBody(w, r, &input) != nil || input.Revision == 0 || input.Policy.Validate() != nil {
 			http.Error(w, "策略或版本无效", 400)
 			return
 		}
 		err = s.cfg.UpdateTaskFlow(ctx, id, input.Revision, input.Policy)
 		if s.cfg.OnTaskFlowAction != nil {
-			s.cfg.OnTaskFlowAction(AgentActionEvent{Action: "task-flow-policy", ID: id, Operator: auth.OperatorFrom(ctx), IP: clientIP(r).String(), At: time.Now(), Err: err})
+			s.cfg.OnTaskFlowAction(TaskFlowActionEvent{Action: "task-flow-policy", ID: id, Operator: auth.OperatorFrom(ctx), IP: clientIP(r).String(), At: time.Now(), Err: err})
 		}
 		result = map[string]any{"updated": err == nil, "revision": input.Revision + 1}
 	} else {

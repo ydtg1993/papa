@@ -23,10 +23,6 @@
     </script>
     <link rel="stylesheet" href="/static/mo.css">
     <link rel="stylesheet" href="/static/oao/oao.css">
-    <link rel="stylesheet" href="/static/schedules.css">
-    <link rel="stylesheet" href="/static/rules.css">
-    <link rel="stylesheet" href="/static/quality.css">
-    <link rel="stylesheet" href="/static/agents.css">
     <link rel="stylesheet" href="/static/workbench.css">
     {{if .OaoCharts}}<link rel="stylesheet" href="/static/oao/oao-charts.css">{{end}}
     {{if .OaoMotion}}<link rel="stylesheet" href="/static/oao/oao-motion.css">{{end}}
@@ -97,77 +93,6 @@
         <div class="site-tabs" id="site-tabs" hidden></div>
         <div class="site-meta" id="site-meta" hidden></div>
 
-        <div class="module" id="mod-quality">
-            <h2>运行质量 <small>已记录观测</small></h2>
-            <p class="quality-notice">按顶部站点筛选，检查规则与发布范围内的运行表现。未查到数据不表示质量正常：需启用 quality.enabled 并由宿主接入 Collector。固化报告后可进入 Agent 审阅；正式发布仍由人工执行。</p>
-            <div id="quality-pending" class="rule-panel" aria-live="polite"></div>
-            <form onsubmit="event.preventDefault();queryQuality(true)">
-                <div class="quality-filters" oninput="editQuality()" onchange="editQuality()">
-                    <label>数据来源<select id="quality-mode"><option value="observations">采集观测</option><option value="reports">持久报告</option></select></label>
-                    <label>阶段（精确匹配）<input id="quality-stage" maxlength="128" placeholder="所有阶段"></label>
-                    <label>规则 ID（精确匹配）<input id="quality-rule" maxlength="128" placeholder="所有规则"></label>
-                    <label>版本（精确匹配）<input id="quality-version" maxlength="128" placeholder="所有版本"></label>
-                    <label>开始时间（本地）<input id="quality-from" type="datetime-local" step="1" required></label>
-                    <label>结束时间（不含，最多 7 天）<input id="quality-until" type="datetime-local" step="1" required></label>
-                </div>
-                <div class="quality-actions"><button class="btn btn-primary" type="submit">重新查询</button><button class="btn" type="button" onclick="recentQuality()">最近 24 小时</button><button class="btn" type="button" id="quality-next" onclick="queryQuality(false)" disabled>扫描下一页</button></div>
-            </form>
-            <div id="quality-list" aria-live="polite"></div>
-            <div class="rule-panel" id="quality-detail" tabindex="-1" aria-live="polite"></div>
-        </div>
-        <div class="module" id="mod-agents">
-            <h2>Agent 运行与候选审阅</h2>
-            <p id="agent-notice" class="quality-notice" role="status"></p>
-            <div id="agent-pending" class="rule-panel" aria-live="polite"></div>
-            <section><h3>01 · 固化报告与分析配置</h3>
-                <div class="quality-filters"><label>固化报告 ID<input id="agent-report-id" maxlength="128" oninput="invalidateAgentPreview()" placeholder="从质量监控带入，或输入报告 ID"></label><label>宿主批准的配置<select id="agent-profile" onchange="invalidateAgentPreview()"></select></label></div>
-                <button class="btn" onclick="agentLoadReport()">读取报告与证据</button><div id="agent-evidence" class="rule-panel"></div>
-                <button class="btn btn-primary" onclick="previewAgent()">预览分析范围与预算</button><div id="agent-preview" class="rule-panel" aria-live="polite"></div>
-            </section>
-            <section><h3>02 · 持久运行与请求</h3><form onsubmit="event.preventDefault();agentLists(true)"><div class="quality-filters" oninput="editAgentFilters()"><label>运行开始时间<input id="agent-from" type="datetime-local" step="1" required></label><label>运行结束时间（不含，最多 7 天）<input id="agent-until" type="datetime-local" step="1" required></label><label>运行状态<select id="agent-status"><option value="">全部状态</option><option>running</option><option>awaiting_review</option><option>needs_fixtures</option><option>failed</option><option>interrupted</option><option>canceled</option><option>exhausted</option></select></label></div><button class="btn" type="submit">刷新运行与请求</button> <button class="btn" type="button" onclick="recentAgents()">最近 24 小时</button><p class="hint">刷新保留指定窗口；查看刚启动的运行请更新结束时间，或点“最近 24 小时”。</p></form><div id="agent-list" aria-live="polite"></div></section>
-            <section><h3>03 · 请求、步骤与候选依据</h3><div id="agent-detail" class="rule-panel" tabindex="-1" aria-live="polite"></div></section>
-        </div>
-        <div class="module" id="mod-rules">
-            <section>
-                <h2>规则版本库 <small>全局共享</small></h2>
-                <p class="hint">先审阅规则与验收依据，再向目标站点发布完整阶段清单。版本库全局共享；曾发布不表示当前生效，以站点发布为准。发布与回滚需要具名登录。</p>
-                <div class="rule-toolbar"><label>规则 ID（精确筛选）<input id="rule-filter" placeholder="留空查看全部规则"></label><button class="btn" onclick="loadRuleVersions(true)">查询版本</button></div>
-                <div id="rule-versions" class="rule-panel"></div>
-                <div class="schedule-actions"><button class="btn" id="rule-versions-prev" disabled onclick="pageRuleVersions(false)">版本上一页</button><button class="btn" id="rule-versions-next" disabled onclick="pageRuleVersions(true)">版本下一页</button></div>
-                <div id="rule-detail" class="rule-panel" tabindex="-1" hidden></div>
-            </section>
-            <section>
-                <h2>站点发布</h2>
-                <div id="rule-pending" class="rule-panel rule-pending" hidden></div>
-                <div id="rule-result" role="status" tabindex="-1"></div>
-                <div class="rule-toolbar"><label>目标站点<input id="rule-site" placeholder="填写站点标识" oninput="editRuleSite()" onchange="ruleSiteChanged()"></label><button class="btn" onclick="loadRuleReleases(true)">刷新发布</button><span>当前代次：<strong id="rule-generation">—</strong></span></div>
-                <div id="rule-releases" class="rule-panel"></div>
-                <div class="schedule-actions"><button class="btn" id="rule-history-prev" disabled onclick="pageRuleHistory(false)">历史上一页</button><button class="btn" id="rule-history-next" disabled onclick="pageRuleHistory(true)">历史下一页</button></div>
-                <div class="rule-panel">
-                    <h3>准备完整阶段清单</h3>
-                    <p class="hint">每个键是阶段名，值包含规则 id 和 version。提交的是完整清单，遗漏的现有阶段会被移除；不会修改业务部署中的阶段配置。</p>
-                    <button class="btn" onclick="fillRuleBindings()">填入当前发布清单</button>
-                    <label for="rule-bindings">阶段与规则版本（JSON）</label>
-                    <textarea id="rule-bindings" class="rule-manifest" spellcheck="false" oninput="invalidateRulePreview()" placeholder='{"list":{"id":"catalog","version":"v2"}}'></textarea>
-                    <div class="rule-toolbar"><button class="btn" id="rule-publish-preview" onclick="previewRuleChange('publish')">预览发布</button><button class="btn" id="rule-rollback-preview" disabled onclick="previewRuleChange('rollback')">预览回滚到前驱</button></div>
-                </div>
-                <div id="rule-preview" class="rule-panel" hidden></div>
-            </section>
-        </div>
-        <div class="module" id="mod-schedules">
-            <section>
-                <div class="schedule-heading"><h2>周期批次 <small id="schedule-scope">全部站点</small></h2><button class="btn" onclick="loadSchedules(true)">刷新列表</button></div>
-                <p class="hint">查看当前持久批次与固定规则；按需刷新，不自动扫描成员。控制任务成功表示本次调度结束，不代表整批采集完成。</p>
-                <div class="card" id="schedule-list" aria-live="polite"></div>
-                <div class="schedule-actions"><button class="btn" id="schedule-list-prev" disabled onclick="pageSchedules(false)">上一页</button><button class="btn" id="schedule-list-next" disabled onclick="pageSchedules(true)">下一页</button></div>
-            </section>
-            <section id="schedule-detail" hidden>
-                <div class="schedule-heading"><h2>当前批次</h2><button class="btn" onclick="refreshScheduleDetail()">刷新当前批次</button></div>
-                <label><input type="checkbox" id="schedule-failed" onchange="refreshScheduleDetail()"> 只看失败成员</label>
-                <div class="card" id="schedule-detail-body" aria-live="polite"></div>
-                <div class="schedule-actions"><button class="btn" id="schedule-member-prev" disabled onclick="pageScheduleMembers(false)">成员上一页</button><button class="btn" id="schedule-member-next" disabled onclick="pageScheduleMembers(true)">成员下一页</button></div>
-            </section>
-        </div>
         <div class="module active" id="mod-dashboard">
             <section class="overview-summary">
                 <div class="workbench-heading"><p id="workbench-coverage">等待快照</p><span class="workbench-scope" id="workbench-scope">全部站点</span></div>
@@ -178,15 +103,6 @@
             <section class="overview-issues">
                 <h2 class="workbench-section-title">待处理 <span id="workbench-issue-count">—</span></h2>
                 <div class="workbench-panel" id="workbench-issues"></div>
-            </section>
-            <section id="agent-activity" hidden aria-label="Agent 运行活动">
-                <div class="visual-heading"><h2>Agent 运行活动</h2><button class="btn" onclick="switchModule('agents')">查看运行与候选</button></div>
-                <p class="hint" id="agent-activity-note"></p>
-                <div class="workbench-panel" id="agent-activity-summary"></div>
-                <div class="visual-grid agent-activity-charts">
-                    <div class="visual-panel" id="visual-agent-tokens"></div>
-                    <div class="visual-panel" id="visual-agent-steps"></div>
-                </div>
             </section>
             <section aria-label="运行可视化" class="overview-trend">
                 <div class="visual-heading"><h2>采集趋势</h2><span class="visual-label">本次页面观测</span></div>
@@ -308,7 +224,6 @@
 
         <div class="module" id="mod-settings">
             <div id="custom-settings"></div>
-            <section id="model-settings"><h2>模型设置</h2><div class="card"><p class="hint">直接填写 API Key，每日额度默认 1,000,000 Token（输入与输出合计）。Key 保存后不回显，留空不修改；额度调整用于后续调用。</p><form id="model-settings-form"><fieldset id="model-settings-fields" style="border:0;padding:0;margin:0" disabled><div id="model-settings-inputs" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px"></div><div style="display:flex;gap:12px;margin-top:20px"><button class="btn" type="submit">保存模型配置</button></div></fieldset><button class="btn" type="button" id="model-settings-reload" style="margin-top:12px">重新加载</button></form><p id="model-settings-msg" class="hint" role="status">进入设置后加载。</p></div></section>
             <section>
                 <h2>白名单</h2>
                 <div class="card">
@@ -339,17 +254,10 @@
 <script src="/static/queue-governance.js"></script>
 <script src="/static/visual-state.js"></script>
 <script src="/static/visuals.js"></script>
-<script src="/static/agent-activity.js"></script>
 <script src="/static/extensions.js"></script>
 <script src="/static/appearance.js"></script>
 <script src="/static/navigation.js"></script>
 <script src="/static/mo.js"></script>
-<script src="/static/model-settings.js"></script>
-<script src="/static/schedules.js"></script>
-<script src="/static/rules.js"></script>
-<script src="/static/quality.js"></script>
-<script src="/static/quality-write.js"></script>
-<script src="/static/agents.js"></script>
 <!-- 任务步骤追踪抽屉：嗅探 oao 的「追踪」动作请求取任务 id，再拉 /api/task/trace。
      必须在 mo.js 之后（用它的 Dialog / esc / loadKey 等全局件）。 -->
 <script src="/static/trace.js"></script>

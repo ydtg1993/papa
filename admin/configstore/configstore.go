@@ -123,8 +123,7 @@ func Keys() []string {
 //
 // 除了直连库的 Load / Save，它还有一层**内存缓存**（cache.go）：读优先走内存、写时先落库再更新内存。
 type Store struct {
-	db           *gorm.DB
-	modelKeyFile string
+	db *gorm.DB
 
 	// mu 保护 cache。**写锁要覆盖"读-改-写"的整段**（见 UpdateSites）——
 	// 值是一整块 JSON，RMW 分成两次加锁就会互相盖。
@@ -134,13 +133,7 @@ type Store struct {
 }
 
 // New 造一个读写口。不连库、不检查表 —— 表的存在性由 EnsureTable 单独把关（启动期那一步）。
-func New(db *gorm.DB) *Store { return NewWithModelKeyFile(db, "configs/.papa-model.key") }
-
-// NewWithModelKeyFile selects the local credential encryption key file.
-// Keep this path stable across restarts and back it up with the database.
-func NewWithModelKeyFile(db *gorm.DB, path string) *Store {
-	return &Store{db: db, modelKeyFile: path}
-}
+func New(db *gorm.DB) *Store { return &Store{db: db} }
 
 // EnsureTable 启动期自检：这张表不存在就直接报错，让调用方 fail fast。
 //

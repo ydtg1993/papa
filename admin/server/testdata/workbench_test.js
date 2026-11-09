@@ -41,7 +41,7 @@ const data={sites:{a:{stage_count:2,breaker_paused:false},b:{stage_count:1,break
 }
 {
     c.lastData=data;c.currentModule='dashboard';c.navigateWorkbench('tasks','a');assert.equal(c.currentSite,'a');assert.deepEqual(calls.slice(-2),[['site','a'],['table','task','任务']]);
-    c.currentModule='dashboard';c.navigateWorkbench('batches','b');assert.deepEqual(calls.slice(-2),[['site','b'],['module','schedules']]);
+    const before = calls.length;c.navigateWorkbench('batches','b');assert.equal(calls.length,before,'removed batch navigation must do nothing');
     c.currentModule='dashboard';c.navigateWorkbench('queues',null);assert.deepEqual(calls.at(-1),['module','queues']);
     const count=calls.length;c.currentModule='dashboard';c.navigateWorkbench('tasks','missing');assert.equal(calls.length,count);
 }

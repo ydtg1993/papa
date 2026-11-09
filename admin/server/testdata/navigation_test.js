@@ -42,14 +42,14 @@ function setup() {
     document.documentElement.setAttribute('data-auth-required', '1');
     ['main-nav', 'section-nav', 'section-title', 'section-empty', 'moduleTitle', 'site-tabs', 'site-meta', 'nav-toggle', 'key', 'err', 'theme-toggle', 'oao-view', 'page-view', 'custom-settings', 'log-list',
         'workbench-scope', 'workbench-coverage', 'workbench-issue-count', 'workbench-kpis', 'workbench-issues', 'workbench-sites', 'workbench-freshness', 'bell', 'bell-badge', 'bell-panel'].forEach(node);
-    ['dashboard', 'quality', 'obs', 'logs', 'schedules', 'rules', 'agents', 'queues', 'settings', 'tokens', 'tables', 'pages', 'section'].forEach(key => { node('mod-' + key).className = 'module'; });
+    ['dashboard', 'obs', 'logs', 'queues', 'settings', 'tokens', 'tables', 'pages', 'section'].forEach(key => { node('mod-' + key).className = 'module'; });
     ['flow', 'monitor', 'data', 'system'].forEach(key => { const button = new Element('button'); button.className = 'nav-category'; button.dataset.section = key; node('main-nav').appendChild(button); });
     node('site-tabs').appendChild(new Element('button')); node('site-meta').innerHTML = 'site detail';
     const c = vm.createContext({ console, document, window: { addEventListener() {} }, setTimeout, clearTimeout, WeakMap,
         localStorage: { getItem: key => values.get(key) || '', setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) },
         Oao: { init() {}, destroy() {}, list: () => { const d = deferred(); lists.push(d); return d.promise; }, render: async (...args) => calls.push(['render', ...args]) },
         apiFetch: (url, opts) => { const d = deferred(); requests.push({ url, opts, ...d }); return d.promise; },
-        stopPolling() {}, startPolling() {}, handleTableUnauthorized() {}, loadSchedules() {}, loadRules() {}, loadQuality() {}, loadAgents() {} });
+        stopPolling() {}, startPolling() {}, handleTableUnauthorized() {} });
     ['extensions.js', 'navigation.js', 'mo.js'].forEach(name => vm.runInContext(source(name), c));
     const native = { fetchSettings: c.fetchSettings, fetchTokens: c.fetchTokens, fetchObsReports: c.fetchObsReports };
     c.fetchSettings = () => calls.push(['settings']); c.fetchTokens = () => calls.push(['tokens']); c.fetchObsReports = () => calls.push(['obs']);
@@ -66,15 +66,18 @@ function setup() {
     const ownership=setup();
     ownership.c.setMonitorNavigation([], [
       {key:'plan',section:'flow',owns:['page:policy']},
-      {key:'lab',section:'flow',owns:['module:agents']},
-      {key:'versions',section:'flow',owns:['module:rules','module:schedules']},
+      {key:'status',section:'monitor',owns:['module:dashboard']},
       {key:'policy',section:'flow'}]);
-    assert.deepEqual(Array.from(ownership.c.monitorNavigationItems().filter(x=>x.section==='flow'),x=>x.key),['plan','lab','versions']);
-    ownership.c.currentModule='rules';assert.equal(ownership.c.monitorActiveNavigation().key,'versions');
-    ownership.c.resetMonitorNavigation();assert.ok(ownership.c.monitorNavigationItems().some(x=>x.key==='rules'),'default modules lost after identity reset');
+    assert.deepEqual(Array.from(ownership.c.monitorNavigationItems().filter(x=>x.section==='flow'),x=>x.key),['plan']);
+    ownership.c.currentModule='dashboard';assert.equal(ownership.c.monitorActiveNavigation().key,'status');
+    ownership.c.resetMonitorNavigation();assert.ok(ownership.c.monitorNavigationItems().some(x=>x.key==='dashboard'),'default modules lost after identity reset');
     const s = setup(), { c, nodes } = s;
     assert.equal(c.currentSection, 'monitor'); assert.equal(nodes['section-title'].textContent, '运行监控与报告');
-    assert.equal(nodes['main-nav'].children.length, 4); assert.equal(c.monitorNavigationItems().length, 10);
+    assert.equal(nodes['main-nav'].children.length, 4); assert.equal(c.monitorNavigationItems().length, 6);
+    assert.deepEqual(Array.from(c.monitorNavigationItems(), x => x.key), ['dashboard', 'obs', 'logs', 'queues', 'settings', 'tokens']);
+    const template = source('template.html');
+    for (const item of c.monitorNavigationItems()) assert.ok(template.includes('id="mod-' + item.key + '"'), 'missing module markup: ' + item.key);
+    assert.doesNotMatch(template, /id="(?:mod-(?:agents|rules|schedules|quality)|model-settings|agent-activity)"/);
     assert.equal(c.monitorNavigationItems().some(item => item.key === 'task' || item.key === 'operation_log'), false, 'unregistered framework tables must not appear');
     const tables = [{ key: 'task', label: 'Tasks', group: '数据', filters: [{ name: 'site' }] }, { key: 'operation_log', label: '操作日志', group: '数据' }, { key: 'result', label: '<img src=x onerror=alert(1)>', group: '<b>Business</b>', filters: [{ name: 'site' }] }, { key: 'plain', label: 'Plain', filters: [] }];
     const pages = [{ key: 'workbench', label: '采集方案', section: 'flow', group: '业务' }, { key: 'legacy', label: 'Legacy', group: 'Old group' }, { key: 'unknown', label: 'Unknown', section: 'future' }, { key: 'prototype', label: 'Prototype', section: '__proto__' }];
@@ -84,15 +87,15 @@ function setup() {
     assert.equal(entries.find(item => item.key === 'task').group, '', 'framework table groups must not contradict their fixed section');
     assert.equal(entries.find(item => item.key === 'operation_log').group, '');
     const section = key => entries.find(item => item.key === key).section;
-    ['schedules', 'rules', 'agents', 'workbench'].forEach(key => assert.equal(section(key), 'flow'));
+    ['workbench'].forEach(key => assert.equal(section(key), 'flow'));
     assert.equal(section('task'), 'data');
-    ['dashboard', 'quality', 'obs', 'logs', 'queues'].forEach(key => assert.equal(section(key), 'monitor'));
+    ['dashboard', 'obs', 'logs', 'queues'].forEach(key => assert.equal(section(key), 'monitor'));
     ['settings', 'tokens', 'operation_log'].forEach(key => assert.equal(section(key), 'system'));
     ['result', 'plain', 'legacy', 'unknown', 'prototype'].forEach(key => assert.equal(section(key), 'data'));
     c.Papa.page('workbench', () => ({})); c.openPage('workbench', '采集方案');
     assert.equal(c.currentSection, 'flow'); assert.equal(nodes['moduleTitle'].textContent, '采集方案');
     assert.equal(nodes['section-nav'].querySelectorAll('.active')[0].dataset.page, 'workbench');
-    c.switchModule('quality'); assert.equal(c.currentSection, 'monitor');
+    c.switchModule('dashboard'); assert.equal(c.currentSection, 'monitor');
     await c.openTable('operation_log', '操作日志'); assert.equal(c.currentSection, 'system');
     await c.openTable('result', 'Results'); assert.equal(c.currentSection, 'data');
     assert.equal(nodes['moduleTitle'].textContent, tables[2].label);

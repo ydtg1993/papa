@@ -124,10 +124,10 @@ function setup() {
      let current=true;const p=s.c.showTaskTrace('9007199254740993',()=>current);
      assert.equal(s.requests.length,1);assert.equal(s.requests[0].url,'/api/task/trace?id=9007199254740993');
      current=false;s.requests[0].resolve(response({steps:[]}));await p;assert.equal(dialogs.length,0);}
-    // Successful re-authentication reloads a batch page that lost its old request.
+    // Successful re-authentication reloads the reports page that lost its old request.
     {const s=setup(),mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
      const a=mo.indexOf('    var pendingLoginRefresh ='),b=mo.indexOf('    function setStatus(',a);vm.runInContext(mo.slice(a,b),s.c);
-     let loads=0;s.c.currentModule='schedules';s.c.loadSchedules=()=>loads++;s.c.pendingLoginRefresh=true;
+     let loads=0;s.c.currentModule='obs';s.c.fetchObsReports=()=>loads++;s.c.pendingLoginRefresh=true;
      const p=s.c.fetchData();s.requests[0].resolve(response({}));await p;assert.equal(loads,1);
      const q=s.c.fetchData();s.requests[1].resolve(response({}));await q;assert.equal(loads,1);}
     // Late menu failures from a previous login cannot clear a new menu.
