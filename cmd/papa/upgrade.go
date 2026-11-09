@@ -196,9 +196,9 @@ func printUpgradePlan(p *upgradePlan) {
 
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
-		"config.yaml：三个治理队列（error_queue / recover_queue / repeat_queue）仍是全局段，缺省=那条队列不跑；本轮规则见 papa 仓库的 docs/issues/changes.md",
+		"config.yaml：三个治理队列（error_queue / recover_queue / repeat_queue）仍是全局段，缺省=那条队列不跑",
 		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v4 => <本地 papa 仓库>` 先跑起来",
-		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改；动过的看 docs/issues/changes.md 里对应条目",
+		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",
 	} {
 		fmt.Printf("  - %s\n", line)

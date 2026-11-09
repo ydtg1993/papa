@@ -356,4 +356,3 @@ if ev := app.Events(); ev != nil {
 - CLI：[CLI.md](./CLI.md)（`papa report`、调试命令）
 - 实时看板：[MONITOR.md](./MONITOR.md)
 - 三条治理队列：[ERROR_QUEUE.md](./ERROR_QUEUE.md) / [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) / [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)
-- 版本变更：papa 仓库的 `docs/issues/changes.md`（[GitHub](https://github.com/ydtg1993/papa/blob/master/docs/issues/changes.md)；该文件不随 `papa new` 复制进业务项目）

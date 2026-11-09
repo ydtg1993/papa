@@ -38,13 +38,13 @@
   （今天是 `key` / `repeat` / `table` / `values`），加了新列自动覆盖。
   为什么必须有它：`repeat`（v3.1.0 起）与 `key`（v3.2.0 起）都被裸写过，MySQL 直接 Error 1064
   而且**静默**（调用处常常不判那条语句的错）—— 引擎测试跑的是假库、不解析 SQL，
-  这类错只能靠扫源码或真库跑一次才现形。详细来历见框架仓库的 `docs/issues/changes.md`（那份**不随脚手架复制到项目里**，别在项目内找它）。
+  这类错只能靠扫源码或真库跑一次才现形。
 - **`admin/gormsource/sqlquote_test.go`**：后台表格的数据源（筛选 / 全局搜索 / 排序三处都直接往 SQL 里拼列名），
   钉的是"加引号只有 `quote()` 一个出口"，两层一起看 —— **行为层**用 gorm 的 DryRun 把一张表的**整个声明面**
   跑过一遍，断言每个列名只以反引号形态出现、绝不裸写（列名清单从表格声明里取，加一列自动跟上）；
   **结构层**扫本包非测试源码，反引号字面量只许出现在 `quote()` 里（排序那条原先自己拼了一对反引号，
   正是被它拦下才改成调 `quote()` 的）。它与上一条的分工：上一条问"这个名字是不是保留字"，这一条问
-  "这个名字有没有加引号"—— 判据不重叠，所以两条都要在。来历见框架仓库的 `docs/issues/changes.md`（同上，不随脚手架复制）。
+  "这个名字有没有加引号"—— 判据不重叠，所以两条都要在。
 
 ## 2. 业务项目（`papa new` 生成）
 
@@ -313,7 +313,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 提交前二次复核新增 `monitor_identity_test.js`（外部凭据更换、晚到401、轮询恢复、新旧表格导航隔离），`workbench_test.js` 覆盖站点全部消失及当前模块清空筛选。`TestMonitorReducedMotionDisablesFeedbackTransforms` 守卫减弱动效下的反馈位移；`visuals_test.js` 核对系统资源范围。`TestCollectorSnapshotDirsAreIndependent` / `TestCollectorOwnsDirectoryConfig` 验证 map 所有权；`TestHarvestStageTotalsRetiresCurrentSnapshotAtomically` / `TestHarvestStageTotalsPreservesReplacementSnapshot` 以真实 worker pool 验证回收累计与重建身份。回收不在引擎锁内等待 worker 停止。
 
-oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` 覆盖迟到 POST、401重试、同步/异步 render 失败、清理重入与弹窗重入；这些脚本不由 oao 的 `go test` 自动执行。浏览器补验 CSS 跨宿主隔离、数据表滚动焦点、减弱动效与窄屏。完整审查证据和真实环境限制见 `docs/issues/2026-11-07-oao-monitor-visuals-review.md`。
+oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` 覆盖迟到 POST、401重试、同步/异步 render 失败、清理重入与弹窗重入；这些脚本不由 oao 的 `go test` 自动执行。浏览器补验 CSS 跨宿主隔离、数据表滚动焦点、减弱动效与窄屏。
 
 
 ### 四类导航与概览简化

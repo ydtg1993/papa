@@ -14,7 +14,7 @@ import (
 // 第一项是来源 IP 白名单（cfg_key = ip_whitelist，值是 IP 或 CIDR 的字符串数组）。
 //
 // **列名显式钉住**，不用 `key` / `val`：`KEY` 是 MySQL 保留字，这个仓库为它吃过一次
-// Error 1064（见 docs/issues/changes.md 里那条"两条裸 SQL 的列名撞上保留字"）；
+// Error 1064；
 // `cfg_` 前缀顺带把"这是配置表"写进列名里。
 type Config struct {
 	ID     uint   `gorm:"primarykey;comment:配置ID"`
