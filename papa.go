@@ -20,7 +20,8 @@ import (
 // 业务后台任务通过 UseShutdown 注册关库前的取消与排空回调。
 type App = app.App
 
-// NetworkConfig 默认只允许公网 HTTP(S)；PrivateOrigins 显式授权内网 origin。
+// NetworkConfig 默认只允许公网 HTTP(S)；PrivateOrigins 显式授权内网 origin；
+// 非空 AllowedOrigins 将所有出口进一步限制到这些精确 origin。
 type NetworkConfig = egress.Config
 
 // HTTPRequest / HTTPResponse 通用 HTTP/API 抓取的请求与响应。

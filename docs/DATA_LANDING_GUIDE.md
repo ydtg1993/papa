@@ -19,6 +19,8 @@
 
 ## 1. 两类数据，两条生命周期
 
+框架身份表 `crawler_browser_profiles` / `crawler_browser_identity_bindings` 保存档案与绑定修订，不存采集结果或凭据，随显式框架迁移创建。Cookie/Token/浏览器状态及改绑候选仍走账号 Store。匿名业务需要持久保存自己的稳定会话键；`htmlfetch.Session` 不新增 ID。详见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。
+
 | | 调度状态 | 业务结果 |
 | --- | --- | --- |
 | 存在哪 | `crawler_tasks`（框架的表） | 你自己的表（`internal/models/` 里定义） |

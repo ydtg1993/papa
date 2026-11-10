@@ -79,8 +79,18 @@ func (c *Client) do(ctx context.Context, input Request, readErrorBody bool) (*Re
 	if session, ok := ctx.Value(sessionKey{}).(*Session); ok && session != nil {
 		client.Jar = session.jar
 	}
+	// This wrapper runs outside governance/proxy transports but inside net/http's
+	// cookie and redirect processing. Challenge cookies never reach a live jar.
+	client.Transport = challengeTransport{base: client.Transport}
 	resp, err := client.Do(req)
 	if err != nil {
+		var challenge *siteChallengeResponse
+		if errors.As(err, &challenge) {
+			if challenge.response.Body != nil {
+				defer challenge.response.Body.Close()
+			}
+			return &Response{URL: challenge.url, StatusCode: challenge.response.StatusCode, Header: challenge.response.Header.Clone()}, challenge.err
+		}
 		return nil, fmt.Errorf("fetch html: %w", err)
 	}
 	defer resp.Body.Close()

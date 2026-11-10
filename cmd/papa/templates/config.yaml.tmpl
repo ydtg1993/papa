@@ -35,9 +35,11 @@ crawler:
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
 # 空闲超过 max_idle_time 的会被回收。
 # 本段物理容量/浏览器启动参数改完重启生效；动态借用预算在 runtime.resources。
+# 身份档案默认不绑定；在 OA「浏览器诊断」创建版本、绑定并复验，见 docs/framework/BROWSER_IDENTITY.md。
+# 绑定后不要用 Device/UA/语言启动参数或普通头覆盖身份；档案不写入本 YAML。
 browser:
   enable: true
-  pool_size: 3                 # 并发上限（按需创建）。enable=true 时必填且 > 0：写 0 会让 Get 永久阻塞在 cond.Wait
+  pool_size: 3                 # 并发上限（按需创建）。enable=true 时必填且 > 0；无效值在加载时拒绝
   direct_pool_size: 0          # 强制直连浏览器并发上限；0 = 不用直连池（合法，调到时会明确报错）
   max_idle_time: "5m"
   headless: false
@@ -172,3 +174,4 @@ repeat_queue:
 # 采集出口默认只允许公网 HTTP(S)；内网按完整 origin 授权，重启生效。
 network:
   private_origins: []
+  allowed_origins: []          # 非空时只允许列出的精确 origin；不代替 private_origins 的内网授权

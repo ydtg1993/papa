@@ -37,6 +37,8 @@ type CaptureOptions struct {
 
 	// WaitLoad 命中后是否还等一次 WaitLoad 再返回。默认 false：命中即返回，
 	// 由 page.Close 中止剩余导航；需要 DOM 已经加载完时再开。
+	// 等待期间观察到主文档明确挑战时返回 SiteChallenge；这不保证已等到
+	// 所捕获请求自己的响应，需要响应判定时使用 CaptureResponse。
 	WaitLoad bool
 }
 
@@ -49,6 +51,9 @@ type CapturedRequest struct {
 
 // CaptureResult 一次捕获的完整结果 —— 成功与失败共用，失败时的现场全靠它。
 type CaptureResult struct {
+	// ResponseObserved means a primary-document response was observed. Default
+	// early request capture may return false and cannot rule out a later challenge.
+	ResponseObserved bool
 	// Request 命中那条；失败（超时/导航错误）时为 nil。
 	Request *CapturedRequest
 	// HTML 失败路径上尽力读到的页面 HTML（成功时为空 —— 命中即返回，页面已关）。
@@ -115,7 +120,19 @@ func CaptureRequestPage(ctx context.Context, page *rod.Page, pageURL string, opt
 	return captureRequestOnPage(ctx, page, pageURL, opts)
 }
 
-func captureRequestOnPage(ctx context.Context, page *rod.Page, pageURL string, opts CaptureOptions) (*CaptureResult, error) {
+func captureRequestOnPage(ctx context.Context, page *rod.Page, pageURL string, opts CaptureOptions) (result *CaptureResult, err error) {
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() {
+		if result != nil {
+			result.ResponseObserved = challenge.responseObserved()
+		}
+		// Request-only success deliberately remains early success: a response
+		// need not exist yet. WaitLoad/account operations can classify it.
+		if opts.WaitLoad || err != nil {
+			err = challenge.prefer(err)
+		}
+	}()
 	navTimeout := opts.Page.Timeout
 	if navTimeout <= 0 {
 		navTimeout = 30 * time.Second

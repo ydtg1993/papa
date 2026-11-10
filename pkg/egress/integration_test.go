@@ -145,6 +145,46 @@ func TestDownloaderConfigCopiesCannotExpandPrivateGrant(t *testing.T) {
 	}
 }
 
+func TestDownloaderConfigCopiesCannotExpandAllowedGrant(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, "#EXTM3U\n#EXTINF:1,\npart.ts\n#EXT-X-ENDLIST\n")
+	}))
+	defer srv.Close()
+	f := filedown.DefaultConfig()
+	f.OutputDir, f.ResumeStateDir, f.MaxRetries = t.TempDir(), t.TempDir(), 0
+	f.Network = egress.Config{PrivateOrigins: []string{srv.URL}, AllowedOrigins: []string{"http://127.0.0.1:1"}}
+	fd := filedown.NewDownloader(f)
+	f.Network.AllowedOrigins[0] = srv.URL
+	fc := fd.Config()
+	fc.Network.AllowedOrigins[0] = srv.URL
+	fd.SetClient(srv.Client())
+	m := m3u8.DefaultConfig()
+	m.OutputDir, m.ResumeStateDir, m.MaxRetries = t.TempDir(), t.TempDir(), 0
+	m.Network = egress.Config{PrivateOrigins: []string{srv.URL}, AllowedOrigins: []string{"http://127.0.0.1:1"}}
+	md := m3u8.NewDownloader(m)
+	m.Network.AllowedOrigins[0] = srv.URL
+	mc := md.Config()
+	mc.Network.AllowedOrigins[0] = srv.URL
+	md.SetClient(srv.Client())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for _, dl := range []*filedown.Downloader{fd, fd.With(filedown.Overlay{})} {
+		if result := dl.Download(ctx, srv.URL, "", "file", &filedown.DownloadOptions{Direct: true}); result.Error == nil {
+			t.Fatal("file allowlist expanded")
+		}
+	}
+	for _, dl := range []*m3u8.Downloader{md, md.With(m3u8.Overlay{})} {
+		if result := dl.Download(ctx, srv.URL, "", "video.ts"); result.Error == nil {
+			t.Fatal("m3u8 allowlist expanded")
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatal("forbidden origin reached", hits.Load())
+	}
+}
+
 func TestHTMLHotReloadCannotGrantPrivateOrigin(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))

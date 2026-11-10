@@ -13,6 +13,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
+	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"github.com/ydtg1993/papa/v4/pkg/governance"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
@@ -53,6 +54,7 @@ type Engine struct {
 	browserPool        *browser.Pool
 	htmlClient         *htmlfetch.Client
 	accountManager     *account.Manager                    // optional explicit account runtime, guarded by mu
+	identityManager    *identityruntime.Manager            // optional stable identity runtime, independent of account registration
 	statsQueue         map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
 	stageTotals        map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
 	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它

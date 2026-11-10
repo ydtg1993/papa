@@ -17,12 +17,14 @@ import (
 )
 
 var labels = map[string]string{
-	"crawler_task_flows":    "运行调度策略",
-	"crawler_tasks":         "采集任务",
-	"crawler_access_token":  "访问令牌",
-	"crawler_config":        "运行配置",
-	"crawler_operation_log": "操作日志",
-	"crawler_task_trace":    "任务追踪",
+	"crawler_browser_profiles":          "浏览器身份档案",
+	"crawler_browser_identity_bindings": "浏览器身份绑定",
+	"crawler_task_flows":                "运行调度策略",
+	"crawler_tasks":                     "采集任务",
+	"crawler_access_token":              "访问令牌",
+	"crawler_config":                    "运行配置",
+	"crawler_operation_log":             "操作日志",
+	"crawler_task_trace":                "任务追踪",
 }
 
 func group(name string) string {

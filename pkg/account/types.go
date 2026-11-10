@@ -11,6 +11,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
+	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
@@ -136,6 +137,7 @@ type entry struct {
 	current                                     *Credentials
 	seed                                        map[string]string
 	pageState                                   *browser.PageState
+	identityState                               *IdentityState
 	version                                     uint64
 	revision                                    uint64 // lifecycle epoch (load, pause, logout), independent of credential changes
 	browserRevision                             uint64 // browser snapshot epoch, independent of HTTP generation
@@ -148,10 +150,11 @@ type entry struct {
 
 // Manager owns no browser processes and starts no background goroutines.
 type Manager struct {
-	mu      sync.RWMutex
-	client  *htmlfetch.Client
-	entries map[Key]*entry
-	pools   *Pools
+	mu       sync.RWMutex
+	client   *htmlfetch.Client
+	entries  map[Key]*entry
+	pools    *Pools
+	identity *identityruntime.Manager
 }
 
 func NewManager(client *htmlfetch.Client) *Manager {

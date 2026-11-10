@@ -12,6 +12,12 @@ import (
 // NoRetryError 标记不可重试的错误（结构错误、资源不存在等）。
 type NoRetryError = core.NoRetryError
 
+// SiteChallengeError identifies an explicit website challenge. It stops the
+// current immediate retry loop without reporting an account credential failure.
+type SiteChallengeError = core.SiteChallengeError
+
+var ErrSiteChallenge = core.ErrSiteChallenge
+
 // Notifier 告警通知接口。
 type Notifier = core.Notifier
 

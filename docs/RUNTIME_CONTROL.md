@@ -4,6 +4,8 @@
 
 ## 1. 启用与配置来源
 
+浏览器身份是独立的档案/绑定服务，不存入 `runtime_policy`。改绑等待发生在任务认领及全局资源放行前，旧任务继续使用冻结快照；账号池选择版本与身份修订分开。明确网站挑战返回 `site_challenge`，本次不立即重试、不换号、不计代理故障；之后仍可由错误队列补偿。详见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。本次升级还需显式迁移两张身份表。
+
 新项目的站点请求控制、AutoThrottle、资源控制和代理健康默认关闭。账号池只有在业务注册账号、创建池并给任务配置池归属后才参与执行。普通启动不迁移；升级后先运行 `papa migrate`，补齐 `crawler_config.revision`、`crawler_tasks.account_pool` 及 `crawler_account_pools` / `crawler_account_management`。启动会检查运行治理表结构，并读取版本化策略；读取失败或策略非法时拒绝启用采集。
 
 生效顺序为：框架默认 → Go 站点/阶段声明 → `config.yaml` 中显式 `runtime` 字段 → OA 持久覆盖。同一来源内站点覆盖全局默认，阶段字段覆盖该站相应字段。只有显式写出的字段参与合并；`false`、`0`、空池名与“没有提供”不同。清除某项后台覆盖后，继承文件与声明值。

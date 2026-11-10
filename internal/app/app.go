@@ -74,8 +74,9 @@ type App struct {
 	sites        map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
-	configStore  *configstore.Store
-	runtimeState runtimeState
+	configStore   *configstore.Store
+	runtimeState  runtimeState
+	identityState browserIdentityState
 
 	shutdownHooks []func(context.Context) error // Run 前注册，HTTP 退出后、关库前执行
 }
@@ -815,7 +816,10 @@ func (a *App) Run(ctx context.Context) {
 	// 各阶段是并发等的，所以这里最多等一个 stopTimeout。
 	stopTimeout := a.Config.Crawler.StopTimeoutOrDefault()
 	drained, stopStats := a.Engine.Stop(stopTimeout)
-	a.stopRuntime()
+	runtimeDrained := a.drainRuntime(stopTimeout)
+	if !runtimeDrained {
+		a.Logger.Sys.Errorf("浏览器身份复验或诊断未在 %s 内排空，跳过关库与浏览器池关闭", stopTimeout)
+	}
 	if manager := a.Engine.GetProxy(); manager != nil {
 		manager.Close()
 	}
@@ -845,7 +849,7 @@ func (a *App) Run(ctx context.Context) {
 	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
 	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
 	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
-	if drained && businessDrained {
+	if drained && businessDrained && runtimeDrained {
 		if a.Engine.GetBrowserPool() != nil {
 			a.Engine.GetBrowserPool().Close()
 		}
@@ -1192,6 +1196,7 @@ func (a *App) httpServer(ctx context.Context) {
 	tokenHook := tokenWriteHook(tokenCounter, rec)
 	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
 	mux.Handle("/api/browser-diagnostics", mon.Auth(RodDiagnostics(a)))
+	mux.Handle("/api/browser-identities", mon.Auth(http.HandlerFunc(a.browserIdentitiesAPI)))
 	mux.Handle("/api/runtime-policy", mon.Auth(http.HandlerFunc(a.runtimePolicyAPI)))
 	mux.Handle("/api/runtime-remote", mon.Auth(http.HandlerFunc(a.runtimeRemoteAPI)))
 	mux.Handle("/api/account-pools", mon.Auth(http.HandlerFunc(a.accountPoolsAPI)))

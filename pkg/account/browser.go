@@ -8,9 +8,15 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
+	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
 )
 
 func useBrowser(ctx context.Context, cfg *BrowserConfig, state *browser.PageState, fn func(*rod.Page) error) error {
+	detached := *cfg
+	if scope, ok := identityruntime.FromContext(ctx); ok && scope.Snapshot() != nil {
+		detached.Options.Identity = scope.Snapshot()
+	}
+	cfg = &detached
 	use := cfg.Pool.WithIsolatedBrowser
 	if cfg.Direct {
 		use = cfg.Pool.WithDirectIsolatedBrowser
@@ -162,6 +168,11 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 		}
 		return m.WithPoolBrowser(ctx, a.Pool, fn)
 	}
+	ctx, releaseIdentity, identityErr := m.PinIdentity(ctx, key)
+	if identityErr != nil {
+		return identityErr
+	}
+	defer releaseIdentity()
 	if core.ProxyURLFrom(ctx) != "" {
 		return errors.New("account browser requires a pool-bound proxy, not a request proxy")
 	}
@@ -184,6 +195,9 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 	}
 	defer func() { <-e.browserSlot }()
 	if err = e.load(ctx); err != nil {
+		return err
+	}
+	if err = e.validateIdentityState(ctx); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -271,7 +285,7 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 		// Only authentication failures cool down the account, not arbitrary parse
 		// errors from the business callback. Expiry drops the browser snapshot.
 		var failure *Failure
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && (errors.Is(err, ErrExpired) || errors.Is(err, ErrChallenge) || errors.As(err, &failure)) {
+		if !identityOrSiteFailure(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && (errors.Is(err, ErrExpired) || errors.Is(err, ErrChallenge) || errors.As(err, &failure)) {
 			e.pageState = nil
 			e.failure = err
 			e.retryAt = time.Now().Add(e.config.FailureCooldown)

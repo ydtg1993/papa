@@ -60,6 +60,9 @@ func TestRecordCaptureSuccessStep(t *testing.T) {
 	if data["elapsed_ms"] != float64(1200) {
 		t.Fatalf("elapsed_ms = %v, want 1200", data["elapsed_ms"])
 	}
+	if observed, ok := data["response_observed"].(bool); !ok || observed {
+		t.Fatalf("early request trace must explicitly report no observed response: %v", data)
+	}
 }
 
 // 失败捕获：写一条 failed 步骤（带候选样本与超时），并把 HTML 登记进归档缓冲。
@@ -74,7 +77,8 @@ func TestRecordCaptureFailureStep(t *testing.T) {
 
 	const html = `<html><body><h1>安全验证</h1></body></html>`
 	res := &browser.CaptureResult{
-		HTML: html,
+		ResponseObserved: true,
+		HTML:             html,
 		Seen: []browser.CapturedRequest{
 			{URL: "https://site.example/api/health", Method: "GET", ResourceType: proto.NetworkResourceTypeXHR},
 			{URL: "https://site.example/noise", Method: "POST", ResourceType: proto.NetworkResourceTypeFetch},
@@ -98,6 +102,9 @@ func TestRecordCaptureFailureStep(t *testing.T) {
 		t.Fatalf("message = %q, want %q", r.Message, boom.Error())
 	}
 	data := decodeTraceData(t, r)
+	if data["response_observed"] != true {
+		t.Fatalf("failure trace lost observed response scope: %v", data)
+	}
 	if data["candidates_total"] != float64(5) {
 		t.Fatalf("candidates_total = %v, want 5", data["candidates_total"])
 	}

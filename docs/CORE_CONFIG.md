@@ -39,6 +39,7 @@
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `private_origins` | string[] | `[]` | 仅允许公网 HTTP(S)；内网按完整协议/主机/端口显式授权。不能带路径、查询、凭据或通配符，重启生效。完整用法与代理限制见文末「统一网络出口」 |
+| `allowed_origins` | string[] | `[]` | 非空时所有出口进一步限制为这些精确 origin；仍需 `private_origins` 才能访问私网。空值不增加限制，重启生效。身份诊断只给独立诊断实例授予本次回环 origin，不改生产配置 |
 
 ### app —— 环境
 
@@ -78,6 +79,8 @@
 > 人工暂停写的是同一张表、来源标成 manual。
 
 ### browser —— 浏览器池（Rod）
+
+稳定身份档案不存放在 `config.yaml`；通过「浏览器诊断」页或公开 API 创建版本、绑定主体并复验生效，见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。没有绑定/显式 Profile 时保留旧行为。启用身份后，不允许 Device、UA/language 启动参数或普通请求头与身份字段冲突；物理池配置仍按本节管理。
 
 > **默认不用它**：能用静态客户端拿到的页面一律用 `html`（`engine.FetchHTML`），rod 只在
 > 静态 HTML 里拿不到目标数据时才上（判据与理由见 FETCHER_WRITING_GUIDE.md §3）。

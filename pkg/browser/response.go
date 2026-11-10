@@ -38,6 +38,8 @@ type CapturedResponse struct {
 // CaptureResponse observes one response through completion. This is for bounded
 // API responses, not downloads or streams. MaxBodySize limits the returned body;
 // CDP retrieves complete bodies, so it is not a hard Chrome memory limit.
+// An explicit selected-response challenge returns its metadata and a
+// core.SiteChallengeError before reading the body.
 func (b *Browser) CaptureResponse(ctx context.Context, pageURL string, opts ResponseOptions) (*CapturedResponse, error) {
 	if err := validateNavigation(pageURL); err != nil {
 		return nil, err
@@ -92,7 +94,10 @@ func CaptureResponsePage(ctx context.Context, page *rod.Page, pageURL string, op
 	return captureResponseOnPage(ctx, page.Context(ctx), pageURL, opts)
 }
 
-func captureResponseOnPage(ctx context.Context, page *rod.Page, pageURL string, opts ResponseOptions) (*CapturedResponse, error) {
+func captureResponseOnPage(ctx context.Context, page *rod.Page, pageURL string, opts ResponseOptions) (_ *CapturedResponse, err error) {
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() { err = challenge.prefer(err) }()
 	type outcome struct {
 		response *CapturedResponse
 		err      error
@@ -135,6 +140,13 @@ func captureResponseOnPage(ctx context.Context, page *rod.Page, pageURL string, 
 				return false
 			}
 			selected, selectedID = r, e.RequestID
+			// Explicitly selected API responses are part of this operation;
+			// unrelated resource challenges are ignored by the main observer.
+			challenge.record(r.StatusCode, r.Header)
+			if err := challenge.prefer(nil); err != nil {
+				done <- outcome{selected, err}
+				return true
+			}
 			return false
 		},
 		func(e *proto.NetworkLoadingFinished) bool {

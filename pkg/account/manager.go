@@ -126,6 +126,7 @@ func (m *Manager) Register(key Key, cfg Config) error {
 			return errors.New("use browser login/state instead of shared PageOptions.Cookies")
 		}
 		b.Options.Headers = maps.Clone(b.Options.Headers)
+		b.Options.Identity = b.Options.Identity.Clone()
 		b.CookieURLs = append([]string(nil), b.CookieURLs...)
 		if cfg.UserAgent != "" {
 			if b.Options.Headers == nil {
@@ -349,7 +350,7 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 		}
 		if err != nil {
 			credentials = nil
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrSuperseded) {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrSuperseded) && !identityOrSiteFailure(err) {
 				e.failure = err
 				e.retryAt = time.Now().Add(e.config.FailureCooldown)
 			}
@@ -531,6 +532,11 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 		}
 		return m.DoPool(ctx, a.Pool, req)
 	}
+	ctx, releaseIdentity, identityErr := m.PinIdentity(ctx, key)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	defer releaseIdentity()
 	e, err := m.get(key)
 	if err != nil {
 		return nil, err
@@ -551,6 +557,9 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 	}
 	defer e.leave()
 	if err = e.load(ctx); err != nil {
+		return nil, err
+	}
+	if err = e.validateIdentityState(ctx); err != nil {
 		return nil, err
 	}
 	method := req.Method
@@ -584,6 +593,9 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 			r.Headers[k] = v
 		}
 		response, fetchErr := m.client.Do(htmlfetch.WithSession(ctx, c.Session), r)
+		if errors.Is(fetchErr, core.ErrSiteChallenge) {
+			return response, fetchErr
+		}
 		outcome := e.config.Classify(response, fetchErr)
 		switch outcome {
 		case Expired:

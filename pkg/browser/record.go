@@ -60,7 +60,7 @@ func (e NetworkEntry) WriteSample(w io.Writer, policy htmlfetch.SamplePolicy) er
 // RecordNetwork records the current page target, not all tabs, WebSocket frames
 // or every worker. Raw data stays in memory. CDP may allocate full bodies before
 // the returned-body limits can be checked. Incomplete entries remain explicit.
-func (b *Browser) RecordNetwork(ctx context.Context, rawURL string, opts RecordOptions) (*NetworkRecording, error) {
+func (b *Browser) RecordNetwork(ctx context.Context, rawURL string, opts RecordOptions) (_ *NetworkRecording, err error) {
 	if err := validateNavigation(rawURL); err != nil {
 		return nil, err
 	}
@@ -89,6 +89,9 @@ func (b *Browser) RecordNetwork(ctx context.Context, rawURL string, opts RecordO
 		return nil, err
 	}
 	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() { err = challenge.prefer(err) }()
 	eventsCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	observer := page.Context(eventsCtx)
@@ -202,12 +205,14 @@ func (b *Browser) RecordNetwork(ctx context.Context, rawURL string, opts RecordO
 	if err == nil {
 		err = navigation.WaitLoad()
 	}
+	err = challenge.prefer(err)
 	if err == nil {
 		err = applyWaits(navigation, opts.Page)
 	}
 	if err == nil && opts.Page.Interact != nil {
 		err = opts.Page.Interact(ctx, page)
 	}
+	err = challenge.prefer(err)
 	if err == nil {
 		timer := time.NewTimer(opts.ObserveFor)
 		defer timer.Stop()

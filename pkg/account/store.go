@@ -33,10 +33,20 @@ type CredentialState struct {
 	Values  map[string]string      `json:"values"`
 }
 type StoredState struct {
-	Version int                `json:"version"`
-	Key     Key                `json:"key"`
-	HTTP    *CredentialState   `json:"http,omitempty"`
-	Browser *browser.PageState `json:"browser,omitempty"`
+	Version  int                `json:"version"`
+	Key      Key                `json:"key"`
+	HTTP     *CredentialState   `json:"http,omitempty"`
+	Browser  *browser.PageState `json:"browser,omitempty"`
+	Identity *IdentityState     `json:"identity,omitempty"`
+	// PendingIdentity preserves the previous durable credentials while a new
+	// binding is verified and published in the independent binding store.
+	PendingIdentity *IdentityCandidate `json:"pending_identity,omitempty"`
+}
+
+type IdentityCandidate struct {
+	HTTP     *CredentialState   `json:"http,omitempty"`
+	Browser  *browser.PageState `json:"browser,omitempty"`
+	Identity *IdentityState     `json:"identity"`
 }
 
 func (e *entry) load(ctx context.Context) error {
@@ -85,6 +95,7 @@ func (e *entry) load(ctx context.Context) error {
 	}
 	e.current = c
 	e.pageState = state
+	e.identityState = cloneIdentityState(s.Identity)
 	e.version++
 	e.revision++
 	e.loaded = true
@@ -94,22 +105,29 @@ func (e *entry) saveLocked(ctx context.Context) error {
 	if e.config.Store == nil {
 		return nil
 	}
-	state, err := clonePageState(e.pageState)
+	s, err := e.storedStateLocked()
 	if err != nil {
-		return &Failure{Code: "invalid-browser-state", Cause: err}
-	}
-	s := &StoredState{Version: 1, Key: e.key, Browser: state}
-	if c := e.current; c != nil {
-		cookies := c.Session.Snapshot()
-		if _, err := htmlfetch.RestoreSession(cookies); err != nil {
-			return &Failure{Code: "unrestorable-cookie-state", Cause: err}
-		}
-		s.HTTP = &CredentialState{Cookies: cookies, Headers: maps.Clone(c.Headers), Values: maps.Clone(c.Values)}
+		return err
 	}
 	if err := e.config.Store.Save(ctx, e.key, s); err != nil {
 		return &Failure{Code: "state-save-failed", Cause: err}
 	}
 	return nil
+}
+func (e *entry) storedStateLocked() (*StoredState, error) {
+	state, err := clonePageState(e.pageState)
+	if err != nil {
+		return nil, &Failure{Code: "invalid-browser-state", Cause: err}
+	}
+	s := &StoredState{Version: 1, Key: e.key, Browser: state, Identity: cloneIdentityState(e.identityState)}
+	if c := e.current; c != nil {
+		cookies := c.Session.Snapshot()
+		if _, err := htmlfetch.RestoreSession(cookies); err != nil {
+			return nil, &Failure{Code: "unrestorable-cookie-state", Cause: err}
+		}
+		s.HTTP = &CredentialState{Cookies: cookies, Headers: maps.Clone(c.Headers), Values: maps.Clone(c.Values)}
+	}
+	return s, nil
 }
 
 // Logout prevents new acquisitions, removes in-memory credentials and deletes

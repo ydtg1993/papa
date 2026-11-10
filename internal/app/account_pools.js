@@ -226,9 +226,16 @@ Papa.page("account-pools", function (root) {
           "原因",
           "最近检查",
           "冷却至",
+          "浏览器身份",
           "操作",
         ],
         p.accounts.map(function (m) {
+          var identity = (data.identity_bindings || []).find(function (b) { return b.subject.kind === 'account' && b.subject.site === m.key.site && b.subject.key === m.key.id; });
+          var recent = (data.identity_reports || []).find(function (r) { return r.subject.kind === 'account' && r.subject.site === m.key.site && r.subject.key === m.key.id; });
+          var identityCell = el('div', data.identity_error || (identity && identity.active ? identity.active.id + ' · v' + identity.active.version : '未绑定'));
+          if (identity && identity.pending) identityCell.append(el('small', ' 待生效：' + identity.pending.id + ' · v' + identity.pending.version));
+          if (recent) identityCell.append(el('p', (recent.ok ? '本地检查一致' : '本地检查待核对') + ' · ' + u.date(recent.at), 'rt-muted'));
+          identityCell.append(button('档案与检查', function () { window.PapaIdentityTarget = {site:m.key.site, kind:'account', key:m.key.id}; openPage('browser-diagnostics', '浏览器诊断'); }));
           var ops = el("div");
           ops.append(
             button(
@@ -261,6 +268,7 @@ Papa.page("account-pools", function (root) {
             m.management.reason || m.failure || "—",
             u.date(m.http_configured ? m.last_check : m.last_browser_check),
             u.date(m.management.cooldown_until),
+            identityCell,
             ops,
           ];
         }),

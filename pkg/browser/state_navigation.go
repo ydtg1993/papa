@@ -76,6 +76,9 @@ func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageS
 			err = errors.Join(err, fmt.Errorf("close state page: %w", closeErr))
 		}
 	}()
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() { err = challenge.prefer(err) }()
 	// Use the browser's URL parser before navigation, on the untouched blank
 	// page. This matches location.origin for default ports, IDN, and IPv6 too.
 	origin, err := stateNavigationOrigin(page, rawURL)
@@ -116,6 +119,9 @@ func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageS
 	}
 	if err := waitStatePageLoad(page); err != nil {
 		return fmt.Errorf("wait load: %w", err)
+	}
+	if err := challenge.prefer(nil); err != nil {
+		return err
 	}
 	if err := checkStatePageOrigin(page, origin); err != nil {
 		return err
@@ -160,6 +166,9 @@ func (b *Browser) WithStatePage(ctx context.Context, rawURL string, state *PageS
 		if err := opts.Interact(ctx, page); err != nil {
 			return fmt.Errorf("interact: %w", err)
 		}
+	}
+	if err := challenge.prefer(nil); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err

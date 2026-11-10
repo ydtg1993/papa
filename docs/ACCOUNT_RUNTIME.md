@@ -4,6 +4,8 @@
 
 ## 1. 入口与边界
 
+浏览器身份通过独立 `(site, account_id)` 绑定，池内与池外账号 API 都遵守；同账号跨池共享绑定，任务或显式调用内固定快照。改绑排空后复验，候选凭据独立保存，失败不删除旧凭据、不触发换号。`SiteChallenge` 在账号分类器之前处理，区别于账号 `ErrChallenge`；详见 [浏览器身份手册](BROWSER_IDENTITY.md)。HTTP 仍沿用原有 UA/头配置，不自动模拟浏览器 TLS/HTTP2。
+
 `pkg/account.Manager` 是显式注册的单进程账号管理器，以 `account.Key{Site, ID}` 定位账号。HTTP/API 和 HTML 使用同一 CookieJar、Token 与 CSRF 头；Rod 使用同账号的隔离浏览器状态。Manager 不自动发现凭据；可选 `account.Pools` 在其上维护站点内池、独立补偿调度和持久管理状态，见 §7。
 
 | 入口 | 用途 |

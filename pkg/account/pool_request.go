@@ -49,8 +49,16 @@ func (m *Manager) DoPool(ctx context.Context, key PoolKey, req htmlfetch.Request
 		return nil, err
 	}
 	ctx = p.requestContext(ctx, a)
+	ctx, releaseIdentity, identityErr := m.PinIdentity(ctx, a.Account)
+	if identityErr != nil {
+		return nil, identityErr
+	}
+	defer releaseIdentity()
 	e, err := m.get(a.Account)
 	if err != nil {
+		return nil, err
+	}
+	if err = e.validateIdentityState(ctx); err != nil {
 		return nil, err
 	}
 	o, err := origin(req.URL)
@@ -95,6 +103,9 @@ func (m *Manager) DoPool(ctx context.Context, key PoolKey, req htmlfetch.Request
 		r.Headers[k] = v
 	}
 	response, fetchErr := m.client.Do(htmlfetch.WithSession(ctx, c.Session), r)
+	if errors.Is(fetchErr, core.ErrSiteChallenge) {
+		return response, fetchErr
+	}
 	if e.config.ProxyURL != "" {
 		status := 0
 		if response != nil {
@@ -159,12 +170,20 @@ func (m *Manager) withPoolBrowser(ctx context.Context, key PoolKey, options *bro
 		return err
 	}
 	ctx = p.requestContext(ctx, a)
+	ctx, releaseIdentity, identityErr := m.PinIdentity(ctx, a.Account)
+	if identityErr != nil {
+		return identityErr
+	}
+	defer releaseIdentity()
 	e, err := m.get(a.Account)
 	if err != nil {
 		return err
 	}
 	if e.config.Browser == nil {
 		return ErrUnsupported
+	}
+	if err = e.validateIdentityState(ctx); err != nil {
+		return err
 	}
 	if err = e.enter(ctx); err != nil {
 		return err
@@ -223,6 +242,9 @@ func (m *Manager) withPoolBrowser(ctx context.Context, key PoolKey, options *bro
 		saved, err = exportBrowserState(page, e.config.Browser)
 		return err
 	})
+	if identityOrSiteFailure(err) {
+		return err
+	}
 	if errors.Is(err, ErrExpired) {
 		p.ReportFailure(a, Expired, a.TaskID)
 	} else if errors.Is(err, ErrChallenge) {

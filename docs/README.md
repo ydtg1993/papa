@@ -28,6 +28,7 @@ cd mycrawler && go mod tidy
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
 运行治理升级也需执行迁移，以补齐策略 revision、任务 account_pool 与两个账号池管理表；没有启用控制器不代表可以沿用缺列的旧 schema。
+浏览器身份升级还需补齐 `crawler_browser_profiles` 与 `crawler_browser_identity_bindings`；两表不含凭据，普通启动不建表。创建档案不自动启用绑定。
 底层使用 GORM `AutoMigrate`，主要用于补表、列和索引，不负责删除列或表达全部破坏性变更。重复执行通常是幂等的，但生产环境仍应先备份、审查生成 SQL，并为改名、改类型等变更自己写迁移 SQL。
 
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
@@ -50,6 +51,7 @@ cd mycrawler && go mod tidy
 | 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
 | 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
 | 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
+| 固定浏览器身份、账号/匿名会话绑定与本地检查 | [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md) | 档案版本、排空复验、稳定会话键、网站挑战分类及诊断边界 |
 | 调整采集策略、AutoThrottle、资源预算、账号池与代理健康 | [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md) | 默认开关、YAML/OA 优先级、CAS 与重启、异步账号补偿和实际覆盖边界 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
 | 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |

@@ -37,6 +37,8 @@ func FrameworkModels(cfg *config.Config) []Model {
 		// 运行期配置（来源 IP 白名单、站点快照等）。**无条件登记**：它是后台设置页与站点页的落点，
 		// 而且"表在不在"不该取决于某个开关 —— 时有时无会让排查变成猜谜。
 		{Name: "crawler_config", Value: &models.Config{}},
+		{Name: "crawler_browser_profiles", Value: &models.BrowserProfile{}},
+		{Name: "crawler_browser_identity_bindings", Value: &models.BrowserIdentityBinding{}},
 	}
 	if cfg.TaskFlow.Enabled {
 		out = append(out, Model{Name: "crawler_task_flows", Value: &models.TaskFlow{}})

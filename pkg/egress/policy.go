@@ -18,9 +18,13 @@ var ErrTransport = errors.New("egress: unsupported transport")
 // origins access to non-public unicast addresses, never to other origins.
 type Config struct {
 	PrivateOrigins []string `mapstructure:"private_origins"`
+	// AllowedOrigins, when nonempty, restricts all exits to these exact origins.
+	// It does not grant access to private addresses; PrivateOrigins still applies.
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 type Policy struct {
 	private map[string]bool
+	allowed map[string]bool
 	lookup  func(context.Context, string, string) ([]netip.Addr, error)
 }
 
@@ -32,6 +36,16 @@ func New(cfg Config) (*Policy, error) {
 			return nil, ErrDenied
 		}
 		p.private[key] = true
+	}
+	if len(cfg.AllowedOrigins) > 0 {
+		p.allowed = make(map[string]bool, len(cfg.AllowedOrigins))
+		for _, raw := range cfg.AllowedOrigins {
+			u, key, err := Normalize(raw)
+			if err != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+				return nil, ErrDenied
+			}
+			p.allowed[key] = true
+		}
 	}
 	return p, nil
 }
@@ -124,6 +138,9 @@ func (p *Policy) Resolve(ctx context.Context, raw string) (*url.URL, []netip.Add
 	u, key, err := Normalize(raw)
 	if err != nil {
 		return nil, nil, err
+	}
+	if p.allowed != nil && !p.allowed[key] {
+		return nil, nil, ErrDenied
 	}
 	var ips []netip.Addr
 	if ip, e := netip.ParseAddr(u.Hostname()); e == nil {

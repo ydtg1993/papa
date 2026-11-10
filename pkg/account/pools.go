@@ -707,6 +707,11 @@ func (p *Pools) verifyAccount(key Key, t Transport, attempts int, cooldown time.
 	a = p.accounts[key]
 	a.verifying = false
 	a.lastVerify = time.Now()
+	if identityOrSiteFailure(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		p.publishLocked()
+		p.mu.Unlock()
+		return
+	}
 	if a.state.Version == version && !a.state.Disabled {
 		a.state.Version++
 		a.state.UpdatedAt = time.Now()
@@ -741,6 +746,11 @@ func (p *Pools) verifyTransport(ctx context.Context, key Key, t Transport) (err 
 			err = &Failure{Code: "verification-panic"}
 		}
 	}()
+	ctx, releaseIdentity, identityErr := p.manager.PinIdentity(ctx, key)
+	if identityErr != nil {
+		return identityErr
+	}
+	defer releaseIdentity()
 	e, err := p.manager.get(key)
 	if err != nil {
 		return err
@@ -759,7 +769,9 @@ func (p *Pools) verifyTransport(ctx context.Context, key Key, t Transport) (err 
 		func() {
 			defer e.leave()
 			if err = e.load(ctx); err == nil {
-				_, _, err = e.ensure(ctx)
+				if err = e.validateIdentityState(ctx); err == nil {
+					_, _, err = e.ensure(ctx)
+				}
 			}
 		}()
 		if err != nil {

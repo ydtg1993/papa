@@ -37,13 +37,17 @@ func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browse
 		opts.Page = mergeBrowserOptions(ctx, opts.Page)
 		result, err := m.CapturePoolRequest(ctx, a.Pool, pageURL, opts)
 		if err != nil {
-			traceFromCtx(ctx).Fail(captureTraceStep, fmt.Errorf("account capture failed"), nil)
+			data := map[string]any{}
+			if result != nil {
+				data["response_observed"] = result.ResponseObserved
+			}
+			traceFromCtx(ctx).Fail(captureTraceStep, fmt.Errorf("account capture failed"), data)
 			return nil, err
 		}
 		if result == nil || result.Request == nil {
 			return nil, fmt.Errorf("account capture returned no request")
 		}
-		traceFromCtx(ctx).Step(captureTraceStep, map[string]any{"method": result.Request.Method, "resource_type": string(result.Request.ResourceType)})
+		traceFromCtx(ctx).Step(captureTraceStep, map[string]any{"method": result.Request.Method, "resource_type": string(result.Request.ResourceType), "response_observed": result.ResponseObserved})
 		return result.Request, nil
 	}
 	if err := browserProxyError(ctx); err != nil {
@@ -84,10 +88,11 @@ func (e *Engine) recordCapture(ctx context.Context, pageURL string, res *browser
 
 	if err == nil && res != nil && res.Request != nil {
 		traceFromCtx(ctx).Step(captureTraceStep, map[string]any{
-			"matched_url":   res.Request.URL,
-			"method":        res.Request.Method,
-			"resource_type": string(res.Request.ResourceType),
-			"elapsed_ms":    res.Elapsed.Milliseconds(),
+			"matched_url":       res.Request.URL,
+			"method":            res.Request.Method,
+			"resource_type":     string(res.Request.ResourceType),
+			"elapsed_ms":        res.Elapsed.Milliseconds(),
+			"response_observed": res.ResponseObserved,
 		})
 		return
 	}
@@ -102,6 +107,7 @@ func (e *Engine) recordCapture(ctx context.Context, pageURL string, res *browser
 	}
 	data := map[string]any{"page_url": pageURL}
 	if res != nil {
+		data["response_observed"] = res.ResponseObserved
 		data["elapsed_ms"] = res.Elapsed.Milliseconds()
 		data["timeout_ms"] = res.Timeout.Milliseconds()
 		data["candidates_total"] = res.SeenTotal

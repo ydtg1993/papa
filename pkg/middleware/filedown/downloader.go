@@ -70,6 +70,7 @@ func NewDownloader(cfg *Config) *Downloader {
 	}
 	copyConfig := *cfg
 	copyConfig.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	copyConfig.Network.AllowedOrigins = append([]string(nil), cfg.Network.AllowedOrigins...)
 	cfg = &copyConfig
 	return &Downloader{
 		config: cfg,
@@ -108,6 +109,7 @@ func (d *Downloader) With(o Overlay) *Downloader {
 func (d *Downloader) Config() Config {
 	cfg := *d.config
 	cfg.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	cfg.Network.AllowedOrigins = append([]string(nil), cfg.Network.AllowedOrigins...)
 	return cfg
 }
 

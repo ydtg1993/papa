@@ -1,5 +1,7 @@
 # Papa Fetcher 书写手册
 
+浏览器稳定身份、匿名 `session_key` 的业务所有权、`PageOptions.Identity` 和网站挑战错误见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。账号受管入口自动固定身份；匿名回调取得冻结快照后显式传入页面选项。身份不改变原有 URL 去重，不自动修改普通 HTTP 的头/TLS。`CaptureRequest` 的早返回不等于响应已验证，trace 的 `response_observed` 仅说明是否观察到主文档响应。
+
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。

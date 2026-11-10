@@ -13,22 +13,24 @@ import (
 	"github.com/go-rod/rod/lib/devices"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/ydtg1993/papa/v4/pkg/browser/identity"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
 )
 
 // Browser 封装一个 rod实例
 type Browser struct {
-	gateway       *egress.Proxy
-	Browser       *rod.Browser       // rod 浏览器对象
-	launcher      *launcher.Launcher // 启动器，用于关闭
-	useProxy      bool               // 是否走代理（false 为强制直连）
-	useCount      int64              // 已使用次数（原子操作）
-	lastUsed      time.Time          // 最后使用时间
-	mu            sync.Mutex
-	borrowRelease func() // guarded by mu; only the owning pooled instance holds it
-	proxyState    *browserProxyState
-	closed        atomic.Bool
-	pool          *Pool // 归属池：Put 路由 + 读取池共享的默认请求头
+	gateway           *egress.Proxy
+	Browser           *rod.Browser       // rod 浏览器对象
+	launcher          *launcher.Launcher // 启动器，用于关闭
+	diagnosticProcess *diagnosticProcess
+	useProxy          bool      // 是否走代理（false 为强制直连）
+	useCount          int64     // 已使用次数（原子操作）
+	lastUsed          time.Time // 最后使用时间
+	mu                sync.Mutex
+	borrowRelease     func() // guarded by mu; only the owning pooled instance holds it
+	proxyState        *browserProxyState
+	closed            atomic.Bool
+	pool              *Pool // 归属池：Put 路由 + 读取池共享的默认请求头
 	// 从池配置中继承的默认值（固定，不可热更）
 	defaultDevice  *devices.Device
 	defaultCookies []*proto.NetworkCookieParam
@@ -71,6 +73,10 @@ func (b *Browser) Close() {
 	b.releaseBorrow()
 	if b.gateway != nil {
 		b.gateway.Close()
+	}
+	if b.diagnosticProcess != nil {
+		b.diagnosticProcess.close()
+		return
 	}
 	if b.launcher != nil {
 		b.launcher.Kill()
@@ -142,6 +148,8 @@ func (b *Browser) IsAlive() bool {
 
 // PageOptions 创建页面时的可选配置
 type PageOptions struct {
+	// Identity is copied before use and fixed for this managed page's lifetime.
+	Identity *identity.ResolvedProfile
 	// GovernanceOrigins explicitly includes additional target origins (e.g. a
 	// site's CDN) in request control. Empty uses the first document's origin.
 	// Other origins are neither throttled nor included in target-site latency.
@@ -206,6 +214,14 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 			_ = created.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 		}
 	}()
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() {
+		err = challenge.prefer(err)
+		if err != nil {
+			page = nil
+		}
+	}()
 
 	timeout := opts.Timeout
 	if timeout == 0 {
@@ -218,6 +234,9 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 	// 等待页面加载完成
 	if err := page.Timeout(timeout).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("wait load: %w", err)
+	}
+	if err := challenge.prefer(nil); err != nil {
+		return nil, err
 	}
 	// 渲染条件（selector / js / request-idle）按固定顺序等；失败时错误里带着现场 HTML
 	if err := applyWaits(page, opts); err != nil {
@@ -245,6 +264,14 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 		_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 	}()
 	page = page.Context(ctx)
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() {
+		err = challenge.prefer(err)
+		if err != nil {
+			res = nil
+		}
+	}()
 
 	timeout := opts.Timeout
 	if timeout == 0 {
@@ -272,6 +299,9 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 	if err := page.Timeout(timeout).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
+	if err := challenge.prefer(nil); err != nil {
+		return nil, err
+	}
 	// 渲染条件（selector / js / request-idle）按固定顺序等；失败时错误里带着现场 HTML
 	if err := applyWaits(page, opts); err != nil {
 		return nil, err
@@ -288,6 +318,9 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 		if err := opts.Interact(ctx, page); err != nil {
 			return nil, fmt.Errorf("interact: %w", err)
 		}
+	}
+	if err := challenge.prefer(nil); err != nil {
+		return nil, err
 	}
 
 	html, err := page.HTML()
@@ -330,14 +363,23 @@ func (b *Browser) newPageBaseContext(ctx context.Context, opts PageOptions) (*ro
 	if err != nil {
 		return nil, fmt.Errorf("open page: %w", err)
 	}
+	defaults := b.isolatedHeaders
+	if defaults == nil {
+		defaults = b.pool.headersSnapshot()
+	}
+	identityState, err := b.initializePageIdentity(ctx, page, opts, defaults)
+	if err != nil {
+		_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
+		return nil, &identity.InitializationError{Stage: "managed page", Cause: err}
+	}
 
 	// 1. 设备模拟（优先使用 opts.Device，否则使用默认设备）
-	if device := opts.Device; device != nil {
+	if device := opts.Device; identityState == nil && device != nil {
 		if err := page.Emulate(*device); err != nil {
 			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 			return nil, fmt.Errorf("emulate device: %w", err)
 		}
-	} else if b.defaultDevice != nil {
+	} else if identityState == nil && b.defaultDevice != nil {
 		if err := page.Emulate(*b.defaultDevice); err != nil {
 			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 			return nil, fmt.Errorf("emulate device: %w", err)
@@ -348,11 +390,10 @@ func (b *Browser) newPageBaseContext(ctx context.Context, opts PageOptions) (*ro
 	// 键一律按 HTTP 语义规范化：header 名大小写不敏感，站点级默认头可能是 `Authorization`、
 	// 逐请求覆盖/删除写的却是 `authorization`—— map 按精确键删的话删不掉，旧凭据照发。
 	// 规范化后 set/remove 与默认头落到同一个键上，覆盖/删除才按大小写不敏感生效。
-	defaults := b.isolatedHeaders
-	if defaults == nil {
-		defaults = b.pool.headersSnapshot()
-	}
 	headerArgs := mergeExtraHeaders(defaults, opts.Headers, opts.RemoveHeaders)
+	if identityState != nil {
+		headerArgs = mergeExtraHeaders(nil, identityState.headers, nil)
+	}
 	if len(headerArgs) > 0 {
 		if _, err := page.SetExtraHeaders(headerArgs); err != nil {
 			_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
@@ -392,23 +433,38 @@ func (b *Browser) MustNewPage(ctx context.Context, url string) *rod.Page {
 // 默认设备 / 池共享请求头 / 默认 Cookies 由 newPageBase 应用（不导航）。
 // fn panic 时同样先关页，再把 panic 抛回。
 func (b *Browser) WithPage(ctx context.Context, fn func(*rod.Page) error) error {
-	page, err := b.newPageBaseContext(ctx, PageOptions{})
+	return b.WithPageOptions(ctx, PageOptions{}, fn)
+}
+
+// WithPageOptions configures a blank managed page and bounds its lifetime to fn.
+// It applies identity before any navigation performed by the callback.
+func (b *Browser) WithPageOptions(ctx context.Context, opts PageOptions, fn func(*rod.Page) error) (err error) {
+	if fn == nil {
+		return fmt.Errorf("page callback required")
+	}
+	page, err := b.newPageBaseContext(ctx, opts)
 	if err != nil {
 		return err
 	}
 	page = page.Context(ctx)
 	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() { err = challenge.prefer(err) }()
 	return fn(page)
 }
 
 // WithNavigatedPage 等于 NewPageWithOptions + 保证关页：导航失败也会关。
-func (b *Browser) WithNavigatedPage(ctx context.Context, url string, opts PageOptions, fn func(*rod.Page) error) error {
+func (b *Browser) WithNavigatedPage(ctx context.Context, url string, opts PageOptions, fn func(*rod.Page) error) (err error) {
 	page, err := b.NewPageWithOptions(ctx, url, opts)
 	if err != nil {
 		return err
 	}
 	page = page.Context(ctx)
 	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
+	challenge, stopChallenge := observeSiteChallenge(page)
+	defer stopChallenge()
+	defer func() { err = challenge.prefer(err) }()
 	return fn(page)
 }
 

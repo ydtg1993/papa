@@ -106,6 +106,10 @@ func (a *App) initRuntime(ctx context.Context) error {
 	s.effective = cfg
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
+	if err := a.initBrowserIdentities(); err != nil {
+		cancel()
+		return err
+	}
 	if m := a.Engine.GetAccountManager(); m != nil {
 		if existing := m.Pools(); existing != nil {
 			s.pools = existing
@@ -128,7 +132,13 @@ func (a *App) initRuntime(ctx context.Context) error {
 	return nil
 }
 func (a *App) stopRuntime() {
+	_ = a.drainRuntime(5 * time.Second)
+}
+func (a *App) drainRuntime(timeout time.Duration) bool {
 	s := &a.runtimeState
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	identityDrained := a.stopBrowserIdentities(ctx)
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -136,6 +146,7 @@ func (a *App) stopRuntime() {
 	if s.pools != nil {
 		s.pools.Close()
 	}
+	return identityDrained
 }
 func (a *App) validateRuntimePools(cfg governance.Config) error {
 	for site := range cfg.Sites {

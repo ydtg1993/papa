@@ -138,6 +138,7 @@ func (e *Engine) prepareRuntimeTask(ctx context.Context, task *Task, physical in
 	baseCtx := e.RuntimeContext(ctx, task.Site)
 	for {
 		ctx = baseCtx
+		releaseIdentity := func() {}
 		// Accounts and remote cooldown are checked before obtaining global execution
 		// slots. No DB transaction or engine lock is held while waiting.
 		if name := task.AccountPool; name != "" {
@@ -151,25 +152,36 @@ func (e *Engine) prepareRuntimeTask(ctx context.Context, task *Task, physical in
 			}
 			a.TaskID = uint64(task.ID)
 			ctx = account.WithAttempt(ctx, a)
+			ctx, releaseIdentity, err = m.PinIdentity(ctx, a.Account)
+			if err != nil {
+				return ctx, nil, err
+			}
+			if m.Pools().ValidateAttempt(a) != nil {
+				releaseIdentity()
+				continue
+			}
 		}
 		c := e.Governance()
 		if c == nil {
-			return ctx, func() {}, nil
+			return ctx, releaseIdentity, nil
 		}
 		if err := c.WaitTaskReady(ctx, task.Site); err != nil {
+			releaseIdentity()
 			return ctx, nil, err
 		}
 		release, err := c.AcquireStage(ctx, task.Site, task.Stage, physical)
 		if err != nil {
+			releaseIdentity()
 			return ctx, nil, err
 		}
 		if identity, ok := account.AttemptFromContext(ctx); ok {
 			m := e.GetAccountManager()
 			if m == nil || m.Pools() == nil || m.Pools().ValidateAttempt(identity) != nil {
 				release()
+				releaseIdentity()
 				continue
 			}
 		}
-		return ctx, release, nil
+		return ctx, func() { release(); releaseIdentity() }, nil
 	}
 }

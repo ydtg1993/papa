@@ -15,6 +15,14 @@ func (a *App) accountPoolsAPI(w http.ResponseWriter, r *http.Request) {
 		if p != nil {
 			v["pools"] = p.Snapshot()
 		}
+		if a.BrowserIdentities() != nil {
+			if identityView, err := a.identityView(r.Context(), ""); err == nil {
+				v["identity_bindings"] = identityView["bindings"]
+				v["identity_reports"] = identityView["reports"]
+			} else {
+				v["identity_error"] = "身份状态读取失败，请到浏览器诊断页核对"
+			}
+		}
 		return v
 	}
 	if r.Method == http.MethodGet {

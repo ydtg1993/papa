@@ -59,15 +59,16 @@ const (
 
 // PoolConfig 浏览器池配置
 type PoolConfig struct {
-	Network      egress.Config  `mapstructure:"network"`
-	TempDir      string         // Profile root; empty preserves Rod's OS temporary directory default.
-	Size         int            // 代理浏览器并发上限（按需创建）
-	DirectSize   int            // 强制直连浏览器并发上限（不经过代理）
-	MaxIdleTime  time.Duration  // 最大空闲时间，0 表示无限制
-	ProxyManager *proxy.Manager //代理管理器
-	Headless     bool
-	NoSandbox    bool
-	Leakless     bool
+	diagnosticStartup bool           // selected only by NewDiagnosticPool
+	Network           egress.Config  `mapstructure:"network"`
+	TempDir           string         // Profile root; empty preserves Rod's OS temporary directory default.
+	Size              int            // 代理浏览器并发上限（按需创建）
+	DirectSize        int            // 强制直连浏览器并发上限（不经过代理）
+	MaxIdleTime       time.Duration  // 最大空闲时间，0 表示无限制
+	ProxyManager      *proxy.Manager //代理管理器
+	Headless          bool
+	NoSandbox         bool
+	Leakless          bool
 	// BinarySource 二进制来源：留空 / rod（默认，Rod 自动下载）/ system（探测系统已装的）/ path。
 	// 留空时看 BrowserPath：给了就是 path，没给就是 rod。
 	BinarySource   string
@@ -122,6 +123,8 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		return nil, err
 	}
 	cfg.Network.PrivateOrigins = append([]string(nil), cfg.Network.PrivateOrigins...)
+	cfg.Network.AllowedOrigins = append([]string(nil), cfg.Network.AllowedOrigins...)
+	cfg.Flags = copyMap(cfg.Flags)
 	if cfg.TempDir != "" {
 		for key := range cfg.Flags {
 			if strings.TrimLeft(key, "-") == "user-data-dir" || strings.TrimLeft(key, "-") == "disk-cache-dir" {
@@ -160,7 +163,6 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		browsers: make(chan *Browser, cfg.Size),
 		direct:   make(chan *Browser, cfg.DirectSize),
 	}
-	p.newBrowserFn = p.newBrowser
 	p.cond = sync.NewCond(&p.mu)
 	h := copyMap(cfg.DefaultHeaders)
 	p.headers.Store(&h)
@@ -171,7 +173,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	// 起一次进程就知道浏览器这一环通不通（rod 模式会在这里触发下载）。
 	// 用完就关是刻意的：自检只负责验证，不占直连池的槽位（要常驻实例由 Get 按需建）。
 	if cfg.SelfCheck {
-		b, err := p.newBrowserFn(false)
+		b, err := p.createBrowser(context.Background(), false)
 		if err != nil {
 			return nil, fmt.Errorf("browser self-check: %w", err)
 		}
@@ -210,6 +212,16 @@ func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 }
 
 // newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
+func (p *Pool) createBrowser(ctx context.Context, useProxy bool) (*Browser, error) {
+	if p.newBrowserFn != nil {
+		return p.newBrowserFn(useProxy)
+	}
+	if p.cfg.diagnosticStartup {
+		return p.newDiagnosticBrowser(ctx, useProxy)
+	}
+	return p.newBrowser(useProxy)
+}
+
 func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	l := p.newLauncher(false)
 	upstream, observeProxy, proxyState, err := p.selectBrowserProxy(useProxy, l.Get(flags.Flag("proxy-server")))
@@ -404,7 +416,7 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 						panic(v)
 					}
 				}()
-				return p.newBrowserFn(useProxy)
+				return p.createBrowser(ctx, useProxy)
 			}()
 			if err != nil {
 				release()

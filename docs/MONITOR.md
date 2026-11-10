@@ -9,6 +9,8 @@
 
 ## 0. 一句话
 
+「系统管理 → 浏览器诊断」同时提供启动诊断、身份档案版本、账号/会话绑定与配置一致性检查。改绑先待生效，再显式复验；版本冲突保留草稿。账号池成员可跳转到对应检查环境。新增鉴权接口 `/api/browser-identities` 的 GET 只读、POST 支持档案/绑定 CAS 与本地诊断；详见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。本地检查不加载凭据、不访问目标站，不能当作反爬通过证明。
+
 框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`。一级导航固定四类，只展示当前类别的二级入口；默认打开「运行监控与报告 → 运行概览」。
 
 | 一级入口 | 二级内容 |
