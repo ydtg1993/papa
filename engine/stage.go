@@ -12,6 +12,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
@@ -202,6 +203,23 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil
 		}
+		var release func()
+		var admissionErr error
+		ctx, release, admissionErr = e.prepareRuntimeTask(ctx, task, cfg.WorkerCount)
+		if admissionErr != nil {
+			if ctx.Err() == nil {
+				e.spillTask(task)
+			}
+			return admissionErr
+		}
+		defer release()
+		// A task can spend time waiting after the worker's original pause gate.
+		// Recheck before claiming so a pause during that wait keeps it pending.
+		if e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
+			release()
+			e.spillTask(task)
+			return nil
+		}
 		// claimedAt 认领时刻：事件里的 duration_ms 用它算整段在途时间（成功/失败都算）。
 		var claimedAt time.Time
 		var runVersion taskRunVersion
@@ -280,6 +298,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 					DurationMS: elapsedMS(claimedAt),
 				})
 				e.finishTask(task)
+				release()
 				// 任务间隔延迟：让 worker 在两次抓取之间歇一下，别把目标站打急。
 				// **必须可被 ctx 打断** —— 任务到这里已经成功、状态也已经落库，
 				// 再让 worker 抱着这个并发位睡满一个 delay（模板里 catalog 是 5m），
@@ -288,7 +307,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				// 与上面重试退避那段同一个写法（Engine.Stop 的注释承诺的就是这个）。
 				select {
 				case <-ctx.Done():
-				case <-time.After(cfg.Delay.Random()):
+				case <-time.After(e.taskDelay(task, cfg.Delay.Random())):
 				}
 				return nil
 			}
@@ -301,7 +320,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				return ctxErr
 			}
 			// 不可重试的错误：直接标 failed，不再空转重试
-			if !Retryable(err) {
+			if !Retryable(err) || account.IsAttemptFailure(err) {
 				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
 					return errors.Join(err, writeErr)
 				}
@@ -557,6 +576,9 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	// Trace 同样挂一份：render / CaptureRequest 的签名里没有 task，失败步骤从 ctx 取
 	// （见 trace.go 的 traceCtxKey）。
 	ctx = withTrace(ctx, tr)
+	if identity, ok := account.AttemptFromContext(ctx); ok {
+		tr.Step("账号池身份", map[string]any{"pool": identity.Pool.Name, "account": identity.Account.ID, "selection_version": identity.SelectionVersion, "credential_version": identity.CredentialVersion})
+	}
 	ctx = withArchive(ctx, ar)
 	// 站点请求头也挂在 ctx 上：这个站的任务抓任何页面都自动带上它的 UA/Cookie/Referer，
 	// handler 不用写代码；要对单次请求再改，用 `papa.WithHeaders(ctx, …)` 叠加（它只会覆盖给到的键）。
@@ -572,6 +594,19 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	}
 
 	err = fetcher.FetchHandler(ctx, task, e)
+	if identity, ok := account.AttemptFromContext(ctx); ok && err != nil {
+		outcome := account.Unknown
+		if errors.Is(err, account.ErrExpired) {
+			outcome = account.Expired
+		} else if errors.Is(err, account.ErrChallenge) {
+			outcome = account.Challenge
+		}
+		if outcome != account.Unknown {
+			if m := e.GetAccountManager(); m != nil && m.Pools() != nil {
+				m.Pools().ReportFailure(identity, outcome, uint64(task.ID))
+			}
+		}
+	}
 	tr.setResult(err)
 	return err
 }

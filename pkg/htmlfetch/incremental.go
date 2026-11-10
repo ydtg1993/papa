@@ -11,6 +11,9 @@ import (
 // Representation is scoped to one exact URL AND account/headers/locale chosen by
 // the caller. It is not a shared cache. Save it only after successful data landing.
 type Representation struct {
+	// Scope identifies an optional caller-owned representation identity. Framework
+	// account pools set it so validators cannot cross an account switch.
+	Scope        string
 	URL          string
 	ETag         string
 	LastModified string
@@ -31,6 +34,12 @@ type IncrementalResult struct {
 // was sent; unexpected 304/redirects/non-200 responses are errors. Existing Do and
 // Fetch keep their original non-2xx behavior. No automatic storage/retry occurs.
 func (c *Client) FetchIncremental(ctx context.Context, rawURL string, previous *Representation) (*IncrementalResult, error) {
+	return FetchIncrementalWith(ctx, rawURL, previous, c.Do)
+}
+
+// FetchIncrementalWith applies the same conditional response rules to an explicit
+// exchange, for example a task-bound account without hidden credential replay.
+func FetchIncrementalWith(ctx context.Context, rawURL string, previous *Representation, do func(context.Context, Request) (*Response, error)) (*IncrementalResult, error) {
 	req := Request{URL: rawURL, NoRedirect: true, Headers: map[string]string{"If-None-Match": "", "If-Modified-Since": "", "Range": ""}}
 	matching := previous != nil && previous.URL == rawURL
 	conditional := false
@@ -43,7 +52,7 @@ func (c *Client) FetchIncremental(ctx context.Context, rawURL string, previous *
 			conditional = true
 		}
 	}
-	response, err := c.Do(ctx, req)
+	response, err := do(ctx, req)
 	if response != nil && response.StatusCode == http.StatusNotModified {
 		// Do returns only a status error on a well-formed empty 304 response.
 		status, ok := err.(*StatusError)

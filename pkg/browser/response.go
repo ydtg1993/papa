@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
@@ -62,6 +63,36 @@ func (b *Browser) CaptureResponse(ctx context.Context, pageURL string, opts Resp
 	// Cleanup must survive timeout/cancellation of the capture itself.
 	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	page = page.Context(ctx)
+	return captureResponseOnPage(ctx, page, pageURL, opts)
+}
+
+// CaptureResponsePage observes a response on an existing authenticated managed
+// page. It preserves cookies, local storage and the page's request governor.
+func CaptureResponsePage(ctx context.Context, page *rod.Page, pageURL string, opts ResponseOptions) (*CapturedResponse, error) {
+	if err := validateNavigation(pageURL); err != nil {
+		return nil, err
+	}
+	if opts.Match == nil {
+		return nil, fmt.Errorf("capture response: Match is required")
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultCaptureTimeout
+	}
+	if opts.MaxBodySize <= 0 {
+		opts.MaxBodySize = 10 << 20
+	}
+	if opts.MaxRequestBodySize <= 0 {
+		opts.MaxRequestBodySize = 64 << 10
+	}
+	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := ConfigurePage(ctx, page, opts.Page); err != nil {
+		return nil, err
+	}
+	return captureResponseOnPage(ctx, page.Context(ctx), pageURL, opts)
+}
+
+func captureResponseOnPage(ctx context.Context, page *rod.Page, pageURL string, opts ResponseOptions) (*CapturedResponse, error) {
 	type outcome struct {
 		response *CapturedResponse
 		err      error
@@ -137,7 +168,9 @@ func (b *Browser) CaptureResponse(ctx context.Context, pageURL string, opts Resp
 	)
 	go wait()
 	nav := make(chan error, 1)
+	navFinished := make(chan struct{})
 	go func() {
+		defer close(navFinished)
 		navigation := page
 		if opts.Page.Timeout > 0 {
 			navigation = page.Timeout(opts.Page.Timeout)
@@ -147,6 +180,13 @@ func (b *Browser) CaptureResponse(ctx context.Context, pageURL string, opts Resp
 	for {
 		select {
 		case out := <-done:
+			// Rod's navigation updates page helper state. Settle it before an
+			// enclosing account callback exports cookies/local storage.
+			select {
+			case <-navFinished:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 			return out.response, out.err
 		case err := <-nav:
 			if err != nil {

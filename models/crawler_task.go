@@ -36,6 +36,9 @@ type CrawlerTask struct {
 	// 两个站可以各有自己的 catalog，所以它与 Site 一起才构成"哪个阶段"，唯一索引三者都带。
 	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_site_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`
 	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_site_stage_url_hash,priority:3;comment:所属站点(站点声明的 Key，必填；没有未归属那一档)"`
+	// AccountPool is task ownership, not part of deduplication. Retries/recovery
+	// obtain this pool's current identity instead of binding a permanent account.
+	AccountPool string `gorm:"type:varchar(256);not null;default:'';index;comment:所属站点账号池；空表示未使用账号池"`
 	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`

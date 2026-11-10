@@ -37,18 +37,20 @@
 | `id` / `p_id` | 任务 ID / 父任务 ID（阶段串联靠它） |
 | `url` / `url_hash` | 任务 URL 与它的 sha256（唯一索引用哈希，因为长 URL 整串进不了索引） |
 | `stage` / `site` | 属于哪个阶段、哪个站点（`SiteSpec.Key`，**必填** —— 没有「未归属」那一档） |
+| `account_pool` | 任务在该站的账号池归属；空表示未使用池，不参与页面/幂等键去重 |
 | `status` / `retry` / `error` | 运行态：待处理 / 处理中 / 成功 / 失败、重试次数、错误信息 |
 | `repeatable` / `repeat` / `repeat_interval` / `next_repeat_at` / `last_repeat_at` | 轮询相关，调度用 |
 | `reprocess` / `urgent` | 失败重投的代次（同时是后台动作的版本守卫）、加急标记 |
 | `idempotency_key` | 去重键，见下 |
 | `meta` | **业务键**（JSON），见下 |
 
-- **`meta` 是唯一该由你填的任务列**：给 `papa.Task{Meta: map[string]string{...}}` 赋值即可，它随行落库。
+- **业务键写 `meta`**：给 `papa.Task{Meta: map[string]string{...}}` 赋值即可，它随行落库。
   恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份 ——
   不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
   放**键**（`series_id` / `episode_id`），别放数据本身。
 - **唯一索引建在 `(url_hash, stage, site)`**：同一个站点的同一个 URL 在同一个阶段只有一行 ——
   三个都在里面是必须的：**阶段名只在本站内唯一**，两个站可以各有自己的 `catalog` 并各自抓同一个 URL。
+- `Task.AccountPool` 可在首次提交时显式指定，或由当前站点/阶段运行策略解析；之后恢复、轮询及失败补偿都保存这一归属。重复提交指定不同池会报冲突，不改旧行、不创建新任务。实际账号在执行尝试时取得，换号不会改变任务去重键，也不会迁移已有任务的池名。Cookie/Token 不写进 Meta 或任务表。
 - **`idempotency_key` 的规范格式是 `site:stage:<标识>`，而且唯一性由数据库兜底**：
   自定义时显式写上（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），
   留空则回退成同形状的 `site:stage:url`。三段缺一不可 —— 少了 `site` / `stage`，
@@ -181,5 +183,9 @@ return engine.SubmitTask(&papa.Task{
 | 查任务运行态 | 后台「任务」表格页（重投 / 加急 / 追踪 / 开停轮询） |
 
 ## 调度运行关系
+
+运行治理升级需显式 `papa migrate`：补 `crawler_config.revision`、`crawler_tasks.account_pool` 并建 `crawler_account_pools` / `crawler_account_management`。策略 CAS 版本只以 `crawler_config.revision` 列为权威；`runtime_policy` 是独立键，`sites` 仍是运行快照。账号池表保存成员/当前选择/最近 100 条切换记录，账号管理表保存停用/隔离/冷却，不存凭据，也不复用 `crawler_task_flows`。
+
+任务实际账号与选择版本仅在启用 Trace 时随尝试记录；没有新增每任务永久身份历史列。失败账号的任务由错误队列或人工重投复用原行，数据库结果写入仍必须满足业务幂等性。详细运行生命周期见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 
 可选 crawler_task_flows 保存运行策略和修订；crawler_tasks 的 flow_id/flow_lane/flow_branch/flow_path 保存关系。启用 task_flow.enabled 并显式 papa migrate；任务列是本版本共同 schema，默认任务使用空标识。禁止绕过 API 修改/删除关系，详见 [动态阶段调度](TASK_FLOW.md)。

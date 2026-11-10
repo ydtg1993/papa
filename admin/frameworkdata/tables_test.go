@@ -138,7 +138,7 @@ func TestFrameworkCatalogCoversAllModelsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := database.AllFrameworkModels()
-	if len(tables) != 6 || len(tables) != len(models) {
+	if len(tables) != 8 || len(tables) != len(models) {
 		t.Fatalf("catalog/model count = %d/%d", len(tables), len(models))
 	}
 	for i, table := range tables {

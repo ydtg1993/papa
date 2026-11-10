@@ -7,11 +7,14 @@ import (
 
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 )
 
 // Config M3U8 下载器全局配置
 type Config struct {
-	Network egress.Config `mapstructure:"network"`
+	// ProxyManager supplies health feedback for explicitly selected download proxies.
+	ProxyManager *proxy.Manager `json:"-" yaml:"-" mapstructure:"-"`
+	Network      egress.Config  `mapstructure:"network"`
 	// 输出目录，默认 "./downloads"
 	OutputDir string
 	// 最大并发下载片段数，默认 5

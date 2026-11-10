@@ -24,6 +24,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/msgqueue"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
 	"github.com/ydtg1993/papa/v4/pkg/middleware"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 )
 
 // Downloader 文件下载器（并发安全）
@@ -847,7 +848,7 @@ func (d *Downloader) clientForProxy(addr string) *http.Client {
 	}
 	proxyURL, err := url.Parse(addr)
 	if err != nil {
-		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", addr, err))
+		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
 		proxyURL = &url.URL{Scheme: "invalid"}
 	}
 	if d.st.proxyClients == nil {
@@ -862,6 +863,7 @@ func (d *Downloader) clientForProxy(addr string) *http.Client {
 		Transport: transport,
 	}
 	c = egress.Client(c, d.config.Network)
+	c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, addr)
 	d.st.proxyClients[addr] = c
 	return c
 }

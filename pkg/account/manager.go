@@ -498,6 +498,8 @@ func (m *Manager) Status() []Status {
 	for _, e := range entries {
 		e.mu.Lock()
 		s := Status{Key: e.key, Version: e.version, Paused: e.paused, Authenticating: e.flight != nil, HTTPReady: e.current != nil && !e.lastCheck.IsZero() && !e.paused && e.failure == nil, BrowserReady: e.pageState != nil && !e.browserCheck.IsZero() && !e.paused && e.failure == nil, LastCheck: e.lastCheck, LastLogin: e.lastLogin, LastBrowserCheck: e.browserCheck, RetryAt: e.retryAt}
+		s.HTTPConfigured, s.BrowserConfigured = e.config.Login != nil, e.config.Browser != nil
+		s.InUse, s.MaxConcurrent = len(e.slots), cap(e.slots)
 		if e.failure != nil {
 			s.Failure = "authentication-failed"
 			var f *Failure
@@ -523,6 +525,12 @@ func (m *Manager) Status() []Status {
 // Do runs a bounded authenticated request. Only GET/HEAD are replayed, once, on
 // an explicitly classified expiry. Redirects are returned without following.
 func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*htmlfetch.Response, error) {
+	if a, ok := AttemptFromContext(ctx); ok {
+		if a.Account != key {
+			return nil, ErrAttemptChanged
+		}
+		return m.DoPool(ctx, a.Pool, req)
+	}
 	e, err := m.get(key)
 	if err != nil {
 		return nil, err

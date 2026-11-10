@@ -74,7 +74,8 @@ type App struct {
 	sites        map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
-	configStore *configstore.Store
+	configStore  *configstore.Store
+	runtimeState runtimeState
 
 	shutdownHooks []func(context.Context) error // Run 前注册，HTTP 退出后、关库前执行
 }
@@ -778,6 +779,9 @@ func (a *App) Run(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	defer cancel()
+	if err := a.initRuntime(runCtx); err != nil {
+		panic(fmt.Errorf("采集控制初始化失败: %w", err))
+	}
 
 	a.emitRunStarted()
 	// 定时报告（obs.report.interval）：与退出报告共用同一套日报产物，停机时会先停它再出最终报告。
@@ -811,6 +815,10 @@ func (a *App) Run(ctx context.Context) {
 	// 各阶段是并发等的，所以这里最多等一个 stopTimeout。
 	stopTimeout := a.Config.Crawler.StopTimeoutOrDefault()
 	drained, stopStats := a.Engine.Stop(stopTimeout)
+	a.stopRuntime()
+	if manager := a.Engine.GetProxy(); manager != nil {
+		manager.Close()
+	}
 	if !drained {
 		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 跳过关库与浏览器池关闭，让在途写入完成；"+
 			"留在库里的 pending 任务下次启动的启动恢复会重新入队", stopTimeout, stopStats)
@@ -998,6 +1006,8 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	a.UsePage(Page{Key: "browser-diagnostics", Label: "浏览器诊断", Section: "system", Script: rodDiagnosticsScript})
+	a.UsePage(Page{Key: "crawl-control", Label: "采集控制", Section: "monitor", Script: runtimeControlScript})
+	a.UsePage(Page{Key: "account-pools", Label: "账号池", Section: "data", Script: accountPoolsScript})
 	mux := http.NewServeMux()
 	if a.Config.TaskFlow.Enabled {
 		a.UseCSS(server.TaskFlowCSS)
@@ -1182,6 +1192,10 @@ func (a *App) httpServer(ctx context.Context) {
 	tokenHook := tokenWriteHook(tokenCounter, rec)
 	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
 	mux.Handle("/api/browser-diagnostics", mon.Auth(RodDiagnostics(a)))
+	mux.Handle("/api/runtime-policy", mon.Auth(http.HandlerFunc(a.runtimePolicyAPI)))
+	mux.Handle("/api/runtime-remote", mon.Auth(http.HandlerFunc(a.runtimeRemoteAPI)))
+	mux.Handle("/api/account-pools", mon.Auth(http.HandlerFunc(a.accountPoolsAPI)))
+	mux.Handle("/api/proxy-health", mon.Auth(http.HandlerFunc(a.proxyHealthAPI)))
 
 	// 自定义页与注入（阶段 3 的逃生舱）
 	a.mountCustomRoutes(mux, mon.Auth)

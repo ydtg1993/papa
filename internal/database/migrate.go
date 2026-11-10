@@ -3,6 +3,7 @@ package database
 import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/account"
 	"gorm.io/gorm"
 )
 
@@ -39,6 +40,9 @@ func FrameworkModels(cfg *config.Config) []Model {
 	}
 	if cfg.TaskFlow.Enabled {
 		out = append(out, Model{Name: "crawler_task_flows", Value: &models.TaskFlow{}})
+	}
+	for _, model := range account.Models() {
+		out = append(out, Model{Name: model.(interface{ TableName() string }).TableName(), Value: model})
 	}
 	if cfg.Server.OperationLog {
 		out = append(out, Model{Name: "crawler_operation_log", Value: &models.OperationLog{}})

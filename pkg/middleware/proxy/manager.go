@@ -1,11 +1,11 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/msgqueue"
@@ -25,6 +25,15 @@ type Manager struct {
 	mu         sync.RWMutex
 	index      uint64
 	trackQueue *msgqueue.MsgQueue[any] //系统消息队列
+	health     HealthConfig
+	entries    map[string]*healthEntry
+	probes     int
+	changed    chan struct{}
+	now        func() time.Time
+	ctx        context.Context
+	cancel     context.CancelFunc
+	closed     bool
+	refreshWG  sync.WaitGroup
 }
 
 // NewManager 创建代理管理器
@@ -34,11 +43,15 @@ func NewManager(apiURL string, refreshInterval time.Duration) *Manager {
 
 // NewManagerWithNetwork explicitly authorizes private proxy-list API origins.
 func NewManagerWithNetwork(apiURL string, refreshInterval time.Duration, network egress.Config) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		apiURL:     apiURL,
 		refresh:    refreshInterval,
 		client:     egress.Client(&http.Client{Timeout: 10 * time.Second}, network),
 		trackQueue: msgqueue.NewMsgQueue[any](10),
+		health:     DefaultHealthConfig(),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 	if apiURL != "" {
 		// 非正刷新间隔会让 time.NewTicker panic（而且是在 goroutine 里、进程直接崩），
@@ -47,22 +60,17 @@ func NewManagerWithNetwork(apiURL string, refreshInterval time.Duration, network
 			m.refresh = defaultRefreshInterval
 		}
 		m.refreshProxies()
+		m.refreshWG.Add(1)
 		go m.startRefresh()
 	}
 	return m
 }
 
-// Next 位移获取一条proxy
+// Next retains the legacy string API. Call Acquire or NextChecked when a configured
+// proxy is required: the string API cannot distinguish exhaustion from direct access.
 func (m *Manager) Next() string {
-	m.mu.RLock()
-	proxyCount := len(m.proxies)
-	defer m.mu.RUnlock()
-	if proxyCount == 0 {
-		return ""
-	}
-	idx := atomic.AddUint64(&m.index, 1) - 1
-	proxyAddress := m.proxies[idx%uint64(proxyCount)]
-	return proxyAddress
+	address, _ := m.NextChecked(context.Background())
+	return address
 }
 
 // GetErrors 获取错误消息队列
@@ -72,14 +80,22 @@ func (m *Manager) GetErrors() <-chan error {
 
 // refreshProxies 从 API 获取代理列表
 func (m *Manager) refreshProxies() {
-	req, err := http.NewRequest("GET", m.apiURL, nil)
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", m.apiURL, nil)
 	if err != nil {
-		m.trackQueue.SendError(fmt.Errorf("create proxy request failed: %s", err.Error()))
+		m.trackQueue.SendError(fmt.Errorf("create proxy request failed: invalid provider URL"))
 		return
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		m.trackQueue.SendError(fmt.Errorf("fetch proxies failed: %w", err))
+		if ctx.Err() != nil {
+			return
+		}
+		// Provider URLs and transport errors can contain credentials.
+		m.trackQueue.SendError(fmt.Errorf("fetch proxies failed"))
 		return
 	}
 	defer resp.Body.Close()
@@ -94,31 +110,53 @@ func (m *Manager) refreshProxies() {
 		m.trackQueue.SendError(fmt.Errorf("decode proxy list failed: %w", err))
 		return
 	}
-	m.mu.Lock()
 	// 整份建好再一次性换上去：换的那一刻 m.proxies 要么是旧的、要么是新的，
 	// 不会出现半满的中间态（读侧只持 m.mu，不做拷贝）。
 	list := make([]string, 0, len(proxies))
 	for _, p := range proxies {
 		list = append(list, "http://"+p["host"]+":"+p["port"])
 	}
-	m.proxies = list
+	m.replaceProxies(list)
 	empty := len(list) == 0
-	m.mu.Unlock()
 
-	// 只报「拉到了但一条可用都没有」：出口会全部变成直连，目标站可能因此封 IP，
-	// 而这件事在别处看不出来（Next 只是返回空串）—— 这是需要人看的情况。
+	// 只报「拉到了但一条可用都没有」。健康开启后的检查式选择会拒绝请求，
+	// 兼容字符串入口 Next 仍无法区分耗尽与未配置，调用方应迁移到 Acquire。
 	// 非空不报：每轮刷新（默认 8 分钟）写一条 "N available" 是把正常当异常，
 	// 而错误通道那端按 Error 级别落盘（App.mdMsgListener），正常运行的日志里会一直有 ERROR。
 	if empty {
-		m.trackQueue.SendError(fmt.Errorf("proxy API 返回空列表：本进程将直连，不走代理"))
+		m.trackQueue.SendError(fmt.Errorf("proxy API 返回空列表：未取得可用代理"))
 	}
 }
 
 // startRefresh 定时刷新
 func (m *Manager) startRefresh() {
+	defer m.refreshWG.Done()
 	ticker := time.NewTicker(m.refresh)
 	defer ticker.Stop()
-	for range ticker.C {
-		m.refreshProxies()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.refreshProxies()
+		}
 	}
+}
+
+// Close stops refresh requests and releases waiters. Already acquired references
+// may still be completed safely; no in-flight consumer request is interrupted.
+func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	if !m.closed {
+		m.closed = true
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.signalLocked()
+	}
+	m.mu.Unlock()
+	m.refreshWG.Wait()
 }

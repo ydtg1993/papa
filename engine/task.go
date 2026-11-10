@@ -15,18 +15,19 @@ import (
 
 type Task struct {
 	// Flow identity is assigned only by SubmitFlowTask and restored from storage.
-	FlowID     string
-	FlowLane   string
-	FlowBranch uint
-	FlowPath   string
-	ID         int    `json:"id"`  // 数据库记录 ID
-	PID        int    `json:"pid"` // 父级任务ID
-	URL        string // 要打开的 URL
-	Retry      int
-	Repeat     int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮回灌不重复计数。
-	Stage      string // 阶段标识，如 "catalog", "detail", "video"
-	Site       string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
-	Repeatable bool
+	FlowID      string
+	FlowLane    string
+	FlowBranch  uint
+	FlowPath    string
+	ID          int    `json:"id"`  // 数据库记录 ID
+	PID         int    `json:"pid"` // 父级任务ID
+	URL         string // 要打开的 URL
+	Retry       int
+	Repeat      int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮回灌不重复计数。
+	Stage       string // 阶段标识，如 "catalog", "detail", "video"
+	Site        string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
+	AccountPool string // stable pool ownership, excluded from task deduplication
+	Repeatable  bool
 	// RepeatInterval 这条任务的周期轮询周期；0 = 用本站 RepeatQueue 的 Interval。
 	// **只在首次入库时播种**（见 toModel）：之后要改周期，用 `Engine.SetTaskRepeatInterval`
 	// 或后台的「设轮询周期」—— 免得每次启动重投入口任务时，代码里的值把运营改的盖掉。
@@ -75,6 +76,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		URL:            t.URL,
 		Stage:          t.Stage,
 		Site:           t.Site,
+		AccountPool:    t.AccountPool,
 		IdempotencyKey: t.IdempotencyKey,
 		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
@@ -133,6 +135,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		URL:            t.URL,
 		Stage:          t.Stage,
 		Site:           t.Site,
+		AccountPool:    t.AccountPool,
 		Retry:          t.Retry,
 		Repeat:         t.Repeat,
 		Repeatable:     t.Repeatable == models.RepeatableYes,

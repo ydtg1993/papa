@@ -26,7 +26,7 @@ func TestCheckFrameworkSchema(t *testing.T) {
 		if len(missingIndexes) != 0 {
 			t.Fatalf("索引都在时不该报缺索引，实得 %v", missingIndexes)
 		}
-		want := []string{"crawler_access_token", "crawler_config"}
+		want := []string{"crawler_access_token", "crawler_config", "crawler_account_pools", "crawler_account_management"}
 		if len(missing) != len(want) {
 			t.Fatalf("missing = %v, want %v（假库只回了一行）", missing, want)
 		}
@@ -48,8 +48,8 @@ func TestCheckFrameworkSchema(t *testing.T) {
 		if len(missingIndexes) != 0 {
 			t.Fatalf("表都不在时不该再报缺索引（已包含在缺表里），实得 %v", missingIndexes)
 		}
-		if len(missing) != 3 {
-			t.Fatalf("missing = %v, want 3 张框架表", missing)
+		if len(missing) != 5 {
+			t.Fatalf("missing = %v, want 5 张框架表", missing)
 		}
 	})
 

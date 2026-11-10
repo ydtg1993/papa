@@ -86,7 +86,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 core/                           零依赖叶子包：跨包流动的纯值 + 不依赖任何内部包的纯函数
                                 （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定、
                                 页面身份与任务幂等键 identity.go、站点地址回钉 siteurl.go）
-config/                          配置结构与校验（纯数据，不依赖任何内部包）
+config/                          配置结构与校验；runtime.go 引用公开治理/代理策略并保留显式 patch 语义
 engine/                          引擎：Task · Trace · Fetcher · Engine
   engine.go    结构体 + 生命周期 + 依赖注入 + 结果读写
   task.go      Task 结构与状态更新（Insert / UpdateStatus / IncrRetry / Unique）
@@ -106,6 +106,8 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   record.go    有界网络录制门面（仅摘要 trace）
   http.go      通用 HTTP/API、增量与浏览器响应捕获门面（只记录摘要 trace）
   account.go   显式账号管理器接线、认证 HTTP/HTML/浏览器和无凭据状态快照
+  account_pool.go  池任务归属引用保护、认领前账号准备和显式池请求门面
+  governance.go  Go/YAML/OA 优先级、已注册站点/物理容量校验、任务 context 与执行放行
   repeat_submission_test.go   公共提交入口独立对象并发，同一 pending 轮次保持计数
   repeat_submission_mysql_test.go 专用 MySQL 库：并发、首次初始化、恢复、限额、提交结果不确定
   stage_runversion_test.go     普通 worker 认领版本传递、重试固定和旧轮次终态拒绝
@@ -133,6 +135,7 @@ admin/                          ★后台模块：**对外公开**，业务项�
     sanitize.go / status.go  有界脱敏、鉴权状态探测（未迁移/不可用/可查询）
     tables_test.go / mysql_test.go  HTTP/SQL/并发回归与显式只读 MySQL 验证
   configstore/  运行期配置存储（crawler_config 表）+ 读缓存层（内存 / TTL 装饰器）
+    versioned.go  runtime_policy 的 LoadVersioned/SaveCAS；旧 Save 拒绝写受保护键
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ msgqueue/ track/ breaker/
@@ -141,6 +144,9 @@ internal/                       真正的内部件：不对外承诺 API，**模
     rod_diagnostics_view.go / rod_diagnostics.js  系统管理诊断页与嵌入脚本
     rod_diagnostics_test.go    启动失败、目录清理与脱敏回归
     data_tables.go / data_tables_test.go  只接入可操作任务，Trace 走行内弹窗；保留 task API 和动作保护
+    runtime_policy.go / runtime_control.js  持久策略加载发布、远端等待确认和采集控制页
+    account_pools_api.go / account_pools.js  池/成员 CAS 动作、账号池页面与显式复验
+    proxy_health_api.go  代理管理 CAS、注册站点的有界 HEAD 探测与脱敏审计
 pkg/                             可独立复用的件
   events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
   browser/                       池与页面生命周期（pool.go / rod.go）、网络请求捕获（capture.go）、
@@ -150,12 +156,20 @@ pkg/                             可独立复用的件
   browser/state_navigation.go    首次导航前 Cookie/LocalStorage 恢复与 origin 检查
   browser/isolation.go           回调式独立 Chromium 上下文、取消与异常清理
   browser/response.go            按响应匹配并等待正文；session.go 提供浏览器 Cookie 到 HTTP 会话的显式桥接
+  browser/governance.go          借用资源许可、当前 page target 范围的请求拦截与延迟反馈
+  browser/stats.go               真实实例生命周期统计，区分存活/借用/预约/空闲；不把未创建槽计入存活
   htmlfetch/                     client.go HTML；request.go 通用请求；json.go 严格 JSON/内嵌 JSON；session.go 独立 CookieJar；session_guard.go 每账号检查/刷新并发协调；sample.go 显式脱敏样本与离线响应
   discovery/                    links.go URL/HTML；xml.go 订阅源；robots.go 规则；pagination.go 分页停止
   extract/validate.go            JSON 字段与批次唯一性校验
   htmlfetch/incremental.go       条件 GET、304 与内容指纹
   htmlfetch/session_state.go     完整 Cookie 属性追踪、版本化快照与受限恢复
   account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
+  account/pool_types.go / pools.go  站点内黏性账号池、独立调度、有界验证与迟到结果隔离
+  account/pool_store.go           管理状态/池状态 GORM CAS 存储；不自动迁移、不保存凭据
+  account/pool_request.go / pool_capture.go  尝试身份固定的 HTTP/HTML/浏览器/捕获入口
+  governance/                    config.go / patch.go 策略；controller.go 请求与许可；resources.go / sampler.go 采样与预算；transport.go HTTP计量
+  middleware/proxy/health.go / transport.go  引用反馈、冷却/探测/固定出口、CAS和每交换健康包装
+  egress/proxy_failure.go         代理本身拨号/认证失败的安全分类，目标错误不混入
   loggers/ notify/ middleware/{proxy,m3u8,filedown}
   redact/                       诊断副本 URL/Text/JSON 已知凭据遮盖（不改请求、任务身份与恢复数据）
   middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
@@ -218,7 +232,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 
 ### 已按站点切
 
-可选 `pkg/account.Manager` 进一步按站点＋账号管理登录态、请求预算和暂停。它通过显式 Engine 账号入口接入，不改变站点队列暂停规则，也不向框架任务表增加凭据列。详见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。
+`pkg/account.Manager` 按站点＋账号管理登录态及账号许可；`account.Pools` 按站点＋池名保存当前账号与补偿状态。`pkg/governance` 的请求预算按站点跨阶段/账号共享，资源许可按进程全局分配。任务表仅增加池归属，不保存凭据；已有任务的去重身份不含账号/池。详见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)、[RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |
@@ -231,6 +245,8 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | 统计 | 站点快照（**内存是源**：启动读 `crawler_config` 的 `sites` 键（没有就按声明生成）、按声明对齐；`StartPaused` 也在这**一次**写里落成暂停态，手动暂停/恢复整块回写） | `engine/sitestat.go`、`admin/configstore/sites.go` |
 | 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
 | 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
+| 治理 | 同站请求并发/速率/AutoThrottle、阶段有效执行并发、站点服务权重 | `pkg/governance`、`engine/governance.go` |
+| 身份 | 站点内命名池保持当前账号；账号管理状态由同站多池共享；task.account_pool 保留补偿归属 | `pkg/account/pools.go`、`engine/account_pool.go` |
 
 ### 全局，且**有意**如此（别想着分站）
 
@@ -238,8 +254,8 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
   `server.*`（HTTP 服务/白名单/采样间隔）、`db.*`、`log.*` —— 一个进程只有一份。
 - **客户端级**：`html.*` / `browser.*`（超时、体积上限、空闲回收、全局 headers）。站点要自己的头就用
   `SiteSpec.Headers`（同键覆盖全局那层）；单次请求还能 `papa.WithHeaders`。
-- **代理出口**：框架只提供 `engine.NextProxy()` 这个"随用随取"，**不替业务决定**用哪个 ——
-  按站点分流出口是业务自己的事（`papa.WithProxyURL`）。
+- **代理出口**：管理器全局持有 provider 列表与有界健康记录；业务仍决定显式出口/固定账号绑定，健康管理不跨账号换代理。新入口使用 Acquire/AcquireURL 与实际结果反馈，开启后耗尽报错。按站点分流仍由业务配置。
+- **资源预算**：CPU/内存采样和任务/浏览器借用总许可属于单进程；站点权重分配就绪工作的服务机会，不增加物理容量。
 - **操作日志/访问令牌**：与站点无关（前者记的是后台动作，后者是后台的凭据）。
 
 ### 按站点切的进度：三队列已**并回全局**；`crawler` 那四项**有意**保持全局
@@ -371,6 +387,10 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 历史表盘点：`pkg/strategymigrate/inspect.go`只读事务盘点表存在性及行数，`cmd/papa/strategy_migrate.go`提供inspect命令及64KiB业务manifest。未实现任何写模式，报告migration_ready=false。`inspect_test.go`检查只读事务、缺表非零行、错误不能冒充完成、表名/清单校验；CLI测试检查拒绝写命令和输出不覆盖。详见STRATEGY_MIGRATION.md。
 
 ## 后台资源与移除功能的回归
+
+运行治理回归：`go test ./pkg/account ./pkg/governance ./pkg/middleware/proxy ./admin/configstore ./engine ./internal/app`；并发路径运行相同包的 `go test -race`（Windows 需 `CGO_ENABLED=1` 和 C 编译器）。`pkg/governance` 使用可注入时钟/采样器验证速率、远端期限、滞回和单许可公平性；代理/账号失败使用本地合成服务，不访问业务站点。
+
+真实浏览器用例读取 `PAPA_EGRESS_BROWSER_BIN`；包含页面导航、XHR、子资源、重定向、第三方排除以及 OA 草稿/冲突交互，未配置时明确跳过。覆盖只针对当前受管 page target 与显式 origin，不把 popup/worker/raw Rod 页面算作已经验证。MySQL CAS 回归 `TestRuntimePolicyMySQLConcurrentCAS` 用 `PAPA_RUNTIME_TEST_CONFIG` 指向连接配置，独占创建测试库并清理；普通假库测试不能替代它。脚手架 `TestScaffoldBuildsAndUpgradePreservesAppDocs` 实际 new → tidy → build，并检查升级保留应用文档。
 
 后台只注册现有通用能力。`admin/server/ui_behavior_test.go` 的 `TestMonitorTemplateLocalAssetsExist` 检查模板引用的本地资源确实嵌入；`TestOperationsJavaScriptBehavior` 执行 Node 行为测试，覆盖导航、身份切换、草稿保护、队列及工作台。`navigation_test.js` 检查当前内置模块和对应页面，`taskflow.go` / `taskflow.js` 保留动态任务流入口。
 

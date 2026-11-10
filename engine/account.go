@@ -31,6 +31,7 @@ func (e *Engine) AccountStatus() []account.Status {
 	return m.Status()
 }
 func (e *Engine) FetchAccountHTTP(ctx context.Context, key account.Key, req htmlfetch.Request) (*htmlfetch.Response, error) {
+	ctx = e.RuntimeContext(ctx, key.Site)
 	m := e.GetAccountManager()
 	if m == nil {
 		return nil, errors.New("account manager is not configured")
@@ -51,6 +52,7 @@ func (e *Engine) FetchAccountHTTP(ctx context.Context, key account.Key, req html
 
 // FetchAccountHTML does not register credential-bearing HTML in the raw archive.
 func (e *Engine) FetchAccountHTML(ctx context.Context, key account.Key, rawURL string) (*htmlfetch.Page, error) {
+	ctx = e.RuntimeContext(ctx, key.Site)
 	m := e.GetAccountManager()
 	if m == nil {
 		return nil, errors.New("account manager is not configured")
@@ -58,6 +60,7 @@ func (e *Engine) FetchAccountHTML(ctx context.Context, key account.Key, rawURL s
 	return m.FetchHTML(ctx, key, rawURL)
 }
 func (e *Engine) WithAccountBrowser(ctx context.Context, key account.Key, fn func(*rod.Page) error) error {
+	ctx = e.RuntimeContext(ctx, key.Site)
 	m := e.GetAccountManager()
 	if m == nil {
 		return errors.New("account manager is not configured")

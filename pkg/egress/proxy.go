@@ -27,6 +27,27 @@ type Proxy struct {
 	policy   *Policy
 	upstream *url.URL
 	client   *http.Client
+	observer func(context.Context) (func(int, error), error)
+}
+
+// SetProxyObserver installs optional upstream health admission/feedback. The
+// observer must acquire the already fixed upstream, never rotate it. CONNECT
+// success reports proxy tunnel establishment; encrypted target HTTP statuses are
+// not observable here. Ordinary HTTP reports after its response body finishes.
+func (p *Proxy) SetProxyObserver(observer func(context.Context) (func(int, error), error)) {
+	p.mu.Lock()
+	p.observer = observer
+	p.mu.Unlock()
+}
+
+func (p *Proxy) observeProxy(ctx context.Context) (func(int, error), error) {
+	p.mu.Lock()
+	observer := p.observer
+	p.mu.Unlock()
+	if observer == nil || p.upstream == nil {
+		return func(int, error) {}, nil
+	}
+	return observer(ctx)
 }
 
 func NewProxy(cfg Config, upstream string) (*Proxy, error) {
@@ -83,12 +104,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req := r.Clone(r.Context())
 	req.RequestURI = ""
 	stripHop(req.Header)
+	finish, err := p.observeProxy(r.Context())
+	if err != nil {
+		panic(http.ErrAbortHandler)
+	}
+	status := 0
+	defer func() { finish(status, err) }()
 	resp, err := p.client.Do(req)
 	if err != nil {
 		// Do not fabricate a document that a crawler could store as source evidence.
 		panic(http.ErrAbortHandler)
 	}
 	defer resp.Body.Close()
+	status = resp.StatusCode
 	stripHop(resp.Header)
 	for k, vs := range resp.Header {
 		for _, v := range vs {
@@ -96,7 +124,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, err = io.Copy(w, resp.Body)
 }
 func stripHop(h http.Header) {
 	for _, line := range h.Values("Connection") {
@@ -119,11 +147,18 @@ func (p *Proxy) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := net.JoinHostPort(ips[0].String(), portOf(u))
+	finish, err := p.observeProxy(r.Context())
+	if err != nil {
+		http.Error(w, "egress: proxy unavailable", http.StatusBadGateway)
+		return
+	}
 	upstream, err := p.dialTunnel(r.Context(), target)
 	if err != nil {
+		finish(0, err)
 		http.Error(w, "egress: destination unavailable", 502)
 		return
 	}
+	finish(http.StatusOK, nil)
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		upstream.Close()
@@ -172,7 +207,7 @@ func (p *Proxy) dialTunnel(ctx context.Context, target string) (net.Conn, error)
 		return d.DialContext(ctx, "tcp", target)
 	}
 	if p.upstream.Scheme == "socks5" || p.upstream.Scheme == "socks5h" {
-		proxy, err := socks.FromURL(p.upstream, d)
+		proxy, err := socks.FromURL(p.upstream, proxyDialer{base: d})
 		if err != nil {
 			return nil, ErrTransport
 		}
@@ -188,7 +223,7 @@ func (p *Proxy) dialTunnel(ctx context.Context, target string) (net.Conn, error)
 	}
 	c, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, err
+		return nil, proxyFailure(ctx, "transport", err)
 	}
 	success := false
 	defer func() {
@@ -205,12 +240,15 @@ func (p *Proxy) dialTunnel(ctx context.Context, target string) (net.Conn, error)
 		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(p.upstream.User.Username()+":"+pass)))
 	}
 	if err = req.Write(c); err != nil {
-		return nil, err
+		return nil, proxyFailure(ctx, "transport", err)
 	}
 	reader := bufio.NewReader(c)
 	resp, err := http.ReadResponse(reader, req)
 	if err != nil {
-		return nil, err
+		return nil, proxyFailure(ctx, "transport", err)
+	}
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return nil, proxyFailure(ctx, "authentication", ErrDenied)
 	}
 	if resp.StatusCode != 200 {
 		return nil, ErrDenied

@@ -63,7 +63,7 @@ func TestParseSQLLogLevel(t *testing.T) {
 	}
 }
 
-// 框架自有表的清单：三张总是建，其它跟着开关走。
+// 框架自有表的清单：任务、配置、令牌及账号池管理表总是建，其它跟着开关走。
 // 这份清单同时喂给 App.Migrate()（脚手架的 `make migrate`）和 CLI 的 `papa migrate` —— 它错了两边一起错。
 func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	names := func(cfg *config.Config) []string {
@@ -75,20 +75,20 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 	}
 
 	c := &config.Config{}
-	if got := names(c); !reflect.DeepEqual(got, []string{"crawler_tasks", "crawler_access_token", "crawler_config"}) {
+	if got := names(c); !reflect.DeepEqual(got, []string{"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_account_pools", "crawler_account_management"}) {
 		t.Fatalf("开关都关着时的清单 = %v", got)
 	}
 
 	c.Server.OperationLog = true
 	if got := names(c); !reflect.DeepEqual(got, []string{
-		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log",
+		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_account_pools", "crawler_account_management", "crawler_operation_log",
 	}) {
 		t.Fatalf("开审计后的清单 = %v", got)
 	}
 
 	c.Crawler.Trace.Enabled = true
 	if got := names(c); !reflect.DeepEqual(got, []string{
-		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_task_trace",
+		"crawler_tasks", "crawler_access_token", "crawler_config", "crawler_account_pools", "crawler_account_management", "crawler_operation_log", "crawler_task_trace",
 	}) {
 		t.Fatalf("两个开关都开后的清单 = %v", got)
 	}

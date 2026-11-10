@@ -1,6 +1,6 @@
 # Papa 爬虫核心配置手册
 
-> 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填。**全部改完要重启**（没有热更）。
+> 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填。文件和 Go 声明改动需重启；运行治理可在 OA 保存后即时生效，见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 > 配套：本文是「配置字典」；各治理队列与后台行为见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)、[REPEAT_QUEUE.md](./REPEAT_QUEUE.md)、[MONITOR.md](./MONITOR.md)。框架已移除通用 cron 调度器。
 
 ---
@@ -9,7 +9,7 @@
 
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
-- **没有运行期热更**：改 `config.yaml` 或 Go 站点声明后需要重启。三个治理队列都是全局配置，不能按站点覆盖；站点声明可覆盖请求头、受限页关键词、熔断和下载器配置，阶段声明负责并发、队列、间隔、重试、入口和下载器覆盖。任务自己的 repeat 周期可以通过后台或 API 动态调整。
+- **文件与运行覆盖分开**：改 `config.yaml` 或 Go 站点声明后需要重启；`runtime` 支持 OA 持久覆盖，保存后限制新工作并跨重启恢复。三个治理队列仍是全局启动配置，不能按站点覆盖；站点/阶段拓扑、物理 worker/队列容量和凭据来源不热改。任务自己的 repeat 周期仍可通过后台或 API 动态调整。
   老项目里的 `configs/runtime.yaml` 已经没人读写了，可以直接删。
 
 ## 1. 完整配置项参考
@@ -50,9 +50,9 @@
 
 ### crawler —— 爬虫核心
 
-> **阶段参数不在这个文件里**：`worker_count` / `queue_size` / `delay` / `retry` / 入口开关 /
-> 站点归属都在 `internal/sites/<站名>.go` 里一份写全（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）——
-> 一个阶段的存在本来就离不开代码（必须有个 fetcher），参数再放另一份文件等于加一个阶段要改两处。
+> **阶段结构和默认值在 Go 声明里**：`WorkerCount` / `QueueSize` / `Delay` / `Retry` / 入口开关 /
+> 站点归属写在 `internal/sites/<站名>.go`（各文件在 init 里自登记，`App.RegisterSites(papa.Sites()...)`）。
+> `runtime.sites.<site>.stages.<stage>` 仅覆盖已有阶段的有效并发、固定任务间隔和账号池，不能新增阶段或扩大物理容量。
 > 配置里留着的 `crawler.stages` 段会被"未知配置键"拦下（**故意的**，见下面的校验层说明）。
 
 | 键 | 类型 | 默认 | 说明 |
@@ -118,12 +118,63 @@
 | `api_url` | string | 代理服务 API 地址 |
 | `refresh_interval` | duration | 代理列表刷新间隔 |
 
-> 这一节配的是**代理池**（`api_url` 拉列表 + 定时刷新）。**用不用、用哪一个**由 fetcher 决定：
-> `engine.NextProxy()` 取一个，`papa.WithProxyURL(ctx, addr)` 传给一次静态抓取，
+> 这一节配的是**代理池**（`api_url` 拉列表 + 定时刷新）。健康策略另见 `runtime.proxy_health`。
+> 自行选择时使用 `engine.GetProxy().NextChecked(ctx)` 并处理耗尽错误；`Next()` / `NextProxy()` 仅保留旧字符串兼容。
+> `papa.WithProxyURL(ctx, addr)` 传给一次静态抓取，
 > `filedown.DownloadOptions{Proxy: addr}` / `m3u8.DownloadOptions{Proxy: addr}` 传给一次下载。
 > 若这次下载就该跟着任务的抓取出口走，用 `filedown.OptionsFromRequest(ctx, referer)` /
 > `m3u8.OptionsFromRequest(ctx, referer)` 一步拿到（它会把 ctx 上的显式代理与站点级/逐请求头一起填好）。
-> 浏览器渲染那条**不支持**逐请求地址（Chrome 限制），只有"走池 / 直连"两档。
+> 浏览器渲染**不支持**逐请求改代理地址（Chrome 限制）；出口在实例创建时固定，账号专用池也不在途换出口。
+
+### runtime —— 运行治理（默认关闭）
+
+优先级：框架默认 → Go 声明 → YAML 显式字段 → OA 持久覆盖。`defaults` 是站点默认策略；`sites.<已注册站点键>` 支持同样字段，站点内字段覆盖同来源默认值。仅提供的字段参与合并，`false` / `0` / 空池名均有明确覆盖意义；省略或在 OA 清除覆盖才表示继承。
+
+下面的请求键位于 `runtime.defaults.request` 或 `runtime.sites.<site>.request`：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 开启该站请求硬限制与远端冷却；跨阶段、跨账号共用 |
+| `max_inflight` | `0` | 同站实际请求在途上限；0 不设此上限，非负 |
+| `requests_per_second` / `burst` | `0` / `1` | 速率 0 不限；正速率要求 burst ≥ 1 |
+| `manual_delay` | `"0s"` | 手动请求间隔；与阶段任务间隔独立 |
+| `retry_after_default` / `retry_after_max` | `"30s"` / `"1h"` | 429 缺少有效头时的冷却、最大自动等待预算；超过预算需确认，但不截短服务端期限 |
+| `autothrottle.enabled` | `false` | 自适应延迟；关闭后仍遵守已启用的硬限制 |
+| `autothrottle.min_delay` / `max_delay` | `"100ms"` / `"30s"` | 自动间隔范围，最大值不得小于最小值 |
+| `autothrottle.target_concurrency` / `smoothing` | `1` / `0.5` | 启用时目标并发 > 0，平滑系数在 (0,1] |
+
+站点级其他键位于 `runtime.defaults` 或 `runtime.sites.<site>`：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `weight` / `min_weight` | `1` / `1` | 0..10000；资源可用时分配服务机会，不承诺故障或紧急内存保护时强制保留名额 |
+| `pool` | 空 | 新任务默认账号池名；空不选池，已有任务保存的归属不被重写 |
+| `stages.<stage>.max_concurrent` | Go `WorkerCount` | 已注册阶段的有效执行并发，不超过物理 worker 数；0 表示沿用物理上限 |
+| `stages.<stage>.delay` | Go `Delay` | 显式覆盖为固定时长；清除覆盖恢复声明的固定/随机范围 |
+| `stages.<stage>.pool` | 继承站点池 | 非空阶段池优先；空阶段值仍使用站点池 |
+
+全局资源键位于 `runtime.resources`：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` / `sample_interval` | `false` / `"2s"` | 独立于后台页面的采样与放行控制 |
+| `cpu_high` / `cpu_recover` / `high_windows` | `85` / `65` / `3` | CPU 百分比及连续高负载窗口；启用时高阈值大于恢复阈值 |
+| `memory_high` / `memory_recover` | `90` / `75` | 内存百分比滞回阈值 |
+| `minimum_available_bytes` | `0` | 最低可用内存字节数；0 不加此项门槛 |
+| `task_max` / `browser_max` | `32` / `4` | 任务执行、浏览器借用的全局许可上限；启用时均 > 0，物理容量仍是上限 |
+| `shrink_factor` | `0.5` | 降额后保留比例；启用时在 (0,1) |
+| `recovery_step` / `recovery_interval` | `1` / `"30s"` | 每次恢复许可数和最小恢复间隔；采样无效时不自动上调 |
+
+代理健康键位于 `runtime.proxy_health`，不放在 `proxy.api_url` 同级字段中：
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `enabled` | `false` | 开启代理反馈、冷却及检查式选择；耗尽不回退直连 |
+| `failure_threshold` | `3` | 已确认代理自身故障的连续失败阈值 |
+| `initial_cooldown` / `max_cooldown` | `"30s"` / `"10m"` | 失败探测指数退避；正数、顺序合法，最大不超过 24h |
+| `max_probes` / `recovery_successes` | `1` / `2` | 全管理器同时探测数、恢复所需成功数；计数项范围 1..10000 |
+
+YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略持久化到 `crawler_config.runtime_policy`，revision 以表列为权威；读取失败不回退更宽松默认。只读页面不触发账号验证或代理探测。流程、请求覆盖与浏览器边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 
 ### db —— 数据库
 
@@ -366,9 +417,11 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 不再带任何"给旧库补课"的显式迁移（删旧索引、改列类型、回填、删死列那些都删掉了）。
 从更早版本升级时，应核对已有 schema 和数据。`AutoMigrate` 仍可能调整其支持的类型或约束，但不会执行上述历史专项修复，也不会代替业务的数据迁移脚本。
 
-框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config`、`crawler_account_pools`、`crawler_account_management` 总是建；
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
+
+运行治理升级还会补 `crawler_config.revision` 与 `crawler_tasks.account_pool`。账号池表保存成员、当前选择和有界切换记录；管理表保存停用、隔离、冷却及待处理失效状态，不保存 Cookie/Token。普通启动只检查结构并加载状态，不自动加表/列；即使默认未启用控制器，也应完成本次显式迁移。
 
 **业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是 `internal/models`
 包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。
@@ -379,7 +432,8 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 ## 3. 时长格式
 
 - 标准 Go 时长字符串：`"500ms"` / `"5s"` / `"10m"` / `"6h"`。
-- 阶段 `delay` 额外支持区间：`"10s-30s"` 表示在该区间内随机取一个间隔（反爬更隐蔽）。
+- Go `StageSpec.Delay` 额外支持区间：`"10s-30s"` 表示在该区间内随机取间隔；`runtime` 的阶段 `delay` 覆盖值只接受单一固定时长。OA 展示 Go 声明范围，清除覆盖恢复该范围。
+- HTTP JSON 中的 duration 是整数纳秒，`"5s"` 只用于 YAML/Go 声明字符串；OA 表单按秒换算。
 
 ### 阶段轮询次数上限
 

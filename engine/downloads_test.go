@@ -5,6 +5,7 @@ import (
 
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 )
 
 // 下载器覆盖层的解析：**阶段 > 站点 > 基座（框架默认那份）**；没任何覆盖的阶段直接用基座。
@@ -13,6 +14,9 @@ import (
 // —— 共享那半边由 m3u8/filedown 包自己的测试钉住，这里钉的是"取到哪一份"）。
 func TestDownloadOverlayResolution(t *testing.T) {
 	e := stageDepEngine(t)
+	manager := proxy.NewManager("", 0)
+	t.Cleanup(manager.Close)
+	e.SetProxy(manager)
 	e.InitDownloaders() // 框架在 Run 里做的同一件事
 	base := e.GetM3U8()
 	if base == nil {
@@ -56,6 +60,9 @@ func TestDownloadOverlayResolution(t *testing.T) {
 
 	// 阶段 a2：阶段层再叠一层 → 站点层与阶段层同时生效（阶段赢）
 	a2 := e.M3U8ForStage("a", "a2")
+	if base.Config().ProxyManager != manager || a1.Config().ProxyManager != manager || a2.Config().ProxyManager != manager || e.FiledownForStage("a", "a1").Config().ProxyManager != manager {
+		t.Fatal("download base or overlay lost shared proxy health manager")
+	}
 	if got := a2.Config().MaxConcurrent; got != stageConcurrent {
 		t.Fatalf("阶段层的 MaxConcurrent 没生效：%d", got)
 	}

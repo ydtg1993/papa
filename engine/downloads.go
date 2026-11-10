@@ -117,6 +117,7 @@ func mergeFileDown(site, stage *filedown.Overlay) filedown.Overlay {
 func (e *Engine) InitDownloaders() {
 	if e.filedown == nil {
 		cfg := filedown.DefaultConfig()
+		cfg.ProxyManager = e.proxy
 		if e.cfg != nil {
 			cfg.Network = e.cfg.Network
 		}
@@ -124,6 +125,7 @@ func (e *Engine) InitDownloaders() {
 	}
 	if e.m3u8 == nil {
 		cfg := m3u8.DefaultConfig()
+		cfg.ProxyManager = e.proxy
 		if e.cfg != nil {
 			cfg.Network = e.cfg.Network
 		}

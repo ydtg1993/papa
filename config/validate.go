@@ -43,6 +43,9 @@ func Validate(c *Config, unused []string) {
 	// 先补默认值再跑规则：规则里的"没写"这一态（三态里的第一态）已经在这里归一成
 	// 生效值，规则只需判"写了什么" —— 于是"没写"和"写了零值"两条路走同一个结果。
 	applyDefaults(c)
+	if err := c.Runtime.Validate(); err != nil {
+		panic(fmt.Errorf("config: runtime: %w", err))
+	}
 	if err := c.Network.Validate(); err != nil {
 		panic(fmt.Errorf("config: network.private_origins: %w", err))
 	}

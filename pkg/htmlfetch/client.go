@@ -30,17 +30,20 @@ type proxyModeKey struct{}
 //
 // 要指定**具体哪个**出口，用 `core.WithProxyURL(ctx, addr)`（它比这个开关更具体，优先于它）。
 func WithProxy(ctx context.Context, use bool) context.Context {
-	return context.WithValue(ctx, proxyModeKey{}, use)
+	return proxy.WithPool(context.WithValue(ctx, proxyModeKey{}, use), use)
 }
 
 // proxyFunc 返回 http.Transport.Proxy 使用的函数，按请求上下文决定是否走代理
 func proxyFunc(manager *proxy.Manager) func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
+		if _, selected := proxy.SelectedURL(req.Context()); selected {
+			return proxy.RequestProxy(req)
+		}
 		// 显式指定的出口最优先（`core.WithProxyURL`）：比"用不用代理池"更具体
 		if addr := core.ProxyURLFrom(req.Context()); addr != "" {
 			proxyURL, err := url.Parse(addr)
 			if err != nil {
-				return nil, fmt.Errorf("parse proxy URL %q: %w", addr, err)
+				return nil, fmt.Errorf("parse proxy URL: invalid address")
 			}
 			return proxyURL, nil
 		}
@@ -50,7 +53,10 @@ func proxyFunc(manager *proxy.Manager) func(*http.Request) (*url.URL, error) {
 		if manager == nil {
 			return nil, nil
 		}
-		proxyAddress := manager.Next()
+		proxyAddress, selectErr := manager.NextChecked(req.Context())
+		if selectErr != nil {
+			return nil, selectErr
+		}
 		if proxyAddress == "" {
 			return nil, nil
 		}
@@ -131,8 +137,10 @@ func NewClient(cfg Config) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = proxyFunc(cfg.ProxyManager)
 
+	client := egress.Client(&http.Client{Transport: transport}, cfg.Network)
+	client.Transport = proxy.WrapTransport(client.Transport, cfg.ProxyManager)
 	return &Client{
-		httpClient: egress.Client(&http.Client{Transport: transport}, cfg.Network),
+		httpClient: client,
 		config:     cfg,
 	}
 }

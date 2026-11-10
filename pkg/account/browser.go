@@ -15,7 +15,17 @@ func useBrowser(ctx context.Context, cfg *BrowserConfig, state *browser.PageStat
 	if cfg.Direct {
 		use = cfg.Pool.WithDirectIsolatedBrowser
 	}
-	return use(ctx, func(b *browser.Browser) error { return b.WithStatePage(ctx, cfg.URL, state, cfg.Options, fn) })
+	err := use(ctx, func(b *browser.Browser) error {
+		err := b.WithStatePage(ctx, cfg.URL, state, cfg.Options, fn)
+		if failure := b.ProxyFailure(); failure != nil {
+			return &Failure{Code: "fixed-proxy-unavailable", Cause: errors.Join(ErrFixedProxyUnavailable, failure)}
+		}
+		return err
+	})
+	if cfg.Pool.FixedProxyFailure(err) {
+		return &Failure{Code: "fixed-proxy-unavailable", Cause: errors.Join(ErrFixedProxyUnavailable, err)}
+	}
+	return err
 }
 
 func browserOrigin(page *rod.Page, rawURL string) error {
@@ -146,6 +156,12 @@ func (e *entry) enterBrowser(ctx context.Context) error {
 // gets one clean login. The business callback is never replayed. State is saved
 // only after callback success. HTTP credentials are not silently overwritten.
 func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) error) (err error) {
+	if a, ok := AttemptFromContext(ctx); ok {
+		if a.Account != key {
+			return ErrAttemptChanged
+		}
+		return m.WithPoolBrowser(ctx, a.Pool, fn)
+	}
 	if core.ProxyURLFrom(ctx) != "" {
 		return errors.New("account browser requires a pool-bound proxy, not a request proxy")
 	}

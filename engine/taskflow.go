@@ -90,7 +90,7 @@ func (e *Engine) UpdateTaskFlow(ctx context.Context, id string, revision uint64,
 // owned by a different run/parent is an explicit conflict, never silently reused.
 // Repeated roots/children under the same parent are idempotent.
 func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, task *Task) error {
-	if task == nil || task.Repeatable || task.Delay != 0 || !task.NotBefore.IsZero() {
+	if task == nil || task.AccountPool != "" || task.Repeatable || task.Delay != 0 || !task.NotBefore.IsZero() {
 		return ErrFlowInvalid
 	}
 	if err := e.validateTask(task); err != nil {

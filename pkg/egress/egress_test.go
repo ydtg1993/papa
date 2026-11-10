@@ -62,7 +62,7 @@ func TestDNSMixedAnswerDeniesAndDialIsPinned(t *testing.T) {
 	origin := "http://fixture.test:" + port
 	c := Client(nil, Config{PrivateOrigins: []string{origin}})
 	defer c.CloseIdleConnections()
-	tr := c.Transport.(*transport)
+	tr := unwrapTestTransport(t, c.Transport)
 	var queries atomic.Int32
 	tr.policy.lookup = func(context.Context, string, string) ([]netip.Addr, error) {
 		queries.Add(1)
@@ -78,7 +78,7 @@ func TestDNSMixedAnswerDeniesAndDialIsPinned(t *testing.T) {
 		t.Fatalf("not pinned: dns=%d hits=%d host=%s", queries.Load(), hits.Load(), body)
 	}
 	denied := Client(nil, Config{})
-	tr = denied.Transport.(*transport)
+	tr = unwrapTestTransport(t, denied.Transport)
 	tr.policy.lookup = func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("127.0.0.1")}, nil
 	}
@@ -189,7 +189,7 @@ func TestUpstreamProxyReceivesPinnedIPAndOriginalHost(t *testing.T) {
 	pu, _ := url.Parse(proxy.URL)
 	origin := "http://fixture.test:" + dest.Port()
 	c := Client(&http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}, Config{PrivateOrigins: []string{origin}})
-	c.Transport.(*transport).policy.lookup = func(context.Context, string, string) ([]netip.Addr, error) {
+	unwrapTestTransport(t, c.Transport).policy.lookup = func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 	}
 	resp, err := c.Get(origin + "/path")

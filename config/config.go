@@ -14,6 +14,7 @@ type TaskFlowConfig struct {
 }
 
 type Config struct {
+	Runtime  RuntimeConfig  `mapstructure:"runtime"`
 	Network  egress.Config  `mapstructure:"network"`
 	TaskFlow TaskFlowConfig `mapstructure:"task_flow"`
 	App      AppConfig      `mapstructure:"app"`

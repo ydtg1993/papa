@@ -69,6 +69,7 @@ type Task struct {
     URL            string            // 当前任务要处理的 URL
     Retry          int
     Stage          string
+    AccountPool    string            // 所属站点内账号池；持久化，去重键不包含它
     Repeatable     bool
     Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
     IdempotencyKey string            // 自定义幂等键，规范格式 site:stage:<标识>；空则回退 site:stage:url
@@ -86,6 +87,7 @@ type Task struct {
 - `IdempotencyKey` 自定义去重键，**规范格式 `site:stage:<标识>`**（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），空值回退成同样形状的 `site:stage:url`。三段缺一不可：少了 `site`/`stage`，两个站的同名阶段会撞成同一条任务（B 站被判"已存在"、静默不跑）。
   唯一性由**数据库**兜底：唯一索引建在 `idempotency_hash`（键原文的 sha256）上，同一个自定义键在库里只会有一行，并发也插不进第二行；没自定义键的行该列落 NULL（不是空串）。键原文上限 1000 字符，第三段用规范化后的短 URL。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
+- `AccountPool` 非空时使用同站命名池；空值在首次提交时按阶段/站点运行策略解析。既有任务保持已保存归属，重复提交指定其他池返回冲突。账号失效使本次尝试结束并等待以后补偿，不能在 handler 内自行换号重放。见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md) §7。
 - `Repeat` 只读轮次计数：首次可轮询投递初始化为 1，轮询队列开启下一轮时递增；重复提交、回灌和启动恢复不新增轮次。handler 读取的是认领后校准的数据库轮次，不是成功次数或提交 API 调用次数；错误重投/后台重试保持原轮次。禁止用赋值方式重置数据库计数。
 - `StageSpec.RepeatLimit` 可对某站某阶段设置轮询上限，例如 detail 设 30、catalog 保持 0（不限）。`repeat >= 30` 后仅 repeat_queue 停止重投，恢复/错误队列和后台单条重投仍可用。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
 - `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 用全局 `repeat_queue.interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
@@ -155,8 +157,16 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.GetStageStats()` | 各阶段的统计快照（监控页读的就是它） |
 | `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
+| `engine.RuntimeContext(ctx, site)` | 任务外显式绑定站点请求/资源预算；任务内沿用收到的 ctx |
+| `engine.FetchPoolHTTP` / `FetchPoolHTML` / `WithPoolBrowser` | 使用同站命名池的当前账号；失效结束本次尝试，由独立调度器补偿 |
 
 直接使用低层 `Engine.AddStage(stage, cfg, fetcher, sub)` 时须检查返回的 `error`：`WorkerCount` 与 `QueueSize` 必须大于 0，非法阶段不会登记。站点声明层会传播错误并沿用启动失败的 panic 契约。普通调用语句仍可编译；若将方法绑定到旧的无返回值函数类型，或用旧无返回值方法声明接口，升级时需调整签名。无表结构迁移。
+
+**运行治理与账号身份**：任务启用池归属后，`FetchHTTP` / `FetchHTML` / `FetchIncremental`、标准 Render 与 Capture 入口绑定当前尝试账号。增量缓存按账号隔离，不能把旧账号的条件请求表示交给新账号复用。不要另取底层匿名客户端绕过绑定；受管请求必须继续传递原 ctx。filedown/M3U8 的请求预算通过 ctx 继承，但下载选项中的 Cookie/Headers/固定代理仍须按既有 API 显式传入，不自动导出账号凭据。
+
+浏览器预算针对当前受管 page target：第一篇主文档同源及 `PageOptions.GovernanceOrigins`，含该范围导航/XHR/子资源；不覆盖新 popup、独立 worker、原始 Rod page 或业务覆盖 Fetch 拦截器后的请求。第三方 origin 不盲目计入目标站延迟。Get/GetDirect 及回调包装的浏览器借用均受资源许可约束，物理池容量不热改。详见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+
+使用代理管理器的低层 API 时，优先 `Acquire(ctx)` / `AcquireURL(ctx, fixedURL)`，完成后 `ReportHTTP(status, err)` 并 `defer Release()`；反馈与释放幂等。需要代理时必须处理 `ErrUnavailable`，不能将 `Next()` 的空串当直连理由。账号固定代理与已创建浏览器出口不能在途替换。
 
 ### 1.5 写结果到数据库
 
@@ -1129,6 +1139,8 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
+站点/阶段声明确定拓扑、物理 WorkerCount/QueueSize 和 Delay/Retry 默认值。`runtime` 文件显式字段与 OA 持久覆盖可以按站点共享请求预算、按阶段限制有效执行并发与固定间隔，并选择账号池；优先级与完整配置见 [CORE_CONFIG.md](CORE_CONFIG.md)。跨阶段/账号不会绕过同站硬限制，资源预算仍按单实例全局计算。
+
 登录账号按 `account.Key{Site, ID}` 进一步划分；任务只在既有 Meta 中保存账号标识，Fetcher 显式选择账号入口。账号暂停不会自动暂停站点队列，两者是不同作用域，见 [账号手册](./ACCOUNT_RUNTIME.md)。
 
 一站一个文件放进 `internal/sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
@@ -1162,7 +1174,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
 要注意的：
 
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
-  改完要重启，没有热更）。没写哪段 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
+  文件改完要重启）。`runtime` 的站点请求、有效执行并发和账号池默认值另有 OA 持久覆盖。没写哪段队列配置 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
 - **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与原始 HTML 归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `internal/sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
@@ -1194,22 +1206,23 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
 框架本来就不解析它 —— 站点声明里放一份，等于让框架背一个自己用不到的字段，而它还得和 handler 反推 key 的那张表
 保持一致（两处，漂了不报错）。
 
-**代理：出口由 fetcher 随用随取**，框架不替业务决定 —— 与 `GetFiledown()` / `GetM3U8()` 那套"按需取"一致：
+**显式代理：检查选择错误，再传给请求**。已开启健康的池耗尽时不能将空串当直连；框架 HTML/下载器会对实际出口继续反馈健康：
 
 ```go
-// 取一个（配了 proxy.api_url 就是那个池子；没配/池子空 → 返回空串）
-if addr := engine.NextProxy(); addr != "" {
-    page, err = engine.FetchHTML(papa.WithProxyURL(ctx, addr), url)   // 静态：显式出口
-}
+addr, err := engine.GetProxy().NextChecked(ctx)
+if err != nil { return err }
+if addr == "" { return fmt.Errorf("本任务要求代理，但没有配置可用出口") }
+page, err := engine.FetchHTML(papa.WithProxyURL(ctx, addr), url)
+if err != nil { return err }
 res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.DownloadOptions{
-    Proxy: engine.NextProxy(),   // 下载器：逐次下载指定出口（同一地址复用客户端）
+    Proxy: addr,                // 本次下载明确使用同一出口
 })
 ```
 
 `core.WithProxyURL` 比 `htmlfetch.WithProxy(ctx, use)`（走池/直连）更具体，优先于它。
 **浏览器路径不支持逐请求代理地址** —— 代理是浏览器实例级设置（启动参数），Chrome 不提供逐请求改路由，
 所以传了会**明确报错**（而不是静默直连、让人以为走了代理）；要按站换出口就用池上那套（proxied / direct 两类实例）
-或一站一进程。
+或为账号配置固定出口的专用浏览器池。
 
 2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail", Site: task.Site})` 派发子任务（见 1.6）。
 

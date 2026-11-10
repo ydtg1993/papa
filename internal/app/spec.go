@@ -14,14 +14,15 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
-// 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `sites/<站名>.go`），
-// main.go 只要一行 `app.RegisterSites(configs.Sites()...)`。
+// 本文件是**阶段与站点声明**：各站一份文件（脚手架生成的 `internal/sites/<站名>.go`），
+// 应用组装调用 `app.RegisterSites(papa.Sites()...)`。
 //
-// 为什么参数不放 config.yaml：一个阶段的存在本来就离不开代码（必须有个 fetcher），
-// 参数再放另一份文件，等于加一个阶段要改两处、想看全貌要翻两个地方。现在一处写全 ——
-// 并发、队列、间隔、重试、要不要投入口、属于哪个站、熔断阈值。
+// Go 声明定义阶段结构、物理 worker/队列容量、间隔与重试默认值、入口和站点归属。
+// runtime 的文件显式字段与 OA 持久覆盖可调整有效执行并发、固定任务间隔和账号池；
+// 不能凭运行策略新增阶段、扩大物理容量或改变凭据来源。
 //
-// config.yaml 里**不再有 `crawler.stages` 段**：阶段的存在性与参数都以这份声明为准
+// config.yaml 里**没有 `crawler.stages` 段**：阶段存在性与物理容量以此声明为准；
+// 可覆盖项按框架默认 → Go 声明 → runtime YAML 显式字段 → OA 持久覆盖生效
 //（`crawler.breaker` 那份阈值是**每个站没单配时的默认值**，可被 SiteSpec.Breaker 按站点覆盖；
 // "默认 scope" 现在只剩存量数据 —— 旧行 `site` 为空，它们没有熔断计数器（除非显式
 // `SetSiteBreaker("")`）、也不会被暂停信号挡住：暂停只认**声明过的**站点）。
@@ -32,8 +33,8 @@ type SiteSpec struct {
 	// Key 站点键：**必填** —— 阶段键是 `site:stage`（阶段名只在本站内唯一），熔断 scope、
 	// 日志与监控维度、落库的 `crawler_tasks.site` 也都用它。没有 Key 的声明会在启动时报错。
 	Key string
-	// BaseURL 站点根地址。框架不拿它当限制，只是方便 handler 取用
-	//（`engine.Site(task.Site)` → BaseURL）。
+	// BaseURL 站点根地址，供 handler 取用，也作为 OA 显式代理探测的 HEAD 目标。
+	// 它不自动扩大网络或账号 origin 授权（`engine.Site(task.Site)` → BaseURL）。
 	BaseURL string
 	// Headers 本站的请求头（UA / Referer / Cookie / Accept-Language…）：这个站的任务抓任何页面
 	// 都自动带上（静态抓取与浏览器渲染都认），**同键覆盖** `html.headers` / `browser.headers`；
@@ -79,9 +80,10 @@ type StageSpec struct {
 	// Fetcher 阶段的实现。名字取自它自己的 `GetStage()`，不在这里写第二遍。
 	// 实现了 engine.EntrySubmitter（`SubmitEntries`）的阶段，声明里写了 `Entry: true` 时启动那一趟投一轮。
 	Fetcher     engine.Fetcher
-	WorkerCount int
+	WorkerCount int // 物理 worker 上限；运行策略只能调低/恢复有效执行并发。
 	QueueSize   int
-	// Delay 任务间隔："5m"（固定）或 "10s-30s"（随机区间）；空 = 不延迟。
+	// Delay 任务间隔默认值："5m"（固定）或 "10s-30s"（随机区间）；空 = 不延迟。
+	// runtime/OA 可覆盖为固定时长，清除覆盖后恢复本声明范围；与请求限速独立。
 	Delay string
 	Retry RetrySpec
 	// M3U8 / FileDown 本阶段的下载器覆盖层（nil = 不覆盖）：比站点那层更细，赢了就用它。

@@ -14,8 +14,8 @@
 | 一级入口 | 二级内容 |
 | --- | --- |
 | 采集任务流 | 业务自定义页（注册后显示）、运行调度策略（启用 `task_flow.enabled` 后显示） |
-| 运行监控与报告 | 运行概览、运行报告、运行日志、队列治理 |
-| 数据与资源 | 采集任务 `crawler_tasks` 的手动操作，行内「追踪」弹窗查看执行记录；业务自行注册专门页面 |
+| 运行监控与报告 | 运行概览、采集控制（站点请求 / 资源控制 / 代理健康）、运行报告、运行日志、队列治理 |
+| 数据与资源 | 采集任务 `crawler_tasks` 的手动操作、账号池；行内「追踪」弹窗查看执行记录，业务仍可注册专门页面 |
 | 系统管理 | 系统设置（包括业务注册的设置项）、访问令牌、浏览器诊断、操作日志（注册后显示） |
 
 跨分类的详情入口自动同步类别、二级选中项与标题；未保存页面仍可阻止离开。站点筛选只在支持站点范围的页面显示；运行报告/日志和系统管理不显示站点筛选；队列治理的阶段区支持筛选，后台治理区始终为全站范围。手机通过「菜单」展开四类，选中后收起，Esc 关闭并返回菜单按钮。这里的「采集任务流」是导航分类；其中的运行调度策略编辑页使用现有 TaskFlow API，见 [TASK_FLOW.md](TASK_FLOW.md)。
@@ -103,6 +103,30 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 > 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
 ## 2. 设置 API
+
+运行治理使用独立的版本化接口与“采集控制”页，不在系统设置中再维护一份同类编辑器。配置字段见 [CORE_CONFIG.md](CORE_CONFIG.md) 的 `runtime` 字典，完整流程见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+
+| 接口 | 读写与版本约定 |
+| --- | --- |
+| `GET /api/runtime-policy` | 读取 document、revision、文件/声明默认、当前生效值、声明物理容量/Delay 范围及运行快照；不启动采集或认证 |
+| `POST /api/runtime-policy` | `{revision, document: {schema_version: 1, overrides: {...}}}`；严格 JSON，最多 128 KiB；先校验、CAS 持久化再发布 |
+| `POST /api/runtime-remote` | `{site, revision}`；确认超出自动等待预算的远端限流，仍等待原服务端期限，不提前放行 |
+| `GET /api/account-pools` | 已注册账号的脱敏状态、池成员/当前选择、等待原因与有界切换记录；未注册 Manager 时返回 configured=false |
+| `POST /api/account-pools` | action=`save/delete/disable/verify`；最多 64 KiB，携带池 revision 或成员 management.version |
+| `GET /api/proxy-health` | 脱敏代理标识、状态、版本、冷却/最近结果、在途量与固定出口标志 |
+| `POST /api/proxy-health` | `{action, id, revision, site}`；action=`disable/enable/probe`，revision 取读数的 version；最多 4 KiB，probe 必须选择有 BaseURL 的已注册站点 |
+
+以上路由全部沿用有效令牌鉴权；开启 `server.operation_log` 时写动作进入操作日志。JSON 时长为整数纳秒（30 秒为 `30000000000`）；OA 输入框按秒转换，YAML 文件仍写 `"30s"`。
+
+“站点请求”页按站点展示实际请求速率/在途、间隔、远端冷却与等待原因，可调整请求限制、AutoThrottle、阶段有效并发/固定间隔与池默认值。实际请求统计按站点汇总，阶段统计仍是任务统计，不提供每阶段请求量分解。原 Go 随机 Delay 显示声明范围，未覆盖时不伪装为固定 0。
+
+“资源控制”始终为全局范围，显示采样来源/时间/有效性、任务执行与浏览器借用许可；存活实例不等于借用数。降额不取消在途任务，采样无效显示未知。浏览器请求仅覆盖当前受管 page target 的同源及显式 GovernanceOrigins，完整边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md) §2。
+
+“账号池”在“数据与资源”独立维护：save 创建/更新池配置及成员顺序，池启停修改 `config.disabled`；delete 提交 key 与池 revision；disable 提交 account、disabled 与成员管理版本；verify 提交 account 与成员管理版本。停用成员立即阻止新使用，重新验证成功才恢复候选，不自动抢回当前账号。删除受运行策略与可再次执行任务的引用保护。成员验证可能实际访问站点；只读刷新不会。
+
+“代理健康”启用动作只允许参与受限探测，不直接标健康。probe 使用既有代理向所选站点发一次 HEAD，受站点预算和 15 秒超时约束；失败不会回退直连或改写固定出口。展示的是最近反馈与管理动作审计，不是完整代理采集历史，也不把 fixed 标志解释为固定账号引用数量。
+
+保存遇到旧版本返回 409 并保留草稿；冲突核对只合并本次修改字段。轮询不覆盖输入，旧 revision 响应不覆盖新保存结果。提交超时显示结果待核对，读取服务端版本后再决定，不自动重试写入。清除覆盖仍递增 revision，重启恢复后台覆盖。任务实际账号与选择版本记录在开启的 Trace 中，不另建永久的任务身份历史。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |

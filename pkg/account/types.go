@@ -91,17 +91,21 @@ type BrowserConfig struct {
 }
 
 type Status struct {
-	Key              Key       `json:"key"`
-	Version          uint64    `json:"version"`
-	Paused           bool      `json:"paused"`
-	Authenticating   bool      `json:"authenticating"`
-	HTTPReady        bool      `json:"http_ready"`
-	BrowserReady     bool      `json:"browser_ready"`
-	LastCheck        time.Time `json:"last_check"`
-	LastLogin        time.Time `json:"last_login"`
-	LastBrowserCheck time.Time `json:"last_browser_check"`
-	RetryAt          time.Time `json:"retry_at"`
-	Failure          string    `json:"failure,omitempty"`
+	Key               Key       `json:"key"`
+	Version           uint64    `json:"version"`
+	Paused            bool      `json:"paused"`
+	Authenticating    bool      `json:"authenticating"`
+	HTTPReady         bool      `json:"http_ready"`
+	BrowserReady      bool      `json:"browser_ready"`
+	LastCheck         time.Time `json:"last_check"`
+	LastLogin         time.Time `json:"last_login"`
+	LastBrowserCheck  time.Time `json:"last_browser_check"`
+	RetryAt           time.Time `json:"retry_at"`
+	Failure           string    `json:"failure,omitempty"`
+	HTTPConfigured    bool      `json:"http_configured"`
+	BrowserConfigured bool      `json:"browser_configured"`
+	InUse             int       `json:"in_use"`
+	MaxConcurrent     int       `json:"max_concurrent"`
 }
 
 // Failure keeps the public message free of provider URLs/tokens while allowing
@@ -147,6 +151,7 @@ type Manager struct {
 	mu      sync.RWMutex
 	client  *htmlfetch.Client
 	entries map[Key]*entry
+	pools   *Pools
 }
 
 func NewManager(client *htmlfetch.Client) *Manager {

@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
@@ -158,6 +160,30 @@ func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.Pa
 // opts 里的 WaitSelector / WaitJS / WaitRequestIdle 由 NewPageWithOptions 应用；
 // 等待失败时会带回 browser.WaitError（含现场 HTML），这里负责归档与 trace。
 func (e *Engine) render(ctx context.Context, rawURL string, opts browser.PageOptions) (string, string, error) {
+	if a, ok := account.AttemptFromContext(ctx); ok {
+		m := e.GetAccountManager()
+		if m == nil {
+			return "", "", account.ErrPoolUnknown
+		}
+		var html, finalURL string
+		err := m.NavigatePoolPage(ctx, a.Pool, rawURL, mergeBrowserOptions(ctx, opts), func(page *rod.Page) error {
+			var err error
+			html, err = page.HTML()
+			if err != nil {
+				return err
+			}
+			info, err := page.Info()
+			if err == nil {
+				finalURL = info.URL
+			}
+			return err
+		})
+		if err != nil {
+			traceFromCtx(ctx).Fail("账号池浏览器渲染", errors.New("account pool render failed"), nil)
+		}
+		// Account pages can contain credentials; they never enter the raw archive.
+		return html, finalURL, err
+	}
 	if err := browserProxyError(ctx); err != nil {
 		return "", "", err
 	}
@@ -269,6 +295,9 @@ func (e *Engine) NextProxy() string {
 // 开了 `crawler.archive` 时，这里会**自动**把抓到的页面登记进本次尝试的归档缓冲
 // （handler 不用写任何代码，见 archive.go）——登记不写盘，落盘在本次尝试结束时按结局决定。
 func (e *Engine) FetchHTML(ctx context.Context, rawURL string) (*htmlfetch.Page, error) {
+	if a, ok := account.AttemptFromContext(ctx); ok {
+		return e.FetchPoolHTML(ctx, a.Pool, rawURL)
+	}
 	// 未启用时 SetHTMLClient 不建客户端（cfg.HTML.Enable=false），直接解引用就是 nil panic ——
 	// 给一句能照着改的错，别让业务去猜"为什么抓一下就崩"。
 	if e.htmlClient == nil {

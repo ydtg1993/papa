@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"crypto/tls"
+	"github.com/ydtg1993/papa/v4/pkg/governance"
 	"io"
 	"net"
 	"net/http"
@@ -34,6 +35,25 @@ func Client(c *http.Client, cfg Config) *http.Client {
 	if c != nil {
 		out = *c
 	}
+	// Rebuild supported wrappers around the new secured transport. Simply
+	// stripping them loses fixed-proxy selection and controller identity.
+	type wrapper interface {
+		BaseTransport() http.RoundTripper
+		WithBaseTransport(http.RoundTripper) http.RoundTripper
+	}
+	var wrappers []wrapper
+	for i := 0; i < 8; i++ {
+		wrapped, ok := out.Transport.(wrapper)
+		if !ok {
+			break
+		}
+		wrappers = append(wrappers, wrapped)
+		out.Transport = wrapped.BaseTransport()
+	}
+	if _, tooDeep := out.Transport.(wrapper); tooDeep {
+		out.Transport = deniedTransport{ErrTransport}
+		return &out
+	}
 	p, err := New(cfg)
 	if err != nil {
 		out.Transport = deniedTransport{err}
@@ -64,7 +84,11 @@ func Client(c *http.Client, cfg Config) *http.Client {
 		}
 		return dialIPs(ctx, network, port, r.ips)
 	}
-	out.Transport = tr
+	var secured http.RoundTripper = tr
+	for i := len(wrappers) - 1; i >= 0; i-- {
+		secured = wrappers[i].WithBaseTransport(secured)
+	}
+	out.Transport = governance.WrapTransport(secured)
 	return &out
 }
 func dialIPs(ctx context.Context, network, port string, ips []netip.Addr) (net.Conn, error) {

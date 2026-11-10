@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
@@ -28,6 +29,23 @@ const captureTraceStep = "捕获网络请求"
 // trace 与归档都从 ctx 取（runAttempt 用 withTrace / withArchive 挂上）——
 // 未开启时取出来的是 nil，方法照常干活、只少留痕。
 func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browser.CaptureOptions) (*browser.CapturedRequest, error) {
+	if a, ok := account.AttemptFromContext(ctx); ok {
+		m := e.GetAccountManager()
+		if m == nil {
+			return nil, account.ErrPoolUnknown
+		}
+		opts.Page = mergeBrowserOptions(ctx, opts.Page)
+		result, err := m.CapturePoolRequest(ctx, a.Pool, pageURL, opts)
+		if err != nil {
+			traceFromCtx(ctx).Fail(captureTraceStep, fmt.Errorf("account capture failed"), nil)
+			return nil, err
+		}
+		if result == nil || result.Request == nil {
+			return nil, fmt.Errorf("account capture returned no request")
+		}
+		traceFromCtx(ctx).Step(captureTraceStep, map[string]any{"method": result.Request.Method, "resource_type": string(result.Request.ResourceType)})
+		return result.Request, nil
+	}
 	if err := browserProxyError(ctx); err != nil {
 		return nil, err
 	}

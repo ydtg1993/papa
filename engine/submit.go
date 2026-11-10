@@ -8,8 +8,40 @@ import (
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
+	"github.com/ydtg1993/papa/v4/pkg/account"
 	"gorm.io/gorm"
 )
+
+var ErrTaskOwnershipConflict = errors.New("existing task belongs to another site, stage or account pool")
+
+func adoptTaskOwnership(task *Task, record *models.CrawlerTask) error {
+	if (record.Site != "" && record.Site != task.Site) || (record.Stage != "" && record.Stage != task.Stage) || (task.AccountPool != "" && task.AccountPool != record.AccountPool) {
+		return ErrTaskOwnershipConflict
+	}
+	task.AccountPool = record.AccountPool
+	return nil
+}
+
+func (e *Engine) protectTaskPoolReferences(tasks []*Task, insert func() error) error {
+	var keys []account.PoolKey
+	for _, task := range tasks {
+		if task.AccountPool != "" {
+			keys = append(keys, account.PoolKey{Site: task.Site, Name: task.AccountPool})
+		}
+	}
+	if len(keys) == 0 {
+		return insert()
+	}
+	m := e.GetAccountManager()
+	if m == nil || m.Pools() == nil {
+		return account.ErrPoolUnknown
+	}
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return m.Pools().ProtectReferences(ctx, keys, insert)
+}
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
 func (e *Engine) logSubmitError(task *Task, err error) error {
@@ -39,27 +71,40 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if err := e.validateTask(task); err != nil {
 		return e.logSubmitError(task, err)
 	}
+	if task.ID == 0 {
+		task.AccountPool = e.resolveTaskPool(task)
+	}
 
 	key := task.Unique()
 	var record models.CrawlerTask
 
 	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_site_stage_url_hash 兜底）
 	if e.dedupCache.Get(key) {
-		if !task.Repeatable {
+		if !task.Repeatable && task.AccountPool == "" {
 			return nil // 去重命中：视为成功，无需重复处理
 		}
 		// 已入库的轮询任务：查找记录防止重复录入
 		if err := e.findTaskRecord(task, &record); err != nil {
 			return e.logSubmitError(task, fmt.Errorf("load repeat task record: %w", err))
 		}
+		if err := adoptTaskOwnership(task, &record); err != nil {
+			return err
+		}
+		wasNew := task.ID == 0
 		task.ID = int(record.ID)
 		task.Repeat = record.Repeat
+		if !task.Repeatable && wasNew {
+			return nil
+		}
 		e.submitIfActive(task, record)
 		return nil
 	}
 
 	err := e.findTaskRecord(task, &record)
 	if err == nil {
+		if err := adoptTaskOwnership(task, &record); err != nil {
+			return err
+		}
 		// DB 命中：复用已有记录（重新加入内存缓存）
 		e.dedupCache.Add(key)
 		wasNew := task.ID == 0
@@ -77,10 +122,13 @@ func (e *Engine) SubmitTask(task *Task) error {
 	}
 
 	// 全新任务：提交到 pool 前先插入数据库
-	if ierr := task.Insert(e.db); ierr != nil {
+	if ierr := e.protectTaskPoolReferences([]*Task{task}, func() error { return task.Insert(e.db) }); ierr != nil {
 		// 并发下撞唯一索引：另一 goroutine 已入库并将入队，此处回填 ID 后跳过，避免重复入队
 		if rerr := e.findTaskRecordFallback(task, &record); rerr != nil {
 			return e.logSubmitError(task, fmt.Errorf("insert crawler task to db failed: %w", ierr))
+		}
+		if err := adoptTaskOwnership(task, &record); err != nil {
+			return err
 		}
 		e.dedupCache.Add(key)
 		task.ID = int(record.ID)
@@ -100,10 +148,10 @@ func (e *Engine) SubmitTask(task *Task) error {
 //   - 自定义幂等键 → `idempotency_hash`（唯一索引 idx_idempotency_hash；键原文 varchar(1000) 建不了索引）
 //   - 没有自定义键 → `url_hash + stage + site`（唯一索引 idx_site_stage_url_hash）
 //
-// 调用方需要 ID、Status 与 Repeat（入队前判终态、透传计数），只投影这三列：历史行的 error/meta 可能很宽，
+// 调用方需要 ID、Status、Repeat 与站点/阶段/池归属，只投影这些列：历史行的 error/meta 可能很宽，
 // 为了去重把整行读出来纯属浪费。
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return e.dedupScope(task).Select("id", "status", "repeat").First(record).Error
+	return e.dedupScope(task).Select("id", "status", "repeat", "site", "stage", "account_pool").First(record).Error
 }
 
 // dedupScope 给出"查已存在行"的条件（抽出来是为了能用 DryRun 把 SQL 形状钉住 —— 假库不解析 WHERE）。
@@ -123,11 +171,11 @@ func (e *Engine) dedupScope(task *Task) *gorm.DB {
 // 所以先按哈希（若有自定义键），再按 (url_hash, stage, site)。
 func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) error {
 	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
-		if err := e.db.Model(&models.CrawlerTask{}).Select("id").Where("idempotency_hash = ?", h).First(record).Error; err == nil {
+		if err := e.db.Model(&models.CrawlerTask{}).Select("id", "status", "repeat", "site", "stage", "account_pool").Where("idempotency_hash = ?", h).First(record).Error; err == nil {
 			return nil
 		}
 	}
-	return e.db.Model(&models.CrawlerTask{}).Select("id").
+	return e.db.Model(&models.CrawlerTask{}).Select("id", "status", "repeat", "site", "stage", "account_pool").
 		Where("url_hash = ? AND stage = ? AND site = ?", models.UrlHash(task.URL), task.Stage, task.Site).
 		First(record).Error
 }
@@ -361,6 +409,20 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		if info := e.stages[stageKeyOf(t)]; info == nil {
 			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", t.Stage, t.Site))
 		}
+		if t.ID == 0 {
+			t.AccountPool = e.resolveTaskPool(t)
+		}
+	}
+	// Reject conflicting ownership within the batch before writing any rows.
+	owners := map[string]*Task{}
+	for _, t := range tasks {
+		if prior := owners[t.Unique()]; prior != nil {
+			if prior.Site != t.Site || prior.Stage != t.Stage || prior.AccountPool != t.AccountPool {
+				return ErrTaskOwnershipConflict
+			}
+		} else {
+			owners[t.Unique()] = t
+		}
 	}
 
 	// 两阶段去重与 repeatable 处理，收集需入库/入队的任务
@@ -385,19 +447,28 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		// 批内先排除重复，避免本批插入的首条被后续重复项标成外部冲突。
 		batch[key] = t
 		if e.dedupCache.Get(key) {
-			if !t.Repeatable {
+			if !t.Repeatable && t.AccountPool == "" {
 				continue // 去重命中：跳过
 			}
 			var record models.CrawlerTask
 			if err := e.findTaskRecord(t, &record); err != nil {
 				return e.logSubmitError(t, fmt.Errorf("load repeat task record: %w", err))
 			}
+			if err := adoptTaskOwnership(t, &record); err != nil {
+				return err
+			}
 			t.ID = int(record.ID)
+			if !t.Repeatable {
+				continue
+			}
 		} else {
 			var record models.CrawlerTask
 			err := e.findTaskRecord(t, &record)
 			switch {
 			case err == nil:
+				if err := adoptTaskOwnership(t, &record); err != nil {
+					return err
+				}
 				// DB 命中：复用已有记录
 				e.dedupCache.Add(key)
 				t.ID = int(record.ID)
@@ -480,6 +551,18 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 // 继续处理后面的行，最终汇总失败信息，成功行仍由调用方负责投递。
 // 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
 func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, map[string]struct{}, error) {
+	var conflicted, failed map[string]struct{}
+	err := e.protectTaskPoolReferences(tasks, func() error { var err error; conflicted, failed, err = e.insertTasksWithReferences(tasks); return err })
+	if err != nil && failed == nil {
+		failed = map[string]struct{}{}
+		for _, task := range tasks {
+			failed[task.Unique()] = struct{}{}
+		}
+	}
+	return conflicted, failed, err
+}
+
+func (e *Engine) insertTasksWithReferences(tasks []*Task) (map[string]struct{}, map[string]struct{}, error) {
 	records := make([]models.CrawlerTask, 0, len(tasks))
 	for _, t := range tasks {
 		records = append(records, t.toModel())
@@ -509,6 +592,11 @@ func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, map[string]str
 		if serr := e.findTaskRecordFallback(t, &existed); serr != nil {
 			failed[t.Unique()] = struct{}{}
 			insertErrors = append(insertErrors, fmt.Errorf("insert task %q: %w", t.URL, ierr))
+			continue
+		}
+		if err := adoptTaskOwnership(t, &existed); err != nil {
+			failed[t.Unique()] = struct{}{}
+			insertErrors = append(insertErrors, err)
 			continue
 		}
 		t.ID = int(existed.ID)

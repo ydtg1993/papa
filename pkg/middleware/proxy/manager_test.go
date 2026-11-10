@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,5 +179,38 @@ func TestNewManagerNonPositiveIntervalFallsBack(t *testing.T) {
 	}
 	if got := m.Next(); got != "http://1.2.3.4:8080" {
 		t.Fatalf("Next = %q", got)
+	}
+}
+
+func TestManagerCloseCancelsProviderRefresh(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			_ = json.NewEncoder(w).Encode([]map[string]string{{"host": "127.0.0.1", "port": "8080"}})
+			return
+		}
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	m := NewManagerWithNetwork(srv.URL, 10*time.Millisecond, egress.Config{PrivateOrigins: []string{srv.URL}})
+	defer m.Close()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("provider refresh did not start")
+	}
+	closed := make(chan struct{})
+	go func() { m.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel active provider request")
+	}
+	select {
+	case err := <-m.GetErrors():
+		t.Fatalf("normal shutdown reported provider failure: %v", err)
+	default:
 	}
 }

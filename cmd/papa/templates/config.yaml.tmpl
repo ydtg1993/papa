@@ -30,11 +30,11 @@ crawler:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
     threshold: 50              # 达阈值即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
-  # 阶段参数不在这里配：声明在 internal/sites/<站名>.go（Go 里一份写全）。详见 docs/framework/FETCHER_WRITING_GUIDE.md 7.2
+  # 阶段结构/物理容量声明在 internal/sites/<站名>.go；有效并发与间隔可由 runtime/OA 覆盖。
 
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
 # 空闲超过 max_idle_time 的会被回收。
-# 全部字段都是**改完重启才生效**（框架没有运行期热更这回事）。
+# 本段物理容量/浏览器启动参数改完重启生效；动态借用预算在 runtime.resources。
 browser:
   enable: true
   pool_size: 3                 # 并发上限（按需创建）。enable=true 时必填且 > 0：写 0 会让 Get 永久阻塞在 cond.Wait
@@ -63,6 +63,20 @@ html:
 proxy:
   api_url: ""
   refresh_interval: 500s
+
+# 运行治理默认关闭；OA 持久覆盖优先于本段显式字段。详见 docs/framework/RUNTIME_CONTROL.md。
+# 升级后先 papa migrate；文件时长写 "30s"，API JSON 时长为整数纳秒。
+runtime:
+  defaults:
+    request:
+      enabled: false
+      autothrottle:
+        enabled: false
+  sites: {}
+  resources:
+    enabled: false
+  proxy_health:
+    enabled: false
 
 # 数据库
 db:

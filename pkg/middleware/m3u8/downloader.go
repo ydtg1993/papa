@@ -26,6 +26,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/msgqueue"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
 	"github.com/ydtg1993/papa/v4/pkg/middleware"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 	"time"
 )
 
@@ -151,7 +152,7 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	}
 	proxyURL, err := neturl.Parse(opts.Proxy)
 	if err != nil {
-		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL %q: %w", opts.Proxy, err))
+		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
 		proxyURL = &neturl.URL{Scheme: "invalid"}
 	}
 	if d.st.proxyClients == nil {
@@ -167,6 +168,7 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	// 非代理那份一直带 `Timeout: cfg.SegmentTimeout`，这里对齐它。
 	c := &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
 	c = egress.Client(c, d.config.Network)
+	c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, opts.Proxy)
 	d.st.proxyClients[opts.Proxy] = c
 	return c
 }

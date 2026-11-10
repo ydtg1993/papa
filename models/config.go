@@ -22,6 +22,8 @@ type Config struct {
 	// CfgVal 值（JSON）：按 cfg_key 各自的约定解释 —— 表结构不随配置项变化。
 	// MySQL 的 json 类型由 gorm 的 datatypes.JSON 承载（任务表的 meta 列用的是同一套）。
 	CfgVal datatypes.JSON `gorm:"column:cfg_val;type:json;comment:配置值（JSON，按 cfg_key 解释）"`
+	// Revision 是受保护策略的唯一版本来源；旧配置键保留零值。
+	Revision uint64 `gorm:"column:revision;not null;default:0;comment:运行策略写入版本"`
 	// UpdatedBy 最后一次改这一行的人（后台令牌对应的 operator；直接用 SQL 改则为空）。
 	// 审计的另一半在 crawler_operation_log，而那个开关可以关 —— 所以"谁改的"记在行上。
 	UpdatedBy string `gorm:"column:updated_by;type:varchar(128);comment:最后修改人（后台令牌的 operator）"`

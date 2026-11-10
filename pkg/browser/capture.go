@@ -92,6 +92,30 @@ func (b *Browser) CaptureRequest(ctx context.Context, pageURL string, opts Captu
 		_ = page.Context(cleanup).Close()
 	}()
 
+	return captureRequestOnPage(ctx, page, pageURL, opts)
+}
+
+// CaptureRequestPage captures on an existing managed page. It keeps that page's
+// state and request governor; the caller owns closing the page. Navigation is
+// settled before returning so the caller may safely export the updated state.
+func CaptureRequestPage(ctx context.Context, page *rod.Page, pageURL string, opts CaptureOptions) (*CaptureResult, error) {
+	if err := validateNavigation(pageURL); err != nil {
+		return nil, err
+	}
+	if opts.Match == nil {
+		return nil, fmt.Errorf("capture: Match is required")
+	}
+	pageCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := ConfigurePage(pageCtx, page, opts.Page); err != nil {
+		return nil, err
+	}
+	page = page.Context(pageCtx)
+	opts.WaitLoad = true
+	return captureRequestOnPage(ctx, page, pageURL, opts)
+}
+
+func captureRequestOnPage(ctx context.Context, page *rod.Page, pageURL string, opts CaptureOptions) (*CaptureResult, error) {
 	navTimeout := opts.Page.Timeout
 	if navTimeout <= 0 {
 		navTimeout = 30 * time.Second

@@ -14,6 +14,7 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/governance"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
@@ -100,9 +101,11 @@ type Engine struct {
 	// 0 = 不合并（测试/手工构造的 Engine 默认行为），生产由 NewEngine 设默认值。
 	wakeCoalesce time.Duration
 
-	proxy    *proxy.Manager       // 代理管理器中间件
-	m3u8     *m3u8.Downloader     // m3u8下载器（全局那份）
-	filedown *filedown.Downloader // 文件下载器（全局那份）
+	proxy         *proxy.Manager // 代理管理器中间件
+	governor      *governance.Controller
+	runtimeDelays map[string]time.Duration
+	m3u8          *m3u8.Downloader     // m3u8下载器（全局那份）
+	filedown      *filedown.Downloader // 文件下载器（全局那份）
 	// 站点/阶段覆盖层与解析结果：启动期（ApplyRegisterStage → resolveStageDownloads）建好后**只读**
 	//（fetcher 的取用路径不带锁，与 repeatQueues / statsQueue 那几张 map 同一约定）。
 	downloadCfgMu   sync.RWMutex

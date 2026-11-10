@@ -18,14 +18,17 @@ import (
 
 // Browser 封装一个 rod实例
 type Browser struct {
-	gateway  *egress.Proxy
-	Browser  *rod.Browser       // rod 浏览器对象
-	launcher *launcher.Launcher // 启动器，用于关闭
-	useProxy bool               // 是否走代理（false 为强制直连）
-	useCount int64              // 已使用次数（原子操作）
-	lastUsed time.Time          // 最后使用时间
-	mu       sync.Mutex
-	pool     *Pool // 归属池：Put 路由 + 读取池共享的默认请求头
+	gateway       *egress.Proxy
+	Browser       *rod.Browser       // rod 浏览器对象
+	launcher      *launcher.Launcher // 启动器，用于关闭
+	useProxy      bool               // 是否走代理（false 为强制直连）
+	useCount      int64              // 已使用次数（原子操作）
+	lastUsed      time.Time          // 最后使用时间
+	mu            sync.Mutex
+	borrowRelease func() // guarded by mu; only the owning pooled instance holds it
+	proxyState    *browserProxyState
+	closed        atomic.Bool
+	pool          *Pool // 归属池：Put 路由 + 读取池共享的默认请求头
 	// 从池配置中继承的默认值（固定，不可热更）
 	defaultDevice  *devices.Device
 	defaultCookies []*proto.NetworkCookieParam
@@ -59,6 +62,13 @@ const browserCleanupTimeout = 5 * time.Second
 //	   PID 拿不到时 Kill 什么都不做（rod 里 `l.PID() == 0` 直接 return），Cleanup 就还是那个永久等待。
 //	   到点就放弃等待、留一条日志：调用方可能正握着池锁，最坏留一个 goroutine，绝不把池与停机拖死。
 func (b *Browser) Close() {
+	if b.closed.Swap(true) {
+		return
+	}
+	if b.pool != nil {
+		b.pool.unregisterInstance(b)
+	}
+	b.releaseBorrow()
 	if b.gateway != nil {
 		b.gateway.Close()
 	}
@@ -117,6 +127,9 @@ func (b *Browser) GetLastUsed() time.Time {
 
 // IsAlive 检查浏览器是否可用
 func (b *Browser) IsAlive() bool {
+	if b.closed.Load() {
+		return false
+	}
 	if b.aliveOverride != nil {
 		return *b.aliveOverride
 	}
@@ -129,8 +142,12 @@ func (b *Browser) IsAlive() bool {
 
 // PageOptions 创建页面时的可选配置
 type PageOptions struct {
-	Device  *devices.Device   // 设备模拟，覆盖默认值
-	Headers map[string]string // 额外请求头，会合并默认头
+	// GovernanceOrigins explicitly includes additional target origins (e.g. a
+	// site's CDN) in request control. Empty uses the first document's origin.
+	// Other origins are neither throttled nor included in target-site latency.
+	GovernanceOrigins []string
+	Device            *devices.Device   // 设备模拟，覆盖默认值
+	Headers           map[string]string // 额外请求头，会合并默认头
 	// RemoveHeaders 从最终请求头里删掉这些键（含池的默认头）——"这次不要那个头"用；
 	// 单独一条是因为 rod 的默认头是在内部先合并的，光靠 Headers 给空值删不掉。
 	RemoveHeaders []string
@@ -174,7 +191,7 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 	if err := validateNavigation(url); err != nil {
 		return nil, err
 	}
-	page, err = b.newPageBase(opts)
+	page, err = b.newPageBaseContext(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +203,7 @@ func (b *Browser) NewPageWithOptions(ctx context.Context, url string, opts PageO
 	created := page // 上面已经挡住 err != nil，这里必非 nil
 	defer func() {
 		if err != nil {
-			_ = created.Close()
+			_ = created.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 		}
 	}()
 
@@ -216,7 +233,7 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 	if err := validateNavigation(url); err != nil {
 		return nil, err
 	}
-	page, err := b.newPageBase(opts)
+	page, err := b.newPageBaseContext(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +242,7 @@ func (b *Browser) FetchOnce(ctx context.Context, url string, opts PageOptions) (
 	// 业务把它当长跑抓取接口用时就是持续泄漏。顺带：下面 `go wait()` 那条 EachEvent 协程
 	// 要等页面关闭才退出，不关它也跟着一起漏。
 	defer func() {
-		_ = page.Close()
+		_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 	}()
 	page = page.Context(ctx)
 
@@ -355,7 +372,7 @@ func (b *Browser) newPageBaseContext(ctx context.Context, opts PageOptions) (*ro
 	}
 
 	// 4. 本页资源拦截（必须在导航前；见 BlockOptions 的两种机制）
-	if err := applyBlock(page, opts.Block); err != nil {
+	if err := applyPageGovernance(ctx, page, opts); err != nil {
 		_ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close()
 		return nil, err
 	}
@@ -375,12 +392,12 @@ func (b *Browser) MustNewPage(ctx context.Context, url string) *rod.Page {
 // 默认设备 / 池共享请求头 / 默认 Cookies 由 newPageBase 应用（不导航）。
 // fn panic 时同样先关页，再把 panic 抛回。
 func (b *Browser) WithPage(ctx context.Context, fn func(*rod.Page) error) error {
-	page, err := b.newPageBase(PageOptions{})
+	page, err := b.newPageBaseContext(ctx, PageOptions{})
 	if err != nil {
 		return err
 	}
 	page = page.Context(ctx)
-	defer func() { _ = page.Close() }()
+	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	return fn(page)
 }
 
@@ -391,7 +408,7 @@ func (b *Browser) WithNavigatedPage(ctx context.Context, url string, opts PageOp
 		return err
 	}
 	page = page.Context(ctx)
-	defer func() { _ = page.Close() }()
+	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	return fn(page)
 }
 

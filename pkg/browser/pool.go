@@ -34,7 +34,11 @@ type Pool struct {
 	proxyAlive  atomic.Int64 // 当前存活（含借用中）的代理浏览器数
 	directAlive atomic.Int64 // 当前存活（含借用中）的直连浏览器数
 
-	mu sync.Mutex // 保护空闲通道的收发与关闭，见 get/put/reapChannel/Close
+	mu              sync.Mutex // 保护空闲通道的收发与关闭，见 get/put/reapChannel/Close
+	admissionCtx    context.Context
+	admissionCancel context.CancelFunc
+	statsMu         sync.Mutex
+	instances       map[*Browser]instanceState
 
 	headers atomic.Pointer[map[string]string] // 共享可热更：默认请求头（copy-on-write）
 	maxIdle atomic.Int64                      // 共享可热更：空闲回收阈值（纳秒）
@@ -207,11 +211,17 @@ func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 
 // newBrowser 创建一个新的浏览器实例，useProxy 为 false 时强制直连
 func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
-	l := p.newLauncher(useProxy)
-	upstream := l.Get(flags.Flag("proxy-server"))
+	l := p.newLauncher(false)
+	upstream, observeProxy, proxyState, err := p.selectBrowserProxy(useProxy, l.Get(flags.Flag("proxy-server")))
+	if err != nil {
+		return nil, err
+	}
 	gateway, err := egress.NewProxy(p.cfg.Network, upstream)
 	if err != nil {
 		return nil, err
+	}
+	if observeProxy != nil {
+		gateway.SetProxyObserver(observeProxy)
 	}
 	success := false
 	defer func() {
@@ -260,6 +270,7 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 	}
 	success = true
 	return &Browser{
+		proxyState:     proxyState,
 		Browser:        browser,
 		gateway:        gateway,
 		launcher:       l,
@@ -335,6 +346,9 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 	defer stopCtx()
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		maxIdle := p.maxIdleDuration()
 
 		// 1. 非阻塞复用空闲实例
@@ -354,14 +368,46 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 				continue
 			}
 			b.markUsed()
+			p.setInstanceState(b, instanceReserved)
+			if b.proxyState != nil {
+				b.proxyState.reset()
+			}
+			release, err := p.acquireBrowserPermit(ctx)
+			if err != nil {
+				_ = p.put(b)
+				return nil, err
+			}
+			b.setBorrowRelease(release)
+			p.setInstanceState(b, instanceBorrowed)
+			if p.closed.Load() {
+				_ = p.put(b)
+				return nil, fmt.Errorf("browser pool closed")
+			}
 			return b, nil
 		default:
 		}
 
 		// 2. 未达容量上限则按需新建
 		if limit > 0 && alive.Add(1) <= limit {
-			b, err := p.newBrowserFn(useProxy)
+			release, permitErr := p.acquireBrowserPermit(ctx)
+			if permitErr != nil {
+				alive.Add(-1)
+				p.broadcast()
+				return nil, permitErr
+			}
+			b, err := func() (*Browser, error) {
+				defer func() {
+					if v := recover(); v != nil {
+						release()
+						alive.Add(-1)
+						p.broadcast()
+						panic(v)
+					}
+				}()
+				return p.newBrowserFn(useProxy)
+			}()
 			if err != nil {
+				release()
 				alive.Add(-1)
 				// 槽位空出来了：叫醒睡在 cond.Wait 的 Get。照 broadcast 的约定，凡是改变
 				// "还有没有空闲槽位"的状态变化都要叫一声 —— 这里不广播的话，池满时那个
@@ -370,7 +416,17 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 				return nil, fmt.Errorf("create browser: %w", err)
 			}
 			b.pool = p
+			p.registerInstance(b)
+			b.setBorrowRelease(release)
 			b.markUsed()
+			if p.closed.Load() {
+				_ = p.put(b)
+				return nil, fmt.Errorf("browser pool closed")
+			}
+			if err := ctx.Err(); err != nil {
+				_ = p.put(b)
+				return nil, err
+			}
 			return b, nil
 		}
 		if limit > 0 {
@@ -436,6 +492,8 @@ func (p *Pool) Put(b *Browser) error {
 
 // put 归还浏览器：死实例直接回收不重建，池已关闭则直接回收。
 func (p *Pool) put(b *Browser) error {
+	b.releaseBorrow()
+	p.setInstanceState(b, instanceIdle)
 	enqueued := false
 	if b.IsAlive() {
 		b.markIdle()
@@ -621,6 +679,9 @@ func (p *Pool) Close() {
 		// 持锁关通道（与 put/reapChannel 的发送互斥），再广播唤醒阻塞在 cond.Wait 的 Get；
 		// 它们醒来后从已关闭的空通道收到 nil，返回 "browser pool closed" 而不是挂住。
 		p.mu.Lock()
+		if p.admissionCancel != nil {
+			p.admissionCancel()
+		}
 		close(p.browsers)
 		close(p.direct)
 		p.cond.Broadcast()

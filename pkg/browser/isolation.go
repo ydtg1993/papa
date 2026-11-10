@@ -46,6 +46,6 @@ func (parent *Browser) withIsolatedContext(ctx context.Context, fn func(*Browser
 			err = errors.Join(err, fmt.Errorf("dispose isolated browser context: %w", closeErr))
 		}
 	}()
-	child := &Browser{Browser: isolated, pool: parent.pool, useProxy: parent.useProxy, defaultDevice: parent.defaultDevice, isolatedHeaders: map[string]string{}}
+	child := &Browser{Browser: isolated, pool: parent.pool, useProxy: parent.useProxy, defaultDevice: parent.defaultDevice, isolatedHeaders: map[string]string{}, proxyState: parent.proxyState}
 	return fn(child)
 }

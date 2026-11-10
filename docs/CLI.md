@@ -70,8 +70,8 @@ mycrawler/
 
 - **加一个站 = 加一个 `internal/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
   `papa.Sites()` 收集，`internal/app/run.go` 不用动（站点键必填；阶段名只在本站内唯一，两个站可以同名）。
-- **阶段参数不在 `config.yaml` 里**：都写在那份声明（Go 里一份写全，加阶段不用改两个地方）；
-  yaml 里留 `crawler.stages` 段会被"未知配置键"拦下。
+- **阶段结构/物理容量在 Go 声明里**：`runtime` 可覆盖已有阶段的有效执行并发、固定任务间隔与账号池；
+  `crawler.stages` 仍是未知键。模板默认关闭请求自适应、资源与代理健康，字段与覆盖优先级见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 - **三个治理队列（error_queue / recover_queue / repeat_queue）在 `config.yaml` 里全局配**：
   没写哪段 = 那条不跑；开了（`enabled: true`）就得写全，缺一项 / 越界启动就报。
 - **`.claude/skills/papa-crawler-development/` 带一份开发技能**：Claude Code 会从 `<项目>/.claude/skills/`
@@ -85,6 +85,8 @@ mycrawler/
 生成的 `.gitignore` 仍包含历史文件名 `.papa-model.key` 的忽略项；当前框架没有模型配置或自动生成该密钥的功能。业务自行管理凭据文件和忽略规则，`upgrade` 不覆盖已有 `.gitignore`。
 
 `papa new` 生成的本机配置和 example 配置使用 `user:CHANGE_ME` 数据库凭据占位；请先在本机填真实连接，再执行 `papa migrate`。已有项目的 `papa upgrade --write` 只刷新框架手册/通用技能，不替换已配置的 DSN；`--missing-only` 同样保留现有配置。
+
+运行治理升级仍使用现有 `papa migrate`，没有新的隐式启动迁移命令。它补齐 `crawler_config.revision`、`crawler_tasks.account_pool` 及账号池/账号管理表；普通启动会检查结构和持久策略，不在缺列时回退默认运行。`papa upgrade --write` 分发包括 `RUNTIME_CONTROL.md` 的框架手册，但不会替业务修改 runtime 配置、注册账号或启动采集。YAML 时长写字符串，OA API 的 duration 用整数纳秒。
 
 ### `papa check` 校验声明（不用起库）
 

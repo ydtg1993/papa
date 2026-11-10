@@ -4,7 +4,7 @@
 
 ## 1. 入口与边界
 
-`pkg/account.Manager` 是显式注册的单进程账号管理器，以 `account.Key{Site, ID}` 定位账号。HTTP/API 和 HTML 使用同一 CookieJar、Token 与 CSRF 头；Rod 使用同账号的隔离浏览器状态。它不自动扫描账号、不改任务表，也不启动后台刷新定时器。
+`pkg/account.Manager` 是显式注册的单进程账号管理器，以 `account.Key{Site, ID}` 定位账号。HTTP/API 和 HTML 使用同一 CookieJar、Token 与 CSRF 头；Rod 使用同账号的隔离浏览器状态。Manager 不自动发现凭据；可选 `account.Pools` 在其上维护站点内池、独立补偿调度和持久管理状态，见 §7。
 
 | 入口 | 用途 |
 | --- | --- |
@@ -16,8 +16,10 @@
 | `Pause` / `Resume` / `Logout` | 停止新操作、恢复并重新检查、清除本地状态并暂停 |
 | `Status` / `Engine.AccountStatus` | 无凭据状态列表，可接业务自定义后台 |
 | `NewFileStore` | 绑定账号身份的加密本地存储 |
+| `NewPools` / `Manager.Pools` | 站点内账号池与独立调度；App 为已注册 Manager 接入 GORM 池存储 |
+| `Manager.DoPool` / `Engine.FetchPoolHTTP`、`FetchPoolHTML`、`WithPoolBrowser` | 使用池当前账号，失败不在本次尝试换号重发 |
 
-旧 `FetchHTTP` / `FetchHTML` / `WithIsolatedBrowser` / `SessionGuard` 行为仍可使用，**不会因为注册了管理器就自动选账号**。任务可在既有 `Task.Meta["account_id"]` 保存非敏感账号标识，执行时用 `task.Site` 和该标识构造 Key；用户名密码、Cookie、Token 不放进任务 Meta。
+仅注册管理器、未配置任务池时，原有显式账号调用仍可使用，不会自动选账号。启用任务池归属后，普通 Engine HTTP/HTML/渲染等受支持入口会使用本次尝试固定的账号，不能靠普通入口悄悄匿名请求，具体覆盖见 §7。非池任务仍可在 `Task.Meta["account_id"]` 保存显式账号标识；用户名密码、Cookie、Token 不放进 Meta。
 
 ## 2. HTTP 登录、检查与使用
 
@@ -114,4 +116,57 @@ Status 给出账号键、HTTP 版本、是否暂停、是否正在认证、近�
 
 认证 HTTP/HTML 入口不进入旧原始 HTML 归档，避免登录后页面凭据随失败证据落盘。需要回归材料时显式使用 WriteSample 脱敏；浏览器截图和回调自行记录的数据仍由业务控制。Failure.Error 只返回类别，Unwrap 仍可供 errors.Is/As 检查，不能把解包的原始错误直接写日志。
 
-账号运行时服务于单实例采集；验证码处理、任务到账号的分配和生产站点是否允许 Cookie 桥接由业务负责。测试使用本地 HTTP 和真实 Chromium，站点登录协议与业务规则仍需自己的验收样本。
+账号运行时服务于单实例采集；验证码处理、池内账号能否互换和生产站点是否允许 Cookie 桥接由业务负责。测试使用本地 HTTP 和真实 Chromium，站点登录协议与业务规则仍需独立业务模块验收。
+
+## 7. 站点账号池与异步补偿
+
+池键是 `account.PoolKey{Site, Name}`；成员引用同站已经 `Register` 的账号 ID，不复制凭据。每站可以有多个权限相同的命名池，不把不同权限的账号混在一起。成员顺序独立保存，替补按该顺序选择；哈希索引不决定选择顺序。同账号加入同站多个池时，共享管理状态，停用或隔离会对这些池同时生效。
+
+### 接入顺序
+
+1. 在 App.Run 前注册账号 Manager、Login/Check、Store 和可选 Browser 配置；先执行 `papa migrate`。
+2. 在“数据与资源 → 账号池”创建池，选择已注册账号及顺序、HTTP/browser/both 传输要求。也可在业务初始化中使用 `NewPools` + `Upsert` 创建，但须提供持久 Store、站点预算 context 和任务引用检查。
+3. 在“采集控制”设置站点/阶段 `pool`，或提交 `Task{Site: "fixture", Stage: "detail", AccountPool: "readers", URL: ...}`。持久策略不能引用不存在的池，因此应先建池再保存归属默认值。
+4. FetchHandler 继续传递收到的 ctx，调用普通 Engine HTML/HTTP/渲染入口，或显式 `FetchPoolHTTP` / `FetchPoolHTML` / `WithPoolBrowser`。在任务外先用 `RuntimeContext` 绑定站点。
+
+```go
+ctx = engine.RuntimeContext(ctx, "fixture")
+response, err := engine.FetchPoolHTTP(ctx,
+    account.PoolKey{Site: "fixture", Name: "readers"},
+    papa.HTTPRequest{URL: "https://fixture.example/items"},
+)
+if err != nil { return err }
+_ = response
+```
+
+示例站点和 URL 仅为合成占位，账号 Origins、认证与模型仍由业务注册。低层 `Pools.Acquire` 返回固定身份的 Attempt，不另占一份账号并发许可；每次实际交换复用 Manager 的 `MaxConcurrent` 与认证合并。业务不要在持有自己的账号许可时再嵌套申请同一账号。
+
+### 正常执行与失效
+
+当前账号正常时持续使用，不因一条请求结束、阶段变化或普通重试轮换。并发已满只等待当前账号名额。明确过期、人工验证阻断或已确认固定出口不可用时，本次尝试返回失败；池调度器异步隔离旧成员并有限验证备用。失败任务不等待换号、不在当前 FetchHandler 重放，也跳过当前阶段的立即重试；错误队列或人工重投以后再补偿。
+
+每次尝试固定账号、凭据与选择版本；已发请求自然结束，切换后旧尝试不能继续发送使用新身份的请求。旧响应不覆盖新凭据或已验证状态。403、整站 429、普通目标网络失败不直接失效账号。显式 `Manager.Do` 的 GET/HEAD 最多一次认证重试仍按 §3 保留；`DoPool` 不在明确失效后沿用这个隐式重放。
+
+`Task.AccountPool` 保存到 `crawler_tasks.account_pool`，去重仍只认既有页面/自定义幂等键，不增加账号/池维度。同一已有任务被显式指定为其他池时返回冲突；重复提交不覆盖归属。以后补偿复用原任务，取所属池的新当前账号；更改站点默认池不迁移旧任务。账号专属游标或资源是否可跨账号补偿由业务判断。
+
+### 持久化、验证和预算
+
+| 配置/状态 | 行为 |
+| --- | --- |
+| `PoolConfig.Transport` | `http`（默认）、`browser`、`both`；配置能力与已验证状态分别判定，纯浏览器账号不因 HTTP 未就绪被排除 |
+| `Members` | 有序 ID 列表，最多 1024 个，同站且不可重复 |
+| `VerifyAttempts` | 默认 1，范围 1..10，每候选的验证次数 |
+| `SwitchLimit` | 默认 16，范围 1..1024，每调度轮检查候选上限；之后等待 Cooldown，不忙循环 |
+| `Cooldown` | 默认 5s，范围 1ms..24h；到期仅允许复验，不直接恢复 |
+| `PoolOptions.ScanInterval` / `VerifyTimeout` | 默认 1s / 30s；独立调度扫描及每次验证超时 |
+| `PoolOptions.ReverifyInterval` | 默认关闭；显式配置才定时复验，人工验证阻断与停用账号不会自动恢复；OA 目前提供显式验证动作，不提供此选项的全局编辑器 |
+
+`crawler_account_pools` 保存成员顺序、池开关、当前账号/选择版本和最近 100 条切换记录；`crawler_account_management` 保存账号停用、隔离、冷却、原因及管理版本。凭据仍在既有 Store，普通配置 JSON 不含 Cookie/Token。重启重新验证认证状态，持久停用/隔离不被自动清除。
+
+管理状态保存失败时当前进程仍阻止新请求使用失效账号，后台显示未保存/持久化错误，并由调度器重试；不能把失败保存当作已经安全落盘。重新验证成功才恢复候选，恢复不自动切回。删除池必须先停用，并确认没有策略引用、待处理/处理中/失败可补偿或轮询任务引用。
+
+### 后台与证据
+
+池页展示当前账号、成员状态、HTTP/浏览器能力、等待数与原因、选择版本、最近切换；支持创建/启停池、排序、停用成员和重新验证。写动作带版本检查、令牌鉴权与审计；GET 查询不触发认证。验证会实际访问配置站点，并受超时与站点预算约束。
+
+任务身份通过 `task.Trace.Step("账号池身份", ...)` 留痕，需开启 `crawler.trace.enabled`；没有额外永久的每任务账号历史列。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障可隔离该成员并触发备用调度；普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
