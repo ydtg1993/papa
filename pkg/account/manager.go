@@ -86,6 +86,7 @@ func (m *Manager) Register(key Key, cfg Config) error {
 	}
 	e := &entry{config: cfg, key: key, origins: map[string]bool{}, authHeaders: map[string]bool{"Authorization": true, "X-Csrf-Token": true}, slots: make(chan struct{}, cfg.MaxConcurrent), browserSlot: make(chan struct{}, 1)}
 	e.autoBridge = autoBridge
+	e.manager = m
 	for _, raw := range cfg.Origins {
 		o, err := origin(raw)
 		if err != nil {
@@ -407,6 +408,11 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 		}
 	}
 	for attempt := 0; attempt < 2; attempt++ {
+		if e.manager != nil {
+			if err = e.manager.ReserveLogin(ctx, e.key); err != nil {
+				return nil, 0, err
+			}
+		}
 		restored := false
 		if e.autoBridge {
 			restored, err = browserLoginState(ctx, candidate, *e.config.Browser)
@@ -582,6 +588,11 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 		base["User-Agent"] = e.config.UserAgent
 	}
 	for attempt := 0; attempt < 2; attempt++ {
+		if p := m.Pools(); p != nil {
+			if err = p.guardAccount(key); err != nil {
+				return nil, err
+			}
+		}
 		c, version, err := e.ensure(ctx)
 		if err != nil {
 			return nil, err
@@ -592,16 +603,22 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 		for k, v := range c.Headers {
 			r.Headers[k] = v
 		}
+		if err = m.beforeOperation(ctx, key); err != nil {
+			return nil, err
+		}
 		response, fetchErr := m.client.Do(htmlfetch.WithSession(ctx, c.Session), r)
 		if errors.Is(fetchErr, core.ErrSiteChallenge) {
 			return response, fetchErr
 		}
 		outcome := e.config.Classify(response, fetchErr)
 		switch outcome {
-		case Expired:
+		case Expired, NeedsVerify:
 			m.Invalidate(key, version)
 			if retryable && attempt == 0 {
 				continue
+			}
+			if outcome == NeedsVerify {
+				return response, ErrNeedsVerify
 			}
 			return response, ErrExpired
 		case Forbidden:

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/go-rod/rod"
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
@@ -14,7 +15,10 @@ import (
 // non-polling history does not prevent deleting a disabled pool.
 func (e *Engine) AccountPoolReferences(ctx context.Context, key account.PoolKey) (int64, error) {
 	var n int64
-	err := e.db.WithContext(ctx).Model(&models.CrawlerTask{}).Where("site = ? AND account_pool = ?", key.Site, key.Name).Where("status IN ? OR repeatable = ?", []models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing, models.TaskStatusFailed}, models.RepeatableYes).Count(&n).Error
+	// Permanent failures cannot execute again, including through polling.
+	err := e.db.WithContext(ctx).Model(&models.CrawlerTask{}).Where("site = ? AND account_pool = ?", key.Site, key.Name).
+		Where("status IN ? OR repeatable = ?", []models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing, models.TaskStatusFailed}, models.RepeatableYes).
+		Where("compensation_mode <> ?", string(core.CompensationPermanent)).Count(&n).Error
 	return n, err
 }
 

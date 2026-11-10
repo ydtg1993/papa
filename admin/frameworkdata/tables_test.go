@@ -138,7 +138,7 @@ func TestFrameworkCatalogCoversAllModelsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := database.AllFrameworkModels()
-	if len(tables) != 10 || len(tables) != len(models) {
+	if len(tables) != 12 || len(tables) != len(models) {
 		t.Fatalf("catalog/model count = %d/%d", len(tables), len(models))
 	}
 	for i, table := range tables {
@@ -214,7 +214,7 @@ func TestFrameworkSQLProjectionPaginationAndStableOrder(t *testing.T) {
 			t.Fatal(w.Body.String())
 		}
 		q := strings.Join(f.queries, "\n")
-		for _, bad := range []string{"token_hash", "cfg_val", "idempotency_key", "evil", "forbidden", "SELECT *"} {
+		for _, bad := range []string{"token_hash", "cfg_val", "idempotency_key", "secret_ref", "inputs_ref", "evil", "forbidden", "SELECT *"} {
 			if strings.Contains(q, bad) {
 				t.Fatalf("unsafe projection %s: %s", bad, q)
 			}

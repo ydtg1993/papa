@@ -119,6 +119,17 @@ func (b *Breaker) RecordFailure() (tripped bool, failures int) {
 	return n >= b.threshold, n // threshold 必然 > 0（New 已校验）
 }
 
+// Reset 清空窗口计数，保留配置。恢复闸门与失败判定之间的原子性由引擎保证。
+func (b *Breaker) Reset() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.counts = [bucketCount]int64{}
+	b.slots = [bucketCount]int64{}
+}
+
 // Sum 返回当前窗口内的终态失败数。
 func (b *Breaker) Sum() int {
 	if b == nil || !b.enabled {

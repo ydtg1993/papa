@@ -17,7 +17,7 @@ func NewPools(ctx context.Context, m *Manager, store PoolStore, options PoolOpti
 	if m.Pools() != nil {
 		return nil, errors.New("account pool coordinator already configured")
 	}
-	if options.ScanInterval < 0 || options.VerifyTimeout < 0 || options.ReverifyInterval < 0 {
+	if options.ScanInterval < 0 || options.VerifyTimeout < 0 || options.ReverifyInterval < 0 || options.VerifyConcurrency < 0 || options.VerifyConcurrency > 64 {
 		return nil, errors.New("negative account pool budget")
 	}
 	if options.ScanInterval == 0 {
@@ -25,6 +25,9 @@ func NewPools(ctx context.Context, m *Manager, store PoolStore, options PoolOpti
 	}
 	if options.VerifyTimeout == 0 {
 		options.VerifyTimeout = 30 * time.Second
+	}
+	if options.VerifyConcurrency == 0 {
+		options.VerifyConcurrency = 4
 	}
 	states, err := store.LoadPools(ctx)
 	if err != nil {
@@ -36,12 +39,38 @@ func NewPools(ctx context.Context, m *Manager, store PoolStore, options PoolOpti
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	p := &Pools{manager: m, store: store, options: options, pools: map[PoolKey]*managedPool{}, accounts: map[Key]*managedAccount{}, wake: make(chan struct{}, 1), changed: make(chan struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	p.workers = make(chan struct{}, options.VerifyConcurrency)
+	p.activeSites = map[string]bool{}
+	p.stopped = make(chan struct{})
+	p.listeners = map[uint64]chan HealthEvent{}
 	for _, s := range management {
 		if s.Version == 0 || strings.TrimSpace(s.Key.Site) == "" || strings.TrimSpace(s.Key.ID) == "" {
 			cancel()
 			return nil, errors.New("invalid account management state")
 		}
-		p.accounts[s.Key] = &managedAccount{state: s, persisted: s.Version}
+		policy, policyErr := normalizePolicy(s.Policy)
+		if policyErr != nil {
+			cancel()
+			return nil, policyErr
+		}
+		s.Policy = policy
+		if s.Generation == 0 {
+			s.Generation = s.Version
+		}
+		if s.LastControlVersion == 0 {
+			s.LastControlVersion = s.Version
+		}
+		if s.LastControlVersion > s.Version {
+			cancel()
+			return nil, errors.New("invalid account control version")
+		}
+		s.Usage.Unit = "operation"
+		for _, event := range s.Events {
+			if event.Sequence > p.eventSequence {
+				p.eventSequence = event.Sequence
+			}
+		}
+		p.accounts[s.Key] = &managedAccount{state: cloneManagement(s), persisted: s.Version, verify: s.VerificationPending || s.Suspicious || (s.ProxyUnavailable && !s.Quarantined)}
 	}
 	for _, s := range states {
 		if s.Revision == 0 {
@@ -89,19 +118,30 @@ func NewPools(ctx context.Context, m *Manager, store PoolStore, options PoolOpti
 	}
 	m.pools = p
 	m.mu.Unlock()
-	go p.run()
+	go func() { p.run(); p.workerWG.Wait(); close(p.stopped) }()
 	return p, nil
 }
 
 func (m *Manager) Pools() *Pools { m.mu.RLock(); defer m.mu.RUnlock(); return m.pools }
 func (p *Pools) Close() {
+	_ = p.Shutdown(context.Background())
+}
+
+// Shutdown stops admission and waits for all verification callbacks. On timeout
+// the caller must retain the browser and stores until a later Shutdown succeeds.
+func (p *Pools) Shutdown(ctx context.Context) error {
 	p.cancel()
-	<-p.done
+	select {
+	case <-p.stopped:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	p.manager.mu.Lock()
 	if p.manager.pools == p {
 		p.manager.pools = nil
 	}
 	p.manager.mu.Unlock()
+	return nil
 }
 func (p *Pools) signal() {
 	select {
@@ -125,7 +165,7 @@ func clonePool(s PoolState) PoolState {
 func (p *Pools) ensureManagement(key Key) *managedAccount {
 	a := p.accounts[key]
 	if a == nil {
-		a = &managedAccount{state: ManagementState{Key: key, Version: 1, UpdatedAt: time.Now()}, dirty: true}
+		a = &managedAccount{state: ManagementState{Key: key, Version: 1, LastControlVersion: 1, Generation: 1, Policy: DefaultPolicy(), Usage: Usage{Unit: "operation"}, UpdatedAt: time.Now()}, dirty: true}
 		p.accounts[key] = a
 	}
 	return a
@@ -151,6 +191,12 @@ func (p *Pools) validateConfig(c *PoolConfig) error {
 	}
 	if c.Cooldown == 0 {
 		c.Cooldown = 5 * time.Second
+	}
+	if c.StandbyTarget < 0 || c.StandbyTarget > 1024 || c.StandbyTTL < 0 || c.StandbyTTL > 24*time.Hour {
+		return errors.New("invalid standby budget")
+	}
+	if c.StandbyTarget > 0 && c.StandbyTTL == 0 {
+		c.StandbyTTL = 15 * time.Minute
 	}
 	if c.VerifyAttempts < 1 || c.VerifyAttempts > 10 || c.SwitchLimit < 1 || c.SwitchLimit > 1024 || c.Cooldown < time.Millisecond || c.Cooldown > 24*time.Hour {
 		return errors.New("invalid account pool compensation budget")
@@ -277,22 +323,27 @@ func (p *Pools) SetDisabled(ctx context.Context, key Key, disabled bool, expecte
 	}
 	defer p.writes.Unlock()
 	p.mu.Lock()
-	a := p.ensureManagement(key)
-	if a.state.Version != expected {
+	a := p.accounts[key]
+	if !matchesControlVersion(a, expected) {
 		p.mu.Unlock()
 		return ErrPoolConflict
 	}
+	a = p.ensureManagement(key)
 	a.state.Disabled = disabled
-	a.state.Version++
+	a.state.advanceControl()
+	a.state.Generation++
 	a.state.UpdatedAt = time.Now()
 	a.dirty = true
 	if disabled {
 		a.state.Reason = "disabled"
 		a.verify = false
+		a.state.VerificationPending = false
 	} else {
 		a.state.Reason = "verification-required"
 		a.state.Quarantined = true
 		a.verify = true
+		a.state.VerificationMode = RecoverLogin
+		a.state.VerificationPending = true
 	}
 	p.wakeAccountLocked(key)
 	p.publishLocked()
@@ -304,41 +355,7 @@ func (p *Pools) SetDisabled(ctx context.Context, key Key, disabled bool, expecte
 // Verify queues one bounded coordinator verification. GET snapshots never call it.
 // A disabled account must be explicitly enabled first, which also queues a check.
 func (p *Pools) Verify(ctx context.Context, key Key, expected uint64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := p.manager.get(key); err != nil {
-		return err
-	}
-	if err := p.writes.LockContext(ctx); err != nil {
-		return err
-	}
-	defer p.writes.Unlock()
-	p.mu.Lock()
-	a := p.ensureManagement(key)
-	if a.state.Version != expected {
-		p.mu.Unlock()
-		return ErrPoolConflict
-	}
-	if a.state.Disabled {
-		p.mu.Unlock()
-		return ErrPaused
-	}
-	if a.verify || a.verifying {
-		p.mu.Unlock()
-		return ErrPoolConflict
-	}
-	a.state.Version++
-	a.state.UpdatedAt = time.Now()
-	a.state.Reason = "verification-requested"
-	a.state.Quarantined = true
-	a.verify = true
-	a.dirty = true
-	p.wakeAccountLocked(key)
-	p.publishLocked()
-	p.mu.Unlock()
-	p.signal()
-	return p.flushManagement(ctx, key)
+	return p.queueVerification(ctx, key, expected, RecoverLogin)
 }
 
 func ready(s Status, t Transport) bool {
@@ -360,17 +377,24 @@ func (p *Pools) memberLocked(key Key, t Transport) MemberSnapshot {
 	if a == nil {
 		return out
 	}
-	out.Management = a.state
+	out.Management = cloneManagement(a.state)
+	out.Verifying = a.verifying
 	out.Persisted = !a.dirty
 	switch {
 	case a.state.Disabled || s.Paused:
 		out.State = "disabled"
+	case a.state.Suspicious:
+		out.State = "needs-verification"
+	case a.state.ProxyUnavailable:
+		out.State = "proxy-unavailable"
 	case a.verifying:
 		out.State = "verifying"
 	case time.Now().Before(a.state.CooldownUntil):
 		out.State = "cooling"
 	case a.state.Quarantined || a.state.PendingInvalidation:
 		out.State = "invalid"
+	case usageReason(a.state, time.Now()) != "":
+		out.State = usageReason(a.state, time.Now())
 	case a.dirty:
 		out.State = "pending"
 	case ready(s, t):
@@ -475,7 +499,7 @@ func (p *Pools) Acquire(ctx context.Context, key PoolKey, t Transport) (*Attempt
 		a := p.accounts[k]
 		if !q.state.Disabled && a != nil && p.memberLocked(k, t).State == "available" {
 			s := p.status(k)
-			out := &Attempt{Pool: key, Account: k, SelectionVersion: q.state.SelectionVersion, ManagementVersion: a.state.Version, CredentialVersion: s.Version, Transport: t, owner: p}
+			out := &Attempt{Pool: key, Account: k, SelectionVersion: q.state.SelectionVersion, ManagementVersion: a.state.Generation, CredentialVersion: s.Version, Transport: t, owner: p}
 			p.mu.Unlock()
 			return out, nil
 		}
@@ -510,7 +534,7 @@ func (p *Pools) ValidateAttempt(a *Attempt) error {
 func (p *Pools) validateAttemptLocked(a *Attempt) error {
 	q := p.pools[a.Pool]
 	m := p.accounts[a.Account]
-	if q == nil || q.state.Deleted || q.state.Disabled || q.state.CurrentID != a.Account.ID || q.state.SelectionVersion != a.SelectionVersion || m == nil || m.state.Version != a.ManagementVersion || p.memberLocked(a.Account, a.Transport).State != "available" {
+	if q == nil || q.state.Deleted || q.state.Disabled || q.state.CurrentID != a.Account.ID || q.state.SelectionVersion != a.SelectionVersion || m == nil || m.state.Generation != a.ManagementVersion || m.state.Disabled || m.state.Quarantined || m.state.Suspicious || m.state.ProxyUnavailable || m.verifying {
 		return ErrAttemptChanged
 	}
 	if p.status(a.Account).Version != a.CredentialVersion {
@@ -523,7 +547,13 @@ func (p *Pools) validateAttemptLocked(a *Attempt) error {
 // these dirty records, retries persistence, then chooses replacements. Ordinary
 // 403, timeout and parsing failures never change selection.
 func (p *Pools) ReportFailure(a *Attempt, outcome Outcome, taskID uint64) bool {
-	if a == nil || a.owner != p || (outcome != Expired && outcome != Challenge && outcome != ProxyUnavailable) {
+	if a == nil {
+		return false
+	}
+	return p.reportFailure(a, outcome, taskID, a.Transport)
+}
+func (p *Pools) reportFailure(a *Attempt, outcome Outcome, taskID uint64, t Transport) bool {
+	if a == nil || a.owner != p || (outcome != NeedsVerify && outcome != Expired && outcome != Challenge && outcome != ProxyUnavailable) {
 		return false
 	}
 	p.mu.Lock()
@@ -534,34 +564,63 @@ func (p *Pools) ReportFailure(a *Attempt, outcome Outcome, taskID uint64) bool {
 	e, _ := p.manager.get(a.Account)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	// Explicit account APIs may refresh credentials independently of Pools.mu.
-	// Compare while holding the credential lock, immediately before invalidation.
 	if e.version != a.CredentialVersion {
 		return false
 	}
 	m := p.accounts[a.Account]
-	m.state.Version++
-	m.state.Quarantined = true
-	m.state.PendingInvalidation = true
-	m.state.UpdatedAt = time.Now()
+	now := time.Now()
+	m.state.advanceControl()
+	m.state.Generation++
+	m.state.UpdatedAt = now
 	m.state.TriggerTaskID = taskID
-	m.state.Reason = "expired"
-	if outcome == Challenge {
-		m.state.Reason = "manual-verification"
-	}
-	if outcome == ProxyUnavailable {
+	m.state.CredentialVersion = e.version
+	m.state.BrowserVersion = e.browserRevision
+	m.state.CheckTransport = t
+	m.state.InvalidChecks = 0
+	m.state.UnknownChecks = 0
+	m.state.ProxyChecks = 0
+	m.state.SuspectSince = now
+	m.state.VerificationMode = CheckExisting
+	switch outcome {
+	case NeedsVerify:
+		m.state.Suspicious = true
+		m.state.Reason = "needs-verification"
+		m.state.NextVerifyAt = now.Add(m.state.Policy.Buffer)
+		m.verify = true
+		m.state.VerificationPending = true
+	case ProxyUnavailable:
+		m.state.ProxyUnavailable = true
 		m.state.Reason = "fixed-proxy-unavailable"
+		m.state.NextVerifyAt = now.Add(m.state.Policy.Buffer)
+		m.verify = true
+		m.state.VerificationPending = true
+	case Challenge:
+		m.state.Quarantined = true
+		m.state.Reason = "manual-verification"
+		m.verify = false
+		m.state.VerificationPending = false
+	case Expired:
+		m.state.Quarantined = true
+		m.state.PendingInvalidation = true
+		m.state.Reason = "expired"
+		m.verify = false
+		m.state.VerificationPending = false
+		if t == HTTP || t == Both {
+			if e.current != nil {
+				e.seed = e.current.Values
+			}
+			e.current = nil
+			e.lastCheck = time.Time{}
+			e.version++
+		}
+		if t == Browser || t == Both {
+			e.pageState = nil
+			e.browserCheck = time.Time{}
+			e.browserRevision++
+		}
 	}
 	m.dirty = true
-	if e.current != nil {
-		e.seed = e.current.Values
-	}
-	e.current = nil
-	e.lastCheck = time.Time{}
-	e.pageState = nil
-	e.browserCheck = time.Time{}
-	e.version++
-	e.browserRevision++
+	p.eventLocked(m, m.state.Reason, m.state.Reason)
 	p.wakeAccountLocked(a.Account)
 	p.publishLocked()
 	p.signal()
@@ -575,7 +634,7 @@ func (p *Pools) flushManagement(ctx context.Context, key Key) error {
 		p.mu.Unlock()
 		return nil
 	}
-	s, expected := a.state, a.persisted
+	s, expected := cloneManagement(a.state), a.persisted
 	p.mu.Unlock()
 	if err := p.store.SaveManagementCAS(ctx, s, expected); err != nil {
 		return &Failure{Code: "management-state-save-failed", Cause: err}
@@ -600,6 +659,9 @@ func (p *Pools) run() {
 			return
 		case <-p.wake:
 		case <-ticker.C:
+			p.mu.Lock()
+			p.publishLocked()
+			p.mu.Unlock()
 		}
 	}
 }
@@ -638,8 +700,12 @@ func (p *Pools) reconcile() {
 		p.writes.Unlock()
 		p.mu.Lock()
 		a := p.accounts[key]
-		verify := a.verify
-		auto := p.options.ReverifyInterval > 0 && a.state.Quarantined && a.state.Reason != "manual-verification" && time.Since(a.lastVerify) >= p.options.ReverifyInterval && !time.Now().Before(a.state.CooldownUntil)
+		verify := (a.verify || a.state.VerificationPending || a.state.Suspicious || (a.state.ProxyUnavailable && !a.state.Quarantined)) && !time.Now().Before(a.state.NextVerifyAt)
+		recovery := a.state.Policy.RecoveryInterval
+		if recovery == 0 {
+			recovery = p.options.ReverifyInterval
+		}
+		auto := recovery > 0 && a.state.Quarantined && a.state.Reason != "manual-verification" && !p.status(key).Paused && !a.state.Suspicious && time.Since(a.state.UpdatedAt) >= recovery && !time.Now().Before(a.state.CooldownUntil)
 		if a.state.Disabled || a.dirty {
 			verify = false
 			auto = false
@@ -676,71 +742,96 @@ func (p *Pools) requiredTransport(key Key) Transport {
 			}
 		}
 	}
-	return t
-}
-
-func (p *Pools) verifyAccount(key Key, t Transport, attempts int, cooldown time.Duration, explicit bool) {
-	p.mu.Lock()
-	a := p.accounts[key]
-	if a == nil || a.state.Disabled || a.verifying || (!explicit && (a.state.Quarantined || time.Now().Before(a.state.CooldownUntil))) {
-		p.mu.Unlock()
-		return
-	}
-	version := a.state.Version
-	a.verifying = true
-	a.verify = false
-	p.publishLocked()
-	p.mu.Unlock()
-	var err error
-	for i := 0; i < attempts; i++ {
-		ctx, cancel := context.WithTimeout(p.ctx, p.options.VerifyTimeout)
-		if p.options.Context != nil {
-			ctx = p.options.Context(ctx, key)
-		}
-		err = p.verifyTransport(ctx, key, t)
-		cancel()
-		if err == nil || errors.Is(err, ErrChallenge) || p.ctx.Err() != nil {
-			break
-		}
-	}
-	p.mu.Lock()
-	a = p.accounts[key]
-	a.verifying = false
-	a.lastVerify = time.Now()
-	if identityOrSiteFailure(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		p.publishLocked()
-		p.mu.Unlock()
-		return
-	}
-	if a.state.Version == version && !a.state.Disabled {
-		a.state.Version++
-		a.state.UpdatedAt = time.Now()
-		a.state.PendingInvalidation = false
-		a.dirty = true
-		if err == nil {
-			a.state.Quarantined = false
-			a.state.CooldownUntil = time.Time{}
-			a.state.Reason = ""
-		} else {
-			a.state.Quarantined = true
-			a.state.CooldownUntil = time.Now().Add(cooldown)
-			a.state.Reason = "verification-failed"
-			if errors.Is(err, ErrChallenge) {
-				a.state.Reason = "manual-verification"
+	if t == "" {
+		if e, err := p.manager.get(key); err == nil {
+			if e.config.Login != nil {
+				t = HTTP
+			}
+			if e.config.Browser != nil {
+				if t == HTTP {
+					t = Both
+				} else {
+					t = Browser
+				}
 			}
 		}
 	}
-	p.wakeAccountLocked(key)
-	p.publishLocked()
-	p.mu.Unlock()
-	if p.writes.LockContext(p.ctx) != nil {
+	return t
+}
+
+// verifyAccount schedules work on the existing coordinator's bounded worker set.
+// Account-level coalescing prevents multiple pools from checking the same state.
+func (p *Pools) verifyAccount(key Key, t Transport, attempts int, cooldown time.Duration, explicit bool) {
+	p.mu.Lock()
+	a := p.accounts[key]
+	if a == nil || a.state.Disabled || a.verifying || p.activeSites[key.Site] || a.dirty || time.Now().Before(a.state.NextVerifyAt) || (!explicit && (p.status(key).Paused || a.state.Quarantined || a.state.Suspicious || a.state.ProxyUnavailable || time.Now().Before(a.state.CooldownUntil))) {
+		p.mu.Unlock()
 		return
 	}
-	_ = p.flushManagement(p.ctx, key)
-	p.writes.Unlock()
+	select {
+	case p.workers <- struct{}{}:
+	default:
+		p.mu.Unlock()
+		return
+	}
+	a.verifying = true
+	p.activeSites[key.Site] = true
+	a.verify = false
+	mode := a.state.VerificationMode
+	if explicit && a.state.Quarantined && !a.state.Suspicious && !a.state.VerificationPending {
+		mode = RecoverLogin
+		if a.state.ProxyUnavailable {
+			mode = CheckExisting
+		}
+	}
+	if mode == "" {
+		mode = RecoverLogin
+	}
+	if a.state.CheckTransport != "" {
+		t = a.state.CheckTransport
+	}
+	state := cloneManagement(a.state)
+	p.workerWG.Add(1)
+	p.publishLocked()
+	p.mu.Unlock()
+	go func() {
+		defer p.workerWG.Done()
+		defer func() { <-p.workers; p.mu.Lock(); delete(p.activeSites, key.Site); p.mu.Unlock(); p.signal() }()
+		var err error = &Failure{Code: "verification-aborted"}
+		var checkedVersion, checkedBrowser uint64
+		defer func() {
+			if recover() != nil {
+				err = &Failure{Code: "verification-panic"}
+			}
+			p.finishVerification(key, t, state, mode, checkedVersion, checkedBrowser, err, cooldown)
+		}()
+		timeout := state.Policy.VerifyTimeout
+		if p.options.VerifyTimeout < timeout {
+			timeout = p.options.VerifyTimeout
+		}
+		ctx, cancel := context.WithTimeout(p.ctx, timeout)
+		defer cancel()
+		if p.options.Context != nil {
+			ctx = p.options.Context(ctx, key)
+		}
+		if mode == CheckExisting {
+			checkedVersion, checkedBrowser, err = p.checkTransport(ctx, key, t, state.CredentialVersion, state.BrowserVersion)
+		} else {
+			for i := 0; i < attempts; i++ {
+				err = p.verifyTransport(ctx, key, t)
+				if err == nil || errors.Is(err, ErrChallenge) || errors.Is(err, ErrBudget) || ctx.Err() != nil {
+					break
+				}
+			}
+		}
+		if err == nil {
+			err = ctx.Err()
+		}
+	}()
 }
 
 func (p *Pools) verifyTransport(ctx context.Context, key Key, t Transport) (err error) {
+	ctx = context.WithValue(ctx, coordinatorContextKey{}, true)
 	defer func() {
 		if recover() != nil {
 			err = &Failure{Code: "verification-panic"}
@@ -793,9 +884,18 @@ func (p *Pools) reconcilePool(key PoolKey) {
 	}
 	s := clonePool(q.state)
 	current := Key{Site: key.Site, ID: s.CurrentID}
-	if s.CurrentID != "" && p.memberLocked(current, s.Transport).State == "available" {
-		p.mu.Unlock()
-		return
+	if s.CurrentID != "" {
+		member := p.memberLocked(current, s.Transport)
+		a := p.accounts[current]
+		if member.State == "available" {
+			p.mu.Unlock()
+			p.preverifyStandbys(s)
+			return
+		}
+		if a != nil && !a.state.Disabled && (a.state.Suspicious || (a.state.ProxyUnavailable && !a.state.Quarantined) || a.verifying || usageReason(a.state, time.Now()) != "") {
+			p.mu.Unlock()
+			return
+		}
 	}
 	ids := append([]string(nil), s.Members...)
 	if s.CurrentID != "" {
@@ -814,7 +914,7 @@ func (p *Pools) reconcilePool(key PoolKey) {
 		p.mu.Lock()
 		a := p.accounts[k]
 		member := p.memberLocked(k, s.Transport)
-		pending := a != nil && !a.dirty && !member.Paused && !a.state.Disabled && !a.state.Quarantined && !a.state.PendingInvalidation && !time.Now().Before(a.state.CooldownUntil)
+		pending := a != nil && !a.dirty && !member.Paused && !a.state.Disabled && !a.state.Quarantined && !a.state.Suspicious && !a.state.ProxyUnavailable && !a.state.PendingInvalidation && !time.Now().Before(a.state.CooldownUntil)
 		p.mu.Unlock()
 		if member.State == "available" {
 			selected = id
@@ -833,6 +933,7 @@ func (p *Pools) reconcilePool(key PoolKey) {
 				selected = id
 				break
 			}
+			return
 		}
 	}
 	if p.writes.LockContext(p.ctx) != nil {
@@ -846,6 +947,18 @@ func (p *Pools) reconcilePool(key PoolKey) {
 		return
 	}
 	q.nextScan = time.Now().Add(s.Cooldown)
+	if selected == "" && !q.exhaustedNotified && len(s.Members) > 0 {
+		a := p.accounts[Key{Site: key.Site, ID: s.Members[0]}]
+		if a != nil {
+			a.state.Version++
+			a.dirty = true
+			p.eventForPoolLocked(a, key, "pool-exhausted", "no-verified-account")
+			q.exhaustedNotified = true
+		}
+	}
+	if selected != "" {
+		q.exhaustedNotified = false
+	}
 	if q.state.CurrentID == selected {
 		p.mu.Unlock()
 		return

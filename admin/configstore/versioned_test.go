@@ -21,6 +21,7 @@ func TestRuntimePolicyRequiresCAS(t *testing.T) {
 }
 func TestRuntimePolicyCASCreationAndConditionalUpdate(t *testing.T) {
 	f := gormfake.New()
+	f.EnableTransactionStatements()
 	s := New(gormfake.MustOpen(f))
 	ctx := context.Background()
 	if _, v, e := s.LoadVersioned(ctx, KeyRuntimePolicy); e != nil || v != 0 {
@@ -45,6 +46,7 @@ func TestRuntimePolicyCASCreationAndConditionalUpdate(t *testing.T) {
 }
 func TestRuntimePolicyVersionedReadAndFailures(t *testing.T) {
 	f := gormfake.New()
+	f.EnableTransactionStatements()
 	s := New(gormfake.MustOpen(f))
 	ctx := context.Background()
 	f.SetRow(map[string]driver.Value{"cfg_val": []byte(`{"schema_version":1}`), "revision": int64(9)})

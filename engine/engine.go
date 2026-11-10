@@ -48,18 +48,21 @@ type Engine struct {
 	stages map[string]*stageInfo
 	// pools 活池登记表：阶段键 -> 当前活着的池。投递/关停/错误通道都从它取池，
 	// 不再散落在 stageInfo.workerPool 上（那是裸指针，池一旦懒建/回收就会并发读写）。
-	pools              *poolRegistry
-	mu                 sync.RWMutex
-	cfg                *config.Config
-	browserPool        *browser.Pool
-	htmlClient         *htmlfetch.Client
-	accountManager     *account.Manager                    // optional explicit account runtime, guarded by mu
-	identityManager    *identityruntime.Manager            // optional stable identity runtime, independent of account registration
-	statsQueue         map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
-	stageTotals        map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
-	errorCh            chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
-	errorForwardCancel map[string]*poolForwarder           // 每阶段错误转发协程（停机信号 + 归属池）；e.mu 保护
-	dedupCache         *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
+	pools                   *poolRegistry
+	mu                      sync.RWMutex
+	cfg                     *config.Config
+	browserPool             *browser.Pool
+	htmlClient              *htmlfetch.Client
+	accountManager          *account.Manager // optional explicit account runtime, guarded by mu
+	accountEventUnsubscribe func()
+	accountAlertMu          sync.Mutex
+	accountAlertLast        map[string]time.Time
+	identityManager         *identityruntime.Manager            // optional stable identity runtime, independent of account registration
+	statsQueue              map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
+	stageTotals             map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
+	errorCh                 chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
+	errorForwardCancel      map[string]*poolForwarder           // 每阶段错误转发协程（停机信号 + 归属池）；e.mu 保护
+	dedupCache              *dedupCache                         // 有界去重表（LRU），key: 任务去重键；淘汰条目由 DB 唯一索引兜底
 
 	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
 	// 取任务点的闸门、入队点的寄放、后台的横幅/卡片/落库。
@@ -503,8 +506,15 @@ func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 // 为什么合成：暂停状态现在只有一处（pause.go），而后台的历史契约是"一条记录里既有熔断阈值
 // 又有暂停现场"。合成让 payload 的字段形状一个字都不变（只多一个 Source）。
 func (e *Engine) breakerStatusOf(site string) BreakerStatus {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	return e.breakerStatusOfLocked(site)
+}
+
+// breakerStatusOfLocked 调用方持有 breakerMu，快照不会被恢复/新熔断拆开。
+func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
 	var st BreakerStatus
-	if b := e.breakerFor(site); b != nil {
+	if b := e.siteBreaker[site]; b != nil {
 		st.Enabled = b.Enabled()
 		st.Window = b.Window()
 		st.Threshold = b.Threshold()
@@ -549,6 +559,7 @@ func (e *Engine) breakerStatusOf(site string) BreakerStatus {
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]StopStats) {
 	deadline := time.Now().Add(timeout)
 	e.cancel()
+	e.BindAccountHealthEvents(nil)
 	tickersDone := make(chan struct{})
 	go func() {
 		e.tickerWG.Wait()

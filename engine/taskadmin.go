@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -29,13 +30,13 @@ var (
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
 // 测试用 GORM 的 DryRun/ToSQL 断言条件确实写进了语句，而不是"先查再写"。
 func claimScope(db *gorm.DB, id uint) *gorm.DB {
-	return db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", id, models.TaskStatusPending)
+	return compensationScope(db.Model(&models.CrawlerTask{}).
+		Where("id = ? AND status = ?", id, models.TaskStatusPending))
 }
 
 func retryScope(db *gorm.DB, id uint, wasReprocess int) *gorm.DB {
-	return db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status <> ? AND reprocess = ?", id, models.TaskStatusProcessing, wasReprocess)
+	return compensationScope(db.Model(&models.CrawlerTask{}).
+		Where("id = ? AND status <> ? AND reprocess = ?", id, models.TaskStatusProcessing, wasReprocess))
 }
 
 // urgentScope 只对「还没加急过、且还没被取走」的行生效，防手抖双击与两人同点
@@ -110,15 +111,42 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	if err != nil {
 		return err
 	}
+	return e.retryTaskRecord(context.Background(), t, wasReprocess, nil)
+}
+
+// RetryTaskVersioned additionally fences a polling/release change since the OA
+// row was displayed. The legacy RetryTask contract uses only reprocess; callers
+// with a compensation preview should always supply this second version.
+func (e *Engine) RetryTaskVersioned(ctx context.Context, id uint, wasReprocess int, wasCompensationVersion uint64) error {
+	t, err := e.loadTask(id)
+	if err != nil {
+		return err
+	}
+	return e.retryTaskRecord(ctx, t, wasReprocess, &wasCompensationVersion)
+}
+
+func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, wasReprocess int, expected *uint64) error {
+	id := t.ID
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
+	if t.Status == models.TaskStatusProcessing {
+		return ErrTaskProcessing
+	}
+	if reason := e.compensationBlockedReason(t, time.Now()); reason != "" {
+		return blockedCompensationError(reason)
+	}
+	if expected != nil && *expected != t.CompensationVersion {
+		return ErrTaskChanged
+	}
 
-	res := retryScope(e.db, id, wasReprocess).
+	res := retryScope(e.db.WithContext(ctx), id, wasReprocess).
+		Where("status = ? AND `repeat` = ? AND compensation_version = ?", t.Status, t.Repeat, t.CompensationVersion).
 		Updates(map[string]any{
-			"status":    models.TaskStatusPending,
-			"retry":     0,
-			"reprocess": gorm.Expr("reprocess + 1"),
+			"status":               models.TaskStatusPending,
+			"retry":                0,
+			"reprocess":            gorm.Expr("reprocess + 1"),
+			"compensation_version": gorm.Expr("compensation_version + 1"),
 		})
 	if res.Error != nil {
 		return fmt.Errorf("reset task %d: %w", id, res.Error)
@@ -139,6 +167,7 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 			return nil
 		}
 		e.dedupCache.Delete(task.Unique())
+		e.markRequeueFailed("manual", t.ID, err)
 		return fmt.Errorf("submit task %d: %w", id, err)
 	}
 	return nil
@@ -152,6 +181,9 @@ func (e *Engine) whyRetryRejected(id uint) error {
 	}
 	if t.Status == models.TaskStatusProcessing {
 		return ErrTaskProcessing
+	}
+	if reason := e.compensationBlockedReason(t, time.Now()); reason != "" {
+		return blockedCompensationError(reason)
 	}
 	return ErrTaskChanged
 }
@@ -321,10 +353,7 @@ func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 		msg += "：" + reason
 	}
 	res := markFailedScope(e.db, id, e.startedAt).
-		Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", msg+"\n"),
-		})
+		Updates(taskStatusUpdates(models.TaskStatusFailed, WrapNoRetryKind("manual_failure", errors.New(msg))))
 	if res.Error != nil {
 		return fmt.Errorf("mark task %d failed: %w", id, res.Error)
 	}

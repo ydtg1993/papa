@@ -89,6 +89,15 @@ func TestPoolStickySharedFailureNoReplay(t *testing.T) {
 		}
 		fmt.Fprint(w, r.Header.Get("Authorization"))
 	}, "a", "b")
+	// This test covers a provider's strong expiry contract; default 401 is
+	// independently covered by the suspicious-state tests.
+	e, _ := m.get(Key{Site: "s", ID: "a"})
+	e.config.Classify = func(r *htmlfetch.Response, err error) Outcome {
+		if r != nil && r.StatusCode == 401 {
+			return Expired
+		}
+		return defaultClassify(r, err)
+	}
 	p := testPools(t, m, NewMemoryPoolStore())
 	k1 := createPool(t, p, "one", "a", "b")
 	k2 := createPool(t, p, "two", "a", "b")
@@ -440,7 +449,7 @@ func TestPoolBrowserExpiredDoesNotReloginOrReplayCallback(t *testing.T) {
 	}
 }
 
-func TestPoolFixedProxyAuthenticationFailureQuarantinesAccount(t *testing.T) {
+func TestPoolFixedProxyAuthenticationFailurePreservesCredentials(t *testing.T) {
 	fixedProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusProxyAuthRequired) }))
 	defer fixedProxy.Close()
 	m, srv, _ := poolManager(t, nil, "a", "b")
@@ -454,11 +463,19 @@ func TestPoolFixedProxyAuthenticationFailureQuarantinesAccount(t *testing.T) {
 	if !errors.Is(err, ErrFixedProxyUnavailable) {
 		t.Fatalf("expected fixed proxy classification: %v", err)
 	}
-	b := acquirePool(t, p, key)
-	if b.Account.ID != "b" {
-		t.Fatal("fixed proxy failure kept selecting broken member")
-	}
 	s, _ := p.Get(key)
+	if s.CurrentID != "a" || !s.Accounts[0].Management.ProxyUnavailable || s.Accounts[0].Management.Quarantined {
+		t.Fatal("proxy failure incorrectly invalidated identity")
+	}
+	e.mu.Lock()
+	retained := e.current != nil
+	e.mu.Unlock()
+	if !retained {
+		t.Fatal("proxy failure discarded credentials")
+	}
+	if available, _ := p.Readiness(key); available {
+		t.Fatal("unavailable proxy accepted work")
+	}
 	if s.Accounts[0].Management.Reason != "fixed-proxy-unavailable" {
 		t.Fatal("fixed proxy reason absent")
 	}

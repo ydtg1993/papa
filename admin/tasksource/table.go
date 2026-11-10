@@ -63,6 +63,13 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "p_id", Label: "父任务", Kind: oao.KindNumber, Width: "80px", NoEdit: true},
 			{Field: "stage", Label: "阶段"},
 			{Field: "site", Label: "站点", Width: "90px"}, // 多站时按站点分：熔断、日志、任务都按它
+			{Field: "account_pool", Label: "账号池", NoEdit: true},
+			{Field: "last_account_id", Label: "最近账号", NoEdit: true},
+			{Field: "failure_kind", Label: "失败分类", NoEdit: true},
+			{Field: "compensation_mode", Label: "补偿条件", NoEdit: true},
+			{Field: "compensation_reason", Label: "补偿原因", NoEdit: true, MaxLen: 40},
+			{Field: "next_compensation_at", Label: "最早补偿", Kind: oao.KindTime, NoEdit: true},
+			{Field: "compensation_version", Label: "补偿版本", Kind: oao.KindNumber, NoEdit: true},
 			{Field: "url", Label: "URL", Render: oao.RenderLink, Href: "{url}", NewTab: true},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Render: oao.RenderEnum, Enum: taskStatusEnum, Tone: taskStatusTone},
@@ -84,6 +91,9 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "url", Label: "URL", Op: oao.OpLike},
 			{Field: "stage", Label: "阶段", Op: oao.OpEq},
 			{Field: "site", Label: "站点", Op: oao.OpEq},
+			{Field: "account_pool", Label: "账号池", Op: oao.OpEq},
+			{Field: "last_account_id", Label: "最近账号", Op: oao.OpEq},
+			{Field: "compensation_mode", Label: "补偿条件", Op: oao.OpEq},
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Op: oao.OpIn, Options: taskStatusEnum},
 			{Field: "retry", Label: "重试次数 >", Kind: oao.KindNumber, Op: oao.OpGt},
@@ -94,6 +104,25 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 	}
 	if acts != nil {
 		t.Actions = taskActions(acts)
+		if release, ok := acts.(interface {
+			ReleaseTaskCompensation(context.Context, uint, uint64) error
+		}); ok {
+			t.Actions = append(t.Actions, oao.Action{
+				Key: "compensation_release", Label: "解除人工等待", Tone: oao.ToneWarn,
+				Confirm: "只解除任务的人工等待；账号、最早补偿时间仍须满足，随后可预览或重投。",
+				Handler: func(ctx context.Context, req oao.ActionRequest) error {
+					id, err := parseID(req)
+					if err != nil {
+						return err
+					}
+					version, err := strconv.ParseUint(req.RowString("compensation_version"), 10, 64)
+					if err != nil {
+						return oao.Fail(http.StatusBadRequest, "缺少有效补偿版本，请刷新页面")
+					}
+					return toOaoError(release.ReleaseTaskCompensation(ctx, id, version))
+				},
+			})
+		}
 	}
 	return t
 }
@@ -121,6 +150,15 @@ func taskActions(acts TaskActions) []oao.Action {
 				was, convErr := strconv.Atoi(raw)
 				if convErr != nil {
 					return oao.Fail(http.StatusBadRequest, "版本号 reprocess 不是整数：%q", raw)
+				}
+				if versioned, ok := acts.(interface {
+					RetryTaskVersioned(context.Context, uint, int, uint64) error
+				}); ok {
+					version, err := strconv.ParseUint(req.RowString("compensation_version"), 10, 64)
+					if err != nil {
+						return oao.Fail(http.StatusBadRequest, "缺少有效补偿版本，请刷新页面")
+					}
+					return toOaoError(versioned.RetryTaskVersioned(ctx, id, was, version))
 				}
 				return toOaoError(acts.RetryTask(id, was))
 			},
@@ -244,6 +282,8 @@ func toOaoError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, engine.ErrTaskBatchProtected):
+		return oao.Fail(http.StatusConflict, "%s", err)
+	case errors.Is(err, engine.ErrCompensationBlocked):
 		return oao.Fail(http.StatusConflict, "%s", err)
 	case errors.Is(err, engine.ErrTaskNotFound):
 		return oao.Fail(http.StatusNotFound, "任务不存在，可能已被删除")

@@ -26,8 +26,8 @@ type errorQueueState struct {
 func (e *Engine) errorQueueQuery() func() *gorm.DB {
 	cfg := e.cfg.ErrorQueue
 	return func() *gorm.DB {
-		q := e.db.Model(&models.CrawlerTask{}).
-			Where("status = ?", models.TaskStatusFailed)
+		q := compensationScope(e.db.Model(&models.CrawlerTask{}).
+			Where("status = ?", models.TaskStatusFailed))
 		if cfg.MaxRetry > 0 {
 			q = q.Where("reprocess < ?", cfg.MaxRetry)
 		}
@@ -58,6 +58,9 @@ func (e *Engine) requeueFailedTask() func(*models.CrawlerTask) bool {
 
 // requeueFailedTaskIn 单条重投的实体。
 func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
+	if e.compensationBlockedReason(t, time.Now()) != "" {
+		return false
+	}
 	// 站点也要看：阶段名只在本站内唯一，光按名字查会把另一站的同名阶段当成本站那个。
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
@@ -67,12 +70,17 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	//（一条 `repeatable + failed` 的行同时命中两个队列，两者各自有锁、互不互斥）：那一份被 worker
 	// 认领、正在跑，而这次无条件 UPDATE 照样把它改回 pending 并再投一份 → 同一行被两个 worker
 	// 并发执行。带上 status 之后：已经不是 failed 的行（正在跑 / 已终态）匹配不上，0 行 → 跳过。
-	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", t.ID, models.TaskStatusFailed).
+	reset := compensationVersionScope(e.db.Model(&models.CrawlerTask{}).
+		Where("id = ? AND status = ?", t.ID, models.TaskStatusFailed), t)
+	if e.cfg.ErrorQueue.MaxRetry > 0 {
+		reset = reset.Where("reprocess < ?", e.cfg.ErrorQueue.MaxRetry)
+	}
+	res := reset.
 		Updates(map[string]any{
-			"status":    models.TaskStatusPending,
-			"retry":     0,
-			"reprocess": gorm.Expr("reprocess + 1"),
+			"status":               models.TaskStatusPending,
+			"retry":                0,
+			"reprocess":            gorm.Expr("reprocess + 1"),
+			"compensation_version": gorm.Expr("compensation_version + 1"),
 		})
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())

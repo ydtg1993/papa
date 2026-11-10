@@ -14,6 +14,9 @@ func (a *App) accountPoolsAPI(w http.ResponseWriter, r *http.Request) {
 		v := map[string]any{"configured": p != nil, "pools": []account.PoolSnapshot{}, "accounts": a.Engine.AccountStatus()}
 		if p != nil {
 			v["pools"] = p.Snapshot()
+			v["events"] = p.Events(account.Key{}, 0)
+			v["default_policy"] = account.DefaultPolicy()
+			v["event_retention"] = 100
 		}
 		if a.BrowserIdentities() != nil {
 			if identityView, err := a.identityView(r.Context(), ""); err == nil {
@@ -44,12 +47,13 @@ func (a *App) accountPoolsAPI(w http.ResponseWriter, r *http.Request) {
 		Key      account.PoolKey    `json:"key"`
 		Account  account.Key        `json:"account"`
 		Disabled bool               `json:"disabled"`
+		Policy   account.Policy     `json:"policy"`
 	}
 	if err := strictJSON(http.MaxBytesReader(w, r.Body, 64<<10), &input); err != nil {
 		writeRuntimeJSON(w, 400, map[string]any{"error": "账号池请求格式无效"})
 		return
 	}
-	if input.Action != "save" && input.Action != "delete" && input.Action != "disable" && input.Action != "verify" {
+	if input.Action != "save" && input.Action != "delete" && input.Action != "disable" && input.Action != "verify" && input.Action != "check" && input.Action != "policy" {
 		writeRuntimeJSON(w, 400, map[string]any{"error": "未知账号池操作"})
 		return
 	}
@@ -87,6 +91,10 @@ func (a *App) accountPoolsAPI(w http.ResponseWriter, r *http.Request) {
 		err = p.SetDisabled(ctx, input.Account, input.Disabled, input.Revision)
 	case "verify":
 		err = p.Verify(a.Engine.RuntimeContext(ctx, input.Account.Site), input.Account, input.Revision)
+	case "check":
+		err = p.CheckExisting(a.Engine.RuntimeContext(ctx, input.Account.Site), input.Account, input.Revision)
+	case "policy":
+		err = p.SetPolicy(ctx, input.Account, input.Policy, input.Revision)
 	default:
 		err = errors.New("未知账号池操作")
 	}
@@ -97,7 +105,7 @@ func (a *App) accountPoolsAPI(w http.ResponseWriter, r *http.Request) {
 	target := input.Key.Site + ":" + input.Key.Name
 	if input.Action == "save" {
 		target = input.Config.Key.Site + ":" + input.Config.Key.Name
-	} else if input.Action == "disable" || input.Action == "verify" {
+	} else if input.Action == "disable" || input.Action == "verify" || input.Action == "check" || input.Action == "policy" {
 		target = input.Account.Site + ":" + input.Account.ID
 	}
 	a.runtimeAudit(r, "account_pools", input.Action, target, safeErr)

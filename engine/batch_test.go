@@ -68,7 +68,7 @@ func TestMarkRequeueFailedSkipsAlreadyFailed(t *testing.T) {
 
 	sql := f.written() // 空
 	e.markRequeueFailed(recoverQueueName, 7, errNotSubmitted)
-	if !strings.Contains(f.written(), "status <>") {
+	if !strings.Contains(f.written(), "status = ?") {
 		t.Fatalf("守卫应写在语句里：\n%s", f.written())
 	}
 	_ = sql

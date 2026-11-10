@@ -179,6 +179,8 @@
 
 YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略持久化到 `crawler_config.runtime_policy`，revision 以表列为权威；读取失败不回退更宽松默认。只读页面不触发账号验证或代理探测。流程、请求覆盖与浏览器边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 
+账号健康政策、使用预算与备用预验证不是 `runtime` YAML 的另一份覆盖：前者按账号保存到管理状态，后者按池保存，可由 OA 动态调整。默认缓冲 10 秒、两次间隔确认、未知结果退避；使用额度与自动恢复默认关闭。正式字段、默认值及跨池共享语义见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md)。账号接入需由业务显式注册 Provider 和外部密钥支持的 Secrets 存储，不在 YAML 或任务 Meta 中保存明文密码，见 [ACCOUNT_ONBOARDING.md](ACCOUNT_ONBOARDING.md)。
+
 ### db —— 数据库
 
 | 键 | 类型 | 说明 |
@@ -420,11 +422,11 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 不再带任何"给旧库补课"的显式迁移（删旧索引、改列类型、回填、删死列那些都删掉了）。
 从更早版本升级时，应核对已有 schema 和数据。`AutoMigrate` 仍可能调整其支持的类型或约束，但不会执行上述历史专项修复，也不会代替业务的数据迁移脚本。
 
-框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config`、`crawler_account_pools`、`crawler_account_management` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
-运行治理升级还会补 `crawler_config.revision` 与 `crawler_tasks.account_pool`。账号池表保存成员、当前选择和有界切换记录；管理表保存停用、隔离、冷却及待处理失效状态，不保存 Cookie/Token。普通启动只检查结构并加载状态，不自动加表/列；即使默认未启用控制器，也应完成本次显式迁移。
+运行治理升级补 `crawler_config.revision` 与 `crawler_tasks.account_pool`；本轮新增任务失败类别、补偿条件/时间/原因/CAS 版本、最近账号与选择版本、最近 8 次尝试 JSON。账号池表保存成员、当前选择和有界切换记录；管理表保存健康政策、核验进度、预算与有界事件，不保存 Cookie/Token。账号资料表只保存资料与加密存储引用，策略历史表保留最近 100 个覆盖版本。普通启动只检查结构并加载状态，不自动加表/列；即使默认未启用控制器，也应完成显式迁移。
 
 **业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是 `internal/models`
 包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。

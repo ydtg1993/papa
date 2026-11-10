@@ -11,14 +11,14 @@ import (
 // 启动期结构检查的三条结局：缺表 / 缺索引 / 查询失败。
 // 用假库（能返回行、能按语句配错误）—— 真库那条路只在 NewApp 里跑一次，这里验判据本身。
 func TestCheckFrameworkSchema(t *testing.T) {
-	zeroCfg := &config.Config{} // 操作日志/追踪都关：框架表只剩 tasks / access_token / config
+	zeroCfg := &config.Config{} // 操作日志和追踪关闭，仍检查基础框架表。
 
-	t.Run("三张表都在、两个索引导都在", func(t *testing.T) {
+	t.Run("任务表与两个索引都在", func(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"table_name": "crawler_tasks"})
 		f.SetCounts(1, 1) // 两个 HasIndexNamed 的 COUNT 都走 countAll
 
-		// 假库只回一行：只证明 crawler_tasks 在；另外两张按"缺失"返回。
+		// 假库只回一行：只证明 crawler_tasks 在；其余框架表按"缺失"返回。
 		missing, missingIndexes, err := checkFrameworkSchema(gormfake.MustOpen(f), zeroCfg)
 		if err != nil {
 			t.Fatalf("checkFrameworkSchema = %v", err)
@@ -26,7 +26,7 @@ func TestCheckFrameworkSchema(t *testing.T) {
 		if len(missingIndexes) != 0 {
 			t.Fatalf("索引都在时不该报缺索引，实得 %v", missingIndexes)
 		}
-		want := []string{"crawler_access_token", "crawler_config", "crawler_browser_profiles", "crawler_browser_identity_bindings", "crawler_account_pools", "crawler_account_management"}
+		want := []string{"crawler_access_token", "crawler_config", "crawler_runtime_policy_history", "crawler_browser_profiles", "crawler_browser_identity_bindings", "crawler_account_pools", "crawler_account_management", "crawler_account_profiles"}
 		if len(missing) != len(want) {
 			t.Fatalf("missing = %v, want %v（假库只回了一行）", missing, want)
 		}
@@ -48,8 +48,8 @@ func TestCheckFrameworkSchema(t *testing.T) {
 		if len(missingIndexes) != 0 {
 			t.Fatalf("表都不在时不该再报缺索引（已包含在缺表里），实得 %v", missingIndexes)
 		}
-		if len(missing) != 7 {
-			t.Fatalf("missing = %v, want 7 张框架表", missing)
+		if len(missing) != 9 {
+			t.Fatalf("missing = %v, want 9 张框架表", missing)
 		}
 	})
 

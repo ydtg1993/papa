@@ -35,11 +35,12 @@ func New() *DB { return &DB{affected: 1, lastInsertID: 1} }
 type DB struct {
 	mu sync.Mutex
 
-	row          map[string]driver.Value // 单行查询（如 `SELECT operator … LIMIT 1`）返回的行；nil = 一行都没有
-	countEnabled int64                   // `count(*)` 且 SQL 里带 enabled 条件时的返回值
-	countAll     int64                   // 其余 `count(*)` 的返回值
-	lastInsertID int64
-	affected     int64
+	row                   map[string]driver.Value // 单行查询（如 `SELECT operator … LIMIT 1`）返回的行；nil = 一行都没有
+	countEnabled          int64                   // `count(*)` 且 SQL 里带 enabled 条件时的返回值
+	countAll              int64                   // 其余 `count(*)` 的返回值
+	lastInsertID          int64
+	affected              int64
+	transactionStatements bool
 
 	// queryErr / queryErrSub：SQL 里含 queryErrSub 的查询报 queryErr（空串 = 全部查询都报）——
 	// 这样能精确驱动"数数失败"与"取令牌那一句失败"这两条不同的 fail-closed 分支。
@@ -90,6 +91,15 @@ func (d *DB) SetExecError(err string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.execErr = errOf(err)
+}
+
+// EnableTransactionStatements allows testing SQL and API branches inside an
+// explicit transaction. It does NOT model rollback, isolation or persistence;
+// those guarantees must be tested against an isolated real database.
+func (d *DB) EnableTransactionStatements() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.transactionStatements = true
 }
 
 // Written 返回执行过的语句（含参数，空格归一）。
@@ -156,7 +166,19 @@ var (
 
 func (c *conn) Prepare(string) (driver.Stmt, error) { return nil, driver.ErrSkip }
 func (c *conn) Close() error                        { return nil }
-func (c *conn) Begin() (driver.Tx, error)           { return nil, errors.New("gormfake: 不支持事务") }
+func (c *conn) Begin() (driver.Tx, error) {
+	c.d.mu.Lock()
+	defer c.d.mu.Unlock()
+	if !c.d.transactionStatements {
+		return nil, errors.New("gormfake: 不支持事务")
+	}
+	return statementTransaction{}, nil
+}
+
+type statementTransaction struct{}
+
+func (statementTransaction) Commit() error   { return nil }
+func (statementTransaction) Rollback() error { return nil }
 
 func (c *conn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	c.d.record(query, args)

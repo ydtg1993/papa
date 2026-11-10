@@ -51,6 +51,7 @@ cd mycrawler && go mod tidy
 | 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
 | 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
 | 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
+| OA 添加账号、多方式登录与远程人工操作 | [ACCOUNT_ONBOARDING.md](./ACCOUNT_ONBOARDING.md) | 业务 Provider、候选身份确认、加密保存、受控画面与超时回收 |
 | 固定浏览器身份、账号/匿名会话绑定与本地检查 | [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md) | 档案版本、排空复验、稳定会话键、网站挑战分类及诊断边界 |
 | 调整采集策略、AutoThrottle、资源预算、账号池与代理健康 | [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md) | 默认开关、YAML/OA 优先级、CAS 与重启、异步账号补偿和实际覆盖边界 |
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |

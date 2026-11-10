@@ -40,8 +40,10 @@ type PoolConfig struct {
 	VerifyAttempts int       `json:"verify_attempts"`
 	// SwitchLimit bounds candidates checked in one scheduling round. Later rounds
 	// continue after Cooldown, never spin or silently reset invalid accounts.
-	SwitchLimit int           `json:"switch_limit"`
-	Cooldown    time.Duration `json:"cooldown"`
+	SwitchLimit   int           `json:"switch_limit"`
+	Cooldown      time.Duration `json:"cooldown"`
+	StandbyTarget int           `json:"standby_target"`
+	StandbyTTL    time.Duration `json:"standby_ttl"`
 }
 
 type SwitchRecord struct {
@@ -66,15 +68,36 @@ type PoolState struct {
 // ManagementState is separate from credential state. It never stores a third
 // readiness flag: eligibility combines these exclusions with Manager auth state.
 type ManagementState struct {
-	Key                 Key       `json:"key"`
-	Version             uint64    `json:"version"`
-	Disabled            bool      `json:"disabled"`
-	Quarantined         bool      `json:"quarantined"`
-	CooldownUntil       time.Time `json:"cooldown_until"`
-	Reason              string    `json:"reason,omitempty"`
-	PendingInvalidation bool      `json:"pending_invalidation"`
-	TriggerTaskID       uint64    `json:"trigger_task_id,omitempty"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	Key     Key    `json:"key"`
+	Version uint64 `json:"version"`
+	// LastControlVersion is the latest Version that changed policy or health.
+	// Pure usage and event writes advance Version without invalidating OA edits.
+	LastControlVersion  uint64           `json:"last_control_version"`
+	Generation          uint64           `json:"generation"`
+	Disabled            bool             `json:"disabled"`
+	Quarantined         bool             `json:"quarantined"`
+	CooldownUntil       time.Time        `json:"cooldown_until"`
+	Reason              string           `json:"reason,omitempty"`
+	PendingInvalidation bool             `json:"pending_invalidation"`
+	TriggerTaskID       uint64           `json:"trigger_task_id,omitempty"`
+	UpdatedAt           time.Time        `json:"updated_at"`
+	Suspicious          bool             `json:"suspicious"`
+	ProxyUnavailable    bool             `json:"proxy_unavailable"`
+	VerificationMode    VerificationMode `json:"verification_mode,omitempty"`
+	VerificationPending bool             `json:"verification_pending"`
+	CredentialVersion   uint64           `json:"credential_version"`
+	BrowserVersion      uint64           `json:"browser_version"`
+	CheckTransport      Transport        `json:"check_transport,omitempty"`
+	NextVerifyAt        time.Time        `json:"next_verify_at"`
+	SuspectSince        time.Time        `json:"suspect_since"`
+	InvalidChecks       int              `json:"invalid_checks"`
+	UnknownChecks       int              `json:"unknown_checks"`
+	ProxyChecks         int              `json:"proxy_checks"`
+	LastVerifiedAt      time.Time        `json:"last_verified_at"`
+	LastVerification    string           `json:"last_verification,omitempty"`
+	Policy              Policy           `json:"policy"`
+	Usage               Usage            `json:"usage"`
+	Events              []HealthEvent    `json:"events,omitempty"`
 }
 
 // PoolStore persists selection and management with compare-and-swap. Save must
@@ -89,9 +112,10 @@ type PoolStore interface {
 
 type PoolOptions struct {
 	// Context attaches site request budgets to coordinator authentication traffic.
-	Context       func(context.Context, Key) context.Context
-	ScanInterval  time.Duration
-	VerifyTimeout time.Duration
+	Context           func(context.Context, Key) context.Context
+	ScanInterval      time.Duration
+	VerifyTimeout     time.Duration
+	VerifyConcurrency int
 	// ReverifyInterval is opt-in. Disabled and manual-challenge accounts are never
 	// automatically restored. Expired cooldown merely permits another check.
 	ReverifyInterval time.Duration
@@ -103,6 +127,7 @@ type MemberSnapshot struct {
 	Management ManagementState `json:"management"`
 	State      string          `json:"state"`
 	Persisted  bool            `json:"persisted"`
+	Verifying  bool            `json:"verifying"`
 }
 
 type PoolSnapshot struct {
@@ -137,7 +162,7 @@ func AttemptFromContext(ctx context.Context) (*Attempt, bool) {
 	return a, ok && a != nil
 }
 func IsAttemptFailure(err error) bool {
-	return errors.Is(err, ErrExpired) || errors.Is(err, ErrChallenge) || errors.Is(err, ErrAttemptChanged) || errors.Is(err, ErrPoolDisabled) || errors.Is(err, ErrPaused) || errors.Is(err, ErrFixedProxyUnavailable)
+	return errors.Is(err, ErrNeedsVerify) || errors.Is(err, ErrBudget) || errors.Is(err, ErrExpired) || errors.Is(err, ErrChallenge) || errors.Is(err, ErrAttemptChanged) || errors.Is(err, ErrPoolDisabled) || errors.Is(err, ErrPaused) || errors.Is(err, ErrFixedProxyUnavailable)
 }
 
 type managedAccount struct {
@@ -149,11 +174,13 @@ type managedAccount struct {
 	lastVerify time.Time
 }
 type managedPool struct {
-	state            PoolState
-	members          map[Key]struct{}
-	waiting          int
-	nextScan         time.Time
-	persistenceError string
+	state             PoolState
+	members           map[Key]struct{}
+	waiting           int
+	nextScan          time.Time
+	persistenceError  string
+	exhaustedNotified bool
+	standbyNotified   bool
 }
 
 type poolWriteGate struct {
@@ -179,16 +206,23 @@ func (g *poolWriteGate) Unlock() { <-g.token }
 // Pools has one asynchronous coordinator per Manager. Lock order is Pools.mu
 // then entry.mu. Network and store calls never execute with Pools.mu held.
 type Pools struct {
-	mu       sync.Mutex
-	writes   poolWriteGate
-	manager  *Manager
-	store    PoolStore
-	options  PoolOptions
-	pools    map[PoolKey]*managedPool
-	accounts map[Key]*managedAccount
-	wake     chan struct{}
-	changed  chan struct{}
-	ctx      context.Context
-	cancel   context.CancelFunc
-	done     chan struct{}
+	mu            sync.Mutex
+	writes        poolWriteGate
+	manager       *Manager
+	store         PoolStore
+	options       PoolOptions
+	pools         map[PoolKey]*managedPool
+	accounts      map[Key]*managedAccount
+	wake          chan struct{}
+	changed       chan struct{}
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
+	stopped       chan struct{}
+	workers       chan struct{}
+	activeSites   map[string]bool
+	workerWG      sync.WaitGroup
+	listeners     map[uint64]chan HealthEvent
+	listenerID    uint64
+	eventSequence uint64
 }

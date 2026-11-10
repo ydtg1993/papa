@@ -52,7 +52,9 @@ type TaskError struct {
 
 // AlertEvent 告警事件，在任务最终失败时发出。
 type AlertEvent struct {
-	Level AlertLevel `json:"level"`
+	Level       AlertLevel `json:"level"`
+	AccountPool string     `json:"account_pool,omitempty"`
+	AccountID   string     `json:"account_id,omitempty"`
 	TaskError
 }
 

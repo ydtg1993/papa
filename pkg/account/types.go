@@ -19,6 +19,8 @@ var (
 	ErrUnknown     = errors.New("account is not registered")
 	ErrPaused      = errors.New("account is paused")
 	ErrExpired     = errors.New("account credentials expired")
+	ErrNeedsVerify = errors.New("account credentials require verification")
+	ErrBudget      = errors.New("account usage policy is waiting")
 	ErrForbidden   = errors.New("account lacks permission")
 	ErrChallenge   = errors.New("account requires manual verification")
 	ErrSuperseded  = errors.New("account operation superseded")
@@ -48,11 +50,12 @@ func (c *Credentials) Context(ctx context.Context) context.Context {
 type Outcome string
 
 const (
-	Valid     Outcome = "valid"
-	Expired   Outcome = "expired"
-	Forbidden Outcome = "forbidden"
-	Challenge Outcome = "challenge"
-	Unknown   Outcome = "unknown"
+	Valid       Outcome = "valid"
+	NeedsVerify Outcome = "needs-verify"
+	Expired     Outcome = "expired"
+	Forbidden   Outcome = "forbidden"
+	Challenge   Outcome = "challenge"
+	Unknown     Outcome = "unknown"
 )
 
 type Config struct {
@@ -129,6 +132,9 @@ type entry struct {
 	mu                                          sync.Mutex
 	config                                      Config
 	key                                         Key
+	manager                                     *Manager
+	lastCandidateVersion                        uint64
+	lastCandidateTransport                      Transport
 	origins                                     map[string]bool
 	authHeaders                                 map[string]bool
 	slots                                       chan struct{}
@@ -172,7 +178,7 @@ func defaultClassify(r *htmlfetch.Response, err error) Outcome {
 	}
 	switch r.StatusCode {
 	case http.StatusUnauthorized:
-		return Expired
+		return NeedsVerify
 	case http.StatusForbidden:
 		return Forbidden
 	}

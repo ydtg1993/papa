@@ -19,6 +19,10 @@
 
 浏览器身份分层：`pkg/browser/identity` 负责声明/原生 CDP/观察（不依赖 GORM），其 `runtime` 子包负责 Store 与单实例绑定作用域；`pkg/account` 负责候选认证状态，`engine` 负责认领前固定，`internal/app` 提供 OA 和本地诊断。见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。本地 Chromium 测试使用 `PAPA_EGRESS_BROWSER_BIN` 和 `PAPA_TEST_CHROME`；隔离 MySQL 测试可用 `PAPA_RUNTIME_TEST_CONFIG` 读取连接配置并创建自有临时库，不对业务库迁移。
 
+账号生命周期仍复用 `pkg/account.Pools` 协调器：`NeedsVerify`、仅检查/恢复模式、持久政策和使用计量在该包内。`pkg/account/onboarding` 提供业务 Provider、候选身份确认、加密存储引用、登录过程及受控远程浏览器；业务真实站点实现留在独立模块。`core/compensation.go` 定义错误补偿契约，`engine/compensation.go` 统一原任务的预览、条件判断和 CAS；`admin/configstore` 将运行策略与最近历史放在同一事务中，`internal/app` 负责 OA 接线。
+
+`internal/gormfake.EnableTransactionStatements` 只让 SQL/API 分支测试通过显式事务边界，不模拟回滚或隔离。真实事务保证由 `TestRuntimePolicyMySQLConcurrentCAS`（并发唯一赢家、历史失败回滚）和 `TestCompensationMySQLPersistenceRecoveryCASAndIdentity` 等隔离 MySQL 测试验证；不要将假库通过当成数据库验收。新增 OA 页面与模式使用真实 Chromium 合成 fixture 验证，不访问真实业务站点。
+
 根目录 `Makefile`：
 
 | 目标 | 实际命令 | 作用 |

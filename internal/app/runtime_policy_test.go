@@ -21,6 +21,7 @@ import (
 func runtimeTestApp(t *testing.T) (*App, *gormfake.DB) {
 	t.Helper()
 	fake := gormfake.New()
+	fake.EnableTransactionStatements()
 	db := gormfake.MustOpen(fake)
 	cfg := &config.Config{}
 	l := &loggers.LoggerSet{Engine: quietLogger(), DB: quietLogger(), Monitor: quietLogger(), Sys: quietLogger()}

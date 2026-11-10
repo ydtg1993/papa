@@ -1,6 +1,6 @@
 # 账号登录态与采集运行
 
-> 面向：需要按账号登录、跨 HTTP/浏览器采集和恢复会话的业务。配套：[Fetcher 手册](FETCHER_WRITING_GUIDE.md)、[采集工具](CRAWL_TOOLKIT.md)。
+> 面向：需要按账号登录、跨 HTTP/浏览器采集和恢复会话的业务。配套：[Fetcher 手册](FETCHER_WRITING_GUIDE.md)、[采集工具](CRAWL_TOOLKIT.md)、[账号接入与登录流程](ACCOUNT_ONBOARDING.md)。
 
 ## 1. 入口与边界
 
@@ -12,6 +12,7 @@
 | --- | --- |
 | `account.NewManager(client)` / `papa.NewAccountManager(client)` | 创建注册表；HTTP client 可由 Engine.GetHTMLClient 提供 |
 | `Register(key, Config)` | 注册站点＋账号，一次注册后配置不再外部修改 |
+| `RegisterCandidate` / `PublishCandidate` / `Version` | 核验独立候选后注册或按版本更新；失败保留原状态，见 §8 |
 | `Manager.Do` / `Engine.FetchAccountHTTP` | 有限认证恢复的 HTTP 请求 |
 | `Manager.FetchHTML` / `Engine.FetchAccountHTML` | 同账号抓 HTML，不进入旧原始 HTML 归档 |
 | `Manager.WithBrowser` / `Engine.WithAccountBrowser` | 恢复、检查、必要时登录，执行一次浏览器回调并保存状态 |
@@ -62,17 +63,18 @@ CheckInterval 为 0 时逐次检查，正数允许近期有效结果复用；实
 
 ## 3. 过期、限制与 Token 轮换
 
-默认只把完整 HTTP 401 判定为过期，403 判定为权限不足；网络/读取错误不自动当过期。站点若用 200 登录页或 JSON 业务码，可通过 `Config.Classify(response, err)` 返回 `Valid`、`Expired`、`Forbidden`、`Challenge` 或 `Unknown`。判断前应检查 err，不能将不完整正文识别为过期。
+默认将完整 HTTP 401 分类为 `NeedsVerify`（可疑、待核验），403 为 `Forbidden`；网络/读取错误保持 `Unknown`。站点的 200 登录页或模糊 JSON 认证码也应返回 `NeedsVerify`。`Expired` 仍表示业务已明确确认登录态失效，不能继续把所有 401 当作强证据。旧自定义 `Classify` 的 401 分支需要业务检查并按证据强度迁移；框架不会静默改写自定义分类结果。有效分类为 `Valid`、`NeedsVerify`、`Expired`、`Forbidden`、`Challenge`、`Unknown`。判断前检查 err，不用不完整正文作失效证据。
 
-- Expired：只废弃实际使用的 HTTP 凭据版本；旧响应不能废弃刚刷新成功的版本。GET/HEAD 最多重新认证并再请求一次；第二次仍过期即返回 ErrExpired。
-- POST/PUT/PATCH/DELETE：过期时记录失效并返回错误，不自动重发。业务需根据幂等键和远端执行结果决定后续操作。
+- 显式非池 `Manager.Do` 对 `NeedsVerify` 和 `Expired` 保留兼容恢复：只废弃实际使用的 HTTP 版本，GET/HEAD 最多重新认证并重发一次。第二次异常分别返回 `ErrNeedsVerify` 或 `ErrExpired`。旧响应不能废弃已刷新的版本。
+- 池请求对 `NeedsVerify` 返回 `ErrNeedsVerify`，保留凭据和当前选择，进入独立核验；`Expired` 返回 `ErrExpired` 并隔离对应会话。两者都不在本次尝试重发，详见 §7。
+- POST/PUT/PATCH/DELETE：返回相应认证错误，不自动重发。业务按幂等键和远端执行结果决定后续操作。
 - Forbidden：返回 ErrForbidden，不重新登录、不自动更换账号。
 - Challenge：返回 ErrChallenge 并暂停账号；人工完成处理后显式 Resume。
 - Unknown：保留底层请求错误语义，不增加重试。
 
 配置可选 `Update(candidate, response)`，在成功响应后根据站点约定更新 Token/CSRF/refresh token。候选头校验通过才替换，发生变化时增加 HTTP 凭据版本。Update 必须快速、不重入管理器、不替换 CookieJar；并发时只接收当前版本的响应更新。普通 Set-Cookie 仍由 Jar 自动处理。浏览器状态变化不会单独增加 HTTP 凭据版本。
 
-`Invalidate(key, version)` 适合已知版本的显式 HTTP 失效标记，未匹配版本返回 false。`Pause` 阻止新操作和过期认证结果发布，但不强杀已发送请求；暂停标志是进程内状态，长期停用应由应用账号配置控制。`Logout(ctx,key)` 清除内存凭据、删除存储并暂停；它不是网站远端退出登录 API。删除失败会返回错误，需处理后再恢复，以免旧文件仍留在磁盘。
+`Invalidate(key, version)` 适合已知版本的显式 HTTP 失效标记，未匹配版本返回 false。`Pause` 阻止新操作和过期认证结果发布，但不强杀已发送请求；暂停标志是进程内状态，长期停用使用持久的 `Pools.SetDisabled`；仅检查模式不解除暂停。`Logout(ctx,key)` 清除内存凭据、删除存储并暂停；它不是网站远端退出登录 API。删除失败会返回错误，需处理后再恢复，以免旧文件仍留在磁盘。
 
 ## 4. 持久化与重启
 
@@ -145,7 +147,7 @@ _ = response
 
 ### 正常执行与失效
 
-当前账号正常时持续使用，不因一条请求结束、阶段变化或普通重试轮换。并发已满只等待当前账号名额。明确过期、人工验证阻断或已确认固定出口不可用时，本次尝试返回失败；池调度器异步隔离旧成员并有限验证备用。失败任务不等待换号、不在当前 FetchHandler 重放，也跳过当前阶段的立即重试；错误队列或人工重投以后再补偿。
+当前账号正常时持续使用，不因一条请求结束、阶段变化或普通重试轮换。并发已满只等待当前账号名额。可疑认证、明确过期、人工验证阻断或固定出口不可用时，本次尝试返回失败。可疑认证先保留当前成员并独立核验；强失效与人工验证进入隔离；固定出口先缓冲探测，间隔确认持续不可用后才能选备用，凭据保留。失败任务不等待换号、不在当前 FetchHandler 重放，也跳过当前阶段的立即重试；错误队列或人工重投以后再补偿。
 
 每次尝试固定账号、凭据与选择版本；已发请求自然结束，切换后旧尝试不能继续发送使用新身份的请求。旧响应不覆盖新凭据或已验证状态。403、整站 429、普通目标网络失败不直接失效账号。显式 `Manager.Do` 的 GET/HEAD 最多一次认证重试仍按 §3 保留；`DoPool` 不在明确失效后沿用这个隐式重放。
 
@@ -157,13 +159,15 @@ _ = response
 | --- | --- |
 | `PoolConfig.Transport` | `http`（默认）、`browser`、`both`；配置能力与已验证状态分别判定，纯浏览器账号不因 HTTP 未就绪被排除 |
 | `Members` | 有序 ID 列表，最多 1024 个，同站且不可重复 |
-| `VerifyAttempts` | 默认 1，范围 1..10，每候选的验证次数 |
-| `SwitchLimit` | 默认 16，范围 1..1024，每调度轮检查候选上限；之后等待 Cooldown，不忙循环 |
+| `VerifyAttempts` | 默认 1，范围 1..10；恢复登录模式在单次超时预算内的最大尝试数，仅检查模式每轮始终只检查一次 |
+| `SwitchLimit` | 默认 16，范围 1..1024；候选扫描上限。异步协调器按成员顺序提交候选，每轮至多启动一个新的候选检查，不并发抢选 |
 | `Cooldown` | 默认 5s，范围 1ms..24h；到期仅允许复验，不直接恢复 |
-| `PoolOptions.ScanInterval` / `VerifyTimeout` | 默认 1s / 30s；独立调度扫描及每次验证超时 |
-| `PoolOptions.ReverifyInterval` | 默认关闭；显式配置才定时复验，人工验证阻断与停用账号不会自动恢复；OA 目前提供显式验证动作，不提供此选项的全局编辑器 |
+| `PoolOptions.ScanInterval` / `VerifyTimeout` | 默认 1s / 30s；独立调度扫描及验证超时上限；实际超时取此上限与账号 Policy.VerifyTimeout 较小值 |
+| `PoolOptions.VerifyConcurrency` | 默认 4，范围 1..64；全局核验工作上限。同站最多一个，慢站点不会占满全部槽位 |
+| `StandbyTarget` / `StandbyTTL` | 目标默认 0（关闭）；启用时 TTL 默认 15 分钟。当前账号健康时按成员顺序补近期通过核验的备用 |
+| `PoolOptions.ReverifyInterval` | 默认关闭，保留旧全局恢复间隔；账号 Policy.RecoveryInterval 为正时覆盖它。人工验证阻断、持久停用和 Manager.Pause 均不自动解除 |
 
-`crawler_account_pools` 保存成员顺序、池开关、当前账号/选择版本和最近 100 条切换记录；`crawler_account_management` 保存账号停用、隔离、冷却、原因及管理版本。凭据仍在既有 Store，普通配置 JSON 不含 Cookie/Token。重启重新验证认证状态，持久停用/隔离不被自动清除。
+`crawler_account_pools` 保存成员顺序、池开关、当前账号/选择版本和最近 100 条切换记录；`crawler_account_management` 的现有 JSON 保存账号停用、隔离、可疑状态、核验模式、凭据版本、证据计数、下次核验时间、政策、用量及有界健康事件；不新增凭据列。凭据仍在既有 Store，普通配置 JSON 不含 Cookie/Token。重启重新验证认证状态，持久停用/隔离不被自动清除。
 
 管理状态保存失败时当前进程仍阻止新请求使用失效账号，后台显示未保存/持久化错误，并由调度器重试；不能把失败保存当作已经安全落盘。重新验证成功才恢复候选，恢复不自动切回。删除池必须先停用，并确认没有策略引用、待处理/处理中/失败可补偿或轮询任务引用。
 
@@ -171,4 +175,61 @@ _ = response
 
 池页展示当前账号、成员状态、HTTP/浏览器能力、等待数与原因、选择版本、最近切换；支持创建/启停池、排序、停用成员和重新验证。写动作带版本检查、令牌鉴权与审计；GET 查询不触发认证。验证会实际访问配置站点，并受超时与站点预算约束。
 
-任务身份通过 `task.Trace.Step("账号池身份", ...)` 留痕，需开启 `crawler.trace.enabled`；没有额外永久的每任务账号历史列。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障可隔离该成员并触发备用调度；普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
+每条任务通过 `crawler_tasks.account_attempts` 独立于 Trace 保存最近 8 次认领的账号关联，含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据；后台可按该有界记录查找受影响任务。更早关联会被淘汰，升级前的记录不会回填，空结果不代表从未使用该账号。`task.Trace.Step("账号池身份", ...)` 仍可在开启 `crawler.trace.enabled` 后记录详细步骤。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障先保留凭据并暂停新操作，独立核验确认持续故障后隔离出口并触发备用；`ProxyChecks` 与 `InvalidChecks` 分开计数，普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
+
+
+### 可疑状态与两种核验
+
+`Pools.CheckExisting(ctx,key,managementVersion)` 与 `Pools.Verify(ctx,key,managementVersion)` 复用同一协调器、并发合并、版本守卫和结果发布。`CheckExisting` 仅使用对应版本的现有 HTTP/浏览器状态，实际调用 Check，不命中近期成功缓存，也不调用 Resume、ensure、WithBrowser 或 Login。`Verify` 保留原有允许恢复登录的语义，适合明确恢复操作。两种入口提交的是异步工作，成功回执表示请求已保存，不表示核验成功。
+
+默认可疑缓冲 10 秒；一次独立检查成功即恢复原账号。`false,nil` 是确认无效证据，需要两次至少间隔 10 秒的检查才隔离。同一凭据版本的并发失败只创建一轮；检查次数不由失败请求数累加。超时、网络或其他未知错误不计入无效次数，按 10 秒起、最长 5 分钟退避，等待 5 分钟后产生等待过久事件。明确人工验证停止自动恢复。冷却结束只允许再次检查。
+
+异常记录的 `CheckTransport` 说明证据来自 HTTP、browser 或 both；HTTP 失效不会删除浏览器快照，浏览器失效不会删除 HTTP 凭据。管理上的暂停/隔离仍以账号为粒度，统一暂缓该账号所属池；不能将这一门控理解为已证明另一传输的凭据也失效。固定出口使用独立标志与计数，失败确认不删除任何凭据。
+
+新凭据发布后，旧核验结果不恢复或撤销新状态；协调器将重新检查新版本。健康恢复只让账号重新成为候选，不抢回其他健康的当前账号。已发送请求自然结束；同一旧 Attempt 后续操作被版本门控拒绝。
+
+`Readiness(PoolKey) (bool,string)`、`Get`、`Snapshot` 都是只读，不登录、不选账号、不扣预算。任务补偿应依据 Readiness 等待条件恢复，沿用原任务和池归属；不调用 Verify 来“测试是否就绪”。
+
+### 账号政策与用量
+
+`Policy(key) (Policy,managementVersion,error)` 读取有效值；`SetPolicy(ctx,key,policy,expectedVersion)` 使用管理版本 CAS 保存。注册但尚未创建管理记录的账号返回默认政策和版本 0。保存失败会返回错误，账号呈现未保存状态；不能向操作人报告设置已持久生效。直接 JSON 里的 `time.Duration` 使用纳秒，后台应在提交前显式换算。
+
+管理记录分别保存完整写入版本 `Version` 和最近控制变更版本 `LastControlVersion`。用量预留、登录间隔计数及纯事件追加只推进 Version，不使已打开的 OA 政策编辑、停用或核验表单过期；提交的快照版本位于 `LastControlVersion <= expectedVersion <= Version` 时仍有效。政策、健康、核验结果、候选恢复或开关的真实变更推进 LastControlVersion，此前快照继续返回版本冲突；两个并发控制提交仍只有第一个成功。数据库保存仍以最新持久 Version 做严格 CAS，并未放宽存储层并发保护。旧 JSON 没有 LastControlVersion 时按已保存 Version 保守归一化，随后写入持久保留这一边界。
+
+| Policy 字段 | 默认值 / 单位 | 作用 |
+| --- | --- | --- |
+| Buffer | 10s | 可疑信号后的首轮检查等待 |
+| InvalidConfirmations | 2 次 | 间隔无效确认阈值；代理确认使用独立计数 |
+| CheckInterval | 10s | 确认无效/代理故障后的下一轮间隔 |
+| VerifyTimeout | 30s | 单轮核验超时，另受协调器上限限制 |
+| UnknownBackoff / MaxBackoff | 10s / 5m | 未知结果指数退避 |
+| UnknownAlertAfter | 5m | 可疑等待过久事件门槛，不是判失效门槛 |
+| RecoveryInterval | 0，关闭 | 隔离后的自动恢复间隔；为 0 时沿用兼容的全局 ReverifyInterval |
+| OperationInterval | 0，无限制 | 同账号两次公开业务操作的最小间隔 |
+| DailyLimit | 0，无限制 | 按账号、按配置时区自然日的操作额度 |
+| Timezone | UTC | 额度重置及工作时段的 IANA 时区 |
+| WorkStartMinute / WorkEndMinute | 0 / 0，全天 | 本地日内分钟 0..1439；相等全天，开始大于结束表示跨午夜 |
+| LoginInterval | 0，无限制 | 两次登录尝试之间的最小间隔，失败也计入 |
+| TrackUsage | false | 没有额度/间隔限制时，显式启用严格持久操作统计 |
+
+`Usage.Unit` 固定为 `operation`。DailyLimit、OperationInterval 或 TrackUsage 启用时开始统计；默认不统计操作数。一次 `Do`/`DoPool` 的实际 HTTP 交换计一次；显式 GET/HEAD 恢复后的第二次交换再计一次。一次浏览器业务回调/导航捕获操作计一次，无论它触发多少子请求，不能解释为网站网络请求配额。协调器健康检查不扣业务操作额度，仍使用 `PoolOptions.Context` 注入的站点请求预算；实际 Login 受 LoginInterval 限制。接入适配器可在开始外部登录前调用 `Manager.ReserveLogin`。
+
+启用额度、操作间隔或 TrackUsage 时，在发送业务操作前跨池原子预留并持久保存，失败不退额度，避免重放和并发超额。用量记录保存失败时请求不会发送，但保守保留该次预留并继续重试保存。用尽、间隔未到或工作时段之外返回 `ErrBudget`/就绪等待原因，不更换健康账号。操作额度与账号并发许可分开；计数与控制代数分开，普通用量更新不会使同一 Attempt 失效。
+
+默认政策不增加逐次管理 CAS 或全局写许可等待；只配工作时段也仅做内存门控。启用 DailyLimit、OperationInterval 或 TrackUsage 后，每次业务操作增加管理 JSON 的 CAS 写入；LoginInterval 为正才持久预留登录尝试。高频场景需把这些可选数据库写入和凭据 Store 写入一起纳入单实例资源预算。备用核验受相同站点预算、核验并发与登录间隔约束，默认不产生备用维护流量。
+
+### 健康事件与停止
+
+`Events(key,afterSequence)` 返回序号之后最多 100 条事件；`Key{}` 查询全部账号。每账号持久保存最近 100 条，池事件包含 PoolKey，事件只包含框架原因码、账号/池键、任务 ID、版本及时间，不包含 URL、Cookie、Token 或提供方错误原文。这是有界排障记录，不是永久审计账本。
+
+`AddEventListener(func(HealthEvent))` 返回退订函数，每个订阅有 32 条有界队列，慢订阅丢弃后续通知，不阻塞核验；回调在池锁之外执行。业务可按序号补查 Events，但被保留窗口淘汰的数据无法补回。事件包括 needs-verification、verification-invalid、verification-unknown、verification-overdue、proxy-unavailable、manual-verification、recovered、pool-exhausted 与 standby-shortage。通知按账号/池聚合节流；不要把每次事件等同一次独立登录或永久失效。
+
+`Shutdown(ctx)` 停止新工作并等待协调器和所有核验回调结束。超时返回 ctx 错误，Manager 仍保留该协调器，调用者必须继续保留 Store、浏览器等依赖，之后重试 Shutdown；`Close()` 保持等待全部结束的兼容行为。取消后的迟到核验结果不发布。回调必须遵守 context；忽略取消的第三方回调无法被 Go 安全强杀，只能有界等待并保留其依赖。
+
+## 8. 已验证候选发布
+
+`RegisterCandidate(ctx,key,config,credentials)` 在注册表可见之前，克隆候选、检查 HTTP/可选浏览器身份并保存凭据；失败不会留下可采集的注册。`PublishCandidate(ctx,key,expectedCredentialVersion,credentials)` 先独立 Check，再按版本保存发布；不会调用 Login，验证失败、过时版本或保存失败都保留旧状态。候选必须包含独立 Session；BrowserState 可选，存在时也要通过 Browser.Check，并检查浏览器状态代数防止覆盖并发更新。HTTP-only 候选保留同一身份档案下的旧浏览器快照，但不声称重新验证了它，不能靠 HTTP 证据解除 browser-only 健康排除。候选验证与发布全程固定身份快照，并保存其身份元数据；已固定的同账号 context 复用该快照。业务适配器仍负责真实账号与预期账号匹配，通用框架不猜测站点身份。
+
+取消在保存前到达时不提交；若 Store.Save 已返回成功，保存是提交点，之后到达的取消不撤销成功结果，内存与持久状态保持一致。Store 必须遵守保存成功/失败语义；若自定义 Store 在写入后返回错误，调用方需要依据其读回/不确定提交协议核对，不能仅凭错误假定磁盘仍是旧值。
+
+凭据发布与池管理恢复是两个提交：已有管理状态时，在成功发布后调用 `Pools.CandidatePublished(ctx,key,newCredentialVersion)`。它确认新凭据版本后清理可疑/失效排除并保存健康结果，保留人工 Disabled；若此步保存失败，显示“凭据已更新，健康恢复待保存”，不能反过来宣称凭据发布失败或账号已可用。新成员加入池仍不会抢占健康当前成员。账号资料、验证码/扫码过程、导入与远程交互见 [账号接入手册](ACCOUNT_ONBOARDING.md)。

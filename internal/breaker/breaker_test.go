@@ -55,6 +55,24 @@ func TestTripsAtThreshold(t *testing.T) {
 	}
 }
 
+func TestResetStartsFreshWindowAndPreservesConfig(t *testing.T) {
+	var absent *Breaker
+	absent.Reset()
+	b, _ := newTest(Config{Enabled: true, Window: time.Hour, Threshold: 2})
+	b.RecordFailure()
+	b.RecordFailure()
+	b.Reset()
+	if b.Sum() != 0 || !b.Enabled() || b.Window() != time.Hour || b.Threshold() != 2 {
+		t.Fatal("Reset must clear counts and preserve configuration")
+	}
+	if tripped, n := b.RecordFailure(); tripped || n != 1 {
+		t.Fatalf("first new failure: tripped=%v count=%d", tripped, n)
+	}
+	if tripped, n := b.RecordFailure(); !tripped || n != 2 {
+		t.Fatalf("new threshold must still trip: tripped=%v count=%d", tripped, n)
+	}
+}
+
 // 越过阈值之后**每次都还报 tripped**（因为计数还在涨）—— 判重是调用方的事：
 // 引擎靠"写暂停信号成功没成功"来保证"一次触发只报一次告警"（已经停着时 setPause 返回 false）。
 // 这条把那个分工钉住：熔断器不再自己记"报过了"。

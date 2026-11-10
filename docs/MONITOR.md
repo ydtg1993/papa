@@ -17,7 +17,7 @@
 | --- | --- |
 | 采集任务流 | 业务自定义页（注册后显示）、运行调度策略（启用 `task_flow.enabled` 后显示） |
 | 运行监控与报告 | 运行概览、采集控制（站点请求 / 资源控制 / 代理健康）、运行报告、运行日志、队列治理 |
-| 数据与资源 | 采集任务 `crawler_tasks` 的手动操作、账号池；行内「追踪」弹窗查看执行记录，业务仍可注册专门页面 |
+| 数据与资源 | 采集任务 `crawler_tasks` 的手动操作、账号管理、账号池；行内「追踪」弹窗查看执行记录，业务仍可注册专门页面 |
 | 系统管理 | 系统设置（包括业务注册的设置项）、访问令牌、浏览器诊断、操作日志（注册后显示） |
 
 跨分类的详情入口自动同步类别、二级选中项与标题；未保存页面仍可阻止离开。站点筛选只在支持站点范围的页面显示；运行报告/日志和系统管理不显示站点筛选；队列治理的阶段区支持筛选，后台治理区始终为全站范围。手机通过「菜单」展开四类，选中后收起，Esc 关闭并返回菜单按钮。这里的「采集任务流」是导航分类；其中的运行调度策略编辑页使用现有 TaskFlow API，见 [TASK_FLOW.md](TASK_FLOW.md)。
@@ -114,7 +114,14 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 | `POST /api/runtime-policy` | `{revision, document: {schema_version: 1, overrides: {...}}}`；严格 JSON，最多 128 KiB；先校验、CAS 持久化再发布 |
 | `POST /api/runtime-remote` | `{site, revision}`；确认超出自动等待预算的远端限流，仍等待原服务端期限，不提前放行 |
 | `GET /api/account-pools` | 已注册账号的脱敏状态、池成员/当前选择、等待原因与有界切换记录；未注册 Manager 时返回 configured=false |
-| `POST /api/account-pools` | action=`save/delete/disable/verify`；最多 64 KiB，携带池 revision 或成员 management.version |
+| `POST /api/account-pools` | action=`save/delete/disable/check/verify/policy`；最多 64 KiB，携带池 revision 或成员 management.version；check 仅检查原状态，verify 允许恢复登录 |
+| `GET /api/accounts` | 适配器能力、账号资料与运行状态；`?process=...` 查询本人登录过程；未装配服务时明确返回 configured=false |
+| `POST /api/accounts` | draft/start/continue/confirm/cancel；新资料与登录过程有各自 revision，输入与凭据不进入操作日志 |
+| `POST /api/accounts/remote` | 当前操作者的受控登录画面与输入；不是原始 CDP 端点，详见 [账号接入](ACCOUNT_ONBOARDING.md) |
+| `GET /api/account-compensation` | site/pool/account/limit 筛选关联失败任务；limit 1–200，仅预览，计数是本页值，账号关联限最近 8 次执行 |
+| `POST /api/account-compensation` | release 携带 id/version，仅解除人工条件；retry 携带 requests:[{id,version}]，逐项返回 submitted/error |
+| `GET /api/runtime-policy/history` | 最近 100 个已提交策略覆盖版本及当前 revision |
+| `POST /api/runtime-policy/history` | preview/restore 携带当前 revision 与历史 target；restore 额外携带 paths 字段路径数组，按当前版本 CAS 生成新版本 |
 | `GET /api/proxy-health` | 脱敏代理标识、状态、版本、冷却/最近结果、在途量与固定出口标志 |
 | `POST /api/proxy-health` | `{action, id, revision, site}`；action=`disable/enable/probe`，revision 取读数的 version；最多 4 KiB，probe 必须选择有 BaseURL 的已注册站点 |
 
@@ -124,11 +131,11 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 
 “资源控制”始终为全局范围，显示采样来源/时间/有效性、任务执行与浏览器借用许可；存活实例不等于借用数。降额不取消在途任务，采样无效显示未知。浏览器请求仅覆盖当前受管 page target 的同源及显式 GovernanceOrigins，完整边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md) §2。
 
-“账号池”在“数据与资源”独立维护：save 创建/更新池配置及成员顺序，池启停修改 `config.disabled`；delete 提交 key 与池 revision；disable 提交 account、disabled 与成员管理版本；verify 提交 account 与成员管理版本。停用成员立即阻止新使用，重新验证成功才恢复候选，不自动抢回当前账号。删除受运行策略与可再次执行任务的引用保护。成员验证可能实际访问站点；只读刷新不会。
+“账号池”在“数据与资源”独立维护：save 创建/更新池配置及成员顺序，池启停修改 `config.disabled`；delete 提交 key 与池 revision；disable 提交 account、disabled 与成员管理版本；check/verify 提交 account 与成员管理版本，policy 另提交 policy 对象。停用成员立即阻止新使用；检查原登录态不调用 Login，恢复登录允许按业务适配器更新登录态。核验成功才恢复候选，不自动抢回当前账号。成员可查看健康事件、预算和关联任务，并预览后补偿。删除受运行策略与可再次执行任务的引用保护。成员验证可能实际访问站点；只读刷新不会。
 
 “代理健康”启用动作只允许参与受限探测，不直接标健康。probe 使用既有代理向所选站点发一次 HEAD，受站点预算和 15 秒超时约束；失败不会回退直连或改写固定出口。展示的是最近反馈与管理动作审计，不是完整代理采集历史，也不把 fixed 标志解释为固定账号引用数量。
 
-保存遇到旧版本返回 409 并保留草稿；冲突核对只合并本次修改字段。轮询不覆盖输入，旧 revision 响应不覆盖新保存结果。提交超时显示结果待核对，读取服务端版本后再决定，不自动重试写入。清除覆盖仍递增 revision，重启恢复后台覆盖。任务实际账号与选择版本记录在开启的 Trace 中，不另建永久的任务身份历史。
+保存遇到旧版本返回 409 并保留草稿；冲突核对只合并本次修改字段。轮询不覆盖输入，旧 revision 响应不覆盖新保存结果。提交超时显示结果待核对，读取服务端版本后再决定，不自动重试写入。清除覆盖和历史字段恢复均递增 revision，重启恢复后台覆盖。账号—任务关联独立保存最近 8 次执行，不依赖 Trace；Trace 仍可记录详细步骤。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -663,6 +670,9 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 `resumed=false` 表示**当前本来就不在暂停态**（比如另一个人先点了），这不是错误 ——
 重复点击恢复不该看起来像失败，但也不能回一个含糊的 ok 让调用方以为是自己放行的。
 放行了哪些 scope 在 `resumed_scopes` 里。
+
+**恢复会重置失败窗口**：整站恢复先清零该站的熔断计数，再放开队列；全部恢复只清零实际解除暂停的站点。重复恢复已运行的站点不会清零，单阶段恢复也不会清除整站计数。历史失败记录与已发送的熔断告警保留。
+恢复不取消在途任务：恢复后完成的终态失败会计入新窗口，新失败再次达到阈值仍会熔断。真正重启进程也会重新创建内存计数器，但积压任务仍可能执行并产生新失败。
 
 暂停与放行都是**人在场的干预**（它们停 / 通的是整条抓取线），所以状态真的变了之后会写一条操作日志
 （`Table: breaker` / `Action: pause` 或 `resume`，带操作人与 `scope`）—— 前提是开了 `server.operation_log`。

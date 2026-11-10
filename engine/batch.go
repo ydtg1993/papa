@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,16 +17,13 @@ import (
 // status IN (success, failed)（repeat_queue），于是这条任务再也不会被任何一个队列捞起来：
 // 运营看着是"排队中"，实际早就没人会执行它了。
 //
-// 带 `status <> failed` 是有意的：走 SubmitTask 那条路失败时，submitToPool 已经标过 failed
-// 并把原始错误写进 error 列了，这里再标一次只会在 error 列里多贴一行重复的原因。已经是 failed 就跳过。
+// 只改变仍 pending 的行：已失败不重复追加，已被另一个投递认领或已完成的行也不能覆盖。
 func (e *Engine) markRequeueFailed(queue string, id uint, err error) {
+	updates := taskStatusUpdates(models.TaskStatusFailed, fmt.Errorf("%s 重新投递失败：%w", queue, err))
+	updates["retry"] = gorm.Expr("retry + 1")
 	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status <> ?", id, models.TaskStatusFailed).
-		Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-			"retry":  gorm.Expr("retry + 1"),
-			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", queue+" 重新投递失败："+err.Error()+"\n"),
-		})
+		Where("id = ? AND status = ?", id, models.TaskStatusPending).
+		Updates(updates)
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("%s: mark task %d failed: %s", queue, id, res.Error.Error())
 	}

@@ -102,6 +102,12 @@ func (m *Manager) DoPool(ctx context.Context, key PoolKey, req htmlfetch.Request
 	for k, v := range c.Headers {
 		r.Headers[k] = v
 	}
+	if err = m.beforeOperation(ctx, a.Account); err != nil {
+		return nil, err
+	}
+	if err = p.ValidateAttempt(a); err != nil {
+		return nil, err
+	}
 	response, fetchErr := m.client.Do(htmlfetch.WithSession(ctx, c.Session), r)
 	if errors.Is(fetchErr, core.ErrSiteChallenge) {
 		return response, fetchErr
@@ -113,17 +119,20 @@ func (m *Manager) DoPool(ctx context.Context, key PoolKey, req htmlfetch.Request
 		}
 		failure := proxy.ClassifyHTTP(e.config.ProxyURL, status, fetchErr)
 		if failure == proxy.TransportFailure || failure == proxy.AuthenticationFailure || errors.Is(fetchErr, proxy.ErrUnavailable) {
-			p.ReportFailure(a, ProxyUnavailable, a.TaskID)
+			p.reportFailure(a, ProxyUnavailable, a.TaskID, HTTP)
 			return response, &Failure{Code: "fixed-proxy-unavailable", Cause: errors.Join(ErrFixedProxyUnavailable, fetchErr)}
 		}
 	}
 	outcome := e.config.Classify(response, fetchErr)
 	switch outcome {
+	case NeedsVerify:
+		p.reportFailure(a, NeedsVerify, a.TaskID, HTTP)
+		return response, ErrNeedsVerify
 	case Expired:
-		p.ReportFailure(a, Expired, a.TaskID)
+		p.reportFailure(a, Expired, a.TaskID, HTTP)
 		return response, ErrExpired
 	case Challenge:
-		p.ReportFailure(a, Challenge, a.TaskID)
+		p.reportFailure(a, Challenge, a.TaskID, HTTP)
 		return response, ErrChallenge
 	case Forbidden:
 		return response, ErrForbidden
@@ -232,6 +241,12 @@ func (m *Manager) withPoolBrowser(ctx context.Context, key PoolKey, options *bro
 		if err := p.ValidateAttempt(a); err != nil {
 			return err
 		}
+		if err := m.beforeOperation(ctx, a.Account); err != nil {
+			return err
+		}
+		if err := p.ValidateAttempt(a); err != nil {
+			return err
+		}
 		if err := fn(page); err != nil {
 			return err
 		}
@@ -245,12 +260,14 @@ func (m *Manager) withPoolBrowser(ctx context.Context, key PoolKey, options *bro
 	if identityOrSiteFailure(err) {
 		return err
 	}
-	if errors.Is(err, ErrExpired) {
-		p.ReportFailure(a, Expired, a.TaskID)
+	if errors.Is(err, ErrNeedsVerify) {
+		p.reportFailure(a, NeedsVerify, a.TaskID, Browser)
+	} else if errors.Is(err, ErrExpired) {
+		p.reportFailure(a, Expired, a.TaskID, Browser)
 	} else if errors.Is(err, ErrChallenge) {
-		p.ReportFailure(a, Challenge, a.TaskID)
+		p.reportFailure(a, Challenge, a.TaskID, Browser)
 	} else if errors.Is(err, ErrFixedProxyUnavailable) {
-		p.ReportFailure(a, ProxyUnavailable, a.TaskID)
+		p.reportFailure(a, ProxyUnavailable, a.TaskID, Browser)
 	}
 	if err != nil {
 		return err

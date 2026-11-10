@@ -33,11 +33,13 @@ type CredentialState struct {
 	Values  map[string]string      `json:"values"`
 }
 type StoredState struct {
-	Version  int                `json:"version"`
-	Key      Key                `json:"key"`
-	HTTP     *CredentialState   `json:"http,omitempty"`
-	Browser  *browser.PageState `json:"browser,omitempty"`
-	Identity *IdentityState     `json:"identity,omitempty"`
+	Version           int                `json:"version"`
+	Generation        uint64             `json:"generation,omitempty"`
+	BrowserGeneration uint64             `json:"browser_generation,omitempty"`
+	Key               Key                `json:"key"`
+	HTTP              *CredentialState   `json:"http,omitempty"`
+	Browser           *browser.PageState `json:"browser,omitempty"`
+	Identity          *IdentityState     `json:"identity,omitempty"`
 	// PendingIdentity preserves the previous durable credentials while a new
 	// binding is verified and published in the independent binding store.
 	PendingIdentity *IdentityCandidate `json:"pending_identity,omitempty"`
@@ -97,6 +99,10 @@ func (e *entry) load(ctx context.Context) error {
 	e.pageState = state
 	e.identityState = cloneIdentityState(s.Identity)
 	e.version++
+	if s.Generation > e.version {
+		e.version = s.Generation
+	}
+	e.browserRevision = s.BrowserGeneration
 	e.revision++
 	e.loaded = true
 	return nil
@@ -119,7 +125,7 @@ func (e *entry) storedStateLocked() (*StoredState, error) {
 	if err != nil {
 		return nil, &Failure{Code: "invalid-browser-state", Cause: err}
 	}
-	s := &StoredState{Version: 1, Key: e.key, Browser: state, Identity: cloneIdentityState(e.identityState)}
+	s := &StoredState{Version: 1, Generation: e.version, BrowserGeneration: e.browserRevision, Key: e.key, Browser: state, Identity: cloneIdentityState(e.identityState)}
 	if c := e.current; c != nil {
 		cookies := c.Session.Snapshot()
 		if _, err := htmlfetch.RestoreSession(cookies); err != nil {

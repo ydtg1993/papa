@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
@@ -22,7 +23,7 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 	if bin == "" {
 		t.Skip("PAPA_EGRESS_BROWSER_BIN not configured")
 	}
-	a, _ := runtimeTestApp(t)
+	a, fake := runtimeTestApp(t)
 	manager := account.NewManager(htmlfetch.NewClient(htmlfetch.Config{}))
 	a.Engine.SetAccountManager(manager)
 	pools, err := account.NewPools(context.Background(), manager, account.NewMemoryPoolStore(), account.PoolOptions{})
@@ -33,6 +34,7 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 	a.runtimeState.pools = pools
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/runtime-policy", a.runtimePolicyAPI)
+	mux.HandleFunc("/api/runtime-policy/history", a.runtimeHistoryAPI)
 	mux.HandleFunc("/api/account-pools", a.accountPoolsAPI)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -88,6 +90,28 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 		}
 		if a.Engine.Governance().Effective("fixture").Weight != 7 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 3 {
 			return fmt.Errorf("conflict merge lost unrelated field")
+		}
+		fake.SetRow(map[string]driver.Value{"cfg_key": "runtime_policy", "revision": int64(1), "document": []byte(`{"schema_version":1,"overrides":{"sites":{"fixture":{"request":{"max_inflight":2}}}}}`)})
+		if err = eval(`()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='策略历史').click()`); err != nil {
+			return err
+		}
+		if err = page.Timeout(8 * time.Second).Wait(rod.Eval(`()=>Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='查看差异')`)); err != nil {
+			return err
+		}
+		if err = eval(`()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='查看差异').click()`); err != nil {
+			return err
+		}
+		if err = page.Timeout(8 * time.Second).Wait(rod.Eval(`()=>document.querySelector('.rt-drawer input[type=checkbox]')!==null`)); err != nil {
+			return err
+		}
+		if err = eval(`()=>{let inputs=Array.from(document.querySelectorAll('.rt-drawer input[type=checkbox]'));if(inputs.some(x=>x.checked))throw Error('history restore preselected');let c=inputs.find(x=>x.getAttribute('aria-label').includes('max_inflight'));c.checked=true;c.dispatchEvent(new Event('change'));Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='恢复所选字段并生成新版本').click()}`); err != nil {
+			return err
+		}
+		if err = page.Timeout(8 * time.Second).Wait(rod.Eval(`()=>!document.querySelector('.rt-drawer')`)); err != nil {
+			return err
+		}
+		if a.runtimeState.revision != 4 || a.Engine.Governance().Effective("fixture").Weight != 7 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
+			return fmt.Errorf("history selected restore lost current settings")
 		}
 		if err = eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='资源控制').click();}`); err != nil {
 			return err

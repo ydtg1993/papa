@@ -172,6 +172,9 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 
 func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {
 	updates := map[string]any{"status": status}
+	for key, value := range compensationStatusUpdates(status, err) {
+		updates[key] = value
+	}
 	if status == models.TaskStatusFailed {
 		var errMsg string
 		if err != nil {

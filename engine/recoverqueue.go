@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"time"
+
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"gorm.io/gorm"
@@ -21,10 +23,10 @@ import (
 // 也可能入库了但没来得及入队 —— 不捞就永远躺在「待处理」。
 func (e *Engine) recoverQueueQuery() func() *gorm.DB {
 	return func() *gorm.DB {
-		return e.db.Where("status IN ?", []models.TaskStatus{
+		return compensationScope(e.db.Where("status IN ?", []models.TaskStatus{
 			models.TaskStatusPending,
 			models.TaskStatusProcessing,
-		}).
+		})).
 			// 只看"本进程启动之前就写过的行"：本进程认领/改过的行 updated_at 更晚，自动排除。
 			Where("updated_at < ?", e.startedAt)
 	}
@@ -55,6 +57,9 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
 func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
+	if compensationConditionReason(t, time.Now()) != "" {
+		return false
+	}
 	// 站点也要看：阶段名只在本站内唯一，光按名字查会把另一站的同名阶段当成本站那个。
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		// 逐条只记 Debug：启动恢复扫到几百条老任务时，这条会把日志刷满。
@@ -83,11 +88,11 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 		// 批次 SELECT 与这一句之间有窗口 —— 运营可能把这一行删了、标了失败，或任务自己跑完落了 success。
 		// 无条件 UPDATE 会把这些行也翻回 pending：删掉的行重新插回来、已终态的行再跑一遍。
 		// 0 行 = 这一行已经不该被恢复：跳过，不计数、也不标 failed（它不是"恢复失败"，是"轮不到它了"）。
-		res := e.db.Model(&models.CrawlerTask{}).
+		res := compensationVersionScope(e.db.Model(&models.CrawlerTask{}).
 			Where("id = ? AND status IN ?", t.ID, []models.TaskStatus{
 				models.TaskStatusPending,
 				models.TaskStatusProcessing,
-			}).
+			}).Where("updated_at < ?", e.startedAt), t).
 			Updates(map[string]any{"status": models.TaskStatusPending})
 		if res.Error != nil {
 			e.loggerSet.Engine.Errorf("recover queue: reset task %d: %s", t.ID, res.Error.Error())

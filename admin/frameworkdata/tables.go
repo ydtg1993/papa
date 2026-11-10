@@ -23,6 +23,10 @@ var labels = map[string]string{
 	"crawler_tasks":                     "采集任务",
 	"crawler_access_token":              "访问令牌",
 	"crawler_config":                    "运行配置",
+	"crawler_runtime_policy_history":    "运行策略历史",
+	"crawler_account_profiles":          "账号资料",
+	"crawler_account_pools":             "账号池",
+	"crawler_account_management":        "账号健康与政策",
 	"crawler_operation_log":             "操作日志",
 	"crawler_task_trace":                "任务追踪",
 }
@@ -31,7 +35,7 @@ func group(name string) string {
 	switch name {
 	case "crawler_tasks", "crawler_task_trace":
 		return "任务与追踪"
-	case "crawler_access_token", "crawler_config", "crawler_operation_log":
+	case "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_runtime_policy_history":
 		return "系统配置"
 	case "crawler_task_flows":
 		return "任务调度"
@@ -135,5 +139,5 @@ func Tables(db *gorm.DB, names ...string) ([]oao.Table, error) {
 }
 
 func hidden(table, field string) bool {
-	return sensitive(field) || (table == "crawler_config" && field == "cfg_val") || field == "idempotency_key"
+	return sensitive(field) || (table == "crawler_config" && field == "cfg_val") || (table == "crawler_account_profiles" && field == "inputs_ref") || field == "idempotency_key"
 }

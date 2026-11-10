@@ -68,6 +68,8 @@ proxy:
 
 # 运行治理默认关闭；OA 持久覆盖优先于本段显式字段。详见 docs/framework/RUNTIME_CONTROL.md。
 # 升级后先 papa migrate；文件时长写 "30s"，API JSON 时长为整数纳秒。
+# 账号健康/额度按账号由 OA 管理，不在此重复配置；默认不逐次计量、不自动恢复登录。
+# OA 新增账号需要业务注册 Provider 与加密存储，见 docs/framework/ACCOUNT_ONBOARDING.md。
 runtime:
   defaults:
     request:

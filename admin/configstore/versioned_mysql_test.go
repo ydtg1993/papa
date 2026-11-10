@@ -65,7 +65,7 @@ func TestRuntimePolicyMySQLConcurrentCAS(t *testing.T) {
 	pool, _ := db.DB()
 	defer pool.Close()
 	pool.SetMaxOpenConns(16)
-	all := append([]any{&models.Config{}, &models.CrawlerTask{}}, account.Models()...)
+	all := append([]any{&models.Config{}, &models.CrawlerTask{}, &models.RuntimePolicyHistory{}}, account.Models()...)
 	if err = db.AutoMigrate(all...); err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +97,36 @@ func TestRuntimePolicyMySQLConcurrentCAS(t *testing.T) {
 	}
 	if _, rev, err := store.LoadVersioned(context.Background(), KeyRuntimePolicy); err != nil || rev != 2 {
 		t.Fatalf("revision=%d err=%v", rev, err)
+	}
+	history, err := store.History(context.Background(), KeyRuntimePolicy)
+	if err != nil || len(history) != 2 || history[0].Revision != 2 || history[1].Revision != 1 {
+		t.Fatalf("history must contain only committed CAS winners: count=%d err=%v", len(history), err)
+	}
+	// A history write failure must roll back the policy update as well.
+	if err := db.Exec("CREATE TRIGGER reject_history_fixture BEFORE INSERT ON crawler_runtime_policy_history FOR EACH ROW BEGIN IF NEW.revision = 3 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'history fixture failure'; END IF; END").Error; err != nil {
+		t.Fatal(err)
+	}
+	_, failedWrite := store.SaveCAS(context.Background(), KeyRuntimePolicy, map[string]any{"schema_version": 1, "overrides": map[string]any{}}, 2, "failure-fixture")
+	if failedWrite == nil {
+		t.Fatal("policy committed without history")
+	}
+	if _, revision, err := store.LoadVersioned(context.Background(), KeyRuntimePolicy); err != nil || revision != 2 {
+		t.Fatal("history failure advanced policy", revision, err)
+	}
+	if err := db.Exec("DROP TRIGGER reject_history_fixture").Error; err != nil {
+		t.Fatal(err)
+	}
+	for expected := uint64(2); expected < 103; expected++ {
+		if _, err := store.SaveCAS(context.Background(), KeyRuntimePolicy, map[string]any{"schema_version": 1, "overrides": map[string]any{}}, expected, "retention-fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err = store.History(context.Background(), KeyRuntimePolicy)
+	if err != nil || len(history) != RuntimeHistoryLimit || history[0].Revision != 103 || history[len(history)-1].Revision != 4 {
+		t.Fatal("history retention must keep the newest committed versions", len(history), err)
+	}
+	if _, err = store.HistoryRevision(context.Background(), KeyRuntimePolicy, 3); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatal("expired history still accessible", err)
 	}
 	if !db.Migrator().HasColumn(&models.CrawlerTask{}, "account_pool") {
 		t.Fatal("missing account pool ownership column")

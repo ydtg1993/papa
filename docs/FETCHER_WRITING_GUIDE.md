@@ -1143,7 +1143,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 
 站点/阶段声明确定拓扑、物理 WorkerCount/QueueSize 和 Delay/Retry 默认值。`runtime` 文件显式字段与 OA 持久覆盖可以按站点共享请求预算、按阶段限制有效执行并发与固定间隔，并选择账号池；优先级与完整配置见 [CORE_CONFIG.md](CORE_CONFIG.md)。跨阶段/账号不会绕过同站硬限制，资源预算仍按单实例全局计算。
 
-登录账号按 `account.Key{Site, ID}` 进一步划分；任务只在既有 Meta 中保存账号标识，Fetcher 显式选择账号入口。账号暂停不会自动暂停站点队列，两者是不同作用域，见 [账号手册](./ACCOUNT_RUNTIME.md)。
+登录账号按 `account.Key{Site, ID}` 进一步划分；非池调用由 Fetcher 显式选择账号入口，池任务则持久绑定 AccountPool 并固定当次身份。最近 8 次实际账号尝试独立落在任务记录中，不依赖 Meta 或 Trace。账号暂停不会自动暂停整个站点，两者是不同作用域，见 [账号手册](./ACCOUNT_RUNTIME.md)。
 
 一站一个文件放进 `internal/sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
 框架把它们收在 `papa.Sites()` 里，**项目里没有汇总清单要维护**：

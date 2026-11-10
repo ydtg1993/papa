@@ -77,7 +77,7 @@ func (s *GORMPoolStore) LoadManagement(ctx context.Context) ([]ManagementState, 
 		if v.Key != (Key{Site: row.Site, ID: row.AccountID}) || v.Version != row.Revision {
 			return nil, errors.New("stored account management identity mismatch")
 		}
-		out = append(out, v)
+		out = append(out, cloneManagement(v))
 	}
 	return out, nil
 }
@@ -207,7 +207,7 @@ func (s *MemoryPoolStore) LoadManagement(ctx context.Context) ([]ManagementState
 	defer s.mu.Unlock()
 	out := make([]ManagementState, 0, len(s.management))
 	for _, v := range s.management {
-		out = append(out, v)
+		out = append(out, cloneManagement(v))
 	}
 	return out, nil
 }
@@ -232,6 +232,6 @@ func (s *MemoryPoolStore) SaveManagementCAS(ctx context.Context, v ManagementSta
 	if s.management[v.Key].Version != expected || v.Version <= expected {
 		return ErrPoolConflict
 	}
-	s.management[v.Key] = v
+	s.management[v.Key] = cloneManagement(v)
 	return nil
 }

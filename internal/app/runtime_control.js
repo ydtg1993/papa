@@ -167,6 +167,7 @@
       button("调整全局默认", function () {
         openEditor("defaults");
       }),
+      button("策略历史", openHistory),
       button("刷新", refresh),
     );
     [
@@ -968,6 +969,81 @@
       editor = { close: closeEditor };
       var first = drawer.querySelector("input");
       if (first) first.focus();
+    }
+    async function openHistory() {
+      if (!data || !closeEditor()) return;
+      var pane = el("aside", undefined, "rt-drawer"),
+        note = el("p", "正在加载历史…", "rt-status"),
+        entries = el("div");
+      drawer = pane;
+      pane.setAttribute("role", "dialog");
+      pane.setAttribute("aria-label", "策略历史");
+      pane.append(el("h2", "策略历史"), el("p", "保留最近 100 个版本。恢复选中的字段会生成新版本，其余设置保持当前值。", "rt-muted"), note, entries,
+        button("关闭", function () { closeEditor(); }));
+      root.appendChild(pane);
+      function live() { return !dead && drawer === pane; }
+      var listVersion, previewGeneration = 0;
+      try {
+        var history = await request("/api/runtime-policy/history", null, live);
+        if (!live()) return;
+        listVersion = history.revision;
+        note.textContent = "当前版本 " + listVersion;
+        entries.appendChild(table(["版本", "保存时间", "操作者", "操作"], history.history.map(function (row) {
+          return [row.revision, date(row.created_at), row.operator || "—", button("查看差异", function () { preview(row.revision); })];
+        })));
+        if (!history.history.length) entries.appendChild(el("p", "尚无历史记录。升级前的当前设置会在下次保存时归档。"));
+      } catch (e) { if (live()) note.textContent = e.message; }
+      async function preview(target) {
+        if (!live() || writing) return;
+        if (dirty && !window.confirm("放弃当前选择并查看另一版本？")) return;
+        var revision = listVersion, previewID = ++previewGeneration;
+        function previewLive() { return live() && previewID === previewGeneration; }
+        try {
+          var result = await request("/api/runtime-policy/history", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"preview", revision:revision, target:target})}, previewLive);
+          if (!previewLive()) return;
+          dirty = false;
+          entries.replaceChildren();
+          note.textContent = "版本 " + revision + " → 参考版本 " + target + "；只恢复选中的字段。" + (result.warning ? "\n" + result.warning : "");
+          var selected = [],
+            apply = button("恢复所选字段并生成新版本", restore);
+          apply.disabled = true;
+          entries.appendChild(table(["选择", "字段", "当前覆盖", "历史覆盖"], result.changes.map(function (change) {
+            var check = el("input");
+            check.type = "checkbox";
+            check.setAttribute("aria-label", "恢复 " + change.path.slice(1).join(" / "));
+            check.onchange = function () {
+              if (check.checked) selected.push(change.path);
+              else selected = selected.filter(function (path) { return path !== change.path; });
+              dirty = selected.length > 0;
+              apply.disabled = !dirty || writing;
+            };
+            return [check, change.path.slice(1).join(" / "), change.before_present ? JSON.stringify(change.before) : "继承默认", change.after_present ? JSON.stringify(change.after) : "继承默认"];
+          })));
+          if (!result.changes.length) entries.appendChild(el("p", "当前覆盖与此版本一致。"));
+          entries.append(apply);
+          async function restore() {
+            if (!live() || writing || !selected.length) return;
+            writing = true;
+            generation++;
+            apply.disabled = true;
+            entries.querySelectorAll("input").forEach(function (x) { x.disabled = true; });
+            try {
+              var saved = await request("/api/runtime-policy/history", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"restore", revision:revision, target:target, paths:selected})}, live);
+              if (!live()) return;
+              data = saved;
+              closeEditor(true);
+              render();
+              status.textContent = "已恢复所选字段 · 新版本 " + saved.revision;
+            } catch (e) {
+              if (live()) {
+                note.textContent = e.message + "；未自动重试。请刷新并核对当前版本后重新预览。";
+                // An ambiguous response must not enable an automatic duplicate save.
+                apply.disabled = true;
+              }
+            } finally { writing = false; }
+          }
+        } catch (e) { if (previewLive()) note.textContent = e.message + "；请关闭历史窗口后刷新。"; }
+      }
     }
     refresh();
     var timer = setInterval(refresh, 5000);

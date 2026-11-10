@@ -62,15 +62,9 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 	// **写成功才发告警** —— "一次触发只报一次"因此由 setPause 的去重天然保证：
 	// 已经停着时它返回 false（可能是人工暂停在先），那就既不该覆盖人家的原因，也不该重复报警。
 	// 站点没有熔断配置时 breakerFor 返回 nil，RecordFailure 是 nil 安全的（没有熔断这回事）。
-	if tripped, failures := e.breakerFor(task.Site).RecordFailure(); tripped {
-		if e.setPause(pauseScope{Site: task.Site}, pauseState{
-			Reason:   "窗口内终态失败数达到阈值",
-			Source:   PauseSourceBreaker,
-			Stage:    task.Stage,
-			Failures: failures,
-		}) {
-			e.notifyBreakerTrip(e.breakerStatusOf(task.Site))
-		}
+	if st, tripped := e.recordBreakerFailure(task); tripped {
+		// 通知在锁外发送，使用触发瞬间的快照，恢复不能擦掉告警现场。
+		e.notifyBreakerTrip(st)
 	}
 
 	notifiers := e.getNotifiers()
@@ -87,6 +81,21 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 			e.loggerSet.Engine.Errorf("notify alert failed: %s", nerr.Error())
 		}
 	}
+}
+
+// recordBreakerFailure 将计数、判阈和写暂停与整站恢复串行化。
+// 失败按完成时刻归属窗口：恢复后完成的在途任务仍正常计数。
+func (e *Engine) recordBreakerFailure(task *Task) (BreakerStatus, bool) {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	tripped, failures := e.siteBreaker[task.Site].RecordFailure()
+	if !tripped || !e.setPause(pauseScope{Site: task.Site}, pauseState{
+		Reason: "窗口内终态失败数达到阈值", Source: PauseSourceBreaker,
+		Stage: task.Stage, Failures: failures,
+	}) {
+		return BreakerStatus{}, false
+	}
+	return e.breakerStatusOfLocked(task.Site), true
 }
 
 // notifyBreakerTrip 熔断触发时的回调：打醒目日志 + 发一条 AlertCritical 告警。
@@ -255,6 +264,10 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		claimedAt = time.Now()
 		runVersion = version
 		ctx = withTaskRunVersion(ctx, version)
+		if err := e.persistAccountAttempt(ctx, task, version); err != nil {
+			e.releaseClaim(task)
+			return err
+		}
 		e.emit(events.Event{
 			Type: events.TypeTaskClaimed, Site: task.Site, Stage: task.Stage,
 			TaskID: uint(task.ID), URL: task.URL, Attempt: 0,
@@ -320,7 +333,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				return ctxErr
 			}
 			// 不可重试的错误：直接标 failed，不再空转重试
-			if !Retryable(err) || account.IsAttemptFailure(err) {
+			_, hasCompensationPolicy := core.CompensationOf(err)
+			if !Retryable(err) || account.IsAttemptFailure(err) || hasCompensationPolicy {
 				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
 					return errors.Join(err, writeErr)
 				}
@@ -596,7 +610,9 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	err = fetcher.FetchHandler(ctx, task, e)
 	if identity, ok := account.AttemptFromContext(ctx); ok && err != nil {
 		outcome := account.Unknown
-		if errors.Is(err, account.ErrExpired) {
+		if errors.Is(err, account.ErrNeedsVerify) {
+			outcome = account.NeedsVerify
+		} else if errors.Is(err, account.ErrExpired) {
 			outcome = account.Expired
 		} else if errors.Is(err, account.ErrChallenge) {
 			outcome = account.Challenge

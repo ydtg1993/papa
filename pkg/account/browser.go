@@ -186,6 +186,11 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 	if e.config.Browser == nil {
 		return ErrUnsupported
 	}
+	if p := m.Pools(); p != nil && ctx.Value(coordinatorContextKey{}) == nil {
+		if err = p.guardAccount(key); err != nil {
+			return err
+		}
+	}
 	if err = e.enter(ctx); err != nil {
 		return err
 	}
@@ -234,6 +239,9 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 				if state != nil {
 					return errRestoreExpired
 				}
+				if err = m.ReserveLogin(ctx, key); err != nil {
+					return err
+				}
 				if err = e.config.Browser.Login(ctx, page); err != nil {
 					return &Failure{Code: "browser-login-failed", Cause: err}
 				}
@@ -251,6 +259,9 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 					return err
 				}
 				loggedIn = true
+			}
+			if err = m.beforeOperation(ctx, key); err != nil {
+				return err
 			}
 			if err = fn(page); err != nil {
 				return err

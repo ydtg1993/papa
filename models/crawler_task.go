@@ -38,7 +38,18 @@ type CrawlerTask struct {
 	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_site_stage_url_hash,priority:3;comment:所属站点(站点声明的 Key，必填；没有未归属那一档)"`
 	// AccountPool is task ownership, not part of deduplication. Retries/recovery
 	// obtain this pool's current identity instead of binding a permanent account.
-	AccountPool string `gorm:"type:varchar(256);not null;default:'';index;comment:所属站点账号池；空表示未使用账号池"`
+	AccountPool                 string     `gorm:"type:varchar(256);not null;default:'';index;comment:所属站点账号池；空表示未使用账号池"`
+	FailureKind                 string     `gorm:"type:varchar(64);not null;default:'';comment:最近终态失败分类"`
+	CompensationMode            string     `gorm:"type:varchar(32);not null;default:'';index:idx_compensation_due,priority:1;comment:空为兼容自动补偿；retry_after/account_ready/manual/permanent"`
+	NextCompensationAt          *time.Time `gorm:"index:idx_compensation_due,priority:2;comment:最早补偿时间；NULL为无时间约束"`
+	CompensationReason          string     `gorm:"type:varchar(512);not null;default:'';comment:脱敏补偿等待原因"`
+	CompensationVersion         uint64     `gorm:"not null;default:0;comment:补偿状态乐观锁版本"`
+	LastAccountID               string     `gorm:"type:varchar(256);not null;default:'';index;comment:最近认领使用账号，不包含凭据"`
+	LastAccountSelectionVersion uint64     `gorm:"not null;default:0;comment:最近认领的账号池选择版本"`
+	// AccountAttempts retains the latest eight claimed rounds, independently of
+	// optional trace retention. Each item includes account ID, versions and time;
+	// older identity associations are deliberately outside this query coverage.
+	AccountAttempts datatypes.JSON `gorm:"type:json;comment:最近8次认领的有界账号关联；非完整历史"`
 	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`

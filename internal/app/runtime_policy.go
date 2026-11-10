@@ -110,6 +110,12 @@ func (a *App) initRuntime(ctx context.Context) error {
 		cancel()
 		return err
 	}
+	if a.accountOnboarding != nil {
+		if err := a.accountOnboarding.Load(runCtx); err != nil {
+			cancel()
+			return fmt.Errorf("账号资料加载失败（请确认 migrate 与站点适配器）: %w", err)
+		}
+	}
 	if m := a.Engine.GetAccountManager(); m != nil {
 		if existing := m.Pools(); existing != nil {
 			s.pools = existing
@@ -127,6 +133,7 @@ func (a *App) initRuntime(ctx context.Context) error {
 		a.stopRuntime()
 		return err
 	}
+	a.Engine.BindAccountHealthEvents(s.pools)
 	s.wg.Add(1)
 	go func() { defer s.wg.Done(); _ = c.RunSampler(runCtx, governance.NewSampler()) }()
 	return nil
@@ -138,15 +145,21 @@ func (a *App) drainRuntime(timeout time.Duration) bool {
 	s := &a.runtimeState
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	identityDrained := a.stopBrowserIdentities(ctx)
+	if a.accountOnboarding != nil {
+		if err := a.accountOnboarding.Shutdown(ctx); err != nil {
+			return false
+		}
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
 	s.wg.Wait()
 	if s.pools != nil {
-		s.pools.Close()
+		if err := s.pools.Shutdown(ctx); err != nil {
+			return false
+		}
 	}
-	return identityDrained
+	return a.stopBrowserIdentities(ctx)
 }
 func (a *App) validateRuntimePools(cfg governance.Config) error {
 	for site := range cfg.Sites {

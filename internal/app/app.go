@@ -23,6 +23,7 @@ import (
 	"github.com/ydtg1993/papa/v4/obs/analyze"
 	"github.com/ydtg1993/papa/v4/obs/pattern"
 	"github.com/ydtg1993/papa/v4/obs/report"
+	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
@@ -74,9 +75,10 @@ type App struct {
 	sites        map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
-	configStore   *configstore.Store
-	runtimeState  runtimeState
-	identityState browserIdentityState
+	configStore       *configstore.Store
+	runtimeState      runtimeState
+	identityState     browserIdentityState
+	accountOnboarding *onboarding.Service
 
 	shutdownHooks []func(context.Context) error // Run 前注册，HTTP 退出后、关库前执行
 }
@@ -818,7 +820,7 @@ func (a *App) Run(ctx context.Context) {
 	drained, stopStats := a.Engine.Stop(stopTimeout)
 	runtimeDrained := a.drainRuntime(stopTimeout)
 	if !runtimeDrained {
-		a.Logger.Sys.Errorf("浏览器身份复验或诊断未在 %s 内排空，跳过关库与浏览器池关闭", stopTimeout)
+		a.Logger.Sys.Errorf("账号登录、账号核验或浏览器身份诊断未在 %s 内排空，跳过关库与浏览器池关闭", stopTimeout)
 	}
 	if manager := a.Engine.GetProxy(); manager != nil {
 		manager.Close()
@@ -1012,6 +1014,7 @@ func (a *App) httpServer(ctx context.Context) {
 	a.UsePage(Page{Key: "browser-diagnostics", Label: "浏览器诊断", Section: "system", Script: rodDiagnosticsScript})
 	a.UsePage(Page{Key: "crawl-control", Label: "采集控制", Section: "monitor", Script: runtimeControlScript})
 	a.UsePage(Page{Key: "account-pools", Label: "账号池", Section: "data", Script: accountPoolsScript})
+	a.UsePage(Page{Key: "accounts", Label: "账号管理", Section: "data", Script: accountsScript})
 	mux := http.NewServeMux()
 	if a.Config.TaskFlow.Enabled {
 		a.UseCSS(server.TaskFlowCSS)
@@ -1200,6 +1203,10 @@ func (a *App) httpServer(ctx context.Context) {
 	mux.Handle("/api/runtime-policy", mon.Auth(http.HandlerFunc(a.runtimePolicyAPI)))
 	mux.Handle("/api/runtime-remote", mon.Auth(http.HandlerFunc(a.runtimeRemoteAPI)))
 	mux.Handle("/api/account-pools", mon.Auth(http.HandlerFunc(a.accountPoolsAPI)))
+	mux.Handle("/api/accounts", mon.Auth(http.HandlerFunc(a.accountsAPI)))
+	mux.Handle("/api/accounts/remote", mon.Auth(http.HandlerFunc(a.accountsRemoteAPI)))
+	mux.Handle("/api/account-compensation", mon.Auth(http.HandlerFunc(a.accountCompensationAPI)))
+	mux.Handle("/api/runtime-policy/history", mon.Auth(http.HandlerFunc(a.runtimeHistoryAPI)))
 	mux.Handle("/api/proxy-health", mon.Auth(http.HandlerFunc(a.proxyHealthAPI)))
 
 	// 自定义页与注入（阶段 3 的逃生舱）

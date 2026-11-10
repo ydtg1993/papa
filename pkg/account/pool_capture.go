@@ -59,6 +59,8 @@ func (m *Manager) CapturePoolResponse(ctx context.Context, key PoolKey, rawURL s
 		u, _ := url.Parse(result.Request.URL)
 		outcome := e.config.Classify(&htmlfetch.Response{URL: u, StatusCode: result.StatusCode, Header: result.Header, Body: result.Body}, nil)
 		switch outcome {
+		case NeedsVerify:
+			return ErrNeedsVerify
 		case Expired:
 			return ErrExpired
 		case Challenge:

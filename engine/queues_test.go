@@ -179,8 +179,8 @@ func TestRequeueFailedTaskMarksRowWhenSubmitFails(t *testing.T) {
 	}
 
 	writes := f.written()
-	if !strings.Contains(writes, "status <> ?") {
-		t.Fatalf("标记失败应带 `status <> failed` 守卫（免得重复贴一行原因）：\n%s", writes)
+	if !strings.Contains(writes, "status = ?") {
+		t.Fatalf("标记失败只允许仍 pending 的行，避免覆盖运行或终态：\n%s", writes)
 	}
 	if !strings.Contains(f.writtenArgs(), QueueError) {
 		t.Fatalf("原因里应写明是哪条队列写的：%s", f.writtenArgs())

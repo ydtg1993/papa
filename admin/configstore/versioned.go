@@ -68,26 +68,49 @@ func (s *Store) SaveCAS(ctx context.Context, key string, val any, expected uint6
 		return 0, errors.New("revision 必须由独立列管理")
 	}
 	next := expected + 1
-	if expected == 0 {
-		row := models.Config{CfgKey: key, CfgVal: datatypes.JSON(raw), Revision: next, UpdatedBy: operator}
-		err = s.db.WithContext(ctx).Create(&row).Error
-		var mysqlErr *mysql.MySQLError
-		if errors.Is(err, gorm.ErrDuplicatedKey) || (errors.As(err, &mysqlErr) && mysqlErr.Number == 1062) {
-			return 0, ErrConflict
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if expected == 0 {
+			row := models.Config{CfgKey: key, CfgVal: datatypes.JSON(raw), Revision: next, UpdatedBy: operator}
+			createErr := tx.Create(&row).Error
+			var mysqlErr *mysql.MySQLError
+			if errors.Is(createErr, gorm.ErrDuplicatedKey) || (errors.As(createErr, &mysqlErr) && mysqlErr.Number == 1062) {
+				return ErrConflict
+			}
+			if createErr != nil {
+				return fmt.Errorf("创建运行策略: %w", createErr)
+			}
+		} else {
+			// Acquire the policy row's exclusive lock before INSERT ... SELECT.
+			// Otherwise concurrent archivers take shared locks and deadlock when
+			// upgrading to the CAS update. This changes no value or timestamp;
+			// affected rows are deliberately ignored (MySQL may report zero).
+			if err := tx.Exec("UPDATE crawler_config SET revision = revision WHERE cfg_key = ?", key).Error; err != nil {
+				return fmt.Errorf("锁定运行策略: %w", err)
+			}
+			if err := archiveRuntimePrevious(tx, key, expected); err != nil {
+				return fmt.Errorf("归档原策略（请确认已执行 migrate）: %w", err)
+			}
+			result := tx.Model(&models.Config{}).
+				Where("cfg_key = ? AND revision = ?", key, expected).
+				Updates(map[string]any{"cfg_val": datatypes.JSON(raw), "revision": next, "updated_by": operator, "updated_at": time.Now()})
+			if result.Error != nil {
+				return fmt.Errorf("更新运行策略: %w", result.Error)
+			}
+			if result.RowsAffected != 1 {
+				return ErrConflict
+			}
 		}
-		if err != nil {
-			return 0, fmt.Errorf("创建运行策略: %w", err)
+		history := models.RuntimePolicyHistory{ConfigKey: key, Revision: next, Document: datatypes.JSON(raw), Operator: operator, CreatedAt: time.Now()}
+		if err := tx.Create(&history).Error; err != nil {
+			return fmt.Errorf("保存策略历史（请确认已执行 migrate）: %w", err)
 		}
-		return next, nil
-	}
-	result := s.db.WithContext(ctx).Model(&models.Config{}).
-		Where("cfg_key = ? AND revision = ?", key, expected).
-		Updates(map[string]any{"cfg_val": datatypes.JSON(raw), "revision": next, "updated_by": operator, "updated_at": time.Now()})
-	if result.Error != nil {
-		return 0, fmt.Errorf("更新运行策略: %w", result.Error)
-	}
-	if result.RowsAffected != 1 {
-		return 0, ErrConflict
+		if next > RuntimeHistoryLimit {
+			return tx.Where("cfg_key = ? AND revision <= ?", key, next-RuntimeHistoryLimit).Delete(&models.RuntimePolicyHistory{}).Error
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 	return next, nil
 }

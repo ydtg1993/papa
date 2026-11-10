@@ -212,7 +212,7 @@ func TestAccountExpiryRetryAndNoPostReplay(t *testing.T) {
 		t.Fatal(n)
 	}
 	s.expire("alice")
-	if _, err := m.Do(ctx, key, htmlfetch.Request{URL: s.server.URL + "/write", Method: "POST", Body: []byte("submit")}); !errors.Is(err, ErrExpired) {
+	if _, err := m.Do(ctx, key, htmlfetch.Request{URL: s.server.URL + "/write", Method: "POST", Body: []byte("submit")}); !errors.Is(err, ErrNeedsVerify) {
 		t.Fatal(err)
 	}
 	if n, _, writes := s.counts(); n != 2 || writes != 1 {
