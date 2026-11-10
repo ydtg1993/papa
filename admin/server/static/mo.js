@@ -921,6 +921,7 @@
             '<div class="bell-head">' +
             '<span class="bell-where">站点 ' + esc(b.site || '') + '</span>' +
             '<span class="bell-head-text">' + head + '</span>' +
+            (tripped ? '<button class="btn" data-site="' + esc(b.site || '') + '" onclick="openBreakerAnalysis(this.dataset.site)">分析原因</button>' : '') +
             '<button class="btn" data-scope="' + esc(b.site || '') +
             '" onclick="resumeCrawling(this.dataset.scope)">恢复</button>' +
             '</div>' +
@@ -1009,9 +1010,56 @@
                 (paused ? '恢复整站' : '暂停整站') + '</button>';
             return '<div class="card"><div class="breaker-row">' +
                 '<span class="breaker-text"><b>' + esc(siteLabel(site)) + '</b>' +
-                (paused ? '｜<b>已暂停</b>' : '｜未暂停') + '</span>' + toggle + '</div></div>';
+                (paused ? '｜<b>已暂停</b>' : '｜未暂停') + '</span>' +
+                '<button class="btn" data-site="' + esc(site) + '" onclick="openBreakerAnalysis(this.dataset.site)">熔断分析</button>' + toggle + '</div></div>';
         }).join('');
         sec.hidden = false;
+    }
+
+    var breakerAnalysisSeq = 0;
+    async function openBreakerAnalysis(site) {
+        var seq = ++breakerAnalysisSeq, viewCurrent = captureMonitorView(), selected = null;
+        var dialog = Dialog.open({title: site + ' · 熔断分析',
+            body: '<p class="hint" id="breaker-analysis-status" role="status">正在读取熔断现场…</p>' +
+                '<label>熔断记录 <select id="breaker-analysis-select" aria-label="熔断记录"></select></label>' +
+                '<div id="breaker-analysis-body"></div>',
+            actions: [
+                {label:'复制报告',onClick:function(){if(selected && current())copyText(selected.text);return false;}},
+                {label:'下载文本',onClick:function(){download('text');return false;}},
+                {label:'下载 JSON',onClick:function(){download('json');return false;}},
+                {label:'关闭',value:true}
+            ]});
+        var status = document.getElementById('breaker-analysis-status'), select = document.getElementById('breaker-analysis-select'), body = document.getElementById('breaker-analysis-body');
+        var current = function(){return seq === breakerAnalysisSeq && viewCurrent() && body.isConnected;};
+        dialog.then(function(){if(seq===breakerAnalysisSeq)breakerAnalysisSeq++;});
+        async function download(format) {
+            if (!selected || !current()) return;
+            await downloadFile('/api/breaker/analysis?scope='+encodeURIComponent(site)+'&id='+encodeURIComponent(selected.id)+'&format='+format,current);
+        }
+        function render(report) {
+            if (!current()) return;
+            selected = report;
+            var rows = report.groups.map(function(g){return '<tr><td>'+esc(g.stage)+'</td><td>'+esc(g.category)+'</td><td>'+g.count+'</td><td>'+g.percent.toFixed(1)+'%</td><td>'+g.tasks+'</td></tr>';}).join('');
+            body.innerHTML = '<p><strong>'+esc(report.summary)+'</strong></p>'+
+                '<p>'+esc(report.complete?'样本数量与触发计数一致，未截断':'证据不完整，请结合下方说明排查')+'</p>'+
+                (report.groups.length ? '<p><b>优先核查（未验证）：</b>'+esc(report.groups[0].hypothesis || '')+'</p><p><b>验证步骤：</b>'+esc(report.groups[0].verify || '')+'</p>' : '')+
+                '<div class="breaker-analysis-table"><table><thead><tr><th>阶段</th><th>错误类型</th><th>次数</th><th>采样占比</th><th>任务数</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+                '<details><summary>展开完整证据与各组验证步骤</summary><pre class="log-tail-text"></pre></details>';
+            body.querySelector('pre').textContent = report.text;
+        }
+        try {
+            var response = await apiFetch('/api/breaker/analysis?scope='+encodeURIComponent(site),{current:current});
+            if (!current()) return;
+            if (!response) throw new Error('读取失败，请检查登录状态');
+            if (!response.ok) throw new Error((await response.text()).trim() || '读取熔断分析失败');
+            var data = await response.json();
+            if (!current()) return;
+            status.textContent = data.retention;
+            if (!data.reports.length) {status.textContent += ' 当前没有记录；旧版本产生的熔断无法补录实时现场。';select.disabled=true;return;}
+            select.innerHTML = data.reports.map(function(r,i){return '<option value="'+i+'">'+esc(r.at)+' · '+r.failures+' 次</option>';}).join('');
+            select.onchange = function(){render(data.reports[Number(select.value)]);};
+            render(data.reports[0]);
+        } catch(error) {if(current()){status.textContent=error.message;select.disabled=true;}}
     }
 
     // 暂停抓取：只给 site = 整站那一层（框架自带界面走的就是这一档 —— 站点控制卡上那个按钮）；

@@ -197,6 +197,7 @@ func (e *Engine) clearSite(site string) bool {
 	}
 	if cleared {
 		e.siteBreaker[site].Reset()
+		e.resetBreakerEvidenceLocked(site)
 		e.broadcastPauseLocked()
 	}
 	return cleared
@@ -214,6 +215,7 @@ func (e *Engine) clearAllPauses() bool {
 	for sc, st := range e.paused {
 		// 同站多条暂停重复清零无副作用；运行中的站点不受影响。
 		e.siteBreaker[sc.Site].Reset()
+		e.resetBreakerEvidenceLocked(sc.Site)
 		delete(e.paused, sc)
 		e.recordResumeLocked(sc)
 		e.emit(events.Event{Type: events.TypePauseResumed, Site: sc.Site, Stage: sc.Stage, Source: st.Source})

@@ -11,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
+	"github.com/ydtg1993/papa/v4/obs/incident"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
@@ -126,8 +127,11 @@ type Engine struct {
 	//
 	// 它**不再是闸门**：达到阈值只是"该停了"，停这个动作由 notifyFailure 写进暂停信号、
 	// 由取任务点的闸门与入队点的寄放去执行（见 pause.go）。
-	breakerMu   sync.Mutex
-	siteBreaker map[string]*breaker.Breaker
+	breakerMu          sync.Mutex
+	siteBreaker        map[string]*breaker.Breaker
+	breakerSamples     map[string]*breakerEvidence // guarded by breakerMu
+	breakerIncidents   []incident.Capture          // newest last; bounded globally and per site
+	breakerIncidentSeq uint64
 	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
 	// 框架只把它当标签，不做任何限制（见 core.Site 的注释）。
 	sites map[string]core.Site
@@ -380,6 +384,7 @@ func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	// 这里只登记**计数配置**：熔断器不再持有暂停状态、也不发告警 ——
 	// 达到阈值之后由 notifyFailure 写一条暂停信号（Source=breaker）并发 AlertCritical。
 	e.siteBreaker[site] = breaker.New(cfg)
+	delete(e.breakerSamples, site)
 }
 
 // breakerFor 取某个站点的熔断计数器；没这个站（或没给它 SetSiteBreaker）返回 nil。

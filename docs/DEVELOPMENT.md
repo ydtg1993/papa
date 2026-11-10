@@ -104,6 +104,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   spill.go     高水位溢出与回灌
   pause.go     暂停信号表（唯一真源：scope / reason / source）+ 取任务点的闸门
                （入队点的收口在 submit.go 的 submitToStage；熔断只往这张表里写）
+  breaker_diagnostics.go / breaker_diagnostics_test.go  有界熔断现场、恢复隔离、历史保留和并发回归
   batch.go     各治理队列共用的分页扫描（keyset 游标）
   dedup.go     内存去重表 + 活跃任务装载
   sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
@@ -128,6 +129,8 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用
   server/       监控后台（HTML / API / 静态资源）
+    breaker_analysis.go / breaker_analysis_test.go  鉴权只读熔断分析、指定现场导出、空态和过期响应
+    breaker_analysis_ui_test.go / breaker_analysis_browser_test.go  请求竞态、纯文本证据、历史切换和窄屏浏览器回归
     ui_behavior_test.go        Node 执行生产 JS 与依赖真实 renderer 的行为回归入口
     static/requests.js         原生 API 错误、轮询代次/超时/退避/可见性管理
     static/table-links.js      oao v1.3.4 整值 URL 兼容适配（table-loaded 扩展点）
@@ -182,6 +185,9 @@ pkg/                             可独立复用的件
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染
+  incident/incident.go / classify.go  实时与历史报告共用的错误分组、脱敏证据、分类及文本导出
+  incident/incident_test.go          状态码保留、窗口/数量上限、脱敏和原因置信边界
+  analyze/breaker.go / breaker_test.go  按运行/站点/窗口关联熔断事件，旧事件缺少窗口时降级
 models/                          框架自带的表结构
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report / strategy-migrate inspect）
   scaffold_safe.go               new 独占写入与链接路径保护；--missing-only 只补缺失文件

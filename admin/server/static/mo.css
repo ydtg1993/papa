@@ -491,6 +491,10 @@ html.need-login #login { display: flex; }
 .dlg-body p { margin: 0 0 10px; }
 .dlg-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
 .dlg-actions .btn { margin-top: 0; }
+#breaker-analysis-select { width: 100%; max-width: 100%; margin: 8px 0 14px; }
+#breaker-analysis-body { overflow-wrap: anywhere; }
+.breaker-analysis-table { overflow-x: auto; margin: 12px 0; }
+.breaker-analysis-table table { min-width: 440px; }
 
 /* ---- 任务追踪时间线（static/trace.js 渲染） ---- */
 .trace-body { max-height: 60vh; overflow: auto; }

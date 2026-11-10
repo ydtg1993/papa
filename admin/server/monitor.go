@@ -25,6 +25,7 @@ import (
 	"github.com/ydtg1993/papa/v4/admin/sysinfo"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/obs/incident"
 )
 
 //go:embed template.html
@@ -96,7 +97,8 @@ type MonitorConfig struct {
 	TaskTrace      func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
 	// BreakerStatuses 各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
 	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
-	BreakerStatuses func() map[string]core.BreakerStatus
+	BreakerStatuses  func() map[string]core.BreakerStatus
+	BreakerIncidents func(site string) []incident.Capture
 	// ResumeBreaker 放行某个站点（`stage` 为空）或**某站的某个阶段**的抓取（清掉对应的暂停信号）；
 	// 返回是否真的从暂停态切了回来（本来在跑就是 false）。
 	// 要知道有哪些站点，看 BreakerStatuses 的键。
@@ -253,6 +255,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/errorqueue/process", s.wrap(s.errorQueueProcessHandler))
 	mux.HandleFunc("/api/repeatqueue/process", s.wrap(s.repeatQueueProcessHandler))
 	mux.HandleFunc("/api/breaker", s.wrap(s.breakerHandler))
+	mux.HandleFunc("/api/breaker/analysis", s.wrap(s.breakerAnalysisHandler))
 	mux.HandleFunc("/api/breaker/resume", s.wrap(s.breakerResumeHandler))
 	mux.HandleFunc("/api/breaker/pause", s.wrap(s.breakerPauseHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))

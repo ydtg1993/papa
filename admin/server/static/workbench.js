@@ -127,7 +127,8 @@ function navigateWorkbench(action, site, event) {
         bell.focus();
         return;
     }
-    if (['site', 'tasks'].indexOf(action) < 0 || !buildWorkbench(lastData, null).rows.some(function (row) { return row.site === site; })) return;
+    if (['site', 'tasks', 'analysis'].indexOf(action) < 0 || !buildWorkbench(lastData, null).rows.some(function (row) { return row.site === site; })) return;
+    if (action === 'analysis') { openBreakerAnalysis(site); return; }
     switchSite(site);
     if (action === 'tasks') openTable('task', '任务');
     else {
@@ -168,6 +169,7 @@ function renderWorkbench(data) {
     document.getElementById('workbench-issue-count').textContent = model.issues.length;
     function issueHTML(issue) {
         return '<article class="workbench-issue" data-tone="' + issue.tone + '"><div><span class="workbench-scope">' + esc(issue.scope) + '</span><h3>' + esc(issue.title) + '</h3><p>' + esc(issue.detail) + '</p></div>'
+            + (issue.kind === 'pause' && issue.site ? workbenchButton('分析原因', 'analysis', issue.site, issue.key + ':analysis') : '')
             + (issue.action ? workbenchButton(issue.action === 'queues' ? '查看队列' : issue.action === 'pauses' ? '查看暂停详情' : '查看站点', issue.action, issue.site, issue.key) : '') + '</article>';
     }
     var content = model.issues.slice(0, 3).map(issueHTML).join(''), remaining = model.issues.slice(3);
@@ -185,7 +187,7 @@ function renderWorkbench(data) {
     if (replaceWorkbenchHTML(issueRoot, content)) bindWorkbench(issueRoot);
     var siteRoot = document.getElementById('workbench-sites');
     content = model.rows.length ? '<div class="workbench-scroll"><table class="workbench-table"><thead><tr><th>站点 / 阶段</th><th>状态</th><th>排队 / 未完成（含排队）</th><th>累计完成 / 失败</th><th>定位</th></tr></thead><tbody>' + model.rows.map(function (row) {
-        return '<tr><td><strong>' + esc(row.site) + '</strong><small>' + row.activeStages + ' 个活跃阶段</small></td><td><span class="workbench-state" data-tone="' + row.tone + '">' + esc(row.state) + '</span></td><td>' + workbenchNumber(row.queued) + ' / ' + workbenchNumber(row.running) + '</td><td>' + workbenchNumber(row.completed) + ' / ' + workbenchNumber(row.failed) + '</td><td><div class="workbench-links">' + workbenchButton('阶段', 'site', row.site) + workbenchButton('任务', 'tasks', row.site) + '</div></td></tr>';
+        return '<tr><td><strong>' + esc(row.site) + '</strong><small>' + row.activeStages + ' 个活跃阶段</small></td><td><span class="workbench-state" data-tone="' + row.tone + '">' + esc(row.state) + '</span></td><td>' + workbenchNumber(row.queued) + ' / ' + workbenchNumber(row.running) + '</td><td>' + workbenchNumber(row.completed) + ' / ' + workbenchNumber(row.failed) + '</td><td><div class="workbench-links">' + workbenchButton('阶段', 'site', row.site) + workbenchButton('任务', 'tasks', row.site) + workbenchButton('熔断分析', 'analysis', row.site) + '</div></td></tr>';
     }).join('') + '</tbody></table></div>' : '<p class="workbench-empty">当前范围没有本进程采集阶段的快照。仅管理模式与独立 CLI 不共享内存队列。</p>';
     if (replaceWorkbenchHTML(siteRoot, content)) bindWorkbench(siteRoot);
     renderWorkbenchFreshness();

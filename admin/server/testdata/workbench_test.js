@@ -10,10 +10,16 @@ const c=vm.createContext({Date,Map,Number,Object,Array,String,
     switchModule:name=>{c.currentModule=name;calls.push(['module',name]);},
     openTable:(key,label)=>calls.push(['table',key,label]),
 });vm.runInContext(source,c);
+c.openBreakerAnalysis=site=>calls.push(['analysis',site]);
 const q=(queued,running,completed,failed)=>({queue_len:queued,in_progress:running,completed,failed});
 const data={sites:{a:{stage_count:2,breaker_paused:false},b:{stage_count:1,breaker_paused:false},idle:{stage_count:3,breaker_paused:false}},
     stages:{'a:list':{site:'a',stage:'list',queue:q(3,2,10,4)},'b:list':{site:'b',stage:'list',queue:q(5,1,20,0)}},breakers:[],
     queues:{error_queue:{enabled:true,backlog:0,backlog_at:'2026-11-06T01:00:00Z'}}};
+{
+    c.lastData=data;c.navigateWorkbench('analysis','a');assert.deepEqual(calls.pop(),['analysis','a']);
+    const n=calls.length;c.navigateWorkbench('analysis','unknown');assert.equal(calls.length,n);
+    c.currentModule='settings';c.navigateWorkbench('analysis','a');assert.equal(calls.length,n);c.currentModule='dashboard';
+}
 {
     const m=c.buildWorkbench(data,null);assert.equal(m.rows.length,3);assert.equal(m.totals.queued,8);assert.equal(m.totals.running,3);
     assert.equal(m.totals.completed,30);assert.equal(m.totals.failed,4);assert.equal(m.totals.activeStages,2);

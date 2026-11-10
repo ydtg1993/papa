@@ -1104,6 +1104,7 @@ func (a *App) httpServer(ctx context.Context) {
 		TaskTrace:        a.Engine.ListTrace,
 		VerifyTokenValue: tokenCounter.Confirmer(a.Logger.Sys),
 		BreakerStatuses:  a.Engine.BreakerStatuses,
+		BreakerIncidents: a.Engine.BreakerIncidents,
 		// 暂停/放行的 scope 有两层：`stage` 为空 = 整站，否则只动那一站的某个阶段。
 		// 两层写的是**同一张暂停信号表**（见 engine/pause.go），只是 scope 不同。
 		ResumeBreaker: func(site, stage string) bool {

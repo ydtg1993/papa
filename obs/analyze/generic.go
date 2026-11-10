@@ -6,13 +6,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/pkg/redact"
-	"regexp"
+
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/obs/incident"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
@@ -69,6 +70,7 @@ func (g *Generic) Build(ctx context.Context, in *obs.Input) (*obs.SectionResult,
 	addEventCoverage(in, res, g.Thresholds.eventMaxGap(), dts)
 	g.addQueue(in, res)
 	groups := g.addFailures(in, res)
+	addBreakerIncidents(in, res)
 	g.addPerformance(in, res)
 	g.addFrameworkState(ctx, in, res)
 	// 失败分组数只算 task_failed 的分组，不用 len(res.Problems)：
@@ -408,26 +410,12 @@ func failureTasksRef(grp *failGroup) string {
 	return fmt.Sprintf("失败任务 %d 个：%s（共 %d 次）", len(ids), strings.Join(parts, "、"), grp.Count)
 }
 
-// errNumRE / errURLRE 在包级编译一次：errorTemplate 对每条失败事件都会调用。
-var (
-	errNumRE = regexp.MustCompile(`\d+`)
-	errURLRE = regexp.MustCompile(`https?://\S+`)
-)
-
-// errorTemplate 把错误文本归一成模板（去 task failed: 前缀 / 数字 -> # / URL -> <url>），
-// 用于同组内 TopN：一串带 task_id、行号、URL 的错误文本只有归一后才能看出是同一个错。
+// errorTemplate 与实时熔断分析共用归一化规则，保留 HTTP/数据库错误码。
 func errorTemplate(msg string) string {
-	s := msg
-	if i := strings.Index(s, "task failed:"); i >= 0 {
-		s = s[i+len("task failed:"):]
+	if i := strings.Index(msg, "task failed:"); i >= 0 {
+		msg = msg[i+len("task failed:"):]
 	}
-	s = errNumRE.ReplaceAllString(s, "#")
-	s = errURLRE.ReplaceAllString(s, "<url>")
-	// 按字符（rune）截断，避免把多字节字符切成半个。
-	if r := []rune(s); len(r) > 120 {
-		s = string(r[:120])
-	}
-	return strings.TrimSpace(s)
+	return incident.Template(msg)
 }
 
 // topTemplate 返回组内出现次数最多的错误模板；并列时取字典序最小者，保证报告可复现。
@@ -467,48 +455,10 @@ func findLogSampleForGroup(in *obs.Input, grp *failGroup) (obs.LogSample, bool) 
 	return findLogSample(in, "task failed")
 }
 
-// hypothesesForKind 先用错误文本给高置信度假设，认不出错误文本时回退到按 kind 的通用假设。
+// hypothesesForKind 与实时熔断分析使用同一套待验证原因，避免将启动失败直接归因于权限。
 func hypothesesForKind(kind, errText string) []obs.Hypothesis {
-	switch {
-	case strings.Contains(errText, "Access is denied"), strings.Contains(errText, "browser binary"),
-		strings.Contains(errText, "debug url"), strings.Contains(errText, "ProcessSingleton"):
-		return []obs.Hypothesis{{
-			Text:       "浏览器/文件系统权限问题（rod 下载目录或 Chrome user-data-dir 不可写）",
-			Confidence: "high", Verify: "`papa rod --self-check` 与检查 rod 目录 ACL",
-			FixHint: "browser.binary / user-data-dir 指向可写目录",
-		}}
-	case strings.Contains(errText, "unsupported detail route"), strings.Contains(errText, "grid missing"):
-		return []obs.Hypothesis{{
-			Text: "站点页面结构变化或 URL 规则不符", Confidence: "high",
-			Verify: "用 `papa rod --url <失败 URL>` 对照归档页面", FixHint: "站点声明/抓取解析规则",
-		}}
-	default:
-		return hypothesesFor(kind)
-	}
-}
-
-// hypothesesFor 按通用错误种类给可验证假设（不含任何业务文件路径）。
-func hypothesesFor(kind string) []obs.Hypothesis {
-	switch kind {
-	case "structure", "not-found", "not_found":
-		return []obs.Hypothesis{{
-			Text: "目标页面结构变化或 URL 失效，选择器/链接规则与真实页面不符", Confidence: "high",
-			Verify:  "用 `papa rod --url <失败 URL>` 抓一次真实页面，对照归档页面与选择器",
-			FixHint: "该阶段 fetcher 的解析逻辑与站点声明（sites/<站>.go）",
-		}}
-	case "protected", "access_restricted":
-		return []obs.Hypothesis{{
-			Text: "被反爬/登录墙/地区限制拦截", Confidence: "medium",
-			Verify:  "`papa rod --url <URL> --show` 人工看页面是否要求登录/验证码",
-			FixHint: "站点请求头、Cookie/代理配置或抓取频率",
-		}}
-	default:
-		return []obs.Hypothesis{{
-			Text: "网络抖动、浏览器资源不足或目标站限流", Confidence: "medium",
-			Verify:  "`papa rod --self-check` 验浏览器可用；对照失败时间分布是否集中",
-			FixHint: "browser.pool_size / 阶段并发与重试退避",
-		}}
-	}
+	category, hypothesis, verify := incident.Classify(kind, errText)
+	return []obs.Hypothesis{{Text: category + "：" + hypothesis, Confidence: "low", Verify: verify, FixHint: "先验证对应证据，再调整运行环境或抓取规则"}}
 }
 
 func findLogSample(in *obs.Input, contains string) (obs.LogSample, bool) {
