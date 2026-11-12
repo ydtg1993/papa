@@ -16,6 +16,10 @@ type Snapshot struct {
 }
 
 func (s Snapshot) Clean() Snapshot {
+	if s.Control.PendingFailure != nil {
+		p := *s.Control.PendingFailure
+		s.Control.PendingFailure = &p
+	}
 	s.Lifecycle = s.Lifecycle.Clean()
 	s.Control.Checks = append([]breaker.StageCheck(nil), s.Control.Checks...)
 	for i := range s.Control.Checks {

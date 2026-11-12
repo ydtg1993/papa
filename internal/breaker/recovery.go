@@ -24,6 +24,20 @@ type Recovery struct {
 	StoppedAt                                                           time.Time
 	SampleID, SampleStage                                               string
 	SampleDeadline                                                      time.Time // selection time + 10 minutes, capped by the cycle budget
+	PendingFailure                                                      *PendingFailure
+}
+
+// A serial sample's business result awaiting terminal acknowledgement. Keep
+// the original round and classification; recovery retries SQL, never business.
+type PendingFailure struct {
+	TaskID                                            int
+	Stage, URL, Error, Category, Fingerprint          string
+	Repeat, Reprocess                                 int
+	At, SampleDeadline                                time.Time
+	FailureKind, CompensationMode, CompensationReason string
+	NotBefore                                         time.Time
+	LastAttempt                                       time.Time
+	Attempts                                          int
 }
 
 type RecoverySample struct {

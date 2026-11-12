@@ -206,6 +206,9 @@ func (e *Engine) breakerStagesReadyLocked(s *smartBreaker, minimum int) bool {
 }
 
 func (e *Engine) finishBreakerRecoveryLocked(s *smartBreaker, now time.Time) {
+	if s.event.PendingFailure != nil || s.savedRevision < s.controlRevision {
+		return
+	}
 	if len(s.event.pendingHistory) >= 4094 {
 		e.transitionBreakerLocked(s, "manual", "历史写入积压，不能完成恢复或清零", now)
 		e.pauseSmartBreakerLocked(s, "历史写入积压")
@@ -328,7 +331,7 @@ func recoverySampleID(sample breaker.RecoverySample) string {
 // An operator grants a new bounded attempt, not a health verdict. Do not reuse
 // old stage proofs or abandon a callback that is still executing.
 func (e *Engine) retryBreakerLocked(s *smartBreaker) bool {
-	if s.probeRunning || s.probeExecuting || s.inflight > 0 || s.sampleDispatching {
+	if s.event.PendingFailure != nil || s.probeRunning || s.probeExecuting || s.inflight > 0 || s.sampleDispatching {
 		return false
 	}
 	e.beginBreakerRetryLocked(s, time.Now(), "manual_retry", "人工请求重试整站验证；保留失败窗口，重新授予恢复预算")

@@ -171,6 +171,9 @@ func (e *Engine) requeueRepeatTask() func(*models.CrawlerTask) bool {
 
 // requeueRepeatTaskIn 单条重投的实体。
 func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
+	if e.breakerSettlementBlocked(t.Site) {
+		return false
+	}
 	if e.compensationBlockedReason(t, time.Now()) != "" {
 		return false
 	}

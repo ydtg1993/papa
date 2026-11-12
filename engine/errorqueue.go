@@ -58,6 +58,9 @@ func (e *Engine) requeueFailedTask() func(*models.CrawlerTask) bool {
 
 // requeueFailedTaskIn 单条重投的实体。
 func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
+	if e.breakerSettlementBlocked(t.Site) {
+		return false
+	}
 	if e.compensationBlockedReason(t, time.Now()) != "" {
 		return false
 	}

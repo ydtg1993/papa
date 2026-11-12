@@ -131,6 +131,9 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
+	if e.breakerSettlementBlocked(t.Site) {
+		return ErrTaskProcessing
+	}
 	if t.Status == models.TaskStatusProcessing {
 		return ErrTaskProcessing
 	}

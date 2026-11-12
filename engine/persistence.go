@@ -106,6 +106,18 @@ func (e *Engine) persistTerminal(ctx context.Context, task *Task, version taskRu
 		return nil // compatibility for non-persistent, directly supplied tasks
 	}
 	updates := taskStatusUpdates(status, cause)
+	if status == models.TaskStatusFailed && !task.breakerSampleDeadline.IsZero() {
+		if err := e.retainBreakerFailure(ctx, task, version, cause); err != nil {
+			return err
+		}
+		e.breakerMu.Lock()
+		updates["last_finished_at"] = e.smartBreakers[task.Site].event.PendingFailure.At.UTC()
+		e.breakerMu.Unlock()
+	}
+	return e.persistTerminalUpdates(ctx, task, version, status, updates)
+}
+
+func (e *Engine) persistTerminalUpdates(ctx context.Context, task *Task, version taskRunVersion, status models.TaskStatus, updates map[string]any) error {
 	err := e.retryTaskState(ctx, task, "persist terminal state", func() error {
 		db := e.db.WithContext(ctx)
 		result := terminalScope(db, task, version).Updates(updates)

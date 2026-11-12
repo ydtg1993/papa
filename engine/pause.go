@@ -218,6 +218,10 @@ func (e *Engine) clearSite(site string, force bool) bool {
 	// 与终态失败的计数/写暂停串行化，不能让旧判定跨过恢复重新关闸。
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
+	if s := e.smartBreakers[site]; s != nil && s.event != nil && s.event.PendingFailure != nil {
+		e.noteBreakerLocked(s, "failure_settlement_wait", "", "存在未结算失败，不能人工重试或强制放行；等待原轮次终态确认", time.Now())
+		return false
+	}
 	if !force {
 		if s := e.smartBreakers[site]; s != nil && s.event != nil && (s.event.Active() || s.manualTakeover) {
 			if s.probeRunning || s.probeExecuting {

@@ -87,14 +87,14 @@ func (e *Engine) expireBreakerSampleLocked(s *smartBreaker, now time.Time) {
 	}
 	// Neither SQL still submitting nor a handler ignoring cancellation may
 	// release the site's serial slot early.
-	if s.inflight == 0 && !s.sampleDispatching {
+	if s.inflight == 0 && !s.sampleDispatching && l.PendingFailure == nil {
 		l.SampleID, l.SampleStage, l.SampleDeadline = "", "", time.Time{}
 	}
 }
 
 func (e *Engine) admitBreakerSampleLocked(s *smartBreaker, task *Task, now time.Time) bool {
 	l := s.event
-	if s.inflight != 0 || s.sampleDispatching || s.probeRunning || s.probeExecuting {
+	if s.event.PendingFailure != nil || s.inflight != 0 || s.sampleDispatching || s.probeRunning || s.probeExecuting {
 		return false
 	}
 	e.expireBreakerSampleLocked(s, now)
@@ -146,7 +146,7 @@ func (e *Engine) retryBreakerSamples(ctx context.Context) {
 		e.breakerMu.Lock()
 		s := e.smartBreakers[site]
 		l, now := s.event, time.Now()
-		if l == nil || !l.MixedSamples || (l.State != "observing" && l.State != "ramping") || !now.Before(l.Deadline) || s.draining || s.inflight > 0 || s.sampleDispatching || s.savedRevision < s.controlRevision || now.Before(s.nextSampleRetry) || e.hasManualBreakerPause(site) {
+		if l == nil || l.PendingFailure != nil || !l.MixedSamples || (l.State != "observing" && l.State != "ramping") || !now.Before(l.Deadline) || s.draining || s.inflight > 0 || s.sampleDispatching || s.savedRevision < s.controlRevision || now.Before(s.nextSampleRetry) || e.hasManualBreakerPause(site) {
 			e.breakerMu.Unlock()
 			continue
 		}

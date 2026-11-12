@@ -311,7 +311,15 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			if errors.Is(err, errAttemptTimingPersistence) {
 				var timingErr *attemptTimingError
 				if !task.breakerSampleDeadline.IsZero() && errors.As(err, &timingErr) && timingErr.handlerErr != nil && !cancellationOnly(timingErr.handlerErr) {
-					return err // retain unresolved persistence; never turn a real failure into pending cancellation
+					terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+					defer cancel()
+					if writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusFailed, timingErr.handlerErr); writeErr != nil {
+						return errors.Join(err, writeErr)
+					}
+					e.emitTaskFailed(task, timingErr.handlerErr, claimedAt)
+					e.notifyFailure(terminalCtx, task, timingErr.handlerErr)
+					e.finishTask(task)
+					return err
 				}
 				if ctx.Err() != nil && (!errors.As(err, &timingErr) || !timingErr.handlerSucceeded) {
 					e.releaseClaim(task)

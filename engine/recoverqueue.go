@@ -57,6 +57,9 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
 func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
+	if e.breakerSettlementBlocked(t.Site) {
+		return false
+	}
 	if compensationConditionReason(t, time.Now()) != "" {
 		return false
 	}
