@@ -142,10 +142,7 @@ func TestSmartBreakerFastScopeMixedObservationAndHardCeiling(t *testing.T) {
 			t.Fatalf("mixed must observe first: %+v", l)
 		}
 		flushSmart(t, e)
-		done, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"})
-		if !ok {
-			t.Fatal("observing must allow bounded work")
-		}
+		_, done := admitSmartTrial(t, e, 1, "detail")
 		if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 			t.Fatal("observing concurrency cap lost")
 		}
@@ -260,7 +257,9 @@ func TestSmartBreakerSemanticSuccessPersistsBeforeRamping(t *testing.T) {
 	if e.isPaused(pauseScope{Site: "synthetic", Stage: "detail"}) {
 		t.Fatal("durable ramp did not release automatic pause")
 	}
-	smartSuccess(e, &Task{ID: 3, Site: "synthetic", Stage: "detail", breakerEpoch: l.Epoch})
+	task, done := admitSmartTrial(t, e, 3, "detail")
+	e.recordSmartOutcome(task, nil)
+	done()
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(time.Minute))
 	expectSmartState(t, e, "recovered")
 	if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
@@ -419,22 +418,14 @@ func TestReviewRampDoesNotFinishWithUnsettledTrial(t *testing.T) {
 	e.smartBreakers["synthetic"].policy.Interval = time.Nanosecond
 	e.smartBreakers["synthetic"].policy.RampConcurrency = 2
 	e.breakerMu.Unlock()
-	good := &Task{ID: 2, Site: "synthetic", Stage: "detail", breakerRound: "0:0"}
-	done, ok := e.admitBreakerTask(good)
-	if !ok {
-		t.Fatal("good admission")
-	}
+	good, done := admitSmartTrial(t, e, 2, "detail")
 	e.recordSmartOutcome(good, nil)
 	done()
 	flushSmart(t, e)
-	slow := &Task{ID: 3, Site: "synthetic", Stage: "detail", breakerRound: "0:0"}
 	e.breakerMu.Lock()
 	e.smartBreakers["synthetic"].nextAdmission = time.Time{}
 	e.breakerMu.Unlock()
-	release, ok := e.admitBreakerTask(slow)
-	if !ok {
-		t.Fatal("slow admission")
-	}
+	slow, release := admitSmartTrial(t, e, 3, "detail")
 	defer release()
 	l := smartLifecycle(e)
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
@@ -493,7 +484,7 @@ func TestReviewMixedObservationCanRejectAStaleIncident(t *testing.T) {
 		smartSuccess(e, &Task{ID: i, Site: "synthetic", Stage: "detail", breakerRound: "0:0"})
 	}
 	for i := 1; i <= 3; i++ {
-		smartSuccess(e, &Task{ID: i, Site: "synthetic", Stage: "detail", breakerRound: "verification"})
+		verificationSuccess(t, e, i, "verification")
 	}
 	flushSmart(t, e)
 	// Plenty of successful work and no further failure; short-window failures expired.

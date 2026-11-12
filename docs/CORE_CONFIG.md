@@ -71,14 +71,14 @@
 | `breaker.policy.short_window` | duration | `30s` | 短时爆发检测窗口 |
 | `breaker.policy.fast_threshold` | int | `5` | 同阶段、同分类、同错误指纹的不同任务数达到此值，立即保护整站；阶段分类只用于定位和报告 |
 | `breaker.policy.mixed_threshold` | int | `8` | 短窗口内失败的不同任务数达到此值、未命中快速或硬保护时，进入有期限的混合错误观察 |
-| `breaker.policy.observe_for` | duration | `30s` | 最后一次失败后的混合观察时长；所有已注册阶段至少两个本轮不同任务成功且没有新失败，排空在途任务后退出观察；覆盖不足则探测。新增失败重计观察时间，不延长总恢复预算，不越过硬阈值 |
+| `breaker.policy.observe_for` | duration | `30s` | 最后一次失败后的混合观察时长；所有已注册阶段完成三次本轮受控真实任务验证且没有新失败，排空在途任务后退出观察；选中的失败样本串行检查，最长等待/执行10分钟，受整轮预算限制。新增失败重计观察时间，不延长总恢复预算，不越过硬阈值 |
 | `breaker.policy.cooldown` | duration | `30s` | 自动保护后的冷却时间 |
-| `breaker.policy.probe_timeout` | duration | `10s` | 单次试探超时 |
+| `breaker.policy.probe_timeout` | duration | `10s` | 单次只读试探超时；选中后的等待和执行另受10分钟上限及整轮预算约束 |
 | `breaker.policy.max_probes` | int | `3` | 一次自动恢复最多进行的整站试探轮数；每轮逐阶段验证全部阶段 |
 | `breaker.policy.probe_interval` | duration | `30s` | 试探间隔；明确的 Retry-After 仍是下限 |
 | `breaker.policy.max_recovery` | duration | `5m` | 本轮自动恢复时间预算，耗尽后保持暂停并追加本轮结果，一小时后重新复查 |
 | `breaker.policy.ramp_for` | duration | `30s` | 试探通过后的低速恢复观察时长；到期且每个阶段都有本轮验证成功（混合错误为三个失败样本轮次）后停止继续放行，等待全站在途任务全部结束再确认恢复并清零 |
-| `breaker.policy.ramp_concurrency` | int | `1` | 低速恢复阶段的并发上限 |
+| `breaker.policy.ramp_concurrency` | int | `1` | 兼容旧配置；恢复验证始终同站点串行，配置大于1也不会并行执行样本 |
 | `breaker.policy.interval` | duration | `1s` | 观察和低速恢复阶段的任务启动间隔下限 |
 | `breaker.policy.capacity` | int | `4096` | 每站检测器保留的失败轮次上限；成功样本使用独立同容量空间。失败超限直接保护整站并标明证据受限，不通过丢弃失败降低计数 |
 

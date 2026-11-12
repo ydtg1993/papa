@@ -18,7 +18,7 @@ type Policy struct {
 	ProbeInterval   time.Duration `mapstructure:"probe_interval" json:"probe_interval"`
 	MaxRecovery     time.Duration `mapstructure:"max_recovery" json:"max_recovery"`
 	RampFor         time.Duration `mapstructure:"ramp_for" json:"ramp_for"`
-	RampConcurrency int           `mapstructure:"ramp_concurrency" json:"ramp_concurrency"`
+	RampConcurrency int           `mapstructure:"ramp_concurrency" json:"ramp_concurrency"` // legacy configuration; recovery validation is always serial
 	Interval        time.Duration `mapstructure:"interval" json:"interval"`
 	Capacity        int           `mapstructure:"capacity" json:"capacity"`
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -18,8 +19,10 @@ import (
 // evidence fallback supports direct Engine users without a stage registry.
 func (e *Engine) resetBreakerChecksLocked(s *smartBreaker) {
 	previous := make(map[string][]breaker.RecoverySample)
+	timeouts := make(map[string][]string)
 	for _, c := range s.event.Checks {
 		previous[c.Stage] = c.Samples
+		timeouts[c.Stage] = c.TimedOutIDs
 	}
 	names := map[string]bool{}
 	for _, stage := range e.stages {
@@ -41,6 +44,7 @@ func (e *Engine) resetBreakerChecksLocked(s *smartBreaker) {
 	s.event.Checks = nil
 	for _, stage := range keys[:min(len(keys), breaker.MaxRecoveryStages)] {
 		check := breaker.StageCheck{Stage: stage, State: "pending", Round: s.event.ProbeAttempts, Verification: "task", Coverage: "完整真实任务路径；未声明只读检查可完整覆盖", RequiredTasks: 1, RequiredProbes: 1}
+		check.TimedOutIDs = timeouts[stage]
 		if info := e.stages[core.StageKey(s.event.Site, stage)]; info != nil && strings.TrimSpace(info.config.BreakerReadOnlyCoverage) != "" {
 			check.Verification, check.Coverage = "readonly", info.config.BreakerReadOnlyCoverage
 			check.RequiredProbes = 2
@@ -76,7 +80,6 @@ func (e *Engine) noteBreakerLocked(s *smartBreaker, action, stage, reason string
 	l := s.event
 	e.appendBreakerTransitionLocked(s, incident.Transition{At: now, From: l.State, To: l.State, Action: action, Stage: stage, Round: l.ProbeAttempts, Failures: l.report.WindowFailures, Successes: l.report.WindowSuccesses, NextAttemptAt: l.NextProbeAt, Reason: reason})
 	l.Revision++
-	l.trimReport()
 	s.dirty = true
 	e.emit(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Stage: stage, Attrs: map[string]string{"incident_id": l.ID, "state": l.State, "action": action, "round": fmt.Sprint(l.ProbeAttempts)}})
 }
@@ -105,26 +108,36 @@ func (e *Engine) appendBreakerTransitionLocked(s *smartBreaker, entry incident.T
 	l.HistorySequence++
 	entry.Sequence, entry.Cycle = l.HistorySequence, l.Cycle
 	if entry.Stage != "" {
-		for _, check := range l.reportSnapshot().Checks {
+		for _, check := range l.Checks {
 			if check.Stage == entry.Stage {
-				copy := check
+				copy := breakerCheckReport(check)
 				entry.Check = &copy
 				break
 			}
 		}
 	}
+	// Clean only the new immutable entry; repeatedly cleaning the full history
+	// under the admission lock makes multi-stage serial progress unnecessarily slow.
+	entry = (incident.Lifecycle{Timeline: []incident.Transition{entry}}).Clean().Timeline[0]
 	l.pendingHistory = append(l.pendingHistory, entry)
 	l.report.Timeline = append(l.report.Timeline, entry)
+	if len(l.report.Timeline) > incident.MaxTransitions {
+		l.report.Timeline = l.report.Timeline[len(l.report.Timeline)-incident.MaxTransitions:]
+		l.report.Limited = true
+	}
 }
 
 func (e *Engine) recordBreakerStageSuccessLocked(s *smartBreaker, task *Task, now time.Time) {
-	if task.breakerTrial != s.trial {
+	if task.breakerTrial != s.trial || task.breakerSampleDeadline.IsZero() || !task.breakerSampleDeadline.Equal(s.event.SampleDeadline) || !now.Before(task.breakerSampleDeadline) {
 		return
 	}
 	for i := range s.event.Checks {
 		check := &s.event.Checks[i]
 		if check.Stage != task.Stage {
 			continue
+		}
+		if slices.Contains(check.TimedOutIDs, recoverySampleID(breaker.RecoverySample{TaskID: int64(task.ID), URL: task.URL})) {
+			return
 		}
 		if s.event.MixedSamples && len(check.Samples) > 0 {
 			matched := false
@@ -133,10 +146,7 @@ func (e *Engine) recordBreakerStageSuccessLocked(s *smartBreaker, task *Task, no
 				if recoverySampleID(*sample) != recoverySampleID(breaker.RecoverySample{TaskID: int64(task.ID), URL: task.URL}) {
 					continue
 				}
-				need := 3 / len(check.Samples)
-				if j < 3%len(check.Samples) {
-					need++
-				}
+				need := breakerSampleNeed(len(check.Samples), j)
 				if sample.Successes < need {
 					sample.Successes++
 					matched = true
@@ -162,7 +172,7 @@ func (e *Engine) recordBreakerStageSuccessLocked(s *smartBreaker, task *Task, no
 			check.SuccessIDs = append(check.SuccessIDs, id)
 		}
 		check.TaskSuccesses++
-		if s.event.State == "observing" {
+		if s.event.State == "observing" && len(check.TimedOutIDs) == 0 {
 			check.State = "observing"
 		}
 		// First successes and the three-sample proof are milestones; avoid
@@ -179,6 +189,9 @@ func (e *Engine) breakerStagesReadyLocked(s *smartBreaker, minimum int) bool {
 		return false
 	}
 	for _, check := range s.event.Checks {
+		if len(check.TimedOutIDs) > 0 {
+			return false
+		}
 		if check.Verification == "readonly" {
 			if check.State != "passed" || check.ProbeSuccesses < check.RequiredProbes {
 				return false
@@ -193,7 +206,7 @@ func (e *Engine) breakerStagesReadyLocked(s *smartBreaker, minimum int) bool {
 }
 
 func (e *Engine) finishBreakerRecoveryLocked(s *smartBreaker, now time.Time) {
-	if len(s.event.pendingHistory) >= 4095 {
+	if len(s.event.pendingHistory) >= 4094 {
 		e.transitionBreakerLocked(s, "manual", "历史写入积压，不能完成恢复或清零", now)
 		e.pauseSmartBreakerLocked(s, "历史写入积压")
 		return
@@ -202,8 +215,12 @@ func (e *Engine) finishBreakerRecoveryLocked(s *smartBreaker, now time.Time) {
 		s.draining = true
 		e.noteBreakerLocked(s, "waiting_inflight", "", fmt.Sprintf("所有阶段验证通过，停止新增放行，等待 %d 个在途任务结束", s.inflight), now)
 	}
-	if s.inflight != 0 {
+	if s.inflight != 0 || s.sampleDispatching {
 		return
+	}
+	if s.event.SampleID != "" {
+		e.noteBreakerLocked(s, "sample_superseded", s.event.SampleStage, "全部阶段已有完整有效证明；结束未执行的样本等待，不额外重投", now)
+		s.event.SampleID, s.event.SampleStage, s.event.SampleDeadline = "", "", time.Time{}
 	}
 	// Freeze pre-reset totals in the report, then start the new site window.
 	e.updateBreakerEvidenceLocked(s, s.detector.Snapshot(now))
@@ -240,7 +257,19 @@ func (e *Engine) prepareNextBreakerProbeLocked(s *smartBreaker, now time.Time) b
 }
 
 func (e *Engine) launchBreakerStageProbeLocked(ctx context.Context, s *smartBreaker, now time.Time) {
-	if s.probeRunning || s.probeExecuting || now.Before(s.event.NextProbeAt) {
+	if s.probeRunning || s.probeExecuting {
+		return
+	}
+	for i := range s.event.Checks {
+		check := &s.event.Checks[i]
+		if check.State == "probing" && !now.Before(check.StartedAt.Add(breakerSampleTimeout)) {
+			check.State, check.FinishedAt, check.Detail = "failed", now, "只读样本选中后等待超过10分钟；未执行，不证明健康"
+			e.noteBreakerLocked(s, "stage_probe_timeout", check.Stage, check.Detail, now)
+			e.transitionBreakerLocked(s, "manual", check.Detail, now)
+			return
+		}
+	}
+	if now.Before(s.event.NextProbeAt) {
 		return
 	}
 	if g := e.Governance(); g != nil {
@@ -281,7 +310,7 @@ func (e *Engine) launchBreakerStageProbeLocked(ctx context.Context, s *smartBrea
 			req.Coverage = check.Coverage
 		}
 		e.tickerWG.Add(1)
-		go e.runBreakerProbe(ctx, probe, req, l.ID, l.ProbeAttempts, min(s.policy.ProbeTimeout, l.Deadline.Sub(now)))
+		go e.runBreakerProbe(ctx, probe, req, l.ID, l.ProbeAttempts, min(s.policy.ProbeTimeout, l.Deadline.Sub(now), check.StartedAt.Add(breakerSampleTimeout).Sub(now)))
 		return
 	}
 }
@@ -299,7 +328,7 @@ func recoverySampleID(sample breaker.RecoverySample) string {
 // An operator grants a new bounded attempt, not a health verdict. Do not reuse
 // old stage proofs or abandon a callback that is still executing.
 func (e *Engine) retryBreakerLocked(s *smartBreaker) bool {
-	if s.probeRunning || s.probeExecuting {
+	if s.probeRunning || s.probeExecuting || s.inflight > 0 || s.sampleDispatching {
 		return false
 	}
 	e.beginBreakerRetryLocked(s, time.Now(), "manual_retry", "人工请求重试整站验证；保留失败窗口，重新授予恢复预算")
@@ -308,6 +337,10 @@ func (e *Engine) retryBreakerLocked(s *smartBreaker) bool {
 
 func (e *Engine) beginBreakerRetryLocked(s *smartBreaker, now time.Time, action, reason string) {
 	s.nextSampleRetry = time.Time{}
+	s.event.SampleID, s.event.SampleStage, s.event.SampleDeadline = "", "", time.Time{}
+	for i := range s.event.Checks {
+		s.event.Checks[i].TimedOutIDs = nil
+	}
 	s.event.Cycle++
 	s.event.RecheckAt = time.Time{}
 	e.noteBreakerLocked(s, action, "", reason, now)

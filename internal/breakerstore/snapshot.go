@@ -21,6 +21,7 @@ func (s Snapshot) Clean() Snapshot {
 	for i := range s.Control.Checks {
 		s.Control.Checks[i].Samples = append([]breaker.RecoverySample(nil), s.Control.Checks[i].Samples...)
 		s.Control.Checks[i].SuccessIDs = append([]string(nil), s.Control.Checks[i].SuccessIDs...)
+		s.Control.Checks[i].TimedOutIDs = append([]string(nil), s.Control.Checks[i].TimedOutIDs...)
 		s.Control.Checks[i].Detail = incident.Clean(incident.Sample{Error: s.Control.Checks[i].Detail}).Error
 		s.Control.Checks[i].Coverage = incident.Clean(incident.Sample{Error: s.Control.Checks[i].Coverage}).Error
 	}
@@ -35,6 +36,18 @@ func (s Snapshot) Clean() Snapshot {
 		s.Window = &w
 	}
 	return s
+}
+
+// UpgradeRecovery is a one-time compatibility conversion, not runtime control
+// driven by the display report. Old promoted hard incidents may have started mixed.
+func (s *Snapshot) UpgradeRecovery() {
+	if s.Control.Version != 0 {
+		return
+	}
+	if s.Control.Active() && (s.Rule == "mixed" || s.Rule == "hard" || s.Rule == "" || s.Control.State == "observing") {
+		s.Control.MixedSamples = true
+	}
+	s.Control.Version = 1
 }
 
 // LegacySnapshot is only for upgrading old stored events. Missing exact window

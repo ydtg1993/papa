@@ -7,6 +7,7 @@ const MaxRecoveryStages = 128
 // Recovery is control data. Display truncation and redaction must never change
 // its identities, coverage or admission state. All access is owned by Engine's lock.
 type Recovery struct {
+	Version                                                             int // recovery format; zero predates serial sample validation
 	ID, Site, Stage                                                     string
 	State                                                               string
 	Revision, Epoch                                                     uint64
@@ -21,6 +22,8 @@ type Recovery struct {
 	Cycle                                                               int
 	HistorySequence                                                     uint64
 	StoppedAt                                                           time.Time
+	SampleID, SampleStage                                               string
+	SampleDeadline                                                      time.Time // selection time + 10 minutes, capped by the cycle budget
 }
 
 type RecoverySample struct {
@@ -40,6 +43,7 @@ type StageCheck struct {
 	RequiredTasks, RequiredProbes int
 	Samples                       []RecoverySample
 	SuccessIDs                    []string
+	TimedOutIDs                   []string // current cycle only; never healthy even if other samples pass
 }
 
 func (r Recovery) Active() bool { return r.State != "closed" && r.State != "recovered" }

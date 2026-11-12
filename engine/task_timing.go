@@ -12,6 +12,7 @@ var errAttemptTimingPersistence = errors.New("attempt timing persistence unresol
 type attemptTimingError struct {
 	cause            error
 	handlerSucceeded bool
+	handlerErr       error
 }
 
 func (e *attemptTimingError) Error() string { return e.cause.Error() }

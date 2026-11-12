@@ -29,6 +29,7 @@ type StageCheck struct {
 	RequiredTasks    int       `json:"required_tasks"`
 	RequiredProbes   int       `json:"required_probes"`
 	SampleIDs        []string  `json:"sample_ids,omitempty"`
+	TimedOutIDs      []string  `json:"timed_out_ids,omitempty"`
 }
 
 // FailureGroup records structured classification, independent of text samples.
@@ -136,6 +137,10 @@ func (l Lifecycle) Clean() Lifecycle {
 		for i := range check.SampleIDs {
 			check.SampleIDs[i] = safeDetail(check.SampleIDs[i], 1024)
 		}
+		check.TimedOutIDs = append([]string(nil), check.TimedOutIDs[:min(3, len(check.TimedOutIDs))]...)
+		for i := range check.TimedOutIDs {
+			check.TimedOutIDs[i] = safeDetail(check.TimedOutIDs[i], 1024)
+		}
 		if check.Verification == "readonly" {
 			check.RequiredProbes = max(2, check.RequiredProbes)
 			check.VerificationNote = fmt.Sprintf("未验证：完整只读检查 %d/%d 次", check.ProbeSuccesses, check.RequiredProbes)
@@ -156,6 +161,10 @@ func (l Lifecycle) Clean() Lifecycle {
 		if check.State == "failed" || check.State == "missing" || check.State == "interrupted" {
 			check.Verified = false
 			check.VerificationNote = "未验证：" + check.Detail
+		}
+		if len(check.TimedOutIDs) > 0 {
+			check.Verified = false
+			check.VerificationNote = fmt.Sprintf("未验证：本周期样本 %v 超时；其它样本通过不能代替，下周期重新验证", check.TimedOutIDs)
 		}
 		checks = append(checks, check)
 	}

@@ -36,10 +36,16 @@ func verificationSuccess(t *testing.T, e *Engine, id int, round string) {
 
 func TestBreakerMixedThreeSelectedSamplesMatchReport(t *testing.T) {
 	e := mixedSampleFixture(t, 4)
-	verificationSuccess(t, e, 80, "other")
-	for i := 0; i < 3; i++ {
-		verificationSuccess(t, e, 1, fmt.Sprint("retry", i))
+	if done, ok := e.admitBreakerTask(&Task{ID: 80, Site: "synthetic", Stage: "detail"}); ok {
+		done()
+		t.Fatal("unrelated task bypassed selected samples")
 	}
+	task, done := admitSmartTrial(t, e, 1, "detail")
+	task.breakerRound = "retry"
+	for i := 0; i < 3; i++ {
+		e.recordSmartOutcome(task, nil)
+	}
+	done()
 	l := smartLifecycle(e)
 	if l.Checks[0].TaskSuccesses != 1 || l.Checks[0].Verified {
 		t.Fatalf("same sample counted as three: %+v", l.Checks[0])
@@ -82,8 +88,10 @@ func TestBreakerMixedFewSamplesRotateThreeFreshRounds(t *testing.T) {
 
 func TestBreakerMixedProbeMustConfirmSelectedSampleAndThreePasses(t *testing.T) {
 	e := mixedSampleFixture(t, 4)
+	if !e.ResumeSite("synthetic") {
+		t.Fatal("retry recovery")
+	}
 	l := smartLifecycle(e)
-	e.tickBreakers(context.Background(), l.LastFailureAt.Add(31*time.Second))
 	var selected []string
 	startSmartProbe(t, e, func(_ context.Context, req BreakerProbeRequest) (BreakerProbeResult, error) {
 		selected = append(selected, req.SampleID)
@@ -99,8 +107,10 @@ func TestBreakerMixedProbeMustConfirmSelectedSampleAndThreePasses(t *testing.T) 
 
 func TestBreakerMixedProbeCannotIgnoreRequestedFailureSample(t *testing.T) {
 	e := mixedSampleFixture(t, 4)
+	if !e.ResumeSite("synthetic") {
+		t.Fatal("retry recovery")
+	}
 	l := smartLifecycle(e)
-	e.tickBreakers(context.Background(), l.LastFailureAt.Add(31*time.Second))
 	startSmartProbe(t, e, completeReadOnlyProbe)
 	e.tickerWG.Wait()
 	l = expectSmartState(t, e, "cooldown")
@@ -272,6 +282,8 @@ func TestBreakerSelectedTaskRetryMySQLUsesExistingVersionedPath(t *testing.T) {
 		}
 		smartFailure(e, int(row.ID), "detail", fmt.Sprint(i))
 	}
+	flushSmart(t, e)
+	e.retryBreakerSamples(context.Background())
 	flushSmart(t, e)
 	e.retryBreakerSamples(context.Background())
 	var rows []models.CrawlerTask

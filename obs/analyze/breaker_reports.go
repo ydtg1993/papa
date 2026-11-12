@@ -42,7 +42,7 @@ func addBreakerReports(ctx context.Context, in *obs.Input, res *obs.SectionResul
 		return
 	}
 	if limited {
-		res.Problems = append(res.Problems, obs.Problem{ID: "breaker-reports-truncated", Severity: obs.SeverityWarn, Title: "当天熔断过程超过 10000 条；本次展示不完整，数据库历史未删除"})
+		res.Problems = append(res.Problems, obs.Problem{ID: "breaker-reports-truncated", Severity: obs.SeverityWarn, Title: "当天熔断过程超过 10000 条；本次展示不完整，无法据此确认日报截止状态；数据库历史未删除"})
 	}
 	found := map[string]bool{}
 	last := map[string]int{}
@@ -63,7 +63,7 @@ func addBreakerReports(ctx context.Context, in *obs.Input, res *obs.SectionResul
 		}
 	}
 	for i, row := range reports {
-		if last[row.IncidentID] != i || row.State == "closed" || row.State == "recovered" {
+		if limited || last[row.IncidentID] != i || row.State == "closed" || row.State == "recovered" {
 			continue
 		}
 		detail, _ := breakerstore.HistoryText(row)

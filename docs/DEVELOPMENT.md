@@ -110,7 +110,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   breaker_readonly_test.go  显式完整只读覆盖、两次间隔检查、混合阶段、并发晚结果及重启回归（含隔离 MySQL）
                阶段隔离、在途终态、观察退出、阻塞写入/重试节奏、重启及 MySQL 回归
   breaker_snapshot.go  运行控制到只读报告投影；裁剪不回写控制
-  breaker_samples.go / breaker_hourly_test.go  失败样本的版本化重试、三次验证与小时复查回归
+  breaker_samples.go / breaker_hourly_test.go / breaker_serial_test.go  失败样本串行选择、截止时间、版本化重试、重启与小时复查回归
   breaker_review_fixes_test.go  截断、标识、中断、重试/强制解除与重启回归
   breaker_reports_test.go  唯一事件 ID、Detector 证据快照、人工暂停生命周期和并发回归
   batch.go     各治理队列共用的分页扫描（keyset 游标）
@@ -433,3 +433,5 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 - `core/task_identity.go`：纯函数，规范 URL 并生成标准身份。
 - `internal/database/task_identity.go`：显式迁移中的分批回填、冲突拒绝及旧索引移除；普通启动不调用。
 - `engine/task_identity_mysql_test.go`：独立随机 MySQL 测试库验证同 URL 不同 ID、恢复去重、真正旧表升级、重复迁移和冲突拒绝。
+
+obs/analyze/breaker_history_limit_test.go 验证日报截断不会推断错误截止状态。

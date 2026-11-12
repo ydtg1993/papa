@@ -38,11 +38,16 @@ func completeSmartProbeRound(t *testing.T, e *Engine) {
 
 func admitSmartTrial(t *testing.T, e *Engine, id int, stage string) (*Task, func()) {
 	t.Helper()
+	flushSmart(t, e)
 	e.breakerMu.Lock()
 	e.smartBreakers["synthetic"].nextAdmission = time.Time{}
 	e.breakerMu.Unlock()
 	task := &Task{ID: id, Site: "synthetic", Stage: stage, breakerRound: "0:0"}
 	done, ok := e.admitBreakerTask(task)
+	if !ok {
+		flushSmart(t, e) // persist newly selected serial sample before execution
+		done, ok = e.admitBreakerTask(task)
+	}
 	if !ok {
 		t.Fatalf("controlled admission rejected for %s", stage)
 	}
@@ -172,7 +177,9 @@ func TestSmartBreakerOldTaskSuccessCannotProveNewTrial(t *testing.T) {
 	flushSmart(t, e)
 	l := smartLifecycle(e)
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
-	expectSmartState(t, e, "cooldown")
+	expectSmartState(t, e, "observing")
+	e.tickBreakers(context.Background(), l.Deadline.Add(time.Millisecond))
+	expectSmartState(t, e, "manual")
 }
 
 func TestSmartBreakerLocalSuccessCannotReopenSite(t *testing.T) {

@@ -49,10 +49,12 @@ type Task struct {
 
 	// repeatCounted 跳过当前副本的首轮初始化；幂等性由数据库 CASE/轮询条件更新保证。
 	// 后台重试、错误重投也置真，保持原轮次（包括历史零值）。
-	repeatCounted bool
-	breakerEpoch  uint64
-	breakerTrial  uint64
-	breakerRound  string
+	repeatCounted         bool
+	breakerEpoch          uint64
+	breakerTrial          uint64
+	breakerRound          string
+	breakerSampleDeadline time.Time
+	breakerSampleFinished bool
 }
 
 // deliverAt 返回任务的延迟投递时间；无延迟时返回零值 time.Time。

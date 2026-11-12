@@ -41,7 +41,7 @@ crawler:
       probe_interval: "30s"
       max_recovery: "5m"      # 单轮预算；耗尽后保持保护，一小时后复查
       ramp_for: "30s"          # 全部阶段验证成功后仍须等全站在途任务结束
-      ramp_concurrency: 1
+      ramp_concurrency: 1      # 兼容旧配置；恢复验证固定同站点串行
       interval: "1s"
       capacity: 4096          # 错误任务轮去重上限；超限保护而不丢失败计数
   # 阶段结构/物理容量声明在 internal/sites/<站名>.go；有效并发与间隔可由 runtime/OA 覆盖。

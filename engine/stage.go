@@ -206,6 +206,18 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil
 		}
+		breakerRelease, admitted := e.admitBreakerTask(task)
+		if !admitted {
+			e.spillTask(task)
+			return nil
+		}
+		defer breakerRelease()
+		if !task.breakerSampleDeadline.IsZero() {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, task.breakerSampleDeadline)
+			defer cancel()
+		}
+		// Serial ownership and its deadline include resource/governor waits.
 		var release func()
 		var admissionErr error
 		ctx, release, admissionErr = e.prepareRuntimeTask(ctx, task, cfg.WorkerCount)
@@ -216,12 +228,6 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			return admissionErr
 		}
 		defer release()
-		breakerRelease, admitted := e.admitBreakerTask(task)
-		if !admitted {
-			e.spillTask(task)
-			return nil
-		}
-		defer breakerRelease()
 		// A task can spend time waiting after the worker's original pause gate.
 		// Recheck before claiming so a pause during that wait keeps it pending.
 		if e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
@@ -304,6 +310,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if errors.Is(err, errAttemptTimingPersistence) {
 				var timingErr *attemptTimingError
+				if !task.breakerSampleDeadline.IsZero() && errors.As(err, &timingErr) && timingErr.handlerErr != nil && !cancellationOnly(timingErr.handlerErr) {
+					return err // retain unresolved persistence; never turn a real failure into pending cancellation
+				}
 				if ctx.Err() != nil && (!errors.As(err, &timingErr) || !timingErr.handlerSucceeded) {
 					e.releaseClaim(task)
 					return ctx.Err()
@@ -311,7 +320,15 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				return err
 			}
 			if err == nil {
-				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusSuccess, nil); writeErr != nil {
+				// A handler may finish despite sample cancellation. Preserve its
+				// actual terminal result, but the breaker rejects its late proof.
+				terminalCtx, terminalCancel := ctx, func() {}
+				if !task.breakerSampleDeadline.IsZero() && ctx.Err() != nil {
+					terminalCtx, terminalCancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				}
+				writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusSuccess, nil)
+				terminalCancel()
+				if writeErr != nil {
 					return writeErr
 				}
 				e.recordSmartOutcome(task, nil)
@@ -340,6 +357,20 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			// 行就永远停在 processing。这里先回退成 pending，再如实返回 ctx 的错误；
 			// 不可重试分支也必须在它之后，否则一次停机取消会被当成「页面结构变了」记进 error 列。
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				if !task.breakerSampleDeadline.IsZero() && !cancellationOnly(err) {
+					// The handler returned a real error after cancellation. Persist
+					// that terminal round without replaying business or releasing the
+					// serial slot before persistence and notification have finished.
+					terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+					defer cancel()
+					if writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
+						return errors.Join(err, writeErr)
+					}
+					e.emitTaskFailed(task, err, claimedAt)
+					e.notifyFailure(terminalCtx, task, err)
+					e.finishTask(task)
+					return err
+				}
 				e.releaseClaim(task)
 				return ctxErr
 			}
@@ -624,12 +655,17 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	defer func() {
 		// Keep persistence responsibility here; failure must never replay business.
 		r := recover()
-		writeErr := e.recordAttemptTime(ctx, task, "last_finished_at")
+		finishCtx, finishCancel := ctx, func() {}
+		if !task.breakerSampleDeadline.IsZero() && ctx.Err() != nil {
+			finishCtx, finishCancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		}
+		writeErr := e.recordAttemptTime(finishCtx, task, "last_finished_at")
+		finishCancel()
 		if r != nil {
 			panic(r)
 		}
 		if writeErr != nil {
-			err = &attemptTimingError{cause: errors.Join(err, writeErr), handlerSucceeded: err == nil}
+			err = &attemptTimingError{cause: errors.Join(err, writeErr), handlerSucceeded: err == nil, handlerErr: err}
 		}
 	}()
 	err = fetcher.FetchHandler(ctx, task, e)
@@ -650,4 +686,28 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	}
 	tr.setResult(err)
 	return err
+}
+
+// A joined cancellation and business error is still a real failure. Wrapping
+// cancellation alone (including HTTP/url wrappers) must not inflate failures.
+func cancellationOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		found := false
+		for _, child := range joined.Unwrap() {
+			if child != nil {
+				found = true
+				if !cancellationOnly(child) {
+					return false
+				}
+			}
+		}
+		return found
+	}
+	if wrapped := errors.Unwrap(err); wrapped != nil {
+		return cancellationOnly(wrapped)
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

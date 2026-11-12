@@ -109,14 +109,21 @@ func TestSmartBreakerObservationRequiresAffectedStagesAndFreshSuccess(t *testing
 				if mode == "covered" || mode == "new-failure" {
 					id = []int{1, 2, 1, 3, 4, 3}[i-10]
 				}
-				smartSuccess(e, &Task{ID: id, Site: "synthetic", Stage: stage, breakerRound: fmt.Sprint(i)})
+				if mode == "covered" || mode == "new-failure" {
+					task, done := admitSmartTrial(t, e, id, stage)
+					task.breakerRound = fmt.Sprint(i)
+					e.recordSmartOutcome(task, nil)
+					done()
+				} else {
+					smartSuccess(e, &Task{ID: id, Site: "synthetic", Stage: stage, breakerRound: fmt.Sprint(i)})
+				}
 			}
 			if mode == "new-failure" {
 				smartFailure(e, 99, "detail", "new fault after successes")
 			}
 			flushSmart(t, e)
 			e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
-			want := "cooldown"
+			want := "observing" // serial failed samples retain their bounded validation opportunity
 			if mode == "covered" {
 				want = "recovered"
 			}
