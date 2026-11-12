@@ -18,9 +18,9 @@ func TestSpillBacklogCountsAcrossStages(t *testing.T) {
 	if got := e.spillBacklog(); got != 0 {
 		t.Fatalf("初始应为空，实得 %d", got)
 	}
-	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "a"})
-	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "b"})
-	e.spillTask(&Task{Stage: "other", URL: "c"})
+	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/a"})
+	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/b"})
+	e.spillTask(&Task{Stage: "other", Site: "stub", URL: "https://example.com/c"})
 
 	if got := e.spillBacklog(); got != 3 {
 		t.Fatalf("溢出积压 = %d, want 3（跨阶段累加）", got)

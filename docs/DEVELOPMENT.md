@@ -280,7 +280,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
   它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
-- **`dedupCache` 是"按 key 分、预算共享"**：key 是 `site:stage:url`（`Task.Unique()`；缺 site 时以空段出现），但只有**一个**
+- **`dedupCache` 是"按 key 分、预算共享"**：key 是版本化的站点、阶段、身份类型和值的 SHA-256（`Task.Unique()`），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
   不影响正确性 —— 想每站一份预算就是"去重缓存按站点"那一项。
 - ~~**任务表的预置筛选**~~：oao 已经加上了（`render`/`open` 的 `opts.filter`，见 oao README 的
@@ -411,3 +411,11 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 `admin/frameworkdata/tables.go` 根据 GORM schema 向 `source.go` 传递 JSON 列清单，查询结果按 JSON 递归脱敏，不仅依赖 `_json` 字段名后缀；现有任务流的 `policy` 同样受保护。
 
 移除无效的 `configstore.NewWithModelKeyFile` 后，配置存储统一使用 `configstore.New(db)`；任务流操作日志回调类型为 `server.TaskFlowActionEvent`。这不影响 `pkg/account` 的凭据加密存储。
+
+### 任务身份实现入口
+
+任务时间另见 `docs/TASK_TIMING.md`：`models/task_timing.go` 负责首次相对排期，`models/utc_time.go` 隔离 DATETIME 与驱动时区，`engine/task_timing.go` 负责执行记录及延迟恢复；`engine/task_timing_test.go`、`engine/task_timing_mysql_test.go` 和 `models/utc_time_test.go` 验证持久化、恢复、失败隔离和时区。
+
+- `core/task_identity.go`：纯函数，规范 URL 并生成标准身份。
+- `internal/database/task_identity.go`：显式迁移中的分批回填、冲突拒绝及旧索引移除；普通启动不调用。
+- `engine/task_identity_mysql_test.go`：独立随机 MySQL 测试库验证同 URL 不同 ID、恢复去重、真正旧表升级、重复迁移和冲突拒绝。

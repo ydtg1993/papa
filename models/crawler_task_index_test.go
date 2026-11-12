@@ -54,7 +54,7 @@ func TestCrawlerTaskIndexes(t *testing.T) {
 		t.Fatal("idx_task_status 不该是唯一索引")
 	}
 
-	if !unique["idx_site_stage_url_hash"] {
-		t.Fatal("idx_site_stage_url_hash 必须仍是唯一索引")
+	if !unique["idx_task_identity"] {
+		t.Fatal("idx_task_identity 必须仍是唯一索引")
 	}
 }

@@ -39,8 +39,8 @@ func TestInsertTasksFallsBackToPerRowOnBatchFailure(t *testing.T) {
 	e, _ := urgentEngine(t, f)
 
 	tasks := []*Task{
-		{URL: "https://example.com/a", Stage: "stub"},
-		{URL: "https://example.com/b", Stage: "stub"},
+		{URL: "https://example.com/a", Stage: "stub", Site: "stub"},
+		{URL: "https://example.com/b", Stage: "stub", Site: "stub"},
 	}
 	f.failNext = 1 // 只让那条多行 INSERT 失败
 
@@ -91,7 +91,7 @@ func TestInsertTasksReportsConflictingRow(t *testing.T) {
 	// 回查必须按 (url_hash, stage, site) —— 唯一索引就是这个（阶段名只在本站内唯一）。
 	// 不能复用 findTaskRecord：它优先按 IdempotencyKey 查，而那列不是唯一索引，可能捞回另一行。
 	read := f.readSQL()
-	for _, want := range []string{"url_hash = ?", "stage = ?", "site = ?"} {
+	for _, want := range []string{"identity_hash = ?", "stage = ?", "site = ?"} {
 		if !strings.Contains(read, want) {
 			t.Fatalf("回查应带 %s 条件：\n%s", want, read)
 		}

@@ -27,6 +27,10 @@ import (
 // PAPA_COMPENSATION_TEST_DSN explicitly opts into creating and dropping a fresh
 // random test database. The supplied DSN's database is never used or migrated.
 func compensationMySQL(t *testing.T) (*gorm.DB, func() *Engine) {
+	return compensationMySQLWithLocation(t, nil)
+}
+
+func compensationMySQLWithLocation(t *testing.T, location *time.Location) (*gorm.DB, func() *Engine) {
 	t.Helper()
 	dsn := os.Getenv("PAPA_COMPENSATION_TEST_DSN")
 	if dsn == "" {
@@ -46,6 +50,9 @@ func compensationMySQL(t *testing.T) (*gorm.DB, func() *Engine) {
 	}
 	c.DBName = ""
 	c.ParseTime = true
+	if location != nil {
+		c.Loc = location
+	}
 	c.Timeout = 5 * time.Second
 	server, err := sql.Open("mysql", c.FormatDSN())
 	if err != nil {

@@ -110,13 +110,10 @@ func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, tas
 		if flow.Site != task.Site || lane == "" {
 			return ErrFlowInvalid
 		}
-		// Check both persistent identities, including duplicates after a lost commit acknowledgement.
-		q := tx.Where("site = ? AND stage = ? AND url_hash = ?", task.Site, task.Stage, models.UrlHash(task.URL))
-		if task.IdempotencyKey != "" {
-			q = tx.Where("(site = ? AND stage = ? AND url_hash = ?) OR idempotency_hash = ?", task.Site, task.Stage, models.UrlHash(task.URL), models.IdempotencyKeyHash(task.IdempotencyKey))
-		}
+		// All submission paths use the same scoped identity.
+		q := tx.Where("site = ? AND stage = ? AND identity_hash = ?", task.Site, task.Stage, task.Unique())
 		if err = q.Take(&saved).Error; err == nil {
-			if saved.FlowID != id || saved.PID != parent || saved.Site != task.Site || saved.Stage != task.Stage || saved.URL != task.URL {
+			if saved.FlowID != id || saved.PID != parent || saved.Site != task.Site || saved.Stage != task.Stage {
 				return ErrFlowConflict
 			}
 			return nil

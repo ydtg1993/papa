@@ -13,21 +13,24 @@ import (
 )
 
 func TestTaskUnique(t *testing.T) {
-	// 规范文本是 `site:stage:url`：三段都在，两个站的同名阶段才不会互相顶掉。
-	task := &Task{URL: "https://example.com", Stage: "mock", Site: "shop"}
-	if got := task.Unique(); got != "shop:mock:https://example.com" {
-		t.Fatalf("default unique = %q", got)
+	task := &Task{URL: "https://EXAMPLE.com:443#x", Stage: "mock", Site: "shop"}
+	equal := &Task{URL: "https://example.com/", Stage: "mock", Site: "shop"}
+	if task.Unique() != equal.Unique() || len(task.Unique()) != 64 {
+		t.Fatal("canonical URL identity mismatch")
 	}
-	// 空 site（默认 scope）以空段出现，形状不变
-	task.Site = ""
-	if got := task.Unique(); got != ":mock:https://example.com" {
-		t.Fatalf("empty-site unique = %q", got)
+	task.ResourceID = "42"
+	equal.ResourceID = "42"
+	equal.URL = "https://other.example/moved"
+	if task.Unique() != equal.Unique() {
+		t.Fatal("ID identity changed with URL")
 	}
-	// 自定义幂等键优先；按约定它自己就带站点与阶段，所以这里原样返回
-	task.Site = "shop"
-	task.IdempotencyKey = "shop:mock:cat:2"
-	if got := task.Unique(); got != "shop:mock:cat:2" {
-		t.Fatalf("idempotency key unique = %q", got)
+	equal.Site = "other"
+	if task.Unique() == equal.Unique() {
+		t.Fatal("cross-site identity collision")
+	}
+	task.IdempotencyKey = "ignored"
+	if task.Unique() == "ignored" {
+		t.Fatal("unscoped legacy identity")
 	}
 }
 

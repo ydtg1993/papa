@@ -1,5 +1,7 @@
 # Papa 数据落地手册
 
+框架任务时间列及 UTC 存储规则见 [TASK_TIMING.md](TASK_TIMING.md)。升级需要停 worker 后显式迁移，不将任务最近结束记录视为业务事务提交时间。
+
 > 面向：写完 fetcher 之后，抓到的内容怎么落地成表、写进数据库、以及写在哪里。
 > 配套阅读：[FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md)（抓取逻辑怎么写）。
 
@@ -43,30 +45,18 @@
 | `status` / `retry` / `error` | 运行态：待处理 / 处理中 / 成功 / 失败、重试次数、错误信息 |
 | `repeatable` / `repeat` / `repeat_interval` / `next_repeat_at` / `last_repeat_at` | 轮询相关，调度用 |
 | `reprocess` / `urgent` | 失败重投的代次（同时是后台动作的版本守卫）、加急标记 |
-| `idempotency_key` | 去重键，见下 |
+| `identity_type` / `identity_value` / `identity_hash` | 标准身份类型、原值和 SHA-256，见下 |
 | `meta` | **业务键**（JSON），见下 |
 
 - **业务键写 `meta`**：给 `papa.Task{Meta: map[string]string{...}}` 赋值即可，它随行落库。
   恢复队列、轮询队列、错误队列重投、后台「重投 / 加急」都按这一列还原任务身份 ——
   不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
   放**键**（`series_id` / `episode_id`），别放数据本身。
-- **唯一索引建在 `(url_hash, stage, site)`**：同一个站点的同一个 URL 在同一个阶段只有一行 ——
-  三个都在里面是必须的：**阶段名只在本站内唯一**，两个站可以各有自己的 `catalog` 并各自抓同一个 URL。
+- **唯一索引建在 `(site, stage, identity_hash)`**，同一站点阶段内按 ID 或规范 URL 去重；旧 URL 哈希不再独立限制唯一性。
 - `Task.AccountPool` 可在首次提交时显式指定，或由当前站点/阶段运行策略解析；之后恢复、轮询及失败补偿都保存这一归属。重复提交指定不同池会报冲突，不改旧行、不创建新任务。实际账号在执行尝试时取得，换号不会改变任务去重键，也不会迁移已有任务的池名。Cookie/Token 不写进 Meta 或任务表。
-- **`idempotency_key` 的规范格式是 `site:stage:<标识>`，而且唯一性由数据库兜底**：
-  自定义时显式写上（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），
-  留空则回退成同形状的 `site:stage:url`。三段缺一不可 —— 少了 `site` / `stage`，
-  两个站的同名阶段会撞成同一条任务（B 站被判「已存在」、静默不跑）。
-  - **站点换域名/多镜像**：用 `papa.TaskKey(site, stage, rawURL)` 生成
-    `site:stage:<path?query>`（不含 host，`https://a.com` 与 `https://a.com/` 都是 `/`）。
-    它不改变默认键；直接赋给 `Task.IdempotencyKey` 即可。键超过 1000 字符会返回 error
-    （不静默截断）。
-  - **唯一索引建在 `idempotency_hash` 上**（键原文的 sha256，64 位十六进制），不是键原文上 ——
-    键里带 URL，`varchar(1000)` 在 utf8mb4 下超过 InnoDB 的 3072 字节键长上限（真库实测 `ERROR 1071`）。
-    所以原文只存文本、`idempotency_hash` 才是身份；**同一个自定义键在库里只会有一行**，并发也插不进第二行。
-  - **空键落 NULL**（不是空串）：MySQL 的唯一索引把多个 NULL 视作互不相同，落空串等于全表只能有一行。
-    NULL 同时也是"没自定义键"的标记，这类行由 `(url_hash, stage, site)` 那条索引管。
-  - 键原文上限 1000 字符（第三段用规范化后的短 URL；实测三段的键都在 60 字符内）。
+- **标准身份**：`Task.ResourceID` 非空时采用 ID，否则采用保留 origin 的规范 URL。框架存储 `identity_type`、`identity_value`、`identity_hash`；哈希输入是包含版本、站点、阶段、类型和值的 JSON 字符串数组，不直接拼接分隔符。
+- `IdempotencyKey` 是已弃用的 ID 输入，ResourceID 为空时使用；旧 `idempotency_key/idempotency_hash/url_hash` 列保留用于升级和诊断，不再独立承担唯一性。
+- 改用 ResourceID 是身份契约变化，不应把已有 URL 身份静默转换成 ID 身份。框架不会自动合并两条记录，也不重写业务表身份。
 - 其余列由引擎维护，业务**不要直接读写**；后台任务表的「重投 / 加急 / 开停轮询 / 标失败 / 删除」已经覆盖了常见的运维动作。
 
 ---
@@ -152,7 +142,7 @@ return engine.SubmitTask(&papa.Task{
 
 1. **忘了登记 `models.Models()`** → `papa migrate` 不建表，运行时才报 `Table doesn't exist`。
 2. **没建唯一键** → 重投/轮询一轮就多一行；`Upsert` 也会退化成普通插入。
-3. **站点维度漏了一处**（提交任务时不带 `site`、自定义幂等键少写 `site:` 那一段、按阶段取配置只给名字）→ 查不到那个阶段，或者两个站的数据互相顶掉。
+3. **站点维度漏了一处**（提交任务时不带 `site`、按阶段取配置只给名字）→ 声明或提交被拒绝，或查不到对应阶段。标准任务身份由框架自动纳入站点与阶段，业务不再手拼作用域前缀。
 4. **`meta` 里塞数据** → 它是给"还原任务身份"用的，塞大对象既没索引也不该随任务清理而消失。
 5. **业务列名与 gorm 生成的实际列名对不上**（后台表格页 `Field` 写 `pid` 而库里是 `p_id`）→ 后台永远渲染成空，见 [MONITOR.md](./MONITOR.md)。
 6. **改了表结构没跑迁移** → `AutoMigrate` 只增不减（不改类型、不删列）；改列类型、删列、回填都得自己写 SQL，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
@@ -180,7 +170,7 @@ return engine.SubmitTask(&papa.Task{
 | 落地抓到的数据 | 自己的表 + `engine.Upsert` |
 | 建/改表 | `models.Models()` 登记 + `papa migrate`（改类型 / 删列 / 回填要自己写 SQL） |
 | 记住「这条任务是哪条业务行」 | `papa.Task{Meta: ...}`（随任务行落库） |
-| 防重复投递 | 任务的 `(url_hash, stage, site)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
+| 防重复投递 | 任务的 `(site, stage, identity_hash)` 唯一索引；稳定业务 ID 使用 `ResourceID` |
 | 复杂查询 / 事务 | `engine.GetDB()` |
 | 查任务运行态 | 后台「任务」表格页（重投 / 加急 / 追踪 / 开停轮询） |
 

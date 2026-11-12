@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/core"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
@@ -19,6 +20,9 @@ func adoptTaskOwnership(task *Task, record *models.CrawlerTask) error {
 		return ErrTaskOwnershipConflict
 	}
 	task.AccountPool = record.AccountPool
+	if record.URL != "" && (task.ResourceID != "" || task.IdempotencyKey != "") {
+		task.URL = record.URL
+	}
 	return nil
 }
 
@@ -45,6 +49,9 @@ func (e *Engine) protectTaskPoolReferences(tasks []*Task, insert func() error) e
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
 func (e *Engine) logSubmitError(task *Task, err error) error {
+	if task == nil {
+		return err
+	}
 	e.loggerSet.Engine.Errorf("submit task failed: stage=%q url=%q err=%v", task.Stage, task.URL, err)
 	return err
 }
@@ -54,12 +61,23 @@ func (e *Engine) logSubmitError(task *Task, err error) error {
 // 抽出来给 SubmitTask 与 submitRecoveredTask 共用：两条路对入参的要求必须一致 ——
 // 恢复/轮询队列从库里重建的 Task 也可能因为历史脏行缺少字段，不能因为省一次查库就少校验一道。
 func (e *Engine) validateTask(task *Task) error {
-	if task.Stage == "" || task.URL == "" || task.Site == "" {
+	if task == nil || task.Stage == "" || task.URL == "" || task.Site == "" {
 		return fmt.Errorf("task stage or url or site is empty: %+v", task)
+	}
+	if task.Delay < 0 {
+		return fmt.Errorf("task delay must not be negative")
 	}
 	if info := e.stages[stageKeyOf(task)]; info == nil {
 		return fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage, task.Site)
 	}
+	resourceID := task.ResourceID
+	if resourceID == "" {
+		resourceID = task.IdempotencyKey
+	}
+	if _, err := core.NormalizeTaskIdentity(task.Site, task.Stage, resourceID, task.URL); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -78,7 +96,7 @@ func (e *Engine) SubmitTask(task *Task) error {
 	key := task.Unique()
 	var record models.CrawlerTask
 
-	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_site_stage_url_hash 兜底）
+	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_task_identity 兜底）
 	if e.dedupCache.Get(key) {
 		if !task.Repeatable && task.AccountPool == "" {
 			return nil // 去重命中：视为成功，无需重复处理
@@ -91,6 +109,8 @@ func (e *Engine) SubmitTask(task *Task) error {
 			return err
 		}
 		wasNew := task.ID == 0
+		task.NotBefore = taskTimeValue(record.NotBefore)
+		task.Delay = time.Duration(record.DelayMS) * time.Millisecond
 		task.ID = int(record.ID)
 		task.Repeat = record.Repeat
 		if !task.Repeatable && wasNew {
@@ -108,6 +128,8 @@ func (e *Engine) SubmitTask(task *Task) error {
 		// DB 命中：复用已有记录（重新加入内存缓存）
 		e.dedupCache.Add(key)
 		wasNew := task.ID == 0
+		task.NotBefore = taskTimeValue(record.NotBefore)
+		task.Delay = time.Duration(record.DelayMS) * time.Millisecond
 		task.ID = int(record.ID)
 		task.Repeat = record.Repeat
 		// 仅「新任务」去重跳过；已带 ID 的重提交（如 RecoverJob）需继续入队
@@ -135,49 +157,32 @@ func (e *Engine) SubmitTask(task *Task) error {
 		task.Repeat = record.Repeat
 		return nil
 	}
-	e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record)
+	if err := e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			e.spillTask(task)
+		}
+		return e.logSubmitError(task, fmt.Errorf("reload inserted task %d: %w", task.ID, err))
+	}
 	e.dedupCache.Add(key)
 	e.submitIfActive(task, record)
 	return nil
 }
 
-// findTaskRecord 按去重键查找已存在的任务记录；未找到返回 gorm.ErrRecordNotFound。
-//
-// 两条分支都**按唯一索引查**（查得到的前提是"查的键与索引的键一致"，否则插冲突后回查会空手而归、
-// 把并发冲突报成插入失败）：
-//   - 自定义幂等键 → `idempotency_hash`（唯一索引 idx_idempotency_hash；键原文 varchar(1000) 建不了索引）
-//   - 没有自定义键 → `url_hash + stage + site`（唯一索引 idx_site_stage_url_hash）
-//
-// 调用方需要 ID、Status、Repeat 与站点/阶段/池归属，只投影这些列：历史行的 error/meta 可能很宽，
-// 为了去重把整行读出来纯属浪费。
+// findTaskRecord uses the same scoped identity index as every insert path.
+// Load only ownership, execution URL and scheduling fields, not wide error/meta.
 func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return e.dedupScope(task).Select("id", "status", "repeat", "site", "stage", "account_pool").First(record).Error
+	return e.dedupScope(task).Select("id", "status", "repeat", "site", "stage", "account_pool", "url", "not_before", "delay_ms").First(record).Error
 }
 
 // dedupScope 给出"查已存在行"的条件（抽出来是为了能用 DryRun 把 SQL 形状钉住 —— 假库不解析 WHERE）。
 func (e *Engine) dedupScope(task *Task) *gorm.DB {
-	q := e.db.Model(&models.CrawlerTask{})
-	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
-		return q.Where("idempotency_hash = ?", h)
-	}
-	return q.Where("url_hash = ? AND stage = ? AND site = ?", models.UrlHash(task.URL), task.Stage, task.Site)
+	return e.db.Model(&models.CrawlerTask{}).Where("site = ? AND stage = ? AND identity_hash = ?", task.Site, task.Stage, task.Unique())
 }
 
-// findTaskRecordFallback 插入撞了唯一索引之后**无条件**按两条唯一索引回查。
-//
-// 为什么不能复用 findTaskRecord：它只走"这次提交用的那条键"。冲突完全可能来自**另一条**索引 ——
-// 最典型的是幂等键文本变过（老行还存着旧文本，新代码算出的哈希查不到它），而 (url_hash, stage, site)
-// 那条索引照样拦下这次插入。这时若只按哈希回查就会空手而归，把"复用已有行"误报成插入失败。
-// 所以先按哈希（若有自定义键），再按 (url_hash, stage, site)。
+// findTaskRecordFallback confirms a concurrent insert using the same identity.
+// URL is not a fallback identity: distinct IDs may deliberately share one URL.
 func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) error {
-	if h := models.IdempotencyKeyHash(task.IdempotencyKey); h != "" {
-		if err := e.db.Model(&models.CrawlerTask{}).Select("id", "status", "repeat", "site", "stage", "account_pool").Where("idempotency_hash = ?", h).First(record).Error; err == nil {
-			return nil
-		}
-	}
-	return e.db.Model(&models.CrawlerTask{}).Select("id", "status", "repeat", "site", "stage", "account_pool").
-		Where("url_hash = ? AND stage = ? AND site = ?", models.UrlHash(task.URL), task.Stage, task.Site).
-		First(record).Error
+	return e.findTaskRecord(task, record)
 }
 
 // submitIfActive 若任务尚未到终态（success/failed）则延迟投递或入队，否则静默跳过。
@@ -189,7 +194,11 @@ func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) {
 		return
 	}
 	// 延迟投递：到点才入队，避免 worker 空等浪费并发位
-	if at := task.deliverAt(); !at.IsZero() && at.After(time.Now()) {
+	if record.NotBefore != nil {
+		task.NotBefore = *record.NotBefore
+		task.Delay = time.Duration(record.DelayMS) * time.Millisecond
+	}
+	if at := task.NotBefore; !at.IsZero() && at.After(time.Now()) {
 		e.enqueueDelayed(at, task, record)
 		return
 	}
@@ -202,6 +211,12 @@ func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) {
 // 统统归到同一个动作：任务留在溢出表等回灌（见函数末尾）。所以调用方不需要、也不该处理错误，
 // 由类型把这件事说出来；原先签名带 error 而三条出口全是 nil，那几处 err 处理是死代码。
 func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
+	if record.NotBefore != nil {
+		task.NotBefore = *record.NotBefore
+	}
+	if e.deferUntilDue(task) {
+		return
+	}
 	// 先落库再入队：「已入队 ⇒ 行里是 pending」必须是不变量。
 	// worker 取到任务时会以 status=待处理 为条件认领（claimTask），
 	// 如果这里先入队后落库，中间那个窗口里取到任务的 worker（repeatable 重跑时
@@ -252,6 +267,9 @@ func (e *Engine) submitPendingTask(task *Task) {
 
 // afterTaskPending 任务行已处于（或已写回）pending 之后的收尾：叫醒轮询队列 + 投递。
 func (e *Engine) afterTaskPending(task *Task) {
+	if e.deferUntilDue(task) {
+		return
+	}
 	if task.RepeatInterval > 0 {
 		// 新播种了一条带周期的轮询任务：叫醒轮询队列重算扫描节拍，别让它等当前那次 sleep。
 		e.wakeRepeatQueue()
@@ -324,6 +342,23 @@ func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error)
 	})
 	if res.Error != nil {
 		return false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		var row models.CrawlerTask
+		if err := e.db.WithContext(ctx).Where("id = ?", task.ID).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		if row.Status == models.TaskStatusPending && row.NotBefore != nil {
+			task.NotBefore = *row.NotBefore
+			at := time.Now().Add(e.drainInterval())
+			if task.NotBefore.After(at) {
+				at = task.NotBefore
+			}
+			e.enqueueDelayed(at, task, row)
+		}
 	}
 	return res.RowsAffected == 1, nil
 }
@@ -403,6 +438,9 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		return nil
 	}
 	for _, t := range tasks {
+		if err := e.validateTask(t); err != nil {
+			return err
+		}
 		if t.Stage == "" || t.URL == "" || t.Site == "" {
 			return e.logSubmitError(t, fmt.Errorf("task stage or url or site is empty: %+v", t))
 		}
@@ -458,6 +496,8 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 				return err
 			}
 			t.ID = int(record.ID)
+			t.NotBefore = taskTimeValue(record.NotBefore)
+			t.Delay = time.Duration(record.DelayMS) * time.Millisecond
 			if !t.Repeatable {
 				continue
 			}
@@ -466,6 +506,8 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 			err := e.findTaskRecord(t, &record)
 			switch {
 			case err == nil:
+				t.NotBefore = taskTimeValue(record.NotBefore)
+				t.Delay = time.Duration(record.DelayMS) * time.Millisecond
 				if err := adoptTaskOwnership(t, &record); err != nil {
 					return err
 				}
@@ -525,7 +567,10 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 		if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 			continue
 		}
-		if at := t.deliverAt(); !at.IsZero() && at.After(time.Now()) {
+		if record.NotBefore != nil {
+			t.NotBefore = *record.NotBefore
+		}
+		if at := t.NotBefore; !at.IsZero() && at.After(time.Now()) {
 			e.enqueueDelayed(at, t, record)
 			continue
 		}
@@ -546,7 +591,7 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 // 业务看到的是一整批任务凭空消失。所以批量失败就退到逐条插。
 //
 // 这里不去分辨"批量失败是不是因为重复键"：逐条那条路自己会分辨 —— 插不进去就按唯一索引
-// `idx_site_stage_url_hash` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
+// `idx_task_identity` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
 // 把同样的 site|stage|url 写进去了），回填它的 ID、记进冲突集合；查不到则记录插入错误，
 // 继续处理后面的行，最终汇总失败信息，成功行仍由调用方负责投递。
 // 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
@@ -571,6 +616,7 @@ func (e *Engine) insertTasksWithReferences(tasks []*Task) (map[string]struct{}, 
 	if err := e.db.Create(&records).Error; err == nil {
 		for i, t := range tasks {
 			t.ID = int(records[i].ID)
+			t.NotBefore = taskTimeValue(records[i].NotBefore)
 		}
 		return nil, nil, nil
 	}
@@ -584,10 +630,10 @@ func (e *Engine) insertTasksWithReferences(tasks []*Task) (map[string]struct{}, 
 		ierr := e.db.Create(&rec).Error
 		if ierr == nil {
 			t.ID = int(rec.ID)
+			t.NotBefore = taskTimeValue(rec.NotBefore)
 			continue
 		}
-		// 按两条唯一索引回查（哈希优先，其次 (url_hash, stage)）—— 冲突落在哪条都接得住，
-		// 而只查一条时"键文本变过"那种情况会把它报成插入失败。
+		// 只按标准身份回查；不同 ID 的相同 URL 不能相互吞掉。
 		var existed models.CrawlerTask
 		if serr := e.findTaskRecordFallback(t, &existed); serr != nil {
 			failed[t.Unique()] = struct{}{}

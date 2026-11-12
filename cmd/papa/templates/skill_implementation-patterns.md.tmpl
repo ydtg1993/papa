@@ -44,7 +44,7 @@ func (*FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
     _ = engine.SubmitTask(&papa.Task{
         URL: u, Site: site.Key, Stage: StageCatalog,
         Meta: map[string]string{"category": "books"},
-        IdempotencyKey: "example-shop:catalog:books",
+        ResourceID: "books",
         Repeatable: true,
         RepeatInterval: 8 * time.Hour,
     })
@@ -57,13 +57,13 @@ When the catalog discovers a book, persist or derive its identity first, then su
 err := engine.SubmitTask(&papa.Task{
     URL: detailURL, Site: task.Site, Stage: StageDetail, PID: task.ID,
     Meta: map[string]string{"book_id": bookID},
-    IdempotencyKey: "example-shop:book:" + bookID,
+    ResourceID: bookID,
 })
 ```
 
 In production code, handle a failed submit by stopping or returning the error according to the project’s batching strategy. Do not add duplicate log lines when `SubmitTask` already logs the failure.
 
-When the same page can be reached through different hostnames (mirrors / domain changes), derive the key with `papa.TaskKey(site, stage, rawURL)` — it returns `site:stage:<path?query>` without the host. It does not change the default key; assign it to `Task.IdempotencyKey` explicitly.
+When mirrors or domain changes represent the same resource, provide an explicit stable `ResourceID`. Default URL identity preserves the origin and query order; the framework never guesses which hosts or parameters are equivalent.
 
 ## Parser boundary
 

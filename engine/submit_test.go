@@ -424,6 +424,8 @@ func TestSubmitToPoolWritesOnlyItsOwnColumns(t *testing.T) {
 // 未到点的任务先进延迟堆，不占 worker 的并发位；到点由 dispatcher 统一入队。
 func TestSubmitTaskDelayedGoesToHeap(t *testing.T) {
 	f := newFakeTaskDB()
+	f.row["not_before"] = time.Now().Add(time.Hour)
+	f.row["delay_ms"] = int64(time.Hour / time.Millisecond)
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := submitEngine(t, f, pool)
 
@@ -548,8 +550,8 @@ func TestSubmitTasksHonoursDelay(t *testing.T) {
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
-		{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/now"},
-		{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/later", Delay: time.Hour},
+		{Stage: "stub", Site: "stub", URL: "https://example.com/now"},
+		{Stage: "stub", Site: "stub", URL: "https://example.com/later", Delay: time.Hour},
 	}
 	if err := e.SubmitTasks(tasks); err != nil {
 		t.Fatalf("SubmitTasks = %v", err)

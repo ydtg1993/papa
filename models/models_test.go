@@ -25,7 +25,7 @@ func TestIdempotencyKeyHashIsSHA256Hex(t *testing.T) {
 
 // BeforeCreate 补哈希：有自定义键 → 补上；**没有键 → 保持 nil（落 NULL）**。
 func TestBeforeCreateFillsIdempotencyHash(t *testing.T) {
-	withKey := &CrawlerTask{URL: "https://example.com/x", IdempotencyKey: "shop:catalog:https://example.com/x"}
+	withKey := &CrawlerTask{Site: "shop", Stage: "catalog", URL: "https://example.com/x", IdempotencyKey: "shop:catalog:https://example.com/x"}
 	if err := withKey.BeforeCreate(nil); err != nil {
 		t.Fatalf("BeforeCreate = %v", err)
 	}
@@ -35,7 +35,7 @@ func TestBeforeCreateFillsIdempotencyHash(t *testing.T) {
 
 	// 显式给了哈希就不覆盖（业务自己算过、或从行里读回来的那份）
 	preset := "preset"
-	kept := &CrawlerTask{IdempotencyKey: "shop:catalog:x", IdempotencyHash: &preset}
+	kept := &CrawlerTask{Site: "shop", Stage: "catalog", IdempotencyKey: "shop:catalog:x", IdempotencyHash: &preset}
 	if err := kept.BeforeCreate(nil); err != nil {
 		t.Fatalf("BeforeCreate = %v", err)
 	}
@@ -44,7 +44,7 @@ func TestBeforeCreateFillsIdempotencyHash(t *testing.T) {
 	}
 
 	// 没自定义键（框架回退 site:stage:url）→ 必须留 nil
-	plain := &CrawlerTask{URL: "https://example.com/y"}
+	plain := &CrawlerTask{Site: "shop", Stage: "catalog", URL: "https://example.com/y"}
 	if err := plain.BeforeCreate(nil); err != nil {
 		t.Fatalf("BeforeCreate = %v", err)
 	}
@@ -107,7 +107,7 @@ func TestUrlHashIsSHA256Hex(t *testing.T) {
 
 // 任何创建路径都要带上哈希（唯一索引建在它上面，空串会自己撞自己）。
 func TestBeforeCreateFillsUrlHash(t *testing.T) {
-	task := &CrawlerTask{Stage: "stub", URL: "https://example.com/x"}
+	task := &CrawlerTask{Site: "shop", Stage: "stub", URL: "https://example.com/x"}
 	if err := task.BeforeCreate(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestBeforeCreateFillsUrlHash(t *testing.T) {
 		t.Fatalf("BeforeCreate 应当补上 URLHash，实得 %q", task.URLHash)
 	}
 	// 已经给了就不覆盖（迁移/回填过来的值说了算）
-	task2 := &CrawlerTask{URL: "https://example.com/x", URLHash: "preset"}
+	task2 := &CrawlerTask{Site: "shop", Stage: "catalog", URL: "https://example.com/x", URLHash: "preset"}
 	_ = task2.BeforeCreate(nil)
 	if task2.URLHash != "preset" {
 		t.Fatalf("不该覆盖已有的哈希，实得 %q", task2.URLHash)

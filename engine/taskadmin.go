@@ -31,7 +31,8 @@ var (
 // 测试用 GORM 的 DryRun/ToSQL 断言条件确实写进了语句，而不是"先查再写"。
 func claimScope(db *gorm.DB, id uint) *gorm.DB {
 	return compensationScope(db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", id, models.TaskStatusPending))
+		Where("id = ? AND status = ?", id, models.TaskStatusPending).
+		Where("(not_before IS NULL OR not_before <= UTC_TIMESTAMP(3))"))
 }
 
 func retryScope(db *gorm.DB, id uint, wasReprocess int) *gorm.DB {
@@ -393,8 +394,8 @@ func (e *Engine) DeleteTask(id uint) error {
 		}
 		return ErrTaskProcessing
 	}
-	// 这里只需要算去重键（Unique 是 site:stage:url —— 幂等键或回退都含站点），
+	// 这里只需要算去重键（Unique 为包含站点、阶段、身份类型和值的标准哈希），
 	// 不必把整行还原成 Task；Site 漏了就会删不掉内存去重表里的那条残留。
-	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey})
+	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey, ResourceID: resourceIDFromRecord(t)})
 	return nil
 }

@@ -14,6 +14,9 @@ import (
 )
 
 type Task struct {
+	// ResourceID is a stable business ID, scoped by Site and Stage. Empty uses canonical URL.
+	ResourceID string
+
 	// Flow identity is assigned only by SubmitFlowTask and restored from storage.
 	FlowID      string
 	FlowLane    string
@@ -33,8 +36,10 @@ type Task struct {
 	// 或后台的「设轮询周期」—— 免得每次启动重投入口任务时，代码里的值把运营改的盖掉。
 	RepeatInterval time.Duration
 	Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
-	IdempotencyKey string            // 自定义幂等键，规范格式 site:stage:<标识>；为空时回退 Site:Stage:URL
+	IdempotencyKey string            // Deprecated: ResourceID 优先；否则将此值作为站点阶段内的 ID
 	NotBefore      time.Time         // 延迟投递：最早可执行时间
+	LastStartedAt  *time.Time        // 最近一次 Handler 开始时间，只读
+	LastFinishedAt *time.Time        // 最近一次 Handler 结束时间，只读
 	Delay          time.Duration     // 延迟投递：相对当前时间的延迟
 	Urgent         bool              // 加急：投到所属阶段的快车道，插到常规队列前面
 
@@ -66,11 +71,13 @@ func (t *Task) IncRetry(db *gorm.DB) {
 
 // toModel 将任务转换为数据库记录（不含 ID，由数据库生成）。
 func (t *Task) toModel() models.CrawlerTask {
+	identity := t.identity()
 	repeat := models.RepeatableNo
 	if t.Repeatable {
 		repeat = models.RepeatableYes
 	}
 	return models.CrawlerTask{
+		DelayMS: taskDelayMillis(t.Delay), NotBefore: taskTimePointer(t.NotBefore),
 		FlowID: t.FlowID, FlowLane: t.FlowLane, FlowBranch: t.FlowBranch, FlowPath: t.FlowPath,
 		PID:            uint(t.PID),
 		URL:            t.URL,
@@ -78,6 +85,7 @@ func (t *Task) toModel() models.CrawlerTask {
 		Site:           t.Site,
 		AccountPool:    t.AccountPool,
 		IdempotencyKey: t.IdempotencyKey,
+		IdentityType:   identity.Type, IdentityValue: identity.Value, IdentityHash: identity.Hash,
 		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
 		RepeatInterval: int(t.RepeatInterval / time.Second), // 秒落库；0 = 用本站声明的周期
@@ -129,6 +137,8 @@ func (e *Engine) metaFromJSON(raw datatypes.JSON) map[string]string {
 // 行里 retry 刚被归零的那两条路要把内存副本跟上。这里不塞分支 —— 重建的字段是确定的。
 func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 	return &Task{
+		Delay: time.Duration(t.DelayMS) * time.Millisecond, NotBefore: taskTimeValue(t.NotBefore),
+		LastStartedAt: t.LastStartedAt, LastFinishedAt: t.LastFinishedAt,
 		FlowID: t.FlowID, FlowLane: t.FlowLane, FlowBranch: t.FlowBranch, FlowPath: t.FlowPath,
 		ID:             int(t.ID),
 		PID:            int(t.PID),
@@ -142,6 +152,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		RepeatInterval: time.Duration(t.RepeatInterval) * time.Second,
 		Urgent:         t.Urgent,
 		IdempotencyKey: t.IdempotencyKey,
+		ResourceID:     resourceIDFromRecord(t),
 		Meta:           e.metaFromJSON(t.Meta),
 	}
 }
@@ -152,6 +163,7 @@ func (t *Task) Insert(db *gorm.DB) error {
 		return err
 	}
 	t.ID = int(crawlerTask.ID)
+	t.NotBefore = taskTimeValue(crawlerTask.NotBefore)
 	return nil
 }
 
@@ -185,16 +197,26 @@ func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {
 	return updates
 }
 
-// Unique 进程内去重键（也是"任务身份"的规范文本）：`site:stage:url`。
-//
-// 自定义 IdempotencyKey 优先，但它必须**自带站点与阶段**才唯一 —— 缺了这两段，两个站
-// 的同名阶段会撞成同一条任务（B 站被判"已存在"、静默不跑）。约定格式 `site:stage:<标识>`。
-// 回退值同样按这个格式拼（三段都在：site 是必填维度）。
-func (t *Task) Unique() string {
-	if t.IdempotencyKey != "" {
-		return t.IdempotencyKey
+// Unique returns the standardized scoped SHA-256 identity. Submission validates
+// inputs before using it; invalid unsubmitted tasks return an empty key.
+func (t *Task) Unique() string { return t.identity().Hash }
+
+func (t *Task) identity() core.TaskIdentity {
+	if t == nil {
+		return core.TaskIdentity{}
 	}
-	return core.StageKey(t.Site, t.Stage) + ":" + t.URL
+	resourceID := t.ResourceID
+	if resourceID == "" {
+		resourceID = t.IdempotencyKey
+	} // deprecated input, always scoped
+	identity, _ := core.NormalizeTaskIdentity(t.Site, t.Stage, resourceID, t.URL)
+	return identity
+}
+func resourceIDFromRecord(t *models.CrawlerTask) string {
+	if t.IdentityType == "id" {
+		return t.IdentityValue
+	}
+	return ""
 }
 
 // stageKeyOf / stageKeyOfRecord 这一条属于哪个阶段 —— 引擎内部一切"按阶段取东西"的键

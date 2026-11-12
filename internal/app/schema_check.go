@@ -12,7 +12,7 @@ var frameworkIndexHints = []struct {
 	table, index, hint string
 }{
 	{
-		table: "crawler_tasks", index: "idx_site_stage_url_hash",
+		table: "crawler_tasks", index: "idx_task_identity",
 		hint: "唯一索引缺了，去重就只剩内存表那一层，重启后同一个 URL 会再插一行",
 	},
 	{

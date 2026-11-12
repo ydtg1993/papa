@@ -184,3 +184,10 @@ var WithModels = app.WithModels
 func New(opts ...Option) (*App, error) {
 	return app.NewApp(opts...)
 }
+
+// TaskIdentity is a scoped, versioned task identity. ResourceID is preferred;
+// empty ID falls back to a canonical URL retaining its origin.
+type TaskIdentity = core.TaskIdentity
+
+var NormalizeTaskIdentity = core.NormalizeTaskIdentity
+var CanonicalTaskURL = core.CanonicalTaskURL

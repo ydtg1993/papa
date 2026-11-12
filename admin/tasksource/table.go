@@ -85,6 +85,10 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "error", Label: "错误", Render: oao.RenderInput, MaxLen: 40},
 			{Field: "created_at", Label: "创建时间", Kind: oao.KindTime, NoEdit: true},
 			{Field: "updated_at", Label: "更新时间", Kind: oao.KindTime, NoEdit: true},
+			{Field: "last_started_at", Label: "最近执行开始", Kind: oao.KindTime, NoEdit: true},
+			{Field: "last_finished_at", Label: "最近执行结束", Kind: oao.KindTime, NoEdit: true},
+			{Field: "delay_ms", Label: "投递延迟(毫秒)", Kind: oao.KindNumber, NoEdit: true},
+			{Field: "not_before", Label: "最早执行", Kind: oao.KindTime, NoEdit: true},
 		},
 		Filters: []oao.Filter{
 			{Field: "id", Label: "任务 ID", Kind: oao.KindNumber, Op: oao.OpEq},

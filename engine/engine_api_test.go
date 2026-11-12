@@ -310,7 +310,7 @@ func TestLoadActiveTasksFillsDedupCache(t *testing.T) {
 
 	// 键是 `site:stage:url`，含站点 —— 装载时照抄旧格式（或漏了 Site）就会装进一个永远命不中的键，
 	// 静默退化成"全靠查库"。假库那行的 site 是 stub，所以键是 stub:stub:...
-	if !e.dedupCache.Get("stub:stub:https://example.com/active") {
+	if !e.dedupCache.Get((&Task{Site: "stub", Stage: "stub", URL: "https://example.com/active"}).Unique()) {
 		t.Fatal("进行中的任务应被装进去重表（键含站点）")
 	}
 	// 装的是 pending/processing + repeatable，条件必须写进查询

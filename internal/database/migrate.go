@@ -64,17 +64,17 @@ func FrameworkModels(cfg *config.Config) []Model {
 // 业务得自己拿着模型跑 AutoMigrate，也就是项目自己的 `-migrate` 入口；CLI 那条
 // `papa migrate` 在业务项目里会转交给它）。
 //
-// AutoMigrate **只增不减**：加表、加列、加索引，不删列也不改类型，重复跑是幂等的 ——
-// 所以生产上跑它是安全的。真正的破坏性变更（改名、改类型）gorm 不会替你猜，那得手工迁移。
-//
-// **这里不再有"给旧库补课"的显式迁移**：框架不为更早版本的表结构负责 ——
-// 删旧索引、url 改 text、回填 url_hash 与 idempotency_hash、删死列（title/content、按站点的队列统计列）、
-// 删「默认 scope」那行，这些一步都删掉了（它们只对旧库有意义，而旧库不在支持范围内）。
-// 从老库升上来的库要么手工对齐表结构，要么重建。
+// Explicit migration installs the standardized task identity index, backfills
+// existing tasks and removes the two obsolete unique indexes only after success.
+// Stop workers before migration. Conflicting canonical identities abort; no rows
+// are merged or removed. This is a deliberate schema change, not startup work.
 func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
 	all := make([]any, 0, 8)
 	for _, m := range FrameworkModels(cfg) {
 		all = append(all, m.Value)
 	}
-	return AutoMigrate(db, append(all, extra...)...)
+	if err := AutoMigrate(db, append(all, extra...)...); err != nil {
+		return err
+	}
+	return migrateTaskIdentities(db)
 }

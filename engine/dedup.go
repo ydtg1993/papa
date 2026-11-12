@@ -9,7 +9,7 @@ import (
 
 // dedupCache 有界 LRU 去重缓存。key 为任务去重键（Task.Unique()），value 恒为占位。
 // 容量 <= 0 表示不限制（保持旧行为）；>0 时超出容量淘汰最久未使用的条目，
-// 被淘汰条目的去重由 DB 唯一索引（idx_site_stage_url_hash）兜底。
+// 被淘汰条目的去重由 DB 唯一索引（idx_task_identity）兜底。
 type dedupCache struct {
 	mu      sync.Mutex
 	cap     int
@@ -104,7 +104,7 @@ func (e *Engine) loadActiveTasks() {
 				return
 			}
 		}
-		query := e.db.Select("id", "url", "stage", "site", "idempotency_key").
+		query := e.db.Select("id", "url", "stage", "site", "idempotency_key", "identity_type", "identity_value").
 			Where("status IN ? OR repeatable = ?",
 				[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing}, models.RepeatableYes)
 		if capacity > 0 {
@@ -122,7 +122,7 @@ func (e *Engine) loadActiveTasks() {
 		}
 		for _, t := range tasks {
 			// Site 和自定义幂等键必须保留，与实际投递使用同一种任务身份。
-			task := Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey}
+			task := Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey, ResourceID: resourceIDFromRecord(&t)}
 			e.dedupCache.addOlder(task.Unique())
 		}
 		loaded += len(tasks)

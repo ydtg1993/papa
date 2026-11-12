@@ -3,6 +3,7 @@ package models
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/ydtg1993/papa/v4/core"
 	"time"
 
 	"gorm.io/datatypes"
@@ -26,16 +27,20 @@ const (
 )
 
 type CrawlerTask struct {
-	FlowID     string `gorm:"type:varchar(64);not null;default:'';index;comment:调度运行ID"`
-	FlowLane   string `gorm:"type:varchar(64);not null;default:'';comment:调度范围"`
-	FlowBranch uint   `gorm:"not null;default:0;comment:分支根任务"`
-	FlowPath   string `gorm:"type:varchar(700);not null;default:'';comment:稳定前序路径"`
-	ID         uint   `gorm:"primarykey;comment:任务ID"`
-	PID        uint   `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
+	LastStartedAt  *time.Time `gorm:"type:datetime(3);serializer:papa_utc;comment:最近一次Handler开始记录时间UTC"`
+	LastFinishedAt *time.Time `gorm:"type:datetime(3);serializer:papa_utc;comment:最近一次Handler结束记录时间UTC；不代表终态已落库"`
+	DelayMS        int64      `gorm:"not null;default:0;comment:首次投递延迟毫秒；不在重试时重复施加"`
+	NotBefore      *time.Time `gorm:"type:datetime(3);serializer:papa_utc;index:idx_task_due,priority:2;comment:最早执行时间UTC；NULL为无约束"`
+	FlowID         string     `gorm:"type:varchar(64);not null;default:'';index;comment:调度运行ID"`
+	FlowLane       string     `gorm:"type:varchar(64);not null;default:'';comment:调度范围"`
+	FlowBranch     uint       `gorm:"not null;default:0;comment:分支根任务"`
+	FlowPath       string     `gorm:"type:varchar(700);not null;default:'';comment:稳定前序路径"`
+	ID             uint       `gorm:"primarykey;comment:任务ID"`
+	PID            uint       `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
 	// Stage 阶段名（fetcher 的 GetStage() 原值，**不带站点前缀**）。只在本站内唯一 ——
 	// 两个站可以各有自己的 catalog，所以它与 Site 一起才构成"哪个阶段"，唯一索引三者都带。
-	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_site_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`
-	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_site_stage_url_hash,priority:3;comment:所属站点(站点声明的 Key，必填；没有未归属那一档)"`
+	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_task_identity,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`
+	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_task_identity,priority:1;comment:所属站点(站点声明的 Key，必填；没有未归属那一档)"`
 	// AccountPool is task ownership, not part of deduplication. Retries/recovery
 	// obtain this pool's current identity instead of binding a permanent account.
 	AccountPool                 string     `gorm:"type:varchar(256);not null;default:'';index;comment:所属站点账号池；空表示未使用账号池"`
@@ -53,17 +58,17 @@ type CrawlerTask struct {
 	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`
-	// URLHash URL 的 sha256（64 位十六进制小写，定长）。唯一索引建在 (url_hash, stage, site) 上 ——
-	// 与 URL 长度无关。由 BeforeCreate 自动填 —— 任何创建路径都覆盖，不存在"哪条路忘了填"。
-	URLHash string `gorm:"type:char(64);not null;uniqueIndex:idx_site_stage_url_hash,priority:1;comment:URL的sha256(长URL建不了整串唯一索引)"`
-	// IdempotencyKey 自定义幂等键的**原文**：规范格式 `site:stage:<标识>`（空 = 没自定义，回退 site:stage:url）。
-	// 1) 不建索引：键里带 URL，varchar(1000) 在 utf8mb4 下建不了索引（3072 字节上限 ≈ 768 字符）；
-	// 2) 唯一性由下面的 IdempotencyHash 上的唯一索引兜底（与 URL/URLHash 同一套做法）。
-	IdempotencyKey string `gorm:"type:varchar(1000);comment:自定义幂等键原文(规范格式 site:stage:<标识>；空=回退 site:stage:url)"`
-	// IdempotencyHash 上面那把键的 sha256（64 位十六进制小写），**唯一索引建在它上面**。
-	// **键为空时必须落 NULL**（不是空串）：MySQL 的唯一索引把多个 NULL 视作互不相同，空串会互相撞 ——
-	// 没自定义键的行占大多数，落空串等于全表只能有一行。
-	IdempotencyHash *string `gorm:"type:char(64);uniqueIndex:idx_idempotency_hash;comment:幂等键的sha256(NULL=没自定义键；唯一索引建在它上面)"`
+	// URLHash and legacy idempotency fields are retained for inspection and
+	// explicit upgrade backfill; neither is an independent uniqueness constraint.
+	URLHash         string  `gorm:"type:char(64);not null;comment:原始URL的sha256(诊断字段)"`
+	IdempotencyKey  string  `gorm:"type:varchar(1000);comment:旧API的ID输入(已弃用)"`
+	IdempotencyHash *string `gorm:"type:char(64);comment:旧幂等键哈希(诊断字段)"`
+
+	// IdentityType/Value are immutable task identity, independent of execution URL.
+	IdentityType  string `gorm:"type:varchar(8);not null;default:'';comment:任务身份类型id或url"`
+	IdentityValue string `gorm:"type:text;comment:稳定资源ID或规范URL"`
+	IdentityHash  string `gorm:"type:char(64);default:null;uniqueIndex:idx_task_identity,priority:3;comment:版本化站点阶段身份SHA256"`
+
 	// Meta 业务键（如 series_id/episode_id），与 URL 解耦。**随行落库** ——
 	// 恢复/轮询/错误队列/后台重投这几条「从行重建 Task」的路都按它还原任务身份，
 	// 不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
@@ -75,7 +80,7 @@ type CrawlerTask struct {
 	//     都只按 status 过滤，复合索引 leading 不是 status 时用不上，数据量大后会退化成全表扫描。
 	// gorm 允许同一字段写多个 `index:` tag（schema.ParseIndexes 会解析出两条；别被 TagSettings
 	// map 只留最后一个值误导 —— parseFieldIndexes 读的是原始 tag）。
-	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;comment:0:待处理 1:处理中 2:成功 3:失败"`
+	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;index:idx_task_due,priority:1;comment:0:待处理 1:处理中 2:成功 3:失败"`
 	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
 	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 用本站 RepeatQueue 的 Interval。
@@ -98,6 +103,18 @@ type CrawlerTask struct {
 }
 
 func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
+	resourceID := ""
+	if t.IdentityType == "id" {
+		resourceID = t.IdentityValue
+	} else if t.IdentityType == "" {
+		resourceID = t.IdempotencyKey
+	}
+	identity, err := core.NormalizeTaskIdentity(t.Site, t.Stage, resourceID, t.URL)
+	if err != nil {
+		return err
+	}
+	t.IdentityType, t.IdentityValue, t.IdentityHash = identity.Type, identity.Value, identity.Hash
+
 	// URL 的哈希在这里统一补上：任何创建路径（含业务直接 Create 这个模型）都覆盖到，
 	// 不会出现"唯一索引上是一串空串"这种撞车。
 	if t.URLHash == "" && t.URL != "" {

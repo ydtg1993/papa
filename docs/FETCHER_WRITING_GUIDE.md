@@ -1,5 +1,7 @@
 # Papa Fetcher 书写手册
 
+`Task.Delay/NotBefore` 已持久化，重复提交不会推迟既有排期；完整规则、最近执行记录和迁移要求见 [TASK_TIMING.md](TASK_TIMING.md)。
+
 浏览器稳定身份、匿名 `session_key` 的业务所有权、`PageOptions.Identity` 和网站挑战错误见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。账号受管入口自动固定身份；匿名回调取得冻结快照后显式传入页面选项。身份不改变原有 URL 去重，不自动修改普通 HTTP 的头/TLS。`CaptureRequest` 的早返回不等于响应已验证，trace 的 `response_observed` 仅说明是否观察到主文档响应。
 
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
@@ -74,7 +76,8 @@ type Task struct {
     AccountPool    string            // 所属站点内账号池；持久化，去重键不包含它
     Repeatable     bool
     Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
-    IdempotencyKey string            // 自定义幂等键，规范格式 site:stage:<标识>；空则回退 site:stage:url
+    ResourceID string               // 稳定业务ID；空则按规范URL去重
+    IdempotencyKey string            // 已弃用；ResourceID为空时作为ID值使用
     NotBefore      time.Time         // 延迟投递：最早可执行时间
     Delay          time.Duration     // 延迟投递：相对现在的延迟
     Urgent         bool              // 加急：投到所属阶段的快车道，插到排队任务前面
@@ -86,7 +89,7 @@ type Task struct {
   **它会随行落库**（`crawler_tasks.meta`，json 列）：恢复队列（进程重启）、轮询队列、错误队列重投、后台「重投 / 加急」这几条「从行重建任务」的路都会把它读回来，handler 不必再自己按 URL 回查业务表。
   两边不一致时以**这一列**为准 —— 提交时带了非空 `Meta` 就刷新它，带空 `Meta` 的提交不动它（重投路径自己就是照着库里那份读的）。
   它与 `IdempotencyKey` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
-- `IdempotencyKey` 自定义去重键，**规范格式 `site:stage:<标识>`**（如 `shop:catalog:https://shop.example/books`、`shop:detail:series:5`），空值回退成同样形状的 `site:stage:url`。三段缺一不可：少了 `site`/`stage`，两个站的同名阶段会撞成同一条任务（B 站被判"已存在"、静默不跑）。
+- `ResourceID` 是站点和阶段内的稳定资源 ID；留空使用规范 URL。框架统一计算版本化身份的 SHA-256。`IdempotencyKey` 已弃用，仅在 ResourceID 为空时作为 ID 值输入；不再是跨站点的裸键。
   唯一性由**数据库**兜底：唯一索引建在 `idempotency_hash`（键原文的 sha256）上，同一个自定义键在库里只会有一行，并发也插不进第二行；没自定义键的行该列落 NULL（不是空串）。键原文上限 1000 字符，第三段用规范化后的短 URL。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
 - `AccountPool` 非空时使用同站命名池；空值在首次提交时按阶段/站点运行策略解析。既有任务保持已保存归属，重复提交指定其他池返回冲突。账号失效使本次尝试结束并等待以后补偿，不能在 handler 内自行换号重放。见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md) §7。
@@ -212,7 +215,10 @@ err := engine.SubmitTask(&papa.Task{
 
 **`Site` 必填**：任务按「站点 + 阶段」找池子，漏了它 `SubmitTask` 会拒收（日志 `task stage or url or site is empty`），任务一条都进不了池。子任务继承父任务的 `task.Site`，入口任务（`SubmitEntries`）用 `site.Key`。
 
-去重键默认是 `site:stage:url`，同一个站点的同一个 URL 重复提交会被引擎识别为**已存在**：单任务 `SubmitTask` 返回 `nil`（视为成功，无需 `_ = err` 忽略），批量 `SubmitTasks` 直接跳过该条——天然防重。需要别的幂等键时设 `IdempotencyKey`。
+任务身份是站点、阶段、类型（ID/URL）和值的无歧义编码哈希。同一身份重复提交视为成功并去重。可获取页面稳定 ID 时填写 `ResourceID`；框架不猜测页面 ID。相同 ID 更换访问 URL 仍是同一任务，重复提交不改写已存 URL；不同 ID 即使使用同一 URL 也允许并存。ID 与 URL 分命名空间，不自动合并。
+
+URL 默认规范化主机大小写、默认端口和空路径并去掉 fragment，保留 origin、转义路径及原始查询串顺序。不同域名不默认合并；需要换域名身份时业务应显式提供稳定 ResourceID。单条、批量提交和重启恢复使用同一身份规则。
+
 
 **延迟投递**：episode 这类要反爬随机间隔的任务，设 `Delay`（或 `NotBefore`），引擎到点才入队，不空占 worker：
 
@@ -1105,7 +1111,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
             Stage:          "catalog",
             Site:           site.Key, // 必填：入口任务没有父任务，站点取自声明快照
             Meta:           map[string]string{"category_key": route.Key},
-            IdempotencyKey: site.Key + ":catalog:" + url, // 规范格式：site:stage:<URL>
+            // 没有稳定资源 ID 时使用默认 URL 身份。
             Repeatable:     true,
         }); err != nil {
             engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
@@ -1177,7 +1183,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
 
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
   文件改完要重启）。`runtime` 的站点请求、有效执行并发和账号池默认值另有 OA 持久覆盖。没写哪段队列配置 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
-- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与原始 HTML 归档目录（键是 `site:stage`，库里的唯一索引也是 `(url_hash, stage, site)`）。**同一个站里**重名会在启动时 panic 并点名。
+- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与原始 HTML 归档目录（键是 `site:stage`，库里的唯一索引也是 `(site, stage, identity_hash)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `internal/sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
   站点多了想按站点分包（`fetcher/<站点>/`，如 `fetcher/example/`）也行。硬要求只有一条 ——
@@ -1282,7 +1288,8 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 **任务身份 / 站点地址**
 - `papa.PageIdentity(rawURL)`：`path[?query]`，与域名无关（`https://a.com` 与 `https://a.com/` 都是 `/`）。
-- `papa.TaskKey(site, stage, rawURL)`：`site:stage:<PageIdentity>`，适合站点换域名/多镜像时的自定义幂等键；超过 1000 字符报错，不截断。
+- `papa.NormalizeTaskIdentity(site, stage, resourceID, rawURL)`：检查并生成标准身份（Type / Value / Hash）。
+- `papa.TaskKey(site, stage, rawURL)`：旧的显式页面键工具，`site:stage:<PageIdentity>`，适合站点换域名/多镜像时的自定义幂等键；超过 1000 字符报错，不截断。
 - `papa.ResolveSiteURL(baseURL, raw)`：把任务里存的旧地址钉回当前站点根（scheme/host 换成 baseURL 的），path/query 保留。
 
 **静态 HTML（goquery）**

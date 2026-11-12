@@ -204,6 +204,8 @@ func (e *Engine) releaseClaim(task *Task) {
 	if res.Error != nil {
 		e.loggerSet.Engine.Warnf("release claim task %d: %s", task.ID, res.Error.Error())
 		e.rememberUnsettled(task)
+	} else if res.RowsAffected == 1 {
+		e.forgetUnsettled(task)
 	}
 }
 
@@ -315,6 +317,14 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				})
 			}
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
+			if errors.Is(err, errAttemptTimingPersistence) {
+				var timingErr *attemptTimingError
+				if ctx.Err() != nil && (!errors.As(err, &timingErr) || !timingErr.handlerSucceeded) {
+					e.releaseClaim(task)
+					return ctx.Err()
+				}
+				return err
+			}
 			if err == nil {
 				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusSuccess, nil); writeErr != nil {
 					return writeErr
@@ -621,6 +631,20 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 		tr.Step(traceUrgentStep, nil)
 	}
 
+	if err = e.recordAttemptTime(ctx, task, "last_started_at"); err != nil {
+		return err
+	}
+	defer func() {
+		// Keep persistence responsibility here; failure must never replay business.
+		r := recover()
+		writeErr := e.recordAttemptTime(ctx, task, "last_finished_at")
+		if r != nil {
+			panic(r)
+		}
+		if writeErr != nil {
+			err = &attemptTimingError{cause: errors.Join(err, writeErr), handlerSucceeded: err == nil}
+		}
+	}()
 	err = fetcher.FetchHandler(ctx, task, e)
 	if identity, ok := account.AttemptFromContext(ctx); ok && err != nil {
 		outcome := account.Unknown

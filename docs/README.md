@@ -41,6 +41,8 @@ cd mycrawler && go mod tidy
 
 ## 阅读路径
 
+任务时间与身份升级须先停 worker 并显式迁移；时间规则见 [TASK_TIMING.md](TASK_TIMING.md)，身份规则见 Fetcher 手册的任务身份章节。分类熔断方案单独保存在 [待实施设计](issues/2026-11-12-breaker-analysis-design.md)，不代表当前运行能力。
+
 先按「你要做的事」定位手册，再进对应手册查字段 / 接口 / 示例：
 
 | 我要… | 手册 | 手册在讲什么 |

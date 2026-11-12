@@ -89,6 +89,8 @@ var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 // **必须与模型全列一致**：rowValuesOf 只按这个列表取值，漏了新列不报错，
 // 测试里 `f.row["新列"] = ...` 会被静默丢弃、断言照样"通过"。TestFakeTaskColumnsCoverModel 钉住它。
 var fakeTaskColumns = []string{
+	"last_started_at", "last_finished_at", "delay_ms", "not_before",
+	"identity_type", "identity_value", "identity_hash",
 	"flow_id", "flow_lane", "flow_branch", "flow_path",
 	"failure_kind", "compensation_mode", "next_compensation_at", "compensation_reason", "compensation_version", "last_account_id", "last_account_selection_version", "account_attempts",
 	"id", "p_id", "stage", "site", "account_pool", "url", "url_hash", "idempotency_key", "idempotency_hash", "meta",
@@ -240,6 +242,13 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 		f.failQueries--
 		return nil, errors.New("fake: connection reset by peer")
 	}
+	if strings.HasPrefix(q, "SELECT DATE_ADD(UTC_TIMESTAMP(3)") {
+		micros, _ := asInt64(args[0].Value)
+		return &fakeRows{cols: []string{"deadline"}, all: [][]driver.Value{{time.Now().UTC().Add(time.Duration(micros) * time.Microsecond)}}}, nil
+	}
+	if strings.HasPrefix(q, "SELECT DATE_FORMAT(UTC_TIMESTAMP(3)") {
+		return &fakeRows{cols: []string{"timestamp"}, all: [][]driver.Value{{time.Now().UTC().Format("2006-01-02 15:04:05.000000")}}}, nil
+	}
 
 	if strings.Contains(q, "crawler_task_trace") {
 		out := &fakeRows{cols: fakeTraceColumns}
@@ -267,6 +276,11 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	}
 	if f.rows == nil {
 		if f.noRows {
+			if f.insertedTask && strings.HasPrefix(q, "SELECT * FROM `crawler_tasks` WHERE id = ?") {
+				row := f.rowWithID(1)
+				row["status"] = int64(models.TaskStatusPending)
+				return &fakeRows{cols: fakeTaskColumns, all: [][]driver.Value{rowValues(row)}}, nil
+			}
 			// Existing end-to-end fixtures keep noRows=true to model every new
 			// URL's initial dedup miss. A successful INSERT still has real zero
 			// counters for the post-claim version read. This is not a SQL parser;

@@ -82,12 +82,12 @@ func TestDedupWarmupPagesAndCapacitySQL(t *testing.T) {
 				t.Fatalf("scanned=%d cached=%d want=%d", scanned, e.dedupCache.Len(), want)
 			}
 			for i := 0; i < want; i++ {
-				if _, ok := e.dedupCache.entries[fmt.Sprintf("s:detail:https://example.test/%d", i)]; !ok {
+				if _, ok := e.dedupCache.entries[(&Task{Site: "s", Stage: "detail", URL: fmt.Sprintf("https://example.test/%d", i)}).Unique()]; !ok {
 					t.Fatalf("missing recent row %d", i)
 				}
 			}
 			// The most recently active page must stay newest in the initial LRU order.
-			if got := e.dedupCache.lru.Front().Value.(*dedupEntry).key; got != "s:detail:https://example.test/0" {
+			if got := e.dedupCache.lru.Front().Value.(*dedupEntry).key; got != (&Task{Site: "s", Stage: "detail", URL: "https://example.test/0"}).Unique() {
 				t.Fatalf("newest row not at LRU front: %s", got)
 			}
 			if capacity != 2 && calls < 2 {

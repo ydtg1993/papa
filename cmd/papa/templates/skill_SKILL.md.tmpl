@@ -84,7 +84,7 @@ For every submitted task:
 - use the stage constant;
 - resolve and validate HTTP(S) URLs;
 - use `Task.Meta` for business identity such as `book_id` or `series_id`;
-- use a stable `IdempotencyKey` whose meaning agrees with `(stage, URL)` under concurrency;
+- use a stable `ResourceID`, scoped automatically by site and stage, or leave it empty for canonical URL identity;
 - set `Repeatable` only for actual polling tasks;
 - seed `RepeatInterval` only at first creation when a per-task period is wanted;
 - check `SubmitTask`/`SubmitTasks` for control flow, but do not duplicate framework logging.

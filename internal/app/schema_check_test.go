@@ -63,7 +63,7 @@ func TestCheckFrameworkSchema(t *testing.T) {
 			t.Fatalf("checkFrameworkSchema = %v", err)
 		}
 		// 假库对两条 COUNT 返回同一个值，所以这里只能验"两个都缺"；真库上二者独立。
-		want := map[string]bool{"idx_site_stage_url_hash": true, "idx_task_status": true}
+		want := map[string]bool{"idx_task_identity": true, "idx_task_status": true}
 		for _, idx := range missingIndexes {
 			delete(want, idx)
 		}
@@ -85,8 +85,8 @@ func TestCheckFrameworkSchema(t *testing.T) {
 // 启动检查要确认的索引名必须和模型/迁移里的一致：写错字等于永远报"缺索引"或永远查不到。
 func TestFrameworkIndexHintsMatchModelIndexes(t *testing.T) {
 	want := map[string]bool{
-		"idx_site_stage_url_hash": true, // 去重唯一索引
-		"idx_task_status":         true, // status 单列（恢复队列/去重预热）
+		"idx_task_identity": true, // 去重唯一索引
+		"idx_task_status":   true, // status 单列（恢复队列/去重预热）
 	}
 	for _, c := range frameworkIndexHints {
 		if c.table != "crawler_tasks" {

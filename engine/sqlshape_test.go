@@ -70,28 +70,13 @@ func TestRepeatResetAtomicallyAdvancesQuotedRound(t *testing.T) {
 func TestDedupScopeMatchesUniqueIndexes(t *testing.T) {
 	db := dryRunMySQL(t)
 	e := &Engine{db: db}
-
-	// 有自定义键 → 按 idempotency_hash 查（键原文 varchar(1000) 在 utf8mb4 下建不了索引）
-	withKey := &Task{URL: "https://example.com/a", Stage: "catalog", Site: "shop",
-		IdempotencyKey: "shop:catalog:https://example.com/a"}
-	var rec models.CrawlerTask
-	// 加个 finisher 才会把 SQL 拼出来（DryRun 下只是拼、不执行）
-	sql := renderSQL(t, db, func(*gorm.DB) *gorm.DB { return e.dedupScope(withKey).First(&rec) })
-	if !strings.Contains(sql, "idempotency_hash = ?") {
-		t.Fatalf("有自定义键时应当按 idempotency_hash 查：%s", sql)
-	}
-	if strings.Contains(sql, "idempotency_key = ?") {
-		t.Fatalf("键原文上没有唯一索引，查它在插冲突后会空手而归：%s", sql)
-	}
-
-	// 没有自定义键 → 按 (url_hash, stage, site) 查（idx_site_stage_url_hash）
-	//
-	// **三列都得在**：阶段名只在本站内唯一，两个站可以各有 catalog；少查 site 就会把
-	// 另一个站同 URL 的行当成"已存在"，那条任务静默不跑。
-	plain := &Task{URL: "https://example.com/a", Stage: "catalog", Site: "shop"}
-	sqlPlain := renderSQL(t, db, func(*gorm.DB) *gorm.DB { return e.dedupScope(plain).First(&rec) })
-	if !strings.Contains(sqlPlain, "url_hash = ? AND stage = ? AND site = ?") {
-		t.Fatalf("没有自定义键时应当按 (url_hash, stage, site) 查：%s", sqlPlain)
+	for _, resourceID := range []string{"", "42"} {
+		task := &Task{URL: "https://example.com/a", Stage: "catalog", Site: "shop", ResourceID: resourceID}
+		var rec models.CrawlerTask
+		sql := renderSQL(t, db, func(*gorm.DB) *gorm.DB { return e.dedupScope(task).First(&rec) })
+		if !strings.Contains(sql, "site = ? AND stage = ? AND identity_hash = ?") || strings.Contains(sql, "url_hash") || strings.Contains(sql, "idempotency_hash") {
+			t.Fatalf("wrong identity predicate: %s", sql)
+		}
 	}
 }
 
