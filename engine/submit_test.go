@@ -172,7 +172,7 @@ func TestFindTaskRecordProjectsIDAndStatus(t *testing.T) {
 	e := submitEngine(t, f, pool)
 
 	var record models.CrawlerTask
-	if err := e.findTaskRecord(&Task{Stage: "stub", Site: "stub", URL: "https://example.com"}, &record); err != nil {
+	if err := e.submissions().findTaskRecord(&Task{Stage: "stub", Site: "stub", URL: "https://example.com"}, &record); err != nil {
 		t.Fatalf("findTaskRecord = %v", err)
 	}
 	sql := f.readSQL()

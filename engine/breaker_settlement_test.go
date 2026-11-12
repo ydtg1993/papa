@@ -84,7 +84,7 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			// No hourly reset or explicit recovery may discard the pending result.
 			e.tickBreakers(context.Background(), time.Now().Add(2*time.Hour))
 			e.breakers.breakerMu.Lock()
-			retried := e.retryBreakerLocked(s)
+			retried := e.breakers.retryBreakerLocked(s, e.breakerStageCoverage("synthetic"))
 			e.breakers.breakerMu.Unlock()
 			if retried {
 				t.Fatal("manual retry discarded pending failure")

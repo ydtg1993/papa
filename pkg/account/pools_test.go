@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -183,6 +184,21 @@ func TestPoolConcurrentFailureAndReverifyRejectsLateIdentity(t *testing.T) {
 		t.Fatal("did not fail over")
 	}
 	snapshot, _ := p.Get(key)
+	// A standby may finish verification after the old selection is cleared:
+	// a -> empty -> b is valid, but a's failure must be recorded exactly once.
+	if snapshot.CurrentID != "b" {
+		t.Fatalf("current account = %q, want b", snapshot.CurrentID)
+	}
+	failures := 0
+	for _, change := range snapshot.History {
+		if change.From == "a" && change.Reason == "expired" && change.TaskID == 42 {
+			failures++
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("expired failure transitions = %d: %+v", failures, snapshot.History)
+	}
+	beforeReverify := append([]SwitchRecord(nil), snapshot.History...)
 	var revision uint64
 	for _, v := range snapshot.Accounts {
 		if v.Key.ID == "a" {
@@ -200,8 +216,8 @@ func TestPoolConcurrentFailureAndReverifyRejectsLateIdentity(t *testing.T) {
 		t.Fatal("reverify switched back to recovered account")
 	}
 	snapshot, _ = p.Get(key)
-	if len(snapshot.History) != 2 || snapshot.History[1].TaskID != 42 {
-		t.Fatalf("duplicate failover history: %+v", snapshot.History)
+	if snapshot.CurrentID != "b" || !reflect.DeepEqual(snapshot.History, beforeReverify) {
+		t.Fatalf("reverify or late failure changed selection history: current=%q before=%+v after=%+v", snapshot.CurrentID, beforeReverify, snapshot.History)
 	}
 }
 

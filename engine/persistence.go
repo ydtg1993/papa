@@ -81,7 +81,7 @@ func (e *Engine) persistTerminal(ctx context.Context, task *Task, version taskRu
 			return err
 		}
 		e.breakers.breakerMu.Lock()
-		updates = pendingFailureUpdates(e.breakers.smartBreakers[task.Site].event.PendingFailure)
+		updates = e.breakers.pendingTerminalUpdatesLocked(task.Site)
 		e.breakers.breakerMu.Unlock()
 	}
 	return e.persistTerminalUpdates(ctx, task, version, status, updates)

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,19 +59,46 @@ func TestRepeatQueryShape(t *testing.T) {
 // ticker 里正在写的语句会直接报 `sql: database is closed`。
 func TestStopWaitsForTickers(t *testing.T) {
 	f := newFakeTaskDB()
+	// Fake WHERE clauses do not filter the default pending row. Model the
+	// conditional repeat reset losing its CAS, so no task should be delivered.
+	f.affected = 0
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	var enterOnce sync.Once
+	f.onExec = func(int) {
+		// The competing update removes this row from subsequent repeat scans.
+		// onExec runs under the fake DB mutex, so this change is synchronized.
+		f.noRows = true
+		enterOnce.Do(func() { close(entered) })
+		<-release
+	}
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.pools.Get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: time.Millisecond}
 	e.startRepeatQueue()
-
-	time.Sleep(80 * time.Millisecond) // 让它至少跑过一轮
-	if drained, _ := e.Stop(time.Second); !drained {
-		t.Fatal("Stop 应当把 ticker 也算进「排空」（它已经随 ctx 退出）")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("repeat ticker did not enter SQL write")
 	}
-	before := f.written()
-	time.Sleep(100 * time.Millisecond)
-	if after := f.written(); after != before {
-		t.Fatalf("Stop 返回后不该再有人写库：\n新增：\n%s", strings.TrimPrefix(after, before))
+	// The write is certainly in flight: cancellation alone cannot mean drained.
+	if drained, stats := e.Stop(0); drained || len(stats) != 0 {
+		t.Fatalf("blocked ticker must prevent drain without inventing queued tasks: drained=%v stats=%+v", drained, stats)
+	}
+	unblock()
+	if drained, stats := e.Stop(time.Second); !drained || len(stats) != 0 {
+		t.Fatalf("completed ticker with failed repeat CAS should drain: drained=%v stats=%+v", drained, stats)
+	}
+	// Wait-group completion is the evidence of no remaining SQL producer; no
+	// arbitrary post-Stop sleep is needed to guess whether another tick will fire.
+	e.tickerWG.Wait()
+	if got := strings.Count(f.written(), "UPDATE"); got != 1 {
+		t.Fatalf("expected exactly one in-flight repeat reset, got %d: %s", got, f.written())
+	}
+	if e.delays.Len() != 0 || e.overflow.Count() != 0 {
+		t.Fatalf("failed repeat CAS retained work: delayed=%d spill=%d", e.delays.Len(), e.overflow.Count())
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/governance"
+	"maps"
 	"time"
 )
 
@@ -77,11 +78,13 @@ func (e *Engine) ResolveRuntime(override config.RuntimeConfig) (governance.Confi
 	return base, delays, base.Validate()
 }
 
+// InstallGovernance publishes the controller and an owned delay snapshot together.
+// To update delays, install a new snapshot rather than mutating the input map.
 func (e *Engine) InstallGovernance(c *governance.Controller, delays map[string]time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.governor = c
-	e.runtimeDelays = delays
+	e.runtimeDelays = maps.Clone(delays)
 }
 func (e *Engine) taskDelay(task *Task, fallback time.Duration) time.Duration {
 	e.mu.RLock()

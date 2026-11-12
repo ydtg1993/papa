@@ -1,4 +1,4 @@
-package app
+package access
 
 import (
 	"bytes"
@@ -26,7 +26,7 @@ func TestWarnIfOpenToAll(t *testing.T) {
 
 	t.Run("空白名单要报警", func(t *testing.T) {
 		log, buf := newLog()
-		warnIfOpenToAll(log, nil)
+		WarnIfOpenToAll(log, nil)
 		out := buf.String()
 		// 警告里必须点出**去哪儿改** —— 白名单搬到 crawler_config 之后，
 		// 还写着"往 server.whitelist 里写"就是把运维指到一条已经废弃的路上。
@@ -39,7 +39,7 @@ func TestWarnIfOpenToAll(t *testing.T) {
 
 	t.Run("有白名单时不报", func(t *testing.T) {
 		log, buf := newLog()
-		warnIfOpenToAll(log, []string{"10.0.0.0/8"})
+		WarnIfOpenToAll(log, []string{"10.0.0.0/8"})
 		if buf.Len() != 0 {
 			t.Fatalf("配了白名单就不该报警，实得：%s", buf.String())
 		}
@@ -50,7 +50,7 @@ func TestWarnIfOpenToAll(t *testing.T) {
 //
 // 值的形状由 store 那层把关（用例在 admin/configstore），这里钉的是"读不出来时怎么继续"：
 // 记一条 Error 然后按不限制来源走 —— 这一档等于把限制悄悄放宽了，日志里必须留痕。
-func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
+func TestLoadWhitelistFallsBackToUnrestricted(t *testing.T) {
 	newLog := func() (*logrus.Logger, *bytes.Buffer) {
 		var buf bytes.Buffer
 		log := logrus.New()
@@ -62,7 +62,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 	t.Run("行不存在 → 空（不限制）", func(t *testing.T) {
 		f := gormfake.New()
 		log, buf := newLog()
-		if got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
+		if got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
 			t.Fatalf("没设过白名单时应当是空，实得 %v", got)
 		}
 		if buf.Len() != 0 {
@@ -74,7 +74,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8"]`)})
 		log, _ := newLog()
-		got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log)
+		got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log)
 		if len(got) != 1 || got[0] != "10.0.0.0/8" {
 			t.Fatalf("实得 %v", got)
 		}
@@ -84,7 +84,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`{"a":1}`)})
 		log, buf := newLog()
-		if got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
+		if got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
 			t.Fatalf("坏值应当按不限制来源继续，实得 %v", got)
 		}
 		if !strings.Contains(buf.String(), "不限制来源") {
@@ -96,7 +96,7 @@ func TestLoadIPWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetQueryError("crawler_config", "库抖了")
 		log, buf := newLog()
-		if got := loadIPWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
+		if got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
 			t.Fatalf("库抖动时按不限制来源继续，实得 %v", got)
 		}
 		if buf.Len() == 0 {
@@ -112,8 +112,8 @@ func TestWhitelistKeyIsTheStoreConstant(t *testing.T) {
 	}
 }
 
-// TTL 缓存：重载循环每 30 秒调一次 loadIPWhitelist，但 TTL 内不应该重复查库。
-func TestLoadIPWhitelistUsesTTLCache(t *testing.T) {
+// TTL 缓存：重载循环每 30 秒调一次 LoadWhitelist，但 TTL 内不应该重复查库。
+func TestLoadWhitelistUsesTTLCache(t *testing.T) {
 	f := gormfake.New()
 	f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8"]`)})
 	reader := configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute)
@@ -121,7 +121,7 @@ func TestLoadIPWhitelistUsesTTLCache(t *testing.T) {
 	log.SetLevel(logrus.FatalLevel)
 
 	for i := 0; i < 3; i++ {
-		if got := loadIPWhitelist(reader, log); len(got) != 1 || got[0] != "10.0.0.0/8" {
+		if got := LoadWhitelist(reader, log); len(got) != 1 || got[0] != "10.0.0.0/8" {
 			t.Fatalf("第 %d 次读白名单 = %v", i+1, got)
 		}
 	}
@@ -130,7 +130,7 @@ func TestLoadIPWhitelistUsesTTLCache(t *testing.T) {
 	}
 
 	reader.Invalidate(configstore.KeyIPWhitelist)
-	if got := loadIPWhitelist(reader, log); len(got) != 1 {
+	if got := LoadWhitelist(reader, log); len(got) != 1 {
 		t.Fatalf("失效后重读 = %v", got)
 	}
 	if hits := strings.Count(f.Written(), "crawler_config"); hits != 2 {

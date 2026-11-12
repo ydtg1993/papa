@@ -54,6 +54,21 @@ func (q *Delay[T]) Push(at time.Time, value T) {
 	}
 }
 func (q *Delay[T]) Len() int { q.mu.Lock(); defer q.mu.Unlock(); return q.heap.Len() }
+
+// Snapshot returns a detached slice of queued values for shutdown accounting.
+// Values are shallow copies, in heap order; it neither consumes work nor invokes
+// callbacks while holding the queue lock. Mutable pointed-to values remain owned
+// by the caller and should only be inspected after its dispatcher has drained.
+func (q *Delay[T]) Snapshot() []T {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]T, len(q.heap))
+	for i, item := range q.heap {
+		out[i] = item.value
+	}
+	return out
+}
+
 func (q *Delay[T]) Earliest() time.Time {
 	q.mu.Lock()
 	defer q.mu.Unlock()

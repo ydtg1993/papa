@@ -1,13 +1,54 @@
 package engine
 
 import (
+	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
+
+type queueRoundObserver func(events.Event)
+
+func (f queueRoundObserver) Emit(ev events.Event) { f(ev) }
+
+func TestQueueRoundEmitterCanReadCompletedStats(t *testing.T) {
+	// A failing implementation deadlocks; contain it in a child process so the
+	// regression can fail cleanly without abandoning a goroutine in this suite.
+	const childEnv = "PAPA_TEST_QUEUE_ROUND_OBSERVER_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestQueueRoundEmitterCanReadCompletedStats$", "-test.count=1")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("queue round observer cannot read stats: %v context=%v\n%s", err, ctx.Err(), output)
+		}
+		return
+	}
+	e := newStatsEngine(t)
+	observed := false
+	e.SetEventsEmitter(queueRoundObserver(func(ev events.Event) {
+		if ev.Type != events.TypeQueueRound {
+			return
+		}
+		observed = true
+		st := e.GetQueueStats()[QueueError]
+		if st.Running || st.Runs != 1 || st.LastProcessed != 7 || st.LastError != "fixture failure" || ev.Counts["processed"] != 7 {
+			t.Errorf("observer saw incomplete queue round: %+v event=%+v", st, ev)
+		}
+	}))
+	e.beginQueueRun(QueueError)
+	e.endQueueRun(QueueError, 7, errors.New("fixture failure"))
+	if !observed {
+		t.Fatal("queue round event was not synchronous")
+	}
+}
 
 // newStatsEngine 构造只带队列监控所需字段的引擎，避免依赖 DB。
 func newStatsEngine(t *testing.T) *Engine {

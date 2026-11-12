@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"sort"
 	"strings"
 	"time"
 
@@ -37,12 +36,8 @@ func (e *Engine) SetSiteStore(s SiteStore) { e.siteStore = s }
 // 声明必须有 Key（validateSites 拒没有 Key 的声明）、任务必须有 site（SubmitTask 拒空串）。
 func (e *Engine) siteKeys() []string {
 	e.breakers.breakerMu.Lock()
-	keys := make([]string, 0, len(e.sites))
-	for k := range e.sites {
-		keys = append(keys, k)
-	}
+	keys := e.sites.keysLocked(false)
 	e.breakers.breakerMu.Unlock()
-	sort.Strings(keys)
 	return keys
 }
 
@@ -112,8 +107,9 @@ func (e *Engine) declaredSiteStats() []core.SiteStat {
 		paused[key] = true
 	}
 	now := time.Now()
-	rows := make([]core.SiteStat, 0, len(e.sites))
-	for _, key := range e.siteKeys() {
+	keys := e.siteKeys()
+	rows := make([]core.SiteStat, 0, len(keys))
+	for _, key := range keys {
 		site, _ := e.Site(key) // 取不到就是零值（声明里有、引擎里还没登记）
 		row := core.SiteStat{
 			Key:        key,

@@ -44,7 +44,7 @@ func TestInsertTasksFallsBackToPerRowOnBatchFailure(t *testing.T) {
 	}
 	f.failNext = 1 // 只让那条多行 INSERT 失败
 
-	conflicted, failed, err := e.insertTasks(tasks)
+	conflicted, failed, err := e.submissions().insertTasks(tasks)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("批量失败应退到逐条，而不是整个报错：%v", err)
 	}
@@ -74,7 +74,7 @@ func TestInsertTasksReportsConflictingRow(t *testing.T) {
 	// 批量 INSERT 失败 + 第一条逐条 INSERT 也失败（假库里 query 恒返回 id=7 那行 → 视为"已存在"）
 	f.failNext = 2
 
-	conflicted, failed, err := e.insertTasks(tasks)
+	conflicted, failed, err := e.submissions().insertTasks(tasks)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("撞车应当被跳过，而不是报错：%v", err)
 	}

@@ -48,26 +48,9 @@ func (e *Engine) NotifyAccountHealthEvent(event account.HealthEvent) {
 	}
 	key := site + "\x00" + event.Pool.Name + "\x00" + event.Key.ID + "\x00" + event.Kind
 	now := time.Now()
-	e.accountAlertMu.Lock()
-	if last := e.accountAlertLast[key]; !last.IsZero() && now.Sub(last) < time.Minute {
-		e.accountAlertMu.Unlock()
+	if !e.accountAlerts.allow(key, now) {
 		return
 	}
-	if e.accountAlertLast == nil {
-		e.accountAlertLast = make(map[string]time.Time)
-	}
-	if len(e.accountAlertLast) >= 2048 {
-		var oldestKey string
-		var oldest time.Time
-		for k, at := range e.accountAlertLast {
-			if oldest.IsZero() || at.Before(oldest) {
-				oldestKey, oldest = k, at
-			}
-		}
-		delete(e.accountAlertLast, oldestKey)
-	}
-	e.accountAlertLast[key] = now
-	e.accountAlertMu.Unlock()
 	reason := boundedCompensationReason(event.Reason)
 	e.emit(events.Event{Type: "account_health", Site: site, TaskID: uint(event.TaskID), Kind: event.Kind, Source: "account", Attrs: map[string]string{"account_id": event.Key.ID, "account_pool": event.Pool.Name, "reason": reason}})
 	ctx := e.ctx

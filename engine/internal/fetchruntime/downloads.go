@@ -34,7 +34,7 @@ func (d *Downloads) Register(site string, v SiteDownloads) {
 	if d.sites == nil {
 		d.sites = make(map[string]SiteDownloads)
 	}
-	d.sites[site] = v
+	d.sites[site] = CloneDownloads(v)
 }
 func (d *Downloads) Resolve(stages []StageDownloads, m *m3u8.Downloader, f *filedown.Downloader) {
 	d.mu.Lock()

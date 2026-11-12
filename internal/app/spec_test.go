@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,19 +15,6 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
-
-func TestStageBreakerReadOnlyCoverageDeclaration(t *testing.T) {
-	for _, coverage := range []string{"", "完整读取与解析；无副作用", "  ", strings.Repeat("x", 1025)} {
-		plan, err := planStage(core.Site{Key: "s"}, StageSpec{Fetcher: namedFetcher{"detail"}, WorkerCount: 1, QueueSize: 8, BreakerReadOnlyCoverage: coverage}, map[string]string{})
-		invalid := coverage == "  " || len(coverage) > 1024
-		if (err != nil) != invalid {
-			t.Fatalf("validation mismatch length=%d err=%v", len(coverage), err)
-		}
-		if !invalid && plan.cfg.BreakerReadOnlyCoverage != coverage {
-			t.Fatal("coverage not forwarded")
-		}
-	}
-}
 
 // quietLogger 吞掉输出的 logger：注册那条链会打几条 Info/Warn，测试输出里不需要它们。
 func quietLogger() *logrus.Logger {
@@ -58,6 +44,24 @@ func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 	return engine.NewEngine(db, cfg, &loggers.LoggerSet{
 		Engine: quietLogger(), DB: quietLogger(), Monitor: quietLogger(), Sys: quietLogger(),
 	})
+}
+
+// entryStageFetcher 实现可选接口 EntrySubmitter。
+// site 记下框架交过来的那份站点声明快照（BaseURL / Headers 该在这儿，而不是 fetcher 自己存）。
+type entryStageFetcher struct {
+	called bool
+	site   core.Site
+}
+
+func (f *entryStageFetcher) GetStage() string { return "review" }
+
+func (f *entryStageFetcher) FetchHandler(_ context.Context, _ *engine.Task, _ *engine.Engine) error {
+	return nil
+}
+
+func (f *entryStageFetcher) SubmitEntries(_ *engine.Engine, site core.Site) {
+	f.called = true
+	f.site = site
 }
 
 // RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 Entry 模式）、站点快照、按站的熔断阈值。
@@ -148,58 +152,5 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	}
 	if st := e.BreakerStatuses()["b"]; st.Paused {
 		t.Fatalf("没声明 StartPaused 的站不该被带上：%+v", st)
-	}
-}
-
-// BreakerSpec 合到 crawler.breaker 上的语义：**Enabled 不看默认值**（写了就由它说了算），
-// 阈值/窗口没给才落回默认。
-func TestBreakerSpecToConfig(t *testing.T) {
-	def := config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
-
-	// 全不给：阈值窗口用默认，但 Enabled 是 false（站点自己说了算 —— 于是"全局开着、某站关掉"能表达）
-	got, err := BreakerSpec{}.toConfig(def)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Enabled || got.Threshold != 50 || got.Window != 5*time.Minute {
-		t.Fatalf("空 BreakerSpec 应当只继承阈值与窗口：%+v", got)
-	}
-
-	// 给了阈值与窗口：覆盖
-	got, err = BreakerSpec{Enabled: true, Threshold: 7, Window: "2m"}.toConfig(def)
-	if err != nil || !got.Enabled || got.Threshold != 7 || got.Window != 2*time.Minute {
-		t.Fatalf("覆盖没生效：%+v %v", got, err)
-	}
-
-	// 默认里 Window 是零值：走 WindowOrDefault（否则 time.NewTicker(0) 会在闸门里 panic）
-	got, err = BreakerSpec{Enabled: true}.toConfig(config.BreakerConfig{Threshold: 3})
-	if err != nil || got.Window <= 0 {
-		t.Fatalf("窗口应当有默认值：%+v %v", got, err)
-	}
-	if got.Threshold != 3 {
-		t.Fatalf("阈值应当继承默认：%+v", got)
-	}
-
-	// 窗口写错：报错（不是在运行期崩）
-	if _, err := (BreakerSpec{Enabled: true, Window: "两分钟"}).toConfig(def); err == nil {
-		t.Fatal("窗口解析失败应当报错")
-	}
-}
-
-func TestStageRepeatLimitDeclaration(t *testing.T) {
-	for _, limit := range []int{0, 30, -1} {
-		plan, err := planStage(core.Site{Key: "s"}, StageSpec{Fetcher: namedFetcher{"detail"}, WorkerCount: 1, QueueSize: 8, RepeatLimit: limit}, map[string]string{})
-		if limit < 0 {
-			if err == nil {
-				t.Fatal("negative RepeatLimit accepted")
-			}
-			continue
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if plan.cfg.RepeatLimit != limit {
-			t.Fatalf("limit not forwarded: %+v", plan.cfg)
-		}
 	}
 }

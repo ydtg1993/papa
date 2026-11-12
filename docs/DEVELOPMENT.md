@@ -88,6 +88,8 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 ## 6. 包结构与职责边界
 
+后台各包和前后端文件的详细归属见 [Admin 目录结构与职责细则](ADMIN_STRUCTURE.md)。引擎文件和内部组件细则见 [Engine 目录结构与职责细则](ENGINE_STRUCTURE.md)。应用装配层 `internal/app` 的逐文件细则见 [App 目录结构与职责细则](APP_STRUCTURE.md)。本节保留框架级概览。
+
 **包职责清晰是长期开发硬规则。** 新增功能先明确状态拥有者、接口和依赖，再选择文件；不能因 App / Engine 取依赖方便而向其中堆功能。文件数、目录深度和行数不是拆包目标。完整依赖规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 | 包 / 文件组 | 职责 |
@@ -100,21 +102,29 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 | `internal/app/bootstrap.go` / `lifecycle.go` | 创建依赖、事件流、启动和排空顺序 |
 | `internal/app/http.go` / `pages.go` / `router.go` | 后台装配、公开扩展注册与路由兼容入口 |
 | `internal/app/reports.go` / `runtime_policy.go` / `browser_identity.go` | 报告、运行策略、身份服务的构造和委派；状态算法在服务包 |
+| `internal/app/spec.go` | 站点/阶段声明的公开兼容别名（`SiteSpec`/`StageSpec`/`BreakerSpec`/`RetrySpec` + `RegisterSite`/`Sites`/`CheckSites`/`DescribeDownloadOverlays`）+ `RegisterSites`/`applyStagePlan`/`Site` 的引擎落地；纯逻辑在 `internal/sitedecl` |
+| `internal/sitedecl` | `types.go`/`plan.go`：声明类型 + `PlanSites`/`planStage` 校验推导；`registry.go`：进程级站点登记表；`overlay.go`：下载器覆盖自查。不依赖 App/HTTP/admin |
 | `internal/runtimecontrol` | `service.go`：策略版本、CAS、核对、发布和账号池引用互斥；`document.go` / `history.go`：文档与选择性历史恢复 |
 | `internal/browserdiagnostics` | `service.go` / `options.go`：资源接口与诊断生命周期；`identity_diagnostic.go`：合成页身份检查；`rod.go` / `report.go`：启动检查与报告 |
 | `internal/reportrunner/runner.go` | 报表专用值配置、日报生成、ticker、串行写入与停机等待，消费只读快照，不依赖应用配置包 |
 | `engine` | Task / Fetcher / Engine 公共契约，站点与阶段执行编排；保留需要跨暂停、持久化与熔断协调的原子边界 |
 | `internal/taskstore` | 认领、终态、释放、失败重投、轮询推进和兼容 Task 存储入口 |
+| `engine/engine.go` / `engine_config.go` / `lifecycle.go` | 构造与组件字段、公开阶段契约、关停排空分别维护；`runtime_dependencies.go` 保留公开依赖适配 |
+| `engine/submission_store.go` / `submit.go` | 持久化准备和投递计划归 submissionStore；Engine 只校验阶段、接收投递责任并协调延迟/暂停/worker |
+| `engine/taskflow_service.go` / `taskflow.go` | taskFlowService 拥有 flow 行锁、CAS、父子登记/认领事务；门面只接线和唤醒 |
+| `engine/trace_service.go` / `archive_service.go` / `evidence_maintenance.go` | 证据查询/写入/保留期服务与受 tickerWG 管理的巡检；单次缓冲仍由 Trace/archiveBuffer 拥有 |
+| `engine/site_registry.go` / `account_alerts.go` | 站点声明复制快照、账号告警有界限频；不新增跨状态锁序 |
 | `engine/internal/scheduler` | `pools.go`：活池锁与关闭；`delay.go`：延迟堆、唤醒与取消 |
 | `engine/internal/execution` | 未确认持久化状态、重试背压与排空统计 |
-| `engine/internal/fetchruntime` | `downloads.go`：下载器覆盖与解析快照；`resources.go`：账号/身份/浏览器/HTTP 资源注册、账号准入与渲染资源归还 |
+| `engine/internal/fetchruntime` | `download_config.go`：站点/阶段覆盖值复制；`downloads.go`：下载器覆盖与解析快照；`resources.go`：账号/身份/浏览器/HTTP 资源注册、账号准入与渲染资源归还 |
 | `engine/attempt_execution.go` / `attempt_persistence.go` | 单次执行的 trace/归档、panic、账号反馈及时间/失败日志结算；只接受窄依赖，不持有 Engine |
 | `engine/stage.go` / `stage_registration.go` / `notifications.go` | 执行轮次编排、阶段/worker 装配、告警通知，各文件职责独立 |
 | `engine/breaker_coordinator.go` / `scheduler_spill.go` | 同包状态组件：熔断准入/恢复证据/报告写入、溢出队列；无 Engine 回引用，跨状态事务由 Engine 编排 |
+| `engine/breaker_events.go` | 熔断事务事件值批次与锁外同步派发；探针在结果事件之后重验轮次及取消状态 |
 | `internal/breaker` / `internal/breakerstore` | 终态检测算法、快照和报告事务存储 |
 | `internal/database` | 连接、显式迁移、schema 检查；不由普通启动自动迁移 |
 | `internal/workerpool` / `msgqueue` / `track` | 通用执行池、消息通道、指标采样 |
-| `admin/server` | `monitor.go` 兼容类型与组件装配、统一路由鉴权；`assets.go` / `extensions.go` 保留原资源和扩展 API，不持有功能状态 |
+| `admin/server` | `config.go` 公开契约、`monitor.go` 组件装配、`routes.go` 路由与统一鉴权、`middleware.go` 公开中间件；`assets.go` / `extensions.go` 保留原资源和扩展 API，不持有功能状态 |
 | `admin/shell` | `renderer.go` 管理模板解析；`assets.go` / `resource_fs.go` 确定性组合嵌入资源；`extensions.go` 管理导航元数据快照；`static/runtime.js` 管理控制器注册、依赖与生命周期 |
 | `admin/access` | `handler.go` 拥有来源白名单锁与快照、请求身份校验和白名单保存 |
 | `admin/settings` | `handler.go` 管理设置查询与显式关停；`static/controller.js` / `views/settings.html` 管理设置页面 |
@@ -163,9 +173,9 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 | 层 | 是什么 | 在哪儿 |
 | --- | --- | --- |
-| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `StartPaused` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
+| 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `StartPaused` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/sitedecl/SiteSpec`（`internal/app` 与根包 `papa` 以类型别名透出） |
 | 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine.stage.go` 建池那一段 |
-| 执行 | **每站一个终态 Detector**；阶段分类用于定位，自动保护统一整站；全阶段验证与在途排空完成后才清零，人工解除不清零 | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine/breaker_runtime.go`、`engine/breaker_recovery.go` |
+| 执行 | **每站一个终态 Detector**；阶段分类用于定位，自动保护统一整站；全阶段验证与在途排空完成后才清零，人工解除不清零 | `internal/sitedecl` 的 `defaultBreakerConfig`、`engine/breaker_runtime.go`、`engine/breaker_recovery.go` |
 | 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
@@ -286,7 +296,7 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 ## 动态阶段调度实现
 
-engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go 管理 MySQL 运行锁/CAS/同步派生；claimTaskContext 统一检查新投递、加急、重试与恢复。终态通知仅唤醒回灌，不作为持久真相。测试包括独立 MySQL 并发与恢复、策略纯函数、后台请求与生产页面组件。见 [动态阶段调度](TASK_FLOW.md)。
+engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow_service.go 管理 MySQL 运行锁/CAS/同步派生，engine/taskflow.go 保留公开门面；claimTaskContext 统一检查新投递、加急、重试与恢复。终态通知仅唤醒回灌，不作为持久真相。测试包括独立 MySQL 并发与恢复、策略纯函数、后台请求与生产页面组件。见 [动态阶段调度](TASK_FLOW.md)。
 
 
 ### 后台默认鉴权回归（2026-11-07）

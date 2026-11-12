@@ -46,3 +46,24 @@ func TestDelayEarlierArrivalAndCancellation(t *testing.T) {
 		t.Fatal("cancel lost future entry")
 	}
 }
+
+func TestDelaySnapshotRetainsCancelledWorkAndOwnsSlice(t *testing.T) {
+	var q Delay[int]
+	q.Push(time.Now().Add(time.Hour), 1)
+	q.Push(time.Now().Add(2*time.Hour), 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := q.Next(ctx); ok {
+		t.Fatal("cancel consumed work")
+	}
+	snapshot := q.Snapshot()
+	if len(snapshot) != 2 || snapshot[0] != 1 || snapshot[1] != 2 {
+		t.Fatalf("snapshot=%v", snapshot)
+	}
+	snapshot[0] = 99
+	q.Push(time.Now().Add(3*time.Hour), 3)
+	current := q.Snapshot()
+	if len(current) != 3 || current[0] != 1 || len(snapshot) != 2 {
+		t.Fatalf("snapshot aliased queue: old=%v new=%v", snapshot, current)
+	}
+}

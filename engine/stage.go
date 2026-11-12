@@ -49,8 +49,7 @@ func (e *Engine) releaseClaim(task *Task) {
 	// A cancellation racing terminal cleanup cannot turn a journaled failure
 	// back into pending. The report writer owns its remaining settlement.
 	e.breakers.breakerMu.Lock()
-	s := e.breakers.smartBreakers[task.Site]
-	pending := s != nil && s.event != nil && s.event.PendingFailure != nil && s.event.PendingFailure.TaskID == task.ID
+	pending := e.breakers.ownsFailureSettlementLocked(task)
 	e.breakers.breakerMu.Unlock()
 	if pending {
 		return

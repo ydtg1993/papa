@@ -3,67 +3,15 @@ package server
 import (
 	"archive/zip"
 	"bytes"
-	"fmt"
+	"github.com/ydtg1993/papa/v4/admin/logs"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
-func TestReadLogTail(t *testing.T) {
-	for _, tc := range []struct {
-		name, input, want string
-		lines             int
-	}{
-		{"empty", "", "", 0}, {"single", "hello", "hello", 1}, {"blank", "\n", "\n", 1},
-		{"crlf", "一\r\n二\r\n", "一\n二\n", 2}, {"no newline", "一\n二", "一\n二", 2},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := readLogTail(strings.NewReader(tc.input), int64(len(tc.input)))
-			if err != nil || got.Text != tc.want || got.Lines != tc.lines || got.Truncated {
-				t.Fatalf("%+v %v", got, err)
-			}
-		})
-	}
-	for _, end := range []bool{false, true} {
-		lines := []string{}
-		for i := 1; i <= 300; i++ {
-			lines = append(lines, fmt.Sprintf("line %d", i))
-		}
-		input := strings.Join(lines, "\n")
-		want := strings.Join(lines[100:], "\n")
-		if end {
-			input += "\n"
-			want += "\n"
-		}
-		got, err := readLogTail(strings.NewReader(input), int64(len(input)))
-		if err != nil || got.Text != want || got.Lines != 200 || got.Truncated {
-			t.Fatalf("tail mismatch: %+v %v", got, err)
-		}
-	}
-}
-
-type boundedReader struct {
-	*strings.Reader
-	bytes int
-}
-
-func (r *boundedReader) ReadAt(p []byte, off int64) (int, error) {
-	n, e := r.Reader.ReadAt(p, off)
-	r.bytes += n
-	return n, e
-}
-func TestLogTailByteLimitAndUTF8(t *testing.T) {
-	input := strings.Repeat("中", logTailBytes)
-	r := &boundedReader{Reader: strings.NewReader(input)}
-	got, err := readLogTail(r, int64(len(input)))
-	if err != nil || !got.Truncated || !utf8.ValidString(got.Text) || r.bytes > logTailBytes || len(got.Text) > logTailBytes {
-		t.Fatalf("limit failure bytes=%d len=%d truncated=%v err=%v", r.bytes, len(got.Text), got.Truncated, err)
-	}
-}
 func TestLogTailEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.log"), []byte("<script>alert(1)</script>\n"), 0600); err != nil {
@@ -152,7 +100,7 @@ func TestLogListAndArchiveExcludeNonLogs(t *testing.T) {
 		t.Fatalf("archive has %d entries", len(archive.File))
 	}
 	for _, f := range archive.File {
-		if !isLogFileName(f.Name) {
+		if !logs.IsFileName(f.Name) {
 			t.Fatalf("unexpected archive entry %s", f.Name)
 		}
 	}

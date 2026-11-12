@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/ydtg1993/papa/v4/admin/reports"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -250,7 +251,7 @@ func TestObsReportFileTooLarge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := f.Truncate(int64(obsReportMaxFileBytes) + 1); err != nil {
+	if err := f.Truncate(int64(reports.MaxFileBytes) + 1); err != nil {
 		_ = f.Close()
 		t.Fatalf("truncate: %v", err)
 	}

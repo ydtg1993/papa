@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -37,8 +36,7 @@ const (
 // **空指针安全**：trace 未开启、或测试里直接调 FetchHandler 时 Task.Trace 为 nil，
 // 此时 Step/Fail/setResult/finish 都是 no-op —— 可选协作者就该是可选的。
 type Trace struct {
-	db      *gorm.DB
-	logger  *logrus.Logger
+	store   traceService
 	taskID  int
 	attempt int
 
@@ -52,7 +50,7 @@ type Trace struct {
 
 // newTrace 构造一次尝试的记录器。
 func newTrace(db *gorm.DB, logger *logrus.Logger, taskID, attempt int) *Trace {
-	return &Trace{db: db, logger: logger, taskID: taskID, attempt: attempt, lastAt: time.Now()}
+	return &Trace{store: traceService{db: db, dbLogger: logger}, taskID: taskID, attempt: attempt, lastAt: time.Now()}
 }
 
 // traceCtxKey 把本次尝试的 Trace 挂到 ctx 上 —— 与 archiveCtxKey 同一个手法。
@@ -206,76 +204,28 @@ func (t *Trace) finish() {
 	if len(records) == 0 {
 		return
 	}
-	if err := t.db.Create(&records).Error; err != nil {
-		t.logger.Warnf("trace: write %d steps of task %d attempt %d failed: %s",
-			len(records), t.taskID, t.attempt, err.Error())
+	t.store.write(records, t.taskID, t.attempt)
+}
+func (e *Engine) traceService() traceService {
+	service := traceService{options: e.cfg.Crawler.Trace, db: e.db}
+	if e.loggerSet != nil {
+		service.dbLogger, service.logger = e.loggerSet.DB, e.loggerSet.Engine
 	}
+	return service
 }
-
-// traceEnabled 返回步骤追踪是否开启。
-func (e *Engine) traceEnabled() bool {
-	return e.cfg.Crawler.Trace.Enabled
-}
-
-// newTrace 为一次尝试构造记录器；追踪关闭或任务未落库（没有任务行可挂）时返回 nil。
+func (e *Engine) traceEnabled() bool { return e.cfg.Crawler.Trace.Enabled }
 func (e *Engine) newTrace(task *Task, attempt int) *Trace {
-	if !e.traceEnabled() || task.ID == 0 {
+	if !e.traceEnabled() {
 		return nil
 	}
-	return newTrace(e.db, e.loggerSet.DB, task.ID, attempt)
+	return e.traceService().newTrace(task.ID, attempt)
 }
 
-// ListTrace 返回一条任务的全部步骤记录，按（尝试、步骤）排序。供监控后台的「追踪」抽屉读取。
-func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) {
-	if !e.traceEnabled() {
-		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
-	}
-	var rows []models.TaskTrace
-	err := e.db.Where("task_id = ?", taskID).
-		Order("attempt, seq").
-		Limit(maxTraceSteps).
-		Find(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("load trace of task %d: %w", taskID, err)
-	}
-	out := make([]TraceStep, 0, len(rows))
-	for _, r := range rows {
-		status := "ok"
-		switch r.Status {
-		case models.TraceFailed:
-			status = "failed"
-		case models.TraceWarn:
-			status = "warn"
-		}
-		out = append(out, TraceStep{
-			Attempt:   r.Attempt,
-			Seq:       r.Seq,
-			Step:      r.Step,
-			Status:    status,
-			Kind:      r.Kind,
-			Message:   r.Message,
-			Data:      string(r.Data),
-			Duration:  r.Duration,
-			CreatedAt: r.CreatedAt,
-		})
-	}
-	return out, nil
-}
-
-// traceRetention 返回生效的保留期；<=0（未配置）用默认值，显式负数表示不自动清理。
+// ListTrace returns ordered steps for the monitoring drawer.
+func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) { return e.traceService().list(taskID) }
 func (e *Engine) traceRetention() time.Duration {
-	r := e.cfg.Crawler.Trace.Retention
-	if r < 0 {
-		return 0
-	}
-	if r == 0 {
-		return defaultTraceRetention
-	}
-	return r
+	return (traceService{options: e.cfg.Crawler.Trace}).retention()
 }
-
-// startTraceCleanup 启动保留期清理巡检：按批删除过期的步骤记录，避免全表长事务。
-// 追踪关闭或保留期为负（显式要求永久保留）时不启动。
 func (e *Engine) startTraceCleanup() {
 	if !e.traceEnabled() {
 		return
@@ -285,46 +235,6 @@ func (e *Engine) startTraceCleanup() {
 		e.loggerSet.Engine.Infof("trace cleanup disabled: retention is negative (keep forever)")
 		return
 	}
-	// 进 tickerWG：清理要写库（按批 DELETE），理由同 spill.go 那处。
-	e.tickerWG.Add(1)
-	go func() {
-		defer e.tickerWG.Done()
-		ticker := time.NewTicker(traceCleanupInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-ticker.C:
-				e.cleanupTrace(retention)
-			}
-		}
-	}()
+	startEvidenceMaintenance(e.ctx, &e.tickerWG, traceCleanupInterval, func(ctx context.Context) { e.traceService().cleanup(ctx, retention) })
 }
-
-// cleanupTrace 按批删除 created_at 早于 now-retention 的记录，直到一轮删不满一批为止。
-// 每批之间看一眼 ctx：积压极大时这一轮会连删很多批，Engine.Stop 得能打断它。
-func (e *Engine) cleanupTrace(retention time.Duration) {
-	cutoff := time.Now().Add(-retention)
-	var total int64
-	for {
-		select {
-		case <-e.ctx.Done():
-			e.loggerSet.DB.Infof("trace cleanup: interrupted after deleting %d rows", total)
-			return
-		default:
-		}
-		res := e.db.Where("created_at < ?", cutoff).Limit(traceDeleteBatch).Delete(&models.TaskTrace{})
-		if res.Error != nil {
-			e.loggerSet.DB.Errorf("trace cleanup: %s", res.Error.Error())
-			return
-		}
-		total += res.RowsAffected
-		if res.RowsAffected < traceDeleteBatch {
-			break
-		}
-	}
-	if total > 0 {
-		e.loggerSet.Engine.Infof("trace cleanup: deleted %d rows older than %s", total, cutoff.Format(time.RFC3339))
-	}
-}
+func (e *Engine) cleanupTrace(retention time.Duration) { e.traceService().cleanup(e.ctx, retention) }

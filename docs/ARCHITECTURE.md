@@ -2,6 +2,8 @@
 
 > 面向：维护框架和接入通用能力的开发者。包与文件索引见 [DEVELOPMENT.md](DEVELOPMENT.md) §6。
 
+详细目录分册：[Admin](ADMIN_STRUCTURE.md)、[Engine](ENGINE_STRUCTURE.md)。Engine 分册标注同包组件的状态与需要保留的跨组件协调协议。
+
 ## 依赖方向
 
 Papa 是单实例大单体。App 创建组件、注入窄接口并安排启停；后台 handler 解析请求并调用服务；服务拥有状态与原子操作；存储适配器实现持久化。业务站点、固定采集目标和业务模型留在独立业务模块。
@@ -41,3 +43,13 @@ JS/CSS 继续用 go:embed 保持单二进制部署。`custom.js` 的既有顺序
 3. `GOWORK=off` 下 test/vet/build；并发改动执行 race；SQL 使用隔离 MySQL 验证，页面使用 Node/合成 Chromium。
 4. 跑 `TestPackageResponsibilityBoundaries`，更新 DEVELOPMENT 的实际文件索引。
 5. 保留工作区原有修改，禁止 Git 写操作；由用户 review 和提交。
+
+## Engine 同包组件边界
+
+submissionStore 只处理引用保护、身份与任务存储，返回明确的投递计划；Engine 必须在部分失败时继续接管已成功记录。taskFlowService 拥有完整 flow 事务，不通过 Engine 回调执行 SQL。traceService/archiveService 只持有功能配置值与存储/日志，维护循环加入 Engine 的 tickerWG。站点声明从 siteCatalog 读写时复制可变字段，保留原 breakerMu 协调；账号告警限流归 accountAlertGate。
+
+breakerCoordinator 的内部变更通过语义操作收口；Engine 只在既有锁序下发布暂停或安排任务/探测。组件不能保留完整 Engine/Config，也不能借回调集合任意访问它们。`engine/component_boundaries_test.go` 守卫同包依赖，行为测试验证部分成功、CAS、快照隔离及 Stop 等待维护工作。
+
+输入快照与副作用顺序也是边界的一部分：下载覆盖登记须复制标量指针，治理延迟安装须复制 map；已提交任务必须先保留投递责任，再执行可能阻塞或 panic 的错误日志。context 的取消状态在执行决策处读取，不得为了收窄参数提前固定成 error。Stop 等待后台收尾后再观察溢出、延迟和未确认状态，所有等待继续共用一个 deadline。
+
+事件观察者不在池登记、队列统计或熔断/暂停状态锁内调用。事务内只保存独立事件值，完成状态发布后锁外同步派发；跨回调继续执行的探针决策必须重验事件与轮次，不能以释放锁之前的结果覆盖新的人工控制。事件不是调度或持久化真相，不以增加派发锁或无限异步队列修补重入问题。

@@ -61,20 +61,20 @@ func (e *Engine) endQueueRun(name string, processed int, err error) {
 	if st == nil {
 		return
 	}
+	var errorText string
+	if err != nil {
+		errorText = err.Error()
+	}
 	now := time.Now()
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	dur := now.Sub(st.stat.StartedAt)
 	st.stat.Running = false
 	st.stat.Runs++
 	st.stat.LastProcessed = processed
 	st.stat.LastFinishAt = now
 	st.stat.LastDuration = dur
-	if err != nil {
-		st.stat.LastError = err.Error()
-	} else {
-		st.stat.LastError = ""
-	}
+	st.stat.LastError = errorText
+	st.mu.Unlock()
 	// 队列轮次事件：报告引擎用它算每轮处理量与耗时，不依赖日志文案。
 	ev := events.Event{
 		Type:       events.TypeQueueRound,
@@ -84,8 +84,10 @@ func (e *Engine) endQueueRun(name string, processed int, err error) {
 		DurationMS: dur.Milliseconds(),
 	}
 	if err != nil {
-		ev.Error = events.TruncateError(err.Error())
+		ev.Error = events.TruncateError(errorText)
 	}
+	// Observers may synchronously query this completed round. Publish only
+	// after releasing its state lock, with event values detached from the state.
 	e.emit(ev)
 }
 

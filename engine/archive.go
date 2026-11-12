@@ -2,14 +2,7 @@ package engine
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"github.com/sirupsen/logrus"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/config"
@@ -83,6 +76,7 @@ type archivedPage struct {
 
 // archiveBuffer 一次尝试的归档缓冲：先登记，尝试结束时一次性落盘。
 type archiveBuffer struct {
+	store     archiveService
 	logger    *logrus.Logger
 	dir, mode string
 	maxBytes  int64
@@ -96,10 +90,7 @@ type archiveBuffer struct {
 
 // newArchiveBuffer 为一次尝试建缓冲；归档没开时返回 nil（调用方不用判空）。
 func (e *Engine) newArchiveBuffer(task *Task, attempt int) *archiveBuffer {
-	if !e.archiveEnabled() || task.ID == 0 {
-		return nil
-	}
-	return &archiveBuffer{logger: e.loggerSet.Engine, dir: e.archiveDir(), mode: e.archiveMode(), maxBytes: e.archiveMaxBytes(), task: task, attempt: attempt, byURL: make(map[string]int)}
+	return e.archiveService().newBuffer(task, attempt)
 }
 
 // hold 登记静态抓取（`FetchHTML`）拿到的一页。只登记，不写盘；nil 安全。
@@ -167,7 +158,7 @@ func (a *archiveBuffer) finish(failed bool) []string {
 	root := a.dir
 	files := make([]string, 0, len(a.pages))
 	for _, page := range a.pages {
-		rel, err := a.writeOne(root, page)
+		rel, err := a.store.writeOne(a.task, a.attempt, page)
 		if err != nil {
 			a.logger.Warnf("archive: 写盘失败（不影响任务）：%s", err.Error())
 			continue
@@ -180,52 +171,6 @@ func (a *archiveBuffer) finish(failed bool) []string {
 			len(files), a.dropped, a.task.Stage, a.task.ID, a.task.Retry, root)
 	}
 	return files
-}
-
-// writeOne 写一页：正文按**原样字节**落 .html，旁边落一份 .json 记这次请求的元信息。
-func (a *archiveBuffer) writeOne(root string, page archivedPage) (string, error) {
-	rel := a.relPath(page)
-	abs := filepath.Join(root, rel)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", err
-	}
-	// 原样字节：page.HTML 就是 htmlfetch 读到的 body，不做任何再序列化
-	if err := os.WriteFile(abs, []byte(page.html), 0o644); err != nil {
-		return "", err
-	}
-
-	meta := map[string]any{
-		"task_id":      a.task.ID,
-		"stage":        a.task.Stage,
-		"site":         a.task.Site,
-		"attempt":      a.attempt,
-		"retry":        a.task.Retry,
-		"task_url":     a.task.URL,
-		"final_url":    page.url,
-		"status":       page.status,
-		"content_type": page.contentType,
-		"bytes":        len(page.html),
-		"archived_at":  time.Now().Format(time.RFC3339),
-	}
-	if b, err := marshalNoHTMLEscape(meta); err == nil {
-		// 元信息写不进去不算失败：正文才是证据。文件名把 .html 换成 .json（与正文同名同目录）
-		_ = os.WriteFile(filepath.Join(root, strings.TrimSuffix(rel, ".html")+".json"), b, 0o644)
-	}
-	return rel, nil
-}
-
-// relPath 归档文件的相对路径：`{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html`。
-//
-// **按站点分一层**：阶段名只在本站内唯一，两个站各有 `catalog` 时会写进同一个目录、混在一起
-// （文件名带全局唯一的 task ID，不会互相覆盖，只是"这个阶段抓到过哪些页"再也分不开）。
-// 站点为空只在旧行上还会遇到（新任务必须有 site），那一段落成 `_`，见 sanitizePathSegment。
-//
-// 带 try（= task.Retry）是必须的：同一任务重试 3 次时后面那次会覆盖前面那次，
-// 而"第一次是登录墙、第三次正常"恰好是排查的关键。urlhash8 保证一个尝试里的多页不打架。
-func (a *archiveBuffer) relPath(page archivedPage) string {
-	sum := sha256.Sum256([]byte(page.url))
-	name := fmt.Sprintf("task-%d-try-%d-%s.html", a.task.ID, a.task.Retry, hex.EncodeToString(sum[:4]))
-	return filepath.Join(sanitizePathSegment(a.task.Site), sanitizePathSegment(a.task.Stage), name)
 }
 
 // sanitizePathSegment 清洗作为**目录名**用的站点名 / 阶段名：两者都来自业务代码，
@@ -248,60 +193,33 @@ func sanitizePathSegment(s string) string {
 	return string(out)
 }
 
-/* ---------- 配置取值（默认值集中在引擎侧，与 traceRetention 一致） ---------- */
-
-// archiveEnabled 归档是否生效：开关打开**且**目录非空。
-// 目录为空时按未开启处理 —— 校验层会拦住这种配置，但直接把 Engine 拼出来的代码绕得过去，
-// 而空目录会拼成"文件系统根"，那种后果比"没归档"严重得多。
-func (e *Engine) archiveEnabled() bool {
-	return e.cfg.Crawler.Archive.Enabled && e.cfg.Crawler.Archive.Dir != ""
+// Each facade operation snapshots current values, including hand-built Engine configurations.
+func (e *Engine) archiveService() archiveService {
+	service := archiveService{options: e.cfg.Crawler.Archive}
+	if e.loggerSet != nil {
+		service.logger = e.loggerSet.Engine
+	}
+	return service
 }
-
+func (e *Engine) archiveEnabled() bool {
+	return (archiveService{options: e.cfg.Crawler.Archive}).enabled()
+}
 func (e *Engine) archiveDir() string { return e.cfg.Crawler.Archive.Dir }
 
-// ArchiveDir 归档根目录；归档没开时返回空串。
-//
-// 给后台"点开那一页"用（`GET /api/task/page?file=…`）：框架只暴露目录，
-// 路径解析与防穿越在读取端做（见 admin/server/monitor.go 的 resolveArchivedFile）。
+// ArchiveDir returns the root directory or an empty string when disabled.
 func (e *Engine) ArchiveDir() string {
 	if !e.archiveEnabled() {
 		return ""
 	}
 	return e.archiveDir()
 }
-
-// archiveMode 落盘时机；未配置按 failure。
-func (e *Engine) archiveMode() string {
-	if e.cfg.Crawler.Archive.Mode == config.ArchiveModeAlways {
-		return config.ArchiveModeAlways
-	}
-	return config.ArchiveModeFailure
-}
-
-// archiveRetention 保留期；<=0（未配置）用默认，显式负数表示不自动清理。
+func (e *Engine) archiveMode() string { return (archiveService{options: e.cfg.Crawler.Archive}).mode() }
 func (e *Engine) archiveRetention() time.Duration {
-	r := e.cfg.Crawler.Archive.Retention
-	if r < 0 {
-		return 0
-	}
-	if r == 0 {
-		return defaultArchiveRetention
-	}
-	return r
+	return (archiveService{options: e.cfg.Crawler.Archive}).retention()
 }
-
-// archiveMaxBytes 单页上限（字节）；未配置用默认。
 func (e *Engine) archiveMaxBytes() int64 {
-	if mb := e.cfg.Crawler.Archive.MaxFileMB; mb > 0 {
-		return int64(mb) << 20
-	}
-	return defaultArchiveMaxBytes
+	return (archiveService{options: e.cfg.Crawler.Archive}).maxBytes()
 }
-
-/* ---------- 保留期清理 ---------- */
-
-// startArchiveCleanup 启动归档文件的保留期清理（每小时巡检一次，与 trace 的清理同频）。
-// 归档没开、或保留期为负（显式要求永久保留）时不启动。
 func (e *Engine) startArchiveCleanup() {
 	if !e.archiveEnabled() {
 		return
@@ -311,59 +229,8 @@ func (e *Engine) startArchiveCleanup() {
 		e.loggerSet.Engine.Infof("archive cleanup disabled: retention is negative (keep forever)")
 		return
 	}
-	// 进 tickerWG：清理要删文件、也可能写库，理由同 spill.go 那处。
-	e.tickerWG.Add(1)
-	go func() {
-		defer e.tickerWG.Done()
-		ticker := time.NewTicker(archiveCleanupInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-ticker.C:
-				e.cleanupArchive(retention)
-			}
-		}
-	}()
+	startEvidenceMaintenance(e.ctx, &e.tickerWG, archiveCleanupInterval, func(ctx context.Context) { e.archiveService().cleanup(ctx, retention) })
 }
-
-// cleanupArchive 删掉归档根目录下超过保留期的文件，返回删除数量。
-//
-// 按文件的修改时间判（归档文件写完就不再改）。单个条目读不到就跳过 —— 清理是后台杂活，
-// 不能因为一个坏权限的目录把整轮中断；ctx 取消时立刻收工（Engine.Stop 会等这个协程）。
 func (e *Engine) cleanupArchive(retention time.Duration) int {
-	root := e.archiveDir()
-	cutoff := time.Now().Add(-retention)
-	var files int
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		select {
-		case <-e.ctx.Done():
-			return fs.SkipAll
-		default:
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, ierr := d.Info()
-		if ierr != nil || !info.ModTime().Before(cutoff) {
-			return nil
-		}
-		if rerr := os.Remove(path); rerr != nil {
-			_ = rerr // 删不掉就留到下一轮（可能正被人打开着）
-			return nil
-		}
-		files++
-		return nil
-	})
-	if err != nil {
-		e.loggerSet.Engine.Warnf("archive cleanup: %s", err.Error())
-	}
-	if files > 0 {
-		e.loggerSet.Engine.Infof("archive cleanup: 删除 %d 个超过保留期（%s）的归档文件", files, retention)
-	}
-	return files
+	return e.archiveService().cleanup(e.ctx, retention)
 }

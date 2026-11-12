@@ -3,8 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
-	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/models"
@@ -21,29 +19,19 @@ func (e *Engine) retainBreakerFailure(ctx context.Context, task *Task, version t
 // lock, and inflight prevents overlapping the original handler's cleanup.
 func (e *Engine) settleBreakerFailures(ctx context.Context) {
 	e.breakers.breakerMu.Lock()
-	var sites []string
-	for site := range e.breakers.smartBreakers {
-		sites = append(sites, site)
-	}
-	e.breakers.breakerMu.Unlock()
+	sites := e.breakers.siteKeysLocked()
+	e.breakers.unlockAndEmit()
 	for _, site := range sites {
 		if ctx.Err() != nil {
 			return
 		}
 		e.breakers.breakerMu.Lock()
-		s := e.breakers.smartBreakers[site]
-		if !s.cfg.Enabled || s.event == nil || s.event.PendingFailure == nil || s.inflight != 0 || s.sampleDispatching || s.savedRevision < s.controlRevision || time.Since(s.event.PendingFailure.LastAttempt) < time.Minute {
-			e.breakers.breakerMu.Unlock()
+		s, p, task := e.breakers.reserveFailureSettlementLocked(site)
+		if s == nil {
+			e.breakers.unlockAndEmit()
 			continue
 		}
-		p := *s.event.PendingFailure
-		s.sampleDispatching = true
-		s.event.PendingFailure.Attempts++
-		s.event.PendingFailure.LastAttempt = time.Now()
-		e.breakers.noteBreakerLocked(s, "failure_settlement_retry", p.Stage, fmt.Sprintf("第 %d 次结算任务 %d 轮次 %d:%d；只重试落库，不重跑业务", s.event.PendingFailure.Attempts, p.TaskID, p.Repeat, p.Reprocess), time.Now())
-		s.controlRevision = s.event.Revision
-		task := &Task{ID: p.TaskID, Site: site, Stage: p.Stage, URL: p.URL, breakerEpoch: s.epoch, breakerRound: fmt.Sprintf("%d:%d", p.Repeat, p.Reprocess), breakerSampleDeadline: p.SampleDeadline}
-		e.breakers.breakerMu.Unlock()
+		e.breakers.unlockAndEmit()
 
 		err := e.breakers.flushBreakerReports(ctx)
 		if err == nil {
@@ -64,25 +52,20 @@ func (e *Engine) settleBreakerFailures(ctx context.Context) {
 		if err == nil {
 			e.recordSmartOutcome(task, errors.New(p.Error))
 			e.breakers.breakerMu.Lock()
-			if s.event.SampleDeadline.Equal(p.SampleDeadline) {
-				e.breakers.noteBreakerLocked(s, "sample_exited", p.Stage, "原样本已退出且失败结算完成；不以结算代替健康证明", time.Now())
-				s.event.SampleID, s.event.SampleStage, s.event.SampleDeadline = "", "", time.Time{}
-				s.controlRevision = s.event.Revision
-			}
-			e.breakers.breakerMu.Unlock()
+			e.breakers.confirmFailureSettlementLocked(s, p)
+			e.breakers.unlockAndEmit()
 			// This is reconciliation, not another execution. The durable task_failed
 			// and failure_settled transitions already report the actual outcome;
 			// do not emit a second task execution failure after a lost checkpoint.
 			e.finishTask(task)
 		} else {
 			e.breakers.breakerMu.Lock()
-			e.breakers.noteBreakerLocked(s, "failure_settlement_wait", p.Stage, "失败落库仍未确认，继续阻止验证；一分钟后重试："+err.Error(), time.Now())
-			s.controlRevision = s.event.Revision
-			e.breakers.breakerMu.Unlock()
+			e.breakers.deferFailureSettlementLocked(s, p, err)
+			e.breakers.unlockAndEmit()
 		}
 		e.breakers.breakerMu.Lock()
-		s.sampleDispatching = false
-		e.breakers.breakerMu.Unlock()
+		e.breakers.releaseFailureSettlementLocked(s)
+		e.breakers.unlockAndEmit()
 	}
 }
 

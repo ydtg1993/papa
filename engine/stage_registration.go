@@ -47,10 +47,7 @@ func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*
 		e.setStatsQueue(key, stats)
 		e.loggerSet.Monitor.Infof("monitor started for stage: %s", key)
 	}
-	e.emit(events.Event{
-		Type: events.TypeStagePool, Site: cfg.Site, Stage: info.stage,
-		Source: "created", Counts: map[string]int{"workers": cfg.WorkerCount},
-	})
+
 	return pool
 }
 
@@ -64,9 +61,20 @@ func (e *Engine) getOrCreatePool(key string) *workerpool.WorkerPool[*Task] {
 	if info == nil {
 		return nil
 	}
-	return e.pools.GetOrCreate(key, func() *workerpool.WorkerPool[*Task] {
-		return e.buildPool(key, info)
+	created := false
+	pool := e.pools.GetOrCreate(key, func() *workerpool.WorkerPool[*Task] {
+		p := e.buildPool(key, info)
+		created = p != nil
+		return p
 	})
+	// Registration and shutdown exclusion finish before external emitter code.
+	// Only the caller whose factory ran publishes creation; cache hits and refused
+	// builds do not emit. A synchronous observer can now inspect or stop the pool.
+	if created {
+		e.emit(events.Event{Type: events.TypeStagePool, Site: info.config.Site, Stage: info.stage,
+			Source: "created", Counts: map[string]int{"workers": info.config.WorkerCount}})
+	}
+	return pool
 }
 
 // poolForwarder 一条错误转发协程的归属：停机信号 + 它转发的是哪个池。

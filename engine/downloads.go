@@ -28,9 +28,8 @@ type SiteDownloads = fetchruntime.SiteDownloads
 // SetSiteDownloads 登记某站点的下载器覆盖层。site 为空是非法参数 —— 站点是必填维度，
 // 没有「未归属」那一档（声明要有 Key，任务要有 site）。
 // 必须在 `ApplyRegisterStage` 之前调（之后解析一次，不再变）。
+// 覆盖项按登记时的值复制；启动前要更新时显式重新登记。
 func (e *Engine) SetSiteDownloads(site string, d SiteDownloads) { e.downloads.Register(site, d) }
-
-// siteDownloadsOf 取某站点的下载器覆盖层（只读；没登记返回零值 = 什么都不覆盖）。
 
 // resolveStageDownloads 启动期解析每个阶段该用哪份下载器（`ApplyRegisterStage` 里调一次）。
 //
@@ -42,14 +41,6 @@ func (e *Engine) resolveStageDownloads() {
 		stages = append(stages, fetchruntime.StageDownloads{Site: info.config.Site, Stage: info.stage, SiteDownloads: SiteDownloads{M3U8: info.config.M3U8, FileDown: info.config.FileDown}})
 	}
 	e.downloads.Resolve(stages, e.m3u8, e.filedown)
-}
-
-// mergeM3U8 站点层 .Then(阶段层)：阶段赢。两层都可以为 nil（= 不覆盖）。
-func mergeM3U8(site, stage *m3u8.Overlay) m3u8.Overlay { return fetchruntime.MergeM3U8(site, stage) }
-
-// mergeFileDown 同上，文件下载器那份。
-func mergeFileDown(site, stage *filedown.Overlay) filedown.Overlay {
-	return fetchruntime.MergeFileDown(site, stage)
 }
 
 // InitDownloaders 备好两个下载器的**基座**（框架在 Run 里调，紧挨着 SetBrowserPool / SetHTMLClient）。

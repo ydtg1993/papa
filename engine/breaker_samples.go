@@ -2,11 +2,7 @@ package engine
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/models"
@@ -60,47 +56,26 @@ func (e *Engine) retryBreakerSamples(ctx context.Context) {
 		return
 	}
 	e.breakers.breakerMu.Lock()
-	var sites []string
-	for site := range e.breakers.smartBreakers {
-		sites = append(sites, site)
-	}
-	e.breakers.breakerMu.Unlock()
+	sites := e.breakers.siteKeysLocked()
+	e.breakers.unlockAndEmit()
 	for _, site := range sites {
 		if ctx.Err() != nil {
 			return
 		}
 		e.breakers.breakerMu.Lock()
-		s := e.breakers.smartBreakers[site]
-		l, now := s.event, time.Now()
-		if l == nil || l.PendingFailure != nil || !l.MixedSamples || (l.State != "observing" && l.State != "ramping") || !now.Before(l.Deadline) || s.draining || s.inflight > 0 || s.sampleDispatching || s.savedRevision < s.controlRevision || now.Before(s.nextSampleRetry) || e.hasManualBreakerPause(site) {
-			e.breakers.breakerMu.Unlock()
+		token := e.breakers.reserveSampleLocked(site, e.hasManualBreakerPause(site))
+		e.breakers.unlockAndEmit()
+		if token == nil {
 			continue
 		}
-		e.breakers.expireBreakerSampleLocked(s, now)
-		if l.SampleID == "" {
-			stage, id := nextBreakerSample(s)
-			if id != "" {
-				e.breakers.selectBreakerSampleLocked(s, stage, id, now)
-			}
-			e.breakers.breakerMu.Unlock()
-			continue
-		}
-		taskID, parseErr := strconv.ParseInt(strings.TrimPrefix(l.SampleID, "task:"), 10, 64)
-		if parseErr != nil || taskID <= 0 || s.savedRevision < s.controlRevision {
-			e.breakers.breakerMu.Unlock()
-			continue
-		}
-		id, stage, deadline := l.ID, l.SampleStage, l.SampleDeadline
-		s.sampleDispatching = true
-		s.nextSampleRetry = now.Add(max(time.Second, s.policy.Interval))
-		e.breakers.breakerMu.Unlock()
+		taskID, stage, deadline := token.taskID, token.stage, token.deadline
 
 		var record models.CrawlerTask
 		err := e.db.WithContext(ctx).Where("id = ? AND site = ? AND stage = ?", taskID, site, stage).First(&record).Error
 		requeued := false
 		e.breakers.breakerMu.Lock()
-		valid := s.event == l && l.SampleDeadline.Equal(deadline) && time.Now().Before(deadline) && (l.State == "observing" || l.State == "ramping") && !e.hasManualBreakerPause(site)
-		e.breakers.breakerMu.Unlock()
+		valid := e.breakers.sampleValidLocked(token, e.hasManualBreakerPause(site))
+		e.breakers.unlockAndEmit()
 		if valid && err == nil && record.Status != models.TaskStatusPending && record.Status != models.TaskStatusProcessing {
 			retryCtx, cancel := context.WithDeadline(ctx, deadline)
 			version := record.CompensationVersion
@@ -109,16 +84,7 @@ func (e *Engine) retryBreakerSamples(ctx context.Context) {
 			requeued = err == nil
 		}
 		e.breakers.breakerMu.Lock()
-		s.sampleDispatching = false
-		if s.event == l && l.ID == id && l.SampleDeadline.Equal(deadline) {
-			if requeued {
-				e.breakers.noteBreakerLocked(s, "sample_retry", stage, fmt.Sprintf("串行重投验证样本 %d；复用原有任务认领与版本规则", taskID), time.Now())
-			} else if err != nil && !errors.Is(err, ErrTaskChanged) && !errors.Is(err, ErrTaskProcessing) {
-				e.breakers.noteBreakerLocked(s, "sample_retry_unavailable", stage, fmt.Sprintf("验证样本 %d 暂不能重试：%v；等待至原截止时间，不延长预算", taskID, err), time.Now())
-				s.nextSampleRetry = time.Now().Add(max(s.policy.ProbeInterval, s.policy.Interval))
-			}
-			e.breakers.expireBreakerSampleLocked(s, time.Now())
-		}
-		e.breakers.breakerMu.Unlock()
+		e.breakers.finishSampleLocked(token, requeued, err)
+		e.breakers.unlockAndEmit()
 	}
 }

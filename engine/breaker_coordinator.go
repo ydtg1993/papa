@@ -33,19 +33,15 @@ type breakerCoordinator struct {
 	breakerRuntime     bool
 	breakerProbes      map[pauseScope]BreakerProbe
 	events             events.Emitter
+	pendingEvents      []events.Event
 }
 
-func (b *breakerCoordinator) emit(ev events.Event) {
-	if b.events != nil {
-		b.events.Emit(ev)
-	}
-}
 func (b *breakerCoordinator) noteBreakerLocked(s *smartBreaker, action, stage, reason string, now time.Time) {
 	l := s.event
 	b.appendBreakerTransitionLocked(s, incident.Transition{At: now, From: l.State, To: l.State, Action: action, Stage: stage, Round: l.ProbeAttempts, Failures: l.report.WindowFailures, Successes: l.report.WindowSuccesses, NextAttemptAt: l.NextProbeAt, Reason: reason})
 	l.Revision++
 	s.dirty = true
-	b.emit(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Stage: stage, Attrs: map[string]string{"incident_id": l.ID, "state": l.State, "action": action, "round": fmt.Sprint(l.ProbeAttempts)}})
+	b.queueEventLocked(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Stage: stage, Attrs: map[string]string{"incident_id": l.ID, "state": l.State, "action": action, "round": fmt.Sprint(l.ProbeAttempts)}})
 }
 
 func (b *breakerCoordinator) appendBreakerTransitionLocked(s *smartBreaker, entry incident.Transition) {
@@ -244,7 +240,7 @@ func (b *breakerCoordinator) transitionBreakerLocked(s *smartBreaker, state, rea
 	}
 	l.trimReport()
 	s.dirty = true
-	b.emit(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Attrs: map[string]string{"incident_id": l.ID, "state": state, "action": state, "round": fmt.Sprint(l.ProbeAttempts)}})
+	b.queueEventLocked(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Attrs: map[string]string{"incident_id": l.ID, "state": state, "action": state, "round": fmt.Sprint(l.ProbeAttempts)}})
 }
 
 func (b *breakerCoordinator) closeSmartBreakerLocked(site, stage, reason string) {
@@ -263,18 +259,18 @@ func (b *breakerCoordinator) admitBreakerTask(task *Task) (func(), bool) {
 	b.breakerMu.Lock()
 	s := b.smartBreakers[task.Site]
 	if s == nil || (!s.cfg.Enabled && (s.event == nil || s.event.PendingFailure == nil)) {
-		b.breakerMu.Unlock()
+		b.unlockAndEmit()
 		return func() {}, true
 	}
 	now := time.Now()
 	if l := s.event; l != nil {
 		if l.PendingFailure != nil || s.savedRevision < s.controlRevision || s.draining || (l.Active() && (!now.Before(l.Deadline) || (l.State != "observing" && l.State != "ramping"))) {
-			b.breakerMu.Unlock()
+			b.unlockAndEmit()
 			return nil, false
 		}
 		if l.Active() {
 			if now.Before(s.nextAdmission) || !b.admitBreakerSampleLocked(s, task, now) {
-				b.breakerMu.Unlock()
+				b.unlockAndEmit()
 				return nil, false
 			}
 			s.nextAdmission = now.Add(s.policy.Interval)
@@ -283,12 +279,12 @@ func (b *breakerCoordinator) admitBreakerTask(task *Task) (func(), bool) {
 	task.breakerEpoch = s.epoch
 	task.breakerTrial = s.trial
 	s.inflight++
-	b.breakerMu.Unlock()
+	b.unlockAndEmit()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			b.breakerMu.Lock()
-			defer b.breakerMu.Unlock()
+			defer b.unlockAndEmit()
 			if l := s.event; l != nil && !task.breakerSampleDeadline.IsZero() && task.breakerSampleDeadline.Equal(l.SampleDeadline) {
 				b.expireBreakerSampleLocked(s, time.Now())
 				if l.PendingFailure == nil && (task.breakerSampleFinished || !time.Now().Before(task.breakerSampleDeadline)) {
@@ -309,7 +305,7 @@ func (b *breakerCoordinator) flushBreakerReports(ctx context.Context) error {
 		b.breakerStoreGate = make(chan struct{}, 1)
 	}
 	gate := b.breakerStoreGate
-	b.breakerMu.Unlock()
+	b.unlockAndEmit()
 	select {
 	case gate <- struct{}{}:
 		defer func() { <-gate }()
@@ -327,7 +323,7 @@ func (b *breakerCoordinator) flushBreakerReports(ctx context.Context) error {
 			pending = append(pending, s.snapshot())
 		}
 	}
-	b.breakerMu.Unlock()
+	b.unlockAndEmit()
 	if store == nil {
 		if len(pending) > 0 {
 			return errors.New("breaker store is not initialized")
@@ -355,7 +351,7 @@ func (b *breakerCoordinator) flushBreakerReports(ctx context.Context) error {
 			}
 			s.event.pendingHistory = kept
 		}
-		b.breakerMu.Unlock()
+		b.unlockAndEmit()
 	}
 	return writeErr
 }
@@ -366,7 +362,7 @@ func (b *breakerCoordinator) observationRecoveredLocked(s *smartBreaker) bool {
 
 func (b *breakerCoordinator) recordBreakerStop(drained bool) {
 	b.breakerMu.Lock()
-	defer b.breakerMu.Unlock()
+	defer b.unlockAndEmit()
 	now := time.Now()
 	for _, s := range b.smartBreakers {
 		if s.event == nil {
@@ -383,7 +379,7 @@ func (b *breakerCoordinator) recordBreakerStop(drained bool) {
 
 func (b *breakerCoordinator) SetBreakerProbe(site, stage string, probe BreakerProbe) {
 	b.breakerMu.Lock()
-	defer b.breakerMu.Unlock()
+	defer b.unlockAndEmit()
 	if b.breakerProbes == nil {
 		b.breakerProbes = make(map[pauseScope]BreakerProbe)
 	}
@@ -399,7 +395,7 @@ func (b *breakerCoordinator) BreakerReports(ctx context.Context, site string) ([
 			live[s.event.ID] = s.event.reportSnapshot()
 		}
 	}
-	b.breakerMu.Unlock()
+	b.unlockAndEmit()
 	var history []incident.Lifecycle
 	if store != nil {
 		var err error
@@ -496,7 +492,7 @@ func (b *breakerCoordinator) admitBreakerSampleLocked(s *smartBreaker, task *Tas
 
 func (b *breakerCoordinator) breakerSettlementBlocked(site string) bool {
 	b.breakerMu.Lock()
-	defer b.breakerMu.Unlock()
+	defer b.unlockAndEmit()
 	s := b.smartBreakers[site]
 	return s != nil && s.event != nil && (s.event.PendingFailure != nil || s.savedRevision < s.controlRevision)
 }
@@ -505,12 +501,12 @@ func (b *breakerCoordinator) retainFailure(ctx context.Context, task *Task, vers
 	b.breakerMu.Lock()
 	s := b.smartBreakers[task.Site]
 	if s == nil || s.event == nil {
-		b.breakerMu.Unlock()
+		b.unlockAndEmit()
 		return errors.New("serial failure has no recovery state")
 	}
 	if p := s.event.PendingFailure; p != nil {
 		if p.TaskID != task.ID || p.Repeat != version.Repeat || p.Reprocess != version.Reprocess {
-			b.breakerMu.Unlock()
+			b.unlockAndEmit()
 			return errors.New("another serial failure is awaiting settlement")
 		}
 	} else {
@@ -529,7 +525,7 @@ func (b *breakerCoordinator) retainFailure(ctx context.Context, task *Task, vers
 		b.noteBreakerLocked(s, "failure_pending", task.Stage, fmt.Sprintf("任务 %d 轮次 %d:%d 真实失败待落库确认；阻止后续验证：%s", task.ID, version.Repeat, version.Reprocess, cause), time.Now())
 		s.controlRevision = s.event.Revision
 	}
-	b.breakerMu.Unlock()
 	unresolved.Remember(task.ID, stageKeyOf(task))
+	b.unlockAndEmit()
 	return b.flushBreakerReports(ctx)
 }

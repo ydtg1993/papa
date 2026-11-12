@@ -73,7 +73,7 @@ func TestDedupScopeMatchesUniqueIndexes(t *testing.T) {
 	for _, resourceID := range []string{"", "42"} {
 		task := &Task{URL: "https://example.com/a", Stage: "catalog", Site: "shop", ResourceID: resourceID}
 		var rec models.CrawlerTask
-		sql := renderSQL(t, db, func(*gorm.DB) *gorm.DB { return e.dedupScope(task).First(&rec) })
+		sql := renderSQL(t, db, func(*gorm.DB) *gorm.DB { return e.submissions().dedupScope(task).First(&rec) })
 		if !strings.Contains(sql, "site = ? AND stage = ? AND identity_hash = ?") || strings.Contains(sql, "url_hash") || strings.Contains(sql, "idempotency_hash") {
 			t.Fatalf("wrong identity predicate: %s", sql)
 		}

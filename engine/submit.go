@@ -4,49 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ydtg1993/papa/v4/core"
-	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"time"
+
+	"github.com/ydtg1993/papa/v4/core"
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
-	"github.com/ydtg1993/papa/v4/pkg/account"
-	"gorm.io/gorm"
 )
 
 var ErrTaskOwnershipConflict = errors.New("existing task belongs to another site, stage or account pool")
-
-func adoptTaskOwnership(task *Task, record *models.CrawlerTask) error {
-	if (record.Site != "" && record.Site != task.Site) || (record.Stage != "" && record.Stage != task.Stage) || (task.AccountPool != "" && task.AccountPool != record.AccountPool) {
-		return ErrTaskOwnershipConflict
-	}
-	task.AccountPool = record.AccountPool
-	if record.URL != "" && (task.ResourceID != "" || task.IdempotencyKey != "") {
-		task.URL = record.URL
-	}
-	return nil
-}
-
-func (e *Engine) protectTaskPoolReferences(tasks []*Task, insert func() error) error {
-	var keys []account.PoolKey
-	for _, task := range tasks {
-		if task.AccountPool != "" {
-			keys = append(keys, account.PoolKey{Site: task.Site, Name: task.AccountPool})
-		}
-	}
-	if len(keys) == 0 {
-		return insert()
-	}
-	m := e.GetAccountManager()
-	if m == nil || m.Pools() == nil {
-		return account.ErrPoolUnknown
-	}
-	ctx := e.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return m.Pools().ProtectReferences(ctx, keys, insert)
-}
 
 // logSubmitError 框架自动记录提交类错误，避免业务漏记导致错误丢失；返回原 error 供调用方继续处理。
 func (e *Engine) logSubmitError(task *Task, err error) error {
@@ -80,110 +46,6 @@ func (e *Engine) validateTask(task *Task) error {
 	}
 
 	return nil
-}
-
-// SubmitTask 任务提交
-func (e *Engine) SubmitTask(task *Task) error {
-	if task != nil && task.FlowID != "" {
-		return ErrFlowInvalid
-	}
-	if err := e.validateTask(task); err != nil {
-		return e.logSubmitError(task, err)
-	}
-	if task.ID == 0 {
-		task.AccountPool = e.resolveTaskPool(task)
-	}
-
-	key := task.Unique()
-	var record models.CrawlerTask
-
-	// 两阶段去重：先查内存缓存，miss 再查 DB（唯一索引 idx_task_identity 兜底）
-	if e.dedupCache.Get(key) {
-		if !task.Repeatable && task.AccountPool == "" {
-			return nil // 去重命中：视为成功，无需重复处理
-		}
-		// 已入库的轮询任务：查找记录防止重复录入
-		if err := e.findTaskRecord(task, &record); err != nil {
-			return e.logSubmitError(task, fmt.Errorf("load repeat task record: %w", err))
-		}
-		if err := adoptTaskOwnership(task, &record); err != nil {
-			return err
-		}
-		wasNew := task.ID == 0
-		task.NotBefore = taskTimeValue(record.NotBefore)
-		task.Delay = time.Duration(record.DelayMS) * time.Millisecond
-		task.ID = int(record.ID)
-		task.Repeat = record.Repeat
-		if !task.Repeatable && wasNew {
-			return nil
-		}
-		e.submitIfActive(task, record)
-		return nil
-	}
-
-	err := e.findTaskRecord(task, &record)
-	if err == nil {
-		if err := adoptTaskOwnership(task, &record); err != nil {
-			return err
-		}
-		// DB 命中：复用已有记录（重新加入内存缓存）
-		e.dedupCache.Add(key)
-		wasNew := task.ID == 0
-		task.NotBefore = taskTimeValue(record.NotBefore)
-		task.Delay = time.Duration(record.DelayMS) * time.Millisecond
-		task.ID = int(record.ID)
-		task.Repeat = record.Repeat
-		// 仅「新任务」去重跳过；已带 ID 的重提交（如 RecoverJob）需继续入队
-		if !task.Repeatable && wasNew {
-			return nil
-		}
-		e.submitIfActive(task, record)
-		return nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return e.logSubmitError(task, fmt.Errorf("query task dedup: %w", err))
-	}
-
-	// 全新任务：提交到 pool 前先插入数据库
-	if ierr := e.protectTaskPoolReferences([]*Task{task}, func() error { return task.Insert(e.db) }); ierr != nil {
-		// 并发下撞唯一索引：另一 goroutine 已入库并将入队，此处回填 ID 后跳过，避免重复入队
-		if rerr := e.findTaskRecordFallback(task, &record); rerr != nil {
-			return e.logSubmitError(task, fmt.Errorf("insert crawler task to db failed: %w", ierr))
-		}
-		if err := adoptTaskOwnership(task, &record); err != nil {
-			return err
-		}
-		e.dedupCache.Add(key)
-		task.ID = int(record.ID)
-		task.Repeat = record.Repeat
-		return nil
-	}
-	if err := e.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record).Error; err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			e.spillTask(task)
-		}
-		return e.logSubmitError(task, fmt.Errorf("reload inserted task %d: %w", task.ID, err))
-	}
-	e.dedupCache.Add(key)
-	e.submitIfActive(task, record)
-	return nil
-}
-
-// findTaskRecord uses the same scoped identity index as every insert path.
-// Load only ownership, execution URL and scheduling fields, not wide error/meta.
-func (e *Engine) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return e.dedupScope(task).Select("id", "status", "repeat", "site", "stage", "account_pool", "url", "not_before", "delay_ms").First(record).Error
-}
-
-// dedupScope 给出"查已存在行"的条件（抽出来是为了能用 DryRun 把 SQL 形状钉住 —— 假库不解析 WHERE）。
-func (e *Engine) dedupScope(task *Task) *gorm.DB {
-	return e.db.Model(&models.CrawlerTask{}).Where("site = ? AND stage = ? AND identity_hash = ?", task.Site, task.Stage, task.Unique())
-}
-
-// findTaskRecordFallback confirms a concurrent insert using the same identity.
-// URL is not a fallback identity: distinct IDs may deliberately share one URL.
-func (e *Engine) findTaskRecordFallback(task *Task, record *models.CrawlerTask) error {
-	return e.findTaskRecord(task, record)
 }
 
 // submitIfActive 若任务尚未到终态（success/failed）则延迟投递或入队，否则静默跳过。
@@ -238,11 +100,8 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 	// 正在跑的旧 worker 才不会被回灌 / 延迟投递重置掉（见 drainSpilled 跳过 processing 那一跳）。
 	// 匹配不到还照旧入队：入队的那份副本 claimTask（同样以 pending 为条件）认领不到、直接跳过，
 	// 不会造成二次执行。
-	if res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", record.ID, models.TaskStatusPending).
-		Updates(submitUpdates(task)); res.Error != nil {
-		e.loggerSet.Engine.Errorf("update task %d before enqueue failed, task kept in spill list for retry: %s",
-			task.ID, res.Error.Error())
+	if err := e.submissions().preparePending(task, record.ID); err != nil {
+		e.loggerSet.Engine.Errorf("update task %d before enqueue failed, task kept in spill list for retry: %s", task.ID, err.Error())
 		e.spillTask(task)
 		return
 	}
@@ -337,56 +196,19 @@ func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error)
 	if task.ID == 0 {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
-	res := taskstore.Claim(e.db.WithContext(ctx), uint(task.ID))
-	if res.Error != nil {
-		return false, res.Error
+	claimed, row, err := e.submissions().claim(ctx, uint(task.ID))
+	if err != nil {
+		return false, err
 	}
-	if res.RowsAffected == 0 {
-		var row models.CrawlerTask
-		if err := e.db.WithContext(ctx).Where("id = ?", task.ID).First(&row).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return false, nil
-			}
-			return false, err
+	if row != nil && row.Status == models.TaskStatusPending && row.NotBefore != nil {
+		task.NotBefore = *row.NotBefore
+		at := time.Now().Add(e.drainInterval())
+		if task.NotBefore.After(at) {
+			at = task.NotBefore
 		}
-		if row.Status == models.TaskStatusPending && row.NotBefore != nil {
-			task.NotBefore = *row.NotBefore
-			at := time.Now().Add(e.drainInterval())
-			if task.NotBefore.After(at) {
-				at = task.NotBefore
-			}
-			e.enqueueDelayed(at, task, row)
-		}
+		e.enqueueDelayed(at, task, *row)
 	}
-	return res.RowsAffected == 1, nil
-}
-
-// submitTo 按任务的加急标记选队列：加急走快车道，其余走常规队列。
-// 池子本身不认识优先级（Tasker 接口只有 Unique），路由决定留在这里。
-// submitUpdates 一次提交要写回行里的列 —— **只写这个函数负责的那几列**（见 submitToPool 的注释）。
-//
-// 抽出来是为了能在**不连库**的前提下把拼出来的 SQL 渲染出来验（engine/sqlshape_test.go）：
-// `repeat` 是 MySQL 保留字，裸写进表达式会被当成 REPEAT() 函数调用、整条 UPDATE 报 1064 ——
-// 这个坑真踩过（v3.1.0 起，只有真库跑得出来，假库测试看不见）。
-func submitUpdates(task *Task) map[string]any {
-	updates := map[string]any{"status": models.TaskStatusPending}
-	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
-		// 这里只初始化首轮；并发/顺序重复提交同一 pending 行都保持原计数。
-		// 真正的下一轮在 repeat queue 的终态→pending 条件更新中原子递增。
-		updates["repeat"] = gorm.Expr("CASE WHEN `repeat` = 0 THEN 1 ELSE `repeat` END")
-	}
-	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
-	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，
-	// 下一次重投就把任务带回旧的业务行上（SubmitTask/SubmitTasks 的 Meta 只是内存里的，
-	// 谁也看不出来它和库里的不一致）。
-	if len(task.Meta) > 0 {
-		updates["meta"] = metaToJSON(task.Meta)
-	}
-	// 站点同理：行是这条任务的记录，重投路径全靠它认出"这条属于哪个站"
-	if task.Site != "" {
-		updates["site"] = task.Site
-	}
-	return updates
+	return claimed, nil
 }
 
 // submitToStage 所有投递路径的收口：取活池（没有就懒建），按加急/常规路由。
@@ -423,9 +245,39 @@ func (e *Engine) submitToStage(task *Task) error {
 	return pool.Submit(task)
 }
 
-// SubmitTasks 批量提交任务：先按 Unique 做批内去重，再批量入库、逐个入队。
-// 同键保留首次出现的任务参数，重复项回填相同 ID 和 Repeat，不重复投递。
-// 逐条插入失败时继续处理其它行，成功项照常投递，最后汇总返回失败信息。
+func (e *Engine) submissions() submissionStore {
+	var references taskReferenceGuard
+	if m := e.GetAccountManager(); m != nil && m.Pools() != nil {
+		references = m.Pools()
+	}
+	var logger submissionLogger
+	if e.loggerSet != nil {
+		logger = e.loggerSet.Engine
+	}
+	return submissionStore{db: e.db, ctx: e.ctx, dedupCache: e.dedupCache, references: references, logger: logger}
+}
+
+// SubmitTask validates and persists one task before accepting delivery responsibility.
+func (e *Engine) SubmitTask(task *Task) error {
+	if task != nil && task.FlowID != "" {
+		return ErrFlowInvalid
+	}
+	if err := e.validateTask(task); err != nil {
+		return e.logSubmitError(task, err)
+	}
+	if task.ID == 0 {
+		task.AccountPool = e.resolveTaskPool(task)
+	}
+	plan, err := e.submissions().prepare(task)
+	e.deliverSubmission(plan)
+	if plan.logFailure {
+		return e.logSubmitError(task, err)
+	}
+	return err
+}
+
+// SubmitTasks retains successful rows even when other members of the batch fail.
+// Duplicate inputs receive the first task's persisted identity and repeat state.
 func (e *Engine) SubmitTasks(tasks []*Task) error {
 	for _, task := range tasks {
 		if task != nil && task.FlowID != "" {
@@ -435,216 +287,47 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 	if len(tasks) == 0 {
 		return nil
 	}
-	for _, t := range tasks {
-		if err := e.validateTask(t); err != nil {
+	for _, task := range tasks {
+		if err := e.validateTask(task); err != nil {
 			return err
 		}
-		if t.Stage == "" || t.URL == "" || t.Site == "" {
-			return e.logSubmitError(t, fmt.Errorf("task stage or url or site is empty: %+v", t))
-		}
-		if info := e.stages[stageKeyOf(t)]; info == nil {
-			return e.logSubmitError(t, fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", t.Stage, t.Site))
-		}
-		if t.ID == 0 {
-			t.AccountPool = e.resolveTaskPool(t)
+		if task.ID == 0 {
+			task.AccountPool = e.resolveTaskPool(task)
 		}
 	}
-	// Reject conflicting ownership within the batch before writing any rows.
-	owners := map[string]*Task{}
-	for _, t := range tasks {
-		if prior := owners[t.Unique()]; prior != nil {
-			if prior.Site != t.Site || prior.Stage != t.Stage || prior.AccountPool != t.AccountPool {
-				return ErrTaskOwnershipConflict
-			}
-		} else {
-			owners[t.Unique()] = t
-		}
-	}
+	_, err := e.submissions().prepareBatch(tasks, func(delivery submissionDelivery) {
+		e.deliverSubmission(submissionPlan{deliveries: []submissionDelivery{delivery}})
+	})
+	return err
+}
 
-	// 两阶段去重与 repeatable 处理，收集需入库/入队的任务
-	var toInsert []*Task
-	var toProcess []*Task
-	batch := make(map[string]*Task, len(tasks))
-	defer func() {
-		// 同批重复项没有独立插入，但调用方仍可读取它对应的任务身份。
-		for _, t := range tasks {
-			if first := batch[t.Unique()]; first != nil && first != t {
-				t.ID, t.Repeat = first.ID, first.Repeat
-				t.repeatCounted = first.repeatCounted
-			}
-		}
-	}()
-	for _, t := range tasks {
-		key := t.Unique()
-		if _, exists := batch[key]; exists {
-			continue
-		}
-		// 不写进全局缓存：只有后续落库成功，任务才真正归我们负责。
-		// 批内先排除重复，避免本批插入的首条被后续重复项标成外部冲突。
-		batch[key] = t
-		if e.dedupCache.Get(key) {
-			if !t.Repeatable && t.AccountPool == "" {
-				continue // 去重命中：跳过
-			}
-			var record models.CrawlerTask
-			if err := e.findTaskRecord(t, &record); err != nil {
-				return e.logSubmitError(t, fmt.Errorf("load repeat task record: %w", err))
-			}
-			if err := adoptTaskOwnership(t, &record); err != nil {
-				return err
-			}
-			t.ID = int(record.ID)
-			t.NotBefore = taskTimeValue(record.NotBefore)
-			t.Delay = time.Duration(record.DelayMS) * time.Millisecond
-			if !t.Repeatable {
-				continue
-			}
-		} else {
-			var record models.CrawlerTask
-			err := e.findTaskRecord(t, &record)
-			switch {
-			case err == nil:
-				t.NotBefore = taskTimeValue(record.NotBefore)
-				t.Delay = time.Duration(record.DelayMS) * time.Millisecond
-				if err := adoptTaskOwnership(t, &record); err != nil {
-					return err
-				}
-				// DB 命中：复用已有记录
-				e.dedupCache.Add(key)
-				t.ID = int(record.ID)
-				if !t.Repeatable {
-					continue
-				}
-			case errors.Is(err, gorm.ErrRecordNotFound):
-				if t.ID == 0 {
-					toInsert = append(toInsert, t)
-				}
-			default:
-				return e.logSubmitError(t, fmt.Errorf("query task dedup: %w", err))
-			}
-		}
-		toProcess = append(toProcess, t)
-	}
-
-	// 批量入库（单条多行 INSERT），失败退到逐条
-	var conflicted, failed map[string]struct{}
-	var submitErrors []error
-	if len(toInsert) > 0 {
-		var err error
-		conflicted, failed, err = e.insertTasks(toInsert)
-		if err != nil {
-			submitErrors = append(submitErrors, fmt.Errorf("insert crawler tasks: %w", err))
-		}
-	}
-
-	// 成功项逐个入队（含延迟投递），失败项不缓存、不投递，允许调用方以后重试。
-	for _, t := range toProcess {
-		if _, hit := failed[t.Unique()]; hit {
-			continue
-		}
-		// 并发撞车的那几条：库里那行已经被另一路入库并入队了，别再入一次（与 SubmitTask 同一处理）
-		if _, hit := conflicted[t.Unique()]; hit {
-			e.dedupCache.Add(t.Unique())
-			continue
-		}
-		e.dedupCache.Add(t.Unique())
-		var record models.CrawlerTask
-		if err := e.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record).Error; err != nil {
-			submitErrors = append(submitErrors, fmt.Errorf("reload task %d before enqueue: %w", t.ID, err))
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				// 已经落库的行不能因读库瞬态错误失去投递责任；回灌重读后再投。
-				if at := t.deliverAt(); !at.IsZero() && at.After(time.Now()) {
-					// 尚未到期的任务仍进延迟堆，不能通过回灌提前执行。
-					e.enqueueDelayed(at, t, models.CrawlerTask{ID: uint(t.ID)})
-				} else {
-					e.spillTask(t)
-				}
+// Delivery accepts responsibility even if admission also reported partial errors.
+func (e *Engine) deliverSubmission(plan submissionPlan) {
+	for _, delivery := range plan.deliveries {
+		task := delivery.task
+		if delivery.unread {
+			if at := task.deliverAt(); delivery.batch && !at.IsZero() && at.After(time.Now()) {
+				e.enqueueDelayed(at, task, models.CrawlerTask{ID: uint(task.ID)})
+			} else {
+				e.spillTask(task)
 			}
 			continue
 		}
+		if !delivery.batch {
+			e.submitIfActive(task, delivery.record)
+			continue
+		}
+		record := delivery.record
 		if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
 			continue
 		}
 		if record.NotBefore != nil {
-			t.NotBefore = *record.NotBefore
+			task.NotBefore = *record.NotBefore
 		}
-		if at := t.NotBefore; !at.IsZero() && at.After(time.Now()) {
-			e.enqueueDelayed(at, t, record)
+		if at := task.NotBefore; !at.IsZero() && at.After(time.Now()) {
+			e.enqueueDelayed(at, task, record)
 			continue
 		}
-		e.submitToPool(t, record)
+		e.submitToPool(task, record)
 	}
-	err := errors.Join(submitErrors...)
-	if err != nil {
-		e.loggerSet.Engine.Errorf("submit tasks failed: %v", err)
-	}
-	return err
-}
-
-// insertTasks 批量入库并回填 ID，分别返回外部冲突、实际失败的去重键及汇总错误。
-//
-// 快路径就是一条多行 INSERT —— SubmitTasks 本来就是冲着减少 DB 往返来的。
-//
-// 但**一行冲突不该让整批（可能上万条）一条都进不去**，而且还直接返回错误、连队列都没进，
-// 业务看到的是一整批任务凭空消失。所以批量失败就退到逐条插。
-//
-// 这里不去分辨"批量失败是不是因为重复键"：逐条那条路自己会分辨 —— 插不进去就按唯一索引
-// `idx_task_identity` 回查一下，查得到说明确实是并发撞车（别的 goroutine / 进程在这两步之间
-// 把同样的 site|stage|url 写进去了），回填它的 ID、记进冲突集合；查不到则记录插入错误，
-// 继续处理后面的行，最终汇总失败信息，成功行仍由调用方负责投递。
-// 这么写也就不依赖 gorm 的 TranslateError（默认没开）去识别 MySQL 的 1062。
-func (e *Engine) insertTasks(tasks []*Task) (map[string]struct{}, map[string]struct{}, error) {
-	var conflicted, failed map[string]struct{}
-	err := e.protectTaskPoolReferences(tasks, func() error { var err error; conflicted, failed, err = e.insertTasksWithReferences(tasks); return err })
-	if err != nil && failed == nil {
-		failed = map[string]struct{}{}
-		for _, task := range tasks {
-			failed[task.Unique()] = struct{}{}
-		}
-	}
-	return conflicted, failed, err
-}
-
-func (e *Engine) insertTasksWithReferences(tasks []*Task) (map[string]struct{}, map[string]struct{}, error) {
-	records := make([]models.CrawlerTask, 0, len(tasks))
-	for _, t := range tasks {
-		records = append(records, t.toModel())
-	}
-
-	if err := e.db.Create(&records).Error; err == nil {
-		for i, t := range tasks {
-			t.ID = int(records[i].ID)
-			t.NotBefore = taskTimeValue(records[i].NotBefore)
-		}
-		return nil, nil, nil
-	}
-
-	e.loggerSet.Engine.Warnf("batch insert failed, falling back to per-row insert (%d tasks)", len(tasks))
-	conflicted := make(map[string]struct{})
-	failed := make(map[string]struct{})
-	var insertErrors []error
-	for _, t := range tasks {
-		rec := t.toModel()
-		ierr := e.db.Create(&rec).Error
-		if ierr == nil {
-			t.ID = int(rec.ID)
-			t.NotBefore = taskTimeValue(rec.NotBefore)
-			continue
-		}
-		// 只按标准身份回查；不同 ID 的相同 URL 不能相互吞掉。
-		var existed models.CrawlerTask
-		if serr := e.findTaskRecordFallback(t, &existed); serr != nil {
-			failed[t.Unique()] = struct{}{}
-			insertErrors = append(insertErrors, fmt.Errorf("insert task %q: %w", t.URL, ierr))
-			continue
-		}
-		if err := adoptTaskOwnership(t, &existed); err != nil {
-			failed[t.Unique()] = struct{}{}
-			insertErrors = append(insertErrors, err)
-			continue
-		}
-		t.ID = int(existed.ID)
-		conflicted[t.Unique()] = struct{}{}
-	}
-	return conflicted, failed, errors.Join(insertErrors...)
 }
