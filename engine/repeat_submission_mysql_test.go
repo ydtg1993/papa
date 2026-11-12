@@ -21,25 +21,29 @@ import (
 func repeatMySQL(t *testing.T, foundRows bool) (*gorm.DB, string, func() *Engine) {
 	t.Helper()
 	dsn := os.Getenv("PAPA_REPEAT_TEST_DSN")
+	var db *gorm.DB
 	if dsn == "" {
-		t.Skip("PAPA_REPEAT_TEST_DSN not set")
-	}
-	c, err := driver.ParseDSN(dsn)
-	if err != nil || c.DBName != "papa_repeat_test" {
-		t.Fatal("requires dedicated papa_repeat_test database")
-	}
-	c.ParseTime, c.ClientFoundRows = true, foundRows
-	db, err := gorm.Open(mysql.Open(c.FormatDSN()), &gorm.Config{Logger: logger.Discard})
-	if err != nil {
-		t.Fatal("cannot open dedicated database")
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { sqlDB.Close() })
-	if err := db.AutoMigrate(&models.CrawlerTask{}); err != nil {
-		t.Fatal(err)
+		db, _ = compensationMySQLWithOptions(t, nil, &foundRows)
+	} else {
+		var err error
+		c, err := driver.ParseDSN(dsn)
+		if err != nil || c.DBName != "papa_repeat_test" {
+			t.Fatal("requires dedicated papa_repeat_test database")
+		}
+		c.ParseTime, c.ClientFoundRows = true, foundRows
+		db, err = gorm.Open(mysql.Open(c.FormatDSN()), &gorm.Config{Logger: logger.Discard})
+		if err != nil {
+			t.Fatal("cannot open dedicated database")
+		}
+		sqlDB, err := db.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { sqlDB.Close() })
+		if err := db.AutoMigrate(&models.CrawlerTask{}); err != nil {
+			t.Fatal(err)
+		}
+
 	}
 	site := "repeat-" + uuid.NewString()
 	t.Cleanup(func() {

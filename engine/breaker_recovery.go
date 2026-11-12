@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -11,8 +10,6 @@ import (
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/obs/incident"
-
-	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // The registry defines coverage, including stages that have not run yet. The
@@ -74,155 +71,24 @@ func (e *Engine) resetBreakerChecksLocked(s *smartBreaker) {
 	}
 }
 
-// One bounded timeline is shared by persistence, the monitor and obs. Evidence
-// progress does not reset the observation timer or the control-save barrier.
-func (e *Engine) noteBreakerLocked(s *smartBreaker, action, stage, reason string, now time.Time) {
-	l := s.event
-	e.appendBreakerTransitionLocked(s, incident.Transition{At: now, From: l.State, To: l.State, Action: action, Stage: stage, Round: l.ProbeAttempts, Failures: l.report.WindowFailures, Successes: l.report.WindowSuccesses, NextAttemptAt: l.NextProbeAt, Reason: reason})
-	l.Revision++
-	s.dirty = true
-	e.emit(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Stage: stage, Attrs: map[string]string{"incident_id": l.ID, "state": l.State, "action": action, "round": fmt.Sprint(l.ProbeAttempts)}})
-}
-
-func (e *Engine) appendBreakerTransitionLocked(s *smartBreaker, entry incident.Transition) {
-	l := s.event
-	if l.State == "manual" {
-		entry.NextAttemptAt = l.RecheckAt
-	}
-	// A write outage cannot create unbounded memory or silently certify recovery.
-	// This helper can be called while pauseMu is held by an operator action.
-	if len(l.pendingHistory) >= 4096 {
-		l.report.Limited = true
-		if len(l.pendingHistory) > 4096 {
-			return
-		}
-		if l.Active() {
-			l.State = "manual"
-			l.FinalAt = time.Time{}
-			l.RecheckAt = entry.At.Add(time.Hour)
-			l.NextProbeAt = l.RecheckAt
-			s.controlRevision = l.Revision + 1 // admission stays blocked until durable; no nested pause lock
-		}
-		entry = incident.Transition{At: entry.At, To: l.State, Action: "history_capacity", Reason: "未保存历史达到4096条；后续过程可能不完整，停止自动恢复并等待存储恢复", NextAttemptAt: l.RecheckAt}
-	}
-	l.HistorySequence++
-	entry.Sequence, entry.Cycle = l.HistorySequence, l.Cycle
-	if entry.Stage != "" {
-		for _, check := range l.Checks {
-			if check.Stage == entry.Stage {
-				copy := breakerCheckReport(check)
-				entry.Check = &copy
-				break
-			}
-		}
-	}
-	// Clean only the new immutable entry; repeatedly cleaning the full history
-	// under the admission lock makes multi-stage serial progress unnecessarily slow.
-	entry = (incident.Lifecycle{Timeline: []incident.Transition{entry}}).Clean().Timeline[0]
-	l.pendingHistory = append(l.pendingHistory, entry)
-	l.report.Timeline = append(l.report.Timeline, entry)
-	if len(l.report.Timeline) > incident.MaxTransitions {
-		l.report.Timeline = l.report.Timeline[len(l.report.Timeline)-incident.MaxTransitions:]
-		l.report.Limited = true
-	}
-}
-
-func (e *Engine) recordBreakerStageSuccessLocked(s *smartBreaker, task *Task, now time.Time) {
-	if task.breakerTrial != s.trial || task.breakerSampleDeadline.IsZero() || !task.breakerSampleDeadline.Equal(s.event.SampleDeadline) || !now.Before(task.breakerSampleDeadline) {
-		return
-	}
-	for i := range s.event.Checks {
-		check := &s.event.Checks[i]
-		if check.Stage != task.Stage {
-			continue
-		}
-		if slices.Contains(check.TimedOutIDs, recoverySampleID(breaker.RecoverySample{TaskID: int64(task.ID), URL: task.URL})) {
-			return
-		}
-		if s.event.MixedSamples && len(check.Samples) > 0 {
-			matched := false
-			for j := range check.Samples {
-				sample := &check.Samples[j]
-				if recoverySampleID(*sample) != recoverySampleID(breaker.RecoverySample{TaskID: int64(task.ID), URL: task.URL}) {
-					continue
-				}
-				need := breakerSampleNeed(len(check.Samples), j)
-				if sample.Successes < need {
-					sample.Successes++
-					matched = true
-				}
-			}
-			if !matched {
-				return
-			}
-		}
-		if s.event.MixedSamples && len(check.Samples) == 0 {
-			id := recoverySampleID(breaker.RecoverySample{TaskID: int64(task.ID), URL: task.URL})
-			if id == "" {
-				return
-			}
-			for _, prior := range check.SuccessIDs {
-				if prior == id {
-					return
-				}
-			}
-			if len(check.SuccessIDs) >= 3 {
-				return
-			}
-			check.SuccessIDs = append(check.SuccessIDs, id)
-		}
-		check.TaskSuccesses++
-		if s.event.State == "observing" && len(check.TimedOutIDs) == 0 {
-			check.State = "observing"
-		}
-		// First successes and the three-sample proof are milestones; avoid
-		// writing one timeline entry for every successful page.
-		if check.TaskSuccesses <= 3 {
-			e.noteBreakerLocked(s, "stage_task_success", task.Stage, fmt.Sprintf("本轮受控真实任务 %d / 执行轮次 %s 完成；阶段成功不单独解除整站保护", task.ID, task.breakerRound), now)
-		}
-		return
-	}
-}
-
-func (e *Engine) breakerStagesReadyLocked(s *smartBreaker, minimum int) bool {
-	if s.event.ChecksLimited || len(s.event.Checks) == 0 {
-		return false
-	}
-	for _, check := range s.event.Checks {
-		if len(check.TimedOutIDs) > 0 {
-			return false
-		}
-		if check.Verification == "readonly" {
-			if check.State != "passed" || check.ProbeSuccesses < check.RequiredProbes {
-				return false
-			}
-			continue
-		}
-		if check.TaskSuccesses < max(minimum, check.RequiredTasks) {
-			return false
-		}
-	}
-	return true
-}
-
 func (e *Engine) finishBreakerRecoveryLocked(s *smartBreaker, now time.Time) {
 	if s.event.PendingFailure != nil || s.savedRevision < s.controlRevision {
 		return
 	}
 	if len(s.event.pendingHistory) >= 4094 {
-		e.transitionBreakerLocked(s, "manual", "历史写入积压，不能完成恢复或清零", now)
+		e.breakers.transitionBreakerLocked(s, "manual", "历史写入积压，不能完成恢复或清零", now)
 		e.pauseSmartBreakerLocked(s, "历史写入积压")
 		return
 	}
 	if !s.draining {
 		s.draining = true
-		e.noteBreakerLocked(s, "waiting_inflight", "", fmt.Sprintf("所有阶段验证通过，停止新增放行，等待 %d 个在途任务结束", s.inflight), now)
+		e.breakers.noteBreakerLocked(s, "waiting_inflight", "", fmt.Sprintf("所有阶段验证通过，停止新增放行，等待 %d 个在途任务结束", s.inflight), now)
 	}
 	if s.inflight != 0 || s.sampleDispatching {
 		return
 	}
 	if s.event.SampleID != "" {
-		e.noteBreakerLocked(s, "sample_superseded", s.event.SampleStage, "全部阶段已有完整有效证明；结束未执行的样本等待，不额外重投", now)
+		e.breakers.noteBreakerLocked(s, "sample_superseded", s.event.SampleStage, "全部阶段已有完整有效证明；结束未执行的样本等待，不额外重投", now)
 		s.event.SampleID, s.event.SampleStage, s.event.SampleDeadline = "", "", time.Time{}
 	}
 	// Freeze pre-reset totals in the report, then start the new site window.
@@ -230,33 +96,7 @@ func (e *Engine) finishBreakerRecoveryLocked(s *smartBreaker, now time.Time) {
 	s.epoch++
 	s.detector.ResetEpoch(s.epoch)
 	s.event.CountersResetAt = now
-	e.transitionBreakerLocked(s, "recovered", "所有阶段验证通过，全站在途任务已结束；清空运行计数，保留故障历史，报告保存后恢复正常运行", now)
-}
-
-// Prepare and persist each stage's intent before invoking extension code.
-func (e *Engine) prepareNextBreakerProbeLocked(s *smartBreaker, now time.Time) bool {
-	if s.event.ChecksLimited || len(s.event.Checks) == 0 {
-		e.transitionBreakerLocked(s, "manual", "阶段验证清单为空或超出上限，不能确认整站恢复", now)
-		return false
-	}
-	for i := range s.event.Checks {
-		check := &s.event.Checks[i]
-		if check.State == "passed" {
-			continue
-		}
-		if check.State == "probing" {
-			return true
-		}
-		check.State, check.StartedAt, check.FinishedAt = "probing", now, time.Time{}
-		sampleID := "业务提供的有效样本"
-		if len(check.Samples) > 0 {
-			sampleID = recoverySampleID(check.Samples[check.ProbeSuccesses%len(check.Samples)])
-		}
-		e.noteBreakerLocked(s, "stage_probe_started", check.Stage, fmt.Sprintf("开始本阶段第 %d 次只读语义试探，样本=%s；整站保持暂停", check.ProbeSuccesses+1, sampleID), now)
-		s.controlRevision = s.event.Revision
-		return false
-	}
-	return false
+	e.breakers.transitionBreakerLocked(s, "recovered", "所有阶段验证通过，全站在途任务已结束；清空运行计数，保留故障历史，报告保存后恢复正常运行", now)
 }
 
 func (e *Engine) launchBreakerStageProbeLocked(ctx context.Context, s *smartBreaker, now time.Time) {
@@ -267,8 +107,8 @@ func (e *Engine) launchBreakerStageProbeLocked(ctx context.Context, s *smartBrea
 		check := &s.event.Checks[i]
 		if check.State == "probing" && !now.Before(check.StartedAt.Add(breakerSampleTimeout)) {
 			check.State, check.FinishedAt, check.Detail = "failed", now, "只读样本选中后等待超过10分钟；未执行，不证明健康"
-			e.noteBreakerLocked(s, "stage_probe_timeout", check.Stage, check.Detail, now)
-			e.transitionBreakerLocked(s, "manual", check.Detail, now)
+			e.breakers.noteBreakerLocked(s, "stage_probe_timeout", check.Stage, check.Detail, now)
+			e.breakers.transitionBreakerLocked(s, "manual", check.Detail, now)
 			return
 		}
 	}
@@ -278,11 +118,11 @@ func (e *Engine) launchBreakerStageProbeLocked(ctx context.Context, s *smartBrea
 	if g := e.Governance(); g != nil {
 		if until := g.RetryAfterUntil(s.event.Site); until.After(now) {
 			s.event.RetryAfterUntil, s.event.NextProbeAt = until, until
-			e.noteBreakerLocked(s, "retry_after_wait", "", "遵守 Retry-After，推迟阶段验证", now)
+			e.breakers.noteBreakerLocked(s, "retry_after_wait", "", "遵守 Retry-After，推迟阶段验证", now)
 			return
 		}
 	}
-	if !e.prepareNextBreakerProbeLocked(s, now) {
+	if !e.breakers.prepareNextBreakerProbeLocked(s, now) {
 		return
 	}
 	for i := range s.event.Checks {
@@ -291,14 +131,14 @@ func (e *Engine) launchBreakerStageProbeLocked(ctx context.Context, s *smartBrea
 			continue
 		}
 		site := s.event.Site
-		probe := e.breakerProbes[pauseScope{Site: site, Stage: check.Stage}]
+		probe := e.breakers.breakerProbes[pauseScope{Site: site, Stage: check.Stage}]
 		if probe == nil {
-			probe = e.breakerProbes[pauseScope{Site: site}]
+			probe = e.breakers.breakerProbes[pauseScope{Site: site}]
 		}
 		if probe == nil {
 			check.State, check.FinishedAt, check.Detail = "missing", now, "没有本阶段语义探针或站点兜底探针"
-			e.noteBreakerLocked(s, "stage_probe_missing", check.Stage, check.Detail, now)
-			e.transitionBreakerLocked(s, "manual", "存在未验证阶段；保持整站暂停，等待人工处理", now)
+			e.breakers.noteBreakerLocked(s, "stage_probe_missing", check.Stage, check.Detail, now)
+			e.breakers.transitionBreakerLocked(s, "manual", "存在未验证阶段；保持整站暂停，等待人工处理", now)
 			return
 		}
 		s.probeRunning, s.probeExecuting = true, true
@@ -346,13 +186,13 @@ func (e *Engine) beginBreakerRetryLocked(s *smartBreaker, now time.Time, action,
 	}
 	s.event.Cycle++
 	s.event.RecheckAt = time.Time{}
-	e.noteBreakerLocked(s, action, "", reason, now)
+	e.breakers.noteBreakerLocked(s, action, "", reason, now)
 	s.trial++
 	s.event.ProbeAttempts = 0
 	s.event.Deadline = now.Add(s.policy.MaxRecovery)
 	s.event.NextProbeAt = now
 	e.resetBreakerChecksLocked(s)
-	e.transitionBreakerLocked(s, "cooldown", reason, now)
+	e.breakers.transitionBreakerLocked(s, "cooldown", reason, now)
 	e.pauseSmartBreakerLocked(s, reason)
 }
 

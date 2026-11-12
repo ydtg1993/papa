@@ -148,7 +148,7 @@ func TestConcurrentControlsAfterUsageStillHaveSingleWinner(t *testing.T) {
 
 func TestLegacyManagementNormalizesControlVersionAndPersistsAcrossRestart(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
-	key := Key{"s", "a"}
+	key := Key{Site: "s", ID: "a"}
 	store := NewMemoryPoolStore()
 	policy := DefaultPolicy()
 	policy.TrackUsage = true

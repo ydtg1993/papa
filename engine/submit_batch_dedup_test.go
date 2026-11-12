@@ -36,7 +36,7 @@ func TestSubmitTasksDuplicatesKeepOnePendingDelivery(t *testing.T) {
 				t.Fatal(err)
 			}
 			if delayed {
-				if e.delayHeap.Len() != 1 || queued(t, pool) != 0 || e.spillBacklog() != 0 {
+				if e.delays.Len() != 1 || queued(t, pool) != 0 || e.spillBacklog() != 0 {
 					t.Fatal("duplicate must produce one delayed delivery")
 				}
 			} else if e.spillBacklog() != 1 || queued(t, pool) != 1 {

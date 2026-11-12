@@ -7,16 +7,15 @@ import (
 	"fmt"
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine/internal/execution"
+	"github.com/ydtg1993/papa/v4/engine/internal/fetchruntime"
+	"github.com/ydtg1993/papa/v4/engine/internal/scheduler"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
-	"github.com/ydtg1993/papa/v4/pkg/account"
-	"github.com/ydtg1993/papa/v4/pkg/browser"
-	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"github.com/ydtg1993/papa/v4/pkg/governance"
-	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
@@ -42,8 +41,7 @@ type Engine struct {
 	startedAt time.Time
 	cancel    context.CancelFunc
 	// Cancelled database state retries remain visible in the shutdown report.
-	persistenceMu sync.Mutex
-	unsettled     map[int]string
+	execution execution.State
 	// stages 阶段登记表：**键是 `core.StageKey(site, stage)`**，不是裸的阶段名 ——
 	// 阶段名只在本站内唯一（两个站可以各有自己的 catalog）。凡是按阶段取东西的地方都用这个键。
 	stages map[string]*stageInfo
@@ -52,13 +50,10 @@ type Engine struct {
 	pools                   *poolRegistry
 	mu                      sync.RWMutex
 	cfg                     *config.Config
-	browserPool             *browser.Pool
-	htmlClient              *htmlfetch.Client
-	accountManager          *account.Manager // optional explicit account runtime, guarded by mu
+	fetchResources          fetchruntime.Resources
 	accountEventUnsubscribe func()
 	accountAlertMu          sync.Mutex
 	accountAlertLast        map[string]time.Time
-	identityManager         *identityruntime.Manager            // optional stable identity runtime, independent of account registration
 	statsQueue              map[string]*track.StatsQueue[*Task] // key: core.StageKey 分阶段监控信号
 	stageTotals             map[string]stageTotals              // 各阶段累计吞吐（池 churn 不清零）；e.mu 保护
 	errorCh                 chan error                          // 常驻错误通道：所有池的错误兜底转发到这里，mdMsgListener 读它
@@ -67,17 +62,16 @@ type Engine struct {
 
 	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
 	// 取任务点的闸门、入队点的寄放、后台的横幅/卡片/落库。
-	// 锁序是硬的：breakerMu → pauseMu → (spillMu | e.mu | siteMu)，不许反向；pauseMu 绝不跨 DB 调用。
+	// 锁序是硬的：breakers.breakerMu → pauseMu → (overflow.mu | e.mu)，不许反向；pauseMu 绝不跨 DB 调用。
 	pauseMu      sync.Mutex
 	paused       map[pauseScope]pauseState // scope -> 现场（整站条目的 Stage 为空）
 	pauseChanged chan struct{}             // 每次变更换一个新的并 close 旧的（叫醒所有等闸门的人）
 	lastResumed  map[pauseScope]time.Time  // 放行时刻（信号删了之后后台 payload 还要它）
 	wakeDrain    chan struct{}             // 容量 1：恢复时叫醒回灌循环，别让它等下一个 tick
 
-	spillMu        sync.Mutex
-	spilled        map[string][]*Task // 阶段键 -> 高水位溢出的待回灌任务
-	spilledCount   atomic.Int64       // 累计溢出任务数（监控埋点）
-	recoveredCount atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
+	overflow       spillQueue
+	spilledCount   atomic.Int64 // 累计溢出任务数（监控埋点）
+	recoveredCount atomic.Int64 // 累计启动恢复任务数（recover_queue，只在启动跑一次）
 	// recoverSkippedUnregistered 启动恢复里因"阶段未注册"被跳过的条数：
 	// 逐条降级为 Debug，启动后汇总一条 Warn（否则一次恢复能把日志刷几百行）。
 	recoverSkippedUnregistered atomic.Int64
@@ -85,9 +79,7 @@ type Engine struct {
 	queueRuns     map[string]*queueRunState // 治理队列的运行快照（监控页读取）
 	queueCounters map[string]*atomic.Int64  // 队列名 -> 累计重新投递计数
 
-	delayMu   sync.Mutex // 保护 delayHeap
-	delayHeap delayHeap  // 延迟投递最小堆
-	delayCh   chan struct{}
+	delays scheduler.Delay[*delayedTask]
 
 	// siteStore 站点快照的落点（内存优先 + 落库投影），由 internal/app 注入 —— 见 sitestat.go。
 	// 引擎自己不持有站点数据：那份"内存"在落点的缓存里（configstore 的 `sites` 键），
@@ -112,23 +104,11 @@ type Engine struct {
 	runtimeDelays map[string]time.Duration
 	m3u8          *m3u8.Downloader     // m3u8下载器（全局那份）
 	filedown      *filedown.Downloader // 文件下载器（全局那份）
-	// 站点/阶段覆盖层与解析结果：启动期（ApplyRegisterStage → resolveStageDownloads）建好后**只读**
-	//（fetcher 的取用路径不带锁，与 repeatQueues / statsQueue 那几张 map 同一约定）。
-	downloadCfgMu   sync.RWMutex
-	siteDownloads   map[string]SiteDownloads // 站点层覆盖（声明给）
-	m3u8ByStage     map[string]*m3u8.Downloader
-	m3u8BySite      map[string]*m3u8.Downloader
-	filedownByStage map[string]*filedown.Downloader
-	filedownBySite  map[string]*filedown.Downloader
-	notifiers       []Notifier // 告警通知器，任务最终失败时触发
+	// 下载覆盖配置及解析快照由 Downloads 持锁发布；Engine 只在装配期提供阶段值。
+	downloads fetchruntime.Downloads
+	notifiers []Notifier // 告警通知器，任务最终失败时触发
 	// One detector and one current lifecycle per site.
-	breakerMu          sync.Mutex
-	breakerIncidentSeq uint64
-	smartBreakers      map[string]*smartBreaker
-	breakerStore       breakerRepository
-	breakerStoreGate   chan struct{}
-	breakerRuntime     bool
-	breakerProbes      map[pauseScope]BreakerProbe
+	breakers breakerCoordinator
 	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
 	// 框架只把它当标签，不做任何限制（见 core.Site 的注释）。
 	sites map[string]core.Site
@@ -139,8 +119,8 @@ func (e *Engine) SetSite(s core.Site) {
 	if s.Key == "" {
 		return
 	}
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	if e.sites == nil { // 手工构造的 Engine（测试 / 业务自己拼）没有这一步初始化
 		e.sites = make(map[string]core.Site)
 	}
@@ -152,8 +132,8 @@ func (e *Engine) siteHeaders(site string) map[string]string {
 	if site == "" {
 		return nil
 	}
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	return e.sites[site].Headers
 }
 
@@ -162,8 +142,8 @@ func (e *Engine) siteHeaders(site string) map[string]string {
 //	site, _ := engine.Site(task.Site)   // task.Site 随行落库，重投之后照样认得出站点
 //	abs := site.BaseURL + rel
 func (e *Engine) Site(key string) (core.Site, bool) {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	s, ok := e.sites[key]
 	return s, ok
 }
@@ -247,8 +227,6 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		db:                 db,
 		cfg:                cfg,
 		loggerSet:          loggerSet,
-		delayCh:            make(chan struct{}, 1),
-		spilled:            make(map[string][]*Task),
 		queueRuns:          newQueueRuns(),
 		stageTotals:        make(map[string]stageTotals),
 		errorCh:            make(chan error, 100),
@@ -300,6 +278,7 @@ func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
 // 必须在 Run/ApplyRegisterStage 之前调用：快照事件的 ticker 在那一刻才起。
 func (e *Engine) SetEventsEmitter(em events.Emitter) {
 	e.events = em
+	e.breakers.events = em
 }
 
 // emit 发一条事件；emitter 为 nil（未开启）时是 no-op。
@@ -373,12 +352,12 @@ func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	}
 	cfg = breaker.EffectiveConfig(cfg)
 	detector := breaker.NewDetector(cfg)
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	if e.smartBreakers == nil {
-		e.smartBreakers = make(map[string]*smartBreaker)
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	if e.breakers.smartBreakers == nil {
+		e.breakers.smartBreakers = make(map[string]*smartBreaker)
 	}
-	e.smartBreakers[site] = &smartBreaker{cfg: cfg, policy: cfg.Policy, detector: detector}
+	e.breakers.smartBreakers[site] = &smartBreaker{cfg: cfg, policy: cfg.Policy, detector: detector}
 }
 
 // ResumeCrawling retries automatic protection and releases ordinary manual pauses.
@@ -463,9 +442,9 @@ func (e *Engine) PauseCrawling(reason string) bool {
 
 // breakerSum 该站当前窗口内的终态失败数（没配熔断/没这个站都是 0）。
 func (e *Engine) breakerSum(site string) int {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	if s := e.smartBreakers[site]; s != nil {
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	if s := e.breakers.smartBreakers[site]; s != nil {
 		return s.detector.Snapshot(time.Now()).Failures
 	}
 	return 0
@@ -491,15 +470,15 @@ func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 // 为什么合成：暂停状态现在只有一处（pause.go），而后台的历史契约是"一条记录里既有熔断阈值
 // 又有暂停现场"。合成让 payload 的字段形状一个字都不变（只多一个 Source）。
 func (e *Engine) breakerStatusOf(site string) BreakerStatus {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	return e.breakerStatusOfLocked(site)
 }
 
 // breakerStatusOfLocked 调用方持有 breakerMu，快照不会被恢复/新熔断拆开。
 func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
 	var st BreakerStatus
-	if b := e.smartBreakers[site]; b != nil {
+	if b := e.breakers.smartBreakers[site]; b != nil {
 		st.Enabled, st.Window, st.Threshold = b.cfg.Enabled, b.cfg.Window, b.cfg.Threshold
 		st.InWindow = b.detector.Snapshot(time.Now()).Failures
 		if b.event != nil {
@@ -563,7 +542,7 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	//
 	// 用 shutdown() 而不是 snapshot()：它在同一把锁里**置停机位 + 取快照**，于是"快照之后
 	// 才建出来的池"在结构上不存在（后来者一律被拒，任务按"先寄放"处理）。见 pools.go 的注释。
-	for name, pool := range e.pools.shutdown() {
+	for name, pool := range e.pools.Shutdown() {
 		wg.Add(1)
 		go func(stage string, pool *workerpool.WorkerPool[*Task]) {
 			defer wg.Done()
@@ -582,23 +561,19 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	// 只报池子的存留就会得出 drained=true —— 调用方（app.Run）随即去关库，而几十上百条任务
 	// 还在溢出表里躺着。它们的行是 pending，重启后由启动恢复捞，但那一刻**运维看不到任何告警**。
 	// 这与池子队列里的任务同一性质（"这一轮没跑完"），所以并进同一个结构。
-	e.spillMu.Lock()
-	for key, tasks := range e.spilled {
-		if len(tasks) == 0 {
+	for key, count := range e.overflow.Counts() {
+		if count == 0 {
 			continue
 		}
 		st := stats[key]
-		st.Queued += len(tasks)
+		st.Queued += count
 		stats[key] = st
 	}
-	e.spillMu.Unlock()
-	e.persistenceMu.Lock()
-	for _, key := range e.unsettled {
+	for _, key := range e.execution.Snapshot() {
 		st := stats[key]
 		st.Unfinished++
 		stats[key] = st
 	}
-	e.persistenceMu.Unlock()
 	drained = len(stats) == 0
 	// 动态 ticker（错误/恢复/每站的轮询队列）也要等在途的那一跳跑完：它们同样会写库。
 	// 与阶段池共用同一个 timeout（并发计），等不到就如实说"没排空"。
@@ -617,9 +592,9 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	}
 	select {
 	case <-tickersDone:
-		e.recordBreakerStop(drained)
+		e.breakers.recordBreakerStop(drained)
 		flushCtx, flushCancel := context.WithDeadline(context.Background(), deadline)
-		if err := e.flushBreakerReports(flushCtx); err != nil {
+		if err := e.breakers.flushBreakerReports(flushCtx); err != nil {
 			drained = false
 			e.loggerSet.Engine.Errorf("breaker state not persisted at shutdown: %v", err)
 		}

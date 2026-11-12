@@ -101,8 +101,7 @@ func TestRetryTaskSpillsWhenQueueFull(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 水位 = 1 条
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
+	e.pools.Set("stub:stub", pool)
 
 	if err := pool.Submit(&Task{URL: "occupy", Stage: "stub"}); err != nil {
 		t.Fatal(err)
@@ -125,8 +124,7 @@ func TestRetryTaskReportsSubmitFailure(t *testing.T) {
 	pool.Stop(0)
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
+	e.pools.Set("stub:stub", pool)
 
 	err := e.RetryTask(7, 0)
 	if err == nil {
@@ -349,8 +347,7 @@ func TestUrgentTaskSpillsWhenQueueFull(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 常规水位 1 条、快车道水位 2 条
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
+	e.pools.Set("stub:stub", pool)
 
 	// 占满常规队列，再占满快车道
 	if err := pool.Submit(&Task{URL: "occupy-main", Stage: "stub"}); err != nil {
@@ -380,8 +377,7 @@ func TestUrgentTaskReportsSubmitFailure(t *testing.T) {
 	pool.Stop(0)
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
+	e.pools.Set("stub:stub", pool)
 
 	err := e.UrgentTask(7)
 	if err == nil {

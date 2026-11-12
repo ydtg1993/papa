@@ -53,7 +53,7 @@ func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browse
 	if err := browserProxyError(ctx); err != nil {
 		return nil, err
 	}
-	if e.browserPool == nil {
+	if e.GetBrowserPool() == nil {
 		return nil, fmt.Errorf("browser pool is not configured (browser.enable=false)")
 	}
 
@@ -61,7 +61,7 @@ func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browse
 	opts.Page = mergeBrowserOptions(ctx, opts.Page)
 
 	var res *browser.CaptureResult
-	err := e.browserPool.WithBrowser(ctx, func(b *browser.Browser) error {
+	err := e.GetBrowserPool().WithBrowser(ctx, func(b *browser.Browser) error {
 		var cerr error
 		res, cerr = b.CaptureRequest(ctx, pageURL, opts)
 		return cerr

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 func TestTaskUnique(t *testing.T) {
@@ -254,5 +256,22 @@ func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
 	got := e.taskFromRecord(&models.CrawlerTask{ID: 7, Stage: "stub", Site: "example"})
 	if got.Site != "example" {
 		t.Fatalf("重建出来的任务丢了站点：%q", got.Site)
+	}
+}
+
+func TestTaskIncRetryCompatibilityOnStorageError(t *testing.T) {
+	f := newFakeTaskDB()
+	db := openFakeTaskDB(t, f)
+	failure := errors.New("retry persistence failed")
+	if err := db.Callback().Update().Before("gorm:update").Register("test:retry_error", func(tx *gorm.DB) { tx.AddError(failure) }); err != nil {
+		t.Fatal(err)
+	}
+	task := &Task{ID: 7, Retry: 2}
+	task.IncRetry(db)
+	if task.Retry != 3 {
+		t.Fatalf("legacy in-memory retry=%d", task.Retry)
+	}
+	if err := taskstore.IncrementRetry(db, task.ID); !errors.Is(err, failure) {
+		t.Fatalf("semantic store hid failure: %v", err)
 	}
 }

@@ -25,7 +25,7 @@ func TestFetchHTTPTraceExcludesCredentialsAndBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
+	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
 	trace := newTrace(e.db, logrus.New(), 1, 0)
 	r, err := e.FetchHTTP(withTrace(context.Background(), trace), htmlfetch.Request{URL: srv.URL + "?token=secret-url", Headers: map[string]string{"Authorization": "secret-header"}})
 	if err == nil || r == nil {
@@ -52,7 +52,7 @@ func TestFetchHTTPDisabledAndContextHeaders(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, r.Header.Get("X-Site")) }))
 	defer srv.Close()
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
+	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
 	r, err := e.FetchHTTP(core.WithHeaders(context.Background(), map[string]string{"X-Site": "site-a"}), htmlfetch.Request{URL: srv.URL})
 	if err != nil || string(r.Body) != "site-a" {
 		t.Fatalf("response: %+v %v", r, err)

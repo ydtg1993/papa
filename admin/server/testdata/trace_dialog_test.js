@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const pending = [], dialogs = [];
 const context = vm.createContext({ console, authGeneration: 1,
@@ -6,7 +7,7 @@ const context = vm.createContext({ console, authGeneration: 1,
  Dialog: { open: options => dialogs.push(options) }, Toast: { err: message => { throw Error(message); } },
  esc: text => String(text).replaceAll('<', '&lt;').replaceAll('>', '&gt;'), downloadFile: async () => {}
 });
-vm.runInContext(fs.readFileSync(path.join(process.argv[2], 'trace.js'), 'utf8'), context);
+controllers.run(fs.readFileSync(path.join(process.argv[2], 'trace.js'), 'utf8'), context);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
  await context.window.fetch('/api/oao/task/action/trace', { method: 'POST', body: JSON.stringify({ id: '7' }) });

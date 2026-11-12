@@ -36,12 +36,12 @@ func (e *Engine) SetSiteStore(s SiteStore) { e.siteStore = s }
 // siteKeys 所有站点键，按字典序。**没有"默认 scope"那一档**：站点是必填维度 ——
 // 声明必须有 Key（validateSites 拒没有 Key 的声明）、任务必须有 site（SubmitTask 拒空串）。
 func (e *Engine) siteKeys() []string {
-	e.breakerMu.Lock()
+	e.breakers.breakerMu.Lock()
 	keys := make([]string, 0, len(e.sites))
 	for k := range e.sites {
 		keys = append(keys, k)
 	}
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	sort.Strings(keys)
 	return keys
 }

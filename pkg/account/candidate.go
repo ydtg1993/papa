@@ -296,7 +296,7 @@ func (p *Pools) CandidatePublished(ctx context.Context, key Key, version uint64)
 	a.state.CredentialVersion = version
 	a.state.BrowserVersion = e.browserRevision
 	e.mu.Unlock()
-	a.state.advanceControl()
+	advanceControl(&a.state)
 	a.state.Generation++
 	a.state.Suspicious = false
 	a.state.Quarantined = false

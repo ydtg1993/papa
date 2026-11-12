@@ -1,0 +1,49 @@
+        <div class="module active" id="mod-dashboard">
+            <section class="overview-summary">
+                <div class="workbench-heading"><p id="workbench-coverage">等待快照</p><span class="workbench-scope" id="workbench-scope">全部站点</span></div>
+                <p id="workbench-freshness" role="status">尚未获得监控快照</p>
+                <div class="workbench-kpis" id="workbench-kpis"></div>
+                <p class="hint overview-caption">未完成包含排队；完成与失败为活跃阶段累计次数。「—」表示暂无可信统计。</p>
+            </section>
+            <section class="overview-issues">
+                <h2 class="workbench-section-title">待处理 <span id="workbench-issue-count">—</span></h2>
+                <div class="workbench-panel" id="workbench-issues"></div>
+            </section>
+            <section aria-label="运行可视化" class="overview-trend">
+                <div class="visual-heading"><h2>采集趋势</h2><span class="visual-label">本次页面观测</span></div>
+                <p id="visual-observation-meta">等待新的监控快照</p>
+                <p id="visual-availability" hidden></p>
+                <div class="visual-grid"><div class="visual-panel visual-panel-wide" id="visual-queue-trend"></div></div>
+            </section>
+            <section>
+                <h2>站点概况</h2>
+                <div class="workbench-panel" id="workbench-sites"></div>
+            </section>
+            <details class="workbench-disclosure" id="workbench-analysis">
+                <summary>详细分析 <span>阶段分布与累计结果</span></summary>
+                <section><div class="visual-grid">
+                    <div class="visual-panel" id="visual-stage-bars"></div>
+                    <div class="visual-panel" id="visual-results"></div>
+                </div></section>
+            </details>
+            <details class="workbench-disclosure" id="workbench-stage-details">
+                <summary>阶段与 Worker 明细</summary>
+                <!-- 全部范围按站点分卡片；选择站点后展开该站多阶段与 Worker 详情。 -->
+                <section><h2>任务队列概览</h2><div id="dash-queue"></div></section>
+                <section id="dash-site-ctl-sec" hidden><h2>站点控制</h2><div class="grid" id="dash-site-ctl"></div></section>
+            </details>
+            <details class="workbench-disclosure" id="workbench-resources">
+                <summary>系统资源 <span>CPU、内存、磁盘与目录占用</span></summary>
+                <section>
+                    <div class="visual-resources">
+                        <div class="visual-panel"><strong class="visual-resource-value" id="visual-cpu-value">—</strong><span class="visual-resource-stamp" id="visual-cpu-stamp">尚未采样</span><div id="visual-cpu"></div></div>
+                        <div class="visual-panel"><strong class="visual-resource-value" id="visual-mem-value">—</strong><span class="visual-resource-stamp" id="visual-mem-stamp">尚未采样</span><div id="visual-mem"></div></div>
+                        <div class="visual-panel"><strong class="visual-resource-value" id="visual-disk-value">—</strong><span class="visual-resource-stamp" id="visual-disk-stamp">尚未采样</span><div id="visual-disk"></div></div>
+                    </div>
+                    <p class="hint">CPU/内存为当前运行环境的系统采样，不是 Papa 进程占用；磁盘为 / 所在文件系统（Windows 为当前盘根目录），不代表全部磁盘。趋势仅保存在本页内存。</p>
+                    <div class="grid" id="dash-sys"></div>
+                </section>
+                <section><h2>业务目录占用</h2><div class="grid" id="dash-dirs"></div></section>
+            </details>
+        </div>
+

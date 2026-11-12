@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-appearance="simple" data-auth-required="{{if .AuthRequired}}1{{else}}0{{end}}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Papa Monitor</title>
+    <!-- 首帧之前就定好「主题」与「登录遮罩显不显示」。
+         这两件事 mo.js 也会做，但它在 </body> 前、还要等外部脚本加载完 —— 那之前浏览器
+         已经能画第一帧了：深色用户会闪一下白底，有凭据的人每次刷新会闪一下登录框。
+         内联在这里（样式表之前）就不会。外观默认简约，与浅深色独立；键名与 appearance.js / mo.js 保持一致。
+         data-auth-required 默认要求登录；已有本地凭据时避免遮罩闪烁。
+         首次部署也要求认证，第一把令牌在服务器本机通过 CLI 创建。 -->
+    <script>
+        (function () {
+            var d = document.documentElement;
+            function read(key) { try { return localStorage.getItem(key); } catch (_) { return null; } }
+            d.setAttribute('data-appearance', read('papa-appearance') === 'classic' ? 'classic' : 'simple');
+            d.setAttribute('data-theme', read('papa-theme') === 'dark' ? 'dark' : 'light');
+            if (d.getAttribute('data-auth-required') === '1' && !read('papa_monitor_key')) {
+                d.classList.add('need-login');
+            }
+        })();
+    </script>
+    <link rel="stylesheet" href="/static/mo.css">
+    <link rel="stylesheet" href="/static/oao/oao.css">
+    <link rel="stylesheet" href="/static/workbench.css">
+    {{if .OaoCharts}}<link rel="stylesheet" href="/static/oao/oao-charts.css">{{end}}
+    {{if .OaoMotion}}<link rel="stylesheet" href="/static/oao/oao-motion.css">{{end}}
+    <link rel="stylesheet" href="/static/visuals.css">
+    <link rel="stylesheet" href="/static/layout.css">
+    <!-- 业务注入的样式（app.UseCSS / UseCSSFile）：放最后，可覆盖上面的 -->
+    <link rel="stylesheet" href="/static/custom.css">
+<link rel="stylesheet" href="/static/queue-governance.css">
+</head>
+<body>
+<div id="login">
+    <div class="box">
+        <h1>PAPA MONITOR</h1>
+        <p>输入访问密钥以登录监控后台</p>
+        <input id="key" type="password" placeholder="访问密钥" autocomplete="off">
+        <button class="btn" onclick="submitKey()">登录</button>
+        <div class="err" id="err">密钥错误，请重试</div>
+        <p class="hint">首次使用或无可用令牌时，在服务器本机执行<br><code>papa token add --operator &lt;名字&gt;</code></p>
+    </div>
+</div>
+
+<div class="shell" id="app">
+    <aside class="sidebar">
+        <div class="brand">PAPA <span>采集后台</span></div>
+        <button class="nav-toggle btn" id="nav-toggle" aria-expanded="false" aria-controls="main-nav" onclick="toggleNavigation()">菜单</button>
+        <nav id="main-nav" aria-label="后台分类">
+            <button class="nav-category" data-section="flow" onclick="switchSection('flow')"><span class="nav-index" aria-hidden="true">01</span><span>采集任务流</span></button>
+            <button class="nav-category active" data-section="monitor" onclick="switchSection('monitor')" aria-current="true"><span class="nav-index" aria-hidden="true">02</span><span>运行监控与报告</span></button>
+            <button class="nav-category" data-section="data" onclick="switchSection('data')"><span class="nav-index" aria-hidden="true">03</span><span>数据与资源</span></button>
+            <button class="nav-category" data-section="system" onclick="switchSection('system')"><span class="nav-index" aria-hidden="true">04</span><span>系统管理</span></button>
+        </nav>
+        <button class="theme-toggle" id="theme-toggle">☾ 深色</button>
+        <div class="side-status"><span class="dot" id="dot"></span><span id="statusText">未连接</span></div>
+    </aside>
+
+    <main class="content">
+        <header class="content-top">
+            <div class="content-heading"><p id="section-title" class="section-label">运行监控与报告</p><h1 id="moduleTitle" tabindex="-1">运行概览</h1></div>
+            <div class="top-right">
+                <!-- 暂停与告警铃铛：徽标数字 = 被闸住的 scope 数（含声明期的 StartPaused），
+                     颜色分语义（有熔断触发就红、只有手动/声明期就琥珀）。点开在下方列出细节
+                     （站点/阶段/原因/暂停于 + 逐站恢复），再点一次或点面板外部、按 Esc 关闭。
+                     它**不跟站点 Tab 过滤**（告警不该被切走的 tab 藏起来），由 mo.js 的 renderBell 画。 -->
+                <div class="bell-wrap" id="bell-wrap">
+                    <button class="bell" id="bell" type="button" onclick="toggleBell(event)"
+                            title="暂停与告警" aria-label="暂停与告警" aria-expanded="false" aria-controls="bell-panel">
+                        <!-- 内联 SVG 而不是 emoji：🔔 在 Windows 上是彩色字体，跟这套黑白/等宽的风格不搭；
+                             currentColor 让它跟着主题走。 -->
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                            <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                        </svg>
+                        <span class="bell-badge" id="bell-badge" hidden>0</span>
+                    </button>
+                    <div class="bell-panel" id="bell-panel" hidden></div>
+                </div>
+                <div class="refresh" id="refreshTime"></div>
+            </div>
+        </header>
+
+        <nav id="section-nav" aria-label="当前分类功能"></nav>
+        <div class="module" id="mod-section"><p class="empty" id="section-empty">当前分类暂无可用功能。</p></div>
+
+        <!-- 站点 Tab：多站点时按站点把各面板分开（「概览」= 全部；默认 scope 单独一档）。
+             数据来自 /api/monitor 的 sites（站点信息 + 慢变统计），由 mo.js 渲染。
+             **熔断横幅是例外**：它始终显示全部被闸住的站（告警不该被切走的 tab 藏起来）。 -->
+        <div class="site-tabs" id="site-tabs" hidden></div>
+        <div class="site-meta" id="site-meta" hidden></div>
+
+{{/* feature:monitoring/dashboard.html */}}
+{{/* feature:queues/queues.html */}}
+{{/* feature:shell/tables.html */}}
+{{/* feature:shell/pages.html */}}
+{{/* feature:tokenadmin/tokens.html */}}
+{{/* feature:reports/obs.html */}}
+{{/* feature:logs/logs.html */}}
+{{/* feature:settings/settings.html */}}
+    </main>
+</div>
+
+<script src="/static/oao/oao.js"></script>
+{{if .OaoMotion}}<script src="/static/oao/oao-motion.js"></script>{{end}}
+{{if .OaoCharts}}<script src="/static/oao/oao-charts.js"></script>{{end}}
+<script src="/static/table-links.js"></script>
+<script src="/static/requests.js"></script>
+<script src="/static/workbench.js"></script>
+<script src="/static/queue-governance.js"></script>
+<script src="/static/visual-state.js"></script>
+<script src="/static/visuals.js"></script>
+<script src="/static/extensions.js"></script>
+<script src="/static/appearance.js"></script>
+<script src="/static/navigation.js"></script>
+<script src="/static/mo.js"></script>
+<!-- 任务步骤追踪抽屉：嗅探 oao 的「追踪」动作请求取任务 id，再拉 /api/task/trace。
+     必须在 mo.js 之后（用它的 Dialog / esc / loadKey 等全局件）。 -->
+<script src="/static/trace.js"></script>
+<!-- 业务注入的脚本（app.UsePage 的 Script / app.UseScript）：必须在 mo.js 之后 ——
+     页脚本要调 mo.js 定义的 Papa.page 注册渲染函数。 -->
+<script src="/static/custom.js"></script>
+</body>
+</html>

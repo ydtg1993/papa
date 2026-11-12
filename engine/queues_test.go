@@ -693,7 +693,7 @@ func TestStopWaitsForBackgroundLoops(t *testing.T) {
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.cfg.Crawler.DrainInterval = 20 * time.Millisecond
 	// worker 要真起：池子里压着没跑完的任务时 Stop 不该报"排空"（那是另一条契约）
-	e.pools.get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
+	e.pools.Get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
 	// 塞一条溢出任务：回灌每一跳都会把它重新投一次（submitToPool 会写 status=pending）
 	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/spilled"})
 	e.startDrain()

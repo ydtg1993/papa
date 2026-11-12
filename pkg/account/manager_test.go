@@ -144,8 +144,8 @@ func register(t *testing.T, m *Manager, key Key, cfg Config) {
 func TestAccountHTTPIsolationAndCheckCache(t *testing.T) {
 	s := newAuthSite(t)
 	m := NewManager(s.client)
-	alice := Key{"site", "alice"}
-	bob := Key{"site", "bob"}
+	alice := Key{Site: "site", ID: "alice"}
+	bob := Key{Site: "site", ID: "bob"}
 	register(t, m, alice, s.cfg("alice"))
 	register(t, m, bob, s.cfg("bob"))
 	ctx := core.WithHeaders(context.Background(), map[string]string{"cookie": "sid=foreign", "authorization": "foreign", "proxy-authorization": "foreign"})
@@ -194,7 +194,7 @@ func TestAccountHTTPIsolationAndCheckCache(t *testing.T) {
 func TestAccountExpiryRetryAndNoPostReplay(t *testing.T) {
 	s := newAuthSite(t)
 	m := NewManager(s.client)
-	key := Key{"site", "alice"}
+	key := Key{Site: "site", ID: "alice"}
 	register(t, m, key, s.cfg("alice"))
 	ctx := context.Background()
 	if _, err := m.Do(ctx, key, htmlfetch.Request{URL: s.server.URL + "/data"}); err != nil {
@@ -232,7 +232,7 @@ func TestAccountExpiryRetryAndNoPostReplay(t *testing.T) {
 func TestAccountLateExpiredResponseKeepsFreshGeneration(t *testing.T) {
 	s := newAuthSite(t)
 	m := NewManager(s.client)
-	key := Key{"site", "alice"}
+	key := Key{Site: "site", ID: "alice"}
 	register(t, m, key, s.cfg("alice"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -263,7 +263,7 @@ func TestAccountLateExpiredResponseKeepsFreshGeneration(t *testing.T) {
 func TestAccountPauseChallengeCooldownAndProviderValidation(t *testing.T) {
 	s := newAuthSite(t)
 	m := NewManager(s.client)
-	key := Key{"site", "alice"}
+	key := Key{Site: "site", ID: "alice"}
 	cfg := s.cfg("alice")
 	cfg.Classify = func(r *htmlfetch.Response, e error) Outcome {
 		if r != nil && string(r.Body) == "verify-human" {
@@ -292,7 +292,7 @@ func TestAccountPauseChallengeCooldownAndProviderValidation(t *testing.T) {
 		t.Fatal("pause not visible")
 	}
 	var attempts atomic.Int32
-	bad := Key{"site", "bad"}
+	bad := Key{Site: "site", ID: "bad"}
 	cfg = s.cfg("bad")
 	cfg.Login = func(context.Context, *Credentials) error {
 		attempts.Add(1)
@@ -308,7 +308,7 @@ func TestAccountPauseChallengeCooldownAndProviderValidation(t *testing.T) {
 	if attempts.Load() != 1 {
 		t.Fatal("cooldown failed")
 	}
-	unsafe := Key{"site", "unsafe"}
+	unsafe := Key{Site: "site", ID: "unsafe"}
 	cfg = s.cfg("unsafe")
 	cfg.Check = func(_ context.Context, c *Credentials) (bool, error) {
 		c.Headers["Cookie"] = "foreign"
@@ -335,7 +335,7 @@ func TestAccountCancelledLeaderAndPanicRelease(t *testing.T) {
 	for _, mode := range []string{"cancel", "panic", "goexit"} {
 		t.Run(mode, func(t *testing.T) {
 			m := NewManager(htmlfetch.NewClient(htmlfetch.Config{}))
-			key := Key{"site", mode}
+			key := Key{Site: "site", ID: mode}
 			started, release := make(chan struct{}), make(chan struct{})
 			cfg := Config{Origins: []string{"https://example.com"}, MaxConcurrent: 2, Login: func(ctx context.Context, c *Credentials) error {
 				close(started)
@@ -395,7 +395,7 @@ func TestAccountTokenRotationAndCheckErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 	m := NewManager(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
-	key := Key{"site", "token"}
+	key := Key{Site: "site", ID: "token"}
 	var logins atomic.Int32
 	cfg := Config{Origins: []string{" " + srv.URL + " "}, CheckInterval: time.Hour, Login: func(_ context.Context, c *Credentials) error {
 		logins.Add(1)
@@ -433,7 +433,7 @@ func TestAccountTokenRotationAndCheckErrors(t *testing.T) {
 
 func TestAccountLogoutDuringLoginPreventsLatePublication(t *testing.T) {
 	m := NewManager(htmlfetch.NewClient(htmlfetch.Config{}))
-	key := Key{"site", "alice"}
+	key := Key{Site: "site", ID: "alice"}
 	started, release := make(chan struct{}), make(chan struct{})
 	register(t, m, key, Config{Origins: []string{"https://example.com"}, Login: func(context.Context, *Credentials) error { close(started); <-release; return nil }, Check: func(context.Context, *Credentials) (bool, error) { return true, nil }})
 	e, _ := m.get(key)

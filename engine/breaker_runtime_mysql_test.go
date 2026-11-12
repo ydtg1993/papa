@@ -67,7 +67,7 @@ func TestSmartBreakerMySQLRestartAndManualClosure(t *testing.T) {
 func TestSmartBreakerStopFlushesFinalState(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	r := &memoryBreakerRepository{}
-	e.breakerStore, e.breakerRuntime = r, true
+	e.breakers.breakerStore, e.breakers.breakerRuntime = r, true
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1})
 	smartFailure(e, 1, "detail", "missing")
 	if drained, _ := e.Stop(time.Second); !drained {

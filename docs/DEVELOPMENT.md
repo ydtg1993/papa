@@ -86,165 +86,66 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 1. `go build -o bin/xxx` 在 Windows 上**不会自动加 `.exe`**，产物 `bin/xxx` 无扩展名、跑不了。Makefile 用 `$(EXE)` 变量按 OS 补齐。
 2. 装 CLI 用 `go install ./cmd/papa`（自动处理 `.exe`），不要用 `go build -o bin/papa`。
 
-## 6. 包结构（改代码前先看这个）
+## 6. 包结构与职责边界
 
-```
-core/                           零依赖叶子包：跨包流动的纯值 + 不依赖任何内部包的纯函数
-                                （告警 / 错误分类 / 监控快照 DTO、ctx 携带的请求头与代理、URL 解析与同站判定、
-                                页面身份与任务幂等键 identity.go、站点地址回钉 siteurl.go）
-config/                          配置结构与校验；runtime.go 引用公开治理/代理策略并保留显式 patch 语义
-engine/                          引擎：Task · Trace · Fetcher · Engine
-  engine.go    结构体 + 生命周期 + 依赖注入 + 结果读写
-  task.go      Task 结构与状态更新（Insert / UpdateStatus / IncrRetry / Unique）
-               + 两个 fetcher 接口：Fetcher（GetStage / FetchHandler）与 EntrySubmitter（可选的入口任务）
-  stage.go     阶段装配与 worker 循环（ApplyRegisterStage / runAttempt）
-  persistence.go 认领/终态写入重试、轮次条件守卫与关停未确认状态统计
-  pools.go     活池登记表（懒建 / 空闲回收 / 关停都从这里取池）
-  submit.go    提交路径（去重 → 落库 → 入队 → 认领）
-  spill.go     高水位溢出与回灌
-  pause.go     暂停信号表（唯一真源：scope / reason / source）+ 取任务点的闸门
-               （入队点的收口在 submit.go 的 submitToStage；熔断只往这张表里写）
-  breaker_runtime.go  分类状态机、受限准入/排空、独立报告定时写入与持久化屏障
-  breaker_recovery.go  全阶段验证进度、整站试探、真实任务验证、最终清零与统一时间线
-  breaker_site_recovery_test.go / breaker_runtime_test.go / breaker_concurrency_test.go / breaker_runtime_mysql_test.go
-  breaker_readonly_test.go  显式完整只读覆盖、两次间隔检查、混合阶段、并发晚结果及重启回归（含隔离 MySQL）
-               阶段隔离、在途终态、观察退出、阻塞写入/重试节奏、重启及 MySQL 回归
-  breaker_snapshot.go  运行控制到只读报告投影；裁剪不回写控制
-  breaker_samples.go / breaker_hourly_test.go / breaker_serial_test.go  失败样本串行选择、截止时间、版本化重试、重启与小时复查回归
-  breaker_review_fixes_test.go  截断、标识、中断、重试/强制解除与重启回归
-  breaker_reports_test.go  唯一事件 ID、Detector 证据快照、人工暂停生命周期和并发回归
-  batch.go     各治理队列共用的分页扫描（keyset 游标）
-  dedup.go     内存去重表 + 活跃任务装载
-  sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
-  stats.go     监控快照
-  fetch.go     浏览器池 / 静态 HTML 客户端 / 渲染等待与 FetchRenderedPageWith
-  record.go    有界网络录制门面（仅摘要 trace）
-  http.go      通用 HTTP/API、增量与浏览器响应捕获门面（只记录摘要 trace）
-  account.go   显式账号管理器接线、认证 HTTP/HTML/浏览器和无凭据状态快照
-  account_pool.go  池任务归属引用保护、认领前账号准备和显式池请求门面
-  governance.go  Go/YAML/OA 优先级、已注册站点/物理容量校验、任务 context 与执行放行
-  repeat_submission_test.go   公共提交入口独立对象并发，同一 pending 轮次保持计数
-  repeat_submission_mysql_test.go 专用 MySQL 库：并发、首次初始化、恢复、限额、提交结果不确定
-  stage_runversion_test.go     普通 worker 认领版本传递、重试固定和旧轮次终态拒绝
-  capture.go   浏览器网络请求捕获的引擎层包装（trace 步骤 + 归档登记）
-  downloads.go 下载器解析（阶段 > 站点 > 基座）
-  archive.go   页面归档：失败那一刻的原始页面 + trace 步骤
-  restricted.go 受限页判定（站点词表从 task.Site 取）
-  deps.go      阶段依赖声明（NeedsBrowser 的启动期校验）
-  queuestats.go 三条治理队列的运行快照与积压（全局各一条）
-  dynticker.go 间隔可动态调整的定时器（错误/轮询队列的节拍）
-  alias.go     给 core 里的值类型留的别名（见文末）
-  recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
-admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用
-  server/       监控后台（HTML / API / 静态资源）
-    breaker_control_test.go / testdata/breaker_control_test.js  重试与强制解除入口、确认和审计
-    breaker_analysis.go / breaker_analysis_test.go  鉴权只读熔断分析、指定现场导出、空态和过期响应
-    breaker_analysis_ui_test.go / breaker_analysis_browser_test.go  请求竞态、纯文本证据、历史切换和窄屏浏览器回归
-    ui_behavior_test.go        Node 执行生产 JS 与依赖真实 renderer 的行为回归入口
-    static/requests.js         原生 API 错误、轮询代次/超时/退避/可见性管理
-    static/table-links.js      oao v1.3.4 整值 URL 兼容适配（table-loaded 扩展点）
-  auth/         访问令牌校验与操作人身份
-  tokenadmin/   令牌列表、新增、启停、删除与更新接口
-  oplog/        操作日志（异步写入器 + 只读表格页）
-  tasksource/   内置「任务」表，动作接线的参考实现
-  gormsource/   配置驱动的 oao.Source，业务表格页直接复用
-  frameworkdata/ 按显式选表生成只读查询；后台不默认挂载通用目录，不扫描业务表
-    tables.go / source.go  模型列、受限 SQL 投影、联合主键稳定分页、查询超时
-    sanitize.go / status.go  有界脱敏、鉴权状态探测（未迁移/不可用/可查询）
-    tables_test.go / mysql_test.go  HTTP/SQL/并发回归与显式只读 MySQL 验证
-  configstore/  运行期配置存储（crawler_config 表）+ 读缓存层（内存 / TTL 装饰器）
-    versioned.go  runtime_policy 的 LoadVersioned/SaveCAS；旧 Save 拒绝写受保护键
-  sysinfo/      机器指标 / 目录占用采集
-internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
-  workerpool/ database/ msgqueue/ track/ breaker/
-    breaker/recovery.go / recovery_test.go  原始恢复控制数据与失败窗口快照恢复
-    breakerstore/snapshot.go / store.go / history.go  控制快照与追加历史同事务；按日报时间读取历史
-    models/breaker_history.go  追加运行记录表，随显式框架迁移创建
-    breaker/detector.go / policy.go / detector_test.go  有界终态轮次、短窗口同类/混合爆发、常规硬保护和恢复预算
-  app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
-    rod_diagnostics.go / rod_diagnostics_browser.go  鉴权诊断 handler、环境检查及隔离 Chromium/Rod 启动链路
-    rod_diagnostics_view.go / rod_diagnostics.js  系统管理诊断页与嵌入脚本
-    rod_diagnostics_test.go    启动失败、目录清理与脱敏回归
-    data_tables.go / data_tables_test.go  只接入可操作任务，Trace 走行内弹窗；保留 task API 和动作保护
-    runtime_policy.go / runtime_control.js  持久策略加载发布、远端等待确认和采集控制页
-    account_pools_api.go / account_pools.js  池/成员 CAS 动作、账号池页面与显式复验
-    proxy_health_api.go  代理管理 CAS、注册站点的有界 HEAD 探测与脱敏审计
-pkg/                             可独立复用的件
-  events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
-  browser/                       池与页面生命周期（pool.go / rod.go）、网络请求捕获（capture.go）、
-                                 等待条件（wait.go）、按页资源拦截（block.go）
-  browser/record.go              多交换网络录制、预算与显式脱敏导出
-  browser/state.go               同源隔离页面登录态快照、AES-GCM 加密读写与恢复
-  browser/state_navigation.go    首次导航前 Cookie/LocalStorage 恢复与 origin 检查
-  browser/isolation.go           回调式独立 Chromium 上下文、取消与异常清理
-  browser/response.go            按响应匹配并等待正文；session.go 提供浏览器 Cookie 到 HTTP 会话的显式桥接
-  browser/governance.go          借用资源许可、当前 page target 范围的请求拦截与延迟反馈
-  browser/stats.go               真实实例生命周期统计，区分存活/借用/预约/空闲；不把未创建槽计入存活
-  htmlfetch/                     client.go HTML；request.go 通用请求；json.go 严格 JSON/内嵌 JSON；session.go 独立 CookieJar；session_guard.go 每账号检查/刷新并发协调；sample.go 显式脱敏样本与离线响应
-  discovery/                    links.go URL/HTML；xml.go 订阅源；robots.go 规则；pagination.go 分页停止
-  extract/validate.go            JSON 字段与批次唯一性校验
-  htmlfetch/incremental.go       条件 GET、304 与内容指纹
-  htmlfetch/session_state.go     完整 Cookie 属性追踪、版本化快照与受限恢复
-  account/                      types.go 契约；manager.go 注册/认证/请求/版本；browser.go 账号浏览器与桥接；store.go 加密存储
-  account/pool_types.go / pools.go  站点内黏性账号池、独立调度、有界验证与迟到结果隔离
-  account/pool_store.go           管理状态/池状态 GORM CAS 存储；不自动迁移、不保存凭据
-  account/pool_request.go / pool_capture.go  尝试身份固定的 HTTP/HTML/浏览器/捕获入口
-  governance/                    config.go / patch.go 策略；controller.go 请求与许可；resources.go / sampler.go 采样与预算；transport.go HTTP计量
-  middleware/proxy/health.go / transport.go  引用反馈、冷却/探测/固定出口、CAS和每交换健康包装
-  egress/proxy_failure.go         代理本身拨号/认证失败的安全分类，目标错误不混入
-  loggers/ notify/ middleware/{proxy,m3u8,filedown}
-  redact/                       诊断副本 URL/Text/JSON 已知凭据遮盖（不改请求、任务身份与恢复数据）
-  middleware/output_locks.go    下载目标/断点资源的整组路径锁（目录与子路径互斥、可取消、With 共享）
-obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
-                                 eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
-                                 pattern/ 内置模式库 / report/ 4 产物渲染
-  incident/incident.go / classify.go / failure.go  实时与历史报告共用的错误分组、脱敏证据、结构化分类及文本导出
-  incident/failure_test.go           稳定错误码、数字保留、HTTP/网络/认证/等待条件分类
-  incident/incident_test.go          状态码保留、窗口/数量上限、脱敏和原因置信边界
-  analyze/breaker_reports.go / breaker_reports_test.go  直接查窗口相关/活动持久报告；离线按最近事件 ID 引用，不重建
-models/                          框架自带的表结构
-cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report / strategy-migrate inspect）
-  scaffold_safe.go               new 独占写入与链接路径保护；--missing-only 只补缺失文件
-  scaffold_safe_test.go          已有项目保护、module 冲突、链接路径与缺失文件回归
-  scaffold_review_test.go        Windows junction 越界、并发独占写、带空格 replace 与缺失参数回归
-```
+**包职责清晰是长期开发硬规则。** 新增功能先明确状态拥有者、接口和依赖，再选择文件；不能因 App / Engine 取依赖方便而向其中堆功能。文件数、目录深度和行数不是拆包目标。完整依赖规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-> **`admin/` 与 `internal/` 的区别就一条**：Go 规定 `internal/` 下的包只能被 `internal/` 的
-> 父目录（也就是本模块）内的代码 import。所以业务项目**能** import `admin/gormsource`，
-> **不能** import `internal/workerpool` —— 后者是框架自己的实现细节，改了不算破坏性变更。
+| 包 / 文件组 | 职责 |
+| --- | --- |
+| 根包 `papa` | 应用与任务公开入口、兼容别名；不实现领域算法 |
+| `core` | 跨包纯值与纯函数，不依赖框架其它包 |
+| `config` | 配置解码与校验；熔断公开策略使用 `pkg/breakerpolicy` |
+| `models` | 框架数据库模型；不承担运行状态 |
+| `internal/app/app.go` | App 容器、选项和公开兼容字段 |
+| `internal/app/bootstrap.go` / `lifecycle.go` | 创建依赖、事件流、启动和排空顺序 |
+| `internal/app/http.go` / `pages.go` / `router.go` | 后台装配、公开扩展注册与路由兼容入口 |
+| `internal/app/reports.go` / `runtime_policy.go` / `browser_identity.go` | 报告、运行策略、身份服务的构造和委派；状态算法在服务包 |
+| `internal/runtimecontrol` | `service.go`：策略版本、CAS、核对、发布和账号池引用互斥；`document.go` / `history.go`：文档与选择性历史恢复 |
+| `internal/browserdiagnostics` | `service.go` / `options.go`：资源接口与诊断生命周期；`identity_diagnostic.go`：合成页身份检查；`rod.go` / `report.go`：启动检查与报告 |
+| `internal/reportrunner/runner.go` | 报表专用值配置、日报生成、ticker、串行写入与停机等待，消费只读快照，不依赖应用配置包 |
+| `engine` | Task / Fetcher / Engine 公共契约，站点与阶段执行编排；保留需要跨暂停、持久化与熔断协调的原子边界 |
+| `internal/taskstore` | 认领、终态、释放、失败重投、轮询推进和兼容 Task 存储入口 |
+| `engine/internal/scheduler` | `pools.go`：活池锁与关闭；`delay.go`：延迟堆、唤醒与取消 |
+| `engine/internal/execution` | 未确认持久化状态、重试背压与排空统计 |
+| `engine/internal/fetchruntime` | `downloads.go`：下载器覆盖与解析快照；`resources.go`：账号/身份/浏览器/HTTP 资源注册、账号准入与渲染资源归还 |
+| `engine/attempt_execution.go` / `attempt_persistence.go` | 单次执行的 trace/归档、panic、账号反馈及时间/失败日志结算；只接受窄依赖，不持有 Engine |
+| `engine/stage.go` / `stage_registration.go` / `notifications.go` | 执行轮次编排、阶段/worker 装配、告警通知，各文件职责独立 |
+| `engine/breaker_coordinator.go` / `scheduler_spill.go` | 同包状态组件：熔断准入/恢复证据/报告写入、溢出队列；无 Engine 回引用，跨状态事务由 Engine 编排 |
+| `internal/breaker` / `internal/breakerstore` | 终态检测算法、快照和报告事务存储 |
+| `internal/database` | 连接、显式迁移、schema 检查；不由普通启动自动迁移 |
+| `internal/workerpool` / `msgqueue` / `track` | 通用执行池、消息通道、指标采样 |
+| `admin/server` | `monitor.go` 兼容类型与组件装配、统一路由鉴权；`assets.go` / `extensions.go` 保留原资源和扩展 API，不持有功能状态 |
+| `admin/shell` | `renderer.go` 管理模板解析；`assets.go` / `resource_fs.go` 确定性组合嵌入资源；`extensions.go` 管理导航元数据快照；`static/runtime.js` 管理控制器注册、依赖与生命周期 |
+| `admin/access` | `handler.go` 拥有来源白名单锁与快照、请求身份校验和白名单保存 |
+| `admin/settings` | `handler.go` 管理设置查询与显式关停；`static/controller.js` / `views/settings.html` 管理设置页面 |
+| `admin/monitoring` | `handler.go` 聚合监控快照与实例标识；controller/workbench/visual-state/visuals 与 dashboard 模板拥有监控视图和观测状态 |
+| `admin/queues` / `admin/breakers` | 各自 handler 管理队列触发及熔断操作/分析；static 中的控制器和样式拥有对应前端状态 |
+| `admin/taskflow` | `handler.go` 管理任务流策略校验/CAS响应；`static/taskflow.js/css` 管理任务流编辑生命周期 |
+| `admin/tasktrace` | `handler.go` 管理追踪查询与归档下载边界；`static/trace.js/css` 管理追踪抽屉 |
+| `admin/logs` / `admin/reports` | 各自 `handler.go` 管理文件读取、边界和下载；`static/controller.js` 与 views 管理选择、请求代次、卸载与会话重置 |
+| `admin/accounts` | 账号接入 handler 与 `static/accounts.js` |
+| `admin/accountpools` | 池管理和任务补偿 handler 与 `static/account_pools.js` |
+| `admin/runtimecontrol` | 策略、历史、代理健康 HTTP 适配与 `static/runtime_control.js`；存储适配器连接 configstore |
+| `admin/diagnostics` | Rod / 身份 HTTP 适配与 `static/rod_diagnostics.js` |
+| `admin/auth` / `tokenadmin` / `oplog` | 访问身份、令牌管理、异步审计 |
+| `admin/configstore` / `sysinfo` | 配置持久化与缓存、机器指标 |
+| `admin/tasksource` / `sitesource` / `gormsource` / `frameworkdata` | 表格及只读查询适配 |
+| `pkg/account` / `onboarding` | 账号认证、健康、池调度及登录过程；真实站点 Provider 属于业务模块 |
+| `pkg/account/contract` / `gormstore` | 可持久化值契约与独立 GORM 适配；原 account 构造函数和类型保持兼容 |
+| `pkg/browser` / `identity` / `identity/runtime` | 浏览器资源、身份值与单实例绑定服务 |
+| `pkg/htmlfetch` / `discovery` / `extract` | HTTP 会话、页面发现和数据校验 |
+| `pkg/governance` / `egress` | 单实例预算和网络出口规则 |
+| `pkg/middleware/{filedown,m3u8,proxy}` | 文件、媒体、代理能力，按各自资源生命周期运行 |
+| `pkg/events` / `loggers` / `notify` / `redact` | 事件、日志、通知和脱敏 |
+| `obs/{analyze,eventlog,incident,logidx,pattern,report}` | 观测输入、分析、证据与产物渲染，不负责 App 启停 |
+| `pkg/temporary` / `testdb` / `strategymigrate` | 临时资源、隔离测试库与显式只读迁移检查 |
+| `cmd/papa` | CLI 与脚手架；模板属于公开使用范本 |
 
-**框架与业务边界**：真实网站的目标 URL、选择器/预期、脱敏策略、数据库/模型接线及外站验收均放在独立业务模块，通过 Papa 公开 API 接入。框架只保留通用库、通用修复/回归和本地合成 fixture 示例；业务模块不得导入 Papa 的 internal 包，也不得成为 Papa 的反向依赖。
+每个组件通过窄接口或明确值传递协作，不把整个 App / Engine 传进子组件。共享锁需要保持的原子边界先记录，再考虑跨包；不能以导出字段或新建大而全的 manager 包规避边界。
 
-**依赖方向**（箭头 = import 方向，不允许反向）：
+`architecture_test.go::TestPackageResponsibilityBoundaries` 检查后台不反向依赖 App、运行服务不依赖 HTTP/后台/Engine、引擎子组件不依赖父 Engine，且 App 不拥有 JS/CSS 文件。此守卫不能代替行为测试。
 
-```
-papa 门面 ──► internal/app ──► engine ──► internal/{workerpool,database,track,breaker}
-                 │               │              pkg/{browser,htmlfetch,loggers,middleware}
-                 │               └──► core ◄── config
-                 └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
-                         └──► tasksource/oplog 还依赖 admin/gormsource
-pkg/notify ──► core
-pkg/strategymigrate ──► database/sql + MySQL错误分类（只读旧表/目标表盘点；业务清单由宿主提供）
-pkg/temporary ──► 标准库 + UUID（Files安全目录、Cleaner清理顺序；业务实现CleanupStore）
-pkg/testdb ──► 标准库（独占测试库创建/清理；不包含业务库白名单）
-obs ──► pkg/events + models（只读；不依赖 engine / admin / app，业务项目可直接 import 扩展）
-```
-
-三条约束值得记住：
-
-1. **`core` 只能 import 标准库。** 它被 `admin/server`、`pkg/notify` 这些叶子用；一旦它
-   import 了 gorm / models，这两处就会被连带着拖上 —— 那正是抽它出来要避免的。
-2. **值类型要跨包就走 `core`，引擎自己的类型留在 `engine`。** `Task` / `Trace` / `Fetcher`
-   与引擎强耦合（`Fetcher` 的签名里就带 `*Engine`），搬过去零收益，还得多拖 gorm 和 logrus。
-3. **放进 `admin/` 就等于承诺 API。** 只想自己用的实现放 `internal/`；哪天决定给业务用，
-   再挪过去 —— 挪的那次是**新增**（原来外部也 import 不到），不是破坏性变更。
-
-`engine/alias.go` 给 core 里的值类型留了别名（`engine.StageStats` ≡ `core.StageStats`，
-是**同一个类型**而不是可互转的两个）。它的来历是"抽 core 时不破坏 `crawler.StageStats`"——
-而 `crawler` → `engine` 这次改名本身已经是破坏性的，所以对**模块外**来说这个垫子基本失去意义；
-留着是因为模块内（`internal/app` 等）还在用，新代码请直接写 `core`。
-
----
+公开 `papa.App`、`engine.Task`、`Fetcher` 与现有别名继续兼容。新值类型仅在确实跨领域且保持纯值时进入 core；领域专用契约放其领域包。
 
 ## 7. 站点维度：哪些已按站点切、哪些还是全局
 
@@ -269,7 +170,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | 站点快照（**内存是源**：启动读 `crawler_config` 的 `sites` 键（没有就按声明生成）、按声明对齐；`StartPaused` 也在这**一次**写里落成暂停态，手动暂停/恢复整块回写） | `engine/sitestat.go`、`admin/configstore/sites.go` |
-| 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/server/static/mo.js`、`admin/tasksource/table.go` |
+| 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/monitoring/static/controller.js`、`admin/tasksource/table.go` |
 | 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
 | 治理 | 同站请求并发/速率/AutoThrottle、阶段有效执行并发、站点服务权重 | `pkg/governance`、`engine/governance.go` |
 | 身份 | 站点内命名池保持当前账号；账号管理状态由同站多池共享；task.account_pool 保留补偿归属 | `pkg/account/pools.go`、`engine/account_pool.go` |
@@ -325,7 +226,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 批量部分成功回归在 `engine/submit_partial_test.go`：覆盖首/中/尾行失败、多行与全批失败、成功项不重复投递、失败项可重试、延迟项保持等待，以及落库后读取失败仍保留投递责任。
 
-后台报告切换回归在 `admin/server/obsreport_race_test.go` 的 `TestObsReportLatestRequestWins`：有 Node.js 时执行 `testdata/obs_report_race_test.js`，以受控响应顺序运行真实的报告加载函数，覆盖响应头/正文晚到、旧请求失败、文件切换、A→B→A 和空报告。没有 Node.js 的环境跳过该行为测试；可直接运行 `node admin/server/testdata/obs_report_race_test.js admin/server/static/mo.js`。
+后台报告切换回归在 `admin/server/obsreport_race_test.go` 的 `TestObsReportLatestRequestWins`：有 Node.js 时执行 `testdata/obs_report_race_test.js`，以受控响应顺序运行真实的报告加载函数，覆盖响应头/正文晚到、旧请求失败、文件切换、A→B→A 和空报告。没有 Node.js 的环境跳过该行为测试；可运行 `go test ./admin/server -run TestObsReportLatestRequestWins -count=1`，测试会导出实际组合资源再执行 Node。
 
 报告运行筛选回归在 `obs/load_run_scope_test.go` 的 `TestLoadSourcesGapCountFollowsRunAndWindow`：从临时 JSONL 与 gzip 轮转文件加载交错、多运行、重复及乱序事件，验证单次运行的缺口和 `event_gaps` 检查、全量汇总及时间窗口边界；文件读取诊断仍保留原范围。
 
@@ -335,7 +236,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 
 
-运营首页位于 `admin/server/static/workbench.js` / `workbench.css`；`buildWorkbench` 只派生当前监控快照，`renderWorkbench` 与 `setWorkbenchConnection` 分别接到现有渲染及连接状态。`workbench_test.js` 覆盖统计口径、站点并集、缺失数据、采样时间、XSS、导航作用域、同名按钮焦点、折叠状态和 `__all__` 站点名；`TestWorkbenchTemplateKeepsOperationsAndDetails` 验证模板及嵌入资源接线；`TestDemoTaskSiteFilter` 让演示数据能真实验证本站任务跳转。此路径不增加 HTTP 请求或数据库读取。
+运营首页位于 `admin/monitoring/static/workbench.js` / `workbench.css`；`buildWorkbench` 只派生当前监控快照，`renderWorkbench` 与 `setWorkbenchConnection` 分别接到现有渲染及连接状态。`workbench_test.js` 覆盖统计口径、站点并集、缺失数据、采样时间、XSS、导航作用域、同名按钮焦点、折叠状态和 `__all__` 站点名；`TestWorkbenchTemplateKeepsOperationsAndDetails` 验证模板及嵌入资源接线；`TestDemoTaskSiteFilter` 让演示数据能真实验证本站任务跳转。此路径不增加 HTTP 请求或数据库读取。
 
 
 
@@ -350,7 +251,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 - `admin/server/visual_assets.go` / `visual_assets_test.go`：检测当前链接 oao 的成对静态资源；HTML 不引用旧依赖不存在的文件。`TestMonitorOptionalVisualReferencesMatchLinkedDependency` 在本地新版与发布旧版两配置下复验。
 - `admin/server/monitor_metadata_test.go`：Monitor 实例标识、响应时间、系统未采样元数据及旧字段兼容。
 - `admin/sysinfo/sysinfo.go` / `system_sampling_test.go`：CPU、内存和磁盘锁外采样、短锁发布；目录快照不丢失，可用性、成功时间、合法零值、采样失败与读取不阻塞回归。
-- `admin/server/static/visual-state.js`：纯内存、受限观测模型，按真实时间去重/断线/重置；`visuals.js/css`：首页图表接线和响应式样式；`appearance.js`：注册既有设置槽的浏览器本地动效偏好。
+- `admin/monitoring/static/visual-state.js`：纯内存、受限观测模型，按真实时间去重/断线/重置；`visuals.js/css`：首页图表接线和响应式样式；`appearance.js`：注册既有设置槽的浏览器本地动效偏好。
 - `testdata/visual_state_test.js` / `visuals_test.js`：真实生产 JS 的时间、身份、阶段集合、采样周期、同时间戳重连、旧响应、缺失值、前11项+其他总计、降级和销毁回归，由 `TestOperationsJavaScriptBehavior` 自动执行。`monitor_requests_test.js` 同时验证迟到/超时响应不进入观测历史。
 - 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不引入真实站点业务依赖。
 
@@ -363,21 +264,21 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 ### 四类导航与概览简化
 
-`admin/server/static/navigation.js` 集中维护 module/table/page 的四类归属与二级菜单；`mo.js` 仍负责切页生命周期、鉴权、请求代次和日志弹窗。框架 task/operation_log 使用固定分类，普通表格默认 data；`Page.Section` 通过 `/api/pages` 输出，空/未知值回退 data。`Group` 仅用于类内分组，业务项目在自己的 UsePage 声明分类。`cmd/papa/templates/monitor_view.go.tmpl` 展示可选字段；已有项目不会被 upgrade 改写业务页面。
+`admin/shell/static/navigation.js` 集中维护 module/table/page 的四类归属与二级菜单；`shell` 控制器负责导航、会话和共享请求生命周期；日志弹窗与请求代次属于 `admin/logs/static/controller.js`。`/static/mo.js` 仅为按确定顺序组合功能工厂的兼容 URL。框架 task/operation_log 使用固定分类，普通表格默认 data；`Page.Section` 通过 `/api/pages` 输出，空/未知值回退 data。`Group` 仅用于类内分组，业务项目在自己的 UsePage 声明分类。`cmd/papa/templates/monitor_view.go.tmpl` 展示可选字段；已有项目不会被 upgrade 改写业务页面。
 
-`template.html` 提供当前监控模块根及操作入口，新增 `mod-logs`、`section-nav` 与空分类区域；`layout.css` 在原样式后、业务 custom.css 前加载，用于轻量布局，不覆盖 oao 通用组件源码。`visuals.js` 按 details 展开状态创建/销毁图表，toggle/恢复可见仅重绘已接受快照；`workbench.js` 限制关注项三条并保留队列/暂停的完整详情入口。
+`admin/shell/views/template.html` 组合各功能包 views 中的模块根及操作入口，新增 `mod-logs`、`section-nav` 与空分类区域；`layout.css` 在原样式后、业务 custom.css 前加载，用于轻量布局，不覆盖 oao 通用组件源码。`visuals.js` 按 details 展开状态创建/销毁图表，toggle/恢复可见仅重绘已接受快照；`workbench.js` 限制关注项三条并保留队列/暂停的完整详情入口。
 
 `TestMonitorLayoutHasFourCategoriesAndSeparateLogs`、`TestMonitorOverviewHasOneDefaultChart` 守卫模板结构；`navigation_test.js`、`monitor_requests_test.js`、`monitor_identity_test.js` 执行真实生产 JS，覆盖四类映射、兼容回退、文本安全、未保存阻止导航、晚到清单/日志和凭据切换。`visuals_test.js` 覆盖 1→3→6 实例、折叠销毁、离页/后台不复活和旧依赖回退。`internal/app/page_sections_test.go` 通过真实 HTTP handler 验证 Section 契约，`cmd/papa/scaffold_page_sections_test.go` 检查新建模板。
 
 
-旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版执行真实 render、筛选、正常 POST、销毁确认与迟到401/正文隔离，并断言不安装兼容包装。`mo.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。
+旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版执行真实 render、筛选、正常 POST、销毁确认与迟到401/正文隔离，并断言不安装兼容包装。`admin/shell/static/table-adapter.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。
 
 `TestMonitorLinkedVisualsBehavior` 从当前链接 oao 的 StaticFS 读取真实图表与动效脚本，运行 `testdata/linked_visuals_test.js`，覆盖观测边界、图表折叠/离页、pagehide 迟到回调、KPI 动画和滚动焦点保留。`monitor_identity_test.js` 联合真实 mo/requests 验证冻结页面漏收 storage 事件后的凭据核对。DOM、动画调度及请求仍为受控替身，浏览器排版与实际 BFCache 命中须另验。
 
 ### 外观主题文件分工
 
 - `static/appearance.js`：浏览器外观偏好、设置控件、跨标签页/页面恢复同步与订阅清理；设置只更新根属性，不重新挂载业务。
-- `template.html`：CSS加载前恢复合法外观/明暗值；`static/mo.js` 保留明暗快捷入口和安全的凭据读取。显示选择以DOM当前状态为准，不能每次读取旧存储覆盖写入失败后的临时选择。
+- `admin/shell/views/template.html`：CSS加载前恢复合法外观/明暗值；shell 的 theme/session 控制器保留明暗快捷入口和安全的凭据读取。显示选择以DOM当前状态为准，不能每次读取旧存储覆盖写入失败后的临时选择。
 - `static/layout.css`：共享导航/响应式规则与按外观限定的覆盖；原 `mo.css` 是经典基础。简约根条件使用低权重 `:where`，body中的oao浮层同样继承；`visuals.css` 保留减弱动效优先。
 - `appearance_layout_test.go`：主题根变量隔离、导航/浮层覆盖及动效结构守卫。`testdata/appearance_test.js` 执行首帧、实际主题/设置代码，覆盖7组状态行为；`storage_startup_test.js` 完整执行后台启动，4项验证存储读取失败仍保持未登录、无请求与无旧凭据复用。两者均由 `ui_behavior_test.go` 自动执行。
 
@@ -406,7 +307,7 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 `TestDownloaderConfigCopiesCannotExpandPrivateGrant` 验证外部配置和 Config 副本不能改变 With/SetClient 授权；`TestHTMLHotReloadCannotGrantPrivateOrigin`、`TestInvalidDownloaderProxyNeverFallsBackToDirect` 验证热更与代理错误不会扩大权限。`pkg/middleware/m3u8/egress_ffmpeg_test.go` 的真实合并测试需 `PAPA_EGRESS_FFMPEG_BIN`，同时验证本地片段成功与嵌套网络清单被拒绝。
 
 
-导航归属：`internal/app/page_ownership.go` 校验 Page.Owns 的引用与无环性，`admin/server/static/navigation.js` 负责菜单归属和直接访问高亮；不改变后端授权。
+导航归属：`internal/app/page_ownership.go` 校验 Page.Owns 的引用与无环性，`admin/shell/static/navigation.js` 负责菜单归属和直接访问高亮；不改变后端授权。
 
 临时资源基础能力：`pkg/temporary/files.go` 负责宿主目录与UUID文件路径；`cleanup.go` 负责已授权删除的顺序与重试。业务独占同ID的写入/读出/删除锁并实现CleanupStore事务，框架不导入业务models。`pkg/testdb/schema.go` 只清理本次独占创建的测试库。回归 `go test -race ./pkg/temporary ./pkg/testdb`；契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。
 
@@ -418,7 +319,7 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow.go �
 
 真实浏览器用例读取 `PAPA_EGRESS_BROWSER_BIN`；包含页面导航、XHR、子资源、重定向、第三方排除以及 OA 草稿/冲突交互，未配置时明确跳过。覆盖只针对当前受管 page target 与显式 origin，不把 popup/worker/raw Rod 页面算作已经验证。MySQL CAS 回归 `TestRuntimePolicyMySQLConcurrentCAS` 用 `PAPA_RUNTIME_TEST_CONFIG` 指向连接配置，独占创建测试库并清理；普通假库测试不能替代它。脚手架 `TestScaffoldBuildsAndUpgradePreservesAppDocs` 实际 new → tidy → build，并检查升级保留应用文档。
 
-后台只注册现有通用能力。`admin/server/ui_behavior_test.go` 的 `TestMonitorTemplateLocalAssetsExist` 检查模板引用的本地资源确实嵌入；`TestOperationsJavaScriptBehavior` 执行 Node 行为测试，覆盖导航、身份切换、草稿保护、队列及工作台。`navigation_test.js` 检查当前内置模块和对应页面，`taskflow.go` / `taskflow.js` 保留动态任务流入口。
+后台只注册现有通用能力。`admin/server/ui_behavior_test.go` 的 `TestMonitorTemplateLocalAssetsExist` 检查模板引用的本地资源确实嵌入；`TestOperationsJavaScriptBehavior` 执行 Node 行为测试，覆盖导航、身份切换、草稿保护、队列及工作台。`navigation_test.js` 检查当前内置模块和对应页面，`admin/taskflow/handler.go` / `static/taskflow.js` 保留动态任务流入口。
 
 `admin/frameworkdata/tables_test.go` 使用现有框架模型验证只读目录、鉴权、查询投影、稳定排序、脱敏和缺表恢复，不依赖已删除的 Agent/规则模型。历史旧表仅在 `pkg/strategymigrate` 的只读预检清单中保留，不会自动迁移或删除。
 

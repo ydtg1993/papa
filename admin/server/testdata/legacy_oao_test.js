@@ -1,9 +1,9 @@
+const controllers=require('./controllers');
 // Run the actual linked oao asset, not a mock renderer or a copied action body.
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const makeDOM = require('./legacy_oao_dom');
 const mo = fs.readFileSync(path.join(process.argv[2], 'mo.js'), 'utf8');
 const oao = fs.readFileSync(path.join(process.argv[2], 'oao.js'), 'utf8');
-const adapter = mo.slice(mo.indexOf('    var legacyTableAdapter'), mo.indexOf('    function resetMonitorSessionState'));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(done => resolve = done); return {promise, resolve}; };
 
@@ -25,7 +25,7 @@ function setup(action = {key: 'retry', label: 'Retry'}) {
         CustomEvent: function(type, init) { this.type = type; Object.assign(this, init); },
         KeyboardEvent: function(type, init) { this.type = type; Object.assign(this, init); },
         loadKey: () => credential, authGeneration: 0, tableViewEpoch: 0});
-    c.window = c; vm.runInContext(oao, c); vm.runInContext(adapter, c);
+    c.window = c; controllers.run(oao, c); controllers.load(c,mo,['shell/table-adapter']);
     c.Oao.init({base: '/api/oao', headers: () => ({Authorization: 'Bearer ' + credential}), onUnauthorized: () => { unauthorized++; return false; }});
     const root = dom.doc.body.appendChild(dom.create('div')); root.id = 'oao-view';
     return {c, ...dom, root, requests, control, nativeFetch, payload, unauthorized: () => unauthorized,

@@ -1,33 +1,12 @@
 package engine
 
 import (
-	"container/heap"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 )
-
-func TestDelayHeapOrdering(t *testing.T) {
-	now := time.Now()
-	h := &delayHeap{}
-	heap.Init(h)
-	heap.Push(h, &delayedTask{at: now.Add(10 * time.Second)})
-	heap.Push(h, &delayedTask{at: now.Add(2 * time.Second)})
-	heap.Push(h, &delayedTask{at: now.Add(5 * time.Second)})
-
-	want := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
-	for i, w := range want {
-		got := heap.Pop(h).(*delayedTask).at
-		if !got.Equal(now.Add(w)) {
-			t.Fatalf("pop %d = %v, want %v", i, got.Sub(now), w)
-		}
-	}
-	if h.Len() != 0 {
-		t.Fatalf("heap should be empty, len=%d", h.Len())
-	}
-}
 
 // 到点前运营动过这一行（跑完了 / 被标失败 / 已被别的路径投出去并被认领）→ **不能投**。
 // 照旧快照投的话，`submitUpdates` 会把它无条件写回 pending，`claimTask`（要的正是 pending）
@@ -62,9 +41,9 @@ func TestDelayDispatcherDropsTaskNoLongerPending(t *testing.T) {
 				t.Fatalf("丢掉的任务不该写库：\n%s", got)
 			}
 			// 堆里也不留（丢掉就是丢掉，不是延后）
-			e.delayMu.Lock()
-			n := e.delayHeap.Len()
-			e.delayMu.Unlock()
+
+			n := e.delays.Len()
+
 			if n != 0 {
 				t.Fatalf("丢掉的任务不该留在延迟堆里，实得 %d", n)
 			}
@@ -115,12 +94,11 @@ func TestDelayDispatcherRetriesWhenRereadFails(t *testing.T) {
 	if got := f.written(); got != "" {
 		t.Fatalf("重读失败时不该写库：\n%s", got)
 	}
-	e.delayMu.Lock()
-	defer e.delayMu.Unlock()
-	if e.delayHeap.Len() != 1 {
-		t.Fatalf("重读失败的任务应当放回堆里等下一轮，实得 %d", e.delayHeap.Len())
+
+	if e.delays.Len() != 1 {
+		t.Fatalf("重读失败的任务应当放回堆里等下一轮，实得 %d", e.delays.Len())
 	}
-	if got := e.delayHeap[0].at; !got.After(before) {
+	if got := e.delays.Earliest(); !got.After(before) {
 		t.Fatalf("放回堆里的任务应当改到将来（避免忙等），实得 %v", got)
 	}
 }

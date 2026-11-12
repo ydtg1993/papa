@@ -31,12 +31,10 @@ func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task
 		stages:     map[string]*stageInfo{"stub:stub": {stage: "stub", config: StageConfig{Site: "stub"}}},
 		pools:      newPoolRegistry(),
 		dedupCache: newDedupCache(0),
-		spilled:    make(map[string][]*Task),
-		delayCh:    make(chan struct{}, 1),
 	}
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
-	e.pools.set("stub:stub", pool)
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
+	e.pools.Set("stub:stub", pool)
 	return e
 }
 
@@ -439,9 +437,8 @@ func TestSubmitTaskDelayedGoesToHeap(t *testing.T) {
 		t.Fatal("未到点不该入队")
 	}
 
-	e.delayMu.Lock()
-	n := e.delayHeap.Len()
-	e.delayMu.Unlock()
+	n := e.delays.Len()
+
 	if n != 1 {
 		t.Fatalf("延迟堆里应有 1 条，实得 %d", n)
 	}
@@ -562,9 +559,9 @@ func TestSubmitTasksHonoursDelay(t *testing.T) {
 	if queued(t, pool) != 1 {
 		t.Fatalf("只有非延迟的那条该立刻入队，实得 %d 条", queued(t, pool))
 	}
-	e.delayMu.Lock()
-	n := e.delayHeap.Len()
-	e.delayMu.Unlock()
+
+	n := e.delays.Len()
+
 	if n != 1 {
 		t.Fatalf("延迟堆里应有 1 条，实得 %d", n)
 	}

@@ -164,7 +164,7 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 
 > **例外**：「系统管理 → 访问令牌」操作页**不是**表格页。它要「新增」并把服务端生成的明文令牌交给操作人看一次，
 > 而表格组件的动作只回 `{"status":"ok"}`、不回数据（组件不给"动作返回数据"这个口子）。
-> 所以这一页是后台自带的原生模块：`/api/tokens` 三条接口 + `mo.js` 里自己渲染的表格，接口在 `admin/tokenadmin`。
+> 所以这一页是后台自带的原生模块：`/api/tokens` 三条接口 + `admin/tokenadmin/static/controller.js` 渲染的表格，前后端均归属 `admin/tokenadmin`。
 
 > **表格归属**：任务操作表 `task`（对应 `crawler_tasks`）归「数据与资源」，Trace 合入任务行弹窗；操作日志 `operation_log` 归「系统管理」。业务表格只有显式 `UseTables` 注册后才出现，业务专门页面用 `UsePage` 注册；框架不扫描业务数据库。
 
@@ -933,3 +933,21 @@ Papa.settings('business-options', '业务设置', function (el) {
 
 
 未结算的串行验证失败会在熔断历史中显示“真实失败待落库确认”，后续追加结算重试、落库等待、重启接续和最终确认。待确认时不会提前增加失败统计或显示验证通过；确认后按原任务轮次幂等结算，计数快照保存前仍禁止继续验证。历史沿用每日追加记录，重启不覆盖原错误和等待过程。
+
+
+## 后台功能模块维护
+
+内置后台按功能组织：`admin/accounts` 管理账号接入，`admin/accountpools` 管理池与补偿，`admin/runtimecontrol` 管理运行策略/历史/代理健康，`admin/diagnostics` 提供浏览器和身份诊断。每个功能的脚本在其 `static/` 内嵌入；后台外壳与公共资源仍在 `admin/server`。
+
+`internal/app` 负责注入服务和统一挂载鉴权，不承载页面脚本或策略事务。策略保存/核对属于 `internal/runtimecontrol`，浏览器执行/清理属于 `internal/browserdiagnostics`。新增接口遵循同一分工，详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+此次结构调整保留既有 `/api/*`、`/static/custom.js`、页面 key 与 `UsePage` / `UseRouter` 扩展方式；业务无需因文件位置变化迁移调用。
+
+
+### 后台功能模块与兼容资源
+
+`admin/server` 保留 `NewMonitor`、`MonitorConfig`、`Register`、`Auth`、`SetWhitelist`、扩展注册和任务流脚本导出入口，负责统一装配与鉴权。监控、队列、熔断、设置、日志、报告、追踪和任务流分别由对应功能包管理；白名单状态归 `admin/access`。
+
+页面外壳和共享会话在 `admin/shell`，功能包同时拥有 handler、视图片段、控制器和样式。功能控制器通过明确依赖接口协作，私有选择与请求代次不放在共享全局变量中；页面离开、凭据更换和销毁会使旧请求失效。
+
+既有 `/static/mo.js`、`/static/mo.css` 等 URL 仍有效，由嵌入的功能资源确定性组合，不需要新增前端构建步骤。`Papa.page`、`Papa.settings`、公共请求/弹窗工具和业务脚本顺序保持兼容。不要直接依赖框架控制器的内部状态或源码文件排列。

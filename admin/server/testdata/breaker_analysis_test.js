@@ -1,10 +1,8 @@
+const controllers=require('./controllers');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(process.argv[2], 'utf8');
-const start = source.indexOf('var breakerAnalysisSeq = 0;');
-const end = source.indexOf('// 暂停抓取：', start);
-assert.ok(start >= 0 && end > start);
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b)=>{resolve=a;reject=b;}); return {promise,resolve,reject}; };
 function setup() {
     let nodes = {}, auth = 0;
@@ -28,7 +26,7 @@ function setup() {
         copyText: s => copies.push(s),
         downloadFile: (url,current)=>{if(current())downloads.push(url);},
     });
-    vm.runInContext(source.slice(start,end),context);
+    controllers.load(context,source,['breakers/controller']);
     return {requests,dialogs,downloads,copies,timers,load:site=>context.openBreakerAnalysis(site),logout:()=>{auth++;},tick:()=>{const [id,fn]=timers.entries().next().value;timers.delete(id);return fn();}};
 }
 function response(text, id='one') {return {ok:true,json:async()=>({retention:'bounded history',reports:[{id,at:'time',failures:1,complete:true,summary:'<img onerror=bad>',text,groups:[{stage:'<script>',category:'HTTP 429',count:1,percent:100,tasks:1}]}]})};}

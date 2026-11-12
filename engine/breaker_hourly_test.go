@@ -36,7 +36,7 @@ func verificationSuccess(t *testing.T, e *Engine, id int, round string) {
 
 func TestBreakerMixedThreeSelectedSamplesMatchReport(t *testing.T) {
 	e := mixedSampleFixture(t, 4)
-	if done, ok := e.admitBreakerTask(&Task{ID: 80, Site: "synthetic", Stage: "detail"}); ok {
+	if done, ok := e.breakers.admitBreakerTask(&Task{ID: 80, Site: "synthetic", Stage: "detail"}); ok {
 		done()
 		t.Fatal("unrelated task bypassed selected samples")
 	}
@@ -184,11 +184,11 @@ func TestBreakerHistoryBackpressureCannotResetFailures(t *testing.T) {
 	completeSmartProbeRound(t, e)
 	flushSmart(t, e)
 	l := smartLifecycle(e)
-	e.breakerMu.Lock()
+	e.breakers.breakerMu.Lock()
 	// Exercise the capacity boundary without spending the one-minute detector
 	// window constructing thousands of presentation records under -race.
-	e.smartBreakers["synthetic"].event.pendingHistory = make([]incident.Transition, 4095)
-	e.breakerMu.Unlock()
+	e.breakers.smartBreakers["synthetic"].event.pendingHistory = make([]incident.Transition, 4095)
+	e.breakers.breakerMu.Unlock()
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
 	expectSmartState(t, e, "manual")
 	if e.breakerSum("synthetic") != 3 {
@@ -198,11 +198,11 @@ func TestBreakerHistoryBackpressureCannotResetFailures(t *testing.T) {
 
 func TestBreakerHistoryPressureCannotDeadlockManualPauseOrReopenClosedEvent(t *testing.T) {
 	e, _ := readOnlyFixture(t, "detail")
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
 	// Queue pressure is independent of history payload content.
 	s.event.pendingHistory = make([]incident.Transition, 4096)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	done := make(chan bool, 1)
 	go func() { done <- e.PauseSite("synthetic", "maintenance") }()
 	select {
@@ -236,7 +236,7 @@ func TestBreakerHourlyRecheckKeepsPauseAndGrantsOnlyOneCycle(t *testing.T) {
 		t.Fatal("missed hours caused catchup or lost protection")
 	}
 	r.err = errors.New("fixture write unavailable")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("expected save error")
 	}
 	e.tickBreakers(context.Background(), next.NextProbeAt.Add(time.Millisecond))
@@ -253,7 +253,7 @@ func TestBreakerHourlyRestartPreservesDueTimeAndRecordsOldScope(t *testing.T) {
 	want := smartLifecycle(e).RecheckAt
 	flushSmart(t, e)
 	restarted, _ := newSmartBreakerFixture(t, 100)
-	restarted.breakerStore, restarted.breakerRuntime = r, false
+	restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = r, false
 	registerBreakerFixtureStages(restarted, "detail") // declaration removed in new process
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() { cancel(); restarted.tickerWG.Wait() }()
@@ -272,8 +272,8 @@ func TestBreakerHourlyRestartPreservesDueTimeAndRecordsOldScope(t *testing.T) {
 func TestBreakerSelectedTaskRetryMySQLUsesExistingVersionedPath(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100, Window: time.Minute, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 2}})
 	for i := 1; i <= 2; i++ {
 		row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: fmt.Sprintf("https://example.invalid/%d", i), Status: models.TaskStatusFailed, CompensationMode: ""}

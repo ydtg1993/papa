@@ -30,9 +30,9 @@ func TestArchiveDownloadRejectsParentJunction(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	m := newFakeMonitor(t)
-	m.cfg.ArchiveDir = root
-	rr := serve(m, http.MethodGet, "/api/task/page?file=linked/page.html", nil)
+	cfg := MonitorConfig{VerifyToken: allowUnrestrictedTestRequests}
+	cfg.ArchiveDir = root
+	rr := serve(NewMonitor(fakeStageStats, testLogger{t}, cfg), http.MethodGet, "/api/task/page?file=linked/page.html", nil)
 	if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), "outside archive secret") {
 		t.Fatalf("archive escape through parent junction: status=%d body=%q", rr.Code, rr.Body.String())
 	}
@@ -44,8 +44,8 @@ func TestArchiveDownloadConfinesOpenedFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "page.html"), []byte(secret), 0600); err != nil {
 		t.Fatal(err)
 	}
-	m := newFakeMonitor(t)
-	m.cfg.ArchiveDir = root
+	cfg := MonitorConfig{VerifyToken: allowUnrestrictedTestRequests}
+	cfg.ArchiveDir = root
 	for _, tc := range []struct {
 		name, target, requested string
 	}{
@@ -56,7 +56,7 @@ func TestArchiveDownloadConfinesOpenedFile(t *testing.T) {
 			if err := os.Symlink(tc.target, filepath.Join(root, tc.name)); err != nil {
 				t.Skipf("symlink unavailable: %v", err)
 			}
-			rr := serve(m, http.MethodGet, "/api/task/page?file="+url.QueryEscape(tc.requested), nil)
+			rr := serve(NewMonitor(fakeStageStats, testLogger{t}, cfg), http.MethodGet, "/api/task/page?file="+url.QueryEscape(tc.requested), nil)
 			if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), secret) {
 				t.Fatalf("archive escape: status=%d body=%q", rr.Code, rr.Body.String())
 			}
@@ -70,7 +70,7 @@ func TestArchiveDownloadConfinesOpenedFile(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "nested", "page.html"), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		rr := serve(m, http.MethodGet, "/api/task/page?file=nested/page.html", nil)
+		rr := serve(NewMonitor(fakeStageStats, testLogger{t}, cfg), http.MethodGet, "/api/task/page?file=nested/page.html", nil)
 		if rr.Code != http.StatusOK || rr.Body.String() != body || rr.Header().Get("Content-Disposition") != `attachment; filename="page.html"` {
 			t.Fatalf("normal archive download: status=%d headers=%v body=%q", rr.Code, rr.Header(), rr.Body.String())
 		}
@@ -87,13 +87,13 @@ func TestArchiveDownloadSupportsRelativeRootAndRejectsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, root := range []string{"archive", "." + string(filepath.Separator) + "archive"} {
-		m := newFakeMonitor(t)
-		m.cfg.ArchiveDir = root
-		rr := serve(m, http.MethodGet, "/api/task/page?file=nested/page.html", nil)
+		cfg := MonitorConfig{VerifyToken: allowUnrestrictedTestRequests}
+		cfg.ArchiveDir = root
+		rr := serve(NewMonitor(fakeStageStats, testLogger{t}, cfg), http.MethodGet, "/api/task/page?file=nested/page.html", nil)
 		if rr.Code != http.StatusOK || rr.Body.String() != body {
 			t.Fatalf("relative root %q: status=%d body=%q", root, rr.Code, rr.Body.String())
 		}
-		rr = serve(m, http.MethodGet, "/api/task/page?file=nested", nil)
+		rr = serve(NewMonitor(fakeStageStats, testLogger{t}, cfg), http.MethodGet, "/api/task/page?file=nested", nil)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("directory under %q accepted: status=%d", root, rr.Code)
 		}

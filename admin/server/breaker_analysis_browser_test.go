@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -24,17 +23,21 @@ func TestBreakerAnalysisRealBrowser(t *testing.T) {
 	if bin == "" {
 		t.Skip("PAPA_EGRESS_BROWSER_BIN not configured")
 	}
-	raw, _ := staticFS.ReadFile("static/mo.js")
-	css, _ := staticFS.ReadFile("static/mo.css")
-	source := string(raw)
-	dialog := source[strings.Index(source, "var Dialog = (function ()"):strings.Index(source, "/** skeleton 生成")]
-	analysis := source[strings.Index(source, "var breakerAnalysisSeq = 0;"):strings.Index(source, "// 暂停抓取：")]
-	m := newFakeMonitor(t)
+	read := func(name string) string {
+		b, err := staticFS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	css := read("static/mo.css")
+	controllers := read("features/shell/static/runtime.js") + read("features/shell/static/ui.js") + read("features/breakers/static/controller.js")
+	cfg := MonitorConfig{VerifyToken: allowUnrestrictedTestRequests}
 	now := time.Now()
-	m.cfg.BreakerStatuses = func() map[string]core.BreakerStatus {
+	cfg.BreakerStatuses = func() map[string]core.BreakerStatus {
 		return map[string]core.BreakerStatus{"fixture": {Site: "fixture"}}
 	}
-	m.cfg.BreakerReports = func(context.Context, string) ([]incident.Lifecycle, error) {
+	cfg.BreakerReports = func(context.Context, string) ([]incident.Lifecycle, error) {
 		out := []incident.Lifecycle{}
 		for _, code := range []string{"429", "403"} {
 			c := incident.Capture{ID: code, Site: "fixture", At: now, From: now.Add(-time.Minute), Window: time.Minute, Threshold: 3, Failures: 3}
@@ -48,10 +51,10 @@ func TestBreakerAnalysisRealBrowser(t *testing.T) {
 		return out, nil
 	}
 	mux := http.NewServeMux()
-	m.Register(mux)
+	NewMonitor(fakeStageStats, testLogger{t}, cfg).Register(mux)
 	mux.HandleFunc("/fixture", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><style>`+string(css)+`</style><body><button id="open" onclick="openBreakerAnalysis('fixture')">熔断分析</button><script>function esc(s){let n=document.createElement('span');n.textContent=s;return n.innerHTML;}function captureMonitorView(){return ()=>true;}function apiFetch(url){return fetch(url);}function copyText(s){window.copied=s;}async function downloadFile(url,current){let r=await fetch(url);if(current())window.downloaded=await r.text();}`+dialog+analysis+`</script></body></html>`)
+		fmt.Fprint(w, `<!doctype html><html lang="zh"><meta charset="utf-8"><style>`+string(css)+`</style><body><button id="open" onclick="openBreakerAnalysis('fixture')">熔断分析</button><script>function esc(s){let n=document.createElement('span');n.textContent=s;return n.innerHTML;}function captureMonitorView(){return ()=>true;}function apiFetch(url){return fetch(url);}function copyText(s){window.copied=s;}async function downloadFile(url,current){let r=await fetch(url);if(current())window.downloaded=await r.text();}`+controllers+`</script></body></html>`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

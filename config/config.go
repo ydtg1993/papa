@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
-	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/pkg/breakerpolicy"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
 	yaml "go.yaml.in/yaml/v3"
 )
@@ -199,7 +199,7 @@ type BreakerConfig struct {
 }
 
 // BreakerPolicy configures bounded classification, observation and recovery.
-type BreakerPolicy = breaker.Policy
+type BreakerPolicy = breakerpolicy.Policy
 
 // defaultBreakerWindow 未配置窗口时的默认值。
 const defaultBreakerWindow = 5 * time.Minute

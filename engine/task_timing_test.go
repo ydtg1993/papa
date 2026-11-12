@@ -43,7 +43,7 @@ func TestAttemptFinishPersistenceFailureNeverReplaysHandler(t *testing.T) {
 	if !errors.Is(err, errAttemptTimingPersistence) || len(fetcher.calls()) != 1 || countTaskEvents(c, events.TypeTaskFinished) != 0 {
 		t.Fatalf("timing error replayed business or reported success: err=%v calls=%d", err, len(fetcher.calls()))
 	}
-	if _, ok := e.unsettled[task.ID]; !ok {
+	if _, ok := e.execution.Snapshot()[task.ID]; !ok {
 		t.Fatal("lost persistence responsibility")
 	}
 }
@@ -74,7 +74,7 @@ func TestClaimRejectedByDurableDeadlineRetainsTask(t *testing.T) {
 	if claimed, err := e.claimTask(task); claimed || err != nil {
 		t.Fatal(claimed, err)
 	}
-	if task.NotBefore.IsZero() || len(e.delayHeap) != 1 {
+	if task.NotBefore.IsZero() || e.delays.Len() != 1 {
 		t.Fatal("database-rejected pending task lost scheduling responsibility")
 	}
 }
@@ -89,7 +89,7 @@ func TestSubmitExistingTaskCannotReplacePersistedDeadline(t *testing.T) {
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatal(err)
 	}
-	if !task.NotBefore.Equal(saved) || task.Delay != time.Hour || len(e.delayHeap) != 1 {
+	if !task.NotBefore.Equal(saved) || task.Delay != time.Hour || e.delays.Len() != 1 {
 		t.Fatal("duplicate changed persisted scheduling")
 	}
 }

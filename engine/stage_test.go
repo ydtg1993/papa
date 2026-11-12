@@ -266,8 +266,8 @@ func newTestEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	cfg.Crawler.Trace.Enabled = false
 
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
 	t.Cleanup(e.cancel)
 	return e
 }
@@ -288,14 +288,14 @@ func TestApplyRegisterStageRunsTaskEndToEnd(t *testing.T) {
 	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if e.pools.get(stubKey) != nil {
+	if e.pools.Get(stubKey) != nil {
 		t.Fatal("ApplyRegisterStage 不应建池（池子懒建，等第一条任务 submit 才建）")
 	}
 
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
-	if e.pools.get(stubKey) == nil {
+	if e.pools.Get(stubKey) == nil {
 		t.Fatal("首次 submit 应懒建阶段的工作池")
 	}
 	fetcher.waitCalls(t, 1)
@@ -346,7 +346,7 @@ func TestStopWaitsStagesConcurrently(t *testing.T) {
 	for _, name := range []string{"a", "b", "c"} {
 		pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 		e.stages[name] = &stageInfo{}
-		e.pools.set(name, pool)
+		e.pools.Set(name, pool)
 	}
 
 	start := time.Now()
@@ -400,7 +400,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	if got := e.spillBacklog(); got != 1 {
 		t.Fatalf("暂停中的任务应当寄放在溢出表里，实得 %d", got)
 	}
-	if pool := e.pools.get(stubKey); pool != nil {
+	if pool := e.pools.Get(stubKey); pool != nil {
 		t.Fatal("暂停期间不该建池（收口在建池之前）")
 	}
 
@@ -434,7 +434,7 @@ func TestAddStageOnlyRegisters(t *testing.T) {
 	if !ok {
 		t.Fatal("阶段没登记上")
 	}
-	if e.pools.get(stubKey) != nil {
+	if e.pools.Get(stubKey) != nil {
 		t.Fatal("登记阶段时不该建池子")
 	}
 	if info.fetcher != fetcher || info.config.WorkerCount != 2 {
@@ -506,7 +506,7 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	fetcher.waitCalls(t, 1)
 
 	// 假库上抓取本身是瞬时的，所以此刻 worker 必然已经在延迟里
-	pool := e.pools.get(stubKey)
+	pool := e.pools.Get(stubKey)
 	time.Sleep(150 * time.Millisecond)
 	if _, _, _, inProgress, _ := pool.Stats(); inProgress != 1 {
 		t.Fatalf("延迟期间该任务应仍占着 worker，实得 inProgress=%d", inProgress)
@@ -546,8 +546,8 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
 	t.Cleanup(e.cancel)
 
 	stageCfg := StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
@@ -599,7 +599,7 @@ func TestSubmitCreatesPoolLazily(t *testing.T) {
 	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("首次 submit 应懒建池子并成功，实得：%v", err)
 	}
-	if e.pools.get(stubKey) == nil {
+	if e.pools.Get(stubKey) == nil {
 		t.Fatal("首次 submit 后应有活池")
 	}
 	fetcher.waitCalls(t, 1) // 任务真的跑起来了
@@ -633,8 +633,8 @@ func TestSameStageNameInTwoSitesIsIsolated(t *testing.T) {
 		}
 	}
 
-	poolA := e.pools.get(core.StageKey("a", "catalog"))
-	poolB := e.pools.get(core.StageKey("b", "catalog"))
+	poolA := e.pools.Get(core.StageKey("a", "catalog"))
+	poolB := e.pools.Get(core.StageKey("b", "catalog"))
 	if poolA == nil || poolB == nil {
 		t.Fatalf("两个站都该有自己的池子，实得 a=%v b=%v", poolA, poolB)
 	}
@@ -684,10 +684,10 @@ func TestPauseIsolatesPerSite(t *testing.T) {
 	e.SetSiteBreaker("a", cfg)
 	e.SetSiteBreaker("b", cfg)
 
-	if e.smartBreakers["a"] == e.smartBreakers["b"] {
+	if e.breakers.smartBreakers["a"] == e.breakers.smartBreakers["b"] {
 		t.Fatal("两个站的计数器应当各一份（失败数不能互相灌）")
 	}
-	if e.smartBreakers["ghost"] != nil {
+	if e.breakers.smartBreakers["ghost"] != nil {
 		t.Fatal("没配过熔断的站点应当是 nil（= 没有熔断这回事），不是回落到谁身上")
 	}
 
@@ -769,8 +769,8 @@ func stageDepEngine(t *testing.T) *Engine {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
 	t.Cleanup(e.cancel)
 	return e
 }
@@ -886,8 +886,8 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
 	t.Cleanup(e.cancel)
 	// 不用重赋 e.ctx：NewEngine 已经建好可取消的 ctx，重赋会与 delayDispatcher
 	// 读同一个字段（data race），还会让 dispatcher 永不退出。

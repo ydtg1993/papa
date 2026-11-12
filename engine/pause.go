@@ -163,8 +163,8 @@ func (e *Engine) setPause(scope pauseScope, st pauseState) bool {
 // Manual pause is process-local. Taking over the whole automatic scope closes
 // that automatic event; narrower manual pauses coexist without owning its recovery.
 func (e *Engine) setManualPause(scope pauseScope, st pauseState) bool {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	if old, ok := e.paused[scope]; ok && old.Source == PauseSourceManual {
@@ -173,10 +173,10 @@ func (e *Engine) setManualPause(scope pauseScope, st pauseState) bool {
 	if old, ok := e.paused[pauseScope{Site: scope.Site}]; ok && old.Source == PauseSourceManual {
 		return false
 	}
-	if s := e.smartBreakers[scope.Site]; s != nil && s.event != nil && s.event.Active() && (scope.Stage == "" || s.event.Stage == scope.Stage) {
+	if s := e.breakers.smartBreakers[scope.Site]; s != nil && s.event != nil && s.event.Active() && (scope.Stage == "" || s.event.Stage == scope.Stage) {
 		s.manualTakeover = true
 		owner := s.event.ID
-		e.closeSmartBreakerLocked(scope.Site, scope.Stage, "人工接管自动保护；人工暂停仅在本进程有效")
+		e.breakers.closeSmartBreakerLocked(scope.Site, scope.Stage, "人工接管自动保护；人工暂停仅在本进程有效")
 		for key, old := range e.paused {
 			if old.Source == PauseSourceBreaker && old.Owner == owner {
 				delete(e.paused, key)
@@ -190,8 +190,8 @@ func (e *Engine) setManualPause(scope pauseScope, st pauseState) bool {
 		e.paused = make(map[pauseScope]pauseState)
 	}
 	e.paused[scope] = st
-	if s := e.smartBreakers[scope.Site]; s != nil && s.event != nil {
-		e.noteBreakerLocked(s, "manual_pause", scope.Stage, "人工暂停："+st.Reason+"；暂停仅本进程有效", st.At)
+	if s := e.breakers.smartBreakers[scope.Site]; s != nil && s.event != nil {
+		e.breakers.noteBreakerLocked(s, "manual_pause", scope.Stage, "人工暂停："+st.Reason+"；暂停仅本进程有效", st.At)
 	}
 	e.broadcastPauseLocked()
 	return true
@@ -216,14 +216,14 @@ func (e *Engine) clearScope(scope pauseScope) bool {
 // retries automatic verification; only force bypasses it.
 func (e *Engine) clearSite(site string, force bool) bool {
 	// 与终态失败的计数/写暂停串行化，不能让旧判定跨过恢复重新关闸。
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	if s := e.smartBreakers[site]; s != nil && s.event != nil && s.event.PendingFailure != nil {
-		e.noteBreakerLocked(s, "failure_settlement_wait", "", "存在未结算失败，不能人工重试或强制放行；等待原轮次终态确认", time.Now())
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	if s := e.breakers.smartBreakers[site]; s != nil && s.event != nil && s.event.PendingFailure != nil {
+		e.breakers.noteBreakerLocked(s, "failure_settlement_wait", "", "存在未结算失败，不能人工重试或强制放行；等待原轮次终态确认", time.Now())
 		return false
 	}
 	if !force {
-		if s := e.smartBreakers[site]; s != nil && s.event != nil && (s.event.Active() || s.manualTakeover) {
+		if s := e.breakers.smartBreakers[site]; s != nil && s.event != nil && (s.event.Active() || s.manualTakeover) {
 			if s.probeRunning || s.probeExecuting {
 				return false
 			}
@@ -245,7 +245,7 @@ func (e *Engine) clearSite(site string, force bool) bool {
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	cleared := false
-	if s := e.smartBreakers[site]; force && s != nil && s.event != nil && s.event.Active() {
+	if s := e.breakers.smartBreakers[site]; force && s != nil && s.event != nil && s.event.Active() {
 		cleared = true // observing/ramping can be protected without a pause entry
 	}
 	for sc, st := range e.paused {
@@ -257,10 +257,10 @@ func (e *Engine) clearSite(site string, force bool) bool {
 		}
 	}
 	if cleared {
-		if s := e.smartBreakers[site]; s != nil {
+		if s := e.breakers.smartBreakers[site]; s != nil {
 			s.manualTakeover = false
 		}
-		e.closeSmartBreakerLocked(site, "", "人工强制解除整站保护")
+		e.breakers.closeSmartBreakerLocked(site, "", "人工强制解除整站保护")
 		e.broadcastPauseLocked()
 	}
 	return cleared
@@ -354,13 +354,13 @@ func (e *Engine) ResumeStage(site, stage string) bool {
 	if !e.knownSite(site) || stage == "" {
 		return false
 	}
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	cleared := e.clearScope(pauseScope{Site: site, Stage: stage})
-	if s := e.smartBreakers[site]; cleared && s != nil && s.event != nil && s.event.Stage == stage {
-		e.closeSmartBreakerLocked(site, stage, "人工恢复阶段")
+	if s := e.breakers.smartBreakers[site]; cleared && s != nil && s.event != nil && s.event.Stage == stage {
+		e.breakers.closeSmartBreakerLocked(site, stage, "人工恢复阶段")
 	} else if cleared && s != nil && s.event != nil {
-		e.noteBreakerLocked(s, "manual_resume", stage, "人工解除本阶段暂停；不证明整站健康，不清空计数", time.Now())
+		e.breakers.noteBreakerLocked(s, "manual_resume", stage, "人工解除本阶段暂停；不证明整站健康，不清空计数", time.Now())
 	}
 	if cleared {
 		e.wakeDrainNow()
@@ -376,9 +376,9 @@ func (e *Engine) knownSite(site string) bool {
 	if site == "" {
 		return false
 	}
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	return e.smartBreakers[site] != nil
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	return e.breakers.smartBreakers[site] != nil
 }
 
 /* ---------- 启动那一刻：声明里的 StartPaused ---------- */
@@ -414,8 +414,8 @@ func (e *Engine) applyStartPaused() {
 // startPausedSites 声明了 StartPaused 的站点键，**按名字典序**（读的是声明快照，不是熔断器那张表：
 // 这里问的是"声明怎么说"，不是"配了抓取策略的有哪些"）。
 func (e *Engine) startPausedSites() []string {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	out := make([]string, 0, len(e.sites))
 	for key, s := range e.sites {
 		if s.StartPaused {
@@ -428,10 +428,10 @@ func (e *Engine) startPausedSites() []string {
 
 // allSites 有一份 per-site 抓取配置的站点键（按名字典序）—— 与 BreakerStatuses 同一批。
 func (e *Engine) allSites() []string {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	out := make([]string, 0, len(e.smartBreakers))
-	for key := range e.smartBreakers {
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	out := make([]string, 0, len(e.breakers.smartBreakers))
+	for key := range e.breakers.smartBreakers {
 		out = append(out, key)
 	}
 	// 不在这里排：调用方（PauseCrawling / BreakerStatuses）自己排，免得同一个列表两种顺序。

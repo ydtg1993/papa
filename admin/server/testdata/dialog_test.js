@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
 const events={};let mask;
@@ -15,7 +16,7 @@ const dialog=element(),title=element(),body=element(),actions=element();
 actions.querySelector=()=>actions.children[0];
 doc.createElement=tag=>{const el=element();if(tag==='div'&&!mask){mask=el;el.querySelector=s=>({'h3':title,'.dlg':dialog,'.dlg-body':body,'.dlg-actions':actions})[s];el.querySelectorAll=()=>actions.children.filter(b=>!b.disabled);el.contains=b=>actions.children.includes(b);}return el;};
 const c=vm.createContext({document:doc,Object,Array});
-const a=mo.indexOf('    var Dialog ='),b=mo.indexOf('    /* ============',a+10);assert.ok(a>0&&b>a);vm.runInContext(mo.slice(a,b),c);
+controllers.load(c,mo,['shell/ui']);
 (async()=>{
     let cancelled=false;
     const old=c.Dialog.confirm({title:'batch operation'}).then(v=>{cancelled=v===false;});

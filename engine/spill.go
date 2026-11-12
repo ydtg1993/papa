@@ -10,46 +10,18 @@ import (
 )
 
 // spillBacklog 返回当前溢出列表中待回灌的任务总数。
-func (e *Engine) spillBacklog() int {
-	e.spillMu.Lock()
-	defer e.spillMu.Unlock()
-	n := 0
-	for _, tasks := range e.spilled {
-		n += len(tasks)
-	}
-	return n
-}
+func (e *Engine) spillBacklog() int { return e.overflow.Count() }
 
 // spillTasks 整桶放回溢出表（一次锁）。逐条 spillTask 会按条数反复取锁 ——
 // 暂停的桶每 drain_interval 都要原样放回一次，那条路要便宜。
-func (e *Engine) spillTasks(key string, tasks []*Task) {
-	if len(tasks) == 0 {
-		return
-	}
-	e.spillMu.Lock()
-	e.spilled[key] = append(e.spilled[key], tasks...)
-	e.spillMu.Unlock()
-	// 这里**不发事件**：这条路径是 drain 把"暂停桶"原样放回，每个 drain tick（默认 2s）都会走一次；
-	// 发事件会把 events.jsonl 刷屏（实测：4 个暂停站点 150s 产生 386 条 spill_changed）。
-	// 真实的新增溢出走 spillTask（每条一次），回灌成效走 drainSpilled 的 submitted 计数。
-}
+func (e *Engine) spillTasks(key string, tasks []*Task) { e.overflow.Restore(key, tasks) }
 
 // spillTask 将任务加入高水位溢出列表，等待 drain 重新入队。
 // 桶按**阶段键**（站点 + 阶段名）分：两个站的同名阶段各有各的溢出队列，不互相占位。
 //
 // 去重：同一个任务（同 ID；ID 为 0 时退化成 Unique）只放一份。append 不去重的话，
 // 同一任务从多条投递路径（队满 / 池被回收）反复 spill 会越积越多，drain 对同一条行重复 SELECT。
-func (e *Engine) spillTask(task *Task) {
-	key := stageKeyOf(task)
-	e.spillMu.Lock()
-	defer e.spillMu.Unlock()
-	for _, t := range e.spilled[key] {
-		if (task.ID != 0 && t.ID == task.ID) || (task.ID == 0 && t.Unique() == task.Unique()) {
-			return
-		}
-	}
-	e.spilled[key] = append(e.spilled[key], task)
-}
+func (e *Engine) spillTask(task *Task) { e.overflow.Put(task) }
 
 // startDrain 启动后台回灌协程：定期把溢出列表中的任务重新入队。
 func (e *Engine) startDrain() {
@@ -78,14 +50,7 @@ func (e *Engine) startDrain() {
 
 // drainSpilled 把溢出列表中队列已有空间的任务重新入队；仍满则继续留在列表。
 func (e *Engine) drainSpilled() {
-	e.spillMu.Lock()
-	if len(e.spilled) == 0 {
-		e.spillMu.Unlock()
-		return
-	}
-	all := e.spilled
-	e.spilled = make(map[string][]*Task)
-	e.spillMu.Unlock()
+	all := e.overflow.Take()
 
 	submitted := 0
 	for key, tasks := range all {

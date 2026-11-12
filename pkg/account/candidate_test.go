@@ -20,7 +20,7 @@ func candidateToken(token string) *Credentials {
 
 func TestPublishCandidateCheckAndSaveFailureKeepOldCredentials(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
-	key := Key{"s", "a"}
+	key := Key{Site: "s", ID: "a"}
 	e, _ := m.get(key)
 	if _, err := m.PublishCandidate(context.Background(), key, 0, candidateToken("old")); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestRegisterCandidateDoesNotPublishRejectedOrDuplicateAccount(t *testing.T)
 	cfg := Config{Origins: []string{srv.URL}, Login: func(context.Context, *Credentials) error { return errors.New("must not login") }, Check: func(_ context.Context, c *Credentials) (bool, error) {
 		return c.Headers["Authorization"] == "valid", nil
 	}}
-	key := Key{"s", "candidate"}
+	key := Key{Site: "s", ID: "candidate"}
 	if err := m.RegisterCandidate(context.Background(), key, cfg, candidateToken("bad")); !errors.Is(err, ErrExpired) {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func (s *cancelAfterCandidateSave) Save(ctx context.Context, key Key, state *Sto
 
 func TestCandidateCancellationAfterSuccessfulSaveKeepsCommittedMemory(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
-	key := Key{"s", "a"}
+	key := Key{Site: "s", ID: "a"}
 	e, _ := m.get(key)
 	if _, err := m.PublishCandidate(context.Background(), key, 0, candidateToken("old")); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestHTTPCandidatePreservesBrowserButCannotClaimBrowserRecovery(t *testing.T
 
 func TestCandidateIdentityPinCoversCheckAndPublication(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	profile := accountIdentityProfile("s", 1)
 	store := identityruntime.NewMemoryStore()
 	if err := store.AppendProfile(context.Background(), profile, 0); err != nil {
@@ -186,7 +186,7 @@ func TestCandidateIdentityPinCoversCheckAndPublication(t *testing.T) {
 	}
 	defer runtime.Close()
 	m.SetIdentityManager(runtime)
-	for _, key := range []Key{{"s", "a"}, {"s", "new"}} {
+	for _, key := range []Key{{Site: "s", ID: "a"}, {Site: "s", ID: "new"}} {
 		subject := identityruntime.Subject{Site: key.Site, Kind: "account", Key: key.ID}
 		binding, err := runtime.Stage(context.Background(), subject, profile.Reference(), 0)
 		if err != nil {
@@ -205,13 +205,13 @@ func TestCandidateIdentityPinCoversCheckAndPublication(t *testing.T) {
 		return true, nil
 	}
 	e.config.Check = cfg.Check
-	if _, err = m.PublishCandidate(context.Background(), Key{"s", "a"}, 0, candidateToken("fresh")); err != nil {
+	if _, err = m.PublishCandidate(context.Background(), Key{Site: "s", ID: "a"}, 0, candidateToken("fresh")); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.RegisterCandidate(context.Background(), Key{"s", "new"}, cfg, candidateToken("fresh")); err != nil {
+	if err = m.RegisterCandidate(context.Background(), Key{Site: "s", ID: "new"}, cfg, candidateToken("fresh")); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []Key{{"s", "a"}, {"s", "new"}} {
+	for _, key := range []Key{{Site: "s", ID: "a"}, {Site: "s", ID: "new"}} {
 		ctx, release, err := m.PinIdentity(context.Background(), key)
 		if err != nil {
 			t.Fatal(err)

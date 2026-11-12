@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	driver "github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
@@ -22,19 +23,22 @@ import (
 
 func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 	dsn := os.Getenv("PAPA_TASK_FLOW_TEST_DSN")
+	var db *gorm.DB
+	var err error
 	if dsn == "" {
-		t.Skip("PAPA_TASK_FLOW_TEST_DSN not set")
+		db, _ = compensationMySQL(t)
+	} else {
+		parsed, parseErr := driver.ParseDSN(dsn)
+		if parseErr != nil || parsed.DBName != "papa_task_flow_test" {
+			t.Fatal("requires dedicated papa_task_flow_test database")
+		}
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Discard})
+		if err != nil {
+			t.Fatal("cannot open dedicated database")
+		}
+		sqlDB, _ := db.DB()
+		t.Cleanup(func() { sqlDB.Close() })
 	}
-	parsed, err := driver.ParseDSN(dsn)
-	if err != nil || parsed.DBName != "papa_task_flow_test" {
-		t.Fatal("requires dedicated papa_task_flow_test database")
-	}
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Discard})
-	if err != nil {
-		t.Fatal("cannot open dedicated database")
-	}
-	sqlDB, _ := db.DB()
-	defer sqlDB.Close()
 	if err = db.AutoMigrate(&models.CrawlerTask{}, &models.TaskFlow{}); err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +50,11 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 		cfg := &config.Config{}
 		cfg.TaskFlow.Enabled = true
 		e := NewEngine(db, cfg, testLoggerSet())
-		t.Cleanup(e.cancel)
+		t.Cleanup(func() { e.Stop(time.Second) })
 		for _, stage := range []string{"catalog", "detail", "content"} {
 			key := core.StageKey(site, stage)
 			e.stages[key] = &stageInfo{stage: stage, config: StageConfig{Site: site}}
-			e.pools.set(key, workerpool.NewWorkerPool[*Task](1, 100, 1))
+			e.pools.Set(key, workerpool.NewWorkerPool[*Task](1, 100, 1))
 		}
 		return e
 	}

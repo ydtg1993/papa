@@ -38,9 +38,9 @@ func TestTaskTimingMySQLPersistenceRecoveryAndAttempts(t *testing.T) {
 	if err := restored.submitRecoveredTask(restored.taskFromRecord(&row)); err != nil {
 		t.Fatal(err)
 	}
-	restored.delayMu.Lock()
-	n := len(restored.delayHeap)
-	restored.delayMu.Unlock()
+
+	n := restored.delays.Len()
+
 	if n != 1 {
 		t.Fatal("restart did not restore delayed task", n)
 	}

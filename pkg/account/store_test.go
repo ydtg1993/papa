@@ -25,7 +25,7 @@ func TestAccountEncryptedStoreRestartLogoutAndTamper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := Key{"site", "alice"}
+	key := Key{Site: "site", ID: "alice"}
 	cfg := s.cfg("alice")
 	cfg.Store = store
 	m := NewManager(s.client)
@@ -49,7 +49,7 @@ func TestAccountEncryptedStoreRestartLogoutAndTamper(t *testing.T) {
 	if n, checks, _ := s.counts(); n != 1 || checks != 2 {
 		t.Fatalf("restart login/check=%d/%d", n, checks)
 	}
-	other := Key{"site", "bob"}
+	other := Key{Site: "site", ID: "bob"}
 	otherPath, _ := store.location(other)
 	if err = os.WriteFile(otherPath, data, 0600); err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestAccountStoreFailureDoesNotPublishOrDeadlock(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s := newAuthSite(t)
 			m := NewManager(s.client)
-			key := Key{"site", "alice"}
+			key := Key{Site: "site", ID: "alice"}
 			cfg := s.cfg("alice")
 			cfg.Store = &faultStore{mode: mode}
 			register(t, m, key, cfg)
@@ -128,7 +128,7 @@ func TestAccountStoreFailureDoesNotPublishOrDeadlock(t *testing.T) {
 func TestAccountRefusesUnrestorableStateBeforeOverwrite(t *testing.T) {
 	s := newAuthSite(t)
 	m := NewManager(s.client)
-	key := Key{"site", "alice"}
+	key := Key{Site: "site", ID: "alice"}
 	cfg := s.cfg("alice")
 	store, err := NewFileStore(t.TempDir(), bytes.Repeat([]byte{4}, 32))
 	if err != nil {

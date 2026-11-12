@@ -39,14 +39,14 @@ func completeSmartProbeRound(t *testing.T, e *Engine) {
 func admitSmartTrial(t *testing.T, e *Engine, id int, stage string) (*Task, func()) {
 	t.Helper()
 	flushSmart(t, e)
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].nextAdmission = time.Time{}
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].nextAdmission = time.Time{}
+	e.breakers.breakerMu.Unlock()
 	task := &Task{ID: id, Site: "synthetic", Stage: stage, breakerRound: "0:0"}
-	done, ok := e.admitBreakerTask(task)
+	done, ok := e.breakers.admitBreakerTask(task)
 	if !ok {
 		flushSmart(t, e) // persist newly selected serial sample before execution
-		done, ok = e.admitBreakerTask(task)
+		done, ok = e.breakers.admitBreakerTask(task)
 	}
 	if !ok {
 		t.Fatalf("controlled admission rejected for %s", stage)
@@ -89,7 +89,7 @@ func TestSmartBreakerAllStagesDrainThenResetWithReport(t *testing.T) {
 	slow, done := admitSmartTrial(t, e, 99, "list")
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
 	expectSmartState(t, e, "ramping")
-	if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+	if _, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 		t.Fatal("draining admitted more work")
 	}
 	e.recordSmartOutcome(slow, nil)
@@ -100,10 +100,10 @@ func TestSmartBreakerAllStagesDrainThenResetWithReport(t *testing.T) {
 		t.Fatal("verified reset lost pre-reset report")
 	}
 	repo.err = errors.New("fixture save failure")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("expected failed final write")
 	}
-	if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "list"}); ok {
+	if _, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "list"}); ok {
 		t.Fatal("unsaved final state reopened site")
 	}
 	repo.err = nil

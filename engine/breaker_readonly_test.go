@@ -99,12 +99,12 @@ func TestBreakerReadOnlyMySQLRestoresReportButInvalidatesControlProof(t *testing
 		t.Fatal(err)
 	}
 	e, _ := readOnlyFixture(t, "detail")
-	e.breakerStore = breakerstore.New(db)
+	e.breakers.breakerStore = breakerstore.New(db)
 	startSmartProbe(t, e, completeReadOnlyProbe)
 	e.tickerWG.Wait()
 	completeSmartProbeRound(t, e)
 	flushSmart(t, e)
-	reports, err := e.breakerStore.List(context.Background(), "synthetic", 10)
+	reports, err := e.breakers.breakerStore.List(context.Background(), "synthetic", 10)
 	if err != nil || len(reports) != 1 {
 		t.Fatalf("report load failed: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestBreakerReadOnlyMySQLRestoresReportButInvalidatesControlProof(t *testing
 		t.Fatalf("persisted proof missing: %+v", c)
 	}
 	restarted, _ := newSmartBreakerFixture(t, 100)
-	restarted.breakerStore, restarted.breakerRuntime = breakerstore.New(db), false
+	restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = breakerstore.New(db), false
 	registerBreakerFixtureStages(restarted, "detail")
 	restarted.stages[core.StageKey("synthetic", "detail")].config.BreakerReadOnlyCoverage = fixtureReadOnlyCoverage
 	ctx, cancel := context.WithCancel(context.Background())
@@ -216,10 +216,10 @@ func TestBreakerReadOnlyRequiresTwoSpacedChecksAndDurableFinish(t *testing.T) {
 		t.Fatal("missing reset or coverage report")
 	}
 	r.err = errors.New("fixture final save failure")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("expected save failure")
 	}
-	if release, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+	if release, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 		release()
 		t.Fatal("unsaved recovery admitted task")
 	}
@@ -313,7 +313,7 @@ func TestBreakerReadOnlyRestartDiscardsProofAndUsesCurrentDeclaration(t *testing
 			e.tickerWG.Wait()
 			flushSmart(t, e)
 			restarted, _ := newSmartBreakerFixture(t, 100)
-			restarted.breakerStore, restarted.breakerRuntime = r, false
+			restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = r, false
 			registerBreakerFixtureStages(restarted, "detail")
 			if keep {
 				restarted.stages[core.StageKey("synthetic", "detail")].config.BreakerReadOnlyCoverage = fixtureReadOnlyCoverage
@@ -328,7 +328,7 @@ func TestBreakerReadOnlyRestartDiscardsProofAndUsesCurrentDeclaration(t *testing
 			if c.ProbeSuccesses != 0 || c.TaskSuccesses != 0 || c.Verified || (c.Verification == "readonly") != keep || restarted.breakerSum("synthetic") != 3 {
 				t.Fatalf("restart trusted stale proof: %+v", c)
 			}
-			if release, ok := restarted.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+			if release, ok := restarted.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 				release()
 				t.Fatal("restart admitted task")
 			}

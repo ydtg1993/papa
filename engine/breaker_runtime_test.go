@@ -81,34 +81,34 @@ func (r *memoryBreakerRepository) LoadRuntime(ctx context.Context) ([]breakersto
 func newSmartBreakerFixture(t *testing.T, threshold int) (*Engine, *memoryBreakerRepository) {
 	t.Helper()
 	r := &memoryBreakerRepository{}
-	e := &Engine{breakerStore: r, breakerRuntime: true}
+	e := &Engine{breakers: breakerCoordinator{breakerStore: r, breakerRuntime: true}}
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Window: time.Minute, Threshold: threshold, Policy: breaker.Policy{FastThreshold: 3, MixedThreshold: 4}})
 	return e, r
 }
 func smartFailure(e *Engine, id int, stage, code string) {
-	e.breakerMu.Lock()
-	epoch := e.smartBreakers["synthetic"].epoch
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	epoch := e.breakers.smartBreakers["synthetic"].epoch
+	e.breakers.breakerMu.Unlock()
 	e.recordSmartOutcome(&Task{ID: id, Site: "synthetic", Stage: stage, breakerRound: "0:0", breakerEpoch: epoch}, core.WithFailureCode(errors.New("synthetic fixture"), "parse", code))
 }
 func smartSuccess(e *Engine, task *Task) {
-	e.breakerMu.Lock()
-	task.breakerTrial = e.smartBreakers[task.Site].trial
-	task.breakerEpoch = e.smartBreakers[task.Site].epoch
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	task.breakerTrial = e.breakers.smartBreakers[task.Site].trial
+	task.breakerEpoch = e.breakers.smartBreakers[task.Site].epoch
+	e.breakers.breakerMu.Unlock()
 	e.recordSmartOutcome(task, nil)
 }
 func smartLifecycle(e *Engine) incident.Lifecycle {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	if s := e.smartBreakers["synthetic"]; s.event != nil {
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	if s := e.breakers.smartBreakers["synthetic"]; s.event != nil {
 		return s.event.reportSnapshot()
 	}
 	return incident.Lifecycle{}
 }
 func flushSmart(t *testing.T, e *Engine) {
 	t.Helper()
-	if err := e.flushBreakerReports(context.Background()); err != nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -143,7 +143,7 @@ func TestSmartBreakerFastScopeMixedObservationAndHardCeiling(t *testing.T) {
 		}
 		flushSmart(t, e)
 		_, done := admitSmartTrial(t, e, 1, "detail")
-		if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+		if _, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 			t.Fatal("observing concurrency cap lost")
 		}
 		done()
@@ -161,12 +161,12 @@ func TestSmartBreakerPersistenceFailureNeverReleasesAdmission(t *testing.T) {
 	e, r := newSmartBreakerFixture(t, 1)
 	smartFailure(e, 1, "detail", "missing")
 	r.err = errors.New("synthetic store unavailable")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("store failure swallowed")
 	}
 	e.tickBreakers(context.Background(), time.Now().Add(time.Minute))
 	expectSmartState(t, e, "cooldown")
-	if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+	if _, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 		t.Fatal("admission opened before durable transition")
 	}
 }
@@ -196,9 +196,9 @@ func TestSmartBreakerProbeRequiresSemanticSuccessAndAttemptBudget(t *testing.T) 
 	if !e.isPaused(pauseScope{Site: "synthetic", Stage: "detail"}) {
 		t.Fatal("HTTP-only success released protection")
 	}
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].policy.MaxProbes = 1
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].policy.MaxProbes = 1
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
 	e.tickBreakers(context.Background(), l.NextProbeAt.Add(time.Millisecond))
 	l = expectSmartState(t, e, "manual")
@@ -240,11 +240,11 @@ func TestSmartBreakerSemanticSuccessPersistsBeforeRamping(t *testing.T) {
 	})
 	e.tickerWG.Wait()
 	l := expectSmartState(t, e, "ramping")
-	if l.Epoch != 0 || e.smartBreakers["synthetic"].detector.Snapshot(time.Now()).Failures != 1 {
+	if l.Epoch != 0 || e.breakers.smartBreakers["synthetic"].detector.Snapshot(time.Now()).Failures != 1 {
 		t.Fatal("probe success cleared the site failure window")
 	}
 	r.err = errors.New("synthetic write failure")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("expected save failure")
 	}
 	e.tickBreakers(context.Background(), time.Now())
@@ -262,7 +262,7 @@ func TestSmartBreakerSemanticSuccessPersistsBeforeRamping(t *testing.T) {
 	done()
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(time.Minute))
 	expectSmartState(t, e, "recovered")
-	if _, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+	if _, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 		t.Fatal("unsaved recovery released admission")
 	}
 	flushSmart(t, e)
@@ -336,11 +336,11 @@ func TestSmartBreakerScopeEscalationInvalidatesInFlightStageProbe(t *testing.T) 
 func TestSmartBreakerRestartRetainsManualIncident(t *testing.T) {
 	e, r := newSmartBreakerFixture(t, 1)
 	smartFailure(e, 1, "detail", "missing")
-	e.breakerMu.Lock()
-	e.transitionBreakerLocked(e.smartBreakers["synthetic"], "manual", "fixture manual review", time.Now())
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.transitionBreakerLocked(e.breakers.smartBreakers["synthetic"], "manual", "fixture manual review", time.Now())
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
-	restarted := &Engine{breakerStore: r}
+	restarted := &Engine{breakers: breakerCoordinator{breakerStore: r}}
 	restarted.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() { cancel(); restarted.tickerWG.Wait() }()
@@ -368,9 +368,9 @@ func TestSmartBreakerRecoveryDeadlineAndProbeTimeout(t *testing.T) {
 	t.Run("bounded probe", func(t *testing.T) {
 		e, _ := newSmartBreakerFixture(t, 1)
 		smartFailure(e, 1, "detail", "missing")
-		e.breakerMu.Lock()
-		e.smartBreakers["synthetic"].policy.ProbeTimeout = 5 * time.Millisecond
-		e.breakerMu.Unlock()
+		e.breakers.breakerMu.Lock()
+		e.breakers.smartBreakers["synthetic"].policy.ProbeTimeout = 5 * time.Millisecond
+		e.breakers.breakerMu.Unlock()
 		startSmartProbe(t, e, func(ctx context.Context, _ BreakerProbeRequest) (BreakerProbeResult, error) {
 			<-ctx.Done()
 			return BreakerProbeResult{}, ctx.Err()
@@ -385,7 +385,7 @@ func TestSmartBreakerRecoveryDeadlineAndProbeTimeout(t *testing.T) {
 func TestReviewSiteProbeKeepsAllStageFailures(t *testing.T) {
 	e, _ := newSmartBreakerFixture(t, 100)
 	other := &Task{ID: 50, Site: "synthetic", Stage: "list", breakerRound: "0:0"}
-	done, ok := e.admitBreakerTask(other)
+	done, ok := e.breakers.admitBreakerTask(other)
 	if !ok {
 		t.Fatal("admission")
 	}
@@ -414,17 +414,17 @@ func TestReviewRampDoesNotFinishWithUnsettledTrial(t *testing.T) {
 	e.tickerWG.Wait()
 	flushSmart(t, e)
 	e.tickBreakers(context.Background(), time.Now())
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].policy.Interval = time.Nanosecond
-	e.smartBreakers["synthetic"].policy.RampConcurrency = 2
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].policy.Interval = time.Nanosecond
+	e.breakers.smartBreakers["synthetic"].policy.RampConcurrency = 2
+	e.breakers.breakerMu.Unlock()
 	good, done := admitSmartTrial(t, e, 2, "detail")
 	e.recordSmartOutcome(good, nil)
 	done()
 	flushSmart(t, e)
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].nextAdmission = time.Time{}
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].nextAdmission = time.Time{}
+	e.breakers.breakerMu.Unlock()
 	slow, release := admitSmartTrial(t, e, 3, "detail")
 	defer release()
 	l := smartLifecycle(e)
@@ -432,7 +432,7 @@ func TestReviewRampDoesNotFinishWithUnsettledTrial(t *testing.T) {
 	if got := smartLifecycle(e).State; got != "ramping" {
 		t.Errorf("declared %s while the current recovery trial remains in flight", got)
 	}
-	if _, ok := e.admitBreakerTask(&Task{ID: 4, Site: "synthetic", Stage: "detail"}); ok {
+	if _, ok := e.breakers.admitBreakerTask(&Task{ID: 4, Site: "synthetic", Stage: "detail"}); ok {
 		t.Fatal("draining recovery admitted new work")
 	}
 	e.recordSmartOutcome(slow, errors.New("current recovery trial failed"))
@@ -460,7 +460,7 @@ func TestReviewBusyOtherStageMustNotStarveRecoveryBudget(t *testing.T) {
 	}
 	l := smartLifecycle(e)
 	id := 100
-	e.breakerStore = &reviewInterleavingRepository{memoryBreakerRepository: base, duringSave: func() {
+	e.breakers.breakerStore = &reviewInterleavingRepository{memoryBreakerRepository: base, duringSave: func() {
 		id++
 		// Reproduce a terminal success landing after snapshot capture, before Save returns.
 		smartSuccess(e, &Task{ID: id, Site: "synthetic", Stage: "list", breakerRound: "0:0"})

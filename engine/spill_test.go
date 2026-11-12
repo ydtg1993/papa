@@ -188,9 +188,8 @@ func TestDelayDispatcherHoldsFutureTask(t *testing.T) {
 		t.Fatalf("未到点不该入队，实得 %d", main+urgent)
 	}
 
-	e.delayMu.Lock()
-	n := e.delayHeap.Len()
-	e.delayMu.Unlock()
+	n := e.delays.Len()
+
 	if n != 1 {
 		t.Fatalf("任务应留在延迟堆里，实得 %d", n)
 	}
@@ -213,9 +212,8 @@ func TestDelayDispatcherRecomputesOnEarlierTask(t *testing.T) {
 
 	waitQueueDepth(t, pool, 1)
 
-	e.delayMu.Lock()
-	n := e.delayHeap.Len()
-	e.delayMu.Unlock()
+	n := e.delays.Len()
+
 	if n != 1 {
 		t.Fatalf("只有到点的那条该被取走，延迟堆应剩 1 条，实得 %d", n)
 	}
@@ -246,7 +244,7 @@ func TestEnqueueDelayedSignalsDispatcher(t *testing.T) {
 
 	e.enqueueDelayed(time.Now().Add(time.Minute), &Task{ID: 7, Stage: "stub", Site: "stub"}, delayRecord(7))
 	select {
-	case <-e.delayCh:
+	case <-e.delays.Wake():
 	default:
 		t.Fatal("入队应当给 delayCh 发一次信号")
 	}

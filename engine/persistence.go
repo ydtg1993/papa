@@ -2,9 +2,8 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 
 	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/gorm"
@@ -12,10 +11,7 @@ import (
 
 // taskRunVersion fences terminal retries from a later reprocess/polling round.
 // It is read only after a successful claim, before calling business code.
-type taskRunVersion struct {
-	Repeat    int
-	Reprocess int
-}
+type taskRunVersion = taskstore.RunVersion
 
 type taskRunVersionKey struct{}
 
@@ -32,31 +28,7 @@ func taskRunVersionFrom(ctx context.Context) (taskRunVersion, bool) {
 // the state operation, never the FetchHandler. Persistent outages apply bounded
 // backpressure (100ms up to 2s between attempts) until cancellation.
 func (e *Engine) retryTaskState(ctx context.Context, task *Task, operation string, fn func() error) error {
-	delay := 100 * time.Millisecond
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			e.rememberUnsettled(task)
-			return fmt.Errorf("task %d %s interrupted: %w", task.ID, operation, errors.Join(err, lastErr))
-		}
-		lastErr = fn()
-		if lastErr == nil {
-			return nil
-		}
-		if errors.Is(lastErr, gorm.ErrRecordNotFound) || errors.Is(lastErr, ErrTaskChanged) {
-			return fmt.Errorf("task %d %s: %w", task.ID, operation, lastErr)
-		}
-		if attempt == 0 || attempt%10 == 0 {
-			e.loggerSet.Engine.Errorf("task %d %s failed; retaining worker and retrying: %s", task.ID, operation, lastErr)
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
-		}
-		delay = min(delay*2, 2*time.Second)
-	}
+	return e.execution.Retry(ctx, task.ID, stageKeyOf(task), operation, fn, e.loggerSet.Engine)
 }
 
 func (e *Engine) claimForExecution(ctx context.Context, task *Task) (bool, taskRunVersion, error) {
@@ -96,9 +68,7 @@ func (e *Engine) claimForExecution(ctx context.Context, task *Task) (bool, taskR
 }
 
 func terminalScope(db *gorm.DB, task *Task, version taskRunVersion) *gorm.DB {
-	return db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ? AND `repeat` = ? AND reprocess = ?",
-			task.ID, models.TaskStatusProcessing, version.Repeat, version.Reprocess)
+	return taskstore.TerminalScope(db, task.ID, version)
 }
 
 func (e *Engine) persistTerminal(ctx context.Context, task *Task, version taskRunVersion, status models.TaskStatus, cause error) error {
@@ -110,34 +80,16 @@ func (e *Engine) persistTerminal(ctx context.Context, task *Task, version taskRu
 		if err := e.retainBreakerFailure(ctx, task, version, cause); err != nil {
 			return err
 		}
-		e.breakerMu.Lock()
-		updates["last_finished_at"] = e.smartBreakers[task.Site].event.PendingFailure.At.UTC()
-		e.breakerMu.Unlock()
+		e.breakers.breakerMu.Lock()
+		updates = pendingFailureUpdates(e.breakers.smartBreakers[task.Site].event.PendingFailure)
+		e.breakers.breakerMu.Unlock()
 	}
 	return e.persistTerminalUpdates(ctx, task, version, status, updates)
 }
 
 func (e *Engine) persistTerminalUpdates(ctx context.Context, task *Task, version taskRunVersion, status models.TaskStatus, updates map[string]any) error {
 	err := e.retryTaskState(ctx, task, "persist terminal state", func() error {
-		db := e.db.WithContext(ctx)
-		result := terminalScope(db, task, version).Updates(updates)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 1 {
-			return nil
-		}
-		// A lost acknowledgement may mean the previous UPDATE committed. The
-		// processing guard makes its error append idempotent. Confirm that exact
-		// terminal round; never overwrite a later pending/processing generation.
-		var current models.CrawlerTask
-		if err := db.Select([]string{"status", "repeat", "reprocess"}).Where("id = ?", task.ID).Take(&current).Error; err != nil {
-			return err
-		}
-		if current.Status == status && current.Repeat == version.Repeat && current.Reprocess == version.Reprocess {
-			return nil
-		}
-		return ErrTaskChanged
+		return taskstore.Complete(e.db.WithContext(ctx), task.ID, version, status, updates)
 	})
 	if err == nil {
 		e.forgetUnsettled(task)
@@ -147,20 +99,19 @@ func (e *Engine) persistTerminalUpdates(ctx context.Context, task *Task, version
 
 // A cancelled state retry is not a completed task. Keep it in Stop's unfinished
 // snapshot even after the worker exits; the durable row is recovered on restart.
-func (e *Engine) rememberUnsettled(task *Task) {
-	if task.ID == 0 {
-		return
-	}
-	e.persistenceMu.Lock()
-	defer e.persistenceMu.Unlock()
-	if e.unsettled == nil {
-		e.unsettled = make(map[int]string)
-	}
-	e.unsettled[task.ID] = stageKeyOf(task)
-}
+func (e *Engine) rememberUnsettled(task *Task) { e.execution.Remember(task.ID, stageKeyOf(task)) }
+func (e *Engine) forgetUnsettled(task *Task)   { e.execution.Forget(task.ID) }
 
-func (e *Engine) forgetUnsettled(task *Task) {
-	e.persistenceMu.Lock()
-	defer e.persistenceMu.Unlock()
-	delete(e.unsettled, task.ID)
+// incrementExecutionRetry is deliberately one-shot. On an ambiguous write the
+// row stays processing and remains visible as unresolved; restart recovery can
+// revisit it. Neither an additive UPDATE nor the business handler is replayed.
+func (e *Engine) incrementExecutionRetry(ctx context.Context, task *Task) error {
+	if task.ID != 0 {
+		if err := taskstore.IncrementRetry(e.db.WithContext(ctx), task.ID); err != nil {
+			e.rememberUnsettled(task)
+			return fmt.Errorf("task %d retry increment unconfirmed: %w", task.ID, err)
+		}
+	}
+	task.Retry++
+	return nil
 }

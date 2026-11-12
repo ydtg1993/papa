@@ -13,12 +13,12 @@ func (e *Engine) RecordNetwork(ctx context.Context, rawURL string, opts browser.
 	if err := browserProxyError(ctx); err != nil {
 		return nil, err
 	}
-	if e.browserPool == nil {
+	if e.GetBrowserPool() == nil {
 		return nil, fmt.Errorf("browser pool is not configured (browser.enable=false)")
 	}
 	opts.Page = mergeBrowserOptions(ctx, opts.Page)
 	var record *browser.NetworkRecording
-	err := e.browserPool.WithBrowser(ctx, func(b *browser.Browser) error {
+	err := e.GetBrowserPool().WithBrowser(ctx, func(b *browser.Browser) error {
 		var err error
 		record, err = b.RecordNetwork(ctx, rawURL, opts)
 		return err

@@ -1,0 +1,25 @@
+        <div class="module" id="mod-obs">
+            <section>
+                <h2>报告列表</h2>
+                <div class="card">
+                    <p class="hint">报告由定时任务（<code>obs.report.interval</code>）、进程退出（<code>obs.report.on_exit</code>）
+                        或命令 <code>papa report</code> 写入，目录取配置 <code>obs.report.dir</code>；
+                        每份报告含 report.md / report.json / ai-brief.md / ai-brief.json 四份产物，头部与 JSON 里都标注生成时间（最近一次更新）。</p>
+                    <p class="hint" id="obs-dir"></p>
+                    <div class="table-wrap" id="obs-runs"></div>
+                    <div class="hint" id="obs-msg"></div>
+                </div>
+            </section>
+            <section id="obs-viewer-sec" hidden>
+                <h2>报告内容</h2>
+                <div class="card">
+                    <div class="obs-toolbar">
+                        <div class="obs-tabs" id="obs-tabs"></div>
+                        <span class="obs-meta" id="obs-meta"></span>
+                        <button class="btn obs-download" onclick="downloadObsReport()">下载当前文件</button>
+                    </div>
+                    <pre class="obs-content" id="obs-content"></pre>
+                </div>
+            </section>
+        </div>
+

@@ -11,16 +11,8 @@ import (
 
 // SetAccountManager installs a caller-configured registry. Call before workers
 // start; replacement does not cancel operations using the previous registry.
-func (e *Engine) SetAccountManager(m *account.Manager) {
-	e.mu.Lock()
-	e.accountManager = m
-	e.mu.Unlock()
-}
-func (e *Engine) GetAccountManager() *account.Manager {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.accountManager
-}
+func (e *Engine) SetAccountManager(m *account.Manager) { e.fetchResources.SetAccount(m) }
+func (e *Engine) GetAccountManager() *account.Manager  { return e.fetchResources.Account() }
 
 // AccountStatus is a credential-free snapshot suitable for custom admin pages.
 func (e *Engine) AccountStatus() []account.Status {

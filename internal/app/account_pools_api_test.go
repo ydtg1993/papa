@@ -35,6 +35,9 @@ func TestRuntimeAccountPoolAPITombstoneAndReadOnly(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 	a.runtimeState.pools = p
+	if err := a.runtimeState.service.AttachPools(p); err != nil {
+		t.Fatal(err)
+	}
 	post := func(body string, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -67,14 +70,14 @@ func TestRuntimeAccountPoolAPITombstoneAndReadOnly(t *testing.T) {
 	// A stale edit cannot replace the current configuration.
 	post(save(0), 409)
 	// Even a disabled pool cannot be deleted while referenced by policy.
-	policy := a.runtimeState.effective.Sites["fixture"]
-	poolName := "primary"
-	policy.Pool = &poolName
-	a.runtimeState.effective.Sites["fixture"] = policy
+	if w := runtimePost(a, `{"revision":0,"document":{"schema_version":1,"overrides":{"sites":{"fixture":{"pool":"primary"}}}}}`); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
 	del := fmt.Sprintf(`{"action":"delete","revision":%d,"key":{"site":"fixture","name":"primary"}}`, before.Revision)
 	post(del, 409)
-	policy.Pool = nil
-	a.runtimeState.effective.Sites["fixture"] = policy
+	if w := runtimePost(a, `{"revision":1,"document":{"schema_version":1,"overrides":{}}}`); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
 	post(del, 200)
 	w := post(save(0), 409)
 	var conflict struct {

@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
@@ -10,7 +11,7 @@ const ctx=vm.createContext({
     apiPost:async(url,body)=>{calls.push({url,body});return {ok:true,json:async()=>({resumed:true})};},
     fetchData(){}
 });
-vm.runInContext(source.slice(source.indexOf('async function resumeCrawling('),source.indexOf('/* ---- 站点控制：')),ctx);
+controllers.load(ctx,source,['breakers/controller']);
 (async()=>{
     await ctx.resumeCrawling('fixture');
     assert.equal(calls[0].url,'/api/breaker/resume');

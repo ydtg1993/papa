@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 const assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
 const source = fs.readFileSync(path.join(process.argv[2], 'requests.js'), 'utf8');
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return {promise,resolve,reject}; };
@@ -16,7 +17,7 @@ function setup() {
         setStatus:(ok,text)=>messages.push(text), Toast:{err:text=>messages.push(text)}, renderNav:()=>{},
     });
     c.clearKey=()=>{key='';c.authGeneration++;c.stopPolling();};
-    vm.runInContext(source,c);
+    controllers.run(source,c);
     return {c,requests,rendered,observations,messages,timers,events,login:()=>{key='new';c.authGeneration++;}};
 }
 (async()=>{
@@ -50,11 +51,11 @@ function setup() {
     // Credentials change without a second monitor request: old 401 is still obsolete.
     { const s=setup(), done=s.c.fetchData();s.login();s.requests[0].resolve({status:401});await done;assert.equal(s.messages.length,0); }
     // One completed request schedules the next. Failures back off; success resets delay.
-    { const s=setup();s.c.monitorPoll.enabled=true;let p=s.c.fetchData();assert.equal([...s.timers.values()].filter(t=>t.ms===3000).length,0);
-      s.requests[0].reject(new Error('offline'));await p;assert.equal(s.c.monitorPoll.delay,6000);
-      p=s.c.fetchData();s.requests[1].resolve(response({}));await p;assert.equal(s.c.monitorPoll.delay,3000);
+    { const s=setup();let p=s.c.startPolling();assert.equal([...s.timers.values()].filter(t=>t.ms===3000).length,0);
+      s.requests[0].reject(new Error('offline'));await p;assert.equal(s.c.pollingStatus().delay,6000);
+      p=s.c.fetchData();s.requests[1].resolve(response({}));await p;assert.equal(s.c.pollingStatus().delay,3000);
       s.c.document.hidden=true;s.events.visibilitychange();assert.equal(s.timers.size,0);await s.c.fetchData();assert.equal(s.requests.length,2);
-      s.c.document.hidden=false;s.events.visibilitychange();assert.equal(s.requests.length,3);s.requests[2].resolve({status:401});await flush();assert.equal(s.c.monitorPoll.enabled,false);assert.equal(s.timers.size,0);
+      s.c.document.hidden=false;s.events.visibilitychange();assert.equal(s.requests.length,3);s.requests[2].resolve({status:401});await flush();assert.equal(s.c.pollingStatus().enabled,false);assert.equal(s.timers.size,0);
     }
     // Timeout covers response body too and never renders late successful JSON.
     {const s=setup(),p=s.c.fetchData(),b=deferred();s.requests[0].resolve({ok:true,status:200,json:()=>b.promise});await flush();
@@ -79,10 +80,11 @@ function setup() {
     // log out a new session, and no write may be automatically replayed.
     {const s=setup(),oao=fs.readFileSync(path.join(process.argv[2],'oao.js'),'utf8');
      const a=oao.indexOf('    async function request('),b=oao.indexOf('    async function api(',a);
-     const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),init=mo.indexOf('    Oao.init({',mo.indexOf('// oao 表格组件：'));
+     const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
      s.c.Oao={init:opts=>{s.c.authHeaders=opts.headers;s.c.onUnauthorized=opts.onUnauthorized;}};
-     vm.runInContext(mo.slice(init,mo.indexOf('    });',init)+7),s.c);
-     vm.runInContext(oao.slice(a,b),s.c);
+     s.c.document.getElementById=()=>({addEventListener(){}});s.c.installLegacyTableAdapter=()=>{};s.c.authRequired=()=>true;s.c.startPolling=()=>{};
+     controllers.load(s.c,mo,['shell/startup']);
+     controllers.run(oao.slice(a,b),s.c);
      const old=s.c.request('/api/oao/task/action/retry',{method:'POST',body:'{}'}).catch(e=>e);
      s.login();s.requests[0].resolve({status:401});await flush();
      assert.equal(s.requests.length,2,'401 must verify the current credential');assert.equal(s.requests[1].opts.headers.Authorization,'Bearer new');
@@ -98,12 +100,12 @@ function setup() {
     {const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),s=setup(),nodes={textContent:''};
      s.c.queueMeta=()=>({label:'轮询队列',url:'/repeat',done:'处理',key:'count'});s.c.document.getElementById=()=>nodes;s.c.document.querySelectorAll=()=>[];
      s.c.Toast.ok=()=>{};s.c.fetchData=()=>{};s.c.currentModule='queues';s.c.captureMonitorView=()=>()=>true;s.c.Dialog={confirm:async()=>true};
-     const a=mo.indexOf('    var queueFlights ='),b=mo.indexOf('    /* ============ 站点 Tab',a);assert.ok(a>0&&b>a);vm.runInContext(mo.slice(a,b),s.c);
-     const p=s.c.triggerQueue('repeat');await s.c.triggerQueue('repeat');assert.equal(s.requests.length,1);s.requests[0].resolve({ok:true,status:200,text:async()=>'{broken'});await p;assert.equal(s.c.queueFlights.repeat,undefined);assert.ok(s.messages.some(m=>m.includes('结果尚未确认')));}
+     controllers.load(s.c,mo,['queues/controller']);
+     const p=s.c.triggerQueue('repeat_queue');await s.c.triggerQueue('repeat_queue');assert.equal(s.requests.length,1);s.requests[0].resolve({ok:true,status:200,text:async()=>'{broken'});await p;assert.equal(s.c.queueOperationPending('repeat_queue'),false);assert.ok(s.messages.some(m=>m.includes('结果尚未确认')));}
     // Trace responses are ordered from the click, not from arrival of headers.
     for (const mode of ['headers','body','401','body-error']) {
         const s=setup(),dialogs=[];s.c.window=s.c;s.c.esc=String;s.c.Dialog={open:d=>dialogs.push(d)};
-        vm.runInContext(fs.readFileSync(path.join(process.argv[2],'trace.js'),'utf8'),s.c);
+        controllers.run(fs.readFileSync(path.join(process.argv[2],'trace.js'),'utf8'),s.c);
         await (async()=>{const p=s.c.fetch('/api/oao/task/action/trace',{method:'POST',body:'{"id":"1"}'});s.requests[0].resolve(response({}));await p;})();
         await flush();assert.equal(s.requests[1].url,'/api/task/trace?id=1');
         const body=deferred();if(mode.startsWith('body')){s.requests[1].resolve({ok:true,status:200,text:()=>body.promise});await flush();}
@@ -120,21 +122,21 @@ function setup() {
     }
     // Native quality panels open Trace with GET only; leaving the panel cancels display.
     {const s=setup(),dialogs=[];s.c.window=s.c;s.c.esc=String;s.c.Dialog={open:d=>dialogs.push(d)};
-     vm.runInContext(fs.readFileSync(path.join(process.argv[2],'trace.js'),'utf8'),s.c);
+     controllers.run(fs.readFileSync(path.join(process.argv[2],'trace.js'),'utf8'),s.c);
      let current=true;const p=s.c.showTaskTrace('9007199254740993',()=>current);
      assert.equal(s.requests.length,1);assert.equal(s.requests[0].url,'/api/task/trace?id=9007199254740993');
      current=false;s.requests[0].resolve(response({steps:[]}));await p;assert.equal(dialogs.length,0);}
     // Successful re-authentication reloads the reports page that lost its old request.
     {const s=setup(),mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
-     const a=mo.indexOf('    var pendingLoginRefresh ='),b=mo.indexOf('    function setStatus(',a);vm.runInContext(mo.slice(a,b),s.c);
-     let loads=0;s.c.currentModule='obs';s.c.fetchObsReports=()=>loads++;s.c.pendingLoginRefresh=true;
+     controllers.load(s.c,mo,['shell/login-refresh']);
+     let loads=0;s.c.currentModule='obs';s.c.fetchObsReports=()=>loads++;s.c.requestLoginRefresh();
      const p=s.c.fetchData();s.requests[0].resolve(response({}));await p;assert.equal(loads,1);
      const q=s.c.fetchData();s.requests[1].resolve(response({}));await q;assert.equal(loads,1);}
     // Late menu failures from a previous login cannot clear a new menu.
     {const s=setup(),mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8'),lists=[],nav={innerHTML:'',querySelectorAll:()=>[]};
      s.c.setMonitorNavigation=(tables,pages)=>{nav.innerHTML=tables.concat(pages).map(item=>item.label).join(' ');};
      s.c.Oao={list:()=>{const d=deferred();lists.push(d);return d.promise;}};
-     const a=mo.indexOf('    var navRequestSeq ='),b=mo.indexOf('    /* ============ 自定义页',a);vm.runInContext(mo.slice(a,b),s.c);
+     controllers.load(s.c,mo,['shell/navigation-controller']);
      const p=s.c.renderNav();s.login();const q=s.c.renderNav();lists[1].resolve([{key:'new',label:'new menu'}]);await flush();
      s.requests[0].resolve(response({pages:[]}));await q;assert.ok(nav.innerHTML.includes('new menu'));
      lists[0].reject(new Error('old unauthorized'));await p;assert.ok(nav.innerHTML.includes('new menu'));assert.equal(s.requests.length,1);}

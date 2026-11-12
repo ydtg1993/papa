@@ -21,24 +21,24 @@ var testBreakerRound atomic.Uint64
 // represents a distinct claimed round; detector dedup tests use recordSmartOutcome.
 func (e *Engine) testBreakerTask(task *Task) *Task {
 	copy := *task
-	e.breakerMu.Lock()
-	if s := e.smartBreakers[task.Site]; s != nil {
+	e.breakers.breakerMu.Lock()
+	if s := e.breakers.smartBreakers[task.Site]; s != nil {
 		copy.breakerEpoch = s.epoch
 	}
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	copy.breakerRound = fmt.Sprint(testBreakerRound.Add(1))
 	return &copy
 }
 func (e *Engine) recordTestBreakerFailure(task *Task, failure ...error) (BreakerStatus, bool) {
 	st, tripped := e.recordBreakerFailure(e.testBreakerTask(task), failure...)
-	if err := e.flushBreakerReports(context.Background()); err != nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err != nil {
 		panic(err)
 	}
 	return st, tripped
 }
 func (e *Engine) notifyTestFailure(ctx context.Context, task *Task, err error) {
 	e.notifyFailure(ctx, e.testBreakerTask(task), err)
-	if err := e.flushBreakerReports(context.Background()); err != nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err != nil {
 		panic(err)
 	}
 }
@@ -128,7 +128,7 @@ func TestBreakerReportConcurrentReadResumeFailure(t *testing.T) {
 func TestManualTakeoverDoesNotRestoreAfterImmediateStop(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	r := &memoryBreakerRepository{}
-	e.breakerStore = r
+	e.breakers.breakerStore = r
 	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 100, Policy: breaker.Policy{FastThreshold: 3}})
 	for i := 0; i < 3; i++ {
 		e.recordTestBreakerFailure(&Task{Site: "a", Stage: "detail", ID: i + 1}, errors.New("missing"))
@@ -143,7 +143,7 @@ func TestManualTakeoverDoesNotRestoreAfterImmediateStop(t *testing.T) {
 	if err != nil || len(active) != 0 {
 		t.Fatalf("manual takeover remained restorable: %+v %v", active, err)
 	}
-	restarted := &Engine{breakerStore: r}
+	restarted := &Engine{breakers: breakerCoordinator{breakerStore: r}}
 	restarted.SetSiteBreaker("a", breaker.Config{Enabled: true, Threshold: 100})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() { cancel(); restarted.tickerWG.Wait() }()

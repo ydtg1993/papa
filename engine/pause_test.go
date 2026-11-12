@@ -178,7 +178,7 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 	if got := e.spillBacklog(); got != 1 {
 		t.Fatalf("应当寄放 1 条，实得 %d", got)
 	}
-	if pool := e.pools.get(core.StageKey("stub", "detail")); pool != nil {
+	if pool := e.pools.Get(core.StageKey("stub", "detail")); pool != nil {
 		t.Fatal("暂停期间不该为那个阶段建池")
 	}
 	if got := detail.calls(); len(got) != 0 {
@@ -219,7 +219,7 @@ func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
 	if got := e.BreakerStatuses()["a"]; !got.Paused || got.Source != PauseSourceManual {
 		t.Fatalf("状态快照应当是「被手动停着」：%+v", got)
 	}
-	if stale := e.pools.get(core.StageKey("a", "catalog")); stale != nil {
+	if stale := e.pools.Get(core.StageKey("a", "catalog")); stale != nil {
 		t.Fatal("闸住的站启动时连池子都不该建（收口在建池之前）")
 	}
 	if got := e.spillBacklog(); got != 1 {
@@ -414,7 +414,7 @@ func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 	if got := e.spillBacklog(); got != 1 {
 		t.Fatalf("应当寄放 1 条，实得 %d", got)
 	}
-	if pool := e.pools.get(stubKey); pool != nil {
+	if pool := e.pools.Get(stubKey); pool != nil {
 		t.Fatal("暂停期间不该建池（收口在建池之前）")
 	}
 	if !strings.Contains(f.written(), "`status`") {
@@ -476,12 +476,12 @@ func TestManualPauseTakesOverAutomaticEvent(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1})
 	e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"}, errors.New("boom"))
-	id := e.smartBreakers["a"].event.ID
+	id := e.breakers.smartBreakers["a"].event.ID
 	if !e.PauseSite("a", "operator takeover") {
 		t.Fatal("takeover failed")
 	}
 	state := e.BreakerStatuses()["a"]
-	if state.Source != PauseSourceManual || !state.Paused || e.smartBreakers["a"].event.State != "closed" || e.smartBreakers["a"].event.ID != id {
+	if state.Source != PauseSourceManual || !state.Paused || e.breakers.smartBreakers["a"].event.State != "closed" || e.breakers.smartBreakers["a"].event.ID != id {
 		t.Fatalf("takeover lost state/report: %+v", state)
 	}
 }

@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"github.com/ydtg1993/papa/v4/admin/auth"
 	"github.com/ydtg1993/papa/v4/admin/configstore"
+	adminruntime "github.com/ydtg1993/papa/v4/admin/runtimecontrol"
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/gormfake"
+	"github.com/ydtg1993/papa/v4/internal/runtimecontrol"
 	"github.com/ydtg1993/papa/v4/pkg/governance"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"net/http/httptest"
@@ -41,8 +43,7 @@ func runtimeTestApp(t *testing.T) (*App, *gormfake.DB) {
 		t.Fatal(err)
 	}
 	e.InstallGovernance(c, delays)
-	a.runtimeState.document = runtimeDocument{SchemaVersion: 1}
-	a.runtimeState.effective = policy
+	a.runtimeState.service = runtimecontrol.New(e, adminruntime.StoreAdapter{Store: a.configStore}, cfg.Runtime)
 	return a, fake
 }
 func runtimePost(a *App, body string) *httptest.ResponseRecorder {
@@ -59,7 +60,7 @@ func TestRuntimePolicyPublishAfterPersistenceAndReset(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 || a.runtimeState.revision != 1 {
+	if a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 || a.runtimeState.service.Revision() != 1 {
 		t.Fatal("policy not published")
 	}
 	if !strings.Contains(f.Written(), "fixture-operator") {
@@ -70,13 +71,13 @@ func TestRuntimePolicyPublishAfterPersistenceAndReset(t *testing.T) {
 	}
 	f.SetExecError("offline")
 	w = runtimePost(a, `{"revision":1,"document":{"schema_version":1,"overrides":{}}}`)
-	if w.Code != 503 || a.runtimeState.revision != 1 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
+	if w.Code != 503 || a.runtimeState.service.Revision() != 1 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
 		t.Fatal("failed write published", w.Code)
 	}
 	f.SetExecError("")
 	f.SetRow(map[string]driver.Value{"revision": int64(1), "cfg_val": []byte(`{"schema_version":1,"overrides":{"sites":{"fixture":{"request":{"enabled":true,"max_inflight":2,"requests_per_second":3}}}}}`)})
 	w = runtimePost(a, `{"revision":1,"document":{"schema_version":1,"overrides":{}}}`)
-	if w.Code != 200 || a.runtimeState.revision != 2 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 0 {
+	if w.Code != 200 || a.runtimeState.service.Revision() != 2 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 0 {
 		t.Fatal("reset failed", w.Code, w.Body.String())
 	}
 }
@@ -106,11 +107,11 @@ func TestRuntimePolicyRestartUsesSavedOverrideAndRejectsCorruption(t *testing.T)
 		t.Fatal(err)
 	}
 	t.Cleanup(a.stopRuntime)
-	if a.runtimeState.revision != 7 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
+	if a.runtimeState.service.Revision() != 7 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
 		t.Fatal("restart lost override")
 	}
 	for _, raw := range []string{`null`, `[]`, `{"schema_version":2}`, `{"schema_version":1,"secret":true}`} {
-		if _, err := decodeRuntime([]byte(raw)); err == nil {
+		if _, err := runtimecontrol.Decode([]byte(raw)); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
 	}
@@ -133,18 +134,22 @@ func TestRuntimeReadDoesNotWriteOrAuthenticate(t *testing.T) {
 
 func TestRuntimeUncertainGETReconcilesDurableRevision(t *testing.T) {
 	a, f := runtimeTestApp(t)
-	a.runtimeState.uncertain = true
+	f.SetExecError("offline")
+	if w := runtimePost(a, `{"revision":0,"document":{"schema_version":1,"overrides":{}}}`); w.Code != 503 {
+		t.Fatal(w.Code)
+	}
+	f.SetExecError("")
 	f.SetQueryError("crawler_config", "offline")
 	w := httptest.NewRecorder()
 	a.runtimePolicyAPI(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
-	if w.Code != 503 || !a.runtimeState.uncertain {
+	if w.Code != 503 || !a.runtimeState.service.Uncertain() {
 		t.Fatal("uncertain result reported as confirmed")
 	}
 	f.SetQueryError("", "")
 	f.SetRow(map[string]driver.Value{"revision": int64(3), "cfg_val": []byte(`{"schema_version":1,"overrides":{"sites":{"fixture":{"request":{"max_inflight":1}}}}}`)})
 	w = httptest.NewRecorder()
 	a.runtimePolicyAPI(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
-	if w.Code != 200 || a.runtimeState.uncertain || a.runtimeState.revision != 3 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 1 {
+	if w.Code != 200 || a.runtimeState.service.Uncertain() || a.runtimeState.service.Revision() != 3 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 1 {
 		t.Fatal("GET retained stale cache", w.Body.String())
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
@@ -17,7 +18,7 @@ var (
 	ErrTaskNotFound       = errors.New("任务不存在")
 	ErrTaskTerminal       = errors.New("该任务已结束（成功或失败），无需再标记失败")
 	ErrTaskProcessing     = errors.New("该任务正在处理中，等它结束再操作")
-	ErrTaskChanged        = errors.New("该行已被他人修改，请刷新后重试")
+	ErrTaskChanged        = taskstore.ErrChanged
 	ErrStageNotRegistered = errors.New("该任务的阶段未注册")
 	ErrTaskUrgent         = errors.New("该任务已经加急过了，或已被取走，刷新后再看")
 	ErrTaskFinished       = errors.New("该任务已结束，加急没有意义（要重跑请用「重投」）")
@@ -29,15 +30,10 @@ var (
 
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
 // 测试用 GORM 的 DryRun/ToSQL 断言条件确实写进了语句，而不是"先查再写"。
-func claimScope(db *gorm.DB, id uint) *gorm.DB {
-	return compensationScope(db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", id, models.TaskStatusPending).
-		Where("(not_before IS NULL OR not_before <= UTC_TIMESTAMP(3))"))
-}
+func claimScope(db *gorm.DB, id uint) *gorm.DB { return taskstore.ClaimScope(db, id) }
 
 func retryScope(db *gorm.DB, id uint, wasReprocess int) *gorm.DB {
-	return compensationScope(db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status <> ? AND reprocess = ?", id, models.TaskStatusProcessing, wasReprocess))
+	return taskstore.RetryScope(db, id, wasReprocess)
 }
 
 // urgentScope 只对「还没加急过、且还没被取走」的行生效，防手抖双击与两人同点
@@ -131,7 +127,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
-	if e.breakerSettlementBlocked(t.Site) {
+	if e.breakers.breakerSettlementBlocked(t.Site) {
 		return ErrTaskProcessing
 	}
 	if t.Status == models.TaskStatusProcessing {
@@ -144,14 +140,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 		return ErrTaskChanged
 	}
 
-	res := retryScope(e.db.WithContext(ctx), id, wasReprocess).
-		Where("status = ? AND `repeat` = ? AND compensation_version = ?", t.Status, t.Repeat, t.CompensationVersion).
-		Updates(map[string]any{
-			"status":               models.TaskStatusPending,
-			"retry":                0,
-			"reprocess":            gorm.Expr("reprocess + 1"),
-			"compensation_version": gorm.Expr("compensation_version + 1"),
-		})
+	res := taskstore.RetryTask(e.db.WithContext(ctx), id, t.Status, taskRunVersion{Repeat: t.Repeat, Reprocess: wasReprocess}, t.CompensationVersion)
 	if res.Error != nil {
 		return fmt.Errorf("reset task %d: %w", id, res.Error)
 	}

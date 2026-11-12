@@ -1,0 +1,12 @@
+.logs-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.logs-heading h2 { margin:0; }
+.logs-heading .btn { padding:5px 10px; font-size:12px; }
+.logs-card { padding:6px 10px; }
+.log-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr)); gap:4px 16px; max-height:180px; overflow:auto; }
+.log-row { display:flex; align-items:center; gap:10px; padding:4px 0; border-bottom:1px solid var(--border-color); }
+.log-row:last-child { border-bottom:0; }
+.log-row .nm { font-family:var(--font-mono); font-size:12px; overflow-wrap:anywhere; min-width:0; flex:1; }
+.log-row .sz { font-family:var(--font-mono); color:var(--muted-foreground); font-size:12px; flex-shrink:0; }
+.log-view { background:none; border:0; padding:4px; cursor:pointer; color:var(--foreground); text-decoration:underline; font:inherit; font-size:12px; flex-shrink:0; }
+.log-tail-text { max-height:55vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.5 var(--font-mono); margin:8px 0 0; }
+

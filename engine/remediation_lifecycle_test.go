@@ -34,7 +34,7 @@ func TestBuildPoolRejectsInvalidConfigWithoutRegisteringNil(t *testing.T) {
 	if p := e.getOrCreatePool(stubKey); p != nil {
 		t.Fatal("invalid config built a pool")
 	}
-	if len(e.pools.pools) != 0 {
+	if e.pools.Count() != 0 {
 		t.Fatal("failed creation registered a nil pool")
 	}
 }

@@ -25,8 +25,8 @@ func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
 	}))
 	defer srv.Close()
 	e, _, _ := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
-	m := account.NewManager(e.htmlClient)
+	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
+	m := account.NewManager(e.GetHTMLClient())
 	key := account.Key{Site: "site", ID: "alice"}
 	if err := m.Register(key, account.Config{Origins: []string{srv.URL}, Login: func(_ context.Context, c *account.Credentials) error {
 		c.Headers["Authorization"] = "Bearer private-token"

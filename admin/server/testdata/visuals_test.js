@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const nodes={},charts=new Map(),windowEvents={},documentEvents={},animated=new Set(),chartRegions=[{hidden:false},{hidden:false},{hidden:false}];let created=0,destroyed=0;
 function node(id){return nodes[id]||(nodes[id]={id,hidden:false,open:false,textContent:'',listeners:{},
@@ -9,10 +10,10 @@ const chartAPI={create(el,options){created++;charts.set(el.id,options);let alive
 const motionAPI={animate:el=>animated.add(el.id),cancel:el=>animated.delete(el.id)};
 const c=vm.createContext({window:{addEventListener:(type,listener)=>windowEvents[type]=listener},document:{hidden:false,getElementById:node,addEventListener:(type,listener)=>documentEvents[type]=listener},currentSite:null,currentModule:'dashboard',
     Oao:{charts:chartAPI,motion:motionAPI}});
-for(const script of ['workbench.js','visual-state.js','visuals.js'])vm.runInContext(fs.readFileSync(path.join(process.argv[2],script),'utf8'),c);
+for(const script of ['workbench.js','visual-state.js','visuals.js'])controllers.run(fs.readFileSync(path.join(process.argv[2],script),'utf8'),c);
 const data={instance_id:'one',generated_at:'2026-11-07T00:00:00Z',stages:{x:{site:'one',stage:'a',queue:{queue_len:0,in_progress:1,completed:8,failed:0}}}};
 function toggle(id,open){const el=node(id);el.open=open;el.emit('toggle');}
-function count(n){assert.equal(c.monitorVisuals.instances.size,n);assert.equal(charts.size,n);assert.equal(created-destroyed,n);}
+function count(n){assert.equal(c.monitorChartCount(),n);assert.equal(charts.size,n);assert.equal(created-destroyed,n);}
 
 // Real production handlers must keep unsampled / unaccepted data empty.
 c.renderMonitorVisuals(null);count(0);
@@ -65,7 +66,7 @@ c.renderMonitorVisuals(fresh);c.setMonitorVisualConnection(false);count(0);
 c.resumeMonitorVisuals();count(6);
 c.resetMonitorObservations();count(0);assert.equal(c.MonitorObservations.size(),0);assert.equal(animated.size,0);
 for(const key of ['cpu','mem','disk']){assert.equal(nodes['visual-'+key+'-value'].textContent,'—');assert.equal(nodes['visual-'+key+'-stamp'].textContent,'尚无成功采样');}
-assert.equal(c.monitorVisuals.data,null);assert.equal(nodes['visual-observation-meta'].textContent,'等待新的监控快照');
+assert.equal(c.getVisualSnapshot(),null);assert.equal(nodes['visual-observation-meta'].textContent,'等待新的监控快照');
 toggle('workbench-resources',true);c.setMonitorVisualConnection(false);count(0);
 c.document.hidden=true;documentEvents.visibilitychange();c.document.hidden=false;documentEvents.visibilitychange();count(0);
 

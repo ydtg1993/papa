@@ -330,7 +330,7 @@ func (p *Pools) SetDisabled(ctx context.Context, key Key, disabled bool, expecte
 	}
 	a = p.ensureManagement(key)
 	a.state.Disabled = disabled
-	a.state.advanceControl()
+	advanceControl(&a.state)
 	a.state.Generation++
 	a.state.UpdatedAt = time.Now()
 	a.dirty = true
@@ -569,7 +569,7 @@ func (p *Pools) reportFailure(a *Attempt, outcome Outcome, taskID uint64, t Tran
 	}
 	m := p.accounts[a.Account]
 	now := time.Now()
-	m.state.advanceControl()
+	advanceControl(&m.state)
 	m.state.Generation++
 	m.state.UpdatedAt = now
 	m.state.TriggerTaskID = taskID

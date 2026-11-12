@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -82,9 +83,11 @@ type archivedPage struct {
 
 // archiveBuffer 一次尝试的归档缓冲：先登记，尝试结束时一次性落盘。
 type archiveBuffer struct {
-	e       *Engine
-	task    *Task
-	attempt int
+	logger    *logrus.Logger
+	dir, mode string
+	maxBytes  int64
+	task      *Task
+	attempt   int
 
 	pages   []archivedPage
 	byURL   map[string]int // 最终 URL → pages 下标（同一个 URL 抓了两次时后来者覆盖）
@@ -96,7 +99,7 @@ func (e *Engine) newArchiveBuffer(task *Task, attempt int) *archiveBuffer {
 	if !e.archiveEnabled() || task.ID == 0 {
 		return nil
 	}
-	return &archiveBuffer{e: e, task: task, attempt: attempt, byURL: make(map[string]int)}
+	return &archiveBuffer{logger: e.loggerSet.Engine, dir: e.archiveDir(), mode: e.archiveMode(), maxBytes: e.archiveMaxBytes(), task: task, attempt: attempt, byURL: make(map[string]int)}
 }
 
 // hold 登记静态抓取（`FetchHTML`）拿到的一页。只登记，不写盘；nil 安全。
@@ -127,9 +130,9 @@ func (a *archiveBuffer) holdPage(p archivedPage) {
 		return
 	}
 	// 单页上限在**登记时**判：既是"太大不归档"的判据，也顺带把内存兜住了
-	if int64(len(p.html)) > a.e.archiveMaxBytes() {
+	if int64(len(p.html)) > a.maxBytes {
 		a.dropped++
-		a.e.loggerSet.Engine.Warnf("archive: 页面超过单页上限，未归档（stage=%s task=%d url=%s bytes=%d）",
+		a.logger.Warnf("archive: 页面超过单页上限，未归档（stage=%s task=%d url=%s bytes=%d）",
 			a.task.Stage, a.task.ID, p.url, len(p.html))
 		return
 	}
@@ -157,23 +160,23 @@ func (a *archiveBuffer) finish(failed bool) []string {
 	if len(a.pages) == 0 {
 		return nil
 	}
-	if a.e.archiveMode() != config.ArchiveModeAlways && !failed {
+	if a.mode != config.ArchiveModeAlways && !failed {
 		return nil // failure 模式：成功的尝试不落盘（写入量按失败率走）
 	}
 
-	root := a.e.archiveDir()
+	root := a.dir
 	files := make([]string, 0, len(a.pages))
 	for _, page := range a.pages {
 		rel, err := a.writeOne(root, page)
 		if err != nil {
-			a.e.loggerSet.Engine.Warnf("archive: 写盘失败（不影响任务）：%s", err.Error())
+			a.logger.Warnf("archive: 写盘失败（不影响任务）：%s", err.Error())
 			continue
 		}
 		files = append(files, rel)
 	}
 	if len(files) > 0 || a.dropped > 0 {
 		// dropped 要报出来：文件数少于"这一轮明明抓到了几页"时，得有个理由可查
-		a.e.loggerSet.Engine.Infof("archive: 已归档 %d 页、丢弃 %d 页（stage=%s task=%d try=%d）→ %s",
+		a.logger.Infof("archive: 已归档 %d 页、丢弃 %d 页（stage=%s task=%d try=%d）→ %s",
 			len(files), a.dropped, a.task.Stage, a.task.ID, a.task.Retry, root)
 	}
 	return files

@@ -3,11 +3,12 @@ package account
 import (
 	"context"
 	"errors"
+	"github.com/ydtg1993/papa/v4/pkg/account/contract"
 	"sort"
 	"time"
 )
 
-type VerificationMode string
+type VerificationMode = contract.VerificationMode
 
 const (
 	CheckExisting VerificationMode = "check-existing"
@@ -17,31 +18,9 @@ const (
 // Policy applies to one account across all pools. Usage counts accepted public
 // HTTP exchanges and browser operations, never the browser's network requests.
 // Zero health durations select defaults; zero usage limits disable the limit.
-type Policy struct {
-	Buffer               time.Duration `json:"buffer"`
-	InvalidConfirmations int           `json:"invalid_confirmations"`
-	CheckInterval        time.Duration `json:"check_interval"`
-	VerifyTimeout        time.Duration `json:"verify_timeout"`
-	UnknownBackoff       time.Duration `json:"unknown_backoff"`
-	MaxBackoff           time.Duration `json:"max_backoff"`
-	UnknownAlertAfter    time.Duration `json:"unknown_alert_after"`
-	OperationInterval    time.Duration `json:"operation_interval"`
-	DailyLimit           int64         `json:"daily_limit"`
-	Timezone             string        `json:"timezone"`
-	WorkStartMinute      int           `json:"work_start_minute"`
-	WorkEndMinute        int           `json:"work_end_minute"`
-	LoginInterval        time.Duration `json:"login_interval"`
-	RecoveryInterval     time.Duration `json:"recovery_interval"`
-	TrackUsage           bool          `json:"track_usage"`
-}
+type Policy = contract.Policy
 
-type Usage struct {
-	Unit             string    `json:"unit"`
-	Day              string    `json:"day"`
-	Operations       int64     `json:"operations"`
-	LastOperation    time.Time `json:"last_operation"`
-	LastLoginAttempt time.Time `json:"last_login_attempt"`
-}
+type Usage = contract.Usage
 
 func DefaultPolicy() Policy {
 	return Policy{Buffer: 10 * time.Second, InvalidConfirmations: 2, CheckInterval: 10 * time.Second, VerifyTimeout: 30 * time.Second, UnknownBackoff: 10 * time.Second, MaxBackoff: 5 * time.Minute, UnknownAlertAfter: 5 * time.Minute, Timezone: "UTC"}
@@ -84,16 +63,7 @@ func normalizePolicy(v Policy) (Policy, error) {
 
 // HealthEvent contains only framework-defined reason codes and identity keys.
 // No callback error text, credential, request URL or provider payload is stored.
-type HealthEvent struct {
-	Sequence uint64    `json:"sequence"`
-	Key      Key       `json:"key"`
-	Pool     PoolKey   `json:"pool,omitempty"`
-	Kind     string    `json:"kind"`
-	Reason   string    `json:"reason"`
-	TaskID   uint64    `json:"task_id,omitempty"`
-	At       time.Time `json:"at"`
-	Version  uint64    `json:"version"`
-}
+type HealthEvent = contract.HealthEvent
 
 func cloneManagement(s ManagementState) ManagementState {
 	s.Events = append([]HealthEvent(nil), s.Events...)
@@ -113,7 +83,7 @@ func matchesControlVersion(a *managedAccount, expected uint64) bool {
 	return expected >= last && expected <= a.state.Version
 }
 
-func (s *ManagementState) advanceControl() {
+func advanceControl(s *ManagementState) {
 	s.Version++
 	s.LastControlVersion = s.Version
 }
@@ -239,7 +209,7 @@ func (p *Pools) SetPolicy(ctx context.Context, key Key, value Policy, expected u
 			e.mu.Unlock()
 		}
 	}
-	a.state.advanceControl()
+	advanceControl(&a.state)
 	a.state.UpdatedAt = time.Now()
 	a.dirty = true
 	p.publishLocked()
@@ -291,7 +261,7 @@ func (p *Pools) queueVerification(ctx context.Context, key Key, expected uint64,
 	e.mu.Lock()
 	v, bv := e.version, e.browserRevision
 	e.mu.Unlock()
-	a.state.advanceControl()
+	advanceControl(&a.state)
 	a.state.Generation++
 	a.state.UpdatedAt = time.Now()
 	a.state.VerificationMode = mode

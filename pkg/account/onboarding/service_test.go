@@ -144,6 +144,21 @@ func confirmFixture(t *testing.T, s *Service, id string) Progress {
 	return waitState(t, s, id, "succeeded", "failed")
 }
 
+func TestStartReturnsInitialSnapshotWhenProviderFailsImmediately(t *testing.T) {
+	s, _, _ := newFixtureService(t, &fixtureProvider{}, NewMemoryStore(), 5*time.Second)
+	p := draftFixture(t, s, "fast-failure")
+	for i := 0; i < 32; i++ {
+		initial := startFixture(t, s, p, "import", map[string]string{"json": "invalid"}, false)
+		if initial.State != "running" || initial.Revision != 1 || initial.Failure != "" {
+			t.Fatalf("Start returned worker progress instead of its initial snapshot: %+v", initial)
+		}
+		failed := waitState(t, s, initial.ID, "failed")
+		if failed.Revision <= initial.Revision || initial.State != "running" {
+			t.Fatalf("progress snapshots are not independent: initial=%+v failed=%+v", initial, failed)
+		}
+	}
+}
+
 func TestLoginCandidateIdentityConfirmationEncryptionAndRestart(t *testing.T) {
 	profiles := NewMemoryStore()
 	s, m, dir := newFixtureService(t, &fixtureProvider{}, profiles, 5*time.Second)

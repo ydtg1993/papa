@@ -163,9 +163,7 @@ func TestUncertainClaimNeverAssumesOwnership(t *testing.T) {
 	if err := e.stageHandler(e.stages["stub:stub"])(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	e.persistenceMu.Lock()
-	unsettled := len(e.unsettled)
-	e.persistenceMu.Unlock()
+	unsettled := len(e.execution.Snapshot())
 	if unsettled != 1 {
 		t.Fatal("unclaimed duplicate cleared unresolved ownership")
 	}
@@ -296,6 +294,51 @@ func TestErrorRetryRepeatCountIndependentOfQueuePressure(t *testing.T) {
 			e.drainSpilled()
 			if got := f.row["repeat"]; got != int64(12) {
 				t.Fatalf("error retry consumed repeat budget under %s pressure: %v", mode, got)
+			}
+		})
+	}
+}
+
+func TestExecutionRetryWriteFailureDoesNotReplayHandlerOrIncrement(t *testing.T) {
+	for _, afterCommit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before-write", true: "lost-ack"}[afterCommit], func(t *testing.T) {
+			e, f, task, c := persistenceFixture(t)
+			fetcher := &recordingFetcher{stage: "stub", err: errors.New("retryable business failure")}
+			info := e.stages["stub:stub"]
+			info.fetcher = fetcher
+			info.config.MaxAttempts = 3
+			failure := errors.New("retry storage acknowledgement unavailable")
+			writes := 0
+			inject := func(tx *gorm.DB) {
+				if values, ok := tx.Statement.Dest.(map[string]any); ok {
+					if _, retry := values["retry"]; retry {
+						writes++
+						tx.AddError(failure)
+					}
+				}
+			}
+			var registerErr error
+			if afterCommit {
+				registerErr = e.db.Callback().Update().After("gorm:commit_or_rollback_transaction").Register("test:retry_lost_ack", inject)
+			} else {
+				registerErr = e.db.Callback().Update().Before("gorm:update").Register("test:retry_error", inject)
+			}
+			if registerErr != nil {
+				t.Fatal(registerErr)
+			}
+			err := e.stageHandler(info)(context.Background(), task)
+			if !errors.Is(err, failure) || writes != 1 || len(fetcher.calls()) != 1 {
+				t.Fatalf("err=%v writes=%d fetches=%d", err, writes, len(fetcher.calls()))
+			}
+			if _, ok := e.execution.Snapshot()[task.ID]; !ok {
+				t.Fatal("ambiguous retry absent from shutdown accounting")
+			}
+			if didWrite := strings.Contains(f.written(), "`retry`=retry +"); didWrite != afterCommit {
+				t.Fatalf("write reached driver=%v lostAck=%v SQL=%s", didWrite, afterCommit, f.written())
+			}
+
+			if task.Retry != 0 || countTaskEvents(c, events.TypeTaskRetry) != 0 || countTaskEvents(c, events.TypeTaskFinished) != 0 {
+				t.Fatal("unconfirmed retry was announced or executed")
 			}
 		})
 	}

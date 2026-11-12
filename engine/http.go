@@ -31,10 +31,10 @@ func (e *Engine) FetchIncremental(ctx context.Context, rawURL string, previous *
 		}
 		return result, err
 	}
-	if e.htmlClient == nil {
+	if e.GetHTMLClient() == nil {
 		return nil, fmt.Errorf("HTTP 客户端未启用：请开启 html.enable")
 	}
-	result, err := e.htmlClient.FetchIncremental(ctx, rawURL, previous)
+	result, err := e.GetHTMLClient().FetchIncremental(ctx, rawURL, previous)
 	data := map[string]any{}
 	if result != nil {
 		data["changed"] = result.Changed
@@ -55,10 +55,10 @@ func (e *Engine) FetchHTTP(ctx context.Context, request htmlfetch.Request) (*htm
 	if a, ok := account.AttemptFromContext(ctx); ok {
 		return e.FetchPoolHTTP(ctx, a.Pool, request)
 	}
-	if e.htmlClient == nil {
+	if e.GetHTMLClient() == nil {
 		return nil, fmt.Errorf("HTTP 客户端未启用：请开启 html.enable")
 	}
-	response, err := e.htmlClient.Do(ctx, request)
+	response, err := e.GetHTMLClient().Do(ctx, request)
 	method := request.Method
 	if method == "" {
 		method = http.MethodGet
@@ -102,12 +102,12 @@ func (e *Engine) CaptureResponse(ctx context.Context, pageURL string, opts brows
 	if err := browserProxyError(ctx); err != nil {
 		return nil, err
 	}
-	if e.browserPool == nil {
+	if e.GetBrowserPool() == nil {
 		return nil, fmt.Errorf("browser pool is not configured (browser.enable=false)")
 	}
 	opts.Page = mergeBrowserOptions(ctx, opts.Page)
 	var response *browser.CapturedResponse
-	err := e.browserPool.WithBrowser(ctx, func(b *browser.Browser) error {
+	err := e.GetBrowserPool().WithBrowser(ctx, func(b *browser.Browser) error {
 		var err error
 		response, err = b.CaptureResponse(ctx, pageURL, opts)
 		return err

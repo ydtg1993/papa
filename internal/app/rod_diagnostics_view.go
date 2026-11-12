@@ -1,6 +1,5 @@
 package app
 
-import _ "embed"
+import "github.com/ydtg1993/papa/v4/admin/diagnostics"
 
-//go:embed rod_diagnostics.js
-var rodDiagnosticsScript string
+var rodDiagnosticsScript = diagnostics.Script

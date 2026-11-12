@@ -109,7 +109,7 @@ func TestLogTailEndpoint(t *testing.T) {
 }
 
 func TestLogViewerUIContract(t *testing.T) {
-	js, err := os.ReadFile("static/mo.js")
+	js, err := staticFS.ReadFile("static/mo.js")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestLogListAndArchiveExcludeNonLogs(t *testing.T) {
 }
 
 func TestLogListUsesCompactGrid(t *testing.T) {
-	css, err := os.ReadFile("static/mo.css")
+	css, err := staticFS.ReadFile("static/mo.css")
 	if err != nil {
 		t.Fatal(err)
 	}

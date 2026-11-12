@@ -1,12 +1,9 @@
+const controllers=require('./controllers');
 // Executes the production loader with controlled HTTP/header and body timing.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(process.argv[2], 'utf8');
-const state = source.match(/var obsState = [^;]+;/)[0];
-const start = source.indexOf('async function loadObsReport()');
-const end = source.indexOf('async function downloadObsReport()', start);
-assert.ok(start >= 0 && end > start);
 const deferred = () => {
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -21,14 +18,13 @@ function setup() {
     const context = vm.createContext({
         encodeURIComponent,
         captureMonitorView: () => () => true,
-        document: { getElementById: () => pre },
+        document: { getElementById: id => id==='obs-content'?pre:id==='obs-viewer-sec'?{}:null },
         apiFetch(url) { const request = deferred(); request.url = url; requests.push(request); return request.promise; },
     });
-    vm.runInContext(state + '\n' + source.slice(start, end), context);
+    controllers.load(context,source,['reports/controller']);
     function load(run, file = 'report.md') {
-        context.obsState.run = run;
-        context.obsState.file = file;
-        const done = context.loadObsReport();
+        context.renderObsReports({runs:[{name:run,files:file?[{name:file}]:[]}]});
+        const done = context.openObsReport(run);
         done.catch(() => {});
         return done;
     }

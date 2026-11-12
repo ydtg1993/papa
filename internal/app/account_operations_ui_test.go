@@ -40,6 +40,9 @@ func TestAccountOperationsUIRealBrowserPolicyAndPartialCompensation(t *testing.T
 	}
 	t.Cleanup(pools.Close)
 	a.runtimeState.pools = pools
+	if err := a.runtimeState.service.AttachPools(pools); err != nil {
+		t.Fatal(err)
+	}
 	_, err = pools.Upsert(context.Background(), account.PoolConfig{Key: account.PoolKey{Site: "fixture", Name: "main"}, Members: []string{"primary"}, Disabled: true, StandbyTarget: 1, StandbyTTL: time.Minute}, 0)
 	if err != nil {
 		t.Fatal(err)

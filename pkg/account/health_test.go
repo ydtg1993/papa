@@ -57,7 +57,7 @@ func TestDefault401NeedsVerifyAndExplicitExpiry(t *testing.T) {
 func TestSuspicious401ChecksExistingWithoutLoginOrReplay(t *testing.T) {
 	var calls, logins atomic.Int32
 	m, srv, _ := poolManager(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(401) }, "a", "b")
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	login := e.config.Login
 	e.config.Login = func(ctx context.Context, c *Credentials) error { logins.Add(1); return login(ctx, c) }
 	p := testPools(t, m, NewMemoryPoolStore())
@@ -91,7 +91,7 @@ func TestSuspiciousConcurrentReportsRequireSeparatedInvalidChecks(t *testing.T) 
 	m, _, _ := poolManager(t, nil, "a", "b")
 	var invalid atomic.Bool
 	var logins atomic.Int32
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	login := e.config.Login
 	e.config.Login = func(ctx context.Context, c *Credentials) error { logins.Add(1); return login(ctx, c) }
 	var mu sync.Mutex
@@ -148,7 +148,7 @@ func TestSuspiciousConcurrentReportsRequireSeparatedInvalidChecks(t *testing.T) 
 func TestUnknownVerificationBacksOffWithoutInvalidEvidence(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a", "b")
 	var unknown atomic.Bool
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	e.config.Check = func(context.Context, *Credentials) (bool, error) {
 		if unknown.Load() {
 			return false, errors.New("secret-provider-token")
@@ -199,7 +199,7 @@ func TestCheckExistingNeverResumesPausedAccount(t *testing.T) {
 
 func TestCheckExistingStaleResultCannotInvalidateNewCandidate(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a", "b")
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	var suspect atomic.Bool
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -243,7 +243,7 @@ func TestCheckExistingStaleResultCannotInvalidateNewCandidate(t *testing.T) {
 
 func TestSuspiciousRestartRetainsStateAndChecksWithoutLogin(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	fs, err := NewFileStore(t.TempDir(), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func TestHealthEventsBoundedAndSlowListenerDoesNotBlock(t *testing.T) {
 
 func TestHealthShutdownTimeoutRetainsDependenciesAndDiscardsLateCheck(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	var block atomic.Bool
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -430,9 +430,9 @@ func TestSlowSiteDoesNotBlockAnotherSiteVerification(t *testing.T) {
 	m, srv, _ := poolManager(t, nil, "a")
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	e.config.Login = func(context.Context, *Credentials) error { close(entered); <-release; return nil }
-	if err := m.Register(Key{"z", "other"}, Config{Origins: []string{srv.URL}, Login: func(context.Context, *Credentials) error { return nil }, Check: func(context.Context, *Credentials) (bool, error) { return true, nil }}); err != nil {
+	if err := m.Register(Key{Site: "z", ID: "other"}, Config{Origins: []string{srv.URL}, Login: func(context.Context, *Credentials) error { return nil }, Check: func(context.Context, *Credentials) (bool, error) { return true, nil }}); err != nil {
 		t.Fatal(err)
 	}
 	p := testPools(t, m, NewMemoryPoolStore())
@@ -443,7 +443,7 @@ func TestSlowSiteDoesNotBlockAnotherSiteVerification(t *testing.T) {
 		t.Fatal("slow site not started")
 	}
 	defer close(release)
-	key := PoolKey{"z", "other"}
+	key := PoolKey{Site: "z", Name: "other"}
 	if _, err := p.Upsert(context.Background(), PoolConfig{Key: key, Members: []string{"other"}}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestSlowSiteDoesNotBlockAnotherSiteVerification(t *testing.T) {
 func TestAutomaticRecoveryUsesLoginButNeverResumesManualPause(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a", "b")
 	var logins atomic.Int32
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	original := e.config.Login
 	e.config.Login = func(ctx context.Context, c *Credentials) error { logins.Add(1); return original(ctx, c) }
 	p := testPools(t, m, NewMemoryPoolStore())
@@ -480,7 +480,7 @@ func TestAutomaticRecoveryUsesLoginButNeverResumesManualPause(t *testing.T) {
 func TestConfirmedProxyFailureSwitchesWithoutDiscardingCredentials(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a", "b")
 	var broken atomic.Bool
-	e, _ := m.get(Key{"s", "a"})
+	e, _ := m.get(Key{Site: "s", ID: "a"})
 	e.config.Check = func(context.Context, *Credentials) (bool, error) {
 		if broken.Load() {
 			return false, ErrFixedProxyUnavailable

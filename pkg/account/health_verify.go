@@ -137,7 +137,7 @@ func (p *Pools) finishVerification(key Key, t Transport, before ManagementState,
 		e.mu.Unlock()
 	}
 	now := time.Now()
-	a.state.advanceControl()
+	advanceControl(&a.state)
 	a.state.Generation++
 	a.state.UpdatedAt = now
 	a.dirty = true

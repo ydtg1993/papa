@@ -3,16 +3,14 @@ package account
 import (
 	"context"
 	"errors"
+	"github.com/ydtg1993/papa/v4/pkg/account/contract"
 	"sync"
 	"time"
 )
 
-type PoolKey struct {
-	Site string `json:"site"`
-	Name string `json:"name"`
-}
+type PoolKey = contract.PoolKey
 
-type Transport string
+type Transport = contract.Transport
 
 const (
 	HTTP    Transport = "http"
@@ -22,7 +20,7 @@ const (
 
 var (
 	ErrPoolUnknown           = errors.New("account pool is not configured")
-	ErrPoolConflict          = errors.New("account pool version conflict")
+	ErrPoolConflict          = contract.ErrPoolConflict
 	ErrPoolDisabled          = errors.New("account pool is disabled")
 	ErrPoolClosed            = errors.New("account pool coordinator is closed")
 	ErrPoolReferenced        = errors.New("account pool has task references or no reference guard")
@@ -32,83 +30,21 @@ var (
 
 const ProxyUnavailable Outcome = "proxy-unavailable"
 
-type PoolConfig struct {
-	Key            PoolKey   `json:"key"`
-	Members        []string  `json:"members"`
-	Transport      Transport `json:"transport"`
-	Disabled       bool      `json:"disabled"`
-	VerifyAttempts int       `json:"verify_attempts"`
-	// SwitchLimit bounds candidates checked in one scheduling round. Later rounds
-	// continue after Cooldown, never spin or silently reset invalid accounts.
-	SwitchLimit   int           `json:"switch_limit"`
-	Cooldown      time.Duration `json:"cooldown"`
-	StandbyTarget int           `json:"standby_target"`
-	StandbyTTL    time.Duration `json:"standby_ttl"`
-}
+type PoolConfig = contract.PoolConfig
 
-type SwitchRecord struct {
-	From             string    `json:"from"`
-	To               string    `json:"to"`
-	Reason           string    `json:"reason"`
-	TaskID           uint64    `json:"task_id,omitempty"`
-	SelectionVersion uint64    `json:"selection_version"`
-	At               time.Time `json:"at"`
-}
+type SwitchRecord = contract.SwitchRecord
 
 // PoolState contains no credentials. Members are stored in stable selection order.
-type PoolState struct {
-	PoolConfig
-	Revision         uint64         `json:"revision"`
-	CurrentID        string         `json:"current_id"`
-	SelectionVersion uint64         `json:"selection_version"`
-	History          []SwitchRecord `json:"history"`
-	Deleted          bool           `json:"deleted,omitempty"`
-}
+type PoolState = contract.PoolState
 
 // ManagementState is separate from credential state. It never stores a third
 // readiness flag: eligibility combines these exclusions with Manager auth state.
-type ManagementState struct {
-	Key     Key    `json:"key"`
-	Version uint64 `json:"version"`
-	// LastControlVersion is the latest Version that changed policy or health.
-	// Pure usage and event writes advance Version without invalidating OA edits.
-	LastControlVersion  uint64           `json:"last_control_version"`
-	Generation          uint64           `json:"generation"`
-	Disabled            bool             `json:"disabled"`
-	Quarantined         bool             `json:"quarantined"`
-	CooldownUntil       time.Time        `json:"cooldown_until"`
-	Reason              string           `json:"reason,omitempty"`
-	PendingInvalidation bool             `json:"pending_invalidation"`
-	TriggerTaskID       uint64           `json:"trigger_task_id,omitempty"`
-	UpdatedAt           time.Time        `json:"updated_at"`
-	Suspicious          bool             `json:"suspicious"`
-	ProxyUnavailable    bool             `json:"proxy_unavailable"`
-	VerificationMode    VerificationMode `json:"verification_mode,omitempty"`
-	VerificationPending bool             `json:"verification_pending"`
-	CredentialVersion   uint64           `json:"credential_version"`
-	BrowserVersion      uint64           `json:"browser_version"`
-	CheckTransport      Transport        `json:"check_transport,omitempty"`
-	NextVerifyAt        time.Time        `json:"next_verify_at"`
-	SuspectSince        time.Time        `json:"suspect_since"`
-	InvalidChecks       int              `json:"invalid_checks"`
-	UnknownChecks       int              `json:"unknown_checks"`
-	ProxyChecks         int              `json:"proxy_checks"`
-	LastVerifiedAt      time.Time        `json:"last_verified_at"`
-	LastVerification    string           `json:"last_verification,omitempty"`
-	Policy              Policy           `json:"policy"`
-	Usage               Usage            `json:"usage"`
-	Events              []HealthEvent    `json:"events,omitempty"`
-}
+type ManagementState = contract.ManagementState
 
 // PoolStore persists selection and management with compare-and-swap. Save must
 // reject an existing version unequal to expected; expected zero creates only.
 // Versions may advance by more than one when failures coalesce during an outage.
-type PoolStore interface {
-	LoadPools(context.Context) ([]PoolState, error)
-	LoadManagement(context.Context) ([]ManagementState, error)
-	SavePoolCAS(context.Context, PoolState, uint64) error
-	SaveManagementCAS(context.Context, ManagementState, uint64) error
-}
+type PoolStore = contract.PoolStore
 
 type PoolOptions struct {
 	// Context attaches site request budgets to coordinator authentication traffic.

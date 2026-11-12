@@ -15,7 +15,7 @@ import (
 func TestSubmitToRoutesByUrgentFlag(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
 	e := &Engine{stages: map[string]*stageInfo{"s:s": {stage: "s", config: StageConfig{Site: "s"}}}, pools: newPoolRegistry()}
-	e.pools.set("s:s", pool)
+	e.pools.Set("s:s", pool)
 
 	if err := e.submitToStage(&Task{URL: "a", Stage: "s", Site: "s"}); err != nil {
 		t.Fatalf("普通任务投递失败：%v", err)
@@ -174,7 +174,7 @@ func TestEngineStopRefusesPoolCreationAfterwards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("停机后的投递按「先寄放」处理，不该报错：%v", err)
 	}
-	if pool := e.pools.get("stub:stub"); pool != nil {
+	if pool := e.pools.Get("stub:stub"); pool != nil {
 		t.Fatalf("Stop 之后不该再建池，实得 %v", pool)
 	}
 	if got := e.spillBacklog(); got != 1 {

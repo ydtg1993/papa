@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
 	"github.com/ydtg1993/papa/v4/obs/incident"
-	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
 // BreakerProbe must perform a bounded, read-only health check, never a FetchHandler
@@ -62,42 +59,37 @@ type smartBreaker struct {
 // SetBreakerProbe registers a semantic probe before Run. Empty stage is a site
 // fallback. The context carries the existing request governor and site identity.
 func (e *Engine) SetBreakerProbe(site, stage string, probe BreakerProbe) {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	if e.breakerProbes == nil {
-		e.breakerProbes = make(map[pauseScope]BreakerProbe)
-	}
-	e.breakerProbes[pauseScope{Site: site, Stage: stage}] = probe
+	e.breakers.SetBreakerProbe(site, stage, probe)
 }
 
 // InitBreakerRuntime restores protection before entry submission/recovery queues.
 // Schema migration remains an explicit operation; an unreadable store stops startup.
 func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
-	e.breakerMu.Lock()
-	if e.breakerRuntime {
-		e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	if e.breakers.breakerRuntime {
+		e.breakers.breakerMu.Unlock()
 		return nil
 	}
-	if e.breakerStore == nil {
-		e.breakerStore = breakerstore.New(e.db)
+	if e.breakers.breakerStore == nil {
+		e.breakers.breakerStore = breakerstore.New(e.db)
 	}
-	store := e.breakerStore
-	e.breakerMu.Unlock()
+	store := e.breakers.breakerStore
+	e.breakers.breakerMu.Unlock()
 	active, err := store.LoadRuntime(ctx)
 	if err != nil {
 		return err
 	}
-	e.breakerMu.Lock()
+	e.breakers.breakerMu.Lock()
 	now := time.Now()
 	for _, saved := range active {
 		legacyRecovery := saved.Control.Version == 0
 		saved.UpgradeRecovery()
-		s := e.smartBreakers[saved.Control.Site]
+		s := e.breakers.smartBreakers[saved.Control.Site]
 		if s == nil {
 			continue
 		} // retain the durable report for unregistered sites
 		if s.event != nil && s.event.ID != saved.Control.ID {
-			e.breakerMu.Unlock()
+			e.breakers.breakerMu.Unlock()
 			return fmt.Errorf("multiple active breaker incidents for site %q", saved.Control.Site)
 		}
 		copy := saved.Control
@@ -118,7 +110,7 @@ func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
 			}
 		}
 		if copy.PendingFailure != nil {
-			e.noteBreakerLocked(s, "failure_settlement_restart", copy.PendingFailure.Stage, "重启接续未确认失败；保留原任务轮次和错误，只重试结算，不重跑业务", now)
+			e.breakers.noteBreakerLocked(s, "failure_settlement_restart", copy.PendingFailure.Stage, "重启接续未确认失败；保留原任务轮次和错误，只重试结算，不重跑业务", now)
 			e.rememberUnsettled(&Task{ID: copy.PendingFailure.TaskID, Site: copy.Site, Stage: copy.PendingFailure.Stage})
 			s.controlRevision = s.event.Revision
 		}
@@ -126,46 +118,46 @@ func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
 			continue
 		}
 		if legacyRecovery {
-			e.noteBreakerLocked(s, "recovery_upgraded", "", "旧恢复控制已升级为串行验证；混合或无法排除混合来源的事件保守要求三次，旧成功成绩作废", now)
+			e.breakers.noteBreakerLocked(s, "recovery_upgraded", "", "旧恢复控制已升级为串行验证；混合或无法排除混合来源的事件保守要求三次，旧成功成绩作废", now)
 		}
 		if copy.HistorySequence == 0 {
-			e.noteBreakerLocked(s, "history_start", "", "开始追加式历史；升级前仅有当前快照，无法补全更早过程", now)
+			e.breakers.noteBreakerLocked(s, "history_start", "", "开始追加式历史；升级前仅有当前快照，无法补全更早过程", now)
 		}
 		// Freeze the old declaration/results in history before rebuilding control.
 		for _, check := range s.event.Checks {
-			e.noteBreakerLocked(s, "previous_stage_snapshot", check.Stage, "重启前最后保存的阶段验证；仅留作历史，不复用健康证明", now)
+			e.breakers.noteBreakerLocked(s, "previous_stage_snapshot", check.Stage, "重启前最后保存的阶段验证；仅留作历史，不复用健康证明", now)
 		}
 		if copy.StoppedAt.IsZero() {
-			e.noteBreakerLocked(s, "process_interrupted", "", "启动时发现上次运行未保存正常停止记录；确切中断时间未知，旧验证作废", now)
+			e.breakers.noteBreakerLocked(s, "process_interrupted", "", "启动时发现上次运行未保存正常停止记录；确切中断时间未知，旧验证作废", now)
 		} else {
-			e.noteBreakerLocked(s, "process_restart", "", "正常停止后重新启动；保留此前过程，旧验证作废", now)
+			e.breakers.noteBreakerLocked(s, "process_restart", "", "正常停止后重新启动；保留此前过程，旧验证作废", now)
 		}
 		s.event.StoppedAt = time.Time{}
 		if s.event.SampleID != "" {
-			e.noteBreakerLocked(s, "sample_interrupted", s.event.SampleStage, "重启作废上次样本执行；保留原截止时间，旧结果不能补算成功", now)
-			e.expireBreakerSampleLocked(s, now)
+			e.breakers.noteBreakerLocked(s, "sample_interrupted", s.event.SampleStage, "重启作废上次样本执行；保留原截止时间，旧结果不能补算成功", now)
+			e.breakers.expireBreakerSampleLocked(s, now)
 		}
 		s.event.Stage = "" // active older stage-scoped incidents protect the whole site
 		e.resetBreakerChecksLocked(s)
 		if saved.Window == nil {
-			e.noteBreakerLocked(s, "legacy_window_missing", "", "旧快照没有精确失败窗口，保留已知失败下界并等待人工重试验证", now)
+			e.breakers.noteBreakerLocked(s, "legacy_window_missing", "", "旧快照没有精确失败窗口，保留已知失败下界并等待人工重试验证", now)
 		}
 		if copy.State != "manual" && !breakerSampleTimedOut(s) {
 			if s.event.NextProbeAt.Before(now) {
 				s.event.NextProbeAt = now.Add(s.policy.Cooldown)
 			}
-			e.transitionBreakerLocked(s, "cooldown", "进程重启：恢复暂停后重新探测", now)
+			e.breakers.transitionBreakerLocked(s, "cooldown", "进程重启：恢复暂停后重新探测", now)
 		} else {
-			e.transitionBreakerLocked(s, "manual", "进程重启：保留整站保护，阶段验证需重新执行", now)
+			e.breakers.transitionBreakerLocked(s, "manual", "进程重启：保留整站保护，阶段验证需重新执行", now)
 		}
 		e.pauseSmartBreakerLocked(s, "恢复持久化熔断事件")
 	}
-	e.breakerRuntime = true
-	e.breakerMu.Unlock()
-	if err := e.flushBreakerReports(ctx); err != nil {
-		e.breakerMu.Lock()
-		e.breakerRuntime = false
-		e.breakerMu.Unlock()
+	e.breakers.breakerRuntime = true
+	e.breakers.breakerMu.Unlock()
+	if err := e.breakers.flushBreakerReports(ctx); err != nil {
+		e.breakers.breakerMu.Lock()
+		e.breakers.breakerRuntime = false
+		e.breakers.breakerMu.Unlock()
 		return err
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
@@ -194,23 +186,6 @@ func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
 	return nil
 }
 
-func (e *Engine) recordBreakerStop(drained bool) {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	now := time.Now()
-	for _, s := range e.smartBreakers {
-		if s.event == nil {
-			continue
-		}
-		action, reason := "process_stop_incomplete", "进程停止未完全排空；不证明验证任务已完成"
-		if drained {
-			action, reason = "process_stopped", "进程正常停止；保留验证进度作为历史，重启必须重新验证"
-			s.event.StoppedAt = now
-		}
-		e.noteBreakerLocked(s, action, "", reason, now)
-	}
-}
-
 // Both healthy and failed writes wait on a timer. Coalescing has a fixed maximum
 // wait instead of restarting a debounce timer for every terminal task.
 func (e *Engine) writeBreakerReports(ctx context.Context) {
@@ -223,7 +198,7 @@ func (e *Engine) writeBreakerReports(ctx context.Context) {
 			return
 		case <-timer.C:
 			writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			err := e.flushBreakerReports(writeCtx)
+			err := e.breakers.flushBreakerReports(writeCtx)
 			if err == nil {
 				e.settleBreakerFailures(writeCtx)
 				e.retryBreakerSamples(writeCtx)
@@ -239,59 +214,6 @@ func (e *Engine) writeBreakerReports(ctx context.Context) {
 			timer.Reset(delay)
 		}
 	}
-}
-
-func (e *Engine) transitionBreakerLocked(s *smartBreaker, state, reason string, now time.Time) {
-	l := s.event
-	if state != "probing" {
-		for i := range l.Checks {
-			c := &l.Checks[i]
-			if c.State == "probing" || ((state == "manual" || state == "closed") && c.State == "pending") {
-				c.State, c.FinishedAt, c.Detail = "interrupted", now, reason
-				e.noteBreakerLocked(s, "stage_probe_interrupted", c.Stage, reason, now)
-			}
-		}
-	}
-	previousState := l.State
-	l.State, l.UpdatedAt, l.Epoch = state, now, s.epoch
-	if state == "manual" && l.RecheckAt.IsZero() {
-		l.RecheckAt = now.Add(time.Hour)
-	}
-	if state == "manual" {
-		l.NextProbeAt = l.RecheckAt
-	}
-	if state == "closed" || state == "recovered" {
-		l.RecheckAt = time.Time{}
-		l.NextProbeAt = time.Time{}
-	}
-	e.appendBreakerTransitionLocked(s, incident.Transition{At: now, From: previousState, To: state, Action: state, Reason: reason, Round: l.ProbeAttempts, Failures: l.report.WindowFailures, Successes: l.report.WindowSuccesses, NextAttemptAt: l.NextProbeAt})
-	l.Revision++
-	s.controlRevision = l.Revision
-	s.draining = false
-	if state == "observing" || state == "ramping" {
-		s.nextSampleRetry = time.Time{}
-		s.trial++
-		for i := range l.Checks {
-			l.Checks[i].TaskSuccesses = 0
-			if state == "observing" {
-				l.Checks[i].Verification, l.Checks[i].Coverage = "task", "完整真实任务路径；优先失败样本，三次成功；有三个样本时必须不同"
-				l.Checks[i].RequiredTasks = 3
-			}
-		}
-	}
-	if state != "manual" && state != "closed" && state != "recovered" {
-		l.FinalAt, l.report.Conclusion = time.Time{}, ""
-	}
-	if state == "manual" {
-		l.FinalAt = time.Time{}
-		l.report.Conclusion = reason + "；继续保护，一小时后复查"
-	}
-	if state == "closed" || state == "recovered" {
-		l.FinalAt, l.report.Conclusion = now, reason
-	}
-	l.trimReport()
-	s.dirty = true
-	e.emit(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Attrs: map[string]string{"incident_id": l.ID, "state": state, "action": state, "round": fmt.Sprint(l.ProbeAttempts)}})
 }
 
 func (e *Engine) pauseSmartBreakerLocked(s *smartBreaker, reason string) bool {
@@ -325,66 +247,10 @@ func (e *Engine) releaseSmartPauseLocked(s *smartBreaker) {
 	}
 }
 
-func (e *Engine) closeSmartBreakerLocked(site, stage, reason string) {
-	if s := e.smartBreakers[site]; s != nil {
-		if s.event != nil && s.event.Active() {
-			e.transitionBreakerLocked(s, "closed", reason+"；人工操作不证明整站健康，不清空计数", time.Now())
-		} else if s.event != nil {
-			e.noteBreakerLocked(s, "manual_control", stage, reason+"；保留原计数和历史结论", time.Now())
-		}
-	}
-}
-
-func (e *Engine) admitBreakerTask(task *Task) (func(), bool) {
-	task.breakerSampleDeadline = time.Time{}
-	task.breakerSampleFinished = false
-	e.breakerMu.Lock()
-	s := e.smartBreakers[task.Site]
-	if s == nil || (!s.cfg.Enabled && (s.event == nil || s.event.PendingFailure == nil)) {
-		e.breakerMu.Unlock()
-		return func() {}, true
-	}
-	now := time.Now()
-	if l := s.event; l != nil {
-		if l.PendingFailure != nil || s.savedRevision < s.controlRevision || s.draining || (l.Active() && (!now.Before(l.Deadline) || (l.State != "observing" && l.State != "ramping"))) {
-			e.breakerMu.Unlock()
-			return nil, false
-		}
-		if l.Active() {
-			if now.Before(s.nextAdmission) || !e.admitBreakerSampleLocked(s, task, now) {
-				e.breakerMu.Unlock()
-				return nil, false
-			}
-			s.nextAdmission = now.Add(s.policy.Interval)
-		}
-	}
-	task.breakerEpoch = s.epoch
-	task.breakerTrial = s.trial
-	s.inflight++
-	e.breakerMu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			e.breakerMu.Lock()
-			defer e.breakerMu.Unlock()
-			if l := s.event; l != nil && !task.breakerSampleDeadline.IsZero() && task.breakerSampleDeadline.Equal(l.SampleDeadline) {
-				e.expireBreakerSampleLocked(s, time.Now())
-				if l.PendingFailure == nil && (task.breakerSampleFinished || !time.Now().Before(task.breakerSampleDeadline)) {
-					e.noteBreakerLocked(s, "sample_exited", task.Stage, "串行样本执行已退出；结束占用，不以退出代替验证成功", time.Now())
-					l.SampleID, l.SampleStage, l.SampleDeadline = "", "", time.Time{}
-				}
-				// A denied claim/resource preparation is still the same waiting
-				// selection. Retain its original deadline rather than renewing it.
-			}
-			s.inflight--
-		})
-	}, true
-}
-
 func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool) {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	s := e.smartBreakers[task.Site]
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	s := e.breakers.smartBreakers[task.Site]
 	if s == nil || !s.cfg.Enabled || task.breakerEpoch != s.epoch {
 		return BreakerStatus{}, false
 	}
@@ -392,7 +258,7 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 	task.breakerSampleFinished = true // called only for a confirmed terminal task round
 	lateSample := s.event != nil && !task.breakerSampleDeadline.IsZero() && !now.Before(task.breakerSampleDeadline)
 	if lateSample {
-		e.expireBreakerSampleLocked(s, now)
+		e.breakers.expireBreakerSampleLocked(s, now)
 	}
 	f := incident.ClassifyError(err)
 	outcomeAt := now
@@ -401,10 +267,11 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 		p := s.event.PendingFailure
 		if p.TaskID == task.ID && task.breakerRound == fmt.Sprintf("%d:%d", p.Repeat, p.Reprocess) {
 			settling = true
+			err = errors.New(p.Error) // the journaled business result remains authoritative
 			f.Category, f.Fingerprint, outcomeAt = p.Category, p.Fingerprint, p.At
 			defer func() {
 				s.event.PendingFailure = nil
-				e.noteBreakerLocked(s, "failure_settled", task.Stage, fmt.Sprintf("任务 %d 轮次 %s 失败终态已确认；按原发生时间和轮次幂等结算，已过窗口的失败不补入当前窗口；保存后才允许后续验证", task.ID, task.breakerRound), now)
+				e.breakers.noteBreakerLocked(s, "failure_settled", task.Stage, fmt.Sprintf("任务 %d 轮次 %s 失败终态已确认；按原发生时间和轮次幂等结算，已过窗口的失败不补入当前窗口；保存后才允许后续验证", task.ID, task.breakerRound), now)
 				s.controlRevision = s.event.Revision
 			}()
 		}
@@ -414,6 +281,9 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 		sample.Error = err.Error()
 	}
 	sample = incident.Clean(sample)
+	if settling {
+		s.detector.Snapshot(now) // advance wall time before evaluating a delayed result
+	}
 	d := s.detector.Observe(breaker.Outcome{TaskID: int64(task.ID), Round: task.breakerRound, Site: task.Site, Stage: task.Stage, URL: sample.URL, At: outcomeAt, Success: err == nil, Category: f.Category, Fingerprint: f.Fingerprint, Epoch: s.epoch, Error: sample.Error, Kind: sample.Kind})
 	if !d.Accepted {
 		if settling {
@@ -427,7 +297,7 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 					s.event.Checks[i].Detail = "实际失败已落库；原轮次已计数或已超过统计窗口：" + sample.Error
 				}
 			}
-			e.noteBreakerLocked(s, "task_failed", task.Stage, "原失败终态已确认，不重复或补入当前窗口："+sample.Error, now)
+			e.breakers.noteBreakerLocked(s, "task_failed", task.Stage, "原失败终态已确认，不重复或补入当前窗口："+sample.Error, now)
 		}
 		return BreakerStatus{}, false
 	}
@@ -435,7 +305,7 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 		e.updateBreakerEvidenceLocked(s, d)
 	}
 	if lateSample {
-		e.noteBreakerLocked(s, "sample_late_result", task.Stage, "记录超时后的实际任务终态；迟到成功不能补算健康证明，实际失败仍进入失败统计", now)
+		e.breakers.noteBreakerLocked(s, "sample_late_result", task.Stage, "记录超时后的实际任务终态；迟到成功不能补算健康证明，实际失败仍进入失败统计", now)
 		if err == nil {
 			return BreakerStatus{}, false
 		}
@@ -443,7 +313,7 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 	if err == nil {
 		if s.event != nil && (s.event.State == "ramping" || s.event.State == "observing") {
 			s.event.Successes++
-			e.recordBreakerStageSuccessLocked(s, task, now)
+			e.breakers.recordBreakerStageSuccessLocked(s, task, now)
 		}
 		return BreakerStatus{}, false
 	}
@@ -485,19 +355,19 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 				s.event.Checks[i].State, s.event.Checks[i].Detail = "failed", sample.Error
 			}
 		}
-		e.noteBreakerLocked(s, "task_failed", task.Stage, "真实任务终态失败："+sample.Error, now)
+		e.breakers.noteBreakerLocked(s, "task_failed", task.Stage, "真实任务终态失败："+sample.Error, now)
 		if s.event.State == "ramping" || s.event.State == "probing" {
 			if d.Rule == "hard" || d.Rule == "capacity" {
 				s.event.Stage, s.event.report.Rule = "", d.Rule
 			}
 			s.event.NextProbeAt = now.Add(s.policy.ProbeInterval * time.Duration(1<<min(s.event.ProbeAttempts, 6)))
-			e.transitionBreakerLocked(s, "cooldown", "验证期间再次失败；全部阶段需重新验证", now)
+			e.breakers.transitionBreakerLocked(s, "cooldown", "验证期间再次失败；全部阶段需重新验证", now)
 			e.pauseSmartBreakerLocked(s, "限量恢复失败，重新冷却")
 		} else if d.Rule == "hard" || d.Rule == "capacity" || d.Rule == "fast" || !s.event.Active() {
 			s.event.Stage = ""
 			s.event.report.Rule = d.Rule
 			if s.event.State != "manual" && (s.event.State == "observing" || s.event.State == "ramping" || s.event.State == "probing" || !s.event.Active()) {
-				e.transitionBreakerLocked(s, "cooldown", "观察期间达到快速或总数保护线", now)
+				e.breakers.transitionBreakerLocked(s, "cooldown", "观察期间达到快速或总数保护线", now)
 				s.event.NextProbeAt = now.Add(s.policy.Cooldown)
 			}
 			e.pauseSmartBreakerLocked(s, "分类熔断升级保护")
@@ -507,9 +377,9 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 	if d.Rule == "" || s.dirty {
 		return BreakerStatus{}, false
 	}
-	e.breakerIncidentSeq++
+	e.breakers.breakerIncidentSeq++
 	report := incident.Lifecycle{
-		Capture: incident.Capture{ID: fmt.Sprintf("%d-%d", now.UnixNano(), e.breakerIncidentSeq), Site: task.Site, At: now, From: now.Add(-s.cfg.Window), Window: s.cfg.Window, Threshold: s.cfg.Threshold, Failures: d.Failures},
+		Capture: incident.Capture{ID: fmt.Sprintf("%d-%d", now.UnixNano(), e.breakers.breakerIncidentSeq), Site: task.Site, At: now, From: now.Add(-s.cfg.Window), Window: s.cfg.Window, Threshold: s.cfg.Threshold, Failures: d.Failures},
 		Stage:   "", Rule: d.Rule, Category: f.Category, Fingerprint: f.Fingerprint, Epoch: s.epoch,
 		StartedAt: now, UpdatedAt: now, Deadline: now.Add(s.policy.MaxRecovery), NextProbeAt: now.Add(s.policy.Cooldown), Limited: d.Limited,
 		LastFailureAt: now,
@@ -533,7 +403,7 @@ func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool)
 	if d.Rule == "mixed" {
 		state, reason = "observing", "混合错误短时增多，限制并发并观察"
 	}
-	e.transitionBreakerLocked(s, state, reason, now)
+	e.breakers.transitionBreakerLocked(s, state, reason, now)
 	if state == "observing" {
 		return BreakerStatus{}, false
 	}
@@ -568,108 +438,23 @@ func (e *Engine) updateBreakerEvidenceLocked(s *smartBreaker, d breaker.Decision
 	s.dirty = true
 }
 
-// flushBreakerReports serializes database writes, never holding the admission lock.
-func (e *Engine) flushBreakerReports(ctx context.Context) error {
-	e.breakerMu.Lock()
-	if e.breakerStoreGate == nil {
-		e.breakerStoreGate = make(chan struct{}, 1)
-	}
-	gate := e.breakerStoreGate
-	e.breakerMu.Unlock()
-	select {
-	case gate <- struct{}{}:
-		defer func() { <-gate }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	e.breakerMu.Lock()
-	store := e.breakerStore
-	var pending []breakerstore.Snapshot
-	for _, s := range e.smartBreakers {
-		if s.dirty && s.event != nil {
-			// Window expiry can change the checkpoint without a terminal outcome.
-			// A retry after a lost commit acknowledgement needs a fresh revision.
-			s.event.Revision++
-			pending = append(pending, s.snapshot())
-		}
-	}
-	e.breakerMu.Unlock()
-	if store == nil {
-		if len(pending) > 0 {
-			return errors.New("breaker store is not initialized")
-		}
-		return nil
-	}
-	var writeErr error
-	for _, l := range pending {
-		if err := ctx.Err(); err != nil {
-			return errors.Join(writeErr, err)
-		}
-		if err := store.Save(ctx, l); err != nil {
-			writeErr = errors.Join(writeErr, err)
-			continue // one unavailable site must not prevent saving the others
-		}
-		e.breakerMu.Lock()
-		if s := e.smartBreakers[l.Control.Site]; s != nil && s.event != nil && s.event.ID == l.Control.ID {
-			s.savedRevision = max(s.savedRevision, l.Control.Revision)
-			s.dirty = s.event.Revision > s.savedRevision
-			kept := s.event.pendingHistory[:0]
-			for _, entry := range s.event.pendingHistory {
-				if entry.Sequence > l.Control.HistorySequence {
-					kept = append(kept, entry)
-				}
-			}
-			s.event.pendingHistory = kept
-		}
-		e.breakerMu.Unlock()
-	}
-	return writeErr
-}
-
 // BreakerReports merges unflushed live state with durable history for the monitor.
 func (e *Engine) BreakerReports(ctx context.Context, site string) ([]incident.Lifecycle, error) {
-	e.breakerMu.Lock()
-	store := e.breakerStore
-	live := make(map[string]incident.Lifecycle)
-	for key, s := range e.smartBreakers {
-		if s.event != nil && (site == "" || site == key) {
-			live[s.event.ID] = s.event.reportSnapshot()
-		}
-	}
-	e.breakerMu.Unlock()
-	var history []incident.Lifecycle
-	if store != nil {
-		var err error
-		history, err = store.List(ctx, site, 100)
-		if err != nil {
-			return nil, err
-		}
-	}
-	for _, l := range history {
-		if _, ok := live[l.Capture.ID]; !ok {
-			live[l.Capture.ID] = l
-		}
-	}
-	out := make([]incident.Lifecycle, 0, len(live))
-	for _, l := range live {
-		out = append(out, l)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
-	return out, nil
+	return e.breakers.BreakerReports(ctx, site)
 }
 
 func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
 	if current := time.Now(); current.After(now) {
 		now = current
 	}
-	for site, s := range e.smartBreakers {
+	for site, s := range e.breakers.smartBreakers {
 		l := s.event
 		if l == nil {
 			continue
 		}
-		e.expireBreakerSampleLocked(s, now)
+		e.breakers.expireBreakerSampleLocked(s, now)
 		if l.PendingFailure != nil {
 			continue
 		}
@@ -684,7 +469,7 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 				if s.probeRunning || s.probeExecuting || s.inflight > 0 || s.sampleDispatching || e.hasManualBreakerPause(site) {
 					l.RecheckAt = now.Add(time.Hour)
 					l.NextProbeAt = l.RecheckAt
-					e.noteBreakerLocked(s, "hourly_recheck_skipped", "", "探针/真实任务/重投尚未退出或存在人工暂停；本次不启动复查，一小时后再检查", now)
+					e.breakers.noteBreakerLocked(s, "hourly_recheck_skipped", "", "探针/真实任务/重投尚未退出或存在人工暂停；本次不启动复查，一小时后再检查", now)
 				} else {
 					e.beginBreakerRetryLocked(s, now, "hourly_recheck", "每小时复查：保留故障证据，重新验证全部阶段")
 				}
@@ -693,7 +478,7 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 		}
 		if !now.Before(l.Deadline) {
 			e.pauseSmartBreakerLocked(s, "恢复超时，待人工处理")
-			e.transitionBreakerLocked(s, "manual", "恢复时间预算耗尽；不能确认故障已消除", now)
+			e.breakers.transitionBreakerLocked(s, "manual", "恢复时间预算耗尽；不能确认故障已消除", now)
 			continue
 		}
 		if s.savedRevision < s.controlRevision {
@@ -702,7 +487,7 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 		if (l.State == "observing" || l.State == "ramping") && breakerSampleTimedOut(s) && l.SampleID == "" && s.inflight == 0 && !s.sampleDispatching {
 			_, pending := nextBreakerSample(s)
 			if pending == "" {
-				e.transitionBreakerLocked(s, "manual", "本周期存在超时样本；其余可用样本已检查，整站保持保护，等待下次复查", now)
+				e.breakers.transitionBreakerLocked(s, "manual", "本周期存在超时样本；其余可用样本已检查，整站保持保护，等待下次复查", now)
 				e.pauseSmartBreakerLocked(s, "样本验证超时")
 				continue
 			}
@@ -712,7 +497,7 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 			if now.Sub(l.LastFailureAt) < s.policy.ObserveFor {
 				continue
 			}
-			if e.observationRecoveredLocked(s) {
+			if e.breakers.observationRecoveredLocked(s) {
 				for i := range s.event.Checks {
 					s.event.Checks[i].State = "passed"
 					s.event.Checks[i].FinishedAt = now
@@ -727,10 +512,10 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 			}
 			s.event.NextProbeAt = now.Add(s.policy.Cooldown)
 			e.pauseSmartBreakerLocked(s, "全阶段成功证据不足，暂停整站并安排逐阶段试探")
-			e.transitionBreakerLocked(s, "cooldown", "混合观察尚不能证明所有阶段正常；进入整站受控验证", now)
+			e.breakers.transitionBreakerLocked(s, "cooldown", "混合观察尚不能证明所有阶段正常；进入整站受控验证", now)
 		case "ramping":
 			e.releaseSmartPauseLocked(s)
-			if now.Sub(l.UpdatedAt) >= s.policy.RampFor && e.breakerStagesReadyLocked(s, 1) {
+			if now.Sub(l.UpdatedAt) >= s.policy.RampFor && e.breakers.breakerStagesReadyLocked(s, 1) {
 				e.finishBreakerRecoveryLocked(s, now)
 			}
 		case "cooldown":
@@ -740,35 +525,31 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 			if s.inflight > 0 || s.sampleDispatching {
 				if !s.draining {
 					s.draining = true
-					e.noteBreakerLocked(s, "waiting_inflight", "", "等待暂停前已放行的全站任务结束，再进行一致的阶段验证", now)
+					e.breakers.noteBreakerLocked(s, "waiting_inflight", "", "等待暂停前已放行的全站任务结束，再进行一致的阶段验证", now)
 				}
 				continue
 			}
 			if l.ProbeAttempts >= s.policy.MaxProbes {
-				e.transitionBreakerLocked(s, "manual", "整站试探轮数耗尽；维持暂停并等待人工处理", now)
+				e.breakers.transitionBreakerLocked(s, "manual", "整站试探轮数耗尽；维持暂停并等待人工处理", now)
 				continue
 			}
 			if g := e.Governance(); g != nil {
 				until := g.RetryAfterUntil(site)
 				if until.After(now) {
 					s.event.RetryAfterUntil, s.event.NextProbeAt = until, until
-					e.noteBreakerLocked(s, "retry_after_wait", "", "遵守服务端 Retry-After，推迟整站试探", now)
+					e.breakers.noteBreakerLocked(s, "retry_after_wait", "", "遵守服务端 Retry-After，推迟整站试探", now)
 					continue
 				}
 			}
 			l.ProbeAttempts++
 			e.resetBreakerChecksLocked(s)
 			s.event.NextProbeAt = now
-			e.transitionBreakerLocked(s, "probing", "开始一轮整站逐阶段只读语义试探；所有阶段通过前保持暂停", now)
-			e.prepareNextBreakerProbeLocked(s, now)
+			e.breakers.transitionBreakerLocked(s, "probing", "开始一轮整站逐阶段只读语义试探；所有阶段通过前保持暂停", now)
+			e.breakers.prepareNextBreakerProbeLocked(s, now)
 		case "probing":
 			e.launchBreakerStageProbeLocked(ctx, s, now)
 		}
 	}
-}
-
-func (e *Engine) observationRecoveredLocked(s *smartBreaker) bool {
-	return !s.detector.Snapshot(time.Now()).Limited && e.breakerStagesReadyLocked(s, 3)
 }
 
 func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req BreakerProbeRequest, id string, round int, timeout time.Duration) {
@@ -786,11 +567,11 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 	go func() {
 		defer e.tickerWG.Done()
 		defer func() {
-			e.breakerMu.Lock()
-			if s := e.smartBreakers[req.Site]; s != nil {
+			e.breakers.breakerMu.Lock()
+			if s := e.breakers.smartBreakers[req.Site]; s != nil {
 				s.probeExecuting = false
 			}
-			e.breakerMu.Unlock()
+			e.breakers.breakerMu.Unlock()
 		}()
 		var o outcome
 		defer func() {
@@ -808,9 +589,9 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 		o.err = probeCtx.Err()
 	}
 	o.result.Detail = incident.Clean(incident.Sample{Error: o.result.Detail}).Error
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	s := e.smartBreakers[req.Site]
+	e.breakers.breakerMu.Lock()
+	defer e.breakers.breakerMu.Unlock()
+	s := e.breakers.smartBreakers[req.Site]
 	if s == nil {
 		return
 	}
@@ -821,7 +602,7 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 	now := time.Now()
 	if !now.Before(s.event.Deadline) {
 		e.pauseSmartBreakerLocked(s, "恢复超时，待人工处理")
-		e.transitionBreakerLocked(s, "manual", "恢复预算已耗尽，晚返回的探针不能证明按时恢复", now)
+		e.breakers.transitionBreakerLocked(s, "manual", "恢复预算已耗尽，晚返回的探针不能证明按时恢复", now)
 		return
 	}
 	if probeCtx.Err() != nil {
@@ -841,14 +622,14 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 				check.State = "pending"
 			}
 			s.event.NextProbeAt = now.Add(s.policy.Interval)
-			e.noteBreakerLocked(s, "stage_probe_passed", req.Stage, fmt.Sprintf("本阶段第 %d 次语义试探通过，指定样本=%s：%s", check.ProbeSuccesses, req.SampleID, o.result.Detail), now)
+			e.breakers.noteBreakerLocked(s, "stage_probe_passed", req.Stage, fmt.Sprintf("本阶段第 %d 次语义试探通过，指定样本=%s：%s", check.ProbeSuccesses, req.SampleID, o.result.Detail), now)
 			all := true
 			for _, c := range s.event.Checks {
 				all = all && c.State == "passed"
 			}
 			if all && ctx.Err() == nil {
 				s.event.Successes = 0
-				e.transitionBreakerLocked(s, "ramping", "所有阶段语义试探通过；进入整站限量观察，未声明完整只读覆盖的阶段仍须真实任务验证，尚不清空计数", now)
+				e.breakers.transitionBreakerLocked(s, "ramping", "所有阶段语义试探通过；进入整站限量观察，未声明完整只读覆盖的阶段仍须真实任务验证，尚不清空计数", now)
 			}
 			return
 		}
@@ -862,13 +643,13 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 		}
 		check.Detail = reason
 		s.event.NextProbeAt = now.Add(s.policy.ProbeInterval * time.Duration(1<<min(s.event.ProbeAttempts, 6)))
-		e.noteBreakerLocked(s, "stage_probe_failed", req.Stage, reason, now)
+		e.breakers.noteBreakerLocked(s, "stage_probe_failed", req.Stage, reason, now)
 		if ctx.Err() != nil {
-			e.transitionBreakerLocked(s, "cooldown", "进程停止；保存阶段结果，重启后重新验证所有阶段", now)
+			e.breakers.transitionBreakerLocked(s, "cooldown", "进程停止；保存阶段结果，重启后重新验证所有阶段", now)
 		} else if errors.Is(o.err, context.DeadlineExceeded) {
-			e.transitionBreakerLocked(s, "manual", "阶段探针超时；停止自动试探，保持整站暂停", now)
+			e.breakers.transitionBreakerLocked(s, "manual", "阶段探针超时；停止自动试探，保持整站暂停", now)
 		} else {
-			e.transitionBreakerLocked(s, "cooldown", "阶段试探失败；整站继续暂停，等待下一轮重试", now)
+			e.breakers.transitionBreakerLocked(s, "cooldown", "阶段试探失败；整站继续暂停，等待下一轮重试", now)
 		}
 		return
 	}

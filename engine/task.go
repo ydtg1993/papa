@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"github.com/ydtg1993/papa/v4/pkg/redact"
 	"time"
 
@@ -54,6 +55,7 @@ type Task struct {
 	breakerTrial          uint64
 	breakerRound          string
 	breakerSampleDeadline time.Time
+	breakerFinalAttempt   bool // current attempt exhausts the stage retry budget
 	breakerSampleFinished bool
 }
 
@@ -70,8 +72,7 @@ func (t *Task) deliverAt() time.Time {
 
 func (t *Task) IncRetry(db *gorm.DB) {
 	t.Retry++
-	db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).
-		Update("retry", gorm.Expr("retry + ?", 1))
+	_ = taskstore.IncrementRetry(db, t.ID)
 }
 
 // toModel 将任务转换为数据库记录（不含 ID，由数据库生成）。
@@ -164,7 +165,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 
 func (t *Task) Insert(db *gorm.DB) error {
 	crawlerTask := t.toModel()
-	if err := db.Create(&crawlerTask).Error; err != nil {
+	if err := taskstore.Insert(db, &crawlerTask); err != nil {
 		return err
 	}
 	t.ID = int(crawlerTask.ID)
@@ -184,7 +185,7 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 	if t.ID == 0 {
 		return false
 	}
-	return db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(taskStatusUpdates(status, err)).Error == nil
+	return taskstore.UpdateStatus(db, t.ID, taskStatusUpdates(status, err)) == nil
 }
 
 func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {

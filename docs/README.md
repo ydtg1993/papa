@@ -47,6 +47,7 @@ cd mycrawler && go mod tidy
 
 | 我要… | 手册 | 手册在讲什么 |
 | --- | --- | --- |
+| 维护框架包职责和依赖边界 | [ARCHITECTURE.md](ARCHITECTURE.md) | 状态所有权、装配/服务/后台分工及重构验收 |
 | 核对旧版本数据库遗留表 | [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) | 只读表盘点、业务清单与旧表处置边界（新项目无需执行） |
 | 管理临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
 | 按阶段控制广度/深度与并行分支 | [TASK_FLOW.md](TASK_FLOW.md) | 可选任务树调度、持久化边界和策略更新 |

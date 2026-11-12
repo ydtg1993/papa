@@ -4,6 +4,7 @@ package account
 import (
 	"context"
 	"errors"
+	"github.com/ydtg1993/papa/v4/pkg/account/contract"
 	"net/http"
 	"sync"
 	"time"
@@ -27,10 +28,7 @@ var (
 	ErrUnsupported = errors.New("account transport is not configured")
 )
 
-type Key struct {
-	Site string `json:"site"`
-	ID   string `json:"id"`
-}
+type Key = contract.Key
 
 // Credentials belongs to one authentication round. Callbacks must not retain or
 // mutate it after returning. Values can hold refresh tokens; they are never sent.

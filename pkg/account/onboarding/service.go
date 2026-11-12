@@ -460,9 +460,11 @@ func (s *Service) Start(ctx context.Context, owner string, key account.Key, revi
 	p := &process{view: Progress{ID: id, Key: key, Revision: 1, State: "running", ExpiresAt: now.Add(s.opts.TTL)}, owner: owner, profile: profile, method: *selected, inputs: maps.Clone(input), remember: remember, version: version, registered: registered, ctx: run, cancel: cancel, releaseIdentity: releaseIdentity, commands: make(chan command, 1)}
 	s.processes[id] = p
 	s.active[key] = true
+	// Capture the response before the worker can mutate the process progress.
+	initial := copyProgress(p.view)
 	s.wg.Add(1)
 	go s.run(p, provider)
-	return p.view, nil
+	return initial, nil
 }
 func (s *Service) lookup(owner, id string) (*process, error) {
 	if owner == "" {

@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 'use strict';
 const assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
 const makeDOM = require('./legacy_oao_dom');
@@ -11,7 +12,7 @@ Object.defineProperty(proto,'open',{get(){return this.hasAttribute('open');},set
 const get=id=>doc.getElementById(id), requests=[], messages=[];
 const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const c=vm.createContext({console,document:doc,Date,Set,Map,WeakMap,esc,fmtDuration:v=>v+'ns',currentModule:'queues',currentSite:null,openTable:(...args)=>requests.push(args)});
-vm.runInContext(source('workbench.js'),c);vm.runInContext(source('queue-governance.js'),c);
+controllers.run(source('workbench.js'),c);controllers.run(source('queue-governance.js'),c);
 const stage=(site,n)=>({site,stage:'detail',queue:{queue_len:n,in_progress:n+2,completed:8,failed:1,submitted:15},workers:{0:{TotalTasks:9,FailedTasks:1,TotalTime:50}},global:{AvgTime:5}});
 const data={instance_id:'one',generated_at:new Date().toISOString(),breakers:[{site:'a',stage:'detail',paused:true,source:'breaker',reason:'<script>bad</script>'}],stages:{'a:detail':stage('a',3),'b:detail':stage('b',7)}};
 assert.equal(c.buildQueueGovernance(data,null).queued,10);assert.equal(c.buildQueueGovernance(data,null).unfinished,14);
@@ -31,8 +32,8 @@ c.setQueueGovernanceConnection(false,'断开');assert.match(get('queue-freshness
 c.renderQueueGovernance({...data,generated_at:'2020-01-01T00:00:00Z'},null);assert.match(get('queue-freshness').textContent,/超过 30 秒/);
 c.resetQueueGovernance();assert.equal(get('queue-stages').textContent,'');assert.equal(get('queue-gov').textContent,'');assert.doesNotMatch(get('queue-freshness').textContent,/2020/);
 c.renderQueueGovernance({},null);assert.match(get('queue-stages').textContent,/不代表数据库没有/);
-const mo=source('mo.js'),start=mo.indexOf('    var queueFlights ='),end=mo.indexOf('    /* ============ 站点 Tab',start);
-vm.runInContext(mo.slice(start,end),c);
+const mo=source('mo.js');
+controllers.load(c,mo,['queues/controller']);
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 const tick=()=>new Promise(r=>setImmediate(r));
 let epoch=0, confirm, response, posted=0;
@@ -48,6 +49,6 @@ c.Toast={ok:m=>messages.push(m),err:m=>messages.push(m)};c.fetchData=()=>message
  const body=deferred();response.resolve({ok:true,json:()=>body.promise});await tick();epoch++;body.resolve({processed:3});await p;assert.equal(messages.length,0,'old identity body updated UI');
  p=c.triggerQueue('error');confirm.resolve(true);await tick();c.currentModule='dashboard';response.resolve({ok:true,json:async()=>({processed:4})});await p;assert.equal(messages.length,0,'old view response updated UI');
  c.currentModule='queues';p=c.triggerQueue('error');confirm.resolve(true);await tick();response.resolve({ok:true,json:async()=>({processed:2})});await p;assert.match(messages[0],/2 个任务（全部站点）/);assert.equal(messages[1],'refresh');
- assert.equal(c.queueFlights.error,undefined);
+ assert.equal(c.queueOperationPending('error'),false);
  console.log('PASS queue governance scope, unknowns, escaping, details, task filters, identity reset and manual-operation races');
 })().catch(e=>{console.error(e);process.exitCode=1;});

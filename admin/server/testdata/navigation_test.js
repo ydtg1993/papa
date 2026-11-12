@@ -41,7 +41,7 @@ function setup() {
         querySelectorAll: selector => Object.values(nodes).filter(el => selector === '.module' && el.classList.contains('module')).concat(node('main-nav').querySelectorAll(selector), node('section-nav').querySelectorAll(selector)) };
     document.documentElement.setAttribute('data-auth-required', '1');
     ['main-nav', 'section-nav', 'section-title', 'section-empty', 'moduleTitle', 'site-tabs', 'site-meta', 'nav-toggle', 'key', 'err', 'theme-toggle', 'oao-view', 'page-view', 'custom-settings', 'log-list',
-        'workbench-scope', 'workbench-coverage', 'workbench-issue-count', 'workbench-kpis', 'workbench-issues', 'workbench-sites', 'workbench-freshness', 'bell', 'bell-badge', 'bell-panel'].forEach(node);
+        'queue-gov', 'dash-sys', 'dash-dirs', 'dash-queue', 'dash-site-ctl', 'queues', 'workbench-scope', 'workbench-coverage', 'workbench-issue-count', 'workbench-kpis', 'workbench-issues', 'workbench-sites', 'workbench-freshness', 'bell', 'bell-badge', 'bell-panel'].forEach(node);
     ['dashboard', 'obs', 'logs', 'queues', 'settings', 'tokens', 'tables', 'pages', 'section'].forEach(key => { node('mod-' + key).className = 'module'; });
     ['flow', 'monitor', 'data', 'system'].forEach(key => { const button = new Element('button'); button.className = 'nav-category'; button.dataset.section = key; node('main-nav').appendChild(button); });
     node('site-tabs').appendChild(new Element('button')); node('site-meta').innerHTML = 'site detail';
@@ -50,7 +50,7 @@ function setup() {
         Oao: { init() {}, destroy() {}, list: () => { const d = deferred(); lists.push(d); return d.promise; }, render: async (...args) => calls.push(['render', ...args]) },
         apiFetch: (url, opts) => { const d = deferred(); requests.push({ url, opts, ...d }); return d.promise; },
         stopPolling() {}, startPolling() {}, handleTableUnauthorized() {} });
-    ['extensions.js', 'navigation.js', 'mo.js'].forEach(name => vm.runInContext(source(name), c));
+    ['extensions.js', 'navigation.js', 'mo.js', 'visual-state.js', 'workbench.js'].forEach(name => vm.runInContext(source(name), c));
     const native = { fetchSettings: c.fetchSettings, fetchTokens: c.fetchTokens, fetchObsReports: c.fetchObsReports };
     c.fetchSettings = () => calls.push(['settings']); c.fetchTokens = () => calls.push(['tokens']); c.fetchObsReports = () => calls.push(['obs']);
     let closeDialog;
@@ -62,6 +62,8 @@ function setup() {
     return { c, nodes, node, calls, requests, lists, values, events, Element, native };
 }
 
+const completionTimeout = setTimeout(() => { console.error("navigation scenarios did not finish"); process.exitCode = 1; }, 10000);
+
 (async () => {
     const ownership=setup();
     ownership.c.setMonitorNavigation([], [
@@ -69,10 +71,10 @@ function setup() {
       {key:'status',section:'monitor',owns:['module:dashboard']},
       {key:'policy',section:'flow'}]);
     assert.deepEqual(Array.from(ownership.c.monitorNavigationItems().filter(x=>x.section==='flow'),x=>x.key),['plan']);
-    ownership.c.currentModule='dashboard';assert.equal(ownership.c.monitorActiveNavigation().key,'status');
+    ownership.c.setActiveModule('dashboard');assert.equal(ownership.c.monitorActiveNavigation().key,'status');
     ownership.c.resetMonitorNavigation();assert.ok(ownership.c.monitorNavigationItems().some(x=>x.key==='dashboard'),'default modules lost after identity reset');
     const s = setup(), { c, nodes } = s;
-    assert.equal(c.currentSection, 'monitor'); assert.equal(nodes['section-title'].textContent, '运行监控与报告');
+    assert.equal(c.getNavigationSection(), 'monitor'); assert.equal(nodes['section-title'].textContent, '运行监控与报告');
     assert.equal(nodes['main-nav'].children.length, 4); assert.equal(c.monitorNavigationItems().length, 6);
     assert.deepEqual(Array.from(c.monitorNavigationItems(), x => x.key), ['dashboard', 'obs', 'logs', 'queues', 'settings', 'tokens']);
     const template = source('template.html');
@@ -93,52 +95,52 @@ function setup() {
     ['settings', 'tokens', 'operation_log'].forEach(key => assert.equal(section(key), 'system'));
     ['result', 'plain', 'legacy', 'unknown', 'prototype'].forEach(key => assert.equal(section(key), 'data'));
     c.Papa.page('workbench', () => ({})); c.openPage('workbench', '采集方案');
-    assert.equal(c.currentSection, 'flow'); assert.equal(nodes['moduleTitle'].textContent, '采集方案');
+    assert.equal(c.getNavigationSection(), 'flow'); assert.equal(nodes['moduleTitle'].textContent, '采集方案');
     assert.equal(nodes['section-nav'].querySelectorAll('.active')[0].dataset.page, 'workbench');
-    c.switchModule('dashboard'); assert.equal(c.currentSection, 'monitor');
-    await c.openTable('operation_log', '操作日志'); assert.equal(c.currentSection, 'system');
-    await c.openTable('result', 'Results'); assert.equal(c.currentSection, 'data');
+    c.switchModule('dashboard'); assert.equal(c.getNavigationSection(), 'monitor');
+    await c.openTable('operation_log', '操作日志'); assert.equal(c.getNavigationSection(), 'system');
+    await c.openTable('result', 'Results'); assert.equal(c.getNavigationSection(), 'data');
     assert.equal(nodes['moduleTitle'].textContent, tables[2].label);
     assert.ok(nodes['section-nav'].children.some(el => el.textContent === tables[2].label && el.children.length === 0));
     assert.ok(nodes['section-nav'].children.some(el => el.textContent === '<b>Business</b>' && el.children.length === 0), 'group text must not become HTML');
-    c.currentSite = 'site-a'; c.syncMonitorSiteScope(); assert.equal(nodes['site-tabs'].hidden, false);
+    c.selectMonitorSite('site-a'); c.syncMonitorSiteScope(); assert.equal(nodes['site-tabs'].hidden, false);
     assert.equal(c.tableFilterOpts().filter.site, 'site-a');
     await c.openTable('plain', 'Plain'); assert.equal(nodes['site-tabs'].hidden, true); assert.equal(Object.keys(c.tableFilterOpts().filter).length, 0);
-    c.switchModule('queues'); assert.equal(nodes['site-tabs'].hidden, false); assert.equal(c.currentSite, 'site-a');
+    c.switchModule('queues'); assert.equal(nodes['site-tabs'].hidden, false); assert.equal(c.getSelectedSite(), 'site-a');
     await c.openTable('task', '任务', null, {site:'site-a',stage:'detail'});
     assert.equal(s.calls.filter(x=>x[0]==='render').at(-1)[3].filter.stage,'detail');
-    c.switchModule('dashboard'); assert.equal(nodes['site-tabs'].hidden, false); assert.equal(c.currentSite, 'site-a');
+    c.switchModule('dashboard'); assert.equal(nodes['site-tabs'].hidden, false); assert.equal(c.getSelectedSite(), 'site-a');
     let allow = false, destroys = 0;
     c.Papa.page('dirty', () => ({ beforeLeave: () => allow, destroy: () => destroys++ }));
     c.openPage('dirty', 'Unsaved');
-    const title = nodes['moduleTitle'].textContent, current = c.currentSection;
-    assert.equal(c.switchSection(current), true); assert.equal(c.currentPage.key, 'dirty'); assert.equal(destroys, 0, 'same category click destroyed the active draft');
+    const title = nodes['moduleTitle'].textContent, current = c.getNavigationSection();
+    assert.equal(c.switchSection(current), true); assert.equal(c.getCurrentPage().key, 'dirty'); assert.equal(destroys, 0, 'same category click destroyed the active draft');
     c.setNavigationOpen(true); const priorFocus = c.document.activeElement;
-    assert.equal(c.switchSection('system'), false); assert.equal(c.currentSection, current); assert.equal(nodes['moduleTitle'].textContent, title);
+    assert.equal(c.switchSection('system'), false); assert.equal(c.getNavigationSection(), current); assert.equal(nodes['moduleTitle'].textContent, title);
     assert.equal(nodes['nav-toggle'].getAttribute('aria-expanded'), 'true'); assert.equal(c.document.activeElement, priorFocus);
-    assert.equal(await c.openTable('task', 'Task'), false); assert.equal(c.currentModule, 'pages'); assert.equal(destroys, 0);
-    allow = true; assert.equal(c.switchSection('system'), true); assert.equal(destroys, 1); assert.equal(c.currentSection, 'system');
+    assert.equal(await c.openTable('task', 'Task'), false); assert.equal(c.getActiveModule(), 'pages'); assert.equal(destroys, 0);
+    allow = true; assert.equal(c.switchSection('system'), true); assert.equal(destroys, 1); assert.equal(c.getNavigationSection(), 'system');
     assert.equal(nodes['nav-toggle'].getAttribute('aria-expanded'), 'false'); assert.equal(c.document.activeElement, nodes['moduleTitle']);
-    c.setMonitorNavigation([], []); c.switchSection('data'); assert.equal(c.currentModule, 'section'); assert.equal(c.currentSection, 'data');
+    c.setMonitorNavigation([], []); c.switchSection('data'); assert.equal(c.getActiveModule(), 'section'); assert.equal(c.getNavigationSection(), 'data');
     assert.match(nodes['section-empty'].textContent, /暂无已注册/);
-    c.setMonitorNavigation([], [{ key: 'late', label: 'Late arrival' }]); assert.equal(c.currentModule, 'section'); assert.equal(nodes['section-nav'].children[0].textContent, 'Late arrival');
-    c.switchSection('not-a-section'); assert.equal(c.currentModule, 'pages'); assert.equal(c.currentPage.key, 'late');
+    c.setMonitorNavigation([], [{ key: 'late', label: 'Late arrival' }]); assert.equal(c.getActiveModule(), 'section'); assert.equal(nodes['section-nav'].children[0].textContent, 'Late arrival');
+    c.switchSection('not-a-section'); assert.equal(c.getActiveModule(), 'pages'); assert.equal(c.getCurrentPage().key, 'late');
     c.setNavigationOpen(true); assert.equal(nodes['nav-toggle'].getAttribute('aria-expanded'), 'true');
     s.events.keydown.forEach(fn => fn({ key: 'Escape' })); assert.equal(nodes['nav-toggle'].getAttribute('aria-expanded'), 'false'); assert.equal(c.document.activeElement, nodes['nav-toggle']);
-    c.buildWorkbench = () => ({ rows: [] }); c.workbenchHTML = new WeakMap();
+    c.buildWorkbench = () => ({ rows: [] });
     c.renderSiteTabs({ sites: {} }); c.switchModule('dashboard');
     assert.equal(nodes['site-tabs'].hidden, true, 'a module change must not resurrect vanished sites');
 
     // Full production renderNav accepts late metadata only for its current session/request.
     const race = setup();
-    const old = race.c.renderNav(); race.c.authGeneration++; const fresh = race.c.renderNav();
+    const old = race.c.renderNav(); race.c.saveKey("replacement-session"); const fresh = race.c.renderNav();
     race.lists[1].resolve([{ key: 'new', label: 'New menu' }]); await tick();
     race.requests[0].resolve({ json: async () => ({ pages: [{ key: 'page', label: 'New page', section: 'flow' }] }) }); await fresh;
     race.lists[0].reject(new Error('old failure')); await old;
-    assert.equal(race.c.monitorNavigation.tables[0].key, 'new'); assert.equal(race.requests.length, 1);
+    assert.equal(race.c.getNavigationTables()[0].key, 'new'); assert.equal(race.requests.length, 1);
     const a = race.c.renderNav(), b = race.c.renderNav();
     race.lists[3].resolve([]); await tick(); race.requests[1].resolve({ json: async () => ({ pages: [] }) }); await b;
-    race.lists[2].resolve([{ key: 'stale', label: 'Stale' }]); await a; assert.equal(race.c.monitorNavigation.tables.length, 0);
+    race.lists[2].resolve([{ key: 'stale', label: 'Stale' }]); await a; assert.equal(race.c.getNavigationTables().length, 0);
 
     // Independent log module: latest request wins, leaving/identity changes retire lists and tails.
     const logs = setup(); logs.c.switchModule('logs'); assert.equal(logs.requests[0].url, '/api/logs'); assert.equal(logs.nodes['site-tabs'].hidden, true);
@@ -146,31 +148,31 @@ function setup() {
     logs.requests[0].resolve({ json: async () => ({ files: [{ name: 'old.log' }] }) }); await tick(); assert.match(logs.nodes['log-list'].textContent, /latest.log/);
     logs.c.viewLog('latest.log'); const tail = logs.nodes['log-tail-text'];
     logs.c.switchModule('dashboard'); logs.requests[2].resolve({ ok: true, json: async () => ({ text: 'late secret', lines: 1 }) }); await tick(); assert.equal(tail.textContent, '');
-    logs.c.switchModule('logs'); const staleList = logs.requests[3]; logs.c.authGeneration++;
+    logs.c.switchModule('logs'); const staleList = logs.requests[3]; logs.c.saveKey("replacement-session");
     staleList.resolve({ json: async () => ({ files: [{ name: 'old identity' }] }) }); await tick(); assert.doesNotMatch(logs.nodes['log-list'].textContent, /old identity/);
-    logs.c.pendingLoginRefresh = true; logs.c.refreshAfterLogin(); assert.equal(logs.requests[4].url, '/api/logs');
+    logs.c.requestLoginRefresh(); logs.c.refreshAfterLogin(); assert.equal(logs.requests[4].url, '/api/logs');
     logs.requests[4].resolve({ json: async () => ({ files: [] }) }); await tick();
     logs.c.viewLog('new.log'); const dismissed = logs.nodes['log-tail-text']; logs.c.Dialog.close(); await tick();
     logs.requests[5].resolve({ ok: true, json: async () => ({ text: 'closed tail', lines: 1 }) }); await tick(); assert.equal(dismissed.textContent, '');
     const beforeSettings = logs.requests.length; logs.c.switchModule('settings'); assert.equal(logs.requests.length, beforeSettings, 'settings must not fetch logs');
     // Render real previous-identity snapshots before clearing credentials: no scope,
     // count, pause detail, expanded popup or "already seen" alarm can survive.
-    const identity = setup(); vm.runInContext(source('workbench.js'), identity.c);
+    const identity = setup();
     const oldData = { sites: { 'old-private-site': {} }, stages: { 'old-private-site:list': { site: 'old-private-site', queue: { queue_len: 7, in_progress: 9, completed: 4, failed: 2 } } },
         queues: {}, breakers: [{ site: 'old-private-site', stage: 'list', paused: true, source: 'breaker', reason: 'old-private-reason' }] };
     function seedOldIdentity() {
-        identity.c.currentSite = 'old-private-site'; identity.c.lastData = oldData;
+        identity.c.selectMonitorSite('old-private-site'); identity.c.renderAll(oldData);
         identity.c.renderWorkbench(oldData); identity.c.renderBell(oldData.breakers);
         identity.nodes['bell-panel'].hidden = false; identity.nodes.bell.setAttribute('aria-expanded', 'true'); identity.nodes.bell.classList.add('pulse');
         identity.nodes['workbench-freshness'].classList.add('is-stale');
         assert.match(identity.nodes['bell-panel'].innerHTML, /old-private-site/);
         assert.equal(identity.nodes['workbench-scope'].textContent, 'old-private-site');
         assert.equal(identity.nodes['workbench-issue-count'].textContent, '1');
-        assert.equal(identity.c.bellSeen.length, 1);
+        assert.equal(identity.nodes['bell-badge'].textContent, '1');
     }
     for (const reset of [() => identity.c.saveKey('new-session'), () => identity.c.clearKey()]) {
         seedOldIdentity(); reset();
-        assert.equal(identity.c.lastData, null); assert.equal(identity.c.currentSite, null);
+        assert.equal(identity.c.getMonitorSnapshot(), null); assert.equal(identity.c.getSelectedSite(), null);
         assert.equal(identity.nodes['workbench-scope'].textContent, '全部站点');
         assert.equal(identity.nodes['workbench-coverage'].textContent, '等待快照');
         assert.equal(identity.nodes['workbench-issue-count'].textContent, '—');
@@ -179,7 +181,6 @@ function setup() {
         assert.equal(identity.nodes['bell-panel'].hidden, true); assert.equal(identity.nodes['bell-badge'].hidden, true);
         assert.equal(identity.nodes['bell-badge'].textContent, '0'); assert.equal(identity.nodes['bell-badge'].className, 'bell-badge');
         assert.equal(identity.nodes.bell.getAttribute('aria-expanded'), 'false'); assert.equal(identity.nodes.bell.classList.contains('pulse'), false);
-        assert.equal(identity.c.bellSeen, null);
         identity.c.renderBell([{ site: 'new-site', paused: true, source: 'breaker' }]);
         assert.equal(identity.nodes.bell.classList.contains('pulse'), false, 'the first new-session snapshot must not compare alarms with the previous identity');
     }
@@ -188,7 +189,7 @@ function setup() {
     for (const action of ['remove', 'disable', 'shutdown']) {
         for (const change of ['identity', 'navigation']) {
             const old = setup(), confirmed = deferred(), writes = [];
-            old.c.currentModule = action === 'shutdown' ? 'settings' : 'tokens';
+            old.c.setActiveModule(action === 'shutdown' ? 'settings' : 'tokens');
             old.c.Dialog.confirm = () => confirmed.promise;
             old.c.askShutdownToken = () => confirmed.promise;
             old.c.apiPost = async (...args) => { writes.push(args); return { json: async () => ({}) }; };
@@ -205,7 +206,7 @@ function setup() {
     // its one-time plaintext in the new identity's dialog.
     for (const change of ['identity', 'navigation']) {
         const old = setup(), confirmed = deferred(), response = deferred(), dialogs = [];
-        old.c.currentModule = 'tokens'; old.node('tk-operator').value = 'old-user'; old.node('tk-note').value = '';
+        old.c.setActiveModule('tokens'); old.node('tk-operator').value = 'old-user'; old.node('tk-note').value = '';
         old.c.Dialog.open = opts => { dialogs.push(opts); return confirmed.promise; };
         old.c.apiPost = () => response.promise;
         const pending = old.c.openNewToken(); confirmed.resolve('ok'); await tick();
@@ -218,15 +219,15 @@ function setup() {
     const privateNodes = ['token-table', 'wl-input', 'wl-file-info', 'wl-msg', 'shutdown-msg', 'obs-dir', 'obs-runs', 'obs-msg', 'obs-tabs', 'obs-meta', 'obs-content'];
     privateNodes.forEach(id => { privateState.node(id).innerHTML = 'old-private-value'; privateState.nodes[id].value = 'old-private-value'; });
     privateState.node('obs-viewer-sec').hidden = false;
-    privateState.c.obsState.runs = [{ name: 'old-run' }]; privateState.c.obsState.run = 'old-run'; privateState.c.obsState.file = 'report.md';
+    privateState.c.renderObsReports({report_dir:'old-private-value',runs:[{name:'old-run',files:[{name:'report.md'}]}]}); privateState.c.openObsReport('old-run');
     privateState.c.saveKey('replacement');
     privateNodes.forEach(id => assert.doesNotMatch(privateState.nodes[id].innerHTML, /old-private-value/, 'identity reset retained ' + id));
     assert.equal(privateState.nodes['wl-input'].value, ''); assert.equal(privateState.nodes['obs-viewer-sec'].hidden, true);
-    assert.equal(privateState.c.obsState.runs.length, 0); assert.equal(privateState.c.obsState.run, '');
+    const resetRequests=privateState.requests.length; privateState.c.openObsReport('old-run'); assert.equal(privateState.requests.length,resetRequests,'reset retained an actionable old report'); assert.equal(privateState.nodes['obs-viewer-sec'].hidden,true);
 
     // Native readers require latest request, view and identity through body completion.
     for (const kind of ['tokens', 'settings', 'obs']) {
-        const race = setup(); race.c.currentModule = kind;
+        const race = setup(); race.c.setActiveModule(kind);
         ['token-table', 'wl-input', 'wl-file-info', 'obs-runs', 'obs-dir', 'obs-content', 'obs-msg'].forEach(race.node);
         const fetcher = race.native[kind === 'tokens' ? 'fetchTokens' : kind === 'settings' ? 'fetchSettings' : 'fetchObsReports'];
         const data = marker => kind === 'tokens' ? { tokens: [{ id: 1, operator: marker }] } : kind === 'settings' ? { whitelist: [marker] } : { report_dir: marker, runs: [] };
@@ -269,4 +270,4 @@ function setup() {
     catalog.requests[catalog.requests.length - 1].resolve({ ok: true, json: async () => ({ state: 'missing', message: 'old-view' }) }); await leaveRace;
     assert.notEqual(catalog.nodes['oao-view'].textContent, 'old-view');
     console.log('PASS four-section navigation, catalog probes/recovery/identity races, draft guards, site scope and log lifecycle');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => clearTimeout(completionTimeout));

@@ -34,18 +34,18 @@ func (r *lostBreakerAckRepository) Save(ctx context.Context, next breakerstore.S
 
 func TestBreakerReviewLostCommitAckAndWindowExpiryCanRetry(t *testing.T) {
 	e, base := newSmartBreakerFixture(t, 1)
-	e.breakerStore = &lostBreakerAckRepository{memoryBreakerRepository: base}
+	e.breakers.breakerStore = &lostBreakerAckRepository{memoryBreakerRepository: base}
 	smartFailure(e, 1, "detail", "missing")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("expected lost acknowledgement")
 	}
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].detector.Snapshot(time.Now().Add(2 * time.Minute))
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].detector.Snapshot(time.Now().Add(2 * time.Minute))
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
-	defer e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
+	defer e.breakers.breakerMu.Unlock()
 	if s.dirty || s.savedRevision < s.controlRevision {
 		t.Fatal("lost acknowledgement left control permanently unsaved")
 	}
@@ -67,12 +67,12 @@ func TestBreakerReviewRetryKeepsProtectionAndCounts(t *testing.T) {
 	if e.breakerSum("synthetic") != 3 || !e.isPaused(pauseScope{Site: "synthetic"}) || !strings.Contains(l.Text(), "manual_retry") {
 		t.Fatal("retry lost protection, counts or report")
 	}
-	if done, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "list"}); ok {
+	if done, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "list"}); ok {
 		done()
 		t.Fatal("retry admitted unchecked stage")
 	}
 	repo.err = errors.New("fixture unavailable")
-	if err := e.flushBreakerReports(context.Background()); err == nil {
+	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 		t.Fatal("expected save failure")
 	}
 	e.tickBreakers(context.Background(), l.NextProbeAt.Add(time.Millisecond))
@@ -108,10 +108,10 @@ func TestBreakerReviewDeadlineEnforcedWithoutManagerTick(t *testing.T) {
 		smartFailure(e, i, "detail", fmt.Sprint(i))
 	}
 	flushSmart(t, e)
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].event.Deadline = time.Now().Add(-time.Second)
-	e.breakerMu.Unlock()
-	if done, ok := e.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].event.Deadline = time.Now().Add(-time.Second)
+	e.breakers.breakerMu.Unlock()
+	if done, ok := e.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 		done()
 		t.Fatal("expired observation admitted a new task")
 	}
@@ -129,9 +129,9 @@ func TestBreakerReviewLateHealthyProbeCannotBeatDeadline(t *testing.T) {
 		return BreakerProbeResult{Healthy: true, Semantic: true}, nil
 	})
 	<-entered
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].event.Deadline = time.Now().Add(-time.Second)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].event.Deadline = time.Now().Add(-time.Second)
+	e.breakers.breakerMu.Unlock()
 	close(release)
 	e.tickerWG.Wait()
 	l := expectSmartState(t, e, "manual")
@@ -195,12 +195,12 @@ func TestBreakerReviewTimelineTruncationMustNotInvalidateHealthyStages(t *testin
 			done()
 		}
 	}
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
-	ready := e.breakerStagesReadyLocked(s, 2)
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
+	ready := e.breakers.breakerStagesReadyLocked(s, 2)
 	stageCount := len(s.event.Checks)
 	limited := s.event.report.Limited
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	if !ready || stageCount != 65 {
 		t.Fatal("fixture lacks complete stage proof")
 	}
@@ -320,7 +320,7 @@ func TestBreakerReviewRestartResetsAllStageProofAndKeepsPause(t *testing.T) {
 	done()
 	flushSmart(t, e)
 	restarted, _ := newSmartBreakerFixture(t, 100)
-	restarted.breakerStore, restarted.breakerRuntime = r, false
+	restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = r, false
 	registerBreakerFixtureStages(restarted, "detail", "list")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() { cancel(); restarted.tickerWG.Wait() }()
@@ -332,7 +332,7 @@ func TestBreakerReviewRestartResetsAllStageProofAndKeepsPause(t *testing.T) {
 		if check.State != "pending" || check.TaskSuccesses != 0 {
 			t.Fatalf("stale stage proof restored: %+v", check)
 		}
-		if done, ok := restarted.admitBreakerTask(&Task{Site: "synthetic", Stage: check.Stage}); ok {
+		if done, ok := restarted.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: check.Stage}); ok {
 			done()
 			t.Fatal("restarted stage admitted")
 		}

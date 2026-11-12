@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 // Integration contract: Papa runs against the actual linked oao assets, with
 // eventful DOM/animation/observer doubles and no copied chart implementation.
 'use strict';
@@ -61,8 +62,8 @@ function setup() {
     const analysis = mount('workbench-analysis', dashboard, 'details'), resources = mount('workbench-resources', dashboard, 'details');
     for (const id of ['visual-stage-bars', 'visual-results']) mount(id, analysis);
     for (const key of ['cpu', 'mem', 'disk']) for (const suffix of ['', '-value', '-stamp']) mount('visual-' + key + suffix, resources);
-    for (const name of scripts) vm.runInContext(fs.readFileSync(path.join(oaoDir, name), 'utf8'), c, {filename: name});
-    for (const name of ['workbench.js', 'visual-state.js', 'visuals.js']) vm.runInContext(fs.readFileSync(path.join(staticDir, name), 'utf8'), c, {filename: name});
+    for (const name of scripts) controllers.run(fs.readFileSync(path.join(oaoDir, name), 'utf8'), c, {filename: name});
+    for (const name of ['workbench.js', 'visual-state.js', 'visuals.js']) controllers.run(fs.readFileSync(path.join(staticDir, name), 'utf8'), c, {filename: name});
     const emit = (type, event = {}) => { for (const listener of [...events[type] || []]) listener(event); };
     const visibility = hidden => { doc.hidden = hidden; for (const listener of [...doc.listeners.visibilitychange || []]) listener(); };
     const toggle = (el, open) => { el.open = open; el.dispatchEvent({type: 'toggle'}); };
@@ -96,12 +97,12 @@ test('published charts preserve keyboard tokens, table state and bounded observa
     show(env, snap(6000));
     assert.equal(chart.querySelector('details').open, true); assert.equal(doc.activeElement, chart.querySelector('.oao-chart-table-scroll'));
     assert.equal(doc.activeElement.scrollTop, 77); assert.equal(doc.activeElement.scrollLeft, 19);
-    c.currentSite = 'absent'; c.renderMonitorVisuals(c.monitorVisuals.data);
+    c.currentSite = 'absent'; c.renderMonitorVisuals(c.getVisualSnapshot());
     assert.equal(c.MonitorObservations.size(), 3); assert.match(chart.textContent, /当前范围没有活跃阶段/);
     assert.equal(doc.querySelector('.oao-chart-error'), null);
     c.currentSite = null;
     for (let n = 3; n < 400; n++) c.acceptMonitorObservation(snap(n * 3000, {stages: n % 2 ? {} : snap().stages}));
-    c.renderMonitorVisuals(c.monitorVisuals.data);
+    c.renderMonitorVisuals(c.getVisualSnapshot());
     assert.equal(doc.querySelector('.oao-chart-error'), null, 'break markers exceeded the released 300-point chart contract');
     assert.ok(c.MonitorObservations.size() <= 240);
 });
@@ -149,7 +150,7 @@ test('resource failures and reconnect gaps reach the published chart as missing 
 test('pagehide cannot be undone by late error renders, then explicit pageshow resume redraws accepted data', env => {
     show(env); env.toggle(env.analysis, true); env.toggle(env.resources, true);
     env.emit('pagehide'); assert.equal(env.observers.size, 0);
-    env.c.setMonitorVisualConnection(false); env.c.renderMonitorVisuals(env.c.monitorVisuals.data);
+    env.c.setMonitorVisualConnection(false); env.c.renderMonitorVisuals(env.c.getVisualSnapshot());
     assert.equal(env.observers.size, 0, 'pagehide was undone by a late status/render callback');
     env.c.resumeMonitorVisuals(); assert.equal(env.observers.size, 6); assert.equal(env.c.MonitorObservations.size(), 1);
     env.emit('pagehide'); env.c.resetMonitorObservations(); env.c.resumeMonitorVisuals();

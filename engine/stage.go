@@ -4,142 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/core"
-	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/events"
-	"strconv"
 )
-
-// AddNotifier 注册告警通知器；任务最终失败时触发 Notify。
-func (e *Engine) AddNotifier(n Notifier) {
-	if n == nil {
-		return
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.notifiers = append(e.notifiers, n)
-}
-
-func (e *Engine) getNotifiers() []Notifier {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	out := make([]Notifier, len(e.notifiers))
-	copy(out, e.notifiers)
-	return out
-}
-
-// notifyFailure 结构化记录失败日志，并触发告警通知器。
-func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
-	te := TaskError{
-		Stage:   task.Stage,
-		Site:    task.Site,
-		TaskID:  task.ID,
-		URL:     task.URL,
-		Retry:   task.Retry,
-		Kind:    ErrorKind(err),
-		Message: err.Error(),
-	}
-	e.loggerSet.Engine.WithFields(logrus.Fields{
-		"stage":   te.Stage,
-		"site":    te.Site,
-		"task_id": te.TaskID,
-		"url":     te.URL,
-		"retry":   te.Retry,
-		"kind":    te.Kind,
-	}).Errorf("task failed: %s", te.Message)
-
-	// One persisted task round is observed by the sole detector. Attempts do not
-	// increment the terminal count, and notifications use the frozen lifecycle ID.
-	if st, tripped := e.recordBreakerFailure(task, err); tripped {
-		// 通知在锁外发送，使用触发瞬间的快照，恢复不能擦掉告警现场。
-		e.notifyBreakerTrip(st)
-	}
-
-	notifiers := e.getNotifiers()
-	if len(notifiers) == 0 {
-		return
-	}
-	level := AlertError
-	if Retryable(err) {
-		level = AlertWarn
-	}
-	event := AlertEvent{Level: level, TaskError: te}
-	for _, n := range notifiers {
-		if nerr := n.Notify(ctx, event); nerr != nil {
-			e.loggerSet.Engine.Errorf("notify alert failed: %s", nerr.Error())
-		}
-	}
-}
-
-// recordBreakerFailure observes one persisted terminal task round.
-func (e *Engine) recordBreakerFailure(task *Task, failure ...error) (BreakerStatus, bool) {
-	var err error
-	if len(failure) > 0 {
-		err = failure[0]
-	}
-	if err == nil {
-		err = fmt.Errorf("unspecified terminal failure")
-	}
-	return e.recordSmartOutcome(task, err)
-}
-
-// notifyBreakerTrip 熔断触发时的回调：打醒目日志 + 发一条 AlertCritical 告警。
-//
-// 走的是与任务失败**同一个** Notifier 通道，业务不用再接一套告警 ——
-// 区别只在 level（critical 比 error 高一级），webhook 那边可以据此单独路由（钉钉 @全体之类）。
-func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
-	e.emit(events.Event{
-		Type: events.TypeBreakerTripped, Site: st.Site, Stage: st.Stage,
-		Source: "breaker", Kind: "circuit-breaker",
-		Counts: map[string]int{"failures": st.Failures, "threshold": st.Threshold},
-		TS:     st.PausedAt, Attrs: map[string]string{"incident_id": st.IncidentID, "window_ns": strconv.FormatInt(int64(st.Window), 10), "window_from": st.WindowFrom.Format(time.RFC3339Nano)},
-	})
-	e.loggerSet.Engine.Errorf(
-		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败，整站硬阈值 %d）。"+
-			"受保护范围已暂停；详见后台熔断分析报告及恢复状态",
-		st.Reason, st.Stage, st.Window, st.Failures, st.Threshold)
-
-	notifiers := e.getNotifiers()
-	if len(notifiers) == 0 {
-		return
-	}
-	event := AlertEvent{
-		Level: AlertCritical,
-		TaskError: TaskError{
-			Stage:   st.Stage,
-			Site:    st.Site,
-			Kind:    "circuit-breaker",
-			Message: st.Reason,
-		},
-	}
-	for _, n := range notifiers {
-		if err := n.Notify(e.ctx, event); err != nil {
-			e.loggerSet.Engine.Errorf("notify breaker trip failed: %s", err.Error())
-		}
-	}
-}
-
-// stageKeys 按名字排序返回已注册的**阶段键**（`core.StageKey`，含站点）。
-//
-// 建池与跑 submitFunc 都按这个顺序（而不是 map 遍历顺序）：启动期的副作用是**看得见**的
-// —— 起始任务入库的顺序决定它们的 ID，统计器注册的顺序决定后台阶段的排列。map 顺序随机，
-// 每次重启都不一样，排查"为什么这次启动多了两条任务"时就成了噪声源。
-// 排序结果按"站点 → 阶段名"排（键就是 `site:stage`），多站时同一个站的阶段聚在一起。
-func (e *Engine) stageKeys() []string {
-	names := make([]string, 0, len(e.stages))
-	for name := range e.stages {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
 
 // finishTask 任务落终态后的统一收尾：非轮询任务清活动去重键，轮询任务唤醒轮询队列。
 //
@@ -173,12 +46,20 @@ func (e *Engine) finishTask(task *Task) {
 // 写库失败记录 Warn 和未确认任务：停机不无限等待，但 Stop 不能谎报已排空。
 // 行回到 pending 就够了 —— 下次启动的启动恢复（recoverqueue.go）会重新入队。
 func (e *Engine) releaseClaim(task *Task) {
+	// A cancellation racing terminal cleanup cannot turn a journaled failure
+	// back into pending. The report writer owns its remaining settlement.
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers[task.Site]
+	pending := s != nil && s.event != nil && s.event.PendingFailure != nil && s.event.PendingFailure.TaskID == task.ID
+	e.breakers.breakerMu.Unlock()
+	if pending {
+		return
+	}
+
 	if task.ID == 0 {
 		return
 	}
-	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", uint(task.ID), models.TaskStatusProcessing).
-		Updates(map[string]any{"status": models.TaskStatusPending})
+	res := taskstore.Release(e.db, uint(task.ID))
 	if res.Error != nil {
 		e.loggerSet.Engine.Warnf("release claim task %d: %s", task.ID, res.Error.Error())
 		e.rememberUnsettled(task)
@@ -206,7 +87,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil
 		}
-		breakerRelease, admitted := e.admitBreakerTask(task)
+		breakerRelease, admitted := e.breakers.admitBreakerTask(task)
 		if !admitted {
 			e.spillTask(task)
 			return nil
@@ -301,12 +182,15 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 					return ctx.Err()
 				case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
 				}
-				task.IncRetry(e.db)
+				if err := e.incrementExecutionRetry(ctx, task); err != nil {
+					return err
+				}
 				e.emit(events.Event{
 					Type: events.TypeTaskRetry, Site: task.Site, Stage: task.Stage,
 					TaskID: uint(task.ID), Attempt: attempt,
 				})
 			}
+			task.breakerFinalAttempt = attempt == attempts-1
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if errors.Is(err, errAttemptTimingPersistence) {
 				var timingErr *attemptTimingError
@@ -412,288 +296,12 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	}
 }
 
-// buildPool 建一个阶段的工作池并登记：建池 + 按站点绑闸门 + 起 worker + 建监控 stats。
-// 调用方须保证 key（`core.StageKey`，不是裸阶段名）已注册。
-func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
-	cfg := info.config
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
-	if pool == nil {
-		e.loggerSet.Engine.Errorf("cannot build stage %q: %v", key, workerpool.ValidateConfig(cfg.WorkerCount, cfg.QueueSize))
-		return nil
-	}
-	// 闸门绑**这个池自己的 scope**（站点 + 阶段）：它问的是暂停信号，所以"整站暂停"与
-	// "某个阶段暂停"由同一个适配器回答，不需要在池子上串两道闸。
-	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
-	pool.SetGate(e.pauseGateFor(pauseScope{Site: cfg.Site, Stage: info.stage}))
-	pool.Start(e.ctx, e.stageHandler(info))
-	e.startPoolErrorForwarder(key, pool)
-	// HTTP 服务开启时，为该阶段创建统计器并启动（数据供监控页面的阶段概览用）
-	if e.cfg.Server.Enabled {
-		stats := track.NewStatsQueue(pool)
-		stats.Start(e.ctx)
-		e.setStatsQueue(key, stats)
-		e.loggerSet.Monitor.Infof("monitor started for stage: %s", key)
-	}
-	e.emit(events.Event{
-		Type: events.TypeStagePool, Site: cfg.Site, Stage: info.stage,
-		Source: "created", Counts: map[string]int{"workers": cfg.WorkerCount},
-	})
-	return pool
-}
-
-// getOrCreatePool 取某阶段的活池；没有就按 StageConfig 懒建一个并登记。阶段未注册返回 nil。
-// 入参是**阶段键**（`core.StageKey(site, stage)`）—— 阶段名只在本站内唯一，两个站的 catalog
-// 是两个池子，所以键里必须带站点。
-// 每次都走 getOrCreate（而不是先 get 快路径）—— 要让 lastSubmit 在**每次投递**时刷新，
-// 空闲回收靠它判断池闲置了多久。
-func (e *Engine) getOrCreatePool(key string) *workerpool.WorkerPool[*Task] {
-	info := e.stages[key]
-	if info == nil {
-		return nil
-	}
-	return e.pools.getOrCreate(key, func() *workerpool.WorkerPool[*Task] {
-		return e.buildPool(key, info)
-	})
-}
-
-// poolForwarder 一条错误转发协程的归属：停机信号 + 它转发的是哪个池。
-//
-// 取消时**必须核对池身份**，不能只按 stage key：reapIdle 把池从登记表摘掉之后、调用
-// cancelPoolErrorForwarder 之前，同阶段可能已被重新提交、建了新池新转发协程 —— 只按 key
-// 关通道会误关新池的那条，让新池的错误再也进不了 Errors()。
-type poolForwarder struct {
-	stop chan struct{}
-	pool *workerpool.WorkerPool[*Task]
-}
-
-// startPoolErrorForwarder 起一条转发协程，把池的错误通道汇进引擎的常驻错误通道（Errors()）。
-// pool.Errors() 从不 close，所以必须带停机信号 —— 池被 reap 时 close 它，否则协程泄漏到引擎结束。
-func (e *Engine) startPoolErrorForwarder(key string, pool *workerpool.WorkerPool[*Task]) {
-	stop := make(chan struct{})
-	e.mu.Lock()
-	if e.errorForwardCancel == nil {
-		e.errorForwardCancel = make(map[string]*poolForwarder)
-	}
-	if old, ok := e.errorForwardCancel[key]; ok {
-		close(old.stop) // 旧池的转发协程该退了（池被重建）
-	}
-	e.errorForwardCancel[key] = &poolForwarder{stop: stop, pool: pool}
-	e.mu.Unlock()
-
-	go func() {
-		for {
-			select {
-			case err := <-pool.Errors():
-				select {
-				case e.errorCh <- err:
-				default: // 常驻通道满了就丢：错误通道是兜底，主日志路径已经记过
-				}
-			case <-stop:
-				return
-			case <-e.ctx.Done():
-				return
-			}
-		}
-	}()
-}
-
-// cancelPoolErrorForwarder 停掉某阶段的错误转发协程（池被 reap 时配套调用）。
-// 只停「仍属于被回收的那份池」的转发协程：reap 与新池建之间没有锁，同阶段可能已换了池，
-// 只按 key 关会误关新池的（见 poolForwarder 的注释）。
-func (e *Engine) cancelPoolErrorForwarder(key string, pool *workerpool.WorkerPool[*Task]) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if fw, ok := e.errorForwardCancel[key]; ok && fw.pool == pool {
-		close(fw.stop)
-		delete(e.errorForwardCancel, key)
-	}
-}
-
-// startIdleReaper 启动空闲池回收协程：每隔 stage_idle_timeout/2 扫一遍，回收「超过 idle 没有
-// 新任务、且空着」的池。config 没配 stage_idle_timeout（<=0）就不起 —— 默认常驻，行为与之前一致。
-func (e *Engine) startIdleReaper() {
-	idle := e.cfg.Crawler.StageIdleTimeout
-	if idle <= 0 {
-		return
-	}
-	interval := idle / 2
-	if interval < time.Second {
-		interval = time.Second
-	}
-	e.tickerWG.Add(1)
-	go func() {
-		defer e.tickerWG.Done()
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-ticker.C:
-				for key, pool := range e.pools.reapIdle(idle, e.cfg.Crawler.StopTimeoutOrDefault()) {
-					e.harvestStageTotals(key, pool)
-					e.cancelPoolErrorForwarder(key, pool)
-					e.loggerSet.Engine.Debugf("reaped idle stage pool: %s", key)
-					site, stage := splitStageKey(key)
-					e.emit(events.Event{Type: events.TypeStagePool, Site: site, Stage: stage, Source: "reaped"})
-				}
-			}
-		}
-	}()
-}
-
-// ApplyRegisterStage 启用注册业务流程开启对应工作池
-func (e *Engine) ApplyRegisterStage() {
-	// 阶段的存在性只有一个来源：**注册进来的 e.stages**（配置里不再声明阶段，见 App.RegisterSites）。
-	// 于是"配置声明了、代码没实现"这一类不同源的问题在结构上不存在了；未注册的阶段在提交时
-	// 由 submitToPool 报 ErrStageNotRegistered。
-	keys := e.stageKeys()
-
-	// 第零趟之二：依赖接线校验。声明了要用下载器却没接线，就在**启动这一刻**炸掉 ——
-	// 不然那句话要等第一条任务跑到那一步才出现，失败的是任务、不是启动（见 deps.go）。
-	for _, key := range keys {
-		e.checkStageDeps(key, e.stages[key].fetcher)
-	}
-
-	// 池子**懒建**：不在这里全量建，等第一条任务 submit 时才建（getOrCreatePool）。于是入口回调
-	// 可以放心投给任意阶段 —— 投到谁、谁的池子在这一刻才起，不再有"后面的池子还没建"的 nil 解引用。
-	//
-	// 引擎在这里**不做策略判断**：有回调、且声明里写了 `Entry: true`，就跑（"这个阶段有没有入口"
-	// 由声明层决定 —— 见 internal/app/spec.go；"这一站现在跑不跑"是另一件事，见下面那一句）。
-	// 下载器实例先解析好（站点层/阶段层覆盖 → 每阶段一份，见 engine/downloads.go）：第一条任务
-	// 可能立刻开跑，解析晚了那几条会拿到全局那份（不至于错，但"声明没生效"这种不一致最难查）。
-	e.resolveStageDownloads()
-	// 站点快照也在这儿备齐（按声明重建、整块写进落点），后台站点 Tab/站点页读它
-	e.buildSiteStats()
-
-	// **先闸住、再投入口任务**（顺序是硬的）：声明了 StartPaused 的站，这一刻整站被暂停 ——
-	// 反过来的话，投进去的头几条可能在"闸还没下"的那个窗口里被 worker 抢去跑掉。
-	// 闸住之后入队点直接折回溢出表、池子一个都不建（见 applyStartPaused）。
-	e.applyStartPaused()
-	for _, key := range keys {
-		info := e.stages[key]
-		if info.submitFunc != nil && info.config.Entry {
-			info.submitFunc(e)
-		}
-	}
-
-	// 启动高水位溢出任务的回灌协程
-	e.startDrain()
-	// 启动错误队列后台自动轮询（配了 interval 才自动，否则仅手动触发）
-	e.startErrorQueue()
-	// 启动中断恢复队列（启动即恢复一次，没有定时轮询）
-	e.startRecoverQueue()
-	// 启动周期轮询队列（repeatable 任务的定时重跑）
-	e.startRepeatQueue()
-	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
-	e.startTraceCleanup()
-	// 启动页面归档的保留期清理（归档未开启时不启动）
-	e.startArchiveCleanup()
-	// HTTP 服务开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
-	if e.cfg.Server.Enabled {
-		e.startQueueSampler()
-	}
-	// 运行事件流的阶段/队列周期快照（obs.events 开启且配了 interval 才起）
-	e.startSnapshotEmitter()
-	// 空闲池回收（没配 stage_idle_timeout 就是 no-op，池常驻）
-	e.startIdleReaper()
-}
-
-// runAttempt 执行一次 FetchHandler，并负责这一次尝试的步骤追踪与页面归档：
-// 挂记录器 → 跑 handler → 记下结局 → 落盘（归档）/落库（trace）。
-//
-// 两件事都放在 defer 里，所以 panic 展开时也会执行 —— 闭包这一层的 defer 先于 workerpool
-// 的 recover 跑，panic 之前已上报的步骤因此不会丢；panic 路径上 setResult 没被调用，
-// trace 按失败处理（data 保留）、归档也按失败落盘，正好是排查现场要看的。
-//
-// 这里 recover 一次**只是为了拿"是不是 panic"这个信号**（panic 时命名返回值 err 还是 nil），
-// 拿到之后原样抛回去：workerpool 那头的 debug.Stack() 与 failed 计数才是既有行为，
-// 吞掉 panic 或者重新造一个都会丢掉 handler 的栈帧。
-func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) (err error) {
-	tr := e.newTrace(task, attempt)
-	task.Trace = tr
-	defer tr.finish() // finish 幂等，正常返回与 panic 展开都走这里
-
-	// 归档缓冲（未开归档时是 nil，所有方法都 nil 安全）。这个 defer 注册在 tr.finish 之后，
-	// 于是**先**执行（LIFO）——"这次归档了哪些文件"因此能作为一条步骤写进还没落库的 trace。
-	ar := e.newArchiveBuffer(task, attempt)
-	defer func() {
-		r := recover()
-		if files := ar.finish(r != nil || err != nil); len(files) > 0 {
-			// OA 追踪抽屉里"失败"与"那一页"的连接点：光有文件、不知道属于哪条任务等于没留。
-			// 注意这条步骤的 data 也受 trace 的既有策略约束（只有失败的尝试才保留 data）——
-			// `always` 模式下成功的尝试里，步骤名还在但文件名会被剥掉；那种情况按
-			// `{dir}/{site}/{stage}/task-{id}-try-{retry}-*` 在目录里找同一次尝试的文件即可。
-			tr.Step(archiveTraceStep, map[string]any{"files": files})
-		}
-		// 失败原因写进 trace：handler 返回错误、或直接 panic，都在这里落一条带分类与消息的
-		// 步骤。放在归档步骤之后 —— 现场在前、"为什么死"在后，读起来就是这次尝试的顺序。
-		switch {
-		case r != nil:
-			tr.Fail(failureTraceStep, fmt.Errorf("panic: %v", r), nil)
-			panic(r) // 原样抛回：workerpool 那头的栈与计数是既有行为
-		case err != nil:
-			tr.Fail(failureTraceStep, err, nil)
-		}
-	}()
-	// 缓冲挂在 ctx 上：FetchHTML 只拿得到 ctx，这是它知道"这一页属于哪次尝试"的唯一途径。
-	// Trace 同样挂一份：render / CaptureRequest 的签名里没有 task，失败步骤从 ctx 取
-	// （见 trace.go 的 traceCtxKey）。
-	ctx = withTrace(ctx, tr)
-	if identity, ok := account.AttemptFromContext(ctx); ok {
-		tr.Step("账号池身份", map[string]any{"pool": identity.Pool.Name, "account": identity.Account.ID, "selection_version": identity.SelectionVersion, "credential_version": identity.CredentialVersion})
-	}
-	ctx = withArchive(ctx, ar)
-	// 站点请求头也挂在 ctx 上：这个站的任务抓任何页面都自动带上它的 UA/Cookie/Referer，
-	// handler 不用写代码；要对单次请求再改，用 `papa.WithHeaders(ctx, …)` 叠加（它只会覆盖给到的键）。
-	if h := e.siteHeaders(task.Site); len(h) > 0 {
-		ctx = core.WithHeaders(ctx, h)
-	}
-
-	// 加急记在 trace 的第一步，事后还能看出"这条曾经加急跑过"：
-	// claimTask 认领时会把 urgent 列归零（加急是「排队位置」的概念，跑过一次即完成使命），
-	// 那张表上就再也看不出它加急过了。只记第一次尝试 —— 同一次执行里的后续重试不是新的加急。
-	if attempt == 0 && task.Urgent {
-		tr.Step(traceUrgentStep, nil)
-	}
-
-	if err = e.recordAttemptTime(ctx, task, "last_started_at"); err != nil {
-		return err
-	}
-	defer func() {
-		// Keep persistence responsibility here; failure must never replay business.
-		r := recover()
-		finishCtx, finishCancel := ctx, func() {}
-		if !task.breakerSampleDeadline.IsZero() && ctx.Err() != nil {
-			finishCtx, finishCancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-		}
-		writeErr := e.recordAttemptTime(finishCtx, task, "last_finished_at")
-		finishCancel()
-		if r != nil {
-			panic(r)
-		}
-		if writeErr != nil {
-			err = &attemptTimingError{cause: errors.Join(err, writeErr), handlerSucceeded: err == nil, handlerErr: err}
-		}
-	}()
-	err = fetcher.FetchHandler(ctx, task, e)
-	if identity, ok := account.AttemptFromContext(ctx); ok && err != nil {
-		outcome := account.Unknown
-		if errors.Is(err, account.ErrNeedsVerify) {
-			outcome = account.NeedsVerify
-		} else if errors.Is(err, account.ErrExpired) {
-			outcome = account.Expired
-		} else if errors.Is(err, account.ErrChallenge) {
-			outcome = account.Challenge
-		}
-		if outcome != account.Unknown {
-			if m := e.GetAccountManager(); m != nil && m.Pools() != nil {
-				m.Pools().ReportFailure(identity, outcome, uint64(task.ID))
-			}
-		}
-	}
-	tr.setResult(err)
-	return err
+// runAttempt assembles one execution session; the public Fetcher API still
+// receives Engine, but no runtime component retains it as a dependency.
+func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
+	session := attemptExecution{task: task, attempt: attempt, trace: e.newTrace(task, attempt), archive: e.newArchiveBuffer(task, attempt), headers: e.siteHeaders(task.Site), resources: &e.fetchResources,
+		persistence: attemptPersistence{db: e.db, state: &e.execution, breakers: &e.breakers, logger: e.loggerSet.Engine}}
+	return session.run(ctx, func(ctx context.Context) error { return fetcher.FetchHandler(ctx, task, e) })
 }
 
 // A joined cancellation and business error is still a real failure. Wrapping

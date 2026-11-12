@@ -17,16 +17,16 @@ import (
 
 func TestBreakerSerialAdmissionIgnoresHigherRampConcurrency(t *testing.T) {
 	e := mixedSampleFixture(t, 3)
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].policy.RampConcurrency = 20
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].policy.RampConcurrency = 20
+	e.breakers.breakerMu.Unlock()
 	a, exitA := admitSmartTrial(t, e, 1, "detail")
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			if done, ok := e.admitBreakerTask(&Task{ID: id, Site: "synthetic", Stage: "detail"}); ok {
+			if done, ok := e.breakers.admitBreakerTask(&Task{ID: id, Site: "synthetic", Stage: "detail"}); ok {
 				done()
 				t.Error("parallel admission during selected sample")
 			}
@@ -36,7 +36,7 @@ func TestBreakerSerialAdmissionIgnoresHigherRampConcurrency(t *testing.T) {
 	a.breakerRound = "verified-A"
 	e.recordSmartOutcome(a, nil)
 	exitA()
-	if done, ok := e.admitBreakerTask(&Task{ID: 1, Site: "synthetic", Stage: "detail"}); ok {
+	if done, ok := e.breakers.admitBreakerTask(&Task{ID: 1, Site: "synthetic", Stage: "detail"}); ok {
 		done()
 		t.Fatal("completed sample executed again")
 	}
@@ -63,7 +63,7 @@ func (f *serialDeadlineFetcher) FetchHandler(ctx context.Context, _ *Task, _ *En
 func TestBreakerSerialDeadlineCancelsRealHandlerButWaitsForExitMySQL(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
-	e.breakerStore, e.breakerRuntime = &memoryBreakerRepository{}, true
+	e.breakers.breakerStore, e.breakers.breakerRuntime = &memoryBreakerRepository{}, true
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100, Window: time.Minute, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 1}})
 	row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/timeout", Status: models.TaskStatusPending, Reprocess: 1}
 	if err := db.Create(&row).Error; err != nil {
@@ -76,11 +76,11 @@ func TestBreakerSerialDeadlineCancelsRealHandlerButWaitsForExitMySQL(t *testing.
 	defer exit()
 	info := e.stages["synthetic:detail"]
 	info.fetcher = f
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
-	e.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
+	e.breakers.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
 	s.event.SampleDeadline = time.Now().Add(200 * time.Millisecond)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
 	done := make(chan error, 1)
 	go func() { done <- e.stageHandler(info)(context.Background(), e.taskFromRecord(&row)) }()
@@ -96,7 +96,7 @@ func TestBreakerSerialDeadlineCancelsRealHandlerButWaitsForExitMySQL(t *testing.
 	}
 	e.tickBreakers(context.Background(), time.Now())
 	flushSmart(t, e)
-	if release, ok := e.admitBreakerTask(&Task{ID: 99, Site: "synthetic", Stage: "detail"}); ok {
+	if release, ok := e.breakers.admitBreakerTask(&Task{ID: 99, Site: "synthetic", Stage: "detail"}); ok {
 		release()
 		t.Fatal("uncooperative handler overlapped next sample")
 	}
@@ -124,7 +124,7 @@ func TestBreakerSerialDeadlineCancelsRealHandlerButWaitsForExitMySQL(t *testing.
 func TestBreakerSerialDeadlineIncludesResourceWaitMySQL(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
-	e.breakerStore, e.breakerRuntime = &memoryBreakerRepository{}, true
+	e.breakers.breakerStore, e.breakers.breakerRuntime = &memoryBreakerRepository{}, true
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 1}})
 	row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/wait", Status: models.TaskStatusPending}
 	if err := db.Create(&row).Error; err != nil {
@@ -147,11 +147,11 @@ func TestBreakerSerialDeadlineIncludesResourceWaitMySQL(t *testing.T) {
 	f := &recordingFetcher{stage: "detail"}
 	e.stages["synthetic:detail"].fetcher = f
 	e.stages["synthetic:detail"].config.WorkerCount = 1
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
-	e.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
+	e.breakers.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
 	s.event.SampleDeadline = time.Now().Add(150 * time.Millisecond)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
 	err = e.stageHandler(e.stages["synthetic:detail"])(context.Background(), e.taskFromRecord(&row))
 	if !errors.Is(err, context.DeadlineExceeded) || len(f.calls()) != 0 {
@@ -167,12 +167,12 @@ func TestBreakerSerialDeadlineIncludesResourceWaitMySQL(t *testing.T) {
 
 func TestBreakerSerialWaitingTimeoutChecksRemainingSamplesWithoutRecovery(t *testing.T) {
 	e := mixedSampleFixture(t, 3)
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
 	s.event.Deadline = time.Now().Add(time.Hour)
-	e.selectBreakerSampleLocked(s, "detail", "task:1", time.Now())
+	e.breakers.selectBreakerSampleLocked(s, "detail", "task:1", time.Now())
 	deadline := s.event.SampleDeadline
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	if d := time.Until(deadline); d < 9*time.Minute || d > 10*time.Minute {
 		t.Fatalf("wrong sample budget %v", d)
 	}
@@ -192,20 +192,20 @@ func TestBreakerSerialUnfinishedTimeoutBlocksNextAndHourlyRetry(t *testing.T) {
 	e := mixedSampleFixture(t, 3)
 	a, exitA := admitSmartTrial(t, e, 1, "detail")
 	defer exitA()
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
 	s.event.SampleDeadline = time.Now().Add(-time.Second)
 	a.breakerSampleDeadline = s.event.SampleDeadline
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	e.tickBreakers(context.Background(), time.Now())
 	flushSmart(t, e)
-	if done, ok := e.admitBreakerTask(&Task{ID: 2, Site: "synthetic", Stage: "detail"}); ok {
+	if done, ok := e.breakers.admitBreakerTask(&Task{ID: 2, Site: "synthetic", Stage: "detail"}); ok {
 		done()
 		t.Fatal("timeout released running A")
 	}
-	e.breakerMu.Lock()
+	e.breakers.breakerMu.Lock()
 	s.event.Deadline = time.Now().Add(-time.Second)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	e.tickBreakers(context.Background(), time.Now())
 	l := expectSmartState(t, e, "manual")
 	flushSmart(t, e)
@@ -231,17 +231,17 @@ func TestBreakerSerialRestartPreservesDeadlineAndRejectsExpiredSelection(t *test
 	for _, expired := range []bool{false, true} {
 		t.Run(fmt.Sprint(expired), func(t *testing.T) {
 			e := mixedSampleFixture(t, 3)
-			e.breakerMu.Lock()
-			s := e.smartBreakers["synthetic"]
-			e.selectBreakerSampleLocked(s, "detail", "task:1", time.Now())
+			e.breakers.breakerMu.Lock()
+			s := e.breakers.smartBreakers["synthetic"]
+			e.breakers.selectBreakerSampleLocked(s, "detail", "task:1", time.Now())
 			if expired {
 				s.event.SampleDeadline = time.Now().Add(-time.Second)
 			}
 			deadline := s.event.SampleDeadline
-			e.breakerMu.Unlock()
+			e.breakers.breakerMu.Unlock()
 			flushSmart(t, e)
 			restarted, _ := newSmartBreakerFixture(t, 100)
-			restarted.breakerStore, restarted.breakerRuntime = e.breakerStore, false
+			restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = e.breakers.breakerStore, false
 			registerBreakerFixtureStages(restarted, "detail")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer func() { cancel(); restarted.tickerWG.Wait() }()
@@ -254,9 +254,9 @@ func TestBreakerSerialRestartPreservesDeadlineAndRejectsExpiredSelection(t *test
 			if l.Checks[0].Verified || l.Checks[0].TaskSuccesses != 0 {
 				t.Fatal("reused old proof")
 			}
-			restarted.breakerMu.Lock()
-			kept := restarted.smartBreakers["synthetic"].event.SampleDeadline
-			restarted.breakerMu.Unlock()
+			restarted.breakers.breakerMu.Lock()
+			kept := restarted.breakers.smartBreakers["synthetic"].event.SampleDeadline
+			restarted.breakers.breakerMu.Unlock()
 			if expired {
 				if l.State != "manual" || len(l.Checks[0].TimedOutIDs) != 1 {
 					t.Fatal("expired selection restarted as healthy")
@@ -273,7 +273,7 @@ func TestBreakerSerialRestartPreservesDeadlineAndRejectsExpiredSelection(t *test
 
 func TestBreakerSerialUpgradeOldMixedSnapshotKeepsThreeSamples(t *testing.T) {
 	e := mixedSampleFixture(t, 3)
-	repo := e.breakerStore.(*memoryBreakerRepository)
+	repo := e.breakers.breakerStore.(*memoryBreakerRepository)
 	repo.mu.Lock()
 	for id, row := range repo.rows {
 		row.Control.Version = 0
@@ -287,7 +287,7 @@ func TestBreakerSerialUpgradeOldMixedSnapshotKeepsThreeSamples(t *testing.T) {
 	}
 	repo.mu.Unlock()
 	restarted, _ := newSmartBreakerFixture(t, 100)
-	restarted.breakerStore, restarted.breakerRuntime = repo, false
+	restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = repo, false
 	registerBreakerFixtureStages(restarted, "detail")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() { cancel(); restarted.tickerWG.Wait() }()
@@ -308,8 +308,8 @@ func TestBreakerSerialUpgradeOldMixedSnapshotKeepsThreeSamples(t *testing.T) {
 func TestBreakerSerialRequeueExcludesNormalAdmissionMySQL(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
-	e.breakerStore = &memoryBreakerRepository{}
-	e.breakerRuntime = true
+	e.breakers.breakerStore = &memoryBreakerRepository{}
+	e.breakers.breakerRuntime = true
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100, Window: time.Minute, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 3}})
 	for i := 1; i <= 3; i++ {
 		row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: fmt.Sprintf("https://example.invalid/%d", i), Status: models.TaskStatusFailed}
@@ -327,7 +327,7 @@ func TestBreakerSerialRequeueExcludesNormalAdmissionMySQL(t *testing.T) {
 			return
 		}
 		interleaved = true
-		if done, ok := e.admitBreakerTask(&Task{ID: 1, Site: "synthetic", Stage: "detail"}); ok {
+		if done, ok := e.breakers.admitBreakerTask(&Task{ID: 1, Site: "synthetic", Stage: "detail"}); ok {
 			done()
 			t.Error("normal scheduling entered during sample lookup")
 		}
@@ -351,9 +351,9 @@ func TestBreakerSerialRequeueExcludesNormalAdmissionMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	verificationSuccess(t, e, 1, "0:1")
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].nextSampleRetry = time.Time{}
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].nextSampleRetry = time.Time{}
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
 	e.retryBreakerSamples(context.Background())
 	flushSmart(t, e)
@@ -369,7 +369,7 @@ func TestBreakerSerialRequeueExcludesNormalAdmissionMySQL(t *testing.T) {
 func TestBreakerSerialDelayedClaimCannotRenewDeadlineMySQL(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
-	e.breakerStore, e.breakerRuntime = &memoryBreakerRepository{}, true
+	e.breakers.breakerStore, e.breakers.breakerRuntime = &memoryBreakerRepository{}, true
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100, Window: time.Hour, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 3, MaxRecovery: time.Hour}})
 	var rows []models.CrawlerTask
 	for i := 1; i <= 3; i++ {
@@ -387,20 +387,20 @@ func TestBreakerSerialDelayedClaimCannotRenewDeadlineMySQL(t *testing.T) {
 	flushSmart(t, e)
 	e.retryBreakerSamples(context.Background())
 	flushSmart(t, e)
-	e.breakerMu.Lock()
-	deadline := e.smartBreakers["synthetic"].event.SampleDeadline
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	deadline := e.breakers.smartBreakers["synthetic"].event.SampleDeadline
+	e.breakers.breakerMu.Unlock()
 	for i := 0; i < 3; i++ {
-		e.breakerMu.Lock()
-		e.smartBreakers["synthetic"].nextAdmission = time.Time{}
-		e.breakerMu.Unlock()
+		e.breakers.breakerMu.Lock()
+		e.breakers.smartBreakers["synthetic"].nextAdmission = time.Time{}
+		e.breakers.breakerMu.Unlock()
 		// An early queued copy reaches the admission gate, but DB time rejects its claim.
 		if err := e.stageHandler(e.stages["synthetic:detail"])(context.Background(), e.taskFromRecord(&rows[0])); err != nil {
 			t.Fatal(err)
 		}
-		e.breakerMu.Lock()
-		same := e.smartBreakers["synthetic"].event.SampleDeadline.Equal(deadline)
-		e.breakerMu.Unlock()
+		e.breakers.breakerMu.Lock()
+		same := e.breakers.smartBreakers["synthetic"].event.SampleDeadline.Equal(deadline)
+		e.breakers.breakerMu.Unlock()
 		if !same {
 			t.Fatal("unsuccessful claim renewed selected sample timeout")
 		}
@@ -423,13 +423,13 @@ func TestBreakerSerialDelayedClaimCannotRenewDeadlineMySQL(t *testing.T) {
 
 func TestBreakerSerialProbeSelectedWaitHasTenMinuteLimit(t *testing.T) {
 	e, _ := readOnlyFixture(t, "detail")
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
 	s.event.Deadline = time.Now().Add(time.Hour)
-	e.transitionBreakerLocked(s, "probing", "fixture", time.Now())
-	e.prepareNextBreakerProbeLocked(s, time.Now().Add(-11*time.Minute))
+	e.breakers.transitionBreakerLocked(s, "probing", "fixture", time.Now())
+	e.breakers.prepareNextBreakerProbeLocked(s, time.Now().Add(-11*time.Minute))
 	s.event.NextProbeAt = time.Now().Add(time.Hour)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	flushSmart(t, e)
 	e.tickBreakers(context.Background(), time.Now())
 	l := expectSmartState(t, e, "manual")
@@ -462,7 +462,7 @@ func TestBreakerSerialLateErrorClassificationMySQL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, makeEngine := compensationMySQL(t)
 			e := makeEngine()
-			e.breakerStore, e.breakerRuntime = &memoryBreakerRepository{}, true
+			e.breakers.breakerStore, e.breakers.breakerRuntime = &memoryBreakerRepository{}, true
 			e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100, Window: time.Minute, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 1}})
 			row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/late-error", Status: models.TaskStatusPending, Reprocess: 1}
 			if err := db.Create(&row).Error; err != nil {
@@ -477,18 +477,18 @@ func TestBreakerSerialLateErrorClassificationMySQL(t *testing.T) {
 					return
 				}
 				checked = true
-				if release, ok := e.admitBreakerTask(&Task{ID: 99, Site: "synthetic", Stage: "detail"}); ok {
+				if release, ok := e.breakers.admitBreakerTask(&Task{ID: 99, Site: "synthetic", Stage: "detail"}); ok {
 					release()
 					t.Error("serial slot released before terminal persistence")
 				}
 			}); err != nil {
 				t.Fatal(err)
 			}
-			e.breakerMu.Lock()
-			s := e.smartBreakers["synthetic"]
-			e.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
+			e.breakers.breakerMu.Lock()
+			s := e.breakers.smartBreakers["synthetic"]
+			e.breakers.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
 			s.event.SampleDeadline = time.Now().Add(100 * time.Millisecond)
-			e.breakerMu.Unlock()
+			e.breakers.breakerMu.Unlock()
 			flushSmart(t, e)
 			got := e.stageHandler(e.stages["synthetic:detail"])(context.Background(), e.taskFromRecord(&row))
 			if got == nil {

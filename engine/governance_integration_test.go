@@ -90,7 +90,7 @@ func TestRuntimeSharedRequestBudgetAcrossHTTPAccountFileAndM3U8(t *testing.T) {
 	defer mgr.Close()
 	e := newTestEngine(t, newFakeTaskDB())
 	e.cfg.Network = network
-	e.htmlClient = htmlfetch.NewClient(htmlfetch.Config{Network: network, ProxyManager: mgr})
+	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: network, ProxyManager: mgr}))
 	cfg := governance.DefaultConfig()
 	cfg.Defaults.Request.Enabled = true
 	cfg.Defaults.Request.MaxInflight = 1

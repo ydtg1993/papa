@@ -1,38 +1,25 @@
 package server
 
 import (
-	"archive/zip"
 	"context"
-	"crypto/rand"
-	"embed"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"html/template"
-	"io"
-	"io/fs"
-	"net"
-	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
-	"github.com/ydtg1993/papa/v4/admin/auth"
+	"github.com/ydtg1993/papa/v4/admin/access"
+	"github.com/ydtg1993/papa/v4/admin/breakers"
+	"github.com/ydtg1993/papa/v4/admin/logs"
+	"github.com/ydtg1993/papa/v4/admin/monitoring"
+	"github.com/ydtg1993/papa/v4/admin/queues"
+	"github.com/ydtg1993/papa/v4/admin/reports"
+	"github.com/ydtg1993/papa/v4/admin/settings"
+	"github.com/ydtg1993/papa/v4/admin/shell"
 	"github.com/ydtg1993/papa/v4/admin/sysinfo"
+	"github.com/ydtg1993/papa/v4/admin/taskflow"
+	"github.com/ydtg1993/papa/v4/admin/tasktrace"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/obs/incident"
+	"io/fs"
+	"net"
+	"net/http"
 )
-
-//go:embed template.html
-var templateFS embed.FS
-
-//go:embed static
-var staticFS embed.FS
 
 // MonitorGetter 定义获取所有阶段统计快照的函数类型
 type MonitorGetter func() map[string]core.StageStats
@@ -42,24 +29,10 @@ type MonitorGetter func() map[string]core.StageStats
 // 为什么要有它：这两个端点与「熔断放行」同一处境 —— 都是后台自带的原生接口、不走表格组件，
 // 而它们同样会**批量改数据**（把到点的可轮询任务/失败任务重置并重投）。审计不该因为
 // "这个按钮不是表格动作"就断档。
-type QueueProcessEvent struct {
-	Queue     string // 队列名：engine.QueueRepeat / engine.QueueError（与后台那一行的名字一致）
-	Operator  string // 谁点的（鉴权中间件解析令牌得到；未鉴权/测试构造的请求为空）
-	IP        string // 直连来源 IP（与白名单同一取法，不信 X-Forwarded-For）
-	Processed int    // 实际处理条数
-	Err       error  // nil = 成功
-	At        time.Time
-}
+type QueueProcessEvent = queues.QueueProcessEvent
 
 // TaskFlowActionEvent 一次任务流策略动作的结局，宿主拿它记操作日志。
-type TaskFlowActionEvent struct {
-	Action   string
-	ID       string
-	Operator string
-	IP       string
-	At       time.Time
-	Err      error
-}
+type TaskFlowActionEvent = taskflow.TaskFlowActionEvent
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
@@ -128,19 +101,16 @@ type MonitorConfig struct {
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
 type Monitor struct {
-	instanceID string // 单次 Monitor 生命周期的观测身份；新实例生成新值。
-	getter     MonitorGetter
-	logger     Logger
-	cfg        MonitorConfig
-	template   *template.Template
-	parseOnce  sync.Once
-	parseErr   error
-
-	mu sync.RWMutex
-	// whitelist 解析后的白名单（每请求判定用它）；rawWhitelist 是**原样**的那一份（设置页回显用它，
-	// 免得把运营输入的 "192.168.1.1" 显示成规范化后的 "192.168.1.1/32"）。两者永远一起换。
-	whitelist    []*net.IPNet
-	rawWhitelist []string
+	page       *shell.Renderer
+	access     *access.Handler
+	settings   *settings.Handler
+	monitoring *monitoring.Handler
+	queues     *queues.Handler
+	breakers   *breakers.Handler
+	taskflow   *taskflow.Handler
+	logs       *logs.Handler
+	reports    *reports.Handler
+	tasktrace  *tasktrace.Handler
 }
 
 // Logger 简单日志接口，避免循环依赖
@@ -152,97 +122,30 @@ type Logger interface {
 
 // NewMonitor 创建监控路由
 func NewMonitor(getter MonitorGetter, logger Logger, cfg MonitorConfig) *Monitor {
-	return &Monitor{
-		instanceID:   rand.Text(),
-		getter:       getter,
-		logger:       logger,
-		cfg:          cfg,
-		whitelist:    parseWhitelist(cfg.Whitelist, logger),
-		rawWhitelist: nonEmptyStrings(cfg.Whitelist),
-	}
+	s := &Monitor{}
+	s.access = access.New(access.Options{VerifyToken: cfg.VerifyToken, AuthRequired: cfg.AuthRequired, SaveWhitelist: cfg.SaveWhitelist, Whitelist: cfg.Whitelist}, logger)
+	s.page = shell.NewRenderer(templateFS, shell.RenderOptions{AuthRequired: s.access.AuthRequired, OptionalAssets: optionalOaoAssets, Logger: logger})
+	s.settings = settings.New(settings.Options{Whitelist: s.access.WhitelistSnapshot, WhitelistPersistent: cfg.SaveWhitelist != nil, LogDir: cfg.LogDir, OnShutdown: cfg.OnShutdown, VerifyTokenValue: cfg.VerifyTokenValue}, logger)
+	s.monitoring = monitoring.New(monitoring.Options{Stages: getter, QueueStats: cfg.QueueStats, BreakerStatuses: cfg.BreakerStatuses, SiteStats: cfg.SiteStats, SysInfo: cfg.SysInfo})
+	s.queues = queues.New(queues.Options{ProcessErrorQueue: cfg.ProcessErrorQueue, ProcessRepeatQueue: cfg.ProcessRepeatQueue, OnQueueProcess: cfg.OnQueueProcess}, logger)
+	s.breakers = breakers.New(breakers.Options{BreakerStatuses: cfg.BreakerStatuses, BreakerReports: cfg.BreakerReports, ResumeBreaker: cfg.ResumeBreaker, ForceResumeBreaker: cfg.ForceResumeBreaker, PauseBreaker: cfg.PauseBreaker, OnBreakerResume: cfg.OnBreakerResume, OnBreakerForceResume: cfg.OnBreakerForceResume, OnBreakerPause: cfg.OnBreakerPause}, logger)
+	s.taskflow = taskflow.New(taskflow.Options{TaskFlow: cfg.TaskFlow, UpdateTaskFlow: cfg.UpdateTaskFlow, OnTaskFlowAction: cfg.OnTaskFlowAction})
+	s.logs = logs.New(logs.Options{Dir: cfg.LogDir})
+	s.reports = reports.New(reports.Options{Dir: cfg.ReportDir})
+	s.tasktrace = tasktrace.New(tasktrace.Options{ArchiveDir: cfg.ArchiveDir, Trace: cfg.TaskTrace, Logger: logger})
+	return s
 }
 
 // parseWhitelist 解析白名单为 CIDR 列表，单 IP 视为 /32（IPv6 视为 /128）
 func parseWhitelist(items []string, logger Logger) []*net.IPNet {
-	var out []*net.IPNet
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		cidr := item
-		if !strings.Contains(cidr, "/") {
-			if strings.Contains(cidr, ":") {
-				cidr += "/128"
-			} else {
-				cidr += "/32"
-			}
-		}
-		if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
-			out = append(out, ipNet)
-		} else {
-			logger.Errorf("invalid whitelist entry %q: %s", item, err.Error())
-		}
-	}
-	// 非空、却一条都没解析出来 —— 这一档的语义是"按不限制来源生效"（见 configstore.KeyIPWhitelist），
-	// 也就是把限制**悄悄放宽了**。运营写错一个字符就会走到这里，所以按 Error 单独喊一句。
-	if len(out) == 0 && len(items) > 0 {
-		logger.Errorf("来源 IP 白名单配置了 %d 条、但一条都解析不出来 —— 按「不限制来源」生效。"+
-			"要么改对（后台设置页 / crawler_config 表的 ip_whitelist 行），要么显式清空成 []", len(items))
-	}
-	return out
-}
-
-// nonEmptyStrings 去掉空串与首尾空白，保留原样的顺序（设置页回显用）。
-func nonEmptyStrings(items []string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if v := strings.TrimSpace(item); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
+	return access.ParseWhitelist(items, logger)
 }
 
 // SetWhitelist 换一份白名单（宿主在启动读取与定期重载时调；解析在本包内做）。
 //
 // 传进来的就是**存储里的原样字符串**：解析后的 CIDR 用于每请求判定，原样那串回显给设置页。
 // 解析规则与初始值同一条路（裸 IP 补 /32、IPv6 补 /128；坏条目丢掉并记 Error）。
-func (s *Monitor) SetWhitelist(entries []string) {
-	parsed := parseWhitelist(entries, s.logger)
-	raw := nonEmptyStrings(entries)
-	s.mu.Lock()
-	s.whitelist = parsed
-	s.rawWhitelist = raw
-	s.mu.Unlock()
-}
-
-// firstInvalidWhitelistEntry 严格校验一份**待保存**的白名单：返回第一条不是 IP/CIDR 的条目
-// （都合法、或整份为空，返回空串）。
-//
-// 与读路径（parseWhitelist）的差别是时机与后果：读路径跑在"库里已存的值"上，坏条目丢掉、
-// 丢完为空就是不限制（那是运营定的语义）；保存路径是人在后台手输的，写坏了没有第二次机会 ——
-// 所以当场拒收，把是哪一条说给操作人听。空数组允许：语义是"清空限制"。
-func firstInvalidWhitelistEntry(items []string) string {
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		cidr := item
-		if !strings.Contains(cidr, "/") {
-			if strings.Contains(cidr, ":") {
-				cidr += "/128"
-			} else {
-				cidr += "/32"
-			}
-		}
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return item
-		}
-	}
-	return ""
-}
+func (s *Monitor) SetWhitelist(entries []string) { s.access.SetWhitelist(entries) }
 
 // Register 将监控路由注册到统一 mux 上
 func (s *Monitor) Register(mux *http.ServeMux) {
@@ -280,39 +183,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 // `/api/` 前缀这条豁免是给**后台自己的页面**留的：/monitor 的 HTML 壳要先能加载出来，
 // 而令牌是在那张页面里填的（填之前也得拿得到页面）。挂在同一个 mux 上的外部组件与业务路由
 // 不走这里，它们走 Auth —— 那道**不看前缀**，见下面那条注释。
-func (s *Monitor) wrap(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.ipAllowed(r) {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			r2, ok := s.requireToken(w, r)
-			if !ok {
-				return
-			}
-			r = r2
-		}
-		next(w, r)
-	}
-}
-
-// requireToken 校验令牌并把操作人放进请求上下文；不通过时**已经写好了响应**
-// （401 + WWW-Authenticate），调用方直接 return 即可。
-//
-// 顺手打上 Cache-Control: no-store —— 带凭据的数据响应不许任何缓存留存：令牌被停用/删除后，
-// 代理（或浏览器）里那份旧 200 还能被原样重放出来。浏览器自己不会缓存带 Authorization 的响应，
-// 但中间代理会，所以把它明确掉，不靠实现细节。
-func (s *Monitor) requireToken(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
-	w.Header().Set("Cache-Control", "no-store")
-	operator, ok := s.authOK(r)
-	if !ok {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return r, false
-	}
-	return r.WithContext(auth.WithOperator(r.Context(), operator)), true
-}
+func (s *Monitor) wrap(next http.HandlerFunc) http.HandlerFunc { return s.access.Wrap(next) }
 
 // Auth 把同一套「白名单 + 令牌」校验暴露成 http.Handler 中间件，
 // 供挂在同一 mux 上的外部组件（如 oao 表格）与业务路由复用，避免业务侧接口绕过鉴权。
@@ -323,148 +194,30 @@ func (s *Monitor) requireToken(w http.ResponseWriter, r *http.Request) (*http.Re
 //
 // 这里以前直接复用 wrap，于是**挂在非 /api/ 路径上的业务路由只剩下白名单那道门**：
 // 白名单是"哪些来源可以进来"，令牌是"谁"，后者缺了就等于对白名单内的任何人开放。
-func (s *Monitor) Auth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.ipAllowed(r) {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		r2, ok := s.requireToken(w, r)
-		if !ok {
-			return
-		}
-		next.ServeHTTP(w, r2)
-	})
-}
+func (s *Monitor) Auth(next http.Handler) http.Handler { return s.access.Auth(next) }
 
 // ipAllowed 校验来源 IP 是否在白名单内；白名单为空则放行
-func (s *Monitor) ipAllowed(r *http.Request) bool {
-	s.mu.RLock()
-	wl := s.whitelist
-	s.mu.RUnlock()
-	if len(wl) == 0 {
-		return true
-	}
-	ip := clientIP(r)
-	for _, n := range wl {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
+func (s *Monitor) ipAllowed(r *http.Request) bool { return s.access.IPAllowed(r) }
 
 // clientIP 取直连来源 IP（r.RemoteAddr 去掉端口）。
 // 刻意不信任 X-Forwarded-For / X-Real-IP：这些头可被客户端伪造，用于白名单会留下绕过漏洞。
-func clientIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	return net.ParseIP(host)
-}
+func clientIP(r *http.Request) net.IP { return access.ClientIP(r) }
 
 // authOK 校验访问令牌，返回（操作人, 是否通过）。
 // 未注入校验器时拒绝；缺少依赖不能变成匿名管理入口。
-func (s *Monitor) authOK(r *http.Request) (operator string, ok bool) {
-	if s.cfg.VerifyToken == nil {
-		return "", false
-	}
-	return s.cfg.VerifyToken(r)
-}
+func (s *Monitor) authOK(r *http.Request) (operator string, ok bool) { return s.access.AuthOK(r) }
 
 // authRequired 报告后台页面是否应该要求登录（只影响 /monitor 首帧要不要画登录遮罩，
 // 不参与接口鉴权 —— 接口鉴权由 VerifyToken 决定）。nil 注入时默认要求登录。
-func (s *Monitor) authRequired() bool {
-	if s.cfg.AuthRequired != nil {
-		return s.cfg.AuthRequired()
-	}
-	return true
-}
+func (s *Monitor) authRequired() bool { return s.access.AuthRequired() }
 
 // loadTemplate 加载 HTML 模板（懒加载，线程安全）
-func (s *Monitor) loadTemplate() (*template.Template, error) {
-	s.parseOnce.Do(func() {
-		s.template, s.parseErr = template.ParseFS(templateFS, "template.html")
-	})
-	return s.template, s.parseErr
-}
 
 // apiHandler 返回 JSON 格式的监控数据
-func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) {
-	resp := map[string]any{
-		"instance_id": s.instanceID,
-		"stages":      s.stageData(),
-	}
-	if s.cfg.QueueStats != nil {
-		resp["queues"] = s.cfg.QueueStats()
-	}
-	// 熔断状态跟着 /api/monitor 一起回：前端每轮刷新只发一个请求就能画出横幅，
-	// 不必再单开一条轮询。单独的 GET /api/breaker 留给脚本/外部系统。
-	if s.cfg.BreakerStatuses != nil {
-		// 是**数组**不是单个对象：每个站点一条状态（暂停与否都在里面），后台要能逐站看、逐站放行。
-		// 顺序固定（按站点名字典序），前端就不用再排。
-		resp["breakers"] = sortedBreakerStatuses(s.cfg.BreakerStatuses())
-	}
-	if s.cfg.SiteStats != nil {
-		resp["sites"] = s.cfg.SiteStats()
-	}
-	if s.cfg.SysInfo != nil {
-		resp["system"] = s.cfg.SysInfo.Snapshot()
-	}
-	// 这是响应组装时间；系统指标和治理积压仍各自携带真实采样时间。
-	resp["generated_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-	writeJSON(w, resp)
-}
-
-// stageData 组装各阶段统计（全局耗时统计 + worker 统计 + 队列计数）
-//
-// 键是**阶段键** `site:stage`（阶段名只在本站内唯一，两个站的 catalog 是两条），
-// 条目里另给 `stage` / `site` 两个字段：前端按 `site` 分组、标题用 `stage`（短名字）。
-func (s *Monitor) stageData() map[string]any {
-	monitors := s.getter()
-	out := make(map[string]any, len(monitors))
-	for stage, ss := range monitors {
-		out[stage] = map[string]any{
-			// 裸阶段名（`GetStage()` 原值）与所属站点：站点的 Tab 靠 site 分组，
-			// 标题显示 stage；键 `site:stage` 只用于唯一标识这一格。
-			"stage":   ss.Stage,
-			"site":    ss.Site,
-			"global":  ss.Global,
-			"workers": ss.Workers,
-			"queue": map[string]any{
-				"submitted":   ss.Queue.Submitted,
-				"completed":   ss.Queue.Completed,
-				"failed":      ss.Queue.Failed,
-				"in_progress": ss.Queue.InProgress,
-				"queue_len":   ss.Queue.QueueLen,
-			},
-		}
-	}
-	return out
-}
+func (s *Monitor) apiHandler(w http.ResponseWriter, r *http.Request) { s.monitoring.Snapshot(w, r) }
 
 // settingsHandler 返回当前后台设置状态（不含密钥明文）
-func (s *Monitor) settingsHandler(w http.ResponseWriter, r *http.Request) {
-	s.mu.RLock()
-	// 用 append([]string{}, …) 而不是 append([]string(nil), …)：空名单要序列化成 []（前端按数组用），
-	// nil 会变成 JSON null —— 老实现一直返回 []，别在这里退化成 null。
-	wl := append([]string{}, s.rawWhitelist...)
-	s.mu.RUnlock()
-
-	// whitelist_source：这份白名单**持久化在哪**（空串 = 这个宿主没接配置存储，改动只在本次运行有效）。
-	// 前端拿它拼那句提示 —— 原来这里报的是 whitelist_file / has_whitelist_file，白名单搬到库里之后
-	// 那两个键没有意义了。
-	source := ""
-	if s.cfg.SaveWhitelist != nil {
-		source = whitelistSource
-	}
-	writeJSON(w, map[string]any{
-		"whitelist":        wl,
-		"whitelist_source": source,
-		"log_dir":          s.cfg.LogDir,
-	})
-}
+func (s *Monitor) settingsHandler(w http.ResponseWriter, r *http.Request) { s.settings.Settings(w, r) }
 
 // maxAdminBody 后台几个收 JSON 的接口的请求体上限。
 //
@@ -479,45 +232,7 @@ const whitelistSource = "crawler_config.ip_whitelist"
 
 // whitelistHandler 动态更新 IP/CIDR 白名单：交给宿主持久化（papa 落在 crawler_config 表），
 // 成功后立刻换本进程的判定缓存 —— 存储是唯一事实来源，这里不自己记一份"待保存"的差异。
-func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Whitelist *[]string `json:"whitelist"`
-	}
-	// 超限会以解码错误的形式浮上来（http.MaxBytesError），与"body 不是合法 JSON"合并成同一个 400
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAdminBody)).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	// 字段缺失或显式 null 都**不是**"清空"：空列表在 ipAllowed 里等于"不限制来源"，是放宽而不是
-	// 收紧 —— 一次字段名写错或手抖的请求不该悄悄放开限制。想清空必须显式传 []。
-	if body.Whitelist == nil {
-		http.Error(w, "whitelist 必须是数组（想清空请显式传 []）", http.StatusBadRequest)
-		return
-	}
-	whitelist := *body.Whitelist
-	// 写时严格：先确认每一条都是 IP/CIDR，再去动存储。写坏一份白名单的代价是"限制静默放宽"，
-	// 而那正是这条路唯一会造成的坏事 —— 当场拒收比事后从日志里翻出来强。
-	if bad := firstInvalidWhitelistEntry(whitelist); bad != "" {
-		http.Error(w, "白名单里有不是 IP/CIDR 的条目："+bad, http.StatusBadRequest)
-		return
-	}
-	if s.cfg.SaveWhitelist == nil {
-		http.Error(w, "这个宿主没有接配置存储，白名单改不了（papa 由 crawler_config 表承载）", http.StatusNotFound)
-		return
-	}
-	// 落库成功才动缓存：反过来的话，库写失败会留下一份"本进程放行、重启后不认"的白名单。
-	if err := s.cfg.SaveWhitelist(whitelist, auth.OperatorFrom(r.Context())); err != nil {
-		s.logger.Errorf("save whitelist: %s", err.Error())
-		http.Error(w, "保存白名单失败："+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.SetWhitelist(whitelist)
-	writeJSON(w, map[string]any{"status": "ok", "whitelist": nonEmptyStrings(whitelist)})
-}
+func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) { s.access.Whitelist(w, r) }
 
 // shutdownHandler 优雅退出。
 //
@@ -525,211 +240,39 @@ func (s *Monitor) whitelistHandler(w http.ResponseWriter, r *http.Request) {
 // 中间件那道校验只证明"这个浏览器带着有效凭据"，这里要的是"人在场"——
 // 误点、开着后台页面走开都不至于把服务停掉。（它不构成新的安全边界：令牌本来就是同一个，
 // 作用是确认动作 + 记下操作人。）
-func (s *Monitor) shutdownHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.OnShutdown == nil || s.cfg.VerifyTokenValue == nil {
-		http.Error(w, "shutdown not configured", http.StatusNotFound)
-		return
-	}
-	var body struct {
-		Token string `json:"token"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
-		http.Error(w, "请求体不是合法 JSON", http.StatusBadRequest)
-		return
-	}
-	operator, ok := s.cfg.VerifyTokenValue(body.Token)
-	if !ok {
-		s.logger.Errorf("拒绝关停：令牌校验不通过（来源 %s）", clientIP(r))
-		http.Error(w, "访问令牌不正确", http.StatusForbidden)
-		return
-	}
-	if operator != "" {
-		s.logger.Errorf("收到优雅退出请求，操作人 %s（来源 %s）", operator, clientIP(r))
-	} else {
-		s.logger.Errorf("收到优雅退出请求（未配令牌，来源 %s）", clientIP(r))
-	}
-	writeJSON(w, map[string]any{"status": "shutting down"})
-	time.AfterFunc(500*time.Millisecond, s.cfg.OnShutdown)
-}
+func (s *Monitor) shutdownHandler(w http.ResponseWriter, r *http.Request) { s.settings.Shutdown(w, r) }
 
 // auditQueueProcess 把一次「立即执行」的结局交给宿主记审计。
 //
 // 只记**真的跑过**的那种：接口没配置（404）属于"压根没这条功能"，不是一次触发，不记。
 // 操作人与 IP 在这里取（与白名单同一套取法），宿主只负责落到 oplog。
-func (s *Monitor) auditQueueProcess(r *http.Request, queue string, processed int, err error) {
-	if s.cfg.OnQueueProcess == nil {
-		return
-	}
-	s.cfg.OnQueueProcess(QueueProcessEvent{
-		Queue:     queue,
-		Operator:  auth.OperatorFrom(r.Context()),
-		IP:        clientIP(r).String(),
-		Processed: processed,
-		Err:       err,
-		At:        time.Now(),
-	})
-}
 
 // errorQueueProcessHandler 手动触发失败任务错误队列处理
 func (s *Monitor) errorQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.ProcessErrorQueue == nil {
-		http.Error(w, "error queue not configured", http.StatusNotFound)
-		return
-	}
-	count, err := s.cfg.ProcessErrorQueue()
-	s.auditQueueProcess(r, engine.QueueError, count, err)
-	if err != nil {
-		s.logger.Errorf("process error queue: %s", err.Error())
-		http.Error(w, "process error queue failed", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]any{"status": "ok", "processed": count})
+	s.queues.Error(w, r)
 }
 
 // repeatQueueProcessHandler 手动触发周期轮询队列处理
 func (s *Monitor) repeatQueueProcessHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.ProcessRepeatQueue == nil {
-		http.Error(w, "repeat queue not configured", http.StatusNotFound)
-		return
-	}
-	count, err := s.cfg.ProcessRepeatQueue()
-	s.auditQueueProcess(r, engine.QueueRepeat, count, err)
-	if err != nil {
-		s.logger.Errorf("process repeat queue: %s", err.Error())
-		http.Error(w, "process repeat queue failed", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, map[string]any{"status": "ok", "repolled": count})
+	s.queues.Repeat(w, r)
 }
 
 // sortedBreakerStatuses 把各站点的状态排成稳定顺序（按站点名字典序）。
 func sortedBreakerStatuses(all map[string]core.BreakerStatus) []core.BreakerStatus {
-	sites := make([]string, 0, len(all))
-	for site := range all {
-		sites = append(sites, site)
-	}
-	sort.Strings(sites)
-	out := make([]core.BreakerStatus, 0, len(sites))
-	for _, site := range sites {
-		st := all[site]
-		st.Site = site // 键就是站点，别让调用方再从 map 键去猜
-		out = append(out, st)
-	}
-	return out
+	return breakers.SortedStatuses(all)
 }
 
 // breakerHandler 读各 scope 的熔断状态。写操作见 breakerResumeHandler。
-func (s *Monitor) breakerHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.BreakerStatuses == nil {
-		http.Error(w, "breaker not configured", http.StatusNotFound)
-		return
-	}
-	writeJSON(w, map[string]any{"breakers": sortedBreakerStatuses(s.cfg.BreakerStatuses())})
-}
+func (s *Monitor) breakerHandler(w http.ResponseWriter, r *http.Request) { s.breakers.Status(w, r) }
 
 // breakerResumeHandler requests bounded whole-site verification or releases a
 // pure manual pause. The force endpoint is the explicit verification bypass.
 func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.ResumeBreaker == nil || s.cfg.BreakerStatuses == nil {
-		http.Error(w, "breaker not configured", http.StatusNotFound)
-		return
-	}
-
-	// 要放行谁：`?scope=xxx&stage=yyy` 或请求体同名字段；都不给 = **全部站点**（整站那一层）。
-	// 多站时"全部"是横幅上那个「恢复抓取」，单站时与以前完全一样。
-	site, stage, ok := breakerTargetParam(r)
-	if !ok {
-		http.Error(w, "bad request: scope/stage must be strings (stage 需要 scope)", http.StatusBadRequest)
-		return
-	}
-	known := s.cfg.BreakerStatuses()
-	if site != "" {
-		if _, exists := known[site]; !exists {
-			http.Error(w, "unknown scope: "+site, http.StatusBadRequest)
-			return
-		}
-	}
-
-	targets := []string{site}
-	if site == "" {
-		targets = targets[:0]
-		for key := range known {
-			targets = append(targets, key)
-		}
-		sort.Strings(targets)
-	}
-	resumed := make([]string, 0, len(targets))
-	for _, key := range targets {
-		if s.cfg.ResumeBreaker(key, stage) {
-			resumed = append(resumed, key)
-		}
-	}
-	if len(resumed) == 0 {
-		writeJSON(w, map[string]any{"status": "ok", "resumed": false, "note": "未变更：当前无需恢复，或探针尚未退出"})
-		return
-	}
-	operator := auth.OperatorFrom(r.Context())
-	for _, key := range resumed {
-		if s.cfg.OnBreakerResume != nil {
-			s.cfg.OnBreakerResume(operator, key, stage)
-		}
-	}
-	s.logger.Infof("已请求重试恢复/解除人工暂停（操作人 %q，scope=%q stage=%q）", operator, strings.Join(resumed, ","), stage)
-	// resumed 仍是**布尔**（前端/脚本靠它区分"本来就没暂停"）；放行了哪些 scope 在 resumed_scopes 里。
-	out := map[string]any{"status": "ok", "resumed": true, "resumed_scopes": resumed}
-	if stage != "" {
-		out["stage"] = stage
-	}
-	writeJSON(w, out)
+	s.breakers.Resume(w, r)
 }
 
 func (s *Monitor) breakerForceResumeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.ForceResumeBreaker == nil || s.cfg.BreakerStatuses == nil {
-		http.Error(w, "breaker not configured", http.StatusNotFound)
-		return
-	}
-	site, stage, ok := breakerTargetParam(r)
-	if !ok || site == "" || stage != "" {
-		http.Error(w, "force release requires one site and no stage", http.StatusBadRequest)
-		return
-	}
-	if _, exists := s.cfg.BreakerStatuses()[site]; !exists {
-		http.Error(w, "unknown scope", http.StatusBadRequest)
-		return
-	}
-	changed := s.cfg.ForceResumeBreaker(site)
-	if changed {
-		operator := auth.OperatorFrom(r.Context())
-		if s.cfg.OnBreakerForceResume != nil {
-			s.cfg.OnBreakerForceResume(operator, site)
-		}
-		s.logger.Infof("人工强制解除保护（操作人 %q，site=%q）；未经健康验证，保留失败计数", operator, site)
-	}
-	writeJSON(w, map[string]any{"status": "ok", "resumed": changed, "mode": "force", "note": "强制解除不代表健康验证通过，失败计数保留"})
+	s.breakers.ForceResume(w, r)
 }
 
 // breakerPauseHandler 手动暂停某个站点的抓取 —— 与 resume 是一对，但**scope 必填**。
@@ -742,50 +285,7 @@ func (s *Monitor) breakerForceResumeHandler(w http.ResponseWriter, r *http.Reque
 //   - **入队点**（收口）：不再接新活，任务寄放到溢出表，点「恢复」时立刻灌回。
 //
 // 所以它天然适合"多站分批放开"：停得干净、不堆积、放开即续跑。
-func (s *Monitor) breakerPauseHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.PauseBreaker == nil || s.cfg.BreakerStatuses == nil {
-		http.Error(w, "breaker not configured", http.StatusNotFound)
-		return
-	}
-	site, stage, ok := breakerTargetParam(r)
-	if !ok {
-		http.Error(w, "bad request: scope/stage must be strings (stage 需要 scope)", http.StatusBadRequest)
-		return
-	}
-	if site == "" {
-		// 与 resume 的默认相反：这里不点名就是错的（见函数头）。文案要说清"不是静默停全部"。
-		http.Error(w, "bad request: scope is required（暂停必须点名站点；不点名不会停掉全部）", http.StatusBadRequest)
-		return
-	}
-	if _, exists := s.cfg.BreakerStatuses()[site]; !exists {
-		http.Error(w, "unknown scope: "+site, http.StatusBadRequest)
-		return
-	}
-	if !s.cfg.PauseBreaker(site, stage) {
-		// 本来就在暂停态：不报错（重复点击不该看起来像失败），也不记审计（没有状态变更）——
-		// 与 resume 的 resumed=false 那条同一取向。
-		note := "该站点本来就在暂停态"
-		if stage != "" {
-			note = "该站点或这个阶段本来就在暂停态"
-		}
-		writeJSON(w, map[string]any{"status": "ok", "paused": false, "note": note})
-		return
-	}
-	operator := auth.OperatorFrom(r.Context())
-	if s.cfg.OnBreakerPause != nil {
-		s.cfg.OnBreakerPause(operator, site, stage)
-	}
-	s.logger.Infof("已手动暂停（操作人 %q，scope=%q stage=%q），worker 不再取任务", operator, site, stage)
-	out := map[string]any{"status": "ok", "paused": true, "paused_scopes": []string{site}}
-	if stage != "" {
-		out["stage"] = stage
-	}
-	writeJSON(w, out)
-}
+func (s *Monitor) breakerPauseHandler(w http.ResponseWriter, r *http.Request) { s.breakers.Pause(w, r) }
 
 // breakerTargetParam 取暂停/放行的对象：先看 `?scope=&stage=`，再看请求体 `{"scope":"…","stage":"…"}`。
 //
@@ -793,115 +293,19 @@ func (s *Monitor) breakerPauseHandler(w http.ResponseWriter, r *http.Request) {
 // `stage` 为空 = 整站那一层。**给了 stage 却没给 scope 一律不合法**（阶段属于某个站）——
 // 调用方回 400，别静默当成"整站"或"全部"。
 func breakerTargetParam(r *http.Request) (site, stage string, ok bool) {
-	q := r.URL.Query()
-	site, stage = q.Get("scope"), q.Get("stage")
-	if r.Body != nil {
-		var body struct {
-			Scope *string `json:"scope"`
-			Stage *string `json:"stage"`
-		}
-		// 空请求体是合法的（"全部放行"）：先看一眼有没有内容，避免把 io.EOF 当解析失败。
-		dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, 4<<10))
-		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-			return "", "", false
-		}
-		if body.Scope != nil {
-			site = *body.Scope
-		}
-		if body.Stage != nil {
-			stage = *body.Stage
-		}
-	}
-	if stage != "" && site == "" {
-		return "", "", false
-	}
-	return site, stage, true
+	return breakers.TargetParam(r)
 }
 
 // taskTraceHandler 返回一条任务的步骤追踪时间线（按尝试、步骤排序）。
-func (s *Monitor) taskTraceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.TaskTrace == nil {
-		http.Error(w, "task trace not configured", http.StatusNotFound)
-		return
-	}
-	id, err := strconv.Atoi(r.URL.Query().Get("id"))
-	if err != nil || id <= 0 {
-		http.Error(w, "invalid task id", http.StatusBadRequest)
-		return
-	}
-	steps, err := s.cfg.TaskTrace(id)
-	if err != nil {
-		// 业务原因（如追踪开关没开）原样回给前端，抽屉里直接显示这句话
-		s.logger.Errorf("load task trace %d: %s", id, err.Error())
-		http.Error(w, err.Error(), http.StatusConflict)
-		return
-	}
-	writeJSON(w, map[string]any{"task_id": id, "steps": steps})
-}
+func (s *Monitor) taskTraceHandler(w http.ResponseWriter, r *http.Request) { s.tasktrace.Trace(w, r) }
 
 // logFile 日志文件条目
-type logFile struct {
-	Name    string    `json:"name"`
-	Size    int64     `json:"size"`
-	ModTime time.Time `json:"mod_time"`
-}
 
 // taskPageHandler 下载一个归档页面（`GET /api/task/page?file=<相对路径>`）。
 //
 // 给的是**文件本身**（`Content-Disposition: attachment`）而不是内联渲染 —— 拿下去本地分析
 // （对着真实页面写选择器）比在浏览器里看更实用，也省掉"注入 base 标签才能长回原样"那套。
-func (s *Monitor) taskPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.cfg.ArchiveDir == "" {
-		http.Error(w, "页面归档未开启（crawler.archive.enabled）", http.StatusNotFound)
-		return
-	}
-	rel := r.URL.Query().Get("file")
-	abs, err := resolveArchivedFile(s.cfg.ArchiveDir, rel)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	// 字符串校验只处理请求格式；实际打开必须由根目录句柄约束，
-	// 防止父目录/最终文件的链接以及检查后替换把读取带出归档目录。
-	root, err := os.OpenRoot(s.cfg.ArchiveDir)
-	if err != nil {
-		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
-		return
-	}
-	defer root.Close()
-	inside, err := filepath.Rel(s.cfg.ArchiveDir, abs)
-	if err != nil {
-		http.Error(w, "file 参数越界", http.StatusBadRequest)
-		return
-	}
-	f, err := root.Open(inside)
-	if err != nil {
-		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
-		return
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
-		return
-	}
-	b, err := io.ReadAll(f)
-	if err != nil {
-		http.Error(w, "归档文件读不到（可能已过保留期）", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(abs)+"\"")
-	_, _ = w.Write(b)
-}
+func (s *Monitor) taskPageHandler(w http.ResponseWriter, r *http.Request) { s.tasktrace.Page(w, r) }
 
 // resolveArchivedFile 把一个**相对路径**解析到归档根目录下的绝对路径；越界一律拒绝。
 //
@@ -909,99 +313,16 @@ func (s *Monitor) taskPageHandler(w http.ResponseWriter, r *http.Request) {
 // （防大小写/分隔符之类的意外）。归档目录里的文件名由框架生成，但路径是**从请求里来的** ——
 // 那是不可信输入，这里不靠"文件名不含 .."这种假设。
 func resolveArchivedFile(root, rel string) (string, error) {
-	rel = strings.TrimSpace(rel)
-	if rel == "" {
-		return "", fmt.Errorf("缺少 file 参数")
-	}
-	if strings.ContainsRune(rel, 0) {
-		return "", fmt.Errorf("file 参数非法")
-	}
-	// 明确拒掉"看起来就是绝对路径"的输入：Windows 上 `filepath.IsAbs("\etc\passwd")` 是 **false**
-	//（没有盘符不算绝对路径），光靠 IsAbs 会把它当相对路径拼进根目录 —— 拼进去虽然仍在根下，
-	// 但那种输入本来就不该被接受。带盘符的（`C:…`）同理。
-	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") ||
-		(len(rel) >= 2 && rel[1] == ':') {
-		return "", fmt.Errorf("file 参数越界")
-	}
-	cleaned := filepath.Clean(filepath.FromSlash(rel))
-	// `example/..` 清洗完是 `.`（指到根目录本身）—— 那不是文件，也别让它再往下走。
-	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." ||
-		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("file 参数越界")
-	}
-	abs := filepath.Join(root, cleaned)
-	inside, err := filepath.Rel(root, abs)
-	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("file 参数越界")
-	}
-	return abs, nil
+	return tasktrace.ResolveArchivedFile(root, rel)
 }
 
 // logsListHandler 列出日志目录下的文件
-func (s *Monitor) logsListHandler(w http.ResponseWriter, r *http.Request) {
-	files := []logFile{}
-	if s.cfg.LogDir != "" {
-		if entries, err := os.ReadDir(s.cfg.LogDir); err == nil {
-			for _, e := range entries {
-				if !isLogFileName(e.Name()) || !e.Type().IsRegular() {
-					continue
-				}
-				if info, err := e.Info(); err == nil {
-					files = append(files, logFile{Name: e.Name(), Size: info.Size(), ModTime: info.ModTime()})
-				}
-			}
-		}
-	}
-	writeJSON(w, map[string]any{"log_dir": s.cfg.LogDir, "files": files})
-}
+func (s *Monitor) logsListHandler(w http.ResponseWriter, r *http.Request) { s.logs.List(w, r) }
 
 // logsDownloadHandler 下载单个日志文件（?file=name），缺省打包全部为 zip
-func (s *Monitor) logsDownloadHandler(w http.ResponseWriter, r *http.Request) {
-	dir := s.cfg.LogDir
-	if dir == "" {
-		http.Error(w, "log dir not configured", http.StatusNotFound)
-		return
-	}
-	if name := r.URL.Query().Get("file"); name != "" {
-		f, info := s.openLogFile(w, name)
-		if f == nil {
-			return
-		}
-		defer f.Close()
-		http.ServeContent(w, r, name, info.ModTime(), f)
-		return
-	}
-	zipLogs(w, dir)
-}
+func (s *Monitor) logsDownloadHandler(w http.ResponseWriter, r *http.Request) { s.logs.Download(w, r) }
 
 // zipLogs 将日志目录下所有文件打包为 zip 响应
-func zipLogs(w http.ResponseWriter, dir string) {
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="logs.zip"`)
-	zw := zip.NewWriter(w)
-	defer zw.Close()
-
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() || !isLogFileName(d.Name()) {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return nil
-		}
-		fw, err := zw.Create(filepath.ToSlash(rel))
-		if err != nil {
-			return nil
-		}
-		src, err := os.Open(path)
-		if err != nil {
-			return nil
-		}
-		_, _ = io.Copy(fw, src)
-		_ = src.Close()
-		return nil
-	})
-}
 
 // noCache 禁止静态资源被浏览器缓存，改样式后无需手动清缓存即可看到。
 func noCache(next http.Handler) http.Handler {
@@ -1014,31 +335,5 @@ func noCache(next http.Handler) http.Handler {
 // NoCache 导出 noCache，供宿主挂载其它静态资源（如 oao 组件）时复用。
 func NoCache(next http.Handler) http.Handler { return noCache(next) }
 
-// writeJSON 统一写 JSON 响应
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// monitorTemplateData 是渲染 /monitor HTML 时交给模板的唯一数据。
-// 登录门控和可选静态资源能力由服务端确定，避免页面请求当前依赖并未提供的脚本。
-type monitorTemplateData struct {
-	AuthRequired bool
-	OaoCharts    bool
-	OaoMotion    bool
-}
-
 // htmlHandler 返回 HTML 监控页面
-func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := s.loadTemplate()
-	if err != nil {
-		s.logger.Errorf("load monitor template: %s", err.Error())
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	charts, motion := optionalOaoAssets()
-	if err := tmpl.Execute(w, monitorTemplateData{AuthRequired: s.authRequired(), OaoCharts: charts, OaoMotion: motion}); err != nil {
-		s.logger.Errorf("execute monitor template: %s", err.Error())
-	}
-}
+func (s *Monitor) htmlHandler(w http.ResponseWriter, r *http.Request) { s.page.ServeHTTP(w, r) }

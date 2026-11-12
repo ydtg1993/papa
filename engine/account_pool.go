@@ -25,19 +25,7 @@ func (e *Engine) AccountPoolReferences(ctx context.Context, key account.PoolKey)
 // PrepareAccount waits before task claim/global execution admission. It holds no
 // account permit; actual exchanges reuse Manager's existing concurrency budget.
 func (e *Engine) PrepareAccount(ctx context.Context, site, pool string) (context.Context, error) {
-	ctx = e.RuntimeContext(ctx, site)
-	if pool == "" {
-		return ctx, nil
-	}
-	m := e.GetAccountManager()
-	if m == nil || m.Pools() == nil {
-		return nil, errors.New("account pools are not configured")
-	}
-	a, err := m.Pools().Acquire(ctx, account.PoolKey{Site: site, Name: pool}, "")
-	if err != nil {
-		return nil, err
-	}
-	return account.WithAttempt(ctx, a), nil
+	return e.fetchResources.PrepareAccount(e.RuntimeContext(ctx, site), site, pool)
 }
 
 func (e *Engine) FetchPoolHTTP(ctx context.Context, key account.PoolKey, req htmlfetch.Request) (*htmlfetch.Response, error) {

@@ -31,6 +31,10 @@ func compensationMySQL(t *testing.T) (*gorm.DB, func() *Engine) {
 }
 
 func compensationMySQLWithLocation(t *testing.T, location *time.Location) (*gorm.DB, func() *Engine) {
+	return compensationMySQLWithOptions(t, location, nil)
+}
+
+func compensationMySQLWithOptions(t *testing.T, location *time.Location, foundRows *bool) (*gorm.DB, func() *Engine) {
 	t.Helper()
 	dsn := os.Getenv("PAPA_COMPENSATION_TEST_DSN")
 	if dsn == "" {
@@ -50,6 +54,9 @@ func compensationMySQLWithLocation(t *testing.T, location *time.Location) (*gorm
 	}
 	c.DBName = ""
 	c.ParseTime = true
+	if foundRows != nil {
+		c.ClientFoundRows = *foundRows
+	}
 	if location != nil {
 		c.Loc = location
 	}
@@ -89,7 +96,7 @@ func compensationMySQLWithLocation(t *testing.T, location *time.Location) (*gorm
 		e := NewEngine(db, cfg, testLoggerSet())
 		t.Cleanup(func() { e.Stop(time.Second) })
 		e.stages["synthetic:detail"] = &stageInfo{stage: "detail", config: StageConfig{Site: "synthetic"}}
-		e.pools.set("synthetic:detail", workerpool.NewWorkerPool[*Task](1, 100, 1))
+		e.pools.Set("synthetic:detail", workerpool.NewWorkerPool[*Task](1, 100, 1))
 		return e
 	}
 	return db, makeEngine

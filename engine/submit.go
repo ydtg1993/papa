@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
@@ -336,10 +337,7 @@ func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error)
 	if task.ID == 0 {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
-	res := claimScope(e.db.WithContext(ctx), uint(task.ID)).Where("flow_id = ?", "").Updates(map[string]any{
-		"status": models.TaskStatusProcessing,
-		"urgent": false,
-	})
+	res := taskstore.Claim(e.db.WithContext(ctx), uint(task.ID))
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -413,7 +411,7 @@ func (e *Engine) submitToStage(task *Task) error {
 		// 下次启动的启动恢复重新入队。用 ErrQueueFull 包住是**故意的**：五个投递调用点对
 		// ErrQueueFull 的处理正是"寄放、不判失败、不建池"，与停机要的语义逐字相同
 		//（暂停那条路也是这么复用的，见上面 isPaused 那段）。
-		if e.pools.isStopped() {
+		if e.pools.IsStopped() {
 			return fmt.Errorf("%w: 引擎已停机，站点 %q 的阶段 %q 先寄放（行保持 pending，下次启动的启动恢复会重新入队）",
 				workerpool.ErrQueueFull, task.Site, task.Stage)
 		}

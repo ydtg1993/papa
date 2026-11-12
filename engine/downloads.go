@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine/internal/fetchruntime"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
@@ -23,89 +23,33 @@ import (
 //
 // 为什么不塞进 `core.Site`：core 是**只 import 标准库**的叶子包（见它的包注释），把 m3u8/filedown
 // 的配置类型放进去会让依赖图整个倒过来。所以站点级的"引擎侧配置"（下载器覆盖）走这类显式 Set。
-type SiteDownloads struct {
-	M3U8     *m3u8.Overlay
-	FileDown *filedown.Overlay
-}
+type SiteDownloads = fetchruntime.SiteDownloads
 
 // SetSiteDownloads 登记某站点的下载器覆盖层。site 为空是非法参数 —— 站点是必填维度，
 // 没有「未归属」那一档（声明要有 Key，任务要有 site）。
 // 必须在 `ApplyRegisterStage` 之前调（之后解析一次，不再变）。
-func (e *Engine) SetSiteDownloads(site string, d SiteDownloads) {
-	if site == "" {
-		return
-	}
-	e.downloadCfgMu.Lock()
-	defer e.downloadCfgMu.Unlock()
-	if e.siteDownloads == nil {
-		e.siteDownloads = make(map[string]SiteDownloads)
-	}
-	e.siteDownloads[site] = d
-}
+func (e *Engine) SetSiteDownloads(site string, d SiteDownloads) { e.downloads.Register(site, d) }
 
 // siteDownloadsOf 取某站点的下载器覆盖层（只读；没登记返回零值 = 什么都不覆盖）。
-func (e *Engine) siteDownloadsOf(site string) SiteDownloads {
-	e.downloadCfgMu.RLock()
-	defer e.downloadCfgMu.RUnlock()
-	return e.siteDownloads[site]
-}
 
 // resolveStageDownloads 启动期解析每个阶段该用哪份下载器（`ApplyRegisterStage` 里调一次）。
 //
 // 只在"确实有覆盖"时才 `With` 出一份：没覆盖的阶段不进 map，取用时回落到全局那份。
 // 阶段那份按**阶段键**（`core.StageKey`）存：两个站的同名阶段可以各有各的覆盖。
 func (e *Engine) resolveStageDownloads() {
-	e.m3u8ByStage = make(map[string]*m3u8.Downloader)
-	e.m3u8BySite = make(map[string]*m3u8.Downloader)
-	e.filedownByStage = make(map[string]*filedown.Downloader)
-	e.filedownBySite = make(map[string]*filedown.Downloader)
-
-	for key, info := range e.stages {
-		site := info.config.Site
-		ov := e.siteDownloadsOf(site)
-
-		if merged := mergeM3U8(ov.M3U8, info.config.M3U8); !merged.IsZero() && e.m3u8 != nil {
-			e.m3u8ByStage[key] = e.m3u8.With(merged)
-		}
-		if merged := mergeFileDown(ov.FileDown, info.config.FileDown); !merged.IsZero() && e.filedown != nil {
-			e.filedownByStage[key] = e.filedown.With(merged)
-		}
+	stages := make([]fetchruntime.StageDownloads, 0, len(e.stages))
+	for _, info := range e.stages {
+		stages = append(stages, fetchruntime.StageDownloads{Site: info.config.Site, Stage: info.stage, SiteDownloads: SiteDownloads{M3U8: info.config.M3U8, FileDown: info.config.FileDown}})
 	}
-	// 站点层单独一份：给"只知道站点、不知道阶段"的调用方（定时任务之类）用。
-	e.downloadCfgMu.RLock()
-	defer e.downloadCfgMu.RUnlock()
-	for site, ov := range e.siteDownloads {
-		if ov.M3U8 != nil && !ov.M3U8.IsZero() && e.m3u8 != nil {
-			e.m3u8BySite[site] = e.m3u8.With(*ov.M3U8)
-		}
-		if ov.FileDown != nil && !ov.FileDown.IsZero() && e.filedown != nil {
-			e.filedownBySite[site] = e.filedown.With(*ov.FileDown)
-		}
-	}
+	e.downloads.Resolve(stages, e.m3u8, e.filedown)
 }
 
 // mergeM3U8 站点层 .Then(阶段层)：阶段赢。两层都可以为 nil（= 不覆盖）。
-func mergeM3U8(site, stage *m3u8.Overlay) m3u8.Overlay {
-	var out m3u8.Overlay
-	if site != nil {
-		out = *site
-	}
-	if stage != nil {
-		out = out.Then(*stage)
-	}
-	return out
-}
+func mergeM3U8(site, stage *m3u8.Overlay) m3u8.Overlay { return fetchruntime.MergeM3U8(site, stage) }
 
 // mergeFileDown 同上，文件下载器那份。
 func mergeFileDown(site, stage *filedown.Overlay) filedown.Overlay {
-	var out filedown.Overlay
-	if site != nil {
-		out = *site
-	}
-	if stage != nil {
-		out = out.Then(*stage)
-	}
-	return out
+	return fetchruntime.MergeFileDown(site, stage)
 }
 
 // InitDownloaders 备好两个下载器的**基座**（框架在 Run 里调，紧挨着 SetBrowserPool / SetHTMLClient）。
@@ -153,19 +97,11 @@ func (e *Engine) M3U8ForTask(task *Task) *m3u8.Downloader {
 // M3U8ForStage 按**站点 + 阶段**取（cron / 非任务上下文用）。
 // 两个参数都要给：阶段名只在本站内唯一，"某个阶段名"在多站项目里不指向唯一一份配置。
 func (e *Engine) M3U8ForStage(site, stage string) *m3u8.Downloader {
-	if d, ok := e.m3u8ByStage[core.StageKey(site, stage)]; ok && d != nil {
-		return d
-	}
-	return e.m3u8
+	return e.downloads.M3U8Stage(site, stage, e.m3u8)
 }
 
 // M3U8ForSite 按站点取"站点层那一份"（不叠阶段层）；没覆盖过就是全局那份。
-func (e *Engine) M3U8ForSite(site string) *m3u8.Downloader {
-	if d, ok := e.m3u8BySite[site]; ok && d != nil {
-		return d
-	}
-	return e.m3u8
-}
+func (e *Engine) M3U8ForSite(site string) *m3u8.Downloader { return e.downloads.M3U8Site(site, e.m3u8) }
 
 // FiledownForTask 取本任务所属阶段该用的文件下载器（解析规则与 M3U8ForTask 相同）。
 func (e *Engine) FiledownForTask(task *Task) *filedown.Downloader {
@@ -177,16 +113,10 @@ func (e *Engine) FiledownForTask(task *Task) *filedown.Downloader {
 
 // FiledownForStage 按**站点 + 阶段**取（与 M3U8ForStage 同一套参数：阶段名在本站内才唯一）。
 func (e *Engine) FiledownForStage(site, stage string) *filedown.Downloader {
-	if d, ok := e.filedownByStage[core.StageKey(site, stage)]; ok && d != nil {
-		return d
-	}
-	return e.filedown
+	return e.downloads.FileStage(site, stage, e.filedown)
 }
 
 // FiledownForSite 按站点取"站点层那一份"；没覆盖过就是全局那份。
 func (e *Engine) FiledownForSite(site string) *filedown.Downloader {
-	if d, ok := e.filedownBySite[site]; ok && d != nil {
-		return d
-	}
-	return e.filedown
+	return e.downloads.FileSite(site, e.filedown)
 }

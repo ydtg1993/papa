@@ -28,7 +28,7 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 				t.Fatal(err)
 			}
 			e := makeEngine()
-			e.breakerStore, e.breakerRuntime = breakerstore.New(db), true
+			e.breakers.breakerStore, e.breakers.breakerRuntime = breakerstore.New(db), true
 			cfg := breaker.Config{Enabled: true, Threshold: 100, Window: time.Hour, Policy: breaker.Policy{FastThreshold: 10, MixedThreshold: 3}}
 			e.SetSiteBreaker("synthetic", cfg)
 			rows := []models.CrawlerTask{}
@@ -57,12 +57,12 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			e.breakerMu.Lock()
-			s := e.smartBreakers["synthetic"]
-			e.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", rows[0].ID), time.Now())
+			e.breakers.breakerMu.Lock()
+			s := e.breakers.smartBreakers["synthetic"]
+			e.breakers.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", rows[0].ID), time.Now())
 			s.event.SampleDeadline = time.Now().Add(50 * time.Millisecond)
 			deadline := s.event.SampleDeadline
-			e.breakerMu.Unlock()
+			e.breakers.breakerMu.Unlock()
 			flushSmart(t, e)
 			if err := e.stageHandler(e.stages["synthetic:detail"])(context.Background(), e.taskFromRecord(&rows[0])); err == nil {
 				t.Fatal("lost business error")
@@ -71,28 +71,28 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			if smartLifecycle(e).WindowFailures != 3 {
 				t.Fatal("counted unconfirmed terminal")
 			}
-			if !e.breakerSettlementBlocked("synthetic") {
+			if !e.breakers.breakerSettlementBlocked("synthetic") {
 				t.Fatal("unsettled failure released admission")
 			}
 			if e.clearSite("synthetic", true) {
 				t.Fatal("force resume bypassed unsettled failure")
 			}
-			if release, ok := e.admitBreakerTask(e.taskFromRecord(&rows[1])); ok {
+			if release, ok := e.breakers.admitBreakerTask(e.taskFromRecord(&rows[1])); ok {
 				release()
 				t.Fatal("next sample admitted despite unresolved failure")
 			}
 			// No hourly reset or explicit recovery may discard the pending result.
 			e.tickBreakers(context.Background(), time.Now().Add(2*time.Hour))
-			e.breakerMu.Lock()
+			e.breakers.breakerMu.Lock()
 			retried := e.retryBreakerLocked(s)
-			e.breakerMu.Unlock()
+			e.breakers.breakerMu.Unlock()
 			if retried {
 				t.Fatal("manual retry discarded pending failure")
 			}
 
 			restarted := makeEngine()
 			restarted.SetSiteBreaker("synthetic", cfg)
-			restarted.breakerStore = breakerstore.New(db)
+			restarted.breakers.breakerStore = breakerstore.New(db)
 			ctx, cancel := context.WithCancel(context.Background())
 			if err := restarted.InitBreakerRuntime(ctx); err != nil {
 				cancel()
@@ -104,32 +104,32 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			if restarted.requeueRecoverTask(&rows[0]) {
 				t.Fatal("recover queue reran failed business")
 			}
-			restarted.breakerMu.Lock()
-			rs := restarted.smartBreakers["synthetic"]
+			restarted.breakers.breakerMu.Lock()
+			rs := restarted.breakers.smartBreakers["synthetic"]
 			p := rs.event.PendingFailure
 			if p == nil || p.Fingerprint != incident.ClassifyError(businessErr).Fingerprint || !p.SampleDeadline.Equal(deadline) {
 				t.Fatal("restart lost original result or deadline")
 			}
-			restarted.breakerMu.Unlock()
+			restarted.breakers.breakerMu.Unlock()
 			// A failed retry is durable and remains blocked.
 			retryCtx, retryCancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 			restarted.settleBreakerFailures(retryCtx)
 			retryCancel()
 			flushSmart(t, restarted)
-			if !restarted.breakerSettlementBlocked("synthetic") {
+			if !restarted.breakers.breakerSettlementBlocked("synthetic") {
 				t.Fatal("failed settlement unblocked site")
 			}
 			unavailable.Store(false)
-			restarted.breakerMu.Lock()
+			restarted.breakers.breakerMu.Lock()
 			rs.event.PendingFailure.LastAttempt = time.Time{}
-			restarted.breakerMu.Unlock()
+			restarted.breakers.breakerMu.Unlock()
 			var wg sync.WaitGroup
 			for i := 0; i < 8; i++ {
 				wg.Add(1)
 				go func() { defer wg.Done(); restarted.settleBreakerFailures(context.Background()) }()
 			}
 			wg.Wait()
-			if !restarted.breakerSettlementBlocked("synthetic") {
+			if !restarted.breakers.breakerSettlementBlocked("synthetic") {
 				t.Fatal("count checkpoint was not saved yet")
 			}
 			if restarted.requeueFailedTaskIn(&rows[0]) || restarted.requeueRepeatTaskIn(&rows[0]) {
@@ -176,7 +176,7 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			// A second restart sees the same failure count, with no result to replay.
 			again := makeEngine()
 			again.SetSiteBreaker("synthetic", cfg)
-			again.breakerStore = breakerstore.New(db)
+			again.breakers.breakerStore = breakerstore.New(db)
 			ctx2, cancel2 := context.WithCancel(context.Background())
 			if err := again.InitBreakerRuntime(ctx2); err != nil {
 				cancel2()
@@ -185,7 +185,7 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			cancel2()
 			again.cancel()
 			again.tickerWG.Wait()
-			if again.breakerSum("synthetic") != 4 || again.smartBreakers["synthetic"].event.PendingFailure != nil {
+			if again.breakerSum("synthetic") != 4 || again.breakers.smartBreakers["synthetic"].event.PendingFailure != nil {
 				t.Fatal("restart recounted or lost settlement")
 			}
 		})
@@ -198,7 +198,7 @@ func TestBreakerSettlementCheckpointOutageAndRoundConflictMySQL(t *testing.T) {
 			db, makeEngine := compensationMySQL(t)
 			e := makeEngine()
 			repo := &memoryBreakerRepository{}
-			e.breakerStore, e.breakerRuntime = repo, true
+			e.breakers.breakerStore, e.breakers.breakerRuntime = repo, true
 			cfg := breaker.Config{Enabled: true, Threshold: 100, Window: time.Hour, Policy: breaker.Policy{MixedThreshold: 1}}
 			e.SetSiteBreaker("synthetic", cfg)
 			row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/settlement", Status: models.TaskStatusProcessing, Repeat: 2, Reprocess: 1}
@@ -212,13 +212,13 @@ func TestBreakerSettlementCheckpointOutageAndRoundConflictMySQL(t *testing.T) {
 			task.breakerSampleDeadline = time.Now().Add(-time.Second)
 			cause := core.RetryAfter(core.WithFailureCode(errors.New("fixture business failure"), "parse", "missing"), time.Now().Add(time.Hour))
 			repo.err = errors.New("fixture checkpoint unavailable")
-			if err := e.persistTerminal(context.Background(), task, taskRunVersion{2, 1}, models.TaskStatusFailed, cause); err == nil {
+			if err := e.persistTerminal(context.Background(), task, taskRunVersion{Repeat: 2, Reprocess: 1}, models.TaskStatusFailed, cause); err == nil {
 				t.Fatal("intent write failure ignored")
 			}
 			if err := db.First(&row, row.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if row.Status != models.TaskStatusProcessing || !e.breakerSettlementBlocked("synthetic") {
+			if row.Status != models.TaskStatusProcessing || !e.breakers.breakerSettlementBlocked("synthetic") {
 				t.Fatal("terminal written before durable intent")
 			}
 			repo.err = nil
@@ -228,7 +228,7 @@ func TestBreakerSettlementCheckpointOutageAndRoundConflictMySQL(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				if err := e.persistTerminal(context.Background(), task, taskRunVersion{2, 1}, models.TaskStatusFailed, cause); err != nil {
+				if err := e.persistTerminal(context.Background(), task, taskRunVersion{Repeat: 2, Reprocess: 1}, models.TaskStatusFailed, cause); err != nil {
 					t.Fatal(err)
 				}
 				e.recordSmartOutcome(task, cause)
@@ -236,14 +236,14 @@ func TestBreakerSettlementCheckpointOutageAndRoundConflictMySQL(t *testing.T) {
 					t.Fatal("confirmed result not counted")
 				}
 				repo.err = errors.New("fixture count checkpoint unavailable")
-				if err := e.flushBreakerReports(context.Background()); err == nil {
+				if err := e.breakers.flushBreakerReports(context.Background()); err == nil {
 					t.Fatal("checkpoint outage ignored")
 				}
 				repo.err = nil
 			}
 			restarted := makeEngine()
 			restarted.SetSiteBreaker("synthetic", cfg)
-			restarted.breakerStore = repo
+			restarted.breakers.breakerStore = repo
 			ctx, cancel := context.WithCancel(context.Background())
 			if err := restarted.InitBreakerRuntime(ctx); err != nil {
 				cancel()
@@ -255,14 +255,14 @@ func TestBreakerSettlementCheckpointOutageAndRoundConflictMySQL(t *testing.T) {
 			restarted.settleBreakerFailures(context.Background())
 			flushSmart(t, restarted)
 			if conflict {
-				if !restarted.breakerSettlementBlocked("synthetic") || smartLifecycle(restarted).WindowFailures != 1 {
+				if !restarted.breakers.breakerSettlementBlocked("synthetic") || smartLifecycle(restarted).WindowFailures != 1 {
 					t.Fatal("newer round mistaken for confirmation")
 				}
 				if !strings.Contains(smartLifecycle(restarted).Text(), "failure_settlement_wait") {
 					t.Fatal("missing conflict report")
 				}
 			} else {
-				if smartLifecycle(restarted).WindowFailures != 2 || restarted.smartBreakers["synthetic"].event.PendingFailure != nil {
+				if smartLifecycle(restarted).WindowFailures != 2 || restarted.breakers.smartBreakers["synthetic"].event.PendingFailure != nil {
 					t.Fatal("count lost or duplicated after checkpoint outage")
 				}
 				if err := db.First(&row, row.ID).Error; err != nil {
@@ -278,20 +278,20 @@ func TestBreakerSettlementCheckpointOutageAndRoundConflictMySQL(t *testing.T) {
 
 func TestBreakerSettlementExpiredResultStillReportsConfirmation(t *testing.T) {
 	e := mixedSampleFixture(t, 3)
-	e.breakerMu.Lock()
-	s := e.smartBreakers["synthetic"]
+	e.breakers.breakerMu.Lock()
+	s := e.breakers.smartBreakers["synthetic"]
 	s.event.PendingFailure = &breaker.PendingFailure{TaskID: 1, Stage: "detail", Repeat: 0, Reprocess: 1, At: time.Now().Add(-2 * time.Hour), Error: "fixture expired failure", Category: "parse", Fingerprint: "old"}
 	s.event.Checks[0].Detail = "真实失败待落库确认"
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	e.recordSmartOutcome(&Task{ID: 1, Site: "synthetic", Stage: "detail", breakerRound: "0:1"}, errors.New("fixture expired failure"))
 	l := smartLifecycle(e)
 	if l.WindowFailures != 3 || l.Checks[0].Verified || !strings.Contains(l.Checks[0].Detail, "实际失败已落库") || !strings.Contains(l.Text(), "fixture expired failure") {
 		t.Fatalf("expired settlement report inaccurate: %+v", l)
 	}
-	e.breakerMu.Lock()
+	e.breakers.breakerMu.Lock()
 	pending := s.event.PendingFailure != nil
 	barrier := s.savedRevision < s.controlRevision
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Unlock()
 	if pending || !barrier {
 		t.Fatal("expired result did not settle behind persistence barrier")
 	}

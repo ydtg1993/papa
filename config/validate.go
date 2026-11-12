@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/pkg/breakerpolicy"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ var rules = []rule{
 	// Capacity anchors the cross-field policy rule to a real YAML leaf; the
 	// shared validator names the precise invalid duration/threshold in its error.
 	{"crawler.breaker.policy.capacity", func(c *Config) error {
-		return breaker.ValidatePolicy(c.Crawler.Breaker.Policy)
+		return breakerpolicy.ValidatePolicy(c.Crawler.Breaker.Policy)
 	}},
 
 	{"proxy.refresh_interval", func(c *Config) error {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"strings"
 	"time"
 
@@ -21,11 +22,7 @@ var ErrCompensationBlocked = errors.New("task compensation is blocked")
 // is checked without side effects before requeue; Acquire rechecks it before
 // execution. The SQL predicate protects time/manual/permanent state against
 // concurrent release, stale queue snapshots and process recovery.
-func compensationScope(db *gorm.DB) *gorm.DB {
-	return db.Where("compensation_mode IN ?", []string{"", string(core.CompensationRetryAfter), string(core.CompensationAccountReady)}).
-		Where("compensation_mode <> ? OR account_pool <> ?", string(core.CompensationAccountReady), "").
-		Where("next_compensation_at IS NULL OR next_compensation_at <= NOW()")
-}
+func compensationScope(db *gorm.DB) *gorm.DB { return taskstore.CompensationScope(db) }
 
 func compensationVersionScope(db *gorm.DB, t *models.CrawlerTask) *gorm.DB {
 	return compensationScope(db).Where("compensation_version = ?", t.CompensationVersion)

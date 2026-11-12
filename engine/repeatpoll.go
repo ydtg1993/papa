@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -159,9 +160,7 @@ func (e *Engine) repollRepeatQueue(force bool) (int, error) {
 // 已经接手了这一行）。这几列才是"它该不该被重投"的判据，所以这里再确认一次 —— 停就是停，
 // 这一轮不再投它。
 func repeatResetScope(db *gorm.DB, id uint) *gorm.DB {
-	return compensationScope(db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND repeatable = ? AND status IN ?", id, models.RepeatableYes,
-			[]models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed}))
+	return taskstore.RepeatScope(db, id)
 }
 
 // requeueRepeatTask 将单条 repeatable 任务重置为 pending 并重新投递。
@@ -171,7 +170,7 @@ func (e *Engine) requeueRepeatTask() func(*models.CrawlerTask) bool {
 
 // requeueRepeatTaskIn 单条重投的实体。
 func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
-	if e.breakerSettlementBlocked(t.Site) {
+	if e.breakers.breakerSettlementBlocked(t.Site) {
 		return false
 	}
 	if e.compensationBlockedReason(t, time.Now()) != "" {
@@ -190,22 +189,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	if limit > 0 && t.Repeat >= limit {
 		return false
 	}
-	reset := repeatResetScope(e.db, uint(t.ID)).Where("compensation_version = ?", t.CompensationVersion)
-	if limit > 0 {
-		reset = reset.Where("`repeat` < ?", limit)
-	}
-	res := reset.Updates(map[string]any{
-		"status":               models.TaskStatusPending,
-		"compensation_version": gorm.Expr("compensation_version + 1"),
-		"repeat":               gorm.Expr("`repeat` + 1"),
-		"last_repeat_at":       gorm.Expr("NOW()"),
-		// 下次到点 = 现在 + 自己的周期（没定就用全局）。换算只在这一条写路径上做一次，
-		// 用 UNIX_TIMESTAMP 加法而不是 DATE_ADD(..., INTERVAL <表达式> SECOND)：后者把函数塞进
-		// INTERVAL 的写法有语法/优化器上的余地；排期与计数由真库回归一起验证。
-		"next_repeat_at": gorm.Expr(
-			"FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + COALESCE(NULLIF(repeat_interval, 0), ?))",
-			int64(e.cfg.RepeatQueue.Interval/time.Second)),
-	})
+	res := taskstore.AdvanceRepeat(e.db, t.ID, t.CompensationVersion, limit, int64(e.cfg.RepeatQueue.Interval/time.Second))
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false

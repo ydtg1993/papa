@@ -1,6 +1,7 @@
+const controllers=require('./controllers');
 const assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
 const c = vm.createContext({});
-vm.runInContext(fs.readFileSync(path.join(process.argv[2], 'visual-state.js'), 'utf8'), c);
+controllers.run(fs.readFileSync(path.join(process.argv[2], 'visual-state.js'), 'utf8'), c);
 const state = c.MonitorObservations, base = Date.parse('2026-11-07T01:00:00Z');
 function snap(n, extra={}) { return {instance_id:'one',generated_at:new Date(base+n).toISOString(),stages:{a:{site:'a',stage:'detail',queue:{queue_len:0,in_progress:4,completed:12,failed:0}}},...extra}; }
 assert.equal(state.accept({}), false);

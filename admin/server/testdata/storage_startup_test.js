@@ -1,3 +1,4 @@
+const controllers=require('./controllers');
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
@@ -39,7 +40,7 @@ function setup(failure) {
     // Execute the entire production startup, including credentialSeen, Oao.init
     // and the final login/polling branch; do not slice off the theme prefix.
     for (const file of ['requests.js', 'extensions.js', 'appearance.js', 'mo.js']) {
-        vm.runInContext(source(file), context, {filename: file});
+        controllers.run(source(file), context, {filename: file});
     }
     return {context, doc, requests, timers, tableOptions, block(value) { blocked = value; }};
 }
@@ -48,11 +49,11 @@ for (const failure of ['getter', 'read']) {
     test('full monitor startup remains logged out when storage ' + failure + ' throws', () => {
         const h = setup(failure), c = h.context;
         assert.equal(c.loadKey(), '');
-        assert.equal(c.credentialSeen, '');
+        assert.equal(c.syncMonitorCredential(), false, 'blocked storage must not invent a credential change');
         assert.equal(c.authRequired(), true);
         assert.equal(h.doc.documentElement.classList.contains('need-login'), true);
         assert.equal(h.doc.activeElement, h.doc.getElementById('key'));
-        assert.equal(c.monitorPoll.enabled, false);
+        assert.equal(c.pollingStatus().enabled, false);
         assert.equal(h.requests.length, 0);
         assert.equal(h.timers.size, 0);
         assert.deepEqual(Object.keys(h.tableOptions.headers()), []);
@@ -74,7 +75,7 @@ for (const failure of ['getter', 'read']) {
         h.block(true);
         assert.equal(h.context.loadKey(), '');
         assert.deepEqual(Object.keys(h.tableOptions.headers()), []);
-        assert.equal(h.context.monitorPoll.enabled, false);
+        assert.equal(h.context.pollingStatus().enabled, false);
         assert.equal(h.requests.length, 0);
     });
 }

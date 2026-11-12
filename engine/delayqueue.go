@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"container/heap"
 	"errors"
 	"time"
 
@@ -16,70 +15,16 @@ type delayedTask struct {
 	record models.CrawlerTask
 }
 
-// delayHeap 按 at 升序的最小堆。
-type delayHeap []*delayedTask
-
-func (h delayHeap) Len() int           { return len(h) }
-func (h delayHeap) Less(i, j int) bool { return h[i].at.Before(h[j].at) }
-func (h delayHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *delayHeap) Push(x any)        { *h = append(*h, x.(*delayedTask)) }
-func (h *delayHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	old[n-1] = nil
-	*h = old[:n-1]
-	return x
-}
-
-// enqueueDelayed 将任务加入延迟投递队列，由后台 dispatcher 到点统一入队。
+// enqueueDelayed delegates heap and wake ownership to the scheduler.
 func (e *Engine) enqueueDelayed(at time.Time, task *Task, record models.CrawlerTask) {
-	e.delayMu.Lock()
-	heap.Push(&e.delayHeap, &delayedTask{at: at, task: task, record: record})
-	e.delayMu.Unlock()
-	select {
-	case e.delayCh <- struct{}{}:
-	default:
-	}
+	e.delays.Push(at, &delayedTask{at: at, task: task, record: record})
 }
-
-// delayDispatcher 单个后台协程消费延迟队列，到点后入队，避免每个延迟任务各占一个 goroutine。
 func (e *Engine) delayDispatcher() {
 	for {
-		e.delayMu.Lock()
-		if e.delayHeap.Len() == 0 {
-			e.delayMu.Unlock()
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-e.delayCh:
-			}
-			continue
+		item, ok := e.delays.Next(e.ctx)
+		if !ok {
+			return
 		}
-		wait := time.Until(e.delayHeap[0].at)
-		e.delayMu.Unlock()
-
-		if wait > 0 {
-			timer := time.NewTimer(wait)
-			select {
-			case <-e.ctx.Done():
-				timer.Stop()
-				return
-			case <-e.delayCh: // 有更早的任务到达，重新计算
-				timer.Stop()
-				continue
-			case <-timer.C:
-			}
-		}
-
-		e.delayMu.Lock()
-		if e.delayHeap.Len() == 0 {
-			e.delayMu.Unlock()
-			continue
-		}
-		item := heap.Pop(&e.delayHeap).(*delayedTask)
-		e.delayMu.Unlock()
-
 		e.deliverDelayed(item)
 	}
 }
@@ -118,14 +63,8 @@ func (e *Engine) deliverDelayed(item *delayedTask) {
 
 // requeueDelayedAfter 把一条延迟任务放回堆里、改到 after 之后再投（只给"重读失败"那条路用）。
 func (e *Engine) requeueDelayedAfter(item *delayedTask, after time.Duration) {
-	e.delayMu.Lock()
 	item.at = time.Now().Add(after)
-	heap.Push(&e.delayHeap, item)
-	e.delayMu.Unlock()
-	select {
-	case e.delayCh <- struct{}{}:
-	default:
-	}
+	e.delays.Push(item.at, item)
 }
 
 // drainInterval 回灌/重试用的间隔（与 startDrain 同一个配置项与兜底）。

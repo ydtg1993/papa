@@ -10,16 +10,8 @@ import (
 
 // IdentityManager shares the account registry's identity runtime. Install it
 // before starting workers; it never changes account management versions.
-func (e *Engine) IdentityManager() *identityruntime.Manager {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.identityManager
-}
-func (e *Engine) SetIdentityManager(v *identityruntime.Manager) {
-	e.mu.Lock()
-	e.identityManager = v
-	e.mu.Unlock()
-}
+func (e *Engine) IdentityManager() *identityruntime.Manager     { return e.fetchResources.Identity() }
+func (e *Engine) SetIdentityManager(v *identityruntime.Manager) { e.fetchResources.SetIdentity(v) }
 
 // WithSessionIdentity pins an explicit business session key. htmlfetch.Session
 // remains a CookieJar and does not supply or infer this key.

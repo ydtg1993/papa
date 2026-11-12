@@ -1,0 +1,20 @@
+        <div class="module" id="mod-settings">
+            <div id="custom-settings"></div>
+            <section>
+                <h2>白名单</h2>
+                <div class="card">
+                    <p class="hint">每行一个 IP 或 CIDR，保存后立即生效（留空 = 不限制）。</p>
+                    <p class="hint" id="wl-file-info"></p>
+                    <textarea id="wl-input" rows="5" placeholder="127.0.0.1&#10;10.0.0.0/8"></textarea>
+                    <button class="btn" onclick="saveWhitelist()">保存白名单</button>
+                    <div class="hint" id="wl-msg"></div>
+                </div>
+            </section>
+            <section>
+                <h2>爬虫控制</h2>
+                <div class="card">
+                    <button class="btn danger" onclick="doShutdown()">优雅退出</button>
+                    <div class="hint" id="shutdown-msg"></div>
+                </div>
+            </section>
+        </div>

@@ -1,0 +1,18 @@
+        <div class="module" id="mod-tokens">
+            <section>
+                <h2>访问令牌</h2>
+                <div class="card">
+                    <p class="hint">每条令牌属于一个操作人：登录后用它的写操作都会记下「谁干的」（操作日志页的「操作人」列）。
+                        令牌只存 sha256，<b>明文只在创建时显示这一次</b>，过后找不回来。</p>
+                    <p class="hint">管理接口始终要求有效令牌。没有令牌或全部停用时，请在服务器本机执行
+                        <code>papa token add --operator &lt;名字&gt;</code> 创建或恢复访问凭据。</p>
+                    <div class="toolbar">
+                        <button class="btn" onclick="openNewToken()">新增令牌</button>
+                    </div>
+                    <div class="table-wrap" id="token-table"></div>
+                </div>
+            </section>
+        </div>
+
+        <!-- obs 报告页：列 obs.report.dir 下的历史运行报告（定时 obs.report.interval / 退出 obs.report.on_exit / 命令 papa report 写入），
+             每份报告四个文件 Tab 看原文（纯文本，不渲染 markdown）并可单独下载。 -->

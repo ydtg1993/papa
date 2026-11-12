@@ -1529,7 +1529,7 @@ func TestMoJSLoginGateFollowsServerAuthMode(t *testing.T) {
 	raw := string(js)
 	for _, want := range []string{
 		"function authRequired()",
-		"if (authRequired() && !loadKey())",
+		"if (deps.authRequired() && !deps.loadKey())",
 		"startPolling();",
 	} {
 		if !strings.Contains(raw, want) {

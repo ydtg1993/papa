@@ -18,7 +18,7 @@ func TestSmartBreakerEvidenceUpdatesDoNotStarveProbe(t *testing.T) {
 		smartFailure(e, i, "detail", "missing")
 	}
 	id := 100
-	e.breakerStore = &reviewInterleavingRepository{memoryBreakerRepository: base, duringSave: func() {
+	e.breakers.breakerStore = &reviewInterleavingRepository{memoryBreakerRepository: base, duringSave: func() {
 		id++
 		smartSuccess(e, &Task{ID: id, Site: "synthetic", Stage: "list", breakerRound: "0:0"})
 	}}
@@ -48,7 +48,7 @@ func (r *blockingBreakerRepository) Save(ctx context.Context, _ breakerstore.Sna
 
 func TestSmartBreakerBlockedWriterCannotDelayDeadline(t *testing.T) {
 	r := &blockingBreakerRepository{memoryBreakerRepository: &memoryBreakerRepository{}, entered: make(chan struct{})}
-	e := &Engine{breakerStore: r}
+	e := &Engine{breakers: breakerCoordinator{breakerStore: r}}
 	e.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 1})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); e.tickerWG.Wait() })
@@ -61,9 +61,9 @@ func TestSmartBreakerBlockedWriterCannotDelayDeadline(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("report writer did not start")
 	}
-	e.breakerMu.Lock()
-	e.smartBreakers["synthetic"].event.Deadline = time.Now().Add(-time.Second)
-	e.breakerMu.Unlock()
+	e.breakers.breakerMu.Lock()
+	e.breakers.smartBreakers["synthetic"].event.Deadline = time.Now().Add(-time.Second)
+	e.breakers.breakerMu.Unlock()
 	timeout := time.NewTimer(time.Second)
 	defer timeout.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -78,7 +78,7 @@ func TestSmartBreakerBlockedWriterCannotDelayDeadline(t *testing.T) {
 	// Waiting for the writer slot also obeys the caller's deadline.
 	flushCtx, flushCancel := context.WithTimeout(ctx, 10*time.Millisecond)
 	defer flushCancel()
-	if err := e.flushBreakerReports(flushCtx); !errors.Is(err, context.DeadlineExceeded) {
+	if err := e.breakers.flushBreakerReports(flushCtx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("writer gate ignored cancellation: %v", err)
 	}
 }
@@ -145,7 +145,7 @@ func TestSmartBreakerObservationRequiresAffectedStagesAndFreshSuccess(t *testing
 func TestSmartBreakerStageResumeCannotBypassSiteProtection(t *testing.T) {
 	e, _ := newSmartBreakerFixture(t, 100)
 	other := &Task{ID: 50, Site: "synthetic", Stage: "list", breakerRound: "0:0"}
-	done, ok := e.admitBreakerTask(other)
+	done, ok := e.breakers.admitBreakerTask(other)
 	if !ok {
 		t.Fatal("other stage admission failed")
 	}
@@ -173,7 +173,7 @@ func TestSmartBreakerRestartDuringRampReturnsToCooldown(t *testing.T) {
 	e.tickerWG.Wait()
 	flushSmart(t, e)
 	want := expectSmartState(t, e, "ramping")
-	restarted := &Engine{breakerStore: r}
+	restarted := &Engine{breakers: breakerCoordinator{breakerStore: r}}
 	restarted.SetSiteBreaker("synthetic", breaker.Config{Enabled: true, Threshold: 100})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); restarted.tickerWG.Wait() })
@@ -184,10 +184,10 @@ func TestSmartBreakerRestartDuringRampReturnsToCooldown(t *testing.T) {
 	if got.ProbeAttempts != want.ProbeAttempts || !got.Deadline.Equal(want.Deadline) || !got.LastFailureAt.Equal(want.LastFailureAt) {
 		t.Fatal("restart lost recovery budget or observation evidence")
 	}
-	if _, ok := restarted.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
+	if _, ok := restarted.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "detail"}); ok {
 		t.Fatal("restart trusted unfinished real-task recovery")
 	}
-	if _, ok := restarted.admitBreakerTask(&Task{Site: "synthetic", Stage: "list"}); ok {
+	if _, ok := restarted.breakers.admitBreakerTask(&Task{Site: "synthetic", Stage: "list"}); ok {
 		t.Fatal("restart reopened a stage before site verification")
 	}
 }
@@ -195,7 +195,7 @@ func TestSmartBreakerRestartDuringRampReturnsToCooldown(t *testing.T) {
 func TestSmartBreakerSiteProbeWaitsForPriorInflight(t *testing.T) {
 	e, _ := newSmartBreakerFixture(t, 4)
 	other := &Task{ID: 50, Site: "synthetic", Stage: "list", breakerRound: "0:0"}
-	done, ok := e.admitBreakerTask(other)
+	done, ok := e.breakers.admitBreakerTask(other)
 	if !ok {
 		t.Fatal("admission")
 	}
@@ -247,7 +247,7 @@ func TestSmartBreakerWriterTimesNormalFlushAndFailureRetry(t *testing.T) {
 		id++
 		smartSuccess(e, &Task{ID: id, Site: "synthetic", Stage: "list", breakerRound: "0:0"})
 	}}
-	e.breakerStore = r
+	e.breakers.breakerStore = r
 	ctx, cancel := context.WithCancel(context.Background())
 	e.tickerWG.Add(1)
 	go e.writeBreakerReports(ctx)

@@ -291,7 +291,7 @@ func TestObsReportPageWired(t *testing.T) {
 		"'/api/obs/report?run='",
 		"var content = await resp.text()",
 		"pre.textContent = content",
-		"if (name === 'obs') { fetchObsReports(); }",
+		"if (name === 'obs') { deps.fetchObsReports(); }",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("mo.js 里缺少 %q —— obs 报告页会静默失效", want)

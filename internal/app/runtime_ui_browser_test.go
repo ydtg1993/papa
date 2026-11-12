@@ -32,6 +32,9 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 	}
 	t.Cleanup(pools.Close)
 	a.runtimeState.pools = pools
+	if err := a.runtimeState.service.AttachPools(pools); err != nil {
+		t.Fatal(err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/runtime-policy", a.runtimePolicyAPI)
 	mux.HandleFunc("/api/runtime-policy/history", a.runtimeHistoryAPI)
@@ -110,7 +113,7 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 		if err = page.Timeout(8 * time.Second).Wait(rod.Eval(`()=>!document.querySelector('.rt-drawer')`)); err != nil {
 			return err
 		}
-		if a.runtimeState.revision != 4 || a.Engine.Governance().Effective("fixture").Weight != 7 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
+		if a.runtimeState.service.Revision() != 4 || a.Engine.Governance().Effective("fixture").Weight != 7 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 2 {
 			return fmt.Errorf("history selected restore lost current settings")
 		}
 		if err = eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='资源控制').click();}`); err != nil {

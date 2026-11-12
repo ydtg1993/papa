@@ -80,7 +80,7 @@ func TestEntryWithoutSubmitterIsHarmless(t *testing.T) {
 
 	e.ApplyRegisterStage() // 不 panic 就算过
 
-	if pool := e.pools.get(core.StageKey("a", "catalog")); pool != nil {
+	if pool := e.pools.Get(core.StageKey("a", "catalog")); pool != nil {
 		t.Fatal("没有入口回调的阶段不该被建起来（池子是懒建的）")
 	}
 }

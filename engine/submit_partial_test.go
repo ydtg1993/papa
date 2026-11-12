@@ -117,8 +117,8 @@ func TestSubmitTasksPartialSuccessHonoursDelay(t *testing.T) {
 	if err := e.SubmitTasks(tasks); err == nil {
 		t.Fatal("B failure was hidden")
 	}
-	if e.delayHeap.Len() != 1 || queued(t, pool) != 1 {
-		t.Fatalf("A must be delayed and C queued: delayed=%d queued=%d", e.delayHeap.Len(), queued(t, pool))
+	if e.delays.Len() != 1 || queued(t, pool) != 1 {
+		t.Fatalf("A must be delayed and C queued: delayed=%d queued=%d", e.delays.Len(), queued(t, pool))
 	}
 }
 
@@ -171,7 +171,7 @@ func TestSubmitTasksReloadFailureKeepsNotBefore(t *testing.T) {
 	if err := e.SubmitTasks([]*Task{task}); err == nil {
 		t.Fatal("reload failure must be reported")
 	}
-	if e.delayHeap.Len() != 1 || e.spillBacklog() != 0 || queued(t, pool) != 0 {
+	if e.delays.Len() != 1 || e.spillBacklog() != 0 || queued(t, pool) != 0 {
 		t.Fatal("reload failure must not route a future task into immediate spill delivery")
 	}
 }

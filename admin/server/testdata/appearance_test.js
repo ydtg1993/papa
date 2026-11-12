@@ -1,8 +1,9 @@
+const controllers=require('./controllers');
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const dir=process.argv[2],read=name=>fs.readFileSync(path.join(dir,name),'utf8');
 const template=read('template.html'),head=template.match(/<script>\s*([\s\S]*?)<\/script>/)[1];
-const theme=read('mo.js').split('    /* ============ 基础状态 ============ */')[0];
+const theme=read('mo.js');
 function harness(saved={},failure=''){
     const values=new Map(Object.entries(saved)),writes=[],nodes=new Map(),events=new Map();
     function element(tag='div'){
@@ -23,8 +24,8 @@ function harness(saved={},failure=''){
         Oao:{motion:{get:()=> 'system',set:value=>{sandbox.motionValue=value;}}}};
     Object.defineProperty(sandbox,'localStorage',{get(){if(failure==='getter')throw Error('blocked storage');return storage;}});
     const context=vm.createContext(sandbox);
-    vm.runInContext(head,context);const firstFrame={appearance:root.getAttribute('data-appearance'),theme:root.getAttribute('data-theme'),login:root.getAttribute('class')};
-    vm.runInContext(read('extensions.js'),context);vm.runInContext(read('appearance.js'),context);vm.runInContext(theme,context);
+    controllers.run(head,context);const firstFrame={appearance:root.getAttribute('data-appearance'),theme:root.getAttribute('data-theme'),login:root.getAttribute('class')};
+    controllers.run(read('extensions.js'),context);controllers.run(read('appearance.js'),context);controllers.load(context,theme,['shell/theme']);
     return {c:context,root,button,values,writes,nodes,firstFrame,element,storage,
         fail(value){failure=value;},emit(name,props={}){for(const fn of events.get(name)||[])fn(props);},
         change(id,value){const el=nodes.get(id);el.value=value;el.fire('change');},mount(){const host=element();context.Papa.renderSettings(host);return host;}};

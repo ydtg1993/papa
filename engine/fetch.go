@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/engine/internal/fetchruntime"
 	"maps"
 	"net/textproto"
 	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/go-rod/rod"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
@@ -99,13 +99,7 @@ func (e *Engine) FetchRenderedPageWith(ctx context.Context, rawURL string, opts 
 // 为什么不能静默忽略：代理是浏览器实例级设置（启动参数），Chrome/CDP 不提供逐请求改路由。
 // 忽略会让请求从别的出口出去、而调用方以为走了代理 —— 所以两条浏览器抓取路径
 // （render / CaptureRequest）都在入口处明确报错，并指出替代路。
-func browserProxyError(ctx context.Context) error {
-	if addr := core.ProxyURLFrom(ctx); addr != "" {
-		return fmt.Errorf("浏览器路径不支持逐请求代理地址（%s）：代理是浏览器实例级设置，"+
-			"Chrome 不提供逐请求改路由。要给这个站换出口，用 pool 上的代理配置、或一站一进程", addr)
-	}
-	return nil
-}
+func browserProxyError(ctx context.Context) error { return fetchruntime.BrowserProxyError(ctx) }
 
 // mergeBrowserOptions 把 ctx 上的站点级 / 逐请求头合并进 PageOptions；
 // 显式 opts.Headers 是 API 调用方给的最后一层，优先。
@@ -160,73 +154,22 @@ func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.Pa
 // opts 里的 WaitSelector / WaitJS / WaitRequestIdle 由 NewPageWithOptions 应用；
 // 等待失败时会带回 browser.WaitError（含现场 HTML），这里负责归档与 trace。
 func (e *Engine) render(ctx context.Context, rawURL string, opts browser.PageOptions) (string, string, error) {
-	if a, ok := account.AttemptFromContext(ctx); ok {
-		m := e.GetAccountManager()
-		if m == nil {
-			return "", "", account.ErrPoolUnknown
-		}
-		var html, finalURL string
-		err := m.NavigatePoolPage(ctx, a.Pool, rawURL, mergeBrowserOptions(ctx, opts), func(page *rod.Page) error {
-			var err error
-			html, err = page.HTML()
-			if err != nil {
-				return err
-			}
-			info, err := page.Info()
-			if err == nil {
-				finalURL = info.URL
-			}
-			return err
-		})
+	opts = mergeBrowserOptions(ctx, opts)
+	result, err := e.fetchResources.Render(ctx, rawURL, opts)
+	if result.Account {
 		if err != nil {
 			traceFromCtx(ctx).Fail("账号池浏览器渲染", errors.New("account pool render failed"), nil)
 		}
-		// Account pages can contain credentials; they never enter the raw archive.
-		return html, finalURL, err
+		return result.HTML, result.URL, err
 	}
-	if err := browserProxyError(ctx); err != nil {
-		return "", "", err
+	if result.Archive {
+		archiveFromCtx(ctx).holdRendered(result.HTML, result.ArchiveURL)
 	}
-
-	pool := e.browserPool
-	if pool == nil {
-		return "", "", fmt.Errorf("browser pool is not configured (browser.enable=false)")
-	}
-	bw, err := pool.Get(ctx)
-	if err != nil {
-		return "", "", fmt.Errorf("acquire browser: %w", err)
-	}
-	defer pool.Put(bw)
-
-	opts = mergeBrowserOptions(ctx, opts)
-	page, err := bw.NewPageWithOptions(ctx, rawURL, opts)
 	if err != nil {
 		recordRenderWaitFailure(ctx, rawURL, opts, err)
-		return "", "", fmt.Errorf("open page %s: %w", rawURL, err)
+		return "", "", err
 	}
-	defer page.Close()
-
-	html, err := page.HTML()
-	if err != nil {
-		return "", "", fmt.Errorf("read html of %s: %w", rawURL, err)
-	}
-	// 归档：这份 HTML 本来就在手上（上面那次 page.HTML() 是解析文档必须付的代价），
-	// 顺手登记 —— 于是渲染路径的失败现场（选择器等错了、渲染没出来）也留得下。
-	// 先取 info 是为了拿导航后的最终 URL 给文件命名；info 出错时退回请求的 URL，
-	// **不能因此丢掉归档**（那正是最该看现场的时候）。
-	info, infoErr := page.Info()
-	finalURL := rawURL
-	if infoErr == nil && info.URL != "" {
-		finalURL = info.URL
-	}
-	archiveFromCtx(ctx).holdRendered(html, finalURL)
-	if infoErr != nil {
-		return "", "", fmt.Errorf("get page info of %s: %w", rawURL, infoErr)
-	}
-
-	// 返回值用 info.URL（导航后的地址），归档用的是上面的 finalURL（取不到 info 时退回请求的 URL）——
-	// 与拆成两条公开方法之前逐字一致。
-	return html, info.URL, nil
+	return result.HTML, result.URL, nil
 }
 
 // defaultHeaders 浏览器与静态 HTML 客户端共用的默认请求头，配置中的 headers 会覆盖同名项
@@ -260,17 +203,17 @@ func (e *Engine) SetBrowserPool() {
 	if err != nil {
 		panic(fmt.Errorf("new browser pool: %s", err.Error()))
 	}
-	e.browserPool = pool
+	e.fetchResources.SetBrowser(pool)
 }
 
 // GetBrowserPool 获取浏览器池
 func (e *Engine) GetBrowserPool() *browser.Pool {
-	return e.browserPool
+	return e.fetchResources.Browser()
 }
 
 // GetHTMLClient 获取静态 HTML 抓取客户端
 func (e *Engine) GetHTMLClient() *htmlfetch.Client {
-	return e.htmlClient
+	return e.fetchResources.HTML()
 }
 
 // NextProxy 取一个代理地址；没配代理管理器或池子为空时返回空串。
@@ -300,11 +243,11 @@ func (e *Engine) FetchHTML(ctx context.Context, rawURL string) (*htmlfetch.Page,
 	}
 	// 未启用时 SetHTMLClient 不建客户端（cfg.HTML.Enable=false），直接解引用就是 nil panic ——
 	// 给一句能照着改的错，别让业务去猜"为什么抓一下就崩"。
-	if e.htmlClient == nil {
+	if e.GetHTMLClient() == nil {
 		return nil, fmt.Errorf("静态 HTML 客户端未启用（crawler.html.enable = false）：FetchHTML 用不了。" +
 			"要用浏览器渲染走 FetchRendered（browser.enable），或把 html.enable 打开")
 	}
-	page, err := e.htmlClient.Fetch(ctx, rawURL)
+	page, err := e.GetHTMLClient().Fetch(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +260,7 @@ func (e *Engine) SetHTMLClient() {
 	if !e.cfg.HTML.Enable {
 		return
 	}
-	e.htmlClient = htmlfetch.NewClient(e.htmlConfig())
+	e.fetchResources.SetHTML(htmlfetch.NewClient(e.htmlConfig()))
 }
 
 // browserHeaders 合并内置默认头与配置里的浏览器默认头（每次新建 map）。
