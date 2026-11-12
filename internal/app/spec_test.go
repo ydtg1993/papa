@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,19 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
+
+func TestStageBreakerReadOnlyCoverageDeclaration(t *testing.T) {
+	for _, coverage := range []string{"", "完整读取与解析；无副作用", "  ", strings.Repeat("x", 1025)} {
+		plan, err := planStage(core.Site{Key: "s"}, StageSpec{Fetcher: namedFetcher{"detail"}, WorkerCount: 1, QueueSize: 8, BreakerReadOnlyCoverage: coverage}, map[string]string{})
+		invalid := coverage == "  " || len(coverage) > 1024
+		if (err != nil) != invalid {
+			t.Fatalf("validation mismatch length=%d err=%v", len(coverage), err)
+		}
+		if !invalid && plan.cfg.BreakerReadOnlyCoverage != coverage {
+			t.Fatal("coverage not forwarded")
+		}
+	}
+}
 
 // quietLogger 吞掉输出的 logger：注册那条链会打几条 Info/Warn，测试输出里不需要它们。
 func quietLogger() *logrus.Logger {

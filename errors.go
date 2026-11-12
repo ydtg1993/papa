@@ -60,3 +60,8 @@ var Retryable = core.Retryable
 
 // ErrorKind 返回错误的分类标识。
 var ErrorKind = core.ErrorKind
+
+// WithFailureCode attaches a stable diagnostic rule without changing retry policy.
+var WithFailureCode = core.WithFailureCode
+
+type FailureCodeError = core.FailureCodeError

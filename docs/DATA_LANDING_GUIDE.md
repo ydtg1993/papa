@@ -181,3 +181,6 @@ return engine.SubmitTask(&papa.Task{
 任务实际账号与选择版本仅在启用 Trace 时随尝试记录；没有新增每任务永久身份历史列。失败账号的任务由错误队列或人工重投复用原行，数据库结果写入仍必须满足业务幂等性。详细运行生命周期见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
 
 可选 crawler_task_flows 保存运行策略和修订；crawler_tasks 的 flow_id/flow_lane/flow_branch/flow_path 保存关系。启用 task_flow.enabled 并显式 papa migrate；任务列是本版本共同 schema，默认任务使用空标识。禁止绕过 API 修改/删除关系，详见 [动态阶段调度](TASK_FLOW.md)。
+
+
+熔断运行数据分为当前快照 `crawler_breaker_incidents` 与追加历史 `crawler_breaker_history`。本次升级须运行宿主显式迁移创建历史表，普通启动不自动迁移；每日 obs 查询历史表，不用最新快照覆盖过去某天的状态。两表同事务写入，历史主键为事件 ID 与事件内序号。

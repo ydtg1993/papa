@@ -34,6 +34,8 @@ func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task
 		spilled:    make(map[string][]*Task),
 		delayCh:    make(chan struct{}, 1),
 	}
+	e.breakerStore = &memoryBreakerRepository{}
+	e.breakerRuntime = true
 	e.pools.set("stub:stub", pool)
 	return e
 }

@@ -10,6 +10,10 @@ import "github.com/ydtg1993/papa/v4/engine"
 // *Engine，两者绑在一起，没法下沉到 core（见 core 的包注释）。
 type Engine = engine.Engine
 
+type BreakerProbe = engine.BreakerProbe
+type BreakerProbeRequest = engine.BreakerProbeRequest
+type BreakerProbeResult = engine.BreakerProbeResult
+
 // Fetcher 爬虫业务逻辑接口。
 type Fetcher = engine.Fetcher
 

@@ -876,7 +876,7 @@
         if (paused.length > 1) {
             html += '<div class="bell-all"><span class="bell-meta">共 ' + paused.length +
                 ' 个 scope 被闸住</span>' +
-                '<button class="btn" onclick="resumeCrawling()">全部恢复</button></div>';
+                '<button class="btn" onclick="resumeCrawling()">全部重试恢复</button></div>';
         }
         if (!html) {
             html = '<div class="bell-meta">当前没有被闸住的站点</div>';
@@ -923,7 +923,7 @@
             '<span class="bell-head-text">' + head + '</span>' +
             (tripped ? '<button class="btn" data-site="' + esc(b.site || '') + '" onclick="openBreakerAnalysis(this.dataset.site)">分析原因</button>' : '') +
             '<button class="btn" data-scope="' + esc(b.site || '') +
-            '" onclick="resumeCrawling(this.dataset.scope)">恢复</button>' +
+            '" onclick="resumeCrawling(this.dataset.scope)">重试恢复</button>' +
             '</div>' +
             (meta.length ? '<div class="bell-meta">' + meta.join('｜') + '</div>' : '') +
             '</div>';
@@ -964,8 +964,19 @@
         var data = null;
         try { data = await resp.json(); } catch (e) { /* 拿不到 body 不影响放行结果 */ }
         // resumed=false 说明本来就没闸住（比如另一个人先点了）—— 说清楚，别报个含糊的成功
-        if (data && data.resumed === false) Toast.info('当前不在暂停态');
-        else Toast.ok(site ? (stage ? ('已恢复 ' + site + '/' + stage) : ('已恢复 ' + site)) : '已恢复抓取');
+        if (data && data.resumed === false) Toast.info('未变更：当前无需恢复，或探针尚未退出');
+        else Toast.ok(stage ? ('已解除阶段人工暂停 ' + site + '/' + stage) : '已请求重试恢复；自动保护需通过全阶段验证后解除');
+        fetchData();
+    }
+
+    async function forceResumeCrawling(site) {
+        if (!site) return;
+        if (!await Dialog.confirm({title:'强制解除保护',body:'<p>将跳过整站恢复验证。失败计数保留，再次失败可能立即暂停。</p>',okLabel:'强制解除'})) return;
+        var resp = await apiPost('/api/breaker/force-resume', {scope:site});
+        if (!resp || !resp.ok) return;
+        var data = await resp.json();
+        if (data.resumed) Toast.ok('已强制解除保护；未确认站点健康');
+        else Toast.info('当前没有需要解除的保护');
         fetchData();
     }
 
@@ -1007,18 +1018,18 @@
             // 运行期值一律走 data-*（内联属性里只有固定代码）—— 与熔断那个「恢复」按钮同一套写法
             var toggle = '<button class="btn' + (paused ? '' : ' danger') + '" data-site="' + esc(site) + '" ' +
                 'onclick="' + (paused ? 'resumeCrawling' : 'pauseCrawling') + '(this.dataset.site)">' +
-                (paused ? '恢复整站' : '暂停整站') + '</button>';
+                (paused ? '重试恢复' : '暂停整站') + '</button>';
             return '<div class="card"><div class="breaker-row">' +
                 '<span class="breaker-text"><b>' + esc(siteLabel(site)) + '</b>' +
                 (paused ? '｜<b>已暂停</b>' : '｜未暂停') + '</span>' +
-                '<button class="btn" data-site="' + esc(site) + '" onclick="openBreakerAnalysis(this.dataset.site)">熔断分析</button>' + toggle + '</div></div>';
+                '<button class="btn" data-site="' + esc(site) + '" onclick="openBreakerAnalysis(this.dataset.site)">熔断分析</button>' + toggle + ((breakerOf[site] && breakerOf[site].incident_id) ? '<button class="btn danger" data-site="'+esc(site)+'" onclick="forceResumeCrawling(this.dataset.site)">强制解除保护</button>' : '') + '</div></div>';
         }).join('');
         sec.hidden = false;
     }
 
     var breakerAnalysisSeq = 0;
     async function openBreakerAnalysis(site) {
-        var seq = ++breakerAnalysisSeq, viewCurrent = captureMonitorView(), selected = null;
+        var seq = ++breakerAnalysisSeq, viewCurrent = captureMonitorView(), selected = null, refreshTimer = null;
         var dialog = Dialog.open({title: site + ' · 熔断分析',
             body: '<p class="hint" id="breaker-analysis-status" role="status">正在读取熔断现场…</p>' +
                 '<label>熔断记录 <select id="breaker-analysis-select" aria-label="熔断记录"></select></label>' +
@@ -1031,7 +1042,7 @@
             ]});
         var status = document.getElementById('breaker-analysis-status'), select = document.getElementById('breaker-analysis-select'), body = document.getElementById('breaker-analysis-body');
         var current = function(){return seq === breakerAnalysisSeq && viewCurrent() && body.isConnected;};
-        dialog.then(function(){if(seq===breakerAnalysisSeq)breakerAnalysisSeq++;});
+        dialog.then(function(){clearTimeout(refreshTimer);if(seq===breakerAnalysisSeq)breakerAnalysisSeq++;});
         async function download(format) {
             if (!selected || !current()) return;
             await downloadFile('/api/breaker/analysis?scope='+encodeURIComponent(site)+'&id='+encodeURIComponent(selected.id)+'&format='+format,current);
@@ -1040,14 +1051,34 @@
             if (!current()) return;
             selected = report;
             var rows = report.groups.map(function(g){return '<tr><td>'+esc(g.stage)+'</td><td>'+esc(g.category)+'</td><td>'+g.count+'</td><td>'+g.percent.toFixed(1)+'%</td><td>'+g.tasks+'</td></tr>';}).join('');
-            body.innerHTML = '<p><strong>'+esc(report.summary)+'</strong></p>'+
+            var lifecycle = report.lifecycle;
+            var stateNames = {interrupted:'验证已中断',pending:'待验证',probing:'试探中',passed:'验证通过',failed:'验证失败',missing:'缺少探针',observing:'受限观察',ramping:'整站限量验证',cooldown:'整站暂停冷却',manual:'暂停，等待定时复查或人工处理',closed:'人工结束事件',recovered:'整站已恢复'};
+            var actionNames = {hourly_recheck:'每小时复查',hourly_recheck_skipped:'本次复查未启动',sample_retry:'重试指定验证任务',sample_retry_unavailable:'验证任务无法重试',process_stopped:'进程正常停止',process_stop_incomplete:'进程未完全排空',process_restart:'进程重新启动',process_interrupted:'发现上次运行中断',previous_stage_snapshot:'保留上次阶段验证',history_start:'开始追加历史',history_capacity:'历史写入积压',manual_retry:'人工重试恢复',stage_probe_interrupted:'阶段验证中断',stage_probe_started:'开始阶段试探',stage_probe_passed:'阶段试探通过',stage_probe_failed:'阶段试探失败',stage_probe_missing:'阶段探针缺失',stage_task_success:'真实任务验证成功',task_failed:'真实任务失败',waiting_inflight:'等待在途任务结束',retry_after_wait:'等待服务端允许重试',manual_control:'人工操作',manual_pause:'人工暂停',manual_resume:'人工解除暂停'};
+            var stageRows = lifecycle && (lifecycle.checks || []).map(function(c){return '<tr><td>'+esc(c.stage)+'</td><td>'+esc(c.state === 'passed' ? '探针/任务检查已完成' : (stateNames[c.state] || c.state))+'</td><td>'+esc(c.verification === 'readonly' ? '完整只读验证' : '真实任务验证')+'<br>'+esc(c.coverage || '未提供覆盖范围')+'</td><td>'+esc(c.verification_note || '未验证：缺少验证结论')+'<br>'+esc((c.sample_ids || []).join('，'))+'</td><td>'+Number(c.round)+'</td><td>'+Number(c.probe_successes || 0)+' / '+Number(c.task_successes || 0)+'</td><td>'+esc(c.detail || '')+'</td></tr>';}).join('');
+            var timelineRows = lifecycle && (lifecycle.timeline || []).map(function(t){return '<li><b>'+esc(t.at)+'</b> · '+esc(t.stage || '整站')+' · 第 '+Number(t.round)+' 轮 · '+esc(actionNames[t.action] || stateNames[t.action] || t.action)+'<br>'+esc(t.reason || '')+(t.check ? '<br>当时验证：'+esc(t.check.verification)+'；覆盖：'+esc(t.check.coverage)+'；样本：'+esc((t.check.sample_ids || []).join('，'))+'；'+esc(t.check.verification_note) : '')+'<br>窗口失败 / 成功：'+Number(t.failures)+' / '+Number(t.successes)+(t.next_attempt_at && !t.next_attempt_at.startsWith('0001-')?'；下次计划：'+esc(t.next_attempt_at):'')+'</li>';}).join('');
+            body.innerHTML = (lifecycle ? '<p><b>事件状态：</b>'+esc(stateNames[lifecycle.state] || lifecycle.state)+' · '+esc(lifecycle.stage || '整站')+'</p>'+
+                (lifecycle.recheck_at && !lifecycle.recheck_at.startsWith('0001-') ? '<p>下次小时复查：'+esc(lifecycle.recheck_at)+'；恢复周期：'+Number(lifecycle.cycle || 1)+'</p>' : '')+
+                '<p><b>当前结论：</b>'+esc(lifecycle.conclusion || '仍在收集证据')+'</p>'+
+                '<p>成功样本：'+Number(lifecycle.successes)+'；整站试探轮数：'+Number(lifecycle.probe_attempts)+'</p>' : '')+
+                (lifecycle ? '<p>触发失败：'+Number(report.failures)+'；当前窗口失败 / 成功：'+Number(lifecycle.window_failures)+' / '+Number(lifecycle.window_successes)+
+                    '；短窗口失败：'+Number(lifecycle.short_failures)+'；已知失败任务：'+Number(lifecycle.distinct_tasks)+'</p>' : '')+
+                '<p><strong>'+esc(report.summary)+'</strong></p>'+
                 '<p>'+esc(report.complete?'样本数量与触发计数一致，未截断':'证据不完整，请结合下方说明排查')+'</p>'+
+                (report.hypotheses && report.hypotheses.length ? '<p><b>结构化证据假设（未验证）：</b>'+esc(report.hypotheses.join('；'))+'</p>' : '')+
+                (report.contradictions && report.contradictions.length ? '<p><b>反证：</b>'+esc(report.contradictions.join('；'))+'</p>' : '')+
+                (report.missing && report.missing.length ? '<p><b>仍需验证：</b>'+esc(report.missing.join('；'))+'</p>' : '')+
                 (report.groups.length ? '<p><b>优先核查（未验证）：</b>'+esc(report.groups[0].hypothesis || '')+'</p><p><b>验证步骤：</b>'+esc(report.groups[0].verify || '')+'</p>' : '')+
                 '<div class="breaker-analysis-table"><table><thead><tr><th>阶段</th><th>错误类型</th><th>次数</th><th>采样占比</th><th>任务数</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+                (stageRows ? '<h3>全阶段验证进度</h3><div class="breaker-analysis-table"><table><thead><tr><th>阶段</th><th>检查进度</th><th>验证方式与覆盖范围</th><th>验证结论</th><th>轮次</th><th>探针 / 真实任务成功</th><th>说明</th></tr></thead><tbody>'+stageRows+'</tbody></table></div>' : '')+
+                (lifecycle && lifecycle.checks_limited ? '<p>阶段清单不完整，不能认定整站恢复。</p>' : '')+
+                (lifecycle && lifecycle.counters_reset_at && !lifecycle.counters_reset_at.startsWith('0001-') ? '<p>运行计数已于 '+esc(lifecycle.counters_reset_at)+' 清零；本报告保留清零前的统计证据。</p>' : '')+
+                (timelineRows ? '<h3>运行时间线：暂停、试探与恢复</h3><ol>'+timelineRows+'</ol>' : '')+
                 '<details><summary>展开完整证据与各组验证步骤</summary><pre class="log-tail-text"></pre></details>';
             body.querySelector('pre').textContent = report.text;
         }
-        try {
+        async function refresh() {
+          if (!current()) return;
+          try {
             var response = await apiFetch('/api/breaker/analysis?scope='+encodeURIComponent(site),{current:current});
             if (!current()) return;
             if (!response) throw new Error('读取失败，请检查登录状态');
@@ -1056,10 +1087,17 @@
             if (!current()) return;
             status.textContent = data.retention;
             if (!data.reports.length) {status.textContent += ' 当前没有记录；旧版本产生的熔断无法补录实时现场。';select.disabled=true;return;}
-            select.innerHTML = data.reports.map(function(r,i){return '<option value="'+i+'">'+esc(r.at)+' · '+r.failures+' 次</option>';}).join('');
+            select.innerHTML = data.reports.map(function(r,i){return '<option value="'+i+'">'+esc(r.at)+' · '+r.failures+' 次'+(r.lifecycle?' · '+esc(r.lifecycle.state):'')+'</option>';}).join('');
+            select.disabled = false;
+            var selectedIndex = selected ? data.reports.findIndex(function(r){return r.id===selected.id;}) : 0;
+            if (selectedIndex < 0) selectedIndex = 0;
+            select.value = String(selectedIndex);
             select.onchange = function(){render(data.reports[Number(select.value)]);};
-            render(data.reports[0]);
-        } catch(error) {if(current()){status.textContent=error.message;select.disabled=true;}}
+            render(data.reports[selectedIndex]);
+          } catch(error) {if(current()){status.textContent=error.message;select.disabled=true;}}
+          finally {if(current())refreshTimer=setTimeout(refresh,3000);}
+        }
+        await refresh();
     }
 
     // 暂停抓取：只给 site = 整站那一层（框架自带界面走的就是这一档 —— 站点控制卡上那个按钮）；

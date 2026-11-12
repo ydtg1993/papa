@@ -1131,7 +1131,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > **"启动先别跑"不是这个字段的事**（它曾经是三态，`manual` 管的就是这个 —— 结果是只管住了
 > 入口那一投：启动恢复、轮询队列照样把这一站跑起来，看着像"声明没生效"）。要"先把入口排好、
 > 再放开这一站"，写**站点级**的 `SiteSpec.StartPaused: true`：入口任务照投，但整站在入队点被闸住 ——
-> 每一条都寄放到溢出表里、池子一个都不建，后台 Dashboard「站点控制」卡上点「恢复整站」才灌回。
+> 每一条都寄放到溢出表里、池子一个都不建，后台 Dashboard「站点控制」卡上点「重试恢复」才灌回。
 > 它管的是**这一站的全部阶段**（包括 detail / episode 这种由上一级投出来的），而且暂停不跨重启，
 > 每次启动都重新闸上。只想掐某一个阶段（不想让入口阶段又跑一遍、其它照跑）用
 > `engine.PauseStage(site, stage, reason)` / `ResumeStage`，见 [MONITOR.md](./MONITOR.md) §9。
@@ -1261,7 +1261,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 9. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
 10. **延迟投递**：反爬随机间隔用 `task.Delay`（或 `NotBefore`）在派发时设置，别在 handler 里 `time.Sleep` 空等，那会浪费 worker 并发位。
 11. **别重复记日志**：`FetchHandler` 的 error 和 `SubmitTask` 的提交错误框架都会自动记，fetcher 里**不必再** `logger.Errorf` 记一遍，否则会刷双份。你只需判断 error 要不要改变控制流（继续/中止/告警）。
-12. **限流（429 / 503）现在按普通失败重试**：框架还不认 `Retry-After` —— 命中限流后它会立刻按该阶段的 `Retry.Backoff` 再打一次，容易把限流升级成封禁。反爬严的站点把 `delay` 调大（如 `"30s-60s"`），或对 429 返回 `papa.WrapNoRetryKind("rate_limited", err)`，交给 error_queue 稍后重投。
+12. **限流与任务重试分别受控**：使用任务传入的 `ctx` 和框架受管 HTTP/浏览器路径时，429/503 的有效 `Retry-After` 会限制站点后续请求；即使关闭请求治理或 AutoThrottle，普通重试与恢复试探也不能早于这一期限。发现限流只在 AutoThrottle 已开启时自动降频，不会替业务打开开关。无有效头且 AutoThrottle 关闭时沿用固定间隔及 `Retry.Backoff`；错误返回与是否重试仍由阶段策略决定。详见 `RUNTIME_CONTROL.md`。
 
 ---
 
@@ -1316,10 +1316,15 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 **任务派发 / 错误分类 / 告警**
 - `engine.SubmitTask(&papa.Task{...})` 派发单个子任务；`engine.SubmitTasks([]*papa.Task{...})` 批量派发。
 - `papa.WrapNoRetry(err)` / `papa.WrapNoRetryKind(kind, err)` 标记不可重试错误。
+- `papa.WithFailureCode(err, phase, code)` 为熔断诊断添加稳定错误规则，例如 `papa.WithFailureCode(papa.WrapNoRetryKind("structure", err), "parse", "title_missing")`。同一规则跨页面使用同一 code；不要放入 URL、任务 ID、账号或凭据。该包装保留原有重试与补偿语义，不能代替 `WrapNoRetryKind`。`parse` / `extract` / `validate` 阶段失败需要语义试探，单纯 HTTP 200 不能证明修复。框架优先读取结构化状态码、网络错误、浏览器等待与账号错误；缺少稳定 code 时才使用保留数字错误码的消息模板。
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
-- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动闸住 / 放行**所有站点**的抓取；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
-- 入口任务由框架在**启动那一趟**投（阶段声明写了 `Entry: true` 的话）—— 引擎侧没有「手动投入口」这个动作。想控制「什么时候开始跑」就声明 `SiteSpec.StartPaused: true`，再到后台「站点控制」卡上点「恢复整站」（那是整站级的暂停信号，见 [MONITOR.md](./MONITOR.md) §10）。
+
+- `engine.SetBreakerProbe(site, stage, probe)` 注册只读阶段语义探针；空 stage 为逐阶段调用的兜底，回调必须识别 `req.Stage`，不可用同一次首页成功代表全部阶段。自动恢复默认要求所有注册阶段通过试探和限量真实任务验证，未运行阶段也不能默认通过；阶段失败、暂停重试和最终恢复进入同一 obs 报告。详见 [分类熔断与整站恢复](BREAKER.md)。
+- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动暂停 / 请求重试恢复**所有站点**的抓取（纯人工暂停直接解除，自动保护须全阶段重新验证）；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
+- `engine.ForceResumeSite(site)` 明确跳过整站自动验证，保留失败窗口和报告；普通恢复不要调用它。
+- 只有全部操作可被只读检查覆盖的阶段，才可在 `StageSpec.BreakerReadOnlyCoverage` 填写完整范围（默认空）。这类阶段须间隔两次返回 `Healthy && Semantic && Complete` 且 `Detail` 非空，才能替代真实任务验证；请求提供 `Pass` 和 `Coverage`。缺少有效样本、只测部分解析、未覆盖写入/下载/派发时均不合格；其他阶段保持未验证。此声明需要业务如实维护，框架不能自动证明覆盖完整。报告明确展示验证方式和范围，重启全部重验，详见 [BREAKER.md](BREAKER.md)。
+- 入口任务由框架在**启动那一趟**投（阶段声明写了 `Entry: true` 的话）—— 引擎侧没有「手动投入口」这个动作。想控制「什么时候开始跑」就声明 `SiteSpec.StartPaused: true`，再到后台「站点控制」卡上点「重试恢复」（那是整站级的暂停信号，见 [MONITOR.md](./MONITOR.md) §10）。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
 - `engine.FetchRenderedPage(ctx, url, waitSelector)` 同上，但返回 `*htmlfetch.Page`（`StatusCode` / `Content-Type` 为零值）—— 走浏览器的阶段要接 `engine.RestrictedError` 或复用静态路径那套解析时用它。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。
@@ -1385,3 +1390,6 @@ client := htmlfetch.NewClient(htmlfetch.Config{
 ```
 
 零配置不允许本地服务，测试 fixture 也需授权。`egress.ErrDenied` 表示目标不被授权；不要通过改用 `http.Get`、原生浏览器导航或外部下载工具绕过失败。网络策略不替代账号隔离、站点规则边界或业务写入权限。网络错误不会由浏览器网关伪造成成功的采集文档。
+
+
+混合错误恢复采用三次验证并优先指定失败样本。`BreakerProbeRequest.Sample/SampleID` 非空时必须检查指定任务对应页面，结果 `SampleID` 回传一致；忽略样本的通用成功结果不能通过。相同任务不同轮次仅在不足三个失败样本时按轮换规则使用。原有任务补偿禁用/延迟条件继续生效。完整只读阶段默认两次，混合错误三次；其他阶段仍须真实任务验证。长期保护每小时复查通过后自动恢复，人工暂停不自动解除；详见 [BREAKER.md](BREAKER.md)。

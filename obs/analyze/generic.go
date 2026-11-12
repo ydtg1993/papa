@@ -70,7 +70,7 @@ func (g *Generic) Build(ctx context.Context, in *obs.Input) (*obs.SectionResult,
 	addEventCoverage(in, res, g.Thresholds.eventMaxGap(), dts)
 	g.addQueue(in, res)
 	groups := g.addFailures(in, res)
-	addBreakerIncidents(in, res)
+	addBreakerReports(ctx, in, res)
 	g.addPerformance(in, res)
 	g.addFrameworkState(ctx, in, res)
 	// 失败分组数只算 task_failed 的分组，不用 len(res.Problems)：

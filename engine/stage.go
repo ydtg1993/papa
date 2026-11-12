@@ -12,9 +12,9 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
-	"github.com/ydtg1993/papa/v4/obs/incident"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/events"
+	"strconv"
 )
 
 // AddNotifier 注册告警通知器；任务最终失败时触发 Notify。
@@ -55,14 +55,8 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 		"kind":    te.Kind,
 	}).Errorf("task failed: %s", te.Message)
 
-	// 熔断计数 + 触发。走到这里就是**终态失败**（重试耗尽、或不可重试），正好是熔断要数的那个量 ——
-	// 按 attempt 数会把一个烂 URL 记 3 次，阈值会被噪声灌满。见 breaker.RecordFailure。
-	//
-	// **计数在熔断器里（每站一份），"停"这个动作在暂停信号里**：达到阈值就写一条整站暂停
-	//（Source=breaker，带上"哪个阶段在失败、当时窗口内多少次"的现场）。
-	// **写成功才发告警** —— "一次触发只报一次"因此由 setPause 的去重天然保证：
-	// 已经停着时它返回 false（可能是人工暂停在先），那就既不该覆盖人家的原因，也不该重复报警。
-	// 站点没有熔断配置时 breakerFor 返回 nil，RecordFailure 是 nil 安全的（没有熔断这回事）。
+	// One persisted task round is observed by the sole detector. Attempts do not
+	// increment the terminal count, and notifications use the frozen lifecycle ID.
 	if st, tripped := e.recordBreakerFailure(task, err); tripped {
 		// 通知在锁外发送，使用触发瞬间的快照，恢复不能擦掉告警现场。
 		e.notifyBreakerTrip(st)
@@ -84,31 +78,16 @@ func (e *Engine) notifyFailure(ctx context.Context, task *Task, err error) {
 	}
 }
 
-// recordBreakerFailure 将计数、判阈和写暂停与整站恢复串行化。
-// 失败按完成时刻归属窗口：恢复后完成的在途任务仍正常计数。
+// recordBreakerFailure observes one persisted terminal task round.
 func (e *Engine) recordBreakerFailure(task *Task, failure ...error) (BreakerStatus, bool) {
-	sample := incident.Sample{TaskID: int64(task.ID), Stage: task.Stage, URL: task.URL}
-	if len(failure) > 0 && failure[0] != nil {
-		sample.Kind, sample.Error = ErrorKind(failure[0]), failure[0].Error()
+	var err error
+	if len(failure) > 0 {
+		err = failure[0]
 	}
-	sample = incident.Clean(sample)
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	if !e.siteBreaker[task.Site].Enabled() {
-		return BreakerStatus{}, false
+	if err == nil {
+		err = fmt.Errorf("unspecified terminal failure")
 	}
-	sample.At = time.Now()
-	e.recordBreakerSampleLocked(task.Site, sample)
-	tripped, failures := e.siteBreaker[task.Site].RecordFailure()
-	if !tripped || !e.setPause(pauseScope{Site: task.Site}, pauseState{
-		Reason: "窗口内终态失败数达到阈值", Source: PauseSourceBreaker,
-		Stage: task.Stage, Failures: failures,
-	}) {
-		return BreakerStatus{}, false
-	}
-	st := e.breakerStatusOfLocked(task.Site)
-	e.freezeBreakerIncidentLocked(st)
-	return st, true
+	return e.recordSmartOutcome(task, err)
 }
 
 // notifyBreakerTrip 熔断触发时的回调：打醒目日志 + 发一条 AlertCritical 告警。
@@ -120,12 +99,11 @@ func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
 		Type: events.TypeBreakerTripped, Site: st.Site, Stage: st.Stage,
 		Source: "breaker", Kind: "circuit-breaker",
 		Counts: map[string]int{"failures": st.Failures, "threshold": st.Threshold},
-		TS:     st.PausedAt, Attrs: e.breakerIncidentAttrs(st),
+		TS:     st.PausedAt, Attrs: map[string]string{"incident_id": st.IncidentID, "window_ns": strconv.FormatInt(int64(st.Window), 10), "window_from": st.WindowFrom.Format(time.RFC3339Nano)},
 	})
 	e.loggerSet.Engine.Errorf(
-		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败 ≥ 阈值 %d）—— 已暂停整站："+
-			"worker 停在取任务点，新任务不再入队（先寄放到溢出表）。"+
-			"处理完后调 POST /api/breaker/resume（后台 Dashboard 上也有按钮）放行",
+		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败，整站硬阈值 %d）。"+
+			"受保护范围已暂停；详见后台熔断分析报告及恢复状态",
 		st.Reason, st.Stage, st.Window, st.Failures, st.Threshold)
 
 	notifiers := e.getNotifiers()
@@ -238,6 +216,12 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			return admissionErr
 		}
 		defer release()
+		breakerRelease, admitted := e.admitBreakerTask(task)
+		if !admitted {
+			e.spillTask(task)
+			return nil
+		}
+		defer breakerRelease()
 		// A task can spend time waiting after the worker's original pause gate.
 		// Recheck before claiming so a pause during that wait keeps it pending.
 		if e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
@@ -279,6 +263,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		}
 		claimedAt = time.Now()
 		runVersion = version
+		task.breakerRound = fmt.Sprintf("%d:%d", version.Repeat, version.Reprocess)
 		ctx = withTaskRunVersion(ctx, version)
 		if err := e.persistAccountAttempt(ctx, task, version); err != nil {
 			e.releaseClaim(task)
@@ -329,6 +314,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusSuccess, nil); writeErr != nil {
 					return writeErr
 				}
+				e.recordSmartOutcome(task, nil)
+				breakerRelease()
 				e.emit(events.Event{
 					Type: events.TypeTaskFinished, Site: task.Site, Stage: task.Stage,
 					TaskID: uint(task.ID), Outcome: "success", Attempt: attempt,

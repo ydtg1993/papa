@@ -43,6 +43,7 @@ type pauseScope struct {
 // pauseState 一条暂停的现场。`At` 是下这条暂停的时刻，**不随后续变化改写**
 // （排查时要看的是"当时为什么停的"，与熔断那套触发快照同一取向）。
 type pauseState struct {
+	Owner  string // durable automatic incident ID; empty for manual/legacy pauses
 	Reason string // 给人看的："后台手动暂停" / "窗口内终态失败数达到阈值"
 	Source string // PauseSourceManual / PauseSourceBreaker
 	At     time.Time
@@ -137,13 +138,12 @@ func (e *Engine) isPausedLocked(scope pauseScope) bool {
 
 /* ---------- 变更 ---------- */
 
-// setPause 下一条暂停；这个 scope 已经停着就返回 false（**且不覆盖已有的 reason/快照** ——
-// 后台"空点不记审计"那条规则、以及"人工暂停不该被熔断触发改写成熔断"都靠这个）。
-//
-// 判定按**精确 scope**（不看继承）：所以某站只被手动停了 `catalog` 时，**熔断触发照样会追加一条
-// 整站暂停** —— 那是熔断的本职（它管的是"这一站现在不能抓了"，比某个阶段的意图更宽），
-// 而反过来（整站停着时又来了阶段级的暂停/熔断）会被这条去重挡掉。
+// setPause never lets automatic protection overwrite an existing pause.
+// Explicit manual calls use setManualPause to take ownership within this process.
 func (e *Engine) setPause(scope pauseScope, st pauseState) bool {
+	if st.Source == PauseSourceManual {
+		return e.setManualPause(scope, st)
+	}
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	if e.isPausedLocked(scope) {
@@ -156,6 +156,43 @@ func (e *Engine) setPause(scope pauseScope, st pauseState) bool {
 		e.paused = make(map[pauseScope]pauseState)
 	}
 	e.paused[scope] = st
+	e.broadcastPauseLocked()
+	return true
+}
+
+// Manual pause is process-local. Taking over the whole automatic scope closes
+// that automatic event; narrower manual pauses coexist without owning its recovery.
+func (e *Engine) setManualPause(scope pauseScope, st pauseState) bool {
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	e.pauseMu.Lock()
+	defer e.pauseMu.Unlock()
+	if old, ok := e.paused[scope]; ok && old.Source == PauseSourceManual {
+		return false
+	}
+	if old, ok := e.paused[pauseScope{Site: scope.Site}]; ok && old.Source == PauseSourceManual {
+		return false
+	}
+	if s := e.smartBreakers[scope.Site]; s != nil && s.event != nil && s.event.Active() && (scope.Stage == "" || s.event.Stage == scope.Stage) {
+		s.manualTakeover = true
+		owner := s.event.ID
+		e.closeSmartBreakerLocked(scope.Site, scope.Stage, "人工接管自动保护；人工暂停仅在本进程有效")
+		for key, old := range e.paused {
+			if old.Source == PauseSourceBreaker && old.Owner == owner {
+				delete(e.paused, key)
+			}
+		}
+	}
+	if st.At.IsZero() {
+		st.At = time.Now()
+	}
+	if e.paused == nil {
+		e.paused = make(map[pauseScope]pauseState)
+	}
+	e.paused[scope] = st
+	if s := e.smartBreakers[scope.Site]; s != nil && s.event != nil {
+		e.noteBreakerLocked(s, "manual_pause", scope.Stage, "人工暂停："+st.Reason+"；暂停仅本进程有效", st.At)
+	}
 	e.broadcastPauseLocked()
 	return true
 }
@@ -175,18 +212,38 @@ func (e *Engine) clearScope(scope pauseScope) bool {
 	return true
 }
 
-// clearSite 放行整站：**该站的所有条目一起清**（整站那条 + 各阶段那些）。
-//
-// 为什么不分那么细：后台对一站只有一个「恢复」按钮。只清整站那条的话，该站还留着阶段条目 ——
-// 横幅还是红的、再点一次却回"当前不在暂停态"，界面上就成了"卡住且没出路"
-// （`engine/sitestat.go` 里那个残留 true 的坑就是同一类）。
-func (e *Engine) clearSite(site string) bool {
+// clearSite serializes operator actions with terminal outcomes. Ordinary resume
+// retries automatic verification; only force bypasses it.
+func (e *Engine) clearSite(site string, force bool) bool {
 	// 与终态失败的计数/写暂停串行化，不能让旧判定跨过恢复重新关闸。
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
+	if !force {
+		if s := e.smartBreakers[site]; s != nil && s.event != nil && (s.event.Active() || s.manualTakeover) {
+			if s.probeRunning || s.probeExecuting {
+				return false
+			}
+			// This is an explicit whole-site resume, so release its process-local
+			// manual pauses while retaining/reinstating automatic protection.
+			e.pauseMu.Lock()
+			for scope, st := range e.paused {
+				if scope.Site == site && st.Source == PauseSourceManual {
+					delete(e.paused, scope)
+					e.recordResumeLocked(scope)
+				}
+			}
+			e.broadcastPauseLocked()
+			e.pauseMu.Unlock()
+			s.manualTakeover = false
+			return e.retryBreakerLocked(s)
+		}
+	}
 	e.pauseMu.Lock()
 	defer e.pauseMu.Unlock()
 	cleared := false
+	if s := e.smartBreakers[site]; force && s != nil && s.event != nil && s.event.Active() {
+		cleared = true // observing/ramping can be protected without a pause entry
+	}
 	for sc, st := range e.paused {
 		if sc.Site == site {
 			delete(e.paused, sc)
@@ -196,32 +253,13 @@ func (e *Engine) clearSite(site string) bool {
 		}
 	}
 	if cleared {
-		e.siteBreaker[site].Reset()
-		e.resetBreakerEvidenceLocked(site)
+		if s := e.smartBreakers[site]; s != nil {
+			s.manualTakeover = false
+		}
+		e.closeSmartBreakerLocked(site, "", "人工强制解除整站保护")
 		e.broadcastPauseLocked()
 	}
 	return cleared
-}
-
-// clearAllPauses 放行所有站点（后台横幅上那个「全部恢复」）。
-func (e *Engine) clearAllPauses() bool {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	e.pauseMu.Lock()
-	defer e.pauseMu.Unlock()
-	if len(e.paused) == 0 {
-		return false
-	}
-	for sc, st := range e.paused {
-		// 同站多条暂停重复清零无副作用；运行中的站点不受影响。
-		e.siteBreaker[sc.Site].Reset()
-		e.resetBreakerEvidenceLocked(sc.Site)
-		delete(e.paused, sc)
-		e.recordResumeLocked(sc)
-		e.emit(events.Event{Type: events.TypePauseResumed, Site: sc.Site, Stage: sc.Stage, Source: st.Source})
-	}
-	e.broadcastPauseLocked()
-	return true
 }
 
 // recordResumeLocked 记下"这个 scope 被放行了"；调用方须已持 pauseMu。
@@ -312,11 +350,22 @@ func (e *Engine) ResumeStage(site, stage string) bool {
 	if !e.knownSite(site) || stage == "" {
 		return false
 	}
-	return e.clearScope(pauseScope{Site: site, Stage: stage})
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	cleared := e.clearScope(pauseScope{Site: site, Stage: stage})
+	if s := e.smartBreakers[site]; cleared && s != nil && s.event != nil && s.event.Stage == stage {
+		e.closeSmartBreakerLocked(site, stage, "人工恢复阶段")
+	} else if cleared && s != nil && s.event != nil {
+		e.noteBreakerLocked(s, "manual_resume", stage, "人工解除本阶段暂停；不证明整站健康，不清空计数", time.Now())
+	}
+	if cleared {
+		e.wakeDrainNow()
+	}
+	return cleared
 }
 
 // knownSite 引擎认不认识这个站点。判据是**它有没有一份 per-site 抓取配置（熔断器）**：
-// `SetSiteBreaker` 是导出 API，使用者会只调它、不调 `SetSite`；而 `siteBreaker` 正好就是
+// `SetSiteBreaker` 是导出 API，使用者会只调它、不调 `SetSite`；而 `smartBreakers` 正好就是
 // "有哪些站配了抓取策略"—— 那才是"暂停这个站的抓取"该管的那批。
 // 用 `e.sites` 的话，`PauseCrawling` 会静默漏掉这类站点（"全部暂停"变成半停）。
 func (e *Engine) knownSite(site string) bool {
@@ -325,7 +374,7 @@ func (e *Engine) knownSite(site string) bool {
 	}
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
-	return e.siteBreaker[site] != nil
+	return e.smartBreakers[site] != nil
 }
 
 /* ---------- 启动那一刻：声明里的 StartPaused ---------- */
@@ -377,8 +426,8 @@ func (e *Engine) startPausedSites() []string {
 func (e *Engine) allSites() []string {
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
-	out := make([]string, 0, len(e.siteBreaker))
-	for key := range e.siteBreaker {
+	out := make([]string, 0, len(e.smartBreakers))
+	for key := range e.smartBreakers {
 		out = append(out, key)
 	}
 	// 不在这里排：调用方（PauseCrawling / BreakerStatuses）自己排，免得同一个列表两种顺序。

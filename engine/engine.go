@@ -11,7 +11,6 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
-	"github.com/ydtg1993/papa/v4/obs/incident"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
@@ -24,6 +23,7 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 	"gorm.io/gorm"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -121,17 +121,14 @@ type Engine struct {
 	filedownByStage map[string]*filedown.Downloader
 	filedownBySite  map[string]*filedown.Downloader
 	notifiers       []Notifier // 告警通知器，任务最终失败时触发
-	// siteBreaker 每站一个**熔断计数器**（滑动窗口数终态失败、判阈），由声明层按站点建
-	// （App.RegisterSites 对每个站点调 SetSiteBreaker：单配了阈值的用它的，没单配的用
-	// crawler.breaker 那份默认值）。一个站被墙不会把另一个站一起闸住 —— 与阶段名按站点作用配套。
-	//
-	// 它**不再是闸门**：达到阈值只是"该停了"，停这个动作由 notifyFailure 写进暂停信号、
-	// 由取任务点的闸门与入队点的寄放去执行（见 pause.go）。
+	// One detector and one current lifecycle per site.
 	breakerMu          sync.Mutex
-	siteBreaker        map[string]*breaker.Breaker
-	breakerSamples     map[string]*breakerEvidence // guarded by breakerMu
-	breakerIncidents   []incident.Capture          // newest last; bounded globally and per site
 	breakerIncidentSeq uint64
+	smartBreakers      map[string]*smartBreaker
+	breakerStore       breakerRepository
+	breakerStoreGate   chan struct{}
+	breakerRuntime     bool
+	breakerProbes      map[pauseScope]BreakerProbe
 	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
 	// 框架只把它当标签，不做任何限制（见 core.Site 的注释）。
 	sites map[string]core.Site
@@ -184,12 +181,15 @@ type stageInfo struct {
 
 // StageConfig 阶段配置
 type StageConfig struct {
-	RepeatLimit int                  // repeat_queue 重投上限：repeat >= 此值不再重投；<=0 不限。
-	MaxAttempts int                  // Handler 最大尝试次数（含首次执行）
-	Backoff     time.Duration        // Handler 错误重试退避时间
-	Delay       config.DurationRange // 任务间隔延迟，支持随机区间
-	WorkerCount int                  // WorkerCount 该阶段专用的 worker 数量
-	QueueSize   int                  // QueueSize 该阶段的任务队列缓冲大小
+	// Nonempty explicitly attests that a read-only probe covers the entire stage.
+	// Stages with writes, downloads or dispatch must leave this empty.
+	BreakerReadOnlyCoverage string
+	RepeatLimit             int                  // repeat_queue 重投上限：repeat >= 此值不再重投；<=0 不限。
+	MaxAttempts             int                  // Handler 最大尝试次数（含首次执行）
+	Backoff                 time.Duration        // Handler 错误重试退避时间
+	Delay                   config.DurationRange // 任务间隔延迟，支持随机区间
+	WorkerCount             int                  // WorkerCount 该阶段专用的 worker 数量
+	QueueSize               int                  // QueueSize 该阶段的任务队列缓冲大小
 
 	// Site 本阶段所属站点（`SiteSpec.Key`）。**必填** —— 阶段键是 `site:stage`，熔断按站点
 	// 分组、任务表也按它记归属（`crawler_tasks.site`），没有「未归属」那一档。
@@ -216,6 +216,9 @@ type StageConfig struct {
 // 阶段名只在本站内唯一：两个站登记各自的 `catalog` 是两条独立记录（各自的池子与统计）。
 // WorkerCount/QueueSize 必须 > 0；非法配置返回错误且不登记阶段。
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) error {
+	if config.BreakerReadOnlyCoverage != "" && (strings.TrimSpace(config.BreakerReadOnlyCoverage) == "" || len(config.BreakerReadOnlyCoverage) > 1024) {
+		return fmt.Errorf("stage %q: BreakerReadOnlyCoverage 必须描述完整只读覆盖范围，且不超过 1024 字节", stage)
+	}
 	if err := workerpool.ValidateConfig(config.WorkerCount, config.QueueSize); err != nil {
 		return fmt.Errorf("stage %q: %w", core.StageKey(config.Site, stage), err)
 	}
@@ -256,10 +259,9 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		// N 次节拍重算（MIN 聚合查询）压成一次；见 dynticker.go。
 		wakeCoalesce: defaultWakeCoalesce,
 	}
-	engine.siteBreaker = make(map[string]*breaker.Breaker)
 	engine.sites = make(map[string]core.Site)
 	// 熔断计数器不在这里建：每站一个、由声明层按站点建（SetSiteBreaker）。
-	// 计数走 RecordFailure（终态失败）；达到阈值之后由 notifyFailure 写暂停信号并发一条
+	// 终态结果进入 Detector；达到保护线之后写暂停信号并发一条
 	// AlertCritical（业务不用再接一套告警通道）。
 	// 两条治理队列（全局各一条）的运行态 + 累计计数：键就是监控面板上的队列名。
 	engine.errorQueue = &errorQueueState{}
@@ -364,73 +366,50 @@ func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
 
-// SetSiteBreaker 为一个站点建一个**熔断计数器**（滑动窗口数终态失败、判阈）。
-//
-// **声明层会给每个声明的站点都调它**（App.RegisterSites 按 SiteSpec 逐个来）：单配了阈值的用它的，
-// 没单配的用 crawler.breaker 那份默认 —— 关键在于"每站一把"，而不是"没声明的站共用默认那把"
-// （共用的话 A 站被墙会把 B 站一起闸住）。
-//
-// 必须在 ApplyRegisterStage 之前调用（池子在那一刻就把闸门绑好了，之后再设换不回来）。
-// site 为空是非法参数：站点是必填维度，没有"未归属"那一档。
+// SetSiteBreaker registers the site's single outcome detector before Run.
 func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
 	if site == "" {
 		return
 	}
+	cfg = breaker.EffectiveConfig(cfg)
+	detector := breaker.NewDetector(cfg)
 	e.breakerMu.Lock()
 	defer e.breakerMu.Unlock()
-	if e.siteBreaker == nil {
-		e.siteBreaker = make(map[string]*breaker.Breaker)
+	if e.smartBreakers == nil {
+		e.smartBreakers = make(map[string]*smartBreaker)
 	}
-	// 这里只登记**计数配置**：熔断器不再持有暂停状态、也不发告警 ——
-	// 达到阈值之后由 notifyFailure 写一条暂停信号（Source=breaker）并发 AlertCritical。
-	e.siteBreaker[site] = breaker.New(cfg)
-	delete(e.breakerSamples, site)
+	e.smartBreakers[site] = &smartBreaker{cfg: cfg, policy: cfg.Policy, detector: detector}
 }
 
-// breakerFor 取某个站点的熔断计数器；没这个站（或没给它 SetSiteBreaker）返回 nil。
-//
-// 返回 nil 是常态的一种（自己搭引擎没配熔断、旧库里 site 为空的行）：`*breaker.Breaker`
-// 的所有方法都容忍 nil 接收者，所以调用处不必判空 —— 没配就是"没有熔断这回事"。
-//
-// 注意它**不再是闸门**：暂停与它无关（那是 pause.go 里那条信号）。
-func (e *Engine) breakerFor(site string) *breaker.Breaker {
-	e.breakerMu.Lock()
-	defer e.breakerMu.Unlock()
-	return e.siteBreaker[site]
-}
-
-// ResumeCrawling 放行**所有站点**的暂停，返回是否真的放行了至少一个。
-// 这就是后台横幅上那个「恢复抓取」；只想放行某一站用 ResumeSite。
-//
-// 它清的是**暂停信号**（见 pause.go）—— 熔断触发与人工暂停写的是同一张表，所以这里一视同仁地放行。
-// 与 ResumeSite 一样，放行后逐站把站点快照翻回「未暂停」（后台站点表读的是这份快照）。
+// ResumeCrawling retries automatic protection and releases ordinary manual pauses.
 func (e *Engine) ResumeCrawling() bool {
-	sites := e.pausedSites()
-	if !e.clearAllPauses() {
-		return false
+	changed := false
+	for site := range e.BreakerStatuses() {
+		if e.ResumeSite(site) {
+			changed = true
+		}
 	}
-	// 放行之后立刻把寄放在溢出表里的任务灌回去（不等下一个 drain tick）
-	e.wakeDrainNow()
-	for _, site := range sites {
-		e.writeSiteBreakerState(site, false)
-	}
-	return true
+	return changed
 }
 
-// ResumeSite 放行某个站点（该站所有暂停条目一起清，见 clearSite 的理由）；
-// 没这个站、或它本来就没暂停返回 false。
+// ResumeSite retries whole-site verification for an active automatic incident.
+// It never treats an operator click as health proof. Pure manual pauses release normally.
 func (e *Engine) ResumeSite(site string) bool {
-	if !e.knownSite(site) {
-		return false
-	}
-	if !e.clearSite(site) {
+	return e.resumeSite(site, false)
+}
+
+// ForceResumeSite explicitly bypasses automatic verification. Failure counts and
+// historical reports remain; the next failure may immediately protect the site again.
+func (e *Engine) ForceResumeSite(site string) bool {
+	return e.resumeSite(site, true)
+}
+
+func (e *Engine) resumeSite(site string, force bool) bool {
+	if !e.knownSite(site) || !e.clearSite(site, force) {
 		return false
 	}
 	e.wakeDrainNow()
-	// 落库放在放锁之后：pauseMu 绝不跨 DB 调用（锁序见 pause.go）。
-	// 熔断**触发**不写这一列（与今天一致）：它只写暂停信号，横幅读信号、站点表读库，两者在触发时
-	// 本来就不同步 —— 这是有意的，别顺手把两条路并成一条。
-	e.writeSiteBreakerState(site, false)
+	e.writeSiteBreakerState(site, e.pauseInfoOf(site).Paused)
 	return true
 }
 
@@ -439,8 +418,7 @@ func (e *Engine) ResumeSite(site string) bool {
 // 现场里带上当时的窗口失败数（与今天一致：它是后台 payload 的一个字段，别顺手改成 0）。
 func (e *Engine) PauseSite(site, reason string) bool {
 	if !e.setSitePausedSignal(site, reason) {
-		// 已经停着（可能正是熔断触发的那一条）：返回 false，也**不覆盖**它的 reason 与快照 ——
-		// 后台"空点不记审计"那条规则、以及"人工暂停不该把熔断现场改写成手动"都靠这个。
+		// 已由人工暂停，无需重复接管。
 		return false
 	}
 	e.writeSiteBreakerState(site, true)
@@ -485,8 +463,10 @@ func (e *Engine) PauseCrawling(reason string) bool {
 
 // breakerSum 该站当前窗口内的终态失败数（没配熔断/没这个站都是 0）。
 func (e *Engine) breakerSum(site string) int {
-	if b := e.breakerFor(site); b != nil {
-		return b.Sum()
+	e.breakerMu.Lock()
+	defer e.breakerMu.Unlock()
+	if s := e.smartBreakers[site]; s != nil {
+		return s.detector.Snapshot(time.Now()).Failures
 	}
 	return 0
 }
@@ -519,12 +499,15 @@ func (e *Engine) breakerStatusOf(site string) BreakerStatus {
 // breakerStatusOfLocked 调用方持有 breakerMu，快照不会被恢复/新熔断拆开。
 func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
 	var st BreakerStatus
-	if b := e.siteBreaker[site]; b != nil {
-		st.Enabled = b.Enabled()
-		st.Window = b.Window()
-		st.Threshold = b.Threshold()
-		st.InWindow = b.Sum()
+	if b := e.smartBreakers[site]; b != nil {
+		st.Enabled, st.Window, st.Threshold = b.cfg.Enabled, b.cfg.Window, b.cfg.Threshold
+		st.InWindow = b.detector.Snapshot(time.Now()).Failures
+		if b.event != nil {
+			st.IncidentID = b.event.ID
+			st.WindowFrom = b.event.report.Capture.From
+		}
 	}
+
 	st.Site = site
 	// 用"该站任一暂停条目"而不是只查整站那条：阶段级暂停也该在这一行里显示出来
 	//（这样才能一眼看出"这一站停的是哪个阶段"）。
@@ -631,6 +614,18 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	}
 	if drained {
 		e.loggerSet.Engine.Info("all workers stopped")
+	}
+	select {
+	case <-tickersDone:
+		e.recordBreakerStop(drained)
+		flushCtx, flushCancel := context.WithDeadline(context.Background(), deadline)
+		if err := e.flushBreakerReports(flushCtx); err != nil {
+			drained = false
+			e.loggerSet.Engine.Errorf("breaker state not persisted at shutdown: %v", err)
+		}
+		flushCancel()
+	default:
+		drained = false
 	}
 	return drained, stats
 }

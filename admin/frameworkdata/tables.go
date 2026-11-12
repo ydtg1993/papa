@@ -21,6 +21,8 @@ var labels = map[string]string{
 	"crawler_browser_identity_bindings": "浏览器身份绑定",
 	"crawler_task_flows":                "运行调度策略",
 	"crawler_tasks":                     "采集任务",
+	"crawler_breaker_incidents":         "熔断事件报告",
+	"crawler_breaker_history":           "熔断运行历史",
 	"crawler_access_token":              "访问令牌",
 	"crawler_config":                    "运行配置",
 	"crawler_runtime_policy_history":    "运行策略历史",
@@ -33,7 +35,7 @@ var labels = map[string]string{
 
 func group(name string) string {
 	switch name {
-	case "crawler_tasks", "crawler_task_trace":
+	case "crawler_tasks", "crawler_task_trace", "crawler_breaker_incidents", "crawler_breaker_history":
 		return "任务与追踪"
 	case "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_runtime_policy_history":
 		return "系统配置"

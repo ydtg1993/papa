@@ -66,8 +66,21 @@
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：计数与阈值**每站一份**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
-| `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
-| `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.New` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
+| `breaker.window` | duration | `5m` | 常规统计窗口；精确记录窗口内终态失败任务轮次。成功不抵消失败，同一任务轮次重复上报只计一次 |
+| `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.NewDetector` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
+| `breaker.policy.short_window` | duration | `30s` | 短时爆发检测窗口 |
+| `breaker.policy.fast_threshold` | int | `5` | 同阶段、同分类、同错误指纹的不同任务数达到此值，立即保护整站；阶段分类只用于定位和报告 |
+| `breaker.policy.mixed_threshold` | int | `8` | 短窗口内失败的不同任务数达到此值、未命中快速或硬保护时，进入有期限的混合错误观察 |
+| `breaker.policy.observe_for` | duration | `30s` | 最后一次失败后的混合观察时长；所有已注册阶段至少两个本轮不同任务成功且没有新失败，排空在途任务后退出观察；覆盖不足则探测。新增失败重计观察时间，不延长总恢复预算，不越过硬阈值 |
+| `breaker.policy.cooldown` | duration | `30s` | 自动保护后的冷却时间 |
+| `breaker.policy.probe_timeout` | duration | `10s` | 单次试探超时 |
+| `breaker.policy.max_probes` | int | `3` | 一次自动恢复最多进行的整站试探轮数；每轮逐阶段验证全部阶段 |
+| `breaker.policy.probe_interval` | duration | `30s` | 试探间隔；明确的 Retry-After 仍是下限 |
+| `breaker.policy.max_recovery` | duration | `5m` | 本轮自动恢复时间预算，耗尽后保持暂停并追加本轮结果，一小时后重新复查 |
+| `breaker.policy.ramp_for` | duration | `30s` | 试探通过后的低速恢复观察时长；到期且每个阶段都有本轮验证成功（混合错误为三个失败样本轮次）后停止继续放行，等待全站在途任务全部结束再确认恢复并清零 |
+| `breaker.policy.ramp_concurrency` | int | `1` | 低速恢复阶段的并发上限 |
+| `breaker.policy.interval` | duration | `1s` | 观察和低速恢复阶段的任务启动间隔下限 |
+| `breaker.policy.capacity` | int | `4096` | 每站检测器保留的失败轮次上限；成功样本使用独立同容量空间。失败超限直接保护整站并标明证据受限，不通过丢弃失败降低计数 |
 
 > **熔断按站点分组**：这一节配的是**默认值**；每个站点可以在
 > `internal/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
@@ -75,7 +88,9 @@
 >
 > **想"启动先别跑"不在这一节**：那是声明期的一道整站闸门 `SiteSpec.StartPaused: true`
 > （入口任务照投、任务寄放在溢出表，后台点「恢复整站」才放开），见 [MONITOR.md](./MONITOR.md) §10。
-> 这一节只管**判据**（窗口与阈值）；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](./MONITOR.md) §9），
+> `policy` 的零值采用上表默认；负值不合法，时长不超过 24h，整数不超过 100000；`capacity` 必须覆盖短窗口两条阈值，`max_recovery` 至少覆盖冷却、单次试探和低速恢复时长。`BreakerSpec.Policy == nil` 继承配置文件策略；非 nil 用该站策略整体替换，未填字段采用框架默认。默认值是通用起点，应结合本站流量与报告调整。
+>
+> 这一节配置**判据与恢复预算**；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](./MONITOR.md) §9），
 > 人工暂停写的是同一张表、来源标成 manual。
 
 ### browser —— 浏览器池（Rod）
@@ -137,14 +152,16 @@
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `false` | 开启该站请求硬限制与远端冷却；跨阶段、跨账号共用 |
+| `enabled` | `false` | 开启该站请求硬限制与自动调节；跨阶段、跨账号共用。关闭也遵守 429/503 的有效 Retry-After |
 | `max_inflight` | `0` | 同站实际请求在途上限；0 不设此上限，非负 |
 | `requests_per_second` / `burst` | `0` / `1` | 速率 0 不限；正速率要求 burst ≥ 1 |
 | `manual_delay` | `"0s"` | 手动请求间隔；与阶段任务间隔独立 |
-| `retry_after_default` / `retry_after_max` | `"30s"` / `"1h"` | 429 缺少有效头时的冷却、最大自动等待预算；超过预算需确认，但不截短服务端期限 |
-| `autothrottle.enabled` | `false` | 自适应延迟；关闭后仍遵守已启用的硬限制 |
+| `retry_after_default` / `retry_after_max` | `"30s"` / `"1h"` | 请求控制与 AutoThrottle 都开启时，429 缺少有效头的默认冷却；最大自动等待预算。超过预算需确认，但不截短服务端期限；关闭请求控制且预算未设正数时用默认 1h |
+| `autothrottle.enabled` | `false` | 请求控制开启后自适应延迟；限流时先检查开关，开启才降频，绝不自动开启。关闭后保持固定间隔和已启用硬限制，不额外添加无头 429 默认冷却 |
 | `autothrottle.min_delay` / `max_delay` | `"100ms"` / `"30s"` | 自动间隔范围，最大值不得小于最小值 |
 | `autothrottle.target_concurrency` / `smoothing` | `1` / `0.5` | 启用时目标并发 > 0，平滑系数在 (0,1] |
+
+有效 `Retry-After` 支持秒数与 HTTP 日期，HTTP、浏览器普通访问和恢复试探均须等待站点期限；较短的新期限不能缩短已有冷却。开启 AutoThrottle 时，429 或带有效头的 503 会增加间隔（通常翻倍、零间隔至少增加 1ms，最大不超过 `max_delay`），即使拒绝响应很快也不加速。配置关闭不会阻止错误计数、熔断分析或有效远端等待。
 
 站点级其他键位于 `runtime.defaults` 或 `runtime.sites.<site>`：
 
@@ -359,7 +376,7 @@ repeat_queue:
 
 | 谁 | 什么时候动它 |
 | --- | --- |
-| 引擎启动 | 读这一行：**没有就按声明生成**；有就载入内存。载入后**按当前声明对齐**（站点集合 / `base_url` / `stage_count`；`breaker_paused*` 普通站一律归零 —— 暂停状态**不跨重启**；声明了 `StartPaused` 的站带 `paused=true` + 本次启动时刻），内容一致就不回写。整份快照**一次写回**（不再先按"全没暂停"写一次、再逐站补写） |
+| 引擎启动 | 读这一行：**没有就按声明生成**；有就载入内存。按当前声明对齐站点集合 / `base_url` / `stage_count`；暂停投影以运行闸门为准：先恢复 `crawler_breaker_incidents` 的活动事件，再应用 `StartPaused`。人工暂停不从此投影恢复；完全接管自动保护时结束自动事件，自动保护自身的待人工处理状态仍按持久事件恢复。整份快照一次写回，内容一致就不回写 |
 | 后台点「暂停整站 / 恢复整站」 | 改内存那份 + 整块回写这一行（在读写口那把写锁里做读-改-写） |
 | 后台「站点」页 `/api/monitor` 的 `sites` | **读内存**（读写口的内存缓存），不查库 |
 
@@ -422,7 +439,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 不再带任何"给旧库补课"的显式迁移（删旧索引、改列类型、回填、删死列那些都删掉了）。
 从更早版本升级时，应核对已有 schema 和数据。`AutoMigrate` 仍可能调整其支持的类型或约束，但不会执行上述历史专项修复，也不会代替业务的数据迁移脚本。
 
-框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_breaker_incidents`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
@@ -479,3 +496,6 @@ M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理�
 本次升级必须停止所有 worker 后显式执行 `papa migrate`。迁移先增加可空的身份哈希列及 `(site, stage, identity_hash)` 唯一索引，再分批回填已有任务；旧 IdempotencyKey 映射为 ID 类型，否则使用规范 URL。回填成功后才删除 `idx_site_stage_url_hash` 和 `idx_idempotency_hash`。不删除任何任务或业务数据。
 
 规范 URL 可能让原来不同的 URL 合并为同一身份（例如默认端口、fragment）。遇到这种冲突或非法历史 URL，迁移报错并保留旧索引，不自动合并；运维核对任务后显式解决，再重跑迁移。失败前已经完成的回填可保留，重复迁移会跳过，不要求整批DDL事务回滚。迁移未成功完成之前不要启动新版本；新列允许 NULL 仅为升级过渡，所有正常创建入口都会生成身份。大表建唯一索引应预留维护窗口并先备份。
+
+
+熔断升级须显式迁移创建 `crawler_breaker_history`，用于 obs 当日过程与重启历史；现有 `crawler_breaker_incidents` 保留控制快照。长期保护固定每小时复查，遵守 Retry-After，人工暂停不自动解除。取样和历史规则见 [BREAKER.md](BREAKER.md)。

@@ -23,13 +23,27 @@ crawler:
     retention: "168h"          # 保留期（默认 7 天，与 trace 对齐）；负数 = 不自动清理
     max_file_mb: 8             # 单页上限（MB）；超了不归档并记 WARN
   # 熔断闸门：窗口内**终态失败**数（重试耗尽或不可重试，不是每次 attempt）达阈值就把该站所有阶段的 worker 闸住，
-  # 并发一条 critical 告警；从后台右上角铃铛面板的「恢复」放行（可逐站放行）。暂停**不跨重启**。
+  # 并发一条 critical 告警；自动保护状态持久化，按冷却/试探预算恢复，人工暂停不自动解除。
   # **闸门每站一把**：这里这份是**没单配阈值的站点**用的默认值（`SiteSpec.Breaker` 按站点覆盖），
   # 一个站被墙不会把别的站一起闸住。详见 docs/framework/CORE_CONFIG.md
   breaker:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
     threshold: 50              # 达阈值即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
+    policy:
+      short_window: "30s"      # 同指纹爆发及混合错误观察窗口
+      fast_threshold: 5       # 同阶段/同指纹的不同失败任务数
+      mixed_threshold: 8      # 短窗口不同失败任务数；先受限观察
+      observe_for: "30s"       # 最后一次失败后观察；成功覆盖要求见 BREAKER 手册
+      cooldown: "30s"
+      probe_timeout: "10s"
+      max_probes: 3           # 整站试探轮数，每轮验证全部阶段
+      probe_interval: "30s"
+      max_recovery: "5m"      # 单轮预算；耗尽后保持保护，一小时后复查
+      ramp_for: "30s"          # 全部阶段验证成功后仍须等全站在途任务结束
+      ramp_concurrency: 1
+      interval: "1s"
+      capacity: 4096          # 错误任务轮去重上限；超限保护而不丢失败计数
   # 阶段结构/物理容量声明在 internal/sites/<站名>.go；有效并发与间隔可由 runtime/OA 覆盖。
 
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，

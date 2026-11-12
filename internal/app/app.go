@@ -798,6 +798,9 @@ func (a *App) Run(ctx context.Context) {
 	// 下载器（文件 / m3u8）：框架按 DefaultConfig 备好**基座** —— 它们没有"全局那层配置面"，
 	// 要按站点/阶段各配一份写在声明里。必须在 ApplyRegisterStage 之前：两层覆盖是叠在基座上的。
 	a.Engine.InitDownloaders()
+	if err := a.Engine.InitBreakerRuntime(runCtx); err != nil {
+		panic(fmt.Errorf("initialize breaker runtime: %w", err))
+	}
 	// 启用工作流和对应工作池
 	a.Engine.ApplyRegisterStage()
 
@@ -1101,10 +1104,16 @@ func (a *App) httpServer(ctx context.Context) {
 				At:       ev.At,
 			})
 		},
-		TaskTrace:        a.Engine.ListTrace,
-		VerifyTokenValue: tokenCounter.Confirmer(a.Logger.Sys),
-		BreakerStatuses:  a.Engine.BreakerStatuses,
-		BreakerIncidents: a.Engine.BreakerIncidents,
+		TaskTrace:          a.Engine.ListTrace,
+		VerifyTokenValue:   tokenCounter.Confirmer(a.Logger.Sys),
+		BreakerStatuses:    a.Engine.BreakerStatuses,
+		BreakerReports:     a.Engine.BreakerReports,
+		ForceResumeBreaker: a.Engine.ForceResumeSite,
+		OnBreakerForceResume: func(operator, site string) {
+			if rec != nil {
+				rec.RecordEvent(oplog.Event{Table: "breaker", Action: "force_resume", Values: map[string]any{"scope": site, "note": "人工强制解除保护；未验证健康，保留失败计数"}, Operator: operator, At: time.Now()})
+			}
+		},
 		// 暂停/放行的 scope 有两层：`stage` 为空 = 整站，否则只动那一站的某个阶段。
 		// 两层写的是**同一张暂停信号表**（见 engine/pause.go），只是 scope 不同。
 		ResumeBreaker: func(site, stage string) bool {
@@ -1119,7 +1128,7 @@ func (a *App) httpServer(ctx context.Context) {
 				return
 			}
 			values := map[string]any{
-				"note":  "手动放行被暂停的抓取",
+				"note":  "请求重试整站恢复或解除普通人工暂停；不跳过自动验证",
 				"scope": site, // 哪个站（站点是必填维度，不存在空键）
 			}
 			if stage != "" {

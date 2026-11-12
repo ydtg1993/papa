@@ -197,7 +197,7 @@ func TestManualRetryAndUrgencyKeepRepeatCountWhenSpilled(t *testing.T) {
 			if e.spillBacklog() != 1 {
 				t.Fatal("test did not exercise spill")
 			}
-			e.clearAllPauses()
+			e.ForceResumeSite("stub")
 			e.drainSpilled()
 			if f.row["repeat"] != int64(12) {
 				t.Fatalf("%s consumed polling round: %v", action, f.row["repeat"])
@@ -291,7 +291,7 @@ func TestErrorRetryRepeatCountIndependentOfQueuePressure(t *testing.T) {
 				t.Fatal("failed to requeue")
 			}
 			if mode == "paused" {
-				e.clearAllPauses()
+				e.ForceResumeSite("stub")
 			}
 			e.drainSpilled()
 			if got := f.row["repeat"]; got != int64(12) {

@@ -67,6 +67,8 @@ type SiteSpec struct {
 
 // BreakerSpec 一个站点的熔断阈值（覆盖 crawler.breaker 的默认值）。
 type BreakerSpec struct {
+	// Policy overrides the global detection/recovery policy; nil inherits it.
+	Policy *config.BreakerPolicy
 	// Enabled 本站是否启用熔断。**注意它不看默认值** —— 写了这个字段就由它说了算，
 	// 于是"全局开着、某个站关掉"和"全局关着、某个站单独开"都能表达。
 	Enabled   bool
@@ -76,7 +78,9 @@ type BreakerSpec struct {
 
 // StageSpec 一个阶段的完整声明。
 type StageSpec struct {
-	RepeatLimit int // 轮询队列上限：repeat >= 此值停止重投；0 不限，不影响恢复/错误队列。
+	// 非空表示完整阶段可由只读探针验证；有写入/下载/派发的阶段不得声明。
+	BreakerReadOnlyCoverage string
+	RepeatLimit             int // 轮询队列上限：repeat >= 此值停止重投；0 不限，不影响恢复/错误队列。
 	// Fetcher 阶段的实现。名字取自它自己的 `GetStage()`，不在这里写第二遍。
 	// 实现了 engine.EntrySubmitter（`SubmitEntries`）的阶段，声明里写了 `Entry: true` 时启动那一趟投一轮。
 	Fetcher     engine.Fetcher
@@ -319,6 +323,9 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 	if st.RepeatLimit < 0 {
 		return plan, fmt.Errorf("阶段 %q: RepeatLimit 不能为负数", stage)
 	}
+	if st.BreakerReadOnlyCoverage != "" && (strings.TrimSpace(st.BreakerReadOnlyCoverage) == "" || len(st.BreakerReadOnlyCoverage) > 1024) {
+		return plan, fmt.Errorf("阶段 %q: BreakerReadOnlyCoverage 必须描述完整只读覆盖范围，且不超过 1024 字节", stage)
+	}
 	if st.WorkerCount <= 0 {
 		return plan, fmt.Errorf("阶段 %q: WorkerCount 必须 > 0（为 0 时池子里没有 worker，任务会静静躺在队列里）", stage)
 	}
@@ -344,16 +351,17 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 		stage:   stage,
 		fetcher: st.Fetcher,
 		cfg: engine.StageConfig{
-			RepeatLimit: st.RepeatLimit,
-			MaxAttempts: attempts,
-			Backoff:     backoff,
-			WorkerCount: st.WorkerCount,
-			QueueSize:   st.QueueSize,
-			Delay:       delay,
-			Site:        site.Key,
-			Entry:       st.Entry,
-			M3U8:        st.M3U8,
-			FileDown:    st.FileDown,
+			BreakerReadOnlyCoverage: st.BreakerReadOnlyCoverage,
+			RepeatLimit:             st.RepeatLimit,
+			MaxAttempts:             attempts,
+			Backoff:                 backoff,
+			WorkerCount:             st.WorkerCount,
+			QueueSize:               st.QueueSize,
+			Delay:                   delay,
+			Site:                    site.Key,
+			Entry:                   st.Entry,
+			M3U8:                    st.M3U8,
+			FileDown:                st.FileDown,
 		},
 	}
 	// 两态 × 有没有实现入口：四个格子各有各的说法，别让任一种组合静默过去。
@@ -447,6 +455,7 @@ func parseBackoff(s string) (time.Duration, error) {
 // 的站点当它自己的阈值用（每站一个计数器，见 planSite）。
 func defaultBreakerConfig(def config.BreakerConfig) breaker.Config {
 	return breaker.Config{
+		Policy:    def.Policy,
 		Enabled:   def.Enabled,
 		Window:    def.WindowOrDefault(),
 		Threshold: def.Threshold,
@@ -455,9 +464,16 @@ func defaultBreakerConfig(def config.BreakerConfig) breaker.Config {
 
 func (b BreakerSpec) toConfig(def config.BreakerConfig) (breaker.Config, error) {
 	out := breaker.Config{
+		Policy:    def.Policy,
 		Enabled:   b.Enabled, // 不看默认：写了就由它说了算（见 BreakerSpec.Enabled）
 		Threshold: def.Threshold,
 		Window:    def.WindowOrDefault(),
+	}
+	if b.Policy != nil {
+		out.Policy = *b.Policy
+	}
+	if err := breaker.ValidatePolicy(out.Policy); err != nil {
+		return out, err
 	}
 	if b.Threshold != 0 {
 		out.Threshold = b.Threshold

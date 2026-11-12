@@ -97,14 +97,16 @@ type QueueStat struct {
 // InWindow 是实时值，Paused 之后仍在变（窗口会滑走）；Failures / Stage / Reason 是
 // **触发那一刻**的快照，不会随后续滑动而改写 —— 排查时要看的是"当时为什么断的"。
 type BreakerStatus struct {
-	Enabled   bool          `json:"enabled"`
-	Window    time.Duration `json:"window"`
-	Threshold int           `json:"threshold"`
-	InWindow  int           `json:"in_window"` // 当前窗口内的终态失败数（实时）
-	Paused    bool          `json:"paused"`
-	PausedAt  time.Time     `json:"paused_at"`
-	ResumedAt time.Time     `json:"resumed_at"`
-	Reason    string        `json:"reason"`
+	IncidentID string        `json:"incident_id"`
+	WindowFrom time.Time     `json:"window_from"`
+	Enabled    bool          `json:"enabled"`
+	Window     time.Duration `json:"window"`
+	Threshold  int           `json:"threshold"`
+	InWindow   int           `json:"in_window"` // 当前窗口内的终态失败数（实时）
+	Paused     bool          `json:"paused"`
+	PausedAt   time.Time     `json:"paused_at"`
+	ResumedAt  time.Time     `json:"resumed_at"`
+	Reason     string        `json:"reason"`
 	// Source 这条暂停是谁下的：`manual`（后台/业务手动）或 `breaker`（熔断自动触发）。
 	// 横幅靠它区分两种说法 —— 别再回去用"enabled && stage"那种启发式猜
 	//（熔断关着时的手动暂停、以及将来的阶段级手动暂停都会猜错）。

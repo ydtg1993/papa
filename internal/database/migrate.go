@@ -34,6 +34,8 @@ func AllFrameworkModels() []Model {
 func FrameworkModels(cfg *config.Config) []Model {
 	out := []Model{
 		{Name: "crawler_tasks", Value: &models.CrawlerTask{}},
+		{Name: "crawler_breaker_incidents", Value: &models.BreakerIncident{}},
+		{Name: "crawler_breaker_history", Value: &models.BreakerHistory{}},
 		{Name: "crawler_access_token", Value: &models.AccessToken{}},
 		// 运行期配置（来源 IP 白名单、站点快照等）。**无条件登记**：它是后台设置页与站点页的落点，
 		// 而且"表在不在"不该取决于某个开关 —— 时有时无会让排查变成猜谜。

@@ -55,11 +55,14 @@ type Group struct {
 
 type Report struct {
 	Capture
-	Observed int      `json:"observed"`
-	Complete bool     `json:"complete"`
-	Summary  string   `json:"summary"`
-	Notes    []string `json:"notes"`
-	Groups   []Group  `json:"groups"`
+	Observed       int      `json:"observed"`
+	Complete       bool     `json:"complete"`
+	Summary        string   `json:"summary"`
+	Notes          []string `json:"notes"`
+	Groups         []Group  `json:"groups"`
+	Hypotheses     []string `json:"hypotheses,omitempty"`
+	Contradictions []string `json:"contradictions,omitempty"`
+	Missing        []string `json:"missing,omitempty"`
 }
 
 func clip(s string, n int) string {
@@ -73,7 +76,7 @@ func clip(s string, n int) string {
 }
 
 func Clean(s Sample) Sample {
-	s.Truncated = s.Truncated || len(s.Error) > 1024 || len(s.URL) > 512 || len(s.Stage) > 128 || len(s.Kind) > 128
+	s.Truncated = s.Truncated || len(s.Error) > 1024 || len(s.URL) > 512 || len(s.Stage) > 512 || len(s.Kind) > 128
 	// Never cut a credential in half before redaction (e.g. long URL userinfo).
 	// Oversized input is omitted entirely to keep parsing work bounded.
 	if len(s.Error) > 8192 {
@@ -84,7 +87,7 @@ func Clean(s Sample) Sample {
 	}
 	s.Error = clip(redact.Text(s.Error), 1024)
 	s.URL = clip(redact.URL(s.URL), 512)
-	s.Stage = clip(redact.Text(s.Stage), 128)
+	s.Stage = clip(redact.Text(s.Stage), 512)
 	s.Kind = clip(redact.Text(s.Kind), 128)
 	return s
 }

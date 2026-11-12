@@ -10,7 +10,8 @@ import (
 
 type breakerAnalysisView struct {
 	incident.Report
-	Text string `json:"text"`
+	Text      string              `json:"text"`
+	Lifecycle *incident.Lifecycle `json:"lifecycle,omitempty"`
 }
 
 func (s *Monitor) breakerAnalysisHandler(w http.ResponseWriter, r *http.Request) {
@@ -18,7 +19,7 @@ func (s *Monitor) breakerAnalysisHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if s.cfg.BreakerIncidents == nil || s.cfg.BreakerStatuses == nil {
+	if s.cfg.BreakerReports == nil || s.cfg.BreakerStatuses == nil {
 		http.Error(w, "熔断分析未配置", 404)
 		return
 	}
@@ -34,12 +35,18 @@ func (s *Monitor) breakerAnalysisHandler(w http.ResponseWriter, r *http.Request)
 	}
 	id := r.URL.Query().Get("id")
 	views := []breakerAnalysisView{}
-	for _, c := range s.cfg.BreakerIncidents(site) {
-		if id != "" && c.ID != id {
+	retention := "显示数据库中本站最近 100 次故障事件；事件内证据和时间线有上限，达到上限会标记。"
+	reports, err := s.cfg.BreakerReports(r.Context(), site)
+	if err != nil {
+		http.Error(w, "持久化熔断报告读取失败，请检查服务日志和数据库", http.StatusServiceUnavailable)
+		return
+	}
+	for _, report := range reports {
+		if report.Capture.Site != site || (id != "" && report.Capture.ID != id) {
 			continue
 		}
-		report := incident.Analyze(c)
-		views = append(views, breakerAnalysisView{Report: report, Text: incident.Text(report)})
+		clean := report.Clean()
+		views = append(views, breakerAnalysisView{Report: clean.Analysis(), Text: clean.Text(), Lifecycle: &clean})
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -49,7 +56,7 @@ func (s *Monitor) breakerAnalysisHandler(w http.ResponseWriter, r *http.Request)
 	}
 	if format != "" {
 		if len(views) == 0 {
-			http.Error(w, "本进程尚无熔断现场", 404)
+			http.Error(w, "尚无故障事件", 404)
 			return
 		}
 		if format == "text" {
@@ -60,8 +67,8 @@ func (s *Monitor) breakerAnalysisHandler(w http.ResponseWriter, r *http.Request)
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="breaker-analysis.json"`)
-		_ = json.NewEncoder(w).Encode(views[0].Report)
+		_ = json.NewEncoder(w).Encode(views[0])
 		return
 	}
-	writeJSON(w, map[string]any{"reports": views, "retention": "本进程每站最近 4 次，全局最多 32 次；恢复后保留。重启前的历史请在 obs 报告查看（需事件记录与报告生成已启用）。"})
+	writeJSON(w, map[string]any{"reports": views, "retention": retention})
 }

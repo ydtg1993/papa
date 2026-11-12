@@ -9,7 +9,10 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a,b)=
 function setup() {
     let nodes = {}, auth = 0;
     const requests = [], dialogs = [], downloads = [], copies = [];
+    const timers = new Map(); let timerId=0;
     const context = vm.createContext({
+        setTimeout(fn,delay) {assert.equal(delay,3000);timers.set(++timerId,fn);return timerId;},
+        clearTimeout(id) {timers.delete(id);},
         encodeURIComponent,
         esc: s => String(s).replaceAll('<','&lt;').replaceAll('>','&gt;'),
         captureMonitorView: () => { const generation=auth; return ()=>auth===generation; },
@@ -26,7 +29,7 @@ function setup() {
         downloadFile: (url,current)=>{if(current())downloads.push(url);},
     });
     vm.runInContext(source.slice(start,end),context);
-    return {requests,dialogs,downloads,copies,load:site=>context.openBreakerAnalysis(site),logout:()=>{auth++;}};
+    return {requests,dialogs,downloads,copies,timers,load:site=>context.openBreakerAnalysis(site),logout:()=>{auth++;},tick:()=>{const [id,fn]=timers.entries().next().value;timers.delete(id);return fn();}};
 }
 function response(text, id='one') {return {ok:true,json:async()=>({retention:'bounded history',reports:[{id,at:'time',failures:1,complete:true,summary:'<img onerror=bad>',text,groups:[{stage:'<script>',category:'HTTP 429',count:1,percent:100,tasks:1}]}]})};}
 (async()=>{
@@ -50,4 +53,26 @@ function response(text, id='one') {return {ok:true,json:async()=>({retention:'bo
 
     const failed=setup();const f=failed.load('a');failed.requests[0].resolve({ok:false,text:async()=>'该熔断现场已过期'});await f;
     assert.equal(failed.dialogs[0].nodes['breaker-analysis-status'].textContent,'该熔断现场已过期');
+
+    const live=setup();const open=live.load('a');
+    const one=(await response('first','one').json()).reports[0], two=(await response('history','two').json()).reports[0];
+    one.lifecycle={state:'manual',recheck_at:'2026-11-12T12:00:00Z',cycle:2,timeline:[{action:'process_restart',reason:'重新启动',check:{verification:'readonly',coverage:'旧覆盖 <unsafe>',sample_ids:['task:1'],verification_note:'旧证明不复用'}}],checks:[
+        {stage:'read',state:'passed',verification:'readonly',coverage:'完整解析 <unsafe>',verification_note:'完整只读验证通过',probe_successes:2,task_successes:0,sample_ids:['task:1']},
+        {stage:'write',state:'passed',verification:'task',coverage:'完整真实任务路径',verification_note:'未验证：仍需本轮真实任务成功',probe_successes:1,task_successes:0}
+    ]};
+    live.requests[0].resolve({ok:true,json:async()=>({retention:'live',reports:[one,two]})});await open;
+    const html=live.dialogs[0].nodes['breaker-analysis-body'].innerHTML;
+    assert.ok(html.includes('验证方式与覆盖范围') && html.includes('完整只读验证通过'));
+    assert.ok(html.includes('未验证：仍需本轮真实任务成功'));
+    assert.ok(html.includes('完整解析 &lt;unsafe&gt;') && !html.includes('<unsafe>'));
+    assert.ok(html.includes('下次小时复查') && html.includes('旧覆盖 &lt;unsafe&gt;') && html.includes('task:1'));
+    const select=live.dialogs[0].nodes['breaker-analysis-select'];select.value='1';select.onchange();
+    assert.equal(live.dialogs[0].pre.textContent,'history');
+    const update=live.tick();assert.equal(live.timers.size,0,'no overlapping refresh during request');
+    const newest={...one,id:'newest'}, changed={...two,text:'updated history'};
+    live.requests[1].resolve({ok:true,json:async()=>({retention:'live',reports:[newest,changed,one]})});await update;
+    assert.equal(select.value,'1');assert.equal(live.dialogs[0].pre.textContent,'updated history');
+    live.dialogs[0].resolve();await Promise.resolve();assert.equal(live.timers.size,0,'close must cancel refresh');
+
+    assert.equal(s.timers.size,1);await s.tick();assert.equal(s.requests.length,2,'logout must stop refresh requests');
 })().catch(e=>{console.error(e);process.exitCode=1;});

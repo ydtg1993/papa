@@ -104,7 +104,15 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   spill.go     高水位溢出与回灌
   pause.go     暂停信号表（唯一真源：scope / reason / source）+ 取任务点的闸门
                （入队点的收口在 submit.go 的 submitToStage；熔断只往这张表里写）
-  breaker_diagnostics.go / breaker_diagnostics_test.go  有界熔断现场、恢复隔离、历史保留和并发回归
+  breaker_runtime.go  分类状态机、受限准入/排空、独立报告定时写入与持久化屏障
+  breaker_recovery.go  全阶段验证进度、整站试探、真实任务验证、最终清零与统一时间线
+  breaker_site_recovery_test.go / breaker_runtime_test.go / breaker_concurrency_test.go / breaker_runtime_mysql_test.go
+  breaker_readonly_test.go  显式完整只读覆盖、两次间隔检查、混合阶段、并发晚结果及重启回归（含隔离 MySQL）
+               阶段隔离、在途终态、观察退出、阻塞写入/重试节奏、重启及 MySQL 回归
+  breaker_snapshot.go  运行控制到只读报告投影；裁剪不回写控制
+  breaker_samples.go / breaker_hourly_test.go  失败样本的版本化重试、三次验证与小时复查回归
+  breaker_review_fixes_test.go  截断、标识、中断、重试/强制解除与重启回归
+  breaker_reports_test.go  唯一事件 ID、Detector 证据快照、人工暂停生命周期和并发回归
   batch.go     各治理队列共用的分页扫描（keyset 游标）
   dedup.go     内存去重表 + 活跃任务装载
   sitestat.go  站点表与站点维度快照（启动播种、轮询统计回写、熔断状态）
@@ -129,6 +137,7 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   recoverqueue.go · errorqueue.go · repeatpoll.go · delayqueue.go · taskadmin.go · trace.go
 admin/                          ★后台模块：**对外公开**，业务项目可以直接 import 复用
   server/       监控后台（HTML / API / 静态资源）
+    breaker_control_test.go / testdata/breaker_control_test.js  重试与强制解除入口、确认和审计
     breaker_analysis.go / breaker_analysis_test.go  鉴权只读熔断分析、指定现场导出、空态和过期响应
     breaker_analysis_ui_test.go / breaker_analysis_browser_test.go  请求竞态、纯文本证据、历史切换和窄屏浏览器回归
     ui_behavior_test.go        Node 执行生产 JS 与依赖真实 renderer 的行为回归入口
@@ -148,6 +157,10 @@ admin/                          ★后台模块：**对外公开**，业务项�
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ msgqueue/ track/ breaker/
+    breaker/recovery.go / recovery_test.go  原始恢复控制数据与失败窗口快照恢复
+    breakerstore/snapshot.go / store.go / history.go  控制快照与追加历史同事务；按日报时间读取历史
+    models/breaker_history.go  追加运行记录表，随显式框架迁移创建
+    breaker/detector.go / policy.go / detector_test.go  有界终态轮次、短窗口同类/混合爆发、常规硬保护和恢复预算
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
     rod_diagnostics.go / rod_diagnostics_browser.go  鉴权诊断 handler、环境检查及隔离 Chromium/Rod 启动链路
     rod_diagnostics_view.go / rod_diagnostics.js  系统管理诊断页与嵌入脚本
@@ -185,9 +198,10 @@ pkg/                             可独立复用的件
 obs/                             运行报告引擎（通用、只读）：obs.go 契约 / load.go 三层装载 /
                                  eventlog/ 事件读取 / logidx/ 日志证据 / analyze/ 通用分析节 /
                                  pattern/ 内置模式库 / report/ 4 产物渲染
-  incident/incident.go / classify.go  实时与历史报告共用的错误分组、脱敏证据、分类及文本导出
+  incident/incident.go / classify.go / failure.go  实时与历史报告共用的错误分组、脱敏证据、结构化分类及文本导出
+  incident/failure_test.go           稳定错误码、数字保留、HTTP/网络/认证/等待条件分类
   incident/incident_test.go          状态码保留、窗口/数量上限、脱敏和原因置信边界
-  analyze/breaker.go / breaker_test.go  按运行/站点/窗口关联熔断事件，旧事件缺少窗口时降级
+  analyze/breaker_reports.go / breaker_reports_test.go  直接查窗口相关/活动持久报告；离线按最近事件 ID 引用，不重建
 models/                          框架自带的表结构
 cmd/papa/                        CLI（new / check / upgrade / migrate / token / html / rod / diff / select / report / strategy-migrate inspect）
   scaffold_safe.go               new 独占写入与链接路径保护；--missing-only 只补缺失文件
@@ -250,7 +264,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | --- | --- | --- |
 | 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `StartPaused` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
 | 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine.stage.go` 建池那一段 |
-| 执行 | **每站一个熔断计数器**（没单配阈值的站也用自己那份，阈值取 `crawler.breaker` 那份默认）；它只判据，不再持有暂停状态 | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine.breakerFor` |
+| 执行 | **每站一个终态 Detector**；阶段分类用于定位，自动保护统一整站；全阶段验证与在途排空完成后才清零，人工解除不清零 | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine/breaker_runtime.go`、`engine/breaker_recovery.go` |
 | 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |

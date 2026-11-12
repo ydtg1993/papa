@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ydtg1993/papa/v4/internal/breaker"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +201,11 @@ var rules = []rule{
 				"  要关掉熔断请把 enabled 改成 false", b.Threshold)
 		}
 		return nil
+	}},
+	// Capacity anchors the cross-field policy rule to a real YAML leaf; the
+	// shared validator names the precise invalid duration/threshold in its error.
+	{"crawler.breaker.policy.capacity", func(c *Config) error {
+		return breaker.ValidatePolicy(c.Crawler.Breaker.Policy)
 	}},
 
 	{"proxy.refresh_interval", func(c *Config) error {

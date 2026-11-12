@@ -97,12 +97,17 @@ type MonitorConfig struct {
 	TaskTrace      func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
 	// BreakerStatuses 各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
 	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
-	BreakerStatuses  func() map[string]core.BreakerStatus
-	BreakerIncidents func(site string) []incident.Capture
-	// ResumeBreaker 放行某个站点（`stage` 为空）或**某站的某个阶段**的抓取（清掉对应的暂停信号）；
-	// 返回是否真的从暂停态切了回来（本来在跑就是 false）。
+	BreakerStatuses func() map[string]core.BreakerStatus
+	// BreakerReports loads durable lifecycle reports, including final reports.
+	// It is the sole report source; no process-local report fallback.
+	BreakerReports func(context.Context, string) ([]incident.Lifecycle, error)
+	// ResumeBreaker 重试站点的自动恢复，或解除纯人工暂停；stage 非空只解除该阶段人工暂停。
+	// 返回是否接受了重试或解除了人工暂停；不代表已验证恢复。
 	// 要知道有哪些站点，看 BreakerStatuses 的键。
 	ResumeBreaker func(site, stage string) bool
+	// ForceResumeBreaker explicitly bypasses whole-site verification.
+	ForceResumeBreaker   func(site string) bool
+	OnBreakerForceResume func(operator, site string)
 	// OnBreakerResume 放行成功后的回调，宿主拿它记操作日志（人在场的干预必须留痕）；可空。
 	// `stage` 为空 = 整站那一层。
 	OnBreakerResume func(operator, site, stage string)
@@ -257,6 +262,7 @@ func (s *Monitor) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/breaker", s.wrap(s.breakerHandler))
 	mux.HandleFunc("/api/breaker/analysis", s.wrap(s.breakerAnalysisHandler))
 	mux.HandleFunc("/api/breaker/resume", s.wrap(s.breakerResumeHandler))
+	mux.HandleFunc("/api/breaker/force-resume", s.wrap(s.breakerForceResumeHandler))
 	mux.HandleFunc("/api/breaker/pause", s.wrap(s.breakerPauseHandler))
 	mux.HandleFunc("/api/task/trace", s.wrap(s.taskTraceHandler))
 	mux.HandleFunc("/api/logs", s.wrap(s.logsListHandler))
@@ -637,11 +643,8 @@ func (s *Monitor) breakerHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"breakers": sortedBreakerStatuses(s.cfg.BreakerStatuses())})
 }
 
-// breakerResumeHandler 手动放行暂停中的抓取（手动暂停的、熔断触发的，同一个按钮）。
-//
-// 这是**人在场的干预**，所以成功了要记进操作日志（OnBreakerResume 回调，宿主接到 oplog）。
-// 已经是运行态时返回 resumed=false 而不是报错 —— 「重复点击恢复」不该看起来像失败，
-// 但也不能回一个含糊的 ok 让调用方以为是自己放行的。
+// breakerResumeHandler requests bounded whole-site verification or releases a
+// pure manual pause. The force endpoint is the explicit verification bypass.
 func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -682,7 +685,7 @@ func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(resumed) == 0 {
-		writeJSON(w, map[string]any{"status": "ok", "resumed": false, "note": "当前不在暂停态"})
+		writeJSON(w, map[string]any{"status": "ok", "resumed": false, "note": "未变更：当前无需恢复，或探针尚未退出"})
 		return
 	}
 	operator := auth.OperatorFrom(r.Context())
@@ -691,13 +694,42 @@ func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 			s.cfg.OnBreakerResume(operator, key, stage)
 		}
 	}
-	s.logger.Infof("已手动放行（操作人 %q，scope=%q stage=%q），恢复取任务", operator, strings.Join(resumed, ","), stage)
+	s.logger.Infof("已请求重试恢复/解除人工暂停（操作人 %q，scope=%q stage=%q）", operator, strings.Join(resumed, ","), stage)
 	// resumed 仍是**布尔**（前端/脚本靠它区分"本来就没暂停"）；放行了哪些 scope 在 resumed_scopes 里。
 	out := map[string]any{"status": "ok", "resumed": true, "resumed_scopes": resumed}
 	if stage != "" {
 		out["stage"] = stage
 	}
 	writeJSON(w, out)
+}
+
+func (s *Monitor) breakerForceResumeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.cfg.ForceResumeBreaker == nil || s.cfg.BreakerStatuses == nil {
+		http.Error(w, "breaker not configured", http.StatusNotFound)
+		return
+	}
+	site, stage, ok := breakerTargetParam(r)
+	if !ok || site == "" || stage != "" {
+		http.Error(w, "force release requires one site and no stage", http.StatusBadRequest)
+		return
+	}
+	if _, exists := s.cfg.BreakerStatuses()[site]; !exists {
+		http.Error(w, "unknown scope", http.StatusBadRequest)
+		return
+	}
+	changed := s.cfg.ForceResumeBreaker(site)
+	if changed {
+		operator := auth.OperatorFrom(r.Context())
+		if s.cfg.OnBreakerForceResume != nil {
+			s.cfg.OnBreakerForceResume(operator, site)
+		}
+		s.logger.Infof("人工强制解除保护（操作人 %q，site=%q）；未经健康验证，保留失败计数", operator, site)
+	}
+	writeJSON(w, map[string]any{"status": "ok", "resumed": changed, "mode": "force", "note": "强制解除不代表健康验证通过，失败计数保留"})
 }
 
 // breakerPauseHandler 手动暂停某个站点的抓取 —— 与 resume 是一对，但**scope 必填**。

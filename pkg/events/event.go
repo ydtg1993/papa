@@ -11,20 +11,21 @@ const Version = 1
 
 // 事件类型（稳定契约，只增不改）。
 const (
-	TypeRunStarted     = "run_started"
-	TypeRunStopped     = "run_stopped"
-	TypeTaskClaimed    = "task_claimed"
-	TypeTaskFinished   = "task_finished"
-	TypeTaskFailed     = "task_failed"
-	TypeTaskRetry      = "task_retry_scheduled"
-	TypeTaskRequeued   = "task_requeued"
-	TypeQueueRound     = "queue_round"
-	TypeBacklogSampled = "backlog_sampled"
-	TypeStageSnapshot  = "stage_snapshot"
-	TypeSpillChanged   = "spill_changed"
-	TypeBreakerTripped = "breaker_tripped"
-	TypePauseResumed   = "pause_resumed"
-	TypeStagePool      = "stage_pool"
+	TypeRunStarted        = "run_started"
+	TypeRunStopped        = "run_stopped"
+	TypeTaskClaimed       = "task_claimed"
+	TypeTaskFinished      = "task_finished"
+	TypeTaskFailed        = "task_failed"
+	TypeTaskRetry         = "task_retry_scheduled"
+	TypeTaskRequeued      = "task_requeued"
+	TypeQueueRound        = "queue_round"
+	TypeBacklogSampled    = "backlog_sampled"
+	TypeStageSnapshot     = "stage_snapshot"
+	TypeSpillChanged      = "spill_changed"
+	TypeBreakerTripped    = "breaker_tripped"
+	TypeBreakerTransition = "breaker_transition"
+	TypePauseResumed      = "pause_resumed"
+	TypeStagePool         = "stage_pool"
 )
 
 // Event 是事件流的一行；字段只增不改，读者必须忽略未知键。

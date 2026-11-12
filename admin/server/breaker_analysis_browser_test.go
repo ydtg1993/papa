@@ -34,16 +34,18 @@ func TestBreakerAnalysisRealBrowser(t *testing.T) {
 	m.cfg.BreakerStatuses = func() map[string]core.BreakerStatus {
 		return map[string]core.BreakerStatus{"fixture": {Site: "fixture"}}
 	}
-	m.cfg.BreakerIncidents = func(string) []incident.Capture {
-		out := []incident.Capture{}
+	m.cfg.BreakerReports = func(context.Context, string) ([]incident.Lifecycle, error) {
+		out := []incident.Lifecycle{}
 		for _, code := range []string{"429", "403"} {
 			c := incident.Capture{ID: code, Site: "fixture", At: now, From: now.Add(-time.Minute), Window: time.Minute, Threshold: 3, Failures: 3}
 			for i := 0; i < 3; i++ {
 				c.Samples = append(c.Samples, incident.Sample{At: now, Stage: "detail", Kind: "retryable", TaskID: int64(i + 1), Error: "HTTP " + code + " <img src=x onerror=alert(1)>", URL: "https://example.test/detail?token=hidden"})
 			}
-			out = append(out, c)
+			out = append(out, incident.Lifecycle{Capture: c, State: "cooldown", Evidence: c.Samples,
+				Checks:   []incident.StageCheck{{Stage: "detail", State: "passed", Round: 1, TaskSuccesses: 1, Verified: true}, {Stage: "list", State: "failed", Round: 1, Detail: "HTTP " + code + " <img src=x onerror=alert(1)>"}, {Stage: "read", State: "passed", Round: 1, Verification: "readonly", Coverage: "全部读取和解析 <img src=x onerror=alert(1)>", ProbeSuccesses: 2, Verified: true}, {Stage: "write", State: "passed", Round: 1, ProbeSuccesses: 1}},
+				Timeline: []incident.Transition{{At: now, Action: "stage_probe_failed", Stage: "list", Round: 1, Failures: 3, Reason: "阶段试探失败，整站继续暂停", NextAttemptAt: now.Add(time.Minute)}}})
 		}
-		return out
+		return out, nil
 	}
 	mux := http.NewServeMux()
 	m.Register(mux)
@@ -73,6 +75,12 @@ func TestBreakerAnalysisRealBrowser(t *testing.T) {
 			return err
 		}
 		if _, err = page.Eval(`()=>{if(document.querySelector('#breaker-analysis-body img'))throw new Error('HTML injection');if(!document.querySelector('#breaker-analysis-body').textContent.includes('HTTP 429'))throw new Error('missing analysis');Array.from(document.querySelectorAll('.dlg-actions button')).find(b=>b.textContent==='复制报告').click();if(!window.copied.includes('HTTP 429')||window.copied.includes('hidden'))throw new Error('copy evidence');}`); err != nil {
+			return err
+		}
+		if _, err = page.Eval(`()=>{let b=document.querySelector('#breaker-analysis-body');if(!b.textContent.includes('全阶段验证进度')||!b.textContent.includes('验证通过')||!b.textContent.includes('验证失败')||!b.querySelector('ol li').textContent.includes('整站继续暂停'))throw new Error('missing operating timeline');}`); err != nil {
+			return err
+		}
+		if _, err = page.Eval(`()=>{let b=document.querySelector('#breaker-analysis-body');for(let text of ['验证方式与覆盖范围','完整只读验证通过','全部读取和解析','未验证：仍需本轮真实任务成功'])if(!b.textContent.includes(text))throw new Error('missing verification: '+text);if(b.querySelector('img'))throw new Error('coverage HTML injection');}`); err != nil {
 			return err
 		}
 		for _, width := range []int{1100, 390} {

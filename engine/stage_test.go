@@ -72,7 +72,6 @@ func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 	e := submitEngine(t, f, pool)
 	// 闸门按站点取：这台引擎里那个阶段属于站点 stub
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
-	gate := e.breakerFor("stub")
 
 	n := &recordingNotifier{}
 	e.AddNotifier(n)
@@ -80,14 +79,14 @@ func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", Retry: 2}
 
 	// 可重试的错误 → warn 级；但同样是"终态失败"，照样计数
-	e.notifyFailure(context.Background(), task, errors.New("网络抖动"))
-	if got := gate.Sum(); got != 1 {
+	e.notifyTestFailure(context.Background(), task, errors.New("网络抖动"))
+	if got := e.breakerSum("stub"); got != 1 {
 		t.Fatalf("熔断计数 = %d, want 1", got)
 	}
 
 	// 不可重试的错误 → error 级，并带上分类标识
-	e.notifyFailure(context.Background(), task, core.WrapNoRetryKind("structure", errors.New("页面结构变了")))
-	if got := gate.Sum(); got != 2 {
+	e.notifyTestFailure(context.Background(), task, core.WrapNoRetryKind("structure", errors.New("页面结构变了")))
+	if got := e.breakerSum("stub"); got != 2 {
 		t.Fatalf("熔断计数 = %d, want 2", got)
 	}
 
@@ -116,8 +115,8 @@ func TestNotifyFailureWithoutNotifiers(t *testing.T) {
 	e := submitEngine(t, f, pool)
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
 
-	e.notifyFailure(context.Background(), &Task{Stage: "stub", Site: "stub"}, errors.New("boom"))
-	if got := e.breakerFor("stub").Sum(); got != 1 {
+	e.notifyTestFailure(context.Background(), &Task{Stage: "stub", Site: "stub"}, errors.New("boom"))
+	if got := e.breakerSum("stub"); got != 1 {
 		t.Fatalf("熔断计数 = %d, want 1", got)
 	}
 }
@@ -131,7 +130,7 @@ func TestNotifyFailureWithoutGate(t *testing.T) {
 
 	n := &recordingNotifier{}
 	e.AddNotifier(n)
-	e.notifyFailure(context.Background(), &Task{Stage: "stub", Site: "ghost"}, errors.New("boom"))
+	e.notifyTestFailure(context.Background(), &Task{Stage: "stub", Site: "ghost"}, errors.New("boom"))
 
 	if got := len(n.snapshot()); got != 1 {
 		t.Fatalf("没有闸门也该照发告警，实得 %d 条", got)
@@ -147,7 +146,7 @@ func TestNotifyFailureSwallowsNotifierError(t *testing.T) {
 	n := &recordingNotifier{err: errors.New("webhook 500")}
 	e.AddNotifier(n)
 
-	e.notifyFailure(context.Background(), &Task{Stage: "stub", Site: "stub", URL: "u"}, errors.New("boom"))
+	e.notifyTestFailure(context.Background(), &Task{Stage: "stub", Site: "stub", URL: "u"}, errors.New("boom"))
 	if len(n.snapshot()) != 1 {
 		t.Fatal("通知器应当被调用过")
 	}
@@ -267,6 +266,8 @@ func newTestEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	cfg.Crawler.Trace.Enabled = false
 
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	e.breakerStore = &memoryBreakerRepository{}
+	e.breakerRuntime = true
 	t.Cleanup(e.cancel)
 	return e
 }
@@ -545,6 +546,8 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	e.breakerStore = &memoryBreakerRepository{}
+	e.breakerRuntime = true
 	t.Cleanup(e.cancel)
 
 	stageCfg := StageConfig{MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}
@@ -681,10 +684,10 @@ func TestPauseIsolatesPerSite(t *testing.T) {
 	e.SetSiteBreaker("a", cfg)
 	e.SetSiteBreaker("b", cfg)
 
-	if e.breakerFor("a") == e.breakerFor("b") {
+	if e.smartBreakers["a"] == e.smartBreakers["b"] {
 		t.Fatal("两个站的计数器应当各一份（失败数不能互相灌）")
 	}
-	if e.breakerFor("ghost") != nil {
+	if e.smartBreakers["ghost"] != nil {
 		t.Fatal("没配过熔断的站点应当是 nil（= 没有熔断这回事），不是回落到谁身上")
 	}
 
@@ -766,6 +769,8 @@ func stageDepEngine(t *testing.T) *Engine {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	e.breakerStore = &memoryBreakerRepository{}
+	e.breakerRuntime = true
 	t.Cleanup(e.cancel)
 	return e
 }
@@ -881,6 +886,8 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Crawler.DrainInterval = time.Hour
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
+	e.breakerStore = &memoryBreakerRepository{}
+	e.breakerRuntime = true
 	t.Cleanup(e.cancel)
 	// 不用重赋 e.ctx：NewEngine 已经建好可取消的 ctx，重赋会与 delayDispatcher
 	// 读同一个字段（data race），还会让 dispatcher 永不退出。
@@ -890,7 +897,7 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 	e.SetSiteBreaker("siteb", breaker.Config{Enabled: true, Window: 5 * time.Minute, Threshold: 1})
 
 	failOnce := func() {
-		e.notifyFailure(context.Background(),
+		e.notifyTestFailure(context.Background(),
 			&Task{Stage: "siteb_catalog", Site: "siteb", URL: "https://example.com/x"}, errors.New("boom"))
 	}
 	failOnce()

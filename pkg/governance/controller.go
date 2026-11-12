@@ -436,6 +436,47 @@ func (c *Controller) Observe(site string, f Feedback) {
 	c.notifyLocked()
 	c.dispatchLocked()
 }
+
+// RetryAfterUntil returns the earliest time at which the site may be tried
+// again. Remote deadlines remain binding even when local throttling is off.
+// A zero value means no remote cooldown has been observed.
+func (c *Controller) RetryAfterUntil(site string) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s := c.sites[site]; s != nil {
+		return s.cooldownUntil
+	}
+	return time.Time{}
+}
+
+// RestoreRetryAfter restores a persisted remote deadline before requests resume.
+// It only extends protection and never changes local policy switches or metrics.
+func (c *Controller) RestoreRetryAfter(site string, until time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.clock.Now()
+	if !until.After(now) {
+		return
+	}
+	s := c.stateLocked(site)
+	if !until.After(s.cooldownUntil) {
+		return
+	}
+	s.cooldownUntil = until
+	budget := c.policyLocked(site).Request.RetryAfterMax
+	if budget <= 0 {
+		budget = DefaultConfig().Defaults.Request.RetryAfterMax
+	}
+	s.lastReason = "remote_cooldown_restored"
+	if until.Sub(now) > budget {
+		s.paused = true
+		s.lastReason = "remote_wait_exceeds_budget"
+	}
+	s.lastAdjustment = now
+	c.notifyLocked()
+	c.dispatchLocked()
+}
+
 func (c *Controller) observeLocked(site string, f Feedback) {
 	if f.StatusCode == 0 && !f.Failed && f.Latency == 0 {
 		return
@@ -450,18 +491,25 @@ func (c *Controller) observeLocked(site string, f Feedback) {
 	if f.Latency >= 0 {
 		s.lastLatency = f.Latency
 	}
-	if p.Enabled && (f.StatusCode == 429 || f.StatusCode == 503) {
+	limited := f.StatusCode == 429
+	if f.StatusCode == 429 || f.StatusCode == 503 {
 		d, ok := RetryAfter(f.RetryAfter, now)
-		if f.StatusCode == 429 && !ok {
+		limited = limited || ok
+		// The fallback is an AutoThrottle action, not an implicit policy
+		// enabling throttling for applications which deliberately disabled it.
+		if f.StatusCode == 429 && !ok && p.Enabled && p.AutoThrottle.Enabled {
 			d, ok = p.RetryAfterDefault, true
 		}
 		if ok {
-			s.limited++
 			deadline := now.Add(d)
 			if deadline.After(s.cooldownUntil) {
 				s.cooldownUntil = deadline
 			}
-			if d > p.RetryAfterMax {
+			budget := p.RetryAfterMax
+			if budget <= 0 {
+				budget = DefaultConfig().Defaults.Request.RetryAfterMax
+			}
+			if d > budget {
 				s.paused = true
 				s.lastReason = "remote_wait_exceeds_budget"
 			} else {
@@ -470,7 +518,27 @@ func (c *Controller) observeLocked(site string, f Feedback) {
 			s.lastAdjustment = now
 		}
 	}
-	if p.Enabled && p.AutoThrottle.Enabled && f.Latency > 0 {
+	if limited {
+		s.limited++
+	}
+	// A fast rejection is not evidence of spare capacity. Back off even for
+	// zero-latency feedback, while keeping the configured upper bound.
+	if limited && p.Enabled && p.AutoThrottle.Enabled {
+		a := p.AutoThrottle
+		step := max(s.autoDelay, a.MinDelay, time.Millisecond)
+		next := a.MaxDelay
+		if step < a.MaxDelay-s.autoDelay {
+			next = s.autoDelay + step
+		}
+		if next > s.autoDelay {
+			s.autoDelay = next
+			s.lastAdjustment = now
+			if s.lastReason != "remote_wait_exceeds_budget" {
+				s.lastReason = "rate_limited"
+			}
+		}
+	}
+	if p.Enabled && p.AutoThrottle.Enabled && !limited && f.Latency > 0 {
 		a := p.AutoThrottle
 		target := clampDuration(secondsDuration(f.Latency.Seconds()/a.TargetConcurrency), a.MinDelay, a.MaxDelay)
 		next := time.Duration(float64(s.autoDelay)*(1-a.Smoothing) + float64(target)*a.Smoothing)

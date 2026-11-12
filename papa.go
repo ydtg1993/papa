@@ -67,6 +67,9 @@ type RetrySpec = app.RetrySpec
 // BreakerSpec 站点自己的熔断阈值（覆盖 crawler.breaker 的默认值）。
 type BreakerSpec = app.BreakerSpec
 
+// BreakerPolicy bounds short-window detection, observation and recovery.
+type BreakerPolicy = config.BreakerPolicy
+
 // M3U8Spec / FileDownSpec 下载器的**覆盖层**：站点声明（SiteSpec.M3U8 / FileDown）与阶段声明
 // （StageSpec.M3U8 / FileDown）用它，**字段全是指针，只写要改的那几项**：
 //

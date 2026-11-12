@@ -12,43 +12,37 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 )
 
-func TestResumeSiteStartsFreshFailureWindow(t *testing.T) {
+func TestManualForceResumeDoesNotCertifySiteOrClearFailureWindow(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	for _, site := range []string{"a", "b"} {
 		e.SetSiteBreaker(site, breaker.Config{Enabled: true, Window: time.Hour, Threshold: 2})
 	}
-	fail := func(site string) {
-		e.notifyFailure(context.Background(), &Task{Site: site, Stage: "catalog"}, errors.New("synthetic failure"))
+	for i := 0; i < 2; i++ {
+		e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"})
 	}
-	fail("a")
-	fail("a")
-	fail("b")
-	if !e.ResumeSite("a") || e.breakerSum("a") != 0 {
-		t.Fatal("恢复整站必须清零旧窗口")
+	e.recordTestBreakerFailure(&Task{Site: "b", Stage: "catalog"})
+	if !e.ForceResumeSite("a") || e.breakerSum("a") != 2 || e.breakerSum("b") != 1 {
+		t.Fatal("manual override cleared unverified evidence")
 	}
-	if e.breakerSum("b") != 1 {
-		t.Fatal("恢复 a 不得清除 b 的计数")
+	if e.ForceResumeSite("a") {
+		t.Fatal("empty resume succeeded")
 	}
-	fail("a")
-	if e.pauseInfoOf("a").Paused || e.ResumeSite("a") || e.breakerSum("a") != 1 {
-		t.Fatal("首次新失败不得熔断，重复恢复不得清零")
-	}
-	fail("a")
-	if !e.pauseInfoOf("a").Paused {
-		t.Fatal("新窗口达到阈值仍必须熔断")
+	e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"})
+	if !e.pauseInfoOf("a").Paused || e.breakerSum("a") != 3 {
+		t.Fatal("new failure must still obey the retained hard ceiling")
 	}
 }
 
-func TestResumeAllResetsOnlyPausedSites(t *testing.T) {
+func TestResumeAllPreservesUnverifiedFailureWindows(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	for _, site := range []string{"a", "b", "running"} {
 		e.SetSiteBreaker(site, breaker.Config{Enabled: true, Window: time.Hour, Threshold: 3})
-		e.breakerFor(site).RecordFailure()
+		e.recordTestBreakerFailure(&Task{Site: site, Stage: "catalog"})
 	}
 	e.PauseSite("a", "manual")
 	e.PauseStage("b", "catalog", "manual")
-	if !e.ResumeCrawling() || e.breakerSum("a") != 0 || e.breakerSum("b") != 0 || e.breakerSum("running") != 1 {
-		t.Fatal("全部恢复只能清零实际恢复的站点，含只有阶段暂停的站点")
+	if !e.ResumeCrawling() || e.breakerSum("a") != 1 || e.breakerSum("b") != 1 || e.breakerSum("running") != 1 {
+		t.Fatal("人工全部恢复不得清零未经验证的计数")
 	}
 	if e.ResumeCrawling() || e.breakerSum("running") != 1 {
 		t.Fatal("空恢复不得清零运行中站点")
@@ -64,8 +58,8 @@ func TestConcurrentResumeAndFailure(t *testing.T) {
 	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Hour, Threshold: 2})
 	for i := 0; i < 100; i++ {
 		e.PauseSite("a", "manual")
-		e.breakerFor("a").RecordFailure()
-		e.breakerFor("a").RecordFailure()
+		e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"})
+		e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"})
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		wg.Add(2)
@@ -73,12 +67,12 @@ func TestConcurrentResumeAndFailure(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			e.notifyFailure(context.Background(), &Task{Site: "a", Stage: "catalog"}, errors.New("synthetic failure"))
+			e.notifyTestFailure(context.Background(), &Task{Site: "a", Stage: "catalog"}, errors.New("synthetic failure"))
 		}()
 		close(start)
 		wg.Wait()
-		if e.pauseInfoOf("a").Paused || e.breakerSum("a") > 1 {
-			t.Fatalf("旧判定不得跨过恢复重新暂停：%+v", e.breakerStatusOf("a"))
+		if e.breakerSum("a") != 3*(i+1) {
+			t.Fatalf("并发人工操作不得丢失失败计数：%+v", e.breakerStatusOf("a"))
 		}
 	}
 }
@@ -86,15 +80,15 @@ func TestConcurrentResumeAndFailure(t *testing.T) {
 func TestBreakerTripSnapshotSurvivesResume(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Hour, Threshold: 1})
-	st, tripped := e.recordBreakerFailure(&Task{Site: "a", Stage: "catalog"})
-	if !tripped || !e.ResumeSite("a") {
+	st, tripped := e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"})
+	if !tripped || !e.ForceResumeSite("a") {
 		t.Fatal("expected trip followed by resume")
 	}
 	if !st.Paused || st.Site != "a" || st.Stage != "catalog" || st.Failures != 1 || st.Reason == "" {
 		t.Fatalf("恢复不得擦除待发送的熔断现场：%+v", st)
 	}
-	if current := e.breakerStatusOf("a"); current.Paused || current.InWindow != 0 {
-		t.Fatalf("恢复后当前状态应独立清零：%+v", current)
+	if current := e.breakerStatusOf("a"); current.Paused || current.InWindow != 1 {
+		t.Fatalf("人工解除应保留未经验证的窗口计数：%+v", current)
 	}
 }
 
@@ -477,28 +471,18 @@ func TestResumeWakesDrainImmediately(t *testing.T) {
 	fetcher.waitCalls(t, 1)
 }
 
-// 手动暂停一条**已经熔断**的站：返回 false 且不覆盖触发现场 ——
-// 后台"空点不记审计"那条规则、以及"熔断现场不该被一次点击改写成手动"都靠它。
-func TestManualPauseDoesNotOverwriteTripSnapshot(t *testing.T) {
+// Manual takeover ends automatic recovery for the current event only.
+func TestManualPauseTakesOverAutomaticEvent(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
 	e.SetSiteBreaker("a", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1})
-	e.ApplyRegisterStage()
-
-	// 触发一次熔断（阈值 1）
-	e.notifyFailure(context.Background(),
-		&Task{Stage: "catalog", Site: "a", URL: "u"}, errors.New("boom"))
-	trip := e.BreakerStatuses()["a"]
-	if !trip.Paused || trip.Source != PauseSourceBreaker || trip.Stage != "catalog" {
-		t.Fatalf("熔断应当写进暂停信号：%+v", trip)
+	e.recordTestBreakerFailure(&Task{Site: "a", Stage: "catalog"}, errors.New("boom"))
+	id := e.smartBreakers["a"].event.ID
+	if !e.PauseSite("a", "operator takeover") {
+		t.Fatal("takeover failed")
 	}
-
-	if e.PauseSite("a", "人工也来一下") {
-		t.Fatal("已经停着时 PauseSite 应当返回 false")
-	}
-	after := e.BreakerStatuses()["a"]
-	if after.Source != PauseSourceBreaker || after.Stage != "catalog" || after.Reason != trip.Reason ||
-		!after.PausedAt.Equal(trip.PausedAt) {
-		t.Fatalf("手动暂停不该覆盖熔断现场：before=%+v after=%+v", trip, after)
+	state := e.BreakerStatuses()["a"]
+	if state.Source != PauseSourceManual || !state.Paused || e.smartBreakers["a"].event.State != "closed" || e.smartBreakers["a"].event.ID != id {
+		t.Fatalf("takeover lost state/report: %+v", state)
 	}
 }
 

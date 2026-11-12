@@ -35,7 +35,7 @@ func TestBreakerStatusPayloadKeys(t *testing.T) {
 	manual := marshalKeys(t, e.BreakerStatuses()["b"])
 
 	// 熔断触发（来源 breaker）：站点 a 的阈值是 1，一次终态失败就触发
-	e.notifyFailure(t.Context(), &Task{Stage: "catalog", Site: "a", URL: "u"}, errors.New("boom"))
+	e.notifyTestFailure(t.Context(), &Task{Stage: "catalog", Site: "a", URL: "u"}, errors.New("boom"))
 	if st := e.BreakerStatuses()["a"]; !st.Paused || st.Source != PauseSourceBreaker {
 		t.Fatalf("熔断应当写进暂停信号并带上来源：%+v", st)
 	}
