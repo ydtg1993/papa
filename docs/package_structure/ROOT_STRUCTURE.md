@@ -11,6 +11,7 @@
 papa/
 ├── papa.go                     # 应用/配置/抓取能力公开门面
 ├── task.go                     # Engine、Task、Fetcher 与任务流类型门面
+├── resources.go                # 资源预算类型与构造门面
 ├── errors.go                   # 错误、告警和通知契约门面
 ├── architecture_test.go         # 跨包依赖与资源归属守卫
 ├── papa_test.go                 # 根公开 API 的回归
@@ -29,6 +30,7 @@ papa/
 | --- | --- | --- |
 | `papa.go` | App/Option/Page/Router、声明和配置别名；New、RegisterSite/Sites/CheckSites；HTTP 会话、账号、请求头、URL/身份及下载覆盖入口 | 创建/启停归 internal/app，声明归 sitedecl，能力实现归各 pkg。根包不再维护登记表、锁或第二份配置缓存 |
 | `task.go` | Engine、Task、Fetcher、StageConfig、BreakerProbe 和任务流类型别名 | 执行协议仍由 engine 拥有；Fetcher 签名含 Engine，不为追求“叶子包”把强耦合实现移入 core |
+| `resources.go` | ReportInputLimits、DownloadLimits、DownloadBudget、SchedulerLimits 别名与 NewDownloadBudget | 预算实现归 obs/inputbudget、middleware、engine；根包不拥有状态，装配方式见 [资源手册](../RESOURCE_BUDGETS.md) |
 | `errors.go` | NoRetry、SiteChallenge、FailureCode、告警事件和 Notifier 的兼容入口 | 错误分类和值协议归 core，通知传输归 pkg/notify；根包不实现重试、熔断或补偿调度 |
 
 类型别名暴露的是原类型，不能通过移动内部文件改变公开方法集。已有函数变量形式的入口也应保留兼容；添加门面不意味着其底层服务可以由根包复制状态。业务模块可以通过公开入口使用框架，不把真实站点声明、模型或固定验收目标加入框架根包。
@@ -60,7 +62,7 @@ core 只依赖标准库。这里可以有值方法、错误包装、上下文传
 | `compensation.go` | CompensationPolicy/Mode 与包装、提取函数 | 表达后续任务轮次条件，不创建任务、不执行补偿 SQL |
 | `site.go` | Site 站点快照结构 | 结构含 Headers/RestrictedKeywords；冻结和返回副本由 sitedecl/siteCatalog 的交接点负责 |
 | `stage.go` | StageKey 拼接站点/阶段作用域键 | 不登记阶段或查询运行池 |
-| `stat.go` | Stage/Global/Worker/Queue/Site/Stop/Breaker 快照及 TraceStep 值 | 是共享视图契约，计数与采样状态仍归生产这些值的组件 |
+| `stat.go` | Stage/Global/Worker/Queue/Site/Stop/Breaker 快照及 TraceStep/TraceExecutionStep 值 | 是共享视图契约，计数与采样状态仍归生产这些值的组件 |
 | `request.go` | WithHeaders/HeadersFrom、ApplyHeaders、WithProxyURL/ProxyURLFrom | 上下文请求头使用副本；ApplyHeaders 明确原地修改调用方 map；不发 HTTP 请求 |
 | `url.go` | ResolveURL、SameHost、IsSubdomainOf 的链接解析与域名判断 | URL 语义工具不替代 pkg/egress 的 DNS/IP 出口校验 |
 | `siteurl.go` | ResolveSiteURL 将任务地址的路径/query 绑定到当前站点根地址 | 用于任务换域名回钉；不应当作任意外链跟随器 |
@@ -125,5 +127,3 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
 
 执行证据由 engine 的认领 context 分配 UUID，Trace 与归档共用；models.TaskTrace 持久化 execution_id，core.TraceStep 保留原公开布局；新增 core.TraceExecutionStep 承载只读 execution_id/truncated，Engine.ListTraceExecution 提供详细查询，ListTrace 的返回签名与字段不变。身份不改变任务状态所有权和终态原子性。升级启用 Trace 的库须显式 migrate 增列/索引；历史空身份可读。
-
-`resources.go` 是资源预算公开门面，仅导出 ReportInputLimits、DownloadLimits、DownloadBudget、SchedulerLimits 别名及 NewDownloadBudget 构造转发，不保存运行状态；RESOURCE_BUDGETS.md 负责装配和超限使用规则。

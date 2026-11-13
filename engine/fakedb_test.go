@@ -362,13 +362,22 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 		argN--
 	}
 	var lastID int64
-	if strings.Contains(q, "id > ?") && argN > 0 {
-		if v, ok := asInt64(args[argN-1].Value); ok {
-			lastID = v
+	if pos := strings.Index(q, "id > ?"); pos >= 0 {
+		index := strings.Count(q[:pos], "?")
+		if index < len(args) {
+			if v, ok := asInt64(args[index].Value); ok {
+				lastID = v
+			}
 		}
 	}
 	out := &fakeRows{cols: fakeTaskColumns}
 	for _, r := range f.rows {
+		if strings.Contains(q, "TIMESTAMPADD(MICROSECOND") {
+			status, _ := asInt64(r["status"])
+			if status != int64(models.TaskStatusPending) {
+				continue
+			}
+		}
 		if id, _ := r["id"].(int64); id > lastID {
 			out.all = append(out.all, rowValues(r))
 		}

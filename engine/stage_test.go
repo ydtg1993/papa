@@ -16,6 +16,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
+	"gorm.io/gorm"
 )
 
 // recordingNotifier 记下收到的告警事件，并可注入发送失败。
@@ -404,7 +405,26 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 		t.Fatal("暂停期间不该建池（收口在建池之前）")
 	}
 
-	f.noRows = false // 回灌要按 id 回查那一行（见上面假库两种模式的说明）
+	// Model the single actually inserted row, including its terminal status,
+	// so continuous refill cannot invent the canned unrelated ID=7.
+	f.mu.Lock()
+	f.noRows = false
+	f.rows = []fakeRow{f.rowWithID(1)}
+	f.mu.Unlock()
+	if err := e.db.Callback().Update().After("gorm:after_update").Register("test:paused_row_state", func(tx *gorm.DB) {
+		if tx.Error != nil {
+			return
+		}
+		if updates, ok := tx.Statement.Dest.(map[string]any); ok {
+			if status, ok := updates["status"].(models.TaskStatus); ok {
+				f.mu.Lock()
+				f.rows[0]["status"] = int64(status)
+				f.mu.Unlock()
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if !e.ResumeCrawling() {
 		t.Fatal("放行应当成功")
@@ -418,6 +438,20 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 		t.Fatal("没暂停时放行应返回 false")
 	}
 
+	// Handler entry is not terminal acknowledgement. Wait for the pool's
+	// completion boundary before asserting a fully drained stop; cancellation
+	// during terminal persistence is covered separately and may be unresolved.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, completed, _, inFlight, _ := e.pools.Get(stubKey).Stats()
+		if completed == 1 && inFlight == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("resumed task did not finish terminal settlement")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	drained, stats := e.Stop(2 * time.Second)
 	if !drained {
 		t.Fatalf("应当排空：%+v", stats)

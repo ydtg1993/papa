@@ -131,6 +131,10 @@ func (r *residentSet) count() int {
 	defer r.mu.Unlock()
 	return len(r.tasks)
 }
+
+// SetSchedulerLimits is a composition operation. Call it before submitting
+// tasks or ApplyRegisterStage, serialized with all other Engine operations.
+// ErrSchedulerStarted rejects late configuration; it is not a concurrency guard.
 func (e *Engine) SetSchedulerLimits(l SchedulerLimits) error {
 	if e.schedulerStarted || (e.residents != nil && e.residents.count() != 0) {
 		return ErrSchedulerStarted

@@ -286,6 +286,8 @@ Policy 在构造时建立私有授权 map，无全局可变授权。`PrivateOrig
 
 | 文件 | 职责 |
 | --- | --- |
+| `resources.go` | DownloadLimits、DownloadBudget、限额错误、有界读取及共享内存/临时磁盘准入 |
+| `checkpoint.go` | 单任务单写者；合并通知、定时快照、Close 最终 flush 并等待完成 |
 | `err.go` | 仅声明 `Err.GetErrors()` 错误流契约 |
 | `path.go` | `SanitizeOutputPath` 规范下载相对目录/文件名，拒绝向输出根外逃逸 |
 | `output_locks.go` | `OutputLocks.Lock` 一次性获取一组输出/断点路径；相同路径或祖先后代冲突，等待可取消，返回显式 unlock |
@@ -296,6 +298,7 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 
 | 文件 | 职责 |
 | --- | --- |
+| `resources.go` | 有界旧 JSON/v1 与私有 v2 位图续传、文件下载资源预留；保持公开 ResumeState 布局 |
 | `config.go` | 普通文件下载 `Config` / `DefaultConfig`，包括请求、并发、分块、输出和网络配置 |
 | `overlay.go` | `Overlay.Clone` / `Apply` / `Then` / `Fields` / `IsZero`，区分未覆盖和显式零值，复制标量指针 |
 | `downloader.go` | `NewDownloader` / `With` / `Config` / `SetClient` / `Download`、上下文到请求选项、探测/Range 校验/分块/断点/输出；共享状态及错误流 |
@@ -304,16 +307,28 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 
 | 文件 | 职责 |
 | --- | --- |
+| `resources.go` | 播放列表/分片/响应预算与续传版本兼容；超限不当作坏状态重下 |
+| `stream.go` | 非加密媒体有界流式读取、读取阶段限速和临时段发布 |
+| `publication.go` | 文件产物暂存、权限位继承与发布；OutputSegments 不承诺整目录事务 |
 | `config.go` | 媒体下载配置、`DownloadOptions` / `OptionsFromRequest`、合并后缀校验和默认值 |
 | `overlay.go` | merge/segments/playlist 的 `OutputMode`、覆盖值 Clone/Apply/Then/Fields/IsZero；站点/阶段/任务可叠加独立配置 |
 | `downloader.go` | 播放列表选择与解析、重定向后相对 URL、byterange、map/init、密钥、AES-128 解密、受限响应读取、片段/断点/合并及产物处理 |
 | `ratelimiter.go` | `RateLimiter` / `NewRateLimiter` / `Wait`，单次下载使用的带取消带宽等待 |
 
+| 状态 | 所有者与同步 | 生命周期 |
+| --- | --- | --- |
+| 内存/磁盘预留计数 | DownloadBudget.mu；释放闭包用 sync.Once | 计数短锁不跨磁盘清点；失败和完成归还预留 |
+| 已登记续传根及清点准入 | DownloadBudget.diskGate | 可取消等待，串行登记/扫描；扫描后再取 mu 检查并预留，不自动删除可恢复文件 |
+| 脏标记、首次写错误、定时器 | Checkpoint 写者 goroutine | Notify 合并；Close 用 once 关闭 stop 并等待 done，随后读最终错误 |
+| 完成片集合与状态快照 | 各任务 resumeMu | 锁内只复制，编码/写盘由 Checkpoint 在锁外完成；最终 flush 完成后才能发布或清理 |
+
+WithResources 返回独立限额快照，With 继承共享预算。默认值、磁盘保守计量和物理配额限制见 [资源手册](../RESOURCE_BUDGETS.md)。`middleware/resources_test.go`、filedown/m3u8 的 `resources_test.go` 覆盖边界、旧状态和预算释放；检查点合并及失败传播由父包回归验证。
+
 两个下载器各自拥有 `state`，并非共享一个全局下载状态。状态内 `proxyMu` 保护代理 transport 缓存；连接池跨 With 实例复用，而每次取得的 client 持有本实例 Timeout/SegmentTimeout，`laborMu` 保护按来源/目录/文件组合标识的 labor 和引用数，labor 自己的 `resumeMu` 保护断点修改，`OutputLocks` 保护最终输出及断点路径。m3u8 的密钥缓存只属于单次下载的私有接收者副本，不能跨任务共享认证相关密钥。
 
 `With` 返回独立配置实例，同时共享原实例的状态、路径互斥和错误消息队列；它会按新配置创建默认 HTTP client，不继承原实例通过 `SetClient` 注入的 client/transport。`Config` 返回网络授权列表副本。`Overlay.Clone` 保留 nil 与显式零值并复制指针，是站点声明/阶段覆盖快照的基础。`NewDownloader` 才建立另一组状态。`SetClient` 是客户端替换入口，不能因为 Download 支持并发就推断替换配置也有并发热更保证。
 
-两个下载器用固定 worker 与无缓冲工作通道限制等待 goroutine，生产和消费均响应取消；返回前等待已进入的 worker 及其进度回调收尾。filedown 增量计算偏移及剩余片长，不预先展开整个分片列表，并避免 int64 边界相加溢出；已完成断点索引仍随实际完成分片数增长，m3u8 播放列表及部分响应读取也不构成统一内存上界。filedown 将全部预期分片校验、流式合并到同目录唯一临时文件，既有普通文件的权限位在写入前复制到临时文件，避免 0600 产物被替换为 0644；新文件沿用 0644 与 umask。显式 Close 成功后再 Rename 发布；合并或发布失败保留旧产物与分片，成功后才清状态、删除分片。Windows 也在关闭临时文件后替换目标，目标被占用导致替换失败时不提前删除旧文件；不承诺断电持久性或复制旧 inode 的属主、ACL 等元数据。
+两个下载器用固定 worker 与无缓冲工作通道限制等待 goroutine，生产和消费均响应取消；返回前等待已进入的 worker 及其进度回调收尾。filedown 增量计算偏移及剩余片长，不预先展开整个分片列表，并避免 int64 边界相加溢出；断点索引、播放列表和响应受有限字节/条目额度限制；共享预留不等于精确进程 RSS 上限。filedown 将全部预期分片校验、流式合并到同目录唯一临时文件，既有普通文件的权限位在写入前复制到临时文件，避免 0600 产物被替换为 0644；新文件沿用 0644 与 umask。显式 Close 成功后再 Rename 发布；合并或发布失败保留旧产物与分片，成功后才清状态、删除分片。Windows 也在关闭临时文件后替换目标，目标被占用导致替换失败时不提前删除旧文件；不承诺断电持久性或复制旧 inode 的属主、ACL 等元数据。
 
 Download 同步执行并使用传入 context 约束请求、片段 goroutine 与合并；调用方等待它返回，再处理任务终态、业务落库和文件发布。下载器没有统一公开 Shutdown，宿主通过任务取消/排空及错误流消费者生命周期接入；不应让 HTTP handler 直接占有其内部 labor 或断点锁。网络必须经过 egress，代理选择经过 proxy，消息队列复用 `internal/msgqueue`；这些是具体适配依赖，不意味着可反向依赖 App/Engine。
 
@@ -410,16 +425,3 @@ JSONLSink 拥有传入 `io.WriteCloser` 的关闭责任，自己的 mutex 保护
 | 临时目录/恢复清理、测试库、历史表只读盘点 | 分别进入 temporary、testdb、strategymigrate | 框架内的业务删表事务或普通启动迁移 |
 
 新增实现须同时交代四项：所属语义、状态及资源拥有者、最小公开接口、允许依赖。出现持久化/锁/版本/生命周期交界时先保持原子性和关停语义，再决定是否拆文件或拆包。公开兼容别名保留在原入口，实现在所属组件；不能通过把整个 App/Engine 或可写私有状态传进新包完成表面拆分。
-
-## 下载资源预算与检查点
-
-| 文件 | 职责与生命周期 |
-| --- | --- |
-| `pkg/middleware/resources.go` | DownloadLimits、DownloadBudget、限额错误、有界输入、内存/临时磁盘准入；共享预算可注入多个 downloader；不引用 App/Engine |
-| `pkg/middleware/checkpoint.go` | 每任务单写者、合并通知、定时快照和 Close 最终 flush；通知可合并，完成事实留在任务状态；Close 等写者退出 |
-| `pkg/middleware/filedown/resources.go` | 旧/版本化续传读取、完成集合编码和文件下载资源规则；保留公开 ResumeState 布局 |
-| `pkg/middleware/m3u8/resources.go` | 播放列表/媒体下载预算与续传版本规则，不把限额错误降级为坏状态重下 |
-| `pkg/middleware/m3u8/publication.go` | 文件产物暂存、权限位继承和原子重命名；不承诺 OutputSegments 整目录事务 |
-| `pkg/middleware/m3u8/stream.go` | 非加密分片流式有界接收、接收阶段限速、临时写入及完整发布；加密路径仍受独立缓冲预算 |
-
-WithResources 返回独立限额快照；With 行为覆盖继承预算。checkpoint 在 resumeMu 内只复制状态，序列化/落盘由单写者完成；取消和正常退出都等待最终写入，避免迟到快照覆盖清理后的状态。临时磁盘扫描支持取消，拒绝链接目录越界，不自动删除活动或可恢复数据。配额的实际边界与保守预留见 [资源预算手册](../RESOURCE_BUDGETS.md)。

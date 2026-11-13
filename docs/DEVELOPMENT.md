@@ -88,7 +88,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 ## 6. 包结构与职责边界
 
-完整目录和包职责统一维护在 [Papa 目录说明书](package_structure/README.md)。
+完整目录和包职责统一维护在 [Papa 目录说明书](package_structure/README.md)。新增文件、公开入口或可变状态时，直接更新对应分册的文件主表、状态/锁表及生命周期说明；不要只在文末追加说明而让主表保留旧结论。
 
 | 范围 | 职责分册 |
 | --- | --- |

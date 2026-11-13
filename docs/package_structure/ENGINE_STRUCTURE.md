@@ -88,6 +88,9 @@ engine/
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
 | `delayqueue.go` | 把 Task 接入延迟堆、到期投递和必要的重新排期 | 堆/唤醒算法在 scheduler；这里只决定任务到期后怎么交回执行链 |
+| `scheduler_budget.go` | SchedulerLimits、residentSet；非阻塞准入、转移、释放和驻留计数 | 数量预算不等于 RSS；不执行 SQL |
+| `scheduler_refill.go` | 持续 pending 补充、阶段轮转/keyset 游标和暂停 delay 卸载 | 由 refillMu 串行化，查询谓词归 taskstore；独立于 RecoverQueue |
+| `scheduler_stop.go` | 按注册阶段计数持久 pending | 共用停止 deadline，包含启动前已接受任务；查询失败不能报告排空 |
 | `scheduler_spill.go` | spillQueue：轮次成员索引、去重、TakeBatch/Restore/Put 与公平选择 | 无 Engine 回引用；取出的有限批次交由调用者持有，仍计入 resident 责任，锁不跨 SQL/worker 投递 |
 | `spill.go` | 溢出登记、回灌循环和任务重新投递 | 协调暂停、容量与持久状态，不自己复制溢出 map |
 | `batch.go` | 有界批处理、批间暂停、并发辅助及重投失败处理 | 为治理入口提供执行工具；不演变为任意功能工具集合 |
@@ -125,7 +128,7 @@ engine/
 | `http.go` | HTTP/增量抓取、响应捕获与执行上下文衔接 | 网络传输实现使用独立客户端，不在这里新增站点业务 |
 | `capture.go` | 浏览器网络请求捕获与捕获记录 | 只接通任务观测上下文，捕获实现依赖通用浏览器能力 |
 | `record.go` | 网络录制公开入口 | 录制规则在通用组件中，Engine 提供执行环境 |
-| `downloads.go` | 下载器初始化、站点/阶段配置装配及公开查找入口 | 覆盖配置与解析快照归 fetchruntime.Downloads |
+| `downloads.go` | SetDownloadResources、下载器初始化、站点/阶段配置装配及公开查找入口 | 覆盖配置与解析快照归 fetchruntime.Downloads |
 | `account.go` | 账号 Manager 注入、状态和账号 HTTP/HTML/浏览器公开适配 | 凭据与账号生命周期归 pkg/account |
 | `account_pool.go` | 账号池引用、准备账号、按池抓取的公开入口 | 池选择和资源归还委派账号资源能力，不复制账号状态 |
 | `account_events.go` | 账号健康事件订阅、告警与节流 | 取消订阅由 Engine 生命周期持有；告警节流由 accountAlertGate 拥有，Stop 仍按原顺序解绑 |
@@ -175,6 +178,9 @@ engine/
 | 状态 | 当前拥有者 | 协调约束 |
 | --- | --- | --- |
 | 阶段登记、阶段累计量、错误转发及部分运行配置 | Engine，部分字段使用 `e.mu` | 声明期登记与运行期修改有不同协议，不能默认所有 map 都允许任意并发修改 |
+| 驻留成员、ID 索引及站点/阶段计数 | residentSet，使用自己的 mu | 短锁维护准入/转移/释放；不跨 SQL 或用户回调；取出回灌的批次仍占令牌 |
+| 回灌过程、refillCursor/refillStage | Engine 的 refillMu | 串行化回灌与持续补充，允许跨该流程的 DB 调用；不等同于 e.mu、pauseMu 或容器锁，不可替换为全局状态锁 |
+| residents 配置指针、schedulerStarted | Engine 装配阶段 | SetSchedulerLimits 必须与提交、启动及停止串行；先发布 started 再启动 drain goroutine，运行中不替换预算 |
 | 活池、延迟任务、溢出任务 | Registry、Delay、spillQueue | 关闭后不得新建池；回灌不重复计轮次；未投递任务要计入停机统计 |
 | 未确认任务写入 | execution.State | Retry 成功本身不删除条目，确认后的 Forget 由协调调用方负责；取消时 Remember 保留可见性，不能靠重复调用 handler 补写 |
 | 暂停 map、广播 channel、恢复时间 | Engine 的 pause 状态 | `breakerMu → pauseMu → (overflow.mu 或 e.mu)`；pause 锁不跨数据库调用 |
@@ -183,13 +189,21 @@ engine/
 | 单次 trace 与归档 | Trace、archiveBuffer、attemptExecution | 尝试结束和 panic 路径都终结；账号敏感内容不进入原始页面归档 |
 | 抓取资源登记及下载配置快照 | fetchruntime.Resources/Downloads | 短锁取依赖，网络工作和用户回调不在登记锁内执行 |
 
+Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../RESOURCE_BUDGETS.md)。
+
+暂停下的持久 pool/spill/delay 任务可交还数据库以让出预算：预算模式允许 worker 取出引用，但 stageHandler 在 breaker/业务准入前拦截；heap 提取先快照暂停状态再取堆锁，避免锁序反转。flow 前置等待同样释放持久引用，不占住解除等待所需的最后一个槽。Stop 的持久计数也覆盖 ApplyRegisterStage 前已接受的远期任务。
+
+下载预算装配通过 SetDownloadResources 交给 fetchruntime.Downloads 的 ConfigureResources/Resources：首次构造基座时冻结限额，两种下载基座及 With 派生实例共享同一 DownloadBudget。Engine 不实现磁盘清点、输入解码或检查点算法。
+
+`refillPendingLocked` 的前置条件是持有 refillMu。回灌批读与扫描使用 100ms 时间片派生的查询 context；这不是所有准备写入、锁等待或整个停止流程的硬超时保证。停止通过生命周期取消及 tickerWG 等待在途回灌。
+
 Stop 不只是取消 context：还要关闭池登记并排空 worker、等待 ticker、统计溢出/延迟/未确认写入、结算熔断报告。worker 与 ticker 共用入口 deadline；统计必须在 ticker 等待结束后执行，避免漏掉它最后保留的任务或重复报告已确认写入。超时后的统计仅代表最后观察值，不表示后台已静止。Delay.Snapshot 保留任务，由 Engine 在锁外按阶段汇总，不清空堆。任何后续抽取的维护循环或服务必须明确如何加入这个关闭协议。
 
 `NewEngine` 使用独立的 background context，并在构造时预热去重、登记并启动延迟 dispatcher；它不是无副作用的纯容器构造。`ApplyRegisterStage` 再接入回灌、治理队列、证据清理、采样与回收循环，不能与 Stop 并发重复启动。池登记表停止位和 Engine context 都不可恢复，同一个 Engine 不支持停止后重启。
 
 池锁也有具体限制：`Registry.GetOrCreate` 在登记写锁内运行创建回调；`ReapIdle` 在同一锁内检查空闲、调用 pool.Stop 并摘除。创建回调不得重入登记表；Engine 的 created/reaped 事件均在登记锁外发布。`Registry.Set` 是测试/历史路径，不检查 stopped，不能把它当作生产停机后的重新登记入口。
 
-`StopStats.Unfinished` 的池部分来自 submitted − completed − failed，已经包含尚在队列中的任务；`Queued` 又展示队列长度，并加入 spill/delay 存留。两列不是可直接相加的互斥人数。未确认写入还会追加到 Unfinished；超时快照可能重叠，不能据此宣称获得了全局去重的任务总量。即使 stats 为空，ticker 未退出或最终熔断快照写入失败仍使 drained=false。熔断 stop 记录与最终 flush 仅在 ticker 已退出后执行，并使用同一入口 deadline。
+`StopStats.Unfinished` 的池部分来自 submitted − completed − failed，已经包含尚在队列中的任务；`Queued` 又展示队列长度，并加入 spill/delay 存留，再与该阶段 durable pending 计数取较大值，避免简单相加重复计算卸载前后同一任务。两列不是可直接相加的互斥人数。未确认写入还会追加到 Unfinished；超时快照可能重叠，不能据此宣称获得了全局去重的任务总量。即使 stats 为空，ticker 未退出、持久 backlog 查询未确认或最终熔断快照写入失败仍使 drained=false。熔断 stop 记录与最终 flush 仅在 ticker 已退出后执行，并使用同一入口 deadline。
 
 排空范围也须区分：错误转发 goroutine 和 track 活动消费者响应 Engine context，但没有加入 tickerWG，Stop 不等待它们的 done；它不保证所有观测消息已消费。workerpool.Stop 返回首次任务计数快照，不是可反复查询的新结果。直接调用 Engine 公共管理/提交接口的外部 goroutine 也不自动进入 Stop 的等待组，宿主必须先停止这些生产者；App 的 HTTP 准入和业务收尾就是外层协调的一部分。
 
@@ -241,17 +255,3 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 `trace_schema_test.go` 验证执行身份列/索引、假库列覆盖及两次查询间下一执行写入不混排；数据库真实 DDL 仍由显式迁移验收负责。
 
 执行证据复查：原 `TraceStep`/`ListTrace` 保持公开值布局，详细查询新增 `TraceExecutionStep`/`ListTraceExecution`；`traceService` 仍拥有存储读取，装配层仅选择查询接口。模型新增 latest/tail 顺序索引且保留原索引。`internal/database.CheckTraceSchema` 拥有只读列/索引探测，App 负责启动提示；显式 Migrate 才改库。`TestTraceMySQLLegacyMigrationAndLatestTail` 复用明确授权的隔离测试库检查旧表升级、重复迁移后的历史字段保留、实际列/索引定义、旧 API 兼容及跨尝试尾部查询；未配置测试连接时跳过。实际执行批次与环境边界见源码仓库 docs/issues/2026-11-13-framework-diagnosis/trace-mysql.md。
-
-## 调度与下载预算归属
-
-| 文件/组件 | 所有权与边界 |
-| --- | --- |
-| `scheduler_budget.go` | SchedulerLimits、residentSet 与非阻塞准入/转移/释放；统计驻留引用而非 RSS，不负责 SQL |
-| `scheduler_stop.go` | 共享关停截止时间内按已注册阶段查询持久 pending 计数，不重建任务；查询失败返回未确认并记录，不能把卸载到 DB 当排空 |
-| `scheduler_refill.go` | 阶段冻结后持续补充、阶段轮转和 keyset 游标，独立于可选 RecoverQueue；持久查询条件交给 taskstore.PendingWindow |
-| `scheduler_spill.go` / `spill.go` | 有界批次及成员去重；回灌查询传生命周期 context，取消后保留未完成责任；不在容量/暂停锁内执行 SQL |
-| `internal/scheduler/delay.go` | 延迟堆、去重键和唤醒；任务版本/持久时间由 Engine/taskstore 决定，堆不是持久事实源 |
-| `internal/fetchruntime/downloads.go` | 下载资源配置冻结与共享 DownloadBudget，供两种基座及 With 派生实例使用 |
-| `downloads.go` | SetDownloadResources/InitDownloaders 组合入口；不实现内存、磁盘清点或 checkpoint 算法 |
-
-Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../RESOURCE_BUDGETS.md)。

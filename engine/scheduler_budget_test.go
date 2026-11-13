@@ -316,3 +316,27 @@ func TestSchedulerMySQLStopCountsDurableBeforeApply(t *testing.T) {
 		t.Fatalf("unreported startup durable work: drained=%v stats=%v", drained, stats)
 	}
 }
+
+func TestSchedulerMySQLDelayRefillInitializesFirstRound(t *testing.T) {
+	db, makeEngine := compensationMySQL(t)
+	e := makeEngine()
+	task := &Task{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/first-delayed", Delay: time.Hour, Repeatable: true}
+	if err := e.SubmitTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if e.SchedulerResidentCount() != 0 {
+		t.Fatal("far task not offloaded")
+	}
+	if err := db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Update("not_before", gorm.Expr("DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND)")).Error; err != nil {
+		t.Fatal(err)
+	}
+	e.schedulerStarted = true
+	e.drainSpilled()
+	var row models.CrawlerTask
+	if err := db.First(&row, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Repeat != 1 || e.SchedulerResidentCount() != 1 {
+		t.Fatalf("first pending round not initialized: repeat=%d residents=%d", row.Repeat, e.SchedulerResidentCount())
+	}
+}

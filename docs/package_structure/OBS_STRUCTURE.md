@@ -60,6 +60,7 @@ obs/
 
 | 文件 | 职责 |
 | --- | --- |
+| `windows.go` | BuildWindowsContext 单次扫描构建多个日报窗口；跨窗口保留总量受限，保持各窗口 MaxEntries/Truncated 口径 |
 | `logidx.go` | `Entry`、`Signature`、`Config`、`Index`；读取普通/gzip 日志，限条数聚合，维护有限样本与确定性排序 |
 | `logfmt.go` | logfmt 键值、引号及时间解析；日志来源与行号、额外字段、UTF-8 安全截断和凭据脱敏 |
 | `signature.go` | 将消息中的 URL、动态 ID、数字归一为签名，限制签名长度，供聚合复用 |
@@ -109,6 +110,14 @@ obs/
 
 `Prune` 是显式文件删除入口：负保留期不删除，零值回退默认 7 天。分析、读取和渲染本身不调用清理；CLI 或 Runner 决定何时调用 `Write` / `Prune`。CLI 指定 `--since`、`--until` 或 `--run` 时只生成、不执行保留清理，保证显式历史产物可以取走；无这些筛选的 CLI 生成和自动报告仍按原保留期清理。历史产物之后仍可能被自动清理，需要长期保存时请使用独立 `--out` 目录。后台的文件枚举、读取、下载与页面选择归 `admin/reports`，见 [Admin 分册](ADMIN_STRUCTURE.md)。
 
+### 3.7 `inputbudget`：输入计量与取消
+
+| 文件 | 职责 |
+| --- | --- |
+| `input.go` | Limits 默认值、LimitError/ErrLimit、Meter、固定缓冲逐行读取；只依赖标准库，不拥有文件生命周期 |
+
+预算按调用与源类别计量，Meter 不允许并发共享；超限向调用方返回，不能静默生成不完整的验收结论。旧读取入口使用有限默认值，Context 入口支持合作取消；配置见 [资源手册](../RESOURCE_BUDGETS.md)。
+
 ## 4. 依赖、状态与生命周期
 
 调用方向是宿主/CLI → 输入加载及分析器 → `obs.Generate` → `obs/report`。Go import 方向按文件职责划分：`obs` 根包依赖低层 `eventlog` / `logidx`，`analyze` / `pattern` / `report` 依赖根包；因此不能让根包反向登记这些内置实现。CLI 和 Runner 负责选择具体分析节与模式。
@@ -119,14 +128,16 @@ obs/
 | 本次输入、索引、报告、聚合 map | 当前调用 | 无跨调用全局可变分析状态；扩展必须遵守只读输入契约 |
 | 运行中 Engine 状态及 DB 连接 | 宿主 | 传快照和借用连接；观测不接管其锁或关停 |
 | 报告 ticker、串行生成、停止等待 | `internal/reportrunner` | App 装配和等待；不能在 `obs` 再开一套常驻循环 |
-| 正在读取的文件、gzip reader、写出的临时文件 | 对应输入/产物函数 | 调用内关闭/清理；报告正文写入和保留期删除必须走明确入口 |
+| 事件输入临时分桶、spool 目录与句柄 | obs/daily.go 的单次 ConsumeDailySources 调用 | 有界预检后逐日消费；正常/错误/取消时关闭并清理，强杀可能遗留；不是事件 writer 或最终报告产物 |
+| 正在读取的文件、gzip reader、报告暂存文件 | 对应输入/产物函数 | 调用内关闭/清理；最终报告写入和保留期删除归 report |
 
-取消是协作式且覆盖范围有限：`Generate(ctx, ...)` 把 context 传给各 `Section.Build`，内置 GORM Querier 使用 `WithContext`；Generate 自身不检查 ctx 来提前停止后续节，节返回取消错误仍按降级处理。`Pattern.Match` 没有 context 参数，`LoadSources` / `LoadDailySources`、eventlog/logidx 文件读取以及 `report.Write` / `Prune` 也没有 context。上层停止等待超时不能证明在途分析或文件操作已经退出；不得据此关闭其仍借用的依赖，或宣称整个报告流程能立即取消。
+取消是协作式且覆盖范围有限：`Generate(ctx, ...)` 把 context 传给各 `Section.Build`，内置 GORM Querier 使用 `WithContext`；Generate 自身不检查 ctx 来提前停止后续节，节返回取消错误仍按降级处理。`Pattern.Match` 没有 context 参数；`LoadSourcesContext` / `ConsumeDailySources`、eventlog/logidx 的 Context 入口已把取消传入文件发现、逐行和解压读取，旧兼容入口使用 Background。`report.Write` / `Prune` 仍没有 context。上层停止等待超时不能证明在途分析或文件操作已经退出；不得据此关闭其仍借用的依赖，或宣称整个报告流程能立即取消。
 
 ## 5. 测试分工与新增功能落点
 
 | 位置 | 现有测试关注点 |
 | --- | --- |
+| `inputbudget/input_test.go`、`eventlog/budget_test.go`、`logidx/budget_test.go`、`daily_budget_test.go` | 精确限额/超一单位、取消、逐日等价口径、预检失败不发布及临时文件清理 |
 | 根包 `obs_test.go`、`policy_test.go`、`mode_test.go`、`operational_test.go` | 节/模式汇总、降级、unknown、info/skipped、模式解析、历史状态隔离、可观测时长 |
 | 根包 `inputs_test.go`、`generated_at_test.go` | 事件覆盖、停机配对和生成时刻 |
 | 根包 `load_test.go`、`load_slack_test.go`、`load_run_scope_test.go`、`daily_test.go` | 筛选、日志边界、交错 run/乱序/重复及 gzip、逐日窗口；`TestLoadSourcesGapCountFollowsRunAndWindow` 钉住缺口作用域 |
@@ -139,9 +150,3 @@ obs/
 新增事件读取规则放 `eventlog`，日志格式和签名放 `logidx`；新增通用指标或 DB 聚合放 `analyze`，跨证据异常解释放 `pattern`，熔断证据分类与诊断值放 `incident`，产物格式与保留规则放 `report`。新增调度触发或关停等待改 Runner；新增后台交互改所属 `admin` 功能包；真实业务分析留在业务模块。
 
 本分册是源码盘点，不声明测试已执行。修改时按受影响包选择 `go test ./obs/...`，联动检查 `cmd/papa`、`internal/reportrunner` 和相关后台功能；假库与 DryRun 只证明查询/分析分支及 SQL 形状，不能替代真实数据库语义或浏览器交互验收。
-
-## 输入预算组件
-
-`obs/inputbudget/input.go` 拥有 Limits 默认值、LimitError/ErrLimit、Meter 与固定缓冲逐行读取；只依赖标准库，不拥有文件生命周期或业务判定。eventlog/read.go、discover.go 把预算应用到解压、行、事件/去重与分批目录发现。logidx/windows.go 单次扫描构建多个日报窗口的有界日志证据，保留每窗口 MaxEntries/Truncated 语义。daily.go 拥有临时分桶、精确去重和所有退出路径清理；消费方不得把全部 Sources 再长期缓存。
-
-load.go 的 Context 入口把预算错误向调用方返回，不作为可忽略日志降级导致完整验收通过；旧 SourceConfig 布局保留。预算配置和编排归宿主/CLI，具体解析仍归这些输入组件。新预算和兼容用例在 inputbudget/input_test.go、eventlog/budget_test.go、logidx/budget_test.go、daily_budget_test.go；执行记录见诊断报告，不把目录说明视作容量验收。

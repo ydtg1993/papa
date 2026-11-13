@@ -155,7 +155,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa check [目录] [--boot] [-c <配置路径>]")
 	fmt.Fprintln(os.Stderr, "    校验站点与阶段声明（不用起库）：阶段名重复、熔断阈值、")
-	fmt.Fprintln(os.Stderr, "    Delay 与 Backoff 的写法。跑完删掉项目里的 .papa-check/")
+	fmt.Fprintln(os.Stderr, "    Delay 与 Backoff 的写法。跑完删掉本次生成的 .papa-check-<随机后缀>/")
 	fmt.Fprintln(os.Stderr, "    --boot 再往前一步：连库把启动路径跑到 RegisterSites（不 Run，不抓取）")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa upgrade [目录] [--write]")

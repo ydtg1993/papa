@@ -10,6 +10,7 @@ import (
 
 // refillPendingLocked owns bounded per-stage keyset cursors. It runs only after
 // declaration freeze and independently of the optional startup recovery queue.
+// The caller must hold refillMu, the drain sequencing lock (not Engine.mu).
 func (e *Engine) refillPendingLocked(deadline time.Time) {
 	if !e.schedulerStarted || e.residents == nil || e.db == nil {
 		return
@@ -64,7 +65,12 @@ func (e *Engine) refillPendingLocked(deadline time.Time) {
 			if !e.residents.admit(task, "refill") {
 				break
 			}
-			e.submitPendingTask(task)
+			if task.Repeatable && row.Repeat == 0 && row.Reprocess == 0 {
+				task.repeatCounted = false
+				e.submitToPool(task, *row)
+			} else {
+				e.submitPendingTask(task)
+			}
 		}
 		if len(rows) < batch {
 			e.refillCursor[key] = 0

@@ -61,10 +61,10 @@ type Engine struct {
 	wakeDrain    chan struct{}             // 容量 1：恢复时叫醒回灌循环，别让它等下一个 tick
 
 	residents        *residentSet
-	refillMu         sync.Mutex
+	refillMu         sync.Mutex // serializes drain/refill, including DB I/O and cursor updates
 	refillCursor     map[string]uint
 	refillStage      int
-	schedulerStarted bool
+	schedulerStarted bool // published before startDrain; composition is serialized
 	overflow         spillQueue
 	spilledCount     atomic.Int64 // 累计溢出任务数（监控埋点）
 	recoveredCount   atomic.Int64 // 累计启动恢复任务数（recover_queue，只在启动跑一次）
