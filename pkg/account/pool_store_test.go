@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/ydtg1993/papa/v4/pkg/account/gormstore"
 	"log"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ func TestPoolStoreCASUsesStructuredKeysAndRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := NewGORMPoolStore(db)
+	store := gormstore.NewGORMPoolStore(db)
 	if err = store.SavePoolCAS(context.Background(), PoolState{PoolConfig: PoolConfig{Key: PoolKey{Site: "site", Name: "name"}}, Revision: 2}, 1); !errors.Is(err, ErrPoolConflict) {
 		t.Fatalf("dry run must not claim publication: %v", err)
 	}

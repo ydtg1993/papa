@@ -70,7 +70,7 @@ type proxyURLKey struct{}
 // WithProxyURL 指定这次抓取（及其派生 ctx 上的后续抓取）走**哪个**代理，如
 // "http://1.2.3.4:8080"。空串 = 不指定，回到既有的"用不用代理"开关。
 //
-// 有了它，"用哪个出口"就由 fetcher 自己决定 —— 比如 `engine.GetProxy().Next()` 取一个，
+// 有了它，"用哪个出口"就由 fetcher 自己决定 —— 比如 `engine.GetProxy().NextChecked(ctx)` 取一个，
 // 或者站点自己有固定出口。框架只提供"取一个"和"传进去"，不替业务决定用不用。
 func WithProxyURL(ctx context.Context, addr string) context.Context {
 	if addr == "" {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,7 +17,7 @@ type dataTaskActions struct {
 	reason  string
 }
 
-func (a *dataTaskActions) RetryTask(id uint, version int) error {
+func (a *dataTaskActions) RetryTaskVersioned(_ context.Context, id uint, version int, _ uint64) error {
 	a.retried = id
 	a.version = version
 	return nil
@@ -53,7 +54,7 @@ func TestTaskDataTablesOnlyTaskWithTraceAction(t *testing.T) {
 		mux.ServeHTTP(w, r)
 		return w.Code
 	}
-	if code := post("retry", `{"id":"7","row":{"reprocess":3}}`); code != 200 || a.retried != 7 || a.version != 3 {
+	if code := post("retry", `{"id":"7","row":{"reprocess":3,"compensation_version":0}}`); code != 200 || a.retried != 7 || a.version != 3 {
 		t.Fatalf("retry status=%d id=%d version=%d", code, a.retried, a.version)
 	}
 	a.retried = 0

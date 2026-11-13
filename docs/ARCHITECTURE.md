@@ -9,9 +9,9 @@
 Papa 是单实例大单体。App 创建组件、注入窄接口并安排启停；后台 handler 解析请求并调用服务；服务拥有状态与原子操作；存储适配器实现持久化。业务站点、固定采集目标和业务模型留在独立业务模块。
 
 - `admin/*` 不导入 `internal/app`；页面脚本与所属 handler 位于同一功能模块。
-- `admin/page` 只提供页面描述值，不依赖框架实现；功能包提供默认 Page，App 选择、排序和挂载。任务工作台展示归 `admin/tasksource.WorkspaceTable`，旧 Table 默认值保持兼容。
+- `admin/page` 只提供页面描述值，不依赖框架实现；功能包提供默认 Page，App 选择、排序和挂载。任务工作台展示归 `admin/tasksource.WorkspaceTable`，通用 Table 与任务工作台按用途分别提供。
 - `internal/sitedecl` 不依赖 App、admin 或 HTTP；允许现有 Engine 注册协议的类型依赖，规划阶段不操作 Engine 实例或数据库。
-- `admin/server` 只装配后台组件并保留公开兼容入口；其它 admin 功能包不得反向导入 server。Monitor 不保留完整配置、白名单锁、观测身份或模板缓存副本。
+- `admin/server` 只装配后台组件并保留公开装配入口；其它 admin 功能包不得反向导入 server。Monitor 不保留完整配置、白名单锁、观测身份或模板缓存副本。
 - 后台功能包接收各自窄依赖并拥有 handler、视图片段、控制器及专用样式；`admin/shell` 拥有公共会话、导航、请求及 UI 生命周期。功能控制器只导出语义操作和必要查询，不能把所有私有变量通过 getter/setter 重新变成共享状态。
 - `internal/runtimecontrol`、`internal/reportrunner`、`internal/taskstore` 不依赖 HTTP、后台或 Engine 实现。
 - `engine/internal/*` 不导入父 engine；类型不适合跨包时先建立同包状态组件，不能制造反向依赖。
@@ -30,7 +30,7 @@ App 汇总 HTTP（含白名单重载）、业务收尾、Engine、运行服务�
 
 报表组件持有报表专用值配置、ticker、生成串行锁与排空信号，不保留整份应用配置指针；App 在关库前 Stop 并等待正在生成的报告，再产生退出报告。诊断组件持有操作取消、在途计数和合成浏览器资源；所有使用存储的入口（含身份列表 View）都自行进入取消及排空协议，不能依赖某个 HTTP handler 替它登记。
 
-任务存储按 Claim、Complete、Release、Retry、AdvanceRepeat 等语义使用；终态条件包含执行轮次，丢失确认后的核对不能重复追加错误或重放业务 handler。公开 Task 的旧方法保留兼容，执行路径使用可返回错误的入口。执行重试计数是加法写入：失败或确认丢失时只执行一次，记录 unresolved 并停止下一次 handler，保持 processing 等待重启恢复；不盲目重试加法，也不发出已重试成功的事件。
+任务存储按 Claim、Complete、Release、Retry、AdvanceRepeat 等语义使用；终态条件包含执行轮次，丢失确认后的核对不能重复追加错误或重放业务 handler。Task 不公开旧状态写入/重试旁路，执行路径使用可返回错误且带版本的入口。执行重试计数是加法写入：失败或确认丢失时只执行一次，记录 unresolved 并停止下一次 handler，保持 processing 等待重启恢复；不盲目重试加法，也不发出已重试成功的事件。
 
 调度组件拥有池和延迟队列，执行持久化组件拥有未确认状态。熔断与暂停、任务持久化之间的协调仍须遵守锁序；独立状态组件不能自行跳过协调器改动其他组件。
 
@@ -38,11 +38,11 @@ App 汇总 HTTP（含白名单重载）、业务收尾、Engine、运行服务�
 
 一个包应能回答“做什么、如何调用、依赖什么、谁负责关闭”。可以在同包按职责分文件，不要求每个文件再建子包。禁止无边界的 utils/service/manager 集合，禁止为减少行数而暴露内部字段。
 
-App 和 Engine 的公开入口是兼容门面，新增功能优先委派到职责明确的组件。已有公开字段和类型别名不能直接移除；`internal` 路径不意味着通过根包别名暴露的字段可以任意修改。
+App 和 Engine 的公开入口是当前公开门面，新增功能优先委派到职责明确的组件。当前版本接口按所属模块维护；`internal` 路径不意味着通过根包别名暴露的字段可以任意修改。
 
 JS/CSS/HTML 继续用 go:embed 保持单二进制部署，源码放所属功能包。`custom.js` 的既有顺序、页面 key 和路由维持兼容；跨页面共享脚本必须明确提供者和加载顺序。后台注册接口持有自己的导航元数据快照，不保留调用方可变的 Owns 切片。公开 `server.TaskFlowScript` / `TaskFlowCSS` 在 Run 前覆盖资源的行为继续保留。
 
-`/static/mo.js`、`/static/mo.css` 是兼容资源 URL，不是新增功能的源码落点。资源按明确清单组合，重名资源不能依赖 map 遍历顺序决定归属；缺失模板/样式片段必须在装配时失败。生产资源 FS 只读且不能把共享字节切片暴露给调用方。
+`/static/mo.js`、`/static/mo.css` 是组合资源 URL，不是新增功能的源码落点。资源按明确清单组合，重名资源不能依赖 map 遍历顺序决定归属；缺失模板/样式片段必须在装配时失败。生产资源 FS 只读且不能把共享字节切片暴露给调用方。
 
 ## 变更验收
 
@@ -54,4 +54,6 @@ JS/CSS/HTML 继续用 go:embed 保持单二进制部署，源码放所属功能�
 
 ## Engine 同包组件边界
 
-Engine 的提交、任务流、追踪/归档、站点目录、告警与熔断组件职责，以及跨组件锁序、输入快照、事件派发和关停要求，统一见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。内部组件通过语义接口协作，公开 Fetcher 接收 Engine 的兼容契约不构成其它组件持有完整 Engine 的理由。
+Engine 的提交、任务流、追踪/归档、站点目录、告警与熔断组件职责，以及跨组件锁序、输入快照、事件派发和关停要求，统一见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。内部组件通过语义接口协作，公开 Fetcher 接收 Engine 的当前契约不构成其它组件持有完整 Engine 的理由。
+
+V4 为独立版本：不提供旧版本 API/配置/数据转换兼容层。不得新增只为旧版本保留的空壳或双轨回退；当前协议格式和公开门面不因使用类型别名就被视为兼容层。

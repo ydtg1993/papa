@@ -2,18 +2,7 @@ package main
 
 import "path/filepath"
 
-// siteDirectory prefers application code under internal while accepting older scaffolds.
-func siteDirectory(root string) string {
-	if exists(filepath.Join(root, "internal", "sites")) {
-		return filepath.Join("internal", "sites")
-	}
-	return "sites"
-}
-
+// frameworkDocsDir is the only framework-owned documentation location in v4.
 func frameworkDocsDir(root string) string {
-	dir := filepath.Join(root, "docs", "framework")
-	if exists(dir) {
-		return dir
-	}
-	return filepath.Join(root, "docs")
+	return filepath.Join(root, "docs", "framework")
 }

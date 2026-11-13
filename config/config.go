@@ -236,11 +236,11 @@ func (c CrawlerConfig) StopTimeoutOrDefault() time.Duration {
 // 开启后 handler 可用 task.Trace.Step/Fail/Warn 上报步骤，默认仅保留异常尝试到文件。
 // 关闭时 task.Trace 为 nil（调用是安全的 no-op）；Trace 不使用数据库。
 type TraceConfig struct {
-	Enabled   bool          `mapstructure:"enabled"`   // 是否开启步骤追踪（默认 false）
+	Mode      TraceMode     `mapstructure:"mode"`      // off/errors/all；默认 errors
 	Retention time.Duration `mapstructure:"retention"` // 步骤记录保留期；0/未写 = 默认 7 天，负数 = 不自动清理
 }
 
-// TraceFilesConfig 是独立的文件预算；TraceConfig 保持原有公开值布局。
+// TraceFilesConfig 是独立的文件预算；与追踪模式分开管理。
 // 零值采用默认值；负预算非法，不提供无限容量模式。
 type TraceFilesConfig struct {
 	Dir           string `mapstructure:"dir"`             // 默认 ./traces；专用于 Trace，不与其它数据目录共用

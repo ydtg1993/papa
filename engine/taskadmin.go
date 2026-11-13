@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"time"
 
@@ -84,9 +85,9 @@ func setRepeatIntervalScope(db *gorm.DB, id uint, wasSeconds int) *gorm.DB {
 }
 
 // loadTask 按 ID 取一行任务；不存在时返回 ErrTaskNotFound。
-func (e *Engine) loadTask(id uint) (*models.CrawlerTask, error) {
+func (e *Engine) loadTask(ctx context.Context, id uint) (*models.CrawlerTask, error) {
 	var t models.CrawlerTask
-	err := e.db.First(&t, id).Error
+	err := e.db.WithContext(ctx).First(&t, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrTaskNotFound
 	}
@@ -96,33 +97,16 @@ func (e *Engine) loadTask(id uint) (*models.CrawlerTask, error) {
 	return &t, nil
 }
 
-// RetryTask 把一行任务重置为「待处理」并重新投递到它所属阶段的池。
-// 语义与 error_queue 的单行重投一致：重试次数归零、代次 +1。
-//
-// wasReprocess 是调用方从行快照里带回来的 reprocess 旧值，作为版本条件：
-// 手抖双击或两个人同时点时，只有第一次能匹配上，后一次拿到 ErrTaskChanged。
-// 这里不用 updated_at 当版本号 —— 它从客户端回来是 RFC3339 字符串，
-// 直接和 MySQL 的 datetime 比会有格式/时区坑；reprocess 是纯整数且重投必 +1。
-func (e *Engine) RetryTask(id uint, wasReprocess int) error {
-	t, err := e.loadTask(id)
-	if err != nil {
-		return err
-	}
-	return e.retryTaskRecord(context.Background(), t, wasReprocess, nil)
-}
-
-// RetryTaskVersioned additionally fences a polling/release change since the OA
-// row was displayed. The legacy RetryTask contract uses only reprocess; callers
-// with a compensation preview should always supply this second version.
+// RetryTaskVersioned fences both reprocess and compensation revision from the displayed row.
 func (e *Engine) RetryTaskVersioned(ctx context.Context, id uint, wasReprocess int, wasCompensationVersion uint64) error {
-	t, err := e.loadTask(id)
+	t, err := e.loadTask(ctx, id)
 	if err != nil {
 		return err
 	}
-	return e.retryTaskRecord(ctx, t, wasReprocess, &wasCompensationVersion)
+	return e.retryTaskRecord(ctx, t, wasReprocess, wasCompensationVersion)
 }
 
-func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, wasReprocess int, expected *uint64) error {
+func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, wasReprocess int, expected uint64) error {
 	id := t.ID
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
@@ -136,7 +120,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 	if reason := e.compensationBlockedReason(t, time.Now()); reason != "" {
 		return blockedCompensationError(reason)
 	}
-	if expected != nil && *expected != t.CompensationVersion {
+	if expected != t.CompensationVersion {
 		return ErrTaskChanged
 	}
 
@@ -145,7 +129,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 		return fmt.Errorf("reset task %d: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return e.whyRetryRejected(id)
+		return e.whyRetryRejected(ctx, id)
 	}
 
 	task := e.taskFromRecord(t)
@@ -169,8 +153,8 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 }
 
 // whyRetryRejected 条件更新影响 0 行时，再查一次把原因说清楚。
-func (e *Engine) whyRetryRejected(id uint) error {
-	t, err := e.loadTask(id)
+func (e *Engine) whyRetryRejected(ctx context.Context, id uint) error {
+	t, err := e.loadTask(ctx, id)
 	if err != nil {
 		return err // 行不存在
 	}
@@ -185,13 +169,13 @@ func (e *Engine) whyRetryRejected(id uint) error {
 
 // UrgentTask 给一行「还没被取走」的任务加急：另投一份到所属阶段的快车道，插到常规队列前面。
 //
-// 条件更新 `WHERE id = ? AND urgent = 0` 当版本守卫（与 RetryTask 用 reprocess 同一思路）：
+// 条件更新 `WHERE id = ? AND urgent = 0` 当版本守卫（与 RetryTaskVersioned 用 reprocess 同一思路）：
 // 手抖双击或两个人同时点时只有第一次能匹配上。
 //
 // 已知竞态（可接受）：这条任务本来就排在常规队列里时，池里会有同一行的两份副本，
 // 靠 claimTask 的条件更新仲裁 —— 谁先认领谁执行，另一份被跳过。窗口很小、后果自愈。
 func (e *Engine) UrgentTask(id uint) error {
-	t, err := e.loadTask(id)
+	t, err := e.loadTask(context.Background(), id)
 	if err != nil {
 		return err
 	}
@@ -241,7 +225,7 @@ func (e *Engine) UrgentTask(id uint) error {
 // 中原子比较（影响 0 行时由 whyRepeatRejected 回查原因）。开启后叫醒全局轮询队列。
 func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 	if on {
-		row, err := e.loadTask(id)
+		row, err := e.loadTask(context.Background(), id)
 		if err != nil {
 			return err
 		}
@@ -275,7 +259,7 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 // SetTaskRepeatInterval 改一条任务的轮询周期（秒；0 = 用本站声明的周期）。只改周期相关的列，不顺手重投
 // （想立刻跑一次用「重投」）。合法值：0，或 ≥ repeatMinTick（写入侧就挡住"设了 3 秒却按 10 秒跑"）。
 //
-// wasSeconds 是行快照里的旧值，当版本条件（同 RetryTask 用 reprocess）：手抖双击或两人同点时
+// wasSeconds 是行快照里的旧值，当版本条件（同 RetryTaskVersioned 用 reprocess）：手抖双击或两人同点时
 // 只有第一次能匹配上。改周期**连带重算 NextRepeatAt** —— 否则它还按旧周期排着（1h 改成 10m，
 // 却还要等 55 分钟）；基准取"上次轮询时刻"（不是 NOW()），所以改短之后可能立刻就该跑；
 // 从未轮询过（LastRepeatAt 为空）就从这一刻起算。
@@ -283,7 +267,7 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
 	}
-	_, err := e.loadTask(id)
+	_, err := e.loadTask(context.Background(), id)
 	if err != nil {
 		return err
 	}
@@ -302,7 +286,7 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 		return fmt.Errorf("set task %d repeat_interval=%d: %w", id, seconds, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		if _, err := e.loadTask(id); err != nil {
+		if _, err := e.loadTask(context.Background(), id); err != nil {
 			return err // 行不存在
 		}
 		return ErrTaskChanged // 周期刚被改过（快照过期），刷新后再看
@@ -318,7 +302,7 @@ func (e *Engine) wakeRepeatQueueOfTask(id uint) {
 
 // whyRepeatRejected 条件更新影响 0 行时，再查一次把原因说清楚。
 func (e *Engine) whyRepeatRejected(id uint, on bool) error {
-	t, err := e.loadTask(id)
+	t, err := e.loadTask(context.Background(), id)
 	if err != nil {
 		return err // 行不存在
 	}
@@ -337,9 +321,9 @@ func (e *Engine) whyRepeatRejected(id uint, on bool) error {
 // 允许标记待处理的行，是为了让运营能在 worker 取走之前拦下一条排队任务：
 // worker 执行前会用 claimTask 以 status=待处理 为条件认领，拿不到行就不执行。
 //
-// 本进程正在处理的行**拒绝**（不再像旧版那样放行）：它已经被 worker 认领，这里改了也会被 worker
-// 完成后无条件写回（UpdateStatus 只按 id、没有状态守卫），"标失败"因此不是终态 —— 运营以为掐掉了，
-// 任务其实还在跑，最后还会把自己写回成功。想让它停用 PauseSite，想重跑等它结束再「重投」。
+// 本进程正在处理的行**拒绝**：终态由已认领的 worker 按执行版本结算，
+// 人工标失败不能取消正在执行的 handler，也不能抢走它的结算状态。
+// 想让它停用 PauseSite，想重跑等它结束再「重投」。
 //
 // 上一轮崩溃留下的 processing 行**放行**（判据见 markFailedScope）：没有 worker 在跑它，
 // 而它是这类行唯一的人工出口 —— 尤其在 recover_queue 关着的时候。
@@ -349,12 +333,12 @@ func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 		msg += "：" + reason
 	}
 	res := markFailedScope(e.db, id, e.startedAt).
-		Updates(taskStatusUpdates(models.TaskStatusFailed, WrapNoRetryKind("manual_failure", errors.New(msg))))
+		Updates(taskStatusUpdates(models.TaskStatusFailed, core.WrapNoRetryKind("manual_failure", errors.New(msg))))
 	if res.Error != nil {
 		return fmt.Errorf("mark task %d failed: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		t, err := e.loadTask(id)
+		t, err := e.loadTask(context.Background(), id)
 		if err != nil {
 			return err // 行不存在
 		}
@@ -367,9 +351,9 @@ func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 }
 
 // DeleteTask 删除一行任务，并清掉它在内存去重表里的残留。
-// 处理中的行拒绝删除：worker 稍后会对已删行 UpdateStatus，且运营侧看到"行消失又冒出新行"很困惑。
+// 处理中的行拒绝删除：worker 稍后仍需结算执行状态，且运营侧看到"行消失又冒出新行"很困惑。
 func (e *Engine) DeleteTask(id uint) error {
-	t, err := e.loadTask(id) // 先取 URL/Stage，删除后就没法算去重键了
+	t, err := e.loadTask(context.Background(), id) // 先取 URL/Stage，删除后就没法算去重键了
 	if err != nil {
 		return err
 	}
@@ -384,13 +368,13 @@ func (e *Engine) DeleteTask(id uint) error {
 		return fmt.Errorf("delete task %d: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		if _, err := e.loadTask(id); err != nil {
+		if _, err := e.loadTask(context.Background(), id); err != nil {
 			return err // 行不存在
 		}
 		return ErrTaskProcessing
 	}
 	// 这里只需要算去重键（Unique 为包含站点、阶段、身份类型和值的标准哈希），
 	// 不必把整行还原成 Task；Site 漏了就会删不掉内存去重表里的那条残留。
-	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey, ResourceID: resourceIDFromRecord(t)})
+	e.DelActiveTask(&Task{URL: t.URL, Stage: t.Stage, Site: t.Site, ResourceID: resourceIDFromRecord(t)})
 	return nil
 }

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 
 	"sort"
@@ -99,10 +100,10 @@ func (e *Engine) breakerSum(site string) int { return e.breakers.breakerSum(site
 // 列出**每个声明的站点**（不管有没有单配阈值、有没有在暂停）。**一条都不能少**，
 // 包括没启用、也没暂停的：后台的「恢复抓取」端点 targets 取自这张表，不列就等于
 // "那个站暂停了却既看不见、也点不到恢复"，只能重启或让业务代码自己调 ResumeCrawling。
-func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
+func (e *Engine) BreakerStatuses() map[string]core.BreakerStatus {
 	sites := e.allSites()
 	sort.Strings(sites)
-	out := make(map[string]BreakerStatus, len(sites))
+	out := make(map[string]core.BreakerStatus, len(sites))
 	for _, site := range sites {
 		out[site] = e.breakerStatusOf(site)
 	}
@@ -113,14 +114,14 @@ func (e *Engine) BreakerStatuses() map[string]BreakerStatus {
 //
 // 为什么合成：暂停状态现在只有一处（pause.go），而后台的历史契约是"一条记录里既有熔断阈值
 // 又有暂停现场"。合成让 payload 的字段形状一个字都不变（只多一个 Source）。
-func (e *Engine) breakerStatusOf(site string) BreakerStatus {
+func (e *Engine) breakerStatusOf(site string) core.BreakerStatus {
 	e.breakers.breakerMu.Lock()
 	defer e.breakers.unlockAndEmit()
 	return e.breakerStatusOfLocked(site)
 }
 
 // breakerStatusOfLocked 调用方持有 breakerMu，快照不会被恢复/新熔断拆开。
-func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
+func (e *Engine) breakerStatusOfLocked(site string) core.BreakerStatus {
 	st := e.breakers.statusLocked(site)
 
 	// 用"该站任一暂停条目"而不是只查整站那条：阶段级暂停也该在这一行里显示出来

@@ -9,21 +9,6 @@ import (
 	"github.com/ydtg1993/papa/v4/admin/configstore"
 )
 
-// LoadWhitelist 从配置存储读一次来源白名单（启动那一次与定期重载都走这里）。
-//
-// 生效语义（与 configstore.KeyIPWhitelist 的注释、docs 里那张表逐条对应）：
-// **行不存在 / 空数组 / 值解析不出来 → 不限制来源**；数组里有效的那几条 → 只允许这些来源。
-// 读失败单独记 Error —— 这一档等于把限制**悄悄放宽了**，日志里必须留下痕迹
-// （语义是运营定的：宁可放宽，也不因为一次手改把自己锁在后台外面）。值的形状校验在 store 那层。
-func LoadWhitelist(reader configstore.StringListReader, log Logger) []string {
-	entries, err := reader.LoadStrings(configstore.KeyIPWhitelist)
-	if err != nil {
-		log.Errorf("来源白名单读不出来，按「不限制来源」继续：%s", err.Error())
-		return nil
-	}
-	return entries
-}
-
 // LoadWhitelistContext 保留普通读错时的放宽及日志语义，但取消不是配置值：
 // 取消或超时返回 error，调用方不得据此发布空白名单。
 func LoadWhitelistContext(ctx context.Context, reader configstore.ContextStringListReader, log Logger) ([]string, error) {

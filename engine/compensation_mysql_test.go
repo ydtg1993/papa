@@ -122,7 +122,7 @@ func TestCompensationMySQLPersistenceRecoveryCASAndIdentity(t *testing.T) {
 		if e.requeueFailedTaskIn(&row) || e.requeueRepeatTaskIn(&row) {
 			t.Fatal("blocked task requeued")
 		}
-		if err := e.RetryTask(row.ID, 0); !errors.Is(err, ErrCompensationBlocked) {
+		if err := e.RetryTaskVersioned(context.Background(), row.ID, 0, 0); !errors.Is(err, ErrCompensationBlocked) {
 			t.Fatal("manual bypass", err)
 		}
 		if err := db.Model(&models.CrawlerTask{}).Where("id = ?", row.ID).Update("status", models.TaskStatusPending).Error; err != nil {
@@ -153,7 +153,7 @@ func TestCompensationMySQLPersistenceRecoveryCASAndIdentity(t *testing.T) {
 	if err != nil || results[0].Submitted {
 		t.Fatal("stale preview accepted", results, err)
 	}
-	row, err := e.loadTask(manual.ID)
+	row, err := e.loadTask(context.Background(), manual.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,17 +172,17 @@ func TestCompensationMySQLPersistenceRecoveryCASAndIdentity(t *testing.T) {
 	if won.Load() != 1 {
 		t.Fatalf("concurrent compensation winners=%d", won.Load())
 	}
-	stored, err := e.loadTask(manual.ID)
+	stored, err := e.loadTask(context.Background(), manual.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Reprocess != 1 || stored.ID != manual.ID || stored.URLHash != manual.URLHash {
+	if stored.Reprocess != 1 || stored.ID != manual.ID || stored.IdentityHash != manual.IdentityHash {
 		t.Fatalf("lost original identity or spent duplicate generation: %+v", stored)
 	}
 	if err := db.Model(&models.CrawlerTask{}).Where("id = ?", later.ID).Update("next_compensation_at", gorm.Expr("NOW() - INTERVAL 1 SECOND")).Error; err != nil {
 		t.Fatal(err)
 	}
-	row, err = e.loadTask(later.ID)
+	row, err = e.loadTask(context.Background(), later.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

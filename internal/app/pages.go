@@ -61,7 +61,7 @@ type Page struct {
 }
 
 // UsePage 注册一个自定义页（须在 Run 之前调用 —— 路由在 Run 时挂载）。
-// Key 非法、重复或 Script 为空直接 panic；Section 留空或未知值兼容回退到 data。
+// Key 非法、重复或 Script 为空直接 panic；Section 留空或未知值默认归入 data。
 func (a *App) UsePage(p Page) {
 	if !validPageKey(p.Key) {
 		panic(fmt.Errorf("invalid page key %q: 只允许字母、数字、下划线、连字符", p.Key))

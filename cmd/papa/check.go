@@ -125,7 +125,7 @@ func runCheckCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := rejectLegacyProject(root); err != nil {
+	if err := validateProjectModule(root); err != nil {
 		return err
 	}
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
@@ -161,9 +161,7 @@ func runCheckCmd(args []string) error {
 			fmt.Fprintf(os.Stderr, "提示：临时目录没删掉，手动删掉即可：%s（%v）\n", tmp, err)
 		}
 	}()
-	if siteDirectory(root) == filepath.Join("internal", "sites") {
-		module += "/internal"
-	}
+	module += "/internal"
 	src := checkProgram(module, cfgPath)
 	if boot {
 		src = bootProgram(module, cfgPath)

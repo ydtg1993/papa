@@ -73,7 +73,7 @@ func ReadContext(ctx context.Context, paths []string, from, to time.Time, runID 
 }
 
 // ScanContext decodes window-matching events in input order including duplicates.
-// Unparsed counts every malformed nonempty line. Raw includes its newline.
+// Unparsed counts malformed or unsupported-version nonempty lines. Raw includes its newline.
 func ScanContext(ctx context.Context, paths []string, from, to time.Time, limits inputbudget.Limits, yield func(events.Event, string) error) (Result, error) {
 	meter := inputbudget.New(limits)
 	if err := inputbudget.Check("files", int64(len(paths)), int64(meter.Limits.MaxFiles)); err != nil {
@@ -88,7 +88,7 @@ func ScanContext(ctx context.Context, paths []string, from, to time.Time, limits
 				return nil
 			}
 			var ev events.Event
-			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			if err := json.Unmarshal([]byte(line), &ev); err != nil || ev.V != events.Version {
 				res.Unparsed++
 				return nil
 			}

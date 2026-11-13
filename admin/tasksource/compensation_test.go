@@ -57,7 +57,7 @@ func TestCompensationReleaseActionValidatesAndForwardsVersion(t *testing.T) {
 	}
 }
 
-func TestTaskRetryCarriesCompensationVersionWhenSupported(t *testing.T) {
+func TestTaskRetryRequiresCompensationVersion(t *testing.T) {
 	acts := &compensationActions{}
 	action := Table(nil, acts).Actions[0]
 	request := oao.ActionRequest{ID: "7", Row: map[string]any{"reprocess": "3"}}
@@ -68,7 +68,7 @@ func TestTaskRetryCarriesCompensationVersionWhenSupported(t *testing.T) {
 	if err := action.Handler(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	if acts.id != 7 || acts.version != 12 || acts.reprocess != 3 || len(acts.stubActions.gotID) != 0 {
-		t.Fatal("versioned retry fell back to legacy endpoint")
+	if acts.id != 7 || acts.version != 12 || acts.reprocess != 3 {
+		t.Fatal("retry lost compensation CAS identity")
 	}
 }

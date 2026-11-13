@@ -146,13 +146,33 @@ func TestConcurrentControlsAfterUsageStillHaveSingleWinner(t *testing.T) {
 	}
 }
 
-func TestLegacyManagementNormalizesControlVersionAndPersistsAcrossRestart(t *testing.T) {
+func TestManagementRejectsMissingVersionBoundaries(t *testing.T) {
+	for _, state := range []ManagementState{
+		{Version: 10, Generation: 10},
+		{Version: 10, LastControlVersion: 10},
+	} {
+		m, _, _ := poolManager(t, nil, "a")
+		store := NewMemoryPoolStore()
+		state.Key = Key{Site: "s", ID: "a"}
+		state.Policy = DefaultPolicy()
+		if err := store.SaveManagementCAS(context.Background(), state, 0); err != nil {
+			t.Fatal(err)
+		}
+		p, err := NewPools(context.Background(), m, store, PoolOptions{})
+		if err == nil {
+			p.Close()
+			t.Fatal("accepted management state without version boundaries")
+		}
+	}
+}
+
+func TestManagementControlVersionPersistsAcrossRestart(t *testing.T) {
 	m, _, _ := poolManager(t, nil, "a")
 	key := Key{Site: "s", ID: "a"}
 	store := NewMemoryPoolStore()
 	policy := DefaultPolicy()
 	policy.TrackUsage = true
-	if err := store.SaveManagementCAS(context.Background(), ManagementState{Key: key, Version: 10, Policy: policy}, 0); err != nil {
+	if err := store.SaveManagementCAS(context.Background(), ManagementState{Key: key, Version: 10, Generation: 10, LastControlVersion: 10, Policy: policy}, 0); err != nil {
 		t.Fatal(err)
 	}
 	p, err := NewPools(context.Background(), m, store, PoolOptions{ScanInterval: time.Millisecond})
@@ -170,7 +190,7 @@ func TestLegacyManagementNormalizesControlVersionAndPersistsAcrossRestart(t *tes
 	}
 	if len(rows) != 1 || rows[0].Version != 11 || rows[0].LastControlVersion != 10 {
 		p.Close()
-		t.Fatalf("legacy boundary not persisted: %+v", rows)
+		t.Fatalf("control boundary not persisted: %+v", rows)
 	}
 	p.Close()
 	p2 := testPools(t, m, store)

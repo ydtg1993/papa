@@ -185,7 +185,7 @@ func TestManualRetryAndUrgencyKeepRepeatCountWhenSpilled(t *testing.T) {
 			e.setPause(pauseScope{Site: "stub"}, pauseState{Reason: "test"})
 			var err error
 			if action == "retry" {
-				err = e.RetryTask(7, 0)
+				err = e.RetryTaskVersioned(context.Background(), 7, 0, 0)
 			} else {
 				err = e.UrgentTask(7)
 			}

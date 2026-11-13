@@ -20,7 +20,7 @@ type stubActions struct {
 	repeatErr   error
 	intervalErr error
 	gotID       []uint
-	gotVer      []int    // RetryTask 收到的版本号
+	gotVer      []int    // RetryTaskVersioned 收到的版本号
 	gotReason   []string // MarkTaskFailed 收到的原因
 	gotOn       []bool   // SetTaskRepeatable 收到的方向（开/停）
 	// SetTaskRepeatInterval 收到的旧周期（版本守卫）与新周期
@@ -28,7 +28,7 @@ type stubActions struct {
 	gotInterval    []int
 }
 
-func (s *stubActions) RetryTask(id uint, was int) error {
+func (s *stubActions) RetryTaskVersioned(_ context.Context, id uint, was int, _ uint64) error {
 	s.gotID = append(s.gotID, id)
 	s.gotVer = append(s.gotVer, was)
 	return s.retryErr
@@ -190,7 +190,7 @@ func TestTableReadOnlyWithoutActions(t *testing.T) {
 
 // 处理函数把 crawler 的哨兵错误映射成带状态码的业务错误；入参校验（版本号、原因）也在这一层。
 func TestActionHandlerErrorMapping(t *testing.T) {
-	ver := map[string]any{"reprocess": "3"}
+	ver := map[string]any{"reprocess": "3", "compensation_version": "0"}
 	reason := map[string]any{"reason": "内容违规"}
 	// 「设轮询周期」：行快照里的旧周期当版本号，表单里是新周期
 	ivRow := map[string]any{"repeat_interval": float64(0)}
@@ -319,7 +319,7 @@ func TestRepeatIntervalBadMapsTo400(t *testing.T) {
 func TestActionHandlerPassesUnknownError(t *testing.T) {
 	boom := errors.New("db down")
 	err := handlerFor(t, &stubActions{retryErr: boom}, "retry")(context.Background(), oao.ActionRequest{
-		ID: "1", Row: map[string]any{"reprocess": "1"},
+		ID: "1", Row: map[string]any{"reprocess": "1", "compensation_version": "0"},
 	})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the original error", err)

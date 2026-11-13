@@ -73,7 +73,7 @@ func terminalScope(db *gorm.DB, task *Task, version taskRunVersion) *gorm.DB {
 
 func (e *Engine) persistTerminal(ctx context.Context, task *Task, version taskRunVersion, status models.TaskStatus, cause error) error {
 	if task.ID == 0 {
-		return nil // compatibility for non-persistent, directly supplied tasks
+		return nil // directly supplied non-persistent tasks have no durable timing row
 	}
 	updates := taskStatusUpdates(status, cause)
 	if status == models.TaskStatusFailed && !task.breakerSampleDeadline.IsZero() {

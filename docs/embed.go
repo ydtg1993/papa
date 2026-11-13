@@ -1,5 +1,5 @@
 // Package docs 内嵌框架使用手册，供 papa new 复制到业务项目的 docs/framework/。
-// papa upgrade 同时兼容旧项目的 docs/ 布局。
+// papa upgrade 仅刷新 docs/framework/ 中的框架副本。
 package docs
 
 import "embed"

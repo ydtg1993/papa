@@ -13,13 +13,12 @@ import (
 )
 
 func TestExecutionTraceComposition(t *testing.T) {
-	m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
-	m.SetTaskTraceExecution(func(id int) ([]core.TraceExecutionStep, error) {
+	m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests, TaskTrace: func(id int) ([]core.TraceExecutionStep, error) {
 		if id != 7 {
 			t.Fatalf("id=%d", id)
 		}
 		return []core.TraceExecutionStep{{TraceStep: core.TraceStep{Step: "parse"}, ExecutionID: "run-7", Truncated: true}}, nil
-	})
+	}})
 	rr := serve(m, http.MethodGet, "/api/task/trace?id=7", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
@@ -36,12 +35,12 @@ func TestExecutionTraceComposition(t *testing.T) {
 }
 
 func TestTaskTraceHandler(t *testing.T) {
-	steps := []core.TraceStep{
-		{Attempt: 0, Seq: 0, Step: "打开列表页", Status: "ok", Duration: 12 * time.Millisecond},
-		{Attempt: 0, Seq: 1, Step: "解析详情", Status: "failed", Kind: "no-retry", Message: "selector not found"},
+	steps := []core.TraceExecutionStep{
+		{TraceStep: core.TraceStep{Attempt: 0, Seq: 0, Step: "打开列表页", Status: "ok", Duration: 12 * time.Millisecond}},
+		{TraceStep: core.TraceStep{Attempt: 0, Seq: 1, Step: "解析详情", Status: "failed", Kind: "no-retry", Message: "selector not found"}},
 	}
 	withTrace := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
-		TaskTrace: func(id int) ([]core.TraceStep, error) {
+		TaskTrace: func(id int) ([]core.TraceExecutionStep, error) {
 			if id != 7 {
 				t.Errorf("handler 透传的 id = %d, want 7", id)
 			}
@@ -74,7 +73,7 @@ func TestTaskTraceHandler(t *testing.T) {
 	// 业务原因（追踪未开启）要原样回给前端，不能糊成 500
 	t.Run("业务错误原样带回", func(t *testing.T) {
 		m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests,
-			TaskTrace: func(int) ([]core.TraceStep, error) {
+			TaskTrace: func(int) ([]core.TraceExecutionStep, error) {
 				return nil, errors.New("步骤追踪未开启（core.trace.enabled）")
 			},
 		})

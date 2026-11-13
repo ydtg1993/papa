@@ -82,7 +82,7 @@ function setup() {
      const a=oao.indexOf('    async function request('),b=oao.indexOf('    async function api(',a);
      const mo=fs.readFileSync(path.join(process.argv[2],'mo.js'),'utf8');
      s.c.Oao={init:opts=>{s.c.authHeaders=opts.headers;s.c.onUnauthorized=opts.onUnauthorized;}};
-     s.c.document.getElementById=()=>({addEventListener(){}});s.c.installLegacyTableAdapter=()=>{};s.c.authRequired=()=>true;s.c.startPolling=()=>{};
+     s.c.document.getElementById=()=>({addEventListener(){}});s.c.authRequired=()=>true;s.c.startPolling=()=>{};
      controllers.load(s.c,mo,['shell/startup']);
      controllers.run(oao.slice(a,b),s.c);
      const old=s.c.request('/api/oao/task/action/retry',{method:'POST',body:'{}'}).catch(e=>e);

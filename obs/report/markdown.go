@@ -32,7 +32,7 @@ func VerdictLabel(v obs.Verdict) string {
 	}
 }
 
-// modeText 把判定模式转成带解释的短标签；空模式来自旧版报告（没有 mode 字段）。
+// modeText 把判定模式转成带解释的短标签；空模式表示调用方未指定模式。
 func modeText(m obs.Mode) string {
 	switch m {
 	case obs.ModeSnapshot:
@@ -40,7 +40,7 @@ func modeText(m obs.Mode) string {
 	case obs.ModeAcceptance:
 		return "acceptance（验收）"
 	default:
-		return "-（历史报告）"
+		return "-（未指定）"
 	}
 }
 
@@ -69,7 +69,7 @@ func Markdown(rep *obs.Report) string {
 	}
 	fmt.Fprintf(&b, "- 生成时间：%s（最近一次更新）\n", fmtTime(rep.GeneratedAt))
 	// 自证块：报告要能被独立复核 —— 数字取自哪一刻的库、由什么版本+配置+阈值算出、事件覆盖到哪。
-	// 零值字段直接跳过（历史报告没有 inputs，不能渲染成空行或 0001 年）。
+	// 零值字段直接跳过（可选输入不能渲染成空行或 0001 年）。
 	if !rep.Inputs.SnapshotAt.IsZero() {
 		fmt.Fprintf(&b, "- DB 快照时刻：%s（状态层数字取这一时刻的全库现状）\n", fmtTime(rep.Inputs.SnapshotAt))
 	}

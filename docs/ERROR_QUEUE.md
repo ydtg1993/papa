@@ -54,7 +54,7 @@ error_queue:
 
 | 持久模式 | 业务写法或来源 | 放行条件 |
 | --- | --- | --- |
-| 空串（兼容自动） | 普通错误、仅使用 `WrapNoRetry` | 符合队列状态和代数条件；有账号池的任务仍要求原池就绪 |
+| 空串（默认自动） | 普通错误、仅使用 `WrapNoRetry` | 符合队列状态和代数条件；有账号池的任务仍要求原池就绪 |
 | `retry_after` | `core.RetryAfter(err, time.Now().Add(5*time.Minute))` | 到达持久的 `next_compensation_at`，且原池就绪 |
 | `account_ready` | `ErrNeedsVerify`、确认失效、账号挑战、固定出口不可用、账号预算等待等账号错误 | 原任务的 `(site, account_pool)` 已就绪 |
 | `manual` | `core.ManualCompensation(err, "等待业务审核")` | 运营显式解除任务人工等待，再检查其他条件 |
@@ -90,8 +90,7 @@ error_queue:
 | `PreviewCompensation(ctx, CompensationFilter{Site, AccountPool, AccountID, Limit})` | 查询失败任务，逐项返回 `Eligible` / `BlockedReason`、版本和关联记录；默认 50、最多 200 条 |
 | `ReleaseTaskCompensation(ctx, id, wasVersion)` | CAS 解除 `manual`，仍须通过账号与时间条件；成功后重新预览再重投 |
 | `BatchCompensate(ctx, []CompensationRequest{{ID, Version}})` | 最多 200 项；逐项重新检查失败状态、版本和就绪条件，返回每项 `Submitted` / `Error`，支持部分成功 |
-| `RetryTaskVersioned(ctx, id, wasReprocess, wasCompensationVersion)` | 任务表使用的双版本重投；页面过期、轮询或其他操作已修改该行时返回冲突 |
-| `RetryTask(id, wasReprocess)` | 兼容旧调用者的重投入口，同样检查补偿条件；新界面应使用双版本接口 |
+| `RetryTaskVersioned(ctx, id, wasReprocess, wasCompensationVersion)` | 任务表使用的双版本重投；前置查询、CAS 更新和冲突回查均传递调用方 context；页面过期、轮询或其他操作已修改该行时返回冲突 |
 
 预览不是执行承诺：账号可能在预览后进入待核验，或其他人先处理任务，执行时会重新检查。`Eligible` / `Blocked` 汇总只统计本次返回的条目，`Truncated` 表示还有更多匹配数据，不是全库总数。
 

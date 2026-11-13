@@ -106,7 +106,7 @@ func (a *App) shutdownRun(started bool) {
 
 	// 没排空时**不关**浏览器池和数据库：pool.Stop 超时后返回，但 Go 杀不掉 goroutine，
 	// worker 还在跑 —— 它们可能正持着浏览器、正要把结果写回 DB。这会儿关掉，
-	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
+	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 任务结算 / SaveResult
 	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
 	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
 	if httpDrained && drained && businessDrained && runtimeDrained && listenersDrained {

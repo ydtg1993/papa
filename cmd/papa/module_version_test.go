@@ -57,7 +57,36 @@ func TestV4CLIRejectsLegacyBeforeWork(t *testing.T) {
 	if err := os.WriteFile("go.mod", []byte("module demo\n// "+legacy+"\nrequire "+papaModule+" v4.2.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := rejectLegacyProject("."); err != nil {
+	if err := validateProjectModule("."); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestV4ModuleValidationRejectsAllEarlierModules(t *testing.T) {
+	root := t.TempDir()
+	for _, module := range []string{"github.com/ydtg1993/papa", "github.com/ydtg1993/papa/v1", "github.com/ydtg1993/papa/v2", "github.com/ydtg1993/papa/v3"} {
+		for _, declaration := range []string{"require " + module + " v1.0.0", "replace (\n" + papaModule + " => " + module + " v1.0.0\n)", "module " + module} {
+			writeFileT(t, filepath.Join(root, "go.mod"), declaration+"\n")
+			if err := validateProjectModule(root); err == nil {
+				t.Fatalf("accepted unsupported module: %s", declaration)
+			}
+		}
+	}
+	writeFileT(t, filepath.Join(root, "go.mod"), "module example.com/papa/v3\n// github.com/ydtg1993/papa/v3\nrequire "+papaModule+" v4.0.0\n")
+	if err := validateProjectModule(root); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestV4NewMissingOnlyRejectsEarlierProject(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mod := "module demo\nrequire github.com/ydtg1993/papa/v3 v3.8.10\n"
+	writeFileT(t, filepath.Join("demo", "go.mod"), mod)
+	if err := runNew("demo", []string{"--missing-only"}); err == nil {
+		t.Fatal("accepted an earlier project for v4 scaffold completion")
+	}
+	entries, err := os.ReadDir("demo")
+	if err != nil || len(entries) != 1 || readFile(t, filepath.Join("demo", "go.mod")) != mod {
+		t.Fatalf("rejected project was modified: %v, %v", entries, err)
 	}
 }

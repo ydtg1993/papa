@@ -13,13 +13,13 @@ import (
 	"testing"
 )
 
-func TestResumeResourceBoundsAndLegacy(t *testing.T) {
+func TestResumeResourceBoundsAndFormat(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ResumeStateDir = t.TempDir()
 	d := NewDownloader(cfg).WithResources(middleware.DownloadLimits{ResumeBytes: 1024, Chunks: 2}, nil)
 	la := &labor{url: "http://example.com/f", filename: "f"}
 	old := &ResumeState{TotalSize: 2, ChunkSize: 1, Completed: []int64{0, 1}}
-	data, _ := json.Marshal(old)
+	data, _ := d.encodeResume(*old)
 	path := d.getStateFilePath(la)
 	os.WriteFile(path, data, 0600)
 	s, e := d.loadResumeState(la)
@@ -37,8 +37,7 @@ func TestResumeResourceBoundsAndLegacy(t *testing.T) {
 	if _, e = d.loadResumeState(la); !errors.Is(e, middleware.ErrResourceLimit) {
 		t.Fatal(e)
 	}
-	old.Completed = append(old.Completed, 2)
-	data, _ = json.Marshal(old)
+	data, _ = json.Marshal(resumeEnvelope{Version: 2, State: json.RawMessage(`{"total_size":3,"chunk_size":1}`), Done: []byte{7}})
 	os.WriteFile(path, data, 0600)
 	if _, e = d.loadResumeState(la); !errors.Is(e, middleware.ErrResourceLimit) {
 		t.Fatal(e)
@@ -72,5 +71,15 @@ func TestWithPreservesResourceAdmission(t *testing.T) {
 	d := NewDownloader(nil).WithResources(middleware.DownloadLimits{Chunks: 2}, b).With(Overlay{})
 	if d.budget != b || d.limits.Chunks != 2 {
 		t.Fatal("lost budget")
+	}
+}
+
+func TestResumeRejectsUnsupportedFormats(t *testing.T) {
+	d := NewDownloader(DefaultConfig())
+	for _, data := range []string{`{"total_size":2}`, `{"version":99,"state":{}}`, `{"version":1,"state":{}}`} {
+		var state ResumeState
+		if err := d.decodeResume([]byte(data), &state); err == nil {
+			t.Fatalf("accepted unsupported resume %s", data)
+		}
 	}
 }

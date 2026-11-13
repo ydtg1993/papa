@@ -97,7 +97,7 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 			cause = fmt.Errorf("panic: %v", r)
 		}
 		_, compensation := core.CompensationOf(cause)
-		terminal := cause != nil && (r != nil || ctx.Err() != nil || task.breakerFinalAttempt || !Retryable(cause) || account.IsAttemptFailure(cause) || compensation)
+		terminal := cause != nil && (r != nil || ctx.Err() != nil || task.breakerFinalAttempt || !core.Retryable(cause) || account.IsAttemptFailure(cause) || compensation)
 		if version, claimed := taskRunVersionFrom(ctx); claimed && task.ID != 0 && !task.breakerSampleDeadline.IsZero() && terminal && !cancellationOnly(cause) {
 			// Save a known terminal result before timing/trace/archive retries.
 			// Intermediate retryable attempts must never become terminal intents.

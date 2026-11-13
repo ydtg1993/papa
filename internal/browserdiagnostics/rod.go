@@ -181,7 +181,11 @@ func (a *Service) runRodDiagnostic(ctx context.Context) (report RodReport) {
 		l.RemoteDebuggingPort(0)
 		l.Delete(flags.Flag("remote-debugging-pipe"))
 		if a.options.Resources != nil && a.options.Resources.GetProxy() != nil {
-			if p := a.options.Resources.GetProxy().Next(); p != "" {
+			p, err := a.options.Resources.GetProxy().NextChecked(ctx)
+			if err != nil {
+				return err
+			}
+			if p != "" {
 				secrets = append(secrets, p)
 				l.Proxy(p)
 				report.Environment["proxy"] = "当前代理池选取（地址隐藏）"

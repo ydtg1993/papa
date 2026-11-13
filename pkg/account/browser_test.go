@@ -23,7 +23,23 @@ import (
 
 func accountBrowserPool(t *testing.T, origins ...string) *browser.Pool {
 	t.Helper()
-	pool, err := browser.NewPool(browser.PoolConfig{Network: egress.Config{PrivateOrigins: origins}, Size: 1, Headless: true, NoSandbox: true, Leakless: false})
+	// httptest may receive a port Chromium blocks by default. Allow only the
+	// explicitly supplied synthetic fixture ports; production defaults are unchanged.
+	var fixturePorts []string
+	for _, origin := range origins {
+		u, err := url.Parse(origin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u.Port() != "" {
+			fixturePorts = append(fixturePorts, u.Port())
+		}
+	}
+	flags := map[string]string{}
+	if len(fixturePorts) > 0 {
+		flags["explicitly-allowed-ports"] = strings.Join(fixturePorts, ",")
+	}
+	pool, err := browser.NewPool(browser.PoolConfig{Flags: flags, Network: egress.Config{PrivateOrigins: origins}, Size: 1, Headless: true, NoSandbox: true, Leakless: false})
 	if err != nil {
 		t.Fatal(err)
 	}

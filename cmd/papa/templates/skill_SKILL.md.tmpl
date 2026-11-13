@@ -1,7 +1,7 @@
 ---
 name: papa-crawler-development
-description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v4—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM {{.CodeDir}}models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v3. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
-compatibility: Go 1.25+, Papa v3 business projects; shell and Go toolchain recommended for validation.
+description: Use when adding, changing, reviewing, or debugging business integration in a repository that imports github.com/ydtg1993/papa/v4—especially sites, fetchers and stages, Task submission or repeat polling, HTML/Rod or download handling, result persistence, business GORM {{.CodeDir}}models/repositories and migrations, Papa monitor tables/actions/routes, or startup/queue diagnosis. Also use for 接入站点、写抓取逻辑、落库、加后台表格、业务模型迁移、排查爬虫任务 when repository context shows Papa v4. Do not use for standalone oao component/framework implementation unrelated to a Papa business application.
+compatibility: Go 1.25+, Papa v4 business projects; shell and Go toolchain recommended for validation.
 ---
 
 # Papa Business Crawler Development
@@ -89,7 +89,7 @@ For every submitted task:
 - seed `RepeatInterval` only at first creation when a per-task period is wanted;
 - check `SubmitTask`/`SubmitTasks` for control flow, but do not duplicate framework logging.
 
-`Task.Meta` is persisted and restored by recovery, repeat, error-queue, and manual requeue paths. A URL lookup fallback can support old rows or malformed historic tasks, but do not design new task identity around URL encoding.
+`Task.Meta` is persisted and restored by recovery, repeat, error-queue, and manual requeue paths. Reject malformed task metadata explicitly; do not design task identity around URL encoding.
 
 The repeat queue must be enabled globally for automatic polling. `RepeatInterval` is per-task; the global `repeat_queue.interval` is a scan fallback. Submission does not overwrite an existing row’s operator-edited repeat settings.
 
@@ -111,7 +111,7 @@ After a fetch:
 - Return ordinary errors for transient network, timeout, proxy, and upstream availability failures; the stage retry policy handles them.
 - Return `papa.WrapNoRetry` or `papa.WrapNoRetryKind` for permanent structure, configuration, not-found, or protected-page failures.
 - For static HTTP status failures, inspect `htmlfetch.StatusCode(err)` rather than matching error text.
-- Do not call `task.UpdateStatus`; the engine owns status transitions.
+- The engine owns task status transitions; fetchers report their outcome by returning an error or success.
 - Do not repeat logs already emitted by fetch and submit paths.
 - Add `task.Trace.Step`, `Warn`, or `Fail` for useful business milestones. Calls must remain safe when tracing is disabled.
 

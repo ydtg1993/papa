@@ -18,7 +18,7 @@ Use this for audits and pull-request reviews. Report findings by severity with f
 - Parser returns success for an unexpected empty selection.
 - Permanent structure/not-found/config errors use ordinary retryable errors.
 - HTTP classification parses strings rather than typed/status helpers.
-- Child task identity is absent from persisted Meta or unstable; for sites whose hostname changes, the key is not host-independent (`papa.TaskKey`).
+- Child task business context is absent from persisted Meta, or ResourceID is unstable. For sites whose hostname changes, derive ResourceID from a stable business ID or `papa.PageIdentity`; the engine derives the task key from ResourceID and the site/stage identity.
 - Direct task-status mutation bypasses the engine.
 - A dedicated-table upsert overwrites local/download state with empty values.
 - Concurrent child tasks perform read-modify-write without transaction or condition guards.

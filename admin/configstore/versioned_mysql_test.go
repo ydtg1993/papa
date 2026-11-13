@@ -16,6 +16,7 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/account"
+	"github.com/ydtg1993/papa/v4/pkg/account/gormstore"
 	"github.com/ydtg1993/papa/v4/pkg/testdb"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -65,7 +66,7 @@ func TestRuntimePolicyMySQLConcurrentCAS(t *testing.T) {
 	pool, _ := db.DB()
 	defer pool.Close()
 	pool.SetMaxOpenConns(16)
-	all := append([]any{&models.Config{}, &models.CrawlerTask{}, &models.RuntimePolicyHistory{}}, account.Models()...)
+	all := append([]any{&models.Config{}, &models.CrawlerTask{}, &models.RuntimePolicyHistory{}}, gormstore.Models()...)
 	if err = db.AutoMigrate(all...); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func TestRuntimePolicyMySQLConcurrentCAS(t *testing.T) {
 	if !db.Migrator().HasColumn(&models.CrawlerTask{}, "account_pool") {
 		t.Fatal("missing account pool ownership column")
 	}
-	ps := account.NewGORMPoolStore(db)
+	ps := gormstore.NewGORMPoolStore(db)
 	state := account.PoolState{PoolConfig: account.PoolConfig{Key: account.PoolKey{Site: "fixture", Name: "default"}, Members: []string{"first", "backup"}}, Revision: 1}
 	if err = ps.SavePoolCAS(context.Background(), state, 0); err != nil {
 		t.Fatal(err)

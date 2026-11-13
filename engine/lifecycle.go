@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"github.com/ydtg1993/papa/v4/core"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 //
 // 拿到 drained=false 时，调用方**不该接着关数据库 / 关浏览器池**：worker goroutine 还活着
 // 的可能性仍在（Go 杀不掉它，见 workerpool.Stop），关闭依赖可能使在途写入报 "sql: database is closed"。
-func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]StopStats) {
+func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]core.StopStats) {
 	deadline := time.Now().Add(timeout)
 	e.cancel()
 	e.BindAccountHealthEvents(nil)
@@ -36,7 +37,7 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		wg sync.WaitGroup
 		mu sync.Mutex
 	)
-	stats = make(map[string]StopStats)
+	stats = make(map[string]core.StopStats)
 	// 遍历活池表（而不是 e.stages）：池子是懒建/回收的，e.stages 里「没建池」的阶段
 	// 不在表里，天然被跳过 —— 关停这一步不该自己 panic 掉。
 	//
@@ -52,7 +53,7 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 			}
 			main, urgent := pool.QueueDepths()
 			mu.Lock()
-			stats[stage] = StopStats{Unfinished: inFlight, Queued: main + urgent}
+			stats[stage] = core.StopStats{Unfinished: inFlight, Queued: main + urgent}
 			mu.Unlock()
 		}(name, pool)
 	}

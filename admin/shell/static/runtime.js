@@ -1,10 +1,10 @@
-/* Controller registry. The default instance publishes legacy callable names only
- * as a compatibility bridge; controller dependencies resolve against owners. */
+/* Controller registry. The default instance exposes read-only page operations;
+ * controller dependencies resolve against their owners. */
 (function (root) {
     'use strict';
     if (root.MonitorShell) return;
     var definitions = new Map();
-    function create(environment, compatibility) {
+    function create(environment, pageOperations) {
         var instances = new Map(), owners = new Map(), active = 'dashboard';
         function resolve(name) {
             if(name==='MonitorShell') return api;
@@ -39,9 +39,9 @@
             Object.keys(exports).forEach(function (key) {
                 if (['mount','unmount','reset','destroy'].indexOf(key)>=0) return;
                 owners.set(key, instance);
-                if (compatibility) {
-                    var old=Object.getOwnPropertyDescriptor(compatibility,key);
-                    if(!old||old.configurable)Object.defineProperty(compatibility,key,{configurable:true,enumerable:true,get:function(){return exports[key];},set:function(v){exports[key]=v;}});
+                if (pageOperations) {
+                    var old=Object.getOwnPropertyDescriptor(pageOperations,key);
+                    if(!old||old.configurable)Object.defineProperty(pageOperations,key,{configurable:true,enumerable:true,get:function(){return exports[key];}});
                 }
             });
             return instance;

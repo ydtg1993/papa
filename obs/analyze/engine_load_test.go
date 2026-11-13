@@ -36,13 +36,13 @@ func TestLoadEngineStateFromDB(t *testing.T) {
 	}
 }
 
-func TestParseSiteStatesLegacyPauseDoesNotGuessSource(t *testing.T) {
-	sites, err := parseSiteStates([]byte(`[{"key":"old","breaker_paused":true}]`))
+func TestParseSiteStatesMissingPauseSourceRemainsUnknown(t *testing.T) {
+	sites, err := parseSiteStates([]byte(`[{"key":"fixture","breaker_paused":true}]`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(sites) != 1 || !sites[0].Paused || sites[0].PauseSource != "" || sites[0].PauseReason != "" {
-		t.Fatalf("旧数据应该保留来源未知: %+v", sites)
+		t.Fatalf("缺失来源应保持未知: %+v", sites)
 	}
 }
 

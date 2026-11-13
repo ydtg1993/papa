@@ -298,12 +298,12 @@ func (e *Engine) BatchCompensate(ctx context.Context, requests []CompensationReq
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		row, err := e.loadTask(req.ID)
+		row, err := e.loadTask(ctx, req.ID)
 		if err == nil && (row.Status != models.TaskStatusFailed || row.CompensationVersion != req.Version) {
 			err = ErrTaskChanged
 		}
 		if err == nil {
-			err = e.retryTaskRecord(ctx, row, row.Reprocess, &req.Version)
+			err = e.retryTaskRecord(ctx, row, row.Reprocess, req.Version)
 		}
 		result := CompensationResult{ID: req.ID, Submitted: err == nil}
 		if err != nil {

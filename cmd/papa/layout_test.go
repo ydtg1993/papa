@@ -8,14 +8,10 @@ import (
 	"testing"
 )
 
-func TestLayoutDetectionAndLegacyUpgrade(t *testing.T) {
+func TestUpgradeUsesOnlyV4Layout(t *testing.T) {
 	root := t.TempDir()
 	writeFileT(t, filepath.Join(root, "go.mod"), "module demo\n")
-	writeFileT(t, filepath.Join(root, "sites", "demo.go"), "package sites\n")
-	writeFileT(t, filepath.Join(root, "docs", "README.md"), "legacy\n")
-	if siteDirectory(root) != "sites" || frameworkDocsDir(root) != filepath.Join(root, "docs") {
-		t.Fatal("legacy layout was not detected")
-	}
+	writeFileT(t, filepath.Join(root, "docs", "README.md"), "app-owned\n")
 	p, err := buildUpgradePlan(root)
 	if err != nil {
 		t.Fatal(err)
@@ -23,12 +19,14 @@ func TestLayoutDetectionAndLegacyUpgrade(t *testing.T) {
 	if err := writeDocs(p); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "docs", "framework")); !os.IsNotExist(err) {
-		t.Fatal("legacy upgrade must retain the existing docs layout")
+	if got := readFile(t, filepath.Join(root, "docs", "README.md")); got != "app-owned\n" {
+		t.Fatal("overwrote application docs")
 	}
-	writeFileT(t, filepath.Join(root, "internal", "sites", "demo.go"), "package sites\n")
-	if siteDirectory(root) != filepath.Join("internal", "sites") {
-		t.Fatal("internal declarations should take precedence over compatibility imports")
+	if _, err := os.Stat(filepath.Join(root, "docs", "framework", "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	if data := skillData(root); data.CodeDir != "internal/" || data.DocsDir != "docs/framework" {
+		t.Fatalf("non-v4 layout: %+v", data)
 	}
 }
 
@@ -71,11 +69,7 @@ func TestScaffoldBuildsAndUpgradePreservesAppDocs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("demo", "sites")); !os.IsNotExist(err) {
 		t.Fatal("new scaffolds should not need a compatibility sites package")
 	}
-	// Simulate the legacy sites layout and compile its checker too.
-	if err := os.Rename(filepath.Join("demo", "internal", "sites"), filepath.Join("demo", "sites")); err != nil {
-		t.Fatal(err)
-	}
 	if err := runCheckCmd([]string{"demo"}); err != nil {
-		t.Fatalf("legacy sites check: %v", err)
+		t.Fatalf("v4 sites check: %v", err)
 	}
 }

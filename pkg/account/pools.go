@@ -55,13 +55,7 @@ func NewPools(ctx context.Context, m *Manager, store PoolStore, options PoolOpti
 			return nil, policyErr
 		}
 		s.Policy = policy
-		if s.Generation == 0 {
-			s.Generation = s.Version
-		}
-		if s.LastControlVersion == 0 {
-			s.LastControlVersion = s.Version
-		}
-		if s.LastControlVersion > s.Version {
+		if s.Generation == 0 || s.LastControlVersion == 0 || s.LastControlVersion > s.Version {
 			cancel()
 			return nil, errors.New("invalid account control version")
 		}

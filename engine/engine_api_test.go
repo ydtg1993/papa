@@ -322,7 +322,7 @@ func TestLoadActiveTasksFillsDedupCache(t *testing.T) {
 	if strings.Contains(read, "SELECT *") {
 		t.Fatalf("预热不该 SELECT *：\n%s", read)
 	}
-	for _, col := range []string{"`url`", "`stage`", "`site`", "`idempotency_key`"} {
+	for _, col := range []string{"`url`", "`stage`", "`site`"} {
 		if !strings.Contains(read, col) {
 			t.Fatalf("预热查询缺列 %s：\n%s", col, read)
 		}

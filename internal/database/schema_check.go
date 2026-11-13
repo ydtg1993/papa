@@ -1,9 +1,7 @@
 package database
 
 import (
-	"fmt"
 	"gorm.io/gorm"
-	"strings"
 )
 
 // ExistingTables 一次查询返回 names 里在库里存在的表名集合。
@@ -44,35 +42,4 @@ func HasIndexNamed(db *gorm.DB, table, index string) (bool, error) {
 		return false, err
 	}
 	return n > 0, nil
-}
-
-// CheckTraceSchema only inspects the legacy trace schema; it never migrates.
-//
-// Deprecated: Trace uses files; normal startup and migration do not call this helper.
-func CheckTraceSchema(db *gorm.DB) error {
-	if db == nil {
-		return nil
-	}
-	var n int64
-	if err := db.Raw(`SELECT COUNT(*) FROM information_schema.columns
- WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, "crawler_task_trace", "execution_id").Row().Scan(&n); err != nil {
-		return err
-	}
-	var missing []string
-	if n == 0 {
-		missing = append(missing, "column execution_id")
-	}
-	for _, index := range []string{"idx_trace_execution", "idx_trace_latest", "idx_trace_tail"} {
-		ok, err := HasIndexNamed(db, "crawler_task_trace", index)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			missing = append(missing, "index "+index)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("crawler_task_trace missing %s; legacy schema inspection only; file-backed Trace does not require this table", strings.Join(missing, ", "))
-	}
-	return nil
 }

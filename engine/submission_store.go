@@ -210,7 +210,7 @@ func (s submissionStore) prepare(task *Task) (out submissionPlan, resultErr erro
 	}
 
 	// A new task must be durable before returning its delivery responsibility.
-	if ierr := s.protectTaskPoolReferences([]*Task{task}, func() error { return task.Insert(s.db) }); ierr != nil {
+	if ierr := s.protectTaskPoolReferences([]*Task{task}, func() error { return task.insert(s.db) }); ierr != nil {
 		// 并发下撞唯一索引：另一 goroutine 已入库并将入队，此处回填 ID 后跳过，避免重复入队
 		if rerr := s.findTaskRecordFallback(task, &record); rerr != nil {
 			out.logFailure = true
@@ -353,7 +353,7 @@ func adoptTaskOwnership(task *Task, record *models.CrawlerTask) error {
 		return ErrTaskOwnershipConflict
 	}
 	task.AccountPool = record.AccountPool
-	if record.URL != "" && (task.ResourceID != "" || task.IdempotencyKey != "") {
+	if record.URL != "" && task.ResourceID != "" {
 		task.URL = record.URL
 	}
 	return nil

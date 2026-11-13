@@ -15,6 +15,8 @@
 > **默认关闭**：`obs.events.enabled` 为 `false`，不为不用的项目付事件写入成本。打开即可出报告；
 > 关着时报告只读「失败面 + 状态层」，并在 `degraded` 里明确标注数据缺失。
 
+事件输入只接受当前 writer 的 schema `v: 1`；缺失 `v`、零版本及未知版本与非法 JSON 一样计入事件 `Unparsed`，跳过该行后继续读取，不升级旧事件。当前 schema 内的未知字段仍忽略。事件 schema 版本与 Papa 的主版本号独立。
+
 ## 1. 三层数据与职责
 
 | 层 | 产出 | 谁写 | 回答什么问题 | 默认 |
@@ -150,7 +152,7 @@ papa report generate -c configs/config.yaml
 papa report generate -c configs/config.yaml --since 2026-10-28T00:00:00+08:00 \
   --until 2026-10-28T23:59:59+08:00 --run r-xxx --out ./reports --no-logs
 
-# 列出报告目录下的子目录（按天拆分后通常是日期；也兼容升级前留下的 run_id / window-*）
+# 列出报告目录下的子目录（按天拆分后通常是日期；显式单次报告也可使用 run_id / window-*）
 papa report list -c configs/config.yaml
 ```
 

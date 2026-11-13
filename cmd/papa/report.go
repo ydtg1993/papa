@@ -28,7 +28,7 @@ const reportUsage = `usage:
 
   -c/--config       配置文件路径（默认 PAPA_CONFIG，再回退 configs/config.yaml）
   --since/--until   时间窗口（RFC3339）；缺省按事件里的最早/最晚时刻
-  --run             只保留指定 run_id，输出单份报告（正常目录名 = run_id；特殊名称安全归一；兼容旧的"单次运行"排查用法）
+  --run             只保留指定 run_id，输出单份报告（正常目录名 = run_id；特殊名称安全归一）
   --snapshot        强制快照模式：只出单日窗口的一份报告（显式跨天窗口报错）
   --acceptance      强制验收模式：检查本轮是否通过，与 --snapshot 互斥
   --out             输出根目录（默认 obs.report.dir，再回退 ./reports）

@@ -2,6 +2,7 @@ package access
 
 import (
 	"bytes"
+	"context"
 	"database/sql/driver"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func TestLoadWhitelistFallsBackToUnrestricted(t *testing.T) {
 	t.Run("行不存在 → 空（不限制）", func(t *testing.T) {
 		f := gormfake.New()
 		log, buf := newLog()
-		if got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
+		if got, err := LoadWhitelistContext(context.Background(), configstore.NewCachedContextStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); err != nil || len(got) != 0 {
 			t.Fatalf("没设过白名单时应当是空，实得 %v", got)
 		}
 		if buf.Len() != 0 {
@@ -74,8 +75,8 @@ func TestLoadWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8"]`)})
 		log, _ := newLog()
-		got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log)
-		if len(got) != 1 || got[0] != "10.0.0.0/8" {
+		got, err := LoadWhitelistContext(context.Background(), configstore.NewCachedContextStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log)
+		if err != nil || len(got) != 1 || got[0] != "10.0.0.0/8" {
 			t.Fatalf("实得 %v", got)
 		}
 	})
@@ -84,7 +85,7 @@ func TestLoadWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`{"a":1}`)})
 		log, buf := newLog()
-		if got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
+		if got, err := LoadWhitelistContext(context.Background(), configstore.NewCachedContextStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); err != nil || len(got) != 0 {
 			t.Fatalf("坏值应当按不限制来源继续，实得 %v", got)
 		}
 		if !strings.Contains(buf.String(), "不限制来源") {
@@ -96,7 +97,7 @@ func TestLoadWhitelistFallsBackToUnrestricted(t *testing.T) {
 		f := gormfake.New()
 		f.SetQueryError("crawler_config", "库抖了")
 		log, buf := newLog()
-		if got := LoadWhitelist(configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); len(got) != 0 {
+		if got, err := LoadWhitelistContext(context.Background(), configstore.NewCachedContextStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute), log); err != nil || len(got) != 0 {
 			t.Fatalf("库抖动时按不限制来源继续，实得 %v", got)
 		}
 		if buf.Len() == 0 {
@@ -116,12 +117,12 @@ func TestWhitelistKeyIsTheStoreConstant(t *testing.T) {
 func TestLoadWhitelistUsesTTLCache(t *testing.T) {
 	f := gormfake.New()
 	f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8"]`)})
-	reader := configstore.NewCachedStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute)
+	reader := configstore.NewCachedContextStringListReader(configstore.New(gormfake.MustOpen(f)), time.Minute)
 	log := logrus.New()
 	log.SetLevel(logrus.FatalLevel)
 
 	for i := 0; i < 3; i++ {
-		if got := LoadWhitelist(reader, log); len(got) != 1 || got[0] != "10.0.0.0/8" {
+		if got, err := LoadWhitelistContext(context.Background(), reader, log); err != nil || len(got) != 1 || got[0] != "10.0.0.0/8" {
 			t.Fatalf("第 %d 次读白名单 = %v", i+1, got)
 		}
 	}
@@ -130,7 +131,7 @@ func TestLoadWhitelistUsesTTLCache(t *testing.T) {
 	}
 
 	reader.Invalidate(configstore.KeyIPWhitelist)
-	if got := LoadWhitelist(reader, log); len(got) != 1 {
+	if got, err := LoadWhitelistContext(context.Background(), reader, log); err != nil || len(got) != 1 {
 		t.Fatalf("失效后重读 = %v", got)
 	}
 	if hits := strings.Count(f.Written(), "crawler_config"); hits != 2 {

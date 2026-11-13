@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
 	"github.com/ydtg1993/papa/v4/models"
@@ -37,7 +38,7 @@ func TestBreakerSettlementOldLiveWindow(t *testing.T) {
 type reviewImmediateFailure struct{ recordingFetcher }
 
 func (f *reviewImmediateFailure) FetchHandler(context.Context, *Task, *Engine) error {
-	return WrapNoRetry(errors.New("fixture known business failure"))
+	return core.WrapNoRetry(errors.New("fixture known business failure"))
 }
 func TestBreakerSettlementIntentBeforeTimingRetryMySQL(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
@@ -164,7 +165,7 @@ func TestBreakerSettlementCrashCutsFromHandlerMySQL(t *testing.T) {
 				t.Fatal(err)
 			}
 			smartFailure(e, int(row.ID), "detail", "initial")
-			f := &settlementSequenceFetcher{recordingFetcher: recordingFetcher{stage: "detail"}, results: []error{WrapNoRetry(errors.New("fixture cut business error"))}}
+			f := &settlementSequenceFetcher{recordingFetcher: recordingFetcher{stage: "detail"}, results: []error{core.WrapNoRetry(errors.New("fixture cut business error"))}}
 			e.stages["synthetic:detail"].fetcher = f
 			e.breakers.breakerMu.Lock()
 			e.breakers.selectBreakerSampleLocked(e.breakers.smartBreakers["synthetic"], "detail", fmt.Sprintf("task:%d", row.ID), time.Now())
@@ -314,7 +315,7 @@ func TestBreakerSettlementOnlyTerminalAttemptsJournalMySQL(t *testing.T) {
 				f.results = []error{errors.New("fixture retry error")}
 			}
 			if mode == "auxiliary-panic" {
-				f.results = []error{WrapNoRetry(errors.New("fixture original business error"))}
+				f.results = []error{core.WrapNoRetry(errors.New("fixture original business error"))}
 			}
 			info := e.stages["synthetic:detail"]
 			info.fetcher = f
@@ -396,7 +397,7 @@ func TestBreakerSettlementIntentOutageDoesNotRunAuxiliaryWritesMySQL(t *testing.
 		t.Fatal(err)
 	}
 	smartFailure(e, int(row.ID), "detail", "initial")
-	f := &settlementSequenceFetcher{recordingFetcher: recordingFetcher{stage: "detail"}, results: []error{WrapNoRetry(errors.New("fixture intent outage result"))}}
+	f := &settlementSequenceFetcher{recordingFetcher: recordingFetcher{stage: "detail"}, results: []error{core.WrapNoRetry(errors.New("fixture intent outage result"))}}
 	e.stages["synthetic:detail"].fetcher = f
 	e.breakers.breakerMu.Lock()
 	e.breakers.selectBreakerSampleLocked(e.breakers.smartBreakers["synthetic"], "detail", fmt.Sprintf("task:%d", row.ID), time.Now())

@@ -1,7 +1,6 @@
 package core
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -40,54 +39,5 @@ func TestPageIdentity(t *testing.T) {
 				t.Fatalf("PageIdentity(%q) = %q, want %q", c.raw, got, c.want)
 			}
 		})
-	}
-}
-
-func TestTaskKey(t *testing.T) {
-	key, err := TaskKey("site", "detail", "https://old-domain.com/detail/1?b=2&a=1#x")
-	if err != nil {
-		t.Fatalf("TaskKey: %v", err)
-	}
-	want := "site:detail:/detail/1?b=2&a=1"
-	if key != want {
-		t.Fatalf("TaskKey = %q, want %q", key, want)
-	}
-
-	// 换域名不改变键
-	other, err := TaskKey("site", "detail", "https://new-domain.net/detail/1?b=2&a=1")
-	if err != nil {
-		t.Fatalf("TaskKey(new host): %v", err)
-	}
-	if other != key {
-		t.Fatalf("换域名后键变了：%q -> %q", key, other)
-	}
-
-	for _, c := range []struct {
-		name  string
-		site  string
-		stage string
-		raw   string
-	}{
-		{name: "缺 site", stage: "detail", raw: "https://a.com/x"},
-		{name: "缺 stage", site: "s", raw: "https://a.com/x"},
-		{name: "非 http", site: "s", stage: "d", raw: "/x"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			if _, err := TaskKey(c.site, c.stage, c.raw); err == nil {
-				t.Fatalf("TaskKey(%q,%q,%q) 应当报错", c.site, c.stage, c.raw)
-			}
-		})
-	}
-}
-
-// 超过 varchar(1000) 要报错而不是截断：截断会让两个不同 URL 撞同一个键。
-func TestTaskKeyRejectsOverlongKey(t *testing.T) {
-	raw := "https://a.com/detail/1?q=" + strings.Repeat("x", maxIdempotencyKeyLen)
-	_, err := TaskKey("site", "stage", raw)
-	if err == nil {
-		t.Fatal("超长键应当报错")
-	}
-	if !strings.Contains(err.Error(), "max 1000") {
-		t.Fatalf("错误里应给出上限，实得：%v", err)
 	}
 }

@@ -63,7 +63,7 @@
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
 | `stop_timeout` | duration | `5s` | 优雅退出时 worker 与动态 ticker 共用从 Stop 入口开始的一份等待预算，不各等一个完整 timeout；不保证任意阻塞锁或外部调用的硬实时上限。超时则打错误日志，并**跳过**关库与关浏览器池，避免破坏仍在运行的 worker。认领或终态写入未确认的任务也计入未完成，即使其 worker 已因取消退出，也不会报告已排空。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
-| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），默认仅将异常尝试保存到 Trace 文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.mode` | string | `errors` | off=关闭，errors=异常，all=全部尝试。 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），默认仅将异常尝试保存到 Trace 文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：计数与阈值**每站一份**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
 | `breaker.window` | duration | `5m` | 常规统计窗口；精确记录窗口内终态失败任务轮次。成功不抵消失败，同一任务轮次重复上报只计一次 |
@@ -78,7 +78,6 @@
 | `breaker.policy.probe_interval` | duration | `30s` | 试探间隔；明确的 Retry-After 仍是下限 |
 | `breaker.policy.max_recovery` | duration | `5m` | 本轮自动恢复时间预算，耗尽后保持暂停并追加本轮结果，一小时后重新复查 |
 | `breaker.policy.ramp_for` | duration | `30s` | 试探通过后的低速恢复观察时长；到期且每个阶段都有本轮验证成功（混合错误为三个失败样本轮次）后停止继续放行，等待全站在途任务全部结束再确认恢复并清零 |
-| `breaker.policy.ramp_concurrency` | int | `1` | 兼容旧配置；恢复验证始终同站点串行，配置大于1也不会并行执行样本 |
 | `breaker.policy.interval` | duration | `1s` | 观察和低速恢复阶段的任务启动间隔下限 |
 | `breaker.policy.capacity` | int | `4096` | 每站检测器保留的失败轮次上限；成功样本使用独立同容量空间。失败超限直接保护整站并标明证据受限，不通过丢弃失败降低计数 |
 
@@ -137,7 +136,7 @@
 | `refresh_interval` | duration | 代理列表刷新间隔 |
 
 > 这一节配的是**代理池**（`api_url` 拉列表 + 定时刷新）。健康策略另见 `runtime.proxy_health`。
-> 自行选择时使用 `engine.GetProxy().NextChecked(ctx)` 并处理耗尽错误；`Next()` / `NextProxy()` 仅保留旧字符串兼容。
+> 自行选择时使用 `engine.GetProxy().NextChecked(ctx)` 并处理耗尽错误；不提供吞掉代理耗尽错误的字符串入口。
 > `papa.WithProxyURL(ctx, addr)` 传给一次静态抓取，
 > `filedown.DownloadOptions{Proxy: addr}` / `m3u8.DownloadOptions{Proxy: addr}` 传给一次下载。
 > 若这次下载就该跟着任务的抓取出口走，用 `filedown.OptionsFromRequest(ctx, referer)` /
@@ -491,20 +490,17 @@ M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理�
 
 浏览器安全参数覆盖冲突的用户启动参数，禁用直接 DNS、QUIC、非代理 WebRTC、扩展与相关旁路；仅为本机网关排除回环地址的 DNS 禁止规则，页面回环流量仍经过网关。每实例网关随浏览器关闭，普通 HTTP 升级（`ws://`）暂不支持，`wss://` 经过受控 CONNECT。用户自行使用原生 Rod/CDP、操作系统网络、外部程序或自定义业务 HTTP 客户端属于可信扩展，框架出口策略不是系统级沙箱，也不管理数据库等基础设施连接或浏览器二进制下载。
 
-### 标准任务身份升级
+### v4 独立任务与恢复格式
 
-本次升级必须停止所有 worker 后显式执行 `papa migrate`。迁移先增加可空的身份哈希列及 `(site, stage, identity_hash)` 唯一索引，再分批回填已有任务；旧 IdempotencyKey 映射为 ID 类型，否则使用规范 URL。回填成功后才删除 `idx_site_stage_url_hash` 和 `idx_idempotency_hash`。不删除任何任务或业务数据。
+v4 任务使用 ResourceID（留空时规范 URL）及 `(site, stage, identity_hash)` 唯一约束。创建入口统一生成 identity_type/value/hash；不再声明旧 URLHash、IdempotencyKey 或 IdempotencyHash。普通启动和显式 `papa migrate` 在创建 Engine/迁移写入前检查已有任务表的 v4 身份列、残留旧列/索引及数据；旧格式明确拒绝，不回填、不改写旧索引、不删除业务数据。使用独立 v4 数据库，不支持原地升级旧版本。
 
-规范 URL 可能让原来不同的 URL 合并为同一身份（例如默认端口、fragment）。遇到这种冲突或非法历史 URL，迁移报错并保留旧索引，不自动合并；运维核对任务后显式解决，再重跑迁移。失败前已经完成的回填可保留，重复迁移会跳过，不要求整批DDL事务回滚。迁移未成功完成之前不要启动新版本；新列允许 NULL 仅为升级过渡，所有正常创建入口都会生成身份。大表建唯一索引应预留维护窗口并先备份。
-
-
-熔断升级须显式迁移创建 `crawler_breaker_history`，用于 obs 当日过程与重启历史；现有 `crawler_breaker_incidents` 保留控制快照。长期保护固定每小时复查，遵守 Retry-After，人工暂停不自动解除。取样和历史规则见 [BREAKER.md](BREAKER.md)。
+熔断持久化使用当前控制版本 1 和精确窗口快照；缺失/不支持的版本阻止恢复，不从展示报告推导控制状态。正常 v4 重启恢复和追加历史保持有效；普通启动不迁移。
 
 ### Trace 文件存储
 
 Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `crawler_task_trace`。旧表不删除，也不读取或自动导出；旧 SQL 历史不出现在当前后台。归档文件与下载接口保持独立。
 
-`crawler.trace.enabled` 默认 false；启用后默认仅保存失败、panic、显式 Fail/Warn 的尝试。干净成功不落盘；同轮失败后成功重试仍保留失败尝试。正常关停取消本身不触发保留。后台展示最新**有保留证据**的执行轮次，不表示当前任务最近一次执行一定失败。
+`crawler.trace.mode` 可选 `off`（关闭）、`errors`（默认，仅保留失败、panic、显式 Fail/Warn）、`all`（所有尝试，含成功）。错误模式下干净成功不落盘，同轮失败后成功重试仍保留失败尝试。正常关停取消本身不触发异常保留。全量模式也保存正常取消的尝试；没有步骤的尝试补一个完成标记。后台展示最新**有保留证据**的执行，不代表当前任务状态。
 
 | `crawler.trace_files` 配置 | 默认 | 作用 |
 | --- | --- | --- |
@@ -515,8 +511,12 @@ Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `cra
 
 预算 0 使用默认值，负数非法；达到容量拒绝新证据并告警，不改任务结算。`crawler.trace.retention` 仍默认 168h，负数关闭过期清理。按记录保存时间清理，不以读取时间续期。
 
-`Engine.TraceNextExecution(taskID)` 为未来后台按钮预留：只选中下一次成功认领的执行轮次，同轮重试均保留，包括成功尝试；不立即执行任务、不补录过去步骤、不跨重启。需要先启用 Trace。
+手动追踪 API 已删除，不维护手动选择状态，也不提供主动追踪按钮。需要完整记录时设置 `crawler.trace.mode: all`。
 
-`ListTrace` 与 `ListTraceExecution` 的值布局和调用方式保留，读取最新已发布执行的末 500 步；详细接口首步 `truncated=true` 表示存在截断。写入以每次尝试为单位暂存、同步、关闭并重命名发布；执行目录汇聚各尝试，不将多个执行混合。没有记录不等于任务未执行。容量和故障边界见 [RESOURCE_BUDGETS.md](RESOURCE_BUDGETS.md)。
+`ListTraceExecution` 是唯一追踪查询入口，读取最新已发布执行的末 500 步；详细接口首步 `truncated=true` 表示存在截断。写入以每次尝试为单位暂存、同步、关闭并重命名发布；执行目录汇聚各尝试，不将多个执行混合。没有记录不等于任务未执行。容量和故障边界见 [RESOURCE_BUDGETS.md](RESOURCE_BUDGETS.md)。
 
 单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。
+
+#### Trace 模式配置
+
+模式在启动时确定，修改后重启生效。省略 mode 默认 errors；Go 零值同样默认 errors。关闭用 `TraceConfig{Mode: config.TraceOff}`。旧 enabled 键已删除，和无效模式一样在启动校验时拒绝，不再进行映射。

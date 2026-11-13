@@ -105,7 +105,7 @@ func validateIdentityHeaders(r *identity.ResolvedProfile, headers map[string]str
 	return nil
 }
 
-// ValidateIdentityOptions checks legacy overrides before any navigation.
+// ValidateIdentityOptions checks per-page overrides before any navigation.
 func ValidateIdentityOptions(r *identity.ResolvedProfile, headers map[string]string, remove []string, device *devices.Device) error {
 	if err := r.Validate(); err != nil {
 		return err
@@ -229,7 +229,7 @@ func (p *Pool) DiagnosticConfig() (PoolConfig, []string) {
 	c := p.cfg
 	out := PoolConfig{Size: 1, Headless: c.Headless, NoSandbox: c.NoSandbox, Leakless: c.Leakless, BinarySource: c.BinarySource, BrowserPath: c.BrowserPath, Flags: map[string]string{}}
 	// Protected identity declarations must still reach the production initializer
-	// so a conflicting legacy setting cannot turn into a diagnostic false pass.
+	// so a conflicting explicit setting cannot turn into a diagnostic false pass.
 	out.DefaultHeaders = map[string]string{}
 	for k, v := range p.headersSnapshot() {
 		if protectedIdentityHeader(k) {
@@ -259,7 +259,7 @@ func (p *Pool) DiagnosticConfig() (PoolConfig, []string) {
 		omissions = append(omissions, "proxy and network reputation not reproduced")
 	}
 	if c.DefaultDevice != nil {
-		omissions = append(omissions, "legacy default device is incompatible with managed identity")
+		omissions = append(omissions, "default device is incompatible with managed identity")
 	}
 	if len(p.headersSnapshot()) > 0 || len(c.DefaultCookies) > 0 {
 		omissions = append(omissions, "credentials and ordinary default headers excluded")

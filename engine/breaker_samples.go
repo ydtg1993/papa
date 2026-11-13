@@ -79,7 +79,7 @@ func (e *Engine) retryBreakerSamples(ctx context.Context) {
 		if valid && err == nil && record.Status != models.TaskStatusPending && record.Status != models.TaskStatusProcessing {
 			retryCtx, cancel := context.WithDeadline(ctx, deadline)
 			version := record.CompensationVersion
-			err = e.retryTaskRecord(retryCtx, &record, record.Reprocess, &version)
+			err = e.retryTaskRecord(retryCtx, &record, record.Reprocess, version)
 			cancel()
 			requeued = err == nil
 		}

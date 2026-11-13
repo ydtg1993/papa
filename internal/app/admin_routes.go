@@ -19,7 +19,7 @@ func (a *App) registerBuiltinPages() {
 	if a.Config.TaskFlow.Enabled {
 		p := taskflow.Page()
 		// These public facade variables have historically allowed hosts to
-		// override TaskFlow resources before Run. Keep that compatibility.
+		// override TaskFlow resources before Run. Keep this declaration-time override.
 		p.Script, p.CSS = server.TaskFlowScript, server.TaskFlowCSS
 		pages = append(pages, p)
 	}

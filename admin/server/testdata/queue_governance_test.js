@@ -1,7 +1,7 @@
 const controllers=require('./controllers');
 'use strict';
 const assert = require('node:assert/strict'), fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
-const makeDOM = require('./legacy_oao_dom');
+const makeDOM = require('./oao_dom');
 const source = name => fs.readFileSync(path.join(process.argv[2], name), 'utf8');
 const dom = makeDOM(), doc = dom.doc, proto = Object.getPrototypeOf(dom.create('div'));
 doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);

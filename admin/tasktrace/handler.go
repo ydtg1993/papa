@@ -18,33 +18,26 @@ type Logger interface{ Errorf(string, ...any) }
 // Options supplies the trace lookup and archive root, without execution state.
 type Options struct {
 	ArchiveDir string
-	Trace      func(int) ([]core.TraceStep, error)
+	Trace      func(int) ([]core.TraceExecutionStep, error)
 	Logger     Logger
 }
 type Handler struct {
-	archiveDir     string
-	trace          func(int) ([]core.TraceStep, error)
-	executionTrace func(int) ([]core.TraceExecutionStep, error)
-	logger         Logger
+	archiveDir string
+	trace      func(int) ([]core.TraceExecutionStep, error)
+	logger     Logger
 }
 
 func New(o Options) *Handler {
 	return &Handler{archiveDir: o.ArchiveDir, trace: o.Trace, logger: o.Logger}
 }
 
-// SetExecutionLookup installs the richer lookup during composition, before serving.
-// Options and the legacy lookup retain their original public shape.
-func (s *Handler) SetExecutionLookup(lookup func(int) ([]core.TraceExecutionStep, error)) {
-	s.executionTrace = lookup
-}
-
-// Trace 返回最近保留的异常或手动指定执行的追踪时间线（不代表任务当前状态）；轮次与截断判据由追踪服务拥有。
+// Trace 返回最近保留的执行追踪时间线（不代表任务当前状态）；轮次与截断判据由追踪服务拥有。
 func (s *Handler) Trace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.trace == nil && s.executionTrace == nil {
+	if s.trace == nil {
 		http.Error(w, "task trace not configured", http.StatusNotFound)
 		return
 	}
@@ -53,12 +46,7 @@ func (s *Handler) Trace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task id", http.StatusBadRequest)
 		return
 	}
-	var steps any
-	if s.executionTrace != nil {
-		steps, err = s.executionTrace(id)
-	} else {
-		steps, err = s.trace(id)
-	}
+	steps, err := s.trace(id)
 	if err != nil {
 		// 业务原因（如追踪开关没开）原样回给前端，抽屉里直接显示这句话
 		s.logger.Errorf("load task trace %d: %s", id, err.Error())

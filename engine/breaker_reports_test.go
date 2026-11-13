@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/core"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,7 @@ func (e *Engine) testBreakerTask(task *Task) *Task {
 	copy.breakerRound = fmt.Sprint(testBreakerRound.Add(1))
 	return &copy
 }
-func (e *Engine) recordTestBreakerFailure(task *Task, failure ...error) (BreakerStatus, bool) {
+func (e *Engine) recordTestBreakerFailure(task *Task, failure ...error) (core.BreakerStatus, bool) {
 	st, tripped := e.recordBreakerFailure(e.testBreakerTask(task), failure...)
 	if err := e.breakers.flushBreakerReports(context.Background()); err != nil {
 		panic(err)

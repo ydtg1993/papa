@@ -7,19 +7,12 @@ import (
 	"time"
 )
 
-// StringListReader 是 configstore 的一个**窄读口**：只负责把某个键读成字符串数组。
-// 白名单这类"周期性重载、值很少变"的配置读它 —— 接口小到可以用装饰器随意包一层，
-// 而不必把整个 *Store（写、建表、站点快照）拖进装饰器。
-type StringListReader interface {
-	LoadStrings(key string) ([]string, error)
-}
-
 // ContextStringListReader 把生命周期取消传到读操作；实现者应把 ctx 传到 SQL。
 type ContextStringListReader interface {
 	LoadStringsContext(ctx context.Context, key string) ([]string, error)
 }
 
-// CachedStringListReader 是 StringListReader 的**装饰器**：在 TTL 内直接返回上次读到的值，
+// CachedStringListReader 是 ContextStringListReader 的**装饰器**：在 TTL 内直接返回上次读到的值，
 // 不查库；过期后查一次并刷新缓存。读失败**不缓存**（下一次调用会重试，别把一次抖动固化）。
 //
 // 为什么需要它：白名单每 30 秒重载一次（为了看见运维直接改库），
@@ -44,17 +37,6 @@ type stringListEntry struct {
 	loadedAt time.Time
 }
 
-// NewCachedStringListReader 造一个带 TTL 的读装饰器。ttl <= 0 表示不缓存（直接透传）。
-func NewCachedStringListReader(inner StringListReader, ttl time.Duration) *CachedStringListReader {
-	if contextual, ok := inner.(ContextStringListReader); ok {
-		return NewCachedContextStringListReader(contextual, ttl)
-	}
-	if inner == nil {
-		return NewCachedContextStringListReader(nil, ttl)
-	}
-	return NewCachedContextStringListReader(legacyStringListReader{inner}, ttl)
-}
-
 // NewCachedContextStringListReader 装饰带 context 的窄读口。
 func NewCachedContextStringListReader(inner ContextStringListReader, ttl time.Duration) *CachedStringListReader {
 	return &CachedStringListReader{
@@ -63,25 +45,6 @@ func NewCachedContextStringListReader(inner ContextStringListReader, ttl time.Du
 		now:     time.Now,
 		entries: make(map[string]stringListEntry),
 	}
-}
-
-type legacyStringListReader struct{ StringListReader }
-
-func (r legacyStringListReader) LoadStringsContext(ctx context.Context, key string) ([]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	// 旧接口不能中断已经开始的读；宿主仍须等待真正返回后才能关闭资源。
-	values, err := r.LoadStrings(key)
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	return values, err
-}
-
-// LoadStrings 命中且未过期时返回缓存副本；否则回源读库并记住。
-func (c *CachedStringListReader) LoadStrings(key string) ([]string, error) {
-	return c.LoadStringsContext(context.Background(), key)
 }
 
 // LoadStringsContext 保留 TTL 语义；取消和读失败都不写缓存。

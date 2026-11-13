@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -16,7 +17,7 @@ type countingStringListReader struct {
 	err    error
 }
 
-func (r *countingStringListReader) LoadStrings(string) ([]string, error) {
+func (r *countingStringListReader) LoadStringsContext(context.Context, string) ([]string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -31,16 +32,16 @@ func (r *countingStringListReader) callCount() int {
 
 func TestCachedStringListReaderServesFromCacheWithinTTL(t *testing.T) {
 	inner := &countingStringListReader{values: []string{"10.0.0.0/8"}}
-	reader := NewCachedStringListReader(inner, time.Minute)
+	reader := NewCachedContextStringListReader(inner, time.Minute)
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 	reader.now = func() time.Time { return now }
 
-	first, err := reader.LoadStrings(KeyIPWhitelist)
+	first, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil || !reflect.DeepEqual(first, []string{"10.0.0.0/8"}) {
 		t.Fatalf("first read = %v, %v", first, err)
 	}
 	now = now.Add(30 * time.Second) // TTL 内
-	if _, err := reader.LoadStrings(KeyIPWhitelist); err != nil {
+	if _, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist); err != nil {
 		t.Fatal(err)
 	}
 	if got := inner.callCount(); got != 1 {
@@ -49,7 +50,7 @@ func TestCachedStringListReaderServesFromCacheWithinTTL(t *testing.T) {
 
 	now = now.Add(31 * time.Second) // 过期
 	inner.values = []string{"192.168.1.0/24"}
-	got, err := reader.LoadStrings(KeyIPWhitelist)
+	got, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil || !reflect.DeepEqual(got, []string{"192.168.1.0/24"}) {
 		t.Fatalf("expired read = %v, %v", got, err)
 	}
@@ -60,13 +61,13 @@ func TestCachedStringListReaderServesFromCacheWithinTTL(t *testing.T) {
 
 func TestCachedStringListReaderInvalidateForcesReload(t *testing.T) {
 	inner := &countingStringListReader{values: []string{"10.0.0.0/8"}}
-	reader := NewCachedStringListReader(inner, time.Minute)
-	if _, err := reader.LoadStrings(KeyIPWhitelist); err != nil {
+	reader := NewCachedContextStringListReader(inner, time.Minute)
+	if _, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist); err != nil {
 		t.Fatal(err)
 	}
 	reader.Invalidate(KeyIPWhitelist)
 	inner.values = []string{"192.168.1.1"}
-	got, err := reader.LoadStrings(KeyIPWhitelist)
+	got, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil || !reflect.DeepEqual(got, []string{"192.168.1.1"}) {
 		t.Fatalf("after invalidate = %v, %v", got, err)
 	}
@@ -77,9 +78,9 @@ func TestCachedStringListReaderInvalidateForcesReload(t *testing.T) {
 
 func TestCachedStringListReaderDoesNotCacheErrors(t *testing.T) {
 	inner := &countingStringListReader{err: errors.New("db down")}
-	reader := NewCachedStringListReader(inner, time.Minute)
+	reader := NewCachedContextStringListReader(inner, time.Minute)
 	for i := 0; i < 2; i++ {
-		if _, err := reader.LoadStrings(KeyIPWhitelist); err == nil {
+		if _, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist); err == nil {
 			t.Fatalf("read %d: error was swallowed", i+1)
 		}
 	}
@@ -91,7 +92,7 @@ func TestCachedStringListReaderDoesNotCacheErrors(t *testing.T) {
 	inner.err = nil
 	inner.values = []string{"10.0.0.0/8"}
 	inner.mu.Unlock()
-	got, err := reader.LoadStrings(KeyIPWhitelist)
+	got, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil || !reflect.DeepEqual(got, []string{"10.0.0.0/8"}) {
 		t.Fatalf("recovered read = %v, %v", got, err)
 	}
@@ -99,13 +100,13 @@ func TestCachedStringListReaderDoesNotCacheErrors(t *testing.T) {
 
 func TestCachedStringListReaderReturnsCopy(t *testing.T) {
 	inner := &countingStringListReader{values: []string{"a", "b"}}
-	reader := NewCachedStringListReader(inner, time.Minute)
-	got, err := reader.LoadStrings(KeyIPWhitelist)
+	reader := NewCachedContextStringListReader(inner, time.Minute)
+	got, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got[0] = "mutated"
-	again, err := reader.LoadStrings(KeyIPWhitelist)
+	again, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,9 +117,9 @@ func TestCachedStringListReaderReturnsCopy(t *testing.T) {
 
 func TestCachedStringListReaderZeroTTLPassthrough(t *testing.T) {
 	inner := &countingStringListReader{values: []string{"a"}}
-	reader := NewCachedStringListReader(inner, 0)
+	reader := NewCachedContextStringListReader(inner, 0)
 	for i := 0; i < 2; i++ {
-		if _, err := reader.LoadStrings(KeyIPWhitelist); err != nil {
+		if _, err := reader.LoadStringsContext(context.Background(), KeyIPWhitelist); err != nil {
 			t.Fatal(err)
 		}
 	}

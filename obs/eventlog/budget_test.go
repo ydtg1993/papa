@@ -12,7 +12,7 @@ import (
 )
 
 func TestReadContextResourceBoundaries(t *testing.T) {
-	raw := []byte("{\"seq\":1,\"run_id\":\"r\"}\n{\"seq\":2,\"run_id\":\"r\"}\n")
+	raw := []byte("{\"v\":1,\"seq\":1,\"run_id\":\"r\"}\n{\"v\":1,\"seq\":2,\"run_id\":\"r\"}\n")
 	for _, gz := range []bool{false, true} {
 		path := filepath.Join(t.TempDir(), "events")
 		if gz {
@@ -62,7 +62,7 @@ func TestReadContextResourceBoundaries(t *testing.T) {
 }
 func TestReadContextRunFilterPreservesDuplicateMetadata(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "events")
-	os.WriteFile(p, []byte("{\"seq\":1,\"run_id\":\"other\"}\n{\"seq\":1,\"run_id\":\"other\"}\n{\"seq\":2,\"run_id\":\"wanted\"}\ninvalid\n"), 0600)
+	os.WriteFile(p, []byte("{\"v\":1,\"seq\":1,\"run_id\":\"other\"}\n{\"v\":1,\"seq\":1,\"run_id\":\"other\"}\n{\"v\":1,\"seq\":2,\"run_id\":\"wanted\"}\ninvalid\n"), 0600)
 	r, e := ReadContext(context.Background(), []string{p}, time.Time{}, time.Time{}, "wanted", inputbudget.Limits{})
 	if e != nil || len(r.Events) != 1 || r.Duplicates != 1 || r.Unparsed != 1 {
 		t.Fatalf("%+v %v", r, e)

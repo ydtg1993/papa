@@ -60,7 +60,7 @@ type Fetcher interface {
       return papa.WrapNoRetryKind("not-found", err)
   }
   ```
-- **不要**在 fetcher 里自己调 `task.UpdateStatus`，状态由引擎自动维护；你只负责提取结果并写库。
+- 任务状态由引擎自动维护，fetcher 不直接修改状态；你只负责提取结果并写库。
 - **认领与终态必须确认落库**：认领数据库错误时不执行 Fetcher；状态操作以 100ms 起步、最多 2s 间隔退避重试，等待可取消并占用当前 worker 形成背压。业务完成后只重试终态写入，不重跑业务；确认终态前不发送完成事件。取消或认领回执不明确的任务计入关停未完成统计，需依靠后续恢复处理。这不提供跨进程租约或业务 exactly-once，进程崩溃后的恢复仍要求业务写入幂等。
 - **日志由框架兜底**：`FetchHandler` 返回的 error 会由引擎结构化记入日志并触发告警（`stage/task_id/url/retry/kind`），你**不需要**再自己拼日志。同样，`engine.SubmitTask` / `SubmitTasks` 的提交类错误（非法 stage、入库失败、入队失败）框架也会自动记录——你只需在返回值上做控制流判断（要不要继续、要不要 abort），不用再记一遍。
 
@@ -77,7 +77,6 @@ type Task struct {
     Repeatable     bool
     Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
     ResourceID string               // 稳定业务ID；空则按规范URL去重
-    IdempotencyKey string            // 已弃用；ResourceID为空时作为ID值使用
     NotBefore      time.Time         // 延迟投递：最早可执行时间
     Delay          time.Duration     // 延迟投递：相对现在的延迟
     Urgent         bool              // 加急：投到所属阶段的快车道，插到排队任务前面
@@ -88,9 +87,9 @@ type Task struct {
 - `Meta` 承载业务键（`series_id`/`episode_id` 等），**不要**再把它们拼进 URL 或用 `hg2:series:123` 之类的 scheme；handler 里直接读 `task.Meta["series_id"]`。
   **它会随行落库**（`crawler_tasks.meta`，json 列）：恢复队列（进程重启）、轮询队列、错误队列重投、后台「重投 / 加急」这几条「从行重建任务」的路都会把它读回来，handler 不必再自己按 URL 回查业务表。
   两边不一致时以**这一列**为准 —— 提交时带了非空 `Meta` 就刷新它，带空 `Meta` 的提交不动它（重投路径自己就是照着库里那份读的）。
-  它与 `IdempotencyKey` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
-- `ResourceID` 是站点和阶段内的稳定资源 ID；留空使用规范 URL。框架统一计算版本化身份的 SHA-256。`IdempotencyKey` 已弃用，仅在 ResourceID 为空时作为 ID 值输入；不再是跨站点的裸键。
-  唯一性由**数据库**兜底：唯一索引建在 `idempotency_hash`（键原文的 sha256）上，同一个自定义键在库里只会有一行，并发也插不进第二行；没自定义键的行该列落 NULL（不是空串）。键原文上限 1000 字符，第三段用规范化后的短 URL。
+  它与 `ResourceID` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
+- `ResourceID` 是站点和阶段内的稳定资源 ID；留空使用规范 URL。框架统一计算版本化身份的 SHA-256。不再接受旧的 IdempotencyKey 字段。
+  唯一性由**数据库**兜底：唯一索引为 `(site, stage, identity_hash)`，`identity_hash` 是版本化站点、阶段、身份类型和值的 SHA-256；ResourceID 和 URL 使用不同身份类型，所有任务都生成非空哈希。同一站点、阶段与身份并发提交时也只保留一行。
 - `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
 - `AccountPool` 非空时使用同站命名池；空值在首次提交时按阶段/站点运行策略解析。既有任务保持已保存归属，重复提交指定其他池返回冲突。账号失效使本次尝试结束并等待以后补偿，不能在 handler 内自行换号重放。见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md) §7。
 - `Repeat` 只读轮次计数：首次可轮询投递初始化为 1，轮询队列开启下一轮时递增；重复提交、回灌和启动恢复不新增轮次。handler 读取的是认领后校准的数据库轮次，不是成功次数或提交 API 调用次数；错误重投/后台重试保持原轮次。禁止用赋值方式重置数据库计数。
@@ -130,9 +129,9 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
   - `Fail(name, err, data)` —— 这一步失败了，带上错误分类与现场数据；
   - `Warn(name, err, data)` —— **非致命**：出了点事，但不该把任务判失败。典型是附带产物 —— 封面没下下来、附件缺了、某个可选字段没解析出来，而任务本身是成功的（用 `Fail` 会把"任务失败了"的信号发出去）。它**不影响任务终态**，只写进追踪，后台用橙色和红色的失败步骤分开显示。
 - **默认按异常尝试保留**：普通成功整次不写文件；返回错误、panic、显式 `Fail` 或 `Warn` 会保留该次缓冲步骤及数据。失败后重试成功不删除失败证据。缓冲和单步数据有上限，超限标明截断。
-- **主动追踪**：`engine.TraceNextExecution(taskID)` 选择下一次成功认领的执行及其全部重试，成功也保留；它不提交任务、不回溯已经过去的步骤。
+手动追踪 API 已删除，不维护手动选择状态，也不提供主动追踪按钮。需要完整记录时设置 `crawler.trace.mode: all`。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
-- **默认关闭**：`crawler.trace.enabled` 打开才记录文件（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，按记录时间清理）。
+- **模式配置**：`crawler.trace.mode` 默认为 `errors`；`all` 保留正常成功，`off` 关闭。关闭时 `task.Trace` 为 nil，方法调用安全，无需判空。`crawler.trace.retention` 默认 7 天，按记录时间清理。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断；历史空身份明确标记未知轮次。handler panic 时，panic 之前已上报的步骤同样会落库。启用追踪的旧库升级须显式 migrate 增加 execution_id，详见 CORE_CONFIG 的迁移说明。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
 - **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。
@@ -531,7 +530,7 @@ response, err := engine.FetchHTTP(papa.WithHTTPSession(ctx, session), papa.HTTPR
 - 成功、错误、panic 均先销毁上下文再归还进程；取消时浏览器操作受 ctx 中断，回调退出后仍用独立清理超时销毁上下文。回调必须配合 ctx，框架不能强制终止任意 Go 代码。
 - 销毁失败会关闭并淘汰父浏览器进程，普通返回路径合并清理错误；panic 保持原值向上传播。
 - 不要把回调参数或页面带出回调，也不要对它调用池的 Put；若回调启动 goroutine，必须等它们退出再返回。
-- 隔离上下文本身是临时的；跨进程恢复使用 §3.4.2 的显式加密快照，检查和登录的站点逻辑由业务提供，可用 §3.4.3 的 SessionGuard 协调刷新。旧 `WithBrowser` 保持原有默认上下文行为。
+- 隔离上下文本身是临时的；跨进程恢复使用 §3.4.2 的显式加密快照，检查和登录的站点逻辑由业务提供，使用 §3.4.3 的 account.Manager 协调刷新。`WithBrowser` 使用默认上下文。
 
 ### 3.4.2 加密保存和恢复页面登录态
 
@@ -559,48 +558,11 @@ if err := page.WaitLoad(); err != nil { return err }
 
 文件与密钥管理由应用控制：接口只读写 Reader/Writer，不默认落盘；密钥应独立于状态文件保存，并在重启后仍可取回。Writer 失败可能留下半份文件，由应用以临时文件和原子发布处理。不要记录 PageState、Cookie 值或明文 JSON。
 
-范围只包含当前 URL 可用 Cookie 和当前 origin 的 LocalStorage，不包含其他路径 Cookie、IndexedDB、sessionStorage、Service Worker 或缓存。持久化不会延长服务端登录有效期，快照接口不自动刷新账号登录；恢复后可由 §3.4.3 的 SessionGuard 调用业务检查与登录流程。
+范围只包含当前 URL 可用 Cookie 和当前 origin 的 LocalStorage，不包含其他路径 Cookie、IndexedDB、sessionStorage、Service Worker 或缓存。持久化不会延长服务端登录有效期，快照接口不自动刷新账号登录；恢复后由 §3.4.3 的 account.Manager 调用业务检查与登录流程。
 
 ### 3.4.3 登录态检查与刷新协调
 
-本节的 `SessionGuard` 是兼容保留的低层 HTTP Cookie 协调器。需要站点＋账号注册、Token/CSRF、业务响应过期处理、加密重启恢复和 Rod 账号运行时，使用 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) 的 `account.Manager` 与 `Engine.FetchAccountHTTP / FetchAccountHTML / WithAccountBrowser`；新入口显式选择账号，不改变旧入口。
-
-每个账号创建并长期复用一个 `htmlfetch.SessionGuard`，在业务请求前调用 `Ensure(ctx)`。它返回已经复验的独立 HTTP Session；没有当前会话时先登录，有当前会话时先 Check，明确返回 `false, nil` 才重新登录。网络错误必须返回 error，不能误判成登录过期。
-
-```go
-client := engine.GetHTMLClient() // html.enable 必须开启
-// accountLogin 是业务实现：把此账号登录得到的 Cookie 写入 candidate。
-// 可以使用 WithIsolatedBrowser 登录，再 CopyCookiesToSession(page, candidate, apiURL)。
-guard, err := htmlfetch.NewSessionGuard(htmlfetch.SessionGuardConfig{
-    Check: func(ctx context.Context, session *htmlfetch.Session) (bool, error) {
-        response, err := client.Do(htmlfetch.WithSession(ctx, session), htmlfetch.Request{
-            URL: accountProbeURL,
-        })
-        // 此例约定该站账号检查接口用 401 表示未登录；其他站应按自己的业务响应判断。
-        if response != nil && response.StatusCode == 401 { return false, nil }
-        if err != nil { return false, err }
-        var result struct { LoggedIn bool `json:"logged_in"` }
-        if err := response.DecodeJSON(&result); err != nil { return false, err }
-        return result.LoggedIn, nil
-    },
-    Login: accountLogin, // func(context.Context, *htmlfetch.Session) error
-    Timeout: 30 * time.Second,
-    FailureCooldown: 5 * time.Second,
-})
-if err != nil { return err }
-// guard 应在账号初始化时保存，不能在每次 FetchHandler 里重建。
-session, err := guard.Ensure(ctx)
-if err != nil { return err }
-response, err := engine.FetchHTTP(papa.WithHTTPSession(ctx, session), papa.HTTPRequest{URL: apiURL})
-```
-
-新登录始终使用全新的 CookieJar，复验成功才发布；失败不会把半登录状态覆盖到原会话，Ensure 返回错误而不返回旧会话。Login 只操作传入的候选会话，Check 只读取会话，回调不得重入同一个 Guard。CookieJar 自身线程安全，但业务回调中的其他共享状态仍需自行同步。
-
-同一 Guard 的并发调用共享一轮检查/登录结果。首调用者执行回调并控制整轮 context，首调用者取消会影响等待者；等待者可以独立取消自己的等待。默认整轮超时 30 秒（零值使用默认，负值拒绝），回调必须配合 ctx；任意阻塞 Go 代码不能被框架强行终止。
-
-普通失败结果默认冷却 5 秒（零值使用默认，负值拒绝），期间直接返回同一失败，防止重复登录风暴；取消和超时不缓存。登录后 Check 仍无效时返回 `ErrSessionRejected`。回调 panic 会释放等待者，等待者拿到 `ErrSessionCallbackPanic`，首调用者继续向上传播原 panic。
-
-这不是周期保活器：不会启动后台登录任务，不跨进程协调，也不自动重发业务请求。Ensure 成功后服务端仍可能随时使令牌失效；业务响应失效时应返回明确错误，按业务幂等规则决定是否再调用 Ensure。尤其不要自动重放付款/提交等有副作用的 POST。登录凭据、验证码、加密快照保存时机和账号级代理绑定由业务负责；默认只管理内存 Cookie 会话。
+账号注册、检查/登录协调、Token/CSRF、过期处理与加密重启恢复统一由 [account.Manager](./ACCOUNT_RUNTIME.md) 负责，抓取使用 `Engine.FetchAccountHTTP`、`FetchAccountHTML` 或 `WithAccountBrowser`。底层独立 CookieJar 使用 htmlfetch.Session；不再提供重复的 SessionGuard 协调层。
 
 ### 3.5 显式脱敏样本与离线解析
 
@@ -1064,7 +1026,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	// 只有数据必须等 JS/点击/滚动/登录/网络监听才产生时才上 rod（见 §3.2、§4、§5）。
 	page, err := engine.FetchHTML(ctx, task.URL)
 	if err != nil {
-		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据。
+		// 步骤追踪（crawler.trace.mode 非 off 时生效）：失败时带上现场数据。
 		// task.Trace 关闭时是 nil，这些调用都是安全的 no-op —— 不需要判空。
 		task.Trace.Fail("抓取列表页", err, map[string]string{"url": task.URL})
 		return err
@@ -1289,7 +1251,6 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 **任务身份 / 站点地址**
 - `papa.PageIdentity(rawURL)`：`path[?query]`，与域名无关（`https://a.com` 与 `https://a.com/` 都是 `/`）。
 - `papa.NormalizeTaskIdentity(site, stage, resourceID, rawURL)`：检查并生成标准身份（Type / Value / Hash）。
-- `papa.TaskKey(site, stage, rawURL)`：旧的显式页面键工具，`site:stage:<PageIdentity>`，适合站点换域名/多镜像时的自定义幂等键；超过 1000 字符报错，不截断。
 - `papa.ResolveSiteURL(baseURL, raw)`：把任务里存的旧地址钉回当前站点根（scheme/host 换成 baseURL 的），path/query 保留。
 
 **静态 HTML（goquery）**

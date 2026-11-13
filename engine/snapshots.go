@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v4/core"
 	"strings"
 	"time"
 
@@ -84,7 +85,7 @@ func (e *Engine) emitTaskFailed(task *Task, err error, claimedAt time.Time) {
 		TaskID:     uint(task.ID),
 		URL:        task.URL,
 		Outcome:    "failed",
-		Kind:       string(ErrorKind(err)),
+		Kind:       string(core.ErrorKind(err)),
 		Attempt:    task.Retry,
 		DurationMS: elapsedMS(claimedAt),
 		Error:      events.TruncateError(err.Error()),

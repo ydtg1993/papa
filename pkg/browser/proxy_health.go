@@ -46,7 +46,7 @@ func (b *Browser) ProxyFailure() error {
 
 // FixedProxyFailure identifies pre-borrow fixed-proxy admission failures.
 func (p *Pool) FixedProxyFailure(err error) bool {
-	if p == nil || err == nil || p.newLauncher(false).Get(flags.Flag("proxy-server")) == "" {
+	if p == nil || err == nil || p.newLauncher().Get(flags.Flag("proxy-server")) == "" {
 		return false
 	}
 	return errors.Is(err, proxy.ErrUnavailable) || errors.Is(err, ErrFixedProxyUnavailable)

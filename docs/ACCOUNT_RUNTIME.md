@@ -65,7 +65,7 @@ CheckInterval 为 0 时逐次检查，正数允许近期有效结果复用；实
 
 默认将完整 HTTP 401 分类为 `NeedsVerify`（可疑、待核验），403 为 `Forbidden`；网络/读取错误保持 `Unknown`。站点的 200 登录页或模糊 JSON 认证码也应返回 `NeedsVerify`。`Expired` 仍表示业务已明确确认登录态失效，不能继续把所有 401 当作强证据。旧自定义 `Classify` 的 401 分支需要业务检查并按证据强度迁移；框架不会静默改写自定义分类结果。有效分类为 `Valid`、`NeedsVerify`、`Expired`、`Forbidden`、`Challenge`、`Unknown`。判断前检查 err，不用不完整正文作失效证据。
 
-- 显式非池 `Manager.Do` 对 `NeedsVerify` 和 `Expired` 保留兼容恢复：只废弃实际使用的 HTTP 版本，GET/HEAD 最多重新认证并重发一次。第二次异常分别返回 `ErrNeedsVerify` 或 `ErrExpired`。旧响应不能废弃已刷新的版本。
+- 显式非池 `Manager.Do` 对 `NeedsVerify` 和 `Expired` 支持自动恢复：只废弃实际使用的 HTTP 版本，GET/HEAD 最多重新认证并重发一次。第二次异常分别返回 `ErrNeedsVerify` 或 `ErrExpired`。旧响应不能废弃已刷新的版本。
 - 池请求对 `NeedsVerify` 返回 `ErrNeedsVerify`，保留凭据和当前选择，进入独立核验；`Expired` 返回 `ErrExpired` 并隔离对应会话。两者都不在本次尝试重发，详见 §7。
 - POST/PUT/PATCH/DELETE：返回相应认证错误，不自动重发。业务按幂等键和远端执行结果决定后续操作。
 - Forbidden：返回 ErrForbidden，不重新登录、不自动更换账号。
@@ -175,7 +175,7 @@ _ = response
 
 池页展示当前账号、成员状态、HTTP/浏览器能力、等待数与原因、选择版本、最近切换；支持创建/启停池、排序、停用成员和重新验证。写动作带版本检查、令牌鉴权与审计；GET 查询不触发认证。验证会实际访问配置站点，并受超时与站点预算约束。
 
-每条任务通过 `crawler_tasks.account_attempts` 独立于 Trace 保存最近 8 次认领的账号关联，含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据；后台可按该有界记录查找受影响任务。更早关联会被淘汰，升级前的记录不会回填，空结果不代表从未使用该账号。`task.Trace.Step("账号池身份", ...)` 仍可在开启 `crawler.trace.enabled` 后记录详细步骤。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障先保留凭据并暂停新操作，独立核验确认持续故障后隔离出口并触发备用；`ProxyChecks` 与 `InvalidChecks` 分开计数，普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
+每条任务通过 `crawler_tasks.account_attempts` 独立于 Trace 保存最近 8 次认领的账号关联，含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据；后台可按该有界记录查找受影响任务。更早关联会被淘汰，升级前的记录不会回填，空结果不代表从未使用该账号。`task.Trace.Step("账号池身份", ...)` 仍可在`crawler.trace.mode` 非 off 时记录详细步骤。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障先保留凭据并暂停新操作，独立核验确认持续故障后隔离出口并触发备用；`ProxyChecks` 与 `InvalidChecks` 分开计数，普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
 
 
 ### 可疑状态与两种核验
@@ -194,7 +194,7 @@ _ = response
 
 `Policy(key) (Policy,managementVersion,error)` 读取有效值；`SetPolicy(ctx,key,policy,expectedVersion)` 使用管理版本 CAS 保存。注册但尚未创建管理记录的账号返回默认政策和版本 0。保存失败会返回错误，账号呈现未保存状态；不能向操作人报告设置已持久生效。直接 JSON 里的 `time.Duration` 使用纳秒，后台应在提交前显式换算。
 
-管理记录分别保存完整写入版本 `Version` 和最近控制变更版本 `LastControlVersion`。用量预留、登录间隔计数及纯事件追加只推进 Version，不使已打开的 OA 政策编辑、停用或核验表单过期；提交的快照版本位于 `LastControlVersion <= expectedVersion <= Version` 时仍有效。政策、健康、核验结果、候选恢复或开关的真实变更推进 LastControlVersion，此前快照继续返回版本冲突；两个并发控制提交仍只有第一个成功。数据库保存仍以最新持久 Version 做严格 CAS，并未放宽存储层并发保护。旧 JSON 没有 LastControlVersion 时按已保存 Version 保守归一化，随后写入持久保留这一边界。
+持久管理状态必须包含有效 Generation 和 LastControlVersion；缺失边界明确报错，不进行旧 JSON 版本回填。
 
 | Policy 字段 | 默认值 / 单位 | 作用 |
 | --- | --- | --- |
@@ -204,7 +204,7 @@ _ = response
 | VerifyTimeout | 30s | 单轮核验超时，另受协调器上限限制 |
 | UnknownBackoff / MaxBackoff | 10s / 5m | 未知结果指数退避 |
 | UnknownAlertAfter | 5m | 可疑等待过久事件门槛，不是判失效门槛 |
-| RecoveryInterval | 0，关闭 | 隔离后的自动恢复间隔；为 0 时沿用兼容的全局 ReverifyInterval |
+| RecoveryInterval | 0，关闭 | 隔离后的自动恢复间隔；为 0 时使用池协调器的全局 ReverifyInterval |
 | OperationInterval | 0，无限制 | 同账号两次公开业务操作的最小间隔 |
 | DailyLimit | 0，无限制 | 按账号、按配置时区自然日的操作额度 |
 | Timezone | UTC | 额度重置及工作时段的 IANA 时区 |
@@ -224,7 +224,7 @@ _ = response
 
 `AddEventListener(func(HealthEvent))` 返回退订函数，每个订阅有 32 条有界队列，慢订阅丢弃后续通知，不阻塞核验；回调在池锁之外执行。业务可按序号补查 Events，但被保留窗口淘汰的数据无法补回。事件包括 needs-verification、verification-invalid、verification-unknown、verification-overdue、proxy-unavailable、manual-verification、recovered、pool-exhausted 与 standby-shortage。通知按账号/池聚合节流；不要把每次事件等同一次独立登录或永久失效。
 
-`Shutdown(ctx)` 停止新工作并等待协调器和所有核验回调结束。超时返回 ctx 错误，Manager 仍保留该协调器，调用者必须继续保留 Store、浏览器等依赖，之后重试 Shutdown；`Close()` 保持等待全部结束的兼容行为。取消后的迟到核验结果不发布。回调必须遵守 context；忽略取消的第三方回调无法被 Go 安全强杀，只能有界等待并保留其依赖。
+`Shutdown(ctx)` 停止新工作并等待协调器和所有核验回调结束。超时返回 ctx 错误，Manager 仍保留该协调器，调用者必须继续保留 Store、浏览器等依赖，之后重试 Shutdown；`Close()` 等待全部结束，无截止时间。取消后的迟到核验结果不发布。回调必须遵守 context；忽略取消的第三方回调无法被 Go 安全强杀，只能有界等待并保留其依赖。
 
 ## 8. 已验证候选发布
 

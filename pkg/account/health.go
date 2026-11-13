@@ -77,9 +77,6 @@ func matchesControlVersion(a *managedAccount, expected uint64) bool {
 		return expected == 0
 	}
 	last := a.state.LastControlVersion
-	if last == 0 {
-		last = a.state.Version
-	}
 	return expected >= last && expected <= a.state.Version
 }
 

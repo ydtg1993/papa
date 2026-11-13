@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -8,7 +9,46 @@ import (
 
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
+	"gorm.io/gorm"
 )
+
+func TestVersionedRetryReadsHonorCancellation(t *testing.T) {
+	for _, phase := range []string{"before_read", "during_read", "conflict_read"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newFakeTaskDB()
+			e, pool := urgentEngine(t, f)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if phase == "during_read" {
+				if err := e.db.Callback().Query().Before("gorm:query").Register("test:cancel_read", func(tx *gorm.DB) {
+					if tx.Statement.Context != ctx {
+						t.Error("task query lost caller context")
+					}
+					cancel()
+				}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				cancel()
+			}
+			var err error
+			if phase == "conflict_read" {
+				err = e.whyRetryRejected(ctx, 7)
+			} else {
+				err = e.RetryTaskVersioned(ctx, 7, 0, 0)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation lost: %v", err)
+			}
+			if f.written() != "" {
+				t.Fatal("canceled read wrote task state", f.written())
+			}
+			if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+				t.Fatal("canceled read queued work")
+			}
+		})
+	}
+}
 
 /* ---------- RetryTask ---------- */
 
@@ -17,7 +57,7 @@ func TestRetryTaskHappyPath(t *testing.T) {
 	f := newFakeTaskDB()
 	e, pool := urgentEngine(t, f)
 
-	if err := e.RetryTask(7, 0); err != nil {
+	if err := e.RetryTaskVersioned(context.Background(), 7, 0, 0); err != nil {
 		t.Fatalf("RetryTask = %v", err)
 	}
 
@@ -88,7 +128,7 @@ func TestRetryTaskRejections(t *testing.T) {
 			} else {
 				e, _ = urgentEngine(t, f)
 			}
-			if err := e.RetryTask(7, 0); !errors.Is(err, c.want) {
+			if err := e.RetryTaskVersioned(context.Background(), 7, 0, 0); !errors.Is(err, c.want) {
 				t.Fatalf("err = %v, want %v", err, c.want)
 			}
 		})
@@ -106,7 +146,7 @@ func TestRetryTaskSpillsWhenQueueFull(t *testing.T) {
 	if err := pool.Submit(&Task{URL: "occupy", Stage: "stub"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.RetryTask(7, 0); err != nil {
+	if err := e.RetryTaskVersioned(context.Background(), 7, 0, 0); err != nil {
 		t.Fatalf("队列满时应溢出而不是报错：%v", err)
 	}
 	if got := e.spillBacklog(); got != 1 {
@@ -126,7 +166,7 @@ func TestRetryTaskReportsSubmitFailure(t *testing.T) {
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
 	e.pools.Set("stub:stub", pool)
 
-	err := e.RetryTask(7, 0)
+	err := e.RetryTaskVersioned(context.Background(), 7, 0, 0)
 	if err == nil {
 		t.Fatal("投递失败应当报错")
 	}
@@ -285,9 +325,9 @@ func TestRejectedAdminOpsWriteNothing(t *testing.T) {
 		run  func(*Engine) error
 		prep func(*fakeTaskDB)
 	}{
-		{"重投：行不存在", func(e *Engine) error { return e.RetryTask(7, 0) },
+		{"重投：行不存在", func(e *Engine) error { return e.RetryTaskVersioned(context.Background(), 7, 0, 0) },
 			func(f *fakeTaskDB) { f.noRows = true }},
-		{"重投：阶段未注册", func(e *Engine) error { return e.RetryTask(7, 0) },
+		{"重投：阶段未注册", func(e *Engine) error { return e.RetryTaskVersioned(context.Background(), 7, 0, 0) },
 			func(f *fakeTaskDB) { f.row["stage"] = "nope" }},
 		{"加急：已被取走", func(e *Engine) error { return e.UrgentTask(7) },
 			func(f *fakeTaskDB) { f.row["status"] = int64(models.TaskStatusProcessing) }},
@@ -398,13 +438,13 @@ func TestLoadTaskTranslatesNotFound(t *testing.T) {
 	f.noRows = true
 	e, _ := urgentEngine(t, f)
 
-	if _, err := e.loadTask(7); !errors.Is(err, ErrTaskNotFound) {
+	if _, err := e.loadTask(context.Background(), 7); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("err = %v, want ErrTaskNotFound", err)
 	}
 
 	f2 := newFakeTaskDB()
 	e2, _ := urgentEngine(t, f2)
-	got, err := e2.loadTask(7)
+	got, err := e2.loadTask(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("loadTask = %v", err)
 	}

@@ -103,7 +103,7 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 	}
 	// Reconstruct the engine and task solely from durable state; no in-memory scheduler ownership.
 	e = makeEngine()
-	stored, err := e.loadTask(uint(c.ID))
+	stored, err := e.loadTask(context.Background(), uint(c.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

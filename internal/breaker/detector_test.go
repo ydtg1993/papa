@@ -126,7 +126,7 @@ func TestPolicyDefaultsAndInvalidBounds(t *testing.T) {
 	if p.FastThreshold != 5 || p.MixedThreshold != 8 || p.Capacity != 4096 || p.MaxRecovery != 5*time.Minute {
 		t.Fatalf("defaults: %+v", p)
 	}
-	for _, p := range []Policy{{ShortWindow: -1}, {MaxProbes: -1}, {Capacity: 4}, {MaxRecovery: time.Second}, {RampConcurrency: 100001}} {
+	for _, p := range []Policy{{ShortWindow: -1}, {MaxProbes: -1}, {Capacity: 4}, {MaxRecovery: time.Second}} {
 		if err := ValidatePolicy(p); err == nil {
 			t.Fatalf("accepted invalid: %+v", p)
 		}

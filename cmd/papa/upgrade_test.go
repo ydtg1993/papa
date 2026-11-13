@@ -20,7 +20,7 @@ func writeFileT(t *testing.T, path, content string) {
 }
 
 // upgrade 的检查：docs 漂移（内容变了 / 缺了 / 自己加的）、config.yaml 读不读得通、
-// 站点声明里的旧类型名与三条队列缺项 —— 这些都不用起库，正是"一个个检查"最花时间的部分。
+// 这些检查都不连接数据库。
 func TestUpgradePlanDetectsDrift(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := runNew("demo", nil); err != nil {
@@ -36,19 +36,6 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 	writeFileT(t, filepath.Join("demo", "docs", "framework", "samples", "keep.md"), "# 子目录不动\n")
 
 	// ② config.yaml：脚手架自带的三个队列段是合法的（队列已回 config.yaml，不是"已退休"的旧段）
-
-	// ③ 站点声明写成升级前的样子：还带着旧类型名
-	writeFileT(t, filepath.Join("demo", "internal", "sites", "demo.go"), `package sites
-
-import "github.com/ydtg1993/papa/v4"
-
-func init() {
-	papa.RegisterSite(papa.SiteSpec{
-		Key:        "demo",
-		ErrorQueue: &papa.QueueSpec{WorkerCount: 1},
-	})
-}
-`)
 
 	var plan *upgradePlan
 	var buildErr error
@@ -73,12 +60,7 @@ func init() {
 	if !plan.ConfigOK {
 		t.Error("脚手架自带的三个队列段是合法的，config.yaml 应当读得通")
 	}
-	if len(plan.SiteNotes) != 1 {
-		t.Fatalf("站点声明应当报一条（旧类型名 QueueSpec）：%v", plan.SiteNotes)
-	}
-	if !strings.Contains(strings.Join(plan.SiteNotes, "\n"), "QueueSpec") {
-		t.Errorf("旧类型名要报出来：%v", plan.SiteNotes)
-	}
+
 }
 
 // 默认只报告：一个字节都不落盘；--write 才写，而且**只写框架副本**（docs/ 与 .claude/skills/ 里的
@@ -216,9 +198,9 @@ func TestUpgradeRefreshesSkillButKeepsProjectConventions(t *testing.T) {
 	}
 }
 
-// 老项目（生成时还没有技能目录）：upgrade --write 把整套补上 —— 通用文件刷新，项目所有的播种，
+// 缺失技能目录的 v4 项目：upgrade --write 把整套补上 —— 通用文件刷新，项目所有的播种，
 // 且播种出来的那份要带项目自己的名字（从 go.mod 的 module 行取）。
-func TestUpgradeSeedsSkillForOlderProject(t *testing.T) {
+func TestUpgradeSeedsMissingSkill(t *testing.T) {
 	t.Chdir(t.TempDir())
 	if err := runNew("demo", nil); err != nil {
 		t.Fatalf("runNew = %v", err)
@@ -299,9 +281,6 @@ func TestUpgradeNoSiteDir(t *testing.T) {
 	p, err := buildUpgradePlan("p")
 	if err != nil {
 		t.Fatalf("buildUpgradePlan = %v", err)
-	}
-	if len(p.SiteNotes) != 0 || len(p.SiteFiles) != 0 {
-		t.Errorf("没有 sites/ 时不该报站点声明的问题：%v / %v", p.SiteFiles, p.SiteNotes)
 	}
 	if !p.ConfigOK {
 		t.Errorf("这份 config.yaml 读得通才对，实得：%s", p.ConfigReport)

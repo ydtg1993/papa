@@ -58,7 +58,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	// docs/framework/FETCHER_WRITING_GUIDE.md §3 —— 模板是照着抄的范本，所以这里默认给的就是那条默认路径。
 	page, err := engine.FetchHTML(ctx, task.URL)
 	if err != nil {
-		// 步骤追踪（crawler.trace.enabled 开启时生效）：失败时带上现场数据，后台「追踪」里能直接看到。
+		// 步骤追踪（crawler.trace.mode 非 off 时生效）：失败时带上现场数据，后台「追踪」里能直接看到。
 		// task.Trace 关闭时是 nil，这些调用都是安全的 no-op —— 不需要判空。
 		task.Trace.Fail("抓取列表页", err, map[string]string{"url": task.URL})
 		return err

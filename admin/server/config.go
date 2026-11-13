@@ -57,7 +57,7 @@ type MonitorConfig struct {
 	// OnQueueProcess 队列「立即执行」跑完（成功或失败都算）后的回调，宿主拿它记操作日志；可空。
 	// 失败也要记：站点名打错这种"没跑成"的触发，同样是要查的线索。
 	OnQueueProcess func(QueueProcessEvent)
-	TaskTrace      func(id int) ([]core.TraceStep, error) // 单任务步骤追踪（可空）
+	TaskTrace      func(id int) ([]core.TraceExecutionStep, error) // 单任务步骤追踪（可空）
 	// BreakerStatuses 各站点的熔断状态快照：key 是站点 Key（站点是必填维度，没有空键那一档）。
 	// 可空；也随 /api/monitor 一起返回（`breakers` 数组）。
 	BreakerStatuses func() map[string]core.BreakerStatus

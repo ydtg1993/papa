@@ -1,3 +1,4 @@
+const controllers = require('./controllers');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const source = name => fs.readFileSync(path.join(process.argv[2], name), 'utf8');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
@@ -50,7 +51,7 @@ function setup() {
         Oao: { init() {}, destroy() {}, list: () => { const d = deferred(); lists.push(d); return d.promise; }, render: async (...args) => calls.push(['render', ...args]) },
         apiFetch: (url, opts) => { const d = deferred(); requests.push({ url, opts, ...d }); return d.promise; },
         stopPolling() {}, startPolling() {}, handleTableUnauthorized() {} });
-    ['extensions.js', 'navigation.js', 'mo.js', 'visual-state.js', 'workbench.js'].forEach(name => vm.runInContext(source(name), c));
+    ['extensions.js', 'navigation.js', 'mo.js', 'visual-state.js', 'workbench.js'].forEach(name => controllers.run(source(name), c));
     const native = { fetchSettings: c.fetchSettings, fetchTokens: c.fetchTokens, fetchObsReports: c.fetchObsReports };
     c.fetchSettings = () => calls.push(['settings']); c.fetchTokens = () => calls.push(['tokens']); c.fetchObsReports = () => calls.push(['obs']);
     let closeDialog;

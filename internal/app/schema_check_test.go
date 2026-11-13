@@ -109,7 +109,10 @@ func TestCheckFrameworkSchemaIgnoresLegacyTrace(t *testing.T) {
 		f.SetRow(map[string]driver.Value{"table_name": "crawler_task_trace"})
 		f.SetCounts(0, 0)
 		cfg := &config.Config{}
-		cfg.Crawler.Trace.Enabled = enabled
+		cfg.Crawler.Trace.Mode = config.TraceOff
+		if enabled {
+			cfg.Crawler.Trace.Mode = config.TraceErrors
+		}
 		missing, indexes, err := checkFrameworkSchema(gormfake.MustOpen(f), cfg)
 		if err != nil {
 			t.Fatalf("trace enabled=%v: %v", enabled, err)

@@ -42,7 +42,7 @@ type pauseScope struct {
 // pauseState 一条暂停的现场。`At` 是下这条暂停的时刻，**不随后续变化改写**
 // （排查时要看的是"当时为什么停的"，与熔断那套触发快照同一取向）。
 type pauseState struct {
-	Owner  string // durable automatic incident ID; empty for manual/legacy pauses
+	Owner  string // durable automatic incident ID; empty for manual pauses
 	Reason string // 给人看的："后台手动暂停" / "窗口内终态失败数达到阈值"
 	Source string // PauseSourceManual / PauseSourceBreaker
 	At     time.Time
@@ -304,7 +304,7 @@ func (e *Engine) pauseGateFor(scope pauseScope) workerpool.Gate {
 }
 
 // Wait: budgeted engines dequeue paused references for durable handoff in stageHandler.
-// Legacy unbudgeted engines wait until resume or stop; false means stop.
+// Engines without a configured scheduler budget wait until resume or stop; false means stop.
 //
 // 循环 + 每轮重读是本实现的要点：广播是**全局**的（任何一个 scope 变了都叫醒所有人），
 // 醒来必须重新判定自己这一条。**不能在循环外缓存 channel** —— 关掉之后那个 channel 永远就绪，

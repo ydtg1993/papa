@@ -17,7 +17,7 @@ where it has already diverged from current Papa.
 
 ## Conventions
 
-- **Stage names are unique *within a site*** (`v3.4.0`+; the engine keys a stage by `site:stage`). Two sites
+- **Stage names are unique *within a site*** (the engine keys a stage by `site:stage`). Two sites
   may each declare `catalog`, so **no site prefix is needed** — define the constants once in the fetcher
   package and reuse them in `GetStage`, `Task.Stage`, tests and diagnostics. A duplicate *within one site*
   fails at startup and names the site.

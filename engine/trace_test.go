@@ -98,7 +98,10 @@ func traceEngine(t *testing.T, enabled bool) (*Engine, *stubConnPool) {
 		loggerSet: &loggers.LoggerSet{DB: logrus.New(), Engine: logrus.New()},
 		cfg:       &config.Config{},
 	}
-	e.cfg.Crawler.Trace.Enabled = enabled
+	e.cfg.Crawler.Trace.Mode = config.TraceOff
+	if enabled {
+		e.cfg.Crawler.Trace.Mode = config.TraceErrors
+	}
 	e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
 	return e, pool
 }

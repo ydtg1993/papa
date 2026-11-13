@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"github.com/ydtg1993/papa/v4/core"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -104,7 +105,7 @@ type Engine struct {
 	filedown      *filedown.Downloader // 文件下载器（全局那份）
 	// 下载覆盖配置及解析快照由 Downloads 持锁发布；Engine 只在装配期提供阶段值。
 	downloads fetchruntime.Downloads
-	notifiers []Notifier // 告警通知器，任务最终失败时触发
+	notifiers []core.Notifier // 告警通知器，任务最终失败时触发
 	// One detector and one current lifecycle per site.
 	breakers breakerCoordinator
 	// sites 站点声明快照（Key/BaseURL），由 App.RegisterSites 填；handler 用 Site(task.Site) 取。
@@ -114,6 +115,7 @@ type Engine struct {
 
 // NewEngine 创建引擎
 func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *Engine {
+	_ = cfg.Crawler.Trace.ModeOrDefault()
 	ctx, cancel := context.WithCancel(context.Background())
 	engine := &Engine{
 		ctx:    ctx,
@@ -140,7 +142,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 	}
 	// 熔断计数器不在这里建：每站一个、由声明层按站点建（SetSiteBreaker）。
 	// 终态结果进入 Detector；达到保护线之后写暂停信号并发一条
-	// AlertCritical（业务不用再接一套告警通道）。
+	// core.AlertCritical（业务不用再接一套告警通道）。
 	// 两条治理队列（全局各一条）的运行态 + 累计计数：键就是监控面板上的队列名。
 	engine.errorQueue = &errorQueueState{}
 	engine.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)}

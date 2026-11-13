@@ -14,7 +14,7 @@ run:
 	go run .
 
 # 建 / 补表（框架自带的表 + 本项目 models 里注册的模型）。只增不减、可重复跑；
-# 新开 server.operation_log / crawler.trace.enabled 之后也要重跑一次。
+# 新开 server.operation_log 之后也要重跑一次。
 migrate:
 	go run . -migrate
 

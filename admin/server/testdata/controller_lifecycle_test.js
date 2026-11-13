@@ -8,6 +8,12 @@ const vm = require('node:vm');
 const controllers = require('./controllers');
 const context = vm.createContext({});
 controllers.load(context, fs.readFileSync(path.join(process.argv[2], 'mo.js'), 'utf8'), []);
+// Page scripts cannot replace another controller's operation via a global write.
+context.MonitorShell.define('fixture/operations', null, [], () => ({ fixtureOperation: () => 'owned' }));
+context.MonitorShell.install('fixture/operations');
+assert.equal(Object.getOwnPropertyDescriptor(context, 'fixtureOperation').set, undefined);
+vm.runInContext("fixtureOperation = () => 'replaced'", context);
+assert.equal(context.fixtureOperation(), 'owned');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
     let resolve, reject;

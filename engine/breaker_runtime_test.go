@@ -416,7 +416,6 @@ func TestReviewRampDoesNotFinishWithUnsettledTrial(t *testing.T) {
 	e.tickBreakers(context.Background(), time.Now())
 	e.breakers.breakerMu.Lock()
 	e.breakers.smartBreakers["synthetic"].policy.Interval = time.Nanosecond
-	e.breakers.smartBreakers["synthetic"].policy.RampConcurrency = 2
 	e.breakers.breakerMu.Unlock()
 	good, done := admitSmartTrial(t, e, 2, "detail")
 	e.recordSmartOutcome(good, nil)

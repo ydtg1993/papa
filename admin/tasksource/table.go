@@ -32,8 +32,8 @@ var taskStatusTone = map[string]string{
 // TaskActions 后台对单行任务的手动操作，由 engine.Engine 实现。
 // 定义成接口是为了让本包不依赖 crawler，且这些处理函数能在没有数据库时单测。
 type TaskActions interface {
-	// RetryTask 的 wasReprocess 是行快照里带回来的 reprocess 旧值，用作版本条件防重复提交。
-	RetryTask(id uint, wasReprocess int) error
+	// RetryTaskVersioned 使用重投计数和补偿版本共同校验行快照，阻止过期操作。
+	RetryTaskVersioned(ctx context.Context, id uint, wasReprocess int, compensationVersion uint64) error
 	MarkTaskFailed(id uint, reason string) error
 	DeleteTask(id uint) error
 	// UrgentTask 把一行还没被取走的任务投到快车道；重复加急/已被取走返回 engine.ErrTaskUrgent。
@@ -155,16 +155,11 @@ func taskActions(acts TaskActions) []oao.Action {
 				if convErr != nil {
 					return oao.Fail(http.StatusBadRequest, "版本号 reprocess 不是整数：%q", raw)
 				}
-				if versioned, ok := acts.(interface {
-					RetryTaskVersioned(context.Context, uint, int, uint64) error
-				}); ok {
-					version, err := strconv.ParseUint(req.RowString("compensation_version"), 10, 64)
-					if err != nil {
-						return oao.Fail(http.StatusBadRequest, "缺少有效补偿版本，请刷新页面")
-					}
-					return toOaoError(versioned.RetryTaskVersioned(ctx, id, was, version))
+				version, err := strconv.ParseUint(req.RowString("compensation_version"), 10, 64)
+				if err != nil {
+					return oao.Fail(http.StatusBadRequest, "缺少有效补偿版本，请刷新页面")
 				}
-				return toOaoError(acts.RetryTask(id, was))
+				return toOaoError(acts.RetryTaskVersioned(ctx, id, was, version))
 			},
 		},
 		{

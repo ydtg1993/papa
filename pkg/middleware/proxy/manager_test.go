@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func TestNewManagerWithoutAPIURL(t *testing.T) {
 	if m.client == nil {
 		t.Fatal("client 不该为 nil")
 	}
-	if got := m.Next(); got != "" {
+	if got, err := m.NextChecked(context.Background()); err != nil || got != "" {
 		t.Fatalf("Next = %q, want 空串", got)
 	}
 }
@@ -40,7 +41,7 @@ func TestNewManagerFetchesAndRotates(t *testing.T) {
 		"http://1.2.3.4:8080", // 转回来
 	}
 	for i, w := range want {
-		if got := m.Next(); got != w {
+		if got, err := m.NextChecked(context.Background()); err != nil || got != w {
 			t.Fatalf("第 %d 次 Next = %q, want %q", i+1, got, w)
 		}
 	}
@@ -60,7 +61,7 @@ func TestRefreshProxiesEmptyListWarns(t *testing.T) {
 	srv := proxyServer(t, nil)
 	m := NewManagerWithNetwork(srv.URL, time.Hour, egress.Config{PrivateOrigins: []string{srv.URL}})
 
-	if got := m.Next(); got != "" {
+	if got, err := m.NextChecked(context.Background()); err != nil || got != "" {
 		t.Fatalf("空代理表时 Next = %q, want 空串", got)
 	}
 	select {
@@ -77,7 +78,7 @@ func TestRefreshProxiesEmptyListWarns(t *testing.T) {
 func TestNextWithEmptyProxyList(t *testing.T) {
 	srv := proxyServer(t, nil)
 	m := NewManagerWithNetwork(srv.URL, time.Hour, egress.Config{PrivateOrigins: []string{srv.URL}})
-	if got := m.Next(); got != "" {
+	if got, err := m.NextChecked(context.Background()); err != nil || got != "" {
 		t.Fatalf("空代理表时 Next = %q, want 空串", got)
 	}
 }
@@ -110,7 +111,7 @@ func TestRefreshProxiesErrorPaths(t *testing.T) {
 			if !strings.Contains(got, c.want) {
 				t.Fatalf("错误消息 = %q, want 含 %q", got, c.want)
 			}
-			if m.Next() != "" {
+			if got, err := m.NextChecked(context.Background()); err != nil || got != "" {
 				t.Fatal("拉取失败时不该有可用代理")
 			}
 		})
@@ -177,7 +178,7 @@ func TestNewManagerNonPositiveIntervalFallsBack(t *testing.T) {
 	if m.refresh != defaultRefreshInterval {
 		t.Fatalf("非正间隔应用默认值兜底，实得 %v", m.refresh)
 	}
-	if got := m.Next(); got != "http://1.2.3.4:8080" {
+	if got, err := m.NextChecked(context.Background()); err != nil || got != "http://1.2.3.4:8080" {
 		t.Fatalf("Next = %q", got)
 	}
 }

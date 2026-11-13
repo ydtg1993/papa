@@ -179,16 +179,11 @@ func (s *Store) LoadContext(ctx context.Context, key string) (val []byte, found 
 	return []byte(row.CfgVal), true, nil
 }
 
-// LoadStrings 按 `ip_whitelist` 这一项的规格读成字符串数组 —— **这一项生效的值**：
+// LoadStringsContext 按 `ip_whitelist` 这一项的规格读成字符串数组 —— **这一项生效的值**：
 // 行不存在时给规格里的 Default（空数组 = 不限制），值不是字符串数组则报错。
 //
 // 调用方（admin/access）拿到 error 之后按"不限制来源 + 记 Error"处理：那是这一项的**业务语义**，
 // 不是这个包该决定的事（包注释里写了理由）。
-func (s *Store) LoadStrings(key string) ([]string, error) {
-	return s.LoadStringsContext(context.Background(), key)
-}
-
-// LoadStringsContext 是带取消能力的字符串数组读取口。
 func (s *Store) LoadStringsContext(ctx context.Context, key string) ([]string, error) {
 	sp, err := SpecOf(key)
 	if err != nil {

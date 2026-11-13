@@ -246,7 +246,7 @@ MonitorShell.define("breakers/controller","dashboard",["Dialog","Toast","apiFetc
             var data = await response.json();
             if (!current()) return;
             status.textContent = data.retention;
-            if (!data.reports.length) {status.textContent += ' 当前没有记录；旧版本产生的熔断无法补录实时现场。';select.disabled=true;return;}
+            if (!data.reports.length) {status.textContent += ' 当前没有保留的熔断记录。';select.disabled=true;return;}
             select.innerHTML = data.reports.map(function(r,i){return '<option value="'+i+'">'+deps.esc(r.at)+' · '+r.failures+' 次'+(r.lifecycle?' · '+deps.esc(r.lifecycle.state):'')+'</option>';}).join('');
             select.disabled = false;
             var selectedIndex = selected ? data.reports.findIndex(function(r){return r.id===selected.id;}) : 0;

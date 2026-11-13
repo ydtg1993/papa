@@ -54,7 +54,8 @@ func TestEvidenceFacadeBareEngineAndFreshConfig(t *testing.T) {
 	if e.newTrace(nil, 0) != nil || e.newArchiveBuffer(nil, 0) != nil {
 		t.Fatal("disabled recording must be a no-op")
 	}
-	if _, err := e.ListTrace(7); err == nil {
+	e.cfg.Crawler.Trace.Mode = config.TraceOff
+	if _, err := e.ListTraceExecution(7); err == nil {
 		t.Fatal("disabled list should report configuration error")
 	}
 	if e.traceRetention() != defaultTraceRetention || e.archiveRetention() != defaultArchiveRetention {

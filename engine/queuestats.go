@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v4/core"
 	"sync"
 	"time"
 
@@ -26,7 +27,7 @@ const defaultQueueSampleInterval = time.Minute
 // queueRunState 队列运行期状态：快照 + 本轮起点计数。
 type queueRunState struct {
 	mu      sync.Mutex
-	stat    QueueStat
+	stat    core.QueueStat
 	atStart int64 // 本轮开始时的累计处理数，用于推算本轮进度
 }
 
@@ -104,8 +105,8 @@ func (e *Engine) setQueueBacklog(name string, backlog int) {
 }
 
 // GetQueueStats 返回各治理队列的运行快照（只读内存，不查库，供监控页高频拉取）。
-func (e *Engine) GetQueueStats() map[string]QueueStat {
-	out := make(map[string]QueueStat, len(e.queueRuns))
+func (e *Engine) GetQueueStats() map[string]core.QueueStat {
+	out := make(map[string]core.QueueStat, len(e.queueRuns))
 	for name, st := range e.queueRuns {
 		var total int64
 		if c := e.queueCounters[name]; c != nil {

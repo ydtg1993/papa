@@ -20,7 +20,6 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	wantFiles := []string{
-		filepath.Join("docs", "framework", "STRATEGY_MIGRATION.md"),
 		filepath.Join("docs", "framework", "TEMPORARY_RESOURCES.md"),
 		"go.mod",
 		".gitignore",
@@ -53,8 +52,8 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	// 模块名要写进 go.mod（`papa new my/crawler` 这种带路径的名字也得原样用）
-	if !strings.Contains(readFile(t, filepath.Join("demo", ".gitignore")), ".papa-model.key") {
-		t.Fatal("scaffold may commit local model encryption key")
+	if !strings.Contains(readFile(t, filepath.Join("demo", ".gitignore")), ".papa-check-*/") {
+		t.Fatal("scaffold must ignore its temporary check directories")
 	}
 	if got := modulePath(readFile(t, filepath.Join("demo", "go.mod"))); got != "demo" {
 		t.Errorf("go.mod 的 module = %q, want demo", got)

@@ -7,9 +7,29 @@ function prepare(context) {
     if(!context.setActiveModule)context.setActiveModule=value=>{context.currentModule=value;};
     if(!context.nextTableView)context.nextTableView=()=>context.tableViewEpoch=(context.tableViewEpoch||0)+1;
 }
-function run(source, context) {prepare(context);return vm.runInContext(source,context);}
+// Test fixtures replace dependencies through their owning controller exports.
+// Production page-operation properties remain read-only.
+function fixtureOverrides(context, names) {
+    for (const name of names) {
+        const instance = context.MonitorShell.controller(name);
+        if (!instance) continue;
+        for (const key of Object.keys(instance.exports)) {
+            const descriptor = Object.getOwnPropertyDescriptor(context, key);
+            if (descriptor && descriptor.get && descriptor.configurable) Object.defineProperty(context, key, {
+                ...descriptor, set(value) { instance.exports[key] = value; }
+            });
+        }
+    }
+}
+function run(source, context) {
+    prepare(context);
+    const result = vm.runInContext(source,context);
+    fixtureOverrides(context, Array.from(source.matchAll(/MonitorShell\.install\("([^"]+)"\)/g), match => match[1]));
+    return result;
+}
 function load(context, source, names) {
     run(source.replace(/^MonitorShell\.install\([^\n]+\);\s*$/gm,''),context);
     for(const name of names)context.MonitorShell.install(name);
+    fixtureOverrides(context, names);
 }
 module.exports={run,load,prepare};

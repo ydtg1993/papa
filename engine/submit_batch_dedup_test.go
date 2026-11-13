@@ -77,7 +77,7 @@ func TestSubmitTasksDuplicateBatchKeepsNewTaskScheduled(t *testing.T) {
 				first.Repeatable, duplicate.Repeatable = true, true
 			}
 			if kind == "idempotency-key" {
-				first.IdempotencyKey, duplicate.IdempotencyKey = "same-key", "same-key"
+				first.ResourceID, duplicate.ResourceID = "same-key", "same-key"
 				duplicate.URL = "https://example.com/alias"
 			}
 			if kind == "same-pointer" {

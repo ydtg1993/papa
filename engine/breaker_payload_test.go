@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"github.com/ydtg1993/papa/v4/core"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -55,7 +56,7 @@ func TestBreakerStatusPayloadKeys(t *testing.T) {
 	}
 }
 
-func marshalKeys(t *testing.T, st BreakerStatus) []string {
+func marshalKeys(t *testing.T, st core.BreakerStatus) []string {
 	t.Helper()
 	raw, err := json.Marshal(st)
 	if err != nil {

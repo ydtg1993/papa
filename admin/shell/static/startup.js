@@ -1,5 +1,5 @@
 /* shell/startup: private state, explicit dependencies, per-instance lifecycle. */
-MonitorShell.define("shell/startup",null,["Oao","authRequired","closeBell","document","handleTableUnauthorized","hideLogin","installLegacyTableAdapter","loadKey","setNavigationOpen","showLogin","startPolling","submitKey","syncMonitorNavigation"],function(deps,lifecycle){
+MonitorShell.define("shell/startup",null,["Oao","authRequired","closeBell","document","handleTableUnauthorized","hideLogin","loadKey","setNavigationOpen","showLogin","startPolling","submitKey","syncMonitorNavigation"],function(deps,lifecycle){
 'use strict';
     /* ============ 启动 ============ */
     deps.document.getElementById('key').addEventListener('keydown', function (e) { if (e.key === 'Enter') deps.submitKey(); });
@@ -34,7 +34,6 @@ MonitorShell.define("shell/startup",null,["Oao","authRequired","closeBell","docu
         // （返回 false 表示没换成新凭据，组件就把 401 如实抛出来）
         onUnauthorized: deps.handleTableUnauthorized
     });
-    deps.installLegacyTableAdapter();
 
     if (typeof deps.syncMonitorNavigation === 'function') deps.syncMonitorNavigation();
 

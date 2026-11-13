@@ -6,7 +6,7 @@ import (
 )
 
 // 站点/阶段声明与规划的类型、纯校验/推导/解析、下载器覆盖自查与进程级登记表已下沉到
-// internal/sitedecl（见目录说明书 INTERNAL_STRUCTURE.md 的 App 声明规划章节）。这里只保留公开兼容别名 + 落到引擎的装配方法。
+// internal/sitedecl（见目录说明书 INTERNAL_STRUCTURE.md 的 App 声明规划章节）。这里提供当前公开声明别名 + 落到引擎的装配方法。
 
 // SiteSpec 一个站点的声明（Key 必填）。多站就是多个 SiteSpec。
 type SiteSpec = sitedecl.SiteSpec

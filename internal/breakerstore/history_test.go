@@ -16,7 +16,7 @@ func TestBreakerHistoryMySQLAppendRetryAndHistoricalDay(t *testing.T) {
 	store := New(db)
 	ctx := context.Background()
 	day := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	snapshot := LegacySnapshot(incident.Lifecycle{Capture: incident.Capture{ID: "history", Site: "synthetic"}, Revision: 1, State: "manual", StartedAt: day.Add(-time.Hour), UpdatedAt: day, NextProbeAt: day.Add(time.Hour)})
+	snapshot := snapshotFixture(incident.Lifecycle{Capture: incident.Capture{ID: "history", Site: "synthetic"}, Revision: 1, State: "manual", StartedAt: day.Add(-time.Hour), UpdatedAt: day, NextProbeAt: day.Add(time.Hour)})
 	for i := 0; i < 141; i++ {
 		at := day.Add(time.Duration(i) * time.Minute)
 		if i == 0 {
@@ -74,7 +74,7 @@ func TestBreakerHistoryMySQLFailureRollsBackControl(t *testing.T) {
 	store := New(db)
 	ctx := context.Background()
 	now := time.Now()
-	snapshot := LegacySnapshot(incident.Lifecycle{Capture: incident.Capture{ID: "atomic", Site: "synthetic"}, Revision: 1, State: "cooldown", StartedAt: now, UpdatedAt: now})
+	snapshot := snapshotFixture(incident.Lifecycle{Capture: incident.Capture{ID: "atomic", Site: "synthetic"}, Revision: 1, State: "cooldown", StartedAt: now, UpdatedAt: now})
 	snapshot.Control.HistorySequence = 1
 	snapshot.History = []incident.Transition{{Sequence: 1, At: now, To: "cooldown", Action: "cooldown"}}
 	if err := store.Save(ctx, snapshot); err != nil {

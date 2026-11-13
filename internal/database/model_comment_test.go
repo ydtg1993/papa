@@ -13,7 +13,7 @@ import (
 func TestFrameworkModelColumnsHaveComment(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Server.OperationLog = true
-	cfg.Crawler.Trace.Enabled = true
+	cfg.Crawler.Trace.Mode = config.TraceErrors
 	namer := schema.NamingStrategy{}
 	for _, model := range FrameworkModels(cfg) {
 		parsed, err := schema.Parse(model.Value, &sync.Map{}, namer)

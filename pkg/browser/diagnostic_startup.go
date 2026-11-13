@@ -216,7 +216,7 @@ func (p *Pool) newDiagnosticBrowser(ctx context.Context, useProxy bool) (result 
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	l := p.newLauncher(false)
+	l := p.newLauncher()
 	upstream, observe, state, err := p.selectBrowserProxy(useProxy, l.Get(flags.Flag("proxy-server")))
 	if err != nil {
 		return nil, err

@@ -1,6 +1,9 @@
 package papa
 
-import "github.com/ydtg1993/papa/v4/engine"
+import (
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine"
+)
 
 // 本文件是**任务与引擎门面**：写 fetcher 要用到的全部类型。
 
@@ -28,5 +31,5 @@ type FlowPolicy = engine.FlowPolicy
 type FlowLane = engine.FlowLane
 type TaskFlowView = engine.TaskFlowView
 
-// TraceExecutionStep adds execution identity to the legacy trace snapshot.
-type TraceExecutionStep = engine.TraceExecutionStep
+// TraceExecutionStep contains the current trace timeline with execution identity.
+type TraceExecutionStep = core.TraceExecutionStep

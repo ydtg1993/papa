@@ -66,13 +66,6 @@ func NewManagerWithNetwork(apiURL string, refreshInterval time.Duration, network
 	return m
 }
 
-// Next retains the legacy string API. Call Acquire or NextChecked when a configured
-// proxy is required: the string API cannot distinguish exhaustion from direct access.
-func (m *Manager) Next() string {
-	address, _ := m.NextChecked(context.Background())
-	return address
-}
-
 // GetErrors 获取错误消息队列
 func (m *Manager) GetErrors() <-chan error {
 	return m.trackQueue.Errors()
@@ -120,7 +113,6 @@ func (m *Manager) refreshProxies() {
 	empty := len(list) == 0
 
 	// 只报「拉到了但一条可用都没有」。健康开启后的检查式选择会拒绝请求，
-	// 兼容字符串入口 Next 仍无法区分耗尽与未配置，调用方应迁移到 Acquire。
 	// 非空不报：每轮刷新（默认 8 分钟）写一条 "N available" 是把正常当异常，
 	// 而错误通道那端按 Error 级别落盘（App.mdMsgListener），正常运行的日志里会一直有 ERROR。
 	if empty {

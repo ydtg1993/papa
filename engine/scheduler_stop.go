@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"github.com/ydtg1993/papa/v4/core"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/taskstore"
@@ -9,7 +10,7 @@ import (
 
 // durableStopBacklog counts pending rows without rebuilding task payloads. A
 // completed lifecycle can still have intentionally deferred durable work.
-func (e *Engine) durableStopBacklog(deadline time.Time, stats map[string]StopStats) bool {
+func (e *Engine) durableStopBacklog(deadline time.Time, stats map[string]core.StopStats) bool {
 	if e.residents == nil || e.db == nil {
 		return true
 	}

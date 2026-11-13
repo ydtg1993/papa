@@ -186,7 +186,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 		e.loggerSet.Engine.Warnf("repeat queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
-	// 条件重置（不用 task.UpdateStatus：它无条件、且被 worker 等多处共用，不往它上面加条件）。
+	// 通过带轮次条件的任务存储操作重置。
 	// 下一轮计数与状态、排期同一条语句落库；重复投递/重启恢复不再加次数。
 	// 0 行 = 这一行已经不该被重投了：跳过，不计数、也不标 failed —— 它不是"重投失败"。
 	info := e.stages[stageKeyOfRecord(t)]

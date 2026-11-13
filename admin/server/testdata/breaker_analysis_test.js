@@ -47,7 +47,7 @@ function response(text, id='one') {return {ok:true,json:async()=>({retention:'bo
     closed.requests[0].resolve(response('LATE'));await pending;assert.equal(closed.dialogs[0].pre.textContent,'');
 
     const empty=setup();const p=empty.load('a');empty.requests[0].resolve({ok:true,json:async()=>({retention:'bounded',reports:[]})});await p;
-    assert.ok(empty.dialogs[0].nodes['breaker-analysis-status'].textContent.includes('当前没有记录'));
+    assert.ok(empty.dialogs[0].nodes['breaker-analysis-status'].textContent.includes('当前没有保留的熔断记录'));
 
     const failed=setup();const f=failed.load('a');failed.requests[0].resolve({ok:false,text:async()=>'该熔断现场已过期'});await f;
     assert.equal(failed.dialogs[0].nodes['breaker-analysis-status'].textContent,'该熔断现场已过期');

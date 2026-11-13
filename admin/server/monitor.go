@@ -11,7 +11,6 @@ import (
 	"github.com/ydtg1993/papa/v4/admin/shell"
 	"github.com/ydtg1993/papa/v4/admin/taskflow"
 	"github.com/ydtg1993/papa/v4/admin/tasktrace"
-	"github.com/ydtg1993/papa/v4/core"
 )
 
 // Monitor 监控/后台管理 HTTP 路由(不负责 server 生命周期,统一由 App 层挂载)
@@ -46,9 +45,3 @@ func NewMonitor(getter MonitorGetter, logger Logger, cfg MonitorConfig) *Monitor
 
 // SetWhitelist publishes the host-provided source whitelist.
 func (s *Monitor) SetWhitelist(entries []string) { s.access.SetWhitelist(entries) }
-
-// SetTaskTraceExecution connects the optional execution-aware trace lookup.
-// Call during composition before Register; MonitorConfig stays source-compatible.
-func (s *Monitor) SetTaskTraceExecution(lookup func(int) ([]core.TraceExecutionStep, error)) {
-	s.tasktrace.SetExecutionLookup(lookup)
-}

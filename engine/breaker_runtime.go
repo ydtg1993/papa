@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/core"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/breaker"
@@ -274,16 +275,16 @@ func (e *Engine) breakerGovernanceEvidence(site string) breakerGovernanceEvidenc
 }
 
 // Keep outcome mutation and pause publication in the same admission transaction.
-func (e *Engine) recordSmartOutcome(task *Task, err error) (BreakerStatus, bool) {
+func (e *Engine) recordSmartOutcome(task *Task, err error) (core.BreakerStatus, bool) {
 	e.breakers.breakerMu.Lock()
 	defer e.breakers.unlockAndEmit()
 	reason, notify := e.breakers.recordSmartOutcomeLocked(task, err, e.breakerStageCoverage(task.Site), e.breakerGovernanceEvidence(task.Site))
 	if reason == "" {
-		return BreakerStatus{}, false
+		return core.BreakerStatus{}, false
 	}
 	tripped := e.pauseSmartBreakerLocked(task.Site, reason)
 	if !notify {
-		return BreakerStatus{}, false
+		return core.BreakerStatus{}, false
 	}
 	st := e.breakerStatusOfLocked(task.Site)
 	if st.Stage == "" {

@@ -69,9 +69,6 @@ func (d *Downloader) decodeResume(data []byte, s *ResumeState) error {
 	if err := json.Unmarshal(data, &e); err != nil {
 		return err
 	}
-	if e.Version == 0 {
-		return json.Unmarshal(data, s)
-	}
 	if e.Version != 1 && e.Version != 2 {
 		return middleware.ResourceLimit("unsupported resume version", int64(e.Version))
 	}

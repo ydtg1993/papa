@@ -2,20 +2,11 @@ package account
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/v4/pkg/account/gormstore"
-	"gorm.io/gorm"
 	"sync"
 )
 
-type PoolRecord = gormstore.PoolRecord
-type ManagementRecord = gormstore.ManagementRecord
-type GORMPoolStore = gormstore.GORMPoolStore
-
-func Models() []any                               { return gormstore.Models() }
-func NewGORMPoolStore(db *gorm.DB) *GORMPoolStore { return gormstore.NewGORMPoolStore(db) }
-
 // MemoryPoolStore is useful for deterministic embedded tests and transient apps.
-// Production restart recovery requires a durable PoolStore such as GORMPoolStore.
+// Production restart recovery requires a durable PoolStore such as gormstore.GORMPoolStore.
 type MemoryPoolStore struct {
 	mu         sync.Mutex
 	pools      map[PoolKey]PoolState

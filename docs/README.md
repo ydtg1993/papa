@@ -16,7 +16,7 @@ cd mycrawler && go mod tidy
    照它抄一份自己的 `config.yaml`）。
 2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
-   之后每新开一个带表的开关（`server.operation_log` / `crawler.trace.enabled` / `task_flow.enabled`）都要**再跑一次**，对应表跟着开关走。
+   之后每新开一个带表的开关（`server.operation_log` / `task_flow.enabled`）都要**再跑一次**，对应表跟着开关走。
 3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（物理并发/队列、间隔/重试默认值/
    入口开关在那儿声明；runtime/OA 可覆盖有效并发与固定间隔），`internal/app/run.go` 通过 `app.RegisterSites(papa.Sites()...)`
    统一注册 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
@@ -57,7 +57,6 @@ cd mycrawler && go mod tidy
 | 查通用抓取、账号、浏览器和资源能力 | [PKG_STRUCTURE.md](package_structure/PKG_STRUCTURE.md) | pkg 各包的接口、状态、资源释放和测试归属 |
 | 查观测分析和报告实现 | [OBS_STRUCTURE.md](package_structure/OBS_STRUCTURE.md) | 输入、分析、证据与产物之间的职责边界 |
 | 查 CLI、脚手架和本地演示实现 | [CMD_STRUCTURE.md](package_structure/CMD_STRUCTURE.md) | 命令与模板归属、显式写入和文档分发 |
-| 核对旧版本数据库遗留表 | [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) | 只读表盘点、业务清单与旧表处置边界（新项目无需执行） |
 | 管理临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
 | 按阶段控制广度/深度与并行分支 | [TASK_FLOW.md](TASK_FLOW.md) | 可选任务树调度、持久化边界和策略更新 |
 | 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
@@ -88,3 +87,5 @@ cd mycrawler && go mod tidy
 ## License
 
 基于 [MIT License](https://github.com/ydtg1993/papa/LICENSE.txt) 开源。
+
+Trace 使用文件，无需迁移建表；crawler.trace.mode 默认为 errors，可选 all/off。

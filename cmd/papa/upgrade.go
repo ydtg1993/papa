@@ -16,12 +16,12 @@ import (
 // 本文件是 `papa upgrade`：把一个**已经生成过的**业务目录升到当前脚手架。
 //
 // 为什么不能直接照模板覆盖：生成物一旦落地就归项目所有 —— main.go / monitor/ / models/ / fetcher/ /
-// sites/ / config.yaml / go.mod 都会被业务改，覆盖等于把人家写的东西抹掉（而它恰恰是项目的全部价值）。
+// internal/sites/ / configs/config.yaml / go.mod 都会被业务改，覆盖等于把人家写的东西抹掉（而它恰恰是项目的全部价值）。
 // 所以这里只做两件框架**有把握**的事：
 //
-//  1. 刷新**框架副本**：`docs/`（生成时逐字复制的使用手册，以框架为准）。默认只报告，`--write` 才落盘。
+//  1. 刷新**框架副本**：`docs/framework/`（生成时逐字复制的使用手册，以框架为准）。默认只报告，`--write` 才落盘。
 //  2. 跑几项**不用起库**就能做的检查：`config.yaml` 能不能被框架读（升级最常见的坑：yaml 里留了框架
-//     不再认的键，报错自带"搬去哪儿"的指路）；站点声明里有没有旧类型名 / 缺三条队列。
+//     不再认的键会直接报错）。
 //
 // 业务文件一律不碰，最后打一张"要你自己看"的清单。
 
@@ -48,14 +48,11 @@ type upgradePlan struct {
 	ConfigPath   string // 相对 Root
 	ConfigReport string // 读不了时的报错原文（框架的 panic 文案，自带指路）；空 = 读通了
 	ConfigOK     bool
-
-	SiteNotes []string // 站点声明里的可疑点（文本级检查，只是提醒）
-	SiteFiles []string
 }
 
 // buildUpgradePlan 把一次检查算出来；不打印、不写盘。
 func buildUpgradePlan(dir string) (*upgradePlan, error) {
-	if err := rejectLegacyProject(dir); err != nil {
+	if err := validateProjectModule(dir); err != nil {
 		return nil, err
 	}
 	root, err := filepath.Abs(dir)
@@ -83,7 +80,6 @@ func buildUpgradePlan(dir string) (*upgradePlan, error) {
 	if exists(filepath.Join(root, p.ConfigPath)) {
 		p.ConfigReport, p.ConfigOK = checkConfig(filepath.Join(root, p.ConfigPath))
 	}
-	p.SiteFiles, p.SiteNotes = checkSiteDeclarations(root)
 	return p, nil
 }
 
@@ -184,29 +180,18 @@ func printUpgradePlan(p *upgradePlan) {
 		}
 	}
 
-	fmt.Printf("\n【站点声明】\n")
-	if len(p.SiteFiles) == 0 {
-		fmt.Printf("  sites/ 下没有 .go（站点与阶段声明都在这儿）\n")
-	}
-	for _, n := range p.SiteNotes {
-		fmt.Printf("  ！%s\n", n)
-	}
-	if len(p.SiteNotes) == 0 {
-		fmt.Printf("  %d 份声明文件，没看到旧的队列类型名\n", len(p.SiteFiles))
-	}
-
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
 		"config.yaml：三个治理队列（error_queue / recover_queue / repeat_queue）仍是全局段，缺省=那条队列不跑",
 		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v4 => <本地 papa 仓库>` 先跑起来",
-		"main.go / monitor/ / models/ / fetcher/：模板未动的不必改",
+		"main.go / internal/monitor/ / internal/models/ / internal/fetcher/：模板未动的不必改",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",
 	} {
 		fmt.Printf("  - %s\n", line)
 	}
 }
 
-// writeDocs 把框架手册写进项目 docs/（只写框架有的那份；项目自己加的文件不动）。
+// writeDocs 把框架手册写进项目 docs/framework/（只写框架有的那份；项目自己加的文件不动）。
 func writeDocs(p *upgradePlan) error {
 	dir := frameworkDocsDir(p.Root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -340,7 +325,7 @@ func embeddedDocs() []string {
 }
 
 // checkConfig 跑一次框架的配置加载（**不需要连库**），把 panic 文案原样带回来。
-// 升级时最常见的坑就是这条：yaml 里留着框架不再认的键 —— 那条报错自带"搬去哪儿"的指路。
+// 不接受当前配置契约以外的键。
 func checkConfig(path string) (report string, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -351,41 +336,6 @@ func checkConfig(path string) (report string, ok bool) {
 		return err.Error(), false
 	}
 	return "", true
-}
-
-// checkSiteDeclarations 对 sites/*.go 做**文本级**检查（不改不解析）：
-// 旧类型名还在不在、三条队列声明有没有出现过。只是提醒 —— 真正的校验在启动时（RegisterSites）。
-func checkSiteDeclarations(root string) (files []string, notes []string) {
-	paths, err := filepath.Glob(filepath.Join(root, siteDirectory(root), "*.go"))
-	if err != nil {
-		return nil, nil
-	}
-	sort.Strings(paths)
-	all := ""
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		files = append(files, filepath.Base(p))
-		all += string(data)
-	}
-	if len(files) == 0 {
-		return nil, nil
-	}
-	// 三个治理队列现在回到了 config.yaml 的全局段：站点声明里**不该再出现**那几类 *QueueSpec。
-	var stale []string
-	for _, want := range []string{"papa.QueueSpec", "papa.ErrorQueueSpec", "papa.RecoverQueueSpec", "papa.RepeatQueueSpec"} {
-		if strings.Contains(all, want) {
-			stale = append(stale, strings.TrimPrefix(want, "papa."))
-		}
-	}
-	if len(stale) > 0 {
-		notes = append(notes, "站点声明里还有 "+strings.Join(stale, " / ")+
-			" —— 三个治理队列已回 config.yaml 的全局段（error_queue / recover_queue / repeat_queue），"+
-			"删掉站点声明里的这些旧类型；见 docs/CORE_CONFIG.md")
-	}
-	return files, notes
 }
 
 // readPapaRequire 从 go.mod 里读 papa 的 require 版本与 replace 目标（纯文本扫，够用且不引依赖）。

@@ -36,7 +36,7 @@ crawler_access_token，以及按开关启用的 crawler_operation_log 等。Trac
 // 在业务项目里（cwd 的 go.mod 依赖 papa）转交 `go run . -migrate` —— 业务模型是在项目进程里
 // 注册的，只有那里拿得到；其余情况只建框架自带的表。
 func runMigrateCmd(args []string) error {
-	if err := rejectLegacyProject("."); err != nil {
+	if err := validateProjectModule("."); err != nil {
 		return err
 	}
 	cfgPath := ""

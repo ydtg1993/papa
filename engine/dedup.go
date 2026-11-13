@@ -104,7 +104,7 @@ func (e *Engine) loadActiveTasks() {
 				return
 			}
 		}
-		query := e.db.Select("id", "url", "stage", "site", "idempotency_key", "identity_type", "identity_value").
+		query := e.db.Select("id", "url", "stage", "site", "identity_type", "identity_value").
 			Where("status IN ? OR repeatable = ?",
 				[]models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing}, models.RepeatableYes)
 		if capacity > 0 {
@@ -122,7 +122,7 @@ func (e *Engine) loadActiveTasks() {
 		}
 		for _, t := range tasks {
 			// Site 和自定义幂等键必须保留，与实际投递使用同一种任务身份。
-			task := Task{URL: t.URL, Stage: t.Stage, Site: t.Site, IdempotencyKey: t.IdempotencyKey, ResourceID: resourceIDFromRecord(&t)}
+			task := Task{URL: t.URL, Stage: t.Stage, Site: t.Site, ResourceID: resourceIDFromRecord(&t)}
 			e.dedupCache.addOlder(task.Unique())
 		}
 		loaded += len(tasks)

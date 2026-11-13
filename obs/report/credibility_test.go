@@ -88,13 +88,13 @@ func TestWriteKeepsFileMode(t *testing.T) {
 	}
 }
 
-// 历史/合成报告没有 mode 时，ai-brief.md 也要显示占位而不是空行。
+// 合成报告没有 mode 时，ai-brief.md 也要显示占位而不是空行。
 func TestAIBriefMarkdownEmptyMode(t *testing.T) {
 	rep := credibilityReport()
 	rep.Mode = ""
 	rep.VerdictReason = ""
 	md := AIBriefMarkdown(rep)
-	if !strings.Contains(md, "- 模式：-（历史报告）") {
-		t.Fatalf("空模式应显示历史报告占位：\n%s", md)
+	if !strings.Contains(md, "- 模式：-（未指定）") {
+		t.Fatalf("空模式应显示未指定占位：\n%s", md)
 	}
 }

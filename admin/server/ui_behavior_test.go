@@ -69,7 +69,7 @@ func TestOperationsJavaScriptBehavior(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "oao.js"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, script := range []string{"controller_lifecycle_test.js", "breaker_control_test.js", "queue_governance_test.js", "trace_dialog_test.js", "appearance_test.js", "storage_startup_test.js", "visual_state_test.js", "visuals_test.js", "navigation_test.js", "monitor_identity_test.js", "legacy_oao_test.js", "extensions_test.js", "monitor_requests_test.js", "table_links_test.js", "dialog_test.js", "workbench_test.js"} {
+	for _, script := range []string{"controller_lifecycle_test.js", "breaker_control_test.js", "queue_governance_test.js", "trace_dialog_test.js", "appearance_test.js", "storage_startup_test.js", "visual_state_test.js", "visuals_test.js", "navigation_test.js", "monitor_identity_test.js", "oao_lifecycle_test.js", "extensions_test.js", "monitor_requests_test.js", "table_links_test.js", "dialog_test.js", "workbench_test.js"} {
 		t.Run(script, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()

@@ -50,10 +50,9 @@ engine/
 | `engine.go` | Engine 组件字段与 NewEngine 构造；预热活跃任务去重并启动延迟 dispatcher | 构造已经有读库及后台循环副作用，直接使用 Engine 的宿主也须负责 Stop；不放任务流/提交 SQL 或功能服务实现 |
 | `engine_config.go` | StageConfig、stageInfo、AddStage 声明登记与校验 | 下载覆盖项复制所有标量指针；声明期更新必须显式登记 |
 | `lifecycle.go` | Stop、Errors，取消/worker/ticker/存留任务统计/熔断报告排空 | 共用原 deadline；等 ticker 收尾后再统计溢出、延迟和未确认写入 |
-| `runtime_dependencies.go` | 数据库/配置/日志/事件/代理/默认下载器公开适配及 JSON 编码辅助 | 保留宿主和 Fetcher 兼容入口，不持有第二份功能状态 |
+| `runtime_dependencies.go` | 数据库/配置/日志/事件/代理/默认下载器公开适配及 JSON 编码辅助 | 保留宿主和 Fetcher 当前公开入口，不持有第二份功能状态 |
 | `site_registry.go` | siteCatalog、SetSite/Site、请求头快照 | 使用原 breakerMu 协调；登记和读取都复制 map/slice，防止越过锁修改声明 |
 | `account_alerts.go` | accountAlertGate，按账号/池/事件种类限频和有界淘汰 | 只管理通知节流，不管理账号健康真相 |
-| `alias.go` | core 的类型、常量及函数兼容出口 | 不增加新状态或第二份类型实现 |
 | `deps.go` | 阶段所需运行依赖检查 | 只验证声明/依赖是否可用，不隐式启动资源 |
 | `stage_registration.go` | 构建/懒建 worker 池、错误转发、空闲回收、ApplyRegisterStage 启动接线 | 池登记状态归 scheduler；created 事件在登记锁外由实际创建者发一次 |
 | `pools.go` | scheduler.Registry 的 Task 特化别名和构造桥 | 属于必要的类型适配，不应重新实现登记表 |
@@ -63,14 +62,14 @@ engine/
 
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
-| `task.go` | 公开 Task、模型转换、身份计算入口、旧 Insert/UpdateStatus/IncRetry 兼容方法 | Task 同时带有私有执行标记；旧接口兼容不意味着新执行路径应继续使用无法返回错误的写入 |
+| `task.go` | 公开 Task、模型转换、v4 身份计算及私有插入实现 | Task 带有私有执行标记；状态和重试写入归带版本的执行协议 |
 | `submit.go` | 公开提交、阶段/池选择、提交结果投递、延迟/暂停/满池协调 | 部分失败仍承接成功记录；单条已入库但回读失败时先保留 spill 责任，再记录错误日志 |
 | `submission_store.go` | submissionStore 的身份查找、引用保护入库、批量部分成功、投递前条件更新、认领存储；返回单条计划/批量逐行交接结果 | 只接收数据库、context、去重缓存、引用保护接口和日志；不拥有 worker 或 Engine |
 | `dedup.go` | 有界 LRU 去重状态、淘汰、活跃任务预热 | 缓存只做加速，数据库身份约束仍是持久依据 |
 | `persistence.go` | 执行轮次 context、认领、终态/释放相关持久化协调、未确认状态登记、重试计数 | 复用 taskstore 语义操作；不可把确认丢失当作业务 handler 应重跑 |
 | `task_timing.go` | 时间辅助值、尝试计时适配、未到期任务推迟 | 调度时间与实际执行时间分开，不擅自改变执行轮次 |
-| `taskadmin.go` | 后台/宿主的重试、加急、轮询设置、人工失败、删除及拒绝原因 | 这是任务领域操作，不是 HTTP handler；实际数据修改复用条件更新协议 |
-| `compensation.go` | 账号失败补偿范围/版本、尝试归属持久化、预览、释放、批量补偿 | 保留原任务身份和版本；不得在 admin 再实现另一套补偿状态机 |
+| `taskadmin.go` | 后台/宿主的重试、加急、轮询设置、人工失败、删除及拒绝原因 | 这是任务领域操作，不是 HTTP handler；实际数据修改复用条件更新协议。版本化重投的读取、CAS 与冲突回查传递调用方 context，提交成功后的投递收尾不因请求取消而丢弃 |
+| `compensation.go` | 账号失败补偿范围/版本、尝试归属持久化、预览、释放、批量补偿 | 保留原任务身份和版本；批量补偿读取传递调用方 context，不得在 admin 再实现另一套补偿状态机 |
 | `taskflow.go` | 公开任务流门面、开关/阶段校验、Task 转换、投递和唤醒 | 服务提交成功后才投递，不执行 SQL |
 | `taskflow_service.go` | taskFlowService 的创建、策略 CAS、父子关系登记、事务认领与运行视图 | 仅持有数据库；flow 行锁范围与事务边界保持，不反调 Engine |
 | `taskflow_policy.go` | FlowPolicy、参数验证、放行判据与路径计算 | 纯策略方向正确；有独立消费需求时才提取契约，避免依赖整个 Engine |
@@ -141,8 +140,8 @@ engine/
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
 | `trace.go` | Trace 步骤缓冲/锁/终结、context 及公开查询/配置适配 | 单次记录器拥有异常判定与有界缓冲，委派文件存储 |
-| `trace_data.go` | 有界输入预检与兼容 JSON 编码 | 序列化异常转为证据标记，不改变 handler 结果 |
-| `trace_service.go` | traceService 的文件组件装配、主动追踪选择与保留期维护 | 独占 tracestore；选择锁不跨文件 I/O，文件锁归 tracestore |
+| `trace_data.go` | 有界输入预检与JSON 编码 | 序列化异常转为证据标记，不改变 handler 结果 |
+| `trace_service.go` | traceService 的文件持久化与保留期维护 | 独占 tracestore；无待选任务状态，文件锁归 tracestore |
 | `archive.go` | archiveBuffer 的单次页缓冲、限额、结果选择及公开适配 | 单次尝试拥有页面，文件操作委派服务 |
 | `archive_service.go` | archiveService 的配置值、命名、文件写入、保留期清理 | 只接收归档配置值与日志，不接收 Engine |
 | `evidence_maintenance.go` | 共同巡检循环，启动前登记 tickerWG、取消后退出 | Engine 仍负责取消与等待；后台清理未完成时 Stop 不得报告 drained |
@@ -222,7 +221,7 @@ execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增
 - `attempt_*`、`stage_runversion_test.go`、`persistence_test.go` 验证尝试与持久化确认；暂停、溢出、延迟、轮询相关测试验证调度协作；`breaker_*_test.go` 验证恢复证据与结算链。
 - 保留同包测试访问必要内部状态的能力，但不能为了测试创建无生产用途的转发 API。若组件抽包，迁移算法单测，同时保留关键 Engine 集成用例。
 - 新能力先确定执行状态属于谁；Engine 只增加公开适配和跨组件编排。只处理 SQL 的实现优先归存储组件，纯策略优先保持无运行依赖。
-- 不把整个 Engine 传给新子组件。现有 Fetcher 公开契约接收 Engine 是兼容入口，不能作为内部组件继续持有 Engine 的理由。
+- 不把整个 Engine 传给新子组件。现有 Fetcher 公开契约接收 Engine 是当前公开入口，不能作为内部组件继续持有 Engine 的理由。
 - 拆分涉及任务状态、锁序、取消、背压或关停时，除 test/vet/build 外需要 race；涉及 SQL 事务还需隔离 MySQL 回归。
 - `config_ownership_test.go` 和 fetchruntime 的 `download_config_test.go` 验证输入隔离；`lifecycle_review_test.go` 验证 ticker 收尾统计与延迟存留；`breaker_review_cancellation_test.go` 验证结果事件期间的取消；提交/任务流测试覆盖错误日志、批量交接异常和事务中途取消。
 
@@ -257,8 +256,10 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 ## Trace 文件职责与状态所有权
 
-`trace.go` 拥有单次尝试的缓冲、步骤序号、异常标记与终结幂等锁；`trace_service.go` 拥有一个文件 Store 及最多 1024 个、有效一小时的下一执行选择。Engine 用 sync.Once 初始化组件；声明期配置不允许运行中改写。选择在成功认领后消费，通过 context 固定同轮重试策略；选择锁不跨 handler 或文件调用。
+`trace.go` 拥有单次尝试的缓冲、步骤序号、异常标记与终结幂等锁；`trace_service.go` 拥有一个文件 Store，没有手动选择表或选择锁。Engine 用 sync.Once 初始化组件；声明期配置不允许运行中改写。每次尝试从配置取得 off/errors/all 策略；Trace 自己拥有 keepAll 标记与终结缓冲。
 
-默认仅保存错误、panic、显式 Fail/Warn；干净成功不落盘。正常关停取消不单独构成异常；手动选中仍保留。`ListTrace`/`ListTraceExecution` 保留公开值布局，查询最新已保留执行的尾 500 步，不能据此推断任务当前状态。文件格式、容量、发布、路径安全、清理均归 `internal/tracestore`；Engine 无 Trace SQL。
+默认仅保存错误、panic、显式 Fail/Warn；干净成功不落盘。正常关停取消不单独构成异常；all 模式仍保留所有尝试。`ListTraceExecution` 为唯一查询入口，查询最新已保留执行的尾 500 步，不能据此推断任务当前状态。文件格式、容量、发布、路径安全、清理均归 `internal/tracestore`；Engine 无 Trace SQL。
 
 维护沿既有 evidence maintenance ticker 生命周期执行，取消可中断清理；尝试结束在 worker 收尾内同步发布，不引入脱离 worker 的后台写队列。Trace 存储失败仅告警，不改变任务结果。默认保留七天，磁盘容量预算独立生效。旧 MySQL 验证记录仅说明迁移前实现，当前行为以文件回归为准。
+
+恢复只接受 `Snapshot.ValidateCurrent` 验证过的控制版本及精确窗口；旧控制升级与近似计数回退已删除。后台重投只提供 RetryTaskVersioned，始终检查补偿版本。

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
 	"time"
 )
@@ -11,8 +10,9 @@ import (
 // callers publish cross-component pause changes before releasing that lock.
 
 func (b *breakerCoordinator) restoreSiteLocked(saved breakerstore.Snapshot, now time.Time, coverage map[string]string) (pending *Task, protect bool, err error) {
-	legacyRecovery := saved.Control.Version == 0
-	saved.UpgradeRecovery()
+	if err := saved.ValidateCurrent(); err != nil {
+		return nil, false, err
+	}
 	s := b.smartBreakers[saved.Control.Site]
 	if s == nil {
 		return
@@ -26,15 +26,7 @@ func (b *breakerCoordinator) restoreSiteLocked(saved breakerstore.Snapshot, now 
 	s.savedRevision = saved.Control.Revision
 	s.controlRevision = saved.Control.Revision
 	s.epoch = saved.Control.Epoch + 1
-	if saved.Window != nil {
-		s.detector.Restore(*saved.Window, s.epoch, now)
-	} else {
-		until := saved.LastFailureAt.Add(s.cfg.Window)
-		s.detector.Restore(breaker.Checkpoint{LegacyFailures: saved.WindowFailures, LegacyUntil: until}, s.epoch, now)
-		if copy.Active() {
-			copy.State = "manual"
-		}
-	}
+	s.detector.Restore(*saved.Window, s.epoch, now)
 	if copy.PendingFailure != nil {
 		b.noteBreakerLocked(s, "failure_settlement_restart", copy.PendingFailure.Stage, "重启接续未确认失败；保留原任务轮次和错误，只重试结算，不重跑业务", now)
 		pending = &Task{ID: copy.PendingFailure.TaskID, Site: copy.Site, Stage: copy.PendingFailure.Stage}
@@ -43,11 +35,8 @@ func (b *breakerCoordinator) restoreSiteLocked(saved breakerstore.Snapshot, now 
 	if !copy.Active() {
 		return
 	}
-	if legacyRecovery {
-		b.noteBreakerLocked(s, "recovery_upgraded", "", "旧恢复控制已升级为串行验证；混合或无法排除混合来源的事件保守要求三次，旧成功成绩作废", now)
-	}
 	if copy.HistorySequence == 0 {
-		b.noteBreakerLocked(s, "history_start", "", "开始追加式历史；升级前仅有当前快照，无法补全更早过程", now)
+		b.noteBreakerLocked(s, "history_start", "", "开始追加式历史；此前尚无历史记录", now)
 	}
 	// Freeze the old declaration/results in history before rebuilding control.
 	for _, check := range s.event.Checks {
@@ -63,11 +52,8 @@ func (b *breakerCoordinator) restoreSiteLocked(saved breakerstore.Snapshot, now 
 		b.noteBreakerLocked(s, "sample_interrupted", s.event.SampleStage, "重启作废上次样本执行；保留原截止时间，旧结果不能补算成功", now)
 		b.expireBreakerSampleLocked(s, now)
 	}
-	s.event.Stage = "" // active older stage-scoped incidents protect the whole site
+	s.event.Stage = "" // current recovery always protects the whole site
 	b.resetBreakerChecksLocked(s, coverage)
-	if saved.Window == nil {
-		b.noteBreakerLocked(s, "legacy_window_missing", "", "旧快照没有精确失败窗口，保留已知失败下界并等待人工重试验证", now)
-	}
 	if copy.State != "manual" && !breakerSampleTimedOut(s) {
 		if s.event.NextProbeAt.Before(now) {
 			s.event.NextProbeAt = now.Add(s.policy.Cooldown)

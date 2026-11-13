@@ -40,7 +40,7 @@ func Run(args []string) {
 	//     `papa migrate` 也会转交到这里）。
 	//     框架自带的表（按配置开关）+ internal/models 包里登记的模型一起建；
 	//     AutoMigrate 只增不减、可重复跑，所以本地和上线前都可以随便跑。
-	//     启动时**不会**自动迁移 —— 新开的开关（server.operation_log / crawler.trace.enabled）
+	//     启动时**不会**自动迁移 —— 新开的开关（server.operation_log）
 	//     也要重跑一次才会建出对应的表。迁移分支独立登记模型，不初始化后台。
 	if *doMigrate {
 		app.UseModels(models.Models()...)

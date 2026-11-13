@@ -9,7 +9,7 @@ import (
 // ReportInputLimits configures bounded report loading before App.Run.
 type ReportInputLimits = inputbudget.Limits
 
-// DownloadLimits bounds one download without changing the legacy downloader configuration.
+// DownloadLimits bounds one download independently of downloader configuration.
 type DownloadLimits = middleware.DownloadLimits
 
 // DownloadBudget owns shared reservations across downloader instances.

@@ -82,7 +82,7 @@ var showTaskTrace;
     function renderSteps(steps) {
         if (!steps.length) {
             return '<div class="trace-body"><p class="trace-empty">没有保留的追踪记录。'
-                + '默认只保留异常尝试或手动指定执行的记录；正常成功不会留存。也可能尚未执行、追踪未开启或记录已过保留期。</p></div>';
+                + '默认错误模式下正常成功不会留存；全量模式保留所有尝试。也可能尚未执行、追踪未开启或记录已过保留期。</p></div>';
         }
         var groups = [];
         var cur = null;
@@ -95,8 +95,8 @@ var showTaskTrace;
         });
         var notice = steps[0].execution_id
             ? '<p class="trace-empty">最近保留的执行：' + deps.esc(steps[0].execution_id) + '</p>'
-            : '<p class="trace-empty">历史记录无执行轮次标识，按写入顺序展示。</p>';
-        notice += '<p class="trace-empty">仅展示最近保留的异常尝试或手动指定执行记录，不代表任务当前状态或最新一次执行。</p>';
+            : '<p class="trace-empty">记录缺少执行轮次标识，按写入顺序展示。</p>';
+        notice += '<p class="trace-empty">仅展示最近保留的执行记录，不代表任务当前状态或最新一次执行。</p>';
         if (steps[0].truncated) notice += '<p class="trace-empty">记录已截断，仅展示最后 500 步。</p>';
         return '<div class="trace-body">' + notice + groups.map(function (g) {
             return '<section class="trace-attempt">'

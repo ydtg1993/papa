@@ -37,7 +37,6 @@ type Task struct {
 	// 或后台的「设轮询周期」—— 免得每次启动重投入口任务时，代码里的值把运营改的盖掉。
 	RepeatInterval time.Duration
 	Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
-	IdempotencyKey string            // Deprecated: ResourceID 优先；否则将此值作为站点阶段内的 ID
 	NotBefore      time.Time         // 延迟投递：最早可执行时间
 	LastStartedAt  *time.Time        // 最近一次 Handler 开始时间，只读
 	LastFinishedAt *time.Time        // 最近一次 Handler 结束时间，只读
@@ -72,11 +71,6 @@ func (t *Task) deliverAt() time.Time {
 	return time.Time{}
 }
 
-func (t *Task) IncRetry(db *gorm.DB) {
-	t.Retry++
-	_ = taskstore.IncrementRetry(db, t.ID)
-}
-
 // toModel 将任务转换为数据库记录（不含 ID，由数据库生成）。
 func (t *Task) toModel() models.CrawlerTask {
 	identity := t.identity()
@@ -87,13 +81,12 @@ func (t *Task) toModel() models.CrawlerTask {
 	return models.CrawlerTask{
 		DelayMS: taskDelayMillis(t.Delay), NotBefore: taskTimePointer(t.NotBefore),
 		FlowID: t.FlowID, FlowLane: t.FlowLane, FlowBranch: t.FlowBranch, FlowPath: t.FlowPath,
-		PID:            uint(t.PID),
-		URL:            t.URL,
-		Stage:          t.Stage,
-		Site:           t.Site,
-		AccountPool:    t.AccountPool,
-		IdempotencyKey: t.IdempotencyKey,
-		IdentityType:   identity.Type, IdentityValue: identity.Value, IdentityHash: identity.Hash,
+		PID:          uint(t.PID),
+		URL:          t.URL,
+		Stage:        t.Stage,
+		Site:         t.Site,
+		AccountPool:  t.AccountPool,
+		IdentityType: identity.Type, IdentityValue: identity.Value, IdentityHash: identity.Hash,
 		Meta:           metaToJSON(t.Meta),
 		Repeatable:     repeat,
 		RepeatInterval: int(t.RepeatInterval / time.Second), // 秒落库；0 = 用本站声明的周期
@@ -161,13 +154,12 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		Repeatable:     t.Repeatable == models.RepeatableYes,
 		RepeatInterval: time.Duration(t.RepeatInterval) * time.Second,
 		Urgent:         t.Urgent,
-		IdempotencyKey: t.IdempotencyKey,
 		ResourceID:     resourceIDFromRecord(t),
 		Meta:           e.metaFromJSON(t.Meta),
 	}
 }
 
-func (t *Task) Insert(db *gorm.DB) error {
+func (t *Task) insert(db *gorm.DB) error {
 	crawlerTask := t.toModel()
 	if err := taskstore.Insert(db, &crawlerTask); err != nil {
 		return err
@@ -176,21 +168,6 @@ func (t *Task) Insert(db *gorm.DB) error {
 	t.NotBefore = taskTimeValue(crawlerTask.NotBefore)
 	t.deliveryDurable = true
 	return nil
-}
-
-// UpdateStatus 写入任务状态；status 为 failed 时把错误追加到 error 列。
-//
-// **只更新 status / error 两列，不整行 Save**：worker 标状态和业务回写结果是两条并发的路
-// （`SaveResult` / `SaveContent` 也是按列写的），整行写会把这里读到的旧快照盖回去 ——
-// 业务刚写进 content 的内容就这么没了。追加错误同理，走 SQL 的 CONCAT，不把行读出来拼。
-//
-// 返回值是「这条语句执行成功了」，**不是**「行存在」—— 原来返回 false 表示行不见了，
-// 但没有任何调用方用它判存在性，别依赖它。也正因为不需要判存在性，这里少了一次 SELECT。
-func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bool {
-	if t.ID == 0 {
-		return false
-	}
-	return taskstore.UpdateStatus(db, t.ID, taskStatusUpdates(status, err)) == nil
 }
 
 func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {
@@ -217,9 +194,7 @@ func (t *Task) identity() core.TaskIdentity {
 		return core.TaskIdentity{}
 	}
 	resourceID := t.ResourceID
-	if resourceID == "" {
-		resourceID = t.IdempotencyKey
-	} // deprecated input, always scoped
+
 	identity, _ := core.NormalizeTaskIdentity(t.Site, t.Stage, resourceID, t.URL)
 	return identity
 }

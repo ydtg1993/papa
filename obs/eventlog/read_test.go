@@ -263,3 +263,21 @@ func TestReadCorruptGzipReturnsError(t *testing.T) {
 		t.Fatal("Read corrupt gzip: want error, got nil")
 	}
 }
+
+func TestReadRejectsMissingZeroAndFutureVersionsAndContinues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	writeRaw(t, path, strings.Join([]string{
+		`{"v":1,"seq":1,"run_id":"r"}`,
+		`{"seq":2,"run_id":"r"}`,
+		`{"v":0,"seq":3,"run_id":"r"}`,
+		`{"v":2,"seq":4,"run_id":"r"}`,
+		`{"v":1,"seq":5,"run_id":"r","future_field":true}`,
+	}, "\n"))
+	res, err := Read([]string{path}, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Unparsed != 3 || !slices.Equal(eventSeqs(res.Events), []uint64{1, 5}) || res.Gaps != 3 {
+		t.Fatalf("unsupported versions must count as bad lines while later current events remain readable: %+v", res)
+	}
+}

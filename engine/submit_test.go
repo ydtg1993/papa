@@ -20,6 +20,7 @@ import (
 func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task]) *Engine {
 	t.Helper()
 	cfg := &config.Config{}
+	cfg.Crawler.TraceFiles.Dir = t.TempDir()
 
 	e := &Engine{
 		// ctx 必须有：阶段没预登记池子时 getOrCreatePool 会懒建一个并 Start，

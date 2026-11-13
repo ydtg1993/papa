@@ -2,7 +2,7 @@ const controllers=require('./controllers');
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-const makeDOM = require('./legacy_oao_dom');
+const makeDOM = require('./oao_dom');
 const source = name => fs.readFileSync(path.join(process.argv[2], name), 'utf8');
 
 function setup(failure) {

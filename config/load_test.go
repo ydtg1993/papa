@@ -38,7 +38,7 @@ crawler:
   drain_interval: "5s"
   stop_timeout: "8s"
   trace:
-    enabled: true
+    mode: errors
     retention: "168h"
   trace_files:
     dir: ./test-traces
@@ -90,7 +90,7 @@ crawler:
 	if got := (CrawlerConfig{}).StopTimeoutOrDefault(); got != 5*time.Second {
 		t.Fatalf("空的 stop_timeout 应回退默认 5s，实得 %v", got)
 	}
-	if !cfg.Crawler.Trace.Enabled || cfg.Crawler.Trace.Retention != 168*time.Hour {
+	if cfg.Crawler.Trace.Mode != TraceErrors || cfg.Crawler.Trace.Retention != 168*time.Hour {
 		t.Fatalf("crawler.trace = %+v, want enabled + retention 168h", cfg.Crawler.Trace)
 	}
 }

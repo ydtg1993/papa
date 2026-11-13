@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/ydtg1993/papa/v4/admin/configstore"
 	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/pkg/events"
@@ -54,6 +55,14 @@ func NewApp(opts ...Option) (*App, error) {
 	db, err := database.NewDB(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+
+	// Reject unsupported schema before creating an Engine or starting workers.
+	if err := database.CheckTaskSchema(db); err != nil {
+		if sqlDB, closeErr := db.DB(); closeErr == nil {
+			_ = sqlDB.Close()
+		}
+		return nil, fmt.Errorf("v4 task schema: %w", err)
 	}
 
 	// 4. 建表不在这里做。迁移只有一条路：显式跑一次（`papa migrate`，或项目里 `make migrate`
@@ -180,7 +189,7 @@ func (a *App) emitRunStarted() {
 }
 
 // emitRunStopped 写 run 结束事件（drained 与存留量来自 Engine.Stop）。
-func (a *App) emitRunStopped(drained bool, stats map[string]engine.StopStats) {
+func (a *App) emitRunStopped(drained bool, stats map[string]core.StopStats) {
 	var unfinished, queued int
 	for _, st := range stats {
 		unfinished += st.Unfinished

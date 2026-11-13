@@ -17,7 +17,6 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
-	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -41,7 +40,7 @@ func archiveEngine(t *testing.T, mode string, origins ...string) (*Engine, *stub
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
 
-	e.cfg.Crawler.Trace.Enabled = true
+	e.cfg.Crawler.Trace.Mode = config.TraceErrors
 	e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
 	e.cfg.HTML = config.HTMLConfig{Enable: true, Timeout: 3 * time.Second, MaxBodySize: 4 << 20}
 	e.cfg.Crawler.Archive = config.ArchiveConfig{Enabled: true, Dir: dir, Mode: mode}
@@ -460,21 +459,6 @@ func TestPerRequestHeadersOverrideSiteHeaders(t *testing.T) {
 	}
 	if got.Get("User-Agent") != "ua-a" {
 		t.Fatalf("没提到的站点级头要留着：%q", got.Get("User-Agent"))
-	}
-}
-
-/* ---------- 代理：随用随取 ---------- */
-
-// 出口由 fetcher 决定：`engine.NextProxy()` 取一个、`papa.WithProxyURL` 传进去。
-// 没配代理管理器时取到空串（"没代理"与"池子暂时为空"对调用方是同一种处理：直连）。
-func TestNextProxyWithoutManager(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	if got := e.NextProxy(); got != "" {
-		t.Fatalf("没配代理管理器时应返回空串，实得 %q", got)
-	}
-	e.SetProxy(proxy.NewManager("", time.Hour))
-	if got := e.NextProxy(); got != "" {
-		t.Fatalf("管理器没有可用代理时应返回空串，实得 %q", got)
 	}
 }
 

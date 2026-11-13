@@ -11,7 +11,7 @@
 
 目录按功能归属组织。一个功能包可以同时包含 Go、JS、CSS 和 HTML，但必须通过 `static/`、`views/` 区分资源用途；Go 文件负责 HTTP/适配，前端文件负责该功能的交互。包边界看状态和行为归属，不以语言种类划分整个 admin。
 
-- `server` 是兼容入口和装配层，不拥有功能页面源码或功能内部状态。
+- `server` 是公开入口和装配层，不拥有功能页面源码或功能内部状态。
 - `shell` 是页面外壳与资源组合层，不承担日志、报告、令牌等功能规则。
 - 功能包拥有请求解析、响应映射、功能视图及控制器私有状态。
 - 功能 Page() 提供默认页面元数据和资源；共享的 `admin/page.Descriptor` 仅是值契约，宿主决定是否挂载和排列顺序。
@@ -22,7 +22,7 @@
 
 ```text
 admin/
-├── server/                  # Monitor 公开兼容入口、路由与组件装配
+├── server/                  # Monitor 公开入口、路由与组件装配
 │   └── testdata/            # Node 行为测试、DOM 替身及合成 fixture
 ├── shell/                   # 页面外壳、资源组合与前端公共运行环境
 │   ├── static/              # 会话、导航、请求、UI、主题等公共资源
@@ -83,25 +83,25 @@ admin/
 
 | 文件 | 职责 |
 | --- | --- |
-| `doc.go` | 声明兼容门面、组件装配及集成测试边界 |
-| `config.go` | `MonitorConfig`、`MonitorGetter`、Logger 与公开事件类型别名；保持原 API 契约 |
+| `doc.go` | 声明公开门面、组件装配及集成测试边界 |
+| `config.go` | `MonitorConfig`、`MonitorGetter`、Logger 与公开事件类型别名；声明当前装配契约 |
 | `monitor.go` | `Monitor`、`NewMonitor`、`SetWhitelist`；持有功能组件并按所需依赖构造 |
-| `routes.go` | `Register` 直接绑定功能 handler，并统一包裹鉴权；挂载兼容静态资源 |
+| `routes.go` | `Register` 直接绑定功能 handler，并统一包裹鉴权；挂载页面静态资源 |
 | `middleware.go` | 公开 `Auth`、`NoCache`；扩展接口鉴权和静态缓存策略 |
-| `assets.go` | 连接 shell 资源及任务流脚本/样式的兼容出口 |
-| `extensions.go` | `ExtensionPage` 别名与 `RegisterExtensions` 兼容入口，实际扩展装配交给 shell |
+| `assets.go` | 连接 shell 资源及任务流脚本/样式的公开出口 |
+| `extensions.go` | `ExtensionPage` 别名与 `RegisterExtensions` 公开入口，实际扩展装配交给 shell |
 | `visual_assets.go` | 检查所链接 oao 版本是否实际带有可选图表/动效资源，供页面装配选择 |
-| `*_test.go`、`testdata/` | 公开入口、整页装配、旧 URL、统一鉴权、Node 与 Chrome 集成回归 |
+| `*_test.go`、`testdata/` | 公开入口、整页装配、资源 URL、统一鉴权、Node 与 Chrome 集成回归 |
 
 新增功能时，这里只增加必要的构造参数映射、组件字段和路由挂载。白名单锁、日志游标、报告选择、模板缓存、领域事务都不放入 Monitor。只有承诺的公开 API 保留必要委派；不为旧单元测试保留私有转发函数，也不在 server 复制功能常量。
 
-`TaskFlowScript` / `TaskFlowCSS` 是保留的公开可覆盖资源变量。App 在 Run 前注册任务流页面时继续读取这两个兼容出口；功能包的 `Page()` 提供默认值，不取消宿主已有的覆盖能力。
+`TaskFlowScript` / `TaskFlowCSS` 是保留的公开可覆盖资源变量。App 在 Run 前注册任务流页面时继续读取这两个公开出口；功能包的 `Page()` 提供默认值，不取消宿主已有的覆盖能力。
 
 ### 3.2 shell 的 Go 与模板
 
 | 文件 | 职责 |
 | --- | --- |
-| `assets.go` | 显式列出资源来源与组合顺序，替换模板/CSS 片段，生成兼容资源；缺失片段或重复路径时报错 |
+| `assets.go` | 显式列出资源来源与组合顺序，替换模板/CSS 片段，生成组合资源；缺失片段或重复路径时报错 |
 | `resource_fs.go` | 构造后只读的资源文件系统，支持独立读取副本、目录读取和文件定位 |
 | `renderer.go` | 页面模板解析与缓存、渲染选项和 HTML 响应 |
 | `extensions.go` | 宿主扩展页面元数据快照、脚本和样式挂载 |
@@ -117,14 +117,14 @@ admin/
 | `requests.js` | 公共请求工具、监控轮询的 timer/AbortController/请求序号、表格鉴权探测及请求结果有效性协作 |
 | `navigation.js`、`navigation-controller.js` | 导航支持逻辑、活动模块与站点选择，通过语义接口通知功能 |
 | `login-refresh.js` | 登录后的刷新协调 |
-| `table-adapter.js`、`table-links.js` | oao 表格接入、表格导航和关联跳转 |
+| `table-adapter.js`、`table-links.js` | oao 1.4 表格生命周期接入、表格导航和关联跳转；通过 destroy 退休实例 |
 | `extensions.js` | 前端扩展页面接入 |
 | `ui.js`、`download.js` | 通用交互工具与下载协作 |
 | `theme.js`、`appearance.js` | 主题及外观行为 |
 | `startup.js` | 启动绑定与公共初始化编排 |
 | `mo.css`、`layout.css`、`fonts/` | 共享视觉基础、布局、功能 CSS 组合插槽与字体 |
 
-共享会话和导航可以由 shell 拥有；某个报告的选中项、日志请求计数、令牌编辑表单等必须留在功能控制器内。兼容全局函数只用于维持已有调用方式，不得把私有状态全部导出为可写 getter/setter。
+共享会话和导航可以由 shell 拥有；某个报告的选中项、日志请求计数、令牌编辑表单等必须留在功能控制器内。页面通过只读全局操作入口调用控制器；入口不提供 setter，不能经全局赋值替换所属操作。控制器间依赖按拥有者解析，私有状态不导出为可写 getter/setter。
 
 ### 3.4 server 测试组织
 
@@ -139,7 +139,7 @@ admin/
 
 | 包 | Go 文件分工与主要接口 | 前端与状态归属 | 边界：交给谁处理 |
 | --- | --- | --- | --- |
-| `access` | handler.go：请求身份、白名单校验/保存/快照；reload.go：LoadWhitelist、带 context 的读取与 WhitelistReloader.Start/Cancel/Stop | 拥有白名单判定锁和重载 goroutine/cancel/done；不提供专属页面 | 令牌算法归 auth，令牌增删归 tokenadmin；宿主注入读口及发布回调，依据真实排空结果关闭依赖 |
+| `access` | handler.go：请求身份、白名单校验/保存/快照；reload.go：LoadWhitelistContext 读取与 WhitelistReloader.Start/Cancel/Stop | 拥有白名单判定锁和重载 goroutine/cancel/done；不提供专属页面 | 令牌算法归 auth，令牌增删归 tokenadmin；宿主注入读口及发布回调，依据真实排空结果关闭依赖 |
 | `settings` | `handler.go`：`Settings`、`Shutdown`；读取白名单快照与配置状态，确认后调用关停回调 | controller 与 settings 视图负责设置页操作 | 不拥有白名单锁，不执行进程退出流程，不处理运行策略事务 |
 | `monitoring` | `handler.go`：`Snapshot`、`StageData`；投影统计信息和实例标识 | controller 管概览；workbench 管工作台；visual-state 管图形状态；visuals 管可视化；sites/stages 样式归此包 | 只读统计，实际执行状态属于 engine；系统采样归 sysinfo |
 | `queues` | handler.go：Error/Repeat 和 QueueProcessEvent；audit.go：事件到操作日志值的转换 | controller、queue-governance 与 queues 视图管理队列操作展示；table.css 是队列相关表格样式 | 重投、持久化、并发约束通过运行回调执行；任务表行操作归 tasksource |
@@ -166,7 +166,7 @@ App 的 `admin_routes.go` 直接挂载功能 handler 方法并应用统一 guard
 | --- | --- | --- |
 | `page` | descriptor.go：Key、Label、Group、Section、Script、CSS | 共享纯值，不导入 App/server/shell 或其它框架实现，不拥有页面状态 |
 | `auth` | `auth.go`：生成/哈希/提取/验证令牌，Verifier/Confirmer，操作人 context；`token_counter.go`：计数缓存、失效和相关验证适配 | 验证“谁在操作”；不管理页面、白名单或账号登录过程。缺少有效令牌不能自动变成匿名管理权限 |
-| `configstore` | configstore.go：Spec、读写、LoadContext/LoadStringsContext；cache.go：JSON 缓存；string_list_cache.go：context 列表读口、TTL 与失效代次；sites.go：站点投影；versioned.go/history.go：版本与历史 | 带 context 的 Store 读口传递到 SQL；列表缓存以失效代次拒绝旧读回填。运行策略的 SaveCAS 保证版本/历史事务；普通缓存写入不是这一事务契约，详见下文 |
+| `configstore` | configstore.go：Spec、读写、LoadContext/LoadStringsContext；cache.go：JSON 缓存；string_list_cache.go：context 列表读口、TTL 与失效代次；sites.go：站点投影；versioned.go/history.go：版本与历史 | 带 context 的 Store 读口传递到 SQL；列表缓存以失效代次拒绝旧读回填；字符串列表仅提供 LoadStringsContext，不保留无 context 转发。运行策略的 SaveCAS 保证版本/历史事务；普通缓存写入不是这一事务契约，详见下文 |
 | `gormsource` | `gormsource.go`：Config、Source、List，过滤/排序/分页查询转换 | 把已声明的表格列和查询转成 GORM 查询；不决定业务表目录，不执行任务状态变更 |
 | `frameworkdata` | `tables.go`：框架表目录；`source.go`：只读数据源；`sanitize.go`：敏感字段处理；`status.go`：表状态接口挂载 | 只展示明确列入目录的 Papa 表；不按前缀自动发现业务表，不负责迁移 |
 | `tasksource` | table.go：TaskActions 与通用 Table；workspace.go / views/workspace_header.html：内置 WorkspaceTable 的 Label/Header | 保留旧 Table 默认值及动作能力；展示归本包，不另写认领、重投、补偿状态机 |
@@ -196,13 +196,13 @@ App 的 `admin_routes.go` 直接挂载功能 handler 方法并应用统一 guard
 3. `runtimecontrol.Runtime`、`accountpools.Runtime` 当前确实提供多个运行查询/操作，其中一些返回具体框架类型；它们是现有适配契约，不代表允许继续扩大到全部引擎功能。
 4. 状态、锁、版本和生命周期必须同属明确拥有者。HTTP 层不得另存一份领域状态，再靠定时同步“保持一致”。
 5. 前端 reset/unmount 后，之前发出的 HTTP、正文读取及错误回调不得更新新视图。destroy 还应释放注册的监听和资源；使用 lifecycle 的有效性检查和清理接口。
-6. 公开兼容 API、JSON 响应、资源 URL 与私有实现分开维护。改包位置不能顺带改变鉴权、错误码、版本冲突和关停行为。
+6. 公开 API、JSON 响应、资源 URL 与私有实现分开维护。改包位置不能顺带改变鉴权、错误码、版本冲突和关停行为。
 
 白名单重载不保留完整 App 或 Monitor，只接受 ContextStringListReader 和发布回调。普通读失败仍记错并按不限制处理；取消/超时不发布空白名单。Stop 使用宿主给的 context 返回真实排空结果，读端不响应取消时返回 false。HTTP 服务自身及 handler 计数由 App 管理，包含 hijack，和重载结果共同参与共享 DB/浏览器关闭判断，详见 [Internal 分册的 App 章节](INTERNAL_STRUCTURE.md#app)。
 
 以下状态及关闭契约不能互相套用：
 
-- `configstore.Store` 的锁保护原始 JSON 缓存及站点投影的读改写；`SetCached` 在落库失败但 JSON 编码成功时仍更新内存，并返回保存错误。`CachedStringListReader` 另有自己的锁、TTL 和失效代次，返回切片副本；兼容的旧 StringListReader 只能在读前后检查取消，不能中断在途读取。运行策略的版本以 DB revision 列为准，走 `LoadVersioned` / `SaveCAS`，不能用普通缓存写入替代。
+- `configstore.Store` 的锁保护原始 JSON 缓存及站点投影的读改写；`SetCached` 在落库失败但 JSON 编码成功时仍更新内存，并返回保存错误。`CachedStringListReader` 另有自己的锁、TTL 和失效代次，返回切片副本；列表读口统一使用 ContextStringListReader 与 NewCachedContextStringListReader，取消传递到 SQL。运行策略的版本以 DB revision 列为准，走 `LoadVersioned` / `SaveCAS`，不能用普通缓存写入替代。
 - `auth.TokenCounter` 的两个计数及时间戳由自己的锁保护，只供展示；它没有列表缓存的失效代次机制。鉴权和二次确认每次调用 Verify，不从计数缓存授予权限。
 - `oplog.Recorder` 拥有容量 1024 的队列、发送/关闭互斥锁、消费者和 drained 信号。队列满或关闭后的记录同步调用日志兜底，不等待队列空位；不能据此保证日志调用本身永不阻塞。首个 `Close(timeout)` 关闭队列并等真正排空，timeout 只是告警阈值，不会取消写库；重复 Close 见 closed 会直接返回，不能作为另一个等待排空的屏障。宿主应在首个关闭调用完成后再关闭 DB 和日志依赖。
 - `sysinfo.Collector.Start` 没有重复启动保护或 Stop/Wait 接口。取消在采样循环的 select 中观察；首次采样、CPU 窗口及目录遍历不接收 context，取消不等于这些操作已经返回。Snapshot 复制目录 map 和时间指针，不把可写内部状态借给 HTTP 读者。
@@ -219,7 +219,7 @@ App 的 `admin_routes.go` 直接挂载功能 handler 方法并应用统一 guard
 | `/static/features/<owner>/<file>` | 参与 shell 组合的功能资源的明确归属路径 |
 | accounts/accountpools/runtimecontrol/diagnostics 的 Script | 功能包自行 embed，并通过 Page() 提供默认描述；App 保留原先追加顺序和页面 key，并非所有脚本都进 mo.js |
 
-`go:embed` 解决部署资源随二进制分发的问题，不决定功能归属。增加资源时同时核对 embed 范围、shell 组合/宿主注册、模板引用和兼容 URL。不能把资源复制回 server 来解决引用路径问题。
+`go:embed` 解决部署资源随二进制分发的问题，不决定功能归属。增加资源时同时核对 embed 范围、shell 组合/宿主注册、模板引用和资源 URL。不能把资源复制回 server 来解决引用路径问题。
 
 公共导航与外观由 shell 维护，图表观测模型由 monitoring 维护：navigation.js 统一四类归属，空/未知 Section 回退 data，Group 只在分类内分组；template.html 组合功能根并在 CSS 加载前恢复合法外观值。theme.js、appearance.js 更新根属性、设置控件和浏览器本地偏好，不重新挂载业务页；显示选择以当前 DOM 状态为准，存储写入失败不能让旧值反复覆盖临时选择。
 
@@ -248,9 +248,9 @@ layout.css 负责共享导航、响应式与外观覆盖，在基础样式之后
 | --- | --- |
 | 各功能包 `*_test.go` | 请求校验、错误映射、存储适配、文件边界、独立状态与功能行为 |
 | access 的 reload_lifecycle_test.go / configstore 的 string_list_context_test.go、context_sql_test.go | 重载取消/排空、迟到结果、TTL 失效并发、GORM 到实际 database/sql 调用的 context 传播 |
-| tasksource/workspace_test.go / accounts/frontend_test.go / diagnostics/identity_test.go | 默认工作台展示与旧 Table 兼容、账号脚本文本契约、身份导航视图适配 |
+| tasksource/workspace_test.go / accounts/frontend_test.go / diagnostics/identity_test.go | 默认工作台展示与 Table API、账号脚本文本契约、身份导航视图适配 |
 | `shell/*_test.go` | 模板/资源装配、缺失与重复资源、只读 FS、字体 range |
-| `server/*_test.go` | 公开兼容入口、统一鉴权、旧 URL、页面装配、Node/Chrome 集成 |
+| `server/*_test.go` | 公开入口、统一鉴权、资源 URL、页面装配、Node/Chrome 集成 |
 | `server/testdata/` | 测试脚本、辅助 DOM 和合成数据；这里的 JS 是测试输入，不能供生产页面引用 |
 | 根目录 `architecture_test.go` | server 不存生产页面资源、功能包不反向依赖 server/App；admin/page 值契约不导入框架实现 |
 
@@ -258,8 +258,12 @@ layout.css 负责共享导航、响应式与外观覆盖，在基础样式之后
 
 本文维护当前目录与长期归属规则；接口字段、使用示例和路由细节维护在 MONITOR 及专项手册；实施过程和测试批次记录放在 `docs/issues/`。各职责分册统一放在 `docs/package_structure/`，并沿用“目录—职责—文件—状态—依赖—测试”的组织方式，避免重复维护第二份接口手册。
 
-追踪抽屉由 `admin/tasktrace/static/trace.js` 展示服务返回的 execution_id 与截断标志；只展示最新有记录执行的最后 500 步，旧记录明确提示无轮次标识。`admin/tasktrace/frontend_test.go` 执行真实控制器，验证执行身份转义、截断提示和旧数据提示，不在前端重新判定执行轮次。
+追踪抽屉由 `admin/tasktrace/static/trace.js` 展示服务返回的 execution_id 与截断标志；只展示最新有记录执行的最后 500 步，未提供执行标识时明确提示标识缺失。`admin/tasktrace/frontend_test.go` 执行真实控制器，验证执行身份转义、截断提示和缺失标识提示，不在前端重新判定执行轮次。
 
-Trace 详细回调在装配期通过 Monitor.SetTaskTraceExecution → tasktrace.Handler.SetExecutionLookup 注入，必须在提供请求服务前设置，不是运行时热更新接口。原 MonitorConfig/Options 布局及旧 TraceStep 回调保持兼容；详细回调优先，为 nil 时回退旧回调。handler 负责 HTTP/JSON 适配，不拥有执行身份或存储查询。对应回归为 TestExecutionTraceComposition 和 TestExecutionTraceLookupPreservesLegacyFallback。
+Trace 查询通过 `MonitorConfig.TaskTrace` → `tasktrace.Options.Trace` 在构造时注入，签名为 `func(int) ([]core.TraceExecutionStep, error)`；未配置时接口返回 404。handler 负责 HTTP/JSON 适配，不拥有执行身份或存储查询。对应回归为 `TestExecutionTraceComposition` 和 `TestExecutionTraceLookup`。
 
-当前内置 Trace 查询来自文件：默认仅保留异常尝试，展示最新保留执行，不等于当前任务最新状态。旧回调的未知执行标识展示仍为 API 兼容保留；框架不再挂载 SQL Trace 表。主动选择执行接口已预留，按钮本轮未实现。
+当前内置 Trace 查询来自文件：默认仅保留异常尝试，展示最新保留执行，不等于当前任务最新状态。框架不再挂载 SQL Trace 表。主动选择执行接口已预留，按钮本轮未实现。
+
+任务写操作接口 `tasksource.TaskActions` 要求 `RetryTaskVersioned(ctx, id, reprocess, compensationVersion)`；HTTP 层先校验两个版本字段，再交给引擎执行，不提供无补偿版本的重投回退。
+
+`server/testdata/oao_lifecycle_test.js` 配合 `oao_dom.js` 执行当前链接 oao 的真实资源，覆盖筛选、正常写入、确认框销毁和迟到响应隔离。`controllers.js` 仅在测试中通过所属实例导出项注入替身；`controller_lifecycle_test.js` 另外验证生产全局操作入口不可写。

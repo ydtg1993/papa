@@ -29,7 +29,7 @@ type featureSource struct {
 var assembledOnce sync.Once
 var assembled *resourceFS
 
-// Assets exposes immutable feature resources and deterministic compatibility
+// Assets exposes immutable feature resources and deterministic page
 // bundles. Missing embedded inputs are startup errors, never partial pages.
 func Assets() fs.ReadFileFS {
 	assembledOnce.Do(func() {

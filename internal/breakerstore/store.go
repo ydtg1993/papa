@@ -31,6 +31,9 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 	if s == nil || s.db == nil {
 		return errors.New("breaker store is not configured")
 	}
+	if err := snapshot.ValidateCurrent(); err != nil {
+		return err
+	}
 	snapshot = snapshot.Clean()
 	l := snapshot.Control
 	if l.ID == "" || l.Site == "" || l.Revision == 0 {
@@ -96,12 +99,8 @@ func decodeSnapshots(rows []models.BreakerIncident) ([]Snapshot, error) {
 		if err := json.Unmarshal(row.Payload, &snapshot); err != nil {
 			return nil, fmt.Errorf("decode breaker event %s: %w", row.ID, err)
 		}
-		if snapshot.Control.ID == "" {
-			var legacy incident.Lifecycle
-			if err := json.Unmarshal(row.Payload, &legacy); err != nil {
-				return nil, err
-			}
-			snapshot = LegacySnapshot(legacy)
+		if err := snapshot.ValidateCurrent(); err != nil {
+			return nil, fmt.Errorf("breaker event %s: %w", row.ID, err)
 		}
 		l := snapshot.Control
 		if l.ID != row.ID || l.Site != row.Site || l.Stage != row.Stage || l.Revision != row.Revision || l.State != row.State || l.Active() != row.Active {

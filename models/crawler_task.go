@@ -1,8 +1,6 @@
 package models
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"github.com/ydtg1993/papa/v4/core"
 	"time"
 
@@ -45,7 +43,7 @@ type CrawlerTask struct {
 	// obtain this pool's current identity instead of binding a permanent account.
 	AccountPool                 string     `gorm:"type:varchar(256);not null;default:'';index;comment:所属站点账号池；空表示未使用账号池"`
 	FailureKind                 string     `gorm:"type:varchar(64);not null;default:'';comment:最近终态失败分类"`
-	CompensationMode            string     `gorm:"type:varchar(32);not null;default:'';index:idx_compensation_due,priority:1;comment:空为兼容自动补偿；retry_after/account_ready/manual/permanent"`
+	CompensationMode            string     `gorm:"type:varchar(32);not null;default:'';index:idx_compensation_due,priority:1;comment:空为默认自动补偿；retry_after/account_ready/manual/permanent"`
 	NextCompensationAt          *time.Time `gorm:"index:idx_compensation_due,priority:2;comment:最早补偿时间；NULL为无时间约束"`
 	CompensationReason          string     `gorm:"type:varchar(512);not null;default:'';comment:脱敏补偿等待原因"`
 	CompensationVersion         uint64     `gorm:"not null;default:0;comment:补偿状态乐观锁版本"`
@@ -58,16 +56,10 @@ type CrawlerTask struct {
 	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`
-	// URLHash and legacy idempotency fields are retained for inspection and
-	// explicit upgrade backfill; neither is an independent uniqueness constraint.
-	URLHash         string  `gorm:"type:char(64);not null;comment:原始URL的sha256(诊断字段)"`
-	IdempotencyKey  string  `gorm:"type:varchar(1000);comment:旧API的ID输入(已弃用)"`
-	IdempotencyHash *string `gorm:"type:char(64);comment:旧幂等键哈希(诊断字段)"`
-
 	// IdentityType/Value are immutable task identity, independent of execution URL.
 	IdentityType  string `gorm:"type:varchar(8);not null;default:'';comment:任务身份类型id或url"`
 	IdentityValue string `gorm:"type:text;comment:稳定资源ID或规范URL"`
-	IdentityHash  string `gorm:"type:char(64);default:null;uniqueIndex:idx_task_identity,priority:3;comment:版本化站点阶段身份SHA256"`
+	IdentityHash  string `gorm:"type:char(64);not null;uniqueIndex:idx_task_identity,priority:3;comment:版本化站点阶段身份SHA256"`
 
 	// Meta 业务键（如 series_id/episode_id），与 URL 解耦。**随行落库** ——
 	// 恢复/轮询/错误队列/后台重投这几条「从行重建 Task」的路都按它还原任务身份，
@@ -106,8 +98,6 @@ func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
 	resourceID := ""
 	if t.IdentityType == "id" {
 		resourceID = t.IdentityValue
-	} else if t.IdentityType == "" {
-		resourceID = t.IdempotencyKey
 	}
 	identity, err := core.NormalizeTaskIdentity(t.Site, t.Stage, resourceID, t.URL)
 	if err != nil {
@@ -115,36 +105,5 @@ func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
 	}
 	t.IdentityType, t.IdentityValue, t.IdentityHash = identity.Type, identity.Value, identity.Hash
 
-	// URL 的哈希在这里统一补上：任何创建路径（含业务直接 Create 这个模型）都覆盖到，
-	// 不会出现"唯一索引上是一串空串"这种撞车。
-	if t.URLHash == "" && t.URL != "" {
-		t.URLHash = UrlHash(t.URL)
-	}
-	// 幂等键的哈希同理；**空键保持 nil**（落 NULL），见字段注释。
-	if t.IdempotencyHash == nil && t.IdempotencyKey != "" {
-		h := IdempotencyKeyHash(t.IdempotencyKey)
-		t.IdempotencyHash = &h
-	}
 	return nil
-}
-
-// IdempotencyKeyHash 幂等键原文的 sha256 十六进制（小写，64 字符）—— 唯一索引建在它上面，
-// 因为键里带 URL、整串（varchar(1000)）在 utf8mb4 下建不了索引。空键返回空串，调用方据此落 NULL。
-//
-// 与 MySQL 的 `SHA2(idempotency_key, 256)` 输出一致，所以迁移里的回填 SQL 与 Go 侧算的是同一个值。
-func IdempotencyKeyHash(key string) string {
-	if key == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:])
-}
-
-// UrlHash URL 的 sha256 十六进制（小写，64 字符）—— 唯一索引用它，长 URL 建不了整串索引。
-//
-// 与 MySQL 的 `SHA2(url, 256)` 输出一致（同样是十六进制小写），所以迁移里的回填 SQL 和
-// Go 侧算出来的是同一个值。
-func UrlHash(url string) string {
-	sum := sha256.Sum256([]byte(url))
-	return hex.EncodeToString(sum[:])
 }

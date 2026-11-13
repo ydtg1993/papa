@@ -67,8 +67,7 @@ MonitorShell.define("shell/navigation-controller",null,["Dialog","MonitorShell",
     }
 
     async function renderTableView(key, initialFilter) {
-        // 旧 oao 没有销毁/请求代次保护，隔离旧节点使其晚到渲染无法写入新视图。
-        if (typeof deps.Oao.destroy !== 'function') deps.retireTableView();
+        // 请求代次、会话身份及容器共同校验，防止晚到结果覆盖新视图。
         var view = deps.document.getElementById('oao-view'), epoch = deps.nextTableView(), identity = deps.getSessionGeneration();
         var credential = deps.loadKey();
         var current = function () { return epoch === deps.getTableViewRevision() && identity === deps.getSessionGeneration() && credential === deps.loadKey() && deps.getActiveModule() === 'tables' && currentTable === key && view === deps.document.getElementById('oao-view'); };
@@ -76,7 +75,7 @@ MonitorShell.define("shell/navigation-controller",null,["Dialog","MonitorShell",
             // A server-owned marker distinguishes catalog tables from explicitly registered business tables.
             var entry = typeof deps.getNavigationTables === 'function' && deps.getNavigationTables().find(function (item) { return item.key === key; });
             if (entry && entry.frameworkData) {
-                if (typeof deps.Oao.destroy === 'function') deps.Oao.destroy(view);
+                deps.Oao.destroy(view);
                 view.textContent = '正在检查框架表…';
                 var response = await deps.apiFetch('/api/framework-tables/' + encodeURIComponent(key), { current: current });
                 if (!current()) return;
@@ -85,7 +84,7 @@ MonitorShell.define("shell/navigation-controller",null,["Dialog","MonitorShell",
                 if (!current()) return;
                 if (status.state !== 'available') { view.textContent = status.message || '框架表暂不可用，请重新打开此表重试。'; return; }
             }
-            // 第三个参数 = oao 的预置筛选（需要 oao ≥ 带 opts.filter 的那版；老版本会忽略它）
+            // 第三个参数传入当前 Oao 的预置筛选。
             await deps.Oao.render(view, key, initialFilter ? { filter: Object.assign({}, tableFilterOpts().filter, initialFilter) } : tableFilterOpts());
         } catch (e) {
             if (current()) {

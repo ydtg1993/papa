@@ -41,7 +41,7 @@ type AIBriefSnapshot struct {
 	Backlog       obs.BacklogSummary `json:"backlog,omitempty"`
 }
 
-// hasContent 判断快照摘要是否值得渲染：全空的快照不占版面（历史报告没有 mode/engine/backlog）。
+// hasContent 判断快照摘要是否值得渲染：全空的快照不占版面。
 func (s AIBriefSnapshot) hasContent() bool {
 	return s.Mode != "" || s.VerdictReason != "" || len(s.PausedSites) > 0 ||
 		s.Backlog != (obs.BacklogSummary{})

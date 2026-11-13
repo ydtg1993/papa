@@ -15,14 +15,14 @@ type testLogger struct{ calls int }
 func (l *testLogger) Errorf(string, ...any) { l.calls++ }
 func TestTraceLookupAndErrors(t *testing.T) {
 	logger := &testLogger{}
-	h := New(Options{Logger: logger, Trace: func(id int) ([]core.TraceStep, error) {
+	h := New(Options{Logger: logger, Trace: func(id int) ([]core.TraceExecutionStep, error) {
 		if id == 8 {
 			return nil, errors.New("trace disabled")
 		}
 		if id != 7 {
 			t.Errorf("unexpected id %d", id)
 		}
-		return []core.TraceStep{{Step: "parse", Status: "ok"}}, nil
+		return []core.TraceExecutionStep{{TraceStep: core.TraceStep{Step: "parse", Status: "ok"}}}, nil
 	}})
 	for _, tc := range []struct {
 		method, target string
@@ -41,8 +41,8 @@ func TestTraceLookupAndErrors(t *testing.T) {
 		}
 		if w.Code == 200 {
 			var body struct {
-				TaskID int              `json:"task_id"`
-				Steps  []core.TraceStep `json:"steps"`
+				TaskID int                       `json:"task_id"`
+				Steps  []core.TraceExecutionStep `json:"steps"`
 			}
 			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 				t.Fatal(err)
@@ -62,18 +62,13 @@ func TestTraceLookupAndErrors(t *testing.T) {
 	}
 }
 
-func TestExecutionTraceLookupPreservesLegacyFallback(t *testing.T) {
-	legacyCalls := 0
-	h := New(Options{Logger: &testLogger{}, Trace: func(int) ([]core.TraceStep, error) {
-		legacyCalls++
-		return []core.TraceStep{{Step: "legacy"}}, nil
-	}})
-	h.SetExecutionLookup(func(id int) ([]core.TraceExecutionStep, error) {
+func TestExecutionTraceLookup(t *testing.T) {
+	h := New(Options{Logger: &testLogger{}, Trace: func(id int) ([]core.TraceExecutionStep, error) {
 		if id != 7 {
 			t.Fatalf("lookup id=%d", id)
 		}
 		return []core.TraceExecutionStep{{TraceStep: core.TraceStep{Step: "latest", Attempt: 1}, ExecutionID: "run-1", Truncated: true}}, nil
-	})
+	}})
 	w := httptest.NewRecorder()
 	h.Trace(w, httptest.NewRequest(http.MethodGet, "/api/task/trace?id=7", nil))
 	var response struct {
@@ -82,13 +77,7 @@ func TestExecutionTraceLookupPreservesLegacyFallback(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != 200 || len(response.Steps) != 1 || response.Steps[0]["step"] != "latest" || response.Steps[0]["execution_id"] != "run-1" || response.Steps[0]["truncated"] != true || legacyCalls != 0 {
-		t.Fatalf("response=%s legacy=%d", w.Body.String(), legacyCalls)
-	}
-	h.SetExecutionLookup(nil)
-	w = httptest.NewRecorder()
-	h.Trace(w, httptest.NewRequest(http.MethodGet, "/api/task/trace?id=7", nil))
-	if w.Code != 200 || legacyCalls != 1 || strings.Contains(w.Body.String(), "execution_id") {
-		t.Fatalf("legacy response=%s calls=%d", w.Body.String(), legacyCalls)
+	if w.Code != 200 || len(response.Steps) != 1 || response.Steps[0]["step"] != "latest" || response.Steps[0]["execution_id"] != "run-1" || response.Steps[0]["truncated"] != true {
+		t.Fatalf("response=%s", w.Body.String())
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/ydtg1993/papa/v4/admin/server"
 	"github.com/ydtg1993/papa/v4/admin/sysinfo"
 	"github.com/ydtg1993/papa/v4/admin/tokenadmin"
-	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/core"
 	"net/http"
 	"strconv"
 	"time"
@@ -42,7 +42,7 @@ func (a *App) httpServer(ctx context.Context) {
 	a.registerBuiltinPages()
 	mux := http.NewServeMux()
 
-	getter := func() map[string]engine.StageStats {
+	getter := func() map[string]core.StageStats {
 		return a.Engine.GetStageStats()
 	}
 	if a.sysInfo == nil {
@@ -58,7 +58,7 @@ func (a *App) httpServer(ctx context.Context) {
 		panic(fmt.Errorf("后台运行期配置表没就绪：%w", err))
 	}
 	// 读白名单的装饰器：重载循环每 30s 打一次内存，真正查库由 TTL 摊薄（见 whitelistCacheTTL）。
-	whitelistReader := configstore.NewCachedStringListReader(whitelistStore, whitelistCacheTTL)
+	whitelistReader := configstore.NewCachedContextStringListReader(whitelistStore, whitelistCacheTTL)
 	whitelist, err := access.LoadWhitelistContext(ctx, whitelistReader, a.Logger.Sys)
 	if err != nil {
 		// A stop arriving during initialization is not a configuration error.
@@ -67,10 +67,10 @@ func (a *App) httpServer(ctx context.Context) {
 		return
 	}
 	access.WarnIfOpenToAll(a.Logger.Sys, whitelist)
-	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
+	// 访问令牌：库表里多条、每条属于一个操作人
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
 
-	// 共享令牌服务：鉴权逐请求查库，数量缓存仅用于管理统计兼容。
+	// 共享令牌服务：鉴权逐请求查库，数量缓存用于管理统计。
 	tokenCounter := auth.NewTokenCounter(a.DB, tokenCountCacheTTL)
 
 	// 操作日志：开启时，oao 表格页的动作、后台自带的「访问令牌」页、以及熔断放行都往这里记。
@@ -120,7 +120,7 @@ func (a *App) httpServer(ctx context.Context) {
 			}
 			rec.RecordEvent(ev.OperationLog())
 		},
-		TaskTrace:          a.Engine.ListTrace,
+		TaskTrace:          a.Engine.ListTraceExecution,
 		VerifyTokenValue:   tokenCounter.Confirmer(a.Logger.Sys),
 		BreakerStatuses:    a.Engine.BreakerStatuses,
 		BreakerReports:     a.Engine.BreakerReports,
@@ -158,7 +158,6 @@ func (a *App) httpServer(ctx context.Context) {
 			}
 		},
 	})
-	mon.SetTaskTraceExecution(a.Engine.ListTraceExecution)
 	mon.Register(mux)
 	// 运维直接改 SQL 后的收敛：定期把库里的白名单同步进判定缓存
 	a.whitelistReload = access.NewWhitelistReloader(whitelistReader, a.Logger.Sys, mon.SetWhitelist, whitelistReloadInterval)

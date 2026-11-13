@@ -3,7 +3,7 @@ package database
 import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/models"
-	"github.com/ydtg1993/papa/v4/pkg/account"
+	"github.com/ydtg1993/papa/v4/pkg/account/gormstore"
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 	"gorm.io/gorm"
 )
@@ -46,7 +46,7 @@ func FrameworkModels(cfg *config.Config) []Model {
 	if cfg.TaskFlow.Enabled {
 		out = append(out, Model{Name: "crawler_task_flows", Value: &models.TaskFlow{}})
 	}
-	for _, model := range account.Models() {
+	for _, model := range gormstore.Models() {
 		out = append(out, Model{Name: model.(interface{ TableName() string }).TableName(), Value: model})
 	}
 	for _, model := range onboarding.Models() {
@@ -58,15 +58,11 @@ func FrameworkModels(cfg *config.Config) []Model {
 	return out
 }
 
-// Migrate 建/补框架自带的表，外加业务传进来的 extra（业务自己的模型框架不认识 ——
-// 业务得自己拿着模型跑 AutoMigrate，也就是项目自己的 `-migrate` 入口；CLI 那条
-// `papa migrate` 在业务项目里会转交给它）。
-//
-// Explicit migration installs the standardized task identity index, backfills
-// existing tasks and removes the two obsolete unique indexes only after success.
-// Stop workers before migration. Conflicting canonical identities abort; no rows
-// are merged or removed. This is a deliberate schema change, not startup work.
+// Migrate creates or updates the current v4 schema. It does not convert older task identities.
 func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
+	if err := CheckTaskSchema(db); err != nil {
+		return err
+	}
 	all := make([]any, 0, 8)
 	for _, m := range FrameworkModels(cfg) {
 		all = append(all, m.Value)
@@ -74,5 +70,5 @@ func Migrate(db *gorm.DB, cfg *config.Config, extra ...any) error {
 	if err := AutoMigrate(db, append(all, extra...)...); err != nil {
 		return err
 	}
-	return migrateTaskIdentities(db)
+	return nil
 }

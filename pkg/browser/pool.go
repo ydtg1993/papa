@@ -186,7 +186,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 
 // newLauncher 按池配置构造 launcher（**不启动**）。
 // 抽出来是为了让启动参数能在单测里用 FormatArgs 验证，不必真拉一个 Chromium。
-func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
+func (p *Pool) newLauncher() *launcher.Launcher {
 	l := launcher.New().
 		Headless(p.cfg.Headless).
 		NoSandbox(p.cfg.NoSandbox).
@@ -201,11 +201,6 @@ func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 			l.Set(flags.Flag(key))
 		} else {
 			l.Set(flags.Flag(key), val)
-		}
-	}
-	if useProxy && p.cfg.ProxyManager != nil {
-		if proxyURL := p.cfg.ProxyManager.Next(); proxyURL != "" {
-			l.Proxy(proxyURL)
 		}
 	}
 	return l
@@ -223,7 +218,7 @@ func (p *Pool) createBrowser(ctx context.Context, useProxy bool) (*Browser, erro
 }
 
 func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
-	l := p.newLauncher(false)
+	l := p.newLauncher()
 	upstream, observeProxy, proxyState, err := p.selectBrowserProxy(useProxy, l.Get(flags.Flag("proxy-server")))
 	if err != nil {
 		return nil, err
@@ -242,16 +237,16 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 		}
 	}()
 	secureLauncher(l, gateway.URL)
-	// Preserve legacy fixed profile flags when temp_dir is not configured.
+	// Honor explicit fixed profile flags when temp_dir is not configured.
 	// NewPool rejects these flags together with an explicit temp_dir.
-	legacyProfile := false
+	fixedProfile := false
 	for key := range p.cfg.Flags {
 		if strings.TrimLeft(key, "-") == "user-data-dir" {
-			legacyProfile = true
+			fixedProfile = true
 		}
 	}
 	dir := ""
-	if !legacyProfile {
+	if !fixedProfile {
 		var err error
 		dir, err = NewTempProfile(l, p.cfg.TempDir, "browser-")
 		if err != nil {

@@ -55,7 +55,7 @@ internal/
 
 `internal/app` 是单实例应用的组合根：构造组件、注入依赖、登记业务扩展、连接后台入口、安排启动和排空顺序。App 可以持有服务实例，但不复制服务拥有的版本、锁、领域状态或事务规则。
 
-声明规划归 `internal/sitedecl`，已登记站点归 Engine，运行策略事务归 `internal/runtimecontrol`，身份诊断归 `internal/browserdiagnostics`，报表执行归 `internal/reportrunner`。后台功能的 handler、页面描述、资源和审计事件语义归对应 `admin/*` 包。App 负责组合这些能力及保留公开兼容入口。
+声明规划归 `internal/sitedecl`，已登记站点归 Engine，运行策略事务归 `internal/runtimecontrol`，身份诊断归 `internal/browserdiagnostics`，报表执行归 `internal/reportrunner`。后台功能的 handler、页面描述、资源和审计事件语义归对应 `admin/*` 包。App 负责组合这些能力及保留当前公开入口。
 
 同包文件按职责平铺。文件数量、行数和目录深度不是完成标准，不创建没有独立契约的 `app/service`、`app/manager` 或 `app/utils` 来容纳原有逻辑。
 
@@ -66,12 +66,12 @@ internal/
 ```text
 internal/app/
 ├── doc.go                       # 组合根包契约与允许职责
-├── app.go                       # 容器、选项和公开兼容字段
+├── app.go                       # 容器、选项和当前公开字段
 ├── bootstrap.go                 # 构造、迁移、事件流装配
 ├── lifecycle.go                 # Run / Shutdown、清理编排、日志监听取消与等待
 ├── shutdown.go                  # 业务关停钩子
 ├── schema_check.go              # 启动期 schema 提示
-├── spec.go                      # 声明兼容门面与 Engine 登记
+├── spec.go                      # 声明门面与 Engine 登记
 ├── http.go                      # 后台依赖、HTTP 启停、白名单组件接线
 ├── http_drain.go                # HTTP handler 准入及真实返回计数
 ├── admin_routes.go              # 内置页面选择、handler 构造和受保护路由
@@ -84,7 +84,7 @@ internal/app/
 ├── runtime_policy.go            # 运行组件装配、采样生命周期和排空编排
 ├── accounts.go                  # 公开账号接入扩展
 ├── browser_identity.go          # 身份服务构造、初始化和生命周期接线
-├── rod_diagnostics.go           # 公开 RodDiagnostics 兼容工厂
+├── rod_diagnostics.go           # 公开 RodDiagnostics 工厂
 └── *_test.go                    # 29 个；逐组归属见 §2.6
 
 internal/sitedecl/               # 冻结声明、规划和进程登记表
@@ -127,11 +127,11 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 
 `admin/page.Descriptor` 仅包含页面 Key、Label、Group、Section、Script、CSS，不依赖 App、server、shell 或其它框架实现。accounts、accountpools、runtimecontrol、diagnostics 的 `page.go` 和 taskflow 的 `assets.go` 提供各自 `Page()` 默认值。App 决定是否挂载和导航顺序。
 
-内置脚本继续按“诊断 → 运行治理 → 账号池 → 账号管理 → 可选任务流”顺序追加，业务先登记的脚本仍在前面。任务流保留 `server.TaskFlowScript` / `TaskFlowCSS` 公开变量在 Run 前的覆盖行为；不能只改为读取功能包默认值而丢掉这项兼容能力。
+内置脚本继续按“诊断 → 运行治理 → 账号池 → 账号管理 → 可选任务流”顺序追加，业务先登记的脚本仍在前面。任务流保留 `server.TaskFlowScript` / `TaskFlowCSS` 公开变量在 Run 前的覆盖行为；不能只改为读取功能包默认值而丢掉这项扩展能力。
 
 #### 2.3.3 声明规划与 Engine 落地
 
-`spec.go` 保留 SiteSpec/StageSpec/BreakerSpec/RetrySpec 别名，以及 RegisterSite/Sites/CheckSites/DescribeDownloadOverlays 兼容入口。`App.RegisterSites` 先完成整批校验与规划，再登记到 Engine；`applyStagePlan` 只应用计划与记录日志。`App.Site` 委派 `Engine.Site`，Engine 的 siteCatalog 是已登记站点的唯一来源。
+`spec.go` 保留 SiteSpec/StageSpec/BreakerSpec/RetrySpec 别名，以及 RegisterSite/Sites/CheckSites/DescribeDownloadOverlays 入口。`App.RegisterSites` 先完成整批校验与规划，再登记到 Engine；`applyStagePlan` 只应用计划与记录日志。`App.Site` 委派 `Engine.Site`，Engine 的 siteCatalog 是已登记站点的唯一来源。
 
 | `internal/sitedecl` 文件 | 职责与快照边界 |
 | --- | --- |
@@ -190,7 +190,7 @@ NewApp 构造时已创建 Engine；NewEngine 会读库预热活跃任务并启�
 - `shutdownHTTP` 先关闭 requestDrain 准入并取消白名单重载，再让 Server、handler 计数和 reloader 共用本次 HTTP 截止时间。包括仍在执行的 hijacked handler；Server.Close 不能把这类请求视为完成。超时后仍继续其它组件清理，但共享资源关闭条件保留 false。
 - `drainRuntime` 先对 onboarding、账号池和身份诊断调用 BeginShutdown，并取消采样；随后所有等待使用同一个 context。一个组件超时不会跳过其它组件的停止和结果收集。BeginShutdown 的生命周期门只能短时持锁，不能等待业务存储或回调。
 - onboarding/lifecycle.go 用独立生命周期锁保护准入与 WaitGroup.Add，资料事务仍使用原事务锁。Start 的入口计数保留到新 workflow 取得计数之后。账号池的唯一完成流程等待协调器/worker 退出，再按原 Manager 锁摘除；drained 包含这一过程，调用方仅在所给 context 内等结果。
-- `WhitelistReloader` 独立持有 goroutine/cancel/done。ContextStringListReader 经 TTL 缓存、Store、GORM 传到 SQL；旧 LoadWhitelist/StringListReader 入口仍兼容。普通读取失败继续记错并放宽；取消/截止时间错误不发布空白名单。忽略取消的读端或未返回的发布回调使 Stop 返回 false，依赖保持打开。
+- `WhitelistReloader` 独立持有 goroutine/cancel/done。ContextStringListReader 经 TTL 缓存、Store、GORM 传到 SQL；只提供带 context 的读取入口。普通读取失败继续记错并放宽；取消/截止时间错误不发布空白名单。忽略取消的读端或未返回的发布回调使 Stop 返回 false，依赖保持打开。
 - TTL 缓存读取与 Invalidate 用失效代次协调；失效期间完成的旧读重新回源，不把旧值或旧错误交给发布者。读取失败不缓存，正常 TTL 与本地保存后的即时失效语义不变。
 - 引擎错误与中间件错误消费者都响应 App context，并由同一完成信号追踪；不会为让消费者退出而关闭 Engine 的公开错误通道。正在执行的日志写入也必须返回后才报告排空。
 
@@ -208,7 +208,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 | `admin_routes_test.go` | 内置页面 key、导航和资源顺序；统一 guard；TaskFlow 公开资源覆盖 |
 | `spec_test.go`、`spec_validation_test.go`、`check_test.go` | 声明到 Engine 的装配、副本隔离、applyStagePlan 错误传播、无效批次不落地 |
 | `router_test.go`、`page_ownership_test.go`、`page_sections_test.go` | 路由/中间件鉴权、导航引用和真实 HTTP 元数据 |
-| `schema_check_test.go`、`data_tables_test.go` | schema 提示、内置任务表选择与动作兼容 |
+| `schema_check_test.go`、`data_tables_test.go` | schema 提示、内置任务表选择与版本化动作 |
 | `http_drain_test.go`、`shutdown_resources_test.go` | 连接强关后仍活跃的 handler、hijack、拒绝新请求、白名单未排空时保留数据库，以及全部退出后的关闭 |
 | `runtime_lifecycle_test.go`、`shutdown_test.go` | 运行组件取消/等待、采样和日志消费者、初始化失败清理；业务钩子顺序、错误、panic 和超时 |
 | `events_test.go` | 事件流配置和输出 |
@@ -371,7 +371,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 | `detector.go` | Outcome/Group/Decision、Detector；按任务轮次去重、窗口/epoch 处理、快/混合/硬阈值与容量保护，Snapshot/Evidence |
 | `recovery.go` | Recovery、PendingFailure、StageCheck 等控制值；Detector 的 Checkpoint/Restore 及原时间/失败身份恢复 |
 
-`Detector.mu` 保护失败/成功样本、epoch、时间边界、容量溢出与兼容计数。失败记录容量耗尽进入保护，不静默驱逐失败造成少计；成功样本单独有界，不抵消失败。Evidence 从计数所用记录投影，不维护第二份证据缓存；调用方若需组合多个快照，仍须持有自己的结果/准入协调锁。
+`Detector.mu` 保护失败/成功样本、epoch、时间边界、容量溢出。失败记录容量耗尽进入保护，不静默驱逐失败造成少计；成功样本单独有界，不抵消失败。Evidence 从计数所用记录投影，不维护第二份证据缓存；调用方若需组合多个快照，仍须持有自己的结果/准入协调锁。
 
 Recovery 是由 Engine 的熔断协调锁保护的控制值，不属于 Detector 的暂停状态；显示截断/脱敏不能改变恢复身份、覆盖或准入。Checkpoint 复制精确失败轮次和原始时间、去掉错误展示字段，不保留成功证明；Restore 重置 epoch 后恢复仍有效失败，配置容量缩小时不会悄悄丢掉已知失败。Engine 负责全站恢复、重新放行、结果持久确认和何时清零，详见 [Engine 分册](ENGINE_STRUCTURE.md)。
 
@@ -385,13 +385,13 @@ Recovery 是由 Engine 的熔断协调锁保护的控制值，不属于 Detector
 
 | 文件 | 职责、入口与边界 |
 | --- | --- |
-| `snapshot.go` | Snapshot；Clean 复制控制/窗口/历史并清理展示文本；UpgradeRecovery/LegacySnapshot 只用于旧格式兼容 |
+| `snapshot.go` | Snapshot；Clean 复制控制/窗口/历史并清理展示文本；ValidateCurrent 拒绝缺失控制版本或精确窗口的格式 |
 | `store.go` | Store/New、Save 的行锁与 revision 约束、LoadRuntime、List、解码时元数据匹配和容量限制 |
 | `history.go` | appendHistory 在当前事务内追加；HistoryForWindow 返回窗口前仍活动的起始状态和窗口内转换；HistoryText 渲染单条历史 |
 
 Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期。`Save(ctx)` 在事务中锁定原记录，拒绝较旧/冲突 revision；相同 revision 且规范化 JSON 内容相同允许幂等保存。控制更新和历史追加一起提交或回滚，调用方负责可见重试，不在 Store 内启动后台重放。
 
-快照有 16 MiB payload 上限，恢复加载有数量预算；LoadRuntime 包含活动记录及每站最新关闭记录，以保留人工解除后的失败窗口。多条活动记录交由 Engine 判断，不在此静默选一条。历史按事件/sequence 去重，查询不拼接可变的最新报告；展示时间线的 128 条界限不得裁剪尚未确认的历史写入。LegacySnapshot 缺少精确窗口证明时保留这种不足，由 Engine 采用对应保护策略。
+快照有 16 MiB payload 上限，恢复加载有数量预算；LoadRuntime 包含活动记录及每站最新关闭记录，以保留人工解除后的失败窗口。多条活动记录交由 Engine 判断，不在此静默选一条。历史按事件/sequence 去重，查询不拼接可变的最新报告；展示时间线的 128 条界限不得裁剪尚未确认的历史写入。缺少控制版本或精确窗口的快照明确拒绝，不从展示数据推断控制状态。
 
 允许依赖 `internal/breaker` 控制值、`models`、`obs/incident`、GORM；不拥有 Engine、worker、HTTP 或共享 DB 的关闭责任。操作 context 传入 GORM，宿主等待调用者返回后再关闭 DB。
 
@@ -409,13 +409,13 @@ Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期
 | --- | --- |
 | `db.go` | NewDB 仅接受 mysql；按配置设置连接池及 SQL 日志级别/参数隐藏；AutoMigrate 依次处理模型并传播错误 |
 | `migrate.go` | Model、FrameworkModels、AllFrameworkModels、Migrate；迁移和启动检查共享模型目录，可选功能按配置选择，额外模型由宿主传入 |
-| `task_identity.go` | 显式迁移中的任务身份回填，按 ID 分页、跳过已回填行；新约束下发生冲突即报错，成功后才删除旧索引 |
-| `schema_check.go` | ExistingTables / HasIndexNamed 提供启动提示与迁移判断；CheckTraceSchema 仅保留旧调用兼容，普通启动不调用 |
+| `schema_version.go` | CheckTaskSchema 在启动/显式迁移前只读验证当前 v4 任务身份列、旧索引及数据；拒绝旧格式，不做回填 |
+| `schema_check.go` | ExistingTables / HasIndexNamed 提供启动提示与迁移判断 |
 | `upsert.go` | Upsert 构造冲突更新，必要时按冲突列回读主键；columnList/backfillPrimaryKey 处理 GORM 列元数据 |
 
 NewDB 成功后将 GORM/底层 sql.DB 生命周期交给 App/宿主；本包不启动 goroutine、不关闭调用方传入的数据库，也没有共享可变目录缓存。GORM/数据库拥有连接池及事务，局部 schema 解析缓存只用于当前 Upsert。
 
-普通启动只检查，不自动迁移。Migrate 先同步框架/额外模型，再分批补任务身份；回填使用 `core.NormalizeTaskIdentity`，只更新尚空的 identity_hash，冲突不合并、不删除任务，重新执行可跳过已完成行。此入口要求 worker 已停止；新身份索引由模型迁移建立后，才在回填成功时移除两个旧唯一索引。不能把这些显式 schema 操作藏入 NewDB 或 schema 提示。
+普通启动只检查，不自动迁移。Migrate 写入前拒绝非 v4 任务身份格式，随后同步当前框架/额外模型；不转换旧任务、不删除旧索引或业务数据。
 
 `AllFrameworkModels` 是包括关闭功能的只读检查目录；实际迁移用 `FrameworkModels`。ExistingTables 查询当前库的基础表集合，调用方据需要核对所关注名称；HasIndexNamed 才按具体表/索引过滤。Upsert 不拥有业务事务，调用方应传入适当的 DB/transaction/context；写入成功后的回读错误也必须传播。
 
@@ -433,13 +433,13 @@ NewDB 成功后将 GORM/底层 sql.DB 生命周期交给 App/宿主；本包不�
 | --- | --- |
 | `doc.go` | 任务持久化语义包契约 |
 | `pending.go` | PendingWindow、LoadSchedulingBatch、CountPending；库时钟/补偿/keyset 查询、批量回灌读取及关停计数；不拥有扫描 goroutine、游标或内存成员 |
-| `store.go` | RunVersion / ErrChanged；CompensationScope、ClaimScope、RetryScope、TerminalScope、RepeatScope；Claim、Complete、Release、RetryTask、RetryFailed、AdvanceRepeat，以及兼容 Insert/IncrementRetry/UpdateStatus |
+| `store.go` | RunVersion / ErrChanged；CompensationScope、ClaimScope、RetryScope、TerminalScope、RepeatScope；Claim、Complete、Release、RetryTask、RetryFailed、AdvanceRepeat，以及内部 Insert/IncrementRetry |
 
 没有包级可变状态、锁、后台循环或 Stop。数据库行的 status、repeat、reprocess 和 compensation_version 构成操作条件；调用方提供带 context/事务的 DB，并检查错误与命中行数。不能由 admin、治理队列或 Engine 的另一个入口重新实现一套不同的重投版本规则。
 
 Claim 只认领到期、满足补偿准入、尚 pending 且不属于任务流的行；任务流自己的行锁/事务由 Engine 的 taskFlowService 协调。Complete 用 status=processing 与准确执行轮次更新，未命中时回读相同轮次/终态以确认丢失的 UPDATE 应答；不能因此重复追加结果或覆盖新轮次。RetryTask 固定操作者观察到的状态和版本，RetryFailed/AdvanceRepeat 用补偿版本避免并发领取同一条；重投与轮询分别推进自己的代次。
 
-兼容 Insert/IncrementRetry/UpdateStatus 供旧 Task 门面使用，不能误认为这些宽条件入口等价于新执行协议的版本保护。Release 只按 processing 条件退回 pending；调用它的协调层负责对应执行归属。字段 `repeat` 在相关 SQL 表达式中引用时保留反引号。
+Insert 供提交持久化使用；IncrementRetry 将错误交给执行协调器处理。已删除 Task 上的旧状态/重试方法；终态写入继续通过版本条件保护。
 
 依赖仅 `core`、`models`、GORM 和标准库，不导入 HTTP/admin/App/Engine。`store_test.go` 的 `TestClaimAndReleaseFences`、`TestRetryAndRepeatOwnGenerationTransitions`、`TestTerminalScopeFencesExactRound` 验证 SQL 条件与代次表达式；确认丢失、并发执行和实际持久化行为还由 Engine 的集成/真实库测试负责。
 
@@ -501,9 +501,9 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 
 新增状态或后台循环前，明确是哪个组件持锁、谁负责拒绝新操作、如何取消、如何等待和超时后保留哪些依赖。当前几种停止契约有意不同：App/诊断汇总真实等待结果，reportrunner 等定时生成返回，workerpool 返回首次停止时的任务完成快照，track 只发停止信号，msgqueue 没有停止入口。不能用同一个“都已关闭”描述抹平这些差异。
 
-新增持久化逻辑先找语义拥有者：任务转移归 taskstore；熔断控制快照及历史事务归 breakerstore；策略 CAS/核对/发布归 runtimecontrol，具体配置存储适配归 admin/configstore；建表与任务身份回填只走显式 database.Migrate。App 只组织时序，不复制这些算法。
+新增持久化逻辑先找语义拥有者：任务转移归 taskstore；熔断控制快照及历史事务归 breakerstore；策略 CAS/核对/发布归 runtimecontrol，具体配置存储适配归 admin/configstore；当前 schema 建表只走显式 database.Migrate。App 只组织时序，不复制这些算法。
 
-本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../DEVELOPMENT.md)，公开扩展继续保留既有兼容行为。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。
+本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../DEVELOPMENT.md)，公开扩展以当前 v4 契约为准。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。
 
 
 ## tracestore：Trace 文件持久化
@@ -520,4 +520,6 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 
 路径为分片/task-ID/identity-hash/execution-digest/发布序号.json。标准 identity_hash 直接作为目录名；非标准标识散列后使用。版本化 JSON 保存原执行 UUID、任务身份、尝试号、记录时间和截断状态。任务 ID 查询不依赖数据库或第二套索引。崩溃遗留 `.pending` 不展示，保守保留并计入预算；不自动递归删除未知目录。
 
-App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 与 CheckTraceSchema 兼容声明不意味着恢复 SQL 读写。
+App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 模型及 CheckTraceSchema 声明已经删除。
+
+NewApp 在创建 Engine 前调用 database.CheckTaskSchema；拒绝旧 schema 或校验失败时关闭新建 DB 连接并返回错误。缺少尚未创建的任务表允许后续显式迁移；旧库不靠日志提示继续启动。

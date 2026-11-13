@@ -21,7 +21,7 @@ type Result struct {
 	Gaps int
 	// Files 是实际读取的文件个数（等于传入的路径数；读取失败时 Result 为零值）。
 	Files int
-	// Unparsed 是解析失败的 JSONL 行数。空行（只有空白字符）被忽略、不计入。
+	// Unparsed 是解析失败或 schema 版本不受支持的 JSONL 行数。空行（只有空白字符）被忽略、不计入。
 	Unparsed int
 	// Duplicates 是按 (run_id, seq) 去重时丢弃的条数。
 	Duplicates int

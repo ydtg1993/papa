@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// Register mounts the monitor page, feature APIs and compatibility assets.
+// Register mounts the monitor page, feature APIs and composed page assets.
 func (s *Monitor) Register(mux *http.ServeMux) {
 	// 静态资源（CSS/JS），无需鉴权
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {

@@ -1,6 +1,7 @@
 package breakerstore
 
 import (
+	"fmt"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/obs/incident"
 )
@@ -42,24 +43,10 @@ func (s Snapshot) Clean() Snapshot {
 	return s
 }
 
-// UpgradeRecovery is a one-time compatibility conversion, not runtime control
-// driven by the display report. Old promoted hard incidents may have started mixed.
-func (s *Snapshot) UpgradeRecovery() {
-	if s.Control.Version != 0 {
-		return
+// ValidateCurrent rejects snapshots that cannot supply v4 recovery evidence.
+func (s Snapshot) ValidateCurrent() error {
+	if s.Control.Version != 1 || s.Control.ID == "" || s.Window == nil {
+		return fmt.Errorf("unsupported breaker snapshot: v4 control version 1 and exact window required")
 	}
-	if s.Control.Active() && (s.Rule == "mixed" || s.Rule == "hard" || s.Rule == "" || s.Control.State == "observing") {
-		s.Control.MixedSamples = true
-	}
-	s.Control.Version = 1
-}
-
-// LegacySnapshot is only for upgrading old stored events. Missing exact window
-// evidence is explicit and forces manual protection in Engine.
-func LegacySnapshot(l incident.Lifecycle) Snapshot {
-	s := Snapshot{Lifecycle: l, Control: breaker.Recovery{ID: l.Capture.ID, Site: l.Capture.Site, Stage: l.Stage, State: l.State, Revision: l.Revision, Epoch: l.Epoch, StartedAt: l.StartedAt, UpdatedAt: l.UpdatedAt, LastFailureAt: l.LastFailureAt, NextProbeAt: l.NextProbeAt, RetryAfterUntil: l.RetryAfterUntil, Deadline: l.Deadline, FinalAt: l.FinalAt, CountersResetAt: l.CountersResetAt, ProbeAttempts: l.ProbeAttempts, Successes: l.Successes, ChecksLimited: l.ChecksLimited}}
-	for _, c := range l.Checks {
-		s.Control.Checks = append(s.Control.Checks, breaker.StageCheck{Stage: c.Stage, State: c.State, Round: c.Round, StartedAt: c.StartedAt, FinishedAt: c.FinishedAt, Detail: c.Detail, TaskSuccesses: c.TaskSuccesses, Verification: c.Verification, Coverage: c.Coverage, ProbeSuccesses: c.ProbeSuccesses})
-	}
-	return s
+	return nil
 }

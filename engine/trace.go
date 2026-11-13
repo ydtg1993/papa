@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/tracestore"
 )
@@ -17,7 +18,7 @@ const (
 	defaultTraceRetention = 7 * 24 * time.Hour
 	// traceCleanupInterval 保留期清理的巡检间隔。
 	traceCleanupInterval = time.Hour
-	// maxTraceSteps ListTrace 单次返回的步骤数上限。
+	// maxTraceSteps ListTraceExecution 单次返回的步骤数上限。
 	maxTraceSteps = 500
 	// traceUrgentStep 加急任务在 trace 里记的步骤名（引擎在第一次尝试时写，见 runAttempt）。
 	traceUrgentStep = "加急执行"
@@ -30,14 +31,14 @@ const (
 // Trace 一次尝试（一次 FetchHandler 调用）的步骤记录器。
 //
 // worker 在调用 handler 前把它挂到 Task.Trace 上，handler 用 Step/Fail 逐步骤上报；
-// 一次尝试结束时仅异常或手动选中的执行写入文件。
+// 一次尝试结束时仅异常模式下的异常尝试，或全量模式下的所有尝试写入文件。
 //
 // **空指针安全**：trace 未开启、或测试里直接调 FetchHandler 时 Task.Trace 为 nil，
 // 此时 Step/Fail/setResult/finish 都是 no-op —— 可选协作者就该是可选的。
 type Trace struct {
 	store        *traceService
 	identityHash string
-	manual       bool
+	keepAll      bool
 	abnormal     bool
 	truncated    bool
 	bytes        int
@@ -105,7 +106,7 @@ func (t *Trace) Fail(name string, err error, data any) {
 	defer t.mu.Unlock()
 	var msg, kind string
 	if err != nil {
-		msg, kind = err.Error(), ErrorKind(err)
+		msg, kind = err.Error(), core.ErrorKind(err)
 	}
 	t.append(name, "failed", kind, msg, payload, clipped)
 }
@@ -127,7 +128,7 @@ func (t *Trace) Warn(name string, err error, data any) {
 	defer t.mu.Unlock()
 	var msg, kind string
 	if err != nil {
-		msg, kind = err.Error(), ErrorKind(err)
+		msg, kind = err.Error(), core.ErrorKind(err)
 	}
 	t.append(name, "warn", kind, msg, payload, clipped)
 }
@@ -189,7 +190,7 @@ func traceStepBytes(s core.TraceStep) int {
 	return len(s.Step) + len(s.Kind) + len(s.Message) + len(s.Data) + 256
 }
 
-// setResult 记下本次尝试的结局：err == nil 视为成功，普通成功尝试丢弃缓冲。
+// setResult 记下本次尝试的结局：err == nil 视为成功，errors 模式下普通成功尝试丢弃缓冲。
 // 只在 handler 正常返回时被调用 —— handler panic 时不会走到，那次尝试按失败处理，
 // data 保留，正好是排查 panic 现场要看的。
 func (t *Trace) setResult(err error) {
@@ -201,7 +202,7 @@ func (t *Trace) setResult(err error) {
 	t.mu.Unlock()
 }
 
-// flush consumes the buffer once; clean successes are discarded.
+// flush consumes the buffer once; errors mode discards clean successes.
 func (t *Trace) flush() []core.TraceStep {
 	if t == nil {
 		return nil
@@ -211,14 +212,14 @@ func (t *Trace) flush() []core.TraceStep {
 	if t.done {
 		return nil
 	}
-	if len(t.steps) == 0 && t.manual {
+	if len(t.steps) == 0 && t.keepAll {
 		t.append("执行完成", "ok", "", "", "", false)
 	}
 	t.done = true
 	records := t.steps
 	t.steps = nil
 	t.bytes = 0
-	if t.succeed && !t.abnormal && !t.manual {
+	if t.succeed && !t.abnormal && !t.keepAll {
 		return nil
 	}
 	return records
@@ -243,19 +244,20 @@ func (e *Engine) traceService() *traceService {
 		if options.Dir == "" {
 			options.Dir = "traces"
 		}
-		e.traces = &traceService{files: tracestore.New(tracestore.Options{Dir: options.Dir, MaxFileBytes: options.MaxFileBytes, MaxTotalBytes: options.MaxTotalBytes, MaxFiles: options.MaxFiles}), armed: make(map[int]time.Time)}
+		e.traces = &traceService{files: tracestore.New(tracestore.Options{Dir: options.Dir, MaxFileBytes: options.MaxFileBytes, MaxTotalBytes: options.MaxTotalBytes, MaxFiles: options.MaxFiles})}
 		if e.loggerSet != nil {
 			e.traces.logger = e.loggerSet.Engine
 		}
 	})
 	return e.traces
 }
-func (e *Engine) traceEnabled() bool { return e.cfg.Crawler.Trace.Enabled }
+func (e *Engine) traceEnabled() bool { return e.cfg.Crawler.Trace.ModeOrDefault() != config.TraceOff }
 func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 	if !e.traceEnabled() || task == nil || task.ID <= 0 {
 		return nil
 	}
 	tr := newTrace(e.traceService(), task.ID, attempt)
+	tr.keepAll = e.cfg.Crawler.Trace.ModeOrDefault() == config.TraceAll
 	tr.identityHash = task.Unique()
 	if tr.identityHash == "" {
 		tr.identityHash = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%s", task.ID, task.Site, task.Stage, task.URL))))
@@ -263,24 +265,11 @@ func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 	return tr
 }
 
-// ListTrace returns ordered steps for the monitoring drawer.
-func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) {
-	detailed, err := e.ListTraceExecution(taskID)
-	if err != nil {
-		return nil, err
-	}
-	steps := make([]TraceStep, len(detailed))
-	for i := range detailed {
-		steps[i] = detailed[i].TraceStep
-	}
-	return steps, nil
-}
-
 // ListTraceExecution returns the latest persisted execution tail with identity
-// and truncation metadata. ListTrace retains its original value layout.
-func (e *Engine) ListTraceExecution(taskID int) ([]TraceExecutionStep, error) {
+// and truncation metadata.
+func (e *Engine) ListTraceExecution(taskID int) ([]core.TraceExecutionStep, error) {
 	if !e.traceEnabled() {
-		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
+		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.mode）")
 	}
 	return e.traceService().files.List(context.Background(), taskID, maxTraceSteps)
 }

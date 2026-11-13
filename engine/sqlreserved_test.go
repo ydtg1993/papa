@@ -194,7 +194,7 @@ func frameworkColumns(t *testing.T) map[string]bool {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Server.OperationLog = true
-	cfg.Crawler.Trace.Enabled = true
+	cfg.Crawler.Trace.Mode = config.TraceErrors
 	out := map[string]bool{}
 	cache := &sync.Map{}
 	for _, m := range database.FrameworkModels(cfg) {

@@ -54,7 +54,7 @@ papa/
 | admin | access、accountpools、accounts、auth、breakers、configstore、diagnostics、frameworkdata、gormsource、internal/httpjson、logs、monitoring、oplog、page、queues、reports、runtimecontrol、server、settings、shell、sitesource、sysinfo、taskflow、tasksource、tasktrace、tokenadmin | ADMIN_STRUCTURE |
 | engine | 根包、internal/execution、internal/fetchruntime、internal/scheduler | ENGINE_STRUCTURE |
 | internal | tracestore、 app、breaker、breakerstore、browserdiagnostics、database、gormfake、msgqueue、reportrunner、runtimecontrol、sitedecl、taskstore、track、workerpool | INTERNAL_STRUCTURE |
-| pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、strategymigrate、temporary、testdb | PKG_STRUCTURE |
+| pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、temporary、testdb | PKG_STRUCTURE |
 | obs | 根包、analyze、eventlog、incident、inputbudget、logidx、pattern、report | OBS_STRUCTURE |
 | cmd | papa、monitor-demo | CMD_STRUCTURE |
 
@@ -64,7 +64,7 @@ Papa 专注单实例大单体。业务站点、真实模型、固定采集目标
 
 | 层次 | 拥有的责任 | 与其它层的交接 |
 | --- | --- | --- |
-| 公开门面 | 类型兼容、入口和业务扩展 | 委派实际组件，不另存领域状态 |
+| 公开门面 | 当前类型导出、入口和业务扩展 | 委派实际组件，不另存领域状态 |
 | App 组合根 | 创建依赖、注入、注册、启停与排空结果汇总 | 调用组件语义接口，未排空时保留共享依赖 |
 | HTTP/页面适配 | 请求解析、权限、响应、展示、前端局部生命周期 | 使用窄服务接口；不复制领域版本和事务规则 |
 | 执行与服务 | 调度、状态、原子操作、锁、取消和完成信号 | 在已有事务/锁序内协作，不通过任意字段回调绕开所有权 |

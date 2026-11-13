@@ -6,6 +6,7 @@ import (
 	adminruntime "github.com/ydtg1993/papa/v4/admin/runtimecontrol"
 	"github.com/ydtg1993/papa/v4/internal/runtimecontrol"
 	"github.com/ydtg1993/papa/v4/pkg/account"
+	"github.com/ydtg1993/papa/v4/pkg/account/gormstore"
 	"github.com/ydtg1993/papa/v4/pkg/governance"
 	"time"
 )
@@ -46,7 +47,7 @@ func (a *App) initRuntime(ctx context.Context) error {
 		if existing := m.Pools(); existing != nil {
 			s.pools = existing
 		} else {
-			s.pools, err = account.NewPools(runCtx, m, account.NewGORMPoolStore(a.DB), account.PoolOptions{References: a.Engine.AccountPoolReferences, Context: func(ctx context.Context, key account.Key) context.Context {
+			s.pools, err = account.NewPools(runCtx, m, gormstore.NewGORMPoolStore(a.DB), account.PoolOptions{References: a.Engine.AccountPoolReferences, Context: func(ctx context.Context, key account.Key) context.Context {
 				return a.Engine.RuntimeContext(ctx, key.Site)
 			}})
 			if err != nil {

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/track"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
@@ -52,10 +53,10 @@ func (e *Engine) harvestStageTotals(key string, pool *workerpool.WorkerPool[*Tas
 //
 // **map 的键是 `core.StageKey(site, stage)`**（阶段名只在本站内唯一，两个站的 catalog 是两条）；
 // 站点与裸阶段名另各带一个字段，后台在站点 Tab 里显示短名字、按站分组都靠它们。
-func (e *Engine) GetStageStats() map[string]StageStats {
+func (e *Engine) GetStageStats() map[string]core.StageStats {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	out := make(map[string]StageStats, len(e.statsQueue))
+	out := make(map[string]core.StageStats, len(e.statsQueue))
 	for key, mon := range e.statsQueue {
 		// 键没在登记表里 = 只有统计器没有阶段（测试会这么塞）。两段留空，不 panic：
 		// 监控页少一行标注，好过整个 API 500。
@@ -65,16 +66,16 @@ func (e *Engine) GetStageStats() map[string]StageStats {
 		}
 		submitted, completed, failed, inProgress, queueLen := mon.WorkPool.Stats()
 		allWorkers := mon.GetAllWorkerStats()
-		workers := make(map[int]WorkerStat, len(allWorkers))
+		workers := make(map[int]core.WorkerStat, len(allWorkers))
 		for id, w := range allWorkers {
-			workers[id] = WorkerStat(w)
+			workers[id] = core.WorkerStat(w)
 		}
-		out[key] = StageStats{
+		out[key] = core.StageStats{
 			Stage:   stage,
 			Site:    site, // 阶段属于哪个站点（后台按站点分组就靠它）
-			Global:  GlobalStats(mon.GetGlobalStats()),
+			Global:  core.GlobalStats(mon.GetGlobalStats()),
 			Workers: workers,
-			Queue: QueueStats{
+			Queue: core.QueueStats{
 				// 累计（跨池实例） + 当前池：池 churn 后吞吐不归零
 				Submitted:  e.stageTotals[key].Submitted + submitted,
 				Completed:  e.stageTotals[key].Completed + completed,

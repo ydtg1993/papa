@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/config"
 	"os"
 	"strings"
 	"sync"
@@ -22,14 +23,12 @@ func traceText(t *testing.T, e *Engine, id int) string {
 	return string(b)
 }
 func TestTraceFileRetentionPolicy(t *testing.T) {
-	for _, mode := range []string{"success", "error", "panic", "warn", "fail", "manual"} {
+	for _, mode := range []string{"success", "error", "panic", "warn", "fail", "all"} {
 		t.Run(mode, func(t *testing.T) {
 			e, pool := traceEngine(t, true)
 			task := &Task{ID: 7, Site: "synthetic", Stage: "stub", URL: "https://example.test"}
-			if mode == "manual" {
-				if err := e.TraceNextExecution(7); err != nil {
-					t.Fatal(err)
-				}
+			if mode == "all" {
+				e.cfg.Crawler.Trace.Mode = config.TraceAll
 			}
 			f := &tracePolicyFetcher{mode: mode}
 			func() {
@@ -152,38 +151,18 @@ func TestTraceDataBoundedCyclesAndUnsupported(t *testing.T) {
 		t.Fatal(s)
 	}
 }
-func TestTraceManualSelectionOneShotRetryAndCapacity(t *testing.T) {
+func TestTraceAllRetries(t *testing.T) {
 	e, _ := traceEngine(t, true)
-	if err := e.TraceNextExecution(7); err != nil {
-		t.Fatal(err)
-	}
-	ctx := e.selectTraceExecution(withEvidenceExecution(context.Background()), 7)
+	e.cfg.Crawler.Trace.Mode = config.TraceAll
+	ctx := withEvidenceExecution(context.Background())
 	for i := 0; i < 2; i++ {
 		if err := e.runAttempt(ctx, &tracePolicyFetcher{}, &Task{ID: 7}, i); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rows, _ := e.ListTraceExecution(7)
-	if len(rows) != 2 || rows[0].ExecutionID != rows[1].ExecutionID {
-		t.Fatalf("retry rows=%+v", rows)
-	}
-	if e.selectTraceExecution(context.Background(), 7).Value(traceSelectionKey{}).(bool) {
-		t.Fatal("selection reused")
-	}
-	s := e.traceService()
-	s.mu.Lock()
-	s.armed[8] = time.Now().Add(-time.Second)
-	s.mu.Unlock()
-	if e.selectTraceExecution(context.Background(), 8).Value(traceSelectionKey{}).(bool) {
-		t.Fatal("expired selection")
-	}
-	for i := 1; i <= maxTraceSelections; i++ {
-		if err := e.TraceNextExecution(i); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if e.TraceNextExecution(maxTraceSelections+1) == nil {
-		t.Fatal("unbounded selections")
+	rows, err := e.ListTraceExecution(7)
+	if err != nil || len(rows) != 2 || rows[0].ExecutionID != rows[1].ExecutionID {
+		t.Fatalf("rows=%+v err=%v", rows, err)
 	}
 }
 func TestTraceFailedRetryAndLaterCleanExecutionPreserveEvidence(t *testing.T) {
@@ -219,7 +198,7 @@ func TestTraceNilReceiver(t *testing.T) {
 	}
 }
 
-func TestTraceActualDeadlineAndManualEmpty(t *testing.T) {
+func TestTraceActualDeadlineAndAllEmpty(t *testing.T) {
 	e, _ := traceEngine(t, true)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
@@ -228,14 +207,13 @@ func TestTraceActualDeadlineAndManualEmpty(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("actual deadline discarded")
 	}
-	tr := newTrace(e.traceService(), 8, 0)
-	tr.identityHash = strings.Repeat("a", 64)
-	tr.manual = true
+	e.cfg.Crawler.Trace.Mode = config.TraceAll
+	tr := e.newTrace(&Task{ID: 8}, 0)
 	tr.setResult(nil)
 	tr.finish()
 	rows, _ = e.ListTraceExecution(8)
 	if len(rows) != 1 || rows[0].Step != "执行完成" {
-		t.Fatalf("manual empty=%+v", rows)
+		t.Fatalf("all empty=%+v", rows)
 	}
 }
 func TestTraceFileCleanupAndRetention(t *testing.T) {
@@ -263,5 +241,41 @@ func TestTraceFileCleanupAndRetention(t *testing.T) {
 	rows, _ = e.ListTraceExecution(7)
 	if len(rows) != 0 {
 		t.Fatal("expired files retained")
+	}
+}
+
+func TestTraceDefaultAndOff(t *testing.T) {
+	e, _ := traceEngine(t, true)
+	e.cfg.Crawler.Trace.Mode = ""
+	if tr := e.newTrace(&Task{ID: 7}, 0); tr == nil || tr.keepAll {
+		t.Fatal("default is not errors")
+	}
+	e.cfg.Crawler.Trace.Mode = config.TraceOff
+	if tr := e.newTrace(&Task{ID: 7}, 0); tr != nil {
+		t.Fatal("off allocated trace")
+	}
+	if err := e.runAttempt(context.Background(), &tracePolicyFetcher{mode: "error"}, &Task{ID: 7}, 0); err == nil {
+		t.Fatal("outcome changed")
+	}
+	entries, err := os.ReadDir(e.cfg.Crawler.TraceFiles.Dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("off wrote files: %v %v", entries, err)
+	}
+}
+
+func TestTraceAllRetainsCancellationWithoutFailure(t *testing.T) {
+	e, _ := traceEngine(t, true)
+	e.cfg.Crawler.Trace.Mode = config.TraceAll
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = e.runAttempt(ctx, &tracePolicyFetcher{mode: "cancel", cancel: cancel}, &Task{ID: 7}, 0)
+	rows, err := e.ListTraceExecution(7)
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	for _, r := range rows {
+		if r.Status == "failed" {
+			t.Fatal("shutdown cancellation became failure")
+		}
 	}
 }

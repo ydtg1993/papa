@@ -65,10 +65,7 @@ func (d *Downloader) decodeResume(data []byte, s *ResumeState) error {
 	if err := json.Unmarshal(data, &e); err != nil {
 		return err
 	}
-	if e.Version == 0 {
-		return json.Unmarshal(data, s)
-	}
-	if e.Version != 1 && e.Version != 2 {
+	if e.Version != 2 {
 		return middleware.ResourceLimit("unsupported resume version", int64(e.Version))
 	}
 	if err := json.Unmarshal(e.State, s); err != nil {
@@ -77,20 +74,19 @@ func (d *Downloader) decodeResume(data []byte, s *ResumeState) error {
 	if err := d.validateResume(s); err != nil {
 		return err
 	}
-	if e.Version == 2 {
-		var n int64
-		if s.TotalSize > 0 && s.ChunkSize > 0 {
-			n = (s.TotalSize-1)/s.ChunkSize + 1
-		}
-		if int64(len(e.Done)) != (n+7)/8 {
-			return middleware.ResourceLimit("invalid resume bitmap", n)
-		}
-		s.Completed = nil
-		for i := int64(0); i < n; i++ {
-			if e.Done[i/8]&(1<<uint(i%8)) != 0 {
-				s.Completed = append(s.Completed, i*s.ChunkSize)
-			}
+	var n int64
+	if s.TotalSize > 0 && s.ChunkSize > 0 {
+		n = (s.TotalSize-1)/s.ChunkSize + 1
+	}
+	if int64(len(e.Done)) != (n+7)/8 {
+		return middleware.ResourceLimit("invalid resume bitmap", n)
+	}
+	s.Completed = nil
+	for i := int64(0); i < n; i++ {
+		if e.Done[i/8]&(1<<uint(i%8)) != 0 {
+			s.Completed = append(s.Completed, i*s.ChunkSize)
 		}
 	}
+
 	return nil
 }

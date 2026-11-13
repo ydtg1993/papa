@@ -65,14 +65,14 @@ func TestCompensationConditionsBlockEveryRequeueWithoutSpendingGeneration(t *tes
 				f.row["next_compensation_at"] = *tt.at
 			}
 			e, _ := urgentEngine(t, f)
-			row, err := e.loadTask(7)
+			row, err := e.loadTask(context.Background(), 7)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if e.requeueFailedTaskIn(row) || e.requeueRepeatTaskIn(row) {
 				t.Fatal("automatic path bypassed condition")
 			}
-			if err = e.RetryTask(7, 0); !errors.Is(err, ErrCompensationBlocked) {
+			if err = e.RetryTaskVersioned(context.Background(), 7, 0, 0); !errors.Is(err, ErrCompensationBlocked) {
 				t.Fatalf("manual path bypassed condition: %v", err)
 			}
 			if tt.pool == "" && e.requeueRecoverTask(row) {

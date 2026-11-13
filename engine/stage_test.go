@@ -153,7 +153,7 @@ func TestNotifyFailureSwallowsNotifierError(t *testing.T) {
 	}
 }
 
-// 熔断触发时的回调走同一套 Notifier，但级别更高（critical）——
+// 熔断触发时的回调走同一套 core.Notifier，但级别更高（critical）——
 // webhook 那边据此单独路由（钉钉 @全体之类）。
 func TestNotifyBreakerTripEmitsCritical(t *testing.T) {
 	f := newFakeTaskDB()
@@ -264,7 +264,7 @@ func newTestEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	cfg := &config.Config{}
 	// 阶段不在配置里了（参数搬进 Go 声明）：这个引擎的 "stub" 阶段由各用例自己 AddStage。
 	cfg.Crawler.DrainInterval = time.Hour
-	cfg.Crawler.Trace.Enabled = false
+	cfg.Crawler.Trace.Mode = config.TraceOff
 
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	e.breakers.breakerStore = &memoryBreakerRepository{}
@@ -1180,7 +1180,7 @@ func TestStopDrainDoesNotClaimQueuedTasks(t *testing.T) {
 	done := make(chan struct{})
 	var (
 		drained bool
-		stats   map[string]StopStats
+		stats   map[string]core.StopStats
 	)
 	go func() {
 		drained, stats = e.Stop(2 * time.Second)

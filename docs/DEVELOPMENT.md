@@ -102,7 +102,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 **包职责清晰是长期开发硬规则。** 新增或修改功能先明确状态拥有者、接口、允许依赖、原子性和关闭契约，再选择文件；按职责拆分，不按文件数机械拆包。新增包/重要文件同步对应分册和说明书总索引，不在本节再维护第二份逐文件清单。
 
-完整跨组件规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。`TestPackageResponsibilityBoundaries` 只检查部分依赖与资源归属；改动并发、取消、排空、SQL 或页面时仍须按本手册选择行为验证。公开 App/Engine/Task/Fetcher 及既有别名继续保留兼容。
+完整跨组件规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。`TestPackageResponsibilityBoundaries` 只检查部分依赖与资源归属；改动并发、取消、排空、SQL 或页面时仍须按本手册选择行为验证。公开 App/Engine/Task/Fetcher 以当前 v4 契约为准，不维持旧版接口。
 
 ## 7. 站点维度：哪些已按站点切、哪些还是全局
 
@@ -128,7 +128,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | 站点快照（**内存是源**：启动读 `crawler_config` 的 `sites` 键（没有就按声明生成）、按声明对齐；`StartPaused` 也在这**一次**写里落成暂停态，手动暂停/恢复整块回写） | `engine/sitestat.go`、`admin/configstore/sites.go` |
 | 后台 | 顶部站点 Tab、站点概要；任务表有 `site` 列与筛选 | `admin/monitoring/static/controller.js`、`admin/tasksource/table.go` |
-| 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(url_hash, stage, site)` | `models/crawler_task.go`、`engine.submit.go` |
+| 数据 | 任务的 `site` 列（提交时**必填**，重投路径照抄回来）；唯一索引 `(site, stage, identity_hash)` | `models/crawler_task.go`、`engine.submit.go` |
 | 治理 | 同站请求并发/速率/AutoThrottle、阶段有效执行并发、站点服务权重 | `pkg/governance`、`engine/governance.go` |
 | 身份 | 站点内命名池保持当前账号；账号管理状态由同站多池共享；task.account_pool 保留补偿归属 | `pkg/account/pools.go`、`engine/account_pool.go` |
 
@@ -171,7 +171,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 `papa new` 生成薄根入口 `main.go` 与 `internal/app/run.go`，采集实现、站点声明、模型和后台分别在 `internal/{fetcher,sites,models,monitor}`。Docker 文件放 `deploy/docker`，应用文档与 `docs/framework` 框架副本分开；完整生成树见 [CLI.md](CLI.md)。
 
-CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check、upgrade 与随项目技能共用。旧项目仍使用原目录，不会被升级命令自动迁移。模板 `app_run.go.tmpl` 负责启动组装，`main.go.tmpl` 只转交参数。
+CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check、upgrade 与随项目技能共用。只支持 v4 的 internal/sites 和 docs/framework 布局。模板 `app_run.go.tmpl` 负责启动组装，`main.go.tmpl` 只转交参数。
 
 脚手架区分完整 module 与本地项目名：module 用于 import，本地项目名取最后一段，用于站点文件和构建/部署名称。`cmd/papa/module_path_test.go` 的 `TestRunNewNamespacedModuleBuilds` 覆盖多级路径、连字符和 `/v2` 后缀，实际生成临时项目、tidy/build、构建入口二进制并运行纯站点校验。
 
@@ -213,7 +213,7 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 - `testdata/visual_state_test.js` / `visuals_test.js`：真实生产 JS 的时间、身份、阶段集合、采样周期、同时间戳重连、旧响应、缺失值、前11项+其他总计、降级和销毁回归，由 `TestOperationsJavaScriptBehavior` 自动执行。`monitor_requests_test.js` 同时验证迟到/超时响应不进入观测历史。
 - 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不引入真实站点业务依赖。
 
-当前默认以 `GOWORK=off` 验证 go.mod 中已发布的 oao v1.4.0。修改尚未发布的 oao 时再用临时 go.work 联调；旧版兼容用独立临时 modfile 指向真实发布版本，不修改正式依赖或模块缓存。目标包 `go test ./admin/... ./cmd/monitor-demo`，并发 `go test -race ./admin/server ./admin/sysinfo ./cmd/monitor-demo`，全包静态检查与构建 `go vet ./...` / `go build ./...`。Node 不存在时行为测试显式跳过，不能称前端行为验证通过。
+当前默认以 `GOWORK=off` 验证 go.mod 中已发布的 oao v1.4.0。修改尚未发布的 oao 时再用临时 go.work 联调；不提供旧组件兼容模式。目标包 `go test ./admin/... ./cmd/monitor-demo`，并发 `go test -race ./admin/server ./admin/sysinfo ./cmd/monitor-demo`，全包静态检查与构建 `go vet ./...` / `go build ./...`。Node 不存在时行为测试显式跳过，不能称前端行为验证通过。
 
 提交前二次复核新增 `monitor_identity_test.js`（外部凭据更换、晚到401、轮询恢复、新旧表格导航隔离），`workbench_test.js` 覆盖站点全部消失及当前模块清空筛选。`TestMonitorReducedMotionDisablesFeedbackTransforms` 守卫减弱动效下的反馈位移；`visuals_test.js` 核对系统资源范围。`TestCollectorSnapshotDirsAreIndependent` / `TestCollectorOwnsDirectoryConfig` 验证 map 所有权；`TestHarvestStageTotalsRetiresCurrentSnapshotAtomically` / `TestHarvestStageTotalsPreservesReplacementSnapshot` 以真实 worker pool 验证回收累计与重建身份。回收不在引擎锁内等待 worker 停止。
 
@@ -227,7 +227,7 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 `TestMonitorLayoutHasFourCategoriesAndSeparateLogs`、`TestMonitorOverviewHasOneDefaultChart` 守卫模板结构；`navigation_test.js`、`monitor_requests_test.js`、`monitor_identity_test.js` 执行真实生产 JS，覆盖四类映射、兼容回退、文本安全、未保存阻止导航、晚到清单/日志和凭据切换。`visuals_test.js` 覆盖 1→3→6 实例、折叠销毁、离页/后台不复活和旧依赖回退。`internal/app/page_sections_test.go` 通过真实 HTTP handler 验证 Section 契约，`cmd/papa/scaffold_page_sections_test.go` 检查新建模板。
 
 
-旧 oao 的兼容回归 `testdata/legacy_oao_test.js` 通过 `ui_behavior_test.go` 读取当前链接依赖的真实 `oao.js`，使用仓内最小事件 DOM helper；不依赖相邻 oao 仓或复制动作实现。旧版验证查询/筛选/分页、确认 Promise 取消、强制旧动作的传输拒绝与过期401/正文；新版执行真实 render、筛选、正常 POST、销毁确认与迟到401/正文隔离，并断言不安装兼容包装。`admin/shell/static/table-adapter.js` 的适配只接管同源独立虚拟前缀，其余 fetch 原样透传，不改服务端权限；旧版表格只读限制见 MONITOR 的版本与部署说明。
+当前 oao 1.4 的 `oao_lifecycle_test.js` 通过实际嵌入脚本验证销毁、取消与身份隔离；`oao_dom.js` 仅提供测试 DOM。无旧组件只读回退。
 
 `TestMonitorLinkedVisualsBehavior` 从当前链接 oao 的 StaticFS 读取真实图表与动效脚本，运行 `testdata/linked_visuals_test.js`，覆盖观测边界、图表折叠/离页、pagehide 迟到回调、KPI 动画和滚动焦点保留。`monitor_identity_test.js` 联合真实 mo/requests 验证冻结页面漏收 storage 事件后的凭据核对。DOM、动画调度及请求仍为受控替身，浏览器排版与实际 BFCache 命中须另验。
 
@@ -265,7 +265,6 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 临时资源、恢复清理和隔离测试库的职责见 [Pkg 分册](package_structure/PKG_STRUCTURE.md)，使用契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。回归命令为 `go test -race ./pkg/temporary ./pkg/testdb`。
 
-历史表盘点的实现归属见 Pkg 和 [Cmd 分册](package_structure/CMD_STRUCTURE.md)，使用范围见 [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md)。`inspect_test.go` 检查只读事务、缺表非零行、错误传播、表名/清单校验；CLI 回归检查拒绝写命令和输出不覆盖。
 
 ## 后台资源与移除功能的回归
 
@@ -275,7 +274,7 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 后台只注册现有通用能力。`admin/server/ui_behavior_test.go` 的 `TestMonitorTemplateLocalAssetsExist` 检查模板引用的本地资源确实嵌入；`TestOperationsJavaScriptBehavior` 执行 Node 行为测试，覆盖导航、身份切换、草稿保护、队列及工作台。`navigation_test.js` 检查当前内置模块和对应页面，`admin/taskflow/handler.go` / `static/taskflow.js` 保留动态任务流入口。
 
-`admin/frameworkdata/tables_test.go` 使用现有框架模型验证只读目录、鉴权、查询投影、稳定排序、脱敏和缺表恢复，不依赖已删除的 Agent/规则模型。历史旧表仅在 `pkg/strategymigrate` 的只读预检清单中保留，不会自动迁移或删除。
+`admin/frameworkdata/tables_test.go` 使用现有框架模型验证只读目录、鉴权、查询投影、稳定排序、脱敏和缺表恢复，不依赖已删除的 Agent/规则模型。历史表不属于当前框架，不提供盘点或自动迁移工具。
 
 框架表目录和 JSON 投影的职责见 [Admin 分册](package_structure/ADMIN_STRUCTURE.md)；回归不能只使用 `_json` 字段名，还需覆盖任务流 `policy` 等由 schema 标记的 JSON 列。
 
@@ -283,12 +282,14 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 ### 任务身份与时间验证
 
-身份值与模型 hook 见 [根目录分册](package_structure/ROOT_STRUCTURE.md)，显式回填迁移见 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md)，执行记录及延迟恢复见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。时间使用规则见 [TASK_TIMING.md](TASK_TIMING.md)。
+身份值与模型 hook 见 [根目录分册](package_structure/ROOT_STRUCTURE.md)，v4 schema 校验见 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md)，执行记录及延迟恢复见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。时间使用规则见 [TASK_TIMING.md](TASK_TIMING.md)。
 
-`engine/task_timing_test.go`、`engine/task_timing_mysql_test.go` 和 `models/utc_time_test.go` 验证持久化、恢复、失败隔离和时区。`engine/task_identity_mysql_test.go` 使用独立随机 MySQL 测试库验证同 URL 不同 ID、恢复去重、真正旧表升级、重复迁移和冲突拒绝。
+`engine/task_timing_test.go`、`engine/task_timing_mysql_test.go` 和 `models/utc_time_test.go` 验证持久化、恢复、失败隔离和时区。`engine/task_identity_mysql_test.go` 使用独立随机 MySQL 测试库验证同 URL 不同 ID、恢复去重、当前身份唯一性。
 
 `obs/analyze/breaker_history_limit_test.go` 验证日报截断不会推断错误截止状态。
 
-单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。
+单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；配置以当前 v4 声明为准。
 
 Trace 文件存储的包依赖、状态锁和文件归属见 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md) 的 tracestore 与 [Engine 分册](package_structure/ENGINE_STRUCTURE.md) 的 Trace 章节。架构守卫限制 tracestore 仅依赖标准库与 core 值类型。
+
+`config/trace.go` 负责三模式配置与模式校验；Engine 读取启动配置，不维护主动追踪选择状态。默认 errors；all/off 行为与升级规则见 CORE_CONFIG。

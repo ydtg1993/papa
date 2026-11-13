@@ -383,7 +383,7 @@ func TestLauncherFlags(t *testing.T) {
 			"blink-settings":         "imagesEnabled=false",
 		},
 	}}
-	joined := " " + strings.Join(p.newLauncher(false).FormatArgs(), " ") + " "
+	joined := " " + strings.Join(p.newLauncher().FormatArgs(), " ") + " "
 	for _, want := range []string{
 		" --headless ",
 		" --no-sandbox ",

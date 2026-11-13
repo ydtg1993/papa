@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,29 +54,12 @@ type fakeTaskDB struct {
 	// 给"按批删除直到删不满一批"这类多轮写入用：中途改 affected 才能让它停下来。
 	onExec func(n int)
 
-	// traceRows 是 crawler_task_trace 的结果集（nil = 一张空表）。
-	// 追踪是独立一张表，而 ListTrace 要的是真行，所以假库也认它。
-	traceRows []fakeRow
 	// count 是 COUNT(*) 查询的返回值（默认 0）。治理队列的积压采样走它 ——
 	// 那条路要的是单列结果集，和 crawler_tasks 的整行结果集不是一回事。
 	count int64
 	// minEpoch 是 MIN(UNIX_TIMESTAMP(...)) 查询的返回值（nil = NULL/没有可轮询的行）。
 	// 轮询队列的节拍（soonestRepeatIn）走它 —— 同样是单列结果集。
 	minEpoch *int64
-}
-
-// fakeTraceColumns 是 models.TaskTrace 的全列，顺序任意 —— gorm 按列名映射。
-var fakeTraceColumns = []string{
-	"id", "task_id", "execution_id", "attempt", "seq", "step", "status", "kind", "message", "data", "duration", "created_at",
-}
-
-// traceRow 造一条步骤记录。
-func traceRow(id, taskID int64, attempt, seq int, step string, status int64, data []byte) fakeRow {
-	return fakeRow{
-		"id": id, "task_id": taskID, "attempt": int64(attempt), "seq": int64(seq),
-		"step": step, "status": status, "kind": "", "message": "",
-		"data": data, "duration": int64(3 * time.Millisecond), "created_at": time.Now(),
-	}
 }
 
 // fakeRow 一行 crawler_task 的值；某列缺席即为 NULL。
@@ -94,7 +76,7 @@ var fakeTaskColumns = []string{
 	"identity_type", "identity_value", "identity_hash",
 	"flow_id", "flow_lane", "flow_branch", "flow_path",
 	"failure_kind", "compensation_mode", "next_compensation_at", "compensation_reason", "compensation_version", "last_account_id", "last_account_selection_version", "account_attempts",
-	"id", "p_id", "stage", "site", "account_pool", "url", "url_hash", "idempotency_key", "idempotency_hash", "meta",
+	"id", "p_id", "stage", "site", "account_pool", "url", "meta",
 	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
 	"reprocess", "urgent", "error", "created_at", "updated_at",
 }
@@ -126,8 +108,7 @@ func newFakeTaskDB() *fakeTaskDB {
 		affected: 1,
 		row: fakeRow{
 			"id": int64(7), "p_id": int64(0), "stage": "stub", "site": "stub", "url": "https://example.com",
-			"url_hash":        models.UrlHash("https://example.com"),
-			"idempotency_key": "", "meta": []byte("{}"),
+			"meta":  []byte("{}"),
 			"retry": int64(0), "status": int64(models.TaskStatusPending), "repeatable": int64(0),
 			"repeat": int64(0), "repeat_interval": int64(0), "reprocess": int64(0), "urgent": false, "error": "",
 			"created_at": now, "updated_at": now,
@@ -249,51 +230,6 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	}
 	if strings.HasPrefix(q, "SELECT DATE_FORMAT(UTC_TIMESTAMP(3)") {
 		return &fakeRows{cols: []string{"timestamp"}, all: [][]driver.Value{{time.Now().UTC().Format("2006-01-02 15:04:05.000000")}}}, nil
-	}
-
-	if strings.Contains(q, "crawler_task_trace") {
-		out := &fakeRows{cols: fakeTraceColumns}
-		var rows []fakeRow
-		for _, r := range f.traceRows {
-			taskID, _ := asInt64(r["task_id"])
-			if len(args) > 0 {
-				wanted, _ := asInt64(args[0].Value)
-				if taskID != wanted {
-					continue
-				}
-			}
-			if strings.Contains(q, "execution_id = ?") && len(args) > 1 {
-				id, _ := r["execution_id"].(string)
-				if id != args[1].Value {
-					continue
-				}
-			}
-			rows = append(rows, r)
-		}
-		sort.SliceStable(rows, func(i, j int) bool {
-			if strings.Contains(q, "attempt DESC") {
-				for _, key := range []string{"attempt", "seq"} {
-					a, _ := asInt64(rows[i][key])
-					b, _ := asInt64(rows[j][key])
-					if a != b {
-						return a > b
-					}
-				}
-			}
-			a, _ := asInt64(rows[i]["id"])
-			b, _ := asInt64(rows[j]["id"])
-			return a > b
-		})
-		if m := limitRe.FindStringSubmatch(q); len(m) > 1 {
-			n, _ := strconv.Atoi(m[1])
-			if len(rows) > n {
-				rows = rows[:n]
-			}
-		}
-		for _, r := range rows {
-			out.all = append(out.all, rowValuesOf(fakeTraceColumns, r))
-		}
-		return out, nil
 	}
 
 	if strings.Contains(strings.ToUpper(q), "COUNT(") {

@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 func TestTaskUnique(t *testing.T) {
@@ -29,10 +27,6 @@ func TestTaskUnique(t *testing.T) {
 	equal.Site = "other"
 	if task.Unique() == equal.Unique() {
 		t.Fatal("cross-site identity collision")
-	}
-	task.IdempotencyKey = "ignored"
-	if task.Unique() == "ignored" {
-		t.Fatal("unscoped legacy identity")
 	}
 }
 
@@ -59,37 +53,6 @@ func TestTaskDeliverAt(t *testing.T) {
 //
 // 回归点：原来是「SELECT 整行 → 改字段 → Save 整行」，会把读到的 content 旧快照盖回库里 ——
 // 业务刚 SaveResult 写进去的内容就这么没了（两条并发的路互相覆盖）。
-func TestUpdateStatusOnlyTouchesItsOwnColumns(t *testing.T) {
-	f := newFakeTaskDB()
-	db := openFakeTaskDB(t, f)
-	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
-
-	if !task.UpdateStatus(db, models.TaskStatusSuccess, nil) {
-		t.Fatal("正常路径应返回 true")
-	}
-	if !task.UpdateStatus(db, models.TaskStatusFailed, errors.New("boom")) {
-		t.Fatal("失败路径应返回 true")
-	}
-
-	got := f.written()
-	if !strings.Contains(got, "`status`") {
-		t.Fatalf("应写入 status：\n%s", got)
-	}
-	for _, never := range []string{"`content`", "`title`", "`url`", "`stage`", "`idempotency_key`", "`retry`"} {
-		if strings.Contains(got, never) {
-			t.Fatalf("不该碰 %s（整行写会盖掉业务刚写的 content）：\n%s", never, got)
-		}
-	}
-	if strings.Contains(got, "SELECT") {
-		t.Fatalf("不该先把整行读回来：\n%s", got)
-	}
-	if !strings.Contains(got, "CONCAT") {
-		t.Fatalf("失败时应在 SQL 里追加 error，而不是读出来拼字符串：\n%s", got)
-	}
-	if !f.writtenArgs_hasError("boom") {
-		t.Fatalf("追加的错误内容应作为参数传给 SQL：%s", f.writtenArgs())
-	}
-}
 
 /* ---------- Meta：任务身份随行落库 ---------- */
 
@@ -154,7 +117,9 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 			return nil
 		}},
 		// 后台那两个是引擎自己的入口：行由 loadTask 从库里读出来，同样要带 Meta
-		{"后台重投", func(e *Engine, _ *models.CrawlerTask) error { return e.RetryTask(7, 0) }},
+		{"后台重投", func(e *Engine, _ *models.CrawlerTask) error {
+			return e.RetryTaskVersioned(context.Background(), 7, 0, 0)
+		}},
 		{"后台加急", func(e *Engine, _ *models.CrawlerTask) error { return e.UrgentTask(7) }},
 	}
 
@@ -256,22 +221,5 @@ func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
 	got := e.taskFromRecord(&models.CrawlerTask{ID: 7, Stage: "stub", Site: "example"})
 	if got.Site != "example" {
 		t.Fatalf("重建出来的任务丢了站点：%q", got.Site)
-	}
-}
-
-func TestTaskIncRetryCompatibilityOnStorageError(t *testing.T) {
-	f := newFakeTaskDB()
-	db := openFakeTaskDB(t, f)
-	failure := errors.New("retry persistence failed")
-	if err := db.Callback().Update().Before("gorm:update").Register("test:retry_error", func(tx *gorm.DB) { tx.AddError(failure) }); err != nil {
-		t.Fatal(err)
-	}
-	task := &Task{ID: 7, Retry: 2}
-	task.IncRetry(db)
-	if task.Retry != 3 {
-		t.Fatalf("legacy in-memory retry=%d", task.Retry)
-	}
-	if err := taskstore.IncrementRetry(db, task.ID); !errors.Is(err, failure) {
-		t.Fatalf("semantic store hid failure: %v", err)
 	}
 }

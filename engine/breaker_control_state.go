@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"time"
 )
@@ -31,8 +32,8 @@ func (b *breakerCoordinator) breakerSum(site string) int {
 	return 0
 }
 
-func (b *breakerCoordinator) statusLocked(site string) BreakerStatus {
-	var st BreakerStatus
+func (b *breakerCoordinator) statusLocked(site string) core.BreakerStatus {
+	var st core.BreakerStatus
 	if s := b.smartBreakers[site]; s != nil {
 		st.Enabled, st.Window, st.Threshold = s.cfg.Enabled, s.cfg.Window, s.cfg.Threshold
 		st.InWindow = s.detector.Snapshot(time.Now()).Failures

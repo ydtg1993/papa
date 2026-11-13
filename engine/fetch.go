@@ -216,23 +216,6 @@ func (e *Engine) GetHTMLClient() *htmlfetch.Client {
 	return e.fetchResources.HTML()
 }
 
-// NextProxy 取一个代理地址；没配代理管理器或池子为空时返回空串。
-//
-// 给"用哪个出口由 fetcher 自己决定"用：
-//
-//	if p := engine.NextProxy(); p != "" {
-//	    page, err = engine.FetchHTML(papa.WithProxyURL(ctx, p), url)
-//	}
-//
-// 它只是**取一个**；用不用、用几个、怎么轮换都由业务定 —— 与 GetFiledown() / GetM3U8()
-// 那套"按需取"一致。
-func (e *Engine) NextProxy() string {
-	if m := e.proxy; m != nil {
-		return m.Next()
-	}
-	return ""
-}
-
 // FetchHTML 抓取并解析静态 HTML 页面，不创建浏览器实例。
 //
 // 开了 `crawler.archive` 时，这里会**自动**把抓到的页面登记进本次尝试的归档缓冲

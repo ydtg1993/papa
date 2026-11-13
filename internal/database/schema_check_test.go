@@ -57,18 +57,3 @@ func TestHasIndexNamedUsesCount(t *testing.T) {
 		t.Fatalf("COUNT=1 时 HasIndexNamed = (%v, %v), want (true, nil)", ok, err)
 	}
 }
-
-func TestCheckTraceSchemaReadOnlyReadiness(t *testing.T) {
-	if err := CheckTraceSchema(nil); err != nil {
-		t.Fatal(err)
-	}
-	f := gormfake.New()
-	f.SetCounts(1, 1)
-	if err := CheckTraceSchema(gormfake.MustOpen(f)); err != nil {
-		t.Fatal(err)
-	}
-	f.SetQueryError("information_schema.columns", "schema unavailable")
-	if err := CheckTraceSchema(gormfake.MustOpen(f)); err == nil {
-		t.Fatal("column inspection failure hidden")
-	}
-}

@@ -13,7 +13,7 @@ var (
 	_ breakerpolicy.Policy = breaker.Policy{}
 )
 
-func TestPolicyCompatibilityDefaultsAndValidation(t *testing.T) {
+func TestPolicySharedDefaultsAndValidation(t *testing.T) {
 	p := config.BreakerPolicy{}
 	if breaker.EffectivePolicy(p) != breakerpolicy.EffectivePolicy(p) {
 		t.Fatal("default policy changed")

@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"context"
 	"database/sql/driver"
 	"strings"
 	"testing"
@@ -130,7 +131,7 @@ func TestUnknownKeyRejected(t *testing.T) {
 	if err := store.Save("ip_whitlist", []string{"10.0.0.0/8"}, "alice"); err == nil {
 		t.Fatal("未登记的键写也应当报错")
 	}
-	if _, err := store.LoadStrings("whatever"); err == nil {
+	if _, err := store.LoadStringsContext(context.Background(), "whatever"); err == nil {
 		t.Fatal("未登记的键类型化读也应当报错")
 	}
 	if w := f.Written(); w != "" {
@@ -164,7 +165,7 @@ func TestLoadStrings(t *testing.T) {
 	f := gormfake.New()
 	store := New(gormfake.MustOpen(f))
 
-	got, err := store.LoadStrings(KeyIPWhitelist)
+	got, err := store.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil {
 		t.Fatalf("行不存在不该报错：%v", err)
 	}
@@ -173,14 +174,14 @@ func TestLoadStrings(t *testing.T) {
 	}
 
 	f.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`["10.0.0.0/8","192.168.1.1"]`)})
-	got, err = store.LoadStrings(KeyIPWhitelist)
+	got, err = store.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("实得 %v, err=%v", got, err)
 	}
 
 	f2 := gormfake.New()
 	f2.SetRow(map[string]driver.Value{"cfg_key": "ip_whitelist", "cfg_val": []byte(`{"a":1}`)})
-	if _, err := New(gormfake.MustOpen(f2)).LoadStrings(KeyIPWhitelist); err == nil {
+	if _, err := New(gormfake.MustOpen(f2)).LoadStringsContext(context.Background(), KeyIPWhitelist); err == nil {
 		t.Fatal("值不是字符串数组时应当报错")
 	}
 }

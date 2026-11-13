@@ -61,8 +61,6 @@ type Detector struct {
 	last           time.Time
 	overflowUntil  time.Time
 	anonymous      uint64
-	legacyFailures int
-	legacyUntil    time.Time
 }
 
 func NewDetector(cfg Config) *Detector {
@@ -84,7 +82,6 @@ func (d *Detector) ResetEpoch(epoch uint64) {
 	d.successLimited = false
 	d.last = time.Time{}
 	d.overflowUntil = time.Time{}
-	d.legacyFailures, d.legacyUntil = 0, time.Time{}
 }
 
 func taskID(o Outcome) string {
@@ -201,9 +198,6 @@ func (d *Detector) prune(now time.Time) {
 
 func (d *Detector) snapshot(now time.Time) Decision {
 	out := Decision{Epoch: d.epoch, Limited: d.successLimited, Groups: []Group{}}
-	if now.Before(d.legacyUntil) {
-		out.Failures = d.legacyFailures
-	}
 	if !d.cfg.Enabled {
 		return out
 	}

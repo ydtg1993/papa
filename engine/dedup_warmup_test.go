@@ -33,7 +33,7 @@ func TestDedupWarmupPagesAndCapacitySQL(t *testing.T) {
 				if capacity > 0 {
 					order = "ORDER BY updated_at DESC,id DESC"
 				}
-				for _, want := range []string{"`id`", "`url`", "`stage`", "`site`", "`idempotency_key`", "status IN", "repeatable =", order, "LIMIT ?"} {
+				for _, want := range []string{"`id`", "`url`", "`stage`", "`site`", "status IN", "repeatable =", order, "LIMIT ?"} {
 					if !strings.Contains(sql, want) {
 						t.Fatalf("SQL missing %q: %s", want, sql)
 					}

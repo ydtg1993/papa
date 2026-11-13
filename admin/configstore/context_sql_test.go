@@ -51,7 +51,7 @@ func (c *contextQueryConn) QueryContext(ctx context.Context, query string, _ []d
 }
 
 func TestStoreAndCachedStringListReaderPassContextToSQL(t *testing.T) {
-	for _, method := range []string{"raw", "strings", "cached legacy constructor", "cached context constructor"} {
+	for _, method := range []string{"raw", "strings", "cached context constructor"} {
 		t.Run(method, func(t *testing.T) {
 			connector := &contextQueryConnector{entered: make(chan contextQueryCall, 1), release: make(chan struct{})}
 			sqlDB := sql.OpenDB(connector)
@@ -74,8 +74,6 @@ func TestStoreAndCachedStringListReaderPassContextToSQL(t *testing.T) {
 					_, _, err = store.LoadContext(ctx, KeyIPWhitelist)
 				case "strings":
 					_, err = store.LoadStringsContext(ctx, KeyIPWhitelist)
-				case "cached legacy constructor":
-					_, err = NewCachedStringListReader(store, time.Minute).LoadStringsContext(ctx, KeyIPWhitelist)
 				case "cached context constructor":
 					_, err = NewCachedContextStringListReader(store, time.Minute).LoadStringsContext(ctx, KeyIPWhitelist)
 				}

@@ -56,7 +56,7 @@ func TestScaffoldAndUpgradePreserveStructureManuals(t *testing.T) {
 			t.Fatal("missing-only copy replaced local changes")
 		}
 	})
-	for _, layout := range []string{"docs", "docs/framework"} {
+	for _, layout := range []string{"docs/framework"} {
 		t.Run("upgrade-"+layout, func(t *testing.T) {
 			root := t.TempDir()
 			dir := filepath.Join(root, layout)

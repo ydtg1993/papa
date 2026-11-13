@@ -158,7 +158,6 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		task.breakerRound = fmt.Sprintf("%d:%d", version.Repeat, version.Reprocess)
 		ctx = withTaskRunVersion(ctx, version)
 		ctx = withEvidenceExecution(ctx)
-		ctx = e.selectTraceExecution(ctx, task.ID)
 		if err := e.persistAccountAttempt(ctx, task, version); err != nil {
 			e.releaseClaim(task)
 			return err
@@ -252,7 +251,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				return nil
 			}
 			// 抓取返回错误后先看 ctx、再判错误：停机打断的那一次尝试不是「任务失败」——
-			// 它的错就是 context canceled，按 Retryable 会判真、随后在退避 select 里退出，
+			// 它的错就是 context canceled，按 core.Retryable 会判真、随后在退避 select 里退出，
 			// 行就永远停在 processing。这里先回退成 pending，再如实返回 ctx 的错误；
 			// 不可重试分支也必须在它之后，否则一次停机取消会被当成「页面结构变了」记进 error 列。
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -275,7 +274,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			}
 			// 不可重试的错误：直接标 failed，不再空转重试
 			_, hasCompensationPolicy := core.CompensationOf(err)
-			if !Retryable(err) || account.IsAttemptFailure(err) || hasCompensationPolicy {
+			if !core.Retryable(err) || account.IsAttemptFailure(err) || hasCompensationPolicy {
 				if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
 					return errors.Join(err, writeErr)
 				}
@@ -306,14 +305,10 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 // runAttempt assembles one execution session; the public Fetcher API still
 // receives Engine, but no runtime component retains it as a dependency.
 func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
-	if _, selected := ctx.Value(traceSelectionKey{}).(bool); !selected {
-		ctx = e.selectTraceExecution(ctx, task.ID)
-	}
 	executionID := evidenceExecutionID(ctx)
 	tr, ar := e.newTrace(task, attempt), e.newArchiveBuffer(task, attempt)
 	if tr != nil {
 		tr.executionID = executionID
-		tr.manual, _ = ctx.Value(traceSelectionKey{}).(bool)
 	}
 	if ar != nil {
 		ar.executionID = executionID

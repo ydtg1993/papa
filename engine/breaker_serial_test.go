@@ -15,10 +15,9 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestBreakerSerialAdmissionIgnoresHigherRampConcurrency(t *testing.T) {
+func TestBreakerRecoveryAdmissionIsSerial(t *testing.T) {
 	e := mixedSampleFixture(t, 3)
 	e.breakers.breakerMu.Lock()
-	e.breakers.smartBreakers["synthetic"].policy.RampConcurrency = 20
 	e.breakers.breakerMu.Unlock()
 	a, exitA := admitSmartTrial(t, e, 1, "detail")
 	var wg sync.WaitGroup
@@ -271,38 +270,31 @@ func TestBreakerSerialRestartPreservesDeadlineAndRejectsExpiredSelection(t *test
 	}
 }
 
-func TestBreakerSerialUpgradeOldMixedSnapshotKeepsThreeSamples(t *testing.T) {
-	e := mixedSampleFixture(t, 3)
-	repo := e.breakers.breakerStore.(*memoryBreakerRepository)
-	repo.mu.Lock()
-	for id, row := range repo.rows {
-		row.Control.Version = 0
-		row.Control.MixedSamples = false
-		for i := range row.Control.Checks {
-			row.Control.Checks[i].Samples = nil
-			row.Control.Checks[i].RequiredTasks = 0
-			row.Control.Checks[i].RequiredProbes = 0
-		}
-		repo.rows[id] = row
+func TestBreakerRejectsUnsupportedSnapshotBeforeRestore(t *testing.T) {
+	for _, mode := range []string{"version", "window"} {
+		t.Run(mode, func(t *testing.T) {
+			e := mixedSampleFixture(t, 3)
+			repo := e.breakers.breakerStore.(*memoryBreakerRepository)
+			repo.mu.Lock()
+			for id, row := range repo.rows {
+				if mode == "version" {
+					row.Control.Version = 0
+				} else {
+					row.Window = nil
+				}
+				repo.rows[id] = row
+			}
+			repo.mu.Unlock()
+			restarted, _ := newSmartBreakerFixture(t, 100)
+			restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = repo, false
+			registerBreakerFixtureStages(restarted, "detail")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer func() { cancel(); restarted.tickerWG.Wait() }()
+			if err := restarted.InitBreakerRuntime(ctx); err == nil {
+				t.Fatal("unsupported snapshot restored")
+			}
+		})
 	}
-	repo.mu.Unlock()
-	restarted, _ := newSmartBreakerFixture(t, 100)
-	restarted.breakers.breakerStore, restarted.breakers.breakerRuntime = repo, false
-	registerBreakerFixtureStages(restarted, "detail")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer func() { cancel(); restarted.tickerWG.Wait() }()
-	if err := restarted.InitBreakerRuntime(ctx); err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	restarted.tickerWG.Wait()
-	l := smartLifecycle(restarted)
-	if l.Checks[0].RequiredTasks != 3 || l.Checks[0].RequiredProbes != 3 || len(l.Checks[0].SampleIDs) != 3 {
-		t.Fatalf("weakened restored gate: %+v", l.Checks)
-	}
-	startSmartProbe(t, restarted, completeReadOnlyProbe)
-	restarted.tickerWG.Wait()
-	expectSmartState(t, restarted, "cooldown") // generic healthy result cannot replace the selected failed sample
 }
 
 func TestBreakerSerialRequeueExcludesNormalAdmissionMySQL(t *testing.T) {

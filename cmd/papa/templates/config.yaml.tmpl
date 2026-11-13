@@ -12,7 +12,7 @@ crawler:
   stage_idle_timeout: "0s"     # 阶段工作池连续空闲多久就回收（0=常驻不回收）；多站/长跑建议配，如 "10m"
   # 单任务步骤追踪：默认仅保留异常尝试到文件，不需要迁移。详见 docs/framework/CORE_CONFIG.md
   trace:
-    enabled: true              # 是否开启步骤追踪
+    mode: errors              # off=关闭；errors=异常（默认）；all=全任务
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
   trace_files:
     dir: "./traces"           # 专用目录；容量满时拒绝新证据并告警，不影响任务结算
@@ -46,7 +46,6 @@ crawler:
       probe_interval: "30s"
       max_recovery: "5m"      # 单轮预算；耗尽后保持保护，一小时后复查
       ramp_for: "30s"          # 全部阶段验证成功后仍须等全站在途任务结束
-      ramp_concurrency: 1      # 兼容旧配置；恢复验证固定同站点串行
       interval: "1s"
       capacity: 4096          # 错误任务轮去重上限；超限保护而不丢失败计数
   # 阶段结构/物理容量声明在 internal/sites/<站名>.go；有效并发与间隔可由 runtime/OA 覆盖。

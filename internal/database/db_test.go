@@ -86,7 +86,7 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 		t.Fatalf("开审计后的清单 = %v", got)
 	}
 
-	c.Crawler.Trace.Enabled = true
+	c.Crawler.Trace.Mode = config.TraceErrors
 	if got := names(c); !reflect.DeepEqual(got, []string{
 		"crawler_tasks", "crawler_breaker_incidents", "crawler_breaker_history", "crawler_access_token", "crawler_config", "crawler_runtime_policy_history", "crawler_browser_profiles", "crawler_browser_identity_bindings", "crawler_account_pools", "crawler_account_management", "crawler_account_profiles", "crawler_operation_log",
 	}) {
@@ -113,7 +113,10 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 func TestFrameworkModelsExcludeLegacyTrace(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		cfg := &config.Config{}
-		cfg.Crawler.Trace.Enabled = enabled
+		cfg.Crawler.Trace.Mode = config.TraceOff
+		if enabled {
+			cfg.Crawler.Trace.Mode = config.TraceErrors
+		}
 		for _, model := range FrameworkModels(cfg) {
 			if model.Name == "crawler_task_trace" {
 				t.Fatalf("trace enabled=%v registered legacy table", enabled)

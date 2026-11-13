@@ -65,13 +65,13 @@ func TestMediaResourceBoundaries(t *testing.T) {
 		}
 	}
 }
-func TestResumeLegacyCompactAndLimits(t *testing.T) {
+func TestResumeCompactAndLimits(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ResumeStateDir = t.TempDir()
 	d := NewDownloader(cfg).WithResources(middleware.DownloadLimits{Segments: 2, ResumeBytes: 1024}, nil)
 	la := &labor{source: "https://x/list", filename: "out"}
 	old := ResumeState{TotalSegments: 2, Completed: []int{0, 1}, SegmentFiles: []string{"a", "b"}}
-	b, _ := json.Marshal(old)
+	b, _ := d.encodeResume(old)
 	os.WriteFile(d.getStateFilePath(la), b, 0600)
 	s, e := d.loadResumeState(la)
 	if e != nil || len(s.Completed) != 2 {
@@ -85,7 +85,7 @@ func TestResumeLegacyCompactAndLimits(t *testing.T) {
 		t.Fatal(s, e)
 	}
 	old.TotalSegments = 3
-	b, _ = json.Marshal(old)
+	b, _ = json.Marshal(resumeEnvelope{Version: 1, State: mustResumeJSON(t, old)})
 	os.WriteFile(d.getStateFilePath(la), b, 0600)
 	if _, e = d.loadResumeState(la); !errors.Is(e, middleware.ErrResourceLimit) {
 		t.Fatal(e)
@@ -161,5 +161,24 @@ func TestCompactResumeEliminatesRepeatedPaths(t *testing.T) {
 	var restored ResumeState
 	if e = d.decodeResume(compact, &restored); e != nil || len(restored.Completed) != 10000 {
 		t.Fatal(e, len(restored.Completed))
+	}
+}
+
+func mustResumeJSON(t *testing.T, state ResumeState) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestResumeRejectsUnsupportedFormats(t *testing.T) {
+	d := NewDownloader(DefaultConfig())
+	for _, data := range []string{`{"total_size":2}`, `{"version":99,"state":{}}`, `{"version":-1,"state":{}}`} {
+		var state ResumeState
+		if err := d.decodeResume([]byte(data), &state); err == nil {
+			t.Fatalf("accepted unsupported resume %s", data)
+		}
 	}
 }

@@ -36,9 +36,9 @@ obs/
 | `engine.go` | `SiteState`、`EngineState` 与 `Inactive`，保存来源、采样时刻、暂停、池数量和恢复上下文 | 这些是观测值，不是 Engine 的可写控制接口；来源缺失时不凭空判断空闲 |
 | `inputs.go` | `Inputs` 自证字段；`ComputeEventCoverage`、`ComputeDowntimes`、`TotalDowntime` 计算可见事件覆盖、断层和停机区间 | 复制待排序的事件切片；只根据看得到的边界配对，不假定窗口外发生过停机 |
 | `mode.go` | `Mode`、`Trigger` 与 `ResolveMode`，区分 snapshot / acceptance，解析 auto 及非法值 | 这里只解释模式；配置默认值和 CLI flag 优先级分别归 config 与命令适配层 |
-| `operational.go` | 历史窗口识别、历史状态检查的兼容跳过规则、`ObservedRuntime` 的按 run 区间合并 | 当前 DB/引擎快照不能冒充历史期末；已有检查 ID 的兼容处理不应扩展为真实站点分析逻辑 |
+| `operational.go` | 历史窗口识别、历史状态检查的跳过规则、`ObservedRuntime` 的按 run 区间合并 | 当前 DB/引擎快照不能冒充历史期末；按检查 ID 区分当前状态的处理不应扩展为真实站点分析逻辑 |
 | `load.go` | `SourceConfig` / `Sources`；发现及读取事件、按 run 筛选、重算窗口内缺口、转接日志索引 | 事件是指标来源，日志只是证据；日志窗口有前后 5 分钟富余。run 筛选重算 Count/Gaps；Files/Unparsed 反映文件读取范围，Duplicates 是时间窗口内、筛选 run 之前的重复数 |
-| `daily.go` | `ConsumeDailySources` 有预算地扫描、分桶和逐日消费；旧 `LoadDailySources` 保留收集式入口 | 尊重显式窗口；次日零点只进入下一天。先预检源输入再进入消费回调；保留每日报告重复/缺口口径，不把全窗口元信息复制给每一天 |
+| `daily.go` | `ConsumeDailySources` 有预算地扫描、分桶和逐日消费；`LoadDailySources` 提供收集式入口 | 尊重显式窗口；次日零点只进入下一天。先预检源输入再进入消费回调；保留每日报告重复/缺口口径，不把全窗口元信息复制给每一天 |
 
 `Input` 的“只读”是扩展契约，不是类型系统强制隔离：其中仍含 `*gorm.DB`、map 和 slice。`Generate` 没有为每个分析节深拷贝全部输入，也不为调用方加并发锁；业务 `Section` / `Pattern` 应只读输入，不通过借来的 DB 写业务状态。框架分析节可追加本次调用的 `Input.Degraded`，由生成流程合并进结果。
 
@@ -50,7 +50,7 @@ obs/
 | --- | --- |
 | `eventlog.go` | 只读包契约及 `Result`：事件、文件数、坏行、重复数和同 run 序列缺口 |
 | `discover.go` | `Discover` 根据活动文件名识别 lumberjack 时间戳轮转备份及 `.gz`，稳定排序；不把相似名字当备份 |
-| `read.go` | JSONL/gzip 文件读取与关闭、闭区间窗口、`(run_id, seq)` 去重、稳定排序、`CountGaps` |
+| `read.go` | JSONL/gzip 文件读取与关闭、当前事件 schema 版本校验、闭区间窗口、`(run_id, seq)` 去重、稳定排序、`CountGaps` |
 
 依赖标准库、`pkg/events` 与 `obs/inputbudget`。坏 JSON 行计数后继续；文件打开、解压或读取失败返回错误。序列缺口以实际保留事件为范围，不能证明窗口之前、之后或整段缺失的情况。
 
@@ -100,7 +100,7 @@ obs/
 
 | 文件 | 职责与边界 |
 | --- | --- |
-| `markdown.go` | 报告 Markdown/JSON、模式/判定/表格渲染、诊断副本脱敏、Markdown 转义、稳定目录名、四份产物的 `Write` 和单文件原子替换 |
+| `markdown.go` | 报告 Markdown/JSON、模式/判定/表格渲染（缺失模式显示“未指定”，不推断旧版本）、诊断副本脱敏、Markdown 转义、稳定目录名、四份产物的 `Write` 和单文件原子替换 |
 | `aibrief.go` | `AIBrief` 结构、从同一报告派生的问题/假设/下一步/验收边界，以及 Markdown/JSON 两种表示；不执行建议动作 |
 | `retain.go` | `DayName` 与 `Prune`；仅处理报告根的直接子目录且要求存在 report.md，按日报日期或旧目录修改时间判断过期 |
 
@@ -116,7 +116,7 @@ obs/
 | --- | --- |
 | `input.go` | Limits 默认值、LimitError/ErrLimit、Meter、固定缓冲逐行读取；只依赖标准库，不拥有文件生命周期 |
 
-预算按调用与源类别计量，Meter 不允许并发共享；超限向调用方返回，不能静默生成不完整的验收结论。旧读取入口使用有限默认值，Context 入口支持合作取消；配置见 [资源手册](../RESOURCE_BUDGETS.md)。
+预算按调用与源类别计量，Meter 不允许并发共享；超限向调用方返回，不能静默生成不完整的验收结论。便捷读取入口使用有限默认值，Context 入口支持合作取消；配置见 [资源手册](../RESOURCE_BUDGETS.md)。
 
 ## 4. 依赖、状态与生命周期
 
@@ -131,7 +131,7 @@ obs/
 | 事件输入临时分桶、spool 目录与句柄 | obs/daily.go 的单次 ConsumeDailySources 调用 | 有界预检后逐日消费；正常/错误/取消时关闭并清理，强杀可能遗留；不是事件 writer 或最终报告产物 |
 | 正在读取的文件、gzip reader、报告暂存文件 | 对应输入/产物函数 | 调用内关闭/清理；最终报告写入和保留期删除归 report |
 
-取消是协作式且覆盖范围有限：`Generate(ctx, ...)` 把 context 传给各 `Section.Build`，内置 GORM Querier 使用 `WithContext`；Generate 自身不检查 ctx 来提前停止后续节，节返回取消错误仍按降级处理。`Pattern.Match` 没有 context 参数；`LoadSourcesContext` / `ConsumeDailySources`、eventlog/logidx 的 Context 入口已把取消传入文件发现、逐行和解压读取，旧兼容入口使用 Background。`report.Write` / `Prune` 仍没有 context。上层停止等待超时不能证明在途分析或文件操作已经退出；不得据此关闭其仍借用的依赖，或宣称整个报告流程能立即取消。
+取消是协作式且覆盖范围有限：`Generate(ctx, ...)` 把 context 传给各 `Section.Build`，内置 GORM Querier 使用 `WithContext`；Generate 自身不检查 ctx 来提前停止后续节，节返回取消错误仍按降级处理。`Pattern.Match` 没有 context 参数；`LoadSourcesContext` / `ConsumeDailySources`、eventlog/logidx 的 Context 入口已把取消传入文件发现、逐行和解压读取，不接收 context 的便捷入口使用 Background。`report.Write` / `Prune` 仍没有 context。上层停止等待超时不能证明在途分析或文件操作已经退出；不得据此关闭其仍借用的依赖，或宣称整个报告流程能立即取消。
 
 ## 5. 测试分工与新增功能落点
 
@@ -141,7 +141,7 @@ obs/
 | 根包 `obs_test.go`、`policy_test.go`、`mode_test.go`、`operational_test.go` | 节/模式汇总、降级、unknown、info/skipped、模式解析、历史状态隔离、可观测时长 |
 | 根包 `inputs_test.go`、`generated_at_test.go` | 事件覆盖、停机配对和生成时刻 |
 | 根包 `load_test.go`、`load_slack_test.go`、`load_run_scope_test.go`、`daily_test.go` | 筛选、日志边界、交错 run/乱序/重复及 gzip、逐日窗口；`TestLoadSourcesGapCountFollowsRunAndWindow` 钉住缺口作用域 |
-| `eventlog/*_test.go` | 备份发现、窗口、排序、去重、缺口、坏行、gzip/CRLF 与文件错误 |
+| `eventlog/*_test.go` | 备份发现、窗口、排序、去重、缺口、坏行（包括无版本、零版本及未来版本）、gzip/CRLF 与文件错误 |
 | `logidx/*_test.go` | 解析、签名、有限样本、确定性、凭据与历史原文脱敏 |
 | `analyze/*_test.go` | fake Querier、GORM fake 与 DryRun 的分析及 SQL 口径；`breaker_history_limit_test.go` 专门防止截断历史推断截止状态，`zz_test_helpers_test.go` 仅为测试适配 |
 | `incident/*_test.go`、`pattern/pattern_test.go` | 分类不过度归因、错误码保留、证据限界/深拷贝/脱敏、验证强度、暂停/重启/队列模式 |

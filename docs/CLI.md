@@ -9,7 +9,7 @@
 
 当前源码的模块路径为 `github.com/ydtg1993/papa/v4`。安装发布版本使用下方 Go 命令；验证本工作区代码时从仓库构建 CLI，并用 `papa new <name> --replace <本地 Papa 路径>` 指定本地依赖。`@latest` 由模块代理解析，不保证等同于工作区源码。
 
-旧业务升级需同时修改 imports、go.mod 的 require/replace 为 /v4，require 版本必须为可安装的 v4 版本；tidy 后用 GOWORK=off 验证独立构建。同一业务不要混用 /v3 与 /v4 的任务类型和注册表。v4 CLI 的 check/upgrade/migrate 遇到 /v3 项目会在执行前拒绝；upgrade 不改业务源码与依赖。第三方 yaml/v3 等独立模块不随 Papa 改版本。
+v4 是独立的新项目契约，不提供旧版项目、配置或数据库迁移兼容。`check`、`upgrade`、`migrate` 及 `new --missing-only` 会在写入或数据库连接前拒绝 go.mod 中未版本化及 /v1、/v2、/v3 的 Papa 模块引用（包括 replace 目标）。第三方 yaml/v3 等独立模块不受影响；`upgrade` 不改业务源码与依赖。
 
 ```bash
 # 免克隆安装（推荐）：直接装最新版，得到 papa 命令
@@ -25,7 +25,6 @@ go install ./cmd/papa
 
 | 命令 | 作用 |
 | --- | --- |
-| `papa strategy-migrate inspect [-c <配置>] [--manifest <业务清单>] [--out <新报告>]` | 只读盘点历史数据库表；不导入、不切换、不删表。缺表与空表区分，完整约束见 [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) |
 | `papa new <name> [--replace <path>] [--missing-only]` | 生成新爬虫项目骨架（含 `internal/models/` 与 `internal/monitor/`）。默认拒绝已存在的目标；`--missing-only` 显式补齐缺失文件，保留已有文件。`<name>` 同时是 module 路径与目录名，只允许字母、数字与 `._~+-`，分隔用 `/`；非法名字在写文件前拒绝 |
 | `papa html <url> [flags]` | 静态 HTML 抓取（htmlfetch，不走浏览器） |
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
@@ -33,13 +32,13 @@ go install ./cmd/papa
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
-| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（新布局 `docs/framework/`、旧布局 `docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
+| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/framework/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
 | `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；无时间/run 筛选时生成后按 `obs.report.retention` 清理过期目录；显式筛选不清理。业务段由业务进程注册，papa CLI 只有框架通用段 |
 
 ### `papa new` 生成什么
 
-已有手工业务模块需要补齐骨架时，在父目录执行 `papa new <原模块名> --missing-only`。已有 go.mod 的 module 必须与项目名一致；现有配置、代码、文档、技能与 go.mod 均保持原样，`--replace` 只作用于本次新建的 go.mod。补齐不会合并代码或解析已有配置；新补的站点和入口仍是模板，需要按业务审阅后再启动。文件独占创建，链接路径拒绝写入；中途失败时已新建的文件保留，可修正后再次补齐。升级通用文档/技能使用 `papa upgrade --write`，不以 new 覆盖业务。
+已有 v4 手工业务模块需要补齐骨架时，在父目录执行 `papa new <原模块名> --missing-only`。已有 go.mod 的 module 必须与项目名一致；现有配置、代码、文档、技能与 go.mod 均保持原样，`--replace` 只作用于本次新建的 go.mod。补齐不会合并代码或解析已有配置；新补的站点和入口仍是模板，需要按业务审阅后再启动。文件独占创建，链接路径拒绝写入；中途失败时已新建的文件保留，可修正后再次补齐。升级通用文档/技能使用 `papa upgrade --write`，不以 new 覆盖业务。
 
 路径保护包括 Windows junction 与异常 reparse point，不能通过目录联接写入其它位置。`--replace` 必须跟一个非空本地路径，不能把后面的选项当成路径；路径含空格时，在 shell 中将参数加引号，例如 `--replace "../local papa"`，CLI 会生成合法的 go.mod 引号。相对 replace 路径以生成项目的 go.mod 所在目录为基准。
 
@@ -67,7 +66,7 @@ mycrawler/
 
 后台自定义页模板 `internal/monitor/view/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
 
-框架目录说明书见 [package_structure/README.md](package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留这些相对路径。历史 issues/superpowers 不分发；升级不会删除旧项目自行保留的文档副本。
+框架目录说明书见 [package_structure/README.md](package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留这些相对路径。历史 issues/superpowers 不分发；升级不会删除项目自行保留的文档副本。
 
 几句要点：
 
@@ -85,7 +84,7 @@ mycrawler/
   （记本项目的布局与「已知漂移」），由你自己维护。
 - 生成后：`go mod tidy` → 改 `db.dsn` → `papa migrate`（或 `make migrate`）建表 → `go run .`。
 
-生成的 `.gitignore` 仍包含历史文件名 `.papa-model.key` 的忽略项；当前框架没有模型配置或自动生成该密钥的功能。业务自行管理凭据文件和忽略规则，`upgrade` 不覆盖已有 `.gitignore`。
+业务自行管理凭据文件和忽略规则，`upgrade` 不覆盖已有 `.gitignore`。
 
 `papa new` 生成的本机配置和 example 配置使用 `user:CHANGE_ME` 数据库凭据占位；请先在本机填真实连接，再执行 `papa migrate`。已有项目的 `papa upgrade --write` 只刷新框架手册/通用技能，不替换已配置的 DSN；`--missing-only` 同样保留现有配置。
 
@@ -98,7 +97,7 @@ papa check [目录] [-c <配置路径>]              # 目录默认当前目录�
 papa check [目录] --boot                       # 再往前一步：连库跑到 RegisterSites（不 Run）
 ```
 
-站点与阶段声明是**项目自己的 Go 代码**（新结构 `internal/sites/*.go`、旧结构 `sites/*.go` 在 `init()` 里自登记），而框架那套
+站点与阶段声明是**项目自己的 Go 代码**（`internal/sites/*.go` 在 `init()` 里自登记），而框架那套
 「声明有问题启动即失败」的校验平时要连库、建池才跑得到。`papa check` 把这两件事解开：
 
 - 它在你项目里临时生成一个 **一次性校验程序**（`<目录>/.papa-check-<随机后缀>/main.go`，
@@ -106,7 +105,7 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
   （CLI 是另一个模块，看不见项目的包）；
 - 那个程序只调框架的**纯校验** `papa.CheckSites`，**不连库、不建池、不改任何状态**。
 
-脚手架的 `.gitignore` 同时忽略旧 `.papa-check/` 和当前 `.papa-check-*/` 临时校验目录；正常退出清理本次目录，异常终止可能留下临时文件。
+脚手架的 `.gitignore` 忽略 `.papa-check-*/` 临时校验目录；正常退出清理本次目录，异常终止可能留下临时文件。
 
 查的是 `RegisterSites` 会在启动时 panic 的那些事，而且**一次报全**（不是报第一条就停）：
 
@@ -132,9 +131,9 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 > 首次在**刚生成**的项目里跑，可能会提示先 `go mod tidy` —— 脚手架生成的 `go.mod` 本来就不带
 > `require`（那是 `tidy` 的事），校验程序要编译就得先把依赖落下来。
 
-### `papa upgrade` 升级已有项目
+### `papa upgrade` 刷新已有 v4 项目
 
-新布局只刷新 `docs/framework/`，保留应用 `docs/README.md` 与业务/运维文档；旧布局继续刷新原 `docs/`，不会自动搬迁业务文件。站点检查优先读取 `internal/sites/`，兼容旧 `sites/`。
+仅刷新 v4 项目的 `docs/framework/` 与通用技能，保留应用 `docs/README.md` 与业务/运维文档。没有旧 `docs/` 布局回退；站点声明由 `papa check` 编译 `internal/sites/` 校验。
 
 ```bash
 papa upgrade [目录] [--write]      # 目录默认当前目录
@@ -145,31 +144,17 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 它只做框架**有把握**的两件事：
 
 1. **刷新框架副本**：两处，都以框架为准（按"新增 / 更新"写回；具体数量随版本变化）。
-   - `docs/` 根目录下由框架嵌入的使用手册是生成时逐字复制的。你自己加在 `docs/` 里的 `.md`、以及子目录
-     （如 `docs/samples/`）只列出来，**不删不改**。
+   - `docs/framework/` 中由框架嵌入的手册按相对路径刷新，包括 `package_structure/` 分册。该目录顶层的项目独有 `.md` 会列出但不修改；项目独有子目录不递归列举，也不清理。
    - `.claude/skills/papa-crawler-development/` 里的**通用文件**（`SKILL.md` 与 `references/` 下那三份）。
      `references/project-conventions.md` 是唯一的例外：它记的是**你这个项目**的布局与已知漂移，
-     **只在缺失时播种，存在就一律不碰**（与 `main.go` 那类业务文件同一个待遇）。生成时还没有这个目录的
-     老项目，跑一次就补齐整套。
+     **只在缺失时播种，存在就一律不碰**（与 `main.go` 那类业务文件同一个待遇）。缺失技能目录的
+     v4 项目，跑一次就补齐整套。
    （比内容时忽略行尾：生成物在不同 git 配置下会是 CRLF，那不是"你改过"。）
-2. **几项不用起库的检查**：
-   - **`configs/config.yaml` 能不能被框架读** —— 升级最常见的坑就在这儿：旧版本留下的键现在会被
-     「未知配置键一律拒绝启动」拦下，而**报错自带"搬去哪儿"的指路**。这条不需要连数据库，
-     `papa upgrade` 直接把它跑一遍给你看（就是启动时那条 panic 的原文）。
-   - **`sites/*.go` 的可疑点**（文本级提醒，不解析）：还在用改过名的旧类型，或把已经并回 `config.yaml` 全局段的三个治理队列继续写在站点声明里。
+2. **配置检查**：加载 `configs/config.yaml`，报告未知键、字段和值域错误，不连接数据库。站点/阶段声明使用 `papa check` 校验，upgrade 不再分析旧 API 类型或提供迁移提示。
 
-**业务文件一律不碰**：`main.go` / `monitor/` / `models/` / `fetcher/` / `sites/` / `config.yaml` /
+**业务文件一律不碰**：`main.go` / `internal/monitor/` / `internal/models/` / `internal/fetcher/` / `internal/sites/` / `configs/config.yaml` /
 `go.mod` 都不会被覆盖 —— 生成物一旦落地就归项目所有，照模板覆盖等于抹掉你的改动。它们该改什么，
 报告最后给一张清单（含从 `go.mod` 读出的框架版本与 `replace` 目标）。
-
-例子（升到「三队列并回 config.yaml 全局段」那一版时，站点声明里还留着旧类型名的实际输出节选）：
-
-```
-【站点声明】
-  ！站点声明里还有 ErrorQueueSpec / RecoverQueueSpec / RepeatQueueSpec —— 三个治理队列已回
-     config.yaml 的全局段（error_queue / recover_queue / repeat_queue），删掉站点声明里的这些旧类型；
-     见 docs/CORE_CONFIG.md
-```
 
 > 框架版本还没发布时，`go.mod` 里用 `replace github.com/ydtg1993/papa/v4 => <本地 papa 仓库>`
 > 先跑起来（`papa new --replace` 加的就是这行）；发布后改成 require 一个新版本号即可。

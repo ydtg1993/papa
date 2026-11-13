@@ -56,13 +56,9 @@ func Release(db *gorm.DB, id uint) *gorm.DB {
 }
 func Insert(db *gorm.DB, row *models.CrawlerTask) error { return db.Create(row).Error }
 
-// IncrementRetry returns errors; the legacy Task facade deliberately ignores
-// them and advances its in-memory count, preserving its published behavior.
+// IncrementRetry reports persistence failure to the execution owner.
 func IncrementRetry(db *gorm.DB, id int) error {
 	return db.Model(&models.CrawlerTask{}).Where("id = ?", id).Update("retry", gorm.Expr("retry + ?", 1)).Error
-}
-func UpdateStatus(db *gorm.DB, id int, updates map[string]any) error {
-	return db.Model(&models.CrawlerTask{}).Where("id = ?", id).Updates(updates).Error
 }
 
 // Retry applies the same generation transition to manual and governance retries.

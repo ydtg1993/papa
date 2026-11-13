@@ -10,7 +10,7 @@ import (
 )
 
 // BindAccountHealthEvents connects the pool's bounded asynchronous listener to
-// the existing Notifier channel. Call after NewPools; nil removes the binding.
+// the existing core.Notifier channel. Call after NewPools; nil removes the binding.
 // No pool/controller lock is held while sending notifications. Stop unbinds it.
 func (e *Engine) BindAccountHealthEvents(pools *account.Pools) {
 	var unsubscribe func()

@@ -1,12 +1,8 @@
 package engine
 
 import (
-	"testing"
-
-	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/models"
-	"gorm.io/gorm"
+	"testing"
 )
 
 func TestTaskIdentityMySQLDistinctIDsSameURLAndRestart(t *testing.T) {
@@ -53,65 +49,5 @@ func TestTaskIdentityMySQLDistinctIDsSameURLAndRestart(t *testing.T) {
 		if duplicate.URL != a.URL || duplicate.ID != a.ID {
 			t.Fatal("duplicate execution URL changed", batch, duplicate)
 		}
-	}
-}
-
-func TestTaskIdentityMySQLExplicitMigration(t *testing.T) {
-	db, _ := compensationMySQL(t)
-	for _, sql := range []string{"CREATE UNIQUE INDEX idx_site_stage_url_hash ON crawler_tasks(url_hash, stage, site)", "CREATE UNIQUE INDEX idx_idempotency_hash ON crawler_tasks(idempotency_hash)"} {
-		if err := db.Exec(sql).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	old := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: "https://EXAMPLE.invalid:443/a#x", URLHash: models.UrlHash("old")}
-	if err := db.Session(&gorm.Session{SkipHooks: true}).Create(&old).Error; err != nil {
-		t.Fatal(err)
-	}
-	// Reproduce the actual old schema with no identity columns, not just empty values.
-	if err := db.Migrator().DropIndex(&models.CrawlerTask{}, "idx_task_identity"); err != nil {
-		t.Fatal(err)
-	}
-	for _, column := range []string{"identity_type", "identity_value", "identity_hash"} {
-		if err := db.Migrator().DropColumn(&models.CrawlerTask{}, column); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i := 0; i < 2; i++ {
-		if err := database.Migrate(db, &config.Config{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var got models.CrawlerTask
-	if err := db.First(&got, old.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if got.IdentityValue != "https://example.invalid/a" || len(got.IdentityHash) != 64 {
-		t.Fatal("not backfilled", got.IdentityValue)
-	}
-	for _, index := range []string{"idx_site_stage_url_hash", "idx_idempotency_hash"} {
-		if db.Migrator().HasIndex(&models.CrawlerTask{}, index) {
-			t.Fatal("obsolete index remains", index)
-		}
-	}
-}
-
-func TestTaskIdentityMySQLMigrationRejectsCanonicalConflict(t *testing.T) {
-	db, _ := compensationMySQL(t)
-	if err := db.Exec("CREATE UNIQUE INDEX idx_site_stage_url_hash ON crawler_tasks(url_hash, stage, site)").Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, u := range []string{"https://example.invalid/a", "https://example.invalid:443/a#x"} {
-		row := models.CrawlerTask{Site: "synthetic", Stage: "detail", URL: u, URLHash: models.UrlHash(u)}
-		if err := db.Session(&gorm.Session{SkipHooks: true}).Create(&row).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := database.Migrate(db, &config.Config{}); err == nil {
-		t.Fatal("canonical conflict silently merged")
-	}
-	var count int64
-	db.Model(&models.CrawlerTask{}).Count(&count)
-	if count != 2 || !db.Migrator().HasIndex(&models.CrawlerTask{}, "idx_site_stage_url_hash") {
-		t.Fatal("migration removed rows or old protection before completion")
 	}
 }

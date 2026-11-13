@@ -115,11 +115,6 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
-	case "strategy-migrate":
-		if err := runStrategyMigrateCmd(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
 	case "migrate":
 		if err := runMigrateCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -159,15 +154,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "    --boot 再往前一步：连库把启动路径跑到 RegisterSites（不 Run，不抓取）")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa upgrade [目录] [--write]")
-	fmt.Fprintln(os.Stderr, "    把**已经生成过的**项目升到当前脚手架：刷新框架副本（docs/framework/，旧布局为 docs/）+ 几项不用起库的检查")
-	fmt.Fprintln(os.Stderr, "    默认只报告不落盘；业务文件（main.go / monitor / models / fetcher /")
+	fmt.Fprintln(os.Stderr, "    把**已经生成过的**项目升到当前脚手架：刷新框架副本（docs/framework/）+ 几项不用起库的检查")
+	fmt.Fprintln(os.Stderr, "    默认只报告不落盘；业务文件（main.go / internal/monitor / internal/models / internal/fetcher /")
 	fmt.Fprintln(os.Stderr, "    sites / config.yaml / go.mod）一律不碰 —— 照模板覆盖会抹掉你的改动")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa migrate [-c configs/config.yaml]")
 	fmt.Fprintln(os.Stderr, "    建/补表。在业务项目目录里跑会转交 `go run . -migrate`（连业务模型一起建）；")
 	fmt.Fprintln(os.Stderr, "    其余情况只建框架自带的表。启动时不会自动迁移")
-	fmt.Fprintln(os.Stderr, "  papa strategy-migrate inspect [-c config.yaml] [--manifest business.json] [--out new-report.json]")
-	fmt.Fprintln(os.Stderr, "    只读盘点会话/试验/策略重构的旧表与目标表；不导入、不删表，不代表已通过迁移核验")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  papa token add --operator <名字>   创建一把后台访问令牌（明文只打印一次）")
 	fmt.Fprintln(os.Stderr, "")
@@ -240,6 +233,9 @@ func runNew(name string, args []string) error {
 	modPath := filepath.Join(name, "go.mod")
 	_, modErr := os.Stat(modPath)
 	if missingOnly && modErr == nil {
+		if err := validateProjectModule(name); err != nil {
+			return err
+		}
 		module, err := readModulePath(name)
 		if err != nil {
 			return err

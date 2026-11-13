@@ -54,25 +54,18 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
         else assert.equal(c.pollingStatus().enabled,false);
         c.stopPolling();
     }
-    // Old oao has no destroy API or stale response guard. Its pending render
-    // may finish, but only against a detached node. A stale wrapper rejection
-    // must not replace the next table in either dependency version.
+    // A stale wrapper rejection cannot replace the current table.
     controllers.load(c,mo,['shell/navigation-controller']);
     c.setActiveModule('tables');c.tableFilterOpts=()=>({});c.esc=String;
     function tableNode(){return {innerHTML:'',cloneNode:tableNode,parentNode:{replaceChild:fresh=>nodes['oao-view']=fresh}};}
     const renders=[];c.Oao={render:view=>new Promise((resolve,reject)=>renders.push({view,resolve,reject}))};
     nodes['oao-view']=tableNode();
-    const a=c.renderTableView('a'),b=c.renderTableView('b');
-    assert.notEqual(renders[0].view,renders[1].view,'old oao views must be detached per navigation');
-    renders[1].view.innerHTML='new table';renders[1].resolve();await b;
-    renders[0].view.innerHTML='late old table';renders[0].reject(new Error('old failure'));await a;
-    assert.equal(nodes['oao-view'].innerHTML,'new table');
     c.Oao.destroy=()=>{};
     const d=c.renderTableView('d'),e=c.renderTableView('e');
-    renders[3].view.innerHTML='latest table';renders[3].resolve();await e;
-    renders[2].reject(new Error('old modern failure'));await d;
+    renders[1].view.innerHTML='latest table';renders[1].resolve();await e;
+    renders[0].reject(new Error('old modern failure'));await d;
     assert.equal(nodes['oao-view'].innerHTML,'latest table','stale outer catch replaced next table');
     const f=c.renderTableView('f');c.retireTableView();c.setActiveModule('dashboard');
-    renders[4].reject(null);await f;
+    renders[2].reject(null);await f;
     console.log('PASS external credentials clear identity state, cancel old replies and resume polling');
 })().catch(e=>{console.error(e);process.exitCode=1;});

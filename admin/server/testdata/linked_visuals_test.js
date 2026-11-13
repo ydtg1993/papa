@@ -3,7 +3,7 @@ const controllers=require('./controllers');
 // eventful DOM/animation/observer doubles and no copied chart implementation.
 'use strict';
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-const makeDOM = require('./legacy_oao_dom');
+const makeDOM = require('./oao_dom');
 const staticDir = process.argv[2], oaoDir = process.argv[3] || staticDir;
 const scripts = ['oao-motion.js', 'oao-charts.js'];
 if (scripts.some(name => !fs.existsSync(path.join(oaoDir, name)))) {

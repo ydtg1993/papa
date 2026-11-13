@@ -16,8 +16,8 @@ func (f contextStringReaderFunc) LoadStringsContext(ctx context.Context, key str
 
 func TestCachedStringListReaderRejectsCanceledCacheHit(t *testing.T) {
 	inner := &countingStringListReader{values: []string{"192.0.2.1"}}
-	r := NewCachedStringListReader(inner, time.Minute)
-	if _, err := r.LoadStrings(KeyIPWhitelist); err != nil {
+	r := NewCachedContextStringListReader(inner, time.Minute)
+	if _, err := r.LoadStringsContext(context.Background(), KeyIPWhitelist); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -52,7 +52,7 @@ func TestCachedStringListReaderDoesNotCacheLateCanceledResult(t *testing.T) {
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("late result error=%v", err)
 	}
-	entries, err := r.LoadStrings(KeyIPWhitelist)
+	entries, err := r.LoadStringsContext(context.Background(), KeyIPWhitelist)
 	if err != nil || len(entries) != 1 || entries[0] != "new" || calls.Load() != 2 {
 		t.Fatalf("canceled read populated cache: entries=%v, error=%v, calls=%d", entries, err, calls.Load())
 	}
@@ -77,7 +77,7 @@ func TestCachedStringListReaderInvalidationSupersedesInflightRead(t *testing.T) 
 			})
 			r := NewCachedContextStringListReader(inner, time.Minute)
 			result := make(chan []string, 1)
-			go func() { entries, _ := r.LoadStrings(KeyIPWhitelist); result <- entries }()
+			go func() { entries, _ := r.LoadStringsContext(context.Background(), KeyIPWhitelist); result <- entries }()
 			<-entered
 			if all {
 				r.InvalidateAll()
@@ -88,7 +88,7 @@ func TestCachedStringListReaderInvalidationSupersedesInflightRead(t *testing.T) 
 			if entries := <-result; len(entries) != 1 || entries[0] != "after save" {
 				t.Fatalf("old in-flight read escaped invalidation: %v", entries)
 			}
-			entries, err := r.LoadStrings(KeyIPWhitelist)
+			entries, err := r.LoadStringsContext(context.Background(), KeyIPWhitelist)
 			if err != nil || len(entries) != 1 || entries[0] != "after save" || calls.Load() != 2 {
 				t.Fatalf("stale cache refill: entries=%v, error=%v, calls=%d", entries, err, calls.Load())
 			}

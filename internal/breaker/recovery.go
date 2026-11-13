@@ -65,17 +65,15 @@ func (r Recovery) Active() bool { return r.State != "closed" && r.State != "reco
 // Checkpoint preserves exact failure round identities and their original times.
 // Successful task proofs deliberately do not survive process restart.
 type Checkpoint struct {
-	Failures       []Outcome
-	OverflowUntil  time.Time
-	Anonymous      uint64
-	LegacyFailures int
-	LegacyUntil    time.Time
+	Failures      []Outcome
+	OverflowUntil time.Time
+	Anonymous     uint64
 }
 
 func (d *Detector) Checkpoint() Checkpoint {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	c := Checkpoint{Failures: append([]Outcome(nil), d.failures...), OverflowUntil: d.overflowUntil, Anonymous: d.anonymous, LegacyFailures: d.legacyFailures, LegacyUntil: d.legacyUntil}
+	c := Checkpoint{Failures: append([]Outcome(nil), d.failures...), OverflowUntil: d.overflowUntil, Anonymous: d.anonymous}
 	for i := range c.Failures {
 		c.Failures[i].Error, c.Failures[i].Kind = "", ""
 	}
@@ -88,7 +86,6 @@ func (d *Detector) Restore(c Checkpoint, epoch uint64, now time.Time) {
 	defer d.mu.Unlock()
 	d.anonymous = c.Anonymous
 	d.overflowUntil = c.OverflowUntil
-	d.legacyFailures, d.legacyUntil = c.LegacyFailures, c.LegacyUntil
 	for _, o := range c.Failures {
 		o.Epoch = epoch
 		d.failures = append(d.failures, o)

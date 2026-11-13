@@ -80,7 +80,7 @@ func TestEvidenceIdentityAllocatedByClaimAcrossEngineRecreation(t *testing.T) {
 	// come from the successful claim path, not task ID/retry or a local counter.
 	for round := 0; round < 3; round++ {
 		e, _, task, _ := persistenceFixture(t)
-		e.cfg.Crawler.Trace.Enabled = true
+		e.cfg.Crawler.Trace.Mode = config.TraceErrors
 		e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
 		fetcher := &evidenceClaimFetcher{}
 		info := e.stages["stub:stub"]

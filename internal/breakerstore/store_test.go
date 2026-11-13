@@ -84,10 +84,10 @@ func TestBreakerStoreMySQLLifecycleRestartAndRevision(t *testing.T) {
 	l := incident.Lifecycle{Capture: incident.Capture{ID: "event-one", Site: "synthetic", At: now, Failures: 1}, Stage: "detail", State: "cooldown", Revision: 1, Epoch: 4, StartedAt: now, UpdatedAt: now, NextProbeAt: next, Deadline: next.Add(time.Hour), Evidence: []incident.Sample{{Error: "HTTP 503 token=hidden-value"}}, Timeline: []incident.Transition{{At: now, To: "cooldown", Action: "initial"}}}
 	l.Checks = []incident.StageCheck{{Stage: "detail", State: "passed", Round: 1, TaskSuccesses: 1}, {Stage: "list", State: "failed", Round: 1, Detail: "token=hidden-value"}}
 	l.Timeline = append(l.Timeline, incident.Transition{At: now, Stage: "list", Round: 1, Action: "stage_probe_failed", Failures: 1, NextAttemptAt: next})
-	if err := store.Save(ctx, LegacySnapshot(l)); err != nil {
+	if err := store.Save(ctx, snapshotFixture(l)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(ctx, LegacySnapshot(l)); err != nil {
+	if err := store.Save(ctx, snapshotFixture(l)); err != nil {
 		t.Fatal("idempotent retry", err)
 	}
 	restarted := New(db)
@@ -116,7 +116,7 @@ func TestBreakerStoreMySQLLifecycleRestartAndRevision(t *testing.T) {
 	l.Revision = 2
 	l.Conclusion = "需要人工检查"
 	l.NextProbeAt = time.Time{}
-	if err := store.Save(ctx, LegacySnapshot(l)); err != nil {
+	if err := store.Save(ctx, snapshotFixture(l)); err != nil {
 		t.Fatal(err)
 	}
 	active, err = restarted.LoadRuntime(ctx)
@@ -125,23 +125,23 @@ func TestBreakerStoreMySQLLifecycleRestartAndRevision(t *testing.T) {
 	}
 	old := l
 	old.Revision = 1
-	if err := store.Save(ctx, LegacySnapshot(old)); !errors.Is(err, ErrStale) {
+	if err := store.Save(ctx, snapshotFixture(old)); !errors.Is(err, ErrStale) {
 		t.Fatal("accepted stale snapshot", err)
 	}
 	conflict := l
 	conflict.Conclusion = "conflict"
-	if err := store.Save(ctx, LegacySnapshot(conflict)); !errors.Is(err, ErrStale) {
+	if err := store.Save(ctx, snapshotFixture(conflict)); !errors.Is(err, ErrStale) {
 		t.Fatal("accepted conflicting revision", err)
 	}
 	conflict = l
 	conflict.Revision = 3
 	conflict.Stage = "other"
-	if err := store.Save(ctx, LegacySnapshot(conflict)); !errors.Is(err, ErrStale) {
+	if err := store.Save(ctx, snapshotFixture(conflict)); !errors.Is(err, ErrStale) {
 		t.Fatal("changed event ownership", err)
 	}
 	l.Stage = "" // A cross-stage outbreak widens protection to the whole site.
 	l.Revision = 3
-	if err := store.Save(ctx, LegacySnapshot(l)); err != nil {
+	if err := store.Save(ctx, snapshotFixture(l)); err != nil {
 		t.Fatal("failed to widen stage scope", err)
 	}
 	active, err = restarted.LoadRuntime(ctx)
@@ -151,7 +151,7 @@ func TestBreakerStoreMySQLLifecycleRestartAndRevision(t *testing.T) {
 	conflict = l
 	conflict.Revision = 4
 	conflict.Stage = "detail"
-	if err := store.Save(ctx, LegacySnapshot(conflict)); !errors.Is(err, ErrStale) {
+	if err := store.Save(ctx, snapshotFixture(conflict)); !errors.Is(err, ErrStale) {
 		t.Fatal("allowed scope shrinking", err)
 	}
 	l.State = "recovered"
@@ -159,7 +159,7 @@ func TestBreakerStoreMySQLLifecycleRestartAndRevision(t *testing.T) {
 	l.FinalAt = now
 	l.Conclusion = "恢复已验证"
 	l.CountersResetAt = now
-	if err := store.Save(ctx, LegacySnapshot(l)); err != nil {
+	if err := store.Save(ctx, snapshotFixture(l)); err != nil {
 		t.Fatal(err)
 	}
 	active, err = restarted.LoadRuntime(ctx)
@@ -181,7 +181,7 @@ func TestDecodeRejectsMetadataMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("accepted corrupt recovery data")
 	}
-	if err := New(nil).Save(context.Background(), LegacySnapshot(incident.Lifecycle{})); err == nil {
+	if err := New(nil).Save(context.Background(), snapshotFixture(incident.Lifecycle{})); err == nil {
 		t.Fatal("nil database silently accepted")
 	}
 }
