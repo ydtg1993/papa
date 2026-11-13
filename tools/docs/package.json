@@ -1,0 +1,7 @@
+{
+  "name": "papa-doc-diagrams",
+  "private": true,
+  "scripts": {"render": "node render-diagrams.cjs"},
+  "engines": {"node": ">=20"},
+  "devDependencies": {"mermaid": "12.3.0", "playwright": "1.62.0"}
+}

@@ -1,0 +1,19 @@
+flowchart TB
+    A["入口或子任务 Submit"] --> B["标准身份校验与持久化<br/>ResourceID 优先 / 规范 URL 回退"]
+    B --> C["有界调度与准入<br/>驻留 · delay / spill · 持续数据库补充"]
+    C --> D["条件认领 pending → processing<br/>未确认认领：不执行业务"]
+    D --> E["Fetcher 一次尝试<br/>获取 → 解析 → 按需写结果 / 提交子任务"]
+    E --> F["每次尝试收尾<br/>计时 · Trace 文件 · 页面归档"]
+    F --> H{"结果与取消分类"}
+    H -->|可重试且仍允许执行| I["计数一次并确认<br/>退避后下一次尝试"] --> E
+    H -->|成功 / 最终失败| J["条件确认终态<br/>只重试状态确认，不重放业务"]
+    H -->|取消 / 未确认| K["保留恢复依据<br/>不盲目当作失败重投"]
+    E -.->|业务显式派生，新任务走相同入口| A
+    J --> L["success / failed<br/>后续补偿或轮询另行检查资格"]
+    L -.->|满足持久条件后重投| C
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef business fill:#e8f3fc,color:#173b58,stroke:#5294c7;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    class A,B,C,D,I,J,L runtime;
+    class E business;
+    class F,H,K observe;

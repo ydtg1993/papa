@@ -1,0 +1,15 @@
+flowchart LR
+    P[("持久 pending 积压<br/>未进入内存的工作仍在库中")]
+    P -->|已注册阶段 / 时间窗口内| R["持续补充<br/>独立于 recover_queue"]
+    R -->|有驻留容量与准入| W["有限工作集<br/>排队 + 执行 + spill + delay"]
+    W --> C["条件认领与 handler<br/>数据库轮次 / 版本决定执行"]
+    C --> T[("确认终态<br/>success / failed")]
+    C -.->|进程强杀，可能遗留| O[("processing 孤儿")]
+    O -->|启用 recover_queue<br/>满足启动时间等条件| Q["条件重置 pending"] --> P
+    T -->|失败且补偿资格满足| E["错误队列 / 人工重投"] --> P
+    T -->|repeatable 到期且资格满足| N["轮询队列开启下一轮"] --> P
+    W -.->|未认领引用可释放驻留<br/>持久 pending 等待容量| P
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    class P,R,W,C,T,Q,E,N runtime;
+    class O observe;

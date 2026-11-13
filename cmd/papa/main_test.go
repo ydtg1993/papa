@@ -80,8 +80,10 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 		}
 		if !info.IsDir() {
 			manualCount++
-			if filepath.Ext(name) != ".md" {
-				t.Errorf("框架手册下出现了非 markdown 文件：%s", name)
+			switch filepath.Ext(name) {
+			case ".md", ".mmd", ".svg", ".png", ".json":
+			default:
+				t.Errorf("框架文档下出现了非文档资源：%s", name)
 			}
 		}
 		return nil

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,7 +20,8 @@ import (
 // internal/sites/ / configs/config.yaml / go.mod 都会被业务改，覆盖等于把人家写的东西抹掉（而它恰恰是项目的全部价值）。
 // 所以这里只做两件框架**有把握**的事：
 //
-//  1. 刷新**框架副本**：`docs/framework/`（生成时逐字复制的使用手册，以框架为准）。默认只报告，`--write` 才落盘。
+//  1. 刷新**框架副本**：`docs/framework/`（使用手册和图像）及登记的通用技能；项目约定只补缺失。
+//     默认只报告，`--write` 才落盘。
 //  2. 跑几项**不用起库**就能做的检查：`config.yaml` 能不能被框架读（升级最常见的坑：yaml 里留了框架
 //     不再认的键会直接报错）。
 //
@@ -35,9 +37,9 @@ type upgradePlan struct {
 	Required   string
 	ReplacedTo string
 
-	DocUpdates []string // docs/ 下内容与框架不同的（要更新）
+	DocUpdates []string // docs/framework/ 下内容与框架不同的（要更新）
 	DocAdds    []string // 框架有、项目没有的
-	DocStale   []string // 项目 docs/ 下有、框架没有的（可能是你自己加的文档，不删）
+	DocStale   []string // docs/framework/ 顶层项目独有 Markdown（只报告，不删）
 
 	// 随项目携带的开发技能（`.claude/skills/<skillName>/`）。与 docs/ 的区别只有一条：
 	// **项目所有的那个文件（project-conventions.md）不刷新**，只在缺失时播种。
@@ -113,7 +115,7 @@ func runUpgradeCmd(args []string) error {
 		}
 		var parts []string
 		if n := len(p.DocAdds) + len(p.DocUpdates); n > 0 {
-			parts = append(parts, fmt.Sprintf("%d 份手册", n))
+			parts = append(parts, fmt.Sprintf("%d 个文档及图像文件", n))
 		}
 		if skillPending > 0 {
 			parts = append(parts, fmt.Sprintf("%d 个技能文件", skillPending))
@@ -139,7 +141,7 @@ func printUpgradePlan(p *upgradePlan) {
 	docDir = filepath.ToSlash(docDir)
 	fmt.Printf("\n【框架副本：%s/】\n", docDir)
 	if len(p.DocAdds)+len(p.DocUpdates) == 0 {
-		fmt.Printf("  已是最新（%d 份手册与框架一致）\n", len(embeddedDocs()))
+		fmt.Printf("  已是最新（%d 个文档及图像文件与框架一致）\n", len(embeddedDocs()))
 	} else {
 		for _, f := range p.DocAdds {
 			fmt.Printf("  新增  %s/%s\n", docDir, f)
@@ -191,9 +193,12 @@ func printUpgradePlan(p *upgradePlan) {
 	}
 }
 
-// writeDocs 把框架手册写进项目 docs/framework/（只写框架有的那份；项目自己加的文件不动）。
+// writeDocs 把框架手册和图像写进项目 docs/framework/（只写登记的副本；项目独有文件不动）。
 func writeDocs(p *upgradePlan) error {
 	dir := frameworkDocsDir(p.Root)
+	if err := checkScaffoldPath(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -255,6 +260,17 @@ func writeSkill(p *upgradePlan) error {
 			return err
 		}
 		dst := filepath.Join(p.Root, sf.rel)
+		if !sf.refreshed {
+			// Planning is not permission to overwrite project-owned content
+			// created since the plan was assembled.
+			if err := writeScaffoldFile(dst, content, true); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := checkScaffoldPath(dst); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
@@ -265,7 +281,7 @@ func writeSkill(p *upgradePlan) error {
 	return nil
 }
 
-// planDocs 比对框架手册与项目 docs/：返回 要新增的 / 要更新的 / 项目独有的（只报告，不删）。
+// planDocs 比对框架资源与项目 docs/framework/：返回新增、更新和项目独有文档（只报告，不删）。
 func planDocs(root string) (adds, updates, stale []string) {
 	dir := frameworkDocsDir(root)
 	embedded := embeddedDocs()
@@ -278,11 +294,11 @@ func planDocs(root string) (adds, updates, stale []string) {
 		switch {
 		case err != nil:
 			adds = append(adds, name)
-		case !sameContent(cur, data):
+		case !sameDocContent(name, cur, data):
 			updates = append(updates, name)
 		}
 	}
-	// 项目 docs/ 里框架没有的 .md：可能是自己加的，只列出来（子目录如 docs/samples 不看）
+	// docs/framework/ 顶层独有的 .md 只列出来；不扫描、删除项目自建子目录。
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
@@ -308,6 +324,16 @@ func normalizeEOL(s string) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
+// Text copies tolerate platform line endings; image bytes must remain exact.
+func sameDocContent(name string, a, b []byte) bool {
+	switch filepath.Ext(name) {
+	case ".md", ".mmd", ".svg", ".json":
+		return sameContent(a, b)
+	default:
+		return bytes.Equal(a, b)
+	}
+}
+
 func embeddedDocs() []string {
 	var out []string
 	// Walk only the embedded framework allowlist, never the project's files.
@@ -315,7 +341,7 @@ func embeddedDocs() []string {
 		if err != nil {
 			return err
 		}
-		if !e.IsDir() && strings.HasSuffix(name, ".md") {
+		if !e.IsDir() {
 			out = append(out, name)
 		}
 		return nil

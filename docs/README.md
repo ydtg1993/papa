@@ -4,6 +4,10 @@
 > **运行观测（obs）**：框架级结构化事件流（`logs/events.jsonl`）+ 人读报告 / 机读 JSON / AI 排查细则（`papa report`），见 [OBSERVABILITY.md](operations/OBSERVABILITY.md)。
 > **运行治理**：默认关闭的同站请求预算/AutoThrottle、单实例资源放行、站点账号池与代理健康；OA 持久覆盖优先于文件显式字段，见 [RUNTIME_CONTROL.md](runtime/RUNTIME_CONTROL.md)。
 
+![Papa v4 能力总览](assets/diagrams/01-capabilities.png)
+
+从 [Papa 六图介绍](architecture/PAPA_OVERVIEW.md) 开始：能力总览 → 组件关系 → 动态数据流 → 背压与恢复 → 观测证据 → 关停排空。图片附有 SVG 和 Mermaid 源码，可放大或用于介绍。
+
 ## 适用版本与文档边界
 
 本目录各主题手册及 `package_structure/` 说明当前工作区的 **Papa v4 独立版本**；不提供 v3 及更早版本的 API、配置、旧表转换或工程布局兼容。源码仓库中的 `history/` 集中保存注明适用阶段的审查、验证、设计、计划和变更记录，不随 CLI 分发，也不覆盖当前手册。历史测试结果只证明当次代码和环境，不能当作当前版本重新验收的证据。
@@ -53,6 +57,7 @@ docs/
 ├── README.md             # 当前文档总入口
 ├── embed.go              # CLI 分发白名单
 ├── architecture/         # 架构图、边界、框架开发与验证
+├── assets/diagrams/      # 图册源码、SVG、PNG 与生成校验清单
 ├── configuration/        # 配置字典、显式建表、资源预算
 ├── guides/               # Fetcher、抓取工具、业务数据落地
 ├── accounts/             # 账号接入、认证运行、浏览器身份
@@ -82,7 +87,7 @@ docs/
 ## 文档维护与分发
 
 - 每份当前手册只保留一个主题归属；主题 README 负责导航，不复制配置/API 正文。包与文件职责统一写入 `package_structure/`。
-- 新增手册同步主题入口和必要的总导航；新主题目录同时更新 `embed.go` 白名单及文档分发测试。历史设计和测试结论不得混入当前用法。
+- 新增手册同步主题入口和必要的总导航；新主题目录或图像资源同时更新 `embed.go` 白名单及文档分发测试。图册更新见 [维护说明](architecture/DIAGRAM_ASSETS.md)。历史设计和测试结论不得混入当前用法。
 - 手册移动时同步相对链接、源码中的文档指针、CLI 模板和技能文档映射。所有当前手册的本地链接必须在分发副本内可解析。
 - `papa new/upgrade` 保留上述当前目录层级。`upgrade --write` 只刷新当前框架拥有的路径，不自动删除已有项目的旧路径文档或用户笔记；旧副本由项目维护者核对后处理，新导航只指向当前路径。
 

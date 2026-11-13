@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"io/fs"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/ydtg1993/papa/v4/docs"
 )
@@ -34,7 +37,7 @@ func TestScaffoldAndUpgradePreserveStructureManuals(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := readFile(t, filepath.Join(dir, filepath.FromSlash(rel))); !sameContent([]byte(got), want) {
+			if got := readFile(t, filepath.Join(dir, filepath.FromSlash(rel))); !bytes.Equal([]byte(got), want) {
 				t.Fatalf("distributed content differs: %s", rel)
 			}
 		}
@@ -141,16 +144,30 @@ func TestEmbeddedManualLinksAndNavigation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: invalid link %q: %v", name, match[1], err)
 			}
-			if u.IsAbs() || u.Host != "" || u.Path == "" {
+			if u.IsAbs() || u.Host != "" {
 				continue
 			}
 			target := path.Clean(path.Join(path.Dir(name), u.Path))
+			if u.Path == "" {
+				target = name
+			}
 			if _, err := fs.Stat(docs.Files, target); err != nil {
 				t.Errorf("%s: undistributed or missing link %q: %v", name, match[1], err)
 				continue
 			}
 			if strings.HasSuffix(target, ".md") {
+				if u.Fragment != "" {
+					body, err := docs.Files.ReadFile(target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !manualAnchors(string(body))[u.Fragment] {
+						t.Errorf("%s: missing heading anchor %q", name, match[1])
+					}
+				}
 				walk(target)
+			} else {
+				visited[target] = true
 			}
 		}
 	}
@@ -163,4 +180,35 @@ func TestEmbeddedManualLinksAndNavigation(t *testing.T) {
 			t.Errorf("manual is unreachable from README: %s", name)
 		}
 	}
+}
+
+// The manuals use ATX headings and explicit HTML anchors. Match their GitHub
+// fragment form including repeated headings, without accepting arbitrary IDs.
+func manualAnchors(body string) map[string]bool {
+	fences := regexp.MustCompile("(?ms)^```[^\\n]*\\n.*?^```[ \\t]*$")
+	body = fences.ReplaceAllString(body, "")
+	anchors := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?i)<a\s+(?:id|name)=["']([^"']+)["']`).FindAllStringSubmatch(body, -1) {
+		anchors[m[1]] = true
+	}
+	counts := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^#{1,6}\s+(.+)$`).FindAllStringSubmatch(body, -1) {
+		var slug strings.Builder
+		for _, r := range strings.ToLower(strings.TrimSpace(m[1])) {
+			switch {
+			case unicode.IsLetter(r), unicode.IsNumber(r), r == '-', r == '_':
+				slug.WriteRune(r)
+			case unicode.IsSpace(r):
+				slug.WriteByte('-')
+			}
+		}
+		id := slug.String()
+		suffix := counts[id]
+		counts[id]++
+		if suffix > 0 {
+			id += "-" + strconv.Itoa(suffix)
+		}
+		anchors[id] = true
+	}
+	return anchors
 }

@@ -1,0 +1,17 @@
+flowchart LR
+    E["爬虫执行与控制"] --> S["可靠路径<br/>任务结算 / 熔断控制持久化"]
+    E --> T["尝试收尾证据<br/>Trace 文件 / 页面归档<br/>同步工作，不属于 obs 队列"]
+    E -.->|有界、尽力投递| Q["信号入口<br/>满载允许丢弃"]
+    Q --> J["独立归档<br/>events.jsonl"]
+    Q --> O["在线 obs<br/>有限聚合 / 独立 writer<br/>无业务 DB / 分析回调"]
+    O --> R["报告文件<br/>在线判定 unknown"]
+    U["Admin"] -->|只读已有产物| R
+    J --> L["显式离线分析<br/>papa report / 业务 obs.Generate"]
+    DB[("数据库 / 日志<br/>可选离线输入")] --> L
+    L --> RF["离线报告文件<br/>建议独立输出目录"]
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    classDef business fill:#e8f3fc,color:#173b58,stroke:#5294c7;
+    class E,S runtime;
+    class T,Q,J,O,R observe;
+    class U,L,DB,RF business;

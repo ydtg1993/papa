@@ -8,7 +8,7 @@
 
 `cmd/papa` 是独立 CLI 的组合入口，负责参数解析、目标项目识别、短时资源装配和结果展示。领域实现继续调用配置、数据库、抓取、观测和令牌组件，不能把 CLI 私有函数变成框架运行时依赖。`cmd/monitor-demo` 是本地合成数据演示程序，用真实后台组件验证展示；它不承载真实站点接入。
 
-当前目录有 **2 个 main 包、15 个生产 Go 文件、19 个测试 Go 文件、25 份 `.tmpl` 资源**。文档分发还依赖目录外的 `docs/embed.go`。
+当前目录有 **2 个 main 包、15 个生产 Go 文件、20 个测试 Go 文件、25 份 `.tmpl` 资源**。文档分发还依赖目录外的 `docs/embed.go`。
 
 ```text
 cmd/
@@ -26,7 +26,7 @@ cmd/
 │   ├── debug.go               # HTML/Rod/对比/选择器调试
 │   ├── act.go                 # Rod 页面动作与人工交接
 │   ├── templates/             # Go、配置、部署、文档与技能模板
-│   └── *_test.go              # 18 份测试文件
+│   └── *_test.go              # 19 份测试文件
 └── monitor-demo/
     ├── main.go                # 本地 HTTP、系统指标和合成数据
     ├── oa_demo.go             # 表格、动作和自定义页替身
@@ -87,10 +87,10 @@ CLI 是短生命周期进程。debug 显式管理浏览器池。migrate/token/re
 
 ## 4. 框架文档分发链路
 
-`docs/embed.go` 是分发源白名单：只嵌入 README.md，以及 architecture、configuration、guides、accounts、runtime、operations、package_structure 各目录的 Markdown；**排除 history/**，不自动收进新目录。该 Go 文件本身和历史记录均不是复制给业务的手册文件。
+`docs/embed.go` 是分发源白名单：嵌入 README.md、architecture/configuration/guides/accounts/runtime/operations/package_structure 的 Markdown，以及 assets/diagrams 下的 mmd/svg/png 和 manifest.json；**排除 history/**，不自动收进新目录。Go 源码、渲染工具和 Node 依赖不复制给业务项目。
 
 1. `main.go` 的 `tmplFS` 管业务骨架模板，`docs.Files` 管框架手册，两者分开。
-2. `upgrade.go` 的 `embeddedDocs` 仅遍历 `docs.Files`，收集 `.md` 相对路径并排序；不会把目标项目的文档扫描结果加入写入清单。
+2. `upgrade.go` 的 `embeddedDocs` 仅遍历 `docs.Files`，收集所有嵌入资源的相对路径并排序；不会把目标项目的文档扫描结果加入写入清单。文本比较容忍 CRLF/LF 差异，PNG 等二进制比较完整字节。
 3. `main.go` 的 `copyDocs` 在 new 时按这些相对路径调用 `writeScaffoldFile`，写入 docs/framework/，保留 package_structure/ 子目录，也遵守 missing-only。
 4. `upgrade.go` 的 `planDocs` 比对登记手册并生成 DocAdds/DocUpdates；`layout.go` 固定使用 docs/framework/。
 5. 显式 upgrade write 后，`writeDocs` 只写计划中的框架手册，并创建必要子目录；项目独有文件不删除。顶层项目独有 Markdown 可列入 DocStale，未递归列举的项目子目录也不会因此被清理。
@@ -121,6 +121,7 @@ writeDocs/writeSkill 逐文件直接写入，不是整批事务，也没有临�
 | `scaffold_safe_test.go`、`scaffold_review_test.go` | 已有项目保护、missing-only、module 不一致、链接/junction、创建竞争、replace 路径 |
 | `module_path_test.go`、`module_version_test.go` | 多级/连字符/主版本 module 的实际生成编译；v4 模块、模板、旧模块拒绝及 missing-only 不写入保护 |
 | `layout_test.go`、`docs_structure_test.go` | 固定 v4 布局、实际 new → tidy → build、应用文档保留；`TestScaffoldAndUpgradePreserveStructureManuals` 守卫分册嵌入、子目录复制和升级 |
+| `docs_assets_test.go` | 图源/双格式图片及 manifest 完整复制与哈希一致；PNG 不做文本换行归一；upgrade 不经链接写出目标目录、不覆盖计划后新增的项目约定 |
 | `upgrade_test.go`、`upgrade_helpers_test.go` | 差异计划、只刷新框架副本、通用技能刷新与项目约定保留、辅助输出 |
 | `check_test.go`、`migrate_test.go` | 临时程序内容/参数/端到端声明拒绝、业务 module 识别；不等同真实 DB 迁移验收 |
 | `debug_test.go`、`act_test.go` | 参数、HTML 提取/链接/选择器/输出和动作语法；解析测试不证明真实浏览器动作已执行 |

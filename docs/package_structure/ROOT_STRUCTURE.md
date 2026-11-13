@@ -96,12 +96,15 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 
 | 路径 | 所有者与职责 | 放置规则 |
 | --- | --- | --- |
-| `docs/embed.go` | docs 包的分发白名单；总导航、六组主题手册及 package_structure | 明确列出当前目录，不嵌入 history；复制/升级归 cmd/papa，不在这里读取业务项目或写盘 |
+| `docs/embed.go` | docs 包的分发白名单；总导航、主题手册、package_structure 与图册资源 | 明确列出当前目录/资源扩展名，不嵌入 history；复制/升级归 cmd/papa，不在这里读取业务项目或写盘 |
 | `docs/package_structure/` | 当前目录、包与文件职责说明书 | 全部职责明细集中本目录；README 做索引，各分册维护所属包，App 并入 Internal |
 | `docs/README.md` | 使用手册阅读导航 | 指向说明书总入口；不再复制整份包文件职责表 |
 | `docs/architecture/ARCHITECTURE.md` | 长期依赖、状态、生命周期和变更约束 | 保留跨组件规则；具体目录和文件清单以说明书为准 |
 | `docs/architecture/ARCHITECTURE_DIAGRAMS.md` | 当前静态组件图、动态任务数据流与术语对应 | 说明运行关联和业务/框架/观测边界；不替代各分册的依赖、状态和锁契约 |
 | `docs/architecture/DEVELOPMENT.md` | 构建、测试、平台说明与开发流程 | 包结构章节提供说明书索引；不维护第二份逐文件职责清单 |
+| `docs/architecture/PAPA_OVERVIEW.md`、`DIAGRAM_ASSETS.md` | 六图介绍与生成/维护契约 | 图册供理解与演示，详细语义仍对照代码和职责手册 |
+| `docs/assets/diagrams/` | Mermaid 图源、SVG、PNG、哈希 manifest | 图源和生成物一起更新，一起分发；不混入业务截图或敏感证据 |
+| `tools/docs/` | 图册渲染脚本及 Node 开发依赖声明 | 只做文档生成，不属于运行模块；工具和 node_modules 不分发到业务项目 |
 | `docs/configuration/` | 配置字典、显式迁移及资源预算 | 区分 YAML 配置与装配 API，不重复定义运行服务状态 |
 | `docs/guides/` | Fetcher、抓取工具和业务数据落地 | 面向接入；真实站点材料仍归独立业务模块 |
 | `docs/accounts/` | 账号认证、OA 接入与浏览器身份 | 凭据、候选发布与身份档案的用法及边界 |
@@ -129,6 +132,7 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 | models 的 crawler_task_index/column_default/utc_time 等测试 | 表字段与索引契约、零值/GORM 默认、UTC 序列化；模型通过不等于真实数据库迁移已验收 |
 | internal/database 与存储/Engine 的测试 | 显式迁移、SQL 方言、CAS、事务与真实库行为，由实际拥有者验证 |
 | cmd/papa 的 docs_structure_test.go | 全部手册新建/升级分发、分类导航可达、分发内部链接、历史排除、保留项目内容与目录层级 |
+| cmd/papa 的 docs_assets_test.go | 图源/产物哈希、PNG 字节分发、missing-only 保留、upgrade 链接路径拒绝与项目约定保护 |
 
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
 

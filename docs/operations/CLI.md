@@ -62,6 +62,7 @@ mycrawler/
     framework/             Papa 手册副本（upgrade 可刷新）
       README.md            当前框架文档导航
       architecture/        架构图、边界和框架开发
+      assets/diagrams/     图册 PNG / SVG / Mermaid 源码及 manifest
       configuration/       配置字典、建表与资源预算
       guides/              抓取接入与数据落地
       accounts/            账号、登录与浏览器身份
@@ -185,6 +186,8 @@ papa report list [-c <配置路径>] [--out <dir>]
 - 只读指被观测数据：不写业务表、不重投任务、不调用接收端；命令会写报告文件，并在满足上述条件时删除过期报告。
 - 事件缺失：没有事件文件、默认/`--snapshot` 窗口无事件，或显式 `--run` 窗口无该 run 的事件时均报错；配置当前关闭事件不阻止读取已有事件文件。只有业务自行调用 `obs.Generate` 才能用其它来源组织无事件报告，并明确声明证据缺失。
 - 业务报告段由业务自己的离线命令通过 `obs.Generate` 显式提供；App 在线 Section/Pattern 注册入口已移除，Papa CLI 不包含业务模型。离线允许有界读取历史和查库对账，在线服务不执行这些操作。
+
+文档分发包含当前图册资源，不只复制 Markdown。`upgrade --write` 在创建目录前拒绝链接路径（包括 Windows junction）；技能刷新也使用同一保护。项目所有的 `project-conventions.md` 只在缺失时独占创建，检查后新增的文件也不会被覆盖。
 
 ## 2. 通用 flags（html / rod / diff 共用）
 

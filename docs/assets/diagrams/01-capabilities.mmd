@@ -1,0 +1,18 @@
+flowchart TB
+    P["PAPA v4<br/>单实例 · 多站点 · 多阶段"]
+    P --- A["接入与获取<br/>Site / Stage / Fetcher<br/>HTTP · Rod · 文件与媒体"]
+    P --- B["执行与可靠性<br/>有界调度 · 持久任务<br/>恢复 · 补偿 · 周期轮询"]
+    P --- C["身份与治理<br/>账号 / 浏览器身份<br/>请求预算 · 熔断与验证"]
+    P --- D["管理与证据<br/>Admin · CLI<br/>文件 Trace · 辅助报告"]
+    A --- X["业务模块拥有<br/>站点协议 · 解析 · 业务模型 · 幂等写入"]
+    B --- Y["框架拥有<br/>认领 / 结算 · 资源生命周期 · 控制状态"]
+    C --- Y
+    D --- Z["观测辅助<br/>信号可能丢失 · 报告不参与结算"]
+    classDef primary fill:#123249,color:#fff,stroke:#123249;
+    classDef business fill:#e8f3fc,color:#173b58,stroke:#5294c7;
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    class P primary;
+    class A,X business;
+    class B,C,Y runtime;
+    class D,Z observe;

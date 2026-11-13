@@ -1,0 +1,35 @@
+flowchart LR
+    subgraph B["业务代码"]
+        S["站点 / 阶段声明"]
+        F["Fetcher<br/>抓取与解析"]
+        R["业务结果处理<br/>幂等写入"]
+    end
+    subgraph P["Papa 单进程"]
+        A["App<br/>装配与启停"]
+        E["Engine<br/>提交 · 调度 · 执行 · 结算"]
+        C["治理与控制<br/>运行策略 / 熔断 / 账号"]
+        U["Admin<br/>管理页面与接口"]
+        G["获取能力<br/>HTTP / 浏览器 / 下载器"]
+        O["在线 obs<br/>有界信号 · 独立报告"]
+    end
+    S --> A --> E
+    A --> C
+    A --> U
+    C -->|准入与状态协作| E
+    U -->|窄接口| E
+    E -->|调用 handler| F
+    F --> G
+    F --> R --> BD[("业务表 / 业务产物")]
+    E -->|经任务 / 控制存储| DB[("MySQL<br/>任务与可靠控制状态")]
+    C --> DB
+    E -.->|尽力投递| O --> RF["报告 / 事件文件"]
+    E -->|尝试收尾| T["Trace / 页面归档"]
+    U -->|读取已有文件| RF
+    V["CLI 显式工具<br/>独立命令入口"] -->|按命令操作| DB
+    V -->|离线生成 / 列出| RF
+    classDef business fill:#e8f3fc,color:#173b58,stroke:#5294c7;
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    class S,F,R,BD,V business;
+    class A,E,C,U,G,DB runtime;
+    class O,RF,T observe;
