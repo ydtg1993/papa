@@ -10,7 +10,7 @@ crawler:
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
   stop_timeout: "5s"           # worker 与动态 ticker 共用退出等待预算；超时则跳过关库/关浏览器池
   stage_idle_timeout: "0s"     # 阶段工作池连续空闲多久就回收（0=常驻不回收）；多站/长跑建议配，如 "10m"
-  # 单任务步骤追踪：默认仅保留异常尝试到文件，不需要迁移。详见 docs/framework/CORE_CONFIG.md
+  # 单任务步骤追踪：默认仅保留异常尝试到文件，不需要迁移。详见 docs/framework/configuration/CORE_CONFIG.md
   trace:
     mode: errors              # off=关闭；errors=异常（默认）；all=全任务
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
@@ -30,7 +30,7 @@ crawler:
   # 熔断闸门：窗口内**终态失败**数（重试耗尽或不可重试，不是每次 attempt）达阈值就把该站所有阶段的 worker 闸住，
   # 并发一条 critical 告警；自动保护状态持久化，按冷却/试探预算恢复，人工暂停不自动解除。
   # **闸门每站一把**：这里这份是**没单配阈值的站点**用的默认值（`SiteSpec.Breaker` 按站点覆盖），
-  # 一个站被墙不会把别的站一起闸住。详见 docs/framework/CORE_CONFIG.md
+  # 一个站被墙不会把别的站一起闸住。详见 docs/framework/configuration/CORE_CONFIG.md
   breaker:
     enabled: true              # 是否启用（默认 false）
     window: "5m"               # 统计窗口
@@ -53,7 +53,7 @@ crawler:
 # 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
 # 空闲超过 max_idle_time 的会被回收。
 # 本段物理容量/浏览器启动参数改完重启生效；动态借用预算在 runtime.resources。
-# 身份档案默认不绑定；在 OA「浏览器诊断」创建版本、绑定并复验，见 docs/framework/BROWSER_IDENTITY.md。
+# 身份档案默认不绑定；在 OA「浏览器诊断」创建版本、绑定并复验，见 docs/framework/accounts/BROWSER_IDENTITY.md。
 # 绑定后不要用 Device/UA/语言启动参数或普通头覆盖身份；档案不写入本 YAML。
 browser:
   enable: true
@@ -84,10 +84,10 @@ proxy:
   api_url: ""
   refresh_interval: 500s
 
-# 运行治理默认关闭；OA 持久覆盖优先于本段显式字段。详见 docs/framework/RUNTIME_CONTROL.md。
+# 运行治理默认关闭；OA 持久覆盖优先于本段显式字段。详见 docs/framework/runtime/RUNTIME_CONTROL.md。
 # 升级后先 papa migrate；文件时长写 "30s"，API JSON 时长为整数纳秒。
 # 账号健康/额度按账号由 OA 管理，不在此重复配置；默认不逐次计量、不自动恢复登录。
-# OA 新增账号需要业务注册 Provider 与加密存储，见 docs/framework/ACCOUNT_ONBOARDING.md。
+# OA 新增账号需要业务注册 Provider 与加密存储，见 docs/framework/accounts/ACCOUNT_ONBOARDING.md。
 runtime:
   defaults:
     request:
@@ -126,7 +126,7 @@ log:
   compress: true
   local_time: true
 
-# 运行观测（框架通用事件流 + 运行报告；默认关）。详见 docs/framework/OBSERVABILITY.md
+# 运行观测（框架通用事件流 + 运行报告；默认关）。详见 docs/framework/operations/OBSERVABILITY.md
 obs:
   events:
     enabled: false               # 开启在线信号报告与 logs/events.jsonl 归档；默认关闭
@@ -167,7 +167,7 @@ server:
   # write_timeout 默认 0 = 不限，这是有意的：给日志打包下载设上限等于掐断在途下载。
 
 # 三个治理队列（全局各一条，不再按站点拆）。没写哪一段 = 那条不跑；开了（enabled: true）就得写全，
-# 缺一项 / 值越界启动就报。详见 docs/framework/CORE_CONFIG.md 的对应三节。
+# 缺一项 / 值越界启动就报。详见 docs/framework/configuration/CORE_CONFIG.md 的对应三节。
 error_queue:
   enabled: true               # 失败任务重投；interval="0" = 不自动轮询，只留后台手动触发
   worker_count: 1             # 并发重新投递数，必须 > 0
@@ -186,7 +186,7 @@ repeat_queue:
   batch_size: 100
 
 # 业务自己的配置写在这里：框架**不解析、不校验**这一段，原样透出给 App
-#（`app.Config.BusinessSection("covers", &covers)` 解码；详见 docs/framework/CORE_CONFIG.md 的 business 段）。
+#（`app.Config.BusinessSection("covers", &covers)` 解码；详见 docs/framework/configuration/CORE_CONFIG.md 的 business 段）。
 # business:
 #   covers:
 #     dir: ./covers

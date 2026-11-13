@@ -1,9 +1,9 @@
 # Papa 数据落地手册
 
-框架任务时间列及 UTC 存储规则见 [TASK_TIMING.md](TASK_TIMING.md)。升级需要停 worker 后显式迁移，不将任务最近结束记录视为业务事务提交时间。
+框架任务时间列及 UTC 存储规则见 [TASK_TIMING.md](../runtime/TASK_TIMING.md)。当前 v4 模型变更需要停 worker 后显式迁移；旧版本使用独立数据库，见 §6。不将任务最近结束记录视为业务事务提交时间。
 
 > 面向：写完 fetcher 之后，抓到的内容怎么落地成表、写进数据库、以及写在哪里。
-> 配套阅读：[FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md)（抓取逻辑怎么写）。
+> 配套阅读：[FETCHER_WRITING_GUIDE.md](FETCHER_WRITING_GUIDE.md)（抓取逻辑怎么写）。
 
 ---
 
@@ -14,14 +14,13 @@
 - `crawler_tasks` 记的是「这条 URL 属于哪个站点的哪个阶段、跑到哪一步、重试几次、要不要轮询、业务键是什么」——**它没有结果列**。
 - 抓到的内容要落库，就在项目的 `internal/models/` 包里定义结构、把它登记进 `models.Models()`，然后用 `engine.Upsert` 写进去（建表走 `papa migrate`）。
 
-> **升级提醒**：v3.3.2 之前框架提供过 `crawler_tasks.title` / `content` 两个结果列与
-> `SaveResult` / `SaveContent` / `GetResult` 三个 API，**已全部删除**。迁移步骤见 §6。
+> 任务表不提供业务结果读写 API；业务表通过宿主注册和迁移，与任务状态分开维护。
 
 ---
 
 ## 1. 两类数据，两条生命周期
 
-框架身份表 `crawler_browser_profiles` / `crawler_browser_identity_bindings` 保存档案与绑定修订，不存采集结果或凭据，随显式框架迁移创建。Cookie/Token/浏览器状态及改绑候选仍走账号 Store。匿名业务需要持久保存自己的稳定会话键；`htmlfetch.Session` 不新增 ID。详见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。
+框架身份表 `crawler_browser_profiles` / `crawler_browser_identity_bindings` 保存档案与绑定修订，不存采集结果或凭据，随显式框架迁移创建。Cookie/Token/浏览器状态及改绑候选仍走账号 Store。匿名业务需要持久保存自己的稳定会话键；`htmlfetch.Session` 不新增 ID。详见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。
 
 | | 调度状态 | 业务结果 |
 | --- | --- | --- |
@@ -41,11 +40,13 @@
 | `id` / `p_id` | 任务 ID / 父任务 ID（阶段串联靠它） |
 | `url` | 执行 URL；任务身份独立使用 identity_type/value/hash |
 | `stage` / `site` | 属于哪个阶段、哪个站点（`SiteSpec.Key`，**必填** —— 没有「未归属」那一档） |
-| `account_pool` | 任务在该站的账号池归属；空表示未使用池，不参与页面/幂等键去重 |
+| `account_pool` | 任务在该站的账号池归属；空表示未使用池，不参与标准任务身份去重 |
 | `status` / `retry` / `error` | 运行态：待处理 / 处理中 / 成功 / 失败、重试次数、错误信息 |
 | `repeatable` / `repeat` / `repeat_interval` / `next_repeat_at` / `last_repeat_at` | 轮询相关，调度用 |
 | `reprocess` / `urgent` | 失败重投的代次（同时是后台动作的版本守卫）、加急标记 |
 | `identity_type` / `identity_value` / `identity_hash` | 标准身份类型、原值和 SHA-256，见下 |
+| `failure_kind` / `compensation_mode` / `compensation_reason` / `next_compensation_at` / `compensation_version` | 失败分类、补偿门控和版本，由执行及补偿组件维护 |
+| `last_account_id` / `last_account_selection_version` / `account_attempts` | 最近账号与最多 8 次认领关联，独立于 Trace；不保存凭据 |
 | `meta` | **业务键**（JSON），见下 |
 
 - **业务键写 `meta`**：给 `papa.Task{Meta: map[string]string{...}}` 赋值即可，它随行落库。
@@ -57,7 +58,7 @@
 - **标准身份**：`Task.ResourceID` 非空时采用 ID，否则采用保留 origin 的规范 URL。框架存储 `identity_type`、`identity_value`、`identity_hash`；哈希输入是包含版本、站点、阶段、类型和值的 JSON 字符串数组，不直接拼接分隔符。
 - 只接受 v4 身份字段；旧任务键/哈希字段与回填升级逻辑已删除。
 - 改用 ResourceID 是身份契约变化，不应把已有 URL 身份静默转换成 ID 身份。框架不会自动合并两条记录，也不重写业务表身份。
-- 其余列由引擎维护，业务**不要直接读写**；后台任务表的「重投 / 加急 / 开停轮询 / 标失败 / 删除」已经覆盖了常见的运维动作。
+- 其余列由引擎维护，业务**不要直接改写**；后台任务表的「重投 / 加急 / 开停轮询 / 标失败 / 删除」已经覆盖了常见的运维动作。
 
 ---
 
@@ -89,7 +90,7 @@ type Series struct {
 }
 ```
 
-建表：项目目录里跑 `papa migrate`（等价于 `make migrate`）；它只增不减，重复跑安全。
+建表：项目目录里跑 `papa migrate`（脚手架中等价于 `make migrate`）。底层 AutoMigrate 通常可重复执行，但也可能调整数据库支持的类型和约束；生产变更须审查 DDL，不能把重复执行理解成无条件安全。
 
 **每个字段都要写 `comment:...`**：注释随 `papa migrate` 进库（`information_schema.COLUMNS.COLUMN_COMMENT`），排查时不用再猜列含义。注意 gorm 的 `MigrateColumn` 会跳过**已存在表的主键列**注释，老库的 `id` 注释要手工 `ALTER TABLE ... MODIFY COLUMN ... COMMENT` 补（新建表时随 CREATE TABLE 自动带上）。
 
@@ -144,8 +145,8 @@ return engine.SubmitTask(&papa.Task{
 2. **没建唯一键** → 重投/轮询一轮就多一行；`Upsert` 也会退化成普通插入。
 3. **站点维度漏了一处**（提交任务时不带 `site`、按阶段取配置只给名字）→ 声明或提交被拒绝，或查不到对应阶段。标准任务身份由框架自动纳入站点与阶段，业务不再手拼作用域前缀。
 4. **`meta` 里塞数据** → 它是给"还原任务身份"用的，塞大对象既没索引也不该随任务清理而消失。
-5. **业务列名与 gorm 生成的实际列名对不上**（后台表格页 `Field` 写 `pid` 而库里是 `p_id`）→ 后台永远渲染成空，见 [MONITOR.md](./MONITOR.md)。
-6. **改了表结构没跑迁移** → `AutoMigrate` 只增不减（不改类型、不删列）；改列类型、删列、回填都得自己写 SQL，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+5. **业务列名与 gorm 生成的实际列名对不上**（后台表格页 `Field` 写 `pid` 而库里是 `p_id`）→ 后台永远渲染成空，见 [MONITOR.md](../operations/MONITOR.md)。
+6. **改了表结构没跑迁移** → 普通启动不会迁移。`AutoMigrate` 会建表、补列/索引，并可能调整其支持的类型和约束；不会替业务推断删列、改名或数据回填。涉及这些意图时应审查并编写专用迁移 SQL，见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 第 2 节。
 
 ---
 
@@ -168,17 +169,17 @@ v4 不提供旧版本的表结构或任务身份转换。使用独立数据库�
 
 ## 调度运行关系
 
-运行治理升级需显式 `papa migrate`：补 `crawler_config.revision`、`crawler_tasks.account_pool` 并建 `crawler_account_pools` / `crawler_account_management`。策略 CAS 版本只以 `crawler_config.revision` 列为权威；`runtime_policy` 是独立键，`sites` 仍是运行快照。账号池表保存成员/当前选择/最近 100 条切换记录，账号管理表保存停用/隔离/冷却，不存凭据，也不复用 `crawler_task_flows`。
+运行治理的当前模型由显式 `papa migrate` 创建：包括 `crawler_config.revision`、`crawler_tasks.account_pool` 与 `crawler_account_pools` / `crawler_account_management`。策略 CAS 版本只以 `crawler_config.revision` 列为权威；`runtime_policy` 是独立键，`sites` 仍是运行快照。账号池表保存成员/当前选择/最近 100 条切换记录，账号管理表保存停用/隔离/冷却，不存凭据，也不复用 `crawler_task_flows`。
 
-任务实际账号与选择版本仅在启用 Trace 时随尝试记录；没有新增每任务永久身份历史列。失败账号的任务由错误队列或人工重投复用原行，数据库结果写入仍必须满足业务幂等性。详细运行生命周期见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+任务最近账号与选择版本、最近 8 次认领关联保存在任务行中，不依赖 Trace 开关；这是一段有界关联，不能作为永久身份历史。失败账号的任务由错误队列或人工重投复用原行，数据库结果写入仍必须满足业务幂等性。详细运行生命周期见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
 
-可选 crawler_task_flows 保存运行策略和修订；crawler_tasks 的 flow_id/flow_lane/flow_branch/flow_path 保存关系。启用 task_flow.enabled 并显式 papa migrate；任务列是本版本共同 schema，默认任务使用空标识。禁止绕过 API 修改/删除关系，详见 [动态阶段调度](TASK_FLOW.md)。
+可选 crawler_task_flows 保存运行策略和修订；crawler_tasks 的 flow_id/flow_lane/flow_branch/flow_path 保存关系。启用 task_flow.enabled 并显式 papa migrate；任务列是本版本共同 schema，默认任务使用空标识。禁止绕过 API 修改/删除关系，详见 [动态阶段调度](../runtime/TASK_FLOW.md)。
 
 
-熔断运行数据分为当前快照 `crawler_breaker_incidents` 与追加历史 `crawler_breaker_history`。本次升级须运行宿主显式迁移创建历史表，普通启动不自动迁移；每日 obs 查询历史表，不用最新快照覆盖过去某天的状态。两表同事务写入，历史主键为事件 ID 与事件内序号。
+熔断运行数据分为当前快照 `crawler_breaker_incidents` 与追加历史 `crawler_breaker_history`，均通过宿主显式迁移创建，普通启动不自动迁移。显式离线 obs 可查询历史表，不用最新快照覆盖过去某天的状态；在线 obs 只接收有限信号，不读这两张表。两表同事务写入，历史主键为事件 ID 与事件内序号。
 
 ### 步骤追踪文件存储
 
 Trace 不再参与框架数据库迁移或启动表结构检查。旧 `crawler_task_trace` 表不会自动删除，但也不会回退读取；需要历史 SQL 证据时自行保留原库备份。本次不改变任务主表认领、终态和结算条件。
 
-新执行在成功认领后取得 UUID，同轮重试共用；异常尝试或主动选中的执行保存到专用 Trace 文件目录。执行身份与归档关联保持一致，旧归档下载路径继续可用。详见 [CORE_CONFIG.md](CORE_CONFIG.md) 的 Trace 文件存储。
+新执行在成功认领后取得 UUID，同轮重试共用；`errors` 模式保存异常尝试，`all` 保存全部尝试，`off` 关闭。没有手动选择任务的 Trace 模式。执行身份与归档关联保持一致，归档下载路径独立于 Trace。详见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 Trace 文件存储。

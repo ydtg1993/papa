@@ -1,6 +1,6 @@
 # 账号登录态与采集运行
 
-> 面向：需要按账号登录、跨 HTTP/浏览器采集和恢复会话的业务。配套：[Fetcher 手册](FETCHER_WRITING_GUIDE.md)、[采集工具](CRAWL_TOOLKIT.md)、[账号接入与登录流程](ACCOUNT_ONBOARDING.md)。
+> 面向：需要按账号登录、跨 HTTP/浏览器采集和恢复会话的业务。配套：[Fetcher 手册](../guides/FETCHER_WRITING_GUIDE.md)、[采集工具](../guides/CRAWL_TOOLKIT.md)、[账号接入与登录流程](ACCOUNT_ONBOARDING.md)。
 
 ## 1. 入口与边界
 
@@ -14,7 +14,7 @@
 | `Register(key, Config)` | 注册站点＋账号，一次注册后配置不再外部修改 |
 | `RegisterCandidate` / `PublishCandidate` / `Version` | 核验独立候选后注册或按版本更新；失败保留原状态，见 §8 |
 | `Manager.Do` / `Engine.FetchAccountHTTP` | 有限认证恢复的 HTTP 请求 |
-| `Manager.FetchHTML` / `Engine.FetchAccountHTML` | 同账号抓 HTML，不进入旧原始 HTML 归档 |
+| `Manager.FetchHTML` / `Engine.FetchAccountHTML` | 同账号抓 HTML，不进入原始 HTML 页面归档 |
 | `Manager.WithBrowser` / `Engine.WithAccountBrowser` | 恢复、检查、必要时登录，执行一次浏览器回调并保存状态 |
 | `Pause` / `Resume` / `Logout` | 停止新操作、恢复并重新检查、清除本地状态并暂停 |
 | `Status` / `Engine.AccountStatus` | 无凭据状态列表，可接业务自定义后台 |
@@ -51,13 +51,13 @@ if err != nil { return err }
 page, err := engine.FetchAccountHTML(ctx, key, "https://books.example/list")
 ```
 
-上例 `loginAccount` / `checkAccount` 是站点实现，签名分别为 `func(context.Context, *account.Credentials) error` 和 `func(context.Context, *account.Credentials) (bool, error)`。它们用 `credentials.Context(ctx)` 向自己的 HTTP client 发出登录/检查请求；该 context 绑定候选 CookieJar 和凭据头。Login 可设置 `credentials.Headers["Authorization"]`、`credentials.Headers["X-CSRF-Token"]`；refresh token 等私有状态放入 `Values`，它不会自动发送。协议和刷新接口由站点定义。
+上例 `loginAccount` / `checkAccount` 是站点实现，签名分别为 `func(context.Context, *account.Credentials) error` 和 `func(context.Context, *account.Credentials) (bool, error)`。它们用 `credentials.Context(ctx)` 向受管 `htmlfetch.Client` 发出登录/检查请求；该 context 绑定候选 CookieJar 和凭据头，自建的普通 `net/http.Client` 不会自动读取这些 context 值。回调自己约束目标 origin 和重定向，不能假定 `Credentials.Context` 已替它完成范围检查。Login 可设置 `credentials.Headers["Authorization"]`、`credentials.Headers["X-CSRF-Token"]`；refresh token 等私有状态放入 `Values`，它不会自动发送。协议和刷新接口由站点定义。
 
 只允许 Authorization、X-CSRF-Token 和 `AuthHeaders` 中额外声明的凭据头。请求本身不能覆盖这些头或直接塞 Cookie。账号入口清除继承的这些凭据和 Proxy-Authorization，再绑定当前账号；共享配置中其他自定义认证头必须列入 AuthHeaders。`core.WithHeaders` 现在按 HTTP 规则执行大小写不敏感的覆盖/删除。
 
 Check 必须验证真实账号身份。明确未登录返回 `false, nil`；网络错误返回 error，不能触发误登录。新候选始终使用新的 Jar，登录后复验通过才发布。每轮认证按账号合并并发；首调用者的取消会结束该轮，等待者可独立取消。回调必须配合 ctx，不能重入同一账号或保留候选继续修改。
 
-CheckInterval 为 0 时逐次检查，正数允许近期有效结果复用；实际业务请求仍分类处理失效。MaxConcurrent 默认 1，设大后同账号 HTTP 可以并发，但站点必须允许同时操作和 Cookie 更新。需要严格 Token 顺序时保持 1。浏览器回调始终在账号内串行执行。
+CheckInterval 为 0 时逐次检查，正数允许近期有效结果复用；实际业务请求仍分类处理失效。Timeout 默认为 30 秒，FailureCooldown 默认为 5 秒；这两项的 0 表示使用默认值，不表示关闭。MaxConcurrent 默认 1，范围 1..1024，设大后同账号 HTTP 可以并发，但站点必须允许同时操作和 Cookie 更新。上述预算不接受负值。需要严格 Token 顺序时保持 1。浏览器回调始终在账号内串行执行。
 
 自动 Rod→HTTP 登录桥接与 `WithBrowser` 共用同一账号浏览器锁；桥接持锁直到 HTTP 复验、快照保存和状态发布完成。等待者拿锁后读取最新浏览器状态，避免重复登录或覆盖刚发布的状态。缓存命中和仅 HTTP 检查不占用浏览器锁，等待锁可以独立取消。
 
@@ -116,9 +116,9 @@ HTTP 的 ProxyURL 固定该账号出口，空值固定直连；与 context 的�
 
 ## 6. 状态、归档和边界
 
-Status 给出账号键、HTTP 版本、是否暂停、是否正在认证、近期检查/登录时间、冷却截止和失败类别。Ready 表示已有通过检查的本地状态，不保证服务端此刻有效。不会包含 Cookie、Token、Values、代理密码或回调原始错误。浏览器操作的时间范围和凭据可用性与 HTTP 分开记录。业务后台可用 `engine.AccountStatus()` 挂只读自定义数据接口；暂停/注销等写操作应沿用业务后台权限。
+Status 给出账号键、HTTP 版本、是否暂停、是否正在认证、近期检查/登录时间、冷却截止和失败类别。`HTTPReady` / `BrowserReady` 分别表示已有通过检查且未被暂停或失败阻断的本地状态，不保证服务端此刻有效；配置能力由 `HTTPConfigured` / `BrowserConfigured` 单独表达。不会包含 Cookie、Token、Values、代理密码或回调原始错误。业务后台可用 `engine.AccountStatus()` 挂只读自定义数据接口；暂停/注销等写操作应沿用业务后台权限。
 
-认证 HTTP/HTML 入口不进入旧原始 HTML 归档，避免登录后页面凭据随失败证据落盘。需要回归材料时显式使用 WriteSample 脱敏；浏览器截图和回调自行记录的数据仍由业务控制。Failure.Error 只返回类别，Unwrap 仍可供 errors.Is/As 检查，不能把解包的原始错误直接写日志。
+认证 HTTP/HTML 入口不进入原始 HTML 页面归档，避免登录后页面凭据随失败证据落盘。需要回归材料时显式使用 WriteSample 脱敏；浏览器截图和回调自行记录的数据仍由业务控制。Failure.Error 只返回类别，Unwrap 仍可供 errors.Is/As 检查，不能把解包的原始错误直接写日志。
 
 账号运行时服务于单实例采集；验证码处理、池内账号能否互换和生产站点是否允许 Cookie 桥接由业务负责。测试使用本地 HTTP 和真实 Chromium，站点登录协议与业务规则仍需独立业务模块验收。
 
@@ -165,7 +165,7 @@ _ = response
 | `PoolOptions.ScanInterval` / `VerifyTimeout` | 默认 1s / 30s；独立调度扫描及验证超时上限；实际超时取此上限与账号 Policy.VerifyTimeout 较小值 |
 | `PoolOptions.VerifyConcurrency` | 默认 4，范围 1..64；全局核验工作上限。同站最多一个，慢站点不会占满全部槽位 |
 | `StandbyTarget` / `StandbyTTL` | 目标默认 0（关闭）；启用时 TTL 默认 15 分钟。当前账号健康时按成员顺序补近期通过核验的备用 |
-| `PoolOptions.ReverifyInterval` | 默认关闭，保留旧全局恢复间隔；账号 Policy.RecoveryInterval 为正时覆盖它。人工验证阻断、持久停用和 Manager.Pause 均不自动解除 |
+| `PoolOptions.ReverifyInterval` | 默认关闭，作为协调器的全局恢复间隔；账号 Policy.RecoveryInterval 为正时覆盖它。人工验证阻断、持久停用和 Manager.Pause 均不自动解除 |
 
 `crawler_account_pools` 保存成员顺序、池开关、当前账号/选择版本和最近 100 条切换记录；`crawler_account_management` 的现有 JSON 保存账号停用、隔离、可疑状态、核验模式、凭据版本、证据计数、下次核验时间、政策、用量及有界健康事件；不新增凭据列。凭据仍在既有 Store，普通配置 JSON 不含 Cookie/Token。重启重新验证认证状态，持久停用/隔离不被自动清除。
 
@@ -175,7 +175,7 @@ _ = response
 
 池页展示当前账号、成员状态、HTTP/浏览器能力、等待数与原因、选择版本、最近切换；支持创建/启停池、排序、停用成员和重新验证。写动作带版本检查、令牌鉴权与审计；GET 查询不触发认证。验证会实际访问配置站点，并受超时与站点预算约束。
 
-每条任务通过 `crawler_tasks.account_attempts` 独立于 Trace 保存最近 8 次认领的账号关联，含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据；后台可按该有界记录查找受影响任务。更早关联会被淘汰，升级前的记录不会回填，空结果不代表从未使用该账号。`task.Trace.Step("账号池身份", ...)` 仍可在`crawler.trace.mode` 非 off 时记录详细步骤。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障先保留凭据并暂停新操作，独立核验确认持续故障后隔离出口并触发备用；`ProxyChecks` 与 `InvalidChecks` 分开计数，普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
+每条任务通过 `crawler_tasks.account_attempts` 独立于 Trace 保存最近 8 次认领的账号关联，含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据；后台可按该有界记录查找受影响任务。更早关联会被淘汰，保留窗口之外或未记录的证据不会补造，空结果不代表从未使用该账号。Engine 自动记录“账号池身份”步骤，无需业务重复埋点；`crawler.trace.mode` 默认 `errors`，仅保留异常尝试，`all` 才保留正常成功尝试，`off` 关闭文件追踪。标准 Render、CaptureRequest/CaptureResponse 自动绑定本次账号；Block 与 GovernanceOrigins 在 bootstrap 状态恢复页创建时安装。采集目标仍必须与账号 bootstrap 同源，不能用治理 origin 列表扩大账号认证范围。明确的固定 HTTP 407/代理连通故障与浏览器固定出口故障先保留凭据并暂停新操作，独立核验确认持续故障后隔离出口并触发备用；`ProxyChecks` 与 `InvalidChecks` 分开计数，普通 Rod 超时不能据此认定代理坏。完整治理覆盖见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)，不能将登录态隔离解释为全浏览器目标的请求计量。
 
 
 ### 可疑状态与两种核验

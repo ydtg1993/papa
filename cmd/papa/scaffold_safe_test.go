@@ -12,7 +12,7 @@ func TestNewRejectsExistingProjectAndMissingOnlyPreservesBusiness(t *testing.T) 
 	if e := os.Mkdir("demo", 0755); e != nil {
 		t.Fatal(e)
 	}
-	original := map[string]string{"go.mod": "module demo\n\ngo 1.25.0\n", "main.go": "package main\n// hand written\n", "configs/config.yaml": "private config\n", "docs/framework/CLI.md": "custom copy\n"}
+	original := map[string]string{"go.mod": "module demo\n\ngo 1.25.0\n", "main.go": "package main\n// hand written\n", "configs/config.yaml": "private config\n", "docs/framework/operations/CLI.md": "custom copy\n"}
 	for path, body := range original {
 		p := filepath.Join("demo", path)
 		_ = os.MkdirAll(filepath.Dir(p), 0755)

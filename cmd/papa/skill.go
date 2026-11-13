@@ -11,7 +11,7 @@ import (
 // 两处共用一份，是为了不再出现"模板加了文件、升级那条路却不知道"的漂移。
 //
 // 技能落在 `<项目>/.claude/skills/<skillName>/` —— Claude Code 从项目级 `.claude/skills/` 自动发现
-// （见 docs/CLI.md 的生成树）。所以生成的 `.gitignore` 特意放行这一目录。
+// （见 docs/operations/CLI.md 的生成树）。所以生成的 `.gitignore` 特意放行这一目录。
 
 const skillName = "papa-crawler-development"
 

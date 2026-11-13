@@ -1,7 +1,7 @@
 # Papa 爬虫核心配置手册
 
-> 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填。文件和 Go 声明改动需重启；运行治理可在 OA 保存后即时生效，见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
-> 配套：本文是「配置字典」；各治理队列与后台行为见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)、[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)、[REPEAT_QUEUE.md](./REPEAT_QUEUE.md)、[MONITOR.md](./MONITOR.md)。框架已移除通用 cron 调度器。
+> 面向：配置 `configs/config.yaml` 时，每个字段是什么意思、怎么填。文件和 Go 声明改动需重启；运行治理可在 OA 保存后即时生效，见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
+> 配套：本文是「配置字典」；各治理队列与后台行为见 [ERROR_QUEUE.md](../runtime/ERROR_QUEUE.md)、[RECOVER_QUEUE.md](../runtime/RECOVER_QUEUE.md)、[REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)、[MONITOR.md](../operations/MONITOR.md)。框架已移除通用 cron 调度器。
 
 ---
 
@@ -10,7 +10,7 @@
 - 主配置：`configs/config.yaml`（`papa new` 生成，含中文注释）。
 - 加载路径回退链：`papa.WithConfigPath(...)` 指定的路径 → 环境变量 `PAPA_CONFIG` → `configs/config.yaml`。
 - **文件与运行覆盖分开**：改 `config.yaml` 或 Go 站点声明后需要重启；`runtime` 支持 OA 持久覆盖，保存后限制新工作并跨重启恢复。三个治理队列仍是全局启动配置，不能按站点覆盖；站点/阶段拓扑、物理 worker/队列容量和凭据来源不热改。任务自己的 repeat 周期仍可通过后台或 API 动态调整。
-  老项目里的 `configs/runtime.yaml` 已经没人读写了，可以直接删。
+  运行覆盖保存在数据库中，不读写 `configs/runtime.yaml`。
 
 ## 1. 完整配置项参考
 
@@ -86,15 +86,15 @@
 > 只关掉某一站）。每站一份计数是硬要求 —— 共用一份的话站点 A 被墙会把站点 B 一起闸住。
 >
 > **想"启动先别跑"不在这一节**：那是声明期的一道整站闸门 `SiteSpec.StartPaused: true`
-> （入口任务照投、任务寄放在溢出表，后台点「恢复整站」才放开），见 [MONITOR.md](./MONITOR.md) §10。
+> （入口任务照投、任务寄放在溢出表，后台点「恢复整站」才放开），见 [MONITOR.md](../operations/MONITOR.md) §10。
 > `policy` 的零值采用上表默认；负值不合法，时长不超过 24h，整数不超过 100000；`capacity` 必须覆盖短窗口两条阈值，`max_recovery` 至少覆盖冷却、单次试探和低速恢复时长。`BreakerSpec.Policy == nil` 继承配置文件策略；非 nil 用该站策略整体替换，未填字段采用框架默认。默认值是通用起点，应结合本站流量与报告调整。
 >
-> 这一节配置**判据与恢复预算**；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](./MONITOR.md) §9），
+> 这一节配置**判据与恢复预算**；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](../operations/MONITOR.md) §9），
 > 人工暂停写的是同一张表、来源标成 manual。
 
 ### browser —— 浏览器池（Rod）
 
-稳定身份档案不存放在 `config.yaml`；通过「浏览器诊断」页或公开 API 创建版本、绑定主体并复验生效，见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。没有绑定/显式 Profile 时保留旧行为。启用身份后，不允许 Device、UA/language 启动参数或普通请求头与身份字段冲突；物理池配置仍按本节管理。
+稳定身份档案不存放在 `config.yaml`；通过「浏览器诊断」页或公开 API 创建版本、绑定主体并复验生效，见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。没有绑定/显式 Profile 时保留旧行为。启用身份后，不允许 Device、UA/language 启动参数或普通请求头与身份字段冲突；物理池配置仍按本节管理。
 
 > **默认不用它**：能用静态客户端拿到的页面一律用 `html`（`engine.FetchHTML`），rod 只在
 > 静态 HTML 里拿不到目标数据时才上（判据与理由见 FETCHER_WRITING_GUIDE.md §3）。
@@ -126,7 +126,7 @@
 | `enable` | bool | 是否启用静态 HTML 客户端 |
 | `timeout` | duration | 请求超时 |
 | `max_body_size` | int64 | 响应体大小上限（字节）。**`enable: true` 时必填**，`102400..67108864`（100KB..64MB）。下界挡的是**单位混淆** —— 隔壁 `log.max_size` 的单位是 MB，这里写 `10` 意思是 10 字节，于是每次抓取都报「页面太大」；上界 64MB 在模板值（10MB）之上，只防笔误。启动时校验，越界直接报错 |
-| `headers` | map | 额外请求头，同上：**通常写在站点级 `Headers`**（抓取与下载都认），可被 `papa.WithHeaders` 覆盖（站点级写空值 = 删）。留空时静态抓取的 UA 是框架默认的 `PapaStaticHTML/1.0` |
+| `headers` | map | 额外请求头，同上：**通常写在站点级 `Headers`**，可被 `papa.WithHeaders` 覆盖（站点级写空值 = 删）。下载器须由调用方通过 `OptionsFromRequest(ctx, referer)` 显式传递，不自动继承抓取头。留空时静态抓取的 UA 是框架默认的 `PapaStaticHTML/1.0` |
 
 ### proxy —— 代理管理器
 
@@ -193,9 +193,9 @@
 | `initial_cooldown` / `max_cooldown` | `"30s"` / `"10m"` | 失败探测指数退避；正数、顺序合法，最大不超过 24h |
 | `max_probes` / `recovery_successes` | `1` / `2` | 全管理器同时探测数、恢复所需成功数；计数项范围 1..10000 |
 
-YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略持久化到 `crawler_config.runtime_policy`，revision 以表列为权威；读取失败不回退更宽松默认。只读页面不触发账号验证或代理探测。流程、请求覆盖与浏览器边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略持久化到 `crawler_config.runtime_policy`，revision 以表列为权威；读取失败不回退更宽松默认。只读页面不触发账号验证或代理探测。流程、请求覆盖与浏览器边界见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
 
-账号健康政策、使用预算与备用预验证不是 `runtime` YAML 的另一份覆盖：前者按账号保存到管理状态，后者按池保存，可由 OA 动态调整。默认缓冲 10 秒、两次间隔确认、未知结果退避；使用额度与自动恢复默认关闭。正式字段、默认值及跨池共享语义见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md)。账号接入需由业务显式注册 Provider 和外部密钥支持的 Secrets 存储，不在 YAML 或任务 Meta 中保存明文密码，见 [ACCOUNT_ONBOARDING.md](ACCOUNT_ONBOARDING.md)。
+账号健康政策、使用预算与备用预验证不是 `runtime` YAML 的另一份覆盖：前者按账号保存到管理状态，后者按池保存，可由 OA 动态调整。默认缓冲 10 秒、两次间隔确认、未知结果退避；使用额度与自动恢复默认关闭。正式字段、默认值及跨池共享语义见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md)。账号接入需由业务显式注册 Provider 和外部密钥支持的 Secrets 存储，不在 YAML 或任务 Meta 中保存明文密码，见 [ACCOUNT_ONBOARDING.md](../accounts/ACCOUNT_ONBOARDING.md)。
 
 ### db —— 数据库
 
@@ -221,7 +221,7 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 ### obs —— 运行事件流与报告产物（默认关）
 
 > 面向自动化作业：让「一次运行结束后出报告」有机器可读的数据源。**默认全关** —— 不写这段时行为与没有观测体系时一致。
-> 框架负责事件流（写入 + 契约）与报告引擎（`papa report generate`，产物 4 个文件）；使用姿势、报告怎么读、业务怎么扩展见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
+> 框架负责事件流（写入 + 契约）与报告引擎（`papa report generate`，产物 4 个文件）；使用姿势、报告怎么读、业务怎么扩展见 [OBSERVABILITY.md](../operations/OBSERVABILITY.md)。
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
@@ -256,7 +256,7 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 
 **已知限制（这一版）**：`queue_wait_ms` 不发（需要在任务上记录提交时刻）；`queue_round` 只带本轮处理量，不带每轮失败数。
 
-### server —— 监控 HTTP 服务（详见 [MONITOR.md](./MONITOR.md)）
+### server —— 监控 HTTP 服务（详见 [MONITOR.md](../operations/MONITOR.md)）
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
@@ -272,13 +272,13 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 | `idle_timeout` | duration | 默认 `60s`；keep-alive 空闲连接的上限 |
 | `shutdown_timeout` | duration | 默认 `10s`；优雅退出时等在途请求（如日志下载）跑完的上限，超时才强制断开 |
 
-### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)）
+### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](../runtime/ERROR_QUEUE.md)）
 
 写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
 
 ```yaml
 error_queue:
-  enabled: true               # 失败任务重投；false / 不写 = 不跑
+  enabled: true               # 自动失败重投；false / 不写 = 不自动，仍可手动触发
   worker_count: 1             # 并发重新投递数；开启时必填 > 0
   interval: "4h"              # 自动轮询间隔；"0" = 不自动，仅后台手动触发
   max_retry: 3                # 单个任务最多再处理代数；0 = 不限
@@ -333,7 +333,7 @@ crawler:
 > 服务端按 `archive.dir` 解析、拒绝 `..` 与绝对路径，回的是**文件本身**（`Content-Disposition: attachment`）
 > 而不是内联渲染，拿去本地对着真实页面改选择器最省事。要按自己的路由暴露归档目录，用 `monitor/router.go` 的 `Routes(app)`。
 
-### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
+### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](../runtime/RECOVER_QUEUE.md)）
 
 写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
 
@@ -349,7 +349,7 @@ recover_queue:
 > 恢复是**分批**投递的：每批 `batch_size` 条投完停 `batch_pause`（默认 30m）再继续，
 > 避免重启瞬间把几千条积压一次灌进各阶段队列；停机信号可立即打断停顿。
 
-### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
+### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)）
 
 写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
 
@@ -366,7 +366,7 @@ repeat_queue:
 > `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
 > 播种（`repeat_interval` 为 0 = 用全局 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
 > 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
->（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
+>（见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md) 第 3 节）。
 
 ### crawler_config 的 `sites` 键 —— 站点快照（**内存是源，库是投影**）
 
@@ -381,7 +381,7 @@ repeat_queue:
 
 **不要手改这一行**：它是投影，下一次启动重建就把你的改动覆盖掉；`base_url` / `stage_count` 也是
 按声明抄的（改声明要重启，直接改库不生效）。**不落 Headers**（里面有 UA/Cookie）。
-从更早版本升上来的库，`crawler_sites` 那张表已经没有代码再用它了，手工 `DROP TABLE crawler_sites` 即可。
+当前模型不包含 `crawler_sites`；v4 使用独立数据库，不要求删除旧版数据库中的表或数据。
 
 ### business —— 业务自己的配置段（框架不解析）
 
@@ -434,15 +434,13 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 底层使用 GORM `AutoMigrate` 补齐框架表与注册模型。它不会替业务推断删列、改名等破坏性意图；不同数据库对类型和约束迁移的能力也不完全相同。重复运行通常是幂等的，但生产环境不要把它理解成“无条件安全”：先备份、审查生成 SQL，并为改名、改类型、数据回填等操作自己写迁移 SQL。
 
-**框架不为更早版本的表结构负责**：`papa migrate` 只做 `AutoMigrate`（建表 / 补列 / 补索引），
-不再带任何"给旧库补课"的显式迁移（删旧索引、改列类型、回填、删死列那些都删掉了）。
-从更早版本升级时，应核对已有 schema 和数据。`AutoMigrate` 仍可能调整其支持的类型或约束，但不会执行上述历史专项修复，也不会代替业务的数据迁移脚本。
+**v4 使用独立数据库，不提供旧版任务表原地升级**：启动和迁移先校验已有任务身份结构与数据，拒绝旧格式。校验通过后，`papa migrate` 才以 `AutoMigrate` 创建/补齐当前模型；没有历史专项回填、删旧索引或旧列转换。AutoMigrate 仍可能调整其支持的类型和约束，不能代替业务的数据迁移脚本。
 
-框架自带的表：`crawler_tasks`、`crawler_breaker_incidents`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_breaker_incidents`、`crawler_breaker_history`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
-运行治理升级补 `crawler_config.revision` 与 `crawler_tasks.account_pool`；本轮新增任务失败类别、补偿条件/时间/原因/CAS 版本、最近账号与选择版本、最近 8 次尝试 JSON。账号池表保存成员、当前选择和有界切换记录；管理表保存健康政策、核验进度、预算与有界事件，不保存 Cookie/Token。账号资料表只保存资料与加密存储引用，策略历史表保留最近 100 个覆盖版本。普通启动只检查结构并加载状态，不自动加表/列；即使默认未启用控制器，也应完成显式迁移。
+当前模型包括 `crawler_config.revision`、`crawler_tasks.account_pool`、任务失败类别、补偿条件/时间/原因/CAS 版本、最近账号与选择版本、最近 8 次认领关联 JSON。账号池表保存成员、当前选择和有界切换记录；管理表保存健康政策、核验进度、预算与有界事件，不保存 Cookie/Token。账号资料表只保存资料与加密存储引用，策略历史表保留最近 100 个覆盖版本。普通启动只检查结构并加载状态，不自动加表/列；即使默认未启用控制器，也应完成显式迁移。
 
 **业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是 `internal/models`
 包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。
@@ -458,11 +456,11 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 ### 阶段轮询次数上限
 
-轮询上限属于业务站点声明，不是 YAML 配置项：在 `papa.StageSpec` 上设置 `RepeatLimit: 30`。0 表示不限；达到数据库 `repeat` 计数上限后，该站该阶段的任务不再被自动或强制轮询，恢复及错误重投不受此限，不关闭任务的 `repeatable`。已有 `repeat` 列继续使用，不需要迁移。完整计数含义见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
+轮询上限属于业务站点声明，不是 YAML 配置项：在 `papa.StageSpec` 上设置 `RepeatLimit: 30`。0 表示不限；达到数据库 `repeat` 计数上限后，该站该阶段的任务不再被自动或强制轮询，恢复及错误重投不受此限，不关闭任务的 `repeatable`。已有 `repeat` 列继续使用，不需要迁移。完整计数含义见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)。
 
 ## 动态调度开关
 
-`task_flow.enabled` 默认 false；启用后显式 `papa migrate` 创建运行策略表。升级本版本须迁移 crawler_tasks 的四个调度列（关闭开关也需要），普通启动不迁移。用法、限制与动态切换见 [动态阶段调度](TASK_FLOW.md)。
+`task_flow.enabled` 默认 false；启用后显式 `papa migrate` 创建运行策略表。crawler_tasks 的四个调度列属于共同 v4 schema，关闭开关也包含它们，普通启动不迁移。用法、限制与动态切换见 [动态阶段调度](../runtime/TASK_FLOW.md)。
 
 
 ## 统一网络出口（network）
@@ -515,8 +513,8 @@ Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `cra
 
 `ListTraceExecution` 是唯一追踪查询入口，读取最新已发布执行的末 500 步；详细接口首步 `truncated=true` 表示存在截断。写入以每次尝试为单位暂存、同步、关闭并重命名发布；执行目录汇聚各尝试，不将多个执行混合。没有记录不等于任务未执行。容量和故障边界见 [RESOURCE_BUDGETS.md](RESOURCE_BUDGETS.md)。
 
-单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。
+单实例调度、在线信号、离线报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，通过 Go 装配接口设置，不是 YAML 键。
 
 #### Trace 模式配置
 
-模式在启动时确定，修改后重启生效。省略 mode 默认 errors；Go 零值同样默认 errors。关闭用 `TraceConfig{Mode: config.TraceOff}`。旧 enabled 键已删除，和无效模式一样在启动校验时拒绝，不再进行映射。
+模式在启动时确定，修改后重启生效。省略 mode 默认 errors；Go 零值同样默认 errors。关闭用 `config.TraceConfig{Mode: config.TraceOff}`（`config` 为 `github.com/ydtg1993/papa/v4/config`）。旧 enabled 键已删除，和无效模式一样在启动校验时拒绝，不再进行映射。

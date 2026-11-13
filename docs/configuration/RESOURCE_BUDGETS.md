@@ -1,7 +1,7 @@
 # 单实例资源预算与背压
 
 > 面向：配置 Papa 单实例进程资源、处理输入超限和调度积压的宿主开发者。
-> 配套：[运行配置](CORE_CONFIG.md)、[任务时间](TASK_TIMING.md)、[观测报告](OBSERVABILITY.md)、[目录职责](package_structure/README.md)。
+> 配套：[运行配置](CORE_CONFIG.md)、[任务时间](../runtime/TASK_TIMING.md)、[观测报告](../operations/OBSERVABILITY.md)、[目录职责](../package_structure/README.md)。
 
 资源预算与业务并发配置分开。Config、下载 Overlay、ResumeState 和报告 SourceConfig 各自表达所属组件的参数；预算通过独立类型和装配接口配置。以下上限约束框架管理的数据或令牌，不是进程 RSS、用户插件分配或操作系统文件系统的硬配额。
 
@@ -12,9 +12,9 @@
 ```go
 // app 是已经构造好的 *papa.App。
 if err := app.UseReportInputLimits(papa.ReportInputLimits{
-    MaxLineBytes: 1 << 20,
-    MaxBytes: 256 << 20,
-    MaxEvents: 250000,
+    MaxEvents: 1024,          // 在线入口槽位上限（仍受内置 1024 上限约束）
+    MaxDedupKeys: 256,        // 在线聚合维度上限（仍受内置 256 上限约束）
+    MaxRetainedBytes: 64 << 20,
 }); err != nil {
     return err
 }
@@ -33,7 +33,13 @@ if err := app.Engine.SetSchedulerLimits(papa.SchedulerLimits{
 
 这些不是新增 YAML 键；严格配置解析仍会拒绝未定义键。每个字段未设置时使用有限默认值；不要以负数表示无限。不同独立 Engine 或自行创建的下载器不会自动共享预算，宿主可把同一个 DownloadBudget 传给多个实例的 WithResources。Engine 的 filedown/m3u8 基座及 With 派生实例共享装配的预算。
 
-## 2. 报告输入
+## 2. 在线观测与离线报告输入
+
+`App.UseReportInputLimits` 作用于在线信号入口和聚合维度：槽位取 `min(1024, MaxEvents, MaxRetainedBytes/64KiB)`，维度取 `min(256, MaxDedupKeys, MaxRetainedBytes/1KiB)`，两者至少为 1。在线不扫描 JSONL、日志或数据库，所以 MaxFiles、MaxLineBytes、MaxBytes、MaxSpoolBytes、MaxDays 不影响在线服务。满载信号可丢弃或截断，报告给出完整性说明；它不承担可靠结算。
+
+在线报告与事件归档在关停时共享最多 2 秒等待预算，超时不会扩大业务资源的存活边界；Engine 和宿主业务是否排空仍独立决定共享依赖能否关闭。Trace/页面归档在 worker 尝试收尾中写入，不属于此在线 obs 预算。
+
+下面的输入限制用于显式离线调用 `obs.LoadSourcesContext` / `obs.ConsumeDailySources`，参数类型为 `obs/inputbudget.Limits`。它们不从 App 继承在线配置。
 
 | 项目 | 默认上限 | 口径 |
 | --- | --- | --- |
@@ -47,11 +53,11 @@ if err := app.Engine.SetSchedulerLimits(papa.SchedulerLimits{
 
 事件与日志分别计算扫描预算，两类原始源合计最多各自上限之和；不是跨报告任务共享配额。逐日事件保留内容按日限制，去重键与临时分桶按整次操作限制；日志保留内容按所有窗口合计限制。正常、错误和取消会清理临时分桶，进程被强杀仍可能遗留有界临时文件。
 
-旧 LoadSources/LoadDailySources 接口仍存在。需要取消和自定义限额时使用 obs.LoadSourcesContext、ConsumeDailySources；底层 eventlog.ReadContext、logidx.BuildContext 使用同一输入预算类型。逐日消费先校验并准备有界输入，再逐日分析；不要在 consume 回调中自行累计全部 Sources。
+`obs.LoadSources` / `obs.LoadDailySources` 使用默认预算和后台 context。需要取消和自定义限额时使用 `obs.LoadSourcesContext` / `obs.ConsumeDailySources`；底层 eventlog.ReadContext、logidx.BuildContext 使用同一输入预算类型。逐日消费先校验并准备有界输入，再逐日分析；不要在 consume 回调中自行累计全部 Sources。
 
-超限可通过 errors.Is(err, inputbudget.ErrLimit) 判断，不能把部分事件当完整总体生成“验收通过”。进程内报告失败记录日志，CLI 返回错误；已有产物不因输入预检失败被覆盖。报告写入仍按既有单份文件规则，不承诺四份产物或多天报告为同一事务。
+离线输入超限可通过 errors.Is(err, inputbudget.ErrLimit) 判断，不能把部分事件当完整总体生成“验收通过”。离线调用向调用方返回错误，CLI 据此失败；已有产物不因输入预检失败被覆盖。报告写入仍按既有单份文件规则，不承诺四份产物或多天报告为同一事务。
 
-Timeout 是合作取消预算，覆盖输入读取和分析；无法强制打断用户 Section 或底层不合作 I/O。关停仍等待已经进入的生成操作完成，再关闭共享依赖。
+离线 Timeout 是合作取消预算，覆盖输入读取和分析；无法强制打断用户 Section 或底层不合作 I/O。离线调用方自己拥有所传数据库等依赖和调用生命周期，不将离线分析接入爬虫执行或关停链。
 
 ## 3. 下载输入与资源
 

@@ -1,13 +1,13 @@
 # Papa 周期轮询队列手册
 
 > 面向：想让标记了 `Repeatable: true` 的任务（如 catalog 目录页）被周期性地重新抓取、发现新内容。
-> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复）、[ERROR_QUEUE.md](./ERROR_QUEUE.md)（失败重投）。框架已移除通用 cron；指定时刻任务由业务自行调度。
+> 配套：[RECOVER_QUEUE.md](RECOVER_QUEUE.md)（启动恢复）、[ERROR_QUEUE.md](ERROR_QUEUE.md)（失败重投）。框架已移除通用 cron；指定时刻任务由业务自行调度。
 
 ---
 
 ## 0. 一句话
 
-框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 用全局 `interval`）；配置里的 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
+框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 用全局 `interval`）；配置里的 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](RECOVER_QUEUE.md) 第 6 节）。
 
 队列是**全局一条**：后台一行，锁/计数/运行快照/手动入口各一份（不再按站点拆）。
 
@@ -20,7 +20,7 @@ repeat_queue:
   enabled: true               # 周期轮询；false / 不写 = 不跑
   worker_count: 2             # 并发重新投递 repeatable 任务的数量，开启时必填 > 0
   interval: "10m"             # 最粗兜底的扫描间隔，开启时必填 > 0
-  batch_size: 100             # 每批查询处理的任务数，开启时必填 > 0（分页流式）
+  batch_size: 100             # 每批查询处理数；0 = 默认 1000，开启时不能为负
 ```
 
 > `interval` 的语义是"**最多隔这么久扫一次**"：ticker 会自动提前到"最早一条到点"（见第 3 节），
@@ -46,7 +46,7 @@ repeat_queue:
 
 `repeat` 是可轮询任务的轮次计数：首次投递从 0 初始化为 1；只有轮询队列把已完成任务重置为 pending、开启下一轮时才递增，并与状态、排期在同一条条件 UPDATE 内完成。同一 pending 轮次的并发或顺序重复提交、队满/暂停回灌，以及启动恢复都保留已有计数；旧 pending 行尚为 0 时补初始化为 1。错误重投、后台重试和加急保持原轮次（包括历史零值）。它不是成功抓取次数，也不是 SubmitTask 调用次数。fetcher 可读 `task.Repeat`，框架在认领后以数据库轮次校准该字段；业务不要赋值。
 
-上限在扫描和重投条件更新时都检查；调度器的最早到期查询也排除达上限任务，避免反复空扫描。上限只限制轮询队列，不阻止启动恢复和错误重投。此次计数修复不需要数据库迁移；旧逻辑已多计的存量 `repeat` 不自动回退，不能据当前值推断应扣除多少。
+上限在扫描和重投条件更新时都检查；调度器的最早到期查询也排除达上限任务，避免反复空扫描。上限只限制轮询队列，不阻止启动恢复和错误重投；框架不根据当前计数反推或回退过去轮次。
 
 **多久一次**：`repeat_interval`（秒；**0 = 用全局的** `interval`）同样是任务行上的列，只在首次入库时由 `papa.Task{RepeatInterval: 10 * time.Minute}` 播种；之后用下面两条路改（提交不再覆盖它 —— 否则每次启动重投入口任务都会把运营改的周期冲掉）。
 
@@ -57,7 +57,7 @@ repeat_queue:
 | 开 / 停轮询 | 行内动作「开轮询」/「停轮询」 | `engine.SetTaskRepeatable(id, on)` |
 | 改周期 | 行内动作「设轮询周期」（秒，0 = 用全局周期） | `engine.SetTaskRepeatInterval(id, wasSeconds, seconds)` |
 
-队列以 `repeatable`、`status` 和 `next_repeat_at` 判断是否可重投；`last_repeat_at` 记录上次轮询时刻，后台可见。升级到这套列后需要先跑一次 `papa migrate`，补齐 `repeat_interval`、`last_repeat_at`、`next_repeat_at` 及 `idx_repeat_due` 索引。语义如下：
+队列以 `repeatable`、`status` 和 `next_repeat_at` 判断是否可重投；`last_repeat_at` 记录上次轮询时刻，后台可见。独立 v4 数据库通过 `papa migrate` 创建包含这些列及 `idx_repeat_due` 索引的当前模型，普通启动不迁移。语义如下：
 
 - **到点才重投**：重投那一刻同一条语句写 `repeat = repeat + 1`、`status = 待处理`、`last_repeat_at = NOW()`、`next_repeat_at = NOW() + 有效周期`。有效周期 = `repeat_interval`，为 0 就用全局 `interval`。
 - **周期从"上一轮投递"算起**：任务跑得比自己的周期还久时，等价于"一跑完就又投"（下一轮扫描正好接上）。
@@ -69,18 +69,17 @@ repeat_queue:
 
 > **`enabled: false`（没写这段也一样）时，任务级周期也不生效** —— 关掉就是"仅手动触发"，没有自动扫描这回事。这条最容易被误解，配 `interval` 时留意。
 >
-> **停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同一个 `site:stage:url` 再提交仍会被 `SubmitTask` 的去重命中分支静默吞掉（所有已完成任务都这样，与轮询无关）。想立刻再跑只能「重投」。
+> **停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同一 `(site, stage, identity_hash)` 再提交仍会命中既有任务，不因停轮询而新开一轮。身份优先使用 ResourceID，留空时使用规范 URL。想立刻再跑使用「重投」，并遵守补偿条件。
 >
-> **失败的任务走 error_queue 的节奏**：本队列只按任务周期捞 `success/failed`，而 `failed` 同时也在 [ERROR_QUEUE.md](./ERROR_QUEUE.md) 的集合里 —— 那条路有自己的 `interval` / `max_retry`，不受任务周期约束。想让"失败也别猛打目标站"，调的是 error_queue。
+> **失败的任务走 error_queue 的节奏**：本队列只按任务周期捞 `success/failed`，而 `failed` 同时也在 [ERROR_QUEUE.md](ERROR_QUEUE.md) 的集合里 —— 那条路有自己的 `interval` / `max_retry`，不受任务周期约束。想让"失败也别猛打目标站"，调的是 error_queue。
 
 ## 4. 语义：只重投「到点的、已完成的」
 
-`repeat_queue` 只重投 `status = success / failed`、且 `next_repeat_at IS NULL OR next_repeat_at <= NOW()` 的 repeatable 任务，**不碰还在 pending/processing 的**——后者由 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 在**启动时**兜底。这样避免「上一轮还没处理完，这一轮又入队」的双入队；到点条件则保证每条任务按自己的周期走。
+`repeat_queue` 只重投 `status = success / failed`、且 `next_repeat_at IS NULL OR next_repeat_at <= NOW()` 的 repeatable 任务，并检查轮询上限与补偿条件。它不重置 pending/processing：pending 由持续补充调度，崩溃遗留的 processing 由 [启动恢复](RECOVER_QUEUE.md) 处理。这样避免上一轮尚未完成就新开一轮；到点条件保证每条任务按自己的周期参与扫描。
 
 这条判据是纯比较、走 `idx_repeat_due`（`repeatable, status, next_repeat_at`）：**周期换算只发生在写路径**（重投那一条 UPDATE 算 `now + 周期`），读路径一行算术都没有 —— 函数谓词（`TIMESTAMPDIFF(...) >= 周期` 那类）会让索引失效，而且 SQL 里的算术没法在没有真库的测试里验。
 重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
-（`engine.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `success` / `failed`，
-于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
+（`engine.Engine.markRequeueFailed`，只更新仍为 pending 的行）。阶段未注册时直接跳过，保留原状态。
 
 
 ## 5. 与业务定时调度的边界

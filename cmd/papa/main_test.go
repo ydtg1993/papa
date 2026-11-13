@@ -20,7 +20,7 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	wantFiles := []string{
-		filepath.Join("docs", "framework", "TEMPORARY_RESOURCES.md"),
+		filepath.Join("docs", "framework", "runtime/TEMPORARY_RESOURCES.md"),
 		"go.mod",
 		".gitignore",
 		"main.go",
@@ -73,20 +73,24 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 	}
 
 	// 使用手册要一起复制过去（用户和 Claude 都靠它写 fetcher / model）
-	docs, err := os.ReadDir(filepath.Join("demo", "docs", "framework"))
+	manualCount := 0
+	err := filepath.Walk(filepath.Join("demo", "docs", "framework"), func(name string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			manualCount++
+			if filepath.Ext(name) != ".md" {
+				t.Errorf("框架手册下出现了非 markdown 文件：%s", name)
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("读 docs: %v", err)
+		t.Fatalf("遍历框架手册: %v", err)
 	}
-	if len(docs) < 5 {
-		t.Errorf("docs 只复制了 %d 个文件", len(docs))
-	}
-	for _, d := range docs {
-		if d.IsDir() && d.Name() == "package_structure" {
-			continue
-		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
-			t.Errorf("docs 下出现了非 markdown 文件：%s", d.Name())
-		}
+	if manualCount != len(embeddedDocs()) {
+		t.Errorf("手册文件数：got %d, want %d", manualCount, len(embeddedDocs()))
 	}
 }
 

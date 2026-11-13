@@ -1,10 +1,11 @@
 # Papa 包职责与变更规则
 
-> 面向：维护框架和接入通用能力的开发者。包与文件职责见 [Papa 目录说明书](package_structure/README.md)。
+> 面向：维护框架和接入通用能力的开发者。包与文件职责见 [Papa 目录说明书](../package_structure/README.md)。
+> 适用版本：当前工作区的独立 Papa v4；历史设计和验收记录不覆盖本页契约。
 
 整体组件与任务循环见 [架构图解](ARCHITECTURE_DIAGRAMS.md)：静态图回答系统组成，动态图说明提交、调度、抓取、解析、结果写入及后续任务的运行关系。
 
-目录职责明细统一位于 `docs/package_structure/`，按根目录与基础包、Admin、Engine、Internal、Pkg、Obs、Cmd 分册。App 是 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md#app)中的组合根章节；本页保留跨组件架构规则，不维护另一份文件索引。
+目录职责明细统一位于 `docs/package_structure/`，按根目录与基础包、Admin、Engine、Internal、Pkg、Obs、Cmd 分册。App 是 [Internal 分册](../package_structure/INTERNAL_STRUCTURE.md#app)中的组合根章节；本页保留跨组件架构规则，不维护另一份文件索引。
 
 ## 依赖方向
 
@@ -58,6 +59,6 @@ JS/CSS/HTML 继续用 go:embed 保持单二进制部署，源码放所属功能�
 
 ## Engine 同包组件边界
 
-Engine 的提交、任务流、追踪/归档、站点目录、告警与熔断组件职责，以及跨组件锁序、输入快照、事件派发和关停要求，统一见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。内部组件通过语义接口协作，公开 Fetcher 接收 Engine 的当前契约不构成其它组件持有完整 Engine 的理由。
+Engine 的提交、任务流、追踪/归档、站点目录、告警与熔断组件职责，以及跨组件锁序、输入快照、事件派发和关停要求，统一见 [Engine 分册](../package_structure/ENGINE_STRUCTURE.md)。内部组件通过语义接口协作，公开 Fetcher 接收 Engine 的当前契约不构成其它组件持有完整 Engine 的理由。
 
 V4 为独立版本：不提供旧版本 API/配置/数据转换兼容层。不得新增只为旧版本保留的空壳或双轨回退；当前协议格式和公开门面不因使用类型别名就被视为兼容层。

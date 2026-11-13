@@ -1,8 +1,8 @@
 # Pkg 目录结构与职责细则
 
 > 面向：复用 Papa 通用能力、增加抓取能力和审查资源所有权的开发者。
-> 配套：[目录说明书总览](README.md)、[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)。
-> 本文按当前源码说明整个 `pkg/`，覆盖 24 个 Go 包、116 个生产 `.go` 文件；测试按职责归类，目录树省略测试文件。文件清单与职责核对不代表浏览器、MySQL 或其他测试已执行。
+> 配套：[目录说明书总览](README.md)、[总体架构规则](../architecture/ARCHITECTURE.md)、[开发手册](../architecture/DEVELOPMENT.md)。
+> 本文按当前源码说明整个 `pkg/`，按能力与生命周期组织；测试按职责归类，目录树省略测试文件。文件清单与职责核对不代表浏览器、MySQL 或其他测试已执行。
 
 ## 1. 总体定位
 
@@ -19,7 +19,7 @@
 | 生命周期随资源所有权走 | 创建后台循环或借用资源的组件负责取消、归还和排空；仅发出取消不代表回调、存储或页面已经停止使用依赖 |
 | 单实例内协调 | 账号许可、路径锁、站点预算和身份作用域服务于一个 Papa 进程；优化围绕其并发、背压、恢复和资源预算 |
 
-任务编排见 [Engine 分册](ENGINE_STRUCTURE.md)，宿主装配见 [Internal 分册](INTERNAL_STRUCTURE.md)，HTTP 与页面见 [Admin 分册](ADMIN_STRUCTURE.md)，离线观测分析见 [Obs 分册](OBS_STRUCTURE.md)，模型与核心值见 [根目录分册](ROOT_STRUCTURE.md)。
+任务编排见 [Engine 分册](ENGINE_STRUCTURE.md)，宿主装配见 [Internal 分册](INTERNAL_STRUCTURE.md)，HTTP 与页面见 [Admin 分册](ADMIN_STRUCTURE.md)，在线信号与离线观测分析见 [Obs 分册](OBS_STRUCTURE.md)，模型与核心值见 [根目录分册](ROOT_STRUCTURE.md)。
 
 ## 2. 目录全览
 
@@ -55,7 +55,7 @@ pkg/
 
 ## 3. 账号领域
 
-使用契约见 [账号运行时](../ACCOUNT_RUNTIME.md)、[账号接入](../ACCOUNT_ONBOARDING.md) 和 [浏览器身份](../BROWSER_IDENTITY.md)。四个包分别承担认证协调、纯持久化契约、具体数据库适配和登录过程，不按“都与账号有关”合并成一个服务。
+使用契约见 [账号运行时](../accounts/ACCOUNT_RUNTIME.md)、[账号接入](../accounts/ACCOUNT_ONBOARDING.md) 和 [浏览器身份](../accounts/BROWSER_IDENTITY.md)。四个包分别承担认证协调、纯持久化契约、具体数据库适配和登录过程，不按“都与账号有关”合并成一个服务。
 
 ### 3.1 account：认证与账号池
 
@@ -137,6 +137,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `rod.go` | `Browser`、单实例关闭与使用计量；`PageOptions`、受管页面初始化、`NewPageWithOptions` / `WithPageOptions` / `WithNavigatedPage` / `FetchOnce` |
 | `stats.go` | 活实例登记、空闲/保留/借用状态、`Stats` 独立生命周期快照；统计受管实例，不统计 Chromium 子进程数量 |
 | `temp_dir.go` | `ResolveTempDir` / `PrepareTempDir` / `NewTempProfile`，验证实际可写的配置根和创建独占 profile；`TempDir` 返回池实际使用的共享根；Pool 不删除该根，只由实例关闭清理独占 profile |
+| `page_creation.go` | Chrome 返回 target ID 后即接管清理；连接失败时使用独立 3 秒 context 关闭部分创建的 target |
 | `navigation.go`、`wait.go` | 已有受管页的 `ConfigurePage` / `NavigatePage`、等待条件及 `WaitError`；页面创建时确定的拦截规则不在导航时随意替换 |
 | `block.go` | `BlockOptions` 与单页面资源拦截 |
 | `isolation.go` | `WithIsolatedBrowser` / `WithDirectIsolatedBrowser`，在借入的进程中创建独立浏览器上下文并负责回收；不继承共享凭据 |
@@ -168,6 +169,10 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 浏览器基础包依赖 Rod、`identity`、`egress`、`governance`、`htmlfetch` 和 `middleware/proxy`；不依赖账号协调器、Engine 或后台。身份持久化不放进 `browser`，浏览器诊断报告算法及宿主操作生命周期见 `internal/browserdiagnostics`。现有公开原始 Rod 入口不等于所有自行创建的 page/popup/worker 都自动具备受管页面行为。
 
 测试归属：`pool_test.go`、`stats_test.go`、`close_test.go`、`with_test.go`、`temp_dir_test.go` 验证资源；`browser_extra_test.go`、`wait_test.go`、`block_test.go`、`fetch_once_test.go`、`navigate_error_test.go` 验证页面；`state_test.go`、`state_navigation_test.go`、`isolation_test.go` 验证状态和隔离；`capture_test.go`、`capture_review_test.go`、`response_test.go`、`record_test.go`、`challenge_test.go` 验证观察；`governance_test.go`、`governance_rate_limit_test.go`、`egress_test.go`、`proxy_health_test.go` 验证网络交界；`identity_test.go`、`diagnostic_startup_test.go`、`diagnostic_cleanup_windows_test.go` 验证身份和诊断资源。
+
+#### 页面创建失败的资源所有权
+
+`browser/page_creation.go` 在 Chrome 返回 target ID 时即拥有清理责任；连接/初始化失败时用独立三秒清理 context 关闭部分创建的 target，保留原取消错误。它不改变正常导航或状态恢复策略。`page_creation_test.go` 用合成 CDP 复现取消后原上下文无法清理的缺陷；真实 Chrome 导航取消另由 state_navigation_test 验证。
 
 ### 4.2 browser/identity：声明、原生配置与观察
 
@@ -252,7 +257,7 @@ Validator 保存构造时编译的规则，单次 Validate 的行结果和唯一
 
 请求预算按站点跨阶段/账号共享，任务与浏览器资源许可按进程全局分配。`WaitTaskReady` 在认领前等待，实际请求仍须 `AcquireRequest`。返回的归还函数或反馈函数属于该次许可；HTTP 包装器在 RoundTrip 返回时立即观察状态码、Retry-After 和该阶段延迟，许可则在 body 读到结束/错误、Close 或请求 context 取消时归还；失败或无 body 时立即归还。因此取消后的许可释放不等于底层 body 已关闭，调用方仍须关闭响应。`RunSampler` 是调用方启动并持 context 取消的循环，Controller 不拥有 App 生命周期或政策数据库。
 
-此包不依赖 Engine、配置存储或业务站点。持久运行政策与版本事务见 `internal/runtimecontrol`，Engine 只通过许可接口编排。测试在 `controller_test.go`、`rate_limit_test.go`、`transport_test.go`；受管浏览器适配的测试归 browser。使用说明见 [运行治理](../RUNTIME_CONTROL.md)。
+此包不依赖 Engine、配置存储或业务站点。持久运行政策与版本事务见 `internal/runtimecontrol`，Engine 只通过许可接口编排。测试在 `controller_test.go`、`rate_limit_test.go`、`transport_test.go`；受管浏览器适配的测试归 browser。使用说明见 [运行治理](../runtime/RUNTIME_CONTROL.md)。
 
 ### 6.2 egress
 
@@ -268,7 +273,7 @@ Policy 在构造时建立私有授权 map，无全局可变授权。`PrivateOrig
 
 每个 `Proxy` 拥有本地 HTTP server、请求取消和受锁保护的 CONNECT 连接集合；Close 同时取消请求并关闭 hijack 隧道和空闲连接，但不通过 WaitGroup 等待所有 handler/观察回调退出，不能把它视为回调排空屏障。普通浏览器实例拥有其 Proxy，隔离上下文共享父进程的出口。宿主提供的上游代理选择和回调是显式配置，本包负责框架网络出口，不接管业务数据库或系统防火墙。
 
-`egress_test.go`、`allowlist_test.go`、`transport_test.go`、`proxy_failure_test.go` 检查目标/传输；`integration_test.go` 从 HTML、下载器、通知入口验证策略；`proxy_health_integration_test.go` 验证代理反馈连接。实际浏览器和 ffmpeg 交界分别在 browser 与 m3u8。配置边界见 [核心配置](../CORE_CONFIG.md)。
+`egress_test.go`、`allowlist_test.go`、`transport_test.go`、`proxy_failure_test.go` 检查目标/传输；`integration_test.go` 从 HTML、下载器、通知入口验证策略；`proxy_health_integration_test.go` 验证代理反馈连接。实际浏览器和 ffmpeg 交界分别在 browser 与 m3u8。配置边界见 [核心配置](../configuration/CORE_CONFIG.md)。
 
 ### 6.3 breakerpolicy
 
@@ -321,7 +326,7 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 | 脏标记、首次写错误、定时器 | Checkpoint 写者 goroutine | Notify 合并；Close 用 once 关闭 stop 并等待 done，随后读最终错误 |
 | 完成片集合与状态快照 | 各任务 resumeMu | 锁内只复制，编码/写盘由 Checkpoint 在锁外完成；最终 flush 完成后才能发布或清理 |
 
-WithResources 返回独立限额快照，With 继承共享预算。默认值、磁盘保守计量和物理配额限制见 [资源手册](../RESOURCE_BUDGETS.md)。`middleware/resources_test.go`、filedown/m3u8 的 `resources_test.go` 覆盖边界、当前格式恢复、旧格式拒绝和预算释放；检查点合并及失败传播由父包回归验证。
+WithResources 返回独立限额快照，With 继承共享预算。默认值、磁盘保守计量和物理配额限制见 [资源手册](../configuration/RESOURCE_BUDGETS.md)。`middleware/resources_test.go`、filedown/m3u8 的 `resources_test.go` 覆盖边界、当前格式恢复、旧格式拒绝和预算释放；检查点合并及失败传播由父包回归验证。
 
 两个下载器各自拥有 `state`，并非共享一个全局下载状态。状态内 `proxyMu` 保护代理 transport 缓存；连接池跨 With 实例复用，而每次取得的 client 持有本实例 Timeout/SegmentTimeout，`laborMu` 保护按来源/目录/文件组合标识的 labor 和引用数，labor 自己的 `resumeMu` 保护断点修改，`OutputLocks` 保护最终输出及断点路径。m3u8 的密钥缓存只属于单次下载的私有接收者副本，不能跨任务共享认证相关密钥。
 
@@ -366,6 +371,10 @@ Emitter 拥有 channel、序列/丢弃原子计数和一个固定消费者，Mut
 
 Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；底层 I/O/回调不能被强杀，遗留消费者只持自己的依赖。panic 在消费者边界恢复并结束该单元。JSONLSink 拥有传入 io.WriteCloser，Write/Close 锁归 sink。App 将归档与报告并列接线，关闭共用 2 秒期限，任何一方卡住不阻塞另一方或业务依赖关闭。事件丢失与可靠熔断协议无关；测试见 `boundary_test.go`、`emitter_test.go`、`sink_test.go`、`redact_test.go`。
 
+事件预算也包含 NewEmitter 配置的 runID：不可变归档身份在 Detach 前覆盖输入，不能在消费阶段额外加回预算外字符串。精确上限内的 UTF-8 值保持完整；重复异步边界保留省略质量标记。
+
+字符串预算按输入字符串的 UTF-8 字节计，不是 JSON 转义或脱敏标记替换后的文件字节硬配额。
+
 ### 8.2 loggers、notify、redact
 
 | 包 / 文件 | 职责、公开入口与生命周期 |
@@ -378,6 +387,20 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 
 `loggers/loggers_test.go`、`loggers/redact_test.go` 验证日志级别和输出副本；`notify/webhook_test.go`、`notify/redact_test.go` 验证请求与脱敏；`redact/redact_test.go` 验证通用形状、数字精度及 URL 字节保留。具体报告分析见 [Obs 分册](OBS_STRUCTURE.md)。
 
+### 8.3 incident：熔断证据值与诊断
+
+| 文件 | 职责与边界 |
+| --- | --- |
+| `incident.go` | `Sample`、`Capture`、`Group`、`Report`；样本清洗、保留错误码的文本模板、窗口分组、分析和纯文本输出 |
+| `classify.go` | 根据 kind/message 给出分类、待验证解释和验证方向；分类不能当成已经证实的根因 |
+| `failure.go` | `Failure` 与 `ClassifyError`；优先识别 core、account、browser、identity、htmlfetch 的结构化错误，再做文本回退，生成稳定指纹及可读代码/阶段 |
+| `lifecycle.go` | `Lifecycle`、`Transition`、`StageCheck`、`FailureGroup`；有界脱敏副本、完整任务与只读检查的证据区分、诊断分析及文本表示 |
+
+这里的 lifecycle 是可持久化的诊断数据，不是运行状态机。实时状态、锁、轮次和暂停归 Engine/熔断组件，事务写入归 `internal/breakerstore`；参见 [Engine 分册](ENGINE_STRUCTURE.md)与 [Internal 分册](INTERNAL_STRUCTURE.md)。`Clean` 创建脱离源状态的嵌套副本、限界证据及历史，并保留截断标记。对 browser/account 等包的依赖用于识别错误，不创建浏览器、不取账号、不执行探针。
+
+
+该共享包不依赖 obs 报告服务或数据库；在线报告停用不会移除熔断的数据契约。持久化 JSON 字段不因目录迁移改变，控制状态与未确认历史仍由 Engine/breakerstore 负责可靠保存。
+
 ## 9. 临时资源与显式运维检查
 
 | 包 / 文件 | 职责与公开入口 | 状态、资源和依赖边界 |
@@ -386,7 +409,7 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 | `temporary/cleanup.go` | `CleanupStore` / `Cleaner.Cleanup` / `Recover`；先持久化清理意图，再删目录，最后事务性删业务数据并标记完成 | Cleaner 同步执行，没有后台线程或私有 ID 锁；业务先排空工作并提供存储事务。Recover 只恢复已授权且未完成的清理 |
 | `testdb/schema.go` | `Executor` / `Create`；校验测试库命名、独占 CREATE 后返回清理函数 | 只有本次成功创建才取得删除所有权，不接管已存在数据库；清理闭包自有 mutex/完成标记与独立超时，不因测试 context 已取消而跳过清理 |
 
-临时资源契约见 [临时资源](../TEMPORARY_RESOURCES.md)。Cleaner 不决定发布、终止任务或重新采集；testdb 不进入正常采集运行路径。框架不提供旧策略表盘点或迁移工具。
+临时资源契约见 [临时资源](../runtime/TEMPORARY_RESOURCES.md)。Cleaner 不决定发布、终止任务或重新采集；testdb 不进入正常采集运行路径。框架不提供旧策略表盘点或迁移工具。
 
 测试分别在 `temporary/files_test.go`、`temporary/cleanup_test.go`、`testdb/schema_test.go`。这些测试约束文件/数据库所有权及可恢复步骤。
 
@@ -426,26 +449,3 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 | 临时目录/恢复清理、测试库 | 分别进入 temporary、testdb | 框架内的业务删表事务或普通启动迁移 |
 
 新增实现须同时交代四项：所属语义、状态及资源拥有者、最小公开接口、允许依赖。出现持久化/锁/版本/生命周期交界时先保持原子性和关停语义，再决定是否拆文件或拆包。公开入口按当前职责归属，实现在所属组件；不能通过把整个 App/Engine 或可写私有状态传进新包完成表面拆分。
-
-### 页面创建失败的资源所有权
-
-`browser/page_creation.go` 在 Chrome 返回 target ID 时即拥有清理责任；连接/初始化失败时用独立三秒清理 context 关闭部分创建的 target，保留原取消错误。它不改变正常导航或状态恢复策略。`page_creation_test.go` 用合成 CDP 复现取消后原上下文无法清理的缺陷；真实 Chrome 导航取消另由 state_navigation_test 验证。
-
-### 8.3 incident：熔断证据值与诊断
-
-| 文件 | 职责与边界 |
-| --- | --- |
-| `incident.go` | `Sample`、`Capture`、`Group`、`Report`；样本清洗、保留错误码的文本模板、窗口分组、分析和纯文本输出 |
-| `classify.go` | 根据 kind/message 给出分类、待验证解释和验证方向；分类不能当成已经证实的根因 |
-| `failure.go` | `Failure` 与 `ClassifyError`；优先识别 core、account、browser、identity、htmlfetch 的结构化错误，再做文本回退，生成稳定指纹及可读代码/阶段 |
-| `lifecycle.go` | `Lifecycle`、`Transition`、`StageCheck`、`FailureGroup`；有界脱敏副本、完整任务与只读检查的证据区分、诊断分析及文本表示 |
-
-这里的 lifecycle 是可持久化的诊断数据，不是运行状态机。实时状态、锁、轮次和暂停归 Engine/熔断组件，事务写入归 `internal/breakerstore`；参见 [Engine 分册](ENGINE_STRUCTURE.md)与 [Internal 分册](INTERNAL_STRUCTURE.md)。`Clean` 创建脱离源状态的嵌套副本、限界证据及历史，并保留截断标记。对 browser/account 等包的依赖用于识别错误，不创建浏览器、不取账号、不执行探针。
-
-
-该共享包不依赖 obs 报告服务或数据库；在线报告停用不会移除熔断的数据契约。持久化 JSON 字段不因目录迁移改变，控制状态与未确认历史仍由 Engine/breakerstore 负责可靠保存。
-
-
-事件预算也包含 NewEmitter 配置的 runID：不可变归档身份在 Detach 前覆盖输入，不能在消费阶段额外加回预算外字符串。精确上限内的 UTF-8 值保持完整；重复异步边界保留省略质量标记。
-
-字符串预算按输入字符串的 UTF-8 字节计，不是 JSON 转义或脱敏标记替换后的文件字节硬配额。

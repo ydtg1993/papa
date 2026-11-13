@@ -14,7 +14,7 @@ go run .
 先填写 `configs/config.yaml` 的数据库与后台配置。迁移需显式执行，正常启动不会自动建表。
 
 后台“账号管理”需要业务显式注册站点登录适配器和加密存储；框架不预置真实站点账号。
-接线见 [账号接入手册](docs/framework/ACCOUNT_ONBOARDING.md)，健康缓冲与池策略见 [账号运行手册](docs/framework/ACCOUNT_RUNTIME.md)。
+接线见 [账号接入手册](docs/framework/accounts/ACCOUNT_ONBOARDING.md)，健康缓冲与池策略见 [账号运行手册](docs/framework/accounts/ACCOUNT_RUNTIME.md)。
 
 根 `main.go` 只转交启动；业务代码在 `internal/`，部署文件在 `deploy/`。
 详见 [文档导航](docs/framework/README.md) 和 [开发手册](docs/operations/DEVELOPMENT.md)。

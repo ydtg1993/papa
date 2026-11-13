@@ -1,7 +1,7 @@
 # Papa 错误队列处理手册
 
 > 面向：任务重试耗尽进入 `failed` 后，怎么把它重新投递回阶段重跑，以及如何防止永久坏任务无限空转。
-> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复，两者按状态分工）。
+> 配套：[RECOVER_QUEUE.md](RECOVER_QUEUE.md)（启动恢复，两者按状态分工）。
 
 ---
 
@@ -9,7 +9,7 @@
 
 任务最终失败（`status = failed`）后不会丢，持久化在 `crawler_tasks` 表。`error_queue` 在补偿条件满足后把**原记录重置为 pending 并重新入队**，支持自动轮询和手动触发，用 `reprocess` 计数限制自动补偿代数。账号、时间或人工条件仍未满足时保留失败状态，不增加代数。
 
-升级后先显式执行 `papa migrate`（业务项目使用自己的迁移入口），新增任务补偿与账号关联列、到期及最近账号索引。普通启动不会迁移。任务表较大时应在低峰期执行，评估 DDL 时长和锁等待。历史任务的模式默认空串，继续使用原有自动补偿规则；不迁移任务 ID、去重键或账号池归属。
+先在独立 v4 数据库显式执行 `papa migrate`（业务项目使用自己的迁移入口），创建任务补偿、账号关联列及索引。普通启动不会迁移，旧版本任务身份不原地转换。补偿模式空串表示默认自动策略，不改变任务 ID、标准身份或账号池归属。
 
 ## 1. 配置
 
@@ -17,14 +17,14 @@
 
 ```yaml
 error_queue:
-  enabled: true               # 失败任务重投；false / 不写 = 不跑
+  enabled: true               # 自动失败重投；false / 不写 = 不自动，仍可手动触发
   worker_count: 2             # 并发重新投递失败任务的数量，开启时必填 > 0
   interval: "10m"             # 自动轮询间隔；"0" = 不自动，仅后台手动触发
   max_retry: 3                # 单个失败任务最多再处理代数；0 = 不限
-  batch_size: 100             # 每批查询处理的任务数，开启时必填 > 0（分页流式）
+  batch_size: 100             # 每批查询处理数；0 = 默认 1000，开启时不能为负
 ```
 
-> 开着（`enabled: true`）时 `worker_count` / `batch_size` 必填 > 0，`max_retry` 不能为负、
+> 开着（`enabled: true`）时 `worker_count` 必填 > 0，`batch_size` 为 0 使用默认 1000，`batch_size` / `max_retry` 不能为负、
 > `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker`
 > 「enabled=true 时 threshold 必填」同一档）。
 > 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
@@ -44,8 +44,7 @@ error_queue:
 
 错误重投属于当前轮询轮次，**不增加 `repeat`**。直接入队、队满后溢出回灌、暂停后恢复的计数一致；后台单条「重投 / 加急」同样不因经过溢出路径而额外消耗 `RepeatLimit`。历史版本已经多计的存量值不自动回退。
 重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
-（`engine.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
-于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
+（`engine.Engine.markRequeueFailed`，只更新仍为 pending 的行）。未注册阶段直接跳过，保留原状态；投递责任和持续 pending 补充不等同于本队列的 failed 扫描。
 `max_retry > 0` 时，`reprocess >= max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。
 
 ## 4. 与错误分类配合
@@ -62,7 +61,7 @@ error_queue:
 
 这些策略都会结束当前尝试。也可以返回 `core.WithCompensation(err, core.CompensationPolicy{Mode: ..., NotBefore: ..., Reason: ...})`，或让业务错误实现 `Compensation() core.CompensationPolicy`。模式无效、`retry_after` 没有时间等配置错误会保守转为人工等待。分类保存在 `failure_kind`，脱敏理由保存在 `compensation_reason`，`compensation_version` 用于并发保护。
 
-账号疑似异常结束本次尝试，不在任务里换号重跑。补偿器只读 `Pools.Readiness`，不登录、不核验、不切换成员；账号控制器负责恢复。依赖未知或池未就绪时不会反复消耗 `reprocess`。任务重新进入执行时，正常的账号准备过程再次检查可用性，并在认领及全局执行许可之前等待。原记录、URL / 幂等键和 `AccountPool` 保持不变，下一次尝试使用原池当时的可用账号。
+账号疑似异常结束本次尝试，不在任务里换号重跑。补偿器只读 `Pools.Readiness`，不登录、不核验、不切换成员；账号控制器负责恢复。依赖未知或池未就绪时不会反复消耗 `reprocess`。任务重新进入执行时，正常的账号准备过程再次检查可用性，并在认领及全局执行许可之前等待。原记录、标准任务身份和 `AccountPool` 保持不变，下一次尝试使用原池当时的可用账号。
 
 **显式非池账号调用的边界：**任务未声明 `AccountPool` 却返回账号错误时，自动策略会阻塞并提示 `account-ready compensation requires task pool ownership`，因为引擎不能安全判断它依赖哪个池。业务应声明正确池归属，或明确返回自己的 `retry_after` / `manual` / `permanent` 策略；显式策略优先于自动账号分类。不要通过创建重复页面任务绕过等待。
 
@@ -73,7 +72,7 @@ error_queue:
 | 机制 | 目标状态 | 语义 |
 | --- | --- | --- |
 | `error_queue` | `failed` | 重跑「明确失败」的任务 |
-| `recover_queue` | 本进程启动前遗留的 `pending` / `processing` | 启动时恢复中断任务（以 `updated_at < startedAt` 为边界，**只在启动跑一次**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） |
+| `recover_queue` | 本进程启动前遗留的 `pending` / `processing` | 启动时恢复中断任务（以 `updated_at < startedAt` 为边界，**只在启动跑一次**，见 [RECOVER_QUEUE.md](RECOVER_QUEUE.md)） |
 
 两者按状态互斥，不会同时盯上同一个任务。
 
@@ -94,7 +93,7 @@ error_queue:
 
 预览不是执行承诺：账号可能在预览后进入待核验，或其他人先处理任务，执行时会重新检查。`Eligible` / `Blocked` 汇总只统计本次返回的条目，`Truncated` 表示还有更多匹配数据，不是全库总数。
 
-每条任务独立于 Trace 保存**最近 8 次认领的账号关联**，包含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据。`AccountID` 筛选匹配这段有界关联；任务表的「最近账号」只匹配最后一次。更早关联会被淘汰，升级前没有记录的历史也不会回填，不能把查询空结果当作该账号从未影响过任务。
+每条任务独立于 Trace 保存**最近 8 次认领的账号关联**，包含账号 ID、选择/凭据版本、时间、轮询轮次和补偿代数，不含凭据。`AccountID` 筛选匹配这段有界关联；任务表的「最近账号」只匹配最后一次。更早关联会被淘汰，未记录的关联也不会补造，不能把查询空结果当作该账号从未影响过任务。
 
 账号池事件通过 `Engine.BindAccountHealthEvents(pools)` 接入现有 Notifier，通知在控制器锁外执行。等待过久、池耗尽、需要人工验证及恢复分别通知；相同站点/池/账号/事件种类每分钟最多一次。事件订阅是有界旁路，完整诊断应结合持久健康事件与补偿预览，而不是把通知数量当作任务失败数量。
 

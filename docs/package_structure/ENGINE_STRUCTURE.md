@@ -2,7 +2,7 @@
 
 > 面向：维护执行引擎、任务提交、调度及恢复协议的开发者。
 > 总入口：[Papa 目录说明书](README.md)。
-> 配套：[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)、[Admin 目录说明](ADMIN_STRUCTURE.md)。
+> 配套：[总体架构规则](../architecture/ARCHITECTURE.md)、[开发手册](../architecture/DEVELOPMENT.md)、[Admin 目录说明](ADMIN_STRUCTURE.md)。
 > 本文描述职责收口后的当前实现；最后一节记录保留的协调边界及后续开发规则。
 
 ## 1. 定位与审查结论
@@ -190,7 +190,7 @@ engine/
 | 单次 trace 与归档 | Trace、archiveBuffer、attemptExecution | 尝试结束和 panic 路径都终结；账号敏感内容不进入原始页面归档 |
 | 抓取资源登记及下载配置快照 | fetchruntime.Resources/Downloads | 短锁取依赖，网络工作和用户回调不在登记锁内执行 |
 
-Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../RESOURCE_BUDGETS.md)。
+Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../configuration/RESOURCE_BUDGETS.md)。
 
 暂停下的持久 pool/spill/delay 任务可交还数据库以让出预算：预算模式允许 worker 取出引用，但 stageHandler 在 breaker/业务准入前拦截；heap 提取先快照暂停状态再取堆锁，避免锁序反转。flow 前置等待同样释放持久引用，不占住解除等待所需的最后一个槽。Stop 的持久计数也覆盖 ApplyRegisterStage 前已接受的远期任务。
 
@@ -230,7 +230,7 @@ execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增
 
 ## 8. 收口结果与保留边界
 
-`resilience_mysql_test.go` 归属 Engine 跨组件集成验证：使用真实调度、任务认领/终态、启动恢复和 Stop，旧子进程退出后才启动恢复进程。验收校验器核对原始任务集合、逐任务执行次数、业务结果和时间约束，负向用例用真实 MySQL 事务篡改证据并回滚。持续负载关闭启动恢复队列以单独验证持续回灌、驻留预算和中途进展。父进程独占随机测试库并清理，DROP 后按精确库名确认不存在；另用故意断言失败的子进程覆盖失败清理。合成业务结果/执行次数/控制表只在测试库中，不进入框架迁移清单。不把数据库积压等同于内存驻留，也不把可重放恢复等同于业务 exactly-once。运行方式及边界见 [开发工具手册](../DEVELOPMENT.md#单实例持续负载与进程崩溃恢复)。
+`resilience_mysql_test.go` 归属 Engine 跨组件集成验证：使用真实调度、任务认领/终态、启动恢复和 Stop，旧子进程退出后才启动恢复进程。验收校验器核对原始任务集合、逐任务执行次数、业务结果和时间约束，负向用例用真实 MySQL 事务篡改证据并回滚。持续负载关闭启动恢复队列以单独验证持续回灌、驻留预算和中途进展。父进程独占随机测试库并清理，DROP 后按精确库名确认不存在；另用故意断言失败的子进程覆盖失败清理。合成业务结果/执行次数/控制表只在测试库中，不进入框架迁移清单。不把数据库积压等同于内存驻留，也不把可重放恢复等同于业务 exactly-once。运行方式及边界见 [开发工具手册](../architecture/DEVELOPMENT.md#单实例持续负载与进程崩溃恢复)。
 
 | 原审查问题 | 当前实现 | 后续约束 |
 | --- | --- | --- |
@@ -245,7 +245,7 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 本轮优先采用同包组件，没有为了缩短目录列表而新增重复子包。下一步新增功能必须使用组件语义接口；若出现新的独立消费者或生命周期，再评估抽包，而不是重新导出内部 map、锁或完整 Engine。
 
-历史复核与修复记录位于源码仓库 `docs/issues/2026-11-13-engine-second-review.md`；它不随使用手册分发，当前职责以本册为准。
+历史复核与修复记录位于源码仓库 `docs/history/reviews/2026-11-13-engine-second-review.md`；它不随使用手册分发，当前职责以本册为准。
 
 ### 执行证据身份
 

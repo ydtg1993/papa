@@ -1,8 +1,16 @@
 # Papa - 高性能爬虫框架
 
 > 基于 Go 的爬虫框架，内置**浏览器自动化（Rod）**与**静态 HTML 抓取（htmlfetch）**双引擎：浏览器池、多阶段工作池、任务持久化与恢复、M3U8/文件下载、失败重投/启动恢复/周期轮询治理队列、Web 监控。框架不再内置通用 cron 调度器。
-> **运行观测（obs）**：框架级结构化事件流（`logs/events.jsonl`）+ 人读报告 / 机读 JSON / AI 排查细则（`papa report`），见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
-> **运行治理**：默认关闭的同站请求预算/AutoThrottle、单实例资源放行、站点账号池与代理健康；OA 持久覆盖优先于文件显式字段，见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+> **运行观测（obs）**：框架级结构化事件流（`logs/events.jsonl`）+ 人读报告 / 机读 JSON / AI 排查细则（`papa report`），见 [OBSERVABILITY.md](operations/OBSERVABILITY.md)。
+> **运行治理**：默认关闭的同站请求预算/AutoThrottle、单实例资源放行、站点账号池与代理健康；OA 持久覆盖优先于文件显式字段，见 [RUNTIME_CONTROL.md](runtime/RUNTIME_CONTROL.md)。
+
+## 适用版本与文档边界
+
+本目录各主题手册及 `package_structure/` 说明当前工作区的 **Papa v4 独立版本**；不提供 v3 及更早版本的 API、配置、旧表转换或工程布局兼容。源码仓库中的 `history/` 集中保存注明适用阶段的审查、验证、设计、计划和变更记录，不随 CLI 分发，也不覆盖当前手册。历史测试结果只证明当次代码和环境，不能当作当前版本重新验收的证据。
+
+Trace 只写文件，配置 `crawler.trace.mode` 为 `off/errors/all`，默认 `errors`，默认保留七天；不建 Trace 表、不读取或迁移 SQL Trace，也没有后台主动追踪按钮。异常尝试包括失败、panic 和显式 Fail/Warn；记录不代表任务当前终态。配置见 [CORE_CONFIG.md](configuration/CORE_CONFIG.md)，查询语义见 [MONITOR.md](operations/MONITOR.md)。任务、账号、熔断等业务运行状态仍由 MySQL 持久化，不能因为 Trace 改文件而省略它们的迁移。
+
+运行关联以 [静态组件图与动态数据流图](architecture/ARCHITECTURE_DIAGRAMS.md) 为入口：在线 obs 仅接收有限信号，分析并输出报告，不查业务库或调用业务分析回调；显式离线 `papa report` 的扫描、可选查库与扩展另见 [OBSERVABILITY.md](operations/OBSERVABILITY.md)。
 
 ## 快速开始
 
@@ -20,64 +28,63 @@ cd mycrawler && go mod tidy
 3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（物理并发/队列、间隔/重试默认值/
    入口开关在那儿声明；runtime/OA 可覆盖有效并发与固定间隔），`internal/app/run.go` 通过 `app.RegisterSites(papa.Sites()...)`
    统一注册 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
-   （见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.1）。
+   （见 [FETCHER_WRITING_GUIDE.md](guides/FETCHER_WRITING_GUIDE.md) 1.1）。
 4. 加数据模型写`internal/models/` 包（`internal/models/models.go` 里登记建表清单）；后台（`/monitor`）
    要加表格页 / 自定义页 / 自己的接口，改 `internal/monitor/` 包 ——
-   `internal/app/run.go` 通过 `monitor.Register(app)` 接入（分层与用法见 [MONITOR.md](./MONITOR.md) 第 5 节）。
+   `internal/app/run.go` 通过 `monitor.Register(app)` 接入（分层与用法见 [MONITOR.md](operations/MONITOR.md) 第 5 节）。
 5. `go run .`（配置路径默认 `configs/config.yaml`，要用别处就 `go run . --config=./config.yaml`）。
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
-运行治理升级也需执行迁移，以补齐策略 revision、任务 account_pool 与两个账号池管理表；没有启用控制器不代表可以沿用缺列的旧 schema。
-浏览器身份升级还需补齐 `crawler_browser_profiles` 与 `crawler_browser_identity_bindings`；两表不含凭据，普通启动不建表。创建档案不自动启用绑定。
-底层使用 GORM `AutoMigrate`，主要用于补表、列和索引，不负责删除列或表达全部破坏性变更。重复执行通常是幂等的，但生产环境仍应先备份、审查生成 SQL，并为改名、改类型等变更自己写迁移 SQL。
+当前 v4 建表清单包含运行策略、账号池管理、`crawler_browser_profiles` 与 `crawler_browser_identity_bindings`；这些表不因关闭相应控制器而从基础清单移除。浏览器身份两表不含凭据，创建档案不自动启用绑定。
+显式迁移在调用 GORM `AutoMigrate` 前先检查任务 schema；旧列、旧索引或缺失 v4 身份的数据会被拒绝，需使用独立 v4 数据库，不会自动回填旧任务。通过检查后，迁移创建或更新当前模型；GORM 也可能调整列类型，不能将其理解为“只新增”。重复执行支持当前 v4 schema，仍需审查变更 SQL；迁移不负责删除旧列或任意破坏性数据转换。
 
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
 > `main.go` / `models.Models()` 里注册的模型，所以它在业务项目里会把迁移**转交**给项目自己
 > （`go run . -migrate` → `App.Migrate()`），两边都建。不在业务项目里跑时它只建框架自带的表。
 > 脚手架刚生成的项目没有业务表（框架任务表不存采集结果，抓到的结果要在 `internal/models/` 里建业务表来落），
-> 所以起步阶段两条命令等价。判据与细则见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+> 所以起步阶段两条命令等价。判据与细则见 [CORE_CONFIG.md](configuration/CORE_CONFIG.md) 第 2 节。
 
-新项目根入口只转交 `internal/app.Run`；应用导航在 `docs/README.md`，本套框架手册复制到 `docs/framework/`。旧项目的根级包与平铺文档继续受 `check` / `upgrade` 支持。
+新项目根入口只转交 `internal/app.Run`；应用导航在 `docs/README.md`，本套框架手册复制到 `docs/framework/`，并保留各主题目录与 `package_structure/` 层级。`check` / `upgrade` 只支持当前 v4 工程布局；`upgrade` 刷新框架副本并检查项目，不转换旧版业务代码或数据库。
 
-## 阅读路径
+## 目录与阅读路径
 
-任务时间与身份升级须先停 worker 并显式迁移；时间规则见 [TASK_TIMING.md](TASK_TIMING.md)，身份规则见 Fetcher 手册的任务身份章节。分类熔断方案单独保存在 [待实施设计](issues/2026-11-12-breaker-analysis-design.md)，不代表当前运行能力。
+```text
+docs/
+├── README.md             # 当前文档总入口
+├── embed.go              # CLI 分发白名单
+├── architecture/         # 架构图、边界、框架开发与验证
+├── configuration/        # 配置字典、显式建表、资源预算
+├── guides/               # Fetcher、抓取工具、业务数据落地
+├── accounts/             # 账号接入、认证运行、浏览器身份
+├── runtime/              # 时间、任务流、三队列、熔断与治理
+├── operations/           # CLI、监控后台、观测与报告
+├── package_structure/    # 包职责说明书，App 并入 Internal
+└── history/              # 仅源码仓库保留，不随 CLI 分发
+    ├── README.md
+    ├── reviews/          # 审查、实施结果、验证与阶段画像
+    ├── designs/          # 设计方案与适用状态
+    ├── plans/            # 施工步骤，不作为完成证明
+    └── changes.md        # 跨阶段历史变更记录
+```
 
-先按「你要做的事」定位手册，再进对应手册查字段 / 接口 / 示例：
-
-| 我要… | 手册 | 手册在讲什么 |
+| 想做什么 | 分类入口 | 建议阅读顺序 |
 | --- | --- | --- |
-| 看懂全局组件与任务运行关联 | [ARCHITECTURE_DIAGRAMS.md](ARCHITECTURE_DIAGRAMS.md) | Mermaid 静态组件图、动态数据流图及通用爬虫术语对应 |
-| 配置单实例资源预算、输入限额与积压背压 | [RESOURCE_BUDGETS.md](RESOURCE_BUDGETS.md) | 调度、报告和下载预算、超限行为及旧数据兼容 |
-| 维护框架包职责和依赖边界 | [ARCHITECTURE.md](ARCHITECTURE.md) | 状态所有权、装配/服务/后台分工及重构验收 |
-| 查 Papa 整体目录、所有包和新增代码归属 | [Papa 目录说明书](package_structure/README.md) | 统一目录索引与七份职责分册 |
-| 查根公开入口、配置、跨包契约和模型 | [ROOT_STRUCTURE.md](package_structure/ROOT_STRUCTURE.md) | 根包、config、core、models、文档与构建配套 |
-| 查 admin 各目录、文件职责与新增功能归属 | [ADMIN_STRUCTURE.md](package_structure/ADMIN_STRUCTURE.md) | 后台完整目录细则、状态所有权、前后端资源与依赖边界 |
-| 查 engine 目录、执行状态与调度边界 | [ENGINE_STRUCTURE.md](package_structure/ENGINE_STRUCTURE.md) | 根包文件分工、内部组件、锁与生命周期 |
-| 查 internal 及 App 装配、存储和执行设施 | [INTERNAL_STRUCTURE.md](package_structure/INTERNAL_STRUCTURE.md) | App 完整职责并入本册；覆盖全部 internal 包 |
-| 查通用抓取、账号、浏览器和资源能力 | [PKG_STRUCTURE.md](package_structure/PKG_STRUCTURE.md) | pkg 各包的接口、状态、资源释放和测试归属 |
-| 查观测分析和报告实现 | [OBS_STRUCTURE.md](package_structure/OBS_STRUCTURE.md) | 输入、分析、证据与产物之间的职责边界 |
-| 查 CLI、脚手架和本地演示实现 | [CMD_STRUCTURE.md](package_structure/CMD_STRUCTURE.md) | 命令与模板归属、显式写入和文档分发 |
-| 管理临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
-| 按阶段控制广度/深度与并行分支 | [TASK_FLOW.md](TASK_FLOW.md) | 可选任务树调度、持久化边界和策略更新 |
-| 从零写抓取逻辑（HTML / Rod 策略、场景示例） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) | Fetcher 契约、两种抓取策略、常见坑 |
-| 网络录制 / 链接与订阅源 / 分页 / 增量 / 数据质量 | [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md) | 有界工具、调用方职责与测试边界 |
-| 按账号登录、Token/CSRF、过期恢复、浏览器状态与加密保存 | [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md) | 统一账号入口、版本控制、暂停注销与凭据边界 |
-| OA 添加账号、多方式登录与远程人工操作 | [ACCOUNT_ONBOARDING.md](./ACCOUNT_ONBOARDING.md) | 业务 Provider、候选身份确认、加密保存、受控画面与超时回收 |
-| 固定浏览器身份、账号/匿名会话绑定与本地检查 | [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md) | 档案版本、排空复验、稳定会话键、网站挑战分类及诊断边界 |
-| 调整采集策略、AutoThrottle、资源预算、账号池与代理健康 | [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md) | 默认开关、YAML/OA 优先级、CAS 与重启、异步账号补偿和实际覆盖边界 |
-| 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
-| 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |
-| 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |
-| 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动时重投本进程启动前遗留的未终态任务 |
-| 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、到点才重投（周期可逐条定、后台可改） |
-| **加一个站 / 管多个站点**（站点维度都有什么） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §7、[DEVELOPMENT.md](./DEVELOPMENT.md) §7 | 一站一个文件（自登记）、站点键必填、阶段名按站点作用域（两个站可以同名）、站点级请求头/熔断/下载器；三个治理队列有意留在全局 |
-| 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | 运行概览、令牌更新、浏览器诊断、设置与页面扩展、队列治理、暂停、报告和日志 API |
-| **查一轮跑得怎么样 / 出运行报告 / 给报告加业务段** | [OBSERVABILITY.md](./OBSERVABILITY.md) | 事件契约、`obs` 配置、`papa report` 4 产物、内置模式库、业务扩展点、局限与注意 |
-| 排查「页面抓到了啥」/ 生成新项目 / 升级已有项目 / 建令牌 | [CLI.md](./CLI.md) | `papa new` 脚手架、`html`/`rod`/`diff`/`select` 调试命令、`upgrade`（刷新框架副本+检查）、`check`（不用起库验声明）、`token add` |
-| 构建 / 测试 / 竞态检测（Makefile） | [DEVELOPMENT.md](./DEVELOPMENT.md) | make 目标、Windows 怎么跑、race 前置条件 |
+| 先看全局，或修改框架 | [架构与开发](architecture/README.md) | 架构图 → 架构规则 → 开发验证 |
+| 配参数、建表、控制资源 | [配置与预算](configuration/README.md) | 配置字典 → 单实例资源预算 |
+| 接一个站点并保存结果 | [抓取接入](guides/README.md) | Fetcher → 数据落地 → 可选抓取工具 |
+| 接登录、账号池与稳定身份 | [账号与身份](accounts/README.md) | 账号运行 → OA 接入 → 浏览器身份 |
+| 控制任务运行与故障恢复 | [运行调度](runtime/README.md) | 任务时间/任务流 → 三队列 → 熔断与治理 |
+| 用命令、后台或排查报告 | [运维观测](operations/README.md) | CLI → 后台 → 在线/离线观测 |
+| 查各包职责、状态与依赖 | [目录说明书](package_structure/README.md) | 总索引 → 根目录/Admin/Engine/Internal/Pkg/Obs/Cmd 分册 |
 
-> 新手上手顺序：本页 → [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) → [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)，其余按需查。
+新手从本页的快速开始进入 [Fetcher 编写](guides/FETCHER_WRITING_GUIDE.md)，再读 [数据落地](guides/DATA_LANDING_GUIDE.md)。先看全局可直接打开 [两张架构图](architecture/ARCHITECTURE_DIAGRAMS.md)。历史追溯在源码仓库的 `docs/history/README.md` 进入；分发副本不包含该目录。
+
+## 文档维护与分发
+
+- 每份当前手册只保留一个主题归属；主题 README 负责导航，不复制配置/API 正文。包与文件职责统一写入 `package_structure/`。
+- 新增手册同步主题入口和必要的总导航；新主题目录同时更新 `embed.go` 白名单及文档分发测试。历史设计和测试结论不得混入当前用法。
+- 手册移动时同步相对链接、源码中的文档指针、CLI 模板和技能文档映射。所有当前手册的本地链接必须在分发副本内可解析。
+- `papa new/upgrade` 保留上述当前目录层级。`upgrade --write` 只刷新当前框架拥有的路径，不自动删除已有项目的旧路径文档或用户笔记；旧副本由项目维护者核对后处理，新导航只指向当前路径。
 
 ## 注意事项
 
@@ -88,5 +95,3 @@ cd mycrawler && go mod tidy
 ## License
 
 基于 [MIT License](https://github.com/ydtg1993/papa/LICENSE.txt) 开源。
-
-Trace 使用文件，无需迁移建表；crawler.trace.mode 默认为 errors，可选 all/off。

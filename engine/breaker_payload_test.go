@@ -19,7 +19,7 @@ import (
 // `BreakerStatuses()` 变成了合成视图 —— 字段形状必须一个字都不少（只多一个 source），
 // 否则横幅、站点卡片、外部脚本会在升级后静默少读一列。
 //
-// 两头一起钉：Go 这边 marshal 出来的 key 集合 == `docs/MONITOR.md` 里那份示例的 key 集合。
+// 两头一起钉：Go 这边 marshal 出来的 key 集合 == `docs/operations/MONITOR.md` 里那份示例的 key 集合。
 // 改字段就两边一起改，测试会拦住只改一边。
 func TestBreakerStatusPayloadKeys(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
@@ -52,7 +52,7 @@ func TestBreakerStatusPayloadKeys(t *testing.T) {
 	// 与文档对账：取 MONITOR.md 里 `"breakers": [` 那段示例的 key
 	doc := docKeys(t, "breakers")
 	if strings.Join(manual, ",") != strings.Join(doc, ",") {
-		t.Fatalf("payload 与 docs/MONITOR.md 的示例对不上：\n代码 %v\n文档 %v", manual, doc)
+		t.Fatalf("payload 与 docs/operations/MONITOR.md 的示例对不上：\n代码 %v\n文档 %v", manual, doc)
 	}
 }
 
@@ -74,19 +74,19 @@ func marshalKeys(t *testing.T, st core.BreakerStatus) []string {
 	return keys
 }
 
-// docKeys 从 docs/MONITOR.md 里某段 jsonc 示例抠出字段名（`"<marker>": [` 之后到那节的 ``` 为止）。
+// docKeys 从 docs/operations/MONITOR.md 里某段 jsonc 示例抠出字段名（`"<marker>": [` 之后到那节的 ``` 为止）。
 // 外层的键（如 "breakers"、"entries"）不算 —— 它们是容器名，不是这一项的字段。
 func docKeys(t *testing.T, marker string) []string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "docs", "MONITOR.md"))
+	raw, err := os.ReadFile(filepath.Join("..", "docs", "operations", "MONITOR.md"))
 	if err != nil {
-		t.Fatalf("读 docs/MONITOR.md：%v", err)
+		t.Fatalf("读 docs/operations/MONITOR.md：%v", err)
 	}
 	body := string(raw)
 	head := `"` + marker + `": [`
 	start := strings.Index(body, head)
 	if start < 0 {
-		t.Fatalf("docs/MONITOR.md 里找不到 %s 的示例段", marker)
+		t.Fatalf("docs/operations/MONITOR.md 里找不到 %s 的示例段", marker)
 	}
 	start += len(head) // 从 `[` 之后开始
 	end := strings.Index(body[start:], "\n```")

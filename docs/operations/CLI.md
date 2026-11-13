@@ -30,11 +30,12 @@ go install ./cmd/papa
 | `papa rod <url> [flags]` | 浏览器渲染后抓取（Rod，走完整 JS 渲染） |
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
-| `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节 |
-| `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
-| `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（`docs/framework/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
-| `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
+| `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 第 2 节 |
+| `papa check [目录] [--boot] [-c <配置路径>]` | 默认离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、启用的治理队列缺项、熔断阈值、`Delay` 与 `Backoff` 写法；`--boot` 另连库验证注册装配 |
+| `papa upgrade [目录] [--write]` | 刷新已有 v4 项目的框架文档和技能：刷新框架副本（`docs/framework/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
+| `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](MONITOR.md) 第 1 节 |
 | `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；无时间/run 筛选时生成后按 `obs.report.retention` 清理过期目录；显式筛选不清理。业务段由业务自己的离线 obs.Generate 命令提供，papa CLI 只有框架通用段 |
+| `papa report list [-c <配置路径>] [--out <dir>]` | 列出已有报告目录；不生成新报告 |
 
 ### `papa new` 生成什么
 
@@ -59,6 +60,13 @@ mycrawler/
     README.md              应用文档导航（项目所有）
     operations/DEVELOPMENT.md  应用目录与开发说明（项目所有）
     framework/             Papa 手册副本（upgrade 可刷新）
+      README.md            当前框架文档导航
+      architecture/        架构图、边界和框架开发
+      configuration/       配置字典、建表与资源预算
+      guides/              抓取接入与数据落地
+      accounts/            账号、登录与浏览器身份
+      runtime/             任务、队列、熔断与治理
+      operations/          CLI、后台与观测报告
       package_structure/   Papa 目录说明书：总入口 + 七份职责分册
   README.md · Makefile · logs/ · .gitignore
   .claude/skills/          开发技能（通用文件可刷新，项目约定不覆盖）
@@ -66,14 +74,14 @@ mycrawler/
 
 后台自定义页模板 `internal/monitor/view/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
 
-框架目录说明书见 [package_structure/README.md](package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留这些相对路径。历史 issues/superpowers 不分发；升级不会删除项目自行保留的文档副本。
+框架目录说明书见 [package_structure/README.md](../package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留主题目录和说明书相对路径；`history/` 不分发。升级不会删除项目自行保留的文件，包括旧路径的框架副本；项目维护者核对后自行处理旧副本，当前导航只链接新路径。
 
 几句要点：
 
 - **加一个站 = 加一个 `internal/sites/<站名>.go` 文件**：它在自己的 `init()` 里自登记，框架用
   `papa.Sites()` 收集，`internal/app/run.go` 不用动（站点键必填；阶段名只在本站内唯一，两个站可以同名）。
 - **阶段结构/物理容量在 Go 声明里**：`runtime` 可覆盖已有阶段的有效执行并发、固定任务间隔与账号池；
-  `crawler.stages` 仍是未知键。模板默认关闭请求自适应、资源与代理健康，字段与覆盖优先级见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+  `crawler.stages` 仍是未知键。模板默认关闭请求自适应、资源与代理健康，字段与覆盖优先级见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
 - **三个治理队列（error_queue / recover_queue / repeat_queue）在 `config.yaml` 里全局配**：
   没写哪段 = 那条不跑；开了（`enabled: true`）就得写全，缺一项 / 越界启动就报。
 - **`.claude/skills/papa-crawler-development/` 带一份开发技能**：Claude Code 会从 `<项目>/.claude/skills/`
@@ -113,7 +121,7 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 站点 b 的第 2 个阶段: 阶段 "same" 在本站重复声明（站点 b 已经声明过）—— 同一站内阶段名必须唯一…
 ```
 
-> 它会顺带把 `config.yaml` 也读一遍（框架的键与值域校验，同样不用连库）；配置不在默认位置就 `-c` 指定。
+> 它会顺带读取配置（框架的键与值域校验，同样不用连库）；默认读取目标项目的 `configs/config.yaml`，可用 `-c` 指定。文件不存在时只提示并继续校验声明，此时不代表全局配置通过。普通 check 仍会编译、执行目标站点包的 `init()`，业务初始化的副作用由业务代码负责。
 
 **`--boot`：连库把"注册那条链"也跑一遍。** 上面那版是纯校验（不碰库）；`--boot` 会在同一个一次性
 程序里接着走真的启动路径 —— `papa.New()`（读配置 + 连库 + 建引擎）→ `app.RegisterSites(papa.Sites()...)`，
@@ -126,7 +134,7 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 ```
 
 它同时校验"声明与引擎接线对得上"（每个声明的站点都得能在 `app.Engine.Site(key)` 里查到）。
-要连库，所以比不带 `--boot` 的那版多一层前提：库得连得上。
+要连库，所以比不带 `--boot` 的那版多一层前提：库得连得上且满足当前 schema 检查。NewApp/NewEngine 构造已会创建日志、查询数据库并建立内部调度资源；没有 Run 不等于完全无文件或连接副作用。
 >
 > 首次在**刚生成**的项目里跑，可能会提示先 `go mod tidy` —— 脚手架生成的 `go.mod` 本来就不带
 > `require`（那是 `tidy` 的事），校验程序要编译就得先把依赖落下来。
@@ -139,7 +147,7 @@ papa check [目录] --boot                       # 再往前一步：连库跑�
 papa upgrade [目录] [--write]      # 目录默认当前目录
 ```
 
-`papa new` 只管"从零生成"；已经落地的项目用它升级。**默认只报告不落盘**，加 `--write` 才写。
+已有项目的框架文档/技能用 `upgrade` 刷新；骨架缺失文件使用 `new --missing-only`。`upgrade` **默认只报告不落盘**，加 `--write` 才写。
 
 它只做框架**有把握**的两件事：
 
@@ -167,14 +175,15 @@ papa upgrade [目录] [--write]      # 目录默认当前目录
 ```
 papa report generate [-c configs/config.yaml] [--since RFC3339] [--until RFC3339] \
                      [--run <run_id>] [--snapshot | --acceptance] [--out <dir>] [--no-logs] [--fail-on-verdict]
-papa report list [--out <dir>]
+papa report list [-c <配置路径>] [--out <dir>]
 ```
 
-- 数据源：`log.dir/events.jsonl`（含轮转备份与 `.gz`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `obs.events`）+ `log.dir/*.log` 的证据索引 + `crawler_tasks` 状态。
+- 数据源：`log.dir/events.jsonl`（含轮转备份与 `.gz`，见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 `obs.events`）+ `log.dir/*.log` 的证据索引 + `crawler_tasks` 状态。
 - 产物：默认按**本地日历日拆分**，`<obs.report.dir 或 --out>/<2006-01-02>/` 下 4 个文件：`report.md`（人读）、`report.json`（机读指标）、`ai-brief.md`（AI 排查细则）、`ai-brief.json`（同构机读）；同一天重跑刷新当天那份。`--run <run_id>` 是例外：只出单份 `<obs.report.dir 或 --out>/<run_id>/`，不按天拆。无时间/run 筛选时，生成后按 `obs.report.retention`（默认 7 天，负数 = 永久保留）清理过期目录，并打印「清理过期报告 N 份」。CLI 指定 `--since`、`--until` 或 `--run` 时只生成、不执行保留清理，保证显式历史产物可以取走；无这些筛选的 CLI 生成仍按离线保留期清理；在线另采用有限目录/已知产物清理。历史产物之后仍可能被自动清理，需要长期保存时请使用独立 `--out` 目录。特殊 run_id（如 `..`、Windows 设备名）归一为安全单段目录名；正常 run_id 命名不变。
 - 模式：默认按 `obs.report.mode`，`auto` 在本离线命令中为 `snapshot` 运行报告；在线固定 snapshot；配置明确写 `acceptance` 仍使用验收口径。`--acceptance` 强制检查「这轮是否通过」，`--snapshot` 强制运行快照，两者互斥，均优先于配置。默认有事件的每个本地日各生成一份；只有显式 `--snapshot` 保留单日用法（缺省取最后一个事件所在日；papa CLI 显式窗口跨本地日会报错）。`--run` 仍只生成单次运行报告。模式写在 `report.md` 头部和 `report.json` 的 `mode`。
 - 判定：任一 `fail` 级检查未通过 → 不通过；只有 `warn` 未通过 → 带风险通过；一个可判定的检查都没有 / 数据降级（`degraded` 非空）全过 / 暂停快照全过 → **未判定**（`unknown`）；否则通过。`--fail-on-verdict` 让**任一日报**「不通过」**或「未判定」**时以非零码退出（CI / 自动化门禁；`warn` 仍放行）。
-- 只读：不写业务表、不重投任务、不调用接收端。
+- 只读指被观测数据：不写业务表、不重投任务、不调用接收端；命令会写报告文件，并在满足上述条件时删除过期报告。
+- 事件缺失：没有事件文件、默认/`--snapshot` 窗口无事件，或显式 `--run` 窗口无该 run 的事件时均报错；配置当前关闭事件不阻止读取已有事件文件。只有业务自行调用 `obs.Generate` 才能用其它来源组织无事件报告，并明确声明证据缺失。
 - 业务报告段由业务自己的离线命令通过 `obs.Generate` 显式提供；App 在线 Section/Pattern 注册入口已移除，Papa CLI 不包含业务模型。离线允许有界读取历史和查库对账，在线服务不执行这些操作。
 
 ## 2. 通用 flags（html / rod / diff 共用）
@@ -361,6 +370,6 @@ papa rod "https://example.com" --proxy --ua "Mozilla/5.0 ..." --json
 
 ### debug 的出口授权
 
-`papa html`、`papa rod`、`papa diff` 和在线 `papa select` 都使用配置中的 `network.private_origins`。测试内网服务前，在业务自己的配置中填完整 origin；代理列表 API 的内网地址也须列入。不会因为调试命令、localhost 或使用代理而自动放行。`papa check`/配置加载会拒绝畸形授权，详见 CORE_CONFIG 的网络出口段。本次没有数据库迁移。
+`papa html`、`papa rod`、`papa diff` 和在线 `papa select` 都使用配置中的 `network.private_origins`。测试内网服务前，在业务自己的配置中填完整 origin；代理列表 API 的内网地址也须列入。不会因为调试命令、localhost 或使用代理而自动放行。`papa check`/配置加载会拒绝畸形授权，详见 CORE_CONFIG 的网络出口段。网络出口授权不触发数据库迁移。
 
 Trace 采用文件存储，不需要运行 migrate 建 Trace 表；已有 SQL Trace 表不删除、不读取。新建项目模板提供 crawler.trace_files 有限预算配置。

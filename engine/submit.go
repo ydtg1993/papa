@@ -35,7 +35,7 @@ func (e *Engine) validateTask(task *Task) error {
 		return fmt.Errorf("task delay must not be negative")
 	}
 	if info := e.stages[stageKeyOf(task)]; info == nil {
-		return fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage, task.Site)
+		return fmt.Errorf("invalid stage: %s（站点 %q 下没登记这个阶段 —— 阶段名只在本站内唯一，先确认 task.Site 是声明它的那个站，再看该站的阶段清单，见 docs/guides/FETCHER_WRITING_GUIDE.md 7.1）", task.Stage, task.Site)
 	}
 	resourceID := task.ResourceID
 

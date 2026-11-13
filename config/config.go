@@ -62,7 +62,7 @@ type ErrorQueueConfig struct {
 // RecoverQueueConfig 启动恢复：config.yaml 的 `recover_queue` 段。
 //
 // 它只做一件事：**进程启动时**把「未到终态」的任务（pending/processing）全部重新入队，
-// **只在启动跑一次**（没有周期、没有手动入口，见 docs/RECOVER_QUEUE.md）。
+// **只在启动跑一次**（没有周期、没有手动入口，见 docs/runtime/RECOVER_QUEUE.md）。
 type RecoverQueueConfig struct {
 	Enabled     bool `mapstructure:"enabled"`      // 有没有启动恢复（false 或没写 = 不跑）
 	WorkerCount int  `mapstructure:"worker_count"` // 并发重新入队的数量（开启时必填 > 0）

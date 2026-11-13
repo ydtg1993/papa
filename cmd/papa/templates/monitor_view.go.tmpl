@@ -7,7 +7,7 @@ import "github.com/ydtg1993/papa/v4"
 //
 // 一页 = 分类下一个菜单项 + 一段渲染脚本；脚本加载后调 Papa.page(key, fn) 注册渲染函数，
 // 里面可以直接用后台的全局件：Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 等
-// （清单见项目 docs/framework/MONITOR.md 的「自定义页与注入」）。
+// （清单见项目 docs/framework/operations/MONITOR.md 的「自定义页与注入」）。
 //
 // 注意：注入的 JS/CSS 走**免鉴权**静态路由（浏览器标签带不了自定义请求头），别把密钥写进来；
 // 数据接口仍在白名单 + 令牌后面（页脚本里的 apiFetch / apiPost 会自动带凭据）。

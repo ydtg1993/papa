@@ -15,7 +15,7 @@
 | 增量抓取 | `Engine.FetchIncremental` | 按账号/表示保存校验标记，成功落库后更新 |
 | 数据校验 | `extract.Validator.Validate` | 字段规则、质量阈值、异常处理 |
 
-这些工具只返回事实和结果。旧 Fetcher、任务队列、数据库及后台契约保持不变。旧 `FetchHTML`/`Do` 依旧将非 2xx 作为错误。
+这些工具只返回事实和结果，任务投递、结果存储及业务解析由调用方负责。`FetchHTML` / `Do` 将非 2xx 作为错误；增量入口单独处理带有效校验标记的 304。
 
 ## 2. 网络录制
 
@@ -44,7 +44,7 @@ for _, entry := range record.Entries {
 
 这是**单页面 target 的有界录制**，不是全站无限 HAR：不覆盖所有新标签页、worker、WebSocket 帧或完整请求 ExtraInfo。CDP 可能先返回整段正文再检查长度，因此预算限制保留结果，不是 Chrome 内存硬限制。原始头和正文只在内存里返回，自动 trace 只保留条目数/丢弃数。
 
-登录账号录制应在 `WithIsolatedBrowser` 回调内调用 `account.RecordNetwork`，该回调内的上下文共享登录态；直接使用 Engine 入口按原有池默认上下文执行。
+需要登录态的低层录制，应在 `Pool.WithIsolatedBrowser(ctx, func(b *browser.Browser) error { ... })` 的同一隔离浏览器内先完成业务登录或状态恢复，再调用 `b.RecordNetwork`；录制新页面共享该浏览器上下文的 Cookie，LocalStorage 等状态仍需业务正确恢复。这里的接收者是 `*browser.Browser`，`pkg/account.Manager` 没有 `RecordNetwork` 方法。`Engine.RecordNetwork` 当前使用公共浏览器池，不自动选择任务账号、恢复 Manager 凭据或固定账号身份；账号采集应优先使用已接入账号运行时的 Render / Capture 入口，不能把公共录制结果视为该账号的证据。
 
 ## 3. 链接、订阅源与访问范围
 
@@ -81,7 +81,7 @@ if !decision.Continue {
 }
 ```
 
-一个 Guard 对应一次顺序遍历，停止后保持停止；不是分布式队列，不持久化进度。Continue 表示允许抓下一页，不代表本页数据质量合格。调用前必须已确认页面抓取和业务解析成功。
+一个 Guard 对应一次进程内顺序遍历，停止后保持停止，不持久化进度。Continue 表示允许抓下一页，不代表本页数据质量合格。调用前必须已确认页面抓取和业务解析成功。
 
 `body=nil` 关闭正文指纹检查，非 nil 的空切片是真实空内容。`itemKeys=nil` 关闭新增条目检查，非 nil 的空切片表示明确没有条目，会触发无新增停止。正文哈希按原字节比较，动态时间戳可能使它失效，应优先配合稳定 ID。ID 数量和页数上限必须为正，返回 NewItems 是预算内首次发现的 ID 数。
 
@@ -135,4 +135,4 @@ Report 给出 Rows、InvalidRows、TotalIssues 和限量 Issues（默认 100）�
 
 离线 JSON 重放应解码到新的结果变量。标准 `encoding/json` 复用非空 map 时，会保留本次 JSON 中没有出现的旧键；这会让已经脱敏删除的字段在旧内存结果中残留。`TestIncrementalValidatedSamplePipeline` 演示从 HTTP、校验、脱敏样本到离线重放与条件 304 的完整链路。
 
-账号统一运行与恢复见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。这些工具不自动识别网站业务语义或迁移业务数据库。实际网络访问由配置的网络出口策略约束，链接提取过滤不能替代出口检查。PDF/OCR/额外 JS 引擎属于有目标站点需求时选配的组件。
+账号统一运行与恢复见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md)。这些工具不自动识别网站业务语义或迁移业务数据库。实际网络访问由配置的网络出口策略约束，链接提取过滤不能替代出口检查。PDF/OCR/额外 JS 引擎属于有目标站点需求时选配的组件。

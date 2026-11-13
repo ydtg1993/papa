@@ -1,6 +1,6 @@
 # 任务时间与持久化延迟
 
-> 面向：需要延迟投递、重启恢复和任务执行时间记录的 Fetcher。配套：[Fetcher 手册](FETCHER_WRITING_GUIDE.md)、[启动恢复](RECOVER_QUEUE.md)。
+> 面向：需要延迟投递、重启恢复和任务执行时间记录的 Fetcher。配套：[Fetcher 手册](../guides/FETCHER_WRITING_GUIDE.md)、[启动恢复](RECOVER_QUEUE.md)。
 
 ## 提交延迟任务
 
@@ -14,7 +14,7 @@ if err := engine.SubmitTask(task); err != nil { return err }
 
 `Delay` 是首次提交的相对等待，不能为负；框架在插入前使用数据库 UTC 时钟计算绝对截止时间。显式提供 `NotBefore` 时优先使用它。毫秒以下部分向上取整，避免提前执行。成功插入后 `task.NotBefore` 为已确定排期。
 
-同一身份的重复提交不会覆盖数据库里的排期，也不会把相对延迟重新向后推。轮询、失败重投和 Handler 重试不重复施加首次 `Delay`；它们遵守自己的周期、补偿条件和退避规则。任务身份见 [Fetcher 手册](FETCHER_WRITING_GUIDE.md)。
+同一身份的重复提交不会覆盖数据库里的排期，也不会把相对延迟重新向后推。轮询、失败重投和 Handler 重试不重复施加首次 `Delay`；它们遵守自己的周期、补偿条件和退避规则。任务身份见 [Fetcher 手册](../guides/FETCHER_WRITING_GUIDE.md)。
 
 ## 数据字段
 
@@ -29,7 +29,7 @@ if err := engine.SubmitTask(task); err != nil { return err }
 
 每次已认领 Handler 尝试的开始和结束各增加一次数据库取时与一次更新；首次相对延迟提交另增加一次取时。持久化持续失败时会保留 worker 并按已有退避重试，形成背压。只有带已认领执行轮次的调用记录这些时间，避免无版本保护的更新。
 
-三个新时间列以 UTC DATETIME(3) 存储，专用序列化防止 MySQL 驱动 `loc` 或服务端会话时区造成二次偏移；不改变已有时间列的契约。后台任务表以只读列展示这些信息。
+`not_before`、`last_started_at`、`last_finished_at` 以 UTC DATETIME(3) 存储，专用序列化防止 MySQL 驱动 `loc` 或服务端会话时区造成二次偏移；其它时间列仍遵守各自的契约。后台任务表以只读列展示这些信息。
 
 ## 恢复和认领
 
@@ -37,10 +37,10 @@ if err := engine.SubmitTask(task); err != nil { return err }
 
 执行还须满足已有补偿条件；轮询由 `next_repeat_at` 决定是否创建下一轮。`not_before` 不代替轮询、失败补偿或请求限速。
 
-每次实际 Handler 尝试都记录开始和结束。开始记录失败时不执行 Handler；结束记录失败时保留持久化责任，不重新调用已经完成的 Handler。取消中断的失败尝试按既有规则释放认领；已经成功但状态未确认的任务在停机结果中标为未完成。框架仍是可恢复的至少一次执行，不承诺业务副作用恰好一次。
+每次实际 Handler 尝试都记录开始和结束。开始记录失败时不执行 Handler；结束记录失败时保留持久化责任，不重新调用已经完成的 Handler。业务已成功且取消与收尾并发时，结束时间与成功终态分别获得最多 2 秒的确认窗口；仍未确认就计入停机未完成项。普通取消失败按执行阶段释放认领或保留未确认；熔断选中样本的真实业务失败须先保存待结算责任，不能退回普通 pending，见 [熔断手册](BREAKER.md)。框架仍是可恢复的至少一次执行，不承诺业务副作用恰好一次。
 
-## 升级与验证
+## 建表与验证
 
-执行 `papa migrate` 显式增加四列及 `(status, not_before)` 索引；普通启动不会迁移。历史任务默认为无延迟约束，无法从未保存过的旧内存中恢复历史延迟。
+在独立 v4 数据库执行 `papa migrate`，创建包括这四列及 `(status, not_before)` 索引的当前模型；普通启动不会迁移。框架不从旧版本任务表或旧内存延迟状态转换数据。
 
 验收包括数据库到期守卫、重复提交不改排期、批量提交、引擎重建恢复、时区差异、实际 Handler 时间记录和持久化失败不重放 Handler。真实 MySQL 用例使用独立随机测试数据库，不迁移业务库。

@@ -271,7 +271,7 @@ func runNew(name string, args []string) error {
 		{"docker-compose.yml.tmpl", filepath.Join("deploy", "docker", "docker-compose.yml")},
 		{"Makefile.tmpl", "Makefile"},
 	}
-	// 随项目携带的开发技能（Claude Code 从 <项目>/.claude/skills/ 自动发现 —— 见 docs/CLI.md 的生成树）：
+	// 随项目携带的开发技能（Claude Code 从 <项目>/.claude/skills/ 自动发现 —— 见 docs/operations/CLI.md 的生成树）：
 	// 让每个新业务项目开箱就有一份"怎么写、怎么审"的 skill。清单与 `papa upgrade` 共用一份
 	// （cmd/papa/skill.go），免得出现"模板加了文件、升级那条路却不知道"的漂移。
 	for _, sf := range skillFiles() {

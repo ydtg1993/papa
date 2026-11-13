@@ -81,7 +81,7 @@ func (a *App) UsePage(p Page) {
 }
 
 // UseScript 往后台页注入一段受信任 JS（拼进 /static/custom.js）。
-// 它能用的全局件见 docs/MONITOR.md：Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 等。
+// 它能用的全局件见 docs/operations/MONITOR.md：Toast / Dialog / skeletonRows / esc / apiFetch / apiPost 等。
 //
 // 注意：注入内容与 mo.js / oao.js 一样走**免鉴权**静态路由（浏览器标签没法带自定义头），
 // 所以别把密钥、令牌之类写进去 —— 数据接口仍在白名单 + 密钥后面。

@@ -1,7 +1,7 @@
 # Obs 目录结构与职责细则
 
 > 面向：维护观测输入、报告分析、熔断证据和报告产物的开发者。
-> 总索引：[目录职责说明书](README.md)。配套：[观测使用手册](../OBSERVABILITY.md)、[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)。
+> 总索引：[目录职责说明书](README.md)。配套：[观测使用手册](../operations/OBSERVABILITY.md)、[总体架构规则](../architecture/ARCHITECTURE.md)、[开发手册](../architecture/DEVELOPMENT.md)。
 > 本文说明当前源码归属；配置、报告模式与业务扩展的使用方法以观测手册为准。
 
 ## 1. 定位与目录
@@ -36,7 +36,7 @@ obs/
 | `inputs.go` | `Inputs` 自证字段；`ComputeEventCoverage`、`ComputeDowntimes`、`TotalDowntime` 计算可见事件覆盖、断层和停机区间 | 复制待排序的事件切片；只根据看得到的边界配对，不假定窗口外发生过停机 |
 | `mode.go` | `Mode`、`Trigger` 与 `ResolveMode`，区分 snapshot / acceptance，解析 auto 及非法值 | 这里只解释模式；配置默认值和 CLI flag 优先级分别归 config 与命令适配层 |
 | `operational.go` | 历史窗口识别、历史状态检查的跳过规则、`ObservedRuntime` 的按 run 区间合并 | 当前 DB/引擎快照不能冒充历史期末；按检查 ID 区分当前状态的处理不应扩展为真实站点分析逻辑 |
-| `load.go` | `SourceConfig` / `Sources`；发现及读取事件、按 run 筛选、重算窗口内缺口、转接日志索引 | 事件是指标来源，日志只是证据；日志窗口有前后 5 分钟富余。run 筛选重算 Count/Gaps；Files/Unparsed 反映文件读取范围，Duplicates 是时间窗口内、筛选 run 之前的重复数 |
+| `load.go` | `SourceConfig` / `Sources`；发现及读取事件、按 run 筛选、重算窗口内缺口、转接日志索引；无事件文件或指定 run 无记录时返回错误 | 事件是指标来源，日志只是证据；日志窗口有前后 5 分钟富余。run 筛选重算 Count/Gaps；Files/Unparsed 反映文件读取范围，Duplicates 是时间窗口内、筛选 run 之前的重复数 |
 | `daily.go` | `ConsumeDailySources` 有预算地扫描、分桶和逐日消费；`LoadDailySources` 提供收集式入口 | 尊重显式窗口；次日零点只进入下一天。先预检源输入再进入消费回调；保留每日报告重复/缺口口径，不把全窗口元信息复制给每一天 |
 
 `Input` 的“只读”是扩展契约，不是类型系统强制隔离：其中仍含 `*gorm.DB`、map 和 slice。`Generate` 没有为每个分析节深拷贝全部输入，也不为调用方加并发锁；业务 `Section` / `Pattern` 应只读输入，不通过借来的 DB 写业务状态。框架分析节可追加本次调用的 `Input.Degraded`，由生成流程合并进结果。
@@ -53,7 +53,7 @@ obs/
 
 依赖标准库、`pkg/events` 与 `obs/inputbudget`。坏 JSON 行计数后继续；文件打开、解压或读取失败返回错误。序列缺口以实际保留事件为范围，不能证明窗口之前、之后或整段缺失的情况。
 
-窗口过滤先于去重，同一 `(run_id, seq)` 保留输入顺序中窗口内的第一条。事件、去重键、物理行及解压输入均受 inputbudget 限制；ReadContext 支持合作取消。返回的事件仍是完整切片，编码字节预算不是精确 Go 堆字节保证。输入文件仍可能被 writer 追加或轮转，本包没有与 writer 协商一致快照或排空的接口。
+窗口过滤先于去重，同一 `(run_id, seq)` 保留输入顺序中窗口内的第一条。归档 emitter 会重新编号，因此归档前的上游丢弃未必形成文件序号缺口；首尾和整段缺失也不能靠序号完整检出。事件、去重键、物理行及解压输入均受 inputbudget 限制；ReadContext 支持合作取消。返回的事件仍是完整切片，编码字节预算不是精确 Go 堆字节保证。输入文件仍可能被 writer 追加或轮转，本包没有与 writer 协商一致快照或排空的接口。
 
 ### 3.2 `logidx`：有界日志证据
 
@@ -75,7 +75,7 @@ obs/
 | `engine_load.go` | 离线 `LoadEngineState`；优先读取框架配置中的站点快照，再用事件补采样/池/恢复上下文，说明当前 DB 投影与历史窗口的差异 |
 | `backlog.go` | `BacklogSection`；pending / processing 分布、老化、吞吐及 ETA，输出可供 AI brief 复用的 `BacklogSummary` |
 | `querier.go` | `Querier` 的只读接口和 GORM 实现；站点状态、任务聚合桶、长时间 processing 查询。pending 年龄按 created_at，processing 按 updated_at |
-| `integrity.go` | 事件覆盖完整性检查；与明确停机边界吻合的断层不当成丢事件，其余断层保留风险证据 |
+| `integrity.go` | 事件覆盖完整性检查；检查当前最大相邻断层及窗口起点到首事件的空白，与明确停机边界吻合的最大断层不当成丢事件；不逐一检查全部间隔或窗口尾部空白 |
 | `breaker_reports.go` | 通过 `internal/breakerstore` 读取持久历史，关联事件 ID；报告引用同一份熔断事实，不从可能缺失的事件重造故障窗口 |
 
 分析器依赖 `obs` 的契约、`pkg/events`、`models`、GORM、脱敏和 `incident` 的分类；持久熔断历史是有意的 `internal/breakerstore` 只读适配依赖，不导入 Engine 或 App。`Querier`、`Input.DB` 由调用方提供，本包不建连接、不迁移、不关闭调用方连接。历史被截断时只报告不完整，不能从最后一条可见记录推断日报截止仍在保护。
@@ -94,7 +94,7 @@ obs/
 
 `DirName` 保留正常 run_id，特殊点段、尾点和 Windows 设备名归一为普通单段名称；CLI 写前另做目录边界校验。
 
-渲染使用诊断副本，不把脱敏后的值写回分析输入。`Write` 创建临时文件、写入、同步、关闭后 rename，并清理本次临时文件；**原子性按单文件保证，四份产物不是一个事务**，中途失败不意味着已更新文件会回滚。并发生成与退出等待由上层 Runner 协调，`report` 自身不保存目录级写锁。
+渲染使用诊断副本，不把脱敏后的值写回分析输入。`Write` 创建临时文件、写入、同步、关闭后 rename，并清理本次临时文件；**原子性按单文件保证，四份产物不是一个事务**，中途失败不意味着已更新文件会回滚。在线生成的串行写入与退出等待由 Runner 协调，离线调用方自行安排写入；两者之间没有共享目录锁。`report` 自身不保存目录级写锁，在线与离线同时写同一日报目录可能互相覆盖，应使用独立输出目录保存离线分析。
 
 `Prune` 是显式文件删除入口：负保留期不删除，零值回退默认 7 天。分析、读取和渲染本身不调用清理；离线 CLI 决定何时调用 Write/Prune。在线 Runner 调用 Write，但自有 writer 持有目录游标，每轮最多续扫 128 项、只删四份已知产物的有限保留清理，不调用离线 Prune。CLI 指定 `--since`、`--until` 或 `--run` 时只生成、不执行保留清理，保证显式历史产物可以取走；无这些筛选的 CLI 生成仍按离线保留期清理。历史产物之后仍可能被自动清理，需要长期保存时请使用独立 `--out` 目录。后台的文件枚举、读取、下载与页面选择归 `admin/reports`，见 [Admin 分册](ADMIN_STRUCTURE.md)。
 
@@ -104,7 +104,7 @@ obs/
 | --- | --- |
 | `input.go` | Limits 默认值、LimitError/ErrLimit、Meter、固定缓冲逐行读取；只依赖标准库，不拥有文件生命周期 |
 
-预算按调用与源类别计量，Meter 不允许并发共享；超限向调用方返回，不能静默生成不完整的验收结论。便捷读取入口使用有限默认值，Context 入口支持合作取消；配置见 [资源手册](../RESOURCE_BUDGETS.md)。
+预算按调用与源类别计量，Meter 不允许并发共享；超限向调用方返回，不能静默生成不完整的验收结论。便捷读取入口使用有限默认值，Context 入口支持合作取消；配置见 [资源手册](../configuration/RESOURCE_BUDGETS.md)。
 
 ## 4. 依赖、状态与生命周期
 
@@ -115,7 +115,7 @@ obs/
 | 事件 writer、序列、缓冲和落盘 | `pkg/events` 与其宿主 | `obs/eventlog` 仅打开读取快照，不管理 writer |
 | 本次输入、索引、报告、聚合 map | 当前调用 | 无跨调用全局可变分析状态；扩展必须遵守只读输入契约 |
 | 运行中 Engine 状态及 DB 连接 | 宿主 | 仅离线调用借用连接与快照；在线不持有 DB 或实时查询回调 |
-| 报告 ticker、串行生成、停止等待 | `internal/reportrunner` | App 装配，报告与归档共用最长 2 秒 deadline；超时不阻止业务关闭；obs 本身不开常驻循环 |
+| 报告 ticker、单写者聚合/固定 writer、停止等待 | `internal/reportrunner` | App 装配，报告与归档共用最长 2 秒 deadline；超时不阻止业务关闭；obs 本身不开常驻循环 |
 | 事件输入临时分桶、spool 目录与句柄 | obs/daily.go 的单次 ConsumeDailySources 调用 | 有界预检后逐日消费；正常/错误/取消时关闭并清理，强杀可能遗留；不是事件 writer 或最终报告产物 |
 | 正在读取的文件、gzip reader、报告暂存文件 | 对应输入/产物函数 | 调用内关闭/清理；最终报告写入和保留期删除归 report |
 

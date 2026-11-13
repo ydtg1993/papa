@@ -1,8 +1,8 @@
 # Internal 目录结构与职责细则
 
 > 面向：维护 Papa 内部组件、应用装配和启停流程的开发者。
-> 配套：[分册导航](README.md)、[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)、[根层分册](ROOT_STRUCTURE.md)、[Admin 分册](ADMIN_STRUCTURE.md)、[Engine 分册](ENGINE_STRUCTURE.md)、[Pkg 分册](PKG_STRUCTURE.md)、[Obs 分册](OBS_STRUCTURE.md)、[Cmd 分册](CMD_STRUCTURE.md)。
-> 本文描述当前工作区实现。App 改造前的复现与判断保留在源码仓库 `docs/issues/2026-11-13-app-structure-review.md`，不作为当前缺陷清单或本次验证结论。
+> 配套：[分册导航](README.md)、[总体架构规则](../architecture/ARCHITECTURE.md)、[开发手册](../architecture/DEVELOPMENT.md)、[根层分册](ROOT_STRUCTURE.md)、[Admin 分册](ADMIN_STRUCTURE.md)、[Engine 分册](ENGINE_STRUCTURE.md)、[Pkg 分册](PKG_STRUCTURE.md)、[Obs 分册](OBS_STRUCTURE.md)、[Cmd 分册](CMD_STRUCTURE.md)。
+> 本文描述当前工作区实现。App 改造前的复现与判断保留在源码仓库 `docs/history/reviews/2026-11-13-app-structure-review.md`，不作为当前缺陷清单或本次验证结论。
 
 ## 1. 范围、目录与依赖方向
 
@@ -38,7 +38,7 @@ internal/
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
 | `internal/breakerstore` | 3 / 4 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
 | `internal/database` | 5 / 7 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
-| `internal/tracestore` | 4 / 1 | `New/Write/List/Cleanup`，见文末 tracestore 章节 |
+| `internal/tracestore` | 4 / 1 | `New/Write/List/Cleanup`，见 [Trace 文件存储](#tracestore) |
 | `internal/taskstore` | 3 / 2 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
 | `internal/gormfake` | 1 / 0 | `New`、`Open`、`MustOpen`、`Set*`，见[测试假库](#gormfake) |
 | `internal/workerpool` | 3 / 2 | `NewWorkerPool`、`Start`、`Submit/SubmitUrgent`、`Stop`，见[执行池](#workerpool) |
@@ -59,7 +59,7 @@ internal/
 
 同包文件按职责平铺。文件数量、行数和目录深度不是完成标准，不创建没有独立契约的 `app/service`、`app/manager` 或 `app/utils` 来容纳原有逻辑。
 
-`resilience_mysql_test.go` 负责 App 组合根的真实 MySQL/子进程集成验收：从 NewApp、站点声明、Run 到 Shutdown 和取消收尾，覆盖两个站点、同名 catalog/detail 阶段及派生任务。只测试组件装配与跨组件契约，不把 SQL 状态转换或调度状态挪入 App；测试表、配置、HTTP 路由及资源只属于合成夹具。覆盖项包括 HTTP 在途请求、业务收尾 hook、运行采样/消息监听、审计、事件/报告及空浏览器池的关闭门控；父进程独占测试库和临时目录，并在强杀旧子进程后才启动恢复进程。逐次执行时间核对延迟约束，超时返回后由存活 handler 实测 DB 写入；父进程核验测试库与临时目录均已清理。运行方式见 [开发手册](../DEVELOPMENT.md#组件验证入口)。
+`resilience_mysql_test.go` 负责 App 组合根的真实 MySQL/子进程集成验收：从 NewApp、站点声明、Run 到 Shutdown 和取消收尾，覆盖两个站点、同名 catalog/detail 阶段及派生任务。只测试组件装配与跨组件契约，不把 SQL 状态转换或调度状态挪入 App；测试表、配置、HTTP 路由及资源只属于合成夹具。覆盖项包括 HTTP 在途请求、业务收尾 hook、运行采样/消息监听、审计、事件/报告及空浏览器池的关闭门控；父进程独占测试库和临时目录，并在强杀旧子进程后才启动恢复进程。逐次执行时间核对延迟约束，超时返回后由存活 handler 实测 DB 写入；父进程核验测试库与临时目录均已清理。运行方式见 [开发手册](../architecture/DEVELOPMENT.md#组件验证入口)。
 
 ### 2.2 当前物理目录
 
@@ -170,7 +170,7 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 
 | 状态 / 资源 | 唯一拥有者 | App 的责任 |
 | --- | --- | --- |
-| 启动扩展：模型、页、表、路由、报告扩展、收尾钩子 | App | Run/迁移前登记；移交或复制，不承诺运行期任意修改 |
+| 启动扩展：模型、页、表、路由、报告输入预算、收尾钩子 | App | Run/迁移前登记；移交或复制，不承诺运行期任意修改 |
 | 进程级冻结声明 | `internal/sitedecl` | 消费副本并应用计划 |
 | 已登记站点 | Engine siteCatalog | 通过 `App.Site` 委派查询，不保留第二份站点表 |
 | 阶段、任务、暂停、熔断和执行排空 | Engine 及内部组件 | 登记、启动、Stop，不重写内部锁序/持久化规则 |
@@ -189,7 +189,7 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 
 ### 2.5 启动、取消与排空协议
 
-NewApp 构造时已创建 Engine；NewEngine 会读库预热活跃任务并启动延迟 dispatcher，不能把全部后台活动都归到 Run。正常 Run 启动顺序：运行服务初始化 → run_started/报告循环 → 浏览器/HTML/下载器 → 熔断运行期/阶段 → 日志消费者 → HTTP。`Run` 安装统一 defer：先取消运行 context，再走 `shutdownRun`；运行组件初始化或后续启动失败也会清理已取得的资源。未成功进入运行阶段时不生成 run_stopped/退出报告。
+NewApp 构造时已创建 Engine；NewEngine 会读库预热活跃任务并启动延迟 dispatcher，不能把全部后台活动都归到 Run。正常 Run 启动顺序：运行服务初始化 → 报告循环/run_started → 浏览器/HTML/下载器 → 熔断运行期/阶段 → 日志消费者 → HTTP。`Run` 安装统一 defer：先取消运行 context，再走 `shutdownRun`；运行组件初始化或后续启动失败也会清理已取得的资源。只有报告循环启动并发送 run_started 后才设置 started，此后的启动失败也会发送 run_stopped 并按 on_exit 尽力出报告；更早的初始化失败不会启动在线报告。
 
 关停顺序：HTTP → 业务收尾钩子 → Engine.Stop → 运行组件 → 日志监听等待 → 代理 → 结束信号/在线报告及归档共享期限关闭 → 审计 → 条件关闭浏览器与 DB。观测超时不参与业务依赖关闭门控。
 
@@ -206,7 +206,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 
 ### 2.6 测试归属与验证边界
 
-#### 2.6.1 App 的 30 个测试文件
+#### 2.6.1 App 的 33 个测试文件
 
 | 文件 | 验证职责 |
 | --- | --- |
@@ -218,7 +218,9 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 | `http_drain_test.go`、`shutdown_resources_test.go` | 连接强关后仍活跃的 handler、hijack、拒绝新请求、白名单未排空时保留数据库，以及全部退出后的关闭 |
 | `runtime_lifecycle_test.go`、`shutdown_test.go` | 运行组件取消/等待、采样和日志消费者、初始化失败清理；业务钩子顺序、错误、panic 和超时 |
 | `events_test.go` | 事件流配置和输出 |
-| `report_interval_test.go`、`report_mode_test.go`、`report_on_exit_test.go`、`report_sections_test.go` | App 在线信号报告配置、定时/退出和禁用开关 |
+| `report_interval_test.go`、`report_mode_test.go`、`report_on_exit_test.go` | App 在线信号报告配置、定时/退出和禁用开关 |
+| `report_sections_test.go`、`report_resources_test.go`、`observation_test.go` | 在线无 DB/业务扩展回调、输入预算装配、故障归档隔离与共用退出期限 |
+| `resilience_mysql_test.go`、`lifecycle_load_mysql_test.go` | 组合根的隔离 MySQL/子进程恢复、活跃排空、持续饱和和失败清理；范围见 §2.1–2.2 |
 | `token_hook_test.go` | 令牌写入后的缓存失效与失败保留 |
 | `runtime_policy_test.go`、`runtime_history_test.go` | HTTP → 策略服务 → 持久化/Engine 的集成 |
 | `runtime_ui_browser_test.go` | 真实运行治理资源的浏览器集成 |
@@ -253,7 +255,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 - runtimecontrol/reportrunner/taskstore 不导入 HTTP/admin/App/Engine；reportrunner 不导入整份应用 config、GORM、obs/analyze、obs/pattern 或历史输入加载器。
 - browserdiagnostics 不导入 admin/App；engine/internal 不导入父 engine/admin/App。
 
-守卫不能证明深副本、真实排空、SQL 方言正确或浏览器布局。行为回归分别覆盖这些协议；fake 与合成 SQL driver 不代替 MySQL 现场验证，浏览器用例是否运行取决于实际测试环境。本分册说明实现和覆盖位置，不把新增测试文件或守卫通过表述为全量测试已经通过；执行批次与限制写在 `docs/issues/` 的验证记录。
+守卫不能证明深副本、真实排空、SQL 方言正确或浏览器布局。行为回归分别覆盖这些协议；fake 与合成 SQL driver 不代替 MySQL 现场验证，浏览器用例是否运行取决于实际测试环境。本分册说明实现和覆盖位置，不把新增测试文件或守卫通过表述为全量测试已经通过；执行批次与限制写在 `docs/history/reviews/` 的验证记录。
 
 ### 2.7 后续开发的放置规则
 
@@ -359,7 +361,9 @@ collector 独占单调前进的接收日桶；旧日迟到信号只计入运行�
 
 入口队列最多 1024，维度最多 256，并受 NewWithLimits 的 MaxEvents/MaxDedupKeys/MaxRetainedBytes 缩小；其余离线扫描/spool 预算不适用。聚合不保存完整任务生命周期。writer 最多一个在写和一个待写快照，新请求合并；磁盘阻塞不产生替代 worker。有限指标分别说明 received、task_finished/task_failed 信号，不冒充 DB 的独立任务数。Status 只读取原子健康计数，不等待消费者或 writer；archive_dropped 独立记录归档丢弃，不与报告入口丢弃混算。目录游标和句柄由 writer 独占并关闭，有限续扫避免无关项持续遮挡后续过期目录。
 
-Start 在 enabled 时启动固定消费者和 writer，interval 仅决定周期触发。Close(ctx) 关闭入口、请求末次输出并在 deadline 内等待；App 与归档共用最长 2 秒期限。超时不等待任意文件 I/O，不阻止业务资源按自己的真实排空状态关闭；同一实例停止后不可重启。Stop 是自带 2 秒预算的便利入口。在线固定 snapshot / unknown，source=signals，不据缺失池数推断空闲；report.mode/timeout/thresholds 仅服务离线分析。
+在线报告失败样本与静态说明的 256 字节限制采用整值省略，不保留可能破坏后续凭据识别的字符串前缀。样本省略纳入截断质量计数，已在传输边界标记的同一信号不重复计数。aggregate_boundary_test.go 同时验证四份真实产物、短错误保留和质量标记。
+
+Start 在 enabled 时启动固定消费者和 writer，interval 仅决定周期触发。Close(ctx) 关闭入口、排空已接收信号，仅在 on_exit 开启时请求末次输出，并在 deadline 内等待；App 与归档共用最长 2 秒期限。超时不等待任意文件 I/O，不阻止业务资源按自己的真实排空状态关闭；同一实例停止后不可重启。Stop 是自带 2 秒预算的便利入口。在线固定 snapshot / unknown，source=signals，不据缺失池数推断空闲；Inputs.SnapshotAt 保持零值，GeneratedAt 为聚合快照构建时刻，Engine.CapturedAt 为最后接收信号时刻；report.mode/timeout/thresholds 仅服务离线分析。
 
 `aggregate_boundary_test.go` 验证午夜/同日乱序窗口及维度不混算，`writer_boundary_test.go` 验证目录游标 EOF/退出的实际句柄释放。`runner_test.go` 覆盖洪水丢弃、维度预算、阻塞 writer 的退出期限与不增加 worker、panic、并发 Emit/Close、输入分离和来源口径。`report_resources_test.go` 验证 App 预算装配；App 的 report_* 与 observation_test 验证开关、周期/退出和归档并列接线。组件单测不证明物理零影响或生产长稳。
 
@@ -422,11 +426,13 @@ Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期
 
 NewDB 成功后将 GORM/底层 sql.DB 生命周期交给 App/宿主；本包不启动 goroutine、不关闭调用方传入的数据库，也没有共享可变目录缓存。GORM/数据库拥有连接池及事务，局部 schema 解析缓存只用于当前 Upsert。
 
+NewApp 在创建 Engine 前调用 database.CheckTaskSchema；拒绝旧 schema 或校验失败时关闭新建 DB 连接并返回错误。缺少尚未创建的任务表允许后续显式迁移；旧库不靠日志提示继续启动。
+
 普通启动只检查，不自动迁移。Migrate 写入前拒绝非 v4 任务身份格式，随后同步当前框架/额外模型；不转换旧任务、不删除旧索引或业务数据。
 
 `AllFrameworkModels` 是包括关闭功能的只读检查目录；实际迁移用 `FrameworkModels`。ExistingTables 查询当前库的基础表集合，调用方据需要核对所关注名称；HasIndexNamed 才按具体表/索引过滤。Upsert 不拥有业务事务，调用方应传入适当的 DB/transaction/context；写入成功后的回读错误也必须传播。
 
-依赖 `config`、`core`、`models`、账号/登录模型目录和 GORM/MySQL，允许在适配层引用模型，不让运行控制算法反向依赖本包装配。使用手册见 [CLI](../CLI.md)、[数据落地指南](../DATA_LANDING_GUIDE.md)；迁移职责以本节和现有显式命令为准。
+依赖 `config`、`core`、`models`、账号/登录模型目录和 GORM/MySQL，允许在适配层引用模型，不让运行控制算法反向依赖本包装配。使用手册见 [CLI](../operations/CLI.md)、[数据落地指南](../guides/DATA_LANDING_GUIDE.md)；迁移职责以本节和现有显式命令为准。
 
 测试：`db_test.go` 验证日志配置和模型开关；`taskflow_models_test.go` 验证任务流可选模型；`model_comment_test.go` 检查模型列注释；`schema_check_test.go` 验证查询、错误传播与 nil 保护；`upsert_test.go` 验证插入/冲突回填、写入和回读失败、参数错误、连接失败及迁移错误。`schema_version_test.go` 验证旧格式拒绝、只读和首个非法行查询边界；`v4_mysql_test.go` 通过 PAPA_V4_TEST_DSN 在独占随机测试库验证新库/重复迁移、旧表拒绝、任务状态 CAS，额外设置 PAPA_V4_SCALE_TEST=1 测量 1 万/10 万/100 万行启动校验；建库失败不接管，结束后核验删库。fake/SQL 断言不能代替这些真实 MySQL 测试，Engine 的身份与补偿真库回归补充执行层验证。
 
@@ -463,6 +469,24 @@ Insert 供提交持久化使用；IncrementRetry 将错误交给执行协调器�
 QueryContext 仅区分 count 和固定行，不解析 WHERE；ExecContext 返回配置的影响行数。默认不支持事务，`EnableTransactionStatements` 只让 Begin/Commit/Rollback 调用成立，不模拟回滚、隔离或持久化；方法也不模拟阻塞查询的 context 取消。真实 SQL 方言、事务、取消传播和数据竞争必须用相应测试设施验证。
 
 本包依赖标准库和 GORM/MySQL，没有 App/Engine 状态，没有自有 goroutine/Stop，也没有同目录 `_test.go`。消费者测试遍布 admin、App 等包，不能把“假驱动返回成功”当作真实数据库操作已经完成；Engine 的专用假库另有字段和行为模型，归 Engine 分册维护。
+
+<a id="tracestore"></a>
+
+### 6.4 Tracestore：Trace 文件持久化
+
+| 文件 | 职责 |
+| --- | --- |
+| `store.go` | Options/Batch、版本化记录、Store 状态与可取消串行门、根目录约束 |
+| `files.go` | 首次有限目录盘点、容量核算、暂存/同步/关闭/重命名发布、受限读取与格式验证 |
+| `read.go` | 持久发布顺序选择最新执行、合并尝试、末 500 步截断 |
+| `cleanup.go` | 按记录时间清理，逐文件释放串行门；汇总损坏错误并继续清理其它记录 |
+| `store_test.go` | 发布、取消、配额、重启顺序、损坏、清理和路径边界回归 |
+
+仅依赖标准库及 core Trace 值类型，不依赖 Engine/App/GORM。Store 独占专用目录，拥有文件索引、总字节数及发布序号；它的串行门协调写入/查询/清理，不持有 Engine 调度锁。首次盘点仅扫描文件名和尺寸，后续写入不重新扫盘；实际步骤按文件大小限制读取。
+
+路径为分片/task-ID/identity-hash/execution-digest/发布序号.json。标准 identity_hash 直接作为目录名；非标准标识散列后使用。版本化 JSON 保存原执行 UUID、任务身份、尝试号、记录时间和截断状态。任务 ID 查询不依赖数据库或第二套索引。崩溃遗留 `.pending` 不展示，保守保留并计入预算；不自动递归删除未知目录。
+
+App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 模型及 CheckTraceSchema 声明已经删除。
 
 ## 7. 通用执行与统计设施
 
@@ -510,26 +534,4 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 
 新增持久化逻辑先找语义拥有者：任务转移归 taskstore；熔断控制快照及历史事务归 breakerstore；策略 CAS/核对/发布归 runtimecontrol，具体配置存储适配归 admin/configstore；当前 schema 建表只走显式 database.Migrate。App 只组织时序，不复制这些算法。
 
-本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../DEVELOPMENT.md)，公开扩展以当前 v4 契约为准。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。
-
-
-## tracestore：Trace 文件持久化
-
-| 文件 | 职责 |
-| --- | --- |
-| `store.go` | Options/Batch、版本化记录、Store 状态与可取消串行门、根目录约束 |
-| `files.go` | 首次有限目录盘点、容量核算、暂存/同步/关闭/重命名发布、受限读取与格式验证 |
-| `read.go` | 持久发布顺序选择最新执行、合并尝试、末 500 步截断 |
-| `cleanup.go` | 按记录时间清理，逐文件释放串行门；汇总损坏错误并继续清理其它记录 |
-| `store_test.go` | 发布、取消、配额、重启顺序、损坏、清理和路径边界回归 |
-
-仅依赖标准库及 core Trace 值类型，不依赖 Engine/App/GORM。Store 独占专用目录，拥有文件索引、总字节数及发布序号；它的串行门协调写入/查询/清理，不持有 Engine 调度锁。首次盘点仅扫描文件名和尺寸，后续写入不重新扫盘；实际步骤按文件大小限制读取。
-
-路径为分片/task-ID/identity-hash/execution-digest/发布序号.json。标准 identity_hash 直接作为目录名；非标准标识散列后使用。版本化 JSON 保存原执行 UUID、任务身份、尝试号、记录时间和截断状态。任务 ID 查询不依赖数据库或第二套索引。崩溃遗留 `.pending` 不展示，保守保留并计入预算；不自动递归删除未知目录。
-
-App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 模型及 CheckTraceSchema 声明已经删除。
-
-NewApp 在创建 Engine 前调用 database.CheckTaskSchema；拒绝旧 schema 或校验失败时关闭新建 DB 连接并返回错误。缺少尚未创建的任务表允许后续显式迁移；旧库不靠日志提示继续启动。
-
-
-在线报告失败样本与静态说明的 256 字节限制采用整值省略，不保留可能破坏后续凭据识别的字符串前缀。样本省略纳入截断质量计数，已在传输边界标记的同一信号不重复计数。aggregate_boundary_test.go 同时验证四份真实产物、短错误保留和质量标记。
+本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../architecture/DEVELOPMENT.md)，公开扩展以当前 v4 契约为准。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。

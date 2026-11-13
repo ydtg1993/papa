@@ -28,8 +28,8 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 	}
 
 	// ① 框架副本：改一份（内容漂了）、删一份（缺了）、再加一份自己的
-	writeFileT(t, filepath.Join("demo", "docs", "framework", "CORE_CONFIG.md"), "# 本地乱改过的\n")
-	if err := os.Remove(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
+	writeFileT(t, filepath.Join("demo", "docs", "framework", "configuration/CORE_CONFIG.md"), "# 本地乱改过的\n")
+	if err := os.Remove(filepath.Join("demo", "docs", "framework", "operations/MONITOR.md")); err != nil {
 		t.Fatal(err)
 	}
 	writeFileT(t, filepath.Join("demo", "docs", "framework", "notes.md"), "# 我自己的笔记\n")
@@ -45,10 +45,10 @@ func TestUpgradePlanDetectsDrift(t *testing.T) {
 		t.Fatalf("buildUpgradePlan = %v", buildErr)
 	}
 
-	if !contains(plan.DocUpdates, "CORE_CONFIG.md") {
+	if !contains(plan.DocUpdates, "configuration/CORE_CONFIG.md") {
 		t.Errorf("改过的副本应当算「更新」：%v", plan.DocUpdates)
 	}
-	if !contains(plan.DocAdds, "MONITOR.md") {
+	if !contains(plan.DocAdds, "operations/MONITOR.md") {
 		t.Errorf("删掉的副本应当算「新增」：%v", plan.DocAdds)
 	}
 	if !contains(plan.DocStale, "notes.md") {
@@ -71,13 +71,13 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 		t.Fatalf("runNew = %v", err)
 	}
 
-	coredoc := filepath.Join("demo", "docs", "framework", "CORE_CONFIG.md")
-	temporaryDoc := filepath.Join("demo", "docs", "framework", "TEMPORARY_RESOURCES.md")
+	coredoc := filepath.Join("demo", "docs", "framework", "configuration/CORE_CONFIG.md")
+	temporaryDoc := filepath.Join("demo", "docs", "framework", "runtime/TEMPORARY_RESOURCES.md")
 	if err := os.Remove(temporaryDoc); err != nil {
 		t.Fatal(err)
 	}
 	writeFileT(t, coredoc, "# 本地乱改过的\n")
-	if err := os.Remove(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
+	if err := os.Remove(filepath.Join("demo", "docs", "framework", "operations/MONITOR.md")); err != nil {
 		t.Fatal(err)
 	}
 	writeFileT(t, filepath.Join("demo", "docs", "framework", "notes.md"), "# 我自己的笔记\n")
@@ -94,7 +94,7 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 			t.Fatalf("upgrade = %v", err)
 		}
 	})
-	if !strings.Contains(out, "更新  docs/framework/CORE_CONFIG.md") || !strings.Contains(out, "新增  docs/framework/MONITOR.md") {
+	if !strings.Contains(out, "更新  docs/framework/configuration/CORE_CONFIG.md") || !strings.Contains(out, "新增  docs/framework/operations/MONITOR.md") {
 		t.Fatalf("报告里应当列出要改的副本：\n%s", out)
 	}
 	if got := readFile(t, coredoc); got != "# 本地乱改过的\n" {
@@ -110,18 +110,18 @@ func TestUpgradeWriteOnlyTouchesFrameworkCopies(t *testing.T) {
 			t.Fatalf("upgrade --write = %v", err)
 		}
 	})
-	want, err := docs.Files.ReadFile("CORE_CONFIG.md")
+	want, err := docs.Files.ReadFile("configuration/CORE_CONFIG.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := readFile(t, coredoc); got != string(want) {
 		t.Error("--write 之后副本应当与框架逐字一致")
 	}
-	temporaryWant, err := docs.Files.ReadFile("TEMPORARY_RESOURCES.md")
+	temporaryWant, err := docs.Files.ReadFile("runtime/TEMPORARY_RESOURCES.md")
 	if err != nil || readFile(t, temporaryDoc) != string(temporaryWant) {
 		t.Fatal("temporary resources manual not upgraded", err)
 	}
-	if _, err := os.Stat(filepath.Join("demo", "docs", "framework", "MONITOR.md")); err != nil {
+	if _, err := os.Stat(filepath.Join("demo", "docs", "framework", "operations/MONITOR.md")); err != nil {
 		t.Errorf("缺的副本应当补上：%v", err)
 	}
 	if got := readFile(t, filepath.Join("demo", "docs", "framework", "notes.md")); got != "# 我自己的笔记\n" {

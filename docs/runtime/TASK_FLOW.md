@@ -2,9 +2,9 @@
 
 > 面向：需要按阶段组合广度/深度策略的业务开发者。任务仍由原阶段工作池执行；调度器在认领时决定是否放行。
 
-## 启用与升级
+## 启用与建表
 
-配置 `task_flow.enabled: true`，显式执行 `papa migrate` 后重启。新增可选 `crawler_task_flows` 表；`crawler_tasks` 新增 `flow_id/flow_lane/flow_branch/flow_path` 四列及 flow_id 索引。即使未启用调度，新版本也须迁移任务列；大任务表建议低峰期迁移。普通启动不建表。
+配置 `task_flow.enabled: true`，显式执行 `papa migrate` 后重启。可选的 `crawler_task_flows` 表保存运行策略；`crawler_tasks` 的 `flow_id/flow_lane/flow_branch/flow_path` 四列及 flow_id 索引属于共同 schema。普通启动不建表。v4 使用独立数据库，不提供旧版任务表原地转换，见 [运行配置](../configuration/CORE_CONFIG.md#v4-独立任务与恢复格式)。
 
 普通 SubmitTask/SubmitTasks 行为保持不变，不自动把现有积压解释成任务树。新流程通过专用 API 登记。不要在普通 SubmitTask 中自行填写 Flow 字段。
 
@@ -27,7 +27,7 @@ err = e.SubmitFlowTask(ctx, "run-001", 0, root)
 err = e.SubmitFlowTask(ctx, task.FlowID, uint(task.ID), child)
 ```
 
-自定义 Fetcher 需要显式调用 SubmitFlowTask。不要启动一个异步 goroutine 派生任务后立即返回，父任务终态后新增子任务会被拒绝。重复登记同一运行/父任务下的同 URL 子任务返回既有任务，不重复抓取。
+自定义 Fetcher 需要显式调用 SubmitFlowTask。不要启动一个异步 goroutine 派生任务后立即返回，父任务终态后新增子任务会被拒绝。重复登记同一运行/父任务下的同一标准身份子任务返回既有任务，不重复抓取；身份优先使用 ResourceID，留空才使用保留 origin 的规范 URL。
 
 ## 策略语义
 
@@ -54,10 +54,10 @@ POST 请求体最多 1 MiB，只接受一份 JSON；重复键（包括嵌套对�
 
 ## 持久化与限制
 
-- 策略更新、任务登记、认领锁定同一运行行，防并发越过策略。任务完成唤醒回灌；漏通知由原周期回灌兜底。恢复仍需启用已有 recover_queue；框架沿用单个活动引擎的恢复约定，不提供多实例任务租约。
+- 策略更新、任务登记、认领锁定同一运行行，防并发越过策略。任务完成唤醒回灌；漏通知由原周期回灌兜底。持久 pending 的持续补充独立于 recover_queue；崩溃遗留的 processing 需要启用启动恢复，将其条件重置后再参与调度。
 - 每运行最多 10000 条持久任务、32 层、32 个阶段；并发上限 1..64。达限拒绝登记。调度读取有界活动集合；大规模无限采集需要后续独立容量设计。
-- 任务使用 `(site,stage,identity_hash)` 唯一约束。跨父任务/跨运行的同 URL 不会被偷偷迁移，返回关系冲突；共享链接须在业务发现层选择唯一归属。一个运行内支持重试，尚不支持直接为同批 URL 创建新的周期运行。
-- 当前不支持受控任务自身开启 Repeatable/延迟投递；周期应由业务明确创建批次，不能让永久轮询任务占住父层屏障。保留普通任务的原能力。
+- 任务使用 `(site,stage,identity_hash)` 唯一约束。跨父任务/跨运行的相同标准身份返回关系冲突，不迁移既有任务；共享资源须在业务发现层选择唯一归属。一个运行内支持重试，不能直接复用同批身份创建新的周期运行。
+- 当前受控提交拒绝非空 `AccountPool`、`Repeatable: true`、非零 `Delay` 或 `NotBefore`，也不通过普通提交的池默认值解析来附加归属。周期应由业务明确创建具有正确身份的批次，不能让永久轮询任务占住父层屏障。普通任务继续使用原接口。
 - 后台禁止删除受控任务和开启轮询，防破坏关系。失败标记/重试/加急仍保留。不要直接改 SQL 关系字段；流程归档清理尚未提供。
 
 框架只提供调度。真实网站的阶段声明、抓取逻辑、字段落地和清洗由独立业务模块接线。

@@ -2,7 +2,7 @@
 
 > 面向：维护 Papa 后台、增加后台功能和审查包边界的开发者。
 > 总入口：[Papa 目录说明书](README.md)。
-> 配套：[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)、[后台使用与 API](../MONITOR.md)。
+> 配套：[总体架构规则](../architecture/ARCHITECTURE.md)、[开发手册](../architecture/DEVELOPMENT.md)、[后台使用与 API](../operations/MONITOR.md)。
 > 本文按当前源码说明整个 `admin/`，作为 Papa 总体目录细则的 admin 分册。目录树省略测试文件；文件职责和测试归属在后文说明。
 
 ## 1. 总体定位
@@ -256,13 +256,13 @@ layout.css 负责共享导航、响应式与外观覆盖，在基础样式之后
 
 改动公共资源装配需要验证真实页面，不仅检查 JS 语法；改动异步控制器需要覆盖会话变化、切页、reset/unmount 与迟到结果；改动文件下载需要验证路径限制及响应行为。按改动范围运行功能测试、后台集成测试和必要的完整测试。
 
-本文维护当前目录与长期归属规则；接口字段、使用示例和路由细节维护在 MONITOR 及专项手册；实施过程和测试批次记录放在 `docs/issues/`。各职责分册统一放在 `docs/package_structure/`，并沿用“目录—职责—文件—状态—依赖—测试”的组织方式，避免重复维护第二份接口手册。
+本文维护当前目录与长期归属规则；接口字段、使用示例和路由细节维护在 MONITOR 及专项手册；实施过程和测试批次记录放在 `docs/history/reviews/`。各职责分册统一放在 `docs/package_structure/`，并沿用“目录—职责—文件—状态—依赖—测试”的组织方式，避免重复维护第二份接口手册。
 
 追踪抽屉由 `admin/tasktrace/static/trace.js` 展示服务返回的 execution_id 与截断标志；只展示最新有记录执行的最后 500 步，未提供执行标识时明确提示标识缺失。`admin/tasktrace/frontend_test.go` 执行真实控制器，验证执行身份转义、截断提示和缺失标识提示，不在前端重新判定执行轮次。
 
 Trace 查询通过 `MonitorConfig.TaskTrace` → `tasktrace.Options.Trace` 在构造时注入，签名为 `func(int) ([]core.TraceExecutionStep, error)`；未配置时接口返回 404。handler 负责 HTTP/JSON 适配，不拥有执行身份或存储查询。对应回归为 `TestExecutionTraceComposition` 和 `TestExecutionTraceLookup`。
 
-当前内置 Trace 查询来自文件：默认仅保留异常尝试，展示最新保留执行，不等于当前任务最新状态。框架不再挂载 SQL Trace 表。主动选择执行接口已预留，按钮本轮未实现。
+当前内置 Trace 查询来自文件：默认仅保留异常尝试，展示最新保留执行，不等于当前任务最新状态。框架不再挂载 SQL Trace 表。查询只接收任务 ID；后台没有主动选择执行或临时开启单条追踪的接口与按钮，追踪范围统一由 `crawler.trace.mode` 控制。
 
 任务写操作接口 `tasksource.TaskActions` 要求 `RetryTaskVersioned(ctx, id, reprocess, compensationVersion)`；HTTP 层先校验两个版本字段，再交给引擎执行，不提供无补偿版本的重投回退。
 

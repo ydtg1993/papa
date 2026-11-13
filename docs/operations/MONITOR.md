@@ -1,19 +1,19 @@
 # Papa 监控服务后台手册
 
-> 维护后台源码时，先看 [Admin 目录结构与职责细则](package_structure/ADMIN_STRUCTURE.md)，确定功能、状态和前后端资源归属。
+> 维护后台源码时，先看 [Admin 目录结构与职责细则](../package_structure/ADMIN_STRUCTURE.md)，确定功能、状态和前后端资源归属。
 
-任务表新增最近执行开始、最近执行结束、投递延迟（毫秒）和最早执行时间四个只读列。加急改变队列顺序，不绕过最早执行时间；字段含义及持久化边界见 [TASK_TIMING.md](TASK_TIMING.md)。
+任务表新增最近执行开始、最近执行结束、投递延迟（毫秒）和最早执行时间四个只读列。加急改变队列顺序，不绕过最早执行时间；字段含义及持久化边界见 [TASK_TIMING.md](../runtime/TASK_TIMING.md)。
 
 > 面向：按采集任务流、运行监控与报告、数据与资源、系统管理四类使用 OA 后台。
-> 配置项见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server` 段。
+> 配置项见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 `server` 段。
 
-页面归档下载用打开的根目录句柄约束实际读取，拒绝最终文件或父目录链接逃逸、拒绝非常规文件；根内合法文件仍可下载。归档根目录由宿主可信配置，浏览器仅提交相对路径，不是通用文件下载服务。日志与报告的已知凭据遮盖、原始证据边界见 [OBSERVABILITY.md](./OBSERVABILITY.md)「诊断输出的脱敏边界」。
+页面归档下载用打开的根目录句柄约束实际读取，拒绝最终文件或父目录链接逃逸、拒绝非常规文件；根内合法文件仍可下载。归档根目录由宿主可信配置，浏览器仅提交相对路径，不是通用文件下载服务。日志与报告的已知凭据遮盖、原始证据边界见 [OBSERVABILITY.md](OBSERVABILITY.md)「诊断输出的脱敏边界」。
 
 ---
 
 ## 0. 一句话
 
-「系统管理 → 浏览器诊断」同时提供启动诊断、身份档案版本、账号/会话绑定与配置一致性检查。改绑先待生效，再显式复验；版本冲突保留草稿。账号池成员可跳转到对应检查环境。新增鉴权接口 `/api/browser-identities` 的 GET 只读、POST 支持档案/绑定 CAS 与本地诊断；详见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。本地检查不加载凭据、不访问目标站，不能当作反爬通过证明。
+「系统管理 → 浏览器诊断」同时提供启动诊断、身份档案版本、账号/会话绑定与配置一致性检查。改绑先待生效，再显式复验；版本冲突保留草稿。账号池成员可跳转到对应检查环境。新增鉴权接口 `/api/browser-identities` 的 GET 只读、POST 支持档案/绑定 CAS 与本地诊断；详见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。本地检查不加载凭据、不访问目标站，不能当作反爬通过证明。
 
 框架内置一个 HTTP 监控后台（`server.enabled: true`），访问 `http://localhost:<port>/monitor`。一级导航固定四类，只展示当前类别的二级入口；默认打开「运行监控与报告 → 运行概览」。
 
@@ -24,13 +24,13 @@
 | 数据与资源 | 采集任务 `crawler_tasks` 的手动操作、账号管理、账号池；行内「追踪」弹窗查看执行记录，业务仍可注册专门页面 |
 | 系统管理 | 系统设置（包括业务注册的设置项）、访问令牌、浏览器诊断、操作日志（注册后显示） |
 
-跨分类的详情入口自动同步类别、二级选中项与标题；未保存页面仍可阻止离开。站点筛选只在支持站点范围的页面显示；运行报告/日志和系统管理不显示站点筛选；队列治理的阶段区支持筛选，后台治理区始终为全站范围。手机通过「菜单」展开四类，选中后收起，Esc 关闭并返回菜单按钮。这里的「采集任务流」是导航分类；其中的运行调度策略编辑页使用现有 TaskFlow API，见 [TASK_FLOW.md](TASK_FLOW.md)。
+跨分类的详情入口自动同步类别、二级选中项与标题；未保存页面仍可阻止离开。站点筛选只在支持站点范围的页面显示；运行报告/日志和系统管理不显示站点筛选；队列治理的阶段区支持筛选，后台治理区始终为全站范围。手机通过「菜单」展开四类，选中后收起，Esc 关闭并返回菜单按钮。这里的「采集任务流」是导航分类；其中的运行调度策略编辑页使用现有 TaskFlow API，见 [TASK_FLOW.md](../runtime/TASK_FLOW.md)。
 
 > **单实例边界**：阶段概览读取当前运行进程内存，任务数据读取数据库；单独启动的管理台不拥有另一个进程的 Worker 快照。Papa 不支持多实例协同部署。
 
 > **实时看板 ≠ 事后报告**：本后台回答「现在队列 / worker / 暂停是什么状态」；「这一轮跑得怎么样、
 > 失败怎么分组、退出后总结」由 `obs` 事件流 + `papa report` 产出（`report.md` / `report.json` /
-> `ai-brief.md` / `ai-brief.json`），见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
+> `ai-brief.md` / `ai-brief.json`）。离线 CLI 必须找到输入事件；事件目录不存在或没有匹配事件时明确报错，不生成空报告。在线信号报告与离线分析的区别见 [OBSERVABILITY.md](OBSERVABILITY.md)。
 
 内置后台不提供 Agent 候选、规则发布、规则周期批次、运行质量平台或模型设置。普通任务轮询、队列治理、账号运行时和字段校验仍保留；需要业务扩展时通过 `UsePage` / 设置注册接口接入。
 
@@ -105,12 +105,12 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 > 关停时会先把队列排空再关数据库。
 
 > 升级时表要自己建 —— 跑一次迁移（脚手架项目里 `make migrate` 与 `papa migrate` 等价，
-> 独立使用 CLI 时运行 `papa migrate`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 第 2 节。
+> 独立使用 CLI 时运行 `papa migrate`，见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 第 2 节。
 > 之后用 `papa token add` 给每个人建一把 —— 原来共用的 `auth_key` 请停用/删掉对应令牌。
 
 ## 2. 设置 API
 
-运行治理使用独立的版本化接口与“采集控制”页，不在系统设置中再维护一份同类编辑器。配置字段见 [CORE_CONFIG.md](CORE_CONFIG.md) 的 `runtime` 字典，完整流程见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+运行治理使用独立的版本化接口与“采集控制”页，不在系统设置中再维护一份同类编辑器。配置字段见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 `runtime` 字典，完整流程见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
 
 | 接口 | 读写与版本约定 |
 | --- | --- |
@@ -121,7 +121,7 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 | `POST /api/account-pools` | action=`save/delete/disable/check/verify/policy`；最多 64 KiB，携带池 revision 或成员 management.version；check 仅检查原状态，verify 允许恢复登录 |
 | `GET /api/accounts` | 适配器能力、账号资料与运行状态；`?process=...` 查询本人登录过程；未装配服务时明确返回 configured=false |
 | `POST /api/accounts` | draft/start/continue/confirm/cancel；新资料与登录过程有各自 revision，输入与凭据不进入操作日志 |
-| `POST /api/accounts/remote` | 当前操作者的受控登录画面与输入；不是原始 CDP 端点，详见 [账号接入](ACCOUNT_ONBOARDING.md) |
+| `POST /api/accounts/remote` | 当前操作者的受控登录画面与输入；不是原始 CDP 端点，详见 [账号接入](../accounts/ACCOUNT_ONBOARDING.md) |
 | `GET /api/account-compensation` | site/pool/account/limit 筛选关联失败任务；limit 1–200，仅预览，计数是本页值，账号关联限最近 8 次执行 |
 | `POST /api/account-compensation` | release 携带 id/version，仅解除人工条件；retry 携带 requests:[{id,version}]，逐项返回 submitted/error |
 | `GET /api/runtime-policy/history` | 最近 100 个已提交策略覆盖版本及当前 revision |
@@ -133,7 +133,7 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 
 “站点请求”页按站点展示实际请求速率/在途、间隔、远端冷却与等待原因，可调整请求限制、AutoThrottle、阶段有效并发/固定间隔与池默认值。实际请求统计按站点汇总，阶段统计仍是任务统计，不提供每阶段请求量分解。原 Go 随机 Delay 显示声明范围，未覆盖时不伪装为固定 0。
 
-“资源控制”始终为全局范围，显示采样来源/时间/有效性、任务执行与浏览器借用许可；存活实例不等于借用数。降额不取消在途任务，采样无效显示未知。浏览器请求仅覆盖当前受管 page target 的同源及显式 GovernanceOrigins，完整边界见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md) §2。
+“资源控制”始终为全局范围，显示采样来源/时间/有效性、任务执行与浏览器借用许可；存活实例不等于借用数。降额不取消在途任务，采样无效显示未知。浏览器请求仅覆盖当前受管 page target 的同源及显式 GovernanceOrigins，完整边界见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md) §2。
 
 “账号池”在“数据与资源”独立维护：save 创建/更新池配置及成员顺序，池启停修改 `config.disabled`；delete 提交 key 与池 revision；disable 提交 account、disabled 与成员管理版本；check/verify 提交 account 与成员管理版本，policy 另提交 policy 对象。停用成员立即阻止新使用；检查原登录态不调用 Login，恢复登录允许按业务适配器更新登录态。核验成功才恢复候选，不自动抢回当前账号。成员可查看健康事件、预算和关联任务，并预览后补偿。删除受运行策略与可再次执行任务的引用保护。成员验证可能实际访问站点；只读刷新不会。
 
@@ -166,7 +166,7 @@ papa token add --operator 张三 --note "运维机" -c configs/config.yaml
 
 > **例外**：「系统管理 → 访问令牌」操作页**不是**表格页。它要「新增」并把服务端生成的明文令牌交给操作人看一次，
 > 而表格组件的动作只回 `{"status":"ok"}`、不回数据（组件不给"动作返回数据"这个口子）。
-> 所以这一页是后台自带的原生模块：`/api/tokens` 三条接口 + `admin/tokenadmin/static/controller.js` 渲染的表格，前后端均归属 `admin/tokenadmin`。
+> 所以这一页是后台自带的原生模块：`/api/tokens` 及其启停、更新、删除接口 + `admin/tokenadmin/static/controller.js` 渲染的表格，前后端均归属 `admin/tokenadmin`。
 
 > **表格归属**：任务操作表 `task`（对应 `crawler_tasks`）归「数据与资源」，Trace 合入任务行弹窗；操作日志 `operation_log` 归「系统管理」。业务表格只有显式 `UseTables` 注册后才出现，业务专门页面用 `UsePage` 注册；框架不扫描业务数据库。
 
@@ -255,7 +255,7 @@ Actions: []oao.Action{
 内置「任务」表（`admin/tasksource`）是动作如何接线的参考实现，它带了八个动作（见下表）——
 写操作都走 `engine.Engine` 的条件更新，
 `url` 列用 `NewTab: true` 在新标签页打开。成功与失败都会调 `Config.OnAction`，papa 用它写操作日志
-（见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `server.operation_log`，不开就不记）。
+（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 `server.operation_log`，不开就不记）。
 
 数据源只需实现一个方法：
 
@@ -288,22 +288,23 @@ papa 的 `admin/gormsource` 把算子落成 SQL：`OpLike` → `LIKE '%值%'`（
 
 可选的站点表组件（`admin/sitesource`，宿主需自行注册）展示**站点快照** —— 数据来自内存（引擎按声明重建、
 暂停/恢复时整块回写；落点是 `crawler_config` 的 `sites` 键），**不走 SQL、也不单独一张表**。
-它**只读**（原来的「轮询任务 / 暂停·恢复自动轮询」随按站点队列一起移除了），筛选/搜索/排序/分页
+它**只读**，筛选/搜索/排序/分页
 在内存里做（站点只有几行）。列里的 `base_url` / `stage_count` 是按声明抄的：**改声明要重启**。
 
 内置的「任务」表（`admin/tasksource`）展示的就是 `crawler_tasks` 表，可作为完整示例。
-它带七个写操作加一个只读入口（组件超过 3 个动作时只平铺前两个，其余收进「更多 ▾」）：
+标准 App 接入七个基础写操作、一个“解除人工等待”写操作和一个只读追踪入口（组件超过 3 个动作时只平铺前两个，其余收进「更多 ▾」）：
 
 | 动作 | 位置 | 说明 |
 | --- | --- | --- |
-| **重投** | 平铺 | 重置为待处理并重新投递（队列满时与正常投递一致溢出到 DB 回灌），带 `reprocess` 版本条件防重复点击 |
-| **追踪** | 平铺 | 打开该任务的**步骤时间线**：按「第 N 次尝试」分段，每段列出步骤名、耗时、失败步（红）与非致命步（橙，`task.Trace.Warn`）的错误分类与信息、以及该步采集到的数据（可折叠）。引擎自己也会补两条：「任务失败」（失败尝试的原因）与「归档页面」（失败那一刻的页面，带「下载这一页」按钮）。浏览器捕获/等待失败时还有「捕获网络请求」（候选请求列表，见下）与「等待渲染」（超时/实等，见下） |
+| **重投** | 平铺 | 重置为待处理并重新投递（队列满时与正常投递一致溢出到 DB 回灌），同时校验 `reprocess` 与 `compensation_version`，并检查补偿资格 |
+| **追踪** | 平铺 | 打开该任务的**步骤时间线**：按「第 N 次尝试」分段，每段列出步骤名、耗时、失败步（红）与非致命步（橙）的错误分类与信息、以及该步采集到的数据（可折叠）。引擎自己也会补两条：「任务失败」（失败尝试的原因）与「归档页面」（失败那一刻的页面，带「下载这一页」按钮）。浏览器捕获/等待失败时还有「捕获网络请求」（候选请求列表，见下）与「等待渲染」（超时/实等，见下） |
 | **加急** | 更多 ▾ | 把该任务投一份到所属阶段的**快车道**，插到排队任务前面执行。见下方说明 |
 | **开轮询** | 更多 ▾ | 让该任务参与周期轮询：只改 `repeatable` 标记并把「下次轮询」置为现在，下一轮扫描才生效；已经开着再点 → 409 |
 | **停轮询** | 更多 ▾ | 停掉该任务的周期轮询，已经跑起来的这一轮不受影响；已经停着再点 → 409 |
-| **设轮询周期** | 更多 ▾ | 弹表单填周期（秒，0 = 用全局 `repeat_queue.interval`）；只改周期，不立刻重跑一次；带行快照版本守卫 |
-| **标失败** | 更多 ▾ | 只对**待处理**的行生效（外加**上一轮崩溃留下的孤儿行**：`processing` 且 `updated_at` 早于本次启动 —— 那种行没有 worker 在跑，而它是 `recover_queue` 关着时唯一的人工出口）（排队中才拦得住：worker 认领以 `status=待处理` 为条件，标了就取不走），必填原因写进任务的错误信息；「处理中」的行拒绝 → 409（它已被 worker 认领，标失败会被 worker 完成时无条件写回，不是终态） |
-| **删除** | 更多 ▾ | 二次确认；「处理中」的行拒绝删除 → 409（worker 稍后会对已删行写状态）。想让正在跑的任务停下用整站暂停，想重跑等它结束再用「重投」 |
+| **设轮询周期** | 更多 ▾ | 弹表单填周期（秒，0 = 用全局配置 `repeat_queue.interval`）；只改周期，不立刻重跑一次；带行快照版本守卫 |
+| **标失败** | 更多 ▾ | 只对**待处理**的行生效（外加**上一轮崩溃留下的孤儿行**：`processing` 且 `updated_at` 早于本次启动 —— 那种行没有 worker 在跑，而它是 `recover_queue` 关着时唯一的人工出口）（排队中才拦得住：worker 认领以 `status=待处理` 为条件，标了就取不走），必填原因写进任务的错误信息；「处理中」的行拒绝 → 409（当前执行拥有该轮认领与终态结算，后台不能替它改写终态） |
+| **解除人工等待** | 更多 ▾ | 使用行快照的 `compensation_version` 解除人工补偿条件；不立即重投，最早补偿时间和账号池就绪等条件仍须满足。自定义宿主只有实现 `ReleaseTaskCompensation` 才提供此动作 |
+| **删除** | 更多 ▾ | 二次确认；「处理中」的行拒绝删除 → 409（worker 稍后会对已删行写状态）。整站暂停只阻止新执行，在途任务自然结束；想重跑须等它结束再用「重投」 |
 
 写操作都是条件更新，业务错误经 `oao.Fail` 带状态码返回，成败都记入操作日志。
 
@@ -326,21 +327,21 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 （只记第一次尝试），点「追踪」就能看出这条曾经加急跑过。这条依赖 `crawler.trace.mode` 非 off，
 没开追踪时就只剩认领前后的 `urgent` 列可看。
 任务表的「加急」列（是/否）显示当前状态。业务侧想在提交时就加急，用 `papa.Task{..., Urgent: true}`
-（见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.2）。
+（见 [FETCHER_WRITING_GUIDE.md](../guides/FETCHER_WRITING_GUIDE.md) 1.2）。
 
 **关于「开 / 停轮询 / 设轮询周期」**：某条任务**要不要周期性重跑**由任务行上的 `repeatable` 列决定、
-**多久一次**由 `repeat_interval`（秒，0 = 用全局 `repeat_queue.interval`）决定 —— 粒度都是任务，不是阶段。
-阶段声明的 `RepeatLimit` 也约束后台总按钮“轮询任务”：强制执行只忽略周期，不忽略次数上限。达上限不会关闭 `repeatable`，再次“开轮询”不会重置计数。需要继续周期轮询时调整阶段上限；单条“重投”、恢复队列和错误队列不受该上限限制。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
+**多久一次**由 `repeat_interval`（秒，0 = 用全局配置 `repeat_queue.interval`）决定 —— 粒度都是任务，不是阶段。
+阶段声明的 `RepeatLimit` 也约束后台总按钮“轮询任务”：强制执行只忽略周期，不忽略次数上限。达上限不会关闭 `repeatable`，再次“开轮询”不会重置计数。需要继续周期轮询时调整阶段上限；单条“重投”、恢复队列和错误队列不受该上限限制。详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)。
 
 首次提交时由 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}` 播种，之后就用这三个动作改
 （业务里等价的入口是 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)`，
-见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节。任务表上有对应的三列：**轮询周期(秒) / 上次轮询 / 下次轮询** ——
+见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md) 第 3 节。任务表上有对应的三列：**轮询周期(秒) / 上次轮询 / 下次轮询** ——
 队列只按「下次轮询」到点投，改周期会连带重算它。
 三个动作都**只改标记**：下一轮扫描时才生效（开轮询会把"下次轮询"置为现在，所以它就是下一轮），
 **不会**顺手立刻重跑一次（想立刻跑请用「重投」）；已经开着再开、已经停着再停都返回 409
 （`repeatable` 这一列本身就是版本守卫，「设轮询周期」用的是行快照里的旧周期值，与 `urgent`/`重投` 同一思路）。
 「停轮询」也不打断已经跑起来的那一轮 —— 它跑完这次就没有下一次。
-注意**停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同 `site:stage:url` 再提交仍会被静默吞掉，
+注意**停轮询 ≠ 放开去重**：行还在（`success`/`failed`），相同任务身份再次提交仍受去重约束，
 要立刻重跑只能用「重投」。
 
 **关于「追踪」**：这个动作在服务端**不做事**，只回一句成功 —— 因为表格组件的动作成功时只能回
@@ -351,10 +352,10 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 
 抽屉里失败尝试的最后一条是**引擎补的**「任务失败」（错误分类 + 消息）—— handler 不必自己再上报一次；
 若这一次抓到过页面，前面还有一条「归档页面」，那一步带「下载这一页」按钮（`GET /api/task/page?file=`，
-回的是文件本身），拿下去对着真实页面改选择器最省事（配置见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `archive` 一节）。
+回的是文件本身），拿下去对着真实页面改选择器最省事（配置见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 `archive` 一节）。
 
 浏览器抓取的失败现场会多两步（`engine.CaptureRequest` / `FetchRenderedPageWith`，见
-[FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §5）：
+[FETCHER_WRITING_GUIDE.md](../guides/FETCHER_WRITING_GUIDE.md) §5）：
 
 - **`捕获网络请求`**（失败）：步骤头显示「超时 30s · 实等 30.2s」，展开后是**期间发出的请求样本**
   （`METHOD URL`，最多 20 条，总数在标题上）。用来区分「一个请求都没发」「发了但域名换了」
@@ -366,8 +367,8 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 「捕获/等待失败 → 归档页面（下载）→ 任务失败」。渲染判据是 data 里的键（`candidates` /
 `timeout_ms`），不是步骤名 —— 步骤名微调不会让展示静默失效。
 
-步骤追踪由 `crawler.trace.mode` 控制，默认 `errors`，全量为 `all`，关闭为 `off`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
-handler 侧的用法见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.3。
+步骤追踪由 `crawler.trace.mode` 控制，默认 `errors`，全量为 `all`，关闭为 `off`（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）。
+受管抓取入口与执行收尾自动记录步骤；业务只需传递任务 context。可选业务步骤的契约见 [FETCHER_WRITING_GUIDE.md](../guides/FETCHER_WRITING_GUIDE.md)。
 **未开启时点「追踪」不会白屏**，抽屉里会直接显示「步骤追踪未开启」。
 Trace 使用专用文件目录，无需建表。默认仅保留异常尝试，后台显示最新保留证据，不代表当前任务状态。旧 SQL 记录不再查询；目录、容量、七天清理配置见 CORE_CONFIG。不提供主动追踪按钮，统一通过配置选择三种模式。
 
@@ -474,7 +475,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 > `recover_queue` **不在这个面板上**：它只在进程启动那一刻跑一次，没有周期、没有积压可看，
 > 也就没有「立即执行一次」的意义。其公开方法仅供引擎启动恢复流程使用；不要把它接成运行期按钮或定时任务，以免恢复语义与正在执行的任务生命周期交叉。
-> 见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
+> 见 [RECOVER_QUEUE.md](../runtime/RECOVER_QUEUE.md)。
 
 | 列 | 含义 |
 | --- | --- |
@@ -511,7 +512,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 ```
 
 队列的参数（`enabled` / `worker_count` / `interval` / …）取自 `config.yaml` 的全局段
-（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
+（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）。
 
 `last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
 
@@ -563,10 +564,10 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 「运行监控与报告 → 运行报告」把
 `obs.report.dir`（默认 `./reports`）下的**历史运行报告**列出来，不用登服务器就能看产物原文、下载。
-报告由**定时任务**（`obs.report.interval`）、**进程退出**（`obs.report.on_exit`）或命令 `papa report` 写入，
+在线报告由**定时触发**（`obs.report.interval`）或**退出触发**（`obs.report.on_exit`）尽力写入，只聚合本进程收到的有限信号，来源为 `signals`、判定为 `unknown`。显式命令 `papa report generate` 另行执行离线事件/数据库分析。后台只读取已经生成的文件，不在查询时生成或对账。
 **一份报告 = 一个目录**
 （默认按本地日历日拆分：`<obs.report.dir>/<2006-01-02>/`，一份 = 一天；`--run` 例外，单份 `<obs.report.dir>/<run_id>/`），
-目录里固定四份产物（产物口径见 [OBSERVABILITY.md](./OBSERVABILITY.md)），头部与 JSON 里都带**生成时间（最近一次更新）**：
+目录里固定四份产物（产物口径见 [OBSERVABILITY.md](OBSERVABILITY.md)），头部与 JSON 里都带**报告模型的生成时间**；它不是文件实际写入完成时间，异步 writer 可能稍后才发布：
 
 | 文件 | 内容 |
 | --- | --- |
@@ -592,8 +593,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 空态两种：`obs.report.dir` 没配 → 页面提示「报告目录未配置」；配了但目录里还没有报告 →
 提示先跑一次 `papa report generate`（或启用 `obs.events.enabled` 及 `obs.report.on_exit` 尽力生成退出信号报告）。
 
-报告目录的保留期由 `obs.report.retention` 控制（默认 7 天，负数 = 永久保留）；过期目录是**生成报告时**
-清掉的（见 [OBSERVABILITY.md](./OBSERVABILITY.md)），后台这个页面只展示、不删除。
+报告目录的保留期由 `obs.report.retention` 控制（默认 7 天，负数 = 永久保留）。在线 writer 持有清理游标，每轮最多检查 128 项，只移除过期日期目录中的四份已知产物；离线 CLI 的清理条件见 [OBSERVABILITY.md](OBSERVABILITY.md)。后台这个页面只展示、不删除。
 
 接口（和其它后台接口一样过 IP 白名单 + 访问令牌，见 §1）：
 
@@ -619,8 +619,8 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 | 层 | 位置 | 语义 |
 | --- | --- | --- |
-| **取任务点** | 每个工作池绑的闸门 | **冻住**：worker 停在取任务之前，队列里已经躺着的那批也不动，在途任务跑完为止 |
-| **入队点** | `submitToStage` | **收口**：不再接新活，任务寄放到溢出表（溢出积压会涨），「恢复」时立刻灌回 |
+| **执行准入** | 工作池闸门与 stage handler | 暂停范围不启动新的业务 handler；启用驻留预算时，已排队引用可被取出并交回持久待执行积压，释放驻留容量；在途任务自然结束 |
+| **入队点** | 调度准入与 `submitToStage` | 暂停范围保留持久待执行任务，恢复后由有界补充按容量重新调度；不把全部数据库积压同时装入内存 |
 
 **两层各有一个粒度**（同一张信号表，只是 scope 不同）：
 
@@ -630,15 +630,14 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 - **阶段那一层**（`scope` + `stage`）= 只掐那一个阶段，别的照跑（"catalog 先别抓、让 detail 跑完"）。
   这是**接口**，框架不替业务决定界面长什么样 —— 见 §10 的"阶段级控制是接口，不是框架的界面"。
 
-**暂停不跨重启**：进程重启即恢复运行（起进程本身就是一次人工介入）。要长期停就**改声明** ——
-`SiteSpec.StartPaused: true` 让这一站每次启动都先闸住（入口任务照投、任务寄放在溢出表里），
+**人工暂停不跨重启；自动熔断保护会从持久控制状态恢复**，重启不是跳过自动验证的手段。需要每次启动都人工放行时，使用声明 ——
+`SiteSpec.StartPaused: true` 让这一站每次启动都先闸住（入口任务照投，持久任务留待后续调度），
 等你在后台「站点控制」卡上点「重试恢复」；声明期这一道是"每次启动重新闸上"，
 运行期在后台点的暂停/恢复不会被它改回去。也可以在部署层面停进程 ——
 但别指望运行期点一下「暂停」能撑过一次重启。
 
 **来源只有两种**（payload 里的 `source`）：`manual`（后台/业务手动）与 `breaker`（熔断自动触发，
-见下）。**熔断只是"自动往这张表里写一条的人"** —— 它自己数窗口内的终态失败、比阈值、发
-`AlertCritical`，停与不停、现场怎么写、铃铛怎么画都归暂停信号。
+见下）。熔断协调器统计已确认终态失败、持久保存保护状态与历史，并协调有界恢复验证；暂停信号负责执行准入和后台现场展示，二者通过明确接口协作。
 
 ### 暂停与告警都在右上角那只铃铛上
 
@@ -691,7 +690,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 分析保留 HTTP 状态码和数据库错误码，按阶段、错误类别与文本特征归并。浏览器启动、目录锁、访问权限、DNS、TLS、连接、超时、HTTP、页面解析和数据库错误提供通用排查建议；未识别错误标记原因待确认。所有原因均为待验证假设，不能仅凭 403 认定反爬或凭超时认定并发过高。
 
-升级后须先执行业务提供的显式迁移入口（或 `papa migrate`），建立 `crawler_breaker_incidents`；普通启动不会自动建表。此报告独立于 obs 事件开关，重启后仍可读取，包括最终恢复或需要人工处理的报告。后台默认展示本站最近 100 次事件；读取失败返回 503，不用空列表掩盖数据库错误。自动保护因探测失败或预算耗尽进入待人工处理状态时，启动恢复其约束；操作员主动暂停只在本进程有效，重启不恢复。旧版本只有进程内现场或 obs 事件时，不会补造新的持久事件。自行组装 Monitor 必须提供 `BreakerReports(ctx, site)`；旧 `BreakerIncidents` 回调已删除，不再维护兼容回退。
+升级后须先执行业务提供的显式迁移入口（或 `papa migrate`），建立 `crawler_breaker_incidents`；普通启动不会自动建表。此报告独立于 obs 事件开关，重启后仍可读取，包括最终恢复或需要人工处理的报告。后台默认展示本站最近 100 次事件；读取失败返回 503，不用空列表掩盖数据库错误。自动保护因探测失败或预算耗尽进入待人工处理状态时，启动恢复其约束；操作员主动暂停只在本进程有效，重启不恢复。未持久记录的事件不会补造。自行组装 Monitor 必须提供 `BreakerReports(ctx, site)`；当前契约不提供缺少该回调时的查询回退。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -757,10 +756,9 @@ SiteSpec{ Key: "example",
 
 引擎在 `ApplyRegisterStage`（HTTP 服务起来之前、投入口任务**之前**）据此下一道**整站暂停**：
 
-- 入口任务**照投**（阶段声明写了 `Entry: true` 的那些）—— 但它们、以及启动恢复与轮询队列捞回来的任务
-  全都在入队点折回溢出表（溢出积压会涨），**池子一个都不建**、worker 一条都没跑；
-- 后台点「重试恢复」（`ResumeSite`）才灌回，`wakeDrainNow` 立刻叫醒回灌循环，不等下一个 drain tick；
-- **暂停不跨重启**：每次启动都按声明重新闸上；运行期在后台点的那次恢复，不会被声明改回去。
+- 入口任务**照投**（阶段声明写了 `Entry: true` 的那些）；启动恢复、轮询及正常提交都受暂停准入约束。持久任务保留为数据库待执行积压，不启动业务 handler；阶段池是否已装配不代表任务已经执行。
+- 后台点「重试恢复」（`ResumeSite`）解除纯人工暂停后，唤醒有界数据库补充，按驻留容量、到期时间及其它准入条件逐批调度；若同时存在自动保护，则先走熔断恢复验证。
+- **人工暂停不跨重启**：每次启动都按 StartPaused 声明重新闸上；运行期的人工恢复不会被声明再次覆盖。自动熔断仍按持久控制状态恢复保护。
 
 > **别用入口开关表达"先别跑"**：`StageSpec.Entry` 只回答"这个阶段有没有入口任务"，
 > 它管不住这一站的其它阶段 —— 启动恢复（`recover_queue`）与周期轮询（`repeat_queue`）
@@ -905,7 +903,7 @@ Papa v4 依赖已发布的 oao v1.4.0，包含图表、动效与完整表格生�
 
 ## 运行调度策略
 
-开启 task_flow 后，「采集任务流」新增「运行调度策略」，按业务保存的运行 ID 查询。可分别调整各调度范围的广度/深度和并发上限，显式人工确认后应用到未执行任务；冲突保留编辑，刷新后重新决定。在途任务不中断，降低上限会等待旧任务收敛。该页只更新既有运行的调度策略，不创建任务，详见 [动态阶段调度](TASK_FLOW.md)。数据与资源仍只展示任务及其 Trace 弹窗，不增加独立表菜单。
+开启 task_flow 后，「采集任务流」新增「运行调度策略」，按业务保存的运行 ID 查询。可分别调整各调度范围的广度/深度和并发上限，显式人工确认后应用到未执行任务；冲突保留编辑，刷新后重新决定。在途任务不中断，降低上限会等待旧任务收敛。该页只更新既有运行的调度策略，不创建任务，详见 [动态阶段调度](../runtime/TASK_FLOW.md)。数据与资源仍只展示任务及其 Trace 弹窗，不增加独立表菜单。
 
 
 运行调度策略页沿用宿主的简约/经典与浅色/深色设置。输入运行 ID 后查询，尚未选择运行时显示引导；加载后再显示阶段策略与人工确认按钮。支持回车查询，空 ID 不发请求；窄屏控件改为单列，不改变策略确认和版本冲突规则。
@@ -914,7 +912,7 @@ Papa v4 依赖已发布的 oao v1.4.0，包含图表、动效与完整表格生�
 
 宿主可以在 `papa.Page` 中声明 `Owns: []string{"page:task-flow-policy"}`，把既有模块/自定义页归入该业务流程。被归属的目标不再生成独立导航按钮；原路由、鉴权和操作接口不变，业务页可提供有上下文的高级入口。直接访问目标时仍高亮所属流程。
 
-`Owns` 仅用于菜单归属，不是权限或安全控制。不设置时保留原导航；格式为 `module:<key>` 或 `page:<key>`，重复归属、自引用和循环在启动时拒绝。允许目标稍后注册。旧版前端忽略新增元数据，宿主升级应重新构建并刷新页面。
+`Owns` 仅用于菜单归属，不是权限或安全控制。不设置时保留原导航；格式为 `module:<key>` 或 `page:<key>`，重复归属、自引用和循环在启动时拒绝。允许目标稍后注册。部署时应使用当前 v4 配套的前端资源，重新构建后刷新页面。
 
 ## 令牌更新与浏览器诊断
 
@@ -926,16 +924,16 @@ Papa v4 依赖已发布的 oao v1.4.0，包含图表、动效与完整表格生�
 
 普通「重试恢复」不直接解除自动保护、不清空失败数；重新授予有界恢复预算，全部阶段重新验证，报告记录 `manual_retry`。探针尚未退出时返回未变更，需等其结束；不能靠反复点击堆叠探针。纯人工暂停仍可直接解除。
 
-「强制解除保护」在确认后调用 `POST /api/breaker/force-resume`，请求体必须为指定站点 `{"scope":"example"}`，不接受空 scope 或 stage。它跳过自动验证，保留计数与历史，可能因下一次失败立即再次暂停。返回 `mode: force`，操作日志使用 `force_resume`，不标记为健康恢复。自定义后台宿主接入 `MonitorConfig.ForceResumeBreaker` 和 `OnBreakerForceResume`，默认 App 已接线。原 `ResumeBreaker` 回调应使用新的 `ResumeSite` 安全语义。
+「强制解除保护」在确认后调用 `POST /api/breaker/force-resume`，请求体必须为指定站点 `{"scope":"example"}`，不接受空 scope 或 stage。它跳过自动验证，保留计数与历史，可能因下一次失败立即再次暂停。返回 `mode: force`，操作日志使用 `force_resume`，不标记为健康恢复。自定义后台宿主接入 `MonitorConfig.ForceResumeBreaker` 和 `OnBreakerForceResume`，默认 App 已接线。`ResumeBreaker` 回调对应 `ResumeSite`：纯人工暂停可解除，自动保护重新授予验证预算，不直接清除保护。
 
-报告中的「验证已中断」表示总预算到期或人工结束使阶段验证终止；晚返回结果不改变结论。obs 直接查询持久事件，持续暂停但当天没有新日志的事件仍显示；超过展示上限会明确提示，不静默遗漏。
+报告中的「验证已中断」表示总预算到期或人工结束使阶段验证终止；晚返回结果不改变结论。显式离线 `papa report generate` 可查询持久事件，持续暂停但当天没有新日志的事件仍可显示；超过展示上限会明确提示。在线 obs 只消费已收到的信号，不查库补齐保护状态。
 
-阶段表分别展示检查进度、验证方式与覆盖范围、验证结论、探针及真实任务成功次数。普通探针通过但没有真实任务的阶段仍显示「未验证」。只有显式声明完整只读覆盖且两次完整检查成功的阶段，才标记「完整只读验证通过」；其他阶段保持真实任务门槛。文本、JSON 和 obs 共用这些报告字段；阶段局部通过不等于整站已恢复。配置与业务责任见 [BREAKER.md](BREAKER.md#空闲阶段的完整只读验证)。
+阶段表分别展示检查进度、验证方式与覆盖范围、验证结论、探针及真实任务成功次数。普通探针通过但没有真实任务的阶段仍显示「未验证」。只有显式声明完整只读覆盖且两次完整检查成功的阶段，才标记「完整只读验证通过」；其他阶段保持真实任务门槛。文本、JSON 和 obs 共用这些报告字段；阶段局部通过不等于整站已恢复。配置与业务责任见 [BREAKER.md](../runtime/BREAKER.md#空闲阶段的完整只读验证)。
 
 
-长期自动保护显示下次小时复查时间和恢复周期。每次复查、样本重试、正常停止、中断发现和重启均有过程记录，时间线展示当时的覆盖范围与样本。`manual` 表示仍在保护并等待复查/人工处理，不代表结案；仅人工关闭或验证恢复后结案。当前弹窗展示最近 128 条，完整持久记录在框架数据「熔断运行历史」只读查询。obs 日报按当天范围读取追加历史及日初保护状态，不受后续重启或恢复覆盖。新增历史表需显式迁移。
+长期自动保护显示下次小时复查时间和恢复周期。每次复查、样本重试、正常停止、中断发现和重启均有过程记录，时间线展示当时的覆盖范围与样本。`manual` 表示仍在保护并等待复查/人工处理，不代表结案；仅人工关闭或验证恢复后结案。当前弹窗展示最近 128 条，追加持久历史可供显式离线报告查询；默认后台没有独立的“熔断运行历史”表格菜单。离线 obs 日报按当天范围读取追加历史及日初保护状态，不受后续重启或恢复覆盖。新增历史表需显式迁移。
 
-串行恢复验证会显示“选中串行验证样本 / 验证样本超时 / 样本执行已退出 / 重启中断样本验证”。超时阶段显示对应样本与未通过原因，其它样本成功不改变该结论。obs 日报超过10000条时展示不完整并将截止状态标为无法确认，不把截断位置当作最终状态；持久历史仍保留。
+串行恢复验证会显示“选中串行验证样本 / 验证样本超时 / 样本执行已退出 / 重启中断样本验证”。超时阶段显示对应样本与未通过原因，其它样本成功不改变该结论。离线 obs 日报查询超过 10000 条时展示不完整并将截止状态标为无法确认，不把截断位置当作最终状态；持久历史仍保留。
 
 
 未结算的串行验证失败会在熔断历史中显示“真实失败待落库确认”，后续追加结算重试、落库等待、重启接续和最终确认。待确认时不会提前增加失败统计或显示验证通过；确认后按原任务轮次幂等结算，计数快照保存前仍禁止继续验证。历史沿用每日追加记录，重启不覆盖原错误和等待过程。
@@ -943,9 +941,9 @@ Papa v4 依赖已发布的 oao v1.4.0，包含图表、动效与完整表格生�
 
 ## 后台功能模块维护
 
-内置后台按功能组织：`admin/accounts` 管理账号接入，`admin/accountpools` 管理池与补偿，`admin/runtimecontrol` 管理运行策略/历史/代理健康，`admin/diagnostics` 提供浏览器和身份诊断。每个功能的脚本在其 `static/` 内嵌入；后台外壳与公共资源仍在 `admin/server`。
+内置后台按功能组织：`admin/accounts` 管理账号接入，`admin/accountpools` 管理池与补偿，`admin/runtimecontrol` 管理运行策略/历史/代理健康，`admin/diagnostics` 提供浏览器和身份诊断。每个功能的脚本在其 `static/` 内嵌入；后台外壳与公共资源归 `admin/shell`，`admin/server` 负责公开入口、路由与组件装配。
 
-`internal/app` 负责注入服务和统一挂载鉴权，不承载页面脚本或策略事务。策略保存/核对属于 `internal/runtimecontrol`，浏览器执行/清理属于 `internal/browserdiagnostics`。新增接口遵循同一分工，详见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+`internal/app` 负责注入服务和统一挂载鉴权，不承载页面脚本或策略事务。策略保存/核对属于 `internal/runtimecontrol`，浏览器执行/清理属于 `internal/browserdiagnostics`。新增接口遵循同一分工，详见 [ARCHITECTURE.md](../architecture/ARCHITECTURE.md)。
 
 此次结构调整保留既有 `/api/*`、`/static/custom.js`、页面 key 与 `UsePage` / `UseRouter` 扩展方式；业务无需因文件位置变化迁移调用。
 
@@ -960,7 +958,7 @@ Papa v4 依赖已发布的 oao v1.4.0，包含图表、动效与完整表格生�
 
 ### 追踪抽屉的执行轮次
 
-任务追踪默认展示最新有记录执行的最后 500 步，按尝试和步骤排列；截断时显示提示。执行身份与页面归档一致，同次认领的重试共用，重投、轮询及恢复后的重新认领使用新身份。历史记录没有身份时明确显示未知轮次，按写入 ID 排列；不推断历史轮次。启用追踪的旧库升级须显式迁移增加 execution_id 列和索引，见 [配置手册](CORE_CONFIG.md)。
+任务追踪展示文件中最新保留执行的最后 500 步，按尝试和步骤排列；截断时显示提示。执行身份与页面归档一致，同次认领的重试共用，重投、轮询及恢复后的重新认领使用新身份。默认 `errors` 模式只保留异常尝试，所以最近保留执行不一定是任务最近一次执行。Trace 不建 SQL 表、不要求 execution_id 列迁移；文件目录、容量与保留期见 [配置手册](../configuration/CORE_CONFIG.md)。自定义查询未提供执行身份时，前端提示标识缺失，不推断轮次。
 
 在线 obs 报告只含已收到的有限信号，来源为 signals，判定 unknown；未采样字段不表示零或空闲。后台仅读取已有四份产物，不在 GET 中触发扫描、查库对账或报告生成。需要历史/数据库分析时显式运行 `papa report generate`。报告生成与归档超时不参与 Engine 排空或熔断恢复控制。
 

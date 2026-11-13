@@ -1,7 +1,7 @@
 # 根目录与基础包职责细则
 
 > 面向：维护公开入口、配置、跨包契约、数据库模型及仓库配套文件的开发者。
-> 总入口：[Papa 目录说明书](README.md)。规则见 [ARCHITECTURE.md](../ARCHITECTURE.md)，开发命令见 [DEVELOPMENT.md](../DEVELOPMENT.md)。
+> 总入口：[Papa 目录说明书](README.md)。规则见 [ARCHITECTURE.md](../architecture/ARCHITECTURE.md)，开发命令见 [DEVELOPMENT.md](../architecture/DEVELOPMENT.md)。
 
 ## 1. 范围与定位
 
@@ -30,7 +30,7 @@ papa/
 | --- | --- | --- |
 | `papa.go` | App/Option/Page/Router、声明和配置别名；New、RegisterSite/Sites/CheckSites；HTTP 会话、账号、请求头、URL/身份及下载覆盖入口 | 创建/启停归 internal/app，声明归 sitedecl，能力实现归各 pkg。根包不再维护登记表、锁或第二份配置缓存 |
 | `task.go` | Engine、Task、Fetcher、StageConfig、BreakerProbe 和任务流类型别名 | 执行协议仍由 engine 拥有；Fetcher 签名含 Engine，不为追求“叶子包”把强耦合实现移入 core |
-| `resources.go` | ReportInputLimits、DownloadLimits、DownloadBudget、SchedulerLimits 别名与 NewDownloadBudget | 预算实现归 obs/inputbudget、middleware、engine；根包不拥有状态，装配方式见 [资源手册](../RESOURCE_BUDGETS.md) |
+| `resources.go` | ReportInputLimits、DownloadLimits、DownloadBudget、SchedulerLimits 别名与 NewDownloadBudget | 预算实现归 obs/inputbudget、middleware、engine；根包不拥有状态，装配方式见 [资源手册](../configuration/RESOURCE_BUDGETS.md) |
 | `errors.go` | NoRetry、SiteChallenge、FailureCode、告警事件和 Notifier 的当前公开入口 | 错误分类和值协议归 core，通知传输归 pkg/notify；根包不实现重试、熔断或补偿调度 |
 
 类型别名暴露的是原类型，不能通过移动内部文件改变公开方法集。根包提供当前 v4 使用的函数和类型门面；添加门面不意味着其底层服务可以由根包复制状态。业务模块可以通过公开入口使用框架，不把真实站点声明、模型或固定验收目标加入框架根包。
@@ -48,7 +48,7 @@ papa/
 
 Config 是调用者持有的配置对象，含 map、指针等可变成员，不是自动并发安全的运行状态容器。组件接收所需配置或快照，并自行拥有运行状态。Load 在解码后直接调用 Validate：读取/解码失败返回 error，未知键或非法值则从 Load 内 panic；这两类失败须分别处理。普通启动不因为读到配置就执行迁移。
 
-允许使用 `pkg/breakerpolicy`、`pkg/egress`、`pkg/governance`、`pkg/middleware/proxy` 的声明/校验能力，不能反向依赖 App 或把 internal/breaker 的算法实现引入公开配置。具体配置字典见 [CORE_CONFIG.md](../CORE_CONFIG.md)。
+允许使用 `pkg/breakerpolicy`、`pkg/egress`、`pkg/governance`、`pkg/middleware/proxy` 的声明/校验能力，不能反向依赖 App 或把 internal/breaker 的算法实现引入公开配置。具体配置字典见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)。
 
 ## 4. core：跨包值与协议
 
@@ -90,21 +90,26 @@ models 描述框架拥有的表、字段、索引和局部 GORM hook。它依赖
 | `access_token.go` | AccessToken / crawler_access_token | 操作者、令牌哈希、启用状态；明文令牌不持久化，鉴权和管理归 admin/auth、tokenadmin |
 | `operation_log.go` | OperationLog / crawler_operation_log | 后台动作审计行；队列、写入和关闭归 admin/oplog |
 
-models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboarding 存储也拥有自己的结构与迁移入口，详见 [Pkg 分册](PKG_STRUCTURE.md)。不能仅扫描本目录推断完整迁移清单。业务模型继续放独立业务模块，经公开 WithModels/UseModels 接入显式迁移。
+models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboarding 存储也拥有自己的结构与迁移入口，详见 [Pkg 分册](PKG_STRUCTURE.md)。不能仅扫描本目录推断完整迁移清单。业务模型继续放独立业务模块，经公开 WithModels/UseModels 接入显式迁移。迁移前由 internal/database.CheckTaskSchema 拒绝旧任务结构与缺失当前身份的数据；通过后才调用当前模型的 GORM 迁移，不提供旧库转换。Trace 文件结构归 internal/tracestore，不属于 models 或 SQL 迁移清单。
 
 ## 6. docs 与仓库配套目录
 
 | 路径 | 所有者与职责 | 放置规则 |
 | --- | --- | --- |
-| `docs/embed.go` | docs 包的嵌入清单；顶层 Markdown + package_structure/*.md | 只声明可分发框架手册，复制/升级操作归 cmd/papa；不在这里读取业务项目或写盘 |
+| `docs/embed.go` | docs 包的分发白名单；总导航、六组主题手册及 package_structure | 明确列出当前目录，不嵌入 history；复制/升级归 cmd/papa，不在这里读取业务项目或写盘 |
 | `docs/package_structure/` | 当前目录、包与文件职责说明书 | 全部职责明细集中本目录；README 做索引，各分册维护所属包，App 并入 Internal |
 | `docs/README.md` | 使用手册阅读导航 | 指向说明书总入口；不再复制整份包文件职责表 |
-| `docs/ARCHITECTURE.md` | 长期依赖、状态、生命周期和变更约束 | 保留跨组件规则；具体目录和文件清单以说明书为准 |
-| `docs/ARCHITECTURE_DIAGRAMS.md` | 当前静态组件图、动态任务数据流与术语对应 | 说明运行关联和业务/框架/观测边界；不替代各分册的依赖、状态和锁契约 |
-| `docs/DEVELOPMENT.md` | 构建、测试、平台说明与开发流程 | 包结构章节提供说明书索引；不维护第二份逐文件职责清单 |
-| `docs/*.md` 其它手册 | 配置、CLI、账号、抓取、队列、身份、观测等使用契约 | 用法/配置项归相应手册；职责分册链接过去，避免抄一份参数字典 |
-| `docs/issues/` | 历史审查、实施记录、验证边界与变更记录 | 记录当时事实，不冒充当前目录；不随框架手册分发 |
-| `docs/superpowers/` | 设计与实施计划的历史材料 | 不作为另一套当前包说明，也不随框架手册分发 |
+| `docs/architecture/ARCHITECTURE.md` | 长期依赖、状态、生命周期和变更约束 | 保留跨组件规则；具体目录和文件清单以说明书为准 |
+| `docs/architecture/ARCHITECTURE_DIAGRAMS.md` | 当前静态组件图、动态任务数据流与术语对应 | 说明运行关联和业务/框架/观测边界；不替代各分册的依赖、状态和锁契约 |
+| `docs/architecture/DEVELOPMENT.md` | 构建、测试、平台说明与开发流程 | 包结构章节提供说明书索引；不维护第二份逐文件职责清单 |
+| `docs/configuration/` | 配置字典、显式迁移及资源预算 | 区分 YAML 配置与装配 API，不重复定义运行服务状态 |
+| `docs/guides/` | Fetcher、抓取工具和业务数据落地 | 面向接入；真实站点材料仍归独立业务模块 |
+| `docs/accounts/` | 账号认证、OA 接入与浏览器身份 | 凭据、候选发布与身份档案的用法及边界 |
+| `docs/runtime/` | 任务时序/任务流、三队列、熔断、治理和临时资源 | 执行、补偿、恢复、资源生命周期的操作契约 |
+| `docs/operations/` | CLI、监控后台和观测报告 | 区分运维操作、在线信号和离线分析 |
+| `docs/history/reviews/` | 历史审查、实施结果、验证边界和阶段画像 | 每份标注适用版本/阶段；记录当次事实，不随手册分发 |
+| `docs/history/designs/`、`docs/history/plans/` | 设计与实施计划历史 | 计划不等于当前能力，不随手册分发 |
+| `docs/history/changes.md` | 跨阶段变更记录 | 保留原条目与验证上下文，不替代当前使用契约 |
 | `go.mod` / `go.sum` | Papa /v4 模块和依赖约束/校验 | 框架模块独立验证使用 GOWORK=off，不能依赖父工作区掩盖缺失依赖 |
 | `Makefile` | build/cli/test/race/vet/clean 开发入口 | POSIX shell 语法；Windows 对应方式见开发手册，不将站点验收接线写入框架目标 |
 | `LICENSE.txt` | 项目许可证 | 不属于运行包或配置 |
@@ -123,7 +128,7 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 | core 的 identity/task_identity/request/errors 等测试 | 作用域身份、URL 语义、请求头副本、错误分类与补偿协议 |
 | models 的 crawler_task_index/column_default/utc_time 等测试 | 表字段与索引契约、零值/GORM 默认、UTC 序列化；模型通过不等于真实数据库迁移已验收 |
 | internal/database 与存储/Engine 的测试 | 显式迁移、SQL 方言、CAS、事务与真实库行为，由实际拥有者验证 |
-| cmd/papa 的 docs_structure_test.go | 手册新建/升级分发、导航、保留项目内容与目录层级 |
+| cmd/papa 的 docs_structure_test.go | 全部手册新建/升级分发、分类导航可达、分发内部链接、历史排除、保留项目内容与目录层级 |
 
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
 

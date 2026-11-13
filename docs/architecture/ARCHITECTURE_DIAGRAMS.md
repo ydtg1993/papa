@@ -1,7 +1,8 @@
 # Papa 架构图解：组件与任务数据流
 
 > 面向：需要先看懂框架整体，再定位具体代码或接入站点的开发者。
-> 配套：[目录说明书](package_structure/README.md) · [架构规则](ARCHITECTURE.md) · [Fetcher 契约](FETCHER_WRITING_GUIDE.md)。
+> 配套：[目录说明书](../package_structure/README.md) · [架构规则](ARCHITECTURE.md) · [Fetcher 契约](../guides/FETCHER_WRITING_GUIDE.md)。
+> 适用版本：当前工作区的独立 Papa v4；图中 Trace 为文件证据，在线 obs 为有界信号旁路，不能套用历史 SQL Trace 或统一监控中心方案。
 
 Papa 是**单实例、单进程内模块化**的爬虫框架。多个站点、多个阶段由进程内 worker 并发执行；下图不包含分布式 Master/Worker。独立业务模块是代码职责边界，可以与框架运行在同一个进程中。
 
@@ -128,10 +129,11 @@ flowchart TD
     Parse["业务解析与处理<br/>可产生结果、后续任务，或两者都不产生"]
     Item["业务结果处理<br/>校验、幂等写业务表 / 产物"]
     Child["构造后续 Task<br/>同阶段翻页或跨阶段派发"]
-    Return{"本次 handler 结果"}
+    Finish["每次尝试收尾<br/>结束计时与 Trace / 页面归档；异常见表"]
+    Return{"本次尝试结果分类"}
     Retry{"普通错误且允许再次尝试？"}
     Backoff["可取消退避<br/>一次性增加重试计数"]
-    Settle["结束计时与终态持久化<br/>仅状态操作重试 / 核对，受轮次与取消约束"]
+    Settle["任务终态持久化<br/>仅状态操作重试 / 核对，受轮次与取消约束"]
     Uncertain["中止当前执行路径<br/>未确认状态保留依据；不发已完成信号"]
     Cancel["取消 / 关停中断<br/>按执行阶段释放认领或保留未确认"]
     Recover["启用启动恢复时<br/>按条件处理上次运行遗留 pending / processing"]
@@ -151,20 +153,22 @@ flowchart TD
     Attempt -->|已确认| Fetch
     Attempt -->|持久化未确认| Uncertain
     Fetch -->|获取成功| Parse
-    Fetch -->|出错| Return
+    Fetch -->|出错| Finish
     Parse -->|按需产出 Item| Item
-    Item -->|写入结果| Return
+    Item -->|写入结果| Finish
     Parse -->|按需生成新请求| Child
     Child --> Submit
-    Child -->|提交结果由 handler 检查| Return
-    Parse -->|解析出错或无需额外产出| Return
+    Child -->|提交结果由 handler 检查| Finish
+    Parse -->|解析出错或无需额外产出| Finish
+    Finish -->|计时已确认，证据尽力写入| Return
+    Finish -->|计时未确认，特殊样本见表| Uncertain
     Return -->|成功| Settle
     Return -->|错误| Retry
     Retry -->|是| Backoff
     Backoff -->|计数已确认，仅重新确认开始计时| Attempt
     Backoff -->|计数写入错误或回执不明| Uncertain
     Retry -->|不可重试或次数耗尽| Settle
-    Return -->|执行 ctx 已取消，特殊结算见表| Cancel
+    Return -->|ctx 已取消且业务未成功，特殊结算见表| Cancel
     Backoff -->|取消| Cancel
     Cancel -->|释放为 pending 后，后续准入允许时| Pending
     Cancel -->|仍为遗留 processing 时，需后续启动| Recover
@@ -179,7 +183,7 @@ flowchart TD
 ### 阅读时要守住的四个区别
 
 1. **业务结果与任务终态是两件事。** Item 写入和框架终态不是一个自动跨表事务；进程可能在业务提交后、任务终态确认前退出，业务写入必须幂等。`FetchHandler` 返回成功后，终态写入重试不会再次调用业务 handler。
-2. **产出不是自动分发协议。** 图中 Item / 新 Task 是业务可选分支，不是互斥选择，也不代表后台异步执行。`Child → Submit` 是子任务进入同一提交路径，`Child → Return` 是当前 handler 处理提交返回值，不是自动分叉或自动等待子任务。子任务可能先于父任务终态执行，顺序约束须由任务流/业务契约保证。handler 自己检查解析、写入和提交结果，再返回 `nil` 或 `error`；Papa 不解释 `yield Item/Request`。提交失败/去重不会无条件入队；批量提交报错也不能推定整批回滚。
+2. **产出不是自动分发协议。** 图中 Item / 新 Task 是业务可选分支，不是互斥选择，也不代表后台异步执行。`Child → Submit` 是子任务进入同一提交路径，`Child → Finish` 是当前 handler 处理提交返回值后进入本次尝试收尾，不是自动分叉或自动等待子任务。子任务可能先于父任务终态执行，顺序约束须由任务流/业务契约保证。handler 自己检查解析、写入和提交结果，再返回 `nil` 或 `error`；Papa 不解释 `yield Item/Request`。提交失败/去重不会无条件入队；批量提交报错也不能推定整批回滚。
 3. **取消不等于普通失败重试。** 认领前已取消就不执行 handler；已经成功的业务会在有限窗口内确认计时与终态。未完成、未确认的状态要保留恢复依据。关停排空以实际在途工作退出为准，超时不得提前销毁共享依赖；图中的恢复边是后续启动/治理行为，不是关停时立即重跑。
 4. **重试、重投、轮询不同。** 退避重试属于本次认领内的 handler 尝试；错误队列重投和周期轮询须先完成各自持久化条件转换、再入调度。重复提交、任务流门槛、熔断保护可能阻止立即执行；不能把图中的回环理解成无条件重复抓取。
 
@@ -208,14 +212,14 @@ Trace/页面归档是尝试 `defer` 中执行的独立证据写入路径，**不
 
 | 图中的职责 | 进一步阅读 |
 | --- | --- |
-| App 装配、启动失败清理与关停排空 | [Internal 分册](package_structure/INTERNAL_STRUCTURE.md) |
-| 提交、Scheduler、worker 协调、认领与终态 | [Engine 分册](package_structure/ENGINE_STRUCTURE.md) |
-| Spider / Fetcher、入口与后续 Task | [Fetcher 手册](FETCHER_WRITING_GUIDE.md) |
-| 业务 Pipeline / Item 落地 | [数据落地](DATA_LANDING_GUIDE.md)、[采集工具](CRAWL_TOOLKIT.md) |
-| HTTP、浏览器、下载与资源组件 | [Pkg 分册](package_structure/PKG_STRUCTURE.md)、[资源预算](RESOURCE_BUDGETS.md) |
-| 重投、启动恢复与周期轮询 | [错误队列](ERROR_QUEUE.md)、[恢复队列](RECOVER_QUEUE.md)、[轮询队列](REPEAT_QUEUE.md) |
-| 任务流门槛、熔断与运行治理 | [任务流](TASK_FLOW.md)、[熔断](BREAKER.md)、[运行治理](RUNTIME_CONTROL.md) |
-| 观测信号、离线分析及报告产物 | [Obs 分册](package_structure/OBS_STRUCTURE.md)、[观测手册](OBSERVABILITY.md) |
-| Admin 窄接口与前后端功能归属 | [Admin 分册](package_structure/ADMIN_STRUCTURE.md) |
+| App 装配、启动失败清理与关停排空 | [Internal 分册](../package_structure/INTERNAL_STRUCTURE.md) |
+| 提交、Scheduler、worker 协调、认领与终态 | [Engine 分册](../package_structure/ENGINE_STRUCTURE.md) |
+| Spider / Fetcher、入口与后续 Task | [Fetcher 手册](../guides/FETCHER_WRITING_GUIDE.md) |
+| 业务 Pipeline / Item 落地 | [数据落地](../guides/DATA_LANDING_GUIDE.md)、[采集工具](../guides/CRAWL_TOOLKIT.md) |
+| HTTP、浏览器、下载与资源组件 | [Pkg 分册](../package_structure/PKG_STRUCTURE.md)、[资源预算](../configuration/RESOURCE_BUDGETS.md) |
+| 重投、启动恢复与周期轮询 | [错误队列](../runtime/ERROR_QUEUE.md)、[恢复队列](../runtime/RECOVER_QUEUE.md)、[轮询队列](../runtime/REPEAT_QUEUE.md) |
+| 任务流门槛、熔断与运行治理 | [任务流](../runtime/TASK_FLOW.md)、[熔断](../runtime/BREAKER.md)、[运行治理](../runtime/RUNTIME_CONTROL.md) |
+| 观测信号、离线分析及报告产物 | [Obs 分册](../package_structure/OBS_STRUCTURE.md)、[观测手册](../operations/OBSERVABILITY.md) |
+| Admin 窄接口与前后端功能归属 | [Admin 分册](../package_structure/ADMIN_STRUCTURE.md) |
 
 修改组件职责、任务准入/结算路径或观测边界时，应同时检查这两张图与对应分册；不能只改目录树，也不能把设计中的组件画成当前已实现能力。

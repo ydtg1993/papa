@@ -1,14 +1,14 @@
 # Papa Fetcher 书写手册
 
-`Task.Delay/NotBefore` 已持久化，重复提交不会推迟既有排期；完整规则、最近执行记录和迁移要求见 [TASK_TIMING.md](TASK_TIMING.md)。
+`Task.Delay/NotBefore` 已持久化，重复提交不会推迟既有排期；完整规则、最近执行记录和迁移要求见 [TASK_TIMING.md](../runtime/TASK_TIMING.md)。
 
-浏览器稳定身份、匿名 `session_key` 的业务所有权、`PageOptions.Identity` 和网站挑战错误见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。账号受管入口自动固定身份；匿名回调取得冻结快照后显式传入页面选项。身份不改变原有 URL 去重，不自动修改普通 HTTP 的头/TLS。`CaptureRequest` 的早返回不等于响应已验证，trace 的 `response_observed` 仅说明是否观察到主文档响应。
+浏览器稳定身份、匿名 `session_key` 的业务所有权、`PageOptions.Identity` 和网站挑战错误见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。账号受管入口自动固定身份；匿名回调取得冻结快照后显式传入页面选项。浏览器身份不参与任务的 ResourceID/规范 URL 去重，不自动修改普通 HTTP 的头/TLS。`CaptureRequest` 的早返回不等于响应已验证，trace 的 `response_observed` 仅说明是否观察到主文档响应。
 
 > 面向人群：要把一个新目标站点接入 Papa，让 AI 帮你写抓取逻辑的你。
 >
 > 这份手册回答一件事：**给定一个目标网站，如何把它变成 Papa 里能跑起来的 fetcher**。
 >
-> 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
+> 抓取结果如何落库、怎么生成 model，见 [DATA_LANDING_GUIDE.md](DATA_LANDING_GUIDE.md)。
 
 ---
 
@@ -49,11 +49,9 @@ type Fetcher interface {
   // site = 本站声明快照（SiteSpec → core.Site）：BaseURL / Headers 都在里面
   func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) { /* engine.SubmitTask(...) */ }
   ```
-  曾经还有 `NeedsFiledown()` / `NeedsM3U8()` 两个"声明要用下载器"的接口，已随下载器全局配置面一起删除 ——
-  框架一定按 `DefaultConfig()` 备好下载器基座，"声明了却没接线"在结构上不可能发生，那两条校验成了永不触发的死代码。
-  老 fetcher 上若还留着这两个方法，它们只是普通方法、不会再被调用（删不删都行）。
+  下载器基座由框架按 `DefaultConfig()` 初始化，无需 Fetcher 声明下载器依赖；站点/阶段通过 `M3U8` / `FileDown` 覆盖配置。
 - `FetchHandler` 返回 `nil` → 引擎把任务标记为 `success`；返回普通 `error` → 引擎按该阶段声明里的 `Retry.MaxAttempts` / `Retry.Backoff`（见 7.2）自动重试，最终失败标记为 `failed`。
-- 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎**不重试**，直接把任务标 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类重试无意义的失败。
+- 返回 `papa.WrapNoRetry(err)` 或 `papa.WrapNoRetryKind(kind, err)` → 引擎停止当前认领内的立即重试，正常结算为 `failed` 并触发告警，适合「结构错误 / 404 / 访问受限」这类立即重试无意义的失败。它不禁止后续错误补偿；永久终止、人工或时间门控使用 [错误队列手册](../runtime/ERROR_QUEUE.md) 的补偿策略。
 - 用 `engine.FetchHTML` 抓静态页时，**判失败原因别看错误文本**：非 2xx 是 `*htmlfetch.StatusError`（`htmlfetch.StatusCode(err)` 直接取码），响应体超 `html.max_body_size` 是 `*htmlfetch.BodyTooLargeError`。文本匹配会误伤 —— 把 `max_body_size` 配成 `4040000` 时，"html response exceeds 4040000 bytes" 里就带着 `404`，一个该重试的错误会被判成"不可重试的 not_found"。
   ```go
   if code, ok := htmlfetch.StatusCode(err); ok && (code == 404 || code == 410) {
@@ -61,23 +59,28 @@ type Fetcher interface {
   }
   ```
 - 任务状态由引擎自动维护，fetcher 不直接修改状态；你只负责提取结果并写库。
-- **认领与终态必须确认落库**：认领数据库错误时不执行 Fetcher；状态操作以 100ms 起步、最多 2s 间隔退避重试，等待可取消并占用当前 worker 形成背压。业务完成后只重试终态写入，不重跑业务；确认终态前不发送完成事件。取消或认领回执不明确的任务计入关停未完成统计，需依靠后续恢复处理。这不提供跨进程租约或业务 exactly-once，进程崩溃后的恢复仍要求业务写入幂等。
+- **认领与终态必须确认落库**：认领数据库错误时不执行 Fetcher；状态操作以 100ms 起步、最多 2s 间隔退避重试，等待可取消并占用当前 worker 形成背压，行消失或版本改变时退出。业务完成后只重试计时与终态写入，不重跑业务；确认终态前不发送完成事件。业务成功遇取消时，这两个写入各有最多 2 秒的独立确认窗口，仍未确认的责任计入关停未完成统计。retry 加一属于非幂等写入，只执行一次，回执不明不能循环加法或继续 handler。取消失败及熔断样本真实失败的区别见 [架构图解](../architecture/ARCHITECTURE_DIAGRAMS.md)；进程崩溃恢复仍要求业务写入幂等。
 - **日志由框架兜底**：`FetchHandler` 返回的 error 会由引擎结构化记入日志并触发告警（`stage/task_id/url/retry/kind`），你**不需要**再自己拼日志。同样，`engine.SubmitTask` / `SubmitTasks` 的提交类错误（非法 stage、入库失败、入队失败）框架也会自动记录——你只需在返回值上做控制流判断（要不要继续、要不要 abort），不用再记一遍。
 
 ### 1.2 Task 结构
 
 ```go
 type Task struct {
-    ID             int               // 数据库记录 ID，写结果时用它定位
+    ID             int               // 框架任务记录 ID；业务结果用 Meta 中的业务键定位
     PID            int               // 父任务 ID，派发子任务时用它关联
     URL            string            // 当前任务要处理的 URL
     Retry          int
+    Repeat         int               // 只读：认领后的轮询轮次
     Stage          string
+    Site           string            // 必填：所属站点 Key
     AccountPool    string            // 所属站点内账号池；持久化，去重键不包含它
     Repeatable     bool
+    RepeatInterval time.Duration     // 首次提交播种，0 使用全局周期
     Meta           map[string]string // 业务键（如 series_id/episode_id），与 URL 解耦
-    ResourceID string               // 稳定业务ID；空则按规范URL去重
+    ResourceID     string            // 稳定业务 ID；空则按规范 URL 去重
     NotBefore      time.Time         // 延迟投递：最早可执行时间
+    LastStartedAt  *time.Time        // 只读：最近 Handler 开始记录
+    LastFinishedAt *time.Time        // 只读：最近 Handler 结束记录
     Delay          time.Duration     // 延迟投递：相对现在的延迟
     Urgent         bool              // 加急：投到所属阶段的快车道，插到排队任务前面
     Trace          *Trace            // 本次执行的步骤记录器，由引擎挂上；关闭时是 nil（调用安全）
@@ -86,16 +89,16 @@ type Task struct {
 
 - `Meta` 承载业务键（`series_id`/`episode_id` 等），**不要**再把它们拼进 URL 或用 `hg2:series:123` 之类的 scheme；handler 里直接读 `task.Meta["series_id"]`。
   **它会随行落库**（`crawler_tasks.meta`，json 列）：恢复队列（进程重启）、轮询队列、错误队列重投、后台「重投 / 加急」这几条「从行重建任务」的路都会把它读回来，handler 不必再自己按 URL 回查业务表。
-  两边不一致时以**这一列**为准 —— 提交时带了非空 `Meta` 就刷新它，带空 `Meta` 的提交不动它（重投路径自己就是照着库里那份读的）。
+  重投按持久列还原。首次提交保存 Meta；既有 pending 任务进入投递准备时，非空 Meta 可通过条件更新刷新，空 Meta 不覆盖。重复提交已完成或正在处理的任务不是通用业务键修改接口，去重命中不能作为 Meta 已更新的承诺。
   它与 `ResourceID` 是两件事，别互相替代：后者只保证「同一个任务不重复投递」，前者回答「这条任务是哪条业务行」。
 - `ResourceID` 是站点和阶段内的稳定资源 ID；留空使用规范 URL。框架统一计算版本化身份的 SHA-256。不再接受旧的 IdempotencyKey 字段。
   唯一性由**数据库**兜底：唯一索引为 `(site, stage, identity_hash)`，`identity_hash` 是版本化站点、阶段、身份类型和值的 SHA-256；ResourceID 和 URL 使用不同身份类型，所有任务都生成非空哈希。同一站点、阶段与身份并发提交时也只保留一行。
-- `NotBefore` / `Delay` 实现延迟投递：任务到点才入队，不空占 worker（反爬要随机间隔时设 `Delay` 即可，别在 handler 里 `time.Sleep`）。
-- `AccountPool` 非空时使用同站命名池；空值在首次提交时按阶段/站点运行策略解析。既有任务保持已保存归属，重复提交指定其他池返回冲突。账号失效使本次尝试结束并等待以后补偿，不能在 handler 内自行换号重放。见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md) §7。
+- `NotBefore` / `Delay` 实现首次延迟投递：不在 worker 中空等，到期仍须通过数据库 UTC 时间认领检查。它不会每轮重施；阶段执行间隔使用 `StageSpec.Delay`，后续请求节奏使用请求治理，别用 handler 内 `time.Sleep` 代替。
+- `AccountPool` 非空时使用同站命名池；空值在首次提交时按阶段/站点运行策略解析。既有任务保持已保存归属，重复提交指定其他池返回冲突。账号失效使本次尝试结束并等待以后补偿，不能在 handler 内自行换号重放。见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md) §7。
 - `Repeat` 只读轮次计数：首次可轮询投递初始化为 1，轮询队列开启下一轮时递增；重复提交、回灌和启动恢复不新增轮次。handler 读取的是认领后校准的数据库轮次，不是成功次数或提交 API 调用次数；错误重投/后台重试保持原轮次。禁止用赋值方式重置数据库计数。
-- `StageSpec.RepeatLimit` 可对某站某阶段设置轮询上限，例如 detail 设 30、catalog 保持 0（不限）。`repeat >= 30` 后仅 repeat_queue 停止重投，恢复/错误队列和后台单条重投仍可用。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
-- `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 用全局 `repeat_queue.interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) 第 3 节）。
-- `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面。适合"怀疑某条有问题、想单独跑一遍看着它跑"的探测任务（`&papa.Task{URL: u, Stage: "detail", Urgent: true}`）。注意它只省**排队**时间 —— 该阶段 worker 全在忙的时候，插队也快不了；worker 认领后 `urgent` 列自动归零，是一次性的。
+- `StageSpec.RepeatLimit` 可对某站某阶段设置轮询上限，例如 detail 设 30、catalog 保持 0（不限）。`repeat >= 30` 后仅 repeat_queue 停止重投，恢复/错误队列和后台单条重投仍可用。详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)。
+- `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 用全局 `repeat_queue.interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md) 第 3 节）。
+- `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面（`&papa.Task{URL: u, Stage: "detail", Site: task.Site, Urgent: true}`）。它只改变排队优先级，不突破去重、NotBefore、任务流或熔断门控；重跑既有完成任务应使用后台重投。该阶段 worker 全在忙时仍需等待；worker 认领后 `urgent` 列自动归零，是一次性的。
 - `Trace` 是**本次执行的步骤记录器**，由引擎在调用 `FetchHandler` 前挂上（见 1.3）。你只管调它的方法，不用判空。
 
 ### 1.3 步骤追踪（`task.Trace`）
@@ -132,7 +135,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 手动追踪 API 已删除，不维护手动选择状态，也不提供主动追踪按钮。需要完整记录时设置 `crawler.trace.mode: all`。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **模式配置**：`crawler.trace.mode` 默认为 `errors`；`all` 保留正常成功，`off` 关闭。关闭时 `task.Trace` 为 nil，方法调用安全，无需判空。`crawler.trace.retention` 默认 7 天，按记录时间清理。
-- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断。handler panic 时也会按保留模式尝试把此前缓冲步骤写入 Trace 文件；写盘失败不等于证据已保存。当前 Trace 不落数据库，不需要 Trace 表迁移。Trace 与页面归档在尝试收尾执行，不经过在线 obs 异步队列，不能套用 obs 的收尾等待预算；运行关系见 [架构图解](ARCHITECTURE_DIAGRAMS.md)。
+- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断。handler panic 时也会按保留模式尝试把此前缓冲步骤写入 Trace 文件；写盘失败不等于证据已保存。当前 Trace 不落数据库，不需要 Trace 表迁移。Trace 与页面归档在尝试收尾执行，不经过在线 obs 异步队列，不能套用 obs 的收尾等待预算；运行关系见 [架构图解](../architecture/ARCHITECTURE_DIAGRAMS.md)。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
 - **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。
 
@@ -168,7 +171,7 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 **运行治理与账号身份**：任务启用池归属后，`FetchHTTP` / `FetchHTML` / `FetchIncremental`、标准 Render 与 Capture 入口绑定当前尝试账号。增量缓存按账号隔离，不能把旧账号的条件请求表示交给新账号复用。不要另取底层匿名客户端绕过绑定；受管请求必须继续传递原 ctx。filedown/M3U8 的请求预算通过 ctx 继承，但下载选项中的 Cookie/Headers/固定代理仍须按既有 API 显式传入，不自动导出账号凭据。
 
-浏览器预算针对当前受管 page target：第一篇主文档同源及 `PageOptions.GovernanceOrigins`，含该范围导航/XHR/子资源；不覆盖新 popup、独立 worker、原始 Rod page 或业务覆盖 Fetch 拦截器后的请求。第三方 origin 不盲目计入目标站延迟。Get/GetDirect 及回调包装的浏览器借用均受资源许可约束，物理池容量不热改。详见 [RUNTIME_CONTROL.md](RUNTIME_CONTROL.md)。
+浏览器预算针对当前受管 page target：第一篇主文档同源及 `PageOptions.GovernanceOrigins`，含该范围导航/XHR/子资源；不覆盖新 popup、独立 worker、原始 Rod page 或业务覆盖 Fetch 拦截器后的请求。第三方 origin 不盲目计入目标站延迟。Get/GetDirect 及回调包装的浏览器借用均受资源许可约束，物理池容量不热改。详见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
 
 使用代理管理器的低层 API 时，优先 `Acquire(ctx)` / `AcquireURL(ctx, fixedURL)`，完成后 `ReportHTTP(status, err)` 并 `defer Release()`；反馈与释放幂等。需要代理时必须处理 `ErrUnavailable`，不能将 `Next()` 的空串当直连理由。账号固定代理与已创建浏览器出口不能在途替换。
 
@@ -183,20 +186,21 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 ```go
 // internal/models/ 里定义业务表（建表走 papa migrate，模型登记在 models.Models()）
 type Series struct {
-    ID        uint64 `gorm:"primaryKey"`
-    SourceKey string `gorm:"type:varchar(191);uniqueIndex;comment:站点内稳定标识"`
-    Title     string
-    CoverURL  string
+    ID        uint64 `gorm:"primaryKey;comment:业务主键"`
+    Site      string `gorm:"type:varchar(128);not null;uniqueIndex:ux_series_site_key,priority:1;comment:站点 Key"`
+    SourceKey string `gorm:"type:varchar(191);not null;uniqueIndex:ux_series_site_key,priority:2;comment:站点内稳定标识"`
+    Title     string `gorm:"comment:标题"`
+    CoverURL  string `gorm:"comment:封面 URL"`
 }
 
 // fetcher 里写：engine.Upsert 冲突更新并回填主键（不用自己拼 ON DUPLICATE KEY）
-record := &models.Series{SourceKey: key, Title: detail.Title, CoverURL: detail.CoverURL}
-if err := engine.Upsert(record, []string{"source_key"}, []string{"title", "cover_url"}); err != nil {
+record := &models.Series{Site: task.Site, SourceKey: key, Title: detail.Title, CoverURL: detail.CoverURL}
+if err := engine.Upsert(record, []string{"site", "source_key"}, []string{"title", "cover_url"}); err != nil {
     return err
 }
 ```
 
-`engine.Upsert` 与 `engine.GetDB()` 是这一层仅有的两个入口（见 §9 速查）。完整的落地策略（怎么选表、怎么定唯一键、回写与并发怎么写）见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
+`engine.Upsert` 与 `engine.GetDB()` 是这一层仅有的两个入口（见 §9 速查）。完整的落地策略（怎么选表、怎么定唯一键、回写与并发怎么写）见 [DATA_LANDING_GUIDE.md](DATA_LANDING_GUIDE.md)。
 
 ### 1.6 派发子任务（阶段串联）
 
@@ -219,15 +223,15 @@ err := engine.SubmitTask(&papa.Task{
 URL 默认规范化主机大小写、默认端口和空路径并去掉 fragment，保留 origin、转义路径及原始查询串顺序。不同域名不默认合并；需要换域名身份时业务应显式提供稳定 ResourceID。单条、批量提交和重启恢复使用同一身份规则。
 
 
-**延迟投递**：episode 这类要反爬随机间隔的任务，设 `Delay`（或 `NotBefore`），引擎到点才入队，不空占 worker：
+**首次延迟投递**：需要将新 episode 任务推迟执行时，设 `Delay`（或 `NotBefore`），引擎按排期调度，不空占 worker。这不是多个任务之间的严格请求间隔：
 
 ```go
-engine.SubmitTask(&papa.Task{
+if err := engine.SubmitTask(&papa.Task{
     URL:   episodeURL,
     Stage: "episode",
     Site:  task.Site, // 必填（同 §1.6）
     Delay: time.Duration(10+rand.Intn(21)) * time.Second, // 10–30s 随机
-})
+}); err != nil { return err }
 ```
 
 **批量派发**：一次要投 N 个 episode 时用 `SubmitTasks`（批量入库，比循环 N 次 `SubmitTask` 更快）：
@@ -239,9 +243,9 @@ engine.SubmitTask(&papa.Task{
 ```go
 var tasks []*papa.Task
 for _, ep := range episodes {
-    tasks = append(tasks, &papa.Task{PID: task.ID, URL: ep.URL, Stage: "episode"})
+    tasks = append(tasks, &papa.Task{PID: task.ID, URL: ep.URL, Stage: "episode", Site: task.Site})
 }
-engine.SubmitTasks(tasks)
+if err := engine.SubmitTasks(tasks); err != nil { return err }
 ```
 
 ---
@@ -381,7 +385,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
 5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`internal/sites/<站名>.go` 的 `Stages`），才为通过校验的链接调用 `engine.SubmitTask`。
 
-> **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
+> **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）之后，
 > `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
 > `{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.html`，并在后台「追踪」里多一条 `归档页面` 步骤指向它。
 > **handler 一行代码都不用改** —— 排查"选择器为什么没匹配上"时，直接打开那个文件看它到底长什么样。
@@ -562,11 +566,11 @@ if err := page.WaitLoad(); err != nil { return err }
 
 ### 3.4.3 登录态检查与刷新协调
 
-账号注册、检查/登录协调、Token/CSRF、过期处理与加密重启恢复统一由 [account.Manager](./ACCOUNT_RUNTIME.md) 负责，抓取使用 `Engine.FetchAccountHTTP`、`FetchAccountHTML` 或 `WithAccountBrowser`。底层独立 CookieJar 使用 htmlfetch.Session；不再提供重复的 SessionGuard 协调层。
+账号注册、检查/登录协调、Token/CSRF、过期处理与加密重启恢复统一由 [account.Manager](../accounts/ACCOUNT_RUNTIME.md) 负责，抓取使用 `Engine.FetchAccountHTTP`、`FetchAccountHTML` 或 `WithAccountBrowser`。底层独立 CookieJar 使用 htmlfetch.Session；不再提供重复的 SessionGuard 协调层。
 
 ### 3.5 显式脱敏样本与离线解析
 
-账号浏览器的首次导航前恢复可使用 `Browser.WithStatePage`；它在初次请求前设置 Cookie、在主 frame 首段脚本前恢复 LocalStorage，加载后卸载初始化器。旧 `RestorePageState` 的「先导航再恢复」语义保持不变。统一账号入口会自动使用前者，见 [账号手册](./ACCOUNT_RUNTIME.md)。
+账号浏览器的首次导航前恢复可使用 `Browser.WithStatePage`；它在初次请求前设置 Cookie、在主 frame 首段脚本前恢复 LocalStorage，加载后卸载初始化器。旧 `RestorePageState` 的「先导航再恢复」语义保持不变。统一账号入口会自动使用前者，见 [账号手册](../accounts/ACCOUNT_RUNTIME.md)。
 
 `htmlfetch.WriteSample(writer, request, response, policy)` 将一次 HTTP 交换输出为版本化 JSON。它不创建文件，也不自动发送网络请求。默认省略所有头、查询参数及正文，并删除 URL userinfo 和 fragment；URL 路径仍保留，路径包含账号或签名时用 `RedactURL` 处理。
 
@@ -608,7 +612,7 @@ if err := offline.DecodeJSON(&result); err != nil { return err }
 
 ### 3.6 网络录制、内容发现与质量治理
 
-多响应录制使用 `Engine.RecordNetwork`；增量 GET 使用 `Engine.FetchIncremental`。`pkg/discovery` 提供链接/订阅源/robots 解析与分页停止判定，`pkg/extract` 提供字段和批次质量校验。完整用法、预算、状态语义与边界见 [CRAWL_TOOLKIT.md](./CRAWL_TOOLKIT.md)。
+多响应录制使用 `Engine.RecordNetwork`；增量 GET 使用 `Engine.FetchIncremental`。`pkg/discovery` 提供链接/订阅源/robots 解析与分页停止判定，`pkg/extract` 提供字段和批次质量校验。完整用法、预算、状态语义与边界见 [CRAWL_TOOLKIT.md](CRAWL_TOOLKIT.md)。
 
 ## 4. 场景一：JS 下拉加载 → 抓列表路由 + 详情信息
 
@@ -783,7 +787,7 @@ func deref(s *string) string {
 > 如果播放器自动播放、请求在页面加载过程中自己发出（不需要点击），用
 > `engine.CaptureRequest` —— 它负责「导航前挂监听 → 截第一条匹配请求 → 关页面」，
 > 失败时还会把**那一刻的页面 HTML 与期间发出的请求样本**写进归档和任务追踪
-> （OA 抽屉里的「捕获网络请求」步骤，见 [MONITOR.md](./MONITOR.md) §3）：
+> （OA 抽屉里的「捕获网络请求」步骤，见 [MONITOR.md](../operations/MONITOR.md) §3）：
 >
 > ```go
 > res, err := engine.CaptureRequest(ctx, task.URL, browser.CaptureOptions{
@@ -1096,7 +1100,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > 每一条都寄放到溢出表里、池子一个都不建，后台 Dashboard「站点控制」卡上点「重试恢复」才灌回。
 > 它管的是**这一站的全部阶段**（包括 detail / episode 这种由上一级投出来的），而且暂停不跨重启，
 > 每次启动都重新闸上。只想掐某一个阶段（不想让入口阶段又跑一遍、其它照跑）用
-> `engine.PauseStage(site, stage, reason)` / `ResumeStage`，见 [MONITOR.md](./MONITOR.md) §9。
+> `engine.PauseStage(site, stage, reason)` / `ResumeStage`，见 [MONITOR.md](../operations/MONITOR.md) §9。
 >
 > 声明跟实现对不上会打 WARN，且文案指路：写了 `Entry: true` 却没实现 `SubmitEntries`，
 > 或者**实现了入口却忘了写 `Entry`**（false 是默认值，这是最常见的那种手误）。
@@ -1109,9 +1113,9 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
-站点/阶段声明确定拓扑、物理 WorkerCount/QueueSize 和 Delay/Retry 默认值。`runtime` 文件显式字段与 OA 持久覆盖可以按站点共享请求预算、按阶段限制有效执行并发与固定间隔，并选择账号池；优先级与完整配置见 [CORE_CONFIG.md](CORE_CONFIG.md)。跨阶段/账号不会绕过同站硬限制，资源预算仍按单实例全局计算。
+站点/阶段声明确定拓扑、物理 WorkerCount/QueueSize 和 Delay/Retry 默认值。`runtime` 文件显式字段与 OA 持久覆盖可以按站点共享请求预算、按阶段限制有效执行并发与固定间隔，并选择账号池；优先级与完整配置见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)。跨阶段/账号不会绕过同站硬限制，资源预算仍按单实例全局计算。
 
-登录账号按 `account.Key{Site, ID}` 进一步划分；非池调用由 Fetcher 显式选择账号入口，池任务则持久绑定 AccountPool 并固定当次身份。最近 8 次实际账号尝试独立落在任务记录中，不依赖 Meta 或 Trace。账号暂停不会自动暂停整个站点，两者是不同作用域，见 [账号手册](./ACCOUNT_RUNTIME.md)。
+登录账号按 `account.Key{Site, ID}` 进一步划分；非池调用由 Fetcher 显式选择账号入口，池任务则持久绑定 AccountPool 并固定当次身份。最近 8 次实际账号尝试独立落在任务记录中，不依赖 Meta 或 Trace。账号暂停不会自动暂停整个站点，两者是不同作用域，见 [账号手册](../accounts/ACCOUNT_RUNTIME.md)。
 
 一站一个文件放进 `internal/sites/`（同一个包），**每个文件在自己的 `init()` 里登记** ——
 框架把它们收在 `papa.Sites()` 里，**项目里没有汇总清单要维护**：
@@ -1144,7 +1148,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
 要注意的：
 
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
-  文件改完要重启）。`runtime` 的站点请求、有效执行并发和账号池默认值另有 OA 持久覆盖。没写哪段队列配置 = 那条不跑；开了就得写全，缺一项 / 越界启动就报。见 [CORE_CONFIG.md](./CORE_CONFIG.md)。
+  文件改完要重启）。`runtime` 的站点请求、有效执行并发和账号池默认值另有 OA 持久覆盖。没写配置即不自动启动该治理扫描；错误与轮询队列仍可手动触发。启用时校验必填项和范围，batch_size 为 0 使用默认 1000。见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)。
 - **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与原始 HTML 归档目录（键是 `site:stage`，库里的唯一索引也是 `(site, stage, identity_hash)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `internal/sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
@@ -1155,7 +1159,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
   但两个站会跑同一份 fetcher —— 选择器与入口路由都是照旧站写的，抓出来的是错的、却不报错。
   副本要连带自己的 fetcher（新类型，或按站点分包）。
 - **声明写完先自查**：项目目录里跑一次 `papa check` —— **不用起库**就能把上面这几项（阶段名重复、
-  三个治理队列漏写/缺项、熔断阈值、Delay 与 Backoff 写法）一次报全。见 [CLI.md](./CLI.md)。
+  已启用治理队列的必填项、熔断阈值、Delay 与 Backoff 写法）一次报全。见 [CLI.md](../operations/CLI.md)。
 - **站点值只声明一处，fetcher 从框架取，别在 fetcher 里存副本**：
   handler 里 `site, _ := engine.Site(task.Site)` → `site.BaseURL` / `site.Headers`；
   入口任务里框架把同一份快照交给 `SubmitEntries(engine, site)`。
@@ -1197,10 +1201,10 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail", Site: task.Site})` 派发子任务（见 1.6）。
 
 3. **定时重抓 / 恢复失败**：
-   - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；
-   - 中断恢复：`recover_queue` 配置开启后，**启动时**重投本进程启动前遗留的未终态任务（pending/processing，且 `updated_at` 早于本次启动时间）。这个边界用于排除本次运行已经碰过的行，不是按“卡死时长”猜测。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
+   - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)；
+   - 中断恢复：`recover_queue` 配置开启后，**启动时**重投本进程启动前遗留的未终态任务（pending/processing，且 `updated_at` 早于本次启动时间）。这个边界用于排除本次运行已经碰过的行，不是按“卡死时长”猜测。详见 [RECOVER_QUEUE.md](../runtime/RECOVER_QUEUE.md)。
 
-4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](../runtime/ERROR_QUEUE.md)。
 
 **看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览（概览按站点分卡片，切到某站点 Tab 可看该站各阶段的五格数字、累计耗时与 Worker 明细），另有「队列治理」等模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；来源 IP 限制在后台「设置」页改（存在 `crawler_config` 表，空 = 不限制）。
 
@@ -1219,9 +1223,9 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 6. **相对链接**：`href`/`src` 可能是相对路径，用 `papa.ResolveURL(base, href)` 解析成绝对地址再提交任务
    （rod 那条路的基础地址是 `page.Info().URL`，静态抓取是 `page.URL.String()`）；别用字符串拼接，也别把 `#锚点` 当成不同的页面（`ResolveURL` 会去掉它）。
 7. **重试语义**：fetcher 返回普通 error 会触发重试；对「确实失败、重试无意义」的（页面 404、缺字段、验证码拦截等），返回 `papa.WrapNoRetryKind("structure", err)`（或 `WrapNoRetry(err)`），引擎不重试、直接标 failed 并告警，别再「返回 nil 假装成功」。
-8. **写库用 task.ID**：子任务派发后，每个 fetcher 只写自己这个 `task.ID` 的记录。
+8. **业务结果使用业务键**：`task.ID` 是框架任务 ID，不能直接当业务结果主键。通过 `Meta` 传递业务外键，用业务唯一键 Upsert；不要写任务状态或给任务表加结果列，见 [数据落地手册](DATA_LANDING_GUIDE.md)。
 9. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
-10. **延迟投递**：反爬随机间隔用 `task.Delay`（或 `NotBefore`）在派发时设置，别在 handler 里 `time.Sleep` 空等，那会浪费 worker 并发位。
+10. **首次延迟与请求间隔分开**：`task.Delay` / `NotBefore` 在首次派发时设置，不在轮询/重投时重算；持续的阶段间隔用 `StageSpec.Delay`，请求节奏用请求治理。别在 handler 里 `time.Sleep` 空等。
 11. **别重复记日志**：`FetchHandler` 的 error 和 `SubmitTask` 的提交错误框架都会自动记，fetcher 里**不必再** `logger.Errorf` 记一遍，否则会刷双份。你只需判断 error 要不要改变控制流（继续/中止/告警）。
 12. **限流与任务重试分别受控**：使用任务传入的 `ctx` 和框架受管 HTTP/浏览器路径时，429/503 的有效 `Retry-After` 会限制站点后续请求；即使关闭请求治理或 AutoThrottle，普通重试与恢复试探也不能早于这一期限。发现限流只在 AutoThrottle 已开启时自动降频，不会替业务打开开关。无有效头且 AutoThrottle 关闭时沿用固定间隔及 `Retry.Backoff`；错误返回与是否重试仍由阶段策略决定。详见 `RUNTIME_CONTROL.md`。
 
@@ -1231,7 +1235,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 通用 API：`FetchHTTP` / `HTTPRequest` / `HTTPResponse.DecodeJSON`；会话：`NewHTTPSession` / `WithHTTPSession`；浏览器响应：`CaptureResponse` / `browser.CopyCookiesToSession`。用法和边界见 §3.3–3.4。
 
-账号运行：`NewAccountManager` / `AccountKey` / `AccountConfig`、`engine.SetAccountManager`、`FetchAccountHTTP` / `FetchAccountHTML` / `WithAccountBrowser` / `AccountStatus`，见 [ACCOUNT_RUNTIME.md](./ACCOUNT_RUNTIME.md)。
+账号运行：`NewAccountManager` / `AccountKey` / `AccountConfig`、`engine.SetAccountManager`、`FetchAccountHTTP` / `FetchAccountHTML` / `WithAccountBrowser` / `AccountStatus`，见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md)。
 
 
 **go-rod（页面操作）**
@@ -1251,6 +1255,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 **任务身份 / 站点地址**
 - `papa.PageIdentity(rawURL)`：`path[?query]`，与域名无关（`https://a.com` 与 `https://a.com/` 都是 `/`）。
 - `papa.NormalizeTaskIdentity(site, stage, resourceID, rawURL)`：检查并生成标准身份（Type / Value / Hash）。
+- `papa.CanonicalTaskURL(rawURL)`：保留 origin、路径转义与原始 query，规范 scheme/host 大小写与默认端口，去 fragment；不同域名不会自动合并。`PageIdentity` 是显式业务辅助函数，不是默认任务身份算法。
 - `papa.ResolveSiteURL(baseURL, raw)`：把任务里存的旧地址钉回当前站点根（scheme/host 换成 baseURL 的），path/query 保留。
 
 **静态 HTML（goquery）**
@@ -1272,7 +1277,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 **数据库 / 结果落地**
 - `engine.Upsert(record, conflictCols, updateCols)` 冲突更新并回填主键 —— 业务结果写自己的表就用它。
 - `engine.GetDB()` 拿 gorm 实例（复杂查询、建自己的表时用）。
-- 任务表只存调度状态（URL / 阶段 / 状态 / 重试 / 轮询 / `meta` 业务键）；结果的结构与落地全归业务，见 [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md)。
+- 任务表只存调度状态（URL / 阶段 / 状态 / 重试 / 轮询 / `meta` 业务键）；结果的结构与落地全归业务，见 [DATA_LANDING_GUIDE.md](DATA_LANDING_GUIDE.md)。
 
 **任务派发 / 错误分类 / 告警**
 - `engine.SubmitTask(&papa.Task{...})` 派发单个子任务；`engine.SubmitTasks([]*papa.Task{...})` 批量派发。
@@ -1281,11 +1286,11 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
 
-- `engine.SetBreakerProbe(site, stage, probe)` 注册只读阶段语义探针；空 stage 为逐阶段调用的兜底，回调必须识别 `req.Stage`，不可用同一次首页成功代表全部阶段。自动恢复默认要求所有注册阶段通过试探和限量真实任务验证，未运行阶段也不能默认通过；阶段失败、暂停重试和最终恢复进入可靠熔断历史与报告；在线 obs 只接收可丢弃的观测信号，不承担恢复判定。详见 [分类熔断与整站恢复](BREAKER.md)。
-- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动暂停 / 请求重试恢复**所有站点**的抓取（纯人工暂停直接解除，自动保护须全阶段重新验证）；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
+- `engine.SetBreakerProbe(site, stage, probe)` 注册只读阶段语义探针；空 stage 为逐阶段调用的兜底，回调必须识别 `req.Stage`，不可用同一次首页成功代表全部阶段。自动恢复默认要求所有注册阶段通过试探和限量真实任务验证，未运行阶段也不能默认通过；阶段失败、暂停重试和最终恢复进入可靠熔断历史与报告；在线 obs 只接收可丢弃的观测信号，不承担恢复判定。详见 [分类熔断与整站恢复](../runtime/BREAKER.md)。
+- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动暂停 / 请求重试恢复**所有站点**的抓取（纯人工暂停直接解除，自动保护须全阶段重新验证）；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）。
 - `engine.ForceResumeSite(site)` 明确跳过整站自动验证，保留失败窗口和报告；普通恢复不要调用它。
-- 只有全部操作可被只读检查覆盖的阶段，才可在 `StageSpec.BreakerReadOnlyCoverage` 填写完整范围（默认空）。这类阶段须间隔两次返回 `Healthy && Semantic && Complete` 且 `Detail` 非空，才能替代真实任务验证；请求提供 `Pass` 和 `Coverage`。缺少有效样本、只测部分解析、未覆盖写入/下载/派发时均不合格；其他阶段保持未验证。此声明需要业务如实维护，框架不能自动证明覆盖完整。报告明确展示验证方式和范围，重启全部重验，详见 [BREAKER.md](BREAKER.md)。
-- 入口任务由框架在**启动那一趟**投（阶段声明写了 `Entry: true` 的话）—— 引擎侧没有「手动投入口」这个动作。想控制「什么时候开始跑」就声明 `SiteSpec.StartPaused: true`，再到后台「站点控制」卡上点「重试恢复」（那是整站级的暂停信号，见 [MONITOR.md](./MONITOR.md) §10）。
+- 只有全部操作可被只读检查覆盖的阶段，才可在 `StageSpec.BreakerReadOnlyCoverage` 填写完整范围（默认空）。这类阶段须间隔两次返回 `Healthy && Semantic && Complete` 且 `Detail` 非空，才能替代真实任务验证；请求提供 `Pass` 和 `Coverage`。缺少有效样本、只测部分解析、未覆盖写入/下载/派发时均不合格；其他阶段保持未验证。此声明需要业务如实维护，框架不能自动证明覆盖完整。报告明确展示验证方式和范围，重启全部重验，详见 [BREAKER.md](../runtime/BREAKER.md)。
+- 入口任务由框架在**启动那一趟**投（阶段声明写了 `Entry: true` 的话）—— 引擎侧没有「手动投入口」这个动作。想控制「什么时候开始跑」就声明 `SiteSpec.StartPaused: true`，再到后台「站点控制」卡上点「重试恢复」（那是整站级的暂停信号，见 [MONITOR.md](../operations/MONITOR.md) §10）。
 - `engine.FetchRendered(ctx, url, waitSelector)` 借浏览器渲染并返回 `(*goquery.Document, finalURL, error)`。**只在静态 HTML 拿不到目标数据时用**，见 §3 的规则。
 - `engine.FetchRenderedPage(ctx, url, waitSelector)` 同上，但返回 `*htmlfetch.Page`（`StatusCode` / `Content-Type` 为零值）—— 走浏览器的阶段要接 `engine.RestrictedError` 或复用静态路径那套解析时用它。
 - `engine.ProcessErrorQueue()` 立即把失败任务重新投递（返回处理条数）；配 `error_queue` 可自动轮询或 OA 手动触发。
@@ -1294,7 +1299,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 ## 10. 运行观测（obs）：业务怎么接
 
-在线观测只接收信号、分析并记录报告，不持有业务数据库或执行业务分析回调。自定义分析段与模式只在业务显式离线调用中运行；详细手册见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
+在线观测只接收信号、分析并记录报告，不持有业务数据库或执行业务分析回调。自定义分析段与模式只在业务显式离线调用中运行；详细手册见 [OBSERVABILITY.md](../operations/OBSERVABILITY.md)。
 
 **10.1 发业务事件**
 
@@ -1340,12 +1345,12 @@ rep, err := obs.Generate(ctx, obs.Options{
 
 ## 按阶段组合动态调度
 
-普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](TASK_FLOW.md)。
+普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](../runtime/TASK_FLOW.md)。
 
 
 ### 网络出口与内网采集
 
-框架的 FetchHTTP、HTMLClient、Rod 浏览器、filedown 和 m3u8 共享默认公网出口限制。内网任务先在应用配置中设置 `network.private_origins`，见 [CORE_CONFIG.md](./CORE_CONFIG.md)；阶段下载器 `.With(...)` 不会取消该限制，`SetClient` 也不能绕过它。重定向、M3U8 变体/分片/密钥/初始化片段和浏览器子资源分别检查目的地。签名 URL 的路径和 query 保持原样。
+框架的 FetchHTTP、HTMLClient、Rod 浏览器、filedown 和 m3u8 共享默认公网出口限制。内网任务先在应用配置中设置 `network.private_origins`，见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)；阶段下载器 `.With(...)` 不会取消该限制，`SetClient` 也不能绕过它。重定向、M3U8 变体/分片/密钥/初始化片段和浏览器子资源分别检查目的地。签名 URL 的路径和 query 保持原样。
 
 独立使用底层库时显式传入配置：
 
@@ -1358,8 +1363,8 @@ client := htmlfetch.NewClient(htmlfetch.Config{
 零配置不允许本地服务，测试 fixture 也需授权。`egress.ErrDenied` 表示目标不被授权；不要通过改用 `http.Get`、原生浏览器导航或外部下载工具绕过失败。网络策略不替代账号隔离、站点规则边界或业务写入权限。网络错误不会由浏览器网关伪造成成功的采集文档。
 
 
-混合错误恢复采用三次验证并优先指定失败样本。`BreakerProbeRequest.Sample/SampleID` 非空时必须检查指定任务对应页面，结果 `SampleID` 回传一致；忽略样本的通用成功结果不能通过。相同任务不同轮次仅在不足三个失败样本时按轮换规则使用。原有任务补偿禁用/延迟条件继续生效。完整只读阶段默认两次，混合错误三次；其他阶段仍须真实任务验证。长期保护每小时复查通过后自动恢复，人工暂停不自动解除；详见 [BREAKER.md](BREAKER.md)。
+混合错误恢复采用三次验证并优先指定失败样本。`BreakerProbeRequest.Sample/SampleID` 非空时必须检查指定任务对应页面，结果 `SampleID` 回传一致；忽略样本的通用成功结果不能通过。相同任务不同轮次仅在不足三个失败样本时按轮换规则使用。原有任务补偿禁用/延迟条件继续生效。完整只读阶段默认两次，混合错误三次；其他阶段仍须真实任务验证。长期保护每小时复查通过后自动恢复，人工暂停不自动解除；详见 [BREAKER.md](../runtime/BREAKER.md)。
 
 恢复验证同站点串行，真实样本从选中起最多10分钟（整轮预算更短时优先生效）。Fetcher 必须响应传入 context，包括资源等待、请求和下载。超时后仍未退出会占住本次串行验证并阻止小时复查；迟到成功只表示任务实际完成，不证明站点健康。不要自行启动脱离 context 生命周期的后台写入来绕过取消。
 
-单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。
+单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](../configuration/RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。

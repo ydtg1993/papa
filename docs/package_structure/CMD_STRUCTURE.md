@@ -1,7 +1,7 @@
 # Cmd 目录结构与职责细则
 
 > 面向：维护命令行入口、业务脚手架、框架文档分发和本地后台演示的开发者。
-> 总索引：[目录职责说明书](README.md)。命令用法见 [CLI 手册](../CLI.md)，通用开发约束见 [开发手册](../DEVELOPMENT.md)与[总体架构规则](../ARCHITECTURE.md)。
+> 总索引：[目录职责说明书](README.md)。命令用法见 [CLI 手册](../operations/CLI.md)，通用开发约束见 [开发手册](../architecture/DEVELOPMENT.md)与[总体架构规则](../architecture/ARCHITECTURE.md)。
 > 本文描述目录、文件和副作用归属，不重复命令参数手册。
 
 ## 1. 定位与目录
@@ -46,10 +46,10 @@ docs/embed.go                  # 框架手册的嵌入入口（不是 templates 
 | `scaffold_safe.go` | `checkScaffoldPath` 检查路径祖先；`writeScaffoldFile` 独占创建 | 拒绝符号链接、junction 等链接路径；`O_EXCL` 防止创建竞争截断现存文件；missing-only 只跳过已有普通文件 |
 | `skill.go` | `fileSpec`、`skillFile`、`skillFiles`、技能内容渲染与项目布局数据 | 唯一登记 `.claude/skills/papa-crawler-development/` 的文件、通用刷新与项目所有权；new 和 upgrade 共同使用 |
 | `upgrade.go` | 构建 `upgradePlan`、比对文档/技能、报告配置问题、`writeDocs` / `writeSkill` | plan 是一次调用的结果，无后台状态；默认只报告。显式 write 才刷新登记的框架副本及通用技能；声明编译校验归 check 命令 |
-| `check.go` | 生成并运行普通/boot 两种临时校验程序，解析配置路径、目标 module；站点固定 internal/sites | 本次独占 `.papa-check-*` 目录，defer 只清理自己创建的目录。普通路径编译并调用声明校验；boot 走 New/RegisterSites 到 Run 前，不投任务、不启动服务 |
+| `check.go` | 生成并运行普通/boot 两种临时校验程序，解析配置路径、目标 module；站点固定 internal/sites | 本次独占 `.papa-check-*` 目录，defer 只清理自己创建的目录。普通路径编译并调用声明校验，配置文件缺失时仅提示并继续；boot 走 New/RegisterSites 到 Run 前，不投入口任务、不启动 HTTP |
 | `migrate.go` | `papaModule`、业务 go.mod 识别、参数处理、框架迁移或 `delegateMigrate` | 业务项目委派 `go run . -migrate`，由业务进程登记业务模型；其余路径调用 `internal/database`。仅此显式命令触发迁移，不让 new/check/普通启动暗中建表 |
 | `token.go` | token add 参数、操作人检查、配置/DB 装配，委派 `admin/tokenadmin` 创建令牌 | 明确写入访问令牌表，库中存哈希、明文仅此处显示一次；表缺失提示 migrate，不顺手建表 |
-| `report.go` | 来源/窗口/模式/阈值装配，选择框架分析节与内置模式、日拆分、单 run、列表与退出门禁 | 读取事件、日志和框架 DB；借助 `obs/report` 写四份产物，写前检查目录为输出根的单段子目录；显式 --since/--until/--run 不清理，无这些筛选时清理过期报告。只读指被观测数据，不代表文件系统没有写入和删除；不注册业务报告段 |
+| `report.go` | 来源/窗口/模式/阈值装配，选择框架分析节与内置模式、日拆分、单 run、列表与退出门禁 | 读取事件、日志和框架 DB；借助 `obs/report` 写四份产物，写前检查目录为输出根的单段子目录；显式 --since/--until/--run 不清理，无这些筛选时清理过期报告。没有事件文件或窗口无相应事件时拒绝生成，显式 --run 也要求该 run 的事件；只读指被观测数据，不代表文件系统没有写入和删除；不注册业务报告段 |
 | `debug.go` | 调试参数、可选配置、代理/请求头，HTML/Rod 抓取、差异、选择器与输出 | 调用 `pkg/htmlfetch` / `pkg/browser` / proxy；可访问网络、打开浏览器、写输出/截图。Rod 池和借用实例在命令路径内归还/关闭，临时目录配置传到池 |
 | `act.go` | 页面动作解析、顺序执行、settle、eval、滚动/点击/输入/等待与人工回车交接 | 使用 debug 创建的 page，不拥有池；动作可能改变页面和远端状态，不能把整个调试命令描述成无副作用读取 |
 
@@ -87,7 +87,7 @@ CLI 是短生命周期进程。debug 显式管理浏览器池。migrate/token/re
 
 ## 4. 框架文档分发链路
 
-`docs/embed.go` 的 `//go:embed *.md package_structure/*.md` 是分发源白名单：嵌入顶层 Markdown 手册及目录职责分册，**排除 issues/、superpowers/ 历史记录**，不递归收进其它文档目录。该 Go 文件本身和历史记录均不是复制给业务的手册文件。
+`docs/embed.go` 是分发源白名单：只嵌入 README.md，以及 architecture、configuration、guides、accounts、runtime、operations、package_structure 各目录的 Markdown；**排除 history/**，不自动收进新目录。该 Go 文件本身和历史记录均不是复制给业务的手册文件。
 
 1. `main.go` 的 `tmplFS` 管业务骨架模板，`docs.Files` 管框架手册，两者分开。
 2. `upgrade.go` 的 `embeddedDocs` 仅遍历 `docs.Files`，收集 `.md` 相对路径并排序；不会把目标项目的文档扫描结果加入写入清单。
@@ -134,7 +134,7 @@ writeDocs/writeSkill 逐文件直接写入，不是整批事务，也没有临�
 
 本次文档盘点不宣称测试通过。验证应按改动选择 `go test ./cmd/papa ./cmd/monitor-demo` 及相关库包；真实浏览器、数据库和生产部署需要各自的验证证据，不能由模板存在或 demo 截图替代。
 
-report.go 通过有预算的 Context 输入和逐日消费生成报告；文件解码、去重与临时分桶属于 obs，CLI 只负责参数、错误返回与产物输出。输入预检超限保留已有产物；新资源手册随顶层文档自动分发。
+report.go 通过有预算的 Context 输入和逐日消费生成报告；文件解码、去重与临时分桶属于 obs，CLI 只负责参数、错误返回与产物输出。输入预检超限保留已有产物；资源手册由 configuration 白名单分发。
 
 Trace 配置模板默认 `trace.mode: errors`，包含独立 trace_files 目录/容量段；migrate 不创建 Trace 表。熔断恢复串行验证没有 ramp_concurrency 配置项。
 
