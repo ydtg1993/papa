@@ -994,6 +994,7 @@
                 + '<td>' + fmtTime(t.created_at) + '</td>'
                 + '<td>' + fmtTime(t.updated_at) + '</td>'
                 + '<td><div class="row-actions">'
+                + '<button class="btn" data-token-rotate="' + t.id + '">更新</button>'
                 + (t.enabled
                     ? '<button class="btn" data-token-off="' + t.id + '">停用</button>'
                     : '<button class="btn" data-token-on="' + t.id + '">启用</button>')
@@ -1010,6 +1011,9 @@
         });
         el.querySelectorAll('[data-token-del]').forEach(function (b) {
             b.onclick = function () { removeToken(Number(b.dataset.tokenDel)); };
+        });
+        el.querySelectorAll('[data-token-rotate]').forEach(function (b) {
+            b.onclick = function () { rotateToken(Number(b.dataset.tokenRotate)); };
         });
     }
 
@@ -1091,6 +1095,28 @@
         if (!ok) return;
         if (!await tokenWrite('/api/tokens/remove', { id: id })) return;
         Toast.ok('已删除');
+        fetchTokens();
+    }
+
+    /** 更新：服务端换一把新令牌（旧的立刻失效），新明文只显示一次 */
+    async function rotateToken(id) {
+        var ok = await Dialog.confirm({
+            title: '更新访问令牌',
+            body: '<p>换一把新令牌，旧的立刻失效。新令牌只显示这一次，请立刻存好。</p>',
+            danger: true, okLabel: '更新'
+        });
+        if (!ok) return;
+        var data = await tokenWrite('/api/tokens/rotate', { id: id });
+        if (!data || !data.token) return;
+        await Dialog.open({
+            title: '新令牌（只显示这一次）',
+            body: '<div class="secret-box">' + esc(data.token) + '</div>'
+                + '<p class="hint">旧的已失效；库里只有 sha256，关掉这个窗口就再也看不到明文了。</p>',
+            actions: [
+                { label: '复制', value: 'copy', onClick: function () { copyText(data.token); return false; } },
+                { label: '我已存好', value: null }
+            ]
+        });
         fetchTokens();
     }
 
