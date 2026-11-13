@@ -1,0 +1,5 @@
+# Manifest hashes describe exact source/output bytes on every checkout.
+*.mmd text eol=lf
+*.svg text eol=lf
+manifest.json text eol=lf
+*.png binary

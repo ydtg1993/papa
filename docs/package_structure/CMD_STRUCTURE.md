@@ -43,7 +43,7 @@ docs/embed.go                  # 框架手册的嵌入入口（不是 templates 
 | `main.go` | 顶层子命令分派、usage、`scaffoldData`、module/标识符校验、`runNew`、模板渲染与 `copyDocs` | `tmplFS` 只读嵌入 `templates/*`；先校验名称，再生成目标项目。完整 Module 用于 import，本地 Project 取路径末段用于文件/构建名称；Go 产物通过 `go/format` |
 | `layout.go` | `frameworkDocsDir` 固定返回 docs/framework | upgrade/技能数据共用框架副本位置；没有旧 docs 布局回退 |
 | `module_validation.go` | `validateProjectModule` 拒绝 go.mod 中未版本化及 /v1、/v2、/v3 的 Papa 模块引用，含 replace 目标 | 无可变状态；check/upgrade/migrate 与 new --missing-only 在写入或数据库连接前校验。不重写 imports/require/replace，也不提供旧项目迁移 |
-| `scaffold_safe.go` | `checkScaffoldPath` 检查路径祖先；`writeScaffoldFile` 独占创建 | 拒绝符号链接、junction 等链接路径；`O_EXCL` 防止创建竞争截断现存文件；missing-only 只跳过已有普通文件 |
+| `scaffold_safe.go` | `checkScaffoldPath` 检查路径祖先；`writeScaffoldFile` 独占创建；`replaceScaffoldFile` 刷新框架所有文件 | 拒绝符号链接、junction 等链接路径；`O_EXCL` 防止创建竞争截断现存文件；missing-only 只跳过已有普通文件。刷新使用同目录临时文件写完关闭后 rename，不原地截断硬链接背后的业务文件 |
 | `skill.go` | `fileSpec`、`skillFile`、`skillFiles`、技能内容渲染与项目布局数据 | 唯一登记 `.claude/skills/papa-crawler-development/` 的文件、通用刷新与项目所有权；new 和 upgrade 共同使用 |
 | `upgrade.go` | 构建 `upgradePlan`、比对文档/技能、报告配置问题、`writeDocs` / `writeSkill` | plan 是一次调用的结果，无后台状态；默认只报告。显式 write 才刷新登记的框架副本及通用技能；声明编译校验归 check 命令 |
 | `check.go` | 生成并运行普通/boot 两种临时校验程序，解析配置路径、目标 module；站点固定 internal/sites | 本次独占 `.papa-check-*` 目录，defer 只清理自己创建的目录。普通路径编译并调用声明校验，配置文件缺失时仅提示并继续；boot 走 New/RegisterSites 到 Run 前，不投入口任务、不启动 HTTP |
@@ -97,7 +97,7 @@ CLI 是短生命周期进程。debug 显式管理浏览器池。migrate/token/re
 
 因此新分册放入 package_structure/ 后，通过同一嵌入和复制机制保留相对链接；修改分发目录时需同时检查 embed 白名单、`embeddedDocs`、new/upgrade 的目标路径与回归。应用自己的 docs/README.md、operations/、business/ 属于业务；框架 README 不会覆盖应用导航，即使 docs/framework/ 尚不存在也不会回退写入 docs/。
 
-writeDocs/writeSkill 逐文件直接写入，不是整批事务，也没有临时文件 rename 的原子替换保证；中途失败时，已写文件不会自动回滚。
+writeDocs/writeSkill 对框架所有文件逐个写临时文件并 rename；项目约定仍只独占补缺。不是整批事务，中途失败时，已替换文件不会自动回滚；不承诺所有平台/文件系统上的原子可见性或断电持久性，也不对抗恶意进程并发替换目录祖先。
 
 升级的默认行为始终是报告差异。只有显式 write 才刷新框架登记手册、通用技能及缺失的项目约定技能；不改业务源代码、go.mod、配置、模板生成的应用文档，也不删除旧文档。
 
@@ -118,10 +118,10 @@ writeDocs/writeSkill 逐文件直接写入，不是整批事务，也没有临�
 | 测试位置 | 当前分工 |
 | --- | --- |
 | `main_test.go`、`scaffold_credentials_test.go`、`scaffold_page_sections_test.go` | 生成文件、配置装载、名称/参数、凭据占位和自定义页面分类 |
-| `scaffold_safe_test.go`、`scaffold_review_test.go` | 已有项目保护、missing-only、module 不一致、链接/junction、创建竞争、replace 路径 |
+| `scaffold_safe_test.go`、`scaffold_review_test.go` | 已有项目保护、missing-only、module 不一致；new/upgrade 嵌套链接、文件链接/junction 与硬链接业务保护；项目所有文件全量快照、dry-run、重复升级、创建竞争及计划后新增约定 |
 | `module_path_test.go`、`module_version_test.go` | 多级/连字符/主版本 module 的实际生成编译；v4 模块、模板、旧模块拒绝及 missing-only 不写入保护 |
 | `layout_test.go`、`docs_structure_test.go` | 固定 v4 布局、实际 new → tidy → build、应用文档保留；`TestScaffoldAndUpgradePreserveStructureManuals` 守卫分册嵌入、子目录复制和升级 |
-| `docs_assets_test.go` | 图源/双格式图片及 manifest 完整复制与哈希一致；PNG 不做文本换行归一；upgrade 不经链接写出目标目录、不覆盖计划后新增的项目约定 |
+| `docs_assets_test.go` | 图源/双格式图片及 manifest 完整复制与哈希一致、图源登记无遗漏/重复；PNG 不做文本换行归一；生成文档和随项目技能的相对链接及锚点 |
 | `upgrade_test.go`、`upgrade_helpers_test.go` | 差异计划、只刷新框架副本、通用技能刷新与项目约定保留、辅助输出 |
 | `check_test.go`、`migrate_test.go` | 临时程序内容/参数/端到端声明拒绝、业务 module 识别；不等同真实 DB 迁移验收 |
 | `debug_test.go`、`act_test.go` | 参数、HTML 提取/链接/选择器/输出和动作语法；解析测试不证明真实浏览器动作已执行 |

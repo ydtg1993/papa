@@ -39,7 +39,7 @@ App 装配运行组件；Engine 通过内部调度、worker 和持久化组件�
 
 业务提交任务，框架按站点、阶段与标准身份持久化、去重，调度准入后条件认领，再调用 handler。Fetcher 自行检查获取、解析、保存结果和派发后续任务的返回值；没有自动 `yield Item` 或统一 Item Pipeline。子任务可以早于父任务终态执行，父子屏障须由任务流或业务契约保证。
 
-每次尝试都先收尾再判定下一步。立即重试属于同次认领内，错误补偿/轮询属于后续轮次。retry 加法确认不明时不能重放加法或继续 handler；终态确认只重试状态写入，不重跑已经完成的业务。成功后遇取消仍有有限的计时与终态确认窗口；熔断样本真实失败和纯取消也分别处理，细则见 [异常口径](ARCHITECTURE_DIAGRAMS.md#图中异常分支的准确口径)。
+每次尝试都先收尾再判定下一步。同次认领内的重试先做可取消退避，再一次性增加 retry，确认成功才进入下一次尝试；错误补偿/轮询属于后续轮次。retry 加法确认不明时不能重放加法或继续 handler；终态确认只重试状态写入，不重跑已经完成的业务。成功后遇取消仍有有限的计时与终态确认窗口；熔断样本真实失败和纯取消也分别处理，细则见 [异常口径](ARCHITECTURE_DIAGRAMS.md#图中异常分支的准确口径)。
 
 ## 4. 积压、背压和崩溃恢复
 
@@ -71,6 +71,8 @@ App 装配运行组件；Engine 通过内部调度、worker 和持久化组件�
 [矢量图](../assets/diagrams/06-lifecycle.svg) · [Mermaid 源码](../assets/diagrams/06-lifecycle.mmd)
 
 图示对应 App 的主要收尾顺序；启动失败也沿同一清理编排，未发出运行开始时不伪造 `run_stopped`。HTTP、业务 hooks、Engine、运行服务和消息监听分别报告真实排空结果；未排空时保留共享 DB/公共浏览器池，不把发出取消或超时返回当成“已经退出”。
+
+Engine 的排空判断还包含 ticker、spill/delay、未确认状态和持久 pending 积压检查；worker 已退出并不一定返回 drained。`run_stopped` 中的 outcome/counts 只来自 Engine.Stop，不汇总 HTTP、业务 hooks 等全部 App 组件，不能据此单独证明整个 App 已排空。
 
 观测转发、在线报告和事件归档共用最多 2 秒等待，超时不否决业务依赖关闭；这不是全 App 的总关停期限，也不包含 Trace/页面归档。审计另有限时收尾；调用方拥有的账号专用资源仍按自身生命周期处理。具体锁、资源和时间预算见 [Internal 说明书](../package_structure/INTERNAL_STRUCTURE.md)。
 

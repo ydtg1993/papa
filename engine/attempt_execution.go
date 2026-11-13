@@ -48,7 +48,7 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 		r := recover()
 		if files := ar.finish(r != nil || err != nil); len(files) > 0 {
 			// OA 追踪抽屉里"失败"与"那一页"的连接点：光有文件、不知道属于哪条任务等于没留。
-			// Trace 独立按异常/手动选择策略保留；归档始终按自己的模式执行。
+			// Trace 独立按 off/errors/all 模式保留；归档始终按自己的模式执行。
 			tr.Step(archiveTraceStep, map[string]any{"files": files})
 		}
 		// 失败原因写进 trace：handler 返回错误、或直接 panic，都在这里落一条带分类与消息的

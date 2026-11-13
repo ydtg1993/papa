@@ -189,6 +189,8 @@ papa report list [-c <配置路径>] [--out <dir>]
 
 文档分发包含当前图册资源，不只复制 Markdown。`upgrade --write` 在创建目录前拒绝链接路径（包括 Windows junction）；技能刷新也使用同一保护。项目所有的 `project-conventions.md` 只在缺失时独占创建，检查后新增的文件也不会被覆盖。
 
+框架副本与通用技能先写同目录临时文件，关闭后替换目标；已有文件即使是业务文件的硬链接，也不会被原地截断。升级仍为逐文件操作，中途失败不会回滚此前已更新的副本。
+
 ## 2. 通用 flags（html / rod / diff 共用）
 
 | Flag | 说明 |

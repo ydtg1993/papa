@@ -132,7 +132,7 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 | models 的 crawler_task_index/column_default/utc_time 等测试 | 表字段与索引契约、零值/GORM 默认、UTC 序列化；模型通过不等于真实数据库迁移已验收 |
 | internal/database 与存储/Engine 的测试 | 显式迁移、SQL 方言、CAS、事务与真实库行为，由实际拥有者验证 |
 | cmd/papa 的 docs_structure_test.go | 全部手册新建/升级分发、分类导航可达、分发内部链接、历史排除、保留项目内容与目录层级 |
-| cmd/papa 的 docs_assets_test.go | 图源/产物哈希、PNG 字节分发、missing-only 保留、upgrade 链接路径拒绝与项目约定保护 |
+| cmd/papa 的 docs_assets_test.go、scaffold_safe_test.go | 前者验证图源/产物哈希、PNG 字节分发和生成文档导航；后者验证 new/upgrade 链接路径拒绝、硬链接不越界改写、业务文件与项目约定保护 |
 
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
 

@@ -24,10 +24,10 @@
       "name": "03-task-loop",
       "title": "动态数据流",
       "width": 1200,
-      "height": 1423,
-      "sourceSHA256": "133f177a845dea9f1e143bd474256b0426cdecc2fbada1455a32478d8505ee03",
-      "svgSHA256": "6115b446d693c576daf4b485de0485161da806ba686701e2493aefce7ed16b88",
-      "pngSHA256": "20d4c529171879eb8c1154e0594b52192fb62e40261dc38963f6933854d9b9f5"
+      "height": 1491,
+      "sourceSHA256": "c3635fdd2ae4a7dee3a89a8f256c49877b8cce01a836cc9cfb6ce85294be7415",
+      "svgSHA256": "fd7759a1fcdc19ab4c6dc91d65abd0980baab820e00b9c35688023ee0673d3b4",
+      "pngSHA256": "f09214e5c23542edd12e3e944ab98f01e09b5d4c20d751d28157e8fddccae822"
     },
     {
       "name": "04-recovery-budget",
@@ -51,10 +51,10 @@
       "name": "06-lifecycle",
       "title": "取消、排空与依赖关闭",
       "width": 1200,
-      "height": 1423,
-      "sourceSHA256": "f96901ad1526522dde1678e7790d8bc705eb954fb6f428368f3cb08394246d27",
-      "svgSHA256": "a79e85c5bb0c42ed96f2fd901456c47c38af063cb326525b99bbde326823a929",
-      "pngSHA256": "67492596d6583d6deecfd4423854fa14e2ebee8cfcc42bb8fc22239d69734c59"
+      "height": 1450,
+      "sourceSHA256": "cf206838d3ed8e178f3728fe40c45c7837f0b2c687c9b6bcf59d587aef30f739",
+      "svgSHA256": "52fe993682038d59a4d2581702efba571ac4dba53b9b1920ba8185c59c5650ba",
+      "pngSHA256": "566d317c8365acf6809566c664beeae3412a8118aedb5ff7828e55ac19de591c"
     }
   ]
 }

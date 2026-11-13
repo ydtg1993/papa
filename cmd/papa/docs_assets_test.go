@@ -7,10 +7,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -36,7 +34,12 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 	if err := copyDocs(dir, false); err != nil {
 		t.Fatal(err)
 	}
+	seen := map[string]bool{}
 	for _, diagram := range manifest.Diagrams {
+		if seen[diagram.Name] {
+			t.Fatalf("duplicate diagram in manifest: %s", diagram.Name)
+		}
+		seen[diagram.Name] = true
 		for ext, expectedHash := range map[string]string{"mmd": diagram.SourceSHA256, "svg": diagram.SVGsha256, "png": diagram.PNGsha256} {
 			name := "assets/diagrams/" + diagram.Name + "." + ext
 			want, err := docs.Files.ReadFile(name)
@@ -51,6 +54,11 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 			if err != nil || !bytes.Equal(got, want) {
 				t.Fatalf("asset was not copied exactly: %s: %v", name, err)
 			}
+		}
+	}
+	for _, name := range embeddedDocs() {
+		if strings.HasPrefix(name, "assets/diagrams/") && strings.HasSuffix(name, ".mmd") && !seen[strings.TrimSuffix(filepath.Base(name), ".mmd")] {
+			t.Fatalf("diagram missing from manifest: %s", name)
 		}
 	}
 	name := "assets/diagrams/01-capabilities.png"
@@ -84,70 +92,6 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 	adds, updates, _ = planDocs(root)
 	if len(adds)+len(updates) != 0 {
 		t.Fatalf("asset upgrade is not idempotent: %v %v", adds, updates)
-	}
-}
-
-func testDocDirectoryLink(t *testing.T, link, target string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path "+quote(link)+" -Target "+quote(target)+" | Out-Null")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("create test junction: %v %s", err, out)
-		}
-	} else if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	// Only remove the link entry; never recurse into the external target.
-	t.Cleanup(func() {
-		if err := os.Remove(link); err != nil {
-			t.Error(err)
-		}
-	})
-}
-
-func TestUpgradeRejectsLinkedRootsBeforeCreatingDirectories(t *testing.T) {
-	for _, which := range []string{"docs", "skills"} {
-		t.Run(which, func(t *testing.T) {
-			root, outside := t.TempDir(), t.TempDir()
-			var err error
-			if which == "docs" {
-				testDocDirectoryLink(t, filepath.Join(root, "docs"), outside)
-				err = writeDocs(&upgradePlan{Root: root, DocAdds: []string{"README.md"}})
-			} else {
-				testDocDirectoryLink(t, filepath.Join(root, ".claude"), outside)
-				refresh, seed, _ := planSkill(root)
-				err = writeSkill(&upgradePlan{Root: root, SkillRefresh: refresh, SkillSeed: seed})
-			}
-			if err == nil {
-				t.Error("upgrade followed a directory link")
-			}
-			entries, readErr := os.ReadDir(outside)
-			if readErr != nil || len(entries) != 0 {
-				t.Fatalf("external target changed: %v %v", entries, readErr)
-			}
-		})
-	}
-}
-
-func TestUpgradePreservesProjectConventionsCreatedAfterPlan(t *testing.T) {
-	root := t.TempDir()
-	refresh, seed, _ := planSkill(root)
-	var owned string
-	for _, item := range skillFiles() {
-		if !item.refreshed {
-			owned = filepath.Join(root, item.rel)
-		}
-	}
-	if owned == "" {
-		t.Fatal("missing project-owned skill fixture")
-	}
-	writeFileT(t, owned, "project notes created after planning")
-	if err := writeSkill(&upgradePlan{Root: root, SkillRefresh: refresh, SkillSeed: seed}); err != nil {
-		t.Fatal(err)
-	}
-	if readFile(t, owned) != "project notes created after planning" {
-		t.Fatal("upgrade overwrote newly created project conventions")
 	}
 }
 

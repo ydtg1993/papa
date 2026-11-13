@@ -63,3 +63,45 @@ func writeScaffoldFile(path string, data []byte, missingOnly bool) error {
 	}
 	return closeErr
 }
+
+// replaceScaffoldFile refreshes one framework-owned name without writing through
+// a hard link to project-owned content. Keep the old file until the new contents
+// have been written and closed. Ancestor checks are not a sandbox against a
+// concurrent process replacing directories; callers own a trusted project tree.
+func replaceScaffoldFile(path string, data []byte) error {
+	if err := checkScaffoldPath(path); err != nil {
+		return err
+	}
+	mode := os.FileMode(0644)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("脚手架目标不是普通文件，拒绝刷新：%s", path)
+		}
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".papa-refresh-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // only this call's temporary file
+	_, writeErr := f.Write(data)
+	if writeErr == nil {
+		writeErr = f.Chmod(mode)
+	}
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := checkScaffoldPath(path); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}

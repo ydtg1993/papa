@@ -1,8 +1,8 @@
 flowchart TB
     A["运行上下文取消 / 启动失败"] --> B["停止 HTTP 并等待请求<br/>业务 shutdown hooks 逆序收尾"]
-    B --> C["Engine.Stop<br/>取消 / 限时等待 worker 与结算退出"]
+    B --> C["Engine.Stop<br/>等待 worker / ticker 与结算<br/>同时核对持久积压与未确认状态"]
     C --> D["运行服务与消息监听收尾<br/>记录各自真实排空结果"]
-    D --> E["尽力发送 run_stopped<br/>转发 + 在线报告 + 事件归档<br/>共用最多 2 秒等待"]
+    D --> E["尽力发送 run_stopped：Engine 结果<br/>转发 + 在线报告 + 事件归档<br/>共用最多 2 秒等待"]
     E --> F["操作审计限时收尾"]
     F --> G{"HTTP / 业务 / Engine /<br/>运行服务 / 监听均已排空？"}
     G -->|是| H["关闭公共浏览器池与 DB"]

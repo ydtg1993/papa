@@ -208,13 +208,7 @@ func writeDocs(p *upgradePlan) error {
 			return err
 		}
 		dst := filepath.Join(dir, name)
-		if err := checkScaffoldPath(dst); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := replaceScaffoldFile(dst, data); err != nil {
 			return err
 		}
 	}
@@ -268,13 +262,7 @@ func writeSkill(p *upgradePlan) error {
 			}
 			continue
 		}
-		if err := checkScaffoldPath(dst); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(dst, content, 0o644); err != nil {
+		if err := replaceScaffoldFile(dst, content); err != nil {
 			return err
 		}
 	}
