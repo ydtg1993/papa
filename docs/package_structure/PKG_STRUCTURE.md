@@ -333,7 +333,7 @@ Download 同步执行并使用传入 context 约束请求、片段 goroutine 与
 
 两个包的 `bounded_download_test.go` 覆盖代理覆盖层超时、传输复用、有界调度及取消时等待进度回调；filedown 另覆盖极端偏移、旧产物安全发布、POSIX 权限保留与发布失败后的断点重跑。
 
-filedown 测试：`downloader_test.go`、`overlay_test.go`、`resume_test.go`、`regression_test.go`、`destination_test.go`。m3u8 测试：`downloader_test.go`、`overlay_test.go`、`resume_test.go`、`regression_test.go`、`destination_test.go`、`byterange_test.go`、`url_resolution_test.go`、`limits_test.go`、`remediation_test.go`、`egress_ffmpeg_test.go`。路径互斥放父包测试，真实 ffmpeg 用例须显式配置环境，不能用纯解析测试替代外部进程行为。
+filedown 测试：`downloader_test.go`、`overlay_test.go`、`resume_test.go`、`regression_test.go`、`destination_test.go`。m3u8 测试：`downloader_test.go`、`overlay_test.go`、`resume_test.go`、`regression_test.go`、`destination_test.go`、`byterange_test.go`、`url_resolution_test.go`、`limits_test.go`、`remediation_test.go`、`egress_ffmpeg_test.go`。路径互斥放父包测试，真实 ffmpeg 用例须显式配置环境，不能用纯解析测试替代外部进程行为。m3u8 合并负责把输入协议白名单置于 `-i` 前、输出大小限制 `-fs` 置于 `-i` 后；产物超预算仍由发布边界拒绝，保留旧目标并清理 staging。真实外部进程回归覆盖正常合并、含单引号路径及输出预算失败，不能仅凭参数字符串断言认定命令可执行。
 
 ### 7.4 middleware/proxy
 

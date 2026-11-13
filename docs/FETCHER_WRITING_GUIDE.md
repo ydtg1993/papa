@@ -132,7 +132,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 手动追踪 API 已删除，不维护手动选择状态，也不提供主动追踪按钮。需要完整记录时设置 `crawler.trace.mode: all`。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **模式配置**：`crawler.trace.mode` 默认为 `errors`；`all` 保留正常成功，`off` 关闭。关闭时 `task.Trace` 为 nil，方法调用安全，无需判空。`crawler.trace.retention` 默认 7 天，按记录时间清理。
-- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断；历史空身份明确标记未知轮次。handler panic 时，panic 之前已上报的步骤同样会落库。启用追踪的旧库升级须显式 migrate 增加 execution_id，详见 CORE_CONFIG 的迁移说明。
+- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断。handler panic 时也会按保留模式尝试把此前缓冲步骤写入 Trace 文件；写盘失败不等于证据已保存。当前 Trace 不落数据库，不需要 Trace 表迁移。Trace 与页面归档在尝试收尾执行，不经过在线 obs 异步队列，不能套用 obs 的收尾等待预算；运行关系见 [架构图解](ARCHITECTURE_DIAGRAMS.md)。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
 - **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。
 

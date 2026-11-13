@@ -1111,11 +1111,12 @@ func (d *Downloader) mergeToMP4Staged(ctx context.Context, initSegmentPath strin
 	cmd := exec.CommandContext(ctx, ffmpegPath,
 		// Inputs are already downloaded/decrypted. Never let a nested format
 		// cause ffmpeg to open a network URL outside the guarded HTTP client.
-		"-y", "-fs", strconv.FormatInt(d.limits.OutputBytes+1, 10),
+		"-y",
 		"-protocol_whitelist", "file",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", listFilePath,
+		"-fs", strconv.FormatInt(d.limits.OutputBytes+1, 10),
 		"-c", "copy",
 		"-bsf:a", "aac_adtstoasc",
 		outputPath,
