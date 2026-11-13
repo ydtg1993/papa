@@ -128,3 +128,22 @@ func (m *MemStore) Verify(token string) (string, bool) {
 
 // 编译期确认 MemStore 满足接口。
 var _ Store = (*MemStore)(nil)
+
+// Rotate 换掉一把令牌的哈希，保留行与启用状态，返回新明文与"提交的令牌是否就是当前这一把"。
+func (m *MemStore) Rotate(id uint, presented string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		if m.rows[i].ID == id {
+			token, err := auth.NewToken()
+			if err != nil {
+				return "", false, err
+			}
+			current := m.rows[i].hash == auth.Hash(presented)
+			m.rows[i].hash = auth.Hash(token)
+			m.rows[i].UpdatedAt = time.Now()
+			return token, current, nil
+		}
+	}
+	return "", false, ErrNotFound
+}

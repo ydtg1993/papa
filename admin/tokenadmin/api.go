@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/ydtg1993/papa/v3/admin/auth"
 )
 
 // maxBody 请求体上限：这几条接口的 body 只有几个短字段，别让人用一个畸形请求吃光内存。
@@ -46,6 +48,7 @@ func NewAPI(store Store, hook Hook, log Logger) *API {
 // Register 把路由挂到 mux 上。wrap 传监控后台的中间件（mon.Auth）——
 // 令牌管理接口本身也是 /api/*，同样要过白名单与令牌校验。
 func (a *API) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
+	mux.Handle("/api/tokens/rotate", wrap(http.HandlerFunc(a.handleRotate)))
 	mux.Handle("/api/tokens", wrap(http.HandlerFunc(a.handleTokens)))
 	mux.Handle("/api/tokens/enabled", wrap(http.HandlerFunc(a.handleEnabled)))
 	mux.Handle("/api/tokens/remove", wrap(http.HandlerFunc(a.handleRemove)))
@@ -204,4 +207,38 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// handleRotate 换一把令牌：{id}。当前这把令牌从请求头里取（auth.Extract）。
+// 只有支持 Rotate 的存储才认这条接口；新明文只回一次。
+func (a *API) handleRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var body struct {
+		ID uint `json:"id"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if body.ID == 0 {
+		writeError(w, http.StatusBadRequest, "缺少令牌 ID")
+		return
+	}
+	rotator, ok := a.store.(interface {
+		Rotate(uint, string) (string, bool, error)
+	})
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "当前存储不支持更新令牌")
+		return
+	}
+	token, current, err := rotator.Rotate(body.ID, auth.Extract(r))
+	a.changed("rotate", body.ID, nil, err, r)
+	if err != nil {
+		a.failBody(w, r, err, "rotate")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "current": current})
 }

@@ -43,6 +43,8 @@ type Pool struct {
 
 	reaperMu   sync.Mutex
 	reaperStop chan struct{} // 非 nil 表示空闲回收协程在运行
+
+	removeRootOnClose bool // 优雅退出时是否删除显式配置的 temp_dir 根目录
 }
 
 // 浏览器二进制来源（对应 config.yaml 的 browser.binary）。
@@ -129,6 +131,9 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		return nil, err
 	}
 	cfg.BinarySource, cfg.BrowserPath = source, bin
+	// 只有显式配置了 temp_dir 才在优雅退出时删除根目录；空值走 Rod 默认临时路径，
+	// 那是共享位置，不该删。
+	removeRootOnClose := strings.TrimSpace(cfg.TempDir) != ""
 	root, err := PrepareTempDir(cfg.TempDir)
 	if err != nil {
 		return nil, err
@@ -146,9 +151,10 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 
 	// 只分配空闲通道，浏览器按需在 Get 时创建
 	p := &Pool{
-		cfg:      cfg,
-		browsers: make(chan *Browser, cfg.Size),
-		direct:   make(chan *Browser, cfg.DirectSize),
+		cfg:               cfg,
+		removeRootOnClose: removeRootOnClose,
+		browsers:          make(chan *Browser, cfg.Size),
+		direct:            make(chan *Browser, cfg.DirectSize),
 	}
 	p.newBrowserFn = p.newBrowser
 	p.cond = sync.NewCond(&p.mu)
@@ -613,6 +619,9 @@ func (p *Pool) Close() {
 		}
 		for b := range p.direct {
 			b.Close()
+		}
+		if p.removeRootOnClose {
+			_ = os.RemoveAll(p.cfg.TempDir)
 		}
 	})
 }

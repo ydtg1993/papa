@@ -97,7 +97,20 @@ func TestLivePoolTempDirCleanup(t *testing.T) {
 	if _, err = os.Stat(profile); !os.IsNotExist(err) {
 		t.Fatalf("profile not cleaned: %v", err)
 	}
-	if _, err = os.Stat(root); err != nil {
-		t.Fatal("root removed", err)
+	if _, err = os.Stat(root); !os.IsNotExist(err) {
+		t.Fatal("root not removed after Close", err)
+	}
+}
+
+// 不依赖真实浏览器：size 0 不建任何实例，只验证显式 temp_dir 的根目录在 Close 时被删。
+func TestPoolCloseRemovesExplicitTempDirRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "explicit")
+	p, err := NewPool(PoolConfig{Size: 0, DirectSize: 0, TempDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Close()
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("explicit temp_dir root not removed after Close: %v", err)
 	}
 }
