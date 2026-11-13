@@ -234,6 +234,7 @@ func TestBreakerSettlementCrashCutsFromHandlerMySQL(t *testing.T) {
 			if err := db.Callback().Update().Remove("test:terminal-cut"); err != nil {
 				t.Fatal(err)
 			}
+			drainTestEvents(t, e)
 			beforeReconcile := countTaskEvents(collector, events.TypeTaskFailed)
 			restarted := makeEngine()
 			restarted.SetEventsEmitter(collector)
@@ -270,6 +271,7 @@ func TestBreakerSettlementCrashCutsFromHandlerMySQL(t *testing.T) {
 			if row.Status != models.TaskStatusFailed || row.Reprocess != 1 || row.CompensationVersion != 1 || strings.Count(row.Error, "fixture cut business error") != 1 {
 				t.Fatalf("non-idempotent row: %+v", row)
 			}
+			drainTestEvents(t, restarted)
 			if countTaskEvents(collector, events.TypeTaskFailed) != beforeReconcile {
 				t.Fatal("reconciliation fabricated another execution failure event")
 			}

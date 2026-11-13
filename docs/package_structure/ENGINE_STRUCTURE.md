@@ -278,3 +278,5 @@ InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查�
 
 
 并发恢复初始化由 breakerCoordinator 的 breakerRestoreGate 可取消串行化：gate 包含加载、状态发布、可靠 flush 与维护循环交接，等待者也纳入 Engine 的初始化在途位。该 gate 只约束初始化，不复用控制锁/存储写 gate；等待或访问存储时均不持 Engine.mu、breakerMu。初始化成功标志在可靠 flush 后发布，避免并发调用越过尚未完成的持久化确认。
+
+恢复 gate 的首次创建由 breakerRestoreOnce（sync.Once）拥有，不为通道初始化直接解锁 breakerMu；事务事件派发守卫保持原约束。

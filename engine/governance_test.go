@@ -105,6 +105,7 @@ func TestRuntimeAccountFailureEndsTaskWithoutWaitingForReplacement(t *testing.T)
 	if !errors.Is(err, account.ErrExpired) || calls != 1 || time.Since(start) > time.Second {
 		t.Fatalf("failed task waited/retried: calls=%d elapsed=%v err=%v", calls, time.Since(start), err)
 	}
+	drainTestEvents(t, e)
 	if countTaskEvents(eventsOut, events.TypeTaskFailed) != 1 {
 		t.Fatal("failed task terminal event missing")
 	}

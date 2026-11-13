@@ -10,12 +10,10 @@ import (
 // acquireRestore serializes only startup transactions. Waiting is cancellable;
 // neither breakerMu nor the Engine admission lock spans storage or gate waits.
 func (b *breakerCoordinator) acquireRestore(ctx context.Context) (func(), error) {
-	b.breakerMu.Lock()
-	if b.breakerRestoreGate == nil {
+	b.breakerRestoreOnce.Do(func() {
 		b.breakerRestoreGate = make(chan struct{}, 1)
-	}
+	})
 	gate := b.breakerRestoreGate
-	b.breakerMu.Unlock()
 	select {
 	case gate <- struct{}{}:
 		if err := ctx.Err(); err != nil {

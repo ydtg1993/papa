@@ -57,10 +57,10 @@ func TestBreakerReportsUseOneIDAndRetainHistory(t *testing.T) {
 		t.Fatalf("reports %+v %v", first, err)
 	}
 	id := first[0].Capture.ID
-	for _, ev := range col.snapshot() {
-		if ev.Type == events.TypeBreakerTripped && ev.Attrs["incident_id"] != id {
-			t.Fatalf("event ID %q differs from report %q", ev.Attrs["incident_id"], id)
-		}
+	// Later failures still need this stream; wait for this incident's actual
+	// delivery instead of closing it or inspecting a possibly empty snapshot.
+	if ev := col.waitEvent(t, events.TypeBreakerTripped); ev.Attrs["incident_id"] != id {
+		t.Fatalf("event ID %q differs from report %q", ev.Attrs["incident_id"], id)
 	}
 	if len(first[0].Evidence) != 2 || strings.Contains(first[0].Evidence[0].URL, "hidden") {
 		t.Fatalf("evidence: %+v", first[0])

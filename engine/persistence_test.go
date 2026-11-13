@@ -59,6 +59,7 @@ func TestClaimFailureDoesNotExecuteAndCanCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Millisecond)
 	defer cancel()
 	err := e.stageHandler(e.stages["stub:stub"])(ctx, task)
+	drainTestEvents(t, e)
 	if !errors.Is(err, context.DeadlineExceeded) || len(fetcher.calls()) != 0 || countTaskEvents(c, events.TypeTaskClaimed) != 0 {
 		t.Fatalf("unconfirmed claim executed: err=%v calls=%d events=%v", err, len(fetcher.calls()), c.snapshot())
 	}
@@ -118,6 +119,7 @@ func TestTerminalWriteFailureNeverReportsSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Millisecond)
 	defer cancel()
 	err := e.stageHandler(e.stages["stub:stub"])(ctx, task)
+	drainTestEvents(t, e)
 	if !errors.Is(err, context.DeadlineExceeded) || len(fetcher.calls()) != 1 || countTaskEvents(c, events.TypeTaskFinished) != 0 || !e.dedupCache.Get(task.Unique()) {
 		t.Fatalf("unpersisted terminal state reported success: err=%v calls=%d events=%v active=%v", err, len(fetcher.calls()), c.snapshot(), e.dedupCache.Get(task.Unique()))
 	}
@@ -157,7 +159,7 @@ func TestUncertainClaimNeverAssumesOwnership(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	err := e.stageHandler(e.stages["stub:stub"])(ctx, task)
-	if !errors.Is(err, ErrTaskChanged) || len(fetcher.calls()) != 0 || countTaskEvents(c, events.TypeTaskFinished) != 0 {
+	if !errors.Is(err, ErrTaskChanged) || len(fetcher.calls()) != 0 {
 		t.Fatalf("uncertain claim treated as owned or finished: err=%v calls=%d events=%v", err, len(fetcher.calls()), c.snapshot())
 	}
 	// Another queued copy that cannot claim has not resolved the first copy's
@@ -168,6 +170,10 @@ func TestUncertainClaimNeverAssumesOwnership(t *testing.T) {
 	unsettled := len(e.execution.Snapshot())
 	if unsettled != 1 {
 		t.Fatal("unclaimed duplicate cleared unresolved ownership")
+	}
+	drainTestEvents(t, e)
+	if countTaskEvents(c, events.TypeTaskFinished) != 0 {
+		t.Fatalf("uncertain claim reported completion: events=%v", c.snapshot())
 	}
 }
 
@@ -341,6 +347,7 @@ func TestExecutionRetryWriteFailureDoesNotReplayHandlerOrIncrement(t *testing.T)
 				t.Fatalf("write reached driver=%v lostAck=%v SQL=%s", didWrite, afterCommit, f.written())
 			}
 
+			drainTestEvents(t, e)
 			if task.Retry != 0 || countTaskEvents(c, events.TypeTaskRetry) != 0 || countTaskEvents(c, events.TypeTaskFinished) != 0 {
 				t.Fatal("unconfirmed retry was announced or executed")
 			}

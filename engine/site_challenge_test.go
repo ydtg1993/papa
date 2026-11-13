@@ -66,6 +66,7 @@ func TestSiteChallengeTaskExecutesOnceWithoutAccountSwitch(t *testing.T) {
 	if !errors.Is(err, core.ErrSiteChallenge) || core.Retryable(err) || calls != 1 || account.IsAttemptFailure(err) {
 		t.Fatalf("challenge retried or misclassified: calls=%d err=%v", calls, err)
 	}
+	drainTestEvents(t, e)
 	if countTaskEvents(eventsOut, events.TypeTaskFailed) != 1 {
 		t.Fatal("failed terminal event missing")
 	}

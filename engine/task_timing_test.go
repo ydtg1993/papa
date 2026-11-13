@@ -40,6 +40,7 @@ func TestAttemptFinishPersistenceFailureNeverReplaysHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := e.stageHandler(e.stages["stub:stub"])(context.Background(), task)
+	drainTestEvents(t, e)
 	if !errors.Is(err, errAttemptTimingPersistence) || len(fetcher.calls()) != 1 || countTaskEvents(c, events.TypeTaskFinished) != 0 {
 		t.Fatalf("timing error replayed business or reported success: err=%v calls=%d", err, len(fetcher.calls()))
 	}

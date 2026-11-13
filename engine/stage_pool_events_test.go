@@ -86,6 +86,7 @@ func TestStagePoolConcurrentLookupEmitsCreationOnce(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	drainTestEvents(t, e)
 	count := 0
 	for _, ev := range collector.snapshot() {
 		if ev.Type == events.TypeStagePool && ev.Source == "created" {
