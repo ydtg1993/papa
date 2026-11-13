@@ -26,16 +26,18 @@ func (NopEmitter) Dropped() uint64             { return 0 }
 // bufferedEmitter owns its queue and a single consumer goroutine. No producer
 // or closer invokes user code. A stuck callback cannot create replacement workers.
 type bufferedEmitter struct {
-	ch        chan Event
-	seq       atomic.Uint64
-	dropped   atomic.Uint64
-	mu        sync.Mutex
-	closed    bool
-	done      chan struct{}
-	err       error // written by consumer before done closes
-	consume   func(Event) error
-	finish    func() error
-	stampTime bool // only the standard clock runs on producers
+	ch             chan Event
+	seq            atomic.Uint64
+	dropped        atomic.Uint64
+	mu             sync.Mutex
+	closed         bool
+	done           chan struct{}
+	err            error // written by consumer before done closes
+	consume        func(Event) error
+	finish         func() error
+	stampTime      bool    // only the standard clock runs on producers
+	runID          *string // archive identity, applied before the shared string budget
+	runIDTruncated bool
 }
 
 func newBuffered(buffer int, consume func(Event) error, finish func() error) *bufferedEmitter {
@@ -62,14 +64,14 @@ func NewEmitter(runID string, sink *JSONLSink, buffer int, now func() time.Time)
 	owned, _ := Detach(Event{RunID: runID})
 	e := newBuffered(buffer, func(ev Event) error {
 		ev.V = Version
-		ev.RunID = owned.RunID
-		ev.Truncated = ev.Truncated || owned.Truncated
 		if ev.TS.IsZero() {
 			ev.TS = now()
 		}
 		return sink.Write(ev)
 	}, sink.Close)
 	e.stampTime = standardClock
+	e.runID = &owned.RunID
+	e.runIDTruncated = owned.Truncated
 	return e
 }
 
@@ -96,6 +98,10 @@ func Isolate(em Emitter) Closer {
 }
 
 func (e *bufferedEmitter) Emit(ev Event) {
+	if e.runID != nil {
+		ev.RunID = *e.runID
+		ev.Truncated = ev.Truncated || e.runIDTruncated
+	}
 	if ev.TS.IsZero() && e.stampTime {
 		ev.TS = time.Now()
 	}

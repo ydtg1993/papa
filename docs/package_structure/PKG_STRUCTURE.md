@@ -362,7 +362,7 @@ Manager 的 RWMutex 拥有列表、轮转位置、健康记录和版本、探针
 | `detach.go` | Detach；限制字符串及 map 数量，分离入队值的所有权，标记 Truncated |
 | `sink.go` | `NewJSONLSink`、诊断副本脱敏、逐行 JSON 序列化、写入锁与幂等关闭 |
 
-Emitter 拥有 channel、序列/丢弃原子计数和一个固定消费者，RWMutex 协调入队与关闭。Emit 使用 Detach 分离 map/string 所有权：单字符串 2 KiB、总字符串 16 KiB、所有 map 合计 64 项；省略内容标记 Truncated，队满丢弃。调用期间不得并发修改原 map，返回后可复用。NewEmitter 的时钟、sink.Write 和 sink.Close 均在消费者执行；Isolate 为未知 Emitter 建一个固定队列与消费者，回调阻塞不会进入 worker，也不创建替代消费者。
+Emitter 拥有 channel、序列/丢弃原子计数和一个固定消费者，Mutex 协调入队与关闭。Emit 使用 Detach 分离 map/string 所有权：单字符串 2 KiB、总字符串 16 KiB、所有 map 合计 64 项；超出单字段或总字符串预算的值整体省略并标记 Truncated，队满丢弃。不能先截字符串再脱敏：这可能截掉 URL userinfo/DSN 的分隔符并保留凭据前缀；TruncateError 同样对超限文本返回省略标记。调用期间不得并发修改原 map，返回后可复用。NewEmitter 默认 time.Now 在入口采样；显式注入的时钟回调、sink.Write 和 sink.Close 均在消费者执行；Isolate 为未知 Emitter 建一个固定队列与消费者，回调阻塞不会进入 worker，也不创建替代消费者。
 
 Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；底层 I/O/回调不能被强杀，遗留消费者只持自己的依赖。panic 在消费者边界恢复并结束该单元。JSONLSink 拥有传入 io.WriteCloser，Write/Close 锁归 sink。App 将归档与报告并列接线，关闭共用 2 秒期限，任何一方卡住不阻塞另一方或业务依赖关闭。事件丢失与可靠熔断协议无关；测试见 `boundary_test.go`、`emitter_test.go`、`sink_test.go`、`redact_test.go`。
 
@@ -444,3 +444,6 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 
 
 该共享包不依赖 obs 报告服务或数据库；在线报告停用不会移除熔断的数据契约。持久化 JSON 字段不因目录迁移改变，控制状态与未确认历史仍由 Engine/breakerstore 负责可靠保存。
+
+
+事件预算也包含 NewEmitter 配置的 runID：不可变归档身份在 Detach 前覆盖输入，不能在消费阶段额外加回预算外字符串。精确上限内的 UTF-8 值保持完整；重复异步边界保留省略质量标记。

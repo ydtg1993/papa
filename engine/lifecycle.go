@@ -27,7 +27,11 @@ import (
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]core.StopStats) {
 	defer e.requestEventsClose()
 	deadline := time.Now().Add(timeout)
+	// Startup storage registers its in-flight slot under the same short lock.
+	// Once canceled, no initializer may join after tickerWG has reached zero.
+	e.mu.Lock()
 	e.cancel()
+	e.mu.Unlock()
 	e.BindAccountHealthEvents(nil)
 	tickersDone := make(chan struct{})
 	go func() {

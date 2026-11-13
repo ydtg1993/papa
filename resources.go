@@ -6,7 +6,8 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/middleware"
 )
 
-// ReportInputLimits configures bounded report loading before App.Run.
+// ReportInputLimits configures online signal intake and dimension budgets before
+// App.Run. Offline file/scan/spool limits do not apply to the online service.
 type ReportInputLimits = inputbudget.Limits
 
 // DownloadLimits bounds one download independently of downloader configuration.

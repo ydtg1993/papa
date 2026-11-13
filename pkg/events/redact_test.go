@@ -61,14 +61,47 @@ func TestEventStringBudgetDoesNotRetainPartialCredentials(t *testing.T) {
 	}
 }
 
+func TestEmitterIncludesConfiguredRunIDInStringBudget(t *testing.T) {
+	var out bufCloser
+	padding := strings.Repeat("x", MaxStringBytes)
+	emitter := NewEmitter(padding, NewJSONLSink(&out), 1, nil)
+	emitter.Emit(Event{
+		Type: padding, Site: padding, Stage: padding, URL: padding,
+		Kind: padding, Outcome: padding, Queue: padding, Source: padding,
+	})
+	if err := emitter.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var decoded Event
+	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	total := len(decoded.RunID) + len(decoded.Type) + len(decoded.Site) + len(decoded.Stage) + len(decoded.URL) + len(decoded.Kind) + len(decoded.Outcome) + len(decoded.Queue) + len(decoded.Source)
+	if total > MaxEventStringBytes || !decoded.Truncated {
+		t.Fatalf("configured run ID bypassed string budget: bytes=%d truncated=%v", total, decoded.Truncated)
+	}
+	if decoded.RunID != padding {
+		t.Fatal("configured run ID was not preserved")
+	}
+}
+
 func TestTruncateErrorDoesNotExposeCredentialPrefix(t *testing.T) {
 	var out bufCloser
 	event := Event{Error: TruncateError("user:SECRET" + strings.Repeat("x", MaxStringBytes) + "@tcp(example.test:3306)/db")}
-	if err := NewJSONLSink(&out).Write(event); err != nil {
+	emitter := NewEmitter("run", NewJSONLSink(&out), 1, nil)
+	emitter.Emit(event)
+	if err := emitter.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "SECRET") {
 		t.Fatal("error helper retained a partial DSN credential")
+	}
+	var decoded Event
+	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Truncated {
+		t.Fatal("helper omission lost truncation evidence")
 	}
 }
 

@@ -73,7 +73,9 @@ func NewWithLimits(o Options, l inputbudget.Limits) *Runner {
 }
 func bounded(s string) string {
 	if len(s) > 256 {
-		s = s[:256]
+		// Prefix truncation can remove credential delimiters before rendering
+		// performs redaction. Omit without scanning arbitrary input instead.
+		return "[omitted: report string budget]"
 	}
 	return strings.Clone(s)
 }

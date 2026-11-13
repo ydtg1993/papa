@@ -530,3 +530,6 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 模型及 CheckTraceSchema 声明已经删除。
 
 NewApp 在创建 Engine 前调用 database.CheckTaskSchema；拒绝旧 schema 或校验失败时关闭新建 DB 连接并返回错误。缺少尚未创建的任务表允许后续显式迁移；旧库不靠日志提示继续启动。
+
+
+在线报告失败样本与静态说明的 256 字节限制采用整值省略，不保留可能破坏后续凭据识别的字符串前缀。样本省略纳入截断质量计数，已在传输边界标记的同一信号不重复计数。aggregate_boundary_test.go 同时验证四份真实产物、短错误保留和质量标记。

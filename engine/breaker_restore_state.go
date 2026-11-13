@@ -1,10 +1,32 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
 	"time"
 )
+
+// acquireRestore serializes only startup transactions. Waiting is cancellable;
+// neither breakerMu nor the Engine admission lock spans storage or gate waits.
+func (b *breakerCoordinator) acquireRestore(ctx context.Context) (func(), error) {
+	b.breakerMu.Lock()
+	if b.breakerRestoreGate == nil {
+		b.breakerRestoreGate = make(chan struct{}, 1)
+	}
+	gate := b.breakerRestoreGate
+	b.breakerMu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-gate
+			return nil, err
+		}
+		return func() { <-gate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // Coordinator operations own their state. Locked methods require breakerMu;
 // callers publish cross-component pause changes before releasing that lock.

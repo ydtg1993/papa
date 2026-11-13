@@ -65,12 +65,42 @@ func (e *Engine) SetBreakerProbe(site, stage string, probe BreakerProbe) {
 // InitBreakerRuntime restores protection before entry submission/recovery queues.
 // Schema migration remains an explicit operation; an unreadable store stops startup.
 func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
+	// Restoration itself uses shared storage. Register before touching it, and
+	// keep this slot until both maintenance loops have joined the same lifetime.
+	// The short admission lock also fences Stop; it is never held across I/O.
+	e.mu.Lock()
+	err := ctx.Err()
+	if err == nil && e.ctx != nil {
+		err = e.ctx.Err()
+	}
+	if err == nil {
+		e.tickerWG.Add(1)
+	}
+	e.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	defer e.tickerWG.Done()
+	restoreCtx, restoreCancel := context.WithCancel(ctx)
+	defer restoreCancel()
+	if e.ctx != nil {
+		stopRestore := context.AfterFunc(e.ctx, restoreCancel)
+		defer stopRestore()
+	}
+	releaseRestore, err := e.breakers.acquireRestore(restoreCtx)
+	if err != nil {
+		return err
+	}
+	defer releaseRestore()
 	store, ready := e.breakers.prepareRestore(breakerstore.New(e.db))
 	if ready {
 		return nil
 	}
-	active, err := store.LoadRuntime(ctx)
+	active, err := store.LoadRuntime(restoreCtx)
 	if err != nil {
+		return err
+	}
+	if err := restoreCtx.Err(); err != nil {
 		return err
 	}
 	e.breakers.breakerMu.Lock()
@@ -94,16 +124,15 @@ func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
 		}
 	}
 
-	e.breakers.restorationPublishedLocked()
 	e.breakers.unlockAndEmit()
-	if err := e.breakers.flushBreakerReports(ctx); err != nil {
+	if err := e.breakers.flushBreakerReports(restoreCtx); err != nil {
 		e.breakers.breakerMu.Lock()
 		e.breakers.restorationFailedLocked()
 		e.breakers.unlockAndEmit()
 		return err
 	}
-	// A synchronous restoration observer may stop the engine. Never register
-	// new maintenance goroutines after that completed shutdown.
+	// An asynchronous restoration observer may stop the engine. The initializer
+	// remains registered while checking cancellation and handing off to loops.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -133,6 +162,11 @@ func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
 			}
 		}
 	}()
+	// Readiness includes the durable flush and maintenance handoff. Other
+	// initializers remain behind the restore gate until this call returns.
+	e.breakers.breakerMu.Lock()
+	e.breakers.restorationPublishedLocked()
+	e.breakers.unlockAndEmit()
 	return nil
 }
 

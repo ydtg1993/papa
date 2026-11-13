@@ -30,6 +30,7 @@ type breakerCoordinator struct {
 	smartBreakers      map[string]*smartBreaker
 	breakerStore       breakerRepository
 	breakerStoreGate   chan struct{}
+	breakerRestoreGate chan struct{} // serializes initialization, including its durable flush
 	breakerRuntime     bool
 	breakerProbes      map[pauseScope]BreakerProbe
 	events             events.Emitter

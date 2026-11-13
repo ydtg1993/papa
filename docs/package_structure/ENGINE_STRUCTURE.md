@@ -40,7 +40,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 73 个生产 Go 文件、96 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 73 个生产 Go 文件、97 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -270,3 +270,11 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 恢复只接受 `Snapshot.ValidateCurrent` 验证过的控制版本及精确窗口；旧控制升级与近似计数回退已删除。后台重投只提供 RetryTaskVersioned，始终检查补偿版本。
 
 Engine 的 SetEventsEmitter 将未知消费者隔离到固定异步边界；Stop 只请求关闭自己创建的包装器，不等待任意 observer。`breaker_probe_evidence_test.go` 验证探针证据与持久投影的边界/脱敏一致；`breaker_events_test.go` 验证阻塞或 panic observer 不阻止结算，重入操作通过已提交状态进行。可靠快照、窗口和追加历史仍为同步存储协议，依赖共享 `pkg/incident`，不依赖 obs 服务。
+
+
+### 熔断恢复初始化的排空归属
+
+InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查取消并登记 tickerWG 初始化在途位；Stop 在同一锁内取消，再等待。这把恢复 Load/flush 和后续维护循环的交接连成同一生命周期，锁不跨数据库调用。恢复 context 同时响应调用方和 Engine 取消。存储未返回时 Stop 如实返回未排空，不能据此关闭共享 DB；已经停止的 Engine 不再访问恢复存储。回归见 breaker_startup_lifecycle_test.go，覆盖阻塞读取、停止后拒绝和异步恢复观察者触发 Stop 时的在途写入。
+
+
+并发恢复初始化由 breakerCoordinator 的 breakerRestoreGate 可取消串行化：gate 包含加载、状态发布、可靠 flush 与维护循环交接，等待者也纳入 Engine 的初始化在途位。该 gate 只约束初始化，不复用控制锁/存储写 gate；等待或访问存储时均不持 Engine.mu、breakerMu。初始化成功标志在可靠 flush 后发布，避免并发调用越过尚未完成的持久化确认。

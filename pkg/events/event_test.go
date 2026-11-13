@@ -13,8 +13,33 @@ func TestTruncateError(t *testing.T) {
 	}
 	long := strings.Repeat("a", maxErrorLen+100)
 	got := TruncateError(long)
-	if len(got) != maxErrorLen {
-		t.Fatalf("truncate length = %d, want %d", len(got), maxErrorLen)
+	if got != omittedString {
+		t.Fatalf("oversized error was not omitted: %q", got)
+	}
+}
+
+func TestDetachPreservesExactStringBudgetAndPriorOmission(t *testing.T) {
+	padding := strings.Repeat("界", MaxStringBytes/3) + "ab"
+	input := Event{
+		RunID: padding, Type: padding, Site: padding, Stage: padding,
+		URL: padding, Kind: padding, Outcome: padding, Queue: padding,
+	}
+	got, complete := Detach(input)
+	if !complete || got.Truncated {
+		t.Fatal("exactly full byte budget was marked truncated")
+	}
+	if got.RunID != padding || got.Type != padding || got.Site != padding || got.Stage != padding || got.URL != padding || got.Kind != padding || got.Outcome != padding || got.Queue != padding {
+		t.Fatal("valid multibyte string changed at exact budget")
+	}
+	for _, input := range []Event{{Truncated: true}, {Error: TruncateError(padding + "x")}} {
+		got, complete := Detach(input)
+		if complete || !got.Truncated {
+			t.Fatal("prior omission evidence was lost")
+		}
+		got, complete = Detach(got)
+		if complete || !got.Truncated {
+			t.Fatal("second asynchronous boundary lost omission evidence")
+		}
 	}
 }
 
