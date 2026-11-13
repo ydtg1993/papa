@@ -48,9 +48,14 @@ cd mycrawler && go mod tidy
 | 我要… | 手册 | 手册在讲什么 |
 | --- | --- | --- |
 | 维护框架包职责和依赖边界 | [ARCHITECTURE.md](ARCHITECTURE.md) | 状态所有权、装配/服务/后台分工及重构验收 |
-| 查 admin 各目录、文件职责与新增功能归属 | [ADMIN_STRUCTURE.md](ADMIN_STRUCTURE.md) | 后台完整目录细则、状态所有权、前后端资源与依赖边界 |
-| 查 engine 目录、执行状态与调度边界 | [ENGINE_STRUCTURE.md](ENGINE_STRUCTURE.md) | 根包文件分工、内部组件、锁与生命周期、结构审查及收口建议 |
-| 查 internal/app 装配层文件分工与收口建议 | [APP_STRUCTURE.md](APP_STRUCTURE.md) | 组合根逐文件职责、依赖守卫、审查发现与放置规则 |
+| 查 Papa 整体目录、所有包和新增代码归属 | [Papa 目录说明书](package_structure/README.md) | 统一目录索引与七份职责分册 |
+| 查根公开入口、配置、跨包契约和模型 | [ROOT_STRUCTURE.md](package_structure/ROOT_STRUCTURE.md) | 根包、config、core、models、文档与构建配套 |
+| 查 admin 各目录、文件职责与新增功能归属 | [ADMIN_STRUCTURE.md](package_structure/ADMIN_STRUCTURE.md) | 后台完整目录细则、状态所有权、前后端资源与依赖边界 |
+| 查 engine 目录、执行状态与调度边界 | [ENGINE_STRUCTURE.md](package_structure/ENGINE_STRUCTURE.md) | 根包文件分工、内部组件、锁与生命周期 |
+| 查 internal 及 App 装配、存储和执行设施 | [INTERNAL_STRUCTURE.md](package_structure/INTERNAL_STRUCTURE.md) | App 完整职责并入本册；覆盖全部 internal 包 |
+| 查通用抓取、账号、浏览器和资源能力 | [PKG_STRUCTURE.md](package_structure/PKG_STRUCTURE.md) | pkg 各包的接口、状态、资源释放和测试归属 |
+| 查观测分析和报告实现 | [OBS_STRUCTURE.md](package_structure/OBS_STRUCTURE.md) | 输入、分析、证据与产物之间的职责边界 |
+| 查 CLI、脚手架和本地演示实现 | [CMD_STRUCTURE.md](package_structure/CMD_STRUCTURE.md) | 命令与模板归属、显式写入和文档分发 |
 | 核对旧版本数据库遗留表 | [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md) | 只读表盘点、业务清单与旧表处置边界（新项目无需执行） |
 | 管理临时资源、销毁恢复与测试库 | [TEMPORARY_RESOURCES.md](./TEMPORARY_RESOURCES.md) | 框架机制、业务适配契约和用完即清理 |
 | 按阶段控制广度/深度与并行分支 | [TASK_FLOW.md](TASK_FLOW.md) | 可选任务树调度、持久化边界和策略更新 |

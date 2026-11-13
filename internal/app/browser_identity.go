@@ -2,10 +2,8 @@ package app
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/v4/admin/diagnostics"
 	"github.com/ydtg1993/papa/v4/internal/browserdiagnostics"
 	identityruntime "github.com/ydtg1993/papa/v4/pkg/browser/identity/runtime"
-	"net/http"
 )
 
 type browserIdentityState = browserdiagnostics.Service
@@ -40,22 +38,4 @@ func (a *App) initBrowserIdentities() error {
 	}
 	return nil
 }
-func (a *App) diagnosticHandler() *diagnostics.Handler {
-	return &diagnostics.Handler{Service: a.diagnosticService(),
-		Sites: func() any { return a.Engine.GetSiteStats() },
-		Audit: a.runtimeAudit,
-	}
-}
-func (a *App) browserIdentitiesAPI(w http.ResponseWriter, r *http.Request) {
-	a.diagnosticHandler().Identities(w, r)
-}
-
 func (a *App) stopBrowserIdentities(ctx context.Context) bool { return a.identityState.Shutdown(ctx) }
-
-func (a *App) identityView(ctx context.Context, site string) (map[string]any, error) {
-	view, err := a.identityState.View(ctx, site)
-	if view != nil {
-		view["sites"] = a.Engine.GetSiteStats()
-	}
-	return view, err
-}

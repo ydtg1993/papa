@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	featureaccounts "github.com/ydtg1993/papa/v4/admin/accounts"
+	featurecontrol "github.com/ydtg1993/papa/v4/admin/runtimecontrol"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,11 +26,11 @@ func TestAccountsUIRealBrowserDraftLoginIdentityAndSecretFields(t *testing.T) {
 	a := accountsTestApp(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/accounts", func(w http.ResponseWriter, r *http.Request) {
-		a.accountsAPI(w, r.WithContext(auth.WithOperator(r.Context(), "browser-operator")))
+		a.accountsHandler().Accounts(w, r.WithContext(auth.WithOperator(r.Context(), "browser-operator")))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>window.pages={};window.Papa={page:(name,fn)=>pages[name]=fn};window.apiRequest=async function(url,o){return fetch(url,o)};</script><script>`+runtimeControlScript+accountsScript+`</script><script>window.active=pages.accounts(document.getElementById('root'));</script></body></html>`)
+		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>window.pages={};window.Papa={page:(name,fn)=>pages[name]=fn};window.apiRequest=async function(url,o){return fetch(url,o)};</script><script>`+featurecontrol.Script+featureaccounts.Script+`</script><script>window.active=pages.accounts(document.getElementById('root'));</script></body></html>`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -99,7 +101,7 @@ if(url==='/api/accounts/remote'){let frame={lease:'lease-'+b.id,width:1280,heigh
 throw Error('Unexpected mock request '+url)};`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>`+mock+`</script><script>`+runtimeControlScript+accountsScript+`</script><script>window.active=pages.accounts(document.getElementById('root'));window.seenFrames=[];new MutationObserver(ms=>ms.forEach(m=>{if(m.attributeName==='src')seenFrames.push(m.target.src)})).observe(document.body,{subtree:true,attributes:true,attributeFilter:['src']});</script></body></html>`)
+		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>`+mock+`</script><script>`+featurecontrol.Script+featureaccounts.Script+`</script><script>window.active=pages.accounts(document.getElementById('root'));window.seenFrames=[];new MutationObserver(ms=>ms.forEach(m=>{if(m.attributeName==='src')seenFrames.push(m.target.src)})).observe(document.body,{subtree:true,attributes:true,attributeFilter:['src']});</script></body></html>`)
 	}))
 	defer srv.Close()
 	pool, err := browser.NewPool(browser.PoolConfig{Size: 1, Headless: true, NoSandbox: true, BrowserPath: bin, Network: egress.Config{PrivateOrigins: []string{srv.URL}}})

@@ -41,7 +41,7 @@ func TestRuntimeAccountPoolAPITombstoneAndReadOnly(t *testing.T) {
 	post := func(body string, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
-		a.accountPoolsAPI(w, httptest.NewRequest("POST", "/api/account-pools", strings.NewReader(body)))
+		a.accountPoolsHandler().PoolsAPI(w, httptest.NewRequest("POST", "/api/account-pools", strings.NewReader(body)))
 		if w.Code != status {
 			t.Fatalf("status %d want %d: %s", w.Code, status, w.Body.String())
 		}
@@ -58,7 +58,7 @@ func TestRuntimeAccountPoolAPITombstoneAndReadOnly(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		w := httptest.NewRecorder()
-		a.accountPoolsAPI(w, httptest.NewRequest("GET", "/api/account-pools", nil))
+		a.accountPoolsHandler().PoolsAPI(w, httptest.NewRequest("GET", "/api/account-pools", nil))
 		if w.Code != 200 {
 			t.Fatal(w.Body.String())
 		}

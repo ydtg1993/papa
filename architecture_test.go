@@ -27,7 +27,7 @@ func TestPackageResponsibilityBoundaries(t *testing.T) {
 		if strings.HasPrefix(p, "admin/server/") && !strings.Contains(p, "/testdata/") && (strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".html")) {
 			t.Errorf("server composition owns feature/frontend source instead of its owning module: %s", p)
 		}
-		if strings.HasPrefix(p, "internal/app/") && (strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css")) {
+		if strings.HasPrefix(p, "internal/app/") && (strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".html")) {
 			t.Errorf("application composition owns frontend resource: %s", p)
 		}
 		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
@@ -54,6 +54,12 @@ func TestPackageResponsibilityBoundaries(t *testing.T) {
 
 			if strings.HasPrefix(p, "admin/") && dep == module+"internal/app" {
 				t.Errorf("%s imports app", p)
+			}
+			if strings.HasPrefix(p, "internal/sitedecl/") && (dep == "net/http" || strings.HasPrefix(dep, module+"admin/") || dep == module+"internal/app") {
+				t.Errorf("site declaration planner %s imports outer layer %s", p, dep)
+			}
+			if strings.HasPrefix(p, "admin/page/") && strings.HasPrefix(dep, module) {
+				t.Errorf("page value contract %s imports framework implementation %s", p, dep)
 			}
 			if strings.HasPrefix(p, "admin/") && !strings.HasPrefix(p, "admin/server/") && dep == module+"admin/server" {
 				t.Errorf("admin feature %s imports the server composition facade", p)

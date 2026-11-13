@@ -3,13 +3,16 @@
 package browser
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"syscall"
 )
 
 func configureDiagnosticProcess(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
-func stopDiagnosticProcess(process *os.Process) {
+func stopDiagnosticProcess(_ context.Context, process *os.Process) {
 	_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
 	_ = process.Kill()
 }
+
+func retryDiagnosticCleanup(error) bool { return false }

@@ -7,6 +7,7 @@ import (
 	"github.com/ydtg1993/oao"
 	"github.com/ydtg1993/papa/v4/admin/access"
 	"github.com/ydtg1993/papa/v4/admin/auth"
+	"github.com/ydtg1993/papa/v4/admin/breakers"
 	"github.com/ydtg1993/papa/v4/admin/configstore"
 	"github.com/ydtg1993/papa/v4/admin/oplog"
 	"github.com/ydtg1993/papa/v4/admin/server"
@@ -18,67 +19,13 @@ import (
 	"time"
 )
 
-// whitelistReloadInterval 白名单的重载间隔。
-//
-// 为什么要定期重载：库是唯一事实来源，而库会被**别人**改 —— 多实例后台（A 实例在设置页改完，
-// B 实例要能看见）、运维直接改 SQL 修一行。本进程自己保存的那次是即时生效的（写完就换缓存），
-// 这个 ticker 只兜上面两种；30s 是"够快，也不至于拿它当热路径"的量级。
+// Reload observes operator edits to persistent configuration. Local saves
+// invalidate the shared cache immediately; background SQL is limited by TTL.
 const whitelistReloadInterval = 30 * time.Second
-
-// whitelistCacheTTL 白名单读取的进程内缓存时长（装饰器 CachedStringListReader 的 TTL）。
-//
-// 重载循环每 30 秒跑一次，但不该每 30 秒查一次库：白名单值几乎不变，读库结果缓存 5 分钟后
-// 才真正回源。代价是"别的进程/运维直接改 SQL"最迟约 5 分钟可见（本进程后台保存会 Invalidate，
-// 即时生效）。要调可见性/查库频率的平衡就改这个常量。
 const whitelistCacheTTL = 5 * time.Minute
 
-// tokenCountCacheTTL 是「访问令牌数量」的进程内缓存时长（auth.TokenCounter 的 TTL）。
-//
-// 数量缓存仅保留管理统计用途，不能参与鉴权。Verifier/Confirmer 每次查库，Required 恒为 true。
-// 本进程令牌页写操作仍使计数失效；跨进程的令牌创建、停用和删除无需等待此 TTL 即可影响下一次鉴权。
+// Token count is administrative information, never an authentication cache.
 const tokenCountCacheTTL = time.Minute
-
-// reloadWhitelistLoop 定期把库里的白名单同步进本进程的判定缓存。
-//
-// 读经 CachedStringListReader：30 秒的 tick 只打内存，真正的 SELECT 由 TTL 摊薄。
-func (a *App) reloadWhitelistLoop(ctx context.Context, reader configstore.StringListReader, mon *server.Monitor) {
-	ticker := time.NewTicker(whitelistReloadInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			mon.SetWhitelist(access.LoadWhitelist(reader, a.Logger.Sys))
-		}
-	}
-}
-
-// tokenWriteHook 接「访问令牌」页的写操作：成功后让令牌数量缓存失效，同时按开关记审计。
-//
-// 成功写入后更新管理计数；失败事件不失效（数据没变）。鉴权独立逐请求查库，不依赖此 hook。
-//
-// 抽成独立函数是为了能离线断言"写成功确实 Invalidate"——它的调用点在 httpServer 里，
-// 那一步要真库真端口。
-func tokenWriteHook(counter *auth.TokenCounter, rec *oplog.Recorder) tokenadmin.Hook {
-	return func(ev tokenadmin.Event) {
-		if ev.Err == nil {
-			counter.Invalidate()
-		}
-		if rec == nil {
-			return
-		}
-		rec.RecordEvent(oplog.Event{
-			Table: ev.Table, Action: ev.Action,
-			RowID:    strconv.FormatUint(uint64(ev.ID), 10),
-			Values:   ev.Values,
-			Err:      ev.Err,
-			IP:       ev.IP,
-			Operator: auth.OperatorFrom(ev.Req.Context()),
-			At:       ev.At,
-		})
-	}
-}
 
 // httpServer 启动统一 HTTP 服务（监控后台）
 func (a *App) httpServer(ctx context.Context) {
@@ -92,15 +39,8 @@ func (a *App) httpServer(ctx context.Context) {
 		return
 	}
 
-	a.UsePage(Page{Key: "browser-diagnostics", Label: "浏览器诊断", Section: "system", Script: rodDiagnosticsScript})
-	a.UsePage(Page{Key: "crawl-control", Label: "采集控制", Section: "monitor", Script: runtimeControlScript})
-	a.UsePage(Page{Key: "account-pools", Label: "账号池", Section: "data", Script: accountPoolsScript})
-	a.UsePage(Page{Key: "accounts", Label: "账号管理", Section: "data", Script: accountsScript})
+	a.registerBuiltinPages()
 	mux := http.NewServeMux()
-	if a.Config.TaskFlow.Enabled {
-		a.UseCSS(server.TaskFlowCSS)
-		a.UsePage(Page{Key: "task-flow-policy", Label: "运行调度策略", Group: "调度", Section: "flow", Script: server.TaskFlowScript})
-	}
 
 	getter := func() map[string]engine.StageStats {
 		return a.Engine.GetStageStats()
@@ -119,7 +59,13 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 	// 读白名单的装饰器：重载循环每 30s 打一次内存，真正查库由 TTL 摊薄（见 whitelistCacheTTL）。
 	whitelistReader := configstore.NewCachedStringListReader(whitelistStore, whitelistCacheTTL)
-	whitelist := access.LoadWhitelist(whitelistReader, a.Logger.Sys)
+	whitelist, err := access.LoadWhitelistContext(ctx, whitelistReader, a.Logger.Sys)
+	if err != nil {
+		// A stop arriving during initialization is not a configuration error.
+		// The Run coordinator still drains everything acquired so far.
+		a.Logger.Sys.Infof("admin initialization canceled: %s", err)
+		return
+	}
 	access.WarnIfOpenToAll(a.Logger.Sys, whitelist)
 	// 访问令牌：库表里多条、每条属于一个操作人（原来配置里的单 auth_key 已废弃）
 	auth.WarnIfNoToken(a.DB, a.Logger.Sys)
@@ -138,7 +84,7 @@ func (a *App) httpServer(ctx context.Context) {
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
 		OnTaskFlowAction: func(ev server.TaskFlowActionEvent) {
 			if rec != nil {
-				rec.RecordEvent(oplog.Event{Table: "crawler_task_flows", Action: ev.Action, RowID: ev.ID, Operator: ev.Operator, IP: ev.IP, At: ev.At, Err: ev.Err})
+				rec.RecordEvent(ev.OperationLog())
 			}
 		},
 		TaskFlow:       a.Engine.TaskFlow,
@@ -172,15 +118,7 @@ func (a *App) httpServer(ctx context.Context) {
 			if rec == nil {
 				return
 			}
-			rec.RecordEvent(oplog.Event{
-				Table:    ev.Queue,
-				Action:   "process",
-				Values:   map[string]any{"processed": ev.Processed},
-				Err:      ev.Err,
-				IP:       ev.IP,
-				Operator: ev.Operator,
-				At:       ev.At,
-			})
+			rec.RecordEvent(ev.OperationLog())
 		},
 		TaskTrace:          a.Engine.ListTrace,
 		VerifyTokenValue:   tokenCounter.Confirmer(a.Logger.Sys),
@@ -189,7 +127,7 @@ func (a *App) httpServer(ctx context.Context) {
 		ForceResumeBreaker: a.Engine.ForceResumeSite,
 		OnBreakerForceResume: func(operator, site string) {
 			if rec != nil {
-				rec.RecordEvent(oplog.Event{Table: "breaker", Action: "force_resume", Values: map[string]any{"scope": site, "note": "人工强制解除保护；未验证健康，保留失败计数"}, Operator: operator, At: time.Now()})
+				rec.RecordEvent(breakers.ForceResumeEvent(operator, site, time.Now()))
 			}
 		},
 		// 暂停/放行的 scope 有两层：`stage` 为空 = 整站，否则只动那一站的某个阶段。
@@ -201,59 +139,29 @@ func (a *App) httpServer(ctx context.Context) {
 			return a.Engine.ResumeStage(site, stage)
 		},
 		OnBreakerResume: func(operator, site, stage string) {
-			// 放行是**人在场的干预**：熔断停了整条抓取线，谁在什么时候放的行必须查得到
-			if rec == nil {
-				return
+			if rec != nil {
+				rec.RecordEvent(breakers.ResumeEvent(operator, site, stage, time.Now()))
 			}
-			values := map[string]any{
-				"note":  "请求重试整站恢复或解除普通人工暂停；不跳过自动验证",
-				"scope": site, // 哪个站（站点是必填维度，不存在空键）
-			}
-			if stage != "" {
-				values["note"] = "手动放行被暂停的抓取（只放行这个阶段）"
-				values["stage"] = stage
-			}
-			rec.RecordEvent(oplog.Event{
-				Table:    "breaker",
-				Action:   "resume",
-				Values:   values,
-				Operator: operator,
-				At:       time.Now(),
-			})
 		},
 		PauseBreaker: func(site, stage string) bool {
 			// 暂停同样是人**在场的干预**（它停了整站的抓取线），所以 reason 由宿主给死，
 			// 后台只管点：操作日志里能看清"是谁在后台按的"。
-			const reason = "后台手动暂停"
+			const reason = breakers.ManualPauseReason
 			if stage == "" {
 				return a.Engine.PauseSite(site, reason)
 			}
 			return a.Engine.PauseStage(site, stage, reason)
 		},
 		OnBreakerPause: func(operator, site, stage string) {
-			if rec == nil {
-				return
+			if rec != nil {
+				rec.RecordEvent(breakers.PauseEvent(operator, site, stage, time.Now()))
 			}
-			values := map[string]any{
-				"note":  "后台手动暂停了这一站的抓取",
-				"scope": site,
-			}
-			if stage != "" {
-				values["note"] = "后台手动暂停了这一站的某个阶段"
-				values["stage"] = stage
-			}
-			rec.RecordEvent(oplog.Event{
-				Table:    "breaker",
-				Action:   "pause",
-				Values:   values,
-				Operator: operator,
-				At:       time.Now(),
-			})
 		},
 	})
 	mon.Register(mux)
 	// 运维直接改 SQL 后的收敛：定期把库里的白名单同步进判定缓存
-	go a.reloadWhitelistLoop(ctx, whitelistReader, mon)
+	a.whitelistReload = access.NewWhitelistReloader(whitelistReader, a.Logger.Sys, mon.SetWhitelist, whitelistReloadInterval)
+	a.whitelistReload.Start(ctx)
 
 	// Data/resources is a task operations workspace, not a system table browser.
 	tables := taskDataTables(a.DB, a.Engine)
@@ -286,16 +194,7 @@ func (a *App) httpServer(ctx context.Context) {
 	// hook 同时使管理计数失效；令牌鉴权不依赖数量缓存。
 	tokenHook := tokenWriteHook(tokenCounter, rec)
 	tokenadmin.NewAPI(tokenadmin.NewStore(a.DB), tokenHook, a.Logger.Sys).Register(mux, mon.Auth)
-	mux.Handle("/api/browser-diagnostics", mon.Auth(RodDiagnostics(a)))
-	mux.Handle("/api/browser-identities", mon.Auth(http.HandlerFunc(a.browserIdentitiesAPI)))
-	mux.Handle("/api/runtime-policy", mon.Auth(http.HandlerFunc(a.runtimePolicyAPI)))
-	mux.Handle("/api/runtime-remote", mon.Auth(http.HandlerFunc(a.runtimeRemoteAPI)))
-	mux.Handle("/api/account-pools", mon.Auth(http.HandlerFunc(a.accountPoolsAPI)))
-	mux.Handle("/api/accounts", mon.Auth(http.HandlerFunc(a.accountsAPI)))
-	mux.Handle("/api/accounts/remote", mon.Auth(http.HandlerFunc(a.accountsRemoteAPI)))
-	mux.Handle("/api/account-compensation", mon.Auth(http.HandlerFunc(a.accountCompensationAPI)))
-	mux.Handle("/api/runtime-policy/history", mon.Auth(http.HandlerFunc(a.runtimeHistoryAPI)))
-	mux.Handle("/api/proxy-health", mon.Auth(http.HandlerFunc(a.proxyHealthAPI)))
+	a.mountAdminRoutes(mux, mon.Auth)
 
 	// 自定义页与注入（阶段 3 的逃生舱）
 	a.mountCustomRoutes(mux, mon.Auth)
@@ -303,9 +202,10 @@ func (a *App) httpServer(ctx context.Context) {
 	a.mountRouters(mux, mon.Auth)
 
 	readHeader, read, write, idle, _ := cfg.HTTPTimeouts()
+	a.httpRequests = newRequestDrain()
 	srv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           mux,
+		Handler:           a.httpRequests.wrap(mux),
 		ReadHeaderTimeout: readHeader,
 		ReadTimeout:       read,
 		WriteTimeout:      write, // 默认 0 = 不限：日志下载不能被掐
@@ -323,17 +223,32 @@ func (a *App) httpServer(ctx context.Context) {
 	// 会和引擎/数据库的收尾并发，把在途的日志下载直接掐断 —— 与"优雅退出"的说法不符。
 }
 
-// shutdownHTTP 优雅停下 HTTP 服务：不再接新请求，等在途的跑完（最多 ShutdownTimeout）。
-// 超时就强制 Close，别把关停卡死。
-func (a *App) shutdownHTTP() {
-	if a.httpSrv == nil {
-		return
+// shutdownHTTP stops admission and waits for handlers, including hijacked
+// handlers. Force-closing a connection never proves its handler has returned.
+func (a *App) shutdownHTTP() bool {
+	if a.httpSrv == nil && a.httpRequests == nil && a.whitelistReload == nil {
+		return true
+	}
+	a.httpRequests.stop()
+	if a.whitelistReload != nil {
+		a.whitelistReload.Cancel()
 	}
 	_, _, _, _, timeout := a.Config.Server.HTTPTimeouts()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := a.httpSrv.Shutdown(ctx); err != nil {
-		a.Logger.Sys.Errorf("http server shutdown: %s（超时，强制关闭）", err.Error())
-		_ = a.httpSrv.Close()
+	drained := true
+	if a.httpSrv != nil {
+		if err := a.httpSrv.Shutdown(ctx); err != nil {
+			a.Logger.Sys.Errorf("http server shutdown: %s（强制关闭连接，保留共享资源）", err.Error())
+			_ = a.httpSrv.Close()
+			drained = false
+		}
 	}
+	if !a.httpRequests.wait(ctx) {
+		drained = false
+	}
+	if a.whitelistReload != nil && !a.whitelistReload.Stop(ctx) {
+		drained = false
+	}
+	return drained
 }

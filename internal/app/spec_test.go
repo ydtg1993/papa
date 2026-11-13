@@ -64,6 +64,35 @@ func (f *entryStageFetcher) SubmitEntries(_ *engine.Engine, site core.Site) {
 	f.site = site
 }
 
+func TestAppSiteUsesEngineOwnedSnapshots(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Crawler.DrainInterval = time.Hour
+	e := noDBEngine(t, cfg)
+	t.Cleanup(func() { e.Stop(time.Millisecond) })
+	a := &App{Config: cfg, Engine: e}
+	spec := SiteSpec{Key: "example", Headers: map[string]string{"X-Test": "original"}, RestrictedKeywords: []string{"original"}}
+	a.RegisterSites(spec)
+	spec.Headers["X-Test"], spec.RestrictedKeywords[0] = "input", "input"
+	got, ok := a.Site("example")
+	if !ok || got.Headers["X-Test"] != "original" || got.RestrictedKeywords[0] != "original" {
+		t.Fatalf("App.Site retained declaration aliases: %+v, %v", got, ok)
+	}
+	got.Headers["X-Test"], got.RestrictedKeywords[0] = "output", "output"
+	for _, lookup := range []func(string) (core.Site, bool){a.Site, e.Site} {
+		got, ok := lookup("example")
+		if !ok || got.Headers["X-Test"] != "original" || got.RestrictedKeywords[0] != "original" {
+			t.Fatalf("lookup exposed registry-owned state: %+v, %v", got, ok)
+		}
+	}
+	e.SetSite(core.Site{Key: "example", BaseURL: "https://updated.example/"})
+	if got, ok := a.Site("example"); !ok || got.BaseURL != "https://updated.example/" {
+		t.Fatalf("App.Site diverged from the engine catalog: %+v, %v", got, ok)
+	}
+	if _, ok := (&App{}).Site("missing"); ok {
+		t.Fatal("an App without an Engine should have no site")
+	}
+}
+
 // RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 Entry 模式）、站点快照、按站的熔断阈值。
 func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	cfg := &config.Config{}
@@ -77,7 +106,6 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		Config: cfg,
 		Engine: e,
 		Logger: &loggers.LoggerSet{Engine: quietLogger()},
-		sites:  map[string]core.Site{},
 	}
 
 	entry := &entryStageFetcher{} // 阶段 review：实现了 SubmitEntries（入口任务）

@@ -82,6 +82,9 @@ func TestRunNewScaffoldsCompleteProject(t *testing.T) {
 		t.Errorf("docs 只复制了 %d 个文件", len(docs))
 	}
 	for _, d := range docs {
+		if d.IsDir() && d.Name() == "package_structure" {
+			continue
+		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
 			t.Errorf("docs 下出现了非 markdown 文件：%s", d.Name())
 		}

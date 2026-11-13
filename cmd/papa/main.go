@@ -348,19 +348,12 @@ func render(tmplName, dest string, data scaffoldData, missingOnly bool) error {
 }
 
 func copyDocs(destDir string, missingOnly bool) error {
-	entries, err := docs.Files.ReadDir(".")
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := docs.Files.ReadFile(e.Name())
+	for _, name := range embeddedDocs() {
+		data, err := docs.Files.ReadFile(name)
 		if err != nil {
 			return err
 		}
-		dst := filepath.Join(destDir, e.Name())
+		dst := filepath.Join(destDir, name)
 		if err := writeScaffoldFile(dst, data, missingOnly); err != nil {
 			return err
 		}

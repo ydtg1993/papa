@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"github.com/ydtg1993/oao"
-	"github.com/ydtg1993/papa/v4/admin/auth"
 	"github.com/ydtg1993/papa/v4/admin/server"
 	"net/http"
 	"os"
@@ -133,15 +132,6 @@ func validPageKey(s string) bool {
 		}
 	}
 	return true
-}
-
-// operatorOf 从操作事件带的请求里取「操作人」：身份是鉴权中间件（admin/auth）解析访问令牌后
-// 写进请求上下文的。宿主自己构造事件时 Req 可能为 nil —— 那就记空，不影响审计写库。
-func operatorOf(ev oao.ActionEvent) string {
-	if ev.Req == nil {
-		return ""
-	}
-	return auth.OperatorFrom(ev.Req.Context())
 }
 
 // mountCustomRoutes 挂自定义页与注入的三条路由（在监控后台的装配里调用）。

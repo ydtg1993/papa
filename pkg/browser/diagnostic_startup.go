@@ -122,6 +122,12 @@ type diagnosticProcess struct {
 }
 
 func (p *diagnosticProcess) close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), browserCleanupTimeout)
+	defer cancel()
+	return p.closeWithin(ctx)
+}
+
+func (p *diagnosticProcess) closeWithin(ctx context.Context) error {
 	p.once.Do(func() {
 		if stop := p.stopContext.Load(); stop != nil {
 			(*stop)()
@@ -130,18 +136,30 @@ func (p *diagnosticProcess) close() error {
 			_ = p.ws.Close()
 		}
 		if p.cmd != nil && p.cmd.Process != nil {
-			stopDiagnosticProcess(p.cmd.Process)
+			stopDiagnosticProcess(ctx, p.cmd.Process)
 			select {
 			case <-p.done:
-			case <-time.After(3 * time.Second):
-				p.err = fmt.Errorf("diagnostic browser process did not exit within cleanup timeout")
+			case <-ctx.Done():
+				p.err = fmt.Errorf("diagnostic browser process did not exit within cleanup timeout: %w", ctx.Err())
 			}
 		}
 		if p.dir != "" {
-			p.err = errors.Join(p.err, os.RemoveAll(p.dir))
+			p.err = errors.Join(p.err, removeDiagnosticProfile(ctx, p.dir))
 		}
 	})
 	return p.err
+}
+
+// CloseDiagnostic closes only an owned diagnostic instance and reports its
+// bounded process/profile cleanup result. Ordinary Close keeps its existing API.
+// Calling this before returning a WithBrowser callback is safe: Put observes the
+// closed instance and releases its pool slot through the usual dead-browser path.
+func (b *Browser) CloseDiagnostic() error {
+	if b == nil || b.diagnosticProcess == nil {
+		return errors.New("browser is not an owned diagnostic instance")
+	}
+	b.Close()
+	return b.diagnosticProcess.close()
 }
 
 // This dialer bounds both the TCP dial and Rod's otherwise unbounded WebSocket

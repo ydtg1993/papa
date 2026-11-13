@@ -2,6 +2,8 @@ package sitedecl
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -28,7 +30,7 @@ var (
 func RegisterSite(site SiteSpec) {
 	registeredMu.Lock()
 	defer registeredMu.Unlock()
-	registered = append(registered, site)
+	registered = append(registered, cloneSpec(site))
 }
 
 // Sites 返回**框架收集到的**全部站点声明（顺序 = 登记顺序，也就是文件名字典序）。
@@ -37,7 +39,33 @@ func RegisterSite(site SiteSpec) {
 func Sites() []SiteSpec {
 	registeredMu.Lock()
 	defer registeredMu.Unlock()
-	return append([]SiteSpec(nil), registered...)
+	var out []SiteSpec
+	for _, site := range registered {
+		out = append(out, cloneSpec(site))
+	}
+	return out
+}
+
+// cloneSpec copies framework-owned declaration values. Fetchers are business
+// objects with their own identity/lifecycle and are intentionally retained.
+func cloneSpec(s SiteSpec) SiteSpec {
+	s.Headers = maps.Clone(s.Headers)
+	s.RestrictedKeywords = slices.Clone(s.RestrictedKeywords)
+	if s.Breaker != nil {
+		b := *s.Breaker
+		if b.Policy != nil {
+			policy := *b.Policy
+			b.Policy = &policy
+		}
+		s.Breaker = &b
+	}
+	s.M3U8, s.FileDown = s.M3U8.Clone(), s.FileDown.Clone()
+	s.Stages = slices.Clone(s.Stages)
+	for i := range s.Stages {
+		s.Stages[i].M3U8 = s.Stages[i].M3U8.Clone()
+		s.Stages[i].FileDown = s.Stages[i].FileDown.Clone()
+	}
+	return s
 }
 
 // resetRegisteredSites 清空登记表（只给测试用：全局登记表是进程级的，用例之间要互不影响）。

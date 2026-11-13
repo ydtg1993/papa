@@ -143,7 +143,9 @@ func (a *Service) Begin(parent context.Context) (context.Context, func(), bool) 
 	}, true
 }
 
-func (a *Service) Shutdown(ctx context.Context) bool {
+// BeginShutdown rejects new operations and cancels current service and manager
+// operations. It does not wait for callbacks or persistence cleanup.
+func (a *Service) BeginShutdown() {
 	s := a
 	s.mu.Lock()
 	s.closing = true
@@ -154,6 +156,11 @@ func (a *Service) Shutdown(ctx context.Context) bool {
 	if s.manager != nil {
 		s.manager.Close()
 	}
+}
+
+func (a *Service) Shutdown(ctx context.Context) bool {
+	a.BeginShutdown()
+	s := a
 	for {
 		s.mu.Lock()
 		pending, changed := s.pending, s.changed

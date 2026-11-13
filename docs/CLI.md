@@ -60,11 +60,14 @@ mycrawler/
     README.md              应用文档导航（项目所有）
     operations/DEVELOPMENT.md  应用目录与开发说明（项目所有）
     framework/             Papa 手册副本（upgrade 可刷新）
+      package_structure/   Papa 目录说明书：总入口 + 七份职责分册
   README.md · Makefile · logs/ · .gitignore
   .claude/skills/          开发技能（通用文件可刷新，项目约定不覆盖）
 ```
 
 后台自定义页模板 `internal/monitor/view/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
+
+框架目录说明书见 [package_structure/README.md](package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留这些相对路径。历史 issues/superpowers 不分发；升级不会删除旧项目自行保留的文档副本。
 
 几句要点：
 

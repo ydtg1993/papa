@@ -62,6 +62,38 @@ type Overlay struct {
 	// DownloadOptions 里，见那边的说明）。
 }
 
+// Clone returns an independent overlay, including its scalar pointers.
+// A nil receiver remains nil (no override); explicit zero values are preserved.
+func (o *Overlay) Clone() *Overlay {
+	if o == nil {
+		return nil
+	}
+	return &Overlay{
+		OutputDir:      cloneOverlayValue(o.OutputDir),
+		ResumeStateDir: cloneOverlayValue(o.ResumeStateDir),
+		Output:         cloneOverlayValue(o.Output),
+		MergeExt:       cloneOverlayValue(o.MergeExt),
+		KeepSegments:   cloneOverlayValue(o.KeepSegments),
+		MaxConcurrent:  cloneOverlayValue(o.MaxConcurrent),
+		SegmentTimeout: cloneOverlayValue(o.SegmentTimeout),
+		MaxRetries:     cloneOverlayValue(o.MaxRetries),
+		RetryInterval:  cloneOverlayValue(o.RetryInterval),
+		EnableResume:   cloneOverlayValue(o.EnableResume),
+		RateKB:         cloneOverlayValue(o.RateKB),
+		SaveBatchSize:  cloneOverlayValue(o.SaveBatchSize),
+		FfmpegPath:     cloneOverlayValue(o.FfmpegPath),
+		QueueSize:      cloneOverlayValue(o.QueueSize),
+	}
+}
+
+func cloneOverlayValue[T ~string | ~int | ~bool](v *T) *T {
+	if v == nil {
+		return nil
+	}
+	copy := *v
+	return &copy
+}
+
 // Apply 把这一层叠到 base 上，返回**新的 Config**（不改 base，纯函数、可表驱动测）。
 func (o Overlay) Apply(base Config) Config {
 	out := base

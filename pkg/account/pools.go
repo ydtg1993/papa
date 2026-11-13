@@ -42,6 +42,7 @@ func NewPools(ctx context.Context, m *Manager, store PoolStore, options PoolOpti
 	p.workers = make(chan struct{}, options.VerifyConcurrency)
 	p.activeSites = map[string]bool{}
 	p.stopped = make(chan struct{})
+	p.drained = make(chan struct{})
 	p.listeners = map[uint64]chan HealthEvent{}
 	for _, s := range management {
 		if s.Version == 0 || strings.TrimSpace(s.Key.Site) == "" || strings.TrimSpace(s.Key.ID) == "" {
@@ -130,18 +131,36 @@ func (p *Pools) Close() {
 // Shutdown stops admission and waits for all verification callbacks. On timeout
 // the caller must retain the browser and stores until a later Shutdown succeeds.
 func (p *Pools) Shutdown(ctx context.Context) error {
-	p.cancel()
+	p.BeginShutdown()
 	select {
-	case <-p.stopped:
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-p.drained:
+	default:
+		select {
+		case <-p.drained:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	p.manager.mu.Lock()
-	if p.manager.pools == p {
-		p.manager.pools = nil
-	}
-	p.manager.mu.Unlock()
 	return nil
+}
+
+// BeginShutdown stops admission and cancels verification without waiting for
+// callbacks. Shutdown reports when their resource use has actually drained.
+func (p *Pools) BeginShutdown() {
+	p.cancel()
+	p.shutdownOnce.Do(func() {
+		go func() {
+			<-p.stopped
+			// Candidate publication may hold manager.mu across persistence. Keep
+			// its atomicity, but include this detach in the bounded drain result.
+			p.manager.mu.Lock()
+			if p.manager.pools == p {
+				p.manager.pools = nil
+			}
+			p.manager.mu.Unlock()
+			close(p.drained)
+		}()
+	})
 }
 func (p *Pools) signal() {
 	select {

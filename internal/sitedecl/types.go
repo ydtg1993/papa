@@ -2,6 +2,8 @@ package sitedecl
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,8 +103,8 @@ func (s SiteSpec) snapshot() core.Site {
 	return core.Site{
 		Key:                s.Key,
 		BaseURL:            s.BaseURL,
-		Headers:            s.Headers,
-		RestrictedKeywords: s.RestrictedKeywords,
+		Headers:            maps.Clone(s.Headers),
+		RestrictedKeywords: slices.Clone(s.RestrictedKeywords),
 		StartPaused:        s.StartPaused,
 	}
 }

@@ -7,7 +7,85 @@ import (
 
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
+
+func TestPlanSitesOwnsDeclarationAndDownloadSnapshots(t *testing.T) {
+	dir, workers := "original", 2
+	sharedM3U8 := &m3u8.Overlay{OutputDir: &dir}
+	sharedFile := &filedown.Overlay{MaxConcurrent: &workers}
+	fetcher := &entryStageFetcher{}
+	spec := SiteSpec{
+		Key: "example", Headers: map[string]string{"X-Test": "original"},
+		RestrictedKeywords: []string{"original"}, M3U8: sharedM3U8, FileDown: sharedFile,
+		Stages: []StageSpec{{Fetcher: fetcher, WorkerCount: 1, QueueSize: 8,
+			M3U8: sharedM3U8, FileDown: sharedFile}},
+	}
+	plans, err := PlanSites(nil, []SiteSpec{spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plans[0]
+	spec.Headers["X-Test"], spec.RestrictedKeywords[0] = "input", "input"
+	dir, workers = "input", 99
+	if p.Site.Headers["X-Test"] != "original" || p.Site.RestrictedKeywords[0] != "original" {
+		t.Errorf("plan site aliases the declaration: %+v", p.Site)
+	}
+	if *p.Downloads.M3U8.OutputDir != "original" || *p.Downloads.FileDown.MaxConcurrent != 2 ||
+		*p.Stages[0].Config.M3U8.OutputDir != "original" || *p.Stages[0].Config.FileDown.MaxConcurrent != 2 {
+		t.Fatal("site/stage download plans alias caller-owned scalar pointers")
+	}
+	*p.Downloads.M3U8.OutputDir, *p.Downloads.FileDown.MaxConcurrent = "plan-site", 3
+	if *p.Stages[0].Config.M3U8.OutputDir != "original" || *p.Stages[0].Config.FileDown.MaxConcurrent != 2 {
+		t.Fatal("site and stage plans share download snapshots")
+	}
+	if p.Stages[0].Fetcher != fetcher {
+		t.Fatal("planning must retain the original Fetcher object")
+	}
+}
+
+type snapshotEntryFetcher struct {
+	namedFetcher
+	seen []core.Site
+}
+
+func (f *snapshotEntryFetcher) SubmitEntries(_ *engine.Engine, site core.Site) {
+	f.seen = append(f.seen, site)
+}
+
+func TestEntryCallbacksReceiveFreshIndependentSnapshots(t *testing.T) {
+	first := &snapshotEntryFetcher{namedFetcher: namedFetcher{name: "first"}}
+	second := &snapshotEntryFetcher{namedFetcher: namedFetcher{name: "second"}}
+	spec := SiteSpec{Key: "example", Headers: map[string]string{"X-Test": "original"},
+		RestrictedKeywords: []string{"original"}, Stages: []StageSpec{
+			{Fetcher: first, WorkerCount: 1, QueueSize: 8, Entry: true},
+			{Fetcher: second, WorkerCount: 1, QueueSize: 8, Entry: true},
+		}}
+	plans, err := PlanSites(nil, []SiteSpec{spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plans[0]
+	spec.Headers["X-Test"], spec.RestrictedKeywords[0] = "input", "input"
+	p.Site.Headers["X-Test"], p.Site.RestrictedKeywords[0] = "plan", "plan"
+	p.Stages[0].Submit(nil)
+	if got := first.seen[0]; got.Headers["X-Test"] != "original" || got.RestrictedKeywords[0] != "original" {
+		t.Fatalf("callback aliases its declaration or published plan: %+v", got)
+	}
+	first.seen[0].Headers["X-Test"], first.seen[0].RestrictedKeywords[0] = "callback", "callback"
+	p.Stages[0].Submit(nil)
+	p.Stages[1].Submit(nil)
+	for _, got := range []core.Site{first.seen[1], second.seen[0]} {
+		if got.Headers["X-Test"] != "original" || got.RestrictedKeywords[0] != "original" {
+			t.Fatalf("callback mutation escaped into another invocation: %+v", got)
+		}
+	}
+	if p.Site.Headers["X-Test"] != "plan" || p.Site.RestrictedKeywords[0] != "plan" ||
+		spec.Headers["X-Test"] != "input" || spec.RestrictedKeywords[0] != "input" {
+		t.Fatal("callback mutation escaped into plan or input")
+	}
+}
 
 // 声明有问题**启动即失败**（与配置校验层同取向），报错要点到具体那个阶段。
 func TestPlanStageRejects(t *testing.T) {

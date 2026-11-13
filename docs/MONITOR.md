@@ -1,6 +1,6 @@
 # Papa 监控服务后台手册
 
-> 维护后台源码时，先看 [Admin 目录结构与职责细则](ADMIN_STRUCTURE.md)，确定功能、状态和前后端资源归属。
+> 维护后台源码时，先看 [Admin 目录结构与职责细则](package_structure/ADMIN_STRUCTURE.md)，确定功能、状态和前后端资源归属。
 
 任务表新增最近执行开始、最近执行结束、投递延迟（毫秒）和最早执行时间四个只读列。加急改变队列顺序，不绕过最早执行时间；字段含义及持久化边界见 [TASK_TIMING.md](TASK_TIMING.md)。
 

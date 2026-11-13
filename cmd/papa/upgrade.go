@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -216,7 +217,14 @@ func writeDocs(p *upgradePlan) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		dst := filepath.Join(dir, name)
+		if err := checkScaffoldPath(dst); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
 			return err
 		}
 	}
@@ -316,16 +324,17 @@ func normalizeEOL(s string) string {
 }
 
 func embeddedDocs() []string {
-	entries, err := docs.Files.ReadDir(".")
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			out = append(out, e.Name())
+	var out []string
+	// Walk only the embedded framework allowlist, never the project's files.
+	_ = fs.WalkDir(docs.Files, ".", func(name string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-	}
+		if !e.IsDir() && strings.HasSuffix(name, ".md") {
+			out = append(out, name)
+		}
+		return nil
+	})
 	sort.Strings(out)
 	return out
 }

@@ -10,6 +10,31 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
 
+func TestCheckSitesValidatesEffectiveInheritedBreaker(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		defaults config.BreakerConfig
+		want     string
+	}{
+		{"threshold", config.BreakerConfig{Enabled: true}, "threshold 必须 > 0"},
+		{"policy", config.BreakerConfig{Policy: config.BreakerPolicy{Capacity: -1}}, "capacity"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Crawler.Breaker = tc.defaults
+			err := CheckSites(cfg, SiteSpec{Key: "inherited"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "inherited") {
+				t.Fatalf("invalid inherited breaker must fail declaration validation: %v", err)
+			}
+			// Validate the merged site config, not unused global values.
+			fixed := &BreakerSpec{Enabled: true, Threshold: 9, Policy: &config.BreakerPolicy{}}
+			if err := CheckSites(cfg, SiteSpec{Key: "overridden", Breaker: fixed}); err != nil {
+				t.Fatalf("valid site override should replace invalid defaults: %v", err)
+			}
+		})
+	}
+}
+
 // CheckSites：不起库、不建池、不改状态，把启动时会 panic 的问题**一次收集全**（而不是报第一条就停）。
 // 这条是给"升级后确认声明写对了"用的 —— 起服务要连库，这一步不用。
 func TestCheckSitesCollectsAllProblems(t *testing.T) {

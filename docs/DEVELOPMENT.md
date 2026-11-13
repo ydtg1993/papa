@@ -88,74 +88,21 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 ## 6. 包结构与职责边界
 
-后台各包和前后端文件的详细归属见 [Admin 目录结构与职责细则](ADMIN_STRUCTURE.md)。引擎文件和内部组件细则见 [Engine 目录结构与职责细则](ENGINE_STRUCTURE.md)。应用装配层 `internal/app` 的逐文件细则见 [App 目录结构与职责细则](APP_STRUCTURE.md)。本节保留框架级概览。
+完整目录和包职责统一维护在 [Papa 目录说明书](package_structure/README.md)。
 
-**包职责清晰是长期开发硬规则。** 新增功能先明确状态拥有者、接口和依赖，再选择文件；不能因 App / Engine 取依赖方便而向其中堆功能。文件数、目录深度和行数不是拆包目标。完整依赖规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。
-
-| 包 / 文件组 | 职责 |
+| 范围 | 职责分册 |
 | --- | --- |
-| 根包 `papa` | 应用与任务公开入口、兼容别名；不实现领域算法 |
-| `core` | 跨包纯值与纯函数，不依赖框架其它包 |
-| `config` | 配置解码与校验；熔断公开策略使用 `pkg/breakerpolicy` |
-| `models` | 框架数据库模型；不承担运行状态 |
-| `internal/app/app.go` | App 容器、选项和公开兼容字段 |
-| `internal/app/bootstrap.go` / `lifecycle.go` | 创建依赖、事件流、启动和排空顺序 |
-| `internal/app/http.go` / `pages.go` / `router.go` | 后台装配、公开扩展注册与路由兼容入口 |
-| `internal/app/reports.go` / `runtime_policy.go` / `browser_identity.go` | 报告、运行策略、身份服务的构造和委派；状态算法在服务包 |
-| `internal/app/spec.go` | 站点/阶段声明的公开兼容别名（`SiteSpec`/`StageSpec`/`BreakerSpec`/`RetrySpec` + `RegisterSite`/`Sites`/`CheckSites`/`DescribeDownloadOverlays`）+ `RegisterSites`/`applyStagePlan`/`Site` 的引擎落地；纯逻辑在 `internal/sitedecl` |
-| `internal/sitedecl` | `types.go`/`plan.go`：声明类型 + `PlanSites`/`planStage` 校验推导；`registry.go`：进程级站点登记表；`overlay.go`：下载器覆盖自查。不依赖 App/HTTP/admin |
-| `internal/runtimecontrol` | `service.go`：策略版本、CAS、核对、发布和账号池引用互斥；`document.go` / `history.go`：文档与选择性历史恢复 |
-| `internal/browserdiagnostics` | `service.go` / `options.go`：资源接口与诊断生命周期；`identity_diagnostic.go`：合成页身份检查；`rod.go` / `report.go`：启动检查与报告 |
-| `internal/reportrunner/runner.go` | 报表专用值配置、日报生成、ticker、串行写入与停机等待，消费只读快照，不依赖应用配置包 |
-| `engine` | Task / Fetcher / Engine 公共契约，站点与阶段执行编排；保留需要跨暂停、持久化与熔断协调的原子边界 |
-| `internal/taskstore` | 认领、终态、释放、失败重投、轮询推进和兼容 Task 存储入口 |
-| `engine/engine.go` / `engine_config.go` / `lifecycle.go` | 构造与组件字段、公开阶段契约、关停排空分别维护；`runtime_dependencies.go` 保留公开依赖适配 |
-| `engine/submission_store.go` / `submit.go` | 持久化准备和投递计划归 submissionStore；Engine 只校验阶段、接收投递责任并协调延迟/暂停/worker |
-| `engine/taskflow_service.go` / `taskflow.go` | taskFlowService 拥有 flow 行锁、CAS、父子登记/认领事务；门面只接线和唤醒 |
-| `engine/trace_service.go` / `archive_service.go` / `evidence_maintenance.go` | 证据查询/写入/保留期服务与受 tickerWG 管理的巡检；单次缓冲仍由 Trace/archiveBuffer 拥有 |
-| `engine/site_registry.go` / `account_alerts.go` | 站点声明复制快照、账号告警有界限频；不新增跨状态锁序 |
-| `engine/internal/scheduler` | `pools.go`：活池锁与关闭；`delay.go`：延迟堆、唤醒与取消 |
-| `engine/internal/execution` | 未确认持久化状态、重试背压与排空统计 |
-| `engine/internal/fetchruntime` | `download_config.go`：站点/阶段覆盖值复制；`downloads.go`：下载器覆盖与解析快照；`resources.go`：账号/身份/浏览器/HTTP 资源注册、账号准入与渲染资源归还 |
-| `engine/attempt_execution.go` / `attempt_persistence.go` | 单次执行的 trace/归档、panic、账号反馈及时间/失败日志结算；只接受窄依赖，不持有 Engine |
-| `engine/stage.go` / `stage_registration.go` / `notifications.go` | 执行轮次编排、阶段/worker 装配、告警通知，各文件职责独立 |
-| `engine/breaker_coordinator.go` / `scheduler_spill.go` | 同包状态组件：熔断准入/恢复证据/报告写入、溢出队列；无 Engine 回引用，跨状态事务由 Engine 编排 |
-| `engine/breaker_events.go` | 熔断事务事件值批次与锁外同步派发；探针在结果事件之后重验轮次及取消状态 |
-| `internal/breaker` / `internal/breakerstore` | 终态检测算法、快照和报告事务存储 |
-| `internal/database` | 连接、显式迁移、schema 检查；不由普通启动自动迁移 |
-| `internal/workerpool` / `msgqueue` / `track` | 通用执行池、消息通道、指标采样 |
-| `admin/server` | `config.go` 公开契约、`monitor.go` 组件装配、`routes.go` 路由与统一鉴权、`middleware.go` 公开中间件；`assets.go` / `extensions.go` 保留原资源和扩展 API，不持有功能状态 |
-| `admin/shell` | `renderer.go` 管理模板解析；`assets.go` / `resource_fs.go` 确定性组合嵌入资源；`extensions.go` 管理导航元数据快照；`static/runtime.js` 管理控制器注册、依赖与生命周期 |
-| `admin/access` | `handler.go` 拥有来源白名单锁与快照、请求身份校验和白名单保存 |
-| `admin/settings` | `handler.go` 管理设置查询与显式关停；`static/controller.js` / `views/settings.html` 管理设置页面 |
-| `admin/monitoring` | `handler.go` 聚合监控快照与实例标识；controller/workbench/visual-state/visuals 与 dashboard 模板拥有监控视图和观测状态 |
-| `admin/queues` / `admin/breakers` | 各自 handler 管理队列触发及熔断操作/分析；static 中的控制器和样式拥有对应前端状态 |
-| `admin/taskflow` | `handler.go` 管理任务流策略校验/CAS响应；`static/taskflow.js/css` 管理任务流编辑生命周期 |
-| `admin/tasktrace` | `handler.go` 管理追踪查询与归档下载边界；`static/trace.js/css` 管理追踪抽屉 |
-| `admin/logs` / `admin/reports` | 各自 `handler.go` 管理文件读取、边界和下载；`static/controller.js` 与 views 管理选择、请求代次、卸载与会话重置 |
-| `admin/accounts` | 账号接入 handler 与 `static/accounts.js` |
-| `admin/accountpools` | 池管理和任务补偿 handler 与 `static/account_pools.js` |
-| `admin/runtimecontrol` | 策略、历史、代理健康 HTTP 适配与 `static/runtime_control.js`；存储适配器连接 configstore |
-| `admin/diagnostics` | Rod / 身份 HTTP 适配与 `static/rod_diagnostics.js` |
-| `admin/auth` / `tokenadmin` / `oplog` | 访问身份、令牌管理、异步审计 |
-| `admin/configstore` / `sysinfo` | 配置持久化与缓存、机器指标 |
-| `admin/tasksource` / `sitesource` / `gormsource` / `frameworkdata` | 表格及只读查询适配 |
-| `pkg/account` / `onboarding` | 账号认证、健康、池调度及登录过程；真实站点 Provider 属于业务模块 |
-| `pkg/account/contract` / `gormstore` | 可持久化值契约与独立 GORM 适配；原 account 构造函数和类型保持兼容 |
-| `pkg/browser` / `identity` / `identity/runtime` | 浏览器资源、身份值与单实例绑定服务 |
-| `pkg/htmlfetch` / `discovery` / `extract` | HTTP 会话、页面发现和数据校验 |
-| `pkg/governance` / `egress` | 单实例预算和网络出口规则 |
-| `pkg/middleware/{filedown,m3u8,proxy}` | 文件、媒体、代理能力，按各自资源生命周期运行 |
-| `pkg/events` / `loggers` / `notify` / `redact` | 事件、日志、通知和脱敏 |
-| `obs/{analyze,eventlog,incident,logidx,pattern,report}` | 观测输入、分析、证据与产物渲染，不负责 App 启停 |
-| `pkg/temporary` / `testdb` / `strategymigrate` | 临时资源、隔离测试库与显式只读迁移检查 |
-| `cmd/papa` | CLI 与脚手架；模板属于公开使用范本 |
+| 根包、config、core、models、文档及仓库配套 | [ROOT_STRUCTURE.md](package_structure/ROOT_STRUCTURE.md) |
+| 后台及前端资源 | [ADMIN_STRUCTURE.md](package_structure/ADMIN_STRUCTURE.md) |
+| 引擎和引擎专属内部组件 | [ENGINE_STRUCTURE.md](package_structure/ENGINE_STRUCTURE.md) |
+| App 组合根、声明、运行服务、存储和通用内部设施 | [INTERNAL_STRUCTURE.md](package_structure/INTERNAL_STRUCTURE.md) |
+| 账号、浏览器、HTTP、下载、出口和治理等通用能力 | [PKG_STRUCTURE.md](package_structure/PKG_STRUCTURE.md) |
+| 观测、分析和报告 | [OBS_STRUCTURE.md](package_structure/OBS_STRUCTURE.md) |
+| CLI、脚手架与合成演示 | [CMD_STRUCTURE.md](package_structure/CMD_STRUCTURE.md) |
 
-每个组件通过窄接口或明确值传递协作，不把整个 App / Engine 传进子组件。共享锁需要保持的原子边界先记录，再考虑跨包；不能以导出字段或新建大而全的 manager 包规避边界。
+**包职责清晰是长期开发硬规则。** 新增或修改功能先明确状态拥有者、接口、允许依赖、原子性和关闭契约，再选择文件；按职责拆分，不按文件数机械拆包。新增包/重要文件同步对应分册和说明书总索引，不在本节再维护第二份逐文件清单。
 
-`architecture_test.go::TestPackageResponsibilityBoundaries` 检查后台不反向依赖 App、运行服务不依赖 HTTP/后台/Engine、引擎子组件不依赖父 Engine，且 App 不拥有 JS/CSS 文件。此守卫不能代替行为测试。
-
-公开 `papa.App`、`engine.Task`、`Fetcher` 与现有别名继续兼容。新值类型仅在确实跨领域且保持纯值时进入 core；领域专用契约放其领域包。
+完整跨组件规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。`TestPackageResponsibilityBoundaries` 只检查部分依赖与资源归属；改动并发、取消、排空、SQL 或页面时仍须按本手册选择行为验证。公开 App/Engine/Task/Fetcher 及既有别名继续保留兼容。
 
 ## 7. 站点维度：哪些已按站点切、哪些还是全局
 
@@ -256,12 +203,13 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 
 
-### 可视化与采样文件分工（2026-11-07）
+### 可视化与采样验证
 
-- `admin/server/visual_assets.go` / `visual_assets_test.go`：检测当前链接 oao 的成对静态资源；HTML 不引用旧依赖不存在的文件。`TestMonitorOptionalVisualReferencesMatchLinkedDependency` 在本地新版与发布旧版两配置下复验。
+实现归属见 [Admin 分册](package_structure/ADMIN_STRUCTURE.md)。以下保留验证方式。
+
+- `visual_assets_test.go` 的 `TestMonitorOptionalVisualReferencesMatchLinkedDependency` 在本地新版与发布旧版两配置下复验，确保 HTML 不引用旧依赖不存在的资源。
 - `admin/server/monitor_metadata_test.go`：Monitor 实例标识、响应时间、系统未采样元数据及旧字段兼容。
-- `admin/sysinfo/sysinfo.go` / `system_sampling_test.go`：CPU、内存和磁盘锁外采样、短锁发布；目录快照不丢失，可用性、成功时间、合法零值、采样失败与读取不阻塞回归。
-- `admin/monitoring/static/visual-state.js`：纯内存、受限观测模型，按真实时间去重/断线/重置；`visuals.js/css`：首页图表接线和响应式样式；`appearance.js`：注册既有设置槽的浏览器本地动效偏好。
+- `system_sampling_test.go`：系统采样回归覆盖目录快照、可用性、成功时间、合法零值、采样失败与读取不阻塞。
 - `testdata/visual_state_test.js` / `visuals_test.js`：真实生产 JS 的时间、身份、阶段集合、采样周期、同时间戳重连、旧响应、缺失值、前11项+其他总计、降级和销毁回归，由 `TestOperationsJavaScriptBehavior` 自动执行。`monitor_requests_test.js` 同时验证迟到/超时响应不进入观测历史。
 - 通用图表、motion 与表格生命周期代码在独立 oao 仓库；Papa 不复制组件实现，不引入真实站点业务依赖。
 
@@ -274,9 +222,7 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 ### 四类导航与概览简化
 
-`admin/shell/static/navigation.js` 集中维护 module/table/page 的四类归属与二级菜单；`shell` 控制器负责导航、会话和共享请求生命周期；日志弹窗与请求代次属于 `admin/logs/static/controller.js`。`/static/mo.js` 仅为按确定顺序组合功能工厂的兼容 URL。框架 task/operation_log 使用固定分类，普通表格默认 data；`Page.Section` 通过 `/api/pages` 输出，空/未知值回退 data。`Group` 仅用于类内分组，业务项目在自己的 UsePage 声明分类。`cmd/papa/templates/monitor_view.go.tmpl` 展示可选字段；已有项目不会被 upgrade 改写业务页面。
-
-`admin/shell/views/template.html` 组合各功能包 views 中的模块根及操作入口，新增 `mod-logs`、`section-nav` 与空分类区域；`layout.css` 在原样式后、业务 custom.css 前加载，用于轻量布局，不覆盖 oao 通用组件源码。`visuals.js` 按 details 展开状态创建/销毁图表，toggle/恢复可见仅重绘已接受快照；`workbench.js` 限制关注项三条并保留队列/暂停的完整详情入口。
+导航、外观、图表和表格适配的职责边界统一见 [Admin 分册](package_structure/ADMIN_STRUCTURE.md)；页面扩展和 Owns 校验见 [Internal 的 App 章节](package_structure/INTERNAL_STRUCTURE.md#app)。具体字段和分类用法见 [MONITOR.md](MONITOR.md)。
 
 `TestMonitorLayoutHasFourCategoriesAndSeparateLogs`、`TestMonitorOverviewHasOneDefaultChart` 守卫模板结构；`navigation_test.js`、`monitor_requests_test.js`、`monitor_identity_test.js` 执行真实生产 JS，覆盖四类映射、兼容回退、文本安全、未保存阻止导航、晚到清单/日志和凭据切换。`visuals_test.js` 覆盖 1→3→6 实例、折叠销毁、离页/后台不复活和旧依赖回退。`internal/app/page_sections_test.go` 通过真实 HTTP handler 验证 Section 契约，`cmd/papa/scaffold_page_sections_test.go` 检查新建模板。
 
@@ -285,19 +231,17 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 
 `TestMonitorLinkedVisualsBehavior` 从当前链接 oao 的 StaticFS 读取真实图表与动效脚本，运行 `testdata/linked_visuals_test.js`，覆盖观测边界、图表折叠/离页、pagehide 迟到回调、KPI 动画和滚动焦点保留。`monitor_identity_test.js` 联合真实 mo/requests 验证冻结页面漏收 storage 事件后的凭据核对。DOM、动画调度及请求仍为受控替身，浏览器排版与实际 BFCache 命中须另验。
 
-### 外观主题文件分工
+### 外观主题验证
 
-- `static/appearance.js`：浏览器外观偏好、设置控件、跨标签页/页面恢复同步与订阅清理；设置只更新根属性，不重新挂载业务。
-- `admin/shell/views/template.html`：CSS加载前恢复合法外观/明暗值；shell 的 theme/session 控制器保留明暗快捷入口和安全的凭据读取。显示选择以DOM当前状态为准，不能每次读取旧存储覆盖写入失败后的临时选择。
-- `static/layout.css`：共享导航/响应式规则与按外观限定的覆盖；原 `mo.css` 是经典基础。简约根条件使用低权重 `:where`，body中的oao浮层同样继承；`visuals.css` 保留减弱动效优先。
+主题资源与外观状态归属见 [Admin 分册](package_structure/ADMIN_STRUCTURE.md)。
+
 - `appearance_layout_test.go`：主题根变量隔离、导航/浮层覆盖及动效结构守卫。`testdata/appearance_test.js` 执行首帧、实际主题/设置代码，覆盖7组状态行为；`storage_startup_test.js` 完整执行后台启动，4项验证存储读取失败仍保持未登录、无请求与无旧凭据复用。两者均由 `ui_behavior_test.go` 自动执行。
 
 主题切换不改Go API、数据库或oao版本。业务适配在业务模块内，不能把站点类名写入Papa。浏览器需另验经典/简约×浅色/深色、390窄屏、表格浮层、原生弹窗、草稿与焦点；截图不能代替迟到请求/存储异常的确定性回归。
 
-## 动态阶段调度实现
+## 动态阶段调度验证
 
-engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow_service.go 管理 MySQL 运行锁/CAS/同步派生，engine/taskflow.go 保留公开门面；claimTaskContext 统一检查新投递、加急、重试与恢复。终态通知仅唤醒回灌，不作为持久真相。测试包括独立 MySQL 并发与恢复、策略纯函数、后台请求与生产页面组件。见 [动态阶段调度](TASK_FLOW.md)。
-
+实现职责见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)，使用契约见 [动态阶段调度](TASK_FLOW.md)。验证包括独立 MySQL 并发与恢复、策略纯函数、后台请求与生产页面组件；终态通知只负责唤醒，不能替代持久状态核对。
 
 ### 后台默认鉴权回归（2026-11-07）
 
@@ -308,7 +252,7 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow_servi
 
 ### 网络出口实现与验证（2026-11-07）
 
-新增 `pkg/egress`：`policy.go` 规范化 URL、编译私网 origin 授权并解析地址，`ip.go` 统一公网分类，`http.go` 固定已验证 IP 建连，`proxy.go` 提供浏览器网关与上游隧道。策略在构造时复制，无全局可变授权。浏览器的 `egress.go` 固定安全参数，导航入口拒绝本地文件等 scheme；池拥有网关生命周期，隔离上下文共享父进程的网关。
+出口策略、浏览器网关和资源所有权详见 [Pkg 分册](package_structure/PKG_STRUCTURE.md)。以下说明对应验证层次。
 
 `egress_test.go` 覆盖默认拒绝、显式授权、混合 DNS 答案、固定 IP、重定向、上游 CONNECT、关闭隧道；`integration_test.go` 从实际 HTML/下载器/通知 API 验证目标无请求及 M3U8 四类依赖。`pkg/browser/egress_test.go` 覆盖入口/参数与真实 Chrome 子资源、跳转、弹窗；真实用例需 `PAPA_EGRESS_BROWSER_BIN` 指定本机可执行文件，未配置显式跳过。其余浏览器回归可用 Rod 的 `-rod=bin=<绝对路径>` 指定本机 Chrome。测试仅用合成站点，外网模型与真实业务不参与普通回归。
 
@@ -317,11 +261,11 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow_servi
 `TestDownloaderConfigCopiesCannotExpandPrivateGrant` 验证外部配置和 Config 副本不能改变 With/SetClient 授权；`TestHTMLHotReloadCannotGrantPrivateOrigin`、`TestInvalidDownloaderProxyNeverFallsBackToDirect` 验证热更与代理错误不会扩大权限。`pkg/middleware/m3u8/egress_ffmpeg_test.go` 的真实合并测试需 `PAPA_EGRESS_FFMPEG_BIN`，同时验证本地片段成功与嵌套网络清单被拒绝。
 
 
-导航归属：`internal/app/page_ownership.go` 校验 Page.Owns 的引用与无环性，`admin/shell/static/navigation.js` 负责菜单归属和直接访问高亮；不改变后端授权。
+导航归属校验和前端高亮的配合见 [Internal](package_structure/INTERNAL_STRUCTURE.md#app) 与 [Admin](package_structure/ADMIN_STRUCTURE.md) 分册；前端分类不改变后端授权。
 
-临时资源基础能力：`pkg/temporary/files.go` 负责宿主目录与UUID文件路径；`cleanup.go` 负责已授权删除的顺序与重试。业务独占同ID的写入/读出/删除锁并实现CleanupStore事务，框架不导入业务models。`pkg/testdb/schema.go` 只清理本次独占创建的测试库。回归 `go test -race ./pkg/temporary ./pkg/testdb`；契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。
+临时资源、恢复清理和隔离测试库的职责见 [Pkg 分册](package_structure/PKG_STRUCTURE.md)，使用契约见 [TEMPORARY_RESOURCES.md](TEMPORARY_RESOURCES.md)。回归命令为 `go test -race ./pkg/temporary ./pkg/testdb`。
 
-历史表盘点：`pkg/strategymigrate/inspect.go`只读事务盘点表存在性及行数，`cmd/papa/strategy_migrate.go`提供inspect命令及64KiB业务manifest。未实现任何写模式，报告migration_ready=false。`inspect_test.go`检查只读事务、缺表非零行、错误不能冒充完成、表名/清单校验；CLI测试检查拒绝写命令和输出不覆盖。详见STRATEGY_MIGRATION.md。
+历史表盘点的实现归属见 Pkg 和 [Cmd 分册](package_structure/CMD_STRUCTURE.md)，使用范围见 [STRATEGY_MIGRATION.md](STRATEGY_MIGRATION.md)。`inspect_test.go` 检查只读事务、缺表非零行、错误传播、表名/清单校验；CLI 回归检查拒绝写命令和输出不覆盖。
 
 ## 后台资源与移除功能的回归
 
@@ -333,16 +277,14 @@ engine/taskflow_policy.go 为有界树的纯放行判据，engine/taskflow_servi
 
 `admin/frameworkdata/tables_test.go` 使用现有框架模型验证只读目录、鉴权、查询投影、稳定排序、脱敏和缺表恢复，不依赖已删除的 Agent/规则模型。历史旧表仅在 `pkg/strategymigrate` 的只读预检清单中保留，不会自动迁移或删除。
 
-`admin/frameworkdata/tables.go` 根据 GORM schema 向 `source.go` 传递 JSON 列清单，查询结果按 JSON 递归脱敏，不仅依赖 `_json` 字段名后缀；现有任务流的 `policy` 同样受保护。
+框架表目录和 JSON 投影的职责见 [Admin 分册](package_structure/ADMIN_STRUCTURE.md)；回归不能只使用 `_json` 字段名，还需覆盖任务流 `policy` 等由 schema 标记的 JSON 列。
 
 移除无效的 `configstore.NewWithModelKeyFile` 后，配置存储统一使用 `configstore.New(db)`；任务流操作日志回调类型为 `server.TaskFlowActionEvent`。这不影响 `pkg/account` 的凭据加密存储。
 
-### 任务身份实现入口
+### 任务身份与时间验证
 
-任务时间另见 `docs/TASK_TIMING.md`：`models/task_timing.go` 负责首次相对排期，`models/utc_time.go` 隔离 DATETIME 与驱动时区，`engine/task_timing.go` 负责执行记录及延迟恢复；`engine/task_timing_test.go`、`engine/task_timing_mysql_test.go` 和 `models/utc_time_test.go` 验证持久化、恢复、失败隔离和时区。
+身份值与模型 hook 见 [根目录分册](package_structure/ROOT_STRUCTURE.md)，显式回填迁移见 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md)，执行记录及延迟恢复见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。时间使用规则见 [TASK_TIMING.md](TASK_TIMING.md)。
 
-- `core/task_identity.go`：纯函数，规范 URL 并生成标准身份。
-- `internal/database/task_identity.go`：显式迁移中的分批回填、冲突拒绝及旧索引移除；普通启动不调用。
-- `engine/task_identity_mysql_test.go`：独立随机 MySQL 测试库验证同 URL 不同 ID、恢复去重、真正旧表升级、重复迁移和冲突拒绝。
+`engine/task_timing_test.go`、`engine/task_timing_mysql_test.go` 和 `models/utc_time_test.go` 验证持久化、恢复、失败隔离和时区。`engine/task_identity_mysql_test.go` 使用独立随机 MySQL 测试库验证同 URL 不同 ID、恢复去重、真正旧表升级、重复迁移和冲突拒绝。
 
-obs/analyze/breaker_history_limit_test.go 验证日报截断不会推断错误截止状态。
+`obs/analyze/breaker_history_limit_test.go` 验证日报截断不会推断错误截止状态。

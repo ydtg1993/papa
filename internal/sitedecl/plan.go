@@ -3,6 +3,8 @@ package sitedecl
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,8 +14,9 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 )
 
-// Plan 一份站点声明**推导出来的落地内容**（纯数据）：校验与策略都在推导里做完，
-// 应用层落地那一步只照做。RegisterSites 与 CheckSites 共用它 —— 两边的判据不会漂。
+// Plan 是站点声明推导出的 Engine 注册计划。规划不操作运行实例；
+// 计划仍使用公开 Fetcher/阶段配置及入口回调协议，不是无依赖的纯数据 DTO。
+// RegisterSites 与 CheckSites 共用校验与推导。
 type Plan struct {
 	Site      core.Site            // 声明快照（Key / BaseURL / Headers / …）
 	Breaker   *breaker.Config      // 本站的熔断阈值；nil = 用默认那把
@@ -23,7 +26,7 @@ type Plan struct {
 
 // StagePlan 一条阶段声明的落地计划：校验通过后算出来的"要做的事"。
 //
-// 校验与策略判断都在推导层做完（纯函数，不需要引擎 → 可单测），应用层只负责落地+打日志。
+// 校验与策略判断都在推导层做完（不需要 Engine 实例，可独立测试），应用层只负责落地+打日志。
 // 这样"引擎只给什么跑什么、策略在声明层"这条分工是结构上保证的。
 type StagePlan struct {
 	Stage   string
@@ -45,7 +48,7 @@ func CheckSites(cfg *config.Config, sites ...SiteSpec) error {
 	return err
 }
 
-// PlanSites 校验并推导一批站点/阶段声明为纯数据计划（不碰引擎、不碰库）。
+// PlanSites 校验并推导一批站点/阶段声明为注册计划（不操作引擎实例、不碰库）。
 // 校验与推导在 planSites 里一次做完，有问题**一个字节都不落地**。
 func PlanSites(cfg *config.Config, sites []SiteSpec) ([]Plan, error) {
 	return planSites(cfg, sites)
@@ -82,8 +85,8 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	var p Plan
 	var errs []error
 	p.Site = spec.snapshot() // 声明 → 框架内部流通的快照，一处转换
-	// 下载器覆盖层原样交给引擎（解析时机在 ApplyRegisterStage：那时全局那份已经 Set 好了）
-	p.Downloads = engine.SiteDownloads{M3U8: spec.M3U8, FileDown: spec.FileDown}
+	// 计划拥有覆盖层快照；解析时机仍在 ApplyRegisterStage（全局那份已 Set 好）。
+	p.Downloads = engine.SiteDownloads{M3U8: spec.M3U8.Clone(), FileDown: spec.FileDown.Clone()}
 
 	// 熔断**每站一份计数**：声明里写了阈值就用它，没写就用 `crawler.breaker` 那份默认 ——
 	// 要紧的是"每站各自一把"。共用的后果是 A 站被墙会把 B 站一起闸住（两个站同时被同一面墙
@@ -91,22 +94,18 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	// Key 一定非空（validateSites 已经拒掉没有 Key 的声明）—— 这里的判断纯属防御。
 	if p.Site.Key != "" {
 		bc := defaultBreakerConfig(defBreaker)
-		usable := true
+		var err error
 		if spec.Breaker != nil {
-			declared, err := spec.Breaker.toConfig(defBreaker)
-			if err == nil {
-				// 阈值那条规则与 breaker.New 共用（enabled=true 时必须 > 0）—— 原来只有真起引擎时才炸，
-				// 现在 CheckSites 也查得到。
-				err = breaker.Validate(declared)
-			}
-			if err != nil {
-				errs = append(errs, fmt.Errorf("站点 %q 的熔断配置: %w", p.Site.Key, err))
-				usable = false
-			} else {
-				bc = declared
-			}
+			bc, err = spec.Breaker.toConfig(defBreaker)
 		}
-		if usable {
+		if err == nil {
+			// Validate the effective config even when the site inherits all of
+			// its defaults, before App publishes any part of the batch.
+			err = breaker.Validate(bc)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("站点 %q 的熔断配置: %w", p.Site.Key, err))
+		} else {
 			p.Breaker = &bc
 		}
 	}
@@ -186,8 +185,8 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (StagePlan
 			Delay:                   delay,
 			Site:                    site.Key,
 			Entry:                   st.Entry,
-			M3U8:                    st.M3U8,
-			FileDown:                st.FileDown,
+			M3U8:                    st.M3U8.Clone(),
+			FileDown:                st.FileDown.Clone(),
 		},
 	}
 	// 两态 × 有没有实现入口：四个格子各有各的说法，别让任一种组合静默过去。
@@ -217,7 +216,16 @@ func entryFunc(f engine.Fetcher, site core.Site) func(*engine.Engine) {
 	if !ok {
 		return nil
 	}
-	return func(e *engine.Engine) { es.SubmitEntries(e, site) }
+	// The closure owns a baseline independent of Plan.Site. Each invocation
+	// receives another copy so callback edits cannot affect later entries.
+	site.Headers = maps.Clone(site.Headers)
+	site.RestrictedKeywords = slices.Clone(site.RestrictedKeywords)
+	return func(e *engine.Engine) {
+		snapshot := site
+		snapshot.Headers = maps.Clone(site.Headers)
+		snapshot.RestrictedKeywords = slices.Clone(site.RestrictedKeywords)
+		es.SubmitEntries(e, snapshot)
+	}
 }
 
 func siteLabel(site core.Site, idx int) string {

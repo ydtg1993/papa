@@ -87,9 +87,9 @@ func accountsRequest(a *App, operator, method, path, body string) *httptest.Resp
 	r = r.WithContext(auth.WithOperator(r.Context(), operator))
 	w := httptest.NewRecorder()
 	if path == "/api/accounts/remote" {
-		a.accountsRemoteAPI(w, r)
+		a.accountsHandler().Remote(w, r)
 	} else {
-		a.accountsAPI(w, r)
+		a.accountsHandler().Accounts(w, r)
 	}
 	return w
 }
@@ -168,21 +168,5 @@ func TestAccountsAPIRequiresOperatorAndRedactsSensitiveState(t *testing.T) {
 	w = accountsRequest(a, "operator", http.MethodPost, "/api/accounts/remote", `{"action":"eval","eval":"document.cookie"}`)
 	if w.Code != 400 {
 		t.Fatal(w.Code)
-	}
-}
-func TestAccountsFrontendKeepsConfirmationAndControlledInput(t *testing.T) {
-	for _, required := range []string{"confirm_identity", "身份正确，保存并启用", "sessionStorage", "rawHTTPError", "candidate_publish_failed"} {
-		source := accountsScript
-		if required == "rawHTTPError" {
-			source = runtimeControlScript
-		}
-		if !strings.Contains(source, required) {
-			t.Fatalf("missing behavior %s", required)
-		}
-	}
-	for _, unsafe := range []string{"innerHTML", "localStorage", "document.cookie", "webSocketDebuggerUrl", "eval("} {
-		if strings.Contains(accountsScript, unsafe) {
-			t.Fatalf("unsafe UI path %s", unsafe)
-		}
 	}
 }

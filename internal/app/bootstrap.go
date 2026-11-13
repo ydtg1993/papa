@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/ydtg1993/papa/v4/admin/configstore"
 	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/pkg/events"
@@ -20,7 +19,7 @@ import (
 
 // NewApp 统一初始化所有组件，并完成依赖注入
 func NewApp(opts ...Option) (*App, error) {
-	a := &App{sites: make(map[string]core.Site)}
+	a := &App{}
 	for _, opt := range opts {
 		if err := opt(a); err != nil {
 			return nil, err

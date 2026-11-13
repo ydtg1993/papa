@@ -3,13 +3,9 @@ package app
 import (
 	"context"
 	"errors"
-	"net/http"
 
-	"github.com/ydtg1993/papa/v4/admin/accounts"
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 )
-
-var accountsScript = accounts.Script
 
 // UseAccountOnboarding installs a business-constructed service before Run.
 // The business must explicitly supply encryption, store and site Providers.
@@ -31,16 +27,4 @@ func (a *App) UseAccountOnboarding(s *onboarding.Service) error {
 	s.SetEventListener(a.Engine.NotifyAccountHealthEvent)
 	a.accountOnboarding = s
 	return nil
-}
-
-func (a *App) accountsHandler() *accounts.Handler {
-	h := &accounts.Handler{Audit: a.runtimeAudit, Runtime: a.Engine.AccountStatus}
-	if a.accountOnboarding != nil {
-		h.Service = a.accountOnboarding
-	}
-	return h
-}
-func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) { a.accountsHandler().Accounts(w, r) }
-func (a *App) accountsRemoteAPI(w http.ResponseWriter, r *http.Request) {
-	a.accountsHandler().Remote(w, r)
 }

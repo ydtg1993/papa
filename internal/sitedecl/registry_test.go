@@ -1,9 +1,60 @@
 package sitedecl
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
+	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
+
+// Both registration and reads transfer framework-owned declaration values;
+// Fetcher remains the same business object, including its private state.
+func TestRegistryOwnsNestedDeclarations(t *testing.T) {
+	resetRegisteredSites()
+	t.Cleanup(resetRegisteredSites)
+	entry := &entryStageFetcher{}
+	newSpec := func() SiteSpec {
+		policy := config.BreakerPolicy{FastThreshold: 7}
+		dir, workers, chunk := "original", 2, int64(4096)
+		return SiteSpec{
+			Key: "example", Headers: map[string]string{"X-Test": "original"},
+			RestrictedKeywords: []string{"original"},
+			Breaker:            &BreakerSpec{Enabled: true, Threshold: 9, Policy: &policy},
+			M3U8:               &m3u8.Overlay{OutputDir: &dir}, FileDown: &filedown.Overlay{ChunkSize: &chunk},
+			Stages: []StageSpec{{Fetcher: entry, WorkerCount: 2, QueueSize: 8,
+				M3U8: &m3u8.Overlay{MaxConcurrent: &workers}, FileDown: &filedown.Overlay{OutputDir: &dir}}},
+		}
+	}
+	spec, want := newSpec(), newSpec()
+	RegisterSite(spec)
+	mutate := func(s *SiteSpec) {
+		s.Headers["X-Test"] = "changed"
+		s.RestrictedKeywords[0] = "changed"
+		s.Breaker.Threshold = 99
+		s.Breaker.Policy.FastThreshold = 99
+		*s.M3U8.OutputDir = "changed"
+		*s.FileDown.ChunkSize = 99
+		s.Stages[0].WorkerCount = 99
+		*s.Stages[0].M3U8.MaxConcurrent = 99
+		*s.Stages[0].FileDown.OutputDir = "changed"
+		s.Stages[0].Fetcher = namedFetcher{name: "replacement"}
+	}
+	mutate(&spec)
+	if got := Sites()[0]; got.Headers["X-Test"] != "original" || !reflect.DeepEqual(got, want) {
+		t.Fatalf("RegisterSite retained caller-owned nested state: %+v", got)
+	}
+	returned := Sites()
+	if returned[0].Stages[0].Fetcher != entry {
+		t.Fatal("registration must retain the original Fetcher object")
+	}
+	mutate(&returned[0])
+	if got := Sites()[0]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Sites exposed registry-owned nested state: %+v", got)
+	}
+}
 
 // 站点文件在 init 里登记，框架收集；`Sites()` 给副本、顺序稳定（= 文件名字典序）。
 func TestRegisterSiteCollectsInOrder(t *testing.T) {

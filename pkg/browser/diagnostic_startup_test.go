@@ -97,6 +97,39 @@ func TestIdentityDiagnosticPoolRejectsUnsupportedGuard(t *testing.T) {
 	}
 }
 
+func TestCloseDiagnosticReturnsPoolSlotExactlyOnce(t *testing.T) {
+	p, err := NewDiagnosticPool(PoolConfig{Size: 1, TempDir: t.TempDir(), Network: egress.Config{AllowedOrigins: []string{"http://127.0.0.1:1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	alive := true
+	p.newBrowserFn = func(useProxy bool) (*Browser, error) {
+		dir, err := os.MkdirTemp(p.TempDir(), "browser-diagnostic-")
+		return &Browser{diagnosticProcess: &diagnosticProcess{dir: dir}, useProxy: useProxy, aliveOverride: &alive}, err
+	}
+	for range 2 {
+		if err := p.WithBrowser(context.Background(), func(b *Browser) error {
+			if err := b.CloseDiagnostic(); err != nil {
+				return err
+			}
+			return b.CloseDiagnostic()
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if p.proxyAlive.Load() != 0 || p.directAlive.Load() != 0 || len(p.browsers) != 0 || len(p.direct) != 0 {
+			t.Fatalf("closed diagnostic did not return exactly one slot: proxy=%d direct=%d idle=%d", p.proxyAlive.Load(), p.directAlive.Load(), len(p.browsers)+len(p.direct))
+		}
+	}
+}
+
+func TestCloseDiagnosticRejectsOrdinaryBrowserWithoutClosingIt(t *testing.T) {
+	b := &Browser{}
+	if err := b.CloseDiagnostic(); err == nil || b.closed.Load() {
+		t.Fatalf("diagnostic close changed an ordinary browser: %v", err)
+	}
+}
+
 func TestIdentityDiagnosticStartupRealChromeUsesManagedFactory(t *testing.T) {
 	bin := os.Getenv("PAPA_TEST_CHROME")
 	if bin == "" {

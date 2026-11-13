@@ -19,6 +19,19 @@ import (
 	"gorm.io/gorm"
 )
 
+type cancelingSettlementFetcher struct {
+	recordingFetcher
+	cancel context.CancelFunc
+	result error
+	calls  int
+}
+
+func (f *cancelingSettlementFetcher) FetchHandler(context.Context, *Task, *Engine) error {
+	f.calls++
+	f.cancel()
+	return f.result
+}
+
 func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 	for _, mode := range []string{"write-failure", "lost-ack", "timing-failure"} {
 		lostAck := mode == "lost-ack"
@@ -42,7 +55,13 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 				smartFailure(e, int(row.ID), "detail", fmt.Sprint(row.ID))
 			}
 			businessErr := core.WithFailureCode(errors.Join(context.DeadlineExceeded, errors.New("fixture real parse failure")), "parse", "missing-node")
-			e.stages["synthetic:detail"].fetcher = &serialErrorFetcher{recordingFetcher: recordingFetcher{stage: "detail"}, result: businessErr}
+			// Cancel only after business execution starts: a 50ms sample deadline
+			// can expire during checkpoint/claim SQL before FetchHandler is called.
+			// Natural deadline expiry is covered by TestBreakerSerialLateErrorClassificationMySQL.
+			runCtx, cancelRun := context.WithCancel(context.Background())
+			t.Cleanup(cancelRun)
+			fetcher := &cancelingSettlementFetcher{recordingFetcher: recordingFetcher{stage: "detail"}, cancel: cancelRun, result: businessErr}
+			e.stages["synthetic:detail"].fetcher = fetcher
 			var unavailable atomic.Bool
 			unavailable.Store(true)
 			cb := db.Callback().Update().Before("gorm:update")
@@ -60,12 +79,14 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			e.breakers.breakerMu.Lock()
 			s := e.breakers.smartBreakers["synthetic"]
 			e.breakers.selectBreakerSampleLocked(s, "detail", fmt.Sprintf("task:%d", rows[0].ID), time.Now())
-			s.event.SampleDeadline = time.Now().Add(50 * time.Millisecond)
 			deadline := s.event.SampleDeadline
 			e.breakers.breakerMu.Unlock()
 			flushSmart(t, e)
-			if err := e.stageHandler(e.stages["synthetic:detail"])(context.Background(), e.taskFromRecord(&rows[0])); err == nil {
-				t.Fatal("lost business error")
+			if err := e.stageHandler(e.stages["synthetic:detail"])(runCtx, e.taskFromRecord(&rows[0])); !errors.Is(err, businessErr) {
+				t.Fatalf("lost business error: %v", err)
+			}
+			if fetcher.calls != 1 || runCtx.Err() != context.Canceled {
+				t.Fatalf("fixture did not cancel during business execution: calls=%d context=%v", fetcher.calls, runCtx.Err())
 			}
 			flushSmart(t, e)
 			if smartLifecycle(e).WindowFailures != 3 {

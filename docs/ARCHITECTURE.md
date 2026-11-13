@@ -1,14 +1,16 @@
 # Papa 包职责与变更规则
 
-> 面向：维护框架和接入通用能力的开发者。包与文件索引见 [DEVELOPMENT.md](DEVELOPMENT.md) §6。
+> 面向：维护框架和接入通用能力的开发者。包与文件职责见 [Papa 目录说明书](package_structure/README.md)。
 
-详细目录分册：[Admin](ADMIN_STRUCTURE.md)、[Engine](ENGINE_STRUCTURE.md)。Engine 分册标注同包组件的状态与需要保留的跨组件协调协议。
+目录职责明细统一位于 `docs/package_structure/`，按根目录与基础包、Admin、Engine、Internal、Pkg、Obs、Cmd 分册。App 是 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md#app)中的组合根章节；本页保留跨组件架构规则，不维护另一份文件索引。
 
 ## 依赖方向
 
 Papa 是单实例大单体。App 创建组件、注入窄接口并安排启停；后台 handler 解析请求并调用服务；服务拥有状态与原子操作；存储适配器实现持久化。业务站点、固定采集目标和业务模型留在独立业务模块。
 
 - `admin/*` 不导入 `internal/app`；页面脚本与所属 handler 位于同一功能模块。
+- `admin/page` 只提供页面描述值，不依赖框架实现；功能包提供默认 Page，App 选择、排序和挂载。任务工作台展示归 `admin/tasksource.WorkspaceTable`，旧 Table 默认值保持兼容。
+- `internal/sitedecl` 不依赖 App、admin 或 HTTP；允许现有 Engine 注册协议的类型依赖，规划阶段不操作 Engine 实例或数据库。
 - `admin/server` 只装配后台组件并保留公开兼容入口；其它 admin 功能包不得反向导入 server。Monitor 不保留完整配置、白名单锁、观测身份或模板缓存副本。
 - 后台功能包接收各自窄依赖并拥有 handler、视图片段、控制器及专用样式；`admin/shell` 拥有公共会话、导航、请求及 UI 生命周期。功能控制器只导出语义操作和必要查询，不能把所有私有变量通过 getter/setter 重新变成共享状态。
 - `internal/runtimecontrol`、`internal/reportrunner`、`internal/taskstore` 不依赖 HTTP、后台或 Engine 实现。
@@ -17,6 +19,12 @@ Papa 是单实例大单体。App 创建组件、注入窄接口并安排启停�
 - 公开契约与具体实现分开：账号存储使用 `account/contract`，配置与熔断共享 `breakerpolicy`。
 
 ## 状态与生命周期
+
+已登记站点只由 Engine 的 siteCatalog 拥有，App.Site 委派查询。声明登记表拥有冻结声明；登记输入、查询返回、计划和每次入口交付都复制框架拥有的 map、slice、配置指针及下载覆盖。业务 Fetcher 保持原对象身份，不做反射深拷贝。
+
+App 汇总 HTTP（含白名单重载）、业务收尾、Engine、运行服务和日志消费者的排空结果，再决定是否关闭共享 DB/浏览器。HTTP 的 requestDrain 统计 handler 真正返回，包括 hijacked handler；强关连接不是排空证据。白名单重载由 access 组件拥有 goroutine/cancel/done，读取 context 经缓存与 GORM 到 SQL，取消不发布空白名单。
+
+运行组件先 BeginShutdown 关闭准入并取消，再共用一个截止时间等待；失败不能跳过其它组件。onboarding 的生命周期锁仅保护准入与在途计数，事务锁仍保证资料操作原子性；Pools 的完成信号包含协调器退出和从 Manager 摘除，等待业务持锁也属于排空过程。超时返回未排空并保留依赖，不能通过另起 goroutine 后立即宣称完成规避这一协议。App 启动失败沿用同一清理编排，保留公开 Run 的失败契约。
 
 运行策略的 revision、document、effective、uncertain 和互斥锁属于运行策略服务。策略保存和池删除的引用检查必须在同一互斥边界内完成。返回的治理策略快照必须在该发布锁内与 revision 一起捕获，HTTP 只补充独立运行指标，不得解锁后重新拼装策略快照。持久结果未确认时，池删除须先核对持久策略；远程暂停确认须拒绝旧缓存版本，待刷新核对后重试。返回快照不能泄露服务持有的可变 map/指针。
 
@@ -32,7 +40,7 @@ Papa 是单实例大单体。App 创建组件、注入窄接口并安排启停�
 
 App 和 Engine 的公开入口是兼容门面，新增功能优先委派到职责明确的组件。已有公开字段和类型别名不能直接移除；`internal` 路径不意味着通过根包别名暴露的字段可以任意修改。
 
-JS/CSS 继续用 go:embed 保持单二进制部署。`custom.js` 的既有顺序、页面 key 和路由维持兼容；跨页面共享脚本必须明确提供者和加载顺序。后台注册接口持有自己的导航元数据快照，不保留调用方可变的 Owns 切片。
+JS/CSS/HTML 继续用 go:embed 保持单二进制部署，源码放所属功能包。`custom.js` 的既有顺序、页面 key 和路由维持兼容；跨页面共享脚本必须明确提供者和加载顺序。后台注册接口持有自己的导航元数据快照，不保留调用方可变的 Owns 切片。公开 `server.TaskFlowScript` / `TaskFlowCSS` 在 Run 前覆盖资源的行为继续保留。
 
 `/static/mo.js`、`/static/mo.css` 是兼容资源 URL，不是新增功能的源码落点。资源按明确清单组合，重名资源不能依赖 map 遍历顺序决定归属；缺失模板/样式片段必须在装配时失败。生产资源 FS 只读且不能把共享字节切片暴露给调用方。
 
@@ -41,15 +49,9 @@ JS/CSS 继续用 go:embed 保持单二进制部署。`custom.js` 的既有顺序
 1. 写清状态所有权、接口与允许依赖，复用已有组件。
 2. 为独立组件测试行为；App 测试验证装配，不能用删除集成用例换取通过。
 3. `GOWORK=off` 下 test/vet/build；并发改动执行 race；SQL 使用隔离 MySQL 验证，页面使用 Node/合成 Chromium。
-4. 跑 `TestPackageResponsibilityBoundaries`，更新 DEVELOPMENT 的实际文件索引。
+4. 跑 `TestPackageResponsibilityBoundaries`，更新目录说明书中对应分册与总索引。守卫包含 App 不放独立 JS/CSS/HTML、sitedecl 不依赖外层、admin/page 不导入框架实现；源码位置守卫不能代替快照/取消/排空行为测试。
 5. 保留工作区原有修改，禁止 Git 写操作；由用户 review 和提交。
 
 ## Engine 同包组件边界
 
-submissionStore 只处理引用保护、身份与任务存储，返回明确的投递计划；Engine 必须在部分失败时继续接管已成功记录。taskFlowService 拥有完整 flow 事务，不通过 Engine 回调执行 SQL。traceService/archiveService 只持有功能配置值与存储/日志，维护循环加入 Engine 的 tickerWG。站点声明从 siteCatalog 读写时复制可变字段，保留原 breakerMu 协调；账号告警限流归 accountAlertGate。
-
-breakerCoordinator 的内部变更通过语义操作收口；Engine 只在既有锁序下发布暂停或安排任务/探测。组件不能保留完整 Engine/Config，也不能借回调集合任意访问它们。`engine/component_boundaries_test.go` 守卫同包依赖，行为测试验证部分成功、CAS、快照隔离及 Stop 等待维护工作。
-
-输入快照与副作用顺序也是边界的一部分：下载覆盖登记须复制标量指针，治理延迟安装须复制 map；已提交任务必须先保留投递责任，再执行可能阻塞或 panic 的错误日志。context 的取消状态在执行决策处读取，不得为了收窄参数提前固定成 error。Stop 等待后台收尾后再观察溢出、延迟和未确认状态，所有等待继续共用一个 deadline。
-
-事件观察者不在池登记、队列统计或熔断/暂停状态锁内调用。事务内只保存独立事件值，完成状态发布后锁外同步派发；跨回调继续执行的探针决策必须重验事件与轮次，不能以释放锁之前的结果覆盖新的人工控制。事件不是调度或持久化真相，不以增加派发锁或无限异步队列修补重入问题。
+Engine 的提交、任务流、追踪/归档、站点目录、告警与熔断组件职责，以及跨组件锁序、输入快照、事件派发和关停要求，统一见 [Engine 分册](package_structure/ENGINE_STRUCTURE.md)。内部组件通过语义接口协作，公开 Fetcher 接收 Engine 的兼容契约不构成其它组件持有完整 Engine 的理由。

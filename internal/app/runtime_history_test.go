@@ -23,7 +23,7 @@ func TestRuntimeHistoryAPIUsesCurrentRevisionAndSelectedChanges(t *testing.T) {
 	fake.SetRow(map[string]driver.Value{"cfg_key": configstore.KeyRuntimePolicy, "revision": int64(1), "document": []byte(`{"schema_version":1,"overrides":{"sites":{"fixture":{"request":{"max_inflight":2}}}}}`)})
 	post := func(body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		a.runtimeHistoryAPI(w, httptest.NewRequest("POST", "/api/runtime-policy/history", strings.NewReader(body)))
+		a.runtimeHandler().History(w, httptest.NewRequest("POST", "/api/runtime-policy/history", strings.NewReader(body)))
 		return w
 	}
 	before := fake.Written()

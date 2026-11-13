@@ -50,7 +50,7 @@ func runtimePost(a *App, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/api/runtime-policy", strings.NewReader(body))
 	r = r.WithContext(auth.WithOperator(r.Context(), "fixture-operator"))
-	a.runtimePolicyAPI(w, r)
+	a.runtimeHandler().Policy(w, r)
 	return w
 }
 func TestRuntimePolicyPublishAfterPersistenceAndReset(t *testing.T) {
@@ -120,13 +120,13 @@ func TestRuntimeReadDoesNotWriteOrAuthenticate(t *testing.T) {
 	a, f := runtimeTestApp(t)
 	before := f.Written()
 	w := httptest.NewRecorder()
-	a.runtimePolicyAPI(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
+	a.runtimeHandler().Policy(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
 	var body map[string]any
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
 		t.Fatal(w.Body.String())
 	}
 	w = httptest.NewRecorder()
-	a.accountPoolsAPI(w, httptest.NewRequest("GET", "/api/account-pools", nil))
+	a.accountPoolsHandler().PoolsAPI(w, httptest.NewRequest("GET", "/api/account-pools", nil))
 	if w.Code != 200 || before != f.Written() {
 		t.Fatal("read mutated state")
 	}
@@ -141,14 +141,14 @@ func TestRuntimeUncertainGETReconcilesDurableRevision(t *testing.T) {
 	f.SetExecError("")
 	f.SetQueryError("crawler_config", "offline")
 	w := httptest.NewRecorder()
-	a.runtimePolicyAPI(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
+	a.runtimeHandler().Policy(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
 	if w.Code != 503 || !a.runtimeState.service.Uncertain() {
 		t.Fatal("uncertain result reported as confirmed")
 	}
 	f.SetQueryError("", "")
 	f.SetRow(map[string]driver.Value{"revision": int64(3), "cfg_val": []byte(`{"schema_version":1,"overrides":{"sites":{"fixture":{"request":{"max_inflight":1}}}}}`)})
 	w = httptest.NewRecorder()
-	a.runtimePolicyAPI(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
+	a.runtimeHandler().Policy(w, httptest.NewRequest("GET", "/api/runtime-policy", nil))
 	if w.Code != 200 || a.runtimeState.service.Uncertain() || a.runtimeState.service.Revision() != 3 || a.Engine.Governance().Effective("fixture").Request.MaxInflight != 1 {
 		t.Fatal("GET retained stale cache", w.Body.String())
 	}

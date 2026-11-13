@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	featurepools "github.com/ydtg1993/papa/v4/admin/accountpools"
+	featurecontrol "github.com/ydtg1993/papa/v4/admin/runtimecontrol"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,7 +51,7 @@ func TestAccountOperationsUIRealBrowserPolicyAndPartialCompensation(t *testing.T
 	}
 	var writes atomic.Int32
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/account-pools", a.accountPoolsAPI)
+	mux.HandleFunc("/api/account-pools", a.accountPoolsHandler().PoolsAPI)
 	mux.HandleFunc("/api/account-compensation", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			writeRuntimeJSON(w, 200, map[string]any{"eligible": 2, "blocked": 1, "history_limit": 8, "items": []map[string]any{
@@ -75,7 +77,7 @@ func TestAccountOperationsUIRealBrowserPolicyAndPartialCompensation(t *testing.T
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<!doctype html><html><meta charset="utf-8"><div id="root"></div><script>window.pages={};window.Papa={page:(n,f)=>pages[n]=f};window.apiRequest=(u,o)=>fetch(u,o);window.confirm=()=>true;window.openPage=()=>{};</script><script>`+runtimeControlScript+accountPoolsScript+`</script><script>window.active=pages['account-pools'](document.getElementById('root'));</script></html>`)
+		fmt.Fprint(w, `<!doctype html><html><meta charset="utf-8"><div id="root"></div><script>window.pages={};window.Papa={page:(n,f)=>pages[n]=f};window.apiRequest=(u,o)=>fetch(u,o);window.confirm=()=>true;window.openPage=()=>{};</script><script>`+featurecontrol.Script+featurepools.Script+`</script><script>window.active=pages['account-pools'](document.getElementById('root'));</script></html>`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

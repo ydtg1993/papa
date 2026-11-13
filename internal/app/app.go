@@ -3,11 +3,11 @@ package app
 import (
 	"context"
 	"github.com/ydtg1993/oao"
+	"github.com/ydtg1993/papa/v4/admin/access"
 	"github.com/ydtg1993/papa/v4/admin/configstore"
 	"github.com/ydtg1993/papa/v4/admin/oplog"
 	"github.com/ydtg1993/papa/v4/admin/sysinfo"
 	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/reportrunner"
 	"github.com/ydtg1993/papa/v4/obs"
@@ -39,24 +39,26 @@ type App struct {
 	// 报告定时生成（obs.report.interval）：Run 期间按间隔刷新「当天」日报。
 	// 组件负责取消、等待与串行生成（都发生在关库之前），避免
 	// 定时报告与退出报告，避免同一天目录被两个 goroutine 同时写。
-	reportOnce   sync.Once
-	reportRunner *reportrunner.Runner
-	tables       []oao.Table
-	pages        []Page          // 业务注册的自定义页
-	routers      []func(*Router) // 业务注册的自定义路由组（UseRouter）
-	extraJS      []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
-	extraCSS     []string        // UseCSS 注入的样式，拼成 /static/custom.css
-	sysInfo      *sysinfo.Collector
-	httpSrv      *http.Server    // 优雅关停时要先停它，见 shutdownHTTP
-	oplog        *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
-	cancel       context.CancelFunc
-	sites        map[string]core.Site // 站点声明（RegisterSites 填；Site() 取用）
+	reportOnce      sync.Once
+	reportRunner    *reportrunner.Runner
+	tables          []oao.Table
+	pages           []Page          // 业务注册的自定义页
+	routers         []func(*Router) // 业务注册的自定义路由组（UseRouter）
+	extraJS         []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
+	extraCSS        []string        // UseCSS 注入的样式，拼成 /static/custom.css
+	sysInfo         *sysinfo.Collector
+	httpSrv         *http.Server // 优雅关停时要先停它，见 shutdownHTTP
+	httpRequests    *requestDrain
+	whitelistReload *access.WhitelistReloader
+	oplog           *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
+	cancel          context.CancelFunc
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
 	configStore       *configstore.Store
 	runtimeState      runtimeState
 	identityState     browserIdentityState
 	accountOnboarding *onboarding.Service
+	messageListeners  messageListenerState
 
 	shutdownHooks []func(context.Context) error // Run 前注册，HTTP 退出后、关库前执行
 }

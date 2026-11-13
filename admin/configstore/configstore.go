@@ -13,6 +13,7 @@
 package configstore
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -159,11 +160,16 @@ func (s *Store) EnsureTable() error {
 // Load 读一个键。found=false 表示**这一行不存在**（对白名单来说 = 运营没设过 = 不限制），
 // 与"读了但读出错"（err != nil）分开报 —— 后者是配置系统不可用，前者是正常的"没配"。
 func (s *Store) Load(key string) (val []byte, found bool, err error) {
+	return s.LoadContext(context.Background(), key)
+}
+
+// LoadContext 与 Load 相同，并把调用方的取消和截止时间传到实际 SQL 查询。
+func (s *Store) LoadContext(ctx context.Context, key string) (val []byte, found bool, err error) {
 	if _, err := SpecOf(key); err != nil {
 		return nil, false, err
 	}
 	var row models.Config
-	err = s.db.Model(&models.Config{}).Where("cfg_key = ?", key).Take(&row).Error
+	err = s.db.WithContext(ctx).Model(&models.Config{}).Where("cfg_key = ?", key).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, nil
 	}
@@ -176,14 +182,19 @@ func (s *Store) Load(key string) (val []byte, found bool, err error) {
 // LoadStrings 按 `ip_whitelist` 这一项的规格读成字符串数组 —— **这一项生效的值**：
 // 行不存在时给规格里的 Default（空数组 = 不限制），值不是字符串数组则报错。
 //
-// 调用方（internal/app）拿到 error 之后按"不限制来源 + 记 Error"处理：那是这一项的**业务语义**，
+// 调用方（admin/access）拿到 error 之后按"不限制来源 + 记 Error"处理：那是这一项的**业务语义**，
 // 不是这个包该决定的事（包注释里写了理由）。
 func (s *Store) LoadStrings(key string) ([]string, error) {
+	return s.LoadStringsContext(context.Background(), key)
+}
+
+// LoadStringsContext 是带取消能力的字符串数组读取口。
+func (s *Store) LoadStringsContext(ctx context.Context, key string) ([]string, error) {
 	sp, err := SpecOf(key)
 	if err != nil {
 		return nil, err
 	}
-	raw, found, err := s.Load(key)
+	raw, found, err := s.LoadContext(ctx, key)
 	if err != nil {
 		return nil, err
 	}

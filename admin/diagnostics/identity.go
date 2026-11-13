@@ -28,6 +28,16 @@ type ActionResult = browserdiagnostics.ActionResult
 type RodReport = browserdiagnostics.RodReport
 type IdentityDiagnosticReport = browserdiagnostics.IdentityDiagnosticReport
 
+// View adds navigation context to the service-owned identity snapshot. It is
+// also used by the account-pool adapter without duplicating this presentation.
+func (a *Handler) View(ctx context.Context, site string) (map[string]any, error) {
+	view, err := a.Service.View(ctx, site)
+	if view != nil && a.Sites != nil {
+		view["sites"] = a.Sites()
+	}
+	return view, err
+}
+
 func (a *Handler) Identities(w http.ResponseWriter, r *http.Request) {
 	ctx, done, ok := a.Service.Begin(r.Context())
 	if !ok {
@@ -37,10 +47,7 @@ func (a *Handler) Identities(w http.ResponseWriter, r *http.Request) {
 	defer done()
 	r = r.WithContext(ctx)
 	if r.Method == http.MethodGet {
-		view, err := a.Service.View(r.Context(), r.URL.Query().Get("site"))
-		if view != nil && a.Sites != nil {
-			view["sites"] = a.Sites()
-		}
+		view, err := a.View(r.Context(), r.URL.Query().Get("site"))
 		if err != nil {
 			identityAPIError(w, err)
 			return

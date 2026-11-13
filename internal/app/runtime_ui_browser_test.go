@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
+	featurepools "github.com/ydtg1993/papa/v4/admin/accountpools"
+	featurecontrol "github.com/ydtg1993/papa/v4/admin/runtimecontrol"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
@@ -36,12 +38,12 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/runtime-policy", a.runtimePolicyAPI)
-	mux.HandleFunc("/api/runtime-policy/history", a.runtimeHistoryAPI)
-	mux.HandleFunc("/api/account-pools", a.accountPoolsAPI)
+	mux.HandleFunc("/api/runtime-policy", a.runtimeHandler().Policy)
+	mux.HandleFunc("/api/runtime-policy/history", a.runtimeHandler().History)
+	mux.HandleFunc("/api/account-pools", a.accountPoolsHandler().PoolsAPI)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<!doctype html><html><meta charset="utf-8"><style>body{font:14px system-ui;margin:24px}.btn{padding:7px 12px;margin:3px;border:1px solid #ccd4d5;background:white;border-radius:5px}button{cursor:pointer}</style><div id="root"></div><script>window.pages={};window.Papa={page:(name,fn)=>pages[name]=fn};window.apiRequest=async function(url,o){return fetch(url,o)};</script><script>`+runtimeControlScript+accountPoolsScript+`</script><script>window.active=pages['crawl-control'](document.getElementById('root'));</script></html>`)
+		fmt.Fprint(w, `<!doctype html><html><meta charset="utf-8"><style>body{font:14px system-ui;margin:24px}.btn{padding:7px 12px;margin:3px;border:1px solid #ccd4d5;background:white;border-radius:5px}button{cursor:pointer}</style><div id="root"></div><script>window.pages={};window.Papa={page:(name,fn)=>pages[name]=fn};window.apiRequest=async function(url,o){return fetch(url,o)};</script><script>`+featurecontrol.Script+featurepools.Script+`</script><script>window.active=pages['crawl-control'](document.getElementById('root'));</script></html>`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

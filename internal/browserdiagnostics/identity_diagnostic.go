@@ -155,7 +155,7 @@ func runIdentityDiagnosticWithConfig(ctx context.Context, p identity.Profile, s 
 		"字体仅为有限样本；Canvas/WebGL 随系统、驱动和浏览器环境变化。",
 		"历史诊断仅保留本进程最近 128 份摘要；环境变化不等同于配置错误。",
 	}, omitted...)}
-	fail := func(err error) *IdentityDiagnosticReport { r.Error = Redact(err.Error(), nil); return r }
+	fail := func(err error) *IdentityDiagnosticReport { r.OK = false; r.Error = Redact(err.Error(), nil); return r }
 	if err := p.Validate(); err != nil {
 		return fail(err)
 	}
@@ -171,7 +171,12 @@ func runIdentityDiagnosticWithConfig(ctx context.Context, p identity.Profile, s 
 	defer func() {
 		if err := os.RemoveAll(root); err != nil {
 			r.OK = false
-			r.Error = "诊断临时目录清理失败：" + Redact(err.Error(), nil)
+			cleanupError := "诊断临时目录清理失败：" + Redact(err.Error(), nil)
+			if r.Error != "" {
+				r.Error += "\n" + cleanupError
+			} else {
+				r.Error = cleanupError
+			}
 		}
 	}()
 	origin := "http://" + fixture.listener.Addr().String()
@@ -190,7 +195,8 @@ func runIdentityDiagnosticWithConfig(ctx context.Context, p identity.Profile, s 
 		return fail(err)
 	}
 	defer pool.Close()
-	err = pool.WithBrowser(ctx, func(b *browser.Browser) error {
+	err = pool.WithBrowser(ctx, func(b *browser.Browser) (err error) {
+		defer func() { err = errors.Join(err, b.CloseDiagnostic()) }()
 		resolved, err := b.ResolveIdentity(ctx, p)
 		if err != nil {
 			return err

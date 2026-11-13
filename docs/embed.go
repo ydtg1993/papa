@@ -4,7 +4,7 @@ package docs
 
 import "embed"
 
-// Files 仅内嵌顶层 Markdown 手册；issues/ 和 superpowers/ 历史记录不分发。
+// Files 内嵌顶层 Markdown 手册和目录职责分册；issues/ 和 superpowers/ 历史记录不分发。
 //
-//go:embed *.md
+//go:embed *.md package_structure/*.md
 var Files embed.FS

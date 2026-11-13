@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/pkg/account"
@@ -28,7 +29,9 @@ type Service struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
-	closed       bool
+	lifecycleMu  sync.Mutex // admission/WG.Add only; never held across callbacks or storage
+	closed       atomic.Bool
+	drained      chan struct{}
 	eventMu      sync.RWMutex
 	eventHandler func(account.HealthEvent)
 	events       chan account.HealthEvent
@@ -81,7 +84,7 @@ func New(opts Options) (*Service, error) {
 		return nil, errors.New("invalid account onboarding budget")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{opts: opts, providers: map[string]Provider{}, processes: map[string]*process{}, owned: map[account.Key]bool{}, active: map[account.Key]bool{}, slots: make(chan struct{}, opts.MaxActive), ctx: ctx, cancel: cancel, events: make(chan account.HealthEvent, 64)}
+	s := &Service{opts: opts, providers: map[string]Provider{}, processes: map[string]*process{}, owned: map[account.Key]bool{}, active: map[account.Key]bool{}, slots: make(chan struct{}, opts.MaxActive), ctx: ctx, cancel: cancel, events: make(chan account.HealthEvent, 64), drained: make(chan struct{})}
 	s.wg.Add(1)
 	go s.deliverEvents()
 	return s, nil
@@ -138,6 +141,11 @@ func (s *Service) WrapContext(wrapper func(context.Context, string) context.Cont
 	}
 }
 func (s *Service) RegisterProvider(p Provider) error {
+	_, done, err := s.beginOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer done()
 	if p == nil {
 		return ErrNotConfigured
 	}
@@ -162,7 +170,7 @@ func (s *Service) RegisterProvider(p Provider) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return ErrGone
 	}
 	if _, ok := s.providers[d.Site]; ok {
@@ -208,6 +216,11 @@ func validateInput(fs []Field, in map[string]string) error {
 	return nil
 }
 func (s *Service) Providers() []Descriptor {
+	_, done, err := s.beginOperation(context.Background())
+	if err != nil {
+		return []Descriptor{}
+	}
+	defer done()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Descriptor, 0, len(s.providers))
@@ -222,11 +235,18 @@ func (s *Service) Providers() []Descriptor {
 	sort.Slice(out, func(i, j int) bool { return out[i].Site < out[j].Site })
 	return out
 }
-func (s *Service) Profiles(ctx context.Context) ([]Profile, error) { return s.opts.Profiles.List(ctx) }
+func (s *Service) Profiles(ctx context.Context) ([]Profile, error) {
+	ctx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	return s.opts.Profiles.List(ctx)
+}
 func (s *Service) provider(site string) (Provider, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return nil, ErrGone
 	}
 	p := s.providers[site]
@@ -238,6 +258,11 @@ func (s *Service) provider(site string) (Provider, error) {
 
 // SaveDraft never registers the account with Manager, so pools cannot use it.
 func (s *Service) SaveDraft(ctx context.Context, p Profile, expected uint64) (Profile, error) {
+	ctx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return p, err
+	}
+	defer done()
 	if _, err := s.provider(p.Key.Site); err != nil {
 		return p, err
 	}
@@ -285,6 +310,11 @@ func (s *Service) SaveDraft(ctx context.Context, p Profile, expected uint64) (Pr
 // login. Missing providers, missing ciphertext or code-registered key conflicts
 // fail startup rather than silently replacing a different account source.
 func (s *Service) Load(ctx context.Context) error {
+	ctx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
 	s.mu.Lock()
 	started := len(s.processes) > 0
 	s.mu.Unlock()
@@ -341,30 +371,12 @@ func (s *Service) Load(ctx context.Context) error {
 	}
 	return nil
 }
-func (s *Service) Close() {
-	_ = s.Shutdown(context.Background())
-}
-
-// Shutdown cancels every temporary workflow and waits within the caller's
-// drain budget. A provider that ignores cancellation cannot hold app shutdown.
-func (s *Service) Shutdown(ctx context.Context) error {
-	s.mu.Lock()
-	if !s.closed {
-		s.closed = true
-		s.cancel()
-	}
-	s.mu.Unlock()
-	done := make(chan struct{})
-	go func() { s.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 func (s *Service) Start(ctx context.Context, owner string, key account.Key, revision uint64, method string, input map[string]string, remember bool) (Progress, error) {
+	ctx, done, err := s.beginOperation(ctx)
+	if err != nil {
+		return Progress{}, err
+	}
+	defer done()
 	if !validText(owner, 256) {
 		return Progress{}, ErrDenied
 	}
@@ -395,7 +407,7 @@ func (s *Service) Start(ctx context.Context, owner string, key account.Key, revi
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return Progress{}, ErrGone
 	}
 	if s.active[key] {
@@ -462,6 +474,8 @@ func (s *Service) Start(ctx context.Context, owner string, key account.Key, revi
 	s.active[key] = true
 	// Capture the response before the worker can mutate the process progress.
 	initial := copyProgress(p.view)
+	// The admitted Start operation still owns a WG count here. Thus shutdown
+	// cannot observe zero while this registered workflow acquires its own count.
 	s.wg.Add(1)
 	go s.run(p, provider)
 	return initial, nil

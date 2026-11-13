@@ -29,6 +29,35 @@ type Overlay struct {
 	QueueSize              *int    // 这份实例自己的消息队列容量（满了丢弃，不阻塞下载）
 }
 
+// Clone returns an independent overlay, including its scalar pointers.
+// A nil receiver remains nil (no override); explicit zero values are preserved.
+func (o *Overlay) Clone() *Overlay {
+	if o == nil {
+		return nil
+	}
+	return &Overlay{
+		OutputDir:              cloneOverlayValue(o.OutputDir),
+		ResumeStateDir:         cloneOverlayValue(o.ResumeStateDir),
+		MaxRetries:             cloneOverlayValue(o.MaxRetries),
+		RetryInterval:          cloneOverlayValue(o.RetryInterval),
+		Timeout:                cloneOverlayValue(o.Timeout),
+		MaxConcurrent:          cloneOverlayValue(o.MaxConcurrent),
+		ChunkSize:              cloneOverlayValue(o.ChunkSize),
+		EnableResume:           cloneOverlayValue(o.EnableResume),
+		SaveBatchSize:          cloneOverlayValue(o.SaveBatchSize),
+		KeepSegmentsAfterMerge: cloneOverlayValue(o.KeepSegmentsAfterMerge),
+		QueueSize:              cloneOverlayValue(o.QueueSize),
+	}
+}
+
+func cloneOverlayValue[T ~string | ~int | ~int64 | ~bool](v *T) *T {
+	if v == nil {
+		return nil
+	}
+	copy := *v
+	return &copy
+}
+
 // Apply 把这一层叠到 base 上，返回**新的 Config**（不改 base，纯函数、可表驱动测）。
 func (o Overlay) Apply(base Config) Config {
 	out := base

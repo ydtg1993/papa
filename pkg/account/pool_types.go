@@ -155,6 +155,8 @@ type Pools struct {
 	cancel        context.CancelFunc
 	done          chan struct{}
 	stopped       chan struct{}
+	shutdownOnce  sync.Once
+	drained       chan struct{}
 	workers       chan struct{}
 	activeSites   map[string]bool
 	workerWG      sync.WaitGroup
