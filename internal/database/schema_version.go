@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+
 	"gorm.io/gorm"
 )
 
@@ -37,11 +38,14 @@ func CheckTaskSchema(db *gorm.DB) error {
 
 func checkTaskIdentityData(db *gorm.DB) error {
 	var invalid int64
-	if err := db.Table("crawler_tasks").Where("identity_hash IS NULL OR identity_hash = '' OR identity_type IS NULL OR identity_type NOT IN ('id', 'url') OR identity_value IS NULL OR identity_value = ''").Count(&invalid).Error; err != nil {
+	// Rejection only needs one witness. Counting every invalid row needlessly
+	// scans the rest of a rejected database; valid databases still require a scan.
+	witness := db.Table("crawler_tasks").Select("1").Where("identity_hash IS NULL OR identity_hash = '' OR identity_type IS NULL OR identity_type NOT IN ('id', 'url') OR identity_value IS NULL OR identity_value = ''").Limit(1)
+	if err := db.Table("(?) AS invalid_identity", witness).Count(&invalid).Error; err != nil {
 		return err
 	}
 	if invalid > 0 {
-		return fmt.Errorf("unsupported task data: %d rows lack v4 identity; automatic conversion is not supported", invalid)
+		return fmt.Errorf("unsupported task data: a row lacks v4 identity; automatic conversion is not supported")
 	}
 	return nil
 }

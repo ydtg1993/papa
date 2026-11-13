@@ -37,7 +37,7 @@ internal/
 | `internal/reportrunner` | 2 / 1 | `Runner.Start/Stop/Generate/Periodic/Exit`，见[报表](#reportrunner) |
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
 | `internal/breakerstore` | 3 / 2 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
-| `internal/database` | 5 / 5 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
+| `internal/database` | 5 / 7 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
 | `internal/tracestore` | 4 / 1 | `New/Write/List/Cleanup`，见文末 tracestore 章节 |
 | `internal/taskstore` | 3 / 2 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
 | `internal/gormfake` | 1 / 0 | `New`、`Open`、`MustOpen`、`Set*`，见[测试假库](#gormfake) |
@@ -409,7 +409,7 @@ Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期
 | --- | --- |
 | `db.go` | NewDB 仅接受 mysql；按配置设置连接池及 SQL 日志级别/参数隐藏；AutoMigrate 依次处理模型并传播错误 |
 | `migrate.go` | Model、FrameworkModels、AllFrameworkModels、Migrate；迁移和启动检查共享模型目录，可选功能按配置选择，额外模型由宿主传入 |
-| `schema_version.go` | CheckTaskSchema 在启动/显式迁移前只读验证当前 v4 任务身份列、旧索引及数据；拒绝旧格式，不做回填 |
+| `schema_version.go` | CheckTaskSchema 在启动/显式迁移前只读验证当前 v4 任务身份列、旧索引及数据；拒绝旧格式，不做回填；身份数据只查首个非法行，正常库仍需全表检查 |
 | `schema_check.go` | ExistingTables / HasIndexNamed 提供启动提示与迁移判断 |
 | `upsert.go` | Upsert 构造冲突更新，必要时按冲突列回读主键；columnList/backfillPrimaryKey 处理 GORM 列元数据 |
 
@@ -421,7 +421,7 @@ NewDB 成功后将 GORM/底层 sql.DB 生命周期交给 App/宿主；本包不�
 
 依赖 `config`、`core`、`models`、账号/登录模型目录和 GORM/MySQL，允许在适配层引用模型，不让运行控制算法反向依赖本包装配。使用手册见 [CLI](../CLI.md)、[数据落地指南](../DATA_LANDING_GUIDE.md)；迁移职责以本节和现有显式命令为准。
 
-测试：`db_test.go` 验证日志配置和模型开关；`taskflow_models_test.go` 验证任务流可选模型；`model_comment_test.go` 检查模型列注释；`schema_check_test.go` 验证查询、错误传播与 nil 保护；`upsert_test.go` 验证插入/冲突回填、写入和回读失败、参数错误、连接失败及迁移错误。fake/SQL 断言不代替真实 MySQL schema 演进验收，任务身份迁移跨组件回归还须查看模型和 Engine 对应测试。
+测试：`db_test.go` 验证日志配置和模型开关；`taskflow_models_test.go` 验证任务流可选模型；`model_comment_test.go` 检查模型列注释；`schema_check_test.go` 验证查询、错误传播与 nil 保护；`upsert_test.go` 验证插入/冲突回填、写入和回读失败、参数错误、连接失败及迁移错误。`schema_version_test.go` 验证旧格式拒绝、只读和首个非法行查询边界；`v4_mysql_test.go` 通过 PAPA_V4_TEST_DSN 在独占随机测试库验证新库/重复迁移、旧表拒绝、任务状态 CAS，额外设置 PAPA_V4_SCALE_TEST=1 测量 1 万/10 万/100 万行启动校验；建库失败不接管，结束后核验删库。fake/SQL 断言不能代替这些真实 MySQL 测试，Engine 的身份与补偿真库回归补充执行层验证。
 
 <a id="taskstore"></a>
 

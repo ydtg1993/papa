@@ -110,7 +110,7 @@
 | `no_sandbox` | bool | 关闭 Chromium sandbox |
 | `leakless` | bool | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
 | `binary` | string | 浏览器二进制从哪来：`rod`（默认）= **Rod 管理、缺了自动下载**的 Chromium，服务器上不用手动装；`system` = 系统已安装的 Chrome / Chromium / Edge（建池时探测，找不到就启动报错，不下载）；`path` = 用 `browser_path` 指定。留空 = 看 `browser_path`：给了就按 `path`，没给就按 `rod`。**`rod` / `system` 时不能再给 `browser_path`**（来源冲突，配置加载即报错） |
-| `temp_dir` | string | 临时用户数据根目录，空值沿用 Rod 默认系统临时路径。Linux 可设 `/dev/shm/crawler`；创建并检查可写，不可用时报错，不回退。每实例独立子目录，关闭后删除子目录。不能与 `flags.user-data-dir` / `flags.disk-cache-dir` 同配；修改后重启。Chromium 子进程 TMPDIR 同步使用该根目录。 |
+| `temp_dir` | string | 临时用户数据根目录，空值沿用 Rod 默认系统临时路径。Linux 可设 `/dev/shm/crawler`；创建并检查可写，不可用时报错，不回退。每实例独立子目录，由实例关闭流程清理；配置根目录始终保留，可供多个池或诊断实例共享，显式配置不代表独占所有权。池关闭不替代宿主对在途使用的排空，借出实例归还时再清理。不能与 `flags.user-data-dir` / `flags.disk-cache-dir` 同配；修改后重启。Chromium 子进程 TMPDIR 同步使用该根目录。 |
 | `browser_path` | string | 可执行文件路径，仅在 `binary: path`（或 `binary` 留空）时生效 |
 | `flags` | map | 额外 Chromium 启动参数（launcher flags）：键是开关名（前导 `--` 可省），值为空 = 布尔开关（`--name`），否则拼成 `--name=value`。**值一律按字符串解码**，数字/布尔要加引号（`renderer-process-limit: "2"`）；不带值写 `disable-gpu:` 表示布尔开关。例：`disable-gpu:`、`blink-settings: imagesEnabled=false`。**只放 Chromium 自己的开关**：`headless` / `no_sandbox` / `leakless` / 代理各有配置键，flags 最后应用、会覆盖它们；`rod-` 前缀是 Rod 内部参数，写进来会被拒绝 |
 | `self_check` | bool | 启动自检，默认 `false`：建池时真实启动一次浏览器再关掉，起不来就启动失败。`true` 时 `rod` 模式会在**启动阶段**触发 Chromium 下载（Linux 下落在 `~/.cache/rod/browser`，Windows 是 `%APPDATA%\rod\browser`）—— 服务器部署建议打开，把「下载失败 / 缺系统库 / 路径写错」暴露在启动时，而不是第一次抓取时。注意它只验证浏览器二进制本身：Linux 上缺 `libnss3` 这类**系统共享库**仍要自己装（Rod 只下载 Chromium，不装 apt 包） |
@@ -492,7 +492,7 @@ M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理�
 
 ### v4 独立任务与恢复格式
 
-v4 任务使用 ResourceID（留空时规范 URL）及 `(site, stage, identity_hash)` 唯一约束。创建入口统一生成 identity_type/value/hash；不再声明旧 URLHash、IdempotencyKey 或 IdempotencyHash。普通启动和显式 `papa migrate` 在创建 Engine/迁移写入前检查已有任务表的 v4 身份列、残留旧列/索引及数据；旧格式明确拒绝，不回填、不改写旧索引、不删除业务数据。使用独立 v4 数据库，不支持原地升级旧版本。
+v4 任务使用 ResourceID（留空时规范 URL）及 `(site, stage, identity_hash)` 唯一约束。创建入口统一生成 identity_type/value/hash；不再声明旧 URLHash、IdempotencyKey 或 IdempotencyHash。普通启动和显式 `papa migrate` 在创建 Engine/迁移写入前检查已有任务表的 v4 身份列、残留旧列/索引及数据；旧格式明确拒绝，不回填、不改写旧索引、不删除业务数据。使用独立 v4 数据库，不支持原地升级旧版本。 身份数据校验发现第一条非法记录即拒绝，不统计全部坏行；正常数据仍需扫描全表，启动耗时随数据量和存储性能增长。校验不缓存跨进程的通过结论。
 
 熔断持久化使用当前控制版本 1 和精确窗口快照；缺失/不支持的版本阻止恢复，不从展示报告推导控制状态。正常 v4 重启恢复和追加历史保持有效；普通启动不迁移。
 

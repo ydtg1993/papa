@@ -64,6 +64,9 @@ func TestTaskIdentityDataRejectsMissingValuesAndPropagatesFailure(t *testing.T) 
 	if !strings.Contains(f.Written(), "identity_type IS NULL") {
 		t.Fatal("NULL identity type escaped validation", f.Written())
 	}
+	if !strings.Contains(f.Written(), "LIMIT ?) AS invalid_identity") || !strings.HasSuffix(strings.TrimSpace(f.Written()), "| 1") {
+		t.Fatal("identity rejection must stop at its first witness", f.Written())
+	}
 	f.SetCounts(0, 1)
 	if err := checkTaskIdentityData(db); err == nil {
 		t.Fatal("invalid identity row accepted")

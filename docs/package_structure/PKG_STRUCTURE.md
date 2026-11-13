@@ -135,7 +135,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `pool.go` | `PoolConfig`、二进制来源解析、`NewPool`、代理/直连容量、懒创建、Get/Put/With 借用、空闲回收、默认头热更和 Close |
 | `rod.go` | `Browser`、单实例关闭与使用计量；`PageOptions`、受管页面初始化、`NewPageWithOptions` / `WithPageOptions` / `WithNavigatedPage` / `FetchOnce` |
 | `stats.go` | 活实例登记、空闲/保留/借用状态、`Stats` 独立生命周期快照；统计受管实例，不统计 Chromium 子进程数量 |
-| `temp_dir.go` | `ResolveTempDir` / `PrepareTempDir` / `NewTempProfile`，验证实际可写的配置根和创建独占 profile；`TempDir` 返回池实际使用的根 |
+| `temp_dir.go` | `ResolveTempDir` / `PrepareTempDir` / `NewTempProfile`，验证实际可写的配置根和创建独占 profile；`TempDir` 返回池实际使用的共享根；Pool 不删除该根，只由实例关闭清理独占 profile |
 | `navigation.go`、`wait.go` | 已有受管页的 `ConfigurePage` / `NavigatePage`、等待条件及 `WaitError`；页面创建时确定的拦截规则不在导航时随意替换 |
 | `block.go` | `BlockOptions` 与单页面资源拦截 |
 | `isolation.go` | `WithIsolatedBrowser` / `WithDirectIsolatedBrowser`，在借入的进程中创建独立浏览器上下文并负责回收；不继承共享凭据 |
@@ -397,7 +397,7 @@ JSONLSink 拥有传入 `io.WriteCloser` 的关闭责任，自己的 mutex 保护
 | 接入资料 MySQL | `account/onboarding/store_test.go`，读取 `PAPA_ACCOUNT_ONBOARDING_MYSQL_DSN` 或 `PAPA_RUNTIME_TEST_CONFIG` | 核对真实资料存储与 CAS；未配置时用例跳过 |
 | 身份 MySQL | `browser/identity/runtime/gorm_test.go`，读取 `PAPA_IDENTITY_TEST_ADMIN_DSN` 或 `PAPA_RUNTIME_TEST_CONFIG` | 核对实际模型迁移、版本追加/绑定 CAS；不是普通应用启动自动迁移 |
 | 实际浏览器 | browser、account、onboarding 的相关测试，按用例读取 `PAPA_EGRESS_BROWSER_BIN`、`PAPA_TEST_CHROME` 或探测本机浏览器 | 核对 Chromium 页面/上下文/进程和协议交界；不同用例的选择与跳过条件不同，需检查实际测试输出 |
-| 显式临时目录浏览器验证 | `browser/temp_dir_test.go` 的 live 用例，要求 `CRAWLER_ROD_DIAGNOSTIC_LIVE=1` | 核对实际 profile 根；普通路径测试不代替此验证 |
+| 显式临时目录浏览器验证 | `browser/temp_dir_test.go` 的 live 用例，要求 `CRAWLER_ROD_DIAGNOSTIC_LIVE=1` | 核对实际 profile 根、共享池隔离、关池后借出实例仍存活、归还后 profile 清理；普通路径测试不代替此验证 |
 | 实际 ffmpeg | `middleware/m3u8/egress_ffmpeg_test.go`、`remediation_test.go`，读取 `PAPA_EGRESS_FFMPEG_BIN` | 核对本地合并及外部进程的网络限制，未配置时明确跳过 |
 | 平台专用行为 | `browser/diagnostic_cleanup_windows_test.go`、temporary 的链接用例 | Windows 句柄/目录清理或本机链接权限相关；其他平台或跳过不代表该平台行为已验证 |
 

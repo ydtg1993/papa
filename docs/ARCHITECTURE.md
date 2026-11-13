@@ -22,7 +22,7 @@ Papa 是单实例大单体。App 创建组件、注入窄接口并安排启停�
 
 已登记站点只由 Engine 的 siteCatalog 拥有，App.Site 委派查询。声明登记表拥有冻结声明；登记输入、查询返回、计划和每次入口交付都复制框架拥有的 map、slice、配置指针及下载覆盖。业务 Fetcher 保持原对象身份，不做反射深拷贝。
 
-App 汇总 HTTP（含白名单重载）、业务收尾、Engine、运行服务和日志消费者的排空结果，再决定是否关闭共享 DB/浏览器。HTTP 的 requestDrain 统计 handler 真正返回，包括 hijacked handler；强关连接不是排空证据。白名单重载由 access 组件拥有 goroutine/cancel/done，读取 context 经缓存与 GORM 到 SQL，取消不发布空白名单。
+App 汇总 HTTP（含白名单重载）、业务收尾、Engine、运行服务和日志消费者的排空结果，再决定是否关闭共享 DB/浏览器。HTTP 的 requestDrain 统计 handler 真正返回，包括 hijacked handler；强关连接不是排空证据。浏览器 Pool.Close 只停止准入并关闭空闲实例，借出/创建中实例通过各自归还或晚到路径清理，不代替宿主排空；配置临时根是共享父目录，不能递归删除。白名单重载由 access 组件拥有 goroutine/cancel/done，读取 context 经缓存与 GORM 到 SQL，取消不发布空白名单。
 
 运行组件先 BeginShutdown 关闭准入并取消，再共用一个截止时间等待；失败不能跳过其它组件。onboarding 的生命周期锁仅保护准入与在途计数，事务锁仍保证资料操作原子性；Pools 的完成信号包含协调器退出和从 Manager 摘除，等待业务持锁也属于排空过程。超时返回未排空并保留依赖，不能通过另起 goroutine 后立即宣称完成规避这一协议。App 启动失败沿用同一清理编排，保留公开 Run 的失败契约。
 
@@ -40,7 +40,7 @@ App 汇总 HTTP（含白名单重载）、业务收尾、Engine、运行服务�
 
 App 和 Engine 的公开入口是当前公开门面，新增功能优先委派到职责明确的组件。当前版本接口按所属模块维护；`internal` 路径不意味着通过根包别名暴露的字段可以任意修改。
 
-JS/CSS/HTML 继续用 go:embed 保持单二进制部署，源码放所属功能包。`custom.js` 的既有顺序、页面 key 和路由维持兼容；跨页面共享脚本必须明确提供者和加载顺序。后台注册接口持有自己的导航元数据快照，不保留调用方可变的 Owns 切片。公开 `server.TaskFlowScript` / `TaskFlowCSS` 在 Run 前覆盖资源的行为继续保留。
+JS/CSS/HTML 继续用 go:embed 保持单二进制部署，源码放所属功能包。`custom.js` 的既有顺序、页面 key 和路由属于当前扩展契约；跨页面共享脚本必须明确提供者和加载顺序。后台注册接口持有自己的导航元数据快照，不保留调用方可变的 Owns 切片。公开 `server.TaskFlowScript` / `TaskFlowCSS` 在 Run 前覆盖资源的行为继续保留。
 
 `/static/mo.js`、`/static/mo.css` 是组合资源 URL，不是新增功能的源码落点。资源按明确清单组合，重名资源不能依赖 map 遍历顺序决定归属；缺失模板/样式片段必须在装配时失败。生产资源 FS 只读且不能把共享字节切片暴露给调用方。
 

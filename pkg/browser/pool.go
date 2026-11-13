@@ -673,7 +673,10 @@ drain:
 	p.mu.Unlock()
 }
 
-// Close 关闭池中所有浏览器
+// Close stops admission and closes idle browsers. Borrowed/creating instances
+// finish through their return path; callers own draining work before shutdown.
+// TempDir is a shared parent, even when explicitly configured. Only instance
+// cleanup may remove its own profile; the pool must never delete this parent.
 func (p *Pool) Close() {
 	p.closeOnce.Do(func() {
 		p.closed.Store(true)
