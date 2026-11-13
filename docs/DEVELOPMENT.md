@@ -17,6 +17,42 @@
 
 ## 1. 框架仓库（papa 自身）
 
+### 单实例持续负载与进程崩溃恢复
+
+`engine/resilience_mysql_test.go` 使用合成任务和自有随机 MySQL 测试库。显式设置 `PAPA_COMPENSATION_TEST_DSN` 后运行；连接用户须有创建/删除测试库权限，测试忽略 DSN 原数据库名，不迁移或查询业务数据。父进程独占创建和清理，子进程只使用父进程传入的随机库并核验所有权 token。不要把连接串写入命令、日志或版本库。
+
+```powershell
+# 通过本机私有环境注入 PAPA_COMPENSATION_TEST_DSN，再运行：
+$env:GOWORK = 'off'
+$env:CGO_ENABLED = '1'
+go test -race ./engine -run '^TestSingleInstanceMySQLCrashRecovery$' -count=3 -timeout 4m
+go test -race ./engine -run '^TestResilienceMySQL(RejectsCorruptEvidence|FailureCleanup)$' -count=1 -timeout 2m
+$env:PAPA_RESILIENCE_SOAK_DURATION = '10m'
+go test -race ./engine -run '^TestSingleInstanceMySQLSoak$' -count=1 -v -timeout 15m
+Remove-Item Env:PAPA_RESILIENCE_SOAK_DURATION
+```
+
+崩溃用例分别在认领后、合成幂等结果提交后、50ms Stop 超时后强杀测试子进程，等待旧进程退出再启动新的 Engine；每组包含 64 条任务及未来延迟任务。持续负载默认不运行，时长必须显式指定（1 秒至 24 小时，`go test -timeout` 另行留出迁移/排空余量）；初始积压 64 条，随后每批 64 条、批间至少 2 秒，驻留预算 16、worker 2、队列容量 8，handler 模拟 5ms 工作。检查任务终态、业务值、唯一结果、执行次数、驻留上限及真实排空；日志输出堆内存和 goroutine 采样。
+
+合成结果按 TaskID 幂等写入，证明的是可重放恢复，不是任意业务副作用 exactly-once。测试进程强杀不是 MySQL 服务崩溃或断电；10 分钟是有明确负载的持续运行证据，不是 24/72 小时生产长稳认证。正常结束（包括断言失败）清理自有库；若测试父进程被外部强杀，清理回调无法执行，应按本次运行记录核对残留归属，不能按前缀批量删库。
+
+### 组件验证入口
+
+App 组合根与两站点/两阶段的真实子进程验收位于 `internal/app/resilience_mysql_test.go`，同样显式注入 `PAPA_COMPENSATION_TEST_DSN`；独占创建 `papa_app_test_<随机值>`，结束后核验库已不存在。它从 `NewApp → RegisterSites → Run → Shutdown/取消 → shutdownRun` 执行，启用 HTTP、运行策略采样、空浏览器池、事件、周期/退出报告和审计；不访问真实站点或启动 Chromium。测试配置、日志、报告归父进程临时目录，子进程被强杀后仍由父进程清理。清理后检查该目录不存在；子进程回收限时 10 秒，成功输出也保留供复核。每次 handler 入口独立记录时间并与持久 NotBefore 比较，避免重放掩盖提前执行；超时场景让两个仍在途的 handler 在 Run 返回后再次写库。HTTP 关闭另检查 TCP 不再接受连接，事件核对 run_id 和先后顺序，报告必须存在实际日报目录。
+
+```powershell
+$env:GOWORK = 'off'
+$env:CGO_ENABLED = '1'
+$env:PAPA_APP_MIX_DURATION = '1m'
+go test -race ./internal/app -run '^TestAppMySQLMixedLifecycle$' -count=1 -v -timeout 8m
+Remove-Item Env:PAPA_APP_MIX_DURATION
+go test -race ./internal/app -run '^TestAppMySQLMixedLifecycle/(cancel|timeout|crash)$' -count=3 -v -timeout 5m
+```
+
+混合负载时长默认 3 秒，可显式指定 1 秒至 1 分钟（仅为这组受控验收，不是生产长稳配置）。初始 64 条任务包含延迟任务，catalog 向同站 detail 派生任务；检查暂停 alpha 不阻塞 beta、全局驻留预算 8、跨站同名阶段隔离及原始/派生任务清单。正常结束用在途 HTTP 请求和收尾 hook 验证依赖关闭顺序；合作取消只要求明确返回取消的 handler 释放认领，已成功执行但结算未确认的其他任务可保留 processing 待恢复，不能误改为“取消即全库 processing 清零”。关停超时保留 DB/浏览器池，旧子进程确认退出后才重启；逐任务核对重放与幂等结果。每轮退出另检查监听器、自有循环、审计 16 条记录、事件 outcome 和四份报告产物。
+
+Engine 单组件验收断言按以下口径维护：强杀前把控制信号绑定到具体 processing 任务，并检查该任务的结果提交状态；Stop 超时必须有调用标记、未完成统计及合理耗时。重启后按任务核对重放次数和原始合成 URL 集合，不能只对总数。持续负载关闭 RecoverQueue，以隔离验证持续数据库补充，并在有积压但完成量连续十秒不增加时失败；采样不是整个进程的硬实时资源监控。`RejectsCorruptEvidence` 用事务内篡改证明校验器确实拒绝错误证据，`FailureCleanup` 在子进程故意断言失败后验证清理；每个成功分配的测试库在 DROP 后还会查询精确库名确认已不存在。父进程硬退出、服务器不可用等仍可能使清理无法完成，不能宣称任意故障下绝无残留。
+
 浏览器身份分层：`pkg/browser/identity` 负责声明/原生 CDP/观察（不依赖 GORM），其 `runtime` 子包负责 Store 与单实例绑定作用域；`pkg/account` 负责候选认证状态，`engine` 负责认领前固定，`internal/app` 提供 OA 和本地诊断。见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。本地 Chromium 测试使用 `PAPA_EGRESS_BROWSER_BIN` 和 `PAPA_TEST_CHROME`；隔离 MySQL 测试可用 `PAPA_RUNTIME_TEST_CONFIG` 读取连接配置并创建自有临时库，不对业务库迁移。
 
 账号生命周期仍复用 `pkg/account.Pools` 协调器：`NeedsVerify`、仅检查/恢复模式、持久政策和使用计量在该包内。`pkg/account/onboarding` 提供业务 Provider、候选身份确认、加密存储引用、登录过程及受控远程浏览器；业务真实站点实现留在独立模块。`core/compensation.go` 定义错误补偿契约，`engine/compensation.go` 统一原任务的预览、条件判断和 CAS；`admin/configstore` 将运行策略与最近历史放在同一事务中，`internal/app` 负责 OA 接线。

@@ -8,7 +8,7 @@
 
 `internal/` 是框架内部实现目录，不是单一业务层。这里既有应用组合根，也有声明规划、运行服务、持久化适配和底层执行设施。各包按自身契约协作；不能因都在 internal 下就互相读取可变字段或把完整 App / Engine 交给子组件。Papa 只面向单实例大单体，真实站点、业务模型配置和固定验收目标留在独立业务模块。
 
-本册覆盖根层 `internal/` 的 **14 个包、63 个非测试 Go 文件、60 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
+本册覆盖根层 `internal/` 的 **14 个包、63 个非测试 Go 文件、65 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
 
 ```text
 internal/
@@ -30,13 +30,13 @@ internal/
 
 | 包 | 非测试 / 测试文件数 | 主要入口与详述 |
 | --- | --- | --- |
-| `internal/app` | 20 / 30 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
+| `internal/app` | 20 / 31 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
 | `internal/sitedecl` | 5 / 5 | `RegisterSite`、`Sites`、`CheckSites`、`PlanSites`，见[声明](#sitedecl) |
 | `internal/runtimecontrol` | 4 / 2 | `Service.Initialize/Read/Save/HistoryAction/DeletePool`，见[运行策略](#runtimecontrol) |
 | `internal/browserdiagnostics` | 7 / 4 | `Service.Configure/Initialize/Apply/Diagnose/Rod/Shutdown`，见[诊断](#browserdiagnostics) |
 | `internal/reportrunner` | 2 / 1 | `Runner.Start/Stop/Generate/Periodic/Exit`，见[报表](#reportrunner) |
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
-| `internal/breakerstore` | 3 / 2 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
+| `internal/breakerstore` | 3 / 4 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
 | `internal/database` | 5 / 7 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
 | `internal/tracestore` | 4 / 1 | `New/Write/List/Cleanup`，见文末 tracestore 章节 |
 | `internal/taskstore` | 3 / 2 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
@@ -59,9 +59,11 @@ internal/
 
 同包文件按职责平铺。文件数量、行数和目录深度不是完成标准，不创建没有独立契约的 `app/service`、`app/manager` 或 `app/utils` 来容纳原有逻辑。
 
+`resilience_mysql_test.go` 负责 App 组合根的真实 MySQL/子进程集成验收：从 NewApp、站点声明、Run 到 Shutdown 和取消收尾，覆盖两个站点、同名 catalog/detail 阶段及派生任务。只测试组件装配与跨组件契约，不把 SQL 状态转换或调度状态挪入 App；测试表、配置、HTTP 路由及资源只属于合成夹具。覆盖项包括 HTTP 在途请求、业务收尾 hook、运行采样/消息监听、审计、事件/报告及空浏览器池的关闭门控；父进程独占测试库和临时目录，并在强杀旧子进程后才启动恢复进程。逐次执行时间核对延迟约束，超时返回后由存活 handler 实测 DB 写入；父进程核验测试库与临时目录均已清理。运行方式见 [开发手册](../DEVELOPMENT.md#组件验证入口)。
+
 ### 2.2 当前物理目录
 
-当前 `internal/app` 有 **20 个生产 Go 文件、30 个测试 Go 文件**，没有子目录，没有独立 JS/CSS/HTML 文件。
+当前 `internal/app` 有 **20 个生产 Go 文件、31 个测试 Go 文件**，没有子目录，没有独立 JS/CSS/HTML 文件。
 
 ```text
 internal/app/
