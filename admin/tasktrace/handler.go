@@ -38,7 +38,7 @@ func (s *Handler) SetExecutionLookup(lookup func(int) ([]core.TraceExecutionStep
 	s.executionTrace = lookup
 }
 
-// Trace 返回最新有记录执行的追踪时间线；轮次与截断判据由追踪服务拥有。
+// Trace 返回最近保留的异常或手动指定执行的追踪时间线（不代表任务当前状态）；轮次与截断判据由追踪服务拥有。
 func (s *Handler) Trace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

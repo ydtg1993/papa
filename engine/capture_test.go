@@ -8,18 +8,16 @@ import (
 	"time"
 
 	"github.com/go-rod/rod/lib/proto"
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
-	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
 // decodeTraceData 把 trace 步骤的 JSON 列解出来断言。
-func decodeTraceData(t *testing.T, r models.TaskTrace) map[string]any {
+func decodeTraceData(t *testing.T, r core.TraceStep) map[string]any {
 	t.Helper()
 	var data map[string]any
-	if err := json.Unmarshal(r.Data, &data); err != nil {
+	if err := json.Unmarshal([]byte(r.Data), &data); err != nil {
 		t.Fatalf("步骤 data 不是合法 JSON：%v\n%s", err, r.Data)
 	}
 	return data
@@ -28,7 +26,7 @@ func decodeTraceData(t *testing.T, r models.TaskTrace) map[string]any {
 // 成功捕获：写一条 ok 步骤，data 带命中的 URL / 方法 / 资源类型 / elapsed。
 func TestRecordCaptureSuccessStep(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 7, 0)
+	tr := newTrace(nil, 7, 0)
 	ctx := withTrace(context.Background(), tr)
 
 	res := &browser.CaptureResult{
@@ -47,7 +45,7 @@ func TestRecordCaptureSuccessStep(t *testing.T) {
 		t.Fatalf("steps = %d, want 1", len(records))
 	}
 	r := records[0]
-	if r.Step != captureTraceStep || r.Status != models.TraceOK {
+	if r.Step != captureTraceStep || r.Status != "ok" {
 		t.Fatalf("step = %+v, want %q ok", r, captureTraceStep)
 	}
 	data := decodeTraceData(t, r)
@@ -68,7 +66,7 @@ func TestRecordCaptureSuccessStep(t *testing.T) {
 // 失败捕获：写一条 failed 步骤（带候选样本与超时），并把 HTML 登记进归档缓冲。
 func TestRecordCaptureFailureStep(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 9, 1)
+	tr := newTrace(nil, 9, 1)
 	ar := e.newArchiveBuffer(&Task{ID: 9, Stage: "stub", Site: "site"}, 1)
 	if ar == nil {
 		t.Fatal("归档开着时 newArchiveBuffer 不该返回 nil")
@@ -95,7 +93,7 @@ func TestRecordCaptureFailureStep(t *testing.T) {
 		t.Fatalf("steps = %d, want 1", len(records))
 	}
 	r := records[0]
-	if r.Step != captureTraceStep || r.Status != models.TraceFailed {
+	if r.Step != captureTraceStep || r.Status != "failed" {
 		t.Fatalf("step = %+v, want %q failed", r, captureTraceStep)
 	}
 	if r.Message != boom.Error() {

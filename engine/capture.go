@@ -41,7 +41,7 @@ func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browse
 			if result != nil {
 				data["response_observed"] = result.ResponseObserved
 			}
-			traceFromCtx(ctx).Fail(captureTraceStep, fmt.Errorf("account capture failed"), data)
+			traceFrameworkFailure(ctx, traceFromCtx(ctx), err, captureTraceStep, fmt.Errorf("account capture failed"), data)
 			return nil, err
 		}
 		if result == nil || result.Request == nil {
@@ -117,5 +117,5 @@ func (e *Engine) recordCapture(ctx context.Context, pageURL string, res *browser
 		}
 		data["candidates"] = candidates
 	}
-	tr.Fail(captureTraceStep, err, data)
+	traceFrameworkFailure(ctx, tr, err, captureTraceStep, err, data)
 }

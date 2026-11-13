@@ -18,10 +18,8 @@ const (
 )
 
 // TaskTrace 单任务的一次尝试里，一个步骤的记录。
-// 由 crawler.trace.enabled 开关控制：开启才建表、才写库。
 //
-// 每次 FetchHandler 调用是一次「尝试」（attempt），一次尝试里 handler 可以上报多个步骤（seq）。
-// Data 只在**失败的尝试**里保留 —— 成功尝试（绝大多数）一条 data 都不写，写入量按失败率走。
+// Deprecated: Trace 使用文件存储。此模型仅供历史数据兼容，框架不再迁移或读写此表。
 type TaskTrace struct {
 	ID uint `gorm:"primarykey;index:idx_trace_latest,priority:2;index:idx_trace_tail,priority:5;comment:记录ID"`
 

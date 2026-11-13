@@ -11,27 +11,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/models"
 )
-
-func TestTraceServiceIndependentReadAndCleanupCancellation(t *testing.T) {
-	f := newFakeTaskDB()
-	f.traceRows = []fakeRow{traceRow(1, 7, 0, 0, "warning", int64(models.TraceWarn), []byte(`{"value":1}`))}
-	logger := logrus.New()
-	s := traceService{options: config.TraceConfig{Enabled: true}, db: openFakeTaskDB(t, f), dbLogger: logger, logger: logger}
-	rows, err := s.list(7)
-	if err != nil || len(rows) != 1 || rows[0].Status != "warn" || rows[0].Data != `{"value":1}` {
-		t.Fatalf("list = %+v, %v", rows, err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	f.affected = traceDeleteBatch
-	f.onExec = func(int) { cancel() }
-	s.cleanup(ctx, time.Hour)
-	if got := strings.Count(f.written(), "DELETE"); got != 1 {
-		t.Fatalf("cancel between batches: DELETE count = %d", got)
-	}
-}
 
 func TestArchiveServiceIndependentWriteAndCleanup(t *testing.T) {
 	root := t.TempDir()

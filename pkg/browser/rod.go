@@ -359,7 +359,7 @@ func (b *Browser) newPageBase(opts PageOptions) (*rod.Page, error) {
 }
 
 func (b *Browser) newPageBaseContext(ctx context.Context, opts PageOptions) (*rod.Page, error) {
-	page, err := b.Browser.Context(ctx).Page(proto.TargetCreateTarget{})
+	page, err := b.createManagedPage(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open page: %w", err)
 	}

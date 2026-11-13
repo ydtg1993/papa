@@ -145,7 +145,7 @@ func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.Pa
 	if opts.WaitRequestIdle > 0 {
 		data["wait_request_idle_ms"] = opts.WaitRequestIdle.Milliseconds()
 	}
-	traceFromCtx(ctx).Fail(renderWaitTraceStep, waitErr, data)
+	traceFrameworkFailure(ctx, traceFromCtx(ctx), waitErr, renderWaitTraceStep, waitErr, data)
 }
 
 // render 借浏览器渲染一页，把原始 HTML 与导航后的最终 URL 交出去；两个公开方法共用它
@@ -158,7 +158,7 @@ func (e *Engine) render(ctx context.Context, rawURL string, opts browser.PageOpt
 	result, err := e.fetchResources.Render(ctx, rawURL, opts)
 	if result.Account {
 		if err != nil {
-			traceFromCtx(ctx).Fail("账号池浏览器渲染", errors.New("account pool render failed"), nil)
+			traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "账号池浏览器渲染", errors.New("account pool render failed"), nil)
 		}
 		return result.HTML, result.URL, err
 	}

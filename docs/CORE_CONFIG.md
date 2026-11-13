@@ -63,7 +63,7 @@
 | `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
 | `stop_timeout` | duration | `5s` | 优雅退出时 worker 与动态 ticker 共用从 Stop 入口开始的一份等待预算，不各等一个完整 timeout；不保证任意阻塞锁或外部调用的硬实时上限。超时则打错误日志，并**跳过**关库与关浏览器池，避免破坏仍在运行的 worker。认领或终态写入未确认的任务也计入未完成，即使其 worker 已因取消退出，也不会报告已排空。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
-| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），默认仅将异常尝试保存到 Trace 文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：计数与阈值**每站一份**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
 | `breaker.window` | duration | `5m` | 常规统计窗口；精确记录窗口内终态失败任务轮次。成功不抵消失败，同一任务轮次重复上报只计一次 |
@@ -440,7 +440,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 从更早版本升级时，应核对已有 schema 和数据。`AutoMigrate` 仍可能调整其支持的类型或约束，但不会执行上述历史专项修复，也不会代替业务的数据迁移脚本。
 
 框架自带的表：`crawler_tasks`、`crawler_breaker_incidents`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
-`crawler_operation_log`（`server.operation_log`）、`crawler_task_trace`（`crawler.trace.enabled`）、`crawler_task_flows`（`task_flow.enabled`）
+`crawler_operation_log`（`server.operation_log`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
 运行治理升级补 `crawler_config.revision` 与 `crawler_tasks.account_pool`；本轮新增任务失败类别、补偿条件/时间/原因/CAS 版本、最近账号与选择版本、最近 8 次尝试 JSON。账号池表保存成员、当前选择和有界切换记录；管理表保存健康政策、核验进度、预算与有界事件，不保存 Cookie/Token。账号资料表只保存资料与加密存储引用，策略历史表保留最近 100 个覆盖版本。普通启动只检查结构并加载状态，不自动加表/列；即使默认未启用控制器，也应完成显式迁移。
@@ -500,12 +500,23 @@ M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理�
 
 熔断升级须显式迁移创建 `crawler_breaker_history`，用于 obs 当日过程与重启历史；现有 `crawler_breaker_incidents` 保留控制快照。长期保护固定每小时复查，遵守 Retry-After，人工暂停不自动解除。取样和历史规则见 [BREAKER.md](BREAKER.md)。
 
-### Trace 执行轮次升级
+### Trace 文件存储
 
-开启 trace 的已有部署升级后须显式运行业务迁移入口（`papa migrate` 或业务 `--migrate`），为 `crawler_task_trace` 增加 `execution_id varchar(36) NOT NULL DEFAULT ''` 和 `idx_trace_execution(task_id, execution_id)` 索引，并新增 `idx_trace_latest(task_id, id)`、`idx_trace_tail(task_id, execution_id, attempt, seq, id)` 支持最新执行与有序尾部查询。启动不会自动迁移；大表建索引建议低峰期评估 online DDL。本次不删除旧数据、不回填无法准确推断的历史轮次。
+Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `crawler_task_trace`。旧表不删除，也不读取或自动导出；旧 SQL 历史不出现在当前后台。归档文件与下载接口保持独立。
 
-`ListTrace` 与 `ListTraceExecution`/后台默认显示最新有 Trace 记录的执行轮次，轮内按 attempt/seq 排列；超 500 步只取末 500 步，详细接口 `ListTraceExecution` 的首步 `truncated=true`（原 `ListTrace` 保留原快照字段）。详细快照每步 `execution_id` 对应归档文件和 JSON；历史空值表示轮次未知，按插入 ID 稳定展示其末 500 步。旧归档路径仍可下载，按原保留策略清理。历史轮次分页不在此接口中提供。
+`crawler.trace.enabled` 默认 false；启用后默认仅保存失败、panic、显式 Fail/Warn 的尝试。干净成功不落盘；同轮失败后成功重试仍保留失败尝试。正常关停取消本身不触发保留。后台展示最新**有保留证据**的执行轮次，不表示当前任务最近一次执行一定失败。
 
-Trace 开启且表存在时，启动只读检查 `execution_id` 和上述索引；旧结构会记录包含 `papa migrate` 的明确提示，仍不自动迁移。两次查询以首次选中的持久执行身份为准；并发新执行不会混入，保留期清理仍可能删行，此接口不承诺事务快照。
+| `crawler.trace_files` 配置 | 默认 | 作用 |
+| --- | --- | --- |
+| `dir` | `./traces` | Trace 专用目录，单个 Store 拥有，不与其它产物共用 |
+| `max_file_bytes` | 4194304 | 单个尝试文件字节上限 |
+| `max_total_bytes` | 268435456 | 文件总字节预算 |
+| `max_files` | 10000 | 文件数量预算 |
+
+预算 0 使用默认值，负数非法；达到容量拒绝新证据并告警，不改任务结算。`crawler.trace.retention` 仍默认 168h，负数关闭过期清理。按记录保存时间清理，不以读取时间续期。
+
+`Engine.TraceNextExecution(taskID)` 为未来后台按钮预留：只选中下一次成功认领的执行轮次，同轮重试均保留，包括成功尝试；不立即执行任务、不补录过去步骤、不跨重启。需要先启用 Trace。
+
+`ListTrace` 与 `ListTraceExecution` 的值布局和调用方式保留，读取最新已发布执行的末 500 步；详细接口首步 `truncated=true` 表示存在截断。写入以每次尝试为单位暂存、同步、关闭并重命名发布；执行目录汇聚各尝试，不将多个执行混合。没有记录不等于任务未执行。容量和故障边界见 [RESOURCE_BUDGETS.md](RESOURCE_BUDGETS.md)。
 
 单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。

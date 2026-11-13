@@ -8,7 +8,7 @@
 
 `internal/` 是框架内部实现目录，不是单一业务层。这里既有应用组合根，也有声明规划、运行服务、持久化适配和底层执行设施。各包按自身契约协作；不能因都在 internal 下就互相读取可变字段或把完整 App / Engine 交给子组件。Papa 只面向单实例大单体，真实站点、业务模型配置和固定验收目标留在独立业务模块。
 
-本册覆盖根层 `internal/` 的 **13 个包、59 个非测试 Go 文件、59 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
+本册覆盖根层 `internal/` 的 **14 个包、63 个非测试 Go 文件、60 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
 
 ```text
 internal/
@@ -20,6 +20,7 @@ internal/
 ├── breaker/             # 终态检测、检查点与恢复值契约
 ├── breakerstore/        # 熔断控制快照和历史的事务存储
 ├── database/            # MySQL 连接、显式迁移与 schema 查询
+├── tracestore/          # Trace 文件发布、容量、读取与过期清理
 ├── taskstore/           # 任务认领、终态、释放和重投语义
 ├── gormfake/            # 仓内测试用 GORM/database/sql 假驱动
 ├── workerpool/          # 通用 worker、常规/加急队列和排空
@@ -37,6 +38,7 @@ internal/
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
 | `internal/breakerstore` | 3 / 2 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
 | `internal/database` | 5 / 5 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
+| `internal/tracestore` | 4 / 1 | `New/Write/List/Cleanup`，见文末 tracestore 章节 |
 | `internal/taskstore` | 3 / 2 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
 | `internal/gormfake` | 1 / 0 | `New`、`Open`、`MustOpen`、`Set*`，见[测试假库](#gormfake) |
 | `internal/workerpool` | 3 / 2 | `NewWorkerPool`、`Start`、`Submit/SubmitUrgent`、`Stop`，见[执行池](#workerpool) |
@@ -408,7 +410,7 @@ Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期
 | `db.go` | NewDB 仅接受 mysql；按配置设置连接池及 SQL 日志级别/参数隐藏；AutoMigrate 依次处理模型并传播错误 |
 | `migrate.go` | Model、FrameworkModels、AllFrameworkModels、Migrate；迁移和启动检查共享模型目录，可选功能按配置选择，额外模型由宿主传入 |
 | `task_identity.go` | 显式迁移中的任务身份回填，按 ID 分页、跳过已回填行；新约束下发生冲突即报错，成功后才删除旧索引 |
-| `schema_check.go` | ExistingTables / HasIndexNamed / CheckTraceSchema，使用 MySQL information_schema 查询表、列和索引名称，供启动提示与迁移判断；Trace 检查不替代完整 DDL 校验 |
+| `schema_check.go` | ExistingTables / HasIndexNamed 提供启动提示与迁移判断；CheckTraceSchema 仅保留旧调用兼容，普通启动不调用 |
 | `upsert.go` | Upsert 构造冲突更新，必要时按冲突列回读主键；columnList/backfillPrimaryKey 处理 GORM 列元数据 |
 
 NewDB 成功后将 GORM/底层 sql.DB 生命周期交给 App/宿主；本包不启动 goroutine、不关闭调用方传入的数据库，也没有共享可变目录缓存。GORM/数据库拥有连接池及事务，局部 schema 解析缓存只用于当前 Upsert。
@@ -503,4 +505,19 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 
 本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../DEVELOPMENT.md)，公开扩展继续保留既有兼容行为。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。
 
-Trace 装配与就绪检查：App 仅在启用 Trace 且表已存在时调用 database.CheckTraceSchema，缺列或缺索引记录显式迁移提示，普通启动不自动迁移，也未新增硬失败。http.go 在注册路由前调用 Monitor.SetTaskTraceExecution 接入 Engine.ListTraceExecution；详细查询与执行身份仍归 Engine，App 不复制查询或轮次算法。
+
+## tracestore：Trace 文件持久化
+
+| 文件 | 职责 |
+| --- | --- |
+| `store.go` | Options/Batch、版本化记录、Store 状态与可取消串行门、根目录约束 |
+| `files.go` | 首次有限目录盘点、容量核算、暂存/同步/关闭/重命名发布、受限读取与格式验证 |
+| `read.go` | 持久发布顺序选择最新执行、合并尝试、末 500 步截断 |
+| `cleanup.go` | 按记录时间清理，逐文件释放串行门；汇总损坏错误并继续清理其它记录 |
+| `store_test.go` | 发布、取消、配额、重启顺序、损坏、清理和路径边界回归 |
+
+仅依赖标准库及 core Trace 值类型，不依赖 Engine/App/GORM。Store 独占专用目录，拥有文件索引、总字节数及发布序号；它的串行门协调写入/查询/清理，不持有 Engine 调度锁。首次盘点仅扫描文件名和尺寸，后续写入不重新扫盘；实际步骤按文件大小限制读取。
+
+路径为分片/task-ID/identity-hash/execution-digest/发布序号.json。标准 identity_hash 直接作为目录名；非标准标识散列后使用。版本化 JSON 保存原执行 UUID、任务身份、尝试号、记录时间和截断状态。任务 ID 查询不依赖数据库或第二套索引。崩溃遗留 `.pending` 不展示，保守保留并计入预算；不自动递归删除未知目录。
+
+App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 与 CheckTraceSchema 兼容声明不意味着恢复 SQL 读写。

@@ -137,3 +137,5 @@ writeDocs/writeSkill 逐文件直接写入，不是整批事务，也没有临�
 本次文档盘点不宣称测试通过。验证应按改动选择 `go test ./cmd/papa ./cmd/monitor-demo` 及相关库包；真实浏览器、数据库和生产部署需要各自的验证证据，不能由模板存在或 demo 截图替代。
 
 report.go 通过有预算的 Context 输入和逐日消费生成报告；文件解码、去重与临时分桶属于 obs，CLI 只负责参数、错误返回与产物输出。输入预检超限保留已有产物；新资源手册随顶层文档自动分发。
+
+Trace 配置模板包含独立 trace_files 目录/容量段；migrate 不再提示或创建 Trace 表。旧表不自动删除。

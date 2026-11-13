@@ -35,7 +35,7 @@ func (e *Engine) FetchAccountHTTP(ctx context.Context, key account.Key, req html
 		data["body_bytes"] = len(r.Body)
 	}
 	if err != nil {
-		traceFromCtx(ctx).Fail("账号 HTTP 请求", errors.New("account HTTP exchange failed"), data)
+		traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "账号 HTTP 请求", errors.New("account HTTP exchange failed"), data)
 	} else {
 		traceFromCtx(ctx).Step("账号 HTTP 请求", data)
 	}

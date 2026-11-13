@@ -129,10 +129,10 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
   - `Step(name, data)` —— 这一步做完了，耗时 = 距上一个 `Step`（首步距本次尝试开始）的间隔；
   - `Fail(name, err, data)` —— 这一步失败了，带上错误分类与现场数据；
   - `Warn(name, err, data)` —— **非致命**：出了点事，但不该把任务判失败。典型是附带产物 —— 封面没下下来、附件缺了、某个可选字段没解析出来，而任务本身是成功的（用 `Fail` 会把"任务失败了"的信号发出去）。它**不影响任务终态**，只写进追踪，后台用橙色和红色的失败步骤分开显示。
-- **普通步骤的 `data` 只在失败的尝试里落库**：成功尝试只留步骤骨架，传 `nil` 也完全可以。
-  **例外**：`Warn` 步骤的 `data` 在成功的尝试里也保留 —— 它记的正是"任务成功了、但这一步降级了"，而下一次成功的尝试里它照样只是 warn，剥掉就等于把这条唯一的线索永远丢掉（warn 按定义是异常，量不成问题）。
+- **默认按异常尝试保留**：普通成功整次不写文件；返回错误、panic、显式 `Fail` 或 `Warn` 会保留该次缓冲步骤及数据。失败后重试成功不删除失败证据。缓冲和单步数据有上限，超限标明截断。
+- **主动追踪**：`engine.TraceNextExecution(taskID)` 选择下一次成功认领的执行及其全部重试，成功也保留；它不提交任务、不回溯已经过去的步骤。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
-- **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
+- **默认关闭**：`crawler.trace.enabled` 打开才记录文件（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，按记录时间清理）。
 - 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断；历史空身份明确标记未知轮次。handler panic 时，panic 之前已上报的步骤同样会落库。启用追踪的旧库升级须显式 migrate 增加 execution_id，详见 CORE_CONFIG 的迁移说明。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
 - **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。

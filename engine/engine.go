@@ -21,6 +21,8 @@ import (
 )
 
 type Engine struct {
+	traceOnce sync.Once
+	traces    *traceService
 	db        *gorm.DB
 	loggerSet *loggers.LoggerSet
 	// events 运行事件流（默认关）。nil = 关闭；emit 对 nil 安全。

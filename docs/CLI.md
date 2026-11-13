@@ -377,3 +377,5 @@ papa rod "https://example.com" --proxy --ua "Mozilla/5.0 ..." --json
 ### debug 的出口授权
 
 `papa html`、`papa rod`、`papa diff` 和在线 `papa select` 都使用配置中的 `network.private_origins`。测试内网服务前，在业务自己的配置中填完整 origin；代理列表 API 的内网地址也须列入。不会因为调试命令、localhost 或使用代理而自动放行。`papa check`/配置加载会拒绝畸形授权，详见 CORE_CONFIG 的网络出口段。本次没有数据库迁移。
+
+Trace 采用文件存储，不需要运行 migrate 建 Trace 表；已有 SQL Trace 表不删除、不读取。新建项目模板提供 crawler.trace_files 有限预算配置。

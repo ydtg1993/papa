@@ -25,7 +25,7 @@ type attemptExecution struct {
 }
 
 // runAttempt 执行一次 FetchHandler，并负责这一次尝试的步骤追踪与页面归档：
-// 挂记录器 → 跑 handler → 记下结局 → 落盘（归档）/落库（trace）。
+// 挂记录器 → 跑 handler → 记下结局 → 落盘（归档与异常 trace）。
 //
 // 两件事都放在 defer 里，所以 panic 展开时也会执行 —— 闭包这一层的 defer 先于 workerpool
 // 的 recover 跑，panic 之前已上报的步骤因此不会丢；panic 路径上 setResult 没被调用，
@@ -41,15 +41,13 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 	defer tr.finish() // finish 幂等，正常返回与 panic 展开都走这里
 
 	// 归档缓冲（未开归档时是 nil，所有方法都 nil 安全）。这个 defer 注册在 tr.finish 之后，
-	// 于是**先**执行（LIFO）——"这次归档了哪些文件"因此能作为一条步骤写进还没落库的 trace。
+	// 于是**先**执行（LIFO）——"这次归档了哪些文件"因此能作为一条步骤写进尚未落盘的 trace。
 	ar := a.archive
 	defer func() {
 		r := recover()
 		if files := ar.finish(r != nil || err != nil); len(files) > 0 {
 			// OA 追踪抽屉里"失败"与"那一页"的连接点：光有文件、不知道属于哪条任务等于没留。
-			// 注意这条步骤的 data 也受 trace 的既有策略约束（只有失败的尝试才保留 data）——
-			// `always` 模式下成功的尝试里，步骤名还在但文件名会被剥掉；那种情况按
-			// `{dir}/{site}/{stage}/task-{id}-try-{retry}-*` 在目录里找同一次尝试的文件即可。
+			// Trace 独立按异常/手动选择策略保留；归档始终按自己的模式执行。
 			tr.Step(archiveTraceStep, map[string]any{"files": files})
 		}
 		// 失败原因写进 trace：handler 返回错误、或直接 panic，都在这里落一条带分类与消息的
@@ -59,7 +57,11 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 			tr.Fail(failureTraceStep, fmt.Errorf("panic: %v", r), nil)
 			panic(r) // 原样抛回：workerpool 那头的栈与计数是既有行为
 		case err != nil:
-			tr.Fail(failureTraceStep, err, nil)
+			if ctx.Err() == context.Canceled && cancellationOnly(err) {
+				tr.setResult(nil)
+			} else {
+				tr.Fail(failureTraceStep, err, nil)
+			}
 		}
 	}()
 	// 缓冲挂在 ctx 上：FetchHTML 只拿得到 ctx，这是它知道"这一页属于哪次尝试"的唯一途径。

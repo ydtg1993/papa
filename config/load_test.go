@@ -40,6 +40,11 @@ crawler:
   trace:
     enabled: true
     retention: "168h"
+  trace_files:
+    dir: ./test-traces
+    max_file_bytes: 65536
+    max_total_bytes: 1048576
+    max_files: 50
 `
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -51,6 +56,9 @@ crawler:
 
 	if cfg.Browser.MaxIdleTime != 5*time.Minute {
 		t.Fatalf("max_idle_time = %v, want 5m", cfg.Browser.MaxIdleTime)
+	}
+	if got := cfg.Crawler.TraceFiles; got.Dir != "./test-traces" || got.MaxFileBytes != 65536 || got.MaxTotalBytes != 1048576 || got.MaxFiles != 50 {
+		t.Fatalf("trace_files not decoded: %+v", got)
 	}
 	if cfg.HTML.Timeout != 15*time.Second {
 		t.Fatalf("html timeout = %v, want 15s", cfg.HTML.Timeout)

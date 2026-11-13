@@ -88,7 +88,7 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 
 	c.Crawler.Trace.Enabled = true
 	if got := names(c); !reflect.DeepEqual(got, []string{
-		"crawler_tasks", "crawler_breaker_incidents", "crawler_breaker_history", "crawler_access_token", "crawler_config", "crawler_runtime_policy_history", "crawler_browser_profiles", "crawler_browser_identity_bindings", "crawler_account_pools", "crawler_account_management", "crawler_account_profiles", "crawler_operation_log", "crawler_task_trace",
+		"crawler_tasks", "crawler_breaker_incidents", "crawler_breaker_history", "crawler_access_token", "crawler_config", "crawler_runtime_policy_history", "crawler_browser_profiles", "crawler_browser_identity_bindings", "crawler_account_pools", "crawler_account_management", "crawler_account_profiles", "crawler_operation_log",
 	}) {
 		t.Fatalf("两个开关都开后的清单 = %v", got)
 	}
@@ -105,6 +105,24 @@ func TestFrameworkModelsFollowsSwitches(t *testing.T) {
 		}
 		if tn.TableName() != m.Name {
 			t.Fatalf("表名对不上：清单写 %s，模型的实际表名是 %s", m.Name, tn.TableName())
+		}
+	}
+}
+
+// Trace is file-backed; neither configuration nor catalog inspection registers its legacy table.
+func TestFrameworkModelsExcludeLegacyTrace(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		cfg := &config.Config{}
+		cfg.Crawler.Trace.Enabled = enabled
+		for _, model := range FrameworkModels(cfg) {
+			if model.Name == "crawler_task_trace" {
+				t.Fatalf("trace enabled=%v registered legacy table", enabled)
+			}
+		}
+	}
+	for _, model := range AllFrameworkModels() {
+		if model.Name == "crawler_task_trace" {
+			t.Fatal("catalog registered legacy trace table")
 		}
 	}
 }

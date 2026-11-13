@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
@@ -37,7 +36,7 @@ func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
 	e.SetAccountManager(m)
 	task := &Task{ID: 1, Site: "site", Stage: "detail"}
 	archive := e.newArchiveBuffer(task, 0)
-	trace := newTrace(e.db, logrus.New(), 1, 0)
+	trace := newTrace(nil, 1, 0)
 	ctx := withTrace(withArchive(context.Background(), archive), trace)
 	if _, err := e.FetchAccountHTTP(ctx, key, htmlfetch.Request{URL: srv.URL + "?token=private-url"}); err != nil {
 		t.Fatal(err)

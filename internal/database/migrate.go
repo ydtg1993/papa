@@ -22,12 +22,11 @@ func AllFrameworkModels() []Model {
 	cfg := &config.Config{}
 	cfg.TaskFlow.Enabled = true
 	cfg.Server.OperationLog = true
-	cfg.Crawler.Trace.Enabled = true
 	return FrameworkModels(cfg)
 }
 
 // FrameworkModels 返回框架自带、需要建表的模型。带开关的按配置决定要不要包含 ——
-// 开关关闭就不要求对应表（server.operation_log / crawler.trace.enabled / task_flow.enabled）。
+// 开关关闭就不要求对应表（server.operation_log / task_flow.enabled）。
 //
 // 抽成纯函数让显式迁移与普通启动的缺表检查吃同一份清单，也便于离线断言开关行为。
 // 普通启动只检查，不会调用 AutoMigrate。
@@ -55,9 +54,6 @@ func FrameworkModels(cfg *config.Config) []Model {
 	}
 	if cfg.Server.OperationLog {
 		out = append(out, Model{Name: "crawler_operation_log", Value: &models.OperationLog{}})
-	}
-	if cfg.Crawler.Trace.Enabled {
-		out = append(out, Model{Name: "crawler_task_trace", Value: &models.TaskTrace{}})
 	}
 	return out
 }

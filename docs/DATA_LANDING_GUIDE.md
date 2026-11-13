@@ -185,10 +185,8 @@ return engine.SubmitTask(&papa.Task{
 
 熔断运行数据分为当前快照 `crawler_breaker_incidents` 与追加历史 `crawler_breaker_history`。本次升级须运行宿主显式迁移创建历史表，普通启动不自动迁移；每日 obs 查询历史表，不用最新快照覆盖过去某天的状态。两表同事务写入，历史主键为事件 ID 与事件内序号。
 
-### 步骤追踪执行身份迁移
+### 步骤追踪文件存储
 
-启用 `crawler.trace.enabled` 的既有项目升级后，需要显式运行 `papa migrate`（或业务迁移入口），为 `crawler_task_trace` 增加 `execution_id varchar(36) NOT NULL DEFAULT ''` 及 `idx_trace_execution(task_id, execution_id)`、`idx_trace_latest(task_id, id)`、`idx_trace_tail(task_id, execution_id, attempt, seq, id)`；保留原有索引，不自动删除。大追踪表建议低峰期评估索引 DDL。普通启动不自动改表；本次不增加任务主表字段、不修改认领或终态条件。
+Trace 不再参与框架数据库迁移或启动表结构检查。旧 `crawler_task_trace` 表不会自动删除，但也不会回退读取；需要历史 SQL 证据时自行保留原库备份。本次不改变任务主表认领、终态和结算条件。
 
-历史追踪行保留空执行身份，不根据时间猜测或回填；最新查询可稳定展示这些旧行，并标明未知轮次。新执行在认领后取得独立 UUID，同轮重试共用，归档和追踪一致。旧归档文件及下载路径继续保留。
-
-Trace 开启且表存在时，启动只读检查 `execution_id` 和上述索引；旧结构会记录包含 `papa migrate` 的明确提示，仍不自动迁移。两次查询以首次选中的持久执行身份为准；并发新执行不会混入，保留期清理仍可能删行，此接口不承诺事务快照。
+新执行在成功认领后取得 UUID，同轮重试共用；异常尝试或主动选中的执行保存到专用 Trace 文件目录。执行身份与归档关联保持一致，旧归档下载路径继续可用。详见 [CORE_CONFIG.md](CORE_CONFIG.md) 的 Trace 文件存储。

@@ -23,7 +23,7 @@ const migrateUsage = `usage: papa migrate [-c configs/config.yaml]
 那些模型（papa.WithModels / 脚手架根 models 包的 Models()），CLI 是独立编译的，拿不到。
 
 其余情况（不在项目里、或在 papa 仓库里）只建框架自带的表：crawler_tasks、
-crawler_access_token，以及按开关启用的 crawler_operation_log、crawler_task_trace。
+crawler_access_token，以及按开关启用的 crawler_operation_log 等。Trace 使用文件，不建表。
 
   -c/--config   配置文件路径；缺省读 PAPA_CONFIG 环境变量，再回退 configs/config.yaml
                 转交项目时会作为 PAPA_CONFIG 传给子进程
@@ -88,9 +88,6 @@ func runMigrateCmd(args []string) error {
 	}
 	if !cfg.Server.OperationLog {
 		fmt.Println("提示：server.operation_log 关着，这次不建 crawler_operation_log；开启后重跑本命令即可。")
-	}
-	if !cfg.Crawler.Trace.Enabled {
-		fmt.Println("提示：crawler.trace.enabled 关着，这次不建 crawler_task_trace；开启后重跑本命令即可。")
 	}
 
 	if err := database.Migrate(db, cfg); err != nil {

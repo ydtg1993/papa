@@ -138,7 +138,7 @@ func TestFrameworkCatalogCoversAllModelsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := database.AllFrameworkModels()
-	if len(tables) != 14 || len(tables) != len(models) {
+	if len(tables) != 13 || len(tables) != len(models) {
 		t.Fatalf("catalog/model count = %d/%d", len(tables), len(models))
 	}
 	for i, table := range tables {
@@ -206,7 +206,7 @@ func TestFrameworkHTTPReadOnlyAuthAndBusinessIsolation(t *testing.T) {
 func TestFrameworkSQLProjectionPaginationAndStableOrder(t *testing.T) {
 	db, f := testDB(t)
 	mux := testMux(t, db)
-	for _, name := range []string{"crawler_access_token", "crawler_config", "crawler_tasks", "crawler_operation_log", "crawler_task_flows", "crawler_task_trace"} {
+	for _, name := range []string{"crawler_access_token", "crawler_config", "crawler_tasks", "crawler_operation_log", "crawler_task_flows"} {
 		f.queries = nil
 		params := url.Values{"page": {"2"}, "size": {"50"}, "sort": {"-status,evil"}, "filter[table]": {"task"}, "filter[token_hash]": {"forbidden"}}
 		w := request(mux, "GET", "/api/oao/"+name+"?"+params.Encode(), true)
@@ -303,9 +303,9 @@ func TestFrameworkSanitizerBoundsAndPlainSecrets(t *testing.T) {
 
 func TestFrameworkTypedJSONCannotBypassSanitizer(t *testing.T) {
 	db, f := testDB(t)
-	f.columns = []string{"id", "data"}
+	f.columns = []string{"id", "payload"}
 	f.row = []driver.Value{int64(1), []byte(`{"password":"must-hide","nested":{"cookie":"must-hide"}}`)}
-	w := request(testMux(t, db), "GET", "/api/oao/crawler_task_trace", true)
+	w := request(testMux(t, db), "GET", "/api/oao/crawler_breaker_history", true)
 	if w.Code != 200 || strings.Contains(w.Body.String(), "must-hide") {
 		t.Fatal("typed JSON leaked or failed", w.Code)
 	}
@@ -338,16 +338,30 @@ func TestFrameworkConcurrentReadsKeepQueriesIsolated(t *testing.T) {
 }
 
 func TestSelectedFrameworkCatalogAndProbeExcludeOtherTables(t *testing.T) {
-	tables, err := Tables(nil, "crawler_task_trace")
-	if err != nil || len(tables) != 1 || tables[0].Key != "crawler_task_trace" {
+	tables, err := Tables(nil, "crawler_breaker_history")
+	if err != nil || len(tables) != 1 || tables[0].Key != "crawler_breaker_history" {
 		t.Fatalf("selection: %v %v", tables, err)
 	}
 	mux := http.NewServeMux()
-	Register(mux, nil, authenticated, "crawler_task_trace")
+	Register(mux, nil, authenticated, "crawler_breaker_history")
 	if w := request(mux, "GET", "/api/framework-tables/crawler_config", true); w.Code != 404 {
 		t.Fatal("unselected probe exposed", w.Code)
 	}
-	if w := request(mux, "GET", "/api/framework-tables/crawler_task_trace", true); w.Code != 200 {
+	if w := request(mux, "GET", "/api/framework-tables/crawler_breaker_history", true); w.Code != 200 {
 		t.Fatal("selected probe absent", w.Code)
+	}
+}
+
+func TestLegacyTraceTableIsNotExposed(t *testing.T) {
+	tables, err := Tables(nil, "crawler_task_trace")
+	if err != nil || len(tables) != 0 {
+		t.Fatalf("legacy trace catalog = %v, %v", tables, err)
+	}
+	db, _ := testDB(t)
+	mux := testMux(t, db)
+	for _, path := range []string{"/api/oao/crawler_task_trace", "/api/framework-tables/crawler_task_trace"} {
+		if w := request(mux, "GET", path, true); w.Code != 404 {
+			t.Fatalf("legacy trace exposed: %s %d", path, w.Code)
+		}
 	}
 }

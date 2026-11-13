@@ -58,7 +58,7 @@ type AIBriefRun struct {
 
 // 通用已知陷阱（框架级，业务陷阱由业务问题里的假设携带）。
 var genericPitfalls = []string{
-	"updated_at 会被 claim/重试/终态反复覆盖，不能用来算单次耗时；耗时以事件 duration_ms 或 crawler_task_trace 为准。",
+	"updated_at 会被 claim/重试/终态反复覆盖，不能用来算单次耗时；耗时以事件 duration_ms 或保留的 Trace 文件步骤为准，Trace 默认仅保留异常尝试。",
 	"recover_queue 只在进程启动时跑一次；运行期 processing 超时不是重投依据（那会与仍在跑的 worker 撞车）。",
 	"同一次失败会写两条日志（engine 的 task failed + worker 转发），聚合时按 task_id+retry 去重。",
 	"stuck 阈值（默认 10m）是报告口径，不是引擎的启动恢复判据（后者是 updated_at < startedAt）。",

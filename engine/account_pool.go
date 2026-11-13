@@ -45,7 +45,7 @@ func (e *Engine) FetchPoolHTTP(ctx context.Context, key account.PoolKey, req htm
 		data["body_bytes"] = len(r.Body)
 	}
 	if err != nil {
-		traceFromCtx(ctx).Fail("账号池 HTTP 请求", errors.New("account pool exchange failed"), data)
+		traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "账号池 HTTP 请求", errors.New("account pool exchange failed"), data)
 	} else {
 		traceFromCtx(ctx).Step("账号池 HTTP 请求", data)
 	}

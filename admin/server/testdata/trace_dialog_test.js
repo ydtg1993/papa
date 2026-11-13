@@ -14,7 +14,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(pending[0].url, '/api/task/trace?id=7');
  pending[0].resolve({ json: async () => ({ steps: [] }) }); await tick();
  assert.equal(dialogs[0].title, '任务追踪 #7');
- assert.match(dialogs[0].body, /没有步骤记录/);
+ assert.match(dialogs[0].body, /没有保留的追踪记录/);
  const first = context.showTaskTrace(8), second = context.showTaskTrace(9);
  pending[2].resolve({ json: async () => ({ steps: [{ attempt: 1, step: '<unsafe>', status: 'failed', message: 'failure', duration: 1000000 }] }) }); await second;
  pending[1].resolve({ json: async () => ({ steps: [] }) }); await first;

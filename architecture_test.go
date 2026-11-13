@@ -45,6 +45,9 @@ func TestPackageResponsibilityBoundaries(t *testing.T) {
 			if strings.HasPrefix(p, "config/") && dep == module+"internal/breaker" {
 				t.Errorf("public config %s imports breaker implementation", p)
 			}
+			if strings.HasPrefix(p, "internal/tracestore/") && strings.Contains(strings.Split(dep, "/")[0], ".") && dep != module+"core" {
+				t.Errorf("trace file store %s imports non-value dependency %s", p, dep)
+			}
 			if strings.HasPrefix(p, "pkg/account/gormstore/") && dep == module+"pkg/account" {
 				t.Errorf("storage adapter %s imports account coordinator", p)
 			}

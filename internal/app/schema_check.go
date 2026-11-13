@@ -23,7 +23,7 @@ var frameworkIndexHints = []struct {
 
 // checkFrameworkSchema 启动期的框架表/索引检查（NewApp 里调用）。
 //
-// 返回缺失的框架表名、缺失的框架索引名。err 表示查询失败或已启用 Trace 的旧结构需要显式迁移（这时结果不可信，
+// 返回缺失的框架表名、缺失的框架索引名。err 表示查询失败（这时结果不可信，
 // 调用方只记日志、不影响启动 —— 与原来"表不在只喊一声"同一取向）。
 //
 // 之所以单独成一个函数：NewApp 里那一步要真库，这两个判据靠一条 information_schema 查询
@@ -54,11 +54,6 @@ func checkFrameworkSchema(db *gorm.DB, cfg *config.Config) (missingTables []stri
 		}
 		if !has {
 			missingIndexes = append(missingIndexes, check.index)
-		}
-	}
-	if cfg.Crawler.Trace.Enabled && existing["crawler_task_trace"] {
-		if err := database.CheckTraceSchema(db); err != nil {
-			return missingTables, missingIndexes, err
 		}
 	}
 	return missingTables, missingIndexes, nil

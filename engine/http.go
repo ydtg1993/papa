@@ -42,7 +42,7 @@ func (e *Engine) FetchIncremental(ctx context.Context, rawURL string, previous *
 		data["status_code"] = result.Response.StatusCode
 	}
 	if err != nil {
-		traceFromCtx(ctx).Fail("增量 HTTP 请求", fmt.Errorf("incremental HTTP exchange failed"), data)
+		traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "增量 HTTP 请求", fmt.Errorf("incremental HTTP exchange failed"), data)
 	} else {
 		traceFromCtx(ctx).Step("增量 HTTP 请求", data)
 	}
@@ -70,7 +70,7 @@ func (e *Engine) FetchHTTP(ctx context.Context, request htmlfetch.Request) (*htm
 	}
 	// Do not copy transport error strings into trace: they can contain signed URLs.
 	if err != nil {
-		traceFromCtx(ctx).Fail("HTTP 请求", fmt.Errorf("HTTP exchange failed"), data)
+		traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "HTTP 请求", fmt.Errorf("HTTP exchange failed"), data)
 	} else {
 		traceFromCtx(ctx).Step("HTTP 请求", data)
 	}
@@ -93,7 +93,7 @@ func (e *Engine) CaptureResponse(ctx context.Context, pageURL string, opts brows
 			data["body_bytes"] = len(response.Body)
 		}
 		if err != nil {
-			traceFromCtx(ctx).Fail("捕获 HTTP 响应", fmt.Errorf("account response capture failed"), data)
+			traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "捕获 HTTP 响应", fmt.Errorf("account response capture failed"), data)
 		} else {
 			traceFromCtx(ctx).Step("捕获 HTTP 响应", data)
 		}
@@ -118,7 +118,7 @@ func (e *Engine) CaptureResponse(ctx context.Context, pageURL string, opts brows
 		data["body_bytes"] = len(response.Body)
 	}
 	if err != nil {
-		traceFromCtx(ctx).Fail("捕获 HTTP 响应", fmt.Errorf("response capture failed"), data)
+		traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "捕获 HTTP 响应", fmt.Errorf("response capture failed"), data)
 	} else {
 		traceFromCtx(ctx).Step("捕获 HTTP 响应", data)
 	}

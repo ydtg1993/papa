@@ -261,3 +261,5 @@ layout.css 负责共享导航、响应式与外观覆盖，在基础样式之后
 追踪抽屉由 `admin/tasktrace/static/trace.js` 展示服务返回的 execution_id 与截断标志；只展示最新有记录执行的最后 500 步，旧记录明确提示无轮次标识。`admin/tasktrace/frontend_test.go` 执行真实控制器，验证执行身份转义、截断提示和旧数据提示，不在前端重新判定执行轮次。
 
 Trace 详细回调在装配期通过 Monitor.SetTaskTraceExecution → tasktrace.Handler.SetExecutionLookup 注入，必须在提供请求服务前设置，不是运行时热更新接口。原 MonitorConfig/Options 布局及旧 TraceStep 回调保持兼容；详细回调优先，为 nil 时回退旧回调。handler 负责 HTTP/JSON 适配，不拥有执行身份或存储查询。对应回归为 TestExecutionTraceComposition 和 TestExecutionTraceLookupPreservesLegacyFallback。
+
+当前内置 Trace 查询来自文件：默认仅保留异常尝试，展示最新保留执行，不等于当前任务最新状态。旧回调的未知执行标识展示仍为 API 兼容保留；框架不再挂载 SQL Trace 表。主动选择执行接口已预留，按钮本轮未实现。

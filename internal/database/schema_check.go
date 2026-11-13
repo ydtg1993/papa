@@ -46,8 +46,9 @@ func HasIndexNamed(db *gorm.DB, table, index string) (bool, error) {
 	return n > 0, nil
 }
 
-// CheckTraceSchema only inspects the optional trace schema; it never migrates.
-// Existing legacy rows are supported after explicit migration adds execution_id.
+// CheckTraceSchema only inspects the legacy trace schema; it never migrates.
+//
+// Deprecated: Trace uses files; normal startup and migration do not call this helper.
 func CheckTraceSchema(db *gorm.DB) error {
 	if db == nil {
 		return nil
@@ -71,7 +72,7 @@ func CheckTraceSchema(db *gorm.DB) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("crawler_task_trace missing %s; run papa migrate (or the business migration entry point) before enabling trace", strings.Join(missing, ", "))
+		return fmt.Errorf("crawler_task_trace missing %s; legacy schema inspection only; file-backed Trace does not require this table", strings.Join(missing, ", "))
 	}
 	return nil
 }

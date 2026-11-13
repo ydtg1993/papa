@@ -42,6 +42,7 @@ func archiveEngine(t *testing.T, mode string, origins ...string) (*Engine, *stub
 	t.Cleanup(e.cancel)
 
 	e.cfg.Crawler.Trace.Enabled = true
+	e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
 	e.cfg.HTML = config.HTMLConfig{Enable: true, Timeout: 3 * time.Second, MaxBodySize: 4 << 20}
 	e.cfg.Crawler.Archive = config.ArchiveConfig{Enabled: true, Dir: dir, Mode: mode}
 	e.SetHTMLClient()
@@ -117,7 +118,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 		`<noscript><img src="/lazy-cover.webp"></noscript>  多余的空格  </body></html>`
 	srv := serveBody(t, body)
 
-	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 7, Stage: "stub", URL: srv.URL}
 	f := &pageFetcher{urls: []string{srv.URL}, err: errors.New("解析失败：选择器没匹配到")}
 
@@ -165,7 +166,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 	}
 
 	// trace 里要有指向文件的那一步 —— 否则"失败了"和"那一页"连不起来
-	trace := pool.all()
+	trace := traceText(t, e, task.ID)
 	if !strings.Contains(trace, archiveTraceStep) {
 		t.Fatalf("trace 里应有一条 %q 步骤：\n%s", archiveTraceStep, trace)
 	}
@@ -177,7 +178,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 // 默认模式（failure）下成功的尝试不落盘：写入量按失败率走，与 trace「只在失败尝试写 data」同构。
 func TestArchiveSkipsSuccessfulAttemptByDefault(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 7, Stage: "stub", URL: srv.URL}
 
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL}}, task, 0); err != nil {
@@ -186,8 +187,8 @@ func TestArchiveSkipsSuccessfulAttemptByDefault(t *testing.T) {
 	if files := listArchive(t, dir); len(files) != 0 {
 		t.Fatalf("成功的尝试不该落盘，实得 %v", files)
 	}
-	if strings.Contains(pool.all(), archiveTraceStep) {
-		t.Fatalf("没归档就不该写归档步骤：\n%s", pool.all())
+	if strings.Contains(traceText(t, e, task.ID), archiveTraceStep) {
+		t.Fatalf("没归档就不该写归档步骤：\n%s", traceText(t, e, task.ID))
 	}
 }
 
@@ -209,7 +210,7 @@ func TestArchiveAlwaysModeWritesOnSuccess(t *testing.T) {
 // 且 panic 必须原样抛给 workerpool。
 func TestArchiveOnPanic(t *testing.T) {
 	srv := serveBody(t, "<html>boom</html>")
-	e, pool, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 8, Stage: "stub", URL: srv.URL}
 
 	defer func() {
@@ -220,8 +221,8 @@ func TestArchiveOnPanic(t *testing.T) {
 		if len(files) != 2 {
 			t.Fatalf("panic 的尝试应当落盘，实得 %v", files)
 		}
-		if !strings.Contains(pool.all(), archiveTraceStep) {
-			t.Fatalf("panic 路径也要把归档写进 trace：\n%s", pool.all())
+		if !strings.Contains(traceText(t, e, task.ID), archiveTraceStep) {
+			t.Fatalf("panic 路径也要把归档写进 trace：\n%s", traceText(t, e, task.ID))
 		}
 	}()
 
@@ -290,7 +291,7 @@ func TestArchiveSkipsPageOverLimit(t *testing.T) {
 // 没开归档时：FetchHTML 照常工作，一个文件都不写（所有归档方法对 nil 安全）。
 func TestArchiveDisabledIsNoop(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
+	e, _, dir := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
 	e.cfg.Crawler.Archive.Enabled = false
 	e.cfg.Crawler.Archive.Dir = ""
 
@@ -301,8 +302,8 @@ func TestArchiveDisabledIsNoop(t *testing.T) {
 	if files := listArchive(t, dir); len(files) != 0 {
 		t.Fatalf("归档关着就不该写文件，实得 %v", files)
 	}
-	if strings.Contains(pool.all(), archiveTraceStep) {
-		t.Fatalf("归档关着就不该写归档步骤：\n%s", pool.all())
+	if strings.Contains(traceText(t, e, task.ID), archiveTraceStep) {
+		t.Fatalf("归档关着就不该写归档步骤：\n%s", traceText(t, e, task.ID))
 	}
 }
 

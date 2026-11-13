@@ -4,119 +4,80 @@ import (
 	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
-	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/models"
-	"gorm.io/gorm"
+	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/tracestore"
+	"sync"
 	"time"
 )
 
-// traceService owns storage and retention policy; Trace owns attempt state.
-// Options are a value snapshot, refreshed by the facade for each operation.
+// traceService owns the persistent file store and bounded one-shot selections.
+// Engine only assembles it; Trace owns the per-attempt buffer.
 type traceService struct {
-	options          config.TraceConfig
-	db               *gorm.DB
-	dbLogger, logger *logrus.Logger
+	files  *tracestore.Store
+	logger *logrus.Logger
+	mu     sync.Mutex
+	armed  map[int]time.Time
 }
 
-func (s traceService) retention() time.Duration {
-	if s.options.Retention < 0 {
-		return 0
-	}
-	if s.options.Retention == 0 {
-		return defaultTraceRetention
-	}
-	return s.options.Retention
-}
-func (s traceService) newTrace(taskID, attempt int) *Trace {
-	if !s.options.Enabled || taskID == 0 {
-		return nil
-	}
-	return newTrace(s.db, s.dbLogger, taskID, attempt)
-}
-func (s traceService) write(records []models.TaskTrace, taskID, attempt int) {
-	if err := s.db.Create(&records).Error; err != nil {
-		s.dbLogger.Warnf("trace: write %d steps of task %d attempt %d failed: %s", len(records), taskID, attempt, err.Error())
-	}
-}
-func (s traceService) list(taskID int) ([]TraceExecutionStep, error) {
-	if !s.options.Enabled {
-		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
-	}
-	var latest []models.TaskTrace
-	if err := s.db.Where("task_id = ?", taskID).Order("id DESC").Limit(1).Find(&latest).Error; err != nil {
-		return nil, fmt.Errorf("load trace of task %d: %w", taskID, err)
-	}
-	if len(latest) == 0 {
-		return []TraceExecutionStep{}, nil
-	}
-	var rows []models.TaskTrace
-	query := s.db.Where("task_id = ? AND execution_id = ?", taskID, latest[0].ExecutionID)
-	if latest[0].ExecutionID == "" {
-		query = query.Order("id DESC")
-	} else {
-		query = query.Order("attempt DESC, seq DESC, id DESC")
-	}
-	if err := query.Limit(maxTraceSteps + 1).Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("load trace of task %d: %w", taskID, err)
-	}
-	truncated := len(rows) > maxTraceSteps
-	if truncated {
-		rows = rows[:maxTraceSteps]
-	}
-	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
-		rows[i], rows[j] = rows[j], rows[i]
-	}
-	out := make([]TraceExecutionStep, 0, len(rows))
-	for _, r := range rows {
-		status := "ok"
-		switch r.Status {
-		case models.TraceFailed:
-			status = "failed"
-		case models.TraceWarn:
-			status = "warn"
-		}
-		out = append(out, TraceExecutionStep{
-			ExecutionID: r.ExecutionID,
-			TraceStep: TraceStep{
-				Attempt:   r.Attempt,
-				Seq:       r.Seq,
-				Step:      r.Step,
-				Status:    status,
-				Kind:      r.Kind,
-				Message:   r.Message,
-				Data:      string(r.Data),
-				Duration:  r.Duration,
-				CreatedAt: r.CreatedAt,
-			},
-		})
-	}
-	if len(out) > 0 {
-		out[0].Truncated = truncated
-	}
-	return out, nil
-}
+const maxTraceSelections = 1024
+const traceSelectionTTL = time.Hour
 
-func (s traceService) cleanup(ctx context.Context, retention time.Duration) {
-	cutoff := time.Now().Add(-retention)
-	var total int64
-	for {
-		select {
-		case <-ctx.Done():
-			s.dbLogger.Infof("trace cleanup: interrupted after deleting %d rows", total)
-			return
-		default:
-		}
-		res := s.db.Where("created_at < ?", cutoff).Limit(traceDeleteBatch).Delete(&models.TaskTrace{})
-		if res.Error != nil {
-			s.dbLogger.Errorf("trace cleanup: %s", res.Error.Error())
-			return
-		}
-		total += res.RowsAffected
-		if res.RowsAffected < traceDeleteBatch {
-			break
+type traceSelectionKey struct{}
+
+// TraceNextExecution retains the next successfully claimed execution, including
+// all retries. Requests expire after one hour. It does not execute the task.
+func (e *Engine) TraceNextExecution(taskID int) error {
+	if !e.traceEnabled() {
+		return fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
+	}
+	if taskID <= 0 {
+		return fmt.Errorf("trace task ID must be positive")
+	}
+	s := e.traceService()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	s.prune(now)
+	if _, exists := s.armed[taskID]; !exists && len(s.armed) >= maxTraceSelections {
+		return fmt.Errorf("trace selection capacity reached")
+	}
+	s.armed[taskID] = now.Add(traceSelectionTTL)
+	return nil
+}
+func (s *traceService) prune(now time.Time) {
+	for id, until := range s.armed {
+		if !until.After(now) {
+			delete(s.armed, id)
 		}
 	}
-	if total > 0 {
-		s.logger.Infof("trace cleanup: deleted %d rows older than %s", total, cutoff.Format(time.RFC3339))
+}
+func (e *Engine) selectTraceExecution(ctx context.Context, taskID int) context.Context {
+	selected := false
+	if e.traceEnabled() {
+		s := e.traceService()
+		s.mu.Lock()
+		s.prune(time.Now())
+		_, selected = s.armed[taskID]
+		delete(s.armed, taskID)
+		s.mu.Unlock()
+	}
+	return context.WithValue(ctx, traceSelectionKey{}, selected)
+}
+func (s *traceService) write(t *Trace, steps []core.TraceStep) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.files.Write(ctx, tracestore.Batch{TaskID: t.taskID, IdentityHash: t.identityHash, ExecutionID: t.executionID, Attempt: t.attempt, RecordedAt: time.Now(), Truncated: t.truncated, Steps: steps}); err != nil && s.logger != nil {
+		s.logger.Warnf("trace: write task %d attempt %d failed: %v", t.taskID, t.attempt, err)
+	}
+}
+func (s *traceService) cleanup(ctx context.Context, retention time.Duration) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if retention <= 0 {
+		return
+	}
+	if err := s.files.Cleanup(ctx, time.Now().Add(-retention)); err != nil && s.logger != nil {
+		s.logger.Warnf("trace cleanup: %v", err)
 	}
 }

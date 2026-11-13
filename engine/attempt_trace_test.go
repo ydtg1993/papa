@@ -20,7 +20,7 @@ import (
 // 两条 —— 前几步都成功，到底为什么死掉只在引擎日志里。而"这一次为什么失败"正是点开追踪最想知道的事。
 func TestFailedAttemptRecordsFailureStep(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 
 	// 带分类的错误：抽屉里要能一眼分清"结构变了"还是"重试耗尽"
 	boom := core.WrapNoRetryKind("structure", errors.New("catalog grid missing"))
@@ -31,7 +31,7 @@ func TestFailedAttemptRecordsFailureStep(t *testing.T) {
 		t.Fatalf("runAttempt = %v, want %v", err, boom)
 	}
 
-	trace := pool.all()
+	trace := traceText(t, e, task.ID)
 	if !strings.Contains(trace, failureTraceStep) {
 		t.Fatalf("trace 里应有 %q 步骤：\n%s", failureTraceStep, trace)
 	}
@@ -46,7 +46,7 @@ func TestFailedAttemptRecordsFailureStep(t *testing.T) {
 // panic 也是失败，而且更该在抽屉里看见（workerpool 那头照旧记栈与失败计数）。
 func TestPanickingAttemptRecordsFailureStep(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 11, Stage: "stub", URL: srv.URL}
 
 	func() {
@@ -60,7 +60,7 @@ func TestPanickingAttemptRecordsFailureStep(t *testing.T) {
 		}, task, 0)
 	}()
 
-	trace := pool.all()
+	trace := traceText(t, e, task.ID)
 	if !strings.Contains(trace, failureTraceStep) || !strings.Contains(trace, "boom-in-handler") {
 		t.Fatalf("panic 的尝试也要在 trace 里留下原因：\n%s", trace)
 	}
@@ -69,14 +69,14 @@ func TestPanickingAttemptRecordsFailureStep(t *testing.T) {
 // 成功的尝试不写这条步骤 —— 否则每条任务都挂着"任务失败"，抽屉里全是噪声。
 func TestSuccessfulAttemptHasNoFailureStep(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, pool, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	task := &Task{ID: 10, Stage: "stub", URL: srv.URL}
 
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL}}, task, 0); err != nil {
 		t.Fatalf("runAttempt = %v", err)
 	}
-	if strings.Contains(pool.all(), failureTraceStep) {
-		t.Fatalf("成功的尝试不该写 %q 步骤：\n%s", failureTraceStep, pool.all())
+	if strings.Contains(traceText(t, e, task.ID), failureTraceStep) {
+		t.Fatalf("成功的尝试不该写 %q 步骤：\n%s", failureTraceStep, traceText(t, e, task.ID))
 	}
 }
 

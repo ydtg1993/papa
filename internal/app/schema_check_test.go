@@ -2,7 +2,6 @@ package app
 
 import (
 	"database/sql/driver"
-	"strings"
 	"testing"
 
 	"github.com/ydtg1993/papa/v4/config"
@@ -103,18 +102,25 @@ func TestFrameworkIndexHintsMatchModelIndexes(t *testing.T) {
 	}
 }
 
-func TestCheckFrameworkSchemaDetectsLegacyTraceColumn(t *testing.T) {
-	f := gormfake.New()
-	f.SetRow(map[string]driver.Value{"table_name": "crawler_task_trace"})
-	f.SetCounts(0, 0)
-	cfg := &config.Config{}
-	cfg.Crawler.Trace.Enabled = true
-	_, _, err := checkFrameworkSchema(gormfake.MustOpen(f), cfg)
-	if err == nil || !strings.Contains(err.Error(), "execution_id") || !strings.Contains(err.Error(), "papa migrate") {
-		t.Fatalf("legacy trace needs actionable migration error, got %v", err)
-	}
-	cfg.Crawler.Trace.Enabled = false
-	if _, _, err := checkFrameworkSchema(gormfake.MustOpen(f), cfg); err != nil {
-		t.Fatalf("disabled trace inspected: %v", err)
+// Legacy Trace tables may be absent or outdated without affecting file-backed Trace readiness.
+func TestCheckFrameworkSchemaIgnoresLegacyTrace(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		f := gormfake.New()
+		f.SetRow(map[string]driver.Value{"table_name": "crawler_task_trace"})
+		f.SetCounts(0, 0)
+		cfg := &config.Config{}
+		cfg.Crawler.Trace.Enabled = enabled
+		missing, indexes, err := checkFrameworkSchema(gormfake.MustOpen(f), cfg)
+		if err != nil {
+			t.Fatalf("trace enabled=%v: %v", enabled, err)
+		}
+		if len(indexes) != 0 {
+			t.Fatalf("legacy trace indexes inspected: %v", indexes)
+		}
+		for _, table := range missing {
+			if table == "crawler_task_trace" {
+				t.Fatal("legacy trace table required")
+			}
+		}
 	}
 }

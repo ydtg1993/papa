@@ -81,7 +81,7 @@ models 描述框架拥有的表、字段、索引和局部 GORM hook。它依赖
 | `task_timing.go` | CrawlerTask.BeforeSave | 新任务的相对延迟使用数据库 UTC 时钟换算 NotBefore；更新不重复施加延迟，失败阻止本次插入 |
 | `utc_time.go` | papa_utc GORM 序列化注册与转换 | 新时间字段的 UTC 墙上时间编码；不能把驱动时区转换与此规则混用 |
 | `task_flow.go` | TaskFlow / crawler_task_flows | 动态任务流策略及其持久状态，事务与调度由 Engine 拥有 |
-| `task_trace.go` | TaskTrace、TraceStatus / crawler_task_trace | 尝试内步骤、耗时、错误和可选数据；写入/保留期由 traceService 管理 |
+| `task_trace.go` | TaskTrace、TraceStatus / crawler_task_trace | 仅保留旧 SQL 模型与状态常量的源码兼容；不参与常规迁移、读写或清理 |
 | `breaker_incident.go` | BreakerIncident / crawler_breaker_incidents | 可恢复的事件/报告快照、revision 与 active；不是直接用来累计每次任务失败的计数器 |
 | `breaker_history.go` | BreakerHistory / crawler_breaker_history | 事件内按序追加过程，事件 ID + 序号支撑重试核对；控制状态仍以事件快照为准 |
 | `browser_identity.go` | BrowserProfile、BrowserIdentityBinding | 档案版本与绑定 CAS 结构；绑定 revision 不等同于账号版本或账号池选择版本 |
@@ -126,4 +126,6 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
 
-执行证据由 engine 的认领 context 分配 UUID，Trace 与归档共用；models.TaskTrace 持久化 execution_id，core.TraceStep 保留原公开布局；新增 core.TraceExecutionStep 承载只读 execution_id/truncated，Engine.ListTraceExecution 提供详细查询，ListTrace 的返回签名与字段不变。身份不改变任务状态所有权和终态原子性。升级启用 Trace 的库须显式 migrate 增列/索引；历史空身份可读。
+执行证据由 engine 的认领 context 分配 UUID，Trace 与归档共用；文件记录保存 execution_id，core.TraceStep 保留原公开布局；core.TraceExecutionStep 承载 execution_id/truncated。Engine.ListTraceExecution 提供详细查询，ListTrace 的签名与字段不变。身份不改变任务状态所有权和终态原子性。Trace 不再迁移或读取 SQL 历史。
+
+TraceConfig 保持原布局；CrawlerConfig 新增独立 TraceFilesConfig，承载文件目录和有限预算。配置规则见 CORE_CONFIG。

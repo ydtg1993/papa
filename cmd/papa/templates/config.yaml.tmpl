@@ -10,10 +10,15 @@ crawler:
   drain_interval: "2s"         # 溢出任务回灌队列的间隔
   stop_timeout: "5s"           # worker 与动态 ticker 共用退出等待预算；超时则跳过关库/关浏览器池
   stage_idle_timeout: "0s"     # 阶段工作池连续空闲多久就回收（0=常驻不回收）；多站/长跑建议配，如 "10m"
-  # 单任务步骤追踪：task.Trace.Step/Fail/Warn（关 = 安全的 no-op）。开启后要再跑一次 `papa migrate` 建表。详见 docs/framework/CORE_CONFIG.md
+  # 单任务步骤追踪：默认仅保留异常尝试到文件，不需要迁移。详见 docs/framework/CORE_CONFIG.md
   trace:
     enabled: true              # 是否开启步骤追踪
     retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
+  trace_files:
+    dir: "./traces"           # 专用目录；容量满时拒绝新证据并告警，不影响任务结算
+    max_file_bytes: 4194304
+    max_total_bytes: 268435456
+    max_files: 10000
   # 页面归档：**失败那一刻抓到的那一页**按原始字节落盘（不重新序列化，否则丢 <noscript> 回退标签）；
   # 本次尝试结束自动写、handler 不用写代码，trace 里多一条「归档页面」步骤指向 {dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html。
   archive:

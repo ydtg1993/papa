@@ -29,7 +29,7 @@ func (e *Engine) RecordNetwork(ctx context.Context, rawURL string, opts browser.
 		data["dropped"] = record.Dropped
 	}
 	if err != nil {
-		traceFromCtx(ctx).Fail("网络录制", fmt.Errorf("network recording failed"), data)
+		traceFrameworkFailure(ctx, traceFromCtx(ctx), err, "网络录制", fmt.Errorf("network recording failed"), data)
 	} else {
 		traceFromCtx(ctx).Step("网络录制", data)
 	}

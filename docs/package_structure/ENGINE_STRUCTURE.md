@@ -39,7 +39,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 73 个生产 Go 文件、93 个测试 Go 文件；engine/internal 下有 3 个包、9 个生产 Go 文件、6 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 74 个生产 Go 文件、93 个测试 Go 文件；engine/internal 下有 3 个包、9 个生产 Go 文件、6 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -140,8 +140,9 @@ engine/
 
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
-| `trace.go` | Trace 步骤缓冲/锁/终结、context 及公开查询/配置适配 | 单次记录器委派存储，不执行维护 SQL |
-| `trace_service.go` | traceService 的窄配置值、查询、批量写入与分批过期清理 | 无 Engine/完整 Config，取消在批次间生效 |
+| `trace.go` | Trace 步骤缓冲/锁/终结、context 及公开查询/配置适配 | 单次记录器拥有异常判定与有界缓冲，委派文件存储 |
+| `trace_data.go` | 有界输入预检与兼容 JSON 编码 | 序列化异常转为证据标记，不改变 handler 结果 |
+| `trace_service.go` | traceService 的文件组件装配、主动追踪选择与保留期维护 | 独占 tracestore；选择锁不跨文件 I/O，文件锁归 tracestore |
 | `archive.go` | archiveBuffer 的单次页缓冲、限额、结果选择及公开适配 | 单次尝试拥有页面，文件操作委派服务 |
 | `archive_service.go` | archiveService 的配置值、命名、文件写入、保留期清理 | 只接收归档配置值与日志，不接收 Engine |
 | `evidence_maintenance.go` | 共同巡检循环，启动前登记 tickerWG、取消后退出 | Engine 仍负责取消与等待；后台清理未完成时 Stop 不得报告 drained |
@@ -244,7 +245,7 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 ### 执行证据身份
 
-`evidence_identity.go` 为每次成功认领建立 context 内的 UUID，同轮重试共用，恢复/重投/轮询重新认领则换号；只标识观测证据，不参与 taskstore 终态栅栏。`attemptExecution` 装配时把同一身份交给 Trace 和 archiveBuffer，缓冲与锁仍由各自拥有。traceService 查询最新有记录的执行，保留末 500 步并明确截断；旧数据无轮次，按插入 ID 展示，不虚构轮次。
+`evidence_identity.go` 为每次成功认领建立 context 内的 UUID，同轮重试共用，恢复/重投/轮询重新认领则换号；只标识观测证据，不参与 taskstore 终态栅栏。`attemptExecution` 装配时把同一身份交给 Trace 和 archiveBuffer，缓冲与锁仍由各自拥有。traceService 查询最新有记录的执行，保留末 500 步并明确截断；旧 SQL 历史不再读取，不虚构轮次。
 
 ## 九项诊断修复后的治理取消契约
 
@@ -252,6 +253,12 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 `batch_cancel_test.go` 覆盖零暂停、同批未准入任务、已取消无查询/重置、SQL context 传播和在途回调排空；公开方法签名、条件更新谓词和队列锁顺序不变。
 
-`trace_schema_test.go` 验证执行身份列/索引、假库列覆盖及两次查询间下一执行写入不混排；数据库真实 DDL 仍由显式迁移验收负责。
 
-执行证据复查：原 `TraceStep`/`ListTrace` 保持公开值布局，详细查询新增 `TraceExecutionStep`/`ListTraceExecution`；`traceService` 仍拥有存储读取，装配层仅选择查询接口。模型新增 latest/tail 顺序索引且保留原索引。`internal/database.CheckTraceSchema` 拥有只读列/索引探测，App 负责启动提示；显式 Migrate 才改库。`TestTraceMySQLLegacyMigrationAndLatestTail` 复用明确授权的隔离测试库检查旧表升级、重复迁移后的历史字段保留、实际列/索引定义、旧 API 兼容及跨尝试尾部查询；未配置测试连接时跳过。实际执行批次与环境边界见源码仓库 docs/issues/2026-11-13-framework-diagnosis/trace-mysql.md。
+
+## Trace 文件职责与状态所有权
+
+`trace.go` 拥有单次尝试的缓冲、步骤序号、异常标记与终结幂等锁；`trace_service.go` 拥有一个文件 Store 及最多 1024 个、有效一小时的下一执行选择。Engine 用 sync.Once 初始化组件；声明期配置不允许运行中改写。选择在成功认领后消费，通过 context 固定同轮重试策略；选择锁不跨 handler 或文件调用。
+
+默认仅保存错误、panic、显式 Fail/Warn；干净成功不落盘。正常关停取消不单独构成异常；手动选中仍保留。`ListTrace`/`ListTraceExecution` 保留公开值布局，查询最新已保留执行的尾 500 步，不能据此推断任务当前状态。文件格式、容量、发布、路径安全、清理均归 `internal/tracestore`；Engine 无 Trace SQL。
+
+维护沿既有 evidence maintenance ticker 生命周期执行，取消可中断清理；尝试结束在 worker 收尾内同步发布，不引入脱离 worker 的后台写队列。Trace 存储失败仅告警，不改变任务结果。默认保留七天，磁盘容量预算独立生效。旧 MySQL 验证记录仅说明迁移前实现，当前行为以文件回归为准。

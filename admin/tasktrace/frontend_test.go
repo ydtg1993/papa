@@ -22,10 +22,13 @@ global.MonitorShell={install:()=>{},define:(name,scope,requires,factory)=>{featu
 ` + string(source) + `
 (async()=>{
 await feature.showTaskTrace('1');
-if(!body.includes('&lt;run&gt;')||body.includes('<run>')||!body.includes('最后 500 步'))throw Error(body);
+if(!body.includes('最近保留的执行')||!body.includes('不代表任务当前状态或最新一次执行')||!body.includes('&lt;run&gt;')||body.includes('<run>')||!body.includes('最后 500 步'))throw Error(body);
 steps[0].execution_id='';steps[0].truncated=false;
 await feature.showTaskTrace('2');
 if(!body.includes('历史记录无执行轮次标识')||body.includes('最后 500 步'))throw Error(body);
+steps.length=0;
+await feature.showTaskTrace('3');
+if(!body.includes('没有保留的追踪记录')||!body.includes('正常成功不会留存'))throw Error(body);
 })().catch(e=>{console.error(e);process.exitCode=1});`
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

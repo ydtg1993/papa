@@ -173,14 +173,15 @@ type ObsThresholdsConfig struct {
 }
 
 type CrawlerConfig struct {
-	DedupCacheSize   int           `mapstructure:"dedup_cache_size"`   //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-	QueueWatermark   float64       `mapstructure:"queue_watermark"`    //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
-	DrainInterval    time.Duration `mapstructure:"drain_interval"`     //溢出任务回灌间隔；<=0 用默认 2s
-	StopTimeout      time.Duration `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
-	StageIdleTimeout time.Duration `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
-	Trace            TraceConfig   `mapstructure:"trace"`              //单任务步骤追踪
-	Breaker          BreakerConfig `mapstructure:"breaker"`            //熔断（计数 + 阈值）
-	Archive          ArchiveConfig `mapstructure:"archive"`            //页面归档：失败时把那一页的原样 HTML 落到本地文件
+	DedupCacheSize   int              `mapstructure:"dedup_cache_size"`   //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+	QueueWatermark   float64          `mapstructure:"queue_watermark"`    //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
+	DrainInterval    time.Duration    `mapstructure:"drain_interval"`     //溢出任务回灌间隔；<=0 用默认 2s
+	StopTimeout      time.Duration    `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
+	StageIdleTimeout time.Duration    `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
+	Trace            TraceConfig      `mapstructure:"trace"`              //单任务步骤追踪
+	TraceFiles       TraceFilesConfig `mapstructure:"trace_files"`        // Trace 文件目录与容量预算
+	Breaker          BreakerConfig    `mapstructure:"breaker"`            //熔断（计数 + 阈值）
+	Archive          ArchiveConfig    `mapstructure:"archive"`            //页面归档：失败时把那一页的原样 HTML 落到本地文件
 }
 
 // BreakerConfig 熔断：窗口内**终态失败**数达到阈值就**自动暂停那一站的抓取**，
@@ -232,11 +233,20 @@ func (c CrawlerConfig) StopTimeoutOrDefault() time.Duration {
 }
 
 // TraceConfig 单任务步骤追踪配置。
-// 开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表；
-// 关闭时不建表、不写库，task.Trace 为 nil（调用是安全的 no-op）。
+// 开启后 handler 可用 task.Trace.Step/Fail/Warn 上报步骤，默认仅保留异常尝试到文件。
+// 关闭时 task.Trace 为 nil（调用是安全的 no-op）；Trace 不使用数据库。
 type TraceConfig struct {
 	Enabled   bool          `mapstructure:"enabled"`   // 是否开启步骤追踪（默认 false）
 	Retention time.Duration `mapstructure:"retention"` // 步骤记录保留期；0/未写 = 默认 7 天，负数 = 不自动清理
+}
+
+// TraceFilesConfig 是独立的文件预算；TraceConfig 保持原有公开值布局。
+// 零值采用默认值；负预算非法，不提供无限容量模式。
+type TraceFilesConfig struct {
+	Dir           string `mapstructure:"dir"`             // 默认 ./traces；专用于 Trace，不与其它数据目录共用
+	MaxFileBytes  int64  `mapstructure:"max_file_bytes"`  // 默认 4 MiB
+	MaxTotalBytes int64  `mapstructure:"max_total_bytes"` // 默认 256 MiB
+	MaxFiles      int    `mapstructure:"max_files"`       // 默认 10000
 }
 
 // ArchiveConfig 页面归档：把「失败那一刻抓到的那一页」原样落到本地文件。

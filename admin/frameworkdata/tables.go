@@ -30,12 +30,11 @@ var labels = map[string]string{
 	"crawler_account_pools":             "账号池",
 	"crawler_account_management":        "账号健康与政策",
 	"crawler_operation_log":             "操作日志",
-	"crawler_task_trace":                "任务追踪",
 }
 
 func group(name string) string {
 	switch name {
-	case "crawler_tasks", "crawler_task_trace", "crawler_breaker_incidents", "crawler_breaker_history":
+	case "crawler_tasks", "crawler_breaker_incidents", "crawler_breaker_history":
 		return "任务与追踪"
 	case "crawler_access_token", "crawler_config", "crawler_operation_log", "crawler_runtime_policy_history":
 		return "系统配置"

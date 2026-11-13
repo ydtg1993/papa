@@ -6,9 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
@@ -16,7 +14,7 @@ import (
 // 现场 HTML 登记进归档缓冲。
 func TestRecordRenderWaitFailure(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 31, 0)
+	tr := newTrace(nil, 31, 0)
 	ar := e.newArchiveBuffer(&Task{ID: 31, Stage: "stub", Site: "site"}, 0)
 	ctx := withArchive(withTrace(context.Background(), tr), ar)
 
@@ -35,7 +33,7 @@ func TestRecordRenderWaitFailure(t *testing.T) {
 		t.Fatalf("steps = %d, want 1", len(records))
 	}
 	r := records[0]
-	if r.Step != renderWaitTraceStep || r.Status != models.TraceFailed {
+	if r.Step != renderWaitTraceStep || r.Status != "failed" {
 		t.Fatalf("step = %+v, want %q failed", r, renderWaitTraceStep)
 	}
 	data := decodeTraceData(t, r)
@@ -53,7 +51,7 @@ func TestRecordRenderWaitFailure(t *testing.T) {
 // 导航失败（不是 WaitError）没有页面可看，不该写「等待渲染」步骤。
 func TestRecordRenderWaitFailureIgnoresOtherErrors(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 32, 0)
+	tr := newTrace(nil, 32, 0)
 	ar := e.newArchiveBuffer(&Task{ID: 32, Stage: "stub", Site: "site"}, 0)
 	ctx := withArchive(withTrace(context.Background(), tr), ar)
 

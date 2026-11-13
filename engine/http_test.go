@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
@@ -26,7 +25,7 @@ func TestFetchHTTPTraceExcludesCredentialsAndBody(t *testing.T) {
 	defer srv.Close()
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
 	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
-	trace := newTrace(e.db, logrus.New(), 1, 0)
+	trace := newTrace(nil, 1, 0)
 	r, err := e.FetchHTTP(withTrace(context.Background(), trace), htmlfetch.Request{URL: srv.URL + "?token=secret-url", Headers: map[string]string{"Authorization": "secret-header"}})
 	if err == nil || r == nil {
 		t.Fatalf("expected error response: %+v %v", r, err)

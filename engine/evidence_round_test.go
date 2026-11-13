@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ydtg1993/papa/v4/config"
-	"github.com/ydtg1993/papa/v4/models"
 )
 
 func TestArchiveExecutionIdentitySurvivesRetryReset(t *testing.T) {
@@ -62,47 +60,6 @@ func TestArchiveExecutionIdentitySurvivesRetryReset(t *testing.T) {
 	}
 }
 
-func TestListTraceLatestExecutionTailKeepsFailure(t *testing.T) {
-	f := newFakeTaskDB()
-	for i := 0; i < 1100; i++ {
-		row := traceRow(int64(i+1), 7, 0, i, fmt.Sprint(i), int64(models.TraceOK), nil)
-		row["execution_id"] = "old"
-		if i >= 550 {
-			row["execution_id"] = "new"
-			row["attempt"] = int64(1)
-			row["seq"] = int64(i - 550)
-		}
-		f.traceRows = append(f.traceRows, row)
-	}
-	f.traceRows[1099]["status"] = int64(models.TraceFailed)
-	steps, err := traceDBEngine(t, f).ListTraceExecution(7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(steps) != 500 || !steps[0].Truncated || steps[0].Seq != 50 || steps[499].Status != "failed" {
-		t.Fatalf("incorrect tail: len=%d first=%+v last=%+v", len(steps), steps[0], steps[len(steps)-1])
-	}
-	for i, s := range steps {
-		if s.ExecutionID != "new" || s.Seq != i+50 {
-			t.Fatalf("mixed execution/order: %+v", s)
-		}
-	}
-}
-
-func TestListTraceLegacyRoundsRemainInInsertionOrder(t *testing.T) {
-	f := newFakeTaskDB()
-	f.traceRows = []fakeRow{traceRow(3, 7, 0, 0, "third", 0, nil), traceRow(1, 7, 1, 0, "first", 0, nil), traceRow(2, 7, 0, 0, "second", 0, nil)}
-	steps, err := traceDBEngine(t, f).ListTraceExecution(7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, want := range []string{"first", "second", "third"} {
-		if steps[i].Step != want || steps[i].ExecutionID != "" {
-			t.Fatalf("legacy order: %+v", steps)
-		}
-	}
-}
-
 type evidenceClaimFetcher struct {
 	recordingFetcher
 	ids []string
@@ -124,6 +81,7 @@ func TestEvidenceIdentityAllocatedByClaimAcrossEngineRecreation(t *testing.T) {
 	for round := 0; round < 3; round++ {
 		e, _, task, _ := persistenceFixture(t)
 		e.cfg.Crawler.Trace.Enabled = true
+		e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
 		fetcher := &evidenceClaimFetcher{}
 		info := e.stages["stub:stub"]
 		info.fetcher = fetcher

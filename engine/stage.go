@@ -158,6 +158,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		task.breakerRound = fmt.Sprintf("%d:%d", version.Repeat, version.Reprocess)
 		ctx = withTaskRunVersion(ctx, version)
 		ctx = withEvidenceExecution(ctx)
+		ctx = e.selectTraceExecution(ctx, task.ID)
 		if err := e.persistAccountAttempt(ctx, task, version); err != nil {
 			e.releaseClaim(task)
 			return err
@@ -305,10 +306,14 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 // runAttempt assembles one execution session; the public Fetcher API still
 // receives Engine, but no runtime component retains it as a dependency.
 func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
+	if _, selected := ctx.Value(traceSelectionKey{}).(bool); !selected {
+		ctx = e.selectTraceExecution(ctx, task.ID)
+	}
 	executionID := evidenceExecutionID(ctx)
 	tr, ar := e.newTrace(task, attempt), e.newArchiveBuffer(task, attempt)
 	if tr != nil {
 		tr.executionID = executionID
+		tr.manual, _ = ctx.Value(traceSelectionKey{}).(bool)
 	}
 	if ar != nil {
 		ar.executionID = executionID

@@ -45,6 +45,9 @@ func Validate(c *Config, unused []string) {
 	// 先补默认值再跑规则：规则里的"没写"这一态（三态里的第一态）已经在这里归一成
 	// 生效值，规则只需判"写了什么" —— 于是"没写"和"写了零值"两条路走同一个结果。
 	applyDefaults(c)
+	if c.Crawler.TraceFiles.MaxFileBytes < 0 || c.Crawler.TraceFiles.MaxTotalBytes < 0 || c.Crawler.TraceFiles.MaxFiles < 0 {
+		panic("config: crawler.trace_files: 容量预算不得为负数（0 使用默认值）")
+	}
 	if err := c.Runtime.Validate(); err != nil {
 		panic(fmt.Errorf("config: runtime: %w", err))
 	}
