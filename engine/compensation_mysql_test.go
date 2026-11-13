@@ -88,6 +88,7 @@ func compensationMySQLWithOptions(t *testing.T, location *time.Location, foundRo
 	}
 	makeEngine := func() *Engine {
 		cfg := &config.Config{}
+		cfg.Crawler.TraceFiles.Dir = t.TempDir()
 		cfg.RecoverQueue.Enabled = true
 		cfg.ErrorQueue.MaxRetry = 4
 		cfg.ErrorQueue.BatchSize = 10

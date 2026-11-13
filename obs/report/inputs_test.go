@@ -61,3 +61,21 @@ func TestAIBriefMarkdownSnapshotSection(t *testing.T) {
 		t.Fatal("没有快照内容时不该渲染「现在怎样」段")
 	}
 }
+
+func TestSignalReportsDoNotClaimDatabaseOrEngineSnapshot(t *testing.T) {
+	rep := credibilityReport()
+	rep.Engine = obs.EngineState{Source: "signals"}
+	rep.Mode = obs.ModeSnapshot
+	rep.Inputs.SnapshotAt = rep.GeneratedAt
+	md := Markdown(rep)
+	if strings.Contains(md, "DB 快照时刻") || !strings.Contains(md, "信号聚合时刻") {
+		t.Fatalf("false source claim: %s", md)
+	}
+	brief := AIBriefMarkdown(rep)
+	if strings.Contains(brief, "活跃阶段池：0") || !strings.Contains(brief, "活跃阶段池：未采样") {
+		t.Fatalf("unknown pool count rendered as known: %s", brief)
+	}
+	if BuildAIBrief(rep).Snapshot.Source != "signals" {
+		t.Fatal("brief lost source provenance")
+	}
+}

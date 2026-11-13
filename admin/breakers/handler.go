@@ -6,7 +6,7 @@ import (
 	"errors"
 	"github.com/ydtg1993/papa/v4/admin/auth"
 	"github.com/ydtg1993/papa/v4/core"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"io"
 	"net/http"
 	"sort"

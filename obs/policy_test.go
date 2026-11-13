@@ -74,6 +74,8 @@ func TestEngineStateInactive(t *testing.T) {
 		{EngineState{Source: "engine", ActivePools: 2, Sites: []SiteState{{Key: "a", Paused: true}, {Key: "b"}}}, false},
 		{EngineState{Source: "engine", Sites: []SiteState{{Key: "a", Paused: true}, {Key: "b", Paused: true}}}, true},
 		{EngineState{Source: "none"}, false},
+		{EngineState{Source: "signals"}, false},
+		{EngineState{Source: "signals", Sites: []SiteState{{Key: "a", Paused: true}}}, false},
 	}
 	for i, tc := range cases {
 		if got := tc.st.Inactive(); got != tc.want {

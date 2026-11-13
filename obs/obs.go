@@ -237,10 +237,14 @@ type Options struct {
 	Inputs Inputs
 }
 
-// Generate 依次跑 Section 与 Pattern，聚合成一份 Report。
+// Generate 显式离线运行 Section 与 Pattern，聚合成一份 Report。
 //
-// 单节失败不拖垮整份报告：记入 Degraded，其余节继续（对应"报告本身不能比被观测系统更脆"）。
+// 扩展返回错误或 panic 时记入 Degraded，其余组件继续。取消在扩展调用之间检查；
+// Build 应协作处理 ctx，无法强制终止阻塞的 Key、Title、Build 或 Match。
 func Generate(ctx context.Context, opts Options) (*Report, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -280,33 +284,50 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 		Engine:        opts.Engine,
 		Inputs:        inp,
 	}
-	for _, s := range opts.Sections {
+	for i, s := range opts.Sections {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if s == nil {
 			continue
 		}
-		res, err := s.Build(ctx, in)
+		key, title, res, err := buildSection(ctx, s, in)
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return nil, cancelErr
+		}
 		if err != nil {
-			rep.Degraded = append(rep.Degraded, fmt.Sprintf("section %s: %v", s.Key(), err))
+			rep.Degraded = append(rep.Degraded, fmt.Sprintf("section[%d] %s: %v", i, key, err))
 			continue
 		}
 		if res == nil {
 			continue
 		}
 		if in.Historical {
-			skipHistoricalStateChecks(s.Key(), res)
+			skipHistoricalStateChecks(key, res)
 		}
 		rep.Sections = append(rep.Sections, SectionReport{
-			Key: s.Key(), Title: s.Title(), Summary: res.Summary,
+			Key: key, Title: title, Summary: res.Summary,
 			Metrics: res.Metrics, Tables: res.Tables, Checks: res.Checks, Problems: res.Problems,
 		})
 		rep.Checks = append(rep.Checks, res.Checks...)
 		rep.Problems = append(rep.Problems, res.Problems...)
 	}
-	for _, p := range opts.Patterns {
+	for i, p := range opts.Patterns {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if p == nil {
 			continue
 		}
-		rep.Problems = append(rep.Problems, p.Match(in)...)
+		key, problems, err := matchPattern(ctx, p, in)
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return nil, cancelErr
+		}
+		if err != nil {
+			rep.Degraded = append(rep.Degraded, fmt.Sprintf("pattern[%d] %s: %v", i, key, err))
+			continue
+		}
+		rep.Problems = append(rep.Problems, problems...)
 	}
 	sortProblems(rep.Problems)
 	// 分析器可能在 Input.Degraded 里追加（如 DB 未配置），一并带进报告。
@@ -314,7 +335,49 @@ func Generate(ctx context.Context, opts Options) (*Report, error) {
 	rep.Verdict = VerdictOf(rep.Checks)
 	synthesizeProblems(rep)
 	applyVerdictPolicy(rep)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return rep, nil
+}
+
+// Extension guards own no goroutines or mutable shared state. Panic values are
+// deliberately not formatted: an extension can panic with a hostile Stringer.
+func buildSection(ctx context.Context, s Section, in *Input) (key, title string, result *SectionResult, err error) {
+	step := "Key"
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("%s panicked", step)
+		}
+	}()
+	key = s.Key()
+	if err = ctx.Err(); err != nil {
+		return
+	}
+	step = "Title"
+	title = s.Title()
+	if err = ctx.Err(); err != nil {
+		return
+	}
+	step = "Build"
+	result, err = s.Build(ctx, in)
+	return
+}
+
+func matchPattern(ctx context.Context, p Pattern, in *Input) (key string, problems []Problem, err error) {
+	step := "Key"
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("%s panicked", step)
+		}
+	}()
+	key = p.Key()
+	if err = ctx.Err(); err != nil {
+		return
+	}
+	step = "Match"
+	problems = p.Match(in)
+	return
 }
 
 // VerdictOf 聚合判定：任一 fail 级检查未通过 → fail；否则任一 warn 未通过 → warn；否则 pass。

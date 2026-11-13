@@ -1,256 +1,167 @@
-// Package reportrunner owns scheduled/exit report generation and its drain lifecycle.
-// It consumes snapshots and extensions, never an App or Engine.
+// Package reportrunner owns a bounded, signal-only auxiliary reporting service.
 package reportrunner
 
 import (
 	"context"
-	"github.com/ydtg1993/papa/v4/obs"
-	"github.com/ydtg1993/papa/v4/obs/analyze"
-	"github.com/ydtg1993/papa/v4/obs/inputbudget"
-	"github.com/ydtg1993/papa/v4/obs/pattern"
-	"github.com/ydtg1993/papa/v4/obs/report"
-	"github.com/ydtg1993/papa/v4/pkg/events"
-	"gorm.io/gorm"
-	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
+	"github.com/ydtg1993/papa/v4/obs/report"
+	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
-type Logger interface {
-	Infof(string, ...any)
-	Warnf(string, ...any)
-}
-
-// Config is a value snapshot of only the settings owned by report generation.
-// The host maps its configuration here before starting the runner.
 type Config struct {
-	Enabled                       bool
-	LogDir, EventsFile, ReportDir string
-	OnExit                        bool
-	Interval, Timeout, Retention  time.Duration
-	Mode                          string
-	Thresholds                    analyze.Thresholds
+	Enabled             bool
+	ReportDir           string
+	OnExit              bool
+	Interval, Retention time.Duration
 }
-
 type Options struct {
-	Config      Config
-	DB          *gorm.DB
-	Logger      Logger
-	Sections    []obs.Section
-	Patterns    []obs.Pattern
-	EngineState func() obs.EngineState
-	Inputs      func() obs.Inputs
-	Version     string
+	Config         Config
+	RunID, Version string
+	Inputs         obs.Inputs
 }
+
+// Runner owns intake admission, one collector and one writer. It never borrows
+// business resources. A timed-out writer cannot be restarted on this instance.
 type Runner struct {
-	options     Options
-	limits      inputbudget.Limits
-	generateMu  sync.Mutex
-	lifecycleMu sync.Mutex
-	cancel      context.CancelFunc
-	done        chan struct{}
+	options                                 Options
+	mu                                      sync.RWMutex
+	started, closed                         bool
+	incoming                                chan envelope
+	requests                                chan obs.Trigger
+	stop, done                              chan struct{}
+	jobs                                    chan *obs.Report
+	groups                                  int
+	pruning                                 retentionCursor // writer-owned directory cursor
+	dropped, truncated, failures, coalesced atomic.Uint64
+	write                                   func(string, *obs.Report) ([]string, error)
+}
+type envelope struct {
+	event    events.Event
+	received time.Time
 }
 
-func New(options Options) *Runner {
-	return NewWithLimits(options, inputbudget.Limits{})
-}
+func New(o Options) *Runner { return NewWithLimits(o, inputbudget.Limits{}) }
 
-// NewWithLimits fixes immutable input budgets at composition time.
-func NewWithLimits(options Options, limits inputbudget.Limits) *Runner {
-	options.Sections = append([]obs.Section(nil), options.Sections...)
-	options.Patterns = append([]obs.Pattern(nil), options.Patterns...)
-	if options.EngineState == nil {
-		options.EngineState = func() obs.EngineState { return obs.EngineState{Source: "none", CapturedAt: time.Now()} }
-	}
-	if options.Inputs == nil {
-		options.Inputs = func() obs.Inputs { return obs.Inputs{} }
-	}
-	return &Runner{options: options, limits: limits.Normalize()}
-}
-
-// Start is idempotent until Stop. Host configuration is fixed before startup.
-func (r *Runner) Start() {
-	cfg := r.options.Config
-	if !cfg.Enabled || cfg.Interval <= 0 {
-		return
-	}
-	r.lifecycleMu.Lock()
-	defer r.lifecycleMu.Unlock()
-	if r.cancel != nil {
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
-	done := make(chan struct{})
-	r.done = done
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(cfg.Interval)
-		defer ticker.Stop()
-		r.options.Logger.Infof("auto report enabled: interval=%s dir=%s", cfg.Interval, cfg.ReportDir)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if ctx.Err() != nil {
-					return
-				}
-				r.generate(ctx, obs.TriggerPeriodic)
-			}
+// NewWithLimits uses MaxEvents for intake slots, MaxDedupKeys for dimensions,
+// and MaxRetainedBytes for a conservative 64KiB-per-slot admission budget.
+// Offline file/scan/spool budgets do not apply to this signal-only service.
+func NewWithLimits(o Options, l inputbudget.Limits) *Runner {
+	l = l.Normalize()
+	n := min(1024, l.MaxEvents)
+	n = min(n, int(max(int64(1), l.MaxRetainedBytes/(64<<10))))
+	g := min(256, l.MaxDedupKeys)
+	g = min(g, int(max(int64(1), l.MaxRetainedBytes/1024)))
+	o.RunID = bounded(o.RunID)
+	o.Version = bounded(o.Version)
+	// Copy only finite provenance. Threshold callbacks/maps are not online inputs.
+	in := o.Inputs
+	o.Inputs = obs.Inputs{PapaVersion: bounded(in.PapaVersion), PapaCommit: bounded(in.PapaCommit), ConfigFile: bounded(in.ConfigFile), ThresholdsSource: bounded(in.ThresholdsSource)}
+	o.Inputs.Thresholds = make(map[string]string)
+	for k, v := range in.Thresholds {
+		if len(o.Inputs.Thresholds) >= 32 {
+			break
 		}
-	}()
+		o.Inputs.Thresholds[bounded(k)] = bounded(v)
+	}
+	return &Runner{options: o, incoming: make(chan envelope, n), requests: make(chan obs.Trigger, 1), jobs: make(chan *obs.Report, 1), stop: make(chan struct{}), done: make(chan struct{}), groups: g, write: report.Write}
 }
-
-// Stop waits for the current report before the host closes storage. Repeated calls are safe.
-func (r *Runner) Stop() {
-	r.lifecycleMu.Lock()
-	defer r.lifecycleMu.Unlock()
-	if r.cancel == nil {
+func bounded(s string) string {
+	if len(s) > 256 {
+		s = s[:256]
+	}
+	return strings.Clone(s)
+}
+func (r *Runner) Start() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.started || r.closed || !r.options.Config.Enabled {
 		return
 	}
-	r.cancel()
-	<-r.done
-	r.cancel = nil
-	r.done = nil
+	r.started = true
+	go r.writer()
+	go r.collect()
 }
+
+// Emit never waits for queue capacity or for report processing.
+func (r *Runner) Emit(ev events.Event) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.started || r.closed {
+		return
+	}
+	ev, _ = events.Detach(ev)
+	if ev.Truncated {
+		r.truncated.Add(1)
+	}
+	select {
+	case r.incoming <- envelope{ev, time.Now()}:
+	default:
+		r.dropped.Add(1)
+	}
+}
+func (r *Runner) Generate(t obs.Trigger) {
+	r.Start()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.started || r.closed {
+		return
+	}
+	select {
+	case r.requests <- t:
+	default:
+	}
+}
+func (r *Runner) Periodic() { r.Generate(obs.TriggerPeriodic) }
 func (r *Runner) Exit() {
 	if r.options.Config.OnExit {
 		r.Generate(obs.TriggerExit)
 	}
 }
-func (r *Runner) Periodic() {
-	cfg := r.options.Config
-	if cfg.Enabled && cfg.Interval > 0 {
-		r.Generate(obs.TriggerPeriodic)
-	}
-}
-func (r *Runner) Generate(trigger obs.Trigger) {
-	r.generate(context.Background(), trigger)
-}
-func (r *Runner) generate(parent context.Context, trigger obs.Trigger) {
-	cfg := r.options.Config
-	if !cfg.Enabled {
-		return
-	}
-	// 串行化：定时报告与退出报告都写「当天」目录，不能同时写同一批文件。
-	r.generateMu.Lock()
-	defer r.generateMu.Unlock()
-
-	// 触发方式决定默认语义：定时与正常退出均为 snapshot；验收须显式配置 acceptance。
-	// 配置可强制覆盖；未知值记录警告并回退运行快照。
-	mode, err := obs.ResolveMode(cfg.Mode, trigger)
-	if err != nil {
-		r.options.Logger.Warnf("%s: 模式解析失败，回退 snapshot：%s", trigger, err.Error())
-		mode = obs.ModeSnapshot
-	}
-
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = 120 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
+func (r *Runner) Stop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	_ = r.Close(ctx)
+}
 
-	evFile := cfg.EventsFile
-	if evFile == "" {
-		evFile = "events.jsonl"
-	}
-	now := time.Now()
-	base := obs.SourceConfig{
-		EventsFile:  filepath.Join(cfg.LogDir, evFile),
-		LogDir:      cfg.LogDir,
-		IncludeLogs: true,
-		Loc:         time.Local,
-	}
-	if mode == obs.ModeSnapshot {
-		base.Since = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-		base.Until = now
-		// 窗口 = [当天 0 点, 生成时刻]：snapshot 报的是「现在这一刻的当天」，
-		// 上界钉在 now —— 晚于生成时刻的事件（时钟偏差、补写、未来时间戳）不算进来。
-		// 代价是测试 fixture 必须落在窗口内：凌晨跑时把事件写在中午会被裁掉，报告因「没有事件」跳过。
-	}
-
-	// 框架内置段：通用概览 + 引擎状态 + 积压/老化。顺序即渲染顺序；
-	// 业务段始终排在框架段之后（业务段看到的是同一份 Input，不改变框架口径）。
-	sections := []obs.Section{
-		&analyze.Generic{Thresholds: analyze.Thresholds{
-			StuckAfter:       cfg.Thresholds.StuckAfter,
-			CrawlFailRateMax: cfg.Thresholds.CrawlFailRateMax,
-			EventMaxGap:      cfg.Thresholds.EventMaxGap,
-		}},
-		&analyze.EngineSection{StuckAfter: cfg.Thresholds.StuckAfter},
-		&analyze.BacklogSection{},
-	}
-	sections = append(sections, r.options.Sections...)
-	patterns := append(pattern.Builtin(), r.options.Patterns...)
-
-	engine := r.options.EngineState()
-	written := 0
-	err = obs.ConsumeDailySources(ctx, base, r.limits, func(src *obs.Sources) error {
-		if err := ctx.Err(); err != nil {
-			return err
+// Close shares the caller's deadline; no offline timeout can expand that budget.
+func (r *Runner) Close(ctx context.Context) error {
+	r.mu.Lock()
+	if !r.closed {
+		r.closed = true
+		close(r.stop)
+		if !r.started {
+			close(r.done)
 		}
-		// Recovering 是「这一天窗口内有没有启动恢复」的逐日报事实：按源填，不能把
-		// 进程级 engine 快照原样复用，否则某一天的恢复会染到其它天的报告上。
-		// 口径与 analyze.LoadEngineState 的离线实现保持一致。
-		eng := engine
-		eng.Recovering = recoverRequeueSeen(src.Events)
-		rep, err := obs.Generate(ctx, obs.Options{
-			Run:         src.Run,
-			EventMeta:   src.EventMeta,
-			Events:      src.Events,
-			Logs:        src.Logs,
-			DB:          r.options.DB,
-			Environment: map[string]string{"papa_version": r.options.Version},
-			Degraded:    src.Degraded,
-			Sections:    sections,
-			Patterns:    patterns,
-			Mode:        mode,
-			Engine:      eng,
-			Inputs:      r.options.Inputs(),
-		})
-		if err != nil {
-			r.options.Logger.Warnf("%s: 生成失败：%s", trigger, err.Error())
-			return ctx.Err()
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		day := report.DayName(src.Run.From)
-		dir := filepath.Join(cfg.ReportDir, day)
-		if _, err := report.Write(dir, rep); err != nil {
-			r.options.Logger.Warnf("%s: 写盘失败（%s）：%s", trigger, day, err.Error())
-			return nil
-		}
-		written++
-		r.options.Logger.Infof("%s: %s verdict=%s dir=%s", trigger, day, rep.Verdict, dir)
+	}
+	r.mu.Unlock()
+	select {
+	case <-r.done:
 		return nil
-	})
-	if err != nil {
-		r.options.Logger.Warnf("%s: 读取或生成报告失败，保留已有产物：%s", trigger, err)
-		return
+	default:
 	}
-	if written == 0 {
-		r.options.Logger.Warnf("%s: 没有写出任何日报", trigger)
-		return
-	}
-	if removed, err := report.Prune(cfg.ReportDir, cfg.Retention, time.Now(), time.Local); err != nil {
-		r.options.Logger.Warnf("%s: 清理过期报告失败：%s", trigger, err.Error())
-	} else if len(removed) > 0 {
-		r.options.Logger.Infof("%s: 已清理过期报告 %d 份：%s", trigger, len(removed), strings.Join(removed, ", "))
+	select {
+	case <-r.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
-// recoverRequeueSeen 判断这一天的窗口里是否出现过启动恢复重投
-// （task_requeued 且 queue 名含 recover）。与 analyze.LoadEngineState 的离线口径一致：
-// 离线报告能从事件看出的「正在恢复」，进程内报告也必须看出，否则同一份数据两种结论。
-func recoverRequeueSeen(evs []events.Event) bool {
-	for _, ev := range evs {
-		if ev.Type == events.TypeTaskRequeued && strings.Contains(strings.ToLower(ev.Queue), "recover") {
-			return true
-		}
-	}
-	return false
+// Status is an atomic diagnostic snapshot. Counters are monotonic but need not
+// represent one transaction; it remains readable when report file I/O is stuck.
+type Status struct {
+	Dropped          uint64 `json:"dropped"`
+	Truncated        uint64 `json:"truncated"`
+	Failures         uint64 `json:"failures"`
+	CoalescedReports uint64 `json:"coalesced_reports"`
+}
+
+func (r *Runner) Status() Status {
+	return Status{Dropped: r.dropped.Load(), Truncated: r.truncated.Load(), Failures: r.failures.Load(), CoalescedReports: r.coalesced.Load()}
 }

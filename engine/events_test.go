@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -116,6 +117,7 @@ func TestEndQueueRunEmitsQueueRound(t *testing.T) {
 	e.beginQueueRun(QueueError)
 	e.endQueueRun(QueueError, 3, nil)
 
+	drainTestEvents(t, e)
 	evs := col.snapshot()
 	if len(evs) != 1 {
 		t.Fatalf("应有 1 条事件，实得 %+v", evs)
@@ -137,12 +139,56 @@ func TestEmitSnapshotCarriesMaps(t *testing.T) {
 
 	e.emitSnapshot()
 
+	drainTestEvents(t, e)
 	evs := col.snapshot()
 	if len(evs) != 1 || evs[0].Type != events.TypeStageSnapshot {
 		t.Fatalf("应有 1 条 stage_snapshot，实得 %+v", evs)
 	}
 	if evs[0].Stages == nil || evs[0].Queues == nil {
 		t.Fatalf("快照 map 不应为 nil：%+v", evs[0])
+	}
+}
+
+func TestEmitSnapshotPreservesQueueProgress(t *testing.T) {
+	e := newStatsEngine(t)
+	col := &collectorEmitter{}
+	e.SetEventsEmitter(col)
+	e.errorQueue.retried.Store(10)
+	e.beginQueueRun(QueueError)
+	e.errorQueue.retried.Store(25)
+	e.emitSnapshot()
+	e.endQueueRun(QueueError, 15, nil)
+	e.emitSnapshot()
+	drainTestEvents(t, e)
+	var snapshots []events.QueueSnapshot
+	for _, ev := range col.snapshot() {
+		if ev.Type == events.TypeStageSnapshot {
+			snapshots = append(snapshots, ev.Queues[QueueError])
+		}
+	}
+	if len(snapshots) != 2 || snapshots[0].RunProcessed != 15 || snapshots[0].TotalProcessed != 25 || snapshots[1].RunProcessed != 0 {
+		t.Fatalf("queue progress changed in observation snapshot: %+v", snapshots)
+	}
+}
+
+func TestEmitSnapshotSkipsBusyBusinessLocks(t *testing.T) {
+	e := newStatsEngine(t)
+	col := &collectorEmitter{}
+	e.SetEventsEmitter(col)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.queueRuns[QueueError].mu.Lock()
+	defer e.queueRuns[QueueError].mu.Unlock()
+	done := make(chan struct{})
+	go func() { e.emitSnapshot(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("observation snapshot waited for a business lock")
+	}
+	drainTestEvents(t, e)
+	if evs := col.snapshot(); len(evs) != 1 || !evs[0].Truncated {
+		t.Fatalf("skipped snapshot must disclose incomplete evidence: %+v", evs)
 	}
 }
 
@@ -153,4 +199,16 @@ func TestEmitWithoutEmitterIsNoop(t *testing.T) {
 	e.beginQueueRun(QueueError)
 	e.endQueueRun(QueueError, 1, errors.New("boom"))
 	e.emitSnapshot()
+}
+
+// drainTestEvents explicitly joins observation delivery before synchronous assertions.
+func drainTestEvents(t *testing.T, e *Engine) {
+	t.Helper()
+	if c, ok := e.events.(events.Closer); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := c.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

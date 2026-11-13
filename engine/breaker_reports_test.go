@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/breaker"
-	"github.com/ydtg1993/papa/v4/obs/incident"
 	"github.com/ydtg1993/papa/v4/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 )
 
 var testBreakerRound atomic.Uint64

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 
 	"github.com/ydtg1993/papa/v4/config"
@@ -32,8 +33,13 @@ func (e *Engine) GetLoggerSet() *loggers.LoggerSet {
 // SetEventsEmitter 注入运行事件流（internal/app 组装好后调用）；传 nil 表示关闭。
 // 必须在 Run/ApplyRegisterStage 之前调用：快照事件的 ticker 在那一刻才起。
 func (e *Engine) SetEventsEmitter(em events.Emitter) {
-	e.events = em
-	e.breakers.events = em
+	e.requestEventsClose()
+	safe := events.Isolate(em)
+	e.events = safe
+	if safe != nil && safe != em {
+		e.events = engineOwnedEmitter{safe}
+	}
+	e.breakers.events = e.events
 }
 
 // emit 发一条事件；emitter 为 nil（未开启）时是 no-op。
@@ -91,3 +97,16 @@ func (e *Engine) GetM3U8() *m3u8.Downloader {
 func (e *Engine) GetFiledown() *filedown.Downloader {
 	return e.filedown
 }
+
+// requestEventsClose only requests shutdown of the safe boundary; execution
+// teardown never waits for an observation callback or file I/O.
+func (e *Engine) requestEventsClose() {
+	if c, ok := e.events.(engineOwnedEmitter); ok {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = c.Close(ctx)
+	}
+}
+
+// engineOwnedEmitter identifies isolation created here, not an App-owned pipeline.
+type engineOwnedEmitter struct{ events.Closer }

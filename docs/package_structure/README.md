@@ -12,7 +12,7 @@
 | [Engine](ENGINE_STRUCTURE.md) | engine 根包及 engine/internal 的 execution、fetchruntime、scheduler | 执行、调度、持久化、熔断的同包组件边界，以及锁序和排空 |
 | [Internal](INTERNAL_STRUCTURE.md) | internal 全部包，包含 [app 组合根](INTERNAL_STRUCTURE.md#app) | 装配与声明、运行服务、存储适配、通用执行设施及测试基础设施怎样分工 |
 | [Pkg](PKG_STRUCTURE.md) | pkg 的账号、浏览器、HTTP、下载、治理、出口与辅助能力 | 可复用能力的公开接口、状态、锁和资源释放由谁负责 |
-| [Obs](OBS_STRUCTURE.md) | obs 及 analyze、eventlog、incident、logidx、pattern、report | 观测数据如何读取、分析、形成证据和报告；何处有文件写入 |
+| [Obs](OBS_STRUCTURE.md) | obs 及 analyze、eventlog、inputbudget、logidx、pattern、report | 观测数据如何读取、分析、形成证据和报告；何处有文件写入 |
 | [Cmd](CMD_STRUCTURE.md) | cmd/papa、cmd/monitor-demo、脚手架模板 | 命令调度、显式写操作、框架文档分发和合成演示如何组织 |
 
 `internal/app` 是 Internal 中的一章，不再维护独立 APP_STRUCTURE 分册。Admin、Engine、Internal、Pkg、Obs、Cmd 的目录彼此独立；同名 `runtimecontrol`、`identity`、`report` 应按完整路径区分职责。
@@ -54,8 +54,8 @@ papa/
 | admin | access、accountpools、accounts、auth、breakers、configstore、diagnostics、frameworkdata、gormsource、internal/httpjson、logs、monitoring、oplog、page、queues、reports、runtimecontrol、server、settings、shell、sitesource、sysinfo、taskflow、tasksource、tasktrace、tokenadmin | ADMIN_STRUCTURE |
 | engine | 根包、internal/execution、internal/fetchruntime、internal/scheduler | ENGINE_STRUCTURE |
 | internal | tracestore、 app、breaker、breakerstore、browserdiagnostics、database、gormfake、msgqueue、reportrunner、runtimecontrol、sitedecl、taskstore、track、workerpool | INTERNAL_STRUCTURE |
-| pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、temporary、testdb | PKG_STRUCTURE |
-| obs | 根包、analyze、eventlog、incident、inputbudget、logidx、pattern、report | OBS_STRUCTURE |
+| pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、incident、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、temporary、testdb | PKG_STRUCTURE |
+| obs | 根包、analyze、eventlog、inputbudget、logidx、pattern、report | OBS_STRUCTURE |
 | cmd | papa、monitor-demo | CMD_STRUCTURE |
 
 ## 4. 职责、状态与依赖的读法

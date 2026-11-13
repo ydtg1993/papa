@@ -1281,7 +1281,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
 
-- `engine.SetBreakerProbe(site, stage, probe)` 注册只读阶段语义探针；空 stage 为逐阶段调用的兜底，回调必须识别 `req.Stage`，不可用同一次首页成功代表全部阶段。自动恢复默认要求所有注册阶段通过试探和限量真实任务验证，未运行阶段也不能默认通过；阶段失败、暂停重试和最终恢复进入同一 obs 报告。详见 [分类熔断与整站恢复](BREAKER.md)。
+- `engine.SetBreakerProbe(site, stage, probe)` 注册只读阶段语义探针；空 stage 为逐阶段调用的兜底，回调必须识别 `req.Stage`，不可用同一次首页成功代表全部阶段。自动恢复默认要求所有注册阶段通过试探和限量真实任务验证，未运行阶段也不能默认通过；阶段失败、暂停重试和最终恢复进入可靠熔断历史与报告；在线 obs 只接收可丢弃的观测信号，不承担恢复判定。详见 [分类熔断与整站恢复](BREAKER.md)。
 - `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动暂停 / 请求重试恢复**所有站点**的抓取（纯人工暂停直接解除，自动保护须全阶段重新验证）；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 - `engine.ForceResumeSite(site)` 明确跳过整站自动验证，保留失败窗口和报告；普通恢复不要调用它。
 - 只有全部操作可被只读检查覆盖的阶段，才可在 `StageSpec.BreakerReadOnlyCoverage` 填写完整范围（默认空）。这类阶段须间隔两次返回 `Healthy && Semantic && Complete` 且 `Detail` 非空，才能替代真实任务验证；请求提供 `Pass` 和 `Coverage`。缺少有效样本、只测部分解析、未覆盖写入/下载/派发时均不合格；其他阶段保持未验证。此声明需要业务如实维护，框架不能自动证明覆盖完整。报告明确展示验证方式和范围，重启全部重验，详见 [BREAKER.md](BREAKER.md)。
@@ -1294,7 +1294,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 ## 10. 运行观测（obs）：业务怎么接
 
-观测层（事件契约 / 报告引擎 / 模式库）是框架通用的，业务只通过三个扩展点接入；详细手册见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
+在线观测只接收信号、分析并记录报告，不持有业务数据库或执行业务分析回调。自定义分析段与模式只在业务显式离线调用中运行；详细手册见 [OBSERVABILITY.md](./OBSERVABILITY.md)。
 
 **10.1 发业务事件**
 
@@ -1313,22 +1313,27 @@ if ev := app.Events(); ev != nil {
 
 `events.Event` 来自 `github.com/ydtg1993/papa/v4/pkg/events`；打开 `obs.events.enabled` 后业务事件与框架事件
 共用同一个 sink、同一个 `run_id` / `seq` 序列。事件关闭时 `app.Events()` 返回 no-op，不判空也能跑。
+入口会复制并限制载荷，满载/故障允许丢弃；业务不能用事件归档或报告作为结算确认。在线报告仅汇总收到的有限信号，不自动解释业务自定义 Counts/Attrs。
 
 **10.2 自定义报告段**
 
-实现 `obs.Section`（`ID()` / `Title()` / `Build(ctx, *obs.Input) (SectionResult, error)`），在 `monitor.Register` 或 `Run` 之前注册：
+实现 `obs.Section`（`Key()` / `Title()` / `Build(ctx, *obs.Input) (*obs.SectionResult, error)`），在业务自己的离线诊断命令中显式调用：
 
 ```go
-app.UseReportSection(sections.All()...)   // 业务自己的分析段
+rep, err := obs.Generate(ctx, obs.Options{
+    Sections: sections.All(), // 业务自己的离线分析段
+    Patterns: patterns.All(), // 业务自己的离线模式
+})
+// 检查 err 后由离线命令记录 rep；不放入 Fetcher 或 App 关停回调。
 ```
 
-`obs.Input` 带事件、日志摘要与只读 DB；用 `obs.NewCheck(...)` 产出判定项、`obs.Table` 产出表格。
+`obs.Input` 接收离线调用方显式提供的事件、日志摘要和可选 DB；框架不会自动借用 App 的业务连接。用 `obs.NewCheck(...)` 产出判定项、`obs.Table` 产出表格。
 **业务段只读**：不写表、不重投、不调接收端，同一输入两次跑结果必须一致。
 
 **10.3 自定义模式**
 
 实现 `obs.Pattern`（从输入推断 `obs.Problem`，带 `Evidence` / `Hypothesis` / 验证命令），
-`app.UseReportPattern(...)` 注册。模式只做假设与验证方法，不自动修数据。
+通过 `obs.Options.Patterns` 提供给离线 Generate。模式只做假设与验证方法，不自动修数据。App 的 UseReportSection/UseReportPattern 已移除；Key/Title/Build/Match 的 panic 局部降级，取消在调用边界检查，不合作的离线回调仍不能强制终止。
 
 **边界**：papa 不认任何业务语义（没有 prepare / push / 站点名 / 业务表）；业务阈值放 `business` 段
 （`app.Config.BusinessSection`），不要塞进框架配置。

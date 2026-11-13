@@ -27,8 +27,9 @@ engine/
 │   │   └── *_test.go
 │   ├── execution/
 │   │   ├── state.go           # 未确认持久化状态与重试背压
+│   │   ├── settlement.go      # 成功业务遇取消时的有界持久化确认
 │   │   ├── doc.go
-│   │   └── state_test.go
+│   │   └── *_test.go
 │   └── fetchruntime/
 │       ├── resources.go       # 账号/身份/浏览器/HTTP 资源与执行适配
 │       ├── downloads.go       # 下载覆盖配置及实例快照
@@ -39,7 +40,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 73 个生产 Go 文件、94 个测试 Go 文件；engine/internal 下有 3 个包、9 个生产 Go 文件、6 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 73 个生产 Go 文件、96 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -104,7 +105,7 @@ engine/
 | --- | --- | --- |
 | `pause.go` | 站点/阶段暂停信号、继承查询、人工操作、广播闸门、声明期暂停 | 暂停信号必须只有一份；状态目前直接位于 Engine |
 | `breaker_coordinator.go` | breakerCoordinator 状态、准入、历史与报告写入串行化 | 不持有 Engine；对外提供锁内语义操作和报告接口 |
-| `breaker_events.go` | 当前熔断事务的独立事件值批次与锁外同步派发 | 先完整发布状态及暂停，再调用外部 emitter；不新增后台队列或派发互斥锁 |
+| `breaker_events.go` | 当前熔断事务的有界独立事件批次与安全出口 | 先完整发布状态及暂停，再交给 pkg/events 的有界非等待出口；外部 callback 不在执行栈运行 |
 | `breaker_control.go` | Engine 公开暂停/恢复/状态门面 | 协调既有暂停信号与站点投影 |
 | `breaker_control_state.go` | 熔断登记、人工接管/恢复决策和状态投影 | 仅改变 coordinator 内部状态 |
 | `breaker_outcome_state.go` | 终态观测、证据累计与保护决策 | 返回动作结果，由 Engine 在原临界区内发布暂停 |
@@ -155,7 +156,7 @@ engine/
 | 包 | 独立拥有的状态/接口 | 判断与限制 |
 | --- | --- | --- |
 | `engine/internal/scheduler` | Registry 的池表/最后投递时间/停止位；Delay 的堆、锁、唤醒、timer 和待交付值快照 | 泛型接收任务值，不导入父包；Delay.Snapshot 只浅复制容器，指针值仍由调用方拥有；Next 只允许一个 dispatcher 消费者。Task 的持久化和暂停仍由 Engine 协调 |
-| `engine/internal/execution` | State 的 unresolved map、锁、快照和 Retry 背压 | 已实质拆分，但职责是持久化确认状态，不是“所有任务执行”。依赖 GORM/taskstore 错误语义，后续不应随名称向此处堆执行功能 |
+| `engine/internal/execution` | State 的 unresolved map、锁、快照和 Retry 背压；ConfirmSuccess 的取消后成功结算边界 | 已实质拆分，但职责是持久化确认状态，不是“所有任务执行”。依赖 GORM/taskstore 错误语义，后续不应随名称向此处堆执行功能 |
 | `engine/internal/fetchruntime` | Resources 资源登记与锁、资源申请/归还；Downloads 配置覆盖、解析和查找快照 | 不持有 Engine。download_config.go 复制站点/阶段覆盖值，不能保留调用方的可变指针。资源生命周期仍归各 Manager/Pool |
 
 三个包均有自己的测试，且架构守卫禁止其导入父 engine、admin 或 internal/app。导入守卫只证明依赖方向，不能证明父包已停止直接操作同包组件的字段。
@@ -209,9 +210,11 @@ Stop 不只是取消 context：还要关闭池登记并排空 worker、等待 ti
 
 execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增至最多 2s；它不另起后台 goroutine，也不重跑 handler。ErrRecordNotFound/ErrChanged 直接返回，取消才登记 unresolved；调用方还可主动 Remember 模糊写入。终态确认后显式 Forget，非幂等的 retry 加一则只写一次，确认不明时保留未结算记录。
 
+`execution.ConfirmSuccess` 只包装已成功返回业务后的幂等、版本条件写入（结束时间及 success 终态）。正常运行沿用原 context 的持久化重试；取消已经发生或与写入竞态时，保留执行版本等 context 值，给该写入一次最多 2 秒的独立确认窗口。ErrChanged/ErrRecordNotFound 不因取消而再试，确认失败仍留未结算状态；不包装业务 handler、retry 加一、取消失败或 panic，不增加后台 goroutine，也不改变锁序。两个写入分别有自己的确认窗口，Engine.Stop 截止时间仍独立；若 Stop 先超时，App 仍须保留依赖，不能把它写成统一硬关停时限。
+
 配置的“拥有”也包含输入复制：SetSiteDownloads/AddStage 保存覆盖项的独立值，InstallGovernance 保存延迟 map 副本；调用方随后复用输入不会改变已登记状态。显式重新登记/安装仍是更新入口，不改变阶段优先于站点的解析顺序。
 
-事件是完成状态的观察值。创建池、队列轮次和熔断事务都在释放对应状态锁后同步派发，不能让自定义观察者查询状态时重新等待当前持有的锁。熔断探针的结果里程碑先派发，再重验当前事件/控制轮次和取消状态，旧结果不能覆盖回调期间的新人工操作。批次内部保持事件顺序，不承诺并发或嵌套回调的全局顺序。
+事件是已发布状态的有限观察值。创建池、队列轮次和熔断事务释放状态锁后交给安全异步边界；外部观察者不在执行调用栈运行。观察者执行时状态可能已经推进，不能要求每条事件都对应查询时的即时状态。探针结算仍重验当前事件/控制轮次和取消状态，人工操作通过控制 API 协调，不依赖事件回调发生时机。队列可丢弃，可靠恢复与历史保存另走事务协议。
 
 ## 7. 测试归属与新增代码规则
 
@@ -223,7 +226,7 @@ execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增
 - 新能力先确定执行状态属于谁；Engine 只增加公开适配和跨组件编排。只处理 SQL 的实现优先归存储组件，纯策略优先保持无运行依赖。
 - 不把整个 Engine 传给新子组件。现有 Fetcher 公开契约接收 Engine 是当前公开入口，不能作为内部组件继续持有 Engine 的理由。
 - 拆分涉及任务状态、锁序、取消、背压或关停时，除 test/vet/build 外需要 race；涉及 SQL 事务还需隔离 MySQL 回归。
-- `config_ownership_test.go` 和 fetchruntime 的 `download_config_test.go` 验证输入隔离；`lifecycle_review_test.go` 验证 ticker 收尾统计与延迟存留；`breaker_review_cancellation_test.go` 验证结果事件期间的取消；提交/任务流测试覆盖错误日志、批量交接异常和事务中途取消。
+- `config_ownership_test.go` 和 fetchruntime 的 `download_config_test.go` 验证输入隔离；`lifecycle_review_test.go` 验证 ticker 收尾统计与延迟存留；`breaker_review_cancellation_test.go` 验证结果结算协议阶段之间的显式取消；提交/任务流测试覆盖错误日志、批量交接异常和事务中途取消。
 
 ## 8. 收口结果与保留边界
 
@@ -265,3 +268,5 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 维护沿既有 evidence maintenance ticker 生命周期执行，取消可中断清理；尝试结束在 worker 收尾内同步发布，不引入脱离 worker 的后台写队列。Trace 存储失败仅告警，不改变任务结果。默认保留七天，磁盘容量预算独立生效。旧 MySQL 验证记录仅说明迁移前实现，当前行为以文件回归为准。
 
 恢复只接受 `Snapshot.ValidateCurrent` 验证过的控制版本及精确窗口；旧控制升级与近似计数回退已删除。后台重投只提供 RetryTaskVersioned，始终检查补偿版本。
+
+Engine 的 SetEventsEmitter 将未知消费者隔离到固定异步边界；Stop 只请求关闭自己创建的包装器，不等待任意 observer。`breaker_probe_evidence_test.go` 验证探针证据与持久投影的边界/脱敏一致；`breaker_events_test.go` 验证阻塞或 panic observer 不阻止结算，重入操作通过已提交状态进行。可靠快照、窗口和追加历史仍为同步存储协议，依赖共享 `pkg/incident`，不依赖 obs 服务。

@@ -6,14 +6,15 @@
 
 ---
 
-## 0. 一句话
+## 0. 在线辅助报告与离线分析
 
 框架自带三层运行数据：**指标层**（`logs/events.jsonl` 结构化事件）、**证据层**（人类日志 + 任务 trace + 失败页面归档）、
 **状态层**（MySQL 任务表）。`papa report` 把这三层合成 4 个产物：人读的 `report.md`、机读的 `report.json`、
 给 AI/接手人用的 `ai-brief.md` 与 `ai-brief.json`。
 
-> **默认关闭**：`obs.events.enabled` 为 `false`，不为不用的项目付事件写入成本。打开即可出报告；
-> 关着时报告只读「失败面 + 状态层」，并在 `degraded` 里明确标注数据缺失。
+在线报告只接收有限值信号，不读数据库、不扫描历史 JSONL/日志、不执行业务 Section/Pattern。它维护有限维度计数、最后状态和少量失败样本；计数仅表示收到的信号，不能作为权威任务总数。在线产物固定为 `snapshot`，`engine.source=signals`、判定 `unknown`，数据来源和丢弃/截断会明确说明 `partial` / `unavailable`。Runner 的 Status 为纯原子健康查询，不等待聚合或 writer；`archive_dropped` 单独表示归档丢弃，不混入在线报告接收/丢弃口径。
+
+> **默认关闭**：`obs.events.enabled=false` 同时关闭在线聚合与事件归档。开启后，`report.interval` 和 `report.on_exit` 分别控制在线出报告时机。离线 `papa report generate` 不受此开关禁止，但默认及 `--snapshot` 路径没有窗口事件时会报错，不能仅凭日志/DB 自动确定单日报告窗口。显式 `--run` 路径及自行调用离线 `obs.Generate` 可提供其他证据，仍须声明来源不完整。
 
 事件输入只接受当前 writer 的 schema `v: 1`；缺失 `v`、零版本及未知版本与非法 JSON 一样计入事件 `Unparsed`，跳过该行后继续读取，不升级旧事件。当前 schema 内的未知字段仍忽略。事件 schema 版本与 Papa 的主版本号独立。
 
@@ -25,7 +26,7 @@
 | 证据层 | `logs/*.log`、`traces/`、`logs/fetcher-html/` 归档 | logrus / 引擎 trace / 归档器 | 失败那一刻的原文、`file:line` 样本、task 级轨迹 | 日志默认开；trace/归档按配置 |
 | 状态层 | MySQL `crawler_tasks`（及业务表） | 引擎 / 业务 | 当前事实：谁 pending、谁 processing、终态分布 | 永远在 |
 
-报告是**只读**的：只读事件文件、日志目录、数据库；不写业务表、不重新投递任务、不调用外部接收端。
+离线分析对被观测数据只读：可以读事件文件、日志目录和数据库；不写业务表、不重新投递任务、不调用外部接收端。在线服务只持有值信号与自有报告文件，两者都会写报告产物。
 
 ### 诊断输出的脱敏边界
 
@@ -33,7 +34,7 @@
 
 实际请求 URL、任务身份/去重键、数据库中的任务 URL 和断点恢复内容不被改写，Webhook 的签名目标 URL 也原样请求。自定义 logger/formatter/sink/notifier 不自动继承这些出口约束。此机制不会清除任意正文中的秘密或未知字段，更不能替代业务采样脱敏；Trace 的任意 data、原始 HTML 归档、SQL 字面量和历史原文件不属于自动清洗承诺范围。敏感原文件仍需访问与保留期管理。
 
-事件的 `counts/stages/queues` 字典键是指标或阶段名称，即使叫 `token/session` 也保留原名和数字/快照类型；队列错误与阶段描述文字单独在副本中脱敏。凭据字段与指标名称不能混为一谈。错误已经截断、缺少闭引号时仍遮盖可识别的凭据片段；URI userinfo 内的单引号、MySQL DSN 密码内的 `@` 也不会使匹配提前停止。异步 Emit 仍要求调用方在排空前不并发修改传入 map，本批没有改变该所有权契约。
+事件的 `counts/stages/queues` 字典键是指标或阶段名称，即使叫 `token/session` 也保留原名和数字/快照类型；队列错误与阶段描述文字单独在副本中脱敏。凭据字段与指标名称不能混为一谈。错误已经截断、缺少闭引号时仍遮盖可识别的凭据片段；URI userinfo 内的单引号、MySQL DSN 密码内的 `@` 也不会使匹配提前停止。Emit 在异步边界内复制并限长字符串和 map，返回后调用方可修改原 map；调用期间仍不得并发修改同一 map。单字符串最多 2 KiB、总字符串最多 16 KiB、所有 map 合计最多 64 项；省略内容标记 `truncated`。
 
 `report.md` 与 `ai-brief.md` 的动态标题、表格、摘要和证据按文本上下文转义，换行不再改变表格或注入新标题；复杂代码引用用固定 code 元素包裹已转义文本。报告 JSON 仅脱敏，不混入 Markdown 转义；输入报告对象保持不变。是否允许 HTML 执行仍由具体 Markdown 渲染器决定，这项修复不等同于宣称所有渲染器的 XSS 防护。
 
@@ -53,9 +54,9 @@
 
 可选载荷（按类型出现）：`site` / `stage` / `task_id` / `url` / `attempt` / `max_attempts` / `reprocess` /
 `worker` / `kind` / `outcome` / `duration_ms` / `queue_wait_ms` / `queue` / `counts` / `backlog` /
-`source` / `error` / `attrs` / `stages` / `queues`。
+`source` / `error` / `attrs` / `stages` / `queues` / `truncated`。
 
-内置事件类型（14 个）：
+内置事件类型：
 
 | 类型 | 语义 |
 | --- | --- |
@@ -68,13 +69,13 @@
 | `backlog_sampled` | 治理队列积压采样 |
 | `stage_snapshot` / `stage_pool` | 阶段与工作池的周期快照（排队/在跑/累计/溢出） |
 | `spill_changed` | 溢出表变化（`source=added` 新增；`source=drained` 一轮回灌的聚合） |
-| `breaker_tripped` | 熔断触发 |
+| `breaker_tripped` / `breaker_transition` | 熔断触发及恢复状态变化 |
 | `pause_resumed` | 暂停/恢复信号变化 |
 
 约定：
 
 - **框架不解释 `attrs` 的语义**：业务自定义事件（例如「预处理完成」「推送完成」）用自己定义的 `type` + `attrs`
-  键值即可，papa 只保证字段能落盘、报告能读出计数与分组。
+  键值即可，papa 按载荷和队列预算尽力保留，不保证每个字段或事件都被写入。
 - 事件是**异步有界队列**：满了丢弃并计数（`events.dropped` 可见），**绝不阻塞 worker**。进程被硬杀时
   最后几条可能丢——`seq` 缺口能检测到。
 - 事件文件按 logrus 的 lumberjack 轮转策略滚动（`*.gz` 可读），`Discover` 会按需读取归档。
@@ -91,13 +92,13 @@ obs:
     buffer: 8192         # 异步队列容量；满则丢弃并计数
     snapshot_interval: "30s"  # 阶段/队列快照间隔；"0" = 不发
   report:
-    mode: "auto"         # 判定语义：auto（默认）= 定时/退出/CLI 均为 snapshot；验收显式选 acceptance
+    mode: "auto"         # 仅离线分析：默认 snapshot；验收显式选 acceptance
     on_exit: false       # 进程优雅退出时自动生成报告（默认 false）
     interval: "0"        # 定时生成报告：如 "30m" = Run 期间每 30 分钟刷新一次当天日报；0/不写 = 关
     dir: "./reports"     # 产物根目录：<dir>/<2006-01-02>/（一份 = 一天的日报；--run 时 <dir>/<run_id>/）
-    retention: "168h"    # 报告保留期：默认 7 天；负数 = 永久保留（0/不写同默认）；自动生成/无筛选 CLI 生成后清理
-    timeout: "120s"      # 单次生成报告的超时（失败只记日志，不阻塞业务/退出）
-    thresholds:          # 通用分析节（framework）的阈值
+    retention: "168h"    # 报告保留期：默认 7 天；负数 = 永久保留（0/不写同默认）；在线有限清理/无筛选离线 CLI 清理
+    timeout: "120s"      # 离线生成的协作超时；在线退出与归档合计最多等 2 秒
+    thresholds:          # 离线通用分析节（framework）的阈值
       stuck_after: "10m"
       crawl_fail_rate_max: 0.05
       event_max_gap: "10m"    # 事件时间断层阈值（相邻事件间隔超过它算断层；event_coverage 检查用）
@@ -115,12 +116,11 @@ obs:
 | 退出时 | `obs.report.on_exit: true` | 一次性任务 / 自动化作业，结束后要一份最终总结 |
 | 命令行 | `papa report generate` | 事后补报告、指定窗口、CI 门禁（`--fail-on-verdict`） |
 
-定时报告与退出报告都写**同一个当天目录**（后写覆盖前写 = 当天最新快照）；只开定时就足够，
-不需要再保留 `on_exit`，也不需要定时跑命令。定时器在 `Run` 期间启动；停机时先停定时器、
-再出退出报告，最后才关库。
+定时与退出报告都写当前本地日目录，后写覆盖前写。在线聚合按本次进程收到信号的日期切换，不重扫当天历史文件，也不重写历史日；进程重启后的报告不能代表当天此前进程的全量。定时和退出报告需要 `obs.events.enabled=true`。
 
-`obs.report.on_exit` 的退出顺序（`internal/app`）：停 HTTP → 停引擎排空 → **停定时报告** → 写 `run_stopped` → **flush 事件** →
-生成报告（**此时数据库还开着**）→ 关库/关浏览器。所以退出报告能读到完整的「本轮 + 状态层」。
+App 在 Engine 真实排空结果确定后发出 `run_stopped`，随后停止在线入口并尽力生成末次报告。报告与归档共用一个最长 **2 秒**的退出等待期限；超时返回，不阻止业务 DB/浏览器按原排空条件关闭。写盘阻塞时保留同一个固定后台单元，不启动替代 goroutine，也不强杀文件 I/O。未产生退出报告不改变 Engine 的排空事实。
+
+在线聚合为一个固定消费者，写报告为一个固定 writer，最多一个在写与一个待写快照；新快照可合并旧请求。队满、维度上限、panic 和文件错误会丢弃或降级；这些组件共享进程 CPU/内存/磁盘，不承诺物理零开销或隔离 OOM/fatal。
 
 CLI 报告产物**按本地日历日拆分**：一次生成把事件窗口按本地时区切成若干天，有事件的每天各写一份
 `<dir>/<2006-01-02>/`（四份产物；同一天重跑刷新当天那份）。进程内定时和退出报告仅写当前本地日，不重写历史日报。
@@ -132,13 +132,13 @@ CLI 报告产物**按本地日历日拆分**：一次生成把事件窗口按本
 
 历史日报的数据库表格是**生成时快照，非历史期末状态**。数据库完成度、卡住和一致性检查标「不适用」，不据此判历史窗口失败；窗口内事件失败仍检查。当前日报可结合当前数据库状态分析。
 
-自动生成和无时间/run 筛选的 CLI 生成之后会按 `obs.report.retention` 清理过期目录（默认保留 7 天，负数 = 永久保留）：
+无时间/run 筛选的离线 CLI 生成之后会按 `obs.report.retention` 清理过期目录（默认保留 7 天，负数 = 永久保留）：
 只删报告根目录下**直接子目录、且目录里有 `report.md`** 的，手工放在同一目录里的其它东西不碰；
-CLI 指定 `--since`、`--until` 或 `--run` 时只生成、不执行保留清理，保证显式历史产物可以取走；无这些筛选的 CLI 生成和自动报告仍按原保留期清理。历史产物之后仍可能被自动清理，需要长期保存时请使用独立 `--out` 目录。
+CLI 指定 `--since`、`--until` 或 `--run` 时只生成、不执行保留清理，保证显式历史产物可以取走；无这些筛选的 CLI 生成仍按离线保留期清理。历史产物之后仍可能被自动清理，需要长期保存时请使用独立 `--out` 目录。
 
-日报目录按名字里的日期判断（保留最近 N 个自然日），升级前留下的 `run_id` / `window-*` 旧目录按修改时间判断。
+离线日报目录按名字里的日期判断（保留最近 N 个自然日），旧 `run_id` / `window-*` 目录按修改时间判断。在线 writer 维护自有目录游标，每轮最多查看 128 个目录项，后续轮次继续扫描，避免无关项长期遮挡后面的过期产物；只清理过期日期目录中的四份已知产物；保留无关文件，目录为空才删除，不读取或清理旧 run/window 目录。
 
-> 事件默认关着时，报告只做「失败分组 + 状态层检查」，`report.json` 的 `degraded` 会写明「事件数据缺失」。
+> 离线分析在事件默认关着时，只做「失败分组 + 状态层检查」，`report.json` 的 `degraded` 会写明「事件数据缺失」。
 > 想长期出报告就把 `obs.events.enabled` 打开。
 
 ## 4. 命令与产物
@@ -171,7 +171,7 @@ papa report list -c configs/config.yaml
 > **生成时间 = 最近一次更新时间**：定时报告每天覆盖同一目录，重复生成会刷新这个时间；
 > 看到它就能判断手上这份报告是不是最新的，不用依赖文件 mtime（分发、拷贝都会丢 mtime 语义）。
 
-判定规则：任一 `fail` 级检查失败 → `fail`；只有 `warn` → `warn`；否则 `pass`。
+离线判定规则：任一 `fail` 级检查失败 → `fail`；只有 `warn` → `warn`；否则 `pass`。
 `degraded` 非空表示数据不全（例如事件文件缺失、日志索引失败、DB 查询失败），此时结论只能当参考。
 
 判定项表的结果列有四种：`✅ 通过` / `❌ 未通过`（只用于 `fail` / `warn`）、`ℹ️ 状态`
@@ -189,7 +189,7 @@ papa report list -c configs/config.yaml
 （`report.json` 是 `"skipped": true` + `skip_reason`），既不参与判定、也不合成 Problem。
 引擎在跑时这两项（`stuck_processing` / `unfinished_tasks`）以 `info` 展示待处理状态：
 单次存留或长期未更新时间不足以证明执行者失活；`acceptance` 保留显式排空验收。
-默认 `auto` 在定时、退出和 CLI 中均为 `snapshot`；`obs.report.mode: acceptance` 或 CLI `--acceptance` 显式启用验收。`--snapshot` / `--acceptance` 互斥且优先于配置，
+离线 `auto` 默认为 `snapshot`；`obs.report.mode: acceptance` 或 CLI `--acceptance` 显式启用离线验收。在线固定 snapshot，不读取这些验收参数。`--snapshot` / `--acceptance` 互斥且优先于配置，
 报告头部与 `report.json` 的 `mode` 会写明。
 
 `--fail-on-verdict`：`fail` **或** `unknown` 都以非零码退出（`warn` 仍放行）—— CI 门禁不能把
@@ -199,7 +199,7 @@ papa report list -c configs/config.yaml
 > （判定 / 生成时间 / 产物数），选中后按纯文本看四份产物的原文并下载当前文件 —— 不用登服务器。
 > 接口与安全约束见 [MONITOR.md](./MONITOR.md) §8。
 
-## 5. 通用分析节与模式库
+## 5. 离线通用分析节与模式库
 
 - **通用分析节** `framework`（`obs/analyze`）：运行边界与耗时、队列快照、失败分组（站点×阶段×错误类型）、
   任务终态分布，以及事件缺口 / 日志坏行 / 队列收敛 / 抓取失败率 / 卡死 / 未完成 / 事件覆盖等检查。
@@ -224,7 +224,7 @@ batch2 起框架报告固定带三段排查信息，`report.md` 按注册顺序�
   processing 逐批变回 pending 是正常过程，不是卡死。判定项 `recover_in_progress` 的说明会把
   `recover_queue` 与其它队列的重投数分开写，避免把正常的轮询重投算进「恢复中」。
 
-数据来源：定时/退出报告用进程内实时快照（`source=engine`）；`papa report generate` 离线时读
+数据来源：在线定时/退出报告为 `source=signals`，不查询完整引擎状态或数据库，不运行本节分析器；`papa report generate` 离线时读
 `crawler_config.sites` 的当前快照、并用窗口内事件推断阶段池（`source=db` / `events`）；两者都没有时摘要写
 「无运行上下文（离线报告）」，此时不据此做暂停/空闲跳过。`engine_paused` 仅在有熔断暂停时告警（warn）；人工/启动暂停为 info；
 `stage_pools` / `recover_in_progress` / `engine_idle` 都是 info，不参与判定。
@@ -280,11 +280,14 @@ batch2 起框架报告固定带三段排查信息，`report.md` 按注册顺序�
 papa 是通用框架：**报告层不认识任何业务语义**（没有 prepare / push / 折扣 / 站点名）。业务在项目侧扩展：
 
 ```go
-// 1) 注册自己的分析节（实现 obs.Section：ID/Title/Build）
-app.UseReportSection(sections.All()...)
-
-// 2) 注册自己的模式（实现 obs.Pattern：ID/Title/Match）
-app.UseReportPattern(myPatterns...)
+// 1) 在业务自己的离线命令中显式调用，不注册到 App 在线生命周期。
+rep, err := obs.Generate(ctx, obs.Options{
+    DB: db, // 借用连接；由离线命令负责生命周期
+    Sections: sections.All(), // 实现 Key / Title / Build
+    Patterns: myPatterns,     // 实现 Key / Match
+})
+if err != nil { return err }
+_, err = report.Write(outputDir, rep)
 
 // 3) 发自己的业务事件（类型常量 + Attrs 自由键值，框架不解释）
 if ev := app.Events(); ev != nil {
@@ -297,11 +300,13 @@ if ev := app.Events(); ev != nil {
 }
 ```
 
+App 的 `UseReportSection` / `UseReportPattern` 已移除，不保留转发或静默忽略的空入口。扩展只在业务自己的离线 `obs.Generate` 调用中执行。Key/Title/Build/Match 的 panic 会局部转成 degraded；调用之间检查 context，取消返回错误。任意阻塞回调不能被强制终止，离线宿主仍须正确管理借用资源。
+
 扩展点契约（`papa/obs`）：
 
 | 类型 | 用途 |
 | --- | --- |
-| `obs.Section` | 一个报告段：`ID()` / `Title()` / `Build(ctx, *obs.Input) (SectionResult, error)` |
+| `obs.Section` | 一个报告段：`Key()` / `Title()` / `Build(ctx, *obs.Input) (*SectionResult, error)` |
 | `obs.Check` + `obs.NewCheck` | 判定项：`ID` / `Severity` / `Passed` / `Message`；`Skipped` + `SkipReason` 声明本次不适用；任一**适用**的 fail 未通过即整体 fail |
 | `obs.Pattern` | 模式：从输入推导 `Problem`（含 `Evidence` / `Hypothesis` / 验证命令） |
 | `obs.Problem` / `obs.Evidence` / `obs.Hypothesis` / `obs.Table` | 问题、证据、假设、表格的通用结构 |
@@ -316,7 +321,7 @@ if ev := app.Events(); ev != nil {
 
 ## 7. 报告怎么读（排查路径）
 
-按「判定/原因 → 引擎状态 → 积压/ETA → 失败组证据」四步读，别一上来就 grep 日志：
+在线先看信号来源、缺失/丢弃和最后状态，需要查库或历史对账时显式运行离线命令。离线按「判定/原因 → 引擎状态 → 积压/ETA → 失败组证据」四步读，别一上来就 grep 日志：
 
 1. **判定/原因**：先看 `report.json` 的 `verdict` / `verdict_reason` 与 `checks` —— 哪些 `passed=false`、
    `severity` 是 `fail` 还是 `warn`、哪些是 `➖ 不适用`（不适用既不是通过也不是失败）。若 `event_coverage` 未通过，
@@ -339,9 +344,9 @@ if ev := app.Events(); ev != nil {
 - **ETA 是观测吞吐的线性外推**：完成数取窗口内 `task_finished` + `task_failed`，分母为各 run 首末可见事件
   区间合并后的时长（含暂停），不从整日减去停机估算。再假设吞吐不变、剩余任务同质；限速、批次失败、阶段切换
   和事件缺失都会影响结果。缺少正的事件跨度时不给出有效 ETA，也不据此判零吞吐异常；只作量级参考，别当 SLA。
-- **`inputs.snapshot_at` 是取 DB 快照的时刻**，`generated_at` 是这份产物最后写出的时刻，两者可能差几秒
+- **`inputs.snapshot_at` 是本份输入快照时刻**；在线为信号聚合时刻，离线可对应 DB 采样，`generated_at` 是这份产物最后写出的时刻，两者可能差几秒
   （先取快照，再分析、渲染、落盘）。判断「数字是哪一刻的」看 `snapshot_at`，判断「文件新不新」看 `generated_at`。
-- 积压/年龄/ETA 是**报告时刻的全库快照**（不是窗口末）；待处理行年龄按 `created_at` 算（排队时长），
+- 离线积压/年龄/ETA 是**报告时刻的全库快照**（不是窗口末）；待处理行年龄按 `created_at` 算（排队时长），
   处理中行按 `updated_at` 算（距上次更新）。
 - 日志证据窗口会前后放宽 5 分钟（事件毫秒精度 vs 日志秒精度）；非 logrus 格式的文件会记进
   `logs.unparsed`，不影响判定但会拉低日志证据质量。
@@ -350,7 +355,7 @@ if ev := app.Events(); ev != nil {
 - 耗时口径：用事件的 `duration_ms` / trace；**不要用 `crawler_tasks.updated_at` 算任务耗时**（每次写都会刷新）。
 - `stuck_after` 是**报告口径**（默认 10m），不是引擎的恢复口径；引擎的启动恢复按「启动边界」判定
   （见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）。
-- **单实例范围**：Dashboard 的阶段概览读取当前进程内存；报告读取配置数据库与日志目录。离线 CLI 可读取该实例的数据库和日志生成报告，不汇总多个采集实例。
+- **单实例范围**：Dashboard 的阶段概览读取当前进程内存；在线报告只消费有限值信号。离线 CLI 可读取该实例的数据库和日志生成报告，不汇总多个采集实例。
 - 报告不替代监控后台：后台是**实时看板**（当前队列/worker/暂停），报告是**事后总结**（一段时间窗口）。
 
 ## 9. 相关手册
@@ -361,3 +366,8 @@ if ev := app.Events(); ev != nil {
 - 三条治理队列：[ERROR_QUEUE.md](./ERROR_QUEUE.md) / [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) / [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)
 
 单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。
+
+
+### 在线接收时间与不完整维度
+
+标准事件时间在异步入口采样，阻塞归档不会改写为排空时间；显式注入的时钟回调仍隔离在消费者。在线日报按接收自然日处理，日期只向前推进；旧日迟到信号只进运行累计，单列 `late_day_signals`，不承诺重写昨日文件。同日窗口覆盖实际计入信号。超过 256 字节或已经截断的站点/阶段信号保留总计，但不进入精确分组并计入 `group_overflow`，避免前缀相同的维度混算。

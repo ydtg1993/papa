@@ -34,6 +34,7 @@ type AIBrief struct {
 
 // AIBriefSnapshot 是快照摘要的机读形态（ai-brief.md 的「现在怎样」段由它渲染）。
 type AIBriefSnapshot struct {
+	Source        string             `json:"source,omitempty"`
 	Mode          string             `json:"mode,omitempty"`
 	VerdictReason string             `json:"verdict_reason,omitempty"`
 	PausedSites   []string           `json:"paused_sites,omitempty"`
@@ -114,6 +115,7 @@ func BuildAIBrief(rep *obs.Report) *AIBrief {
 	if rep.Historical {
 		out.Unknowns = append(out.Unknowns, "历史窗口没有该日期末的 DB/引擎快照；当前状态仅供参考，相关状态检查不参与历史判定。")
 	}
+	out.Snapshot.Source = rep.Engine.Source
 	out.Snapshot.Mode = string(rep.Mode)
 	out.Snapshot.VerdictReason = rep.VerdictReason
 	out.Snapshot.ActivePools = rep.Engine.ActivePools
@@ -219,7 +221,11 @@ func AIBriefMarkdown(rep *obs.Report) string {
 		if len(b.Snapshot.PausedSites) > 0 {
 			fmt.Fprintf(&s, "- 暂停站点：%s\n", markdownText(strings.Join(b.Snapshot.PausedSites, "、")))
 		}
-		fmt.Fprintf(&s, "- 活跃阶段池：%d\n", b.Snapshot.ActivePools)
+		if b.Snapshot.Source == "signals" {
+			s.WriteString("- 活跃阶段池：未采样（信号报告不读取完整引擎状态）\n")
+		} else {
+			fmt.Fprintf(&s, "- 活跃阶段池：%d\n", b.Snapshot.ActivePools)
+		}
 		if b.Snapshot.Backlog != (obs.BacklogSummary{}) {
 			fmt.Fprintf(&s, "- 积压：%s\n", markdownText(backlogText(b.Snapshot.Backlog)))
 		}

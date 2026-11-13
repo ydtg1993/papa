@@ -6,7 +6,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/gormfake"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/obs"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"gorm.io/gorm"
 	"testing"
 	"time"

@@ -45,8 +45,9 @@ func TestQueueRoundEmitterCanReadCompletedStats(t *testing.T) {
 	}))
 	e.beginQueueRun(QueueError)
 	e.endQueueRun(QueueError, 7, errors.New("fixture failure"))
+	drainTestEvents(t, e)
 	if !observed {
-		t.Fatal("queue round event was not synchronous")
+		t.Fatal("queue round event was not delivered")
 	}
 }
 

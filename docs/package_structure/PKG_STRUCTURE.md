@@ -2,7 +2,7 @@
 
 > 面向：复用 Papa 通用能力、增加抓取能力和审查资源所有权的开发者。
 > 配套：[目录说明书总览](README.md)、[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)。
-> 本文按当前源码说明整个 `pkg/`，覆盖 24 个 Go 包、113 个生产 `.go` 文件；测试按职责归类，目录树省略测试文件。文件清单与职责核对不代表浏览器、MySQL 或其他测试已执行。
+> 本文按当前源码说明整个 `pkg/`，覆盖 24 个 Go 包、116 个生产 `.go` 文件；测试按职责归类，目录树省略测试文件。文件清单与职责核对不代表浏览器、MySQL 或其他测试已执行。
 
 ## 1. 总体定位
 
@@ -39,6 +39,7 @@ pkg/
 ├── extract/                  # 已解析记录的声明式校验
 ├── governance/               # 站点请求预算、进程资源许可与采样
 ├── htmlfetch/                # 有界 HTTP、HTML/JSON、会话与离线样本
+├── incident/                 # 熔断共享证据、持久诊断值与确定性分类
 ├── loggers/                  # 分通道日志、轮转及诊断副本脱敏
 ├── middleware/              # 下载输出路径和共享路径锁契约
 │   ├── filedown/             # 普通文件下载、分块与断点
@@ -352,15 +353,18 @@ Manager 的 RWMutex 拥有列表、轮转位置、健康记录和版本、探针
 
 ### 8.1 events
 
+默认事件时间在安全入口采样；显式注入时钟仅在消费者执行。序号分配与非等待入队使用同一个短临界区，保持并发归档顺序及丢弃缺口；字符串/map 复制及用户回调、文件 I/O 均不进入此临界区。
+
 | 文件 | 职责 |
 | --- | --- |
 | `event.go` | 版本化 `Event`、阶段/队列快照、类型常量和 `TruncateError`；事件 schema 增量演进，消费者忽略未知字段 |
 | `emitter.go` | `Emitter` / `Closer` / `NopEmitter`、`NewEmitter`、序列/丢弃计数、有界非阻塞入队、单消费者 drain 和受 context 约束的 drain 等待 |
+| `detach.go` | Detach；限制字符串及 map 数量，分离入队值的所有权，标记 Truncated |
 | `sink.go` | `NewJSONLSink`、诊断副本脱敏、逐行 JSON 序列化、写入锁与幂等关闭 |
 
-Emitter 拥有 channel、序列原子计数和 drain goroutine，RWMutex 保护入队与关闭的互斥，满队列/关闭后入队/写失败进入丢弃计量。`Emit` 只复制 Event 结构体，不深拷贝其中 `Counts` / `Attrs` / `Stages` / `Queues` map；调用方应提交独立快照，入队后不得继续修改，sink 写入时的诊断副本处理不能消除这个共享窗口。
+Emitter 拥有 channel、序列/丢弃原子计数和一个固定消费者，RWMutex 协调入队与关闭。Emit 使用 Detach 分离 map/string 所有权：单字符串 2 KiB、总字符串 16 KiB、所有 map 合计 64 项；省略内容标记 Truncated，队满丢弃。调用期间不得并发修改原 map，返回后可复用。NewEmitter 的时钟、sink.Write 和 sink.Close 均在消费者执行；Isolate 为未知 Emitter 建一个固定队列与消费者，回调阻塞不会进入 worker，也不创建替代消费者。
 
-JSONLSink 拥有传入 `io.WriteCloser` 的关闭责任，自己的 mutex 保护 Write/Close。宿主先发送收尾事件再 `Close(ctx)`；context 只限制等待 drain 的阶段，drain 完成后同步执行的 sink/底层 writer.Close 没有期限参数，不能承诺整个 Close 严格有界。等待超时会追加一次 dropped 计量，不是精确的未写事件条数；此时不关闭仍可能被 drain 使用的 sink，须保留后续清理责任。事件记录不承担分析和报告，后者在 obs。测试分别在 `event_test.go`、`emitter_test.go`、`sink_test.go`、`redact_test.go`。
+Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；底层 I/O/回调不能被强杀，遗留消费者只持自己的依赖。panic 在消费者边界恢复并结束该单元。JSONLSink 拥有传入 io.WriteCloser，Write/Close 锁归 sink。App 将归档与报告并列接线，关闭共用 2 秒期限，任何一方卡住不阻塞另一方或业务依赖关闭。事件丢失与可靠熔断协议无关；测试见 `boundary_test.go`、`emitter_test.go`、`sink_test.go`、`redact_test.go`。
 
 ### 8.2 loggers、notify、redact
 
@@ -426,3 +430,17 @@ JSONLSink 拥有传入 `io.WriteCloser` 的关闭责任，自己的 mutex 保护
 ### 页面创建失败的资源所有权
 
 `browser/page_creation.go` 在 Chrome 返回 target ID 时即拥有清理责任；连接/初始化失败时用独立三秒清理 context 关闭部分创建的 target，保留原取消错误。它不改变正常导航或状态恢复策略。`page_creation_test.go` 用合成 CDP 复现取消后原上下文无法清理的缺陷；真实 Chrome 导航取消另由 state_navigation_test 验证。
+
+### 8.3 incident：熔断证据值与诊断
+
+| 文件 | 职责与边界 |
+| --- | --- |
+| `incident.go` | `Sample`、`Capture`、`Group`、`Report`；样本清洗、保留错误码的文本模板、窗口分组、分析和纯文本输出 |
+| `classify.go` | 根据 kind/message 给出分类、待验证解释和验证方向；分类不能当成已经证实的根因 |
+| `failure.go` | `Failure` 与 `ClassifyError`；优先识别 core、account、browser、identity、htmlfetch 的结构化错误，再做文本回退，生成稳定指纹及可读代码/阶段 |
+| `lifecycle.go` | `Lifecycle`、`Transition`、`StageCheck`、`FailureGroup`；有界脱敏副本、完整任务与只读检查的证据区分、诊断分析及文本表示 |
+
+这里的 lifecycle 是可持久化的诊断数据，不是运行状态机。实时状态、锁、轮次和暂停归 Engine/熔断组件，事务写入归 `internal/breakerstore`；参见 [Engine 分册](ENGINE_STRUCTURE.md)与 [Internal 分册](INTERNAL_STRUCTURE.md)。`Clean` 创建脱离源状态的嵌套副本、限界证据及历史，并保留截断标记。对 browser/account 等包的依赖用于识别错误，不创建浏览器、不取账号、不执行探针。
+
+
+该共享包不依赖 obs 报告服务或数据库；在线报告停用不会移除熔断的数据契约。持久化 JSON 字段不因目录迁移改变，控制状态与未确认历史仍由 Engine/breakerstore 负责可靠保存。

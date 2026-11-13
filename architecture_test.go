@@ -71,6 +71,12 @@ func TestPackageResponsibilityBoundaries(t *testing.T) {
 			if strings.HasPrefix(p, "internal/reportrunner/") && dep == module+"config" {
 				t.Errorf("report runner %s imports application configuration instead of its own value contract", p)
 			}
+			if strings.HasPrefix(p, "internal/reportrunner/") && (strings.HasPrefix(dep, "gorm.io/") || dep == "database/sql" || dep == module+"obs/analyze" || dep == module+"obs/pattern" || dep == module+"obs/eventlog" || dep == module+"obs/logidx") {
+				t.Errorf("online report %s imports active database/history source %s", p, dep)
+			}
+			if (strings.HasPrefix(p, "engine/") || strings.HasPrefix(p, "internal/breakerstore/")) && (dep == module+"obs" || strings.HasPrefix(dep, module+"obs/")) {
+				t.Errorf("reliable execution %s depends on auxiliary report layer %s", p, dep)
+			}
 			if service && (dep == "net/http" || strings.HasPrefix(dep, module+"admin/") || dep == module+"internal/app" || dep == module+"engine") {
 				t.Errorf("service %s imports outer layer %s", p, dep)
 			}

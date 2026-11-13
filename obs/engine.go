@@ -14,7 +14,7 @@ type SiteState struct {
 
 // EngineState 是报告生成时刻的运行上下文。
 type EngineState struct {
-	Source         string      `json:"source"` // engine | db | events | none
+	Source         string      `json:"source"` // engine | db | events | signals | none
 	CapturedAt     time.Time   `json:"captured_at"`
 	Sites          []SiteState `json:"sites,omitempty"`
 	ActivePools    int         `json:"active_pools"` // 已建阶段池数；0 = 空闲/暂停
@@ -24,9 +24,9 @@ type EngineState struct {
 }
 
 // Inactive 表示「引擎现在没在跑活」：无阶段池，或全部站点暂停。
-// Source=none（离线且无 DB）时刻意返回 false：没有依据时不做跳过。
+// Source=none 或 signals 时不据缺失字段判断空闲：有限信号不是完整引擎快照。
 func (s EngineState) Inactive() bool {
-	if s.Source == "" || s.Source == "none" {
+	if s.Source == "" || s.Source == "none" || s.Source == "signals" {
 		return false
 	}
 	if s.ActivePools == 0 {

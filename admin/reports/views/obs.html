@@ -2,8 +2,8 @@
             <section>
                 <h2>报告列表</h2>
                 <div class="card">
-                    <p class="hint">报告由定时任务（<code>obs.report.interval</code>）、进程退出（<code>obs.report.on_exit</code>）
-                        或命令 <code>papa report</code> 写入，目录取配置 <code>obs.report.dir</code>；
+                    <p class="hint">开启 <code>obs.events.enabled</code> 后，可通过定时（<code>obs.report.interval</code>）或退出（<code>obs.report.on_exit</code>）生成信号快照；
+                        历史与数据库分析请运行 <code>papa report generate</code>。目录取配置 <code>obs.report.dir</code>；
                         每份报告含 report.md / report.json / ai-brief.md / ai-brief.json 四份产物，头部与 JSON 里都标注生成时间（最近一次更新）。</p>
                     <p class="hint" id="obs-dir"></p>
                     <div class="table-wrap" id="obs-runs"></div>

@@ -51,6 +51,21 @@ go test -race ./internal/app -run '^TestAppMySQLMixedLifecycle/(cancel|timeout|c
 
 混合负载时长默认 3 秒，可显式指定 1 秒至 1 分钟（仅为这组受控验收，不是生产长稳配置）。初始 64 条任务包含延迟任务，catalog 向同站 detail 派生任务；检查暂停 alpha 不阻塞 beta、全局驻留预算 8、跨站同名阶段隔离及原始/派生任务清单。正常结束用在途 HTTP 请求和收尾 hook 验证依赖关闭顺序；合作取消只要求明确返回取消的 handler 释放认领，已成功执行但结算未确认的其他任务可保留 processing 待恢复，不能误改为“取消即全库 processing 清零”。关停超时保留 DB/浏览器池，旧子进程确认退出后才重启；逐任务核对重放与幂等结果。每轮退出另检查监听器、自有循环、审计 16 条记录、事件 outcome 和四份报告产物。
 
+新增 `internal/app/lifecycle_load_mysql_test.go` 补齐三个组合根场景，仍仅使用独占测试库与合成任务：
+
+```powershell
+go test -race ./internal/app -run '^TestAppMySQL(ActiveDrain|FailureCleanup)$' -count=3 -v -timeout 3m
+$env:PAPA_APP_SATURATION_DURATION = '1m'
+go test -race ./internal/app -run '^TestAppMySQLSaturatedFairness$' -count=1 -v -timeout 4m
+Remove-Item Env:PAPA_APP_SATURATION_DURATION
+```
+
+活跃排空：两站点各两个阶段的四个 handler 均处于 processing 时 Shutdown；确认四者收到取消但尚未完成时 Run 不返回、DB 可用，放行后业务成功写入、终态 success、每任务一次尝试，并关闭依赖。成功业务的结束时间和终态若被取消打断，由 Engine 以各自最多 2 秒窗口确认，失败仍保留未确认状态。
+
+持续饱和：默认 10 秒，可指定 5 秒至 2 分钟；关闭 RecoverQueue，仅验证持续数据库补充。四组各预置 96 条任务，pending 低于 64 时补到 96，采样低于 8 立即失败；全局/站点/阶段驻留预算 4/3/2，每阶段 1 worker，处理时间分别 20/40/60/80ms。独立协程每 20ms 采样全局驻留和各组实际完成时间，各组连续 5 秒无进展则失败；结束后停止补充并验证全部原始清单、结果、唯一尝试和排空。它证明该负载下无长期饥饿，不承诺严格均分、硬实时公平性或生产长稳；未直接采样各站点/阶段完整驻留数。
+
+失败清理：三层进程中，最内层 App 在四个 handler 活跃时故意 Fatal；清理回调取消并放行，核对 App 关闭 DB/池/监听器、循环退出及事件/报告，资源所有者随后回收进程、临时目录和数据库。最外层要求预期失败标记、非零退出、全部清理证据且无 race 告警；不是将任意非零退出认定为成功。仍不保证资源所有者被外部硬杀或 MySQL 不可用时可完成清理。
+
 Engine 单组件验收断言按以下口径维护：强杀前把控制信号绑定到具体 processing 任务，并检查该任务的结果提交状态；Stop 超时必须有调用标记、未完成统计及合理耗时。重启后按任务核对重放次数和原始合成 URL 集合，不能只对总数。持续负载关闭 RecoverQueue，以隔离验证持续数据库补充，并在有积压但完成量连续十秒不增加时失败；采样不是整个进程的硬实时资源监控。`RejectsCorruptEvidence` 用事务内篡改证明校验器确实拒绝错误证据，`FailureCleanup` 在子进程故意断言失败后验证清理；每个成功分配的测试库在 DROP 后还会查询精确库名确认已不存在。父进程硬退出、服务器不可用等仍可能使清理无法完成，不能宣称任意故障下绝无残留。
 
 浏览器身份分层：`pkg/browser/identity` 负责声明/原生 CDP/观察（不依赖 GORM），其 `runtime` 子包负责 Store 与单实例绑定作用域；`pkg/account` 负责候选认证状态，`engine` 负责认领前固定，`internal/app` 提供 OA 和本地诊断。见 [BROWSER_IDENTITY.md](BROWSER_IDENTITY.md)。本地 Chromium 测试使用 `PAPA_EGRESS_BROWSER_BIN` 和 `PAPA_TEST_CHROME`；隔离 MySQL 测试可用 `PAPA_RUNTIME_TEST_CONFIG` 读取连接配置并创建自有临时库，不对业务库迁移。
@@ -329,3 +344,11 @@ oao 独立运行 8 个 Node 行为脚本，新增 `oao_lifecycle_race_test.js` �
 Trace 文件存储的包依赖、状态锁和文件归属见 [Internal 分册](package_structure/INTERNAL_STRUCTURE.md) 的 tracestore 与 [Engine 分册](package_structure/ENGINE_STRUCTURE.md) 的 Trace 章节。架构守卫限制 tracestore 仅依赖标准库与 core 值类型。
 
 `config/trace.go` 负责三模式配置与模式校验；Engine 读取启动配置，不维护主动追踪选择状态。默认 errors；all/off 行为与升级规则见 CORE_CONFIG。
+
+## 在线观测隔离与离线分析回归
+
+在线链路为有限值事件 → internal/reportrunner 的单写者聚合 → 固定 writer。App 只接线，不给在线组件 DB 或业务分析回调；共享熔断证据归 pkg/incident，可靠控制/窗口/追加历史保持原事务。obs 根包 Generate 仅为显式离线扩展入口，具有局部 panic 隔离与协作取消。
+
+新增文件归属：pkg/events 的 detach.go（载荷限界与所有权），internal/app/observation.go（并列接线），internal/reportrunner 的 aggregate.go、tables.go、writer.go（有限聚合、投影和文件 worker）。obs/failure_isolation_test.go 覆盖所有扩展方法；engine/breaker_probe_evidence_test.go 保证窄证据复制等价。完整逐文件职责见各结构分册。
+
+可运行 `go test ./obs/... ./pkg/events ./pkg/incident ./internal/reportrunner ./internal/breakerstore ./internal/app ./engine`；并发边界再运行同范围 `go test -race`（Windows 需要 CGO_ENABLED=1 与 C 编译器）。关注堵塞/故障下的返回期限、队满与维度丢弃、固定 worker 数、来源 incomplete 标记，而不是将事件计数等同数据库权威任务数。在线报告和归档退出共用最长 2 秒，未完成报告不代表 Engine 未排空；真实任务/可靠恢复持久化仍用各自排空协议验收。

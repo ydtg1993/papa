@@ -74,6 +74,7 @@ func TestClaimRetriesBeforeExecutingOnce(t *testing.T) {
 	if err := e.stageHandler(e.stages["stub:stub"])(ctx, task); err != nil {
 		t.Fatal(err)
 	}
+	drainTestEvents(t, e)
 	if *calls != 3 || len(fetcher.calls()) != 1 || countTaskEvents(c, events.TypeTaskFinished) != 1 {
 		t.Fatalf("claim attempts=%d fetch calls=%d events=%v", *calls, len(fetcher.calls()), c.snapshot())
 	}
@@ -101,6 +102,7 @@ func TestTerminalWriteRetriesWithoutReplayingBusiness(t *testing.T) {
 			if fail {
 				want = events.TypeTaskFailed
 			}
+			drainTestEvents(t, e)
 			if countTaskEvents(c, want) != 1 {
 				t.Fatal(c.snapshot())
 			}
@@ -253,7 +255,9 @@ func TestPanicTerminalWriteRetriesBeforeRethrowing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	defer func() {
-		if r := recover(); r != "original panic" || *calls != 3 || countTaskEvents(c, events.TypeTaskFailed) != 1 || e.dedupCache.Get(task.Unique()) {
+		r := recover()
+		drainTestEvents(t, e)
+		if r != "original panic" || *calls != 3 || countTaskEvents(c, events.TypeTaskFailed) != 1 || e.dedupCache.Get(task.Unique()) {
 			t.Fatalf("panic=%v attempts=%d events=%v", r, *calls, c.snapshot())
 		}
 	}()

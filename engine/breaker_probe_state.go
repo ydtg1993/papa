@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"strings"
 	"time"
 )
@@ -64,7 +64,7 @@ func (b *breakerCoordinator) selectStageProbeLocked(s *smartBreaker, now, retryA
 		}
 		s.probeRunning, s.probeExecuting = true, true
 		l := s.event
-		req := BreakerProbeRequest{Site: site, Stage: check.Stage, Category: l.report.Category, Evidence: l.reportSnapshot().Evidence, Pass: check.ProbeSuccesses + 1}
+		req := BreakerProbeRequest{Site: site, Stage: check.Stage, Category: l.report.Category, Evidence: l.probeEvidence(), Pass: check.ProbeSuccesses + 1}
 		if len(check.Samples) > 0 {
 			sample := check.Samples[check.ProbeSuccesses%len(check.Samples)]
 			req.SampleID = recoverySampleID(sample)
@@ -173,7 +173,7 @@ func (b *breakerCoordinator) finishStageProbeLocked(token *breakerProbeSettlemen
 		return "恢复超时，待人工处理"
 	}
 	if token.healthy {
-		// The milestone callback may synchronously stop or cancel recovery.
+		// Shutdown may cancel recovery between the milestone and final decision.
 		if all && parentCtx.Err() == nil {
 			s.event.Successes = 0
 			b.transitionBreakerLocked(s, "ramping", "所有阶段语义试探通过；进入整站限量观察，未声明完整只读覆盖的阶段仍须真实任务验证，尚不清空计数", now)

@@ -107,9 +107,10 @@ func NewApp(opts ...Option) (*App, error) {
 	// 关闭时用 NopEmitter —— Emit 是空调用，热路径不做分配。
 	a.runID = newRunID()
 	if cfg.Obs.Events.Enabled {
-		em := newEventEmitter(cfg, a.runID)
-		eng.SetEventsEmitter(em)
-		a.events = em
+		archive := newEventEmitter(cfg, a.runID).(events.Closer)
+		a.observation = &observationPipeline{archive: archive}
+		a.events = events.Isolate(a.observation)
+		eng.SetEventsEmitter(a.events)
 	} else {
 		a.events = events.NopEmitter{}
 	}
@@ -140,20 +141,12 @@ func (a *App) Migrate() error {
 //
 //	app.Events().Emit(events.Event{Type: "your_event", Site: "...", Counts: ...})
 //
-// 注意：业务事件类型是业务侧约定，框架只保证承载与落盘，不做语义解释。
+// 注意：业务事件类型是业务侧约定；有界队列尽力归档，满载或写入故障允许丢弃，不能用于业务结算。
 func (a *App) Events() events.Emitter {
 	if a.events == nil {
 		return events.NopEmitter{}
 	}
 	return a.events
-}
-
-// eventLifecycle 有生命周期的 emitter（框架内置的 bufferedEmitter 实现）。
-// NopEmitter 不实现它，于是"关闭时什么都不做"不需要额外分支。
-type eventLifecycle interface {
-	events.Emitter
-	Close(ctx context.Context) error
-	Dropped() uint64
 }
 
 // newEventEmitter 按配置组装 JSONL 事件流；轮转沿用 log 段参数（10 个人类日志同一套）。
@@ -203,18 +196,25 @@ func (a *App) emitRunStopped(drained bool, stats map[string]core.StopStats) {
 		Counts: map[string]int{"unfinished": unfinished, "queued": queued}})
 }
 
-// closeEvents 关闭事件流并限时排空（事件流关闭时是 no-op）。
+// closeEvents shares one deadline across forwarding, reporting and archival.
+// Optional observation never controls the lifetime of business resources.
 func (a *App) closeEvents() {
-	life, ok := a.events.(eventLifecycle)
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := life.Close(ctx); err != nil {
-		a.Logger.Sys.Warnf("close event stream: %s", err.Error())
+	if life, ok := a.events.(events.Closer); ok {
+		_ = life.Close(ctx)
+		if a.reportRunner != nil {
+			counts := map[string]int{"dropped": int(life.Dropped())}
+			if a.observation != nil {
+				counts["archive_dropped"] = int(a.observation.archive.Dropped())
+			}
+			a.reportRunner.Emit(events.Event{Type: "observation_loss", Counts: counts})
+		}
 	}
-	if d := life.Dropped(); d > 0 {
-		a.Logger.Sys.Warnf("event stream dropped %d events (buffer full or write failed)", d)
+	if a.reportRunner != nil {
+		_ = a.reportRunner.Close(ctx)
+	}
+	if a.observation != nil {
+		_ = a.observation.archive.Close(ctx)
 	}
 }

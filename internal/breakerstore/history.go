@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v4/models"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

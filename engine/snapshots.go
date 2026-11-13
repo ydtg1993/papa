@@ -1,10 +1,10 @@
 package engine
 
 import (
-	"github.com/ydtg1993/papa/v4/core"
 	"strings"
 	"time"
 
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 )
 
@@ -20,7 +20,7 @@ func (e *Engine) startSnapshotEmitter() {
 	if interval <= 0 {
 		return
 	}
-	// 与其它 ticker 一样进 tickerWG：Stop 要等它退出再返回（它不写库，但会读库/读内存快照）。
+	// 与其它 ticker 一样进 tickerWG；只尝试读取有界内存快照，不查库、不等待业务锁。
 	e.tickerWG.Add(1)
 	go func() {
 		defer e.tickerWG.Done()
@@ -45,28 +45,46 @@ func (e *Engine) emitSnapshot() {
 		Stages: make(map[string]events.StageSnapshot),
 		Queues: make(map[string]events.QueueSnapshot),
 	}
-	for key, s := range e.GetStageStats() {
-		ev.Stages[key] = events.StageSnapshot{
-			Site:       s.Site,
-			Stage:      s.Stage,
-			QueueLen:   s.Queue.QueueLen,
-			InProgress: int(s.Queue.InProgress),
-			Workers:    len(s.Workers),
-			Submitted:  s.Queue.Submitted,
-			Completed:  s.Queue.Completed,
-			Failed:     s.Queue.Failed,
+	// Observation reads only bounded scalar copies. It never waits for the
+	// engine metadata lock or copies per-worker activity history.
+	if e.mu.TryRLock() {
+		for key, mon := range e.statsQueue {
+			if len(ev.Stages) >= events.MaxMapEntries-2 {
+				ev.Truncated = true
+				break
+			}
+			info := e.stages[key]
+			if info == nil {
+				continue
+			}
+			submitted, completed, failed, inflight, queued := mon.WorkPool.Stats()
+			totals := e.stageTotals[key]
+			ev.Stages[key] = events.StageSnapshot{Site: info.config.Site, Stage: info.stage, QueueLen: queued,
+				InProgress: int(inflight), Workers: info.config.WorkerCount,
+				Submitted: totals.Submitted + submitted, Completed: totals.Completed + completed, Failed: totals.Failed + failed}
 		}
+		e.mu.RUnlock()
+	} else {
+		ev.Truncated = true
 	}
-	for name, q := range e.GetQueueStats() {
-		ev.Queues[name] = events.QueueSnapshot{
-			Enabled:        q.Enabled,
-			Running:        q.Running,
-			TotalProcessed: q.TotalProcessed,
-			RunProcessed:   q.RunProcessed,
-			Backlog:        int64(q.Backlog),
-			LastDurationMS: q.LastDuration.Milliseconds(),
-			LastError:      q.LastError,
+	for name, q := range e.queueRuns {
+		if !q.mu.TryLock() {
+			ev.Truncated = true
+			continue
 		}
+		s := q.stat
+		atStart := q.atStart
+		q.mu.Unlock()
+		var total int64
+		if c := e.queueCounters[name]; c != nil {
+			total = c.Load()
+		}
+		var runProcessed int64
+		if s.Running {
+			runProcessed = total - atStart
+		}
+		ev.Queues[name] = events.QueueSnapshot{Enabled: e.queueEnabled(name), Running: s.Running, TotalProcessed: total,
+			RunProcessed: runProcessed, Backlog: int64(s.Backlog), LastDurationMS: s.LastDuration.Milliseconds(), LastError: s.LastError}
 	}
 	e.emit(ev)
 }

@@ -13,8 +13,8 @@ import (
 
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/obs"
-	"github.com/ydtg1993/papa/v4/obs/incident"
 	"github.com/ydtg1993/papa/v4/pkg/events"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 )
 
 // Thresholds 是通用判定阈值；零值取默认（可在后续版本接配置）。

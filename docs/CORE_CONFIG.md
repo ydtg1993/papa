@@ -225,19 +225,19 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
-| `events.enabled` | bool | 是否写运行事件流，默认 `false` |
+| `events.enabled` | bool | 是否启用在线信号聚合与事件归档，默认 `false`；离线 CLI 可独立执行 |
 | `events.file` | string | 文件名（相对 `log.dir`），默认 `events.jsonl`；轮转沿用 `log.max_size` / `max_days` / `max_backups` / `compress` / `local_time` |
-| `events.buffer` | int | 异步队列长度，默认 8192。**满了丢弃并计数，绝不阻塞 worker** |
+| `events.buffer` | int | 归档异步队列长度，默认及上限 8192；满则丢弃。未知 Emitter 由固定消费者隔离，执行路径不等待其回调 |
 | `events.snapshot_interval` | duration | `stage_snapshot`（阶段/队列周期快照）的间隔，如 `30s`；`0` / 不写 = 不发 |
-| `report.on_exit` | bool | 进程退出时生成报告，默认 `false`。开启后退出流程在关库前生成一份报告（失败只记日志，不阻塞退出） |
-| `report.interval` | duration | **定时生成报告**：如 `30m` = Run 期间每 30 分钟刷新一次当天日报；`0` / 不写 = 不自动生成（默认关）。与 `on_exit` 独立，两者都开时写同一天目录、后写覆盖前写（当天最新快照）；定时器停机时先停、再出退出报告 |
-| `report.mode` | string | 判定语义：`auto`（默认）在定时、退出和 CLI 中均使用 `snapshot` 运行报告，回答运行状态与异常；`acceptance` 为显式批次验收，检查本轮是否通过、期末是否排空。配置写 `acceptance` 仍生效。CLI 的 `--snapshot` / `--acceptance` 优先于本键且互斥。CLI 默认逐个有事件的本地日生成日报，仅显式 `--snapshot` 限为最后一天；进程内自动报告只写当天。其它值启动即报错 |
+| `report.on_exit` | bool | 尽力生成退出信号快照，默认 `false`；需 events.enabled。与归档合计最多等待 2 秒，超时不影响业务资源关闭条件 |
+| `report.interval` | duration | 在线快照周期，例如 `30m`；`0` / 不写关闭定时生成。需 events.enabled，与 on_exit 独立；只写当前本地日，合并待处理请求 |
+| `report.mode` | string | 仅离线分析模式：auto（默认）= snapshot，acceptance 显式验收；CLI --snapshot / --acceptance 互斥且优先。在线始终 snapshot，不启用验收；非法值仍拒绝配置 |
 | `report.dir` | string | 报告产物目录，默认 `./reports`。产物按**本地日历日**拆分：`<dir>/<2006-01-02>/`（一份 = 一天的日报；`--run` 时 `<dir>/<run_id>/`），四份 `report.md` / `report.json` / `ai-brief.md` / `ai-brief.json`；后台「obs报告」页也读它 |
-| `report.retention` | duration | 报告保留期，默认 `168h`（7 天）；`0` / 不写同默认；负数 = 永久保留、不自动清理。**每次生成报告后**（`papa report generate` / `report.interval` / `report.on_exit`）清理 `<dir>` 下过期的报告目录：只删有 `report.md` 的直接子目录；日报目录按名字里的日期算（保留最近 N 个自然日），旧命名（`run_id` / `window-*`）按目录修改时间算 |
-| `report.timeout` | duration | 单次生成报告的超时，默认 `120s`（`report.interval` 与 `report.on_exit` 共用） |
-| `report.thresholds.stuck_after` | duration | 判「卡住」的阈值（processing 超过它未更新），默认 `10m`。**报告口径**，不是启动恢复判据 |
-| `report.thresholds.crawl_fail_rate_max` | float | 抓取终态失败率上限，默认 `0.05`（未校准） |
-| `report.thresholds.event_max_gap` | duration | 事件时间断层阈值，默认 `10m`：事件流里相邻事件间隔超过它即算一次断层（丢事件 / 被硬杀）。**已用于 `event_coverage` 检查**：超过阈值、或窗口起点后超过阈值才有首条事件，该检查判未通过（warn），并向 `degraded` 写「事件存在时间断层，事件口径可能不完整」。**例外**：断层若正好是一段 `run_stopped` → `run_started` 的停机区间（起止秒级吻合），视为引擎没在跑而不是丢事件 —— 检查判通过、message 写「引擎停机 …，不是事件丢失」，且不写 degraded。`snapshot` 模式下引擎暂停/空闲时该检查标不适用。`0` / 不写 = 默认，负数启动报错。吞吐/ETA 的时长另按各 run 首末可见事件区间合并计算（含暂停），不按整日减停机；无正的事件跨度不判零吞吐异常 |
+| `report.retention` | duration | 默认 168h（7 天），0 同默认，负数永久保留。在线持有目录游标，每轮最多检查 128 个目录项并在下轮续扫，只删过期日期目录的四份已知产物，保留无关文件；离线无筛选 CLI 按 report.Prune 清理有 report.md 的过期目录，显式 since/until/run 不清理 |
+| `report.timeout` | duration | 离线生成的协作超时，默认 `120s`；不能强杀任意分析回调。在线报告与事件归档退出等待固定共享最长 2 秒，不使用此值扩展期限 |
+| `report.thresholds.stuck_after` | duration | 仅离线分析：判「卡住」的阈值（processing 超过它未更新），默认 `10m`。**报告口径**，不是启动恢复判据 |
+| `report.thresholds.crawl_fail_rate_max` | float | 仅离线分析：抓取终态失败率上限，默认 `0.05`（未校准） |
+| `report.thresholds.event_max_gap` | duration | 仅离线分析：事件时间断层阈值，默认 `10m`：事件流里相邻事件间隔超过它即算一次断层（丢事件 / 被硬杀）。**已用于 `event_coverage` 检查**：超过阈值、或窗口起点后超过阈值才有首条事件，该检查判未通过（warn），并向 `degraded` 写「事件存在时间断层，事件口径可能不完整」。**例外**：断层若正好是一段 `run_stopped` → `run_started` 的停机区间（起止秒级吻合），视为引擎没在跑而不是丢事件 —— 检查判通过、message 写「引擎停机 …，不是事件丢失」，且不写 degraded。`snapshot` 模式下引擎暂停/空闲时该检查标不适用。`0` / 不写 = 默认，负数启动报错。吞吐/ETA 的时长另按各 run 首末可见事件区间合并计算（含暂停），不按整日减停机；无正的事件跨度不判零吞吐异常 |
 
 **事件契约（v1，只增不改）**：一行一个 JSON 对象，字段 `v`（schema 版本）、`seq`（本 run 内单调递增）、`ts`、`run_id`、`type`，以及按类型可选的 `site` / `stage` / `task_id` / `attempt` / `duration_ms` / `queue` / `counts` / `backlog` / `attrs` / `stages` / `queues` 等。其中 `attrs` 是**业务自定义键值对**（框架不解释语义），业务事件需要携带框架不认识的维度时放这里。读者必须忽略未知键；`seq` 出现缺口 = 丢弃或丢失。
 
@@ -252,7 +252,7 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 
 业务侧可 `app.Events().Emit(events.Event{...})` 复用同一个 sink（同一 `run_id` / `seq` 序列）；业务事件类型由业务自己约定，框架只负责承载与落盘。
 
-报告扩展点：`app.UseReportSection(section...)` / `app.UseReportPattern(pattern...)` 在 `Run` 之前注册业务报告段与业务模式；不注册时报告只有框架通用段。报告产物默认写两份文档：`report.md`（人读）与 `ai-brief.md`（交给另一个 AI 的排查细则，含边界/证据/假设/验证/验收），各带一份同构 JSON。
+业务扩展通过业务自己的离线命令调用 `obs.Generate` 并提供 Sections/Patterns；App 的 UseReportSection / UseReportPattern 已移除。在线报告不接收 DB/业务回调，不扫描日志或 JSONL，只输出收到的信号和完整性说明；固定 snapshot / unknown，不把计数当权威任务总量。四份报告产物格式保留。
 
 **已知限制（这一版）**：`queue_wait_ms` 不发（需要在任务上记录提交时刻）；`queue_round` 只带本轮处理量，不带每轮失败数。
 

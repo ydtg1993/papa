@@ -195,7 +195,9 @@ func appMixCount(t *testing.T, db *gorm.DB, status models.TaskStatus, site strin
 }
 
 // Only the parent allocates/drops; child DSNs always name this exclusive DB.
-func appMixDB(t *testing.T) (*gorm.DB, string) {
+func appMixDB(t *testing.T) (*gorm.DB, string) { return appMixDatabase(t, true) }
+
+func appMixDatabase(t *testing.T, seed bool) (*gorm.DB, string) {
 	t.Helper()
 	raw := os.Getenv("PAPA_COMPENSATION_TEST_DSN")
 	if raw == "" {
@@ -248,6 +250,9 @@ func appMixDB(t *testing.T) (*gorm.DB, string) {
 	cfg.Server.OperationLog = true
 	if err := database.Migrate(db, cfg, &appMixEffect{}, &appMixAttempt{}, &appMixControl{}); err != nil {
 		t.Fatal(err)
+	}
+	if !seed {
+		return db, dsn
 	}
 	for _, site := range []string{"alpha", "beta"} {
 		for _, stage := range []string{"catalog", "detail"} {

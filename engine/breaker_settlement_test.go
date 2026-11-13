@@ -15,7 +15,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
 	"github.com/ydtg1993/papa/v4/models"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"gorm.io/gorm"
 )
 

@@ -10,7 +10,6 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/reportrunner"
-	"github.com/ydtg1993/papa/v4/obs"
 	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
@@ -34,26 +33,22 @@ type App struct {
 	// 于是框架事件与业务事件写在同一个 events.jsonl、共享 seq/run_id。
 	events events.Emitter
 	runID  string
-	// 报告扩展点（Run 之前注册）：业务段/业务模式。papa 只编排与渲染，不认识其语义。
+	// Online observation owns value signals and its own file resources.
+	observation       *observationPipeline
 	reportInputLimits inputbudget.Limits
-	reportSections    []obs.Section
-	reportPatterns    []obs.Pattern
-	// 报告定时生成（obs.report.interval）：Run 期间按间隔刷新「当天」日报。
-	// 组件负责取消、等待与串行生成（都发生在关库之前），避免
-	// 定时报告与退出报告，避免同一天目录被两个 goroutine 同时写。
-	reportOnce      sync.Once
-	reportRunner    *reportrunner.Runner
-	tables          []oao.Table
-	pages           []Page          // 业务注册的自定义页
-	routers         []func(*Router) // 业务注册的自定义路由组（UseRouter）
-	extraJS         []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
-	extraCSS        []string        // UseCSS 注入的样式，拼成 /static/custom.css
-	sysInfo         *sysinfo.Collector
-	httpSrv         *http.Server // 优雅关停时要先停它，见 shutdownHTTP
-	httpRequests    *requestDrain
-	whitelistReload *access.WhitelistReloader
-	oplog           *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
-	cancel          context.CancelFunc
+	reportOnce        sync.Once
+	reportRunner      *reportrunner.Runner
+	tables            []oao.Table
+	pages             []Page          // 业务注册的自定义页
+	routers           []func(*Router) // 业务注册的自定义路由组（UseRouter）
+	extraJS           []string        // UseScript / UsePage 注入的 JS，拼成 /static/custom.js
+	extraCSS          []string        // UseCSS 注入的样式，拼成 /static/custom.css
+	sysInfo           *sysinfo.Collector
+	httpSrv           *http.Server // 优雅关停时要先停它，见 shutdownHTTP
+	httpRequests      *requestDrain
+	whitelistReload   *access.WhitelistReloader
+	oplog             *oplog.Recorder // 操作日志的异步写入器；关停时要先排空再关库
+	cancel            context.CancelFunc
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
 	configStore       *configstore.Store

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine/internal/execution"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/account"
@@ -218,14 +219,12 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				return err
 			}
 			if err == nil {
-				// A handler may finish despite sample cancellation. Preserve its
-				// actual terminal result, but the breaker rejects its late proof.
-				terminalCtx, terminalCancel := ctx, func() {}
-				if !task.breakerSampleDeadline.IsZero() && ctx.Err() != nil {
-					terminalCtx, terminalCancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-				}
-				writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusSuccess, nil)
-				terminalCancel()
+				// Preserve confirmed business success across shutdown cancellation.
+				// Version guards still reject stale rounds; late breaker proof is
+				// independently rejected by the breaker coordinator.
+				writeErr := execution.ConfirmSuccess(ctx, func(settleCtx context.Context) error {
+					return e.persistTerminal(settleCtx, task, runVersion, models.TaskStatusSuccess, nil)
+				})
 				if writeErr != nil {
 					return writeErr
 				}

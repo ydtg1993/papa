@@ -31,6 +31,7 @@ const (
 // Event 是事件流的一行；字段只增不改，读者必须忽略未知键。
 // 除 v/seq/ts/run_id/type 外，零值字段靠 omitempty 省略，避免每行携带大量空键。
 type Event struct {
+	Truncated   bool           `json:"truncated,omitempty"`
 	V           int            `json:"v"`
 	Seq         uint64         `json:"seq"`
 	TS          time.Time      `json:"ts"`
@@ -86,10 +87,12 @@ type QueueSnapshot struct {
 
 const maxErrorLen = 2048
 
-// TruncateError 把错误文本截到上限（事件里不含整段栈）。
+// TruncateError limits diagnostic input without retaining partial credentials.
+// Oversized text is omitted: cutting before a URL/DSN delimiter prevents later
+// redaction from recognizing the credential. Short errors remain unchanged.
 func TruncateError(s string) string {
 	if len(s) <= maxErrorLen {
 		return s
 	}
-	return s[:maxErrorLen]
+	return omittedString
 }

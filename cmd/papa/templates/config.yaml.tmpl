@@ -129,19 +129,19 @@ log:
 # 运行观测（框架通用事件流 + 运行报告；默认关）。详见 docs/framework/OBSERVABILITY.md
 obs:
   events:
-    enabled: false               # 打开后写 logs/events.jsonl（一行一个 JSON 事件）；本地排查/出报告时开
+    enabled: false               # 开启在线信号报告与 logs/events.jsonl 归档；默认关闭
     file: "events.jsonl"
     buffer: 8192                 # 异步队列；满则丢弃并计数，绝不阻塞 worker
     snapshot_interval: "30s"     # 阶段/队列周期快照事件间隔；"0" = 不发
   report:
-    on_exit: false               # 优雅退出时自动生成报告（在事件 flush 之后、关库之前）
+    on_exit: false               # 尽力生成退出信号快照；与事件归档合计最多等 2 秒
     interval: "0"                # 定时生成报告：如 "30m" = 每 30 分钟刷新当天日报；0/不写 = 关（与 on_exit 独立，可只开定时）
-    # mode: auto              # auto（默认）= 定时/退出/CLI 均出 snapshot；验收显式选 acceptance；
-                              # snapshot 不因常驻积压判 fail；acceptance 是验收口径
+    # mode: auto              # 仅离线分析：auto（默认）= snapshot；验收选 acceptance；
+                              # 在线固定 snapshot，不执行验收或查库
     dir: "./reports"             # 产物目录：<dir>/<2006-01-02>/（report.md / report.json / ai-brief.md / ai-brief.json）；后台「obs报告」页也读它
     retention: "168h"            # 报告保留期；默认 7 天；负数 = 永久保留（每次生成报告后清过期目录）
-    timeout: "120s"              # 单次生成报告的超时（interval 与 on_exit 共用）；失败只记日志，不阻塞业务
-    thresholds:                  # 通用分析节（framework）的阈值
+    timeout: "120s"              # 离线分析的协作超时；在线退出不使用此值扩展 2 秒总预算
+    thresholds:                  # 离线通用分析节（framework）的阈值
       stuck_after: "10m"
       event_max_gap: "10m"      # 事件相邻间隔超过它 → event_coverage 告警（丢事件/被硬杀）
       crawl_fail_rate_max: 0.05

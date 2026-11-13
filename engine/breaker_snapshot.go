@@ -3,7 +3,7 @@ package engine
 import (
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 )
 
 // Control is authoritative. The report is only a bounded history plus a
@@ -52,3 +52,15 @@ func (s *smartBreaker) snapshot() breakerstore.Snapshot {
 
 // Only report storage is cleaned here; no cleaned data flows back into control.
 func (l *breakerEvent) trimReport() { l.report = l.report.Clean() }
+
+// probeEvidence detaches only bounded probe evidence. A probe request does not
+// need to rebuild stage verification notes or clean the complete history while
+// the recovery lock is held. Keep the same evidence budget and redaction as the
+// durable snapshot, without changing its persistence contract.
+func (l *breakerEvent) probeEvidence() []incident.Sample {
+	evidence := make([]incident.Sample, 0, min(len(l.report.Evidence), incident.MaxSamples))
+	for _, sample := range l.report.Evidence[:min(len(l.report.Evidence), incident.MaxSamples)] {
+		evidence = append(evidence, incident.Clean(sample))
+	}
+	return evidence
+}

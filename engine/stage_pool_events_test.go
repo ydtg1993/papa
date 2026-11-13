@@ -58,6 +58,7 @@ func TestStagePoolCreatedEmitterCanStopEngine(t *testing.T) {
 	if e.getOrCreatePool("fixture:detail") == nil {
 		t.Fatal("creator lost its registered pool")
 	}
+	drainTestEvents(t, e)
 	if !e.pools.IsStopped() {
 		t.Fatal("callback did not stop registry")
 	}

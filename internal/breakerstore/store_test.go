@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/models"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"github.com/ydtg1993/papa/v4/pkg/testdb"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"

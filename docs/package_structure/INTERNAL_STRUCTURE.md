@@ -8,7 +8,7 @@
 
 `internal/` 是框架内部实现目录，不是单一业务层。这里既有应用组合根，也有声明规划、运行服务、持久化适配和底层执行设施。各包按自身契约协作；不能因都在 internal 下就互相读取可变字段或把完整 App / Engine 交给子组件。Papa 只面向单实例大单体，真实站点、业务模型配置和固定验收目标留在独立业务模块。
 
-本册覆盖根层 `internal/` 的 **14 个包、63 个非测试 Go 文件、65 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
+本册覆盖根层 `internal/` 的 **14 个包、67 个非测试 Go 文件、69 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
 
 ```text
 internal/
@@ -30,11 +30,11 @@ internal/
 
 | 包 | 非测试 / 测试文件数 | 主要入口与详述 |
 | --- | --- | --- |
-| `internal/app` | 20 / 31 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
+| `internal/app` | 21 / 33 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
 | `internal/sitedecl` | 5 / 5 | `RegisterSite`、`Sites`、`CheckSites`、`PlanSites`，见[声明](#sitedecl) |
 | `internal/runtimecontrol` | 4 / 2 | `Service.Initialize/Read/Save/HistoryAction/DeletePool`，见[运行策略](#runtimecontrol) |
 | `internal/browserdiagnostics` | 7 / 4 | `Service.Configure/Initialize/Apply/Diagnose/Rod/Shutdown`，见[诊断](#browserdiagnostics) |
-| `internal/reportrunner` | 2 / 1 | `Runner.Start/Stop/Generate/Periodic/Exit`，见[报表](#reportrunner) |
+| `internal/reportrunner` | 5 / 3 | `Runner.Start/Emit/Status/Close/Generate/Periodic/Exit`，见[报表](#reportrunner) |
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
 | `internal/breakerstore` | 3 / 4 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
 | `internal/database` | 5 / 7 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
@@ -63,7 +63,9 @@ internal/
 
 ### 2.2 当前物理目录
 
-当前 `internal/app` 有 **20 个生产 Go 文件、31 个测试 Go 文件**，没有子目录，没有独立 JS/CSS/HTML 文件。
+`lifecycle_load_mysql_test.go` 负责活跃 worker 正常关停、持续饱和的四组背压/无饥饿验证及故意断言失败后的 App/进程/文件/测试库清理。复用独占库与产物校验，采样器由测试自身管理；成功任务取消后结算规则归 Engine 内部 execution，不移入 App。
+
+当前 `internal/app` 有 **21 个生产 Go 文件、33 个测试 Go 文件**，没有子目录，没有独立 JS/CSS/HTML 文件。
 
 ```text
 internal/app/
@@ -82,12 +84,13 @@ internal/app/
 ├── page_ownership.go            # 页面归属引用和无环校验
 ├── router.go                    # 业务路由分组与中间件
 ├── data_tables.go               # 选择内置任务工作台表
-├── reports.go                   # 报告组件装配与只读快照适配
+├── observation.go               # 归档与信号报告并列出口及共用关闭期限
+├── reports.go                   # 报告组件静态值装配
 ├── runtime_policy.go            # 运行组件装配、采样生命周期和排空编排
 ├── accounts.go                  # 公开账号接入扩展
 ├── browser_identity.go          # 身份服务构造、初始化和生命周期接线
 ├── rod_diagnostics.go           # 公开 RodDiagnostics 工厂
-└── *_test.go                    # 29 个；逐组归属见 §2.6
+└── *_test.go                    # 测试文件；逐组归属见 §2.6
 
 internal/sitedecl/               # 冻结声明、规划和进程登记表
 internal/runtimecontrol/         # 运行策略状态与事务
@@ -112,7 +115,8 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 | `lifecycle.go` | `Run` / `Shutdown`、统一失败清理、`shutdownRun`、日志监听及等待 | 编排启停并汇总排空结果；不实现各组件的内部领域算法 |
 | `shutdown.go` | `UseShutdown`；逆序执行业务收尾，处理错误/panic/超时 | 超时不表示业务 goroutine 已终止，共享资源必须保留 |
 | `schema_check.go` | `checkFrameworkSchema` 适配框架表/索引探测和缺项提示 | 不新增隐式迁移或独立 schema 服务 |
-| `reports.go` | 报告扩展登记、UseReportInputLimits 装配期预算、NewWithLimits 构造及 Engine 快照适配 | Runner 拥有 ticker、生成锁和等待；真实业务报告段留在业务模块 |
+| `reports.go` | UseReportInputLimits 装配预算与 Runner 静态配置构造 | 不借 DB/Engine 查询回调，不注册在线分析扩展 |
+| `observation.go` | 报告与归档两个有限消费者的并列出口 | 仅持值事件出口；共享退出期限由生命周期编排 |
 
 #### 2.3.2 后台装配与公开扩展
 
@@ -174,7 +178,7 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 | 账号池 / 登录流程 | `account.Pools` / `onboarding.Service` | 先通知所有组件停止，再汇总排空结果 |
 | 身份诊断准入、在途计数与报告 | `internal/browserdiagnostics.Service` | 初始化、接线并检查 Shutdown 结果 |
 | 资源采样循环 / 错误日志消费者 | App 的 runtimeState / messageListenerState | 持有 cancel/done；取消后等待实际退出 |
-| 报表 ticker、生成锁和排空信号 | `internal/reportrunner.Runner` | 关库前 Stop，随后生成退出报告 |
+| 报告入口、单写者聚合与固定 writer | `internal/reportrunner.Runner` | 与归档共用 2 秒关闭期限；不借业务资源 |
 | 白名单判定与周期重载 | `admin/access.Handler` / `WhitelistReloader` | 注入读口和发布回调，收集 Stop 结果 |
 | 配置读写、TTL 缓存与失效代次 | `admin/configstore` | 共用 Store；本进程保存成功后 Invalidate |
 | HTTP 服务 / handler 准入与在途计数 | `http.Server` / App 私有 requestDrain | 关闭准入并等待，区分连接关闭和 handler 返回 |
@@ -187,7 +191,7 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 
 NewApp 构造时已创建 Engine；NewEngine 会读库预热活跃任务并启动延迟 dispatcher，不能把全部后台活动都归到 Run。正常 Run 启动顺序：运行服务初始化 → run_started/报告循环 → 浏览器/HTML/下载器 → 熔断运行期/阶段 → 日志消费者 → HTTP。`Run` 安装统一 defer：先取消运行 context，再走 `shutdownRun`；运行组件初始化或后续启动失败也会清理已取得的资源。未成功进入运行阶段时不生成 run_stopped/退出报告。
 
-关停顺序：HTTP → 业务收尾钩子 → Engine.Stop → 运行组件 → 日志监听等待 → 代理 → 停定时报告/结束事件/退出报告 → 审计 → 条件关闭浏览器与 DB。
+关停顺序：HTTP → 业务收尾钩子 → Engine.Stop → 运行组件 → 日志监听等待 → 代理 → 结束信号/在线报告及归档共享期限关闭 → 审计 → 条件关闭浏览器与 DB。观测超时不参与业务依赖关闭门控。
 
 - `shutdownHTTP` 先关闭 requestDrain 准入并取消白名单重载，再让 Server、handler 计数和 reloader 共用本次 HTTP 截止时间。包括仍在执行的 hijacked handler；Server.Close 不能把这类请求视为完成。超时后仍继续其它组件清理，但共享资源关闭条件保留 false。
 - `drainRuntime` 先对 onboarding、账号池和身份诊断调用 BeginShutdown，并取消采样；随后所有等待使用同一个 context。一个组件超时不会跳过其它组件的停止和结果收集。BeginShutdown 的生命周期门只能短时持锁，不能等待业务存储或回调。
@@ -214,7 +218,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 | `http_drain_test.go`、`shutdown_resources_test.go` | 连接强关后仍活跃的 handler、hijack、拒绝新请求、白名单未排空时保留数据库，以及全部退出后的关闭 |
 | `runtime_lifecycle_test.go`、`shutdown_test.go` | 运行组件取消/等待、采样和日志消费者、初始化失败清理；业务钩子顺序、错误、panic 和超时 |
 | `events_test.go` | 事件流配置和输出 |
-| `report_interval_test.go`、`report_mode_test.go`、`report_on_exit_test.go`、`report_sections_test.go` | App 报告配置、日期范围、定时/退出报告和业务扩展装配 |
+| `report_interval_test.go`、`report_mode_test.go`、`report_on_exit_test.go`、`report_sections_test.go` | App 在线信号报告配置、定时/退出和禁用开关 |
 | `token_hook_test.go` | 令牌写入后的缓存失效与失败保留 |
 | `runtime_policy_test.go`、`runtime_history_test.go` | HTTP → 策略服务 → 持久化/Engine 的集成 |
 | `runtime_ui_browser_test.go` | 真实运行治理资源的浏览器集成 |
@@ -236,7 +240,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 | `pkg/account/onboarding/shutdown_test.go`、`pkg/account/pools_shutdown_test.go` | 资料 Get/SaveCAS/List 卡住时仍能取消与有界等待；Manager 持锁发布候选时，协调器摘除也纳入排空结果 |
 | `pkg/browser/diagnostic_cleanup_windows_test.go`、`diagnostic_startup_test.go` | 真实文件锁延迟释放、持续锁定的截止时间和原始错误、重复关闭、池名额归还与启动取消；真实 Chrome 回归归浏览器与诊断服务包 |
 | `pkg/account/onboarding`、`pkg/account`、`internal/browserdiagnostics`、`pkg/browser/identity/runtime` 其它测试 | 各组件的准入、操作状态、取消与排空；App 保留组合行为测试 |
-| `internal/reportrunner` | 报告生成串行与等待，不以移动 App 集成测试代替组件测试 |
+| `internal/reportrunner` | 固定聚合/writer、有限队列与有界关闭，不持 DB 或任意扩展回调 |
 
 #### 2.6.3 依赖守卫及证明范围
 
@@ -246,7 +250,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 - App 不拥有独立 JS/CSS/**HTML**；Go 字符串中的前端源码不在这个扩展名守卫的识别范围内。
 - sitedecl 不导入 App、admin 或 net/http，允许既有 Engine 注册协议类型依赖。
 - admin/page 不导入框架实现；值契约不得成为新的装配层。
-- runtimecontrol/reportrunner/taskstore 不导入 HTTP/admin/App/Engine；reportrunner 不导入整份应用 config。
+- runtimecontrol/reportrunner/taskstore 不导入 HTTP/admin/App/Engine；reportrunner 不导入整份应用 config、GORM、obs/analyze、obs/pattern 或历史输入加载器。
 - browserdiagnostics 不导入 admin/App；engine/internal 不导入父 engine/admin/App。
 
 守卫不能证明深副本、真实排空、SQL 方言正确或浏览器布局。行为回归分别覆盖这些协议；fake 与合成 SQL driver 不代替 MySQL 现场验证，浏览器用例是否运行取决于实际测试环境。本分册说明实现和覆盖位置，不把新增测试文件或守卫通过表述为全量测试已经通过；执行批次与限制写在 `docs/issues/` 的验证记录。
@@ -341,22 +345,23 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 
 ### 4.3 Reportrunner：定时与退出报表
 
-`internal/reportrunner` 接收报表专用 `Config`、DB、Logger、扩展段/模式和只读 EngineState/Inputs 回调，负责运行时报告触发、生成串行化、写盘和保留期清理。观测输入、分析、渲染算法仍在 `obs/*`，详见 [Obs 分册](OBS_STRUCTURE.md) 和[观测手册](../OBSERVABILITY.md)。
+collector 独占单调前进的接收日桶；旧日迟到信号只计入运行累计并单列 late，不使当前日回退。同日窗口覆盖最早已计入信号。超长或已截断的 site/stage 不以截短键合并为精确维度，显式计 overflow。
+
+`internal/reportrunner` 只接收静态 Config/Inputs 和有限值事件；不接收 DB、App/Engine、Logger、业务 Section/Pattern 或查询回调，不扫描历史 JSONL/日志。离线分析仍归 obs；在线使用 obs 的报告值和 report 渲染。
 
 | 文件 | 职责、入口与边界 |
 | --- | --- |
-| `doc.go` | 报告生成及排空契约；只消费快照，不消费整个 App / Engine |
-| `runner.go` | Config/Options/Runner；New/NewWithLimits 复制扩展切片和预算值，Start/Stop 管 ticker，Periodic/Exit/Generate 管触发和串行生成；通过 obs.ConsumeDailySources 预检并逐日消费，加入框架段、写日目录、清理过期产物 |
+| `doc.go` | 信号辅助服务契约 |
+| `runner.go` | Config/Options/Runner；准入、固定聚合消费者、周期/退出请求、Close deadline 与纯原子 Status 健康查询 |
+| `aggregate.go` | 单写者计数、有限 site/stage 维度、最后快照与失败样本、partial/unavailable 来源、unknown 报告 |
+| `tables.go` | 从已有有限聚合值构建表格 |
+| `writer.go` | 固定 writer；自有文件写入、持久目录游标每轮最多续扫 128 项的保留清理，panic/错误健康记录 |
 
-`generateMu` 防止定时与退出报告同时写同一天目录；`lifecycleMu` 保护 cancel/done 和启动/停止。Config 在构造时按值保存，Sections/Patterns 切片复制，但扩展对象仍由提供方负责其内部状态。输入回调提供查询结果，不能通过它们任意回写执行状态。
+入口队列最多 1024，维度最多 256，并受 NewWithLimits 的 MaxEvents/MaxDedupKeys/MaxRetainedBytes 缩小；其余离线扫描/spool 预算不适用。聚合不保存完整任务生命周期。writer 最多一个在写和一个待写快照，新请求合并；磁盘阻塞不产生替代 worker。有限指标分别说明 received、task_finished/task_failed 信号，不冒充 DB 的独立任务数。Status 只读取原子健康计数，不等待消费者或 writer；archive_dropped 独立记录归档丢弃，不与报告入口丢弃混算。目录游标和句柄由 writer 独占并关闭，有限续扫避免无关项持续遮挡后续过期目录。
 
-`Start` 仅在启用且 interval 大于零时启动，已启动时重复调用不另开循环；`Stop` 取消 ticker 并等待它当前执行的报告返回，停止后可再次 Start。生成在取得 generateMu 后才创建自己的超时 context，等待生成锁不计入这个超时；Stop 持 lifecycleMu 等待 ticker 退出，阻止同时重启；取消会传播给当前定时生成的读取、分析及 Section，仍须等合作清理完成。Stop 本身没有 deadline 参数；不能描述成取消后立即结束或无条件有界。`Generate` 也可被直接调用，因此宿主必须协调额外直接调用者的生命周期。App 正常顺序是先 Stop 定时循环，再写结束事件、关闭事件 sink、生成退出报告，最后才关共享 DB。
+Start 在 enabled 时启动固定消费者和 writer，interval 仅决定周期触发。Close(ctx) 关闭入口、请求末次输出并在 deadline 内等待；App 与归档共用最长 2 秒期限。超时不等待任意文件 I/O，不阻止业务资源按自己的真实排空状态关闭；同一实例停止后不可重启。Stop 是自带 2 秒预算的便利入口。在线固定 snapshot / unknown，source=signals，不据缺失池数推断空闲；report.mode/timeout/thresholds 仅服务离线分析。
 
-默认运行快照只统计当天零点至生成时刻，显式 acceptance 按其模式处理；每日报告的 Recovering 从该日事件源计算。依赖 `obs` 及 analyze/pattern/report、events、GORM 和标准库，不导入 App、Engine、admin、HTTP 或整份应用 config；将来的配置字段由 App 映射为这里的报表值契约。
-
-`report_resources_test.go` 验证 App 预算配置和构造后的拒绝更新；App 不拥有解析/临时分桶算法。
-
-`runner_test.go` 验证 Stop 等当前报告、禁用时不要求依赖及配置快照（`TestStopWaitsForReportBeforeStorageClose`、`TestRunnerOwnsConfigurationSnapshot`）。App 的 report_* 测试覆盖实际装配、日期窗口、退出/定时行为与业务扩展，不把服务单测当作所有输入和文件系统场景已验证。
+`aggregate_boundary_test.go` 验证午夜/同日乱序窗口及维度不混算，`writer_boundary_test.go` 验证目录游标 EOF/退出的实际句柄释放。`runner_test.go` 覆盖洪水丢弃、维度预算、阻塞 writer 的退出期限与不增加 worker、panic、并发 Emit/Close、输入分离和来源口径。`report_resources_test.go` 验证 App 预算装配；App 的 report_* 与 observation_test 验证开关、周期/退出和归档并列接线。组件单测不证明物理零影响或生产长稳。
 
 ## 5. 熔断检测与持久化
 
@@ -395,7 +400,7 @@ Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期
 
 快照有 16 MiB payload 上限，恢复加载有数量预算；LoadRuntime 包含活动记录及每站最新关闭记录，以保留人工解除后的失败窗口。多条活动记录交由 Engine 判断，不在此静默选一条。历史按事件/sequence 去重，查询不拼接可变的最新报告；展示时间线的 128 条界限不得裁剪尚未确认的历史写入。缺少控制版本或精确窗口的快照明确拒绝，不从展示数据推断控制状态。
 
-允许依赖 `internal/breaker` 控制值、`models`、`obs/incident`、GORM；不拥有 Engine、worker、HTTP 或共享 DB 的关闭责任。操作 context 传入 GORM，宿主等待调用者返回后再关闭 DB。
+允许依赖 `internal/breaker` 控制值、`models`、`pkg/incident`、GORM；不拥有 Engine、worker、HTTP 或共享 DB 的关闭责任。操作 context 传入 GORM，宿主等待调用者返回后再关闭 DB。
 
 `store_test.go` 包含元数据不一致拒绝，以及 `TestBreakerStoreMySQLLifecycleRestartAndRevision` 的真实 MySQL 生命周期/重启/revision 回归；`history_test.go` 包含 `TestBreakerHistoryMySQLAppendRetryAndHistoricalDay` 和 `TestBreakerHistoryMySQLFailureRollsBackControl`，验证历史重试、历史日期与回滚。是否运行真实库用例取决于测试环境，不能只凭文件存在声称事务已现场验证。
 
@@ -501,7 +506,7 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 
 ## 8. 维护时的跨包核对
 
-新增状态或后台循环前，明确是哪个组件持锁、谁负责拒绝新操作、如何取消、如何等待和超时后保留哪些依赖。当前几种停止契约有意不同：App/诊断汇总真实等待结果，reportrunner 等定时生成返回，workerpool 返回首次停止时的任务完成快照，track 只发停止信号，msgqueue 没有停止入口。不能用同一个“都已关闭”描述抹平这些差异。
+新增状态或后台循环前，明确是哪个组件持锁、谁负责拒绝新操作、如何取消、如何等待和超时后保留哪些依赖。当前几种停止契约有意不同：App/诊断汇总真实等待结果，reportrunner 仅在调用方 deadline 内等自有 writer，workerpool 返回首次停止时的任务完成快照，track 只发停止信号，msgqueue 没有停止入口。不能用同一个“都已关闭”描述抹平这些差异。
 
 新增持久化逻辑先找语义拥有者：任务转移归 taskstore；熔断控制快照及历史事务归 breakerstore；策略 CAS/核对/发布归 runtimecontrol，具体配置存储适配归 admin/configstore；当前 schema 建表只走显式 database.Migrate。App 只组织时序，不复制这些算法。
 

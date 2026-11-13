@@ -52,8 +52,8 @@ var obsListSeq = 0;
         var el = deps.document.getElementById('obs-runs');
         if (!el) return;
         if (obsState.runs.length === 0) {
-            el.innerHTML = '<div class="empty">还没有报告：跑一次 <code>papa report</code>，'
-                + '或开启 obs.report.on_exit 让进程退出时自动生成。</div>';
+            el.innerHTML = '<div class="empty">还没有报告：运行 <code>papa report generate</code>，'
+                + '或开启 obs.events.enabled 及 obs.report.on_exit，在进程退出时尽力生成信号报告。</div>';
             return;
         }
         var html = '<table><thead><tr><th>报告</th><th>判定</th><th>生成时间</th><th>文件</th><th>操作</th></tr></thead><tbody>';

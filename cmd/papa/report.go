@@ -38,8 +38,8 @@ const reportUsage = `usage:
 产物默认**按本地日历日拆分**：有事件的每天各写一份 <dir>/<2006-01-02>/（同一天重跑会刷新当天那份）。
 无 --since/--until/--run 筛选时，生成后按 obs.report.retention 清理；显式历史/运行筛选不清理。
 
-判定聚合：任一 fail 级检查未通过 → 不通过；只有 warn 未通过 → 带风险通过；否则通过。
-业务报告段由业务进程注册（papa report 只有框架通用段）。`
+判定聚合：任一 fail 级检查未通过 → 不通过；只有 warn 未通过 → 带风险通过；无可判定检查、数据降级或暂停快照全过 → 未判定；否则通过。
+业务报告段由业务自己的离线命令通过 obs.Generate 提供（papa report 只有框架通用段）。`
 
 // runReportCmd 解析 papa report 子命令。
 func runReportCmd(args []string) error {
@@ -90,7 +90,7 @@ func runReportCmd(args []string) error {
 	if dbErr != nil {
 		db = nil
 	}
-	// 框架内置段与 App 的退出/定时报告保持一致：通用概览 + 引擎状态 + 积压/老化。
+	// 离线框架分析段：通用概览 + 引擎状态 + 积压/老化；在线报告只聚合信号。
 	sections := []obs.Section{
 		&analyze.Generic{Thresholds: analyze.Thresholds{
 			StuckAfter:       cfg.Obs.Report.Thresholds.StuckAfter,
@@ -454,7 +454,7 @@ func runtimeVersion() string {
 //
 // CLI 的 cfg 已经过 config.Load 归一，但这里仍按 analyze 的默认口径兜底 ——
 // 将来若有人直接构造 Config，报告也不该把 0 当成生效阈值写出去。
-// 时长用 time.Duration.String()（如 "10m0s"），与 App 的 obsReportInputs 保持同一口径。
+// 时长用 time.Duration.String()（如 "10m0s"）；阈值仅用于离线分析。
 func reportInputs(th config.ObsThresholdsConfig, configPath string) obs.Inputs {
 	stuckAfter := 10 * time.Minute
 	failRateMax := 0.05

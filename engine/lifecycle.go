@@ -25,6 +25,7 @@ import (
 // 拿到 drained=false 时，调用方**不该接着关数据库 / 关浏览器池**：worker goroutine 还活着
 // 的可能性仍在（Go 杀不掉它，见 workerpool.Stop），关闭依赖可能使在途写入报 "sql: database is closed"。
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]core.StopStats) {
+	defer e.requestEventsClose()
 	deadline := time.Now().Add(timeout)
 	e.cancel()
 	e.BindAccountHealthEvents(nil)

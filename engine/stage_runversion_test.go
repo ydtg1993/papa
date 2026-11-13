@@ -57,6 +57,7 @@ func TestStageHandlerCarriesClaimedRunVersion(t *testing.T) {
 				return nil
 			})
 			err := e.stageHandler(info)(ctx, task)
+			drainTestEvents(t, e)
 			if calls != 1 || len(claimStatements(f)) != 1 {
 				t.Fatalf("ordinary handler calls=%d claims=%d", calls, len(claimStatements(f)))
 			}
@@ -104,6 +105,7 @@ func TestStageHandlerRetriesKeepClaimedRunVersion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	err := e.stageHandler(info)(ctx, task)
+	drainTestEvents(t, e)
 	if !errors.Is(err, ErrTaskChanged) || calls != 3 || len(claimStatements(f)) != 1 {
 		t.Fatalf("retry must retain one claim: err=%v calls=%d claims=%d", err, calls, len(claimStatements(f)))
 	}

@@ -71,7 +71,11 @@ func Markdown(rep *obs.Report) string {
 	// 自证块：报告要能被独立复核 —— 数字取自哪一刻的库、由什么版本+配置+阈值算出、事件覆盖到哪。
 	// 零值字段直接跳过（可选输入不能渲染成空行或 0001 年）。
 	if !rep.Inputs.SnapshotAt.IsZero() {
-		fmt.Fprintf(&b, "- DB 快照时刻：%s（状态层数字取这一时刻的全库现状）\n", fmtTime(rep.Inputs.SnapshotAt))
+		if rep.Engine.Source == "signals" {
+			fmt.Fprintf(&b, "- 信号聚合时刻：%s（仅已接收的有限信号；未读取数据库或完整引擎状态）\n", fmtTime(rep.Inputs.SnapshotAt))
+		} else {
+			fmt.Fprintf(&b, "- DB 快照时刻：%s（状态层数字取这一时刻的全库现状）\n", fmtTime(rep.Inputs.SnapshotAt))
+		}
 	}
 	if rep.Historical {
 		b.WriteString("- 历史窗口：当前 DB/引擎状态不代表该日期末，相关状态检查不参与历史判定；历史事件异常仍参与判定。\n")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine/internal/execution"
 	"github.com/ydtg1993/papa/v4/engine/internal/fetchruntime"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"time"
@@ -132,7 +133,14 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 		if !task.breakerSampleDeadline.IsZero() && ctx.Err() != nil {
 			finishCtx, finishCancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		}
-		writeErr := a.persistence.recordTime(finishCtx, task, "last_finished_at")
+		var writeErr error
+		if r == nil && err == nil {
+			writeErr = execution.ConfirmSuccess(ctx, func(settleCtx context.Context) error {
+				return a.persistence.recordTime(settleCtx, task, "last_finished_at")
+			})
+		} else {
+			writeErr = a.persistence.recordTime(finishCtx, task, "last_finished_at")
+		}
 		finishCancel()
 		if r != nil {
 			panic(r)

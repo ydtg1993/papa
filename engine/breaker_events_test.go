@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func breakerReentryChild(t *testing.T) bool {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1")
 	cmd.Env = append(os.Environ(), key+"="+t.Name())
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("synchronous breaker observer blocked/failed: %v; deadline=%v\n%s", err, ctx.Err(), output)
+		t.Fatalf("breaker observer blocked/failed: %v; deadline=%v\n%s", err, ctx.Err(), output)
 	}
 	return false
 }
@@ -40,18 +41,23 @@ func TestBreakerEventsPublishPauseBeforeReentrantQueries(t *testing.T) {
 		return
 	}
 	e, _ := newSmartBreakerFixture(t, 3)
-	observed := 0
+	var observed atomic.Int64
+	cooldown := make(chan struct{}, 1)
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
-		observed++
+		observed.Add(1)
 		status := e.BreakerStatuses()["synthetic"]
 		e.GetStageStats()
-		if ev.Attrs["action"] == "cooldown" && !status.Paused {
-			t.Error("observer saw transition before its pause was published")
+		if ev.Attrs["action"] == "cooldown" {
+			if !status.Paused {
+				t.Error("observer saw transition before its pause was published")
+			}
+			cooldown <- struct{}{}
 		}
 	}))
 	for id := 1; id <= 3; id++ {
 		smartFailure(e, id, "detail", "fixture")
 	}
+	awaitBreakerObservation(t, cooldown)
 	if !e.PauseSite("synthetic", "operator") {
 		t.Fatal("manual takeover failed")
 	}
@@ -61,8 +67,13 @@ func TestBreakerEventsPublishPauseBeforeReentrantQueries(t *testing.T) {
 	if !e.PauseStage("synthetic", "detail", "operator") || !e.ResumeStage("synthetic", "detail") {
 		t.Fatal("stage pause/resume failed")
 	}
-	if observed < 4 {
-		t.Fatalf("too few delivered observations: %d", observed)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := e.events.(events.Closer).Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Load() < 4 {
+		t.Fatalf("too few delivered observations: %d", observed.Load())
 	}
 }
 
@@ -75,10 +86,14 @@ func TestBreakerProbeObserverRetryCannotBeOverwrittenByOldResult(t *testing.T) {
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
 	s.probeRunning, s.probeExecuting = true, true
 	retried := false
+	retryDone := make(chan struct{})
+	probeFinished := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		if ev.Attrs["action"] != "stage_probe_passed" {
 			return
 		}
+		<-probeFinished
+		defer close(retryDone)
 		// The user probe has returned; wait for its tracked exit bookkeeping, which
 		// must be able to take breakerMu while this observer is running.
 		deadline := time.Now().Add(time.Second)
@@ -104,7 +119,10 @@ func TestBreakerProbeObserverRetryCannotBeOverwrittenByOldResult(t *testing.T) {
 		return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
 	}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
 	e.tickerWG.Wait()
-	if !retried || s.trial != 1 || s.event.ProbeAttempts != 0 || s.event.State != "cooldown" {
+	priorTrial := s.trial
+	close(probeFinished)
+	awaitBreakerObservation(t, retryDone)
+	if !retried || s.trial <= priorTrial || s.event.ProbeAttempts != 0 || s.event.State != "cooldown" {
 		t.Fatalf("old result overwrote retry: retried=%v trial=%d state=%s round=%d", retried, s.trial, s.event.State, s.event.ProbeAttempts)
 	}
 }
@@ -119,10 +137,12 @@ func TestBreakerObserverCanStopAfterCommittedTransition(t *testing.T) {
 	e.loggerSet = testLoggerSet()
 	e.pools = newPoolRegistry()
 	stopped := false
+	stopDone := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		e.BreakerStatuses()
 		if ev.Attrs["action"] == "cooldown" && !stopped {
 			stopped = true
+			defer close(stopDone)
 			if drained, stats := e.Stop(time.Second); !drained || len(stats) != 0 {
 				t.Errorf("observer Stop did not drain: %v %+v", drained, stats)
 			}
@@ -131,6 +151,7 @@ func TestBreakerObserverCanStopAfterCommittedTransition(t *testing.T) {
 	for id := 1; id <= 3; id++ {
 		smartFailure(e, id, "detail", "fixture")
 	}
+	awaitBreakerObservation(t, stopDone)
 	if !stopped || e.ctx.Err() == nil {
 		t.Fatal("observer did not stop engine")
 	}
@@ -190,7 +211,7 @@ func TestBreakerTransactionsNeverInvokeEmitterDirectly(t *testing.T) {
 	}
 }
 
-func TestBreakerProbeObserverStopHonorsTrackedDrainDeadline(t *testing.T) {
+func TestBreakerProbeObserverStopDoesNotJoinObservation(t *testing.T) {
 	if !breakerReentryChild(t) {
 		return
 	}
@@ -203,11 +224,15 @@ func TestBreakerProbeObserverStopHonorsTrackedDrainDeadline(t *testing.T) {
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
 	s.probeRunning, s.probeExecuting = true, true
 	stopped := false
+	stopDone := make(chan struct{})
+	probeFinished := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		if ev.Attrs["action"] == "stage_probe_passed" && !stopped {
 			stopped = true
-			if drained, _ := e.Stop(25 * time.Millisecond); drained {
-				t.Error("Stop falsely drained its still-running probe observer")
+			defer close(stopDone)
+			<-probeFinished
+			if drained, _ := e.Stop(time.Second); !drained {
+				t.Error("observation incorrectly prevented probe drain")
 			}
 		}
 	}))
@@ -216,8 +241,10 @@ func TestBreakerProbeObserverStopHonorsTrackedDrainDeadline(t *testing.T) {
 		return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
 	}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
 	e.tickerWG.Wait()
-	if !stopped || s.event.State == "ramping" {
-		t.Fatal("observer Stop failed or stale probe result enabled ramping")
+	close(probeFinished)
+	awaitBreakerObservation(t, stopDone)
+	if !stopped || e.ctx.Err() == nil {
+		t.Fatal("observer Stop did not complete")
 	}
 }
 
@@ -232,9 +259,11 @@ func TestBreakerManualPauseObserverResumeKeepsLatestSiteProjection(t *testing.T)
 		smartFailure(e, id, "detail", "fixture")
 	}
 	resumed := false
+	resumeDone := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		if ev.Attrs["action"] == "manual_pause" && !resumed {
 			resumed = true
+			defer close(resumeDone)
 			if !e.ForceResumeSite("synthetic") {
 				t.Error("reentrant force resume failed")
 			}
@@ -243,12 +272,13 @@ func TestBreakerManualPauseObserverResumeKeepsLatestSiteProjection(t *testing.T)
 	if !e.PauseSite("synthetic", "operator") {
 		t.Fatal("pause failed")
 	}
+	awaitBreakerObservation(t, resumeDone)
 	if !resumed || e.BreakerStatuses()["synthetic"].Paused || store.snapshot()[0].BreakerPaused {
 		t.Fatal("outer pause overwrote observer's later resume")
 	}
 }
 
-func TestBreakerRestoreObserverStopDoesNotStartMaintenanceAfterDrain(t *testing.T) {
+func TestBreakerRestoreCompletesBeforeObserverStop(t *testing.T) {
 	if !breakerReentryChild(t) {
 		return
 	}
@@ -265,17 +295,23 @@ func TestBreakerRestoreObserverStopDoesNotStartMaintenanceAfterDrain(t *testing.
 	e.loggerSet = testLoggerSet()
 	e.pools = newPoolRegistry()
 	stopped := false
+	stopDone := make(chan struct{})
+	restored := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		if ev.Type == events.TypeBreakerTransition && !stopped {
 			stopped = true
+			defer close(stopDone)
+			<-restored
 			if drained, _ := e.Stop(time.Second); !drained {
 				t.Error("restore observer could not drain before maintenance starts")
 			}
 		}
 	}))
-	if err := e.InitBreakerRuntime(context.Background()); err != context.Canceled {
-		t.Fatalf("startup continued after observer stop: %v", err)
+	if err := e.InitBreakerRuntime(context.Background()); err != nil {
+		t.Fatal(err)
 	}
+	close(restored)
+	awaitBreakerObservation(t, stopDone)
 	e.tickerWG.Wait()
 	if !stopped {
 		t.Fatal("restoration event was not emitted")
@@ -289,14 +325,10 @@ func TestBreakerProbeLocalCancellationAfterMilestonePreservesOriginalDecision(t 
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "fixture", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
 	probeCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b.events = stagePoolEventFunc(func(ev events.Event) {
-		if ev.Attrs["action"] == "stage_probe_passed" {
-			cancel()
-		}
-	})
 	b.breakerMu.Lock()
 	token, reason := b.settleStageProbeLocked(BreakerProbeRequest{Site: "fixture", Stage: "detail"}, "incident", 1, BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil, probeCtx)
 	b.unlockAndEmit()
+	cancel()
 	if token == nil || reason != "" || probeCtx.Err() == nil {
 		t.Fatal("fixture did not reach local cancellation after successful milestone")
 	}
@@ -316,8 +348,10 @@ func TestBreakerProbeObserverPanicDoesNotStrandSettlementToken(t *testing.T) {
 	s := e.breakers.smartBreakers["synthetic"]
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}, {Stage: "catalog", State: "pending", RequiredProbes: 1}}}}
 	s.probeRunning, s.probeExecuting = true, true
+	panicObserved := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		if ev.Attrs["action"] == "stage_probe_passed" {
+			close(panicObserved)
 			panic("observer panic")
 		}
 	}))
@@ -330,7 +364,8 @@ func TestBreakerProbeObserverPanicDoesNotStrandSettlementToken(t *testing.T) {
 		}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
 	}()
 	e.tickerWG.Wait()
-	if recovered != "observer panic" || s.probeSettlement != nil {
+	awaitBreakerObservation(t, panicObserved)
+	if recovered != nil || s.probeSettlement != nil {
 		t.Fatalf("panic left settlement reserved: panic=%v token=%v", recovered, s.probeSettlement)
 	}
 	e.breakers.breakerMu.Lock()
@@ -338,5 +373,43 @@ func TestBreakerProbeObserverPanicDoesNotStrandSettlementToken(t *testing.T) {
 	e.breakers.unlockAndEmit()
 	if s.event.Checks[1].State != "probing" {
 		t.Fatalf("remaining stage blocked after recovered observer panic: %s", s.event.Checks[1].State)
+	}
+}
+
+func awaitBreakerObservation(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("observer did not finish")
+	}
+}
+
+func TestBreakerBlockedObserverDoesNotGateProbeDecision(t *testing.T) {
+	e, _ := newSmartBreakerFixture(t, 3)
+	s := e.breakers.smartBreakers["synthetic"]
+	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
+	s.probeRunning, s.probeExecuting = true, true
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
+		if ev.Attrs["action"] == "stage_probe_passed" {
+			close(entered)
+			<-release
+		}
+	}))
+	finished := make(chan struct{})
+	e.tickerWG.Add(1)
+	go func() {
+		e.runBreakerProbe(context.Background(), func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
+			return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
+		}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
+		e.tickerWG.Wait()
+		close(finished)
+	}()
+	awaitBreakerObservation(t, entered)
+	awaitBreakerObservation(t, finished)
+	if s.event.State != "ramping" || s.probeSettlement != nil {
+		t.Fatalf("observer gated recovery: state=%s settlement=%v", s.event.State, s.probeSettlement)
 	}
 }

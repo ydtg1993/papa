@@ -24,10 +24,9 @@ func (a *App) Run(ctx context.Context) {
 		panic(fmt.Errorf("采集控制初始化失败: %w", err))
 	}
 
+	a.startReportLoop()
 	a.emitRunStarted()
 	started = true
-	// 定时报告（obs.report.interval）：与退出报告共用同一套日报产物，停机时会先停它再出最终报告。
-	a.startReportLoop()
 
 	// 初始化引擎浏览器池
 	a.Engine.SetBrowserPool()
@@ -82,21 +81,11 @@ func (a *App) shutdownRun(started bool) {
 			"留在库里的 pending 任务下次启动的启动恢复会重新入队", stopTimeout, stopStats)
 	}
 
-	// 事件流：先写 run_stopped，再排空 sink。必须早于关库 —— 报告 on_exit 还要读库。
-	//
-	// 定时报告先停：否则它可能和退出报告并发写同一天目录，或在关库之后还在读库。
-	if a.reportRunner != nil {
-		a.stopReportLoop()
-	}
+	// Observation owns no business resources. Its final output is best effort.
 	if started {
 		a.emitRunStopped(drained, stopStats)
 	}
 	a.closeEvents()
-
-	// 进程退出自动出报告（obs.report.on_exit）：在关库之前生成，读到的是完整事件与权威状态。
-	if started {
-		a.generateExitReport()
-	}
 
 	// 审计队列先排空再关库：反过来的话最后几条（包括"优雅退出"这条操作本身）写不进去，
 	// 只能落到日志文件里。写失败不阻塞响应是常态，但关停这一下要给它一个收尾的机会。

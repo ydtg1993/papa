@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
-	"github.com/ydtg1993/papa/v4/obs/incident"
+	"github.com/ydtg1993/papa/v4/pkg/incident"
 	"time"
 )
 
