@@ -1,89 +1,209 @@
 package obs
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"sort"
-	"time"
-
 	"github.com/ydtg1993/papa/v4/obs/eventlog"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
+	"github.com/ydtg1993/papa/v4/obs/logidx"
+	"github.com/ydtg1993/papa/v4/pkg/events"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 )
 
-// LoadDailySources 把一个事件窗口按**本地日历日**拆成多份 Sources（有事件的每天一份，按日期升序）。
-//
-// 报告产物按天拆分（`<dir>/<2006-01-02>/`）时用它：先把事件读一遍拿到窗口内有事件的日期，
-// 再对每天用 LoadSources 读那一天的输入（事件按 [当日 0 点, 次日 0 点) 过滤，日志证据也按那天索引，
-// 与单份报告同一套 5 分钟富余）。返回空切片表示事件文件里没有落在窗口内的事件。
-//
-// 为什么逐日重读而不是"读一遍再切"：每天的报告要带**当天自己的**事件元信息（条数 / 缺口 / 坏行）
-// 与日志证据，重读才能让这些口径对得上；重读成本 = 天数 × 事件文件大小，报告只在退出/显式
-// 生成时跑，值得用这一点开销换"日报之间不串数据"。
+// LoadDailySources collects bounded input; prefer ConsumeDailySources to release each day.
 func LoadDailySources(sc SourceConfig) ([]*Sources, error) {
-	if sc.EventsFile == "" {
-		return nil, fmt.Errorf("事件文件路径为空")
-	}
-	paths, err := eventlog.Discover(sc.EventsFile)
+	out := make([]*Sources, 0)
+	err := ConsumeDailySources(context.Background(), sc, inputbudget.Limits{}, func(src *Sources) error { out = append(out, src); return nil })
 	if err != nil {
-		return nil, fmt.Errorf("扫描事件文件: %w", err)
+		return nil, err
+	}
+	return out, nil
+}
+
+type dailyKey struct {
+	run string
+	seq uint64
+}
+type dailyBucket struct {
+	day        time.Time
+	path       string
+	selected   bool
+	seen       map[dailyKey]struct{}
+	duplicates int
+	bytes      int64
+}
+
+// ConsumeDailySources scans original sources once and stages bounded daily
+// buckets. All input limits are checked before the first callback. Temporary
+// files are removed on every return; callbacks own any Sources they retain.
+func ConsumeDailySources(ctx context.Context, sc SourceConfig, limits inputbudget.Limits, consume func(*Sources) error) error {
+	limits = limits.Normalize()
+	if sc.EventsFile == "" {
+		return fmt.Errorf("事件文件路径为空")
+	}
+	paths, err := eventlog.DiscoverContext(ctx, sc.EventsFile, limits)
+	if err != nil {
+		return err
 	}
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("没有找到事件文件 %s —— 确认 obs.events.enabled 已打开并跑过一轮", sc.EventsFile)
+		return fmt.Errorf("没有找到事件文件 %s", sc.EventsFile)
 	}
-	res, err := eventlog.Read(paths, sc.Since, sc.Until)
+	dir, err := os.MkdirTemp("", "papa-report-input-*")
 	if err != nil {
-		return nil, fmt.Errorf("读取事件: %w", err)
+		return err
 	}
-	evs := res.Events
-	if sc.RunID != "" {
-		evs = FilterRunID(evs, sc.RunID)
-		if len(evs) == 0 {
-			return nil, fmt.Errorf("事件里没有 run_id=%s 的记录", sc.RunID)
-		}
-	}
-
+	defer os.RemoveAll(dir)
 	loc := sc.Loc
 	if loc == nil {
 		loc = time.Local
 	}
-	// 收集有事件的本地日期：按本地时区落成当天 0 点，去重后升序。
-	days := make([]time.Time, 0, 8)
-	seen := make(map[string]bool, 8)
-	for _, ev := range evs {
+	buckets := make(map[string]*dailyBucket)
+	global := make(map[dailyKey]struct{})
+	var spool, keyBytes int64
+	keys := 0
+	matched := false
+	meta, err := eventlog.ScanContext(ctx, paths, sc.Since, sc.Until, limits, func(ev events.Event, raw string) error {
+		key := dailyKey{ev.RunID, ev.Seq}
+		_, duplicate := global[key]
+		if !duplicate {
+			if err := inputbudget.Check("dedup keys", int64(len(global)+1), int64(limits.MaxDedupKeys)); err != nil {
+				return err
+			}
+			keyBytes += int64(len(ev.RunID))
+			if err := inputbudget.Check("dedup key bytes", keyBytes, limits.MaxRetainedBytes); err != nil {
+				return err
+			}
+			global[key] = struct{}{}
+			if sc.RunID == "" || ev.RunID == sc.RunID {
+				matched = true
+			}
+		}
 		if ev.TS.IsZero() {
-			continue
+			return nil
 		}
-		d := ev.TS.In(loc)
-		day := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, loc)
-		key := day.Format("2006-01-02")
-		if seen[key] {
-			continue
+		t := ev.TS.In(loc)
+		day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+		name := day.Format("2006-01-02")
+		b := buckets[name]
+		if b == nil {
+			if err := inputbudget.Check("days", int64(len(buckets)+1), int64(limits.MaxDays)); err != nil {
+				return err
+			}
+			b = &dailyBucket{day: day, path: filepath.Join(dir, fmt.Sprintf("%d.jsonl", len(buckets))), seen: make(map[dailyKey]struct{})}
+			buckets[name] = b
 		}
-		seen[key] = true
-		days = append(days, day)
-	}
-	sort.Slice(days, func(i, j int) bool { return days[i].Before(days[j]) })
-
-	out := make([]*Sources, 0, len(days))
-	for _, day := range days {
-		next := day.AddDate(0, 0, 1)
-		dsc := sc
-		// 用户显式给的 --since/--until 要**收紧到当天窗口的并集**里：只影响"哪些天"会被拆分，
-		// 但每天的报告仍只覆盖用户要的那一段（比如 --since 12:00 时当天的窗口从 12:00 起，
-		// 而不是把整天的数据都算进来）。
-		dsc.Since = day
-		if !sc.Since.IsZero() && sc.Since.After(dsc.Since) {
-			dsc.Since = sc.Since
+		if !duplicate && (sc.RunID == "" || ev.RunID == sc.RunID) {
+			b.selected = true
 		}
-		// eventlog 的窗口是闭区间 [from, to]：用次日零点前 1ns 兜住当天最后一刻，
-		// 避免零点整的事件同时算进相邻两天。
-		dsc.Until = next.Add(-time.Nanosecond)
-		if !sc.Until.IsZero() && sc.Until.Before(dsc.Until) {
-			dsc.Until = sc.Until
+		if _, ok := b.seen[key]; ok {
+			b.duplicates++
+			return nil
 		}
-		src, err := LoadSources(dsc)
+		keys++
+		if err := inputbudget.Check("daily dedup keys", int64(keys), int64(limits.MaxDedupKeys)); err != nil {
+			return err
+		}
+		keyBytes += int64(len(ev.RunID))
+		if err := inputbudget.Check("dedup key bytes", keyBytes, limits.MaxRetainedBytes); err != nil {
+			return err
+		}
+		b.seen[key] = struct{}{}
+		if !strings.HasSuffix(raw, "\n") {
+			raw += "\n"
+		}
+		b.bytes += int64(len(raw))
+		spool += int64(len(raw))
+		if err := inputbudget.Check("retained event bytes", b.bytes, limits.MaxRetainedBytes); err != nil {
+			return err
+		}
+		if err := inputbudget.Check("spool bytes", spool, limits.MaxSpoolBytes); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(b.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
-			return nil, fmt.Errorf("读取 %s 的输入: %w", day.Format("2006-01-02"), err)
+			return err
 		}
-		out = append(out, src)
+		_, err = f.WriteString(raw)
+		closeErr := f.Close()
+		if err != nil {
+			return err
+		}
+		return closeErr
+	})
+	if err != nil {
+		return err
 	}
-	return out, nil
+	if sc.RunID != "" && !matched {
+		return fmt.Errorf("事件里没有 run_id=%s 的记录", sc.RunID)
+	}
+	days := make([]*dailyBucket, 0, len(buckets))
+	for _, b := range buckets {
+		b.seen = nil
+		if b.selected {
+			days = append(days, b)
+		}
+	}
+	global = nil
+	sort.Slice(days, func(i, j int) bool { return days[i].day.Before(days[j].day) })
+	windows := make([]logidx.Window, len(days))
+	for i, b := range days {
+		from, to := dailyWindow(sc, b.day)
+		windows[i] = logidx.Window{From: from.Add(-logSlack), To: to.Add(logSlack)}
+	}
+	var logs []*logidx.Index
+	var degraded []string
+	if sc.IncludeLogs && len(days) > 0 {
+		paths, e := discoverLogs(ctx, sc.LogDir, limits)
+		if e == nil {
+			logs, e = logidx.BuildWindowsContext(ctx, logidx.Config{Paths: paths, Loc: loc}, windows, limits)
+		}
+		if e != nil {
+			if errors.Is(e, inputbudget.ErrLimit) || ctx.Err() != nil {
+				return e
+			}
+			degraded = []string{"日志证据索引失败: " + e.Error()}
+		}
+	}
+	for i, b := range days {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		from, to := dailyWindow(sc, b.day)
+		// A final original line may lack a newline; staging adds one delimiter.
+		spoolLimits := limits
+		if spoolLimits.MaxLineBytes < int64(^uint64(0)>>1) {
+			spoolLimits.MaxLineBytes++
+		}
+		if spoolLimits.MaxBytes < spoolLimits.MaxRetainedBytes {
+			spoolLimits.MaxBytes = spoolLimits.MaxRetainedBytes
+		}
+		res, err := eventlog.ReadContext(ctx, []string{b.path}, from, to, sc.RunID, spoolLimits)
+		if err != nil {
+			return err
+		}
+		src := &Sources{Run: RunMeta{RunIDs: CollectRunIDs(res.Events), From: from, To: to}, Events: res.Events, EventMeta: EventMeta{Count: len(res.Events), Files: meta.Files, Gaps: res.Gaps, Unparsed: meta.Unparsed, Duplicates: b.duplicates}, Degraded: append([]string(nil), degraded...)}
+		if logs != nil {
+			src.Logs = logSummary(logs[i])
+			logs[i] = nil
+		}
+		if err := consume(src); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+func dailyWindow(sc SourceConfig, day time.Time) (time.Time, time.Time) {
+	from, to := day, day.AddDate(0, 0, 1).Add(-time.Nanosecond)
+	if !sc.Since.IsZero() && sc.Since.After(from) {
+		from = sc.Since
+	}
+	if !sc.Until.IsZero() && sc.Until.Before(to) {
+		to = sc.Until
+	}
+	return from, to
 }

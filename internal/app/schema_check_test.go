@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql/driver"
+	"strings"
 	"testing"
 
 	"github.com/ydtg1993/papa/v4/config"
@@ -99,5 +100,21 @@ func TestFrameworkIndexHintsMatchModelIndexes(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("缺少索引检查项 %v", want)
+	}
+}
+
+func TestCheckFrameworkSchemaDetectsLegacyTraceColumn(t *testing.T) {
+	f := gormfake.New()
+	f.SetRow(map[string]driver.Value{"table_name": "crawler_task_trace"})
+	f.SetCounts(0, 0)
+	cfg := &config.Config{}
+	cfg.Crawler.Trace.Enabled = true
+	_, _, err := checkFrameworkSchema(gormfake.MustOpen(f), cfg)
+	if err == nil || !strings.Contains(err.Error(), "execution_id") || !strings.Contains(err.Error(), "papa migrate") {
+		t.Fatalf("legacy trace needs actionable migration error, got %v", err)
+	}
+	cfg.Crawler.Trace.Enabled = false
+	if _, _, err := checkFrameworkSchema(gormfake.MustOpen(f), cfg); err != nil {
+		t.Fatalf("disabled trace inspected: %v", err)
 	}
 }

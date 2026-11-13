@@ -55,7 +55,7 @@ papa/
 | engine | 根包、internal/execution、internal/fetchruntime、internal/scheduler | ENGINE_STRUCTURE |
 | internal | app、breaker、breakerstore、browserdiagnostics、database、gormfake、msgqueue、reportrunner、runtimecontrol、sitedecl、taskstore、track、workerpool | INTERNAL_STRUCTURE |
 | pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、strategymigrate、temporary、testdb | PKG_STRUCTURE |
-| obs | 根包、analyze、eventlog、incident、logidx、pattern、report | OBS_STRUCTURE |
+| obs | 根包、analyze、eventlog、incident、inputbudget、logidx、pattern、report | OBS_STRUCTURE |
 | cmd | papa、monitor-demo | CMD_STRUCTURE |
 
 ## 4. 职责、状态与依赖的读法

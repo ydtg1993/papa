@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -284,4 +286,86 @@ func decodeJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func TestReportFilesRejectOutsideLinks(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "report.md"), []byte("OUTSIDE_SENTINEL"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "report.json"), []byte(`{"verdict":"OUTSIDE_SENTINEL"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked")
+	err := os.Symlink(outside, link)
+	if err != nil && runtime.GOOS == "windows" {
+		output, linkErr := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput()
+		if linkErr != nil {
+			t.Fatalf("junction: %v: %s", linkErr, output)
+		}
+		err = nil
+	}
+	if err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+	h := New(Options{Dir: root})
+	if runtime.GOOS == "windows" {
+		junction := filepath.Join(root, "junction")
+		output, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput()
+		if err != nil {
+			t.Fatalf("junction: %v: %s", err, output)
+		}
+		t.Cleanup(func() { _ = os.Remove(junction) })
+		rr := serve(h, http.MethodGet, "/api/obs/report?run=junction&file=report.md", nil)
+		if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), "OUTSIDE_SENTINEL") {
+			t.Fatalf("junction escaped root: %d %s", rr.Code, rr.Body.String())
+		}
+	}
+	for _, name := range []string{"report.md", "report.json"} {
+		rr := serve(h, http.MethodGet, "/api/obs/report?run=linked&file="+name, nil)
+		if rr.Code == http.StatusOK || strings.Contains(rr.Body.String(), "OUTSIDE_SENTINEL") {
+			t.Fatalf("escaped root: %d %s", rr.Code, rr.Body.String())
+		}
+	}
+	rr := serve(h, http.MethodGet, "/api/obs/reports", nil)
+	if strings.Contains(rr.Body.String(), "OUTSIDE_SENTINEL") {
+		t.Fatalf("list leaked outside summary: %s", rr.Body.String())
+	}
+	// An allowed file name must not let a file symlink target escape either.
+	run := filepath.Join(root, "run")
+	if err := os.Mkdir(run, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "report.md"), filepath.Join(run, "report.md")); err != nil {
+		t.Logf("file symlink unavailable: %v", err)
+		return
+	}
+	rr = serve(h, http.MethodGet, "/api/obs/report?run=run&file=report.md", nil)
+	if rr.Code == http.StatusOK {
+		t.Fatalf("file symlink escaped: %s", rr.Body.String())
+	}
+}
+
+func TestReportSummaryAcceptsExactSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	prefix, suffix := `{"verdict":"pass","padding":"`, `"}`
+	data := prefix + strings.Repeat("x", obsReportSummaryMaxBytes-len(prefix)-len(suffix)) + suffix
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readObsReportSummary(root, "report.json"); got.Verdict != "pass" {
+		t.Fatalf("exact limit rejected: %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.json"), []byte(data+" "), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readObsReportSummary(root, "report.json"); got.Verdict != "" {
+		t.Fatalf("oversize accepted: %+v", got)
+	}
 }

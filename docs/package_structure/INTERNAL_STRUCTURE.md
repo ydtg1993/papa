@@ -8,7 +8,7 @@
 
 `internal/` 是框架内部实现目录，不是单一业务层。这里既有应用组合根，也有声明规划、运行服务、持久化适配和底层执行设施。各包按自身契约协作；不能因都在 internal 下就互相读取可变字段或把完整 App / Engine 交给子组件。Papa 只面向单实例大单体，真实站点、业务模型配置和固定验收目标留在独立业务模块。
 
-本册覆盖根层 `internal/` 的 **13 个包、58 个非测试 Go 文件、57 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
+本册覆盖根层 `internal/` 的 **13 个包、59 个非测试 Go 文件、58 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
 
 ```text
 internal/
@@ -29,7 +29,7 @@ internal/
 
 | 包 | 非测试 / 测试文件数 | 主要入口与详述 |
 | --- | --- | --- |
-| `internal/app` | 20 / 29 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
+| `internal/app` | 20 / 30 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
 | `internal/sitedecl` | 5 / 5 | `RegisterSite`、`Sites`、`CheckSites`、`PlanSites`，见[声明](#sitedecl) |
 | `internal/runtimecontrol` | 4 / 2 | `Service.Initialize/Read/Save/HistoryAction/DeletePool`，见[运行策略](#runtimecontrol) |
 | `internal/browserdiagnostics` | 7 / 4 | `Service.Configure/Initialize/Apply/Diagnose/Rod/Shutdown`，见[诊断](#browserdiagnostics) |
@@ -37,7 +37,7 @@ internal/
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
 | `internal/breakerstore` | 3 / 2 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
 | `internal/database` | 5 / 5 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
-| `internal/taskstore` | 2 / 1 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
+| `internal/taskstore` | 3 / 1 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
 | `internal/gormfake` | 1 / 0 | `New`、`Open`、`MustOpen`、`Set*`，见[测试假库](#gormfake) |
 | `internal/workerpool` | 3 / 2 | `NewWorkerPool`、`Start`、`Submit/SubmitUrgent`、`Stop`，见[执行池](#workerpool) |
 | `internal/msgqueue` | 1 / 1 | `NewMsgQueue`、`SendActivity/SendError`，见[消息通道](#msgqueue) |
@@ -59,7 +59,7 @@ internal/
 
 ### 2.2 当前物理目录
 
-当前 `internal/app` 有 **20 个生产 Go 文件、29 个测试 Go 文件**，没有子目录，没有独立 JS/CSS/HTML 文件。
+当前 `internal/app` 有 **20 个生产 Go 文件、30 个测试 Go 文件**，没有子目录，没有独立 JS/CSS/HTML 文件。
 
 ```text
 internal/app/
@@ -181,7 +181,7 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 
 ### 2.5 启动、取消与排空协议
 
-正常启动顺序：运行服务初始化 → run_started/报告循环 → 浏览器/HTML/下载器 → 熔断运行期/阶段 → 日志消费者 → HTTP。`Run` 安装统一 defer：先取消运行 context，再走 `shutdownRun`；运行组件初始化或后续启动失败也会清理已取得的资源。未成功进入运行阶段时不生成 run_stopped/退出报告。
+NewApp 构造时已创建 Engine；NewEngine 会读库预热活跃任务并启动延迟 dispatcher，不能把全部后台活动都归到 Run。正常 Run 启动顺序：运行服务初始化 → run_started/报告循环 → 浏览器/HTML/下载器 → 熔断运行期/阶段 → 日志消费者 → HTTP。`Run` 安装统一 defer：先取消运行 context，再走 `shutdownRun`；运行组件初始化或后续启动失败也会清理已取得的资源。未成功进入运行阶段时不生成 run_stopped/退出报告。
 
 关停顺序：HTTP → 业务收尾钩子 → Engine.Stop → 运行组件 → 日志监听等待 → 代理 → 停定时报告/结束事件/退出报告 → 审计 → 条件关闭浏览器与 DB。
 
@@ -192,11 +192,13 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 - TTL 缓存读取与 Invalidate 用失效代次协调；失效期间完成的旧读重新回源，不把旧值或旧错误交给发布者。读取失败不缓存，正常 TTL 与本地保存后的即时失效语义不变。
 - 引擎错误与中间件错误消费者都响应 App context，并由同一完成信号追踪；不会为让消费者退出而关闭 Engine 的公开错误通道。正在执行的日志写入也必须返回后才报告排空。
 
-App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩子、Engine、运行组件和日志监听全部排空。返回 false 是仍可能使用依赖的证据，不能通过强制关闭连接或另起 goroutine 后立即返回来伪装成排空。这里的统一截止时间分别属于 HTTP 关停和运行组件关停，不表示整个 Run 的所有清理共用一个总预算。
+App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩子、Engine、运行组件和日志监听全部排空。返回 false 可能表示仍有执行者，也可能只是 Engine 中留有 spill/delay/未确认任务或最终熔断写入失败；App 对这些情况统一保守保留 DB/浏览器。不能通过强制关闭连接或另起 goroutine 后立即返回来伪装成排空。这里的统一截止时间分别属于 HTTP 关停和运行组件关停，不表示整个 Run 的所有清理共用一个总预算。
+
+这些条件不等于 App 汇总了所有资源的成功关闭：代理 Close、事件 sink 关闭和审计 Close 不参与上述五项布尔合取；run_stopped 的 drained/stopStats 来自 Engine.Stop，也不是 HTTP、业务钩子和身份服务的全应用排空结果。requestDrain 只跟踪 ServeHTTP 返回；handler 自行启动并在返回后继续运行的 goroutine，须由业务收尾钩子或所属服务另行管理。Shutdown 只发出取消信号，没有等待 Run 清理完毕的返回契约。
 
 ### 2.6 测试归属与验证边界
 
-#### 2.6.1 App 的 29 个测试文件
+#### 2.6.1 App 的 30 个测试文件
 
 | 文件 | 验证职责 |
 | --- | --- |
@@ -344,7 +346,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 
 `generateMu` 防止定时与退出报告同时写同一天目录；`lifecycleMu` 保护 cancel/done 和启动/停止。Config 在构造时按值保存，Sections/Patterns 切片复制，但扩展对象仍由提供方负责其内部状态。输入回调提供查询结果，不能通过它们任意回写执行状态。
 
-`Start` 仅在启用且 interval 大于零时启动，已启动时重复调用不另开循环；`Stop` 取消 ticker 并等待它当前执行的报告返回，停止后可再次 Start。生成使用自己的超时 context，Stop 本身没有 deadline 参数；不能描述成取消后立即结束或无条件有界。`Generate` 也可被直接调用，因此宿主必须协调额外直接调用者的生命周期。App 正常顺序是先 Stop 定时循环，再写结束事件、关闭事件 sink、生成退出报告，最后才关共享 DB。
+`Start` 仅在启用且 interval 大于零时启动，已启动时重复调用不另开循环；`Stop` 取消 ticker 并等待它当前执行的报告返回，停止后可再次 Start。生成在取得 generateMu 后才创建自己的超时 context，等待生成锁不计入这个超时；Stop 持 lifecycleMu 等待 ticker 退出，阻止同时重启，但不取消正在生成的报告。Stop 本身没有 deadline 参数；不能描述成取消后立即结束或无条件有界。`Generate` 也可被直接调用，因此宿主必须协调额外直接调用者的生命周期。App 正常顺序是先 Stop 定时循环，再写结束事件、关闭事件 sink、生成退出报告，最后才关共享 DB。
 
 默认运行快照只统计当天零点至生成时刻，显式 acceptance 按其模式处理；每日报告的 Recovering 从该日事件源计算。依赖 `obs` 及 analyze/pattern/report、events、GORM 和标准库，不导入 App、Engine、admin、HTTP 或整份应用 config；将来的配置字段由 App 映射为这里的报表值契约。
 
@@ -404,7 +406,7 @@ Store 只持有借用的 `*gorm.DB`，没有内存状态锁或独立生命周期
 | `db.go` | NewDB 仅接受 mysql；按配置设置连接池及 SQL 日志级别/参数隐藏；AutoMigrate 依次处理模型并传播错误 |
 | `migrate.go` | Model、FrameworkModels、AllFrameworkModels、Migrate；迁移和启动检查共享模型目录，可选功能按配置选择，额外模型由宿主传入 |
 | `task_identity.go` | 显式迁移中的任务身份回填，按 ID 分页、跳过已回填行；新约束下发生冲突即报错，成功后才删除旧索引 |
-| `schema_check.go` | ExistingTables / HasIndexNamed，使用 MySQL information_schema 查询表/索引，供启动提示与迁移判断 |
+| `schema_check.go` | ExistingTables / HasIndexNamed / CheckTraceSchema，使用 MySQL information_schema 查询表、列和索引名称，供启动提示与迁移判断；Trace 检查不替代完整 DDL 校验 |
 | `upsert.go` | Upsert 构造冲突更新，必要时按冲突列回读主键；columnList/backfillPrimaryKey 处理 GORM 列元数据 |
 
 NewDB 成功后将 GORM/底层 sql.DB 生命周期交给 App/宿主；本包不启动 goroutine、不关闭调用方传入的数据库，也没有共享可变目录缓存。GORM/数据库拥有连接池及事务，局部 schema 解析缓存只用于当前 Upsert。
@@ -495,3 +497,11 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 新增持久化逻辑先找语义拥有者：任务转移归 taskstore；熔断控制快照及历史事务归 breakerstore；策略 CAS/核对/发布归 runtimecontrol，具体配置存储适配归 admin/configstore；建表与任务身份回填只走显式 database.Migrate。App 只组织时序，不复制这些算法。
 
 本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../DEVELOPMENT.md)，公开扩展继续保留既有兼容行为。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。
+
+Trace 装配与就绪检查：App 仅在启用 Trace 且表已存在时调用 database.CheckTraceSchema，缺列或缺索引记录显式迁移提示，普通启动不自动迁移，也未新增硬失败。http.go 在注册路由前调用 Monitor.SetTaskTraceExecution 接入 Engine.ListTraceExecution；详细查询与执行身份仍归 Engine，App 不复制查询或轮次算法。
+
+## 资源预算新增归属
+
+- `internal/taskstore/pending.go`：PendingWindow、LoadSchedulingBatch 和 CountPending 拥有持续发现、批量回灌及关停计数 SQL；PendingWindow 按持久 pending、站点/阶段、库时钟延迟窗口与补偿约束筛选；不拥有扫描 goroutine、游标或内存成员。
+- `internal/app/reports.go` / `app.go`：UseReportInputLimits 仅在 Run 前接收值配置，构造 reportrunner.NewWithLimits；App 不实现输入预算或临时分桶。report_resources_test.go 覆盖冻结前配置和构造后的拒绝更新。
+- `internal/reportrunner/runner.go`：拥有报告生成互斥、输入预算快照、合作取消及排空；通过 obs.ConsumeDailySources 消费，超限不发布伪完整报告，仍等待在途 Section 清理后才允许宿主关库。

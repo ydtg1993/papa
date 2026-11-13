@@ -74,6 +74,11 @@ func (e *Engine) submitIfActive(task *Task, record models.CrawlerTask) {
 // 统统归到同一个动作：任务留在溢出表等回灌（见函数末尾）。所以调用方不需要、也不该处理错误，
 // 由类型把这件事说出来；原先签名带 error 而三条出口全是 nil，那几处 err 处理是死代码。
 func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
+	if e.queueContext().Err() != nil {
+		e.spilledCount.Add(1)
+		e.spillTask(task)
+		return
+	}
 	if record.NotBefore != nil {
 		task.NotBefore = *record.NotBefore
 	}
@@ -109,6 +114,9 @@ func (e *Engine) submitToPool(task *Task, record models.CrawlerTask) {
 	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
 		if task.Repeat == 0 {
 			task.Repeat = 1
+			if task.deliveryVersion != nil {
+				task.deliveryVersion.Repeat = 1
+			}
 		}
 		// 首轮初始化是持久化幂等的；对象标记仅避免同一副本反复初始化。
 		// 已有 pending 轮次（包括重建对象/启动恢复）不得消耗新的轮询次数。
@@ -148,7 +156,7 @@ func (e *Engine) afterTaskPending(task *Task) {
 	//     （默认 4h 一轮、max_retry 3 代）能捞回来 —— 中间这几个小时后台显示的是「失败」，业务看到的是一次
 	//     根本没发生的失败；错误队列关着或代数用尽，就真的回不来了。
 	// 改成重新寄放后，"不标 failed 会永远停在 pending、没有队列会再捞它"这个担心也不成立：
-	// 溢出表就是干这个的 —— drain 每 drain_interval（默认 2s）重投一次，进程真退了还有启动恢复兜底。
+	// 驻留溢出由 drain 分批回灌；容量外的 durable pending 由持续扫描发现，与 RecoverQueue 开关无关。
 	if err := e.submitToStage(task); err != nil {
 		if errors.Is(err, workerpool.ErrQueueFull) {
 			e.spilledCount.Add(1)
@@ -165,7 +173,7 @@ func (e *Engine) afterTaskPending(task *Task) {
 //
 // 与 SubmitTask 的差别只有一个：调用方手里已经握着那一行（刚从批次查出来、刚做完条件更新），
 // 不需要再按去重键查一次库，也不需要再写一次 pending。Repeatable 任务仍走 submitToPool ——
-// 它负责 `repeat` +1（轮询次数），那是这条路径的既有语义，不能因为省写就丢。
+// 它只幂等初始化尚未开始的首轮；已确认 pending 轮次不会重复计数。
 func (e *Engine) submitRecoveredTask(task *Task) error {
 	if err := e.validateTask(task); err != nil {
 		return err
@@ -196,9 +204,12 @@ func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error)
 	if task.ID == 0 {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
-	claimed, row, err := e.submissions().claim(ctx, uint(task.ID))
+	claimed, row, err := e.submissions().claim(ctx, uint(task.ID), task.deliveryVersion)
 	if err != nil {
 		return false, err
+	}
+	if row != nil && task.deliveryVersion != nil && (task.deliveryVersion.Repeat != row.Repeat || task.deliveryVersion.Reprocess != row.Reprocess) {
+		return false, nil
 	}
 	if row != nil && row.Status == models.TaskStatusPending && row.NotBefore != nil {
 		task.NotBefore = *row.NotBefore
@@ -214,6 +225,15 @@ func (e *Engine) claimTaskContext(ctx context.Context, task *Task) (bool, error)
 // submitToStage 所有投递路径的收口：取活池（没有就懒建），按加急/常规路由。
 // 阶段未注册 → ErrStageNotRegistered（后台据此翻 409）。
 func (e *Engine) submitToStage(task *Task) error {
+	if state := e.residents.state(task); state == "pool" || state == "running" {
+		return nil
+	}
+	if !e.residents.admit(task, "pool") {
+		if task.ID != 0 {
+			return nil
+		} // durable pending is owned by continuous refill
+		return ErrSchedulerCapacity
+	}
 	// 暂停中：**在入队点收口**，不接新活。
 	//
 	// 返回 ErrQueueFull 而不是自己往溢出表里塞：五个调用点已经把这个错误处理得正好
@@ -268,8 +288,19 @@ func (e *Engine) SubmitTask(task *Task) error {
 	if task.ID == 0 {
 		task.AccountPool = e.resolveTaskPool(task)
 	}
+	if e.residents.state(task) != "" {
+		return nil
+	}
+	reserved := e.residents.admit(task, "submission")
+	if !reserved && (task.ID != 0 || (task.Repeatable && len(task.Meta) > 0)) {
+		return ErrSchedulerCapacity
+	}
 	plan, err := e.submissions().prepare(task)
-	e.deliverSubmission(plan)
+	if reserved {
+		e.residents.admit(task, "submission")
+	}
+	err = errors.Join(err, e.deliverSubmission(plan))
+	e.residents.release(task, "submission")
 	if plan.logFailure {
 		return e.logSubmitError(task, err)
 	}
@@ -295,16 +326,37 @@ func (e *Engine) SubmitTasks(tasks []*Task) error {
 			task.AccountPool = e.resolveTaskPool(task)
 		}
 	}
+	var deliveryErrors []error
 	_, err := e.submissions().prepareBatch(tasks, func(delivery submissionDelivery) {
-		e.deliverSubmission(submissionPlan{deliveries: []submissionDelivery{delivery}})
+		if err := e.deliverSubmission(submissionPlan{deliveries: []submissionDelivery{delivery}}); err != nil {
+			deliveryErrors = append(deliveryErrors, err)
+		}
 	})
-	return err
+	return errors.Join(append(deliveryErrors, err)...)
 }
 
 // Delivery accepts responsibility even if admission also reported partial errors.
-func (e *Engine) deliverSubmission(plan submissionPlan) {
+func (e *Engine) deliverSubmission(plan submissionPlan) error {
+	var deliveryErrors []error
 	for _, delivery := range plan.deliveries {
 		task := delivery.task
+		if state := e.residents.state(task); state != "" && state != "submission" {
+			continue
+		}
+		if !delivery.unread {
+			if len(task.Meta) == 0 {
+				task.deliveryDurable = true
+			}
+			task.deliveryVersion = &taskRunVersion{Repeat: delivery.record.Repeat, Reprocess: delivery.record.Reprocess}
+		}
+		// Meta supplied by this call may differ from an existing durable row. If
+		// admission is full, confirm that update before releasing the caller's copy.
+		if !e.residents.admit(task, "submission") && len(task.Meta) > 0 {
+			if err := e.submissions().preparePending(task, uint(task.ID)); err != nil {
+				deliveryErrors = append(deliveryErrors, err)
+				continue
+			}
+		}
 		if delivery.unread {
 			if at := task.deliverAt(); delivery.batch && !at.IsZero() && at.After(time.Now()) {
 				e.enqueueDelayed(at, task, models.CrawlerTask{ID: uint(task.ID)})
@@ -319,6 +371,7 @@ func (e *Engine) deliverSubmission(plan submissionPlan) {
 		}
 		record := delivery.record
 		if record.Status == models.TaskStatusSuccess || record.Status == models.TaskStatusFailed {
+			e.residents.release(task, "submission")
 			continue
 		}
 		if record.NotBefore != nil {
@@ -330,4 +383,5 @@ func (e *Engine) deliverSubmission(plan submissionPlan) {
 		}
 		e.submitToPool(task, record)
 	}
+	return errors.Join(deliveryErrors...)
 }

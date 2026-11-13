@@ -22,22 +22,29 @@ type Options struct {
 	Logger     Logger
 }
 type Handler struct {
-	archiveDir string
-	trace      func(int) ([]core.TraceStep, error)
-	logger     Logger
+	archiveDir     string
+	trace          func(int) ([]core.TraceStep, error)
+	executionTrace func(int) ([]core.TraceExecutionStep, error)
+	logger         Logger
 }
 
 func New(o Options) *Handler {
 	return &Handler{archiveDir: o.ArchiveDir, trace: o.Trace, logger: o.Logger}
 }
 
-// taskTraceHandler 返回一条任务的步骤追踪时间线（按尝试、步骤排序）。
+// SetExecutionLookup installs the richer lookup during composition, before serving.
+// Options and the legacy lookup retain their original public shape.
+func (s *Handler) SetExecutionLookup(lookup func(int) ([]core.TraceExecutionStep, error)) {
+	s.executionTrace = lookup
+}
+
+// Trace 返回最新有记录执行的追踪时间线；轮次与截断判据由追踪服务拥有。
 func (s *Handler) Trace(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.trace == nil {
+	if s.trace == nil && s.executionTrace == nil {
 		http.Error(w, "task trace not configured", http.StatusNotFound)
 		return
 	}
@@ -46,7 +53,12 @@ func (s *Handler) Trace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid task id", http.StatusBadRequest)
 		return
 	}
-	steps, err := s.trace(id)
+	var steps any
+	if s.executionTrace != nil {
+		steps, err = s.executionTrace(id)
+	} else {
+		steps, err = s.trace(id)
+	}
 	if err != nil {
 		// 业务原因（如追踪开关没开）原样回给前端，抽屉里直接显示这句话
 		s.logger.Errorf("load task trace %d: %s", id, err.Error())

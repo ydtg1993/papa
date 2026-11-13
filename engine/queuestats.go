@@ -159,7 +159,7 @@ func (e *Engine) sampleQueueBacklog() {
 // 查询失败只记日志：积压数属于观测数据，不影响队列本身。
 func (e *Engine) sampleQueueBacklogOne(name string, query func() *gorm.DB) {
 	var n int64
-	if err := query().Count(&n).Error; err != nil {
+	if err := query().WithContext(e.queueContext()).Count(&n).Error; err != nil {
 		e.loggerSet.Engine.Warnf("queue backlog sample %s: %s", name, err.Error())
 		return
 	}

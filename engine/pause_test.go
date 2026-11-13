@@ -296,6 +296,7 @@ func TestPauseDoesNotSurviveRestart(t *testing.T) {
 // 缓存 channel 就会变成热自旋（那条路在 -race 下也看不出来，只能靠行为断言）。
 func TestPauseGateWakesAndReparks(t *testing.T) {
 	e := newTestEngine(t, newFakeTaskDB())
+	e.residents = nil // legacy gate contract; budgeted pause transfers have MySQL coverage
 	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
 	e.SetSiteBreaker("b", breaker.Config{Enabled: false, Threshold: 1})
 
@@ -445,8 +446,8 @@ func TestDrainSpilledSkipsPausedBucketWithoutQuerying(t *testing.T) {
 	if got := f.readSQL(); got != before {
 		t.Fatalf("暂停中的桶不该被查库（空转就是这么来的）：\n%s", got)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("整桶应当放回溢出表，实得 %d", got)
+	if got := e.spillBacklog(); got != 0 {
+		t.Fatalf("durable paused bucket should release resident spill entries, got %d", got)
 	}
 }
 

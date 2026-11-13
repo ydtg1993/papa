@@ -127,7 +127,7 @@ func (s taskFlowService) register(ctx context.Context, id string, parent uint, c
 	return saved, err
 }
 
-func (s taskFlowService) claim(ctx context.Context, flowID string, taskID uint) (claimed, waiting bool, err error) {
+func (s taskFlowService) claim(ctx context.Context, flowID string, taskID uint, versions ...*taskRunVersion) (claimed, waiting bool, err error) {
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		_, p, err := readFlow(tx, flowID, true)
 		if err != nil {
@@ -137,7 +137,7 @@ func (s taskFlowService) claim(ctx context.Context, flowID string, taskID uint) 
 		if err = tx.Where("id = ? AND flow_id = ?", taskID, flowID).Take(&row).Error; err != nil {
 			return err
 		}
-		if row.Status != models.TaskStatusPending {
+		if row.Status != models.TaskStatusPending || (len(versions) > 0 && versions[0] != nil && (row.Repeat != versions[0].Repeat || row.Reprocess != versions[0].Reprocess)) {
 			return nil
 		}
 		var active []models.CrawlerTask
@@ -152,7 +152,8 @@ func (s taskFlowService) claim(ctx context.Context, flowID string, taskID uint) 
 			waiting = true
 			return nil
 		}
-		result := claimScope(tx, taskID).Updates(map[string]any{"status": models.TaskStatusProcessing, "urgent": false})
+		scope := claimScope(tx, taskID).Where("`repeat` = ? AND reprocess = ?", row.Repeat, row.Reprocess)
+		result := scope.Updates(map[string]any{"status": models.TaskStatusProcessing, "urgent": false})
 		claimed = result.RowsAffected == 1
 		return result.Error
 	})

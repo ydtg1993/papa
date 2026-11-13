@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -20,7 +21,7 @@ func TestProcessConcurrently(t *testing.T) {
 	var mu sync.Mutex
 	seen := make(map[uint]bool)
 
-	n := processConcurrently(tasks, 4, func(t *models.CrawlerTask) bool {
+	n := processConcurrently(context.Background(), tasks, 4, func(t *models.CrawlerTask) bool {
 		mu.Lock()
 		seen[t.ID] = true
 		mu.Unlock()

@@ -57,6 +57,9 @@ func (e *Engine) ProcessRecoverQueue() (int, error) {
 
 // requeueRecoverTask 将单条未到终态的任务重置为 pending 并重新投递；提交失败则标 failed。
 func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
+	if e.queueContext().Err() != nil {
+		return false
+	}
 	if e.breakers.breakerSettlementBlocked(t.Site) {
 		return false
 	}
@@ -91,7 +94,7 @@ func (e *Engine) requeueRecoverTask(t *models.CrawlerTask) bool {
 		// 批次 SELECT 与这一句之间有窗口 —— 运营可能把这一行删了、标了失败，或任务自己跑完落了 success。
 		// 无条件 UPDATE 会把这些行也翻回 pending：删掉的行重新插回来、已终态的行再跑一遍。
 		// 0 行 = 这一行已经不该被恢复：跳过，不计数、也不标 failed（它不是"恢复失败"，是"轮不到它了"）。
-		res := compensationVersionScope(e.db.Model(&models.CrawlerTask{}).
+		res := compensationVersionScope(e.db.WithContext(e.queueContext()).Model(&models.CrawlerTask{}).
 			Where("id = ? AND status IN ?", t.ID, []models.TaskStatus{
 				models.TaskStatusPending,
 				models.TaskStatusProcessing,
@@ -130,8 +133,7 @@ func (e *Engine) startRecoverQueue() {
 	}
 	// 进 tickerWG：恢复中途写库（批量 SELECT / 重置 pending / 提交入队）。Stop 里"drained"的承诺
 	// 是**所有**写库后台都停下来了 —— 这条裸 goroutine 不进等待组的话，Stop 会在恢复还在查库/写库时
-	// 就返回 drained=true，app.Run 随即关库，在途那一跳全报 `database is closed`。它不检查 ctx，
-	// 所以"纳入生命周期"在这里表现为"等它跑完"（Stop 的 tickerWG.Wait 会等到它退出，或超时报未排空）。
+	// 就返回 drained=true，app.Run 随即关库。取消停止新准入；已经准入的收尾仍由 tickerWG 等待。
 	e.tickerWG.Add(1)
 	go func() {
 		defer e.tickerWG.Done()

@@ -2,7 +2,7 @@
 
 > 面向：复用 Papa 通用能力、增加抓取能力和审查资源所有权的开发者。
 > 配套：[目录说明书总览](README.md)、[总体架构规则](../ARCHITECTURE.md)、[开发手册](../DEVELOPMENT.md)。
-> 本文按当前源码说明整个 `pkg/`，覆盖 24 个 Go 包、106 个生产 `.go` 文件；测试按职责归类，目录树省略测试文件。文件清单与职责核对不代表浏览器、MySQL 或其他测试已执行。
+> 本文按当前源码说明整个 `pkg/`，覆盖 24 个 Go 包、112 个生产 `.go` 文件；测试按职责归类，目录树省略测试文件。文件清单与职责核对不代表浏览器、MySQL 或其他测试已执行。
 
 ## 1. 总体定位
 
@@ -125,7 +125,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 
 `New` 启动事件投递 worker；登录过程由服务上下文和 TTL 管理，远程会话拥有自己的取消、页面集合及关闭等待。Provider 的 `Start` / `Next` / `Verify` 须响应 context；`Config` 提供运行认证配置，不执行登录。`SaveDraft` 不向 Manager 登记账号，`Load` 只登记已验证资料，不执行 DDL。资料只保存不透明秘密引用，`Options.Secrets` 必须由宿主提供加密存储。
 
-`Shutdown(ctx)` 等待已准入操作、过程及清理；超时不应被解释为资源可以关闭。数据库连接和浏览器池仍由宿主所有。HTTP/前端分别在 `admin/accounts`、`admin/accountpools`；真实站点协议及 Provider 实现在业务模块。测试在 `service_test.go`、`store_test.go`、`remote_test.go`、`shutdown_test.go`，最后一个文件专门验证被资料操作阻塞时关停仍受调用方期限约束。
+`Shutdown(ctx)` 等待已准入操作、过程及清理，也等待正在执行的事件回调；超时不应被解释为资源可以关闭。事件队列容量为 64，溢出丢弃，取消时 worker 可以直接退出，不承诺投递完队列中的通知。`Remote.Done()` 返回取消信号，不是隔离上下文已销毁、进程已归还的完成信号；`Remote.Close()` 才取消并等待内部结束，且没有调用方期限参数。数据库连接和浏览器池仍由宿主所有。HTTP/前端分别在 `admin/accounts`、`admin/accountpools`；真实站点协议及 Provider 实现在业务模块。测试在 `service_test.go`、`store_test.go`、`remote_test.go`、`shutdown_test.go`，最后一个文件专门验证被资料操作阻塞时关停仍受调用方期限约束。
 
 ## 4. 浏览器与身份
 
@@ -202,7 +202,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `request.go` | 可重放请求体的 `Request`、独立响应元数据/有界 body 的 `Response`、`Do`；配置/上下文/单次请求头合成、重定向和响应体关闭 |
 | `errors.go` | HTTP 状态和 body 超限错误、`StatusCode` 查询；错误类别不直接决定任务终态 |
 | `session.go`、`session_state.go` | 账号/站点独立 Session、上下文挂载、Cookie 导入读取、完整有界快照和恢复、Cookie 原有域/path/顺序语义 |
-| `session_guard.go` | `SessionGuard` / `Ensure`，单账号检查/登录/验证轮次合并、失败冷却、等待者取消和回调 panic 隔离 |
+| `session_guard.go` | `SessionGuard` / `Ensure`，单账号检查/登录/验证轮次合并、失败冷却、等待者取消和回调 panic 后的轮次结算 |
 | `challenge.go` | `DetectSiteChallenge` 与 transport，明确挑战响应在 CookieJar 更新/重定向前返回，不污染当前会话 |
 | `restricted.go` | `RestrictedReason` 按标题与 HTML 可见正文识别默认受限提示；额外站点词由业务传入，不直接判任务失败 |
 | `json.go` | `DecodeJSON` 保留数字精度并拒绝尾随值；`JSONBlocks` 解析选择器命中的 JSON，不执行 JavaScript |
@@ -211,7 +211,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 
 `Client.mu` 保护可热更请求配置，网络授权在构造时固定，SetConfig 不能扩大 private origin 授权。单次请求在复制的 HTTP client 上绑定 Session，避免把全局 CookieJar 变成跨账号容器；`Do` 在返回前关闭网络 body。`Session` 自有带锁 cookie jar，快照/恢复由它保留 Cookie 属性，持久化和加密交给调用方。
 
-`SessionGuard.mu` 只协调本账号的检查轮次与当前会话；领头调用的取消结束共享轮次，等待者可单独取消，回调仍须协作响应 context。它不代替 `account.Manager` 的账号池、身份和用量政策。`Representation` 的 URL、账号、请求头与语言作用域由调用方保证；发现 ETag 不意味着允许跨账号复用。
+`SessionGuard.mu` 只协调本账号的检查轮次与当前会话；领头调用的取消结束共享轮次，等待者可单独取消，回调仍须协作响应 context。回调 panic 时先以 `ErrSessionCallbackPanic` 结算并唤醒等待者，再向领头调用重新 panic；这里不承诺吞掉 panic。它不代替 `account.Manager` 的账号池、身份和用量政策。`Representation` 的 URL、账号、请求头与语言作用域由调用方保证；发现 ETag 不意味着允许跨账号复用。
 
 样本默认不保留 body、header 和 query，允许字段仍可能敏感；业务负责站点特有脱敏与文件原子发布。账户抓取的原始 HTML、捕获 header/body 不应因方便调试而直接进入自动归档。
 
@@ -251,7 +251,7 @@ Validator 保存构造时编译的规则，单次 Validate 的行结果和唯一
 
 `Controller.mu` 集中拥有站点 token、并发、等待队列、远端期限、节流值、阶段计数、全局许可与资源采样结果；访问器返回副本。`changed` 用于预算等待，`policyChanged` 只通知成功的政策更新，普通请求和采样不能放大政策观察频率。阶段许可与全局任务许可在一个原子申请中获得，避免等待阶段期间占住全局容量。
 
-请求预算按站点跨阶段/账号共享，任务与浏览器资源许可按进程全局分配。`WaitTaskReady` 在认领前等待，实际请求仍须 `AcquireRequest`。返回的归还函数或反馈函数属于该次许可；HTTP 包装器在 body 完成时归还，不能只看响应头到达。`RunSampler` 是调用方启动并持 context 取消的循环，Controller 不拥有 App 生命周期或政策数据库。
+请求预算按站点跨阶段/账号共享，任务与浏览器资源许可按进程全局分配。`WaitTaskReady` 在认领前等待，实际请求仍须 `AcquireRequest`。返回的归还函数或反馈函数属于该次许可；HTTP 包装器在 RoundTrip 返回时立即观察状态码、Retry-After 和该阶段延迟，许可则在 body 读到结束/错误、Close 或请求 context 取消时归还；失败或无 body 时立即归还。因此取消后的许可释放不等于底层 body 已关闭，调用方仍须关闭响应。`RunSampler` 是调用方启动并持 context 取消的循环，Controller 不拥有 App 生命周期或政策数据库。
 
 此包不依赖 Engine、配置存储或业务站点。持久运行政策与版本事务见 `internal/runtimecontrol`，Engine 只通过许可接口编排。测试在 `controller_test.go`、`rate_limit_test.go`、`transport_test.go`；受管浏览器适配的测试归 browser。使用说明见 [运行治理](../RUNTIME_CONTROL.md)。
 
@@ -267,7 +267,7 @@ Validator 保存构造时编译的规则，单次 Validate 的行结果和唯一
 
 Policy 在构造时建立私有授权 map，无全局可变授权。`PrivateOrigins` 授权非公网地址，`AllowedOrigins` 限制允许的目标集合，两者含义不同。URL 路径和查询原始字节不得为了诊断或规范化随意改写。
 
-每个 `Proxy` 拥有本地 HTTP server、请求取消和受锁保护的 CONNECT 连接集合；Close 同时取消请求并关闭 hijack 隧道和空闲连接。普通浏览器实例拥有其 Proxy，隔离上下文共享父进程的出口。宿主提供的上游代理选择和回调是显式配置，本包负责框架网络出口，不接管业务数据库或系统防火墙。
+每个 `Proxy` 拥有本地 HTTP server、请求取消和受锁保护的 CONNECT 连接集合；Close 同时取消请求并关闭 hijack 隧道和空闲连接，但不通过 WaitGroup 等待所有 handler/观察回调退出，不能把它视为回调排空屏障。普通浏览器实例拥有其 Proxy，隔离上下文共享父进程的出口。宿主提供的上游代理选择和回调是显式配置，本包负责框架网络出口，不接管业务数据库或系统防火墙。
 
 `egress_test.go`、`allowlist_test.go`、`transport_test.go`、`proxy_failure_test.go` 检查目标/传输；`integration_test.go` 从 HTML、下载器、通知入口验证策略；`proxy_health_integration_test.go` 验证代理反馈连接。实际浏览器和 ffmpeg 交界分别在 browser 与 m3u8。配置边界见 [核心配置](../CORE_CONFIG.md)。
 
@@ -309,11 +309,15 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 | `downloader.go` | 播放列表选择与解析、重定向后相对 URL、byterange、map/init、密钥、AES-128 解密、受限响应读取、片段/断点/合并及产物处理 |
 | `ratelimiter.go` | `RateLimiter` / `NewRateLimiter` / `Wait`，单次下载使用的带取消带宽等待 |
 
-两个下载器各自拥有 `state`，并非共享一个全局下载状态。状态内 `proxyMu` 保护代理客户端缓存，`laborMu` 保护按来源/目录/文件组合标识的 labor 和引用数，labor 自己的 `resumeMu` 保护断点修改，`OutputLocks` 保护最终输出及断点路径。m3u8 的密钥缓存只属于单次下载的私有接收者副本，不能跨任务共享认证相关密钥。
+两个下载器各自拥有 `state`，并非共享一个全局下载状态。状态内 `proxyMu` 保护代理 transport 缓存；连接池跨 With 实例复用，而每次取得的 client 持有本实例 Timeout/SegmentTimeout，`laborMu` 保护按来源/目录/文件组合标识的 labor 和引用数，labor 自己的 `resumeMu` 保护断点修改，`OutputLocks` 保护最终输出及断点路径。m3u8 的密钥缓存只属于单次下载的私有接收者副本，不能跨任务共享认证相关密钥。
 
-`With` 返回独立配置实例，同时共享原实例的状态、路径互斥和错误消息队列；`Config` 返回网络授权列表副本。`Overlay.Clone` 保留 nil 与显式零值并复制指针，是站点声明/阶段覆盖快照的基础。`NewDownloader` 才建立另一组状态。`SetClient` 是客户端替换入口，不能因为 Download 支持并发就推断替换配置也有并发热更保证。
+`With` 返回独立配置实例，同时共享原实例的状态、路径互斥和错误消息队列；它会按新配置创建默认 HTTP client，不继承原实例通过 `SetClient` 注入的 client/transport。`Config` 返回网络授权列表副本。`Overlay.Clone` 保留 nil 与显式零值并复制指针，是站点声明/阶段覆盖快照的基础。`NewDownloader` 才建立另一组状态。`SetClient` 是客户端替换入口，不能因为 Download 支持并发就推断替换配置也有并发热更保证。
+
+两个下载器用固定 worker 与无缓冲工作通道限制等待 goroutine，生产和消费均响应取消；返回前等待已进入的 worker 及其进度回调收尾。filedown 增量计算偏移及剩余片长，不预先展开整个分片列表，并避免 int64 边界相加溢出；已完成断点索引仍随实际完成分片数增长，m3u8 播放列表及部分响应读取也不构成统一内存上界。filedown 将全部预期分片校验、流式合并到同目录唯一临时文件，既有普通文件的权限位在写入前复制到临时文件，避免 0600 产物被替换为 0644；新文件沿用 0644 与 umask。显式 Close 成功后再 Rename 发布；合并或发布失败保留旧产物与分片，成功后才清状态、删除分片。Windows 也在关闭临时文件后替换目标，目标被占用导致替换失败时不提前删除旧文件；不承诺断电持久性或复制旧 inode 的属主、ACL 等元数据。
 
 Download 同步执行并使用传入 context 约束请求、片段 goroutine 与合并；调用方等待它返回，再处理任务终态、业务落库和文件发布。下载器没有统一公开 Shutdown，宿主通过任务取消/排空及错误流消费者生命周期接入；不应让 HTTP handler 直接占有其内部 labor 或断点锁。网络必须经过 egress，代理选择经过 proxy，消息队列复用 `internal/msgqueue`；这些是具体适配依赖，不意味着可反向依赖 App/Engine。
+
+两个包的 `bounded_download_test.go` 覆盖代理覆盖层超时、传输复用、有界调度及取消时等待进度回调；filedown 另覆盖极端偏移、旧产物安全发布、POSIX 权限保留与发布失败后的断点重跑。
 
 filedown 测试：`downloader_test.go`、`overlay_test.go`、`resume_test.go`、`regression_test.go`、`destination_test.go`。m3u8 测试：`downloader_test.go`、`overlay_test.go`、`resume_test.go`、`regression_test.go`、`destination_test.go`、`byterange_test.go`、`url_resolution_test.go`、`limits_test.go`、`remediation_test.go`、`egress_ffmpeg_test.go`。路径互斥放父包测试，真实 ffmpeg 用例须显式配置环境，不能用纯解析测试替代外部进程行为。
 
@@ -338,10 +342,12 @@ Manager 的 RWMutex 拥有列表、轮转位置、健康记录和版本、探针
 | 文件 | 职责 |
 | --- | --- |
 | `event.go` | 版本化 `Event`、阶段/队列快照、类型常量和 `TruncateError`；事件 schema 增量演进，消费者忽略未知字段 |
-| `emitter.go` | `Emitter` / `Closer` / `NopEmitter`、`NewEmitter`、序列/丢弃计数、有界非阻塞入队、单消费者 drain 和有界 Close |
+| `emitter.go` | `Emitter` / `Closer` / `NopEmitter`、`NewEmitter`、序列/丢弃计数、有界非阻塞入队、单消费者 drain 和受 context 约束的 drain 等待 |
 | `sink.go` | `NewJSONLSink`、诊断副本脱敏、逐行 JSON 序列化、写入锁与幂等关闭 |
 
-Emitter 拥有 channel、序列原子计数和 drain goroutine，RWMutex 保护入队与关闭的互斥，满队列/关闭后入队/写失败进入丢弃计量。JSONLSink 拥有传入 `io.WriteCloser` 的关闭责任，自己的 mutex 保护 Write/Close。宿主先发送收尾事件再 `Close(ctx)`；超时不关闭仍可能被 drain 使用的 sink，须保留后续清理责任。事件记录不承担分析和报告，后者在 obs。测试分别在 `event_test.go`、`emitter_test.go`、`sink_test.go`、`redact_test.go`。
+Emitter 拥有 channel、序列原子计数和 drain goroutine，RWMutex 保护入队与关闭的互斥，满队列/关闭后入队/写失败进入丢弃计量。`Emit` 只复制 Event 结构体，不深拷贝其中 `Counts` / `Attrs` / `Stages` / `Queues` map；调用方应提交独立快照，入队后不得继续修改，sink 写入时的诊断副本处理不能消除这个共享窗口。
+
+JSONLSink 拥有传入 `io.WriteCloser` 的关闭责任，自己的 mutex 保护 Write/Close。宿主先发送收尾事件再 `Close(ctx)`；context 只限制等待 drain 的阶段，drain 完成后同步执行的 sink/底层 writer.Close 没有期限参数，不能承诺整个 Close 严格有界。等待超时会追加一次 dropped 计量，不是精确的未写事件条数；此时不关闭仍可能被 drain 使用的 sink，须保留后续清理责任。事件记录不承担分析和报告，后者在 obs。测试分别在 `event_test.go`、`emitter_test.go`、`sink_test.go`、`redact_test.go`。
 
 ### 8.2 loggers、notify、redact
 
@@ -404,3 +410,16 @@ Emitter 拥有 channel、序列原子计数和 drain goroutine，RWMutex 保护�
 | 临时目录/恢复清理、测试库、历史表只读盘点 | 分别进入 temporary、testdb、strategymigrate | 框架内的业务删表事务或普通启动迁移 |
 
 新增实现须同时交代四项：所属语义、状态及资源拥有者、最小公开接口、允许依赖。出现持久化/锁/版本/生命周期交界时先保持原子性和关停语义，再决定是否拆文件或拆包。公开兼容别名保留在原入口，实现在所属组件；不能通过把整个 App/Engine 或可写私有状态传进新包完成表面拆分。
+
+## 下载资源预算与检查点
+
+| 文件 | 职责与生命周期 |
+| --- | --- |
+| `pkg/middleware/resources.go` | DownloadLimits、DownloadBudget、限额错误、有界输入、内存/临时磁盘准入；共享预算可注入多个 downloader；不引用 App/Engine |
+| `pkg/middleware/checkpoint.go` | 每任务单写者、合并通知、定时快照和 Close 最终 flush；通知可合并，完成事实留在任务状态；Close 等写者退出 |
+| `pkg/middleware/filedown/resources.go` | 旧/版本化续传读取、完成集合编码和文件下载资源规则；保留公开 ResumeState 布局 |
+| `pkg/middleware/m3u8/resources.go` | 播放列表/媒体下载预算与续传版本规则，不把限额错误降级为坏状态重下 |
+| `pkg/middleware/m3u8/publication.go` | 文件产物暂存、权限位继承和原子重命名；不承诺 OutputSegments 整目录事务 |
+| `pkg/middleware/m3u8/stream.go` | 非加密分片流式有界接收、接收阶段限速、临时写入及完整发布；加密路径仍受独立缓冲预算 |
+
+WithResources 返回独立限额快照；With 行为覆盖继承预算。checkpoint 在 resumeMu 内只复制状态，序列化/落盘由单写者完成；取消和正常退出都等待最终写入，避免迟到快照覆盖清理后的状态。临时磁盘扫描支持取消，拒绝链接目录越界，不自动删除活动或可恢复数据。配额的实际边界与保守预留见 [资源预算手册](../RESOURCE_BUDGETS.md)。

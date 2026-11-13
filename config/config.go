@@ -153,7 +153,8 @@ type ObsReportConfig struct {
 	// 0/未写 = 默认 7 天（168h）；负数 = 永久保留、不自动清理（与 crawler.trace.retention 同一口径）。
 	// 只清 "<dir>" 下、且目录里有 report.md 的子目录 —— 手工放在同一目录里的其它东西不碰。
 	Retention time.Duration `mapstructure:"retention"`
-	// Timeout 进程内生成报告的超时；<=0 用 120s。生成失败只记日志，不阻塞退出。
+	// Timeout 进程内生成报告的合作取消预算；<=0 用 120s，覆盖输入读取与分析。
+	// 失败只记日志；关停仍等在途生成完成，不保证不合作的 Section/I/O 在此时限内返回。
 	Timeout time.Duration `mapstructure:"timeout"`
 	// Thresholds 通用判定阈值（业务阈值由业务 Section 自己持有，框架不认识）。
 	Thresholds ObsThresholdsConfig `mapstructure:"thresholds"`

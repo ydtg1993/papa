@@ -250,7 +250,7 @@ func TestProxyClientInheritsSegmentTimeout(t *testing.T) {
 		t.Fatalf("代理客户端 Timeout = %v, want 7s（否则代理挂住会把 worker 卡死）", proxied.Timeout)
 	}
 	// 同一个代理地址要复用同一份（连接池不白扔）
-	if again := dl.clientFor(&DownloadOptions{Proxy: "http://127.0.0.1:9"}); again != proxied {
-		t.Fatal("同一代理地址应当复用同一个客户端")
+	if again := dl.clientFor(&DownloadOptions{Proxy: "http://127.0.0.1:9"}); again.Transport != proxied.Transport {
+		t.Fatal("同一代理地址应当复用同一个传输连接池")
 	}
 }

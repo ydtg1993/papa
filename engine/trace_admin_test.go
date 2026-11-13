@@ -88,7 +88,7 @@ func TestListTraceMapsRows(t *testing.T) {
 
 	// 查询要按 task_id 过滤、按 attempt,seq 排序、并带上限
 	read := f.readSQL()
-	for _, want := range []string{"task_id = ?", "ORDER BY attempt,seq", "LIMIT"} {
+	for _, want := range []string{"task_id = ?", "ORDER BY id DESC", "LIMIT"} {
 		if !strings.Contains(strings.ReplaceAll(read, " ", ""), strings.ReplaceAll(want, " ", "")) {
 			t.Fatalf("查询缺少 %q：\n%s", want, read)
 		}

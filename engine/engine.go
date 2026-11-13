@@ -60,9 +60,14 @@ type Engine struct {
 	lastResumed  map[pauseScope]time.Time  // 放行时刻（信号删了之后后台 payload 还要它）
 	wakeDrain    chan struct{}             // 容量 1：恢复时叫醒回灌循环，别让它等下一个 tick
 
-	overflow       spillQueue
-	spilledCount   atomic.Int64 // 累计溢出任务数（监控埋点）
-	recoveredCount atomic.Int64 // 累计启动恢复任务数（recover_queue，只在启动跑一次）
+	residents        *residentSet
+	refillMu         sync.Mutex
+	refillCursor     map[string]uint
+	refillStage      int
+	schedulerStarted bool
+	overflow         spillQueue
+	spilledCount     atomic.Int64 // 累计溢出任务数（监控埋点）
+	recoveredCount   atomic.Int64 // 累计启动恢复任务数（recover_queue，只在启动跑一次）
 	// recoverSkippedUnregistered 启动恢复里因"阶段未注册"被跳过的条数：
 	// 逐条降级为 Debug，启动后汇总一条 Warn（否则一次恢复能把日志刷几百行）。
 	recoverSkippedUnregistered atomic.Int64
@@ -141,6 +146,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		QueueError:  &engine.errorQueue.retried,
 		QueueRepeat: &engine.repeatQueue.repolled,
 	}
+	engine.residents = newResidentSet(SchedulerLimits{})
 	engine.loadActiveTasks()
 	// 延迟投递 dispatcher 同样进 tickerWG：它到点时会写库（status=pending），
 	// Stop 要等它退出再返回（否则调用方关库时它可能正写到一半）。

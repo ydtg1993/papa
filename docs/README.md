@@ -47,6 +47,7 @@ cd mycrawler && go mod tidy
 
 | 我要… | 手册 | 手册在讲什么 |
 | --- | --- | --- |
+| 配置单实例资源预算、输入限额与积压背压 | [RESOURCE_BUDGETS.md](RESOURCE_BUDGETS.md) | 调度、报告和下载预算、超限行为及旧数据兼容 |
 | 维护框架包职责和依赖边界 | [ARCHITECTURE.md](ARCHITECTURE.md) | 状态所有权、装配/服务/后台分工及重构验收 |
 | 查 Papa 整体目录、所有包和新增代码归属 | [Papa 目录说明书](package_structure/README.md) | 统一目录索引与七份职责分册 |
 | 查根公开入口、配置、跨包契约和模型 | [ROOT_STRUCTURE.md](package_structure/ROOT_STRUCTURE.md) | 根包、config、core、models、文档与构建配套 |

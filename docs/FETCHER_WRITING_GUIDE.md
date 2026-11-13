@@ -133,7 +133,7 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
   **例外**：`Warn` 步骤的 `data` 在成功的尝试里也保留 —— 它记的正是"任务成功了、但这一步降级了"，而下一次成功的尝试里它照样只是 warn，剥掉就等于把这条唯一的线索永远丢掉（warn 按定义是异常，量不成问题）。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **默认关闭**：`crawler.trace.enabled` 打开才写库（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。关闭时 `task.Trace` 为 `nil`，上面所有调用都是安全的 no-op，**不需要判空**。记录保留期由 `crawler.trace.retention` 控制（默认 7 天，后台按批清理）。
-- 每次尝试（`FetchHandler` 的一次调用）单独成组，后台任务表的「追踪」动作按「第 N 次尝试」分段展示；handler panic 时，panic 之前已上报的步骤同样会落库。
+- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断；历史空身份明确标记未知轮次。handler panic 时，panic 之前已上报的步骤同样会落库。启用追踪的旧库升级须显式 migrate 增加 execution_id，详见 CORE_CONFIG 的迁移说明。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
 - **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。
 
@@ -384,7 +384,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
 
 > **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](./CORE_CONFIG.md)）之后，
 > `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
-> `{dir}/{stage}/task-{id}-try-{retry}-{urlhash8}.html`，并在后台「追踪」里多一条 `归档页面` 步骤指向它。
+> `{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.html`，并在后台「追踪」里多一条 `归档页面` 步骤指向它。
 > **handler 一行代码都不用改** —— 排查"选择器为什么没匹配上"时，直接打开那个文件看它到底长什么样。
 > 落的是**原始字节**（不是 goquery 再序列化的结果），所以 `<noscript>` 里的延迟渲染回退标签也在。
 
@@ -1395,3 +1395,5 @@ client := htmlfetch.NewClient(htmlfetch.Config{
 混合错误恢复采用三次验证并优先指定失败样本。`BreakerProbeRequest.Sample/SampleID` 非空时必须检查指定任务对应页面，结果 `SampleID` 回传一致；忽略样本的通用成功结果不能通过。相同任务不同轮次仅在不足三个失败样本时按轮换规则使用。原有任务补偿禁用/延迟条件继续生效。完整只读阶段默认两次，混合错误三次；其他阶段仍须真实任务验证。长期保护每小时复查通过后自动恢复，人工暂停不自动解除；详见 [BREAKER.md](BREAKER.md)。
 
 恢复验证同站点串行，真实样本从选中起最多10分钟（整轮预算更短时优先生效）。Fetcher 必须响应传入 context，包括资源等待、请求和下载。超时后仍未退出会占住本次串行验证并阻止小时复查；迟到成功只表示任务实际完成，不证明站点健康。不要自行启动脱离 context 生命周期的后台写入来绕过取消。
+
+单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。

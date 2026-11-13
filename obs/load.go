@@ -1,8 +1,15 @@
 package obs
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
+	"io"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/obs/eventlog"
@@ -45,17 +52,20 @@ type Sources struct {
 //
 // 它是 `papa report` 与业务侧报告命令共用的加载器：报告引擎本身不碰文件系统。
 func LoadSources(sc SourceConfig) (*Sources, error) {
+	return LoadSourcesContext(context.Background(), sc, inputbudget.Limits{})
+}
+func LoadSourcesContext(ctx context.Context, sc SourceConfig, limits inputbudget.Limits) (*Sources, error) {
 	if sc.EventsFile == "" {
 		return nil, fmt.Errorf("事件文件路径为空")
 	}
-	paths, err := eventlog.Discover(sc.EventsFile)
+	paths, err := eventlog.DiscoverContext(ctx, sc.EventsFile, limits)
 	if err != nil {
 		return nil, fmt.Errorf("扫描事件文件: %w", err)
 	}
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("没有找到事件文件 %s —— 确认 obs.events.enabled 已打开并跑过一轮", sc.EventsFile)
 	}
-	res, err := eventlog.Read(paths, sc.Since, sc.Until)
+	res, err := eventlog.ReadContext(ctx, paths, sc.Since, sc.Until, sc.RunID, limits)
 	if err != nil {
 		return nil, fmt.Errorf("读取事件: %w", err)
 	}
@@ -92,8 +102,11 @@ func LoadSources(sc SourceConfig) (*Sources, error) {
 		if !logTo.IsZero() {
 			logTo = logTo.Add(logSlack)
 		}
-		summary, err := LoadLogSummary(sc.LogDir, logFrom, logTo, sc.Loc)
+		summary, err := LoadLogSummaryContext(ctx, sc.LogDir, logFrom, logTo, sc.Loc, limits)
 		if err != nil {
+			if errors.Is(err, inputbudget.ErrLimit) || ctx.Err() != nil {
+				return nil, err
+			}
 			out.Degraded = append(out.Degraded, "日志证据索引失败: "+err.Error())
 		} else {
 			out.Logs = summary
@@ -104,27 +117,23 @@ func LoadSources(sc SourceConfig) (*Sources, error) {
 
 // LoadLogSummary 对目录下的人类日志做证据索引（*.log 与 *.log.gz）。
 func LoadLogSummary(dir string, from, to time.Time, loc *time.Location) (LogSummary, error) {
-	if dir == "" {
-		return LogSummary{}, fmt.Errorf("日志目录为空")
-	}
-	var paths []string
-	for _, pattern := range []string{"*.log", "*.log.gz"} {
-		matched, err := filepath.Glob(filepath.Join(dir, pattern))
-		if err != nil {
-			return LogSummary{}, err
-		}
-		paths = append(paths, matched...)
-	}
-	if len(paths) == 0 {
-		return LogSummary{}, fmt.Errorf("日志目录里没有 *.log")
+	return LoadLogSummaryContext(context.Background(), dir, from, to, loc, inputbudget.Limits{})
+}
+func LoadLogSummaryContext(ctx context.Context, dir string, from, to time.Time, loc *time.Location, limits inputbudget.Limits) (LogSummary, error) {
+	paths, err := discoverLogs(ctx, dir, limits)
+	if err != nil {
+		return LogSummary{}, err
 	}
 	if loc == nil {
 		loc = time.Local
 	}
-	idx, err := logidx.Build(logidx.Config{Paths: paths, From: from, To: to, Loc: loc})
+	idx, err := logidx.BuildContext(ctx, logidx.Config{Paths: paths, From: from, To: to, Loc: loc}, limits)
 	if err != nil {
 		return LogSummary{}, err
 	}
+	return logSummary(idx), nil
+}
+func logSummary(idx *logidx.Index) LogSummary {
 	out := LogSummary{Files: idx.Files, Unparsed: idx.Unparsed, Truncated: idx.Truncated}
 	for _, sig := range idx.Signatures {
 		ls := LogSignature{Pattern: sig.Pattern, Count: sig.Count, First: sig.First, Last: sig.Last}
@@ -135,12 +144,12 @@ func LoadLogSummary(dir string, from, to time.Time, loc *time.Location) (LogSumm
 		}
 		out.Signatures = append(out.Signatures, ls)
 	}
-	return out, nil
+	return out
 }
 
 // FilterRunID 只保留指定 run_id 的事件。
 func FilterRunID(evs []events.Event, runID string) []events.Event {
-	out := make([]events.Event, 0, len(evs))
+	out := make([]events.Event, 0)
 	for _, ev := range evs {
 		if ev.RunID == runID {
 			out = append(out, ev)
@@ -178,4 +187,52 @@ func EventWindow(evs []events.Event) (time.Time, time.Time) {
 		}
 	}
 	return from, to
+}
+
+// discoverLogs bounds matching files without materializing an entire directory.
+func discoverLogs(ctx context.Context, dir string, limits inputbudget.Limits) ([]string, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("日志目录为空")
+	}
+	limits = limits.Normalize()
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var plain, gz []string
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entries, e := f.ReadDir(128)
+		if e != nil && e != io.EOF {
+			return nil, e
+		}
+		for _, de := range entries {
+			if de.IsDir() {
+				continue
+			}
+			n := de.Name()
+			if strings.HasSuffix(n, ".log") {
+				plain = append(plain, filepath.Join(dir, n))
+			} else if strings.HasSuffix(n, ".log.gz") {
+				gz = append(gz, filepath.Join(dir, n))
+			} else {
+				continue
+			}
+			if err := inputbudget.Check("files", int64(len(plain)+len(gz)), int64(limits.MaxFiles)); err != nil {
+				return nil, err
+			}
+		}
+		if e == io.EOF {
+			break
+		}
+	}
+	sort.Strings(plain)
+	sort.Strings(gz)
+	if len(plain)+len(gz) == 0 {
+		return nil, fmt.Errorf("日志目录里没有 *.log")
+	}
+	return append(plain, gz...), nil
 }

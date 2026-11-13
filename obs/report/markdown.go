@@ -377,7 +377,18 @@ func sanitizeDirName(s string) string {
 	if len(out) == 0 {
 		return "run"
 	}
-	return string(out)
+	name := strings.TrimRight(string(out), ". ")
+	if name == "" {
+		return "run"
+	}
+	// Windows device names are reserved even with an extension, on every platform.
+	base := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	reserved := base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+		(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9')
+	if reserved {
+		name = "run-" + name
+	}
+	return name
 }
 
 func fmtTime(t time.Time) string {

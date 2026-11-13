@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"os"
 	"path/filepath"
 	"sync"
@@ -30,6 +31,8 @@ func (s *blockingSection) Build(ctx context.Context, _ *obs.Input) (*obs.Section
 	case <-s.release:
 		return &obs.SectionResult{}, nil
 	case <-ctx.Done():
+		// Cancellation requests cleanup; Stop must still wait for it.
+		<-s.release
 		return nil, ctx.Err()
 	}
 }
@@ -103,5 +106,21 @@ func TestRunnerOwnsConfigurationSnapshot(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.ReportDir); !os.IsNotExist(err) {
 		t.Fatalf("runner used caller's changed configuration: %v", err)
+	}
+}
+
+func TestRunnerInputLimitPreservesPriorReport(t *testing.T) {
+	dir := t.TempDir()
+	day := time.Now().Format("2006-01-02")
+	target := filepath.Join(dir, "reports", day)
+	os.MkdirAll(target, 0700)
+	prior := filepath.Join(target, "report.json")
+	os.WriteFile(prior, []byte("prior"), 0600)
+	os.WriteFile(filepath.Join(dir, "events.jsonl"), []byte("over budget malformed line\n"), 0600)
+	r := NewWithLimits(Options{Config: Config{Enabled: true, LogDir: dir, ReportDir: filepath.Join(dir, "reports"), Retention: time.Nanosecond}, Logger: quietLogger{}}, inputbudget.Limits{MaxLineBytes: 4})
+	r.Generate(obs.TriggerPeriodic)
+	got, err := os.ReadFile(prior)
+	if err != nil || string(got) != "prior" {
+		t.Fatalf("output=%s err=%v", got, err)
 	}
 }

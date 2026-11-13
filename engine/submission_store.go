@@ -87,7 +87,7 @@ func (s submissionStore) protectTaskPoolReferences(tasks []*Task, insert func() 
 }
 
 func (s submissionStore) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return s.dedupScope(task).Select("id", "status", "repeat", "site", "stage", "account_pool", "url", "not_before", "delay_ms").First(record).Error
+	return s.dedupScope(task).Select("id", "status", "repeat", "reprocess", "site", "stage", "account_pool", "url", "not_before", "delay_ms").First(record).Error
 }
 
 func (s submissionStore) dedupScope(task *Task) *gorm.DB {
@@ -120,6 +120,7 @@ func (s submissionStore) insertTasksWithReferences(tasks []*Task) (map[string]st
 		for i, t := range tasks {
 			t.ID = int(records[i].ID)
 			t.NotBefore = taskTimeValue(records[i].NotBefore)
+			t.deliveryDurable = true
 		}
 		return nil, nil, nil
 	}
@@ -134,6 +135,7 @@ func (s submissionStore) insertTasksWithReferences(tasks []*Task) (map[string]st
 		if ierr == nil {
 			t.ID = int(rec.ID)
 			t.NotBefore = taskTimeValue(rec.NotBefore)
+			t.deliveryDurable = true
 			continue
 		}
 		// 只按标准身份回查；不同 ID 的相同 URL 不能相互吞掉。
@@ -359,12 +361,28 @@ func adoptTaskOwnership(task *Task, record *models.CrawlerTask) error {
 
 // preparePending only changes columns owned by delivery, guarded against claims.
 func (s submissionStore) preparePending(task *Task, id uint) error {
-	return s.db.Model(&models.CrawlerTask{}).Where("id = ? AND status = ?", id, models.TaskStatusPending).Updates(submitUpdates(task)).Error
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	scope := s.db.WithContext(ctx).Model(&models.CrawlerTask{}).Where("id = ? AND status = ?", id, models.TaskStatusPending)
+	if task.deliveryVersion != nil {
+		scope = scope.Where("`repeat` = ? AND reprocess = ?", task.deliveryVersion.Repeat, task.deliveryVersion.Reprocess)
+	}
+	err := scope.Updates(submitUpdates(task)).Error
+	if err == nil {
+		task.deliveryDurable = true
+	}
+	return err
 }
 
 // claim returns a rejected row snapshot so the scheduler can respect not_before.
-func (s submissionStore) claim(ctx context.Context, id uint) (bool, *models.CrawlerTask, error) {
-	result := taskstore.Claim(s.db.WithContext(ctx), id)
+func (s submissionStore) claim(ctx context.Context, id uint, versions ...*taskRunVersion) (bool, *models.CrawlerTask, error) {
+	scope := s.db.WithContext(ctx)
+	if len(versions) > 0 && versions[0] != nil {
+		scope = scope.Where("`repeat` = ? AND reprocess = ?", versions[0].Repeat, versions[0].Reprocess)
+	}
+	result := taskstore.Claim(scope, id)
 	if result.Error != nil {
 		return false, nil, result.Error
 	}

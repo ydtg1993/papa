@@ -68,7 +68,7 @@ func NewApp(opts ...Option) (*App, error) {
 	// 迁移器每次都要先猜库名，一张表 3 条 SQL，启动日志被十几条「查表在不在」刷屏）。
 	missingTables, missingIndexes, schemaErr := checkFrameworkSchema(db, cfg)
 	if schemaErr != nil {
-		loggerSet.Sys.Errorf("检查框架表/唯一索引失败：%s（无法确认表结构是否就绪，请检查数据库连接/权限）", schemaErr.Error())
+		loggerSet.Sys.Errorf("检查框架结构失败：%s（请按提示检查迁移状态或数据库连接/权限）", schemaErr.Error())
 	} else {
 		for _, name := range missingTables {
 			loggerSet.Sys.Errorf("表 %s 不存在 —— 相关功能不会写入任何数据。请先跑迁移：`papa migrate`（或项目 Makefile 里的 migrate）", name)

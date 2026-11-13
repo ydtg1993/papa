@@ -407,7 +407,7 @@ func TestSubmitToPoolWritesOnlyItsOwnColumns(t *testing.T) {
 					t.Fatalf("投递不该写 %s：\n%s", never, sql)
 				}
 			}
-			if got := strings.Contains(sql, "`repeat`"); got != tc.wantRepeatIncr {
+			if got := strings.Contains(sql, "`repeat`="); got != tc.wantRepeatIncr {
 				t.Fatalf("repeat 自增 = %v, want %v：\n%s", got, tc.wantRepeatIncr, sql)
 			}
 			for _, want := range []string{"`status`", "`meta`", "`site`"} {

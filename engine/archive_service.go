@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/ydtg1993/papa/v4/config"
 	"io/fs"
@@ -47,13 +48,13 @@ func (s archiveService) newBuffer(task *Task, attempt int) *archiveBuffer {
 	if !s.enabled() || task.ID == 0 {
 		return nil
 	}
-	return &archiveBuffer{store: s, logger: s.logger, dir: s.options.Dir, mode: s.mode(), maxBytes: s.maxBytes(), task: task, attempt: attempt, byURL: make(map[string]int)}
+	return &archiveBuffer{executionID: uuid.NewString(), store: s, logger: s.logger, dir: s.options.Dir, mode: s.mode(), maxBytes: s.maxBytes(), task: task, attempt: attempt, byURL: make(map[string]int)}
 }
 
 // writeOne 写一页：正文按**原样字节**落 .html，旁边落一份 .json 记这次请求的元信息。
-func (s archiveService) writeOne(task *Task, attempt int, page archivedPage) (string, error) {
+func (s archiveService) writeOne(task *Task, attempt int, executionID string, page archivedPage) (string, error) {
 	root := s.options.Dir
-	rel := archiveRelativePath(task, page)
+	rel := archiveRelativePath(task, attempt, executionID, page)
 	abs := filepath.Join(root, rel)
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return "", err
@@ -65,6 +66,7 @@ func (s archiveService) writeOne(task *Task, attempt int, page archivedPage) (st
 
 	meta := map[string]any{
 		"task_id":      task.ID,
+		"execution_id": executionID,
 		"stage":        task.Stage,
 		"site":         task.Site,
 		"attempt":      attempt,
@@ -83,17 +85,10 @@ func (s archiveService) writeOne(task *Task, attempt int, page archivedPage) (st
 	return rel, nil
 }
 
-// relPath 归档文件的相对路径：`{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html`。
-//
-// **按站点分一层**：阶段名只在本站内唯一，两个站各有 `catalog` 时会写进同一个目录、混在一起
-// （文件名带全局唯一的 task ID，不会互相覆盖，只是"这个阶段抓到过哪些页"再也分不开）。
-// 站点为空只在旧行上还会遇到（新任务必须有 site），那一段落成 `_`，见 sanitizePathSegment。
-//
-// 带 try（= task.Retry）是必须的：同一任务重试 3 次时后面那次会覆盖前面那次，
-// 而"第一次是登录墙、第三次正常"恰好是排查的关键。urlhash8 保证一个尝试里的多页不打架。
-func archiveRelativePath(task *Task, page archivedPage) string {
+// archiveRelativePath separates every claim and retry, including restart recovery.
+func archiveRelativePath(task *Task, attempt int, executionID string, page archivedPage) string {
 	sum := sha256.Sum256([]byte(page.url))
-	name := fmt.Sprintf("task-%d-try-%d-%s.html", task.ID, task.Retry, hex.EncodeToString(sum[:4]))
+	name := fmt.Sprintf("task-%d-run-%s-try-%d-%s.html", task.ID, executionID, attempt, hex.EncodeToString(sum[:4]))
 	return filepath.Join(sanitizePathSegment(task.Site), sanitizePathSegment(task.Stage), name)
 }
 

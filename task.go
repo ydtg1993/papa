@@ -27,3 +27,6 @@ type StageConfig = engine.StageConfig
 type FlowPolicy = engine.FlowPolicy
 type FlowLane = engine.FlowLane
 type TaskFlowView = engine.TaskFlowView
+
+// TraceExecutionStep adds execution identity to the legacy trace snapshot.
+type TraceExecutionStep = engine.TraceExecutionStep

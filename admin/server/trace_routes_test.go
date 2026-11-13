@@ -12,6 +12,29 @@ import (
 	"time"
 )
 
+func TestExecutionTraceComposition(t *testing.T) {
+	m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{VerifyToken: allowUnrestrictedTestRequests})
+	m.SetTaskTraceExecution(func(id int) ([]core.TraceExecutionStep, error) {
+		if id != 7 {
+			t.Fatalf("id=%d", id)
+		}
+		return []core.TraceExecutionStep{{TraceStep: core.TraceStep{Step: "parse"}, ExecutionID: "run-7", Truncated: true}}, nil
+	})
+	rr := serve(m, http.MethodGet, "/api/task/trace?id=7", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSON(t, rr)
+	steps := body["steps"].([]any)
+	if len(steps) != 1 {
+		t.Fatalf("steps=%v", steps)
+	}
+	step := steps[0].(map[string]any)
+	if step["execution_id"] != "run-7" || step["truncated"] != true || step["step"] != "parse" {
+		t.Fatalf("step=%v", step)
+	}
+}
+
 func TestTaskTraceHandler(t *testing.T) {
 	steps := []core.TraceStep{
 		{Attempt: 0, Seq: 0, Step: "打开列表页", Status: "ok", Duration: 12 * time.Millisecond},

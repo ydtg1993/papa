@@ -1,8 +1,11 @@
 package eventlog
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,6 +30,11 @@ const backupTimeFormat = "2006-01-02T15-04-05.000"
 // 主文件不存在不算错误；目录不存在或没有匹配文件时返回空列表与 nil。
 // 目录与文件名匹配但时间戳不是 lumberjack 格式的文件不会被当成备份。
 func Discover(activePath string) ([]string, error) {
+	return DiscoverContext(context.Background(), activePath, inputbudget.Limits{})
+}
+
+func DiscoverContext(ctx context.Context, activePath string, limits inputbudget.Limits) ([]string, error) {
+	limits = limits.Normalize()
 	if strings.TrimSpace(activePath) == "" {
 		return nil, errors.New("eventlog: empty active path")
 	}
@@ -36,7 +44,7 @@ func Discover(activePath string) ([]string, error) {
 	ext := filepath.Ext(base)
 	prefix := strings.TrimSuffix(base, ext)
 
-	entries, err := os.ReadDir(dir)
+	df, err := os.Open(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -44,24 +52,40 @@ func Discover(activePath string) ([]string, error) {
 		return nil, fmt.Errorf("eventlog: read event dir %q: %w", dir, err)
 	}
 
+	defer df.Close()
 	type foundFile struct {
 		path string
 		mod  time.Time
 	}
-	found := make([]foundFile, 0, len(entries))
-	for _, de := range entries {
-		if de.IsDir() {
-			continue
+	found := make([]foundFile, 0)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		name := de.Name()
-		if name != base && !isBackupName(name, prefix, ext) {
-			continue
+		entries, readErr := df.ReadDir(128)
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
 		}
-		info, err := de.Info()
-		if err != nil {
-			return nil, fmt.Errorf("eventlog: stat %q: %w", filepath.Join(dir, name), err)
+		for _, de := range entries {
+			if de.IsDir() {
+				continue
+			}
+			name := de.Name()
+			if name != base && !isBackupName(name, prefix, ext) {
+				continue
+			}
+			info, err := de.Info()
+			if err != nil {
+				return nil, fmt.Errorf("eventlog: stat %q: %w", filepath.Join(dir, name), err)
+			}
+			if err := inputbudget.Check("files", int64(len(found)+1), int64(limits.MaxFiles)); err != nil {
+				return nil, err
+			}
+			found = append(found, foundFile{path: filepath.Join(dir, name), mod: info.ModTime()})
 		}
-		found = append(found, foundFile{path: filepath.Join(dir, name), mod: info.ModTime()})
+		if readErr == io.EOF {
+			break
+		}
 	}
 	sort.Slice(found, func(i, j int) bool {
 		if !found[i].mod.Equal(found[j].mod) {

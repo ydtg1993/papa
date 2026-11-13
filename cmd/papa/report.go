@@ -15,6 +15,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/database"
 	"github.com/ydtg1993/papa/v4/obs"
 	"github.com/ydtg1993/papa/v4/obs/analyze"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"github.com/ydtg1993/papa/v4/obs/pattern"
 	"github.com/ydtg1993/papa/v4/obs/report"
 )
@@ -27,7 +28,7 @@ const reportUsage = `usage:
 
   -c/--config       配置文件路径（默认 PAPA_CONFIG，再回退 configs/config.yaml）
   --since/--until   时间窗口（RFC3339）；缺省按事件里的最早/最晚时刻
-  --run             只保留指定 run_id，输出单份报告（目录名 = run_id；兼容旧的"单次运行"排查用法）
+  --run             只保留指定 run_id，输出单份报告（正常目录名 = run_id；特殊名称安全归一；兼容旧的"单次运行"排查用法）
   --snapshot        强制快照模式：只出单日窗口的一份报告（显式跨天窗口报错）
   --acceptance      强制验收模式：检查本轮是否通过，与 --snapshot 互斥
   --out             输出根目录（默认 obs.report.dir，再回退 ./reports）
@@ -35,7 +36,7 @@ const reportUsage = `usage:
   --fail-on-verdict 任一日报判定为 fail 或 unknown 时以非零码退出（供 CI/自动化门禁）
 
 产物默认**按本地日历日拆分**：有事件的每天各写一份 <dir>/<2006-01-02>/（同一天重跑会刷新当天那份）。
-生成后按 obs.report.retention 清掉过期报告目录（默认 7 天；负数 = 永久保留）。
+无 --since/--until/--run 筛选时，生成后按 obs.report.retention 清理；显式历史/运行筛选不清理。
 
 判定聚合：任一 fail 级检查未通过 → 不通过；只有 warn 未通过 → 带风险通过；否则通过。
 业务报告段由业务进程注册（papa report 只有框架通用段）。`
@@ -59,6 +60,12 @@ func runReportCmd(args []string) error {
 	if !ok {
 		return fmt.Errorf("读不到配置（用 -c 指定 configs/config.yaml，或设 PAPA_CONFIG）")
 	}
+	timeout := cfg.Obs.Report.Timeout
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	// 默认运行快照；显式 flag 优先于配置，验收需明确选择。
 	mode, err := resolveCLIReportMode(cfg.Obs.Report.Mode, opts)
 	if err != nil {
@@ -100,12 +107,12 @@ func runReportCmd(args []string) error {
 	}
 	generate := func(src *obs.Sources) (*obs.Report, error) {
 		// 每份日报使用自己的事件，不能复用首日的暂停/运行状态。
-		engine := analyze.LoadEngineState(context.Background(), db, src.Events, time.Now())
+		engine := analyze.LoadEngineState(ctx, db, src.Events, time.Now())
 		degraded := append([]string(nil), src.Degraded...)
 		if dbErr != nil {
 			degraded = append(degraded, "数据库连接失败（跳过框架状态检查）: "+dbErr.Error())
 		}
-		return obs.Generate(context.Background(), obs.Options{
+		return obs.Generate(ctx, obs.Options{
 			Run:         src.Run,
 			EventMeta:   src.EventMeta,
 			Events:      src.Events,
@@ -130,7 +137,14 @@ func runReportCmd(args []string) error {
 	}
 	worst := obs.VerdictPass
 	writeOne := func(label string, rep *obs.Report) error {
-		files, err := report.Write(filepath.Join(outDir, label), rep)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		target, err := reportOutputDir(outDir, label)
+		if err != nil {
+			return err
+		}
+		files, err := report.Write(target, rep)
 		if err != nil {
 			return err
 		}
@@ -161,7 +175,7 @@ func runReportCmd(args []string) error {
 		// 不能把全事件窗口直接交给 snapshotWindow —— 多天事件文件会误报跨天。
 		probeCfg := base
 		probeCfg.IncludeLogs = false // 只是探窗口，不必做两遍日志索引
-		probe, err := obs.LoadSources(probeCfg)
+		probe, err := obs.LoadSourcesContext(ctx, probeCfg, inputbudget.Limits{})
 		if err != nil {
 			return err
 		}
@@ -182,7 +196,7 @@ func runReportCmd(args []string) error {
 			}
 		}
 		base.Since, base.Until = day, end
-		src, err := obs.LoadSources(base)
+		src, err := obs.LoadSourcesContext(ctx, base, inputbudget.Limits{})
 		if err != nil {
 			return err
 		}
@@ -194,8 +208,8 @@ func runReportCmd(args []string) error {
 			return err
 		}
 	} else if opts.runID != "" {
-		// 显式 --run：出一份单 run 报告（目录名 = run_id），方便排查某一次运行；不参与按天拆分。
-		src, err := obs.LoadSources(base)
+		// 显式 --run：出一份单 run 报告（正常目录名 = run_id；特殊名称安全归一），方便排查某一次运行；不参与按天拆分。
+		src, err := obs.LoadSourcesContext(ctx, base, inputbudget.Limits{})
 		if err != nil {
 			return err
 		}
@@ -208,14 +222,8 @@ func runReportCmd(args []string) error {
 		}
 	} else {
 		// 默认按本地日历日拆分：有事件的每天各写一份 <dir>/<2006-01-02>/，重跑刷新当天那份。
-		sources, err := obs.LoadDailySources(base)
-		if err != nil {
-			return err
-		}
-		if len(sources) == 0 {
-			return fmt.Errorf("窗口内没有事件（检查 obs.events 是否开启、或 --since/--until 是否填对）")
-		}
-		for _, src := range sources {
+		consumed := 0
+		err := obs.ConsumeDailySources(ctx, base, inputbudget.Limits{}, func(src *obs.Sources) error {
 			day := report.DayName(src.Run.From)
 			rep, err := generate(src)
 			if err != nil {
@@ -224,14 +232,25 @@ func runReportCmd(args []string) error {
 			if err := writeOne(day, rep); err != nil {
 				return err
 			}
+			consumed++
+			return nil
+		})
+		if err != nil {
+			return err
 		}
+		if consumed == 0 {
+			return fmt.Errorf("窗口内没有事件（检查 obs.events 是否开启、或 --since/--until 是否填对）")
+		}
+
 	}
 
-	// 生成完顺手清过期报告（默认保留 7 天；obs.report.retention 负数 = 永久保留）。
-	if removed, err := report.Prune(outDir, cfg.Obs.Report.Retention, time.Now(), time.Local); err != nil {
-		fmt.Fprintf(os.Stderr, "清理过期报告失败：%v\n", err)
-	} else if len(removed) > 0 {
-		fmt.Printf("清理过期报告 %d 份：%s\n", len(removed), strings.Join(removed, ", "))
+	// 显式历史/运行筛选只生成，不清理；无筛选生成保留原有清理策略。
+	if opts.since.IsZero() && opts.until.IsZero() && opts.runID == "" {
+		if removed, err := report.Prune(outDir, cfg.Obs.Report.Retention, time.Now(), time.Local); err != nil {
+			fmt.Fprintf(os.Stderr, "清理过期报告失败：%v\n", err)
+		} else if len(removed) > 0 {
+			fmt.Printf("清理过期报告 %d 份：%s\n", len(removed), strings.Join(removed, ", "))
+		}
 	}
 	return verdictGate(worst, opts.failOnVerdict)
 }
@@ -459,4 +478,17 @@ func reportInputs(th config.ObsThresholdsConfig, configPath string) obs.Inputs {
 		},
 		ThresholdsSource: "effective（config 覆盖后，未校准）",
 	}
+}
+
+// reportOutputDir independently checks that a generated label names one child of outDir.
+func reportOutputDir(outDir, label string) (string, error) {
+	if label == "." || !filepath.IsLocal(label) || strings.ContainsAny(label, `/\:`) || strings.TrimRight(label, ". ") != label {
+		return "", fmt.Errorf("报告目录名非法: %q", label)
+	}
+	target := filepath.Join(outDir, label)
+	rel, err := filepath.Rel(outDir, target)
+	if err != nil || rel != label {
+		return "", fmt.Errorf("报告目录越界: %q", label)
+	}
+	return target, nil
 }

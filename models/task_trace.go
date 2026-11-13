@@ -23,11 +23,12 @@ const (
 // 每次 FetchHandler 调用是一次「尝试」（attempt），一次尝试里 handler 可以上报多个步骤（seq）。
 // Data 只在**失败的尝试**里保留 —— 成功尝试（绝大多数）一条 data 都不写，写入量按失败率走。
 type TaskTrace struct {
-	ID uint `gorm:"primarykey;comment:记录ID"`
+	ID uint `gorm:"primarykey;index:idx_trace_latest,priority:2;index:idx_trace_tail,priority:5;comment:记录ID"`
 
-	TaskID  uint `gorm:"index:idx_task_attempt_seq,priority:1;comment:任务ID"`
-	Attempt int  `gorm:"index:idx_task_attempt_seq,priority:2;comment:第几次尝试(0起)"`
-	Seq     int  `gorm:"index:idx_task_attempt_seq,priority:3;comment:尝试内的步骤序号"`
+	TaskID      uint   `gorm:"index:idx_trace_latest,priority:1;index:idx_trace_tail,priority:1;index:idx_task_attempt_seq,priority:1;index:idx_trace_execution,priority:1;comment:任务ID"`
+	ExecutionID string `gorm:"type:varchar(36);not null;default:'';index:idx_trace_execution,priority:2;index:idx_trace_tail,priority:2;comment:执行轮次UUID(历史为空)"`
+	Attempt     int    `gorm:"index:idx_task_attempt_seq,priority:2;index:idx_trace_tail,priority:3;comment:第几次尝试(0起)"`
+	Seq         int    `gorm:"index:idx_task_attempt_seq,priority:3;index:idx_trace_tail,priority:4;comment:尝试内的步骤序号"`
 
 	Step    string         `gorm:"type:varchar(128);comment:步骤名"`
 	Status  TraceStatus    `gorm:"comment:0:成功 1:失败 2:警告(非致命)"`

@@ -95,3 +95,7 @@ recover_queue:
 这是硬要求，不是优化：被恢复的行会从 `processing` 变成 `pending`，**依然满足**「未到终态」——
 分页若靠「重新查同一批」，它会原地打转、永远跑不完（启动恢复再也回不来）。
 见 `engine/batch.go` 的 `processInBatches` 与回归测试 `TestProcessInBatchesUsesKeysetCursor`。
+
+### 关停期间的批处理
+
+Engine 取消后不再开始新批次或领取同批后续任务，批间暂停为 0 时同样生效；查询和条件重置使用生命周期 context。已经成功重置的任务按原投递/溢出路径收尾，批处理等待已准入回调返回后才退出。返回计数只包含实际处理成功部分，取消不会把尚未处理的记录标成失败。

@@ -6,6 +6,7 @@ import (
 	"context"
 	"github.com/ydtg1993/papa/v4/obs"
 	"github.com/ydtg1993/papa/v4/obs/analyze"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"github.com/ydtg1993/papa/v4/obs/pattern"
 	"github.com/ydtg1993/papa/v4/obs/report"
 	"github.com/ydtg1993/papa/v4/pkg/events"
@@ -44,6 +45,7 @@ type Options struct {
 }
 type Runner struct {
 	options     Options
+	limits      inputbudget.Limits
 	generateMu  sync.Mutex
 	lifecycleMu sync.Mutex
 	cancel      context.CancelFunc
@@ -51,6 +53,11 @@ type Runner struct {
 }
 
 func New(options Options) *Runner {
+	return NewWithLimits(options, inputbudget.Limits{})
+}
+
+// NewWithLimits fixes immutable input budgets at composition time.
+func NewWithLimits(options Options, limits inputbudget.Limits) *Runner {
 	options.Sections = append([]obs.Section(nil), options.Sections...)
 	options.Patterns = append([]obs.Pattern(nil), options.Patterns...)
 	if options.EngineState == nil {
@@ -59,7 +66,7 @@ func New(options Options) *Runner {
 	if options.Inputs == nil {
 		options.Inputs = func() obs.Inputs { return obs.Inputs{} }
 	}
-	return &Runner{options: options}
+	return &Runner{options: options, limits: limits.Normalize()}
 }
 
 // Start is idempotent until Stop. Host configuration is fixed before startup.
@@ -90,7 +97,7 @@ func (r *Runner) Start() {
 				if ctx.Err() != nil {
 					return
 				}
-				r.Periodic()
+				r.generate(ctx, obs.TriggerPeriodic)
 			}
 		}
 	}()
@@ -120,6 +127,9 @@ func (r *Runner) Periodic() {
 	}
 }
 func (r *Runner) Generate(trigger obs.Trigger) {
+	r.generate(context.Background(), trigger)
+}
+func (r *Runner) generate(parent context.Context, trigger obs.Trigger) {
 	cfg := r.options.Config
 	if !cfg.Enabled {
 		return
@@ -140,7 +150,7 @@ func (r *Runner) Generate(trigger obs.Trigger) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	evFile := cfg.EventsFile
@@ -161,15 +171,6 @@ func (r *Runner) Generate(trigger obs.Trigger) {
 		// 上界钉在 now —— 晚于生成时刻的事件（时钟偏差、补写、未来时间戳）不算进来。
 		// 代价是测试 fixture 必须落在窗口内：凌晨跑时把事件写在中午会被裁掉，报告因「没有事件」跳过。
 	}
-	sources, err := obs.LoadDailySources(base)
-	if err != nil {
-		r.options.Logger.Warnf("%s: 读取事件失败，跳过：%s", trigger, err.Error())
-		return
-	}
-	if len(sources) == 0 {
-		r.options.Logger.Warnf("%s: 事件窗口里没有事件，跳过", trigger)
-		return
-	}
 
 	// 框架内置段：通用概览 + 引擎状态 + 积压/老化。顺序即渲染顺序；
 	// 业务段始终排在框架段之后（业务段看到的是同一份 Input，不改变框架口径）。
@@ -187,10 +188,9 @@ func (r *Runner) Generate(trigger obs.Trigger) {
 
 	engine := r.options.EngineState()
 	written := 0
-	for _, src := range sources {
-		if ctx.Err() != nil {
-			r.options.Logger.Warnf("%s: 生成超时（%s），剩余日报跳过", trigger, timeout)
-			break
+	err = obs.ConsumeDailySources(ctx, base, r.limits, func(src *obs.Sources) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		// Recovering 是「这一天窗口内有没有启动恢复」的逐日报事实：按源填，不能把
 		// 进程级 engine 快照原样复用，否则某一天的恢复会染到其它天的报告上。
@@ -213,19 +213,28 @@ func (r *Runner) Generate(trigger obs.Trigger) {
 		})
 		if err != nil {
 			r.options.Logger.Warnf("%s: 生成失败：%s", trigger, err.Error())
-			continue
+			return ctx.Err()
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		day := report.DayName(src.Run.From)
 		dir := filepath.Join(cfg.ReportDir, day)
 		if _, err := report.Write(dir, rep); err != nil {
 			r.options.Logger.Warnf("%s: 写盘失败（%s）：%s", trigger, day, err.Error())
-			continue
+			return nil
 		}
 		written++
 		r.options.Logger.Infof("%s: %s verdict=%s dir=%s", trigger, day, rep.Verdict, dir)
+		return nil
+	})
+	if err != nil {
+		r.options.Logger.Warnf("%s: 读取或生成报告失败，保留已有产物：%s", trigger, err)
+		return
 	}
 	if written == 0 {
 		r.options.Logger.Warnf("%s: 没有写出任何日报", trigger)
+		return
 	}
 	if removed, err := report.Prune(cfg.ReportDir, cfg.Retention, time.Now(), time.Local); err != nil {
 		r.options.Logger.Warnf("%s: 清理过期报告失败：%s", trigger, err.Error())

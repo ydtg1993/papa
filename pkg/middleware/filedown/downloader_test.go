@@ -518,12 +518,23 @@ func TestMergeFailureKeepsSegments(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	output := filepath.Join(tempOut, la.outputDir, la.filename)
+	if err := os.MkdirAll(filepath.Dir(output), 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := []byte("PREVIOUS-GOOD-ARTIFACT")
+	if err := os.WriteFile(output, old, 0644); err != nil {
+		t.Fatal(err)
+	}
 	res := d.Download(context.Background(), server.URL, la.outputDir, la.filename)
 	if res.Error == nil {
 		t.Fatalf("第二个分片缺失，合并应当失败；实得 %+v", res)
 	}
 	if !strings.Contains(res.Error.Error(), "open temp file") {
 		t.Fatalf("应当报在合并阶段，实得：%v", res.Error)
+	}
+	if actual, err := os.ReadFile(output); err != nil || string(actual) != string(old) {
+		t.Fatalf("failed merge destroyed previous artifact: %q, %v", actual, err)
 	}
 	if _, err := os.Stat(first); err != nil {
 		t.Fatalf("合并失败后第一个分片必须还在（否则续传永远好不了）：%v", err)
@@ -748,11 +759,11 @@ func TestDownloadOptionsProxySelectsClient(t *testing.T) {
 		t.Fatal("missing guarded transport")
 	}
 	// 同一个地址复用
-	if again := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://1.2.3.4:8080"})); again != client {
-		t.Fatal("同一个代理地址应当复用客户端")
+	if again := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://1.2.3.4:8080"})); again.Transport != client.Transport {
+		t.Fatal("同一个代理地址应当复用传输连接池")
 	}
 	// 另一个地址是另一个客户端
-	if other := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://5.6.7.8:3128"})); other == client {
+	if other := d.clientOf(d.buildRequestConfig(&DownloadOptions{Proxy: "http://5.6.7.8:3128"})); other.Transport == client.Transport {
 		t.Fatal("不同代理地址不该共用客户端")
 	}
 	// 地址写错：拒绝请求，不允许静默直连。

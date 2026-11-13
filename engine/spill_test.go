@@ -208,7 +208,7 @@ func TestDelayDispatcherRecomputesOnEarlierTask(t *testing.T) {
 
 	// 再来一个已经到点的
 	e.enqueueDelayed(time.Now().Add(-time.Second),
-		&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/now"}, delayRecord(7))
+		&Task{ID: 8, Stage: "stub", Site: "stub", URL: "https://example.com/now"}, delayRecord(8))
 
 	waitQueueDepth(t, pool, 1)
 

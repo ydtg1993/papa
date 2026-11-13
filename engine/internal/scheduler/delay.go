@@ -10,6 +10,7 @@ import (
 type delayed[T any] struct {
 	at    time.Time
 	value T
+	key   string
 }
 type delayHeap[T any] []delayed[T]
 
@@ -34,6 +35,7 @@ type Delay[T any] struct {
 	mu   sync.Mutex
 	heap delayHeap[T]
 	wake chan struct{}
+	keys map[string]struct{}
 }
 
 func (q *Delay[T]) signalLocked() chan struct{} {
@@ -45,7 +47,7 @@ func (q *Delay[T]) signalLocked() chan struct{} {
 func (q *Delay[T]) Wake() <-chan struct{} { q.mu.Lock(); defer q.mu.Unlock(); return q.signalLocked() }
 func (q *Delay[T]) Push(at time.Time, value T) {
 	q.mu.Lock()
-	heap.Push(&q.heap, delayed[T]{at, value})
+	heap.Push(&q.heap, delayed[T]{at: at, value: value})
 	ch := q.signalLocked()
 	q.mu.Unlock()
 	select {
@@ -97,6 +99,7 @@ func (q *Delay[T]) Next(ctx context.Context) (T, bool) {
 		wait := time.Until(q.heap[0].at)
 		if wait <= 0 {
 			v := heap.Pop(&q.heap).(delayed[T])
+			delete(q.keys, v.key)
 			q.mu.Unlock()
 			return v.value, true
 		}
@@ -111,4 +114,45 @@ func (q *Delay[T]) Next(ctx context.Context) (T, bool) {
 		case <-timer.C:
 		}
 	}
+}
+
+// PushUnique keeps at most one queued entry for an identity/round. The caller
+// retains ownership if false is returned. Detached entries are no longer keyed.
+func (q *Delay[T]) PushUnique(key string, at time.Time, value T) bool {
+	q.mu.Lock()
+	if q.keys == nil {
+		q.keys = map[string]struct{}{}
+	}
+	if _, ok := q.keys[key]; ok {
+		q.mu.Unlock()
+		return false
+	}
+	q.keys[key] = struct{}{}
+	heap.Push(&q.heap, delayed[T]{at: at, value: value, key: key})
+	ch := q.signalLocked()
+	q.mu.Unlock()
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// ExtractMatching removes at most limit queued values. match must be a pure,
+// nonblocking predicate (no scheduler/engine locks); values are returned for
+// ownership transfer after the heap lock has been released.
+func (q *Delay[T]) ExtractMatching(limit int, match func(T) bool) []T {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var out []T
+	for i := 0; i < len(q.heap) && len(out) < limit; {
+		if !match(q.heap[i].value) {
+			i++
+			continue
+		}
+		item := heap.Remove(&q.heap, i).(delayed[T])
+		delete(q.keys, item.key)
+		out = append(out, item.value)
+	}
+	return out
 }

@@ -93,7 +93,11 @@ var showTaskTrace;
             }
             cur.items.push(s);
         });
-        return '<div class="trace-body">' + groups.map(function (g) {
+        var notice = steps[0].execution_id
+            ? '<p class="trace-empty">本次执行：' + deps.esc(steps[0].execution_id) + '</p>'
+            : '<p class="trace-empty">历史记录无执行轮次标识，按写入顺序展示。</p>';
+        if (steps[0].truncated) notice += '<p class="trace-empty">记录已截断，仅展示最后 500 步。</p>';
+        return '<div class="trace-body">' + notice + groups.map(function (g) {
             return '<section class="trace-attempt">'
                 + '<h4>第 ' + (g.attempt + 1) + ' 次尝试</h4>'
                 + '<ol class="trace-steps">' + g.items.map(renderStep).join('') + '</ol>'

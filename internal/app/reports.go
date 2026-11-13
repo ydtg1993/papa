@@ -5,6 +5,7 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/reportrunner"
 	"github.com/ydtg1993/papa/v4/obs"
 	"github.com/ydtg1993/papa/v4/obs/analyze"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -40,7 +41,7 @@ func (a *App) reports() *reportrunner.Runner {
 		if a.Logger != nil {
 			logger = a.Logger.Sys
 		}
-		a.reportRunner = reportrunner.New(reportrunner.Options{Config: a.reportConfig(), DB: a.DB, Logger: logger, Sections: a.reportSections, Patterns: a.reportPatterns, EngineState: a.obsEngineState, Inputs: a.obsReportInputs, Version: buildVersion()})
+		a.reportRunner = reportrunner.NewWithLimits(reportrunner.Options{Config: a.reportConfig(), DB: a.DB, Logger: logger, Sections: a.reportSections, Patterns: a.reportPatterns, EngineState: a.obsEngineState, Inputs: a.obsReportInputs, Version: buildVersion()}, a.reportInputLimits)
 	})
 	return a.reportRunner
 }
@@ -131,4 +132,14 @@ func (a *App) reportConfig() reportrunner.Config {
 			EventMaxGap:      cfg.Obs.Report.Thresholds.EventMaxGap,
 		},
 	}
+}
+
+// UseReportInputLimits sets finite input budgets before Run constructs the report
+// component. It is a composition operation, not a runtime policy update.
+func (a *App) UseReportInputLimits(limits inputbudget.Limits) error {
+	if a.reportRunner != nil {
+		return fmt.Errorf("report input limits already initialized")
+	}
+	a.reportInputLimits = limits.Normalize()
+	return nil
 }

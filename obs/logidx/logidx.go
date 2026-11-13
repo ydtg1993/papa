@@ -13,7 +13,9 @@ package logidx
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"io"
 	"os"
 	"path/filepath"
@@ -79,6 +81,15 @@ type Index struct {
 //
 // 两次相同输入的 Build 结果可 DeepEqual：签名排序、样例顺序都有确定的 tie-break。
 func Build(cfg Config) (*Index, error) {
+	return BuildContext(context.Background(), cfg, inputbudget.Limits{})
+}
+
+func BuildContext(ctx context.Context, cfg Config, limits inputbudget.Limits) (*Index, error) {
+	meter := inputbudget.New(limits)
+	if err := inputbudget.Check("files", int64(len(cfg.Paths)), int64(meter.Limits.MaxFiles)); err != nil {
+		return nil, err
+	}
+	var retained int64
 	maxEntries := cfg.MaxEntries
 	if maxEntries <= 0 {
 		maxEntries = defaultMaxEntries
@@ -102,7 +113,7 @@ func Build(cfg Config) (*Index, error) {
 			break
 		}
 		idx.Files++
-		unparsed, err := readEntries(path, loc, func(e Entry) bool {
+		unparsed, err := readEntriesContext(ctx, meter, path, loc, func(e Entry) bool {
 			if !withinWindow(e.Time, cfg.From, cfg.To) {
 				return true
 			}
@@ -112,6 +123,13 @@ func Build(cfg Config) (*Index, error) {
 				return false
 			}
 			accepted++
+			retained += int64(len(e.Msg) + len(e.Raw))
+			for k, v := range e.Fields {
+				retained += int64(len(k) + len(v))
+			}
+			if retained > meter.Limits.MaxRetainedBytes {
+				return false
+			}
 			pattern := signatureOf(e.Msg)
 			sig, ok := byPattern[pattern]
 			if !ok {
@@ -122,6 +140,9 @@ func Build(cfg Config) (*Index, error) {
 			return true
 		})
 		idx.Unparsed += unparsed
+		if retained > meter.Limits.MaxRetainedBytes {
+			return nil, &inputbudget.LimitError{Resource: "retained log bytes", Limit: meter.Limits.MaxRetainedBytes}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("logidx: read %q: %w", path, err)
 		}
@@ -182,15 +203,24 @@ func withinWindow(t, from, to time.Time) bool {
 // yield 返回 false 表示调用方不要再喂了，函数立即返回。
 // 返回值为未能解析的非空行数。
 func readEntries(path string, loc *time.Location, yield func(Entry) bool) (int, error) {
+	return readEntriesContext(context.Background(), inputbudget.New(inputbudget.Limits{}), path, loc, yield)
+}
+func readEntriesContext(ctx context.Context, meter *inputbudget.Meter, path string, loc *time.Location, yield func(Entry) bool) (int, error) {
+	return visitEntries(ctx, meter, path, loc, yield, nil)
+}
+func visitEntries(ctx context.Context, meter *inputbudget.Meter, path string, loc *time.Location, yield func(Entry) bool, onBad func()) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
 
-	var reader io.Reader = f
+	var reader io.Reader = inputbudget.Reader(ctx, f)
 	if strings.HasSuffix(strings.ToLower(path), ".gz") {
-		gz, gerr := gzip.NewReader(f)
+		gz, gerr := gzip.NewReader(reader)
 		if gerr != nil {
 			return 0, gerr
 		}
@@ -205,7 +235,10 @@ func readEntries(path string, loc *time.Location, yield func(Entry) bool) (int, 
 	lineNo := 0
 
 	for {
-		raw, readErr := br.ReadString('\n')
+		raw, readErr := meter.Line(ctx, br)
+		if readErr != nil && readErr != io.EOF {
+			return unparsed, readErr
+		}
 		if raw != "" {
 			lineNo++
 			text := strings.TrimSuffix(raw, "\n")
@@ -217,6 +250,9 @@ func readEntries(path string, loc *time.Location, yield func(Entry) bool) (int, 
 					}
 				} else {
 					unparsed++
+					if onBad != nil {
+						onBad()
+					}
 				}
 			}
 		}

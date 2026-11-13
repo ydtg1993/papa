@@ -48,7 +48,9 @@ func (e *Engine) ProcessErrorQueue() (int, error) {
 	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueFailedTask())
 	e.endQueueRun(QueueError, n, err)
 	// 本轮到点即采样一次积压，监控页无需等下一轮采样周期
-	e.sampleQueueBacklogOne(QueueError, query)
+	if e.queueContext().Err() == nil {
+		e.sampleQueueBacklogOne(QueueError, query)
+	}
 	return n, err
 }
 
@@ -59,6 +61,9 @@ func (e *Engine) requeueFailedTask() func(*models.CrawlerTask) bool {
 
 // requeueFailedTaskIn 单条重投的实体。
 func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
+	if e.queueContext().Err() != nil {
+		return false
+	}
 	if e.breakers.breakerSettlementBlocked(t.Site) {
 		return false
 	}
@@ -74,7 +79,7 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	//（一条 `repeatable + failed` 的行同时命中两个队列，两者各自有锁、互不互斥）：那一份被 worker
 	// 认领、正在跑，而这次无条件 UPDATE 照样把它改回 pending 并再投一份 → 同一行被两个 worker
 	// 并发执行。带上 status 之后：已经不是 failed 的行（正在跑 / 已终态）匹配不上，0 行 → 跳过。
-	res := taskstore.RetryFailed(e.db, t.ID, t.CompensationVersion, e.cfg.ErrorQueue.MaxRetry)
+	res := taskstore.RetryFailed(e.db.WithContext(e.queueContext()), t.ID, t.CompensationVersion, e.cfg.ErrorQueue.MaxRetry)
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
@@ -84,6 +89,7 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	}
 
 	task := e.taskFromRecord(t)
+	task.deliveryVersion.Reprocess++
 	task.repeatCounted = true // retry this round; spill must not consume another polling round
 	task.Retry = 0            // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
@@ -99,6 +105,7 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 			e.dedupCache.Delete(task.Unique())
 			e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
 			// 上面刚把这行重置成 pending，失败不管的话它就再也没人捞了（本队列只捞 failed）
+			e.residents.release(task, "")
 			e.markRequeueFailed(QueueError, t.ID, err)
 			return false
 		}

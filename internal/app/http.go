@@ -158,6 +158,7 @@ func (a *App) httpServer(ctx context.Context) {
 			}
 		},
 	})
+	mon.SetTaskTraceExecution(a.Engine.ListTraceExecution)
 	mon.Register(mux)
 	// 运维直接改 SQL 后的收敛：定期把库里的白名单同步进判定缓存
 	a.whitelistReload = access.NewWhitelistReloader(whitelistReader, a.Logger.Sys, mon.SetWhitelist, whitelistReloadInterval)

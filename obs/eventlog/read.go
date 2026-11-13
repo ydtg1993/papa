@@ -3,8 +3,10 @@ package eventlog
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"io"
 	"os"
 	"sort"
@@ -30,73 +32,114 @@ type eventKey struct {
 // 去重在窗口过滤之后进行：同一 (run_id, seq) 保留输入顺序中窗口内的第一条，
 // 因此重复传入同一路径不会产生重复事件，重复条数记入 Result.Duplicates。
 func Read(paths []string, from, to time.Time) (Result, error) {
+	return ReadContext(context.Background(), paths, from, to, "", inputbudget.Limits{})
+}
+
+// ReadContext preserves metadata over all runs but retains only runID when set.
+func ReadContext(ctx context.Context, paths []string, from, to time.Time, runID string, limits inputbudget.Limits) (Result, error) {
+	limits = limits.Normalize()
 	res := Result{Files: len(paths)}
 	seen := make(map[eventKey]struct{})
-	for _, path := range paths {
-		if err := readFile(path, from, to, seen, &res); err != nil {
-			return Result{}, err
+	var retained int64
+	meta, err := ScanContext(ctx, paths, from, to, limits, func(ev events.Event, raw string) error {
+		key := eventKey{ev.RunID, ev.Seq}
+		if _, ok := seen[key]; ok {
+			res.Duplicates++
+			return nil
 		}
+		if err := inputbudget.Check("dedup keys", int64(len(seen)+1), int64(limits.MaxDedupKeys)); err != nil {
+			return err
+		}
+		retained += int64(len(raw))
+		if err := inputbudget.Check("retained event bytes", retained, limits.MaxRetainedBytes); err != nil {
+			return err
+		}
+		seen[key] = struct{}{}
+		if runID == "" || ev.RunID == runID {
+			res.Events = append(res.Events, ev)
+		}
+		return nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	res.Unparsed = meta.Unparsed
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
 	}
 	sortEvents(res.Events)
 	res.Gaps = CountGaps(res.Events)
-	return res, nil
+	return res, ctx.Err()
 }
 
-// readFile 读取并解析一个 JSONL 文件，把结果合并进 res。
-func readFile(path string, from, to time.Time, seen map[eventKey]struct{}, res *Result) error {
+// ScanContext decodes window-matching events in input order including duplicates.
+// Unparsed counts every malformed nonempty line. Raw includes its newline.
+func ScanContext(ctx context.Context, paths []string, from, to time.Time, limits inputbudget.Limits, yield func(events.Event, string) error) (Result, error) {
+	meter := inputbudget.New(limits)
+	if err := inputbudget.Check("files", int64(len(paths)), int64(meter.Limits.MaxFiles)); err != nil {
+		return Result{}, err
+	}
+	res := Result{Files: len(paths)}
+	count := 0
+	for _, path := range paths {
+		err := scanFile(ctx, path, meter, func(raw string) error {
+			line := strings.TrimSpace(raw)
+			if line == "" {
+				return nil
+			}
+			var ev events.Event
+			if err := json.Unmarshal([]byte(line), &ev); err != nil {
+				res.Unparsed++
+				return nil
+			}
+			if !inWindow(ev.TS, from, to) {
+				return nil
+			}
+			count++
+			if err := inputbudget.Check("events", int64(count), int64(meter.Limits.MaxEvents)); err != nil {
+				return err
+			}
+			return yield(ev, raw)
+		})
+		if err != nil {
+			return Result{}, fmt.Errorf("eventlog: read %q: %w", path, err)
+		}
+	}
+	return res, ctx.Err()
+}
+func scanFile(ctx context.Context, path string, meter *inputbudget.Meter, yield func(string) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("eventlog: open %q: %w", path, err)
+		return err
 	}
 	defer f.Close()
-
-	var r io.Reader = f
+	var r io.Reader = inputbudget.Reader(ctx, f)
 	if strings.HasSuffix(strings.ToLower(path), ".gz") {
-		zr, err := gzip.NewReader(f)
+		zr, err := gzip.NewReader(r)
 		if err != nil {
-			return fmt.Errorf("eventlog: open gzip %q: %w", path, err)
+			return err
 		}
 		defer zr.Close()
 		r = zr
 	}
-
-	// 用 bufio.Reader 按行读取而不是 bufio.Scanner：事件行可能很长（错误文本等），
-	// Scanner 的 token 上限会把长行变成读错误。
 	br := bufio.NewReader(r)
 	for {
-		line, readErr := br.ReadString('\n')
-		parseLine(line, from, to, seen, res)
-		if readErr != nil {
-			if readErr == io.EOF {
-				return nil
+		line, err := meter.Line(ctx, br)
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if line != "" {
+			if e := yield(line); e != nil {
+				return e
 			}
-			return fmt.Errorf("eventlog: read %q: %w", path, readErr)
+		}
+		if err == io.EOF {
+			return ctx.Err()
 		}
 	}
-}
-
-// parseLine 解析一行 JSONL：空白行忽略，解析失败计入 Unparsed，窗口外丢弃，
-// 重复 (run_id, seq) 计入 Duplicates，其余追加到 res.Events。
-func parseLine(line string, from, to time.Time, seen map[eventKey]struct{}, res *Result) {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return
-	}
-	var ev events.Event
-	if err := json.Unmarshal([]byte(line), &ev); err != nil {
-		res.Unparsed++
-		return
-	}
-	if !inWindow(ev.TS, from, to) {
-		return
-	}
-	key := eventKey{runID: ev.RunID, seq: ev.Seq}
-	if _, ok := seen[key]; ok {
-		res.Duplicates++
-		return
-	}
-	seen[key] = struct{}{}
-	res.Events = append(res.Events, ev)
 }
 
 // inWindow 判断 ts 是否落在 [from, to] 闭区间内；零值边界表示该方向不限。

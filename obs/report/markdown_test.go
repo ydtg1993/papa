@@ -124,3 +124,15 @@ func TestHistoricalReportExplainsCurrentSnapshotBoundary(t *testing.T) {
 		t.Fatal("AI brief lost historical boundary")
 	}
 }
+
+func TestDirNameSpecialRunIDs(t *testing.T) {
+	for _, tc := range []struct{ id, want string }{
+		{".", "run"}, {"..", "run"}, {"...", "run"}, {"CON", "run-CON"}, {"nul.txt", "run-nul.txt"}, {"LPT1", "run-LPT1"}, {"COM9.log", "run-COM9.log"}, {"abc.", "abc"}, {"normal-run_123.abc", "normal-run_123.abc"}, {"../x", "..-x"},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			if got := DirName(obs.RunMeta{RunIDs: []string{tc.id}}); got != tc.want {
+				t.Fatalf("DirName(%q) = %q, want %q", tc.id, got, tc.want)
+			}
+		})
+	}
+}

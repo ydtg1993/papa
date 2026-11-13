@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/ydtg1993/papa/v4/engine/internal/fetchruntime"
+	"github.com/ydtg1993/papa/v4/pkg/middleware"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
@@ -13,7 +14,8 @@ import (
 //  1. **配置面只有两层：站点与阶段**（`SiteSpec.M3U8` / `StageSpec.M3U8`，`FileDown` 同理）。
 //     基座是框架按 `DefaultConfig()` 备好的那份 —— 没有"全局那层配置"可写（`SetM3U8` /
 //     `SetFiledown` 已删除）：要么在声明里按站点/阶段写清楚，要么在 fetcher 里自己造一份，
-//     没有第三种"藏在某处的全局配置"。没有任何覆盖的阶段**不建实例**，直接用基座那份。
+//     没有第三种下载行为覆盖。进程资源预算通过 SetDownloadResources 独立装配，不能由 Overlay 放宽。
+//     没有任何覆盖的阶段**不建实例**，直接用基座那份。
 //  2. **覆盖出来的实例用 `With` 建**：配置独立、**内部状态共享**（同一目标文件的串行锁、密钥缓存、
 //     代理连接池、消息队列都是同一份）。所以"每个阶段一份配置"不等于"每个阶段一个孤岛"。
 //  3. **想临时一份**（只给这一次调用）就自己在 fetcher 里造：`M3U8ForTask(task).With(ov)`，
@@ -43,6 +45,12 @@ func (e *Engine) resolveStageDownloads() {
 	e.downloads.Resolve(stages, e.m3u8, e.filedown)
 }
 
+// SetDownloadResources configures per-download limits and a shared resource
+// budget before InitDownloaders/Run. nil budget selects finite defaults.
+func (e *Engine) SetDownloadResources(limits middleware.DownloadLimits, budget *middleware.DownloadBudget) error {
+	return e.downloads.ConfigureResources(limits, budget)
+}
+
 // InitDownloaders 备好两个下载器的**基座**（框架在 Run 里调，紧挨着 SetBrowserPool / SetHTMLClient）。
 //
 // 为什么由框架备：它们与 `html` / `browser` 那两个客户端是同一类"框架自带组件"，而那两个都是
@@ -50,13 +58,14 @@ func (e *Engine) resolveStageDownloads() {
 // `DefaultConfig()` 那份；要按站点/阶段各配一份，写在声明里（**没有全局那层**）。
 // 重复调用是幂等的（已经建过就不动）。
 func (e *Engine) InitDownloaders() {
+	limits, budget := e.downloads.Resources()
 	if e.filedown == nil {
 		cfg := filedown.DefaultConfig()
 		cfg.ProxyManager = e.proxy
 		if e.cfg != nil {
 			cfg.Network = e.cfg.Network
 		}
-		e.filedown = filedown.NewDownloader(cfg)
+		e.filedown = filedown.NewDownloader(cfg).WithResources(limits, budget)
 	}
 	if e.m3u8 == nil {
 		cfg := m3u8.DefaultConfig()
@@ -64,7 +73,7 @@ func (e *Engine) InitDownloaders() {
 		if e.cfg != nil {
 			cfg.Network = e.cfg.Network
 		}
-		e.m3u8 = m3u8.NewDownloader(cfg)
+		e.m3u8 = m3u8.NewDownloader(cfg).WithResources(limits, budget)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/reportrunner"
 	"github.com/ydtg1993/papa/v4/obs"
+	"github.com/ydtg1993/papa/v4/obs/inputbudget"
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/events"
@@ -34,8 +35,9 @@ type App struct {
 	events events.Emitter
 	runID  string
 	// 报告扩展点（Run 之前注册）：业务段/业务模式。papa 只编排与渲染，不认识其语义。
-	reportSections []obs.Section
-	reportPatterns []obs.Pattern
+	reportInputLimits inputbudget.Limits
+	reportSections    []obs.Section
+	reportPatterns    []obs.Pattern
 	// 报告定时生成（obs.report.interval）：Run 期间按间隔刷新「当天」日报。
 	// 组件负责取消、等待与串行生成（都发生在关库之前），避免
 	// 定时报告与退出报告，避免同一天目录被两个 goroutine 同时写。

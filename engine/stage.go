@@ -77,6 +77,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	//（与下载器那边 max(MaxConcurrent, 1) 同一路数）。
 	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
+		e.residents.move(task, "running")
+		defer e.residents.release(task, "running")
 		// 停机时的排水（WorkerPool.Stop → drainAndExit）会把队列里**还没开始**的存量任务
 		// 也原样交给 handler，而它拿到的 ctx 在进 Stop 那一刻就取消了
 		//（Engine.Stop 先 e.cancel() 再 pool.Stop，所以 workerpool.run 才故意不 select ctx.Done）。
@@ -84,6 +86,10 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		// 所以**不认领、直接放弃**：行仍是 pending，下次启动的启动恢复会重新入队
 		//（recoverqueue.go 的 recoverQueueQuery 捞的正是 pending/processing）。
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil
+		}
+		if e.residents != nil && e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
+			e.spillTask(task)
 			return nil
 		}
 		breakerRelease, admitted := e.breakers.admitBreakerTask(task)
@@ -151,6 +157,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		runVersion = version
 		task.breakerRound = fmt.Sprintf("%d:%d", version.Repeat, version.Reprocess)
 		ctx = withTaskRunVersion(ctx, version)
+		ctx = withEvidenceExecution(ctx)
 		if err := e.persistAccountAttempt(ctx, task, version); err != nil {
 			e.releaseClaim(task)
 			return err
@@ -298,7 +305,15 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 // runAttempt assembles one execution session; the public Fetcher API still
 // receives Engine, but no runtime component retains it as a dependency.
 func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
-	session := attemptExecution{task: task, attempt: attempt, trace: e.newTrace(task, attempt), archive: e.newArchiveBuffer(task, attempt), headers: e.siteHeaders(task.Site), resources: &e.fetchResources,
+	executionID := evidenceExecutionID(ctx)
+	tr, ar := e.newTrace(task, attempt), e.newArchiveBuffer(task, attempt)
+	if tr != nil {
+		tr.executionID = executionID
+	}
+	if ar != nil {
+		ar.executionID = executionID
+	}
+	session := attemptExecution{task: task, attempt: attempt, trace: tr, archive: ar, headers: e.siteHeaders(task.Site), resources: &e.fetchResources,
 		persistence: attemptPersistence{db: e.db, state: &e.execution, breakers: &e.breakers, logger: e.loggerSet.Engine}}
 	return session.run(ctx, func(ctx context.Context) error { return fetcher.FetchHandler(ctx, task, e) })
 }

@@ -149,6 +149,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 	}
 
 	task := e.taskFromRecord(t)
+	task.deliveryVersion.Reprocess++
 	task.repeatCounted = true // manual reprocess keeps the current polling round
 	task.Retry = 0            // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
 	e.dedupCache.Add(task.Unique())
@@ -160,6 +161,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 			return nil
 		}
 		e.dedupCache.Delete(task.Unique())
+		e.residents.release(task, "")
 		e.markRequeueFailed("manual", t.ID, err)
 		return fmt.Errorf("submit task %d: %w", id, err)
 	}
@@ -225,6 +227,7 @@ func (e *Engine) UrgentTask(id uint) error {
 			return nil
 		}
 		e.dedupCache.Delete(task.Unique())
+		e.residents.release(task, "")
 		return fmt.Errorf("submit urgent task %d: %w", id, err)
 	}
 	return nil

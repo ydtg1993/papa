@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,5 +134,66 @@ func TestReportGenerateRunFlagKeepsSingleReport(t *testing.T) {
 	// --run 不走按天拆分：不该出现日期目录。
 	if _, err := os.Stat(filepath.Join(reportsDir, report.DayName(now))); !os.IsNotExist(err) {
 		t.Errorf("--run 不应生成日报目录（err=%v）", err)
+	}
+}
+
+func TestReportGenerateExplicitHistoryRetained(t *testing.T) {
+	for _, selector := range []string{"window", "since", "until", "run", "run-date"} {
+		t.Run(selector, func(t *testing.T) {
+			dir := t.TempDir()
+			logDir, out := filepath.Join(dir, "logs"), filepath.Join(dir, "reports")
+			if err := os.Mkdir(logDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().AddDate(0, 0, -30)
+			old = time.Date(old.Year(), old.Month(), old.Day(), 12, 0, 0, 0, time.Local)
+			events := filepath.Join(logDir, "events.jsonl")
+			writeReportTestEvents(t, events, old)
+			raw, err := os.ReadFile(events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runID := ".."
+			if selector == "run-date" {
+				// A dated run directory expires by its name even when freshly written.
+				// This detects accidentally retaining only the time-window exemption.
+				runID = report.DayName(old)
+			}
+			if err := os.WriteFile(events, []byte(strings.ReplaceAll(string(raw), "r-t", runID)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := writeReportTestConfig(t, dir, logDir, out)
+			args := []string{"generate", "-c", cfg, "--no-logs"}
+			label := report.DayName(old)
+			switch selector {
+			case "window":
+				args = append(args, "--since", old.Add(-time.Hour).Format(time.RFC3339), "--until", old.Add(time.Hour).Format(time.RFC3339))
+			case "since":
+				args = append(args, "--since", old.Add(-time.Hour).Format(time.RFC3339))
+			case "until":
+				args = append(args, "--until", old.Add(time.Hour).Format(time.RFC3339))
+			default:
+				args = append(args, "--run", runID)
+				label = report.DirName(obs.RunMeta{RunIDs: []string{runID}})
+			}
+			if err := runReportCmd(args); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"report.md", "report.json", "ai-brief.md", "ai-brief.json"} {
+				if _, err := os.Stat(filepath.Join(out, label, name)); err != nil {
+					t.Fatalf("missing output %s: %v", name, err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+					t.Fatalf("output escaped: %s (%v)", name, err)
+				}
+			}
+		})
+	}
+}
+func TestReportOutputDirRejectsTraversal(t *testing.T) {
+	for _, label := range []string{"", ".", "..", "../escape", `..\escape`, "/absolute", "C:stream", "trailing."} {
+		if _, err := reportOutputDir(t.TempDir(), label); err == nil {
+			t.Errorf("accepted %q", label)
+		}
 	}
 }

@@ -36,9 +36,10 @@ const (
 // **空指针安全**：trace 未开启、或测试里直接调 FetchHandler 时 Task.Trace 为 nil，
 // 此时 Step/Fail/setResult/finish 都是 no-op —— 可选协作者就该是可选的。
 type Trace struct {
-	store   traceService
-	taskID  int
-	attempt int
+	store       traceService
+	taskID      int
+	attempt     int
+	executionID string
 
 	mu           sync.Mutex
 	steps        []models.TaskTrace
@@ -127,14 +128,15 @@ func (t *Trace) Warn(name string, err error, data any) {
 func (t *Trace) append(name string, status models.TraceStatus, kind, msg string, data any) {
 	now := time.Now()
 	rec := models.TaskTrace{
-		TaskID:   uint(t.taskID),
-		Attempt:  t.attempt,
-		Seq:      len(t.steps),
-		Step:     name,
-		Status:   status,
-		Kind:     kind,
-		Message:  msg,
-		Duration: now.Sub(t.lastAt),
+		TaskID:      uint(t.taskID),
+		ExecutionID: t.executionID,
+		Attempt:     t.attempt,
+		Seq:         len(t.steps),
+		Step:        name,
+		Status:      status,
+		Kind:        kind,
+		Message:     msg,
+		Duration:    now.Sub(t.lastAt),
 	}
 	t.lastAt = now
 	if data != nil {
@@ -222,7 +224,23 @@ func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 }
 
 // ListTrace returns ordered steps for the monitoring drawer.
-func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) { return e.traceService().list(taskID) }
+func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) {
+	detailed, err := e.ListTraceExecution(taskID)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]TraceStep, len(detailed))
+	for i := range detailed {
+		steps[i] = detailed[i].TraceStep
+	}
+	return steps, nil
+}
+
+// ListTraceExecution returns the latest persisted execution tail with identity
+// and truncation metadata. ListTrace retains its original value layout.
+func (e *Engine) ListTraceExecution(taskID int) ([]TraceExecutionStep, error) {
+	return e.traceService().list(taskID)
+}
 func (e *Engine) traceRetention() time.Duration {
 	return (traceService{options: e.cfg.Crawler.Trace}).retention()
 }

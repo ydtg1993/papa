@@ -5,7 +5,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -29,6 +29,8 @@ import (
 
 // Downloader 文件下载器（并发安全）
 type Downloader struct {
+	limits middleware.DownloadLimits
+	budget *middleware.DownloadBudget
 	config *Config
 	client *http.Client
 	st     *state
@@ -39,17 +41,17 @@ type Downloader struct {
 //
 //   - `outputLocks`：按完整输出路径串行写入，断点文件与分片目录也共用这套可取消锁；
 //   - `labors`：按源|目录|文件名保留任务参数，换源不会复用另一源的 URL 或断点身份；
-//   - `proxyClients`：每个代理一条连接池。
+//   - `proxyTransports`：每个代理一条连接池。
 //
 // 想要独立配置不必连这些也独立（用 With）；真要一座互不共享的孤岛，才用 NewDownloader。
 type state struct {
-	// proxyClients 按代理地址缓存的客户端（逐下载指定出口时用）；proxyMu 保护它。
-	proxyMu      sync.Mutex
-	proxyClients map[string]*http.Client
-	trackQueue   *msgqueue.MsgQueue[any]
-	labors       map[string]*labor
-	laborMu      sync.RWMutex
-	outputLocks  middleware.OutputLocks
+	// proxyTransports 按代理地址缓存的传输连接池（逐下载指定出口时用）；proxyMu 保护它。
+	proxyMu         sync.Mutex
+	proxyTransports map[string]http.RoundTripper
+	trackQueue      *msgqueue.MsgQueue[any]
+	labors          map[string]*labor
+	laborMu         sync.RWMutex
+	outputLocks     middleware.OutputLocks
 }
 
 // labor 每个下载任务的私有数据
@@ -73,6 +75,8 @@ func NewDownloader(cfg *Config) *Downloader {
 	copyConfig.Network.AllowedOrigins = append([]string(nil), cfg.Network.AllowedOrigins...)
 	cfg = &copyConfig
 	return &Downloader{
+		limits: (middleware.DownloadLimits{}).Normalized(),
+		budget: middleware.NewDownloadBudget(0, 0),
 		config: cfg,
 		client: egress.Client(&http.Client{Timeout: cfg.Timeout}, cfg.Network),
 		st: &state{
@@ -98,6 +102,7 @@ func (d *Downloader) SetClient(client *http.Client) {
 func (d *Downloader) With(o Overlay) *Downloader {
 	cfg := o.Apply(d.Config())
 	return &Downloader{
+		limits: d.limits, budget: d.budget,
 		config: &cfg,
 		client: egress.Client(&http.Client{Timeout: cfg.Timeout}, cfg.Network),
 		st:     d.st,
@@ -134,7 +139,7 @@ type DownloadOptions struct {
 	Headers   map[string]string
 	// Proxy 本次下载走哪个代理（如 "http://1.2.3.4:8080"）；空 = 用下载器默认的客户端。
 	// 出口由调用方决定：`engine.NextProxy()` 取一个，或站点自己的固定出口。
-	// 同一个地址的客户端会复用（连接池不白扔）。
+	// 同一个地址的传输连接池会复用，客户端超时属于本实例。
 	Proxy string
 	// Direct 直接下载：跳过 HEAD 探测与分片/续传那套机器，一次 GET 落盘。
 	// 封面这类几十~几百 KB 的小文件用它可以省掉一次往返（也就不会再有"分片 1/1"这种过程）。
@@ -220,7 +225,7 @@ func (d *Downloader) getStateFilePath(la *labor) string {
 // loadResumeState 加载状态
 func (d *Downloader) loadResumeState(la *labor) (*ResumeState, error) {
 	fp := d.getStateFilePath(la)
-	data, err := os.ReadFile(fp)
+	data, err := middleware.ReadLimitedFile(fp, d.limits.ResumeBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -228,7 +233,10 @@ func (d *Downloader) loadResumeState(la *labor) (*ResumeState, error) {
 		return nil, err
 	}
 	var state ResumeState
-	if err := json.Unmarshal(data, &state); err != nil {
+	if err := d.decodeResume(data, &state); err != nil {
+		return nil, err
+	}
+	if err := d.validateResume(&state); err != nil {
 		return nil, err
 	}
 	return &state, nil
@@ -237,17 +245,26 @@ func (d *Downloader) loadResumeState(la *labor) (*ResumeState, error) {
 // saveResumeState 保存状态
 func (d *Downloader) saveResumeState(la *labor, state *ResumeState) error {
 	la.resumeMu.Lock()
-	defer la.resumeMu.Unlock()
-
+	snapshot := *state
+	snapshot.Completed = append([]int64(nil), state.Completed...)
+	snapshot.TempFiles = append([]string(nil), state.TempFiles...)
+	la.resumeMu.Unlock()
+	if err := d.validateResume(&snapshot); err != nil {
+		return err
+	}
 	stateDir := filepath.Join(d.config.ResumeStateDir, la.outputDir)
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return err
 	}
 	statePath := d.getStateFilePath(la)
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := d.encodeResume(snapshot)
 	if err != nil {
 		return err
 	}
+	if int64(len(data)) > d.limits.ResumeBytes {
+		return middleware.ResourceLimit("resume bytes", d.limits.ResumeBytes)
+	}
+
 	tmpPath := statePath + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return err
@@ -335,6 +352,16 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		return &DownloadResult{Error: err}
 	}
 	defer unlock()
+	releaseDisk, err := d.budget.AcquireDiskContext(ctx, cfgGlobal.ResumeStateDir, 2*d.limits.OutputBytes+2*d.limits.ResumeBytes)
+	if err != nil {
+		return &DownloadResult{Error: err}
+	}
+	defer releaseDisk()
+	releaseMemory, err := d.budget.AcquireMemory(2*d.limits.ResumeBytes + int64(d.limits.Chunks)*256 + int64(min(max(cfgGlobal.MaxConcurrent, 1), d.limits.Chunks))*(128<<10))
+	if err != nil {
+		return &DownloadResult{Error: err}
+	}
+	defer releaseMemory()
 
 	// 分块大小走兜底：<= 0 见 chunkSizeOrDefault 的说明（那是个"会卡死"的值）
 	chunkSize := chunkSizeOrDefault(cfgGlobal.ChunkSize)
@@ -353,6 +380,14 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 
 	result := &DownloadResult{ContentType: p.ContentType}
 	totalSize := p.TotalSize
+	if totalSize > d.limits.OutputBytes {
+		result.Error = middleware.ResourceLimit("file bytes", d.limits.OutputBytes)
+		return result
+	}
+	if (totalSize-1)/chunkSize+1 > int64(d.limits.Chunks) {
+		result.Error = middleware.ResourceLimit("file chunks", int64(d.limits.Chunks))
+		return result
+	}
 
 	relOutput := filepath.Join(la.outputDir, la.filename)
 	absOutput := filepath.Join(cfgGlobal.OutputDir, relOutput)
@@ -367,6 +402,10 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		var err error
 		resumeState, err = d.loadResumeState(la)
 		if err != nil {
+			if errors.Is(err, middleware.ErrResourceLimit) {
+				result.Error = err
+				return result
+			}
 			d.st.trackQueue.SendError(fmt.Errorf("load resume state failed: %w", err))
 			resumeState = nil
 		}
@@ -397,6 +436,12 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		completedMap[start] = true
 	}
 
+	resumeState.Completed = resumeState.Completed[:0]
+	resumeState.TempFiles = nil
+	for start := range completedMap {
+		resumeState.Completed = append(resumeState.Completed, start)
+	}
+
 	// 临时目录（按源隔离，见 segDir）
 	tempDir := d.segDir(la)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
@@ -404,15 +449,9 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		return result
 	}
 
-	// 并发下载
+	// Fixed workers own requests; the producer emits offsets incrementally.
 	var wg sync.WaitGroup
-	// 并发上限兜底为 1：这个 channel 是当信号量用的，MaxConcurrent 为 0（或负数）时
-	// make(chan struct{}, 0) 是**无缓冲**通道，第一个 goroutine 就会永久阻塞在
-	// `sem <- struct{}{}` 上，wg.Wait() 再也不返回 —— 表现为"下载卡死"：
-	// 不报错、不退出、也没有任何日志。负数则直接 panic。
-	// 写 1 至少让它一块块串行跑完。（同下面 saveBatchSize 的处理方式：
-	// 只补"会卡死/崩"的那一类，不动"分块大小"这种业务语义字段。）
-	sem := make(chan struct{}, max(cfgGlobal.MaxConcurrent, 1))
+	jobs := make(chan int64)
 	var downloadErr error
 	var errMu sync.Mutex
 	var downloaded atomic.Int64
@@ -420,77 +459,114 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 	if saveBatchSize <= 0 {
 		saveBatchSize = 5
 	}
-	var completedCount atomic.Int32
-
-	// 分片起始位置列表
-	var chunks []int64
-	for start := int64(0); start < totalSize; start += chunkSize {
-		chunks = append(chunks, start)
+	var checkpoint *middleware.Checkpoint
+	if d.config.EnableResume {
+		checkpoint = middleware.NewCheckpoint(func() error { return d.saveResumeState(la, resumeState) })
+		defer checkpoint.Close()
 	}
-	totalChunks := len(chunks)
+	var completedCount atomic.Int64
 
-	for _, start := range chunks {
-		// 照状态文件跳过下载 —— 但**合并那一步会按偏移+长度复核一遍**（见下），
-		// 状态说"下好了"而磁盘上没有/长度不对时，那里会清掉状态并报错，让下一次跑重下这一片。
-		if completedMap[start] {
-			continue
-		}
+	totalChunks := (totalSize-1)/chunkSize + 1
+	for worker := int64(0); worker < min(int64(max(cfgGlobal.MaxConcurrent, 1)), totalChunks); worker++ {
 		wg.Add(1)
-		go func(start int64) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			end := start + chunkSize - 1
-			if end >= totalSize {
-				end = totalSize - 1
-			}
-			tempFile := chunkTempPath(tempDir, start)
-			err := d.downloadChunkToFile(ctx, la.url, start, end, tempFile, cfg)
-			if err != nil {
-				errMu.Lock()
-				if downloadErr == nil {
-					downloadErr = fmt.Errorf("chunk %d: %w", start, err)
+			for start := range jobs {
+				if ctx.Err() != nil {
+					return
 				}
-				errMu.Unlock()
-				return
-			}
+				end := start + chunkLength(start, totalSize, chunkSize) - 1
+				tempFile := chunkTempPath(tempDir, start)
+				err := d.downloadChunkToFile(ctx, la.url, start, end, tempFile, cfg)
+				if err != nil {
+					errMu.Lock()
+					if downloadErr == nil {
+						downloadErr = fmt.Errorf("chunk %d: %w", start, err)
+					}
+					errMu.Unlock()
+					continue
+				}
 
-			la.resumeMu.Lock()
-			resumeState.Completed = append(resumeState.Completed, start)
-			resumeState.TempFiles = append(resumeState.TempFiles, tempFile)
-			la.resumeMu.Unlock()
+				la.resumeMu.Lock()
+				resumeState.Completed = append(resumeState.Completed, start)
+				resumeState.TempFiles = append(resumeState.TempFiles, tempFile)
+				la.resumeMu.Unlock()
 
-			newCompleted := completedCount.Add(1)
-			chunkSize := end - start + 1
-			downloaded.Add(chunkSize)
+				newCompleted := completedCount.Add(1)
+				chunkSize := end - start + 1
+				downloaded.Add(chunkSize)
 
-			if int(newCompleted)%saveBatchSize == 0 || int(newCompleted) == totalChunks {
-				if err := d.saveResumeState(la, resumeState); err != nil {
-					d.st.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
+				if int(newCompleted)%saveBatchSize == 0 || newCompleted == totalChunks {
+					if checkpoint != nil {
+						checkpoint.Notify()
+					}
+				}
+				// 进度只走 OnProgress，别改回错误通道：那端（App.mdMsgListener）按 Error 级别落盘，
+				// 拿它传进度等于把"成功"写成 ERROR —— 下 11 张封面就是 11 行 level=error，
+				// 把真错误稀释掉，而且业务侧关不掉（只要用 filedown 就有）。
+				if cfgGlobal.OnProgress != nil {
+					cfgGlobal.OnProgress(downloaded.Load(), totalSize)
 				}
 			}
-			// 进度只走 OnProgress，别改回错误通道：那端（App.mdMsgListener）按 Error 级别落盘，
-			// 拿它传进度等于把"成功"写成 ERROR —— 下 11 张封面就是 11 行 level=error，
-			// 把真错误稀释掉，而且业务侧关不掉（只要用 filedown 就有）。
-			if cfgGlobal.OnProgress != nil {
-				cfgGlobal.OnProgress(downloaded.Load(), totalSize)
-			}
-		}(start)
+		}()
 	}
+produce:
+	for start := int64(0); start < totalSize; {
+		if ctx.Err() != nil {
+			break
+		}
+		if !completedMap[start] {
+			select {
+			case jobs <- start:
+			case <-ctx.Done():
+				break produce
+			}
+		}
+		start += chunkLength(start, totalSize, chunkSize)
+	}
+	close(jobs)
 	wg.Wait()
+	if checkpoint != nil {
+		if err := checkpoint.Close(); err != nil {
+			result.Error = fmt.Errorf("checkpoint: %w", err)
+			return result
+		}
+	}
+	if ctx.Err() != nil {
+		result.Error = ctx.Err()
+		return result
+	}
+
 	if downloadErr != nil {
 		result.Error = downloadErr
 		return result
 	}
 
 	// 合并分片（使用 io.NewOffsetWriter 避免大内存）
-	outFile, err := os.OpenFile(absOutput, os.O_CREATE|os.O_WRONLY, 0644)
+	// 原位写入会保留已有文件的权限；临时文件替换也不能把私有产物放宽成 0644。
+	outputMode := os.FileMode(0644)
+	preserveMode := false
+	if info, err := os.Stat(absOutput); err == nil {
+		outputMode = info.Mode().Perm()
+		preserveMode = info.Mode().IsRegular()
+	} else if !os.IsNotExist(err) {
+		result.Error = fmt.Errorf("stat merged output: %w", err)
+		return result
+	}
+	tmpOutput := filepath.Join(filepath.Dir(absOutput), ".papa-merge-"+rand.Text()+".tmp")
+	outFile, err := os.OpenFile(tmpOutput, os.O_CREATE|os.O_EXCL|os.O_WRONLY, outputMode)
 	if err != nil {
 		result.Error = err
 		return result
 	}
-	defer outFile.Close()
+	defer func() { _ = outFile.Close(); _ = os.Remove(tmpOutput) }()
+	if preserveMode {
+		// Restore the existing permission bits even when the current umask is stricter.
+		if err := outFile.Chmod(outputMode); err != nil {
+			result.Error = fmt.Errorf("preserve merged output permissions: %w", err)
+			return result
+		}
+	}
 	if err := outFile.Truncate(totalSize); err != nil {
 		result.Error = err
 		return result
@@ -499,10 +575,10 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 	// 状态文件是本应用自己写的，但损坏或被改过时，照它给的路径 os.Open 就能把进程读得到的任意文件
 	// 合并进下载产物；照它给的偏移写，就是往产物的任意位置塞字节。`TempFiles` 仍照写进状态文件
 	// （格式不动），只是不再被当成路径来源。
-	for _, start := range resumeState.Completed {
-		if !isChunkStart(start, totalSize, chunkSize) {
-			d.st.trackQueue.SendError(fmt.Errorf("resume state: 合并时忽略非法分片偏移 %d（不在分片边界上）", start))
-			continue
+	for start := int64(0); start < totalSize; start += chunkLength(start, totalSize, chunkSize) {
+		if ctx.Err() != nil {
+			result.Error = ctx.Err()
+			return result
 		}
 		tempFile := chunkTempPath(tempDir, start)
 		// 使用 offset writer 流式复制
@@ -536,6 +612,20 @@ func (d *Downloader) download(ctx context.Context, la *labor, cfg *requestConfig
 		// 合并中途失败时，状态文件仍然写着"所有分片都下好了"，续传会跳过下载直接进合并 ——
 		// 要是这轮已经把前几个分片删了，那次合并就会报 open temp file ... no such file。
 		// 分片统一由下面的 RemoveAll(tempDir) 在**合并全部成功之后**清掉。
+	}
+
+	if err := outFile.Close(); err != nil {
+		result.Error = fmt.Errorf("close merged output: %w", err)
+		return result
+	}
+	if ctx.Err() != nil {
+		result.Error = ctx.Err()
+		return result
+	}
+	// Rename replaces only after close, including on Windows; failure preserves the old target.
+	if err := os.Rename(tmpOutput, absOutput); err != nil {
+		result.Error = fmt.Errorf("publish merged output: %w", err)
+		return result
 	}
 
 	// 收尾：**先清状态文件，再删分片 —— 顺序不能反。**
@@ -642,6 +732,10 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 			continue
 		}
 		expectSize := end - start + 1
+		if resp.ContentLength > expectSize {
+			resp.Body.Close()
+			return middleware.ResourceLimit("chunk declared bytes", expectSize)
+		}
 		tmpPath := destFile + ".tmp"
 		out, err := os.Create(tmpPath)
 		if err != nil {
@@ -649,8 +743,11 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 			lastErr = err
 			continue
 		}
-		written, err := io.Copy(out, resp.Body)
+		written, err := io.Copy(out, io.LimitReader(resp.Body, expectSize+1))
 		_ = resp.Body.Close()
+		if err == nil && written > expectSize {
+			err = middleware.ResourceLimit("chunk bytes", expectSize)
+		}
 		if err == nil && written != expectSize {
 			// 短 206：服务端只回了部分字节，当失败重试，否则合并出空洞文件
 			err = fmt.Errorf("short body: got %d bytes, want %d", written, expectSize)
@@ -659,6 +756,10 @@ func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, st
 			err = cerr // 磁盘写失败只在 Close 时暴露
 		}
 		if err != nil {
+			_ = os.Remove(tmpPath)
+			if errors.Is(err, middleware.ErrResourceLimit) {
+				return err
+			}
 			lastErr = err
 			continue
 		}
@@ -689,6 +790,9 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 		return &DownloadResult{Error: err}
 	}
 	defer resp.Body.Close()
+	if resp.ContentLength > d.limits.OutputBytes {
+		return &DownloadResult{Error: middleware.ResourceLimit("file declared bytes", d.limits.OutputBytes)}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &DownloadResult{Error: fmt.Errorf("unexpected status: %d", resp.StatusCode)}
 	}
@@ -720,6 +824,9 @@ func (d *Downloader) downloadSingle(ctx context.Context, la *labor, cfg *request
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			if int64(n) > d.limits.OutputBytes-written {
+				return &DownloadResult{Error: middleware.ResourceLimit("file bytes", d.limits.OutputBytes)}
+			}
 			if _, werr := file.Write(buf[:n]); werr != nil {
 				return &DownloadResult{Error: fmt.Errorf("write %s: %w", absOutput, werr)}
 			}
@@ -838,23 +945,23 @@ func (d *Downloader) clientOf(cfg *requestConfig) *http.Client {
 	return d.client
 }
 
-// clientForProxy 返回走指定代理的 HTTP 客户端；同一个地址复用同一个（连接池不白扔）。
+// clientForProxy 返回走指定代理的 HTTP 客户端；同一个地址复用传输连接池，客户端超时属于本实例。
 //
 // 代理地址来自调用方（fetcher），所以数量由业务决定 —— 这里不做上限，也不清理。
 // 地址解析失败会记录错误并返回拒绝请求的客户端，绝不回落直连。
 func (d *Downloader) clientForProxy(addr string) *http.Client {
 	d.st.proxyMu.Lock()
 	defer d.st.proxyMu.Unlock()
-	if c, ok := d.st.proxyClients[addr]; ok {
-		return c
+	if transport, ok := d.st.proxyTransports[addr]; ok {
+		return &http.Client{Timeout: d.config.Timeout, Transport: transport}
 	}
 	proxyURL, err := url.Parse(addr)
 	if err != nil {
 		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
 		proxyURL = &url.URL{Scheme: "invalid"}
 	}
-	if d.st.proxyClients == nil {
-		d.st.proxyClients = make(map[string]*http.Client)
+	if d.st.proxyTransports == nil {
+		d.st.proxyTransports = make(map[string]http.RoundTripper)
 	}
 	// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
 	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
@@ -866,7 +973,7 @@ func (d *Downloader) clientForProxy(addr string) *http.Client {
 	}
 	c = egress.Client(c, d.config.Network)
 	c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, addr)
-	d.st.proxyClients[addr] = c
+	d.st.proxyTransports[addr] = c.Transport
 	return c
 }
 
@@ -921,7 +1028,7 @@ func (d *Downloader) genFileName(rawURL, contentDisposition string) string {
 // chunkSizeOrDefault 分块大小的兜底：<= 0 会让分片循环**永不退出**（`start += 0` 原地打转、
 // `start += 负数` 往回走），表现是进程卡在 OOM 上、连一行日志都没有 —— 与 MaxConcurrent /
 // saveBatchSize 同一处理方式：只补"会卡死"的那一类。回落到默认 5MB 而不是 1：
-// 1 字节一块会把分片数打成"文件有多少字节"，goroutine 与临时文件的数量同样能把机器拖死。
+// 1 字节一块会把分片数打成"文件有多少字节"，已完成断点元数据与临时文件数量仍会增长。
 func chunkSizeOrDefault(v int64) int64 {
 	if v <= 0 {
 		return DefaultConfig().ChunkSize

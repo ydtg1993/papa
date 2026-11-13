@@ -35,7 +35,7 @@ go install ./cmd/papa
 | `papa check [目录] [-c <配置路径>]` | 离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、全局三个治理队列漏写/缺项、熔断阈值、`Delay` 与 `Backoff` 写法 |
 | `papa upgrade [目录] [--write]` | 把**已经生成过的**项目升到当前脚手架：刷新框架副本（新布局 `docs/framework/`、旧布局 `docs/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](./MONITOR.md) 第 1 节 |
-| `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；生成后按 `obs.report.retention` 清理过期目录。业务段由业务进程注册，papa CLI 只有框架通用段 |
+| `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；无时间/run 筛选时生成后按 `obs.report.retention` 清理过期目录；显式筛选不清理。业务段由业务进程注册，papa CLI 只有框架通用段 |
 
 ### `papa new` 生成什么
 
@@ -184,7 +184,7 @@ papa report list [--out <dir>]
 ```
 
 - 数据源：`log.dir/events.jsonl`（含轮转备份与 `.gz`，见 [CORE_CONFIG.md](./CORE_CONFIG.md) 的 `obs.events`）+ `log.dir/*.log` 的证据索引 + `crawler_tasks` 状态。
-- 产物：默认按**本地日历日拆分**，`<obs.report.dir 或 --out>/<2006-01-02>/` 下 4 个文件：`report.md`（人读）、`report.json`（机读指标）、`ai-brief.md`（AI 排查细则）、`ai-brief.json`（同构机读）；同一天重跑刷新当天那份。`--run <run_id>` 是例外：只出单份 `<obs.report.dir 或 --out>/<run_id>/`，不按天拆。生成后按 `obs.report.retention`（默认 7 天，负数 = 永久保留）清理过期目录，并打印「清理过期报告 N 份」。
+- 产物：默认按**本地日历日拆分**，`<obs.report.dir 或 --out>/<2006-01-02>/` 下 4 个文件：`report.md`（人读）、`report.json`（机读指标）、`ai-brief.md`（AI 排查细则）、`ai-brief.json`（同构机读）；同一天重跑刷新当天那份。`--run <run_id>` 是例外：只出单份 `<obs.report.dir 或 --out>/<run_id>/`，不按天拆。无时间/run 筛选时，生成后按 `obs.report.retention`（默认 7 天，负数 = 永久保留）清理过期目录，并打印「清理过期报告 N 份」。CLI 指定 `--since`、`--until` 或 `--run` 时只生成、不执行保留清理，保证显式历史产物可以取走；无这些筛选的 CLI 生成和自动报告仍按原保留期清理。历史产物之后仍可能被自动清理，需要长期保存时请使用独立 `--out` 目录。特殊 run_id（如 `..`、Windows 设备名）归一为安全单段目录名；正常 run_id 命名不变。
 - 模式：默认按 `obs.report.mode`，`auto` 在定时、退出和 CLI 中均为 `snapshot` 运行报告；配置明确写 `acceptance` 仍使用验收口径。`--acceptance` 强制检查「这轮是否通过」，`--snapshot` 强制运行快照，两者互斥，均优先于配置。默认有事件的每个本地日各生成一份；只有显式 `--snapshot` 保留单日用法（缺省取最后一个事件所在日；papa CLI 显式窗口跨本地日会报错）。`--run` 仍只生成单次运行报告。模式写在 `report.md` 头部和 `report.json` 的 `mode`。
 - 判定：任一 `fail` 级检查未通过 → 不通过；只有 `warn` 未通过 → 带风险通过；一个可判定的检查都没有 / 数据降级（`degraded` 非空）全过 / 暂停快照全过 → **未判定**（`unknown`）；否则通过。`--fail-on-verdict` 让**任一日报**「不通过」**或「未判定」**时以非零码退出（CI / 自动化门禁；`warn` 仍放行）。
 - 只读：不写业务表、不重投任务、不调用接收端。

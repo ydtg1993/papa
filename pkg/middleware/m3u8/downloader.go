@@ -8,7 +8,7 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -37,11 +37,15 @@ const maxPlaylistLine = 1 << 20
 
 // Downloader 全局下载器（线程安全）
 type Downloader struct {
+	limits middleware.DownloadLimits
+	budget *middleware.DownloadBudget
 	config *Config
 	client *http.Client
 	st     *state
 	// keyCache belongs only to the private receiver copy for one download.
-	keyCache *sync.Map
+	keyCache         *sync.Map
+	received         *atomic.Int64
+	responseReserved bool
 }
 
 // state 一份实例的**可变内部状态**。抽出来只有一个目的：让 `With` 造出来的实例能**共用**它 ——
@@ -49,18 +53,18 @@ type Downloader struct {
 //
 //   - `outputLocks`：按最终输出路径串行写入，断点文件与分片目录也共用这套可取消锁；
 //   - `labors`：按源|目录|文件名保留任务参数，换源不会复用另一源的 URL 或断点身份；
-//   - `proxyClients`：每个代理一条连接池。
+//   - `proxyTransports`：每个代理一条连接池。
 //
 // 也就是说：**想要独立配置，不必（也不该）连这些也独立** —— 用 With；真要一座互不共享的孤岛，
 // 才用 NewDownloader（代价见它的注释）。
 type state struct {
-	// proxyClients 按代理地址缓存的客户端（逐下载指定出口时用）；proxyMu 保护它。
-	proxyMu      sync.Mutex
-	proxyClients map[string]*http.Client
-	trackQueue   *msgqueue.MsgQueue[any] // 系统消息队列
-	labors       map[string]*labor       // 任务专用锁管理
-	laborMu      sync.RWMutex            // 保护 labors map
-	outputLocks  middleware.OutputLocks
+	// proxyTransports 按代理地址缓存的传输连接池（逐下载指定出口时用）；proxyMu 保护它。
+	proxyMu         sync.Mutex
+	proxyTransports map[string]http.RoundTripper
+	trackQueue      *msgqueue.MsgQueue[any] // 系统消息队列
+	labors          map[string]*labor       // 任务专用锁管理
+	laborMu         sync.RWMutex            // 保护 labors map
+	outputLocks     middleware.OutputLocks
 }
 
 type cachedKey struct {
@@ -87,6 +91,8 @@ func NewDownloader(cfg *Config) *Downloader {
 	copyConfig.Network.AllowedOrigins = append([]string(nil), cfg.Network.AllowedOrigins...)
 	cfg = &copyConfig
 	return &Downloader{
+		limits: (middleware.DownloadLimits{}).Normalized(),
+		budget: middleware.NewDownloadBudget(0, 0),
 		config: cfg,
 		client: egress.Client(&http.Client{Timeout: cfg.SegmentTimeout}, cfg.Network),
 		st: &state{
@@ -112,6 +118,7 @@ func (d *Downloader) SetClient(client *http.Client) {
 func (d *Downloader) With(o Overlay) *Downloader {
 	cfg := o.Apply(d.Config())
 	return &Downloader{
+		limits: d.limits, budget: d.budget,
 		config: &cfg,
 		client: egress.Client(&http.Client{Timeout: cfg.SegmentTimeout}, cfg.Network),
 		st:     d.st,
@@ -142,23 +149,23 @@ func (d *Downloader) OutputDir() string {
 }
 
 // clientFor 返回本次下载该用的 HTTP 客户端：没指定代理就是下载器那个；
-// 指定了就用走该代理的客户端（按地址缓存，连接池不白扔）。
+// 指定了就用本实例超时和按地址缓存的传输连接池。
 func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	if opts == nil || opts.Proxy == "" {
 		return d.client
 	}
 	d.st.proxyMu.Lock()
 	defer d.st.proxyMu.Unlock()
-	if c, ok := d.st.proxyClients[opts.Proxy]; ok {
-		return c
+	if transport, ok := d.st.proxyTransports[opts.Proxy]; ok {
+		return &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
 	}
 	proxyURL, err := neturl.Parse(opts.Proxy)
 	if err != nil {
 		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
 		proxyURL = &neturl.URL{Scheme: "invalid"}
 	}
-	if d.st.proxyClients == nil {
-		d.st.proxyClients = make(map[string]*http.Client)
+	if d.st.proxyTransports == nil {
+		d.st.proxyTransports = make(map[string]http.RoundTripper)
 	}
 	// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
 	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
@@ -171,7 +178,7 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	c := &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
 	c = egress.Client(c, d.config.Network)
 	c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, opts.Proxy)
-	d.st.proxyClients[opts.Proxy] = c
+	d.st.proxyTransports[opts.Proxy] = c.Transport
 	return c
 }
 
@@ -189,6 +196,22 @@ func (d *Downloader) doRequest(ctx context.Context, url, rangeHeader string, opt
 // doRequestWithURL also returns the successful response's final URL, so playlist
 // references use the same resource that supplied the body after redirects.
 func (d *Downloader) doRequestWithURL(ctx context.Context, url, rangeHeader string, opts *DownloadOptions) ([]byte, string, error) {
+	return d.requestWithLimit(ctx, url, rangeHeader, opts, d.limits.MediaBytes, nil, nil)
+}
+func (d *Downloader) requestWithLimit(ctx context.Context, url, rangeHeader string, opts *DownloadOptions, localLimit int64, dst io.Writer, limiter *RateLimiter) ([]byte, string, error) {
+	reservation := localLimit * 3
+	if dst != nil {
+		reservation = 64 << 10
+	}
+	if d.responseReserved {
+		reservation = 0
+	}
+	release, err := d.budget.AcquireMemory(reservation)
+	if err != nil {
+		return nil, "", err
+	}
+	defer release()
+
 	var lastErr error
 	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
 		select {
@@ -268,25 +291,38 @@ func (d *Downloader) doRequestWithURL(ctx context.Context, url, rangeHeader stri
 			}
 		}
 
-		// 读之前先定一个上界，而不是无脑 ReadAll —— 远端返回超大（或干脆不结束）的响应时，
-		// ReadAll 会一路吃内存直到 OOM。上界是**推出来的**，不是拍的魔数：
-		//   - 带 Range 的请求：期望长度就写在 Range 里（`bytes=start-end` → `end-start+1`）
-		//   - 不带 Range：用响应自己声明的 Content-Length（多给的一律算异常）
-		// 两者都推不出来（chunked 又没有 Range）时退回无界读 —— 那种情况没有任何可依据的数字，
-		// 宁可保持原样，也不凭空定一个"分片最大多少"（那是替业务做决定）。
-		// 注意：**只有上界**。少收字节由 net/http 拿 Content-Length 校验，不用在这儿管。
-		limit := int64(-1)
-		if rangeHeader != "" {
-			if n, ok := rangeLength(rangeHeader); ok {
-				limit = n
-			}
+		limit := localLimit
+		if resp.ContentLength > limit {
+			resp.Body.Close()
+			return nil, "", middleware.ResourceLimit("response declared bytes", limit)
 		}
-		if limit < 0 && resp.ContentLength > 0 {
+		if n, ok := rangeLength(rangeHeader); ok {
+			if n > limit {
+				resp.Body.Close()
+				return nil, "", middleware.ResourceLimit("range bytes", limit)
+			}
+			limit = n
+		}
+		if resp.ContentLength >= 0 && resp.ContentLength < limit {
 			limit = resp.ContentLength
 		}
-		data, err := readCapped(resp.Body, limit)
+		var data []byte
+		if dst == nil {
+			data, err = readCapped(resp.Body, limit)
+		} else {
+			if reset, ok := dst.(interface{ reset() error }); ok {
+				err = reset.reset()
+			}
+			if err == nil {
+				err = d.copySegment(ctx, dst, resp.Body, limit, limiter)
+			}
+		}
+
 		resp.Body.Close()
 		if err != nil {
+			if errors.Is(err, middleware.ErrResourceLimit) {
+				return nil, "", err
+			}
 			lastErr = err
 			continue
 		}
@@ -349,7 +385,7 @@ func rangeLength(h string) (int64, bool) {
 // 超上界**报错而不是截断** —— 截断会静默产出一个坏分片，那正是这一档最忌讳的失败形态。
 func readCapped(r io.Reader, limit int64) ([]byte, error) {
 	if limit < 0 {
-		return io.ReadAll(r)
+		limit = (middleware.DownloadLimits{}).Normalized().MediaBytes
 	}
 	// 多读一个字节：读满 limit+1 就说明对方给的比声明的还多，不用把剩下的全吃进来
 	data, err := io.ReadAll(io.LimitReader(r, limit+1))
@@ -357,7 +393,7 @@ func readCapped(r io.Reader, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("响应体超过 %d 字节（Range 区间或 Content-Length 声明的长度）", limit)
+		return nil, middleware.ResourceLimit("response bytes", limit)
 	}
 	return data, nil
 }
@@ -439,7 +475,7 @@ func (d *Downloader) getStateFilePath(la *labor) string {
 // loadResumeState 接收 labor
 func (d *Downloader) loadResumeState(la *labor) (*ResumeState, error) {
 	statePath := d.getStateFilePath(la)
-	data, err := os.ReadFile(statePath)
+	data, err := middleware.ReadLimitedFile(statePath, d.limits.ResumeBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -447,7 +483,10 @@ func (d *Downloader) loadResumeState(la *labor) (*ResumeState, error) {
 		return nil, err
 	}
 	var state ResumeState
-	if err := json.Unmarshal(data, &state); err != nil {
+	if err := d.decodeResume(data, &state); err != nil {
+		return nil, err
+	}
+	if err := d.validateResume(&state); err != nil {
 		return nil, err
 	}
 	return &state, nil
@@ -456,17 +495,26 @@ func (d *Downloader) loadResumeState(la *labor) (*ResumeState, error) {
 // saveResumeState 接收 labor 和 state，使用 labor 中的锁
 func (d *Downloader) saveResumeState(la *labor, state *ResumeState) error {
 	la.resumeMu.Lock()
-	defer la.resumeMu.Unlock()
-
+	snapshot := *state
+	snapshot.Completed = append([]int(nil), state.Completed...)
+	snapshot.SegmentFiles = append([]string(nil), state.SegmentFiles...)
+	la.resumeMu.Unlock()
+	if err := d.validateResume(&snapshot); err != nil {
+		return err
+	}
 	stateDir := filepath.Join(d.config.ResumeStateDir, la.outDir)
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		return err
 	}
 	statePath := d.getStateFilePath(la)
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := d.encodeResume(snapshot)
 	if err != nil {
 		return err
 	}
+	if int64(len(data)) > d.limits.ResumeBytes {
+		return middleware.ResourceLimit("resume bytes", d.limits.ResumeBytes)
+	}
+
 	tmpPath := statePath + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
 		return err
@@ -524,6 +572,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	// updated key material. Share cached keys only among this call's segments.
 	run := *d
 	run.keyCache = &sync.Map{}
+	run.received = &atomic.Int64{}
 	d = &run
 	result := &DownloadResult{}
 	cfg := d.config
@@ -566,6 +615,18 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		return result
 	}
 	defer unlock()
+	releaseDisk, err := d.budget.AcquireDiskContext(ctx, cfg.ResumeStateDir, 2*d.limits.OutputBytes+2*d.limits.ResumeBytes)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	defer releaseDisk()
+	releaseMemory, err := d.budget.AcquireMemory(4*d.limits.PlaylistBytes + 2*d.limits.ResumeBytes + int64(d.limits.Segments)*512)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	defer releaseMemory()
 
 	// 1. 获取播放列表
 	playlist, baseURL, err := d.fetchPlaylist(ctx, m3u8URL, opts)
@@ -594,7 +655,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 			result.Error = fmt.Errorf("mkdir output dir: %w", err)
 			return result
 		}
-		if err := os.WriteFile(outputPath, []byte(playlist), 0644); err != nil {
+		if err := publishFile(ctx, outputPath, d.limits.OutputBytes, func(tmp string) error { return os.WriteFile(tmp, []byte(playlist), 0644) }); err != nil {
 			result.Error = fmt.Errorf("write playlist: %w", err)
 			return result
 		}
@@ -626,6 +687,10 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	if cfg.EnableResume {
 		resumeState, err = d.loadResumeState(la)
 		if err != nil {
+			if errors.Is(err, middleware.ErrResourceLimit) {
+				result.Error = err
+				return result
+			}
 			d.st.trackQueue.SendError(fmt.Errorf("load resume state failed: %w, will restart", err))
 			resumeState = nil
 		}
@@ -675,9 +740,13 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 			if initSegment.Range != "" {
 				rangeHeader = "bytes=" + initSegment.Range
 			}
-			data, err := d.doRequest(ctx, initSegment.URL, rangeHeader, opts)
+			data, _, err := d.requestWithLimit(ctx, initSegment.URL, rangeHeader, opts, d.limits.InitBytes, nil, nil)
 			if err != nil {
 				result.Error = fmt.Errorf("init segment: %w", err)
+				return result
+			}
+			if int64(len(data)) > d.limits.OutputBytes {
+				result.Error = middleware.ResourceLimit("init output bytes", d.limits.OutputBytes)
 				return result
 			}
 			if err := os.WriteFile(initSegmentPath, data, 0644); err != nil {
@@ -687,19 +756,36 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 	}
 
+	// Include retained media/init bytes before new writes and assembly.
+	for _, p := range append(append([]string(nil), resumeState.SegmentFiles...), initSegmentPath) {
+		if p == "" {
+			continue
+		}
+		if info, e := os.Stat(p); e == nil {
+			if info.Size() > d.limits.MediaBytes {
+				result.Error = middleware.ResourceLimit("retained media bytes", d.limits.MediaBytes)
+				return result
+			}
+			if e = d.accountBytes(info.Size()); e != nil {
+				result.Error = e
+				return result
+			}
+		}
+	}
 	// 8. 并发下载未完成的片段
 	completedMap := make(map[int]bool)
 	for _, idx := range resumeState.Completed {
-		completedMap[idx] = true
+		if idx >= 0 && idx < totalSegments {
+			completedMap[idx] = true
+		}
+	}
+	resumeState.Completed = resumeState.Completed[:0]
+	for idx := range completedMap {
+		resumeState.Completed = append(resumeState.Completed, idx)
 	}
 
 	var wg sync.WaitGroup
-	// 并发上限兜底为 1：这个 channel 是当信号量用的，MaxConcurrent 为 0（或负数）时
-	// make(chan struct{}, 0) 是**无缓冲**通道，第一个 goroutine 就会永久阻塞在
-	// `sem <- struct{}{}` 上，wg.Wait() 再也不返回 —— 表现为"下载卡死"：
-	// 不报错、不退出、也没有任何日志。写 1 至少让它一条条跑完。
-	// （同 saveBatchSize 的处理方式：只补"会卡死"的那一类，不动其它字段的语义。）
-	sem := make(chan struct{}, max(cfg.MaxConcurrent, 1))
+	jobs := make(chan int)
 	var downloadErr error
 	var errMu sync.Mutex
 	limiter := NewRateLimiter(cfg.RateKB)
@@ -708,59 +794,91 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 	if saveBatchSize <= 0 {
 		saveBatchSize = 10
 	}
+	var checkpoint *middleware.Checkpoint
+	if d.config.EnableResume {
+		checkpoint = middleware.NewCheckpoint(func() error { return d.saveResumeState(la, resumeState) })
+		defer checkpoint.Close()
+	}
 	var completedCount int32
 	var totalBytes int64
 
-	for idx, segInfo := range segments {
-		if completedMap[idx] {
+	for worker := 0; worker < min(max(cfg.MaxConcurrent, 1), len(segments)); worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				seg := segments[index]
+
+				tempFilePath := filepath.Join(tempDir, fmt.Sprintf("segment_%05d.ts", index))
+				err := d.downloadSegmentToFile(ctx, seg, segmentKeys[index], limiter, tempFilePath, opts)
+				if err != nil {
+					errMu.Lock()
+					if downloadErr == nil {
+						downloadErr = fmt.Errorf("segment %d: %w", index, err)
+					}
+					errMu.Unlock()
+					continue
+				}
+
+				info, _ := os.Stat(tempFilePath)
+				segSize := int64(0)
+				if info != nil {
+					segSize = info.Size()
+				}
+
+				// 使用 labor 中的 resumeMu
+				la.resumeMu.Lock()
+				resumeState.Completed = append(resumeState.Completed, index)
+				resumeState.SegmentFiles[index] = tempFilePath
+				la.resumeMu.Unlock()
+
+				newCompleted := atomic.AddInt32(&completedCount, 1)
+				atomic.AddInt64(&totalBytes, segSize)
+
+				// 每 saveBatchSize 个片段保存一次状态
+				if int(newCompleted)%saveBatchSize == 0 || newCompleted == int32(totalSegments) {
+					if checkpoint != nil {
+						checkpoint.Notify()
+					}
+				}
+
+				// 进度回调
+				if cfg.OnProgress != nil {
+					cfg.OnProgress(int(newCompleted), totalSegments, index+1, segSize, atomic.LoadInt64(&totalBytes))
+				}
+			}
+		}()
+	}
+produce:
+	for index := range segments {
+		if ctx.Err() != nil {
+			break
+		}
+		if completedMap[index] {
 			continue
 		}
-		wg.Add(1)
-		go func(index int, seg *SegmentInfo) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			tempFilePath := filepath.Join(tempDir, fmt.Sprintf("segment_%05d.ts", index))
-			err := d.downloadSegmentToFile(ctx, seg, segmentKeys[index], limiter, tempFilePath, opts)
-			if err != nil {
-				errMu.Lock()
-				if downloadErr == nil {
-					downloadErr = fmt.Errorf("segment %d: %w", index, err)
-				}
-				errMu.Unlock()
-				return
-			}
-
-			info, _ := os.Stat(tempFilePath)
-			segSize := int64(0)
-			if info != nil {
-				segSize = info.Size()
-			}
-
-			// 使用 labor 中的 resumeMu
-			la.resumeMu.Lock()
-			resumeState.Completed = append(resumeState.Completed, index)
-			resumeState.SegmentFiles[index] = tempFilePath
-			la.resumeMu.Unlock()
-
-			newCompleted := atomic.AddInt32(&completedCount, 1)
-			atomic.AddInt64(&totalBytes, segSize)
-
-			// 每 saveBatchSize 个片段保存一次状态
-			if int(newCompleted)%saveBatchSize == 0 || newCompleted == int32(totalSegments) {
-				if err := d.saveResumeState(la, resumeState); err != nil {
-					d.st.trackQueue.SendError(fmt.Errorf("save resume state failed: %w", err))
-				}
-			}
-
-			// 进度回调
-			if cfg.OnProgress != nil {
-				cfg.OnProgress(int(newCompleted), totalSegments, index+1, segSize, atomic.LoadInt64(&totalBytes))
-			}
-		}(idx, segInfo)
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			break produce
+		}
 	}
+	close(jobs)
 	wg.Wait()
+	if checkpoint != nil {
+		if err := checkpoint.Close(); err != nil {
+			result.Error = fmt.Errorf("checkpoint: %w", err)
+			return result
+		}
+	}
+	if ctx.Err() != nil {
+		result.Error = ctx.Err()
+		return result
+	}
+
 	if downloadErr != nil {
 		result.Error = downloadErr
 		return result
@@ -821,7 +939,7 @@ func (d *Downloader) download(ctx context.Context, la *labor, opts *DownloadOpti
 		}
 	} else {
 		finalOutput = outputPath
-		if err := d.concatTSFiles(initSegmentPath, resumeState.SegmentFiles, finalOutput); err != nil {
+		if err := d.concatTSFilesContext(ctx, initSegmentPath, resumeState.SegmentFiles, finalOutput); err != nil {
 			result.Error = fmt.Errorf("concat TS failed: %w", err)
 			return result
 		}
@@ -861,9 +979,24 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 	// 如果文件已存在且大小 > 0，直接跳过（片段级续传）。
 	// 「非空即完整」成立的前提是下面那句写入走"临时文件 + 改名"（见那里的注释）。
 	if info, err := os.Stat(destPath); err == nil && info.Size() > 0 {
+		if info.Size() > d.limits.MediaBytes {
+			return middleware.ResourceLimit("retained segment bytes", d.limits.MediaBytes)
+		}
 		d.st.trackQueue.SendError(fmt.Errorf("segment file already exists, skip: %s", destPath))
 		return nil
 	}
+
+	if keyInfo == nil {
+		return d.streamSegment(ctx, seg, limiter, destPath, opts)
+	}
+	copy := *d
+	copy.responseReserved = true
+	d = &copy
+	release, err := d.budget.AcquireMemory(3 * d.limits.MediaBytes)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	var lastErr error
 	for attempt := 0; attempt <= d.config.MaxRetries; attempt++ {
@@ -897,6 +1030,9 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 			data, err = d.doRequest(ctx, seg.URL, "", opts)
 		}
 		if err != nil {
+			if errors.Is(err, middleware.ErrResourceLimit) {
+				return err
+			}
 			lastErr = err
 			continue
 		}
@@ -915,6 +1051,9 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 			}
 		}
 
+		if err := d.accountBytes(int64(len(data))); err != nil {
+			return err
+		}
 		// 限速
 		if err := limiter.Wait(ctx, len(data)); err != nil {
 			return err
@@ -942,6 +1081,9 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 
 // mergeToMP4 使用 ffmpeg 将 TS 片段合并为 MP4
 func (d *Downloader) mergeToMP4(ctx context.Context, initSegmentPath string, segmentFiles []string, outputPath string) error {
+	return publishFile(ctx, outputPath, d.limits.OutputBytes, func(tmp string) error { return d.mergeToMP4Staged(ctx, initSegmentPath, segmentFiles, tmp) })
+}
+func (d *Downloader) mergeToMP4Staged(ctx context.Context, initSegmentPath string, segmentFiles []string, outputPath string) error {
 	// 创建 concat 文件列表
 	hash := fmt.Sprintf("%x", md5.Sum([]byte(outputPath)))
 	listFilePath := filepath.Join(d.config.ResumeStateDir, "concat_list_"+hash+".txt")
@@ -969,6 +1111,7 @@ func (d *Downloader) mergeToMP4(ctx context.Context, initSegmentPath string, seg
 	cmd := exec.CommandContext(ctx, ffmpegPath,
 		// Inputs are already downloaded/decrypted. Never let a nested format
 		// cause ffmpeg to open a network URL outside the guarded HTTP client.
+		"-y", "-fs", strconv.FormatInt(d.limits.OutputBytes+1, 10),
 		"-protocol_whitelist", "file",
 		"-f", "concat",
 		"-safe", "0",
@@ -977,45 +1120,19 @@ func (d *Downloader) mergeToMP4(ctx context.Context, initSegmentPath string, seg
 		"-bsf:a", "aac_adtstoasc",
 		outputPath,
 	)
-	output, err := cmd.CombinedOutput()
+	output := &boundedProcessLog{}
+	cmd.Stdout = output
+	cmd.Stderr = output
+	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("ffmpeg error: %w, output: %s", err, output)
+		return fmt.Errorf("ffmpeg error: %w, output: %s", err, output.data)
 	}
 	return nil
 }
 
 // concatTSFiles 直接拼接 TS 文件（不转码）
 func (d *Downloader) concatTSFiles(initSegmentPath string, segmentFiles []string, outputPath string) error {
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer outFile.Close()
-
-	copyFile := func(srcPath string) error {
-		src, err := os.Open(srcPath)
-		if err != nil {
-			return err
-		}
-		defer src.Close()
-		_, err = io.Copy(outFile, src)
-		return err
-	}
-
-	if initSegmentPath != "" {
-		if err := copyFile(initSegmentPath); err != nil {
-			return err
-		}
-	}
-	for _, f := range segmentFiles {
-		if f == "" {
-			continue
-		}
-		if err := copyFile(f); err != nil {
-			return err
-		}
-	}
-	return nil
+	return d.concatTSFilesContext(context.Background(), initSegmentPath, segmentFiles, outputPath)
 }
 
 // getTotalSize 计算所有片段文件的总大小
@@ -1033,7 +1150,7 @@ func (d *Downloader) getTotalSize(files []string) int64 {
 
 // fetchPlaylist 返回 M3U8 内容及完整的最终 URL；所有引用都以这份列表的 URL 为基准。
 func (d *Downloader) fetchPlaylist(ctx context.Context, m3u8URL string, opts *DownloadOptions) (string, string, error) {
-	data, finalURL, err := d.doRequestWithURL(ctx, m3u8URL, "", opts)
+	data, finalURL, err := d.requestWithLimit(ctx, m3u8URL, "", opts, d.limits.PlaylistBytes, nil, nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -1059,7 +1176,7 @@ func (d *Downloader) prepareKey(ctx context.Context, keyInfo *KeyInfo, mediaSeq 
 			return cached.(*cachedKey).key, ivData, nil
 		}
 	}
-	keyData, err := d.doRequest(ctx, keyInfo.URL, "", opts)
+	keyData, _, err := d.requestWithLimit(ctx, keyInfo.URL, "", opts, d.limits.KeyBytes, nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1164,6 +1281,12 @@ func parseByteRange(spec string, prevEnd int64) (byteRange, error) {
 
 // parsePlaylistEnhancedWithIndex 解析 M3U8，为每个片段分配索引
 func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*SegmentInfo, []*SegmentInfo, []*KeyInfo, error) {
+	copy := *d
+	copy.limits = d.limits.Normalized()
+	d = &copy
+	if int64(len(playlist)) > d.limits.PlaylistBytes {
+		return nil, nil, nil, middleware.ResourceLimit("playlist bytes", d.limits.PlaylistBytes)
+	}
 	scanner := bufio.NewScanner(strings.NewReader(playlist))
 	scanner.Buffer(make([]byte, 0, 64*1024), maxPlaylistLine)
 	var initSegment *SegmentInfo
@@ -1209,6 +1332,9 @@ func (d *Downloader) parsePlaylistEnhancedWithIndex(playlist, baseURL string) (*
 		case strings.HasPrefix(line, "#"):
 			// 其他标签忽略
 		default:
+			if len(segments) >= d.limits.Segments {
+				return nil, nil, nil, middleware.ResourceLimit("playlist segments", int64(d.limits.Segments))
+			}
 			segURL := d.resolveURL(line, baseURL)
 			seg := &SegmentInfo{URL: segURL, Index: segmentIndex, MediaSeq: mediaSequence + int64(segmentIndex)}
 			if pendingRange != "" {

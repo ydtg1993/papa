@@ -43,7 +43,7 @@ papa/
 | `runtime.go` | 显式运行覆盖声明、ProxyHealthPatch.Apply、组合治理/代理配置后的校验 | 不拥有运行策略 revision、发布锁或生效快照；这些归 internal/runtimecontrol 和能力组件 |
 | `business.go` | BusinessSection 将 business 子段解码到调用方类型，拒绝该类型未声明的键 | 不理解业务段的含义，不为业务字段补默认值或安排数据库/模型 |
 
-Config 是调用者持有的配置对象，含 map、指针等可变成员，不是自动并发安全的运行状态容器。组件接收所需配置或快照，并自行拥有运行状态。Load 的读取/解码错误与 Validate 的 panic 契约应分别处理；普通启动不因为读到配置就执行迁移。
+Config 是调用者持有的配置对象，含 map、指针等可变成员，不是自动并发安全的运行状态容器。组件接收所需配置或快照，并自行拥有运行状态。Load 在解码后直接调用 Validate：读取/解码失败返回 error，未知键或非法值则从 Load 内 panic；这两类失败须分别处理。普通启动不因为读到配置就执行迁移。
 
 允许使用 `pkg/breakerpolicy`、`pkg/egress`、`pkg/governance`、`pkg/middleware/proxy` 的声明/校验能力，不能反向依赖 App 或把 internal/breaker 的算法实现引入公开配置。具体配置字典见 [CORE_CONFIG.md](../CORE_CONFIG.md)。
 
@@ -123,3 +123,7 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 | cmd/papa 的 docs_structure_test.go | 手册新建/升级分发、导航、保留项目内容与目录层级 |
 
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
+
+执行证据由 engine 的认领 context 分配 UUID，Trace 与归档共用；models.TaskTrace 持久化 execution_id，core.TraceStep 保留原公开布局；新增 core.TraceExecutionStep 承载只读 execution_id/truncated，Engine.ListTraceExecution 提供详细查询，ListTrace 的返回签名与字段不变。身份不改变任务状态所有权和终态原子性。升级启用 Trace 的库须显式 migrate 增列/索引；历史空身份可读。
+
+`resources.go` 是资源预算公开门面，仅导出 ReportInputLimits、DownloadLimits、DownloadBudget、SchedulerLimits 别名及 NewDownloadBudget 构造转发，不保存运行状态；RESOURCE_BUDGETS.md 负责装配和超限使用规则。

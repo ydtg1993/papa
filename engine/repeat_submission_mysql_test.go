@@ -119,8 +119,8 @@ func TestRepeatSubmissionMySQLConcurrent(t *testing.T) {
 				close(start)
 				wg.Wait()
 				repeatMySQLStored(t, db, base.ID, 12)
-				if e.spillBacklog() != 1 {
-					t.Fatalf("spill=%d, want 1", e.spillBacklog())
+				if e.spillBacklog() != 2 {
+					t.Fatalf("spill=%d, want 2 distinct rounds (old round remains fenced until drain)", e.spillBacklog())
 				}
 			})
 		}

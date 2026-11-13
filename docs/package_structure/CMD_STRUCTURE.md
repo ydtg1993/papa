@@ -51,7 +51,7 @@ docs/embed.go                  # 框架手册的嵌入入口（不是 templates 
 | `migrate.go` | `papaModule`、业务 go.mod 识别、参数处理、框架迁移或 `delegateMigrate` | 业务项目委派 `go run . -migrate`，由业务进程登记业务模型；其余路径调用 `internal/database`。仅此显式命令触发迁移，不让 new/check/普通启动暗中建表 |
 | `token.go` | token add 参数、操作人检查、配置/DB 装配，委派 `admin/tokenadmin` 创建令牌 | 明确写入访问令牌表，库中存哈希、明文仅此处显示一次；表缺失提示 migrate，不顺手建表 |
 | `strategy_migrate.go` | inspect 参数、版本化业务 manifest、连接及超时、JSON 输出 | 只读查询委派 `pkg/strategymigrate`；manifest 上限 64 KiB，拒绝未知字段/无效表名；输出文件用 `O_EXCL` 和 0600，不覆盖。没有导入、删表或应用启动模式 |
-| `report.go` | 来源/窗口/模式/阈值装配，选择框架分析节与内置模式、日拆分、单 run、列表与退出门禁 | 读取事件、日志和框架 DB；借助 `obs/report` 写四份产物并清理过期报告。只读指被观测数据，不代表文件系统没有写入和删除；不注册业务报告段 |
+| `report.go` | 来源/窗口/模式/阈值装配，选择框架分析节与内置模式、日拆分、单 run、列表与退出门禁 | 读取事件、日志和框架 DB；借助 `obs/report` 写四份产物，写前检查目录为输出根的单段子目录；显式 --since/--until/--run 不清理，无这些筛选时清理过期报告。只读指被观测数据，不代表文件系统没有写入和删除；不注册业务报告段 |
 | `debug.go` | 调试参数、可选配置、代理/请求头，HTML/Rod 抓取、差异、选择器与输出 | 调用 `pkg/htmlfetch` / `pkg/browser` / proxy；可访问网络、打开浏览器、写输出/截图。Rod 池和借用实例在命令路径内归还/关闭，临时目录配置传到池 |
 | `act.go` | 页面动作解析、顺序执行、settle、eval、滚动/点击/输入/等待与人工回车交接 | 使用 debug 创建的 page，不拥有池；动作可能改变页面和远端状态，不能把整个调试命令描述成无副作用读取 |
 
@@ -99,6 +99,8 @@ CLI 是短生命周期进程。strategy inspect 显式关闭 `sql.DB` 并取消 
 
 因此新分册放入 package_structure/ 后，通过同一嵌入和复制机制保留相对链接；修改分发目录时需同时检查 embed 白名单、`embeddedDocs`、new/upgrade 的目标路径与回归。应用自己的 docs/README.md、operations/、business/ 属于业务；新版布局不会用框架 README 覆盖应用导航。旧布局保留旧位置，不自动迁移成新版目录。
 
+writeDocs/writeSkill 逐文件直接写入，不是整批事务，也没有临时文件 rename 的原子替换保证；中途失败时，已写文件不会自动回滚。
+
 升级的默认行为始终是报告差异。只有显式 write 才刷新框架登记手册、通用技能及缺失的项目约定技能；不改业务源代码、go.mod、配置、模板生成的应用文档，也不删除旧文档。
 
 ## 5. `cmd/monitor-demo` 的边界
@@ -133,3 +135,5 @@ CLI 是短生命周期进程。strategy inspect 显式关闭 `sql.DB` 并取消 
 新增命令的参数和适配放在职责明确的 cmd/papa 文件，领域算法放其所属库包；新生成物先确定是项目所有还是框架可刷新，再改 main.go/skill.go 清单及对应模板。新增共享布局判据归 layout.go；新增只读报告规则归 [Obs 分册](OBS_STRUCTURE.md)中的组件；新增正式后台功能归 [Admin 分册](ADMIN_STRUCTURE.md)。框架根契约和通用包归属见 [Root 分册](ROOT_STRUCTURE.md)、[Pkg 分册](PKG_STRUCTURE.md)。
 
 本次文档盘点不宣称测试通过。验证应按改动选择 `go test ./cmd/papa ./cmd/monitor-demo` 及相关库包；真实浏览器、数据库和生产部署需要各自的验证证据，不能由模板存在或 demo 截图替代。
+
+report.go 通过有预算的 Context 输入和逐日消费生成报告；文件解码、去重与临时分桶属于 obs，CLI 只负责参数、错误返回与产物输出。输入预检超限保留已有产物；新资源手册随顶层文档自动分发。

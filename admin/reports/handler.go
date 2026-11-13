@@ -11,6 +11,8 @@ package reports
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -65,36 +67,39 @@ func (s *Handler) List(w http.ResponseWriter, r *http.Request) {
 	dir := s.dir
 	runs := []obsReportRunInfo{}
 	if dir != "" {
-		if entries, err := os.ReadDir(dir); err == nil {
-			for _, e := range entries {
-				if !e.IsDir() {
-					continue
-				}
-				info, err := e.Info()
-				if err != nil {
-					continue
-				}
-				run := obsReportRunInfo{Name: e.Name(), ModTime: info.ModTime(), Files: []obsReportFileInfo{}}
-				for _, name := range obsReportFiles {
-					fi, err := os.Stat(filepath.Join(dir, e.Name(), name))
-					if err != nil || fi.IsDir() {
+		if root, err := os.OpenRoot(dir); err == nil {
+			defer root.Close()
+			if entries, err := fs.ReadDir(root.FS(), "."); err == nil {
+				for _, e := range entries {
+					if !e.IsDir() {
 						continue
 					}
-					run.Files = append(run.Files, obsReportFileInfo{Name: name, Size: fi.Size(), ModTime: fi.ModTime()})
+					info, err := e.Info()
+					if err != nil {
+						continue
+					}
+					run := obsReportRunInfo{Name: e.Name(), ModTime: info.ModTime(), Files: []obsReportFileInfo{}}
+					for _, name := range obsReportFiles {
+						fi, err := root.Stat(filepath.Join(e.Name(), name))
+						if err != nil || !fi.Mode().IsRegular() {
+							continue
+						}
+						run.Files = append(run.Files, obsReportFileInfo{Name: name, Size: fi.Size(), ModTime: fi.ModTime()})
+					}
+					if len(run.Files) == 0 {
+						continue // 不是报告目录（没有一份已知产物）
+					}
+					summary := readObsReportSummary(root, filepath.Join(e.Name(), "report.json"))
+					run.Verdict = summary.Verdict
+					run.Mode = summary.Mode
+					run.EnginePaused = summary.paused()
+					if !summary.GeneratedAt.IsZero() {
+						at := summary.GeneratedAt
+						run.GeneratedAt = &at
+					}
+					run.FailReasons = summary.failReasons()
+					runs = append(runs, run)
 				}
-				if len(run.Files) == 0 {
-					continue // 不是报告目录（没有一份已知产物）
-				}
-				summary := readObsReportSummary(filepath.Join(dir, e.Name(), "report.json"))
-				run.Verdict = summary.Verdict
-				run.Mode = summary.Mode
-				run.EnginePaused = summary.paused()
-				if !summary.GeneratedAt.IsZero() {
-					at := summary.GeneratedAt
-					run.GeneratedAt = &at
-				}
-				run.FailReasons = summary.failReasons()
-				runs = append(runs, run)
 			}
 		}
 	}
@@ -140,8 +145,25 @@ func (s *Handler) File(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	fi, err := os.Stat(abs)
-	if err != nil || fi.IsDir() {
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		http.Error(w, "报告目录不可用", http.StatusNotFound)
+		return
+	}
+	defer root.Close()
+	rel, err := filepath.Rel(s.dir, abs)
+	if err != nil {
+		http.Error(w, "报告路径非法", http.StatusBadRequest)
+		return
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		http.Error(w, "报告文件不存在（可能已被清理）", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
 		http.Error(w, "报告文件不存在（可能已被清理）", http.StatusNotFound)
 		return
 	}
@@ -149,9 +171,13 @@ func (s *Handler) File(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "报告文件过大，请到服务器上查看", http.StatusRequestEntityTooLarge)
 		return
 	}
-	b, err := os.ReadFile(abs)
+	b, err := io.ReadAll(io.LimitReader(f, obsReportMaxFileBytes+1))
 	if err != nil {
 		http.Error(w, "报告文件读取失败", http.StatusInternalServerError)
+		return
+	}
+	if len(b) > obsReportMaxFileBytes {
+		http.Error(w, "报告文件过大，请到服务器上查看", http.StatusRequestEntityTooLarge)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -163,10 +189,10 @@ func (s *Handler) File(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// resolveObsReportFile 把 run/file 两个**请求参数**解析成报告目录下的绝对路径；越界一律拒绝。
+// resolveObsReportFile 把 run/file 两个**请求参数**解析成报告目录下的路径，检查字符串边界。
 //
 // 参数是不可信输入：只接受单段名字（不含路径分隔符、不是 . / ..、不带盘符），文件名还必须在
-// 四份已知产物里；最后再用 filepath.Rel 确认结果确实落在报告根目录之下。
+// 四份已知产物里；filepath.Rel 检查字符串路径，实际文件通过 os.Root 打开以约束链接解析。
 func resolveObsReportFile(root, run, file string) (string, error) {
 	run = strings.TrimSpace(run)
 	file = strings.TrimSpace(file)
@@ -213,7 +239,7 @@ func obsReportKnownFile(name string) bool {
 }
 
 // obsReportSummary 是列表需要的 report.json 摘要，只声明关心的字段：
-// json.Decoder 会跳过其余内容，内存不随报告体积（日志/URL/checks 详情）增长。
+// 解码输入有大小上限；json.Decoder 仍可能缓存整个 JSON 值，不承诺常量内存。
 type obsReportSummary struct {
 	Verdict     string    `json:"verdict"`
 	Mode        string    `json:"mode"`
@@ -233,18 +259,19 @@ type obsReportSummary struct {
 }
 
 // readObsReportSummary 从 report.json 里取列表摘要；文件不在/坏了/太大都当零值，不影响列表。
-func readObsReportSummary(path string) obsReportSummary {
+func readObsReportSummary(root *os.Root, path string) obsReportSummary {
 	var out obsReportSummary
-	fi, err := os.Stat(path)
-	if err != nil || fi.IsDir() || fi.Size() > obsReportSummaryMaxBytes {
-		return out
-	}
-	f, err := os.Open(path)
+	f, err := root.Open(path)
 	if err != nil {
 		return out
 	}
 	defer f.Close()
-	if err := json.NewDecoder(f).Decode(&out); err != nil {
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > obsReportSummaryMaxBytes {
+		return out
+	}
+	limited := &io.LimitedReader{R: f, N: obsReportSummaryMaxBytes + 1}
+	if err := json.NewDecoder(limited).Decode(&out); err != nil || limited.N == 0 {
 		return obsReportSummary{}
 	}
 	return out

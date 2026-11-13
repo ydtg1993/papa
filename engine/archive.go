@@ -76,12 +76,13 @@ type archivedPage struct {
 
 // archiveBuffer 一次尝试的归档缓冲：先登记，尝试结束时一次性落盘。
 type archiveBuffer struct {
-	store     archiveService
-	logger    *logrus.Logger
-	dir, mode string
-	maxBytes  int64
-	task      *Task
-	attempt   int
+	store       archiveService
+	logger      *logrus.Logger
+	dir, mode   string
+	maxBytes    int64
+	task        *Task
+	attempt     int
+	executionID string
 
 	pages   []archivedPage
 	byURL   map[string]int // 最终 URL → pages 下标（同一个 URL 抓了两次时后来者覆盖）
@@ -158,7 +159,7 @@ func (a *archiveBuffer) finish(failed bool) []string {
 	root := a.dir
 	files := make([]string, 0, len(a.pages))
 	for _, page := range a.pages {
-		rel, err := a.store.writeOne(a.task, a.attempt, page)
+		rel, err := a.store.writeOne(a.task, a.attempt, a.executionID, page)
 		if err != nil {
 			a.logger.Warnf("archive: 写盘失败（不影响任务）：%s", err.Error())
 			continue

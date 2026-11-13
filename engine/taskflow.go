@@ -78,9 +78,13 @@ func (e *Engine) claimFlowTask(ctx context.Context, task *Task) (bool, error) {
 		e.spillTask(task)
 		return false, nil
 	}
-	claimed, waiting, err := service.claim(ctx, task.FlowID, uint(task.ID))
+	claimed, waiting, err := service.claim(ctx, task.FlowID, uint(task.ID), task.deliveryVersion)
 	if err == nil && waiting {
-		e.spillTask(task)
+		if e.residents != nil {
+			e.residents.release(task, "")
+		} else {
+			e.spillTask(task)
+		}
 	}
 	return claimed, err
 }

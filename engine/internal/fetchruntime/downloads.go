@@ -1,7 +1,9 @@
 package fetchruntime
 
 import (
+	"fmt"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/pkg/middleware"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 	"sync"
@@ -19,6 +21,9 @@ type StageDownloads struct {
 // Downloads owns configuration and resolved instances. Resolve publishes one
 // complete snapshot under the same lock used by registration and lookup.
 type Downloads struct {
+	resourceLimits          middleware.DownloadLimits
+	resourceBudget          *middleware.DownloadBudget
+	resourcesFrozen         bool
 	mu                      sync.RWMutex
 	sites                   map[string]SiteDownloads
 	m3u8ByStage, m3u8BySite map[string]*m3u8.Downloader
@@ -115,4 +120,28 @@ func MergeFileDown(site, stage *filedown.Overlay) filedown.Overlay {
 		out = out.Then(*stage)
 	}
 	return out
+}
+
+// ConfigureResources is composition-only. Resource policy is frozen when bases
+// are constructed, before overlays publish any derived downloader.
+func (d *Downloads) ConfigureResources(limits middleware.DownloadLimits, budget *middleware.DownloadBudget) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.resourcesFrozen {
+		return fmt.Errorf("download resources already initialized")
+	}
+	d.resourceLimits, d.resourceBudget = limits.Normalized(), budget
+	return nil
+}
+
+// Resources returns the one shared budget for both base downloader families.
+func (d *Downloads) Resources() (middleware.DownloadLimits, *middleware.DownloadBudget) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.resourceBudget == nil {
+		d.resourceBudget = middleware.NewDownloadBudget(0, 0)
+	}
+	d.resourceLimits = d.resourceLimits.Normalized()
+	d.resourcesFrozen = true
+	return d.resourceLimits, d.resourceBudget
 }

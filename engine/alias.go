@@ -22,13 +22,14 @@ type (
 	BreakerStatus = core.BreakerStatus
 
 	// 监控快照 DTO
-	StageStats  = core.StageStats
-	GlobalStats = core.GlobalStats
-	WorkerStat  = core.WorkerStat
-	QueueStats  = core.QueueStats
-	StopStats   = core.StopStats
-	QueueStat   = core.QueueStat
-	TraceStep   = core.TraceStep
+	StageStats         = core.StageStats
+	GlobalStats        = core.GlobalStats
+	WorkerStat         = core.WorkerStat
+	QueueStats         = core.QueueStats
+	StopStats          = core.StopStats
+	QueueStat          = core.QueueStat
+	TraceStep          = core.TraceStep
+	TraceExecutionStep = core.TraceExecutionStep
 )
 
 // 告警级别常量。

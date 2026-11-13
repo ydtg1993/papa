@@ -130,3 +130,11 @@ type TraceStep struct {
 	Duration  time.Duration `json:"duration"`
 	CreatedAt time.Time     `json:"created_at"`
 }
+
+// TraceExecutionStep extends a trace snapshot with execution metadata without
+// changing the original TraceStep layout used by existing callers.
+type TraceExecutionStep struct {
+	TraceStep
+	ExecutionID string `json:"execution_id"`
+	Truncated   bool   `json:"truncated,omitempty"` // First returned step: earlier steps omitted.
+}

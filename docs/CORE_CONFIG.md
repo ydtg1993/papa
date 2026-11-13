@@ -314,15 +314,15 @@ crawler:
 **原始 HTML 归档**：`FetchHTML` 等既有入口把「失败那一刻抓到的那一页」原样落到
 
 ```
-{dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html   ← 原始字节，可直接用浏览器打开
-{dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.json   ← 状态码 / 最终 URL / 字节数 / 时间
+{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.html   ← 原始字节，可直接用浏览器打开
+{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.json   ← 状态码 / 最终 URL / 字节数 / 时间
 ```
 
 - **不用写任何代码**：`engine.FetchHTML` 抓到的页面自动登记进"本次尝试"的缓冲，尝试结束（**含 panic**）时按结局决定落不落盘。业务只管照常 `FetchHTML`。
 - **必须是原始字节**：goquery 把文档重新序列化一遍会丢掉 `<noscript>` 里的回退标签 —— 延迟渲染的封面正藏在里面，而那恰恰是选择器坏掉时最该看的东西。所以落的是 `page.HTML`，不是 `doc.Html()`。
-- **文件名带 `try`**（= `crawler_tasks.retry`）：同一任务重试 3 次不会互相覆盖，"第一次是登录墙、第三次正常"这种关键信息才留得住。
+- **文件名带 `run` 与 `try`**（本次认领的 UUID 与轮内 attempt）：同一任务重试 3 次不会互相覆盖，"第一次是登录墙、第三次正常"这种关键信息才留得住。
 - **trace 里连得起来**：归档后引擎会补一条 `归档页面` 步骤，data 里就是文件名 —— 后台「追踪」抽屉里"失败"与"那一页"是同一条线索。
-  （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{site}/{stage}/task-{id}-try-{retry}-*` 在目录里找即可。）
+  （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-*` 在目录里找即可。）
 - **写盘失败不影响任务**：归档是排查辅助，写不进去只记 WARN（磁盘满、目录只读都不该让任务失败）。
 - **几条抓取路径都覆盖**：`FetchHTML`（静态）、`FetchRendered` / `FetchRenderedPage(With)`（渲染）与
   `engine.CaptureRequest`（捕获）。渲染/捕获的原始 HTML 本来就已读出来，登记不额外花 CDP 调用；
@@ -499,3 +499,13 @@ M3U8 合并调用 FFmpeg 时显式使用 `-protocol_whitelist file`，仅处理�
 
 
 熔断升级须显式迁移创建 `crawler_breaker_history`，用于 obs 当日过程与重启历史；现有 `crawler_breaker_incidents` 保留控制快照。长期保护固定每小时复查，遵守 Retry-After，人工暂停不自动解除。取样和历史规则见 [BREAKER.md](BREAKER.md)。
+
+### Trace 执行轮次升级
+
+开启 trace 的已有部署升级后须显式运行业务迁移入口（`papa migrate` 或业务 `--migrate`），为 `crawler_task_trace` 增加 `execution_id varchar(36) NOT NULL DEFAULT ''` 和 `idx_trace_execution(task_id, execution_id)` 索引，并新增 `idx_trace_latest(task_id, id)`、`idx_trace_tail(task_id, execution_id, attempt, seq, id)` 支持最新执行与有序尾部查询。启动不会自动迁移；大表建索引建议低峰期评估 online DDL。本次不删除旧数据、不回填无法准确推断的历史轮次。
+
+`ListTrace` 与 `ListTraceExecution`/后台默认显示最新有 Trace 记录的执行轮次，轮内按 attempt/seq 排列；超 500 步只取末 500 步，详细接口 `ListTraceExecution` 的首步 `truncated=true`（原 `ListTrace` 保留原快照字段）。详细快照每步 `execution_id` 对应归档文件和 JSON；历史空值表示轮次未知，按插入 ID 稳定展示其末 500 步。旧归档路径仍可下载，按原保留策略清理。历史轮次分页不在此接口中提供。
+
+Trace 开启且表存在时，启动只读检查 `execution_id` 和上述索引；旧结构会记录包含 `papa migrate` 的明确提示，仍不自动迁移。两次查询以首次选中的持久执行身份为准；并发新执行不会混入，保留期清理仍可能删行，此接口不承诺事务快照。
+
+单实例调度、报告输入和下载预算的装配 API、有限默认值及超限处理见 [资源预算与背压](RESOURCE_BUDGETS.md)。这些预算与站点/阶段的业务并发配置分开，不是新增 YAML 键；旧公开配置布局保留。

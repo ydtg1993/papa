@@ -95,7 +95,7 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		st.Queued++
 		stats[key] = st
 	}
-	drained = drained && len(stats) == 0
+	drained = e.durableStopBacklog(deadline, stats) && drained && len(stats) == 0
 	if drained {
 		e.loggerSet.Engine.Info("all workers stopped")
 	}

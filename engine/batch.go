@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -50,19 +51,26 @@ func (e *Engine) processInBatches(query func() *gorm.DB, batchSize, workers int,
 		total  int
 		lastID uint // keyset 游标：上一批的最大 id
 	)
+	ctx := e.queueContext()
 	for {
+		if ctx.Err() != nil {
+			return total, nil
+		}
 		var tasks []models.CrawlerTask
-		q := query().Order("id").Limit(batchSize)
+		q := query().WithContext(ctx).Order("id").Limit(batchSize)
 		if lastID > 0 {
 			q = q.Where("id > ?", lastID)
 		}
 		if err := q.Find(&tasks).Error; err != nil {
+			if ctx.Err() != nil {
+				return total, nil
+			}
 			return total, err
 		}
 		if len(tasks) == 0 {
 			return total, nil
 		}
-		total += processConcurrently(tasks, workers, requeue)
+		total += processConcurrently(ctx, tasks, workers, requeue)
 		lastID = tasks[len(tasks)-1].ID
 		if len(tasks) < batchSize {
 			return total, nil // 最后一批
@@ -78,6 +86,9 @@ func (e *Engine) processInBatches(query func() *gorm.DB, batchSize, workers int,
 
 // sleepBatchPause 批间停顿；返回 false 表示停机信号已到，调用方应停止继续分批（不算错误）。
 func (e *Engine) sleepBatchPause(pause time.Duration) bool {
+	if e.queueContext().Err() != nil {
+		return false
+	}
 	if pause <= 0 {
 		return true
 	}
@@ -96,8 +107,16 @@ func (e *Engine) sleepBatchPause(pause time.Duration) bool {
 	}
 }
 
-// processConcurrently 用 worker 并发处理一批任务，返回成功数。
-func processConcurrently(tasks []models.CrawlerTask, workers int, requeue func(*models.CrawlerTask) bool) int {
+// queueContext also supports declaration-only test engines without a lifecycle.
+func (e *Engine) queueContext() context.Context {
+	if e.ctx != nil {
+		return e.ctx
+	}
+	return context.Background()
+}
+
+// Cancellation stops new work; admitted callbacks still finish before returning.
+func processConcurrently(ctx context.Context, tasks []models.CrawlerTask, workers int, requeue func(*models.CrawlerTask) bool) int {
 	jobs := make(chan models.CrawlerTask, len(tasks))
 	for _, t := range tasks {
 		jobs <- t
@@ -111,6 +130,9 @@ func processConcurrently(tasks []models.CrawlerTask, workers int, requeue func(*
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				if requeue(&t) {
 					atomic.AddInt64(&processed, 1)
 				}

@@ -41,8 +41,8 @@ func TestTaskTimingMySQLPersistenceRecoveryAndAttempts(t *testing.T) {
 
 	n := restored.delays.Len()
 
-	if n != 1 {
-		t.Fatal("restart did not restore delayed task", n)
+	if n != 0 {
+		t.Fatal("far-future task must stay durable outside the near window", n)
 	}
 	// An early in-memory copy must still be rejected and retained by the DB guard.
 	early := restored.taskFromRecord(&row)

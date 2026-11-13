@@ -50,6 +50,8 @@ type Task struct {
 
 	// repeatCounted 跳过当前副本的首轮初始化；幂等性由数据库 CASE/轮询条件更新保证。
 	// 后台重试、错误重投也置真，保持原轮次（包括历史零值）。
+	deliveryVersion       *taskRunVersion
+	deliveryDurable       bool
 	repeatCounted         bool
 	breakerEpoch          uint64
 	breakerTrial          uint64
@@ -143,7 +145,9 @@ func (e *Engine) metaFromJSON(raw datatypes.JSON) map[string]string {
 // 行里 retry 刚被归零的那两条路要把内存副本跟上。这里不塞分支 —— 重建的字段是确定的。
 func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 	return &Task{
-		Delay: time.Duration(t.DelayMS) * time.Millisecond, NotBefore: taskTimeValue(t.NotBefore),
+		deliveryVersion: &taskRunVersion{Repeat: t.Repeat, Reprocess: t.Reprocess},
+		deliveryDurable: true,
+		Delay:           time.Duration(t.DelayMS) * time.Millisecond, NotBefore: taskTimeValue(t.NotBefore),
 		LastStartedAt: t.LastStartedAt, LastFinishedAt: t.LastFinishedAt,
 		FlowID: t.FlowID, FlowLane: t.FlowLane, FlowBranch: t.FlowBranch, FlowPath: t.FlowPath,
 		ID:             int(t.ID),
@@ -170,6 +174,7 @@ func (t *Task) Insert(db *gorm.DB) error {
 	}
 	t.ID = int(crawlerTask.ID)
 	t.NotBefore = taskTimeValue(crawlerTask.NotBefore)
+	t.deliveryDurable = true
 	return nil
 }
 

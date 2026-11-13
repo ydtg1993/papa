@@ -150,7 +150,9 @@ func (e *Engine) repollRepeatQueue(force bool) (int, error) {
 	e.beginQueueRun(QueueRepeat)
 	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueRepeatTask())
 	e.endQueueRun(QueueRepeat, n, err)
-	e.sampleQueueBacklogOne(QueueRepeat, query)
+	if e.queueContext().Err() == nil {
+		e.sampleQueueBacklogOne(QueueRepeat, query)
+	}
 	return n, err
 }
 
@@ -170,6 +172,9 @@ func (e *Engine) requeueRepeatTask() func(*models.CrawlerTask) bool {
 
 // requeueRepeatTaskIn 单条重投的实体。
 func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
+	if e.queueContext().Err() != nil {
+		return false
+	}
 	if e.breakers.breakerSettlementBlocked(t.Site) {
 		return false
 	}
@@ -189,7 +194,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	if limit > 0 && t.Repeat >= limit {
 		return false
 	}
-	res := taskstore.AdvanceRepeat(e.db, t.ID, t.CompensationVersion, limit, int64(e.cfg.RepeatQueue.Interval/time.Second))
+	res := taskstore.AdvanceRepeat(e.db.WithContext(e.queueContext()), t.ID, t.CompensationVersion, limit, int64(e.cfg.RepeatQueue.Interval/time.Second))
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
@@ -201,6 +206,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	task := e.taskFromRecord(t)
 	task.Repeatable = true
 	task.Repeat = t.Repeat + 1
+	task.deliveryVersion.Repeat = task.Repeat
 	task.repeatCounted = true
 	// 刚做完条件重置，行已经是 pending：用恢复队列同一条路径投递，省掉 SubmitTask 的去重查库。
 	if err := e.submitRecoveredTask(task); err != nil {

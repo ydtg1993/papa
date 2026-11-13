@@ -38,19 +38,35 @@ func (s traceService) write(records []models.TaskTrace, taskID, attempt int) {
 		s.dbLogger.Warnf("trace: write %d steps of task %d attempt %d failed: %s", len(records), taskID, attempt, err.Error())
 	}
 }
-func (s traceService) list(taskID int) ([]TraceStep, error) {
+func (s traceService) list(taskID int) ([]TraceExecutionStep, error) {
 	if !s.options.Enabled {
 		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
 	}
-	var rows []models.TaskTrace
-	err := s.db.Where("task_id = ?", taskID).
-		Order("attempt, seq").
-		Limit(maxTraceSteps).
-		Find(&rows).Error
-	if err != nil {
+	var latest []models.TaskTrace
+	if err := s.db.Where("task_id = ?", taskID).Order("id DESC").Limit(1).Find(&latest).Error; err != nil {
 		return nil, fmt.Errorf("load trace of task %d: %w", taskID, err)
 	}
-	out := make([]TraceStep, 0, len(rows))
+	if len(latest) == 0 {
+		return []TraceExecutionStep{}, nil
+	}
+	var rows []models.TaskTrace
+	query := s.db.Where("task_id = ? AND execution_id = ?", taskID, latest[0].ExecutionID)
+	if latest[0].ExecutionID == "" {
+		query = query.Order("id DESC")
+	} else {
+		query = query.Order("attempt DESC, seq DESC, id DESC")
+	}
+	if err := query.Limit(maxTraceSteps + 1).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("load trace of task %d: %w", taskID, err)
+	}
+	truncated := len(rows) > maxTraceSteps
+	if truncated {
+		rows = rows[:maxTraceSteps]
+	}
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+	out := make([]TraceExecutionStep, 0, len(rows))
 	for _, r := range rows {
 		status := "ok"
 		switch r.Status {
@@ -59,17 +75,23 @@ func (s traceService) list(taskID int) ([]TraceStep, error) {
 		case models.TraceWarn:
 			status = "warn"
 		}
-		out = append(out, TraceStep{
-			Attempt:   r.Attempt,
-			Seq:       r.Seq,
-			Step:      r.Step,
-			Status:    status,
-			Kind:      r.Kind,
-			Message:   r.Message,
-			Data:      string(r.Data),
-			Duration:  r.Duration,
-			CreatedAt: r.CreatedAt,
+		out = append(out, TraceExecutionStep{
+			ExecutionID: r.ExecutionID,
+			TraceStep: TraceStep{
+				Attempt:   r.Attempt,
+				Seq:       r.Seq,
+				Step:      r.Step,
+				Status:    status,
+				Kind:      r.Kind,
+				Message:   r.Message,
+				Data:      string(r.Data),
+				Duration:  r.Duration,
+				CreatedAt: r.CreatedAt,
+			},
 		})
+	}
+	if len(out) > 0 {
+		out[0].Truncated = truncated
 	}
 	return out, nil
 }

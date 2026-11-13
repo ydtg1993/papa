@@ -720,13 +720,22 @@ func TestStopWaitsForStartupRecover(t *testing.T) {
 	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
 
 	release := make(chan struct{})
+	entered := make(chan struct{})
 	f.onQuery = func(n int) {
 		if n == 1 {
+			close(entered)
 			<-release
 		}
 	}
 
 	e.startRecoverQueue()
+	// Stop may cancel before recovery admits its first query. Test the in-flight case explicitly.
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("startup query did not enter")
+	}
 
 	stopped := make(chan struct{})
 	go func() {

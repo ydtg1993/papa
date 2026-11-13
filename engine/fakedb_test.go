@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,7 +68,7 @@ type fakeTaskDB struct {
 
 // fakeTraceColumns 是 models.TaskTrace 的全列，顺序任意 —— gorm 按列名映射。
 var fakeTraceColumns = []string{
-	"id", "task_id", "attempt", "seq", "step", "status", "kind", "message", "data", "duration", "created_at",
+	"id", "task_id", "execution_id", "attempt", "seq", "step", "status", "kind", "message", "data", "duration", "created_at",
 }
 
 // traceRow 造一条步骤记录。
@@ -252,11 +253,49 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 
 	if strings.Contains(q, "crawler_task_trace") {
 		out := &fakeRows{cols: fakeTraceColumns}
+		var rows []fakeRow
 		for _, r := range f.traceRows {
+			taskID, _ := asInt64(r["task_id"])
+			if len(args) > 0 {
+				wanted, _ := asInt64(args[0].Value)
+				if taskID != wanted {
+					continue
+				}
+			}
+			if strings.Contains(q, "execution_id = ?") && len(args) > 1 {
+				id, _ := r["execution_id"].(string)
+				if id != args[1].Value {
+					continue
+				}
+			}
+			rows = append(rows, r)
+		}
+		sort.SliceStable(rows, func(i, j int) bool {
+			if strings.Contains(q, "attempt DESC") {
+				for _, key := range []string{"attempt", "seq"} {
+					a, _ := asInt64(rows[i][key])
+					b, _ := asInt64(rows[j][key])
+					if a != b {
+						return a > b
+					}
+				}
+			}
+			a, _ := asInt64(rows[i]["id"])
+			b, _ := asInt64(rows[j]["id"])
+			return a > b
+		})
+		if m := limitRe.FindStringSubmatch(q); len(m) > 1 {
+			n, _ := strconv.Atoi(m[1])
+			if len(rows) > n {
+				rows = rows[:n]
+			}
+		}
+		for _, r := range rows {
 			out.all = append(out.all, rowValuesOf(fakeTraceColumns, r))
 		}
 		return out, nil
 	}
+
 	if strings.Contains(strings.ToUpper(q), "COUNT(") {
 		return &fakeRows{cols: []string{"count(*)"}, all: [][]driver.Value{{f.count}}}, nil
 	}
@@ -275,6 +314,24 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 			len(f.queries), f.maxQueries)
 	}
 	if f.rows == nil {
+		// Detached spill batches request actual inserted IDs. The old singleton
+		// fixture returned its canned ID=7 even for an inserted ID=1; a keyed batch
+		// must return the requested rows rather than relying on First ignoring ID.
+		if f.insertedTask && strings.Contains(q, "WHERE id IN (") {
+			out := &fakeRows{cols: fakeTaskColumns}
+			for i, arg := range args {
+				if i == len(args)-1 && strings.Contains(q, "LIMIT ?") {
+					break
+				}
+				id, ok := asInt64(arg.Value)
+				if ok {
+					row := f.rowWithID(id)
+					row["status"] = int64(models.TaskStatusPending)
+					out.all = append(out.all, rowValues(row))
+				}
+			}
+			return out, nil
+		}
 		if f.noRows {
 			if f.insertedTask && strings.HasPrefix(q, "SELECT * FROM `crawler_tasks` WHERE id = ?") {
 				row := f.rowWithID(1)

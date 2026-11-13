@@ -303,12 +303,18 @@ func (e *Engine) pauseGateFor(scope pauseScope) workerpool.Gate {
 	return pauseGate{e: e, scope: scope}
 }
 
-// Wait 暂停中就一直等，直到放行或停机；返回 true = 继续干活，false = 该停机了。
+// Wait: budgeted engines dequeue paused references for durable handoff in stageHandler.
+// Legacy unbudgeted engines wait until resume or stop; false means stop.
 //
 // 循环 + 每轮重读是本实现的要点：广播是**全局**的（任何一个 scope 变了都叫醒所有人），
 // 醒来必须重新判定自己这一条。**不能在循环外缓存 channel** —— 关掉之后那个 channel 永远就绪，
 // 在"别的站变了、我这个 scope 还停着"这种最常见的组合下会变成 100% CPU 的热自旋。
 func (g pauseGate) Wait(stop <-chan struct{}) bool {
+	// Budgeted scheduling drains queued references into the durable backlog.
+	// stageHandler checks pause before breaker admission or business execution.
+	if g.e.residents != nil {
+		return true
+	}
 	for {
 		g.e.pauseMu.Lock()
 		paused := g.e.isPausedLocked(g.scope)

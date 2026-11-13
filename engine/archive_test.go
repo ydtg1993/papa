@@ -135,9 +135,9 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 	if htmlRel == "" {
 		t.Fatalf("失败的尝试应当留下归档，实得 %v", files)
 	}
-	// 路径形状：{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html
+	// 路径形状：{site}/{stage}/task-{id}-run-{execution}-try-{retry}-{urlhash8}.html
 	// 这条任务没带站点（默认 scope）→ 站点那层落成 `_`（见 sanitizePathSegment）。
-	if !regexp.MustCompile(`^_/stub/task-7-try-0-[0-9a-f]{8}\.html$`).MatchString(htmlRel) {
+	if !regexp.MustCompile(`^_/stub/task-7-run-[0-9a-f-]{36}-try-0-[0-9a-f]{8}\.html$`).MatchString(htmlRel) {
 		t.Fatalf("归档路径形状不对：%q", htmlRel)
 	}
 	// 旁边的元信息

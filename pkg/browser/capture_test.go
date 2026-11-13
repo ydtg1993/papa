@@ -149,15 +149,19 @@ fetch('/api/health').catch(function(){});
 func TestCaptureRequestNavigationError(t *testing.T) {
 	pool := newLivePool(t)
 
-	start := time.Now()
+	var elapsed time.Duration
 	var res *CaptureResult
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
+		// Pool acquisition may start Chromium lazily. Measure only the capture
+		// operation whose navigation-error path must not wait CaptureTimeout.
+		start := time.Now()
 		var cerr error
 		res, cerr = b.CaptureRequest(context.Background(), "http://127.0.0.1:1/unreachable", CaptureOptions{
 			Match:          func(r CapturedRequest) bool { return strings.HasSuffix(r.URL, ".m3u8") },
 			CaptureTimeout: 5 * time.Second,
 			Page:           PageOptions{Timeout: 5 * time.Second},
 		})
+		elapsed = time.Since(start)
 		return cerr
 	})
 	if err == nil {
@@ -166,7 +170,7 @@ func TestCaptureRequestNavigationError(t *testing.T) {
 	if res == nil {
 		t.Fatal("导航失败也要返回结果对象（现场可能为空）")
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
+	if elapsed > 3*time.Second {
 		t.Fatalf("导航失败应立刻返回，实耗 %v", elapsed)
 	}
 }
