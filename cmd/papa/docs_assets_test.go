@@ -26,8 +26,8 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Diagrams) != 6 {
-		t.Fatalf("expected six introductory diagrams, got %d", len(manifest.Diagrams))
+	if len(manifest.Diagrams) != 9 {
+		t.Fatalf("expected six overview and three engine diagrams, got %d", len(manifest.Diagrams))
 	}
 	root := t.TempDir()
 	dir := frameworkDocsDir(root)

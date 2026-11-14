@@ -7,6 +7,7 @@
 | 手册 | 职责 |
 | --- | --- |
 | [Papa 六图介绍](PAPA_OVERVIEW.md) | 能力、组件、任务循环、恢复、观测与关停的图片介绍，附矢量图和图源 |
+| [核心引擎图解与算法](ENGINE_GUIDE.md) | Engine 内部组件、调度背压、执行结算三张专图及当前算法公式 |
 | [图册维护说明](DIAGRAM_ASSETS.md) | 图源生成、产物校验、源码责任与 CLI 分发 |
 | [架构图解](ARCHITECTURE_DIAGRAMS.md) | 静态组件图、动态任务数据流，重试、取消及 obs 旁路 |
 | [架构规则](ARCHITECTURE.md) | 包依赖、状态所有权、装配和关停契约、变更纪律 |

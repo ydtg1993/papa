@@ -1,5 +1,7 @@
 # Papa 架构图解：组件与任务数据流
 
+核心引擎内部组件、调度背压、执行结算和算法公式另见 [Engine 专篇](ENGINE_GUIDE.md)。
+
 > 面向：需要先看懂框架整体，再定位具体代码或接入站点的开发者。
 > 配套：[目录说明书](../package_structure/README.md) · [架构规则](ARCHITECTURE.md) · [Fetcher 契约](../guides/FETCHER_WRITING_GUIDE.md)。
 > 适用版本：当前工作区的独立 Papa v4；图中 Trace 为文件证据，在线 obs 为有界信号旁路，不能套用历史 SQL Trace 或统一监控中心方案。

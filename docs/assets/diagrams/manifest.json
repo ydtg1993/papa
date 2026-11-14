@@ -55,6 +55,33 @@
       "sourceSHA256": "cf206838d3ed8e178f3728fe40c45c7837f0b2c687c9b6bcf59d587aef30f739",
       "svgSHA256": "52fe993682038d59a4d2581702efba571ac4dba53b9b1920ba8185c59c5650ba",
       "pngSHA256": "566d317c8365acf6809566c664beeae3412a8118aedb5ff7828e55ac19de591c"
+    },
+    {
+      "name": "07-engine-components",
+      "title": "核心引擎：组件与责任",
+      "width": 1367,
+      "height": 1272,
+      "sourceSHA256": "bd5de3572feada555d048509a0c67f2bdd2e48b79857f27364cb1d19272fe0b9",
+      "svgSHA256": "f0cfeb654f409746b1862e0c3a11935db738a57f486490b5bd5cfd4b0caaab55",
+      "pngSHA256": "2598659ada20285ac369854030d2be58d531a68f67d3a45f30d9a761b14236f2"
+    },
+    {
+      "name": "08-engine-scheduling",
+      "title": "核心引擎：调度与背压",
+      "width": 1200,
+      "height": 1943,
+      "sourceSHA256": "6ccd8366fae2e1488c3214042dee2e731f00346d4f3334d04bac2ef3a743dcdd",
+      "svgSHA256": "5c23a27a609e31e4824518b5829fcd5464573fb6e4d9f17650358f2485c842c5",
+      "pngSHA256": "0fdf22a9f82112ae083075ef892a9709771c2f3f3b9e22bdf10db4cd052c329f"
+    },
+    {
+      "name": "09-engine-execution",
+      "title": "核心引擎：尝试与结算",
+      "width": 1449,
+      "height": 1700,
+      "sourceSHA256": "64abedae88d8bd08b8de8ed6628bee8246f1681546291d5e6c7a5c96252974d4",
+      "svgSHA256": "f639a911a8f0f3505df2d8732bb530ffee0fc5458541795291054c95ff75f9e0",
+      "pngSHA256": "c2b7a4e18122d5b4532b0ec644d0027f1c774051e11a3175a92c48686d71ac57"
     }
   ]
 }

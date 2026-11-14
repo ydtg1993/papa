@@ -11,7 +11,10 @@ const titles = {
   '03-task-loop': ['动态数据流', 'Task 是调度单位；一个 Task 可以发出多个请求，业务产出由 Fetcher 显式处理。'],
   '04-recovery-budget': ['积压、背压与恢复', '驻留令牌限制内存工作集；崩溃恢复可能重跑业务，业务副作用必须幂等。'],
   '05-observation': ['可靠控制与观测证据', '在线报告只说明收到的信号；缺失证据不能证明任务未执行或执行成功。'],
-  '06-lifecycle': ['取消、排空与依赖关闭', '不是全 App 共用一个 2 秒期限；取消信号也不等于在途工作已经退出。']
+  '06-lifecycle': ['取消、排空与依赖关闭', '不是全 App 共用一个 2 秒期限；取消信号也不等于在途工作已经退出。'],
+  '07-engine-components': ['核心引擎：组件与责任', '运行协作图，不是 import 图；Engine 协调执行，组件分别拥有状态。'],
+  '08-engine-scheduling': ['核心引擎：调度与背压', '阶段轮转不是严格吞吐公平；加急优先也不承诺普通队列无饥饿。'],
+  '09-engine-execution': ['核心引擎：尝试与结算', '重试业务与重试持久化是两回事；特殊取消和熔断样本分支见正文。']
 };
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');

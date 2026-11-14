@@ -21,7 +21,7 @@ func TestScaffoldAndUpgradePreserveStructureManuals(t *testing.T) {
 	assertManuals := func(t *testing.T, dir string) {
 		t.Helper()
 		for _, rel := range []string{
-			"architecture/README.md", "architecture/ARCHITECTURE_DIAGRAMS.md",
+			"architecture/README.md", "architecture/ARCHITECTURE_DIAGRAMS.md", "architecture/ENGINE_GUIDE.md",
 			"configuration/README.md", "configuration/CORE_CONFIG.md",
 			"guides/README.md", "guides/FETCHER_WRITING_GUIDE.md",
 			"accounts/README.md", "accounts/ACCOUNT_RUNTIME.md",

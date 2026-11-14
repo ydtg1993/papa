@@ -1,7 +1,7 @@
 # Engine 目录结构与职责细则
 
 > 面向：维护执行引擎、任务提交、调度及恢复协议的开发者。
-> 总入口：[Papa 目录说明书](README.md)。
+> 总入口：[Papa 目录说明书](README.md)。先看图和算法可读 [核心引擎专篇](../architecture/ENGINE_GUIDE.md)。
 > 配套：[总体架构规则](../architecture/ARCHITECTURE.md)、[开发手册](../architecture/DEVELOPMENT.md)、[Admin 目录说明](ADMIN_STRUCTURE.md)。
 > 本文描述职责收口后的当前实现；最后一节记录保留的协调边界及后续开发规则。
 
@@ -305,3 +305,5 @@ InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查�
 `repeatpoll.go` 的 `withRepeatLimits` 继续统一拥有自动轮询、强制轮询和最早排期的读取上限。每次构造 SQL 时，仅合并 **阶段名、正 RepeatLimit 均相同** 的站点，将多条 `NOT (site = ? AND stage = ? AND repeat >= ?)` 合为一条带 `site IN (...)` 的否定条件。组顺序及站点顺序由已排序的阶段键决定；不同阶段或不同上限不合并，单成员组仍用等号。SQL 三值逻辑不变；没有常驻分组缓存、新锁、数据库索引或优化器提示。写路径 `taskstore.AdvanceRepeat` 仍用每条任务所属阶段的单独上限做原子更新。
 
 `repeat_limit_test.go` 钉住分组边界及 SQL 稳定顺序；`repeat_schedule_edge_mysql_test.go` 验证多组上限的 NULL/状态/日期资格及自动/强制轮询集合。`repeat_algorithm_evaluation_test.go` 冻结原 CASE **及原逐阶段上限作用域**，避免新旧两边共用修改后的过滤逻辑而假通过。`repeat_cap_evaluation_test.go` 只拥有随机实库的成本对照：交错执行原 CASE、原过滤聚合、条件交换、语句级 NO_ICP 诊断和生产分组查询，记录实际 EXPLAIN ANALYZE 与 Handler 读取量；诊断提示不进入生产。
+
+条件合并复审另以 `TestRepeatLimitMySQLThreeValuedEquivalence` 在真实 MySQL 中逐行投影 TRUE/FALSE/NULL，避免只比较 WHERE 集合掩盖 UNKNOWN 被改写；覆盖同阈值不同阶段、不同阈值同阶段、NULL site/repeat 和当前列排序规则下的大小写/重音/尾空格。取消与 Stop 回归实际配置可合并的多站点上限，实库阻塞观测要求 SQL 含 `site IN`。性能夹具独立检查终态/未来行数和各查询匹配数量，不能仅凭相同 MIN 判断负载正确。这些断言只验证 Engine 查询与生命周期契约，不增加生产职责。

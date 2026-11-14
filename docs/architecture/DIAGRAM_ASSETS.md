@@ -2,7 +2,7 @@
 
 > 返回 [Papa 图册](PAPA_OVERVIEW.md) · [架构导航](README.md)。适用当前独立 v4。
 
-图册资源在 `docs/assets/diagrams/`：每个主题一份 `.mmd` 源码、一份 SVG 和一份 PNG。文件在 [图册正文](PAPA_OVERVIEW.md) 中逐一引用；[manifest.json](../assets/diagrams/manifest.json) 记录工具版本、尺寸及源码/两种产物的 SHA-256，用于发现忘记重生成或只更新一种格式的情况。哈希证明文件配套，不证明图中行为正确。
+图册资源在 `docs/assets/diagrams/`：每个主题一份 `.mmd` 源码、一份 SVG 和一份 PNG。前六张在 [全框架图册](PAPA_OVERVIEW.md)、后三张在 [核心引擎专篇](ENGINE_GUIDE.md) 中逐一引用；[manifest.json](../assets/diagrams/manifest.json) 记录工具版本、尺寸及源码/两种产物的 SHA-256，用于发现忘记重生成或只更新一种格式的情况。哈希证明文件配套，不证明图中行为正确。
 
 目录内 `.gitattributes` 固定图源、SVG 与 manifest 使用 LF，PNG 为二进制，避免 Windows 检出时行尾转换破坏源码/产物哈希。该仓库规则不随手册副本分发。
 
