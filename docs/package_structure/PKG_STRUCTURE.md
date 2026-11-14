@@ -137,7 +137,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `rod.go` | `Browser`、单实例关闭与使用计量；`PageOptions`、受管页面初始化、`NewPageWithOptions` / `WithPageOptions` / `WithNavigatedPage` / `FetchOnce` |
 | `stats.go` | 活实例登记、空闲/保留/借用状态、`Stats` 独立生命周期快照；统计受管实例，不统计 Chromium 子进程数量 |
 | `temp_dir.go` | `ResolveTempDir` / `PrepareTempDir` / `NewTempProfile`，验证实际可写的配置根和创建独占 profile；`TempDir` 返回池实际使用的共享根；Pool 不删除该根，只由实例关闭清理独占 profile |
-| `page_creation.go` | Chrome 返回 target ID 后即接管清理；连接失败时使用独立 3 秒 context 关闭部分创建的 target |
+| `page_creation.go` | 创建命令遇取消后最多等 3 秒取得 target ID；按原取消状态停止连接/执行，并用独立 3 秒 context 关闭已知 target |
 | `navigation.go`、`wait.go` | 已有受管页的 `ConfigurePage` / `NavigatePage`、等待条件及 `WaitError`；页面创建时确定的拦截规则不在导航时随意替换 |
 | `block.go` | `BlockOptions` 与单页面资源拦截 |
 | `isolation.go` | `WithIsolatedBrowser` / `WithDirectIsolatedBrowser`，在借入的进程中创建独立浏览器上下文并负责回收；不继承共享凭据 |
@@ -172,7 +172,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 
 #### 页面创建失败的资源所有权
 
-`browser/page_creation.go` 在 Chrome 返回 target ID 时即拥有清理责任；连接/初始化失败时用独立三秒清理 context 关闭部分创建的 target，保留原取消错误。它不改变正常导航或状态恢复策略。`page_creation_test.go` 用合成 CDP 复现取消后原上下文无法清理的缺陷；真实 Chrome 导航取消另由 state_navigation_test 验证。
+`browser/page_creation.go` 在 Chrome 返回 target ID 时即拥有清理责任。为避免 Chrome 已创建页面但取消导致应答 ID 丢失，创建命令在调用方取消后保留最多三秒的应答等待；拿到 ID 后若已取消，不再连接或执行页面，使用独立三秒清理 context 关闭该 target，并保留原取消错误。调用前已取消不发创建命令。两段等待属于资源收尾，可能延长超时后的返回；不改变正常导航或状态恢复策略。若 CDP 断连或宽限内仍无 ID，则不能保证单页清理，调用方应丢弃其拥有的隔离 context；不枚举删除未知或共享页面。`page_creation_test.go` 覆盖创建应答、连接取消及有界等待；真实 Chrome 导航取消另由 state_navigation_test 验证。
 
 ### 4.2 browser/identity：声明、原生配置与观察
 

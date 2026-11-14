@@ -449,7 +449,7 @@ func assertStatePagesClosed(b *Browser) error {
 	}
 	for _, target := range targets.TargetInfos {
 		if target.BrowserContextID == b.Browser.BrowserContextID && target.Type == "page" {
-			return fmt.Errorf("state page leaked")
+			return fmt.Errorf("state page leaked: target=%s URL=%s", target.TargetID, target.URL)
 		}
 	}
 	return nil

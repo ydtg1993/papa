@@ -14,12 +14,36 @@ import (
 // Browser.Page cleans up a failed attachment with the original context, which
 // cannot close the target when attachment fails because that context expired.
 func (b *Browser) createManagedPage(ctx context.Context) (*rod.Page, error) {
-	controller := b.Browser.Context(ctx)
-	target, err := (proto.TargetCreateTarget{URL: "about:blank", BrowserContextID: controller.BrowserContextID}).Call(controller)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	page, err := controller.PageFromTarget(target.TargetID)
+	controller := b.Browser.Context(ctx)
+	// Creation is a side effect: dropping its reply on cancellation loses the
+	// only target ID we may safely close. Allow a bounded acknowledgement grace
+	// after cancellation, then close the known target without attaching/running it.
+	creation, stopCreation := context.WithCancel(context.WithoutCancel(ctx))
+	creationDone := make(chan struct{})
+	stopGrace := context.AfterFunc(ctx, func() {
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-creationDone:
+		case <-timer.C:
+			stopCreation()
+		}
+	})
+	target, err := (proto.TargetCreateTarget{URL: "about:blank", BrowserContextID: controller.BrowserContextID}).Call(b.Browser.Context(creation))
+	close(creationDone)
+	stopGrace()
+	stopCreation()
+	if err != nil {
+		return nil, errors.Join(ctx.Err(), err)
+	}
+	var page *rod.Page
+	err = ctx.Err()
+	if err == nil {
+		page, err = controller.PageFromTarget(target.TargetID)
+	}
 	if err == nil {
 		return page, nil
 	}

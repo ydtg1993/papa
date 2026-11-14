@@ -572,6 +572,8 @@ if err := page.WaitLoad(); err != nil { return err }
 
 账号浏览器的首次导航前恢复可使用 `Browser.WithStatePage`；它在初次请求前设置 Cookie、在主 frame 首段脚本前恢复 LocalStorage，加载后卸载初始化器。旧 `RestorePageState` 的「先导航再恢复」语义保持不变。统一账号入口会自动使用前者，见 [账号手册](../accounts/ACCOUNT_RUNTIME.md)。
 
+受管页面的创建命令若遇取消，最多额外等待 3 秒接收 Chrome 已创建的 target ID，再用独立最多 3 秒关闭已知 target；已取消后不继续导航或回调。这是资源收尾宽限，不是继续执行任务。CDP 断连或宽限内仍拿不到 ID 时无法保证单页清理，应丢弃本次拥有的隔离 context，不能枚举删除其他共享页面。
+
 `htmlfetch.WriteSample(writer, request, response, policy)` 将一次 HTTP 交换输出为版本化 JSON。它不创建文件，也不自动发送网络请求。默认省略所有头、查询参数及正文，并删除 URL userinfo 和 fragment；URL 路径仍保留，路径包含账号或签名时用 `RedactURL` 处理。
 
 `SamplePolicy.Headers` / `QueryKeys` 是显式白名单，保留的值仍须由调用方确认。Authorization、Proxy-Authorization、Cookie、Set-Cookie 即使误入白名单也不会导出。`RedactBody(requestSide, body)` 在私有副本上处理正文；未提供时省略正文，提供时以其返回值为准。普通关键字过滤不能保证任意业务数据已脱敏，建议按已知 JSON schema 挑选可保留字段。

@@ -134,10 +134,19 @@ func TestWaitTimeoutKeepsEvidence(t *testing.T) {
 	pool := newLivePool(t, srv.URL)
 
 	err := pool.WithBrowser(context.Background(), func(b *Browser) error {
-		return b.WithNavigatedPage(context.Background(), srv.URL, PageOptions{
-			Timeout:      500 * time.Millisecond,
-			WaitSelector: "#never",
-		}, func(*rod.Page) error { return nil })
+		// This checks wait evidence, not navigation speed. Finish navigation
+		// before starting the short wait deadline, including under full-repo race.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return b.WithPage(ctx, func(page *rod.Page) error {
+			if err := page.Navigate(srv.URL); err != nil {
+				return err
+			}
+			if err := page.WaitLoad(); err != nil {
+				return err
+			}
+			return applyWaits(page, PageOptions{Timeout: 500 * time.Millisecond, WaitSelector: "#never"})
+		})
 	})
 	if err == nil {
 		t.Fatal("等待条件永不满足时应当报错")

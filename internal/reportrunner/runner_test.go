@@ -2,6 +2,7 @@ package reportrunner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,7 +21,9 @@ import (
 
 func closeRunner(t *testing.T, r *Runner) {
 	t.Helper()
-	ctx, c := context.WithTimeout(context.Background(), time.Second)
+	// Test teardown/file assertions are not the production shutdown SLA.
+	// The blocked-writer test below separately enforces a 20ms close deadline.
+	ctx, c := context.WithTimeout(context.Background(), 10*time.Second)
 	defer c()
 	if err := r.Close(ctx); err != nil {
 		t.Fatal(err)
@@ -153,9 +156,14 @@ func TestStaticInputsDetachedAndNoCallbacks(t *testing.T) {
 func TestUnknownReportArtifactsAndPruneOwnFilesOnly(t *testing.T) {
 	dir := t.TempDir()
 	old := filepath.Join(dir, time.Now().Add(-30*24*time.Hour).Format("2006-01-02"))
-	os.MkdirAll(old, 0700)
-	os.WriteFile(filepath.Join(old, "report.json"), []byte("old"), 0600)
-	os.WriteFile(filepath.Join(old, "keep.txt"), []byte("keep"), 0600)
+	if err := os.MkdirAll(old, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"report.json": "old", "keep.txt": "keep"} {
+		if err := os.WriteFile(filepath.Join(old, name), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r := New(Options{Config: Config{Enabled: true, OnExit: true, ReportDir: dir}})
 	r.Start()
 	closeRunner(t, r)
@@ -163,6 +171,14 @@ func TestUnknownReportArtifactsAndPruneOwnFilesOnly(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, time.Now().Format("2006-01-02"), name)); err != nil {
 			t.Fatal(err)
 		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, time.Now().Format("2006-01-02"), "report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rep obs.Report
+	if err := json.Unmarshal(raw, &rep); err != nil || rep.Verdict != obs.VerdictUnknown {
+		t.Fatalf("online artifact must be valid and unknown: verdict=%s err=%v", rep.Verdict, err)
 	}
 	if _, err := os.Stat(filepath.Join(old, "keep.txt")); err != nil {
 		t.Fatal("removed unrelated file", err)
