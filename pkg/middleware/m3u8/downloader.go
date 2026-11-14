@@ -220,14 +220,7 @@ func (d *Downloader) requestWithLimit(ctx context.Context, url, rangeHeader stri
 		default:
 		}
 		if attempt > 0 {
-			base := time.Duration(d.config.RetryInterval) * time.Second
-			if base == 0 {
-				base = 2 * time.Second
-			}
-			sleepTime := base * time.Duration(1<<uint(attempt-1))
-			if sleepTime > 10*time.Second {
-				sleepTime = 10 * time.Second
-			}
+			sleepTime := requestBackoff(attempt, d.config.RetryInterval)
 			// 退避要能被 ctx 打断：Engine.Stop 只等 crawler.stop_timeout（模板 5s），
 			// 而这里最多睡 10s —— 卡住的话 Stop 会报"未排空"，并连带跳过关库与关浏览器池的收尾
 			// （那两件事正是在 drained=false 时故意不做的）。与 engine/stage.go 的退避同一写法。
@@ -1006,10 +999,7 @@ func (d *Downloader) downloadSegmentToFile(ctx context.Context, seg *SegmentInfo
 		default:
 		}
 		if attempt > 0 {
-			sleepTime := time.Duration(1<<uint(attempt)) * time.Second
-			if sleepTime > 10*time.Second {
-				sleepTime = 10 * time.Second
-			}
+			sleepTime := segmentBackoff(attempt)
 			// 退避要能被 ctx 打断：Engine.Stop 只等 crawler.stop_timeout（模板 5s），
 			// 而这里最多睡 10s —— 卡住的话 Stop 会报"未排空"，并连带跳过关库与关浏览器池的收尾
 			// （那两件事正是在 drained=false 时故意不做的）。与 engine/stage.go 的退避同一写法。

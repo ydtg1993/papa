@@ -31,7 +31,7 @@ type StageConfig struct {
 	BreakerReadOnlyCoverage string
 	RepeatLimit             int                  // repeat_queue 重投上限：repeat >= 此值不再重投；<=0 不限。
 	MaxAttempts             int                  // Handler 最大尝试次数（含首次执行）
-	Backoff                 time.Duration        // Handler 错误重试退避时间
+	Backoff                 time.Duration        // Handler 指数退避基数；60s 封顶后 Equal Jitter（半值至全值）
 	Delay                   config.DurationRange // 任务间隔延迟，支持随机区间
 	WorkerCount             int                  // WorkerCount 该阶段专用的 worker 数量
 	QueueSize               int                  // QueueSize 该阶段的任务队列缓冲大小

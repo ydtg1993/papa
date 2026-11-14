@@ -518,3 +518,7 @@ Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `cra
 #### Trace 模式配置
 
 模式在启动时确定，修改后重启生效。省略 mode 默认 errors；Go 零值同样默认 errors。关闭用 `config.TraceConfig{Mode: config.TraceOff}`（`config` 为 `github.com/ydtg1993/papa/v4/config`）。旧 enabled 键已删除，和无效模式一样在启动校验时拒绝，不再进行映射。
+
+## Handler 与下载退避
+
+阶段重试仍通过 Go 声明 `RetrySpec` 配置；下载仍用 Config/Overlay 的 `RetryInterval` 和 `MaxRetries`。Handler 指数退避值上限 60 秒、下载上限 10 秒，均在安全封顶后执行 Equal Jitter（半值至全值）；不增加 `retry.max_backoff` 或 `retry.jitter` YAML 键。首次/末次尝试、取消与计数约定见 [Fetcher 手册](../guides/FETCHER_WRITING_GUIDE.md)。本地退避不缩短服务端 Retry-After。

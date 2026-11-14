@@ -62,7 +62,7 @@ papa/
 | 仓库根及基础包 | 根包 papa、config、core、models、docs | ROOT_STRUCTURE |
 | admin | access、accountpools、accounts、auth、breakers、configstore、diagnostics、frameworkdata、gormsource、internal/httpjson、logs、monitoring、oplog、page、queues、reports、runtimecontrol、server、settings、shell、sitesource、sysinfo、taskflow、tasksource、tasktrace、tokenadmin | ADMIN_STRUCTURE |
 | engine | 根包、internal/execution、internal/fetchruntime、internal/scheduler | ENGINE_STRUCTURE |
-| internal | tracestore、 app、breaker、breakerstore、browserdiagnostics、database、gormfake、msgqueue、reportrunner、runtimecontrol、sitedecl、taskstore、track、workerpool | INTERNAL_STRUCTURE |
+| internal | backoff、tracestore、app、breaker、breakerstore、browserdiagnostics、database、gormfake、msgqueue、reportrunner、runtimecontrol、sitedecl、taskstore、track、workerpool | INTERNAL_STRUCTURE |
 | pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、incident、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、temporary、testdb | PKG_STRUCTURE |
 | obs | 根包、analyze、eventlog、inputbudget、logidx、pattern、report | OBS_STRUCTURE |
 | cmd | papa、monitor-demo | CMD_STRUCTURE |

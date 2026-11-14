@@ -8,10 +8,11 @@
 
 `internal/` 是框架内部实现目录，不是单一业务层。这里既有应用组合根，也有声明规划、运行服务、持久化适配和底层执行设施。各包按自身契约协作；不能因都在 internal 下就互相读取可变字段或把完整 App / Engine 交给子组件。Papa 只面向单实例大单体，真实站点、业务模型配置和固定验收目标留在独立业务模块。
 
-本册覆盖根层 `internal/` 的 **14 个包、67 个非测试 Go 文件、69 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
+本册覆盖根层 `internal/` 的 **15 个包、68 个非测试 Go 文件、70 个测试 Go 文件**；`gormfake.go` 虽为非 `_test.go` 文件，仍是仅供仓内测试使用的支持代码。`engine/internal/` 的三个执行子包由 [Engine 分册](ENGINE_STRUCTURE.md) 维护。本目录当前没有非 Go 资源文件，也没有更深的子包。
 
 ```text
 internal/
+├── backoff/             # 无状态安全退避计算，不持有等待或任务生命周期
 ├── app/                 # 应用装配、公开扩展和生命周期
 ├── sitedecl/            # 冻结声明、规划与进程登记表
 ├── runtimecontrol/      # 运行策略校验、持久化核对和发布
@@ -30,6 +31,7 @@ internal/
 
 | 包 | 非测试 / 测试文件数 | 主要入口与详述 |
 | --- | --- | --- |
+| `internal/backoff` | 1 / 1 | `Seconds/Delay`；安全单位转换、有界指数和 Equal Jitter，见下文 |
 | `internal/app` | 21 / 33 | `NewApp`、`Run`、`Shutdown`、`Use*`，见 [App](#app) |
 | `internal/sitedecl` | 5 / 5 | `RegisterSite`、`Sites`、`CheckSites`、`PlanSites`，见[声明](#sitedecl) |
 | `internal/runtimecontrol` | 4 / 2 | `Service.Initialize/Read/Save/HistoryAction/DeletePool`，见[运行策略](#runtimecontrol) |
@@ -535,3 +537,9 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 新增持久化逻辑先找语义拥有者：任务转移归 taskstore；熔断控制快照及历史事务归 breakerstore；策略 CAS/核对/发布归 runtimecontrol，具体配置存储适配归 admin/configstore；当前 schema 建表只走显式 database.Migrate。App 只组织时序，不复制这些算法。
 
 本册的文件数与逐文件索引用于发现漏写职责，不是机械拆包指标。代码变化需同步对应章节与[开发手册](../architecture/DEVELOPMENT.md)，公开扩展以当前 v4 契约为准。架构守卫、合成 fixture、假库、浏览器和真实 MySQL 测试各有证明范围；本文是源码职责说明，不宣称本轮执行了这些测试，也不把目录说明当作无缺陷证明。
+
+## 退避计算：internal/backoff
+
+`backoff.go` 仅依赖标准库，拥有饱和秒转换、指数溢出预判、Equal Jitter 采样，计算量不随异常指数线性增长。生产随机调用使用并发安全的 math/rand/v2 顶层函数，无包级可变随机源、goroutine、锁或关闭入口。`backoff_test.go` 验证极值、端点、固定种子分散与并发调用。
+
+Engine 与 filedown/M3U8 各自的 `retry_backoff.go` 拥有基数、指数编号和上限策略；调用方继续拥有 context 等待、重试计数、请求和结算。不得把 Sleep、数据库、obs、App/Engine 或配置对象引入本计算包，架构测试守卫该依赖边界。

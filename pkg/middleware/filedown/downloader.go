@@ -672,19 +672,6 @@ func checkContentRange(resp *http.Response, start, end int64) error {
 	return nil
 }
 
-// chunkBackoff 分片重试的退避时长：基数（RetryInterval，默认 1s）按 1·2·4… 翻倍，封顶 10s。
-// 基数 0/负兜底成 1，别让"非默认值"配出一个 0 退避的空转循环。
-func chunkBackoff(attempt, base int) time.Duration {
-	if base <= 0 {
-		base = 1
-	}
-	d := time.Duration(1<<attempt) * time.Duration(base) * time.Second
-	if d > 10*time.Second {
-		d = 10 * time.Second
-	}
-	return d
-}
-
 func (d *Downloader) downloadChunkToFile(ctx context.Context, fileURL string, start, end int64, destFile string, cfg *requestConfig) error {
 	if info, err := os.Stat(destFile); err == nil && info.Size() == (end-start+1) {
 		return nil

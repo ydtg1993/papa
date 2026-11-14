@@ -24,7 +24,7 @@ type Config struct {
 	// 最大重试次数，默认 3
 	MaxRetries int
 	// 初始重试间隔（秒），实际使用指数退避，默认 2
-	RetryInterval int
+	RetryInterval int // <=0 使用 2s；请求级指数值封顶 10s 后 Equal Jitter
 	// 是否启用断点续传，默认 true
 	EnableResume bool
 	// 限速（KB/s），0 表示不限速，默认 0

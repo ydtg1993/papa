@@ -835,8 +835,8 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 
 	// ① 两次尝试之间仍然要退避（别把退避本身一起改没了）
 	times := fetcher.callsAt()
-	if gap := times[1].Sub(times[0]); gap < backoff {
-		t.Fatalf("两次尝试之间应等满一个退避（%v），实得 %v", backoff, gap)
+	if gap := times[1].Sub(times[0]); gap < backoff/2 {
+		t.Fatalf("两次尝试之间至少等待 Equal Jitter 下限（%v），实得 %v", backoff/2, gap)
 	}
 
 	// ② 最后一次失败之后不该再等：终态马上落库（老行为要再等 backoff<<1 = 6s）

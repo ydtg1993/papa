@@ -152,6 +152,8 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 | 观测、分析和报告 | [OBS_STRUCTURE.md](../package_structure/OBS_STRUCTURE.md) |
 | CLI、脚手架与合成演示 | [CMD_STRUCTURE.md](../package_structure/CMD_STRUCTURE.md) |
 
+退避的安全数学与采样归 `internal/backoff`；Handler/下载的策略归各包 `retry_backoff.go`；等待、计数、结算和取消归原执行循环。详见 Internal、Engine、Pkg 分册。
+
 **包职责清晰是长期开发硬规则。** 新增或修改功能先明确状态拥有者、接口、允许依赖、原子性和关闭契约，再选择文件；按职责拆分，不按文件数机械拆包。新增包/重要文件同步对应分册和说明书总索引，不在本节再维护第二份逐文件清单。
 
 完整跨组件规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。`TestPackageResponsibilityBoundaries` 只检查部分依赖与资源归属；改动并发、取消、排空、SQL 或页面时仍须按本手册选择行为验证。公开 App/Engine/Task/Fetcher 以当前 v4 契约为准，不维持旧版接口。

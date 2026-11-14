@@ -94,7 +94,7 @@ type StageSpec struct {
 // RetrySpec 重试声明。
 type RetrySpec struct {
 	MaxAttempts int    // 含首次执行；<=0 用默认 3
-	Backoff     string // 退避基数（指数递增），如 "30s"；空 = 1s
+	Backoff     string // 退避基数，如 "30s"；空 = 1s；指数值封顶 60s 后在半值至全值间抖动
 }
 
 // snapshot 把站点声明压成框架内部流通的快照（core.Site）：引擎侧、告警、入口回调都读它。

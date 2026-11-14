@@ -187,7 +187,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 					// 退避被停机打断：不是任务失败，回退认领后退出。
 					e.releaseClaim(task)
 					return ctx.Err()
-				case <-time.After(cfg.Backoff * (1 << uint(attempt-1))):
+				case <-time.After(retryBackoff(cfg.Backoff, attempt)):
 				}
 				if err := e.incrementExecutionRetry(ctx, task); err != nil {
 					return err

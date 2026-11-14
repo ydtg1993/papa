@@ -621,7 +621,7 @@ func TestChunkRetryBackoffIsInterruptible(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		// 第 1 次退避 = 1<<1 = 2s，够测了
+		// 第 1 次 Equal Jitter 退避在 [1s, 2s]
 		done <- d.downloadChunkToFile(ctx, srv.URL, 0, 9, filepath.Join(cfg.OutputDir, "chunk.part"), &requestConfig{})
 	}()
 
@@ -973,7 +973,7 @@ func TestChunkBackoff(t *testing.T) {
 		{5, 1, 10 * time.Second}, // 封顶 10s
 	}
 	for _, tc := range cases {
-		if got := chunkBackoff(tc.attempt, tc.base); got != tc.want {
+		if got := chunkBackoff(tc.attempt, tc.base); got < tc.want/2 || got > tc.want {
 			t.Fatalf("chunkBackoff(%d, %d) = %v, want %v", tc.attempt, tc.base, got, tc.want)
 		}
 	}

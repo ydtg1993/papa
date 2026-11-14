@@ -42,6 +42,9 @@ func TestPackageResponsibilityBoundaries(t *testing.T) {
 			if err != nil {
 				return err
 			}
+			if strings.HasPrefix(p, "internal/backoff/") && (strings.Contains(strings.Split(dep, "/")[0], ".") || dep == "context" || dep == "net/http" || dep == "database/sql") {
+				t.Errorf("backoff calculation %s imports lifecycle/I/O dependency %s", p, dep)
+			}
 			if strings.HasPrefix(p, "config/") && dep == module+"internal/breaker" {
 				t.Errorf("public config %s imports breaker implementation", p)
 			}

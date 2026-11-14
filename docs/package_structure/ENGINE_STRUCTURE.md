@@ -40,7 +40,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 73 个生产 Go 文件、97 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 74 个生产 Go 文件、98 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -79,6 +79,7 @@ engine/
 
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
+| `retry_backoff.go` | Handler 退避策略：首次重试指数 0、60s 封顶、Equal Jitter | 仅调用 internal/backoff 计算；等待、计数和结算仍在 stage.go，无新增状态/锁 |
 | `stage.go` | worker 执行编排、任务认领/释放、重试、成功/失败结算、单次尝试装配 | 保留跨组件顺序，避免把所有细节重新塞回 stageHandler |
 | `attempt_execution.go` | attemptExecution：一次 handler 的 context、trace/归档终结、panic 传播、账号反馈与计时协调 | 不持有 Engine；handler 调用通过回调传入，持久化重试不能重新调用 handler |
 | `attempt_persistence.go` | attemptPersistence：本次尝试时间写入及失败结算依赖 | 不持有 Engine，但仍直接依赖 GORM、execution.State 和 breakerCoordinator；属于同包组件，不是完全独立存储层 |
@@ -280,3 +281,7 @@ InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查�
 并发恢复初始化由 breakerCoordinator 的 breakerRestoreGate 可取消串行化：gate 包含加载、状态发布、可靠 flush 与维护循环交接，等待者也纳入 Engine 的初始化在途位。该 gate 只约束初始化，不复用控制锁/存储写 gate；等待或访问存储时均不持 Engine.mu、breakerMu。初始化成功标志在可靠 flush 后发布，避免并发调用越过尚未完成的持久化确认。
 
 恢复 gate 的首次创建由 breakerRestoreOnce（sync.Once）拥有，不为通道初始化直接解锁 breakerMu；事务事件派发守卫保持原约束。
+
+### Handler 退避回归归属
+
+`retry_backoff_test.go` 验证策略极值、实际 Handler 重试计数/单次认领、取消时认领释放及真实 worker Stop 退出。`stage_test.go` 保留首次不等、只在尝试之间等待和末次失败不空等的契约；Equal Jitter 的最低等待为封顶指数值的一半。`persistence_test.go` 继续验证 retry 加法回执不明不能重放。该退避不用于数据库确认重试、账号冷却、熔断探测或治理层 Retry-After。

@@ -15,7 +15,7 @@ type Config struct {
 	OutputDir              string         // 输出目录，默认 "./downloads"
 	ResumeStateDir         string         // 断点续传状态存储目录，默认 "./.resume"
 	MaxRetries             int            // 重试次数，默认 3
-	RetryInterval          int            // 重试间隔（秒），默认 1（分片重试的指数退避基数）
+	RetryInterval          int            // 重试间隔（秒），默认 1；分片指数值封顶 10s 后在半值至全值间抖动
 	Timeout                time.Duration  // 下载超时，默认 30s
 	MaxConcurrent          int            // 并发分片数，默认 4
 	ChunkSize              int64          // 每块大小（字节），默认 5MB

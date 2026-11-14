@@ -300,6 +300,8 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 
 ### 7.2 middleware/filedown
 
+`retry_backoff.go` 拥有分片重试策略：首次指数 1、非正基数用 1 秒、10 秒封顶后 Equal Jitter；`retry_backoff_test.go` 验证极大参数、本地 HTTP 重试次数与等待取消。依赖 internal/backoff 纯计算，不增加下载共享状态或关闭步骤。
+
 | 文件 | 职责 |
 | --- | --- |
 | `resources.go` | 有界私有 v2 位图续传及文件下载资源预留；拒绝无版本 JSON、v1 与未知版本 |
@@ -308,6 +310,8 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 | `downloader.go` | `NewDownloader` / `With` / `Config` / `SetClient` / `Download`、上下文到请求选项、探测/Range 校验/分块/断点/输出；共享状态及错误流 |
 
 ### 7.3 middleware/m3u8
+
+`retry_backoff.go` 拥有请求级与加密分片外层两种策略，均在 10 秒封顶后 Equal Jitter。请求级首次指数 0、非正基数用 2 秒；加密分片外层首次指数 1、基数 1 秒。非加密流式分片只走请求级重试。`retry_backoff_test.go` 验证两层次数、极值、两处等待取消及临时文件/内存预留释放；调用循环继续拥有 ctx 和资源。
 
 | 文件 | 职责 |
 | --- | --- |
