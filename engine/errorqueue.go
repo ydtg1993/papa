@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/internal/taskstore"
 	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
@@ -61,17 +62,18 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
-	// **`status` 守卫不能省**：批次 SELECT 与这次重置之间，**轮询队列**可能已经把这一行捞走并重投
-	//（一条 `repeatable + failed` 的行同时命中两个队列，两者各自有锁、互不互斥）：那一份被 worker
-	// 认领、正在跑，而这次无条件 UPDATE 照样把它改回 pending 并再投一份 → 同一行被两个 worker
-	// 并发执行。带上 status 之后：已经不是 failed 的行（正在跑 / 已终态）匹配不上，0 行 → 跳过。
-	res := e.db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", t.ID, models.TaskStatusFailed).
-		Updates(map[string]any{
-			"status":    models.TaskStatusPending,
-			"retry":     0,
-			"reprocess": gorm.Expr("reprocess + 1"),
-		})
+	// 状态挡住在途任务；repeat/reprocess 快照同时挡住另一队列重投并再次
+	// 落终态后的旧查询结果。计数在同一 UPDATE 增长，不靠两个队列的私有锁互斥。
+	reset := taskstore.GenerationScope(e.db.Model(&models.CrawlerTask{}), t).
+		Where("status = ?", models.TaskStatusFailed)
+	if limit := e.cfg.ErrorQueue.MaxRetry; limit > 0 {
+		reset = reset.Where("reprocess < ?", limit)
+	}
+	res := reset.Updates(map[string]any{
+		"status":    models.TaskStatusPending,
+		"retry":     0,
+		"reprocess": gorm.Expr("reprocess + 1"),
+	})
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false

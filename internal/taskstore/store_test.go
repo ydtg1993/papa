@@ -79,10 +79,10 @@ func TestResetOrphansOnlyTransitionsProcessing(t *testing.T) {
 func TestSettleIsConditionalAndOnlyFailureAppendsError(t *testing.T) {
 	for _, status := range []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed} {
 		db, r := dryStore(t)
-		if err := Settle(db, context.Background(), 7, status, errors.New("synthetic failure")); err != nil {
+		if err := Settle(db, context.Background(), 7, status, errors.New("synthetic failure"), 12*time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		sql := assertSQL(t, r, "UPDATE `crawler_tasks` SET", "WHERE id = 7 AND status = 1")
+		sql := assertSQL(t, r, "UPDATE `crawler_tasks` SET", "WHERE id = 7 AND status = 1", "CASE WHEN repeatable = 1 AND next_repeat_at IS NULL", "COALESCE(NULLIF(repeat_interval, 0), 43200)", "ELSE next_repeat_at END")
 		if status == models.TaskStatusFailed {
 			if !strings.Contains(sql, "CONCAT(COALESCE(error, ''),") || !strings.Contains(sql, "synthetic failure") {
 				t.Fatalf("missing atomic append: %s", sql)
@@ -92,7 +92,7 @@ func TestSettleIsConditionalAndOnlyFailureAppendsError(t *testing.T) {
 		}
 	}
 	db, r := dryStore(t)
-	if err := Settle(db, context.Background(), 7, models.TaskStatusPending, nil); err == nil {
+	if err := Settle(db, context.Background(), 7, models.TaskStatusPending, nil, 12*time.Hour); err == nil {
 		t.Fatal("accepted nonterminal settlement")
 	}
 	if len(r.sql) != 0 {
@@ -114,4 +114,13 @@ func TestClaimScopeChecksPersistedNotBeforeInSameUpdate(t *testing.T) {
 	if field == nil || field.DBName != "not_before" {
 		t.Fatalf("claim predicate no longer matches model: %+v", field)
 	}
+}
+
+func TestGenerationScopeChecksBothRoundCounters(t *testing.T) {
+	db, r := dryStore(t)
+	row := &models.CrawlerTask{ID: 7, Repeat: 3, Reprocess: 4}
+	if err := GenerationScope(db.Model(&models.CrawlerTask{}), row).Where("status = ?", models.TaskStatusFailed).Updates(map[string]any{"status": models.TaskStatusPending}).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertSQL(t, r, "id = 7 AND `repeat` = 3 AND reprocess = 4", "status = 3")
 }

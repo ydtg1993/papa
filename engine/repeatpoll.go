@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/internal/taskstore"
 	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
@@ -148,7 +149,7 @@ func (e *Engine) repollRepeatQueue(force bool) (int, error) {
 		query = e.repeatForceQueueQuery()
 	}
 	e.beginQueueRun(QueueRepeat)
-	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueRepeatTask())
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, func(t *models.CrawlerTask) bool { return e.requeueRepeatTaskWithPolicy(t, force) })
 	e.endQueueRun(QueueRepeat, n, err)
 	e.sampleQueueBacklogOne(QueueRepeat, query)
 	return n, err
@@ -172,12 +173,16 @@ func (e *Engine) requeueRepeatTask() func(*models.CrawlerTask) bool {
 
 // requeueRepeatTaskIn 单条重投的实体。
 func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
+	return e.requeueRepeatTaskWithPolicy(t, false)
+}
+
+func (e *Engine) requeueRepeatTaskWithPolicy(t *models.CrawlerTask, force bool) bool {
 	// 站点也要看：阶段名只在本站内唯一，光按名字查会把另一站的同名阶段当成本站那个。
 	if e.stages[stageKeyOfRecord(t)] == nil {
 		e.loggerSet.Engine.Warnf("repeat queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
-	// 条件重置（不用 task.UpdateStatus：它无条件、且被 worker 等多处共用，不往它上面加条件）。
+	// 条件重置：状态、代次、到期时间都在 UPDATE 中复核，拒绝过期扫描快照。
 	// 一条语句把三个字段一起写：状态、记录（上次轮询时刻）、判据（下次到点）。
 	// 0 行 = 这一行已经不该被重投了：跳过，不计数、也不标 failed —— 它不是"重投失败"。
 	info := e.stages[stageKeyOfRecord(t)]
@@ -185,7 +190,10 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	if limit > 0 && t.Repeat >= limit {
 		return false
 	}
-	reset := repeatResetScope(e.db, uint(t.ID))
+	reset := taskstore.GenerationScope(repeatResetScope(e.db, uint(t.ID)), t)
+	if !force {
+		reset = reset.Where("next_repeat_at IS NULL OR next_repeat_at <= NOW()")
+	}
 	if limit > 0 {
 		reset = reset.Where("`repeat` < ?", limit)
 	}

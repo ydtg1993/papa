@@ -84,3 +84,11 @@ repeat_queue:
 | 周期轮询 repeatable | 本文 `repeat_queue` | 到点才投（节拍自动跟随最早到点）；后台「立即执行」手动触发 |
 
 > 框架不再内置 cron 语义（`RegisterCronJob` 已移除）。要「每隔 N 分钟」用 `repeat_queue`；要「每天 08:00 整点」这类指定时刻，业务自己起定时器调 `engine.RepollRepeatableTasks()`。
+
+## 首次排期与并发重投守卫
+
+新周期任务第一次落 success/failed 时，若数据库 repeatable=1 且 next_repeat_at 为 NULL，在原有终态 UPDATE 内按数据库当前 repeat_interval 设置下一次时间；0 使用全局有效间隔。基准是数据库 NOW()，不从入队时间起算，不增加单独 UPDATE。等待队列、暂停和关停释放认领不初始化排期；已有排期（包括后台设置）保持不变。未完成的首次执行重启后继续，真正落终态时再排期。
+
+周期和错误队列都以查询快照的 repeat/reprocess 组合做条件更新。任一重投开启新代次后，另一条旧快照即使再次遇到 success/failed 也不能重投。自动周期重投在 UPDATE 中再次检查 next_repeat_at 到期，防止扫描后运营改远排期仍被提前投递；手动强制轮询只忽略到期条件，仍受代次、状态、repeatable 和阶段 RepeatLimit 守卫。
+
+历史已终态且 next_repeat_at=NULL 的行仍沿用未排期即到期的处理方式，不做全表回填。后续周期继续按原有投递时刻计算下一次时间。此次不改变错误队列自己的重试节奏：首次周期未到期不禁止符合规则的错误重投。

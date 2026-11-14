@@ -37,11 +37,15 @@ func ResetOrphans(db *gorm.DB, ctx context.Context) error {
 // makes a retry after an ambiguous commit idempotent, including error append.
 // Zero affected rows means the task was already settled/deleted by another
 // authorized operation; it is not a reason to overwrite that operation.
-func Settle(db *gorm.DB, ctx context.Context, id uint, status models.TaskStatus, cause error) error {
+func Settle(db *gorm.DB, ctx context.Context, id uint, status models.TaskStatus, cause error, repeatInterval time.Duration) error {
 	if status != models.TaskStatusSuccess && status != models.TaskStatusFailed {
 		return fmt.Errorf("task settlement requires a terminal status, got %d", status)
 	}
-	updates := map[string]any{"status": status}
+	updates := map[string]any{
+		"status": status,
+		// Initialize only unplanned repeatable tasks; never move an existing deadline.
+		"next_repeat_at": gorm.Expr("CASE WHEN repeatable = ? AND next_repeat_at IS NULL THEN FROM_UNIXTIME(UNIX_TIMESTAMP(NOW(3)) + COALESCE(NULLIF(repeat_interval, 0), ?)) ELSE next_repeat_at END", models.RepeatableYes, repeatInterval.Seconds()),
+	}
 	if status == models.TaskStatusFailed {
 		msg := ""
 		if cause != nil {
@@ -59,4 +63,10 @@ func ClaimScope(db *gorm.DB, id uint) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
 		Where("id = ? AND status = ?", id, models.TaskStatusPending).
 		Where("not_before IS NULL OR not_before <= ?", time.Now())
+}
+
+// GenerationScope rejects a selection from before either governance queue or an
+// administrative retry opened another round. Status alone cannot detect ABA.
+func GenerationScope(db *gorm.DB, row *models.CrawlerTask) *gorm.DB {
+	return db.Where("id = ? AND `repeat` = ? AND reprocess = ?", row.ID, row.Repeat, row.Reprocess)
 }

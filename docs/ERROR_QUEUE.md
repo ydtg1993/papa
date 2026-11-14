@@ -56,3 +56,7 @@ error_queue:
 | `recover_queue` | 本进程启动前遗留的 `pending` / `processing` | 启动时恢复中断任务（以 `updated_at < startedAt` 为边界，**只在启动跑一次**，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)） |
 
 两者按状态互斥，不会同时盯上同一个任务。
+
+## 与周期队列竞争时的代次校验
+
+重投 UPDATE 同时匹配查询时的 repeat、reprocess，并再次检查 status=failed 和 max_retry 上限。周期或错误队列中任一方先重投，旧查询快照便失效；即使 worker 已经快速完成并再次失败，也不能用上一轮快照追加重投。影响 0 行表示条件已改变，直接跳过，不计数、不补偿写回。暂停期间接受的重投保持 pending，恢复或重启后执行；关停沿用取消扫描、保留持久化任务的机制。

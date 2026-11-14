@@ -13,7 +13,7 @@ import (
 func (e *Engine) settleTask(ctx context.Context, task *Task, status models.TaskStatus, cause error) bool {
 	for {
 		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-		err := taskstore.Settle(e.db, writeCtx, uint(task.ID), status, cause)
+		err := taskstore.Settle(e.db, writeCtx, uint(task.ID), status, cause, e.cfg.RepeatQueue.EffectiveInterval())
 		cancel()
 		if err == nil {
 			return true
