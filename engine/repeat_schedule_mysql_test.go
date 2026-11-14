@@ -266,6 +266,8 @@ func TestRepeatScheduleMySQLIsolation(t *testing.T) {
 func TestRepeatScheduleMySQLCancelBlockedQuery(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
+	e.stages["synthetic:detail"].config.RepeatLimit = 3
+	e.stages["peer:detail"] = &stageInfo{stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: 3}}
 	// A metadata lock blocks the real aggregate SELECT in MySQL. No injected sleep
 	// or callback is used as proof that the query was actually in flight.
 	sqlDB, err := db.DB()
@@ -296,7 +298,7 @@ func TestRepeatScheduleMySQLCancelBlockedQuery(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var n int64
-		if err := db.Raw("SELECT COUNT(*) FROM information_schema.processlist WHERE DB = ? AND STATE = 'Waiting for table metadata lock' AND INFO LIKE '%MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at%'", name).Scan(&n).Error; err != nil {
+		if err := db.Raw("SELECT COUNT(*) FROM information_schema.processlist WHERE DB = ? AND STATE = 'Waiting for table metadata lock' AND INFO LIKE '%site IN (%' AND INFO LIKE '%MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at%'", name).Scan(&n).Error; err != nil {
 			t.Fatal(err)
 		}
 		if n > 0 {

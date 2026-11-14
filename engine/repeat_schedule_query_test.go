@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func TestRepeatScheduleUsesOneDatabaseRead(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
 	e.stages["stub:stub"].config.RepeatLimit = 3
+	e.stages["peer:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "peer", RepeatLimit: 3}}
 	epoch := time.Now().Add(time.Hour).Unix()
 	f.minEpoch = &epoch
 	f.mu.Lock()
@@ -50,6 +52,12 @@ func TestRepeatScheduleUsesOneDatabaseRead(t *testing.T) {
 func TestRepeatScheduleStopWaitsForQueryExit(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e.stages["stub:stub"].config.RepeatLimit = 3
+	e.stages["peer:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "peer", RepeatLimit: 3}}
+	sql := e.db.ToSQL(func(d *gorm.DB) *gorm.DB { var row struct{ Epoch *int64 }; return e.soonestRepeatQueryOn(d).Find(&row) })
+	if !strings.Contains(sql, "site IN (") {
+		t.Fatal("shutdown fixture did not exercise grouped limits")
+	}
 	e.cfg.RepeatQueue.Enabled = true
 	e.cfg.RepeatQueue.Interval = time.Hour
 	entered, release, exited := make(chan struct{}), make(chan struct{}), make(chan struct{})

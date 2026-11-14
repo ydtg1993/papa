@@ -71,20 +71,32 @@ func TestRepeatCapCostMySQL(t *testing.T) {
 							t.Error(err)
 						}
 					}()
-					var fixture struct{ Total, Repeating, UnderCap int64 }
-					if err := tx.Raw("SELECT COUNT(*) AS total, SUM(repeatable = 1) AS repeating, SUM(`repeat` < 5) AS under_cap FROM crawler_tasks").Scan(&fixture).Error; err != nil {
+					var fixture struct{ Total, Repeating, UnderCap, Terminal, Future int64 }
+					if err := tx.Raw("SELECT COUNT(*) AS total, SUM(repeatable = 1) AS repeating, SUM(`repeat` < 5) AS under_cap, SUM(status IN (2,3)) AS terminal, SUM(next_repeat_at > NOW()) AS future FROM crawler_tasks").Scan(&fixture).Error; err != nil {
 						return err
 					}
-					var wantUnderCap int64
-					if distribution != "all_capped" {
-						for i := 0; i < size; i++ {
-							if (i/64)%10 < 5 {
-								wantUnderCap++
+					var wantUnderCap, wantTerminal, wantFiltered int64
+					wantFuture := int64(size)
+					if distribution == "expired_active" {
+						wantFuture = 0
+					}
+					for i := 0; i < size; i++ {
+						terminal := (i/16)%4 >= 2
+						if distribution == "expired_active" {
+							terminal = (i+1)%100 == 0
+						}
+						if terminal {
+							wantTerminal++
+						}
+						if distribution != "all_capped" && (i/64)%10 < 5 {
+							wantUnderCap++
+							if terminal || distribution != "expired_active" {
+								wantFiltered++
 							}
 						}
 					}
-					if fixture.Total != int64(size) || fixture.Repeating != int64(size) || fixture.UnderCap != wantUnderCap {
-						return fmt.Errorf("fixture cardinality=%+v want total/repeating=%d under_cap=%d", fixture, size, wantUnderCap)
+					if fixture.Total != int64(size) || fixture.Repeating != int64(size) || fixture.UnderCap != wantUnderCap || fixture.Terminal != wantTerminal || fixture.Future != wantFuture {
+						return fmt.Errorf("fixture cardinality=%+v want total/repeating=%d under_cap=%d terminal=%d future=%d", fixture, size, wantUnderCap, wantTerminal, wantFuture)
 					}
 					variants := []struct {
 						name  string
@@ -123,6 +135,20 @@ func TestRepeatCapCostMySQL(t *testing.T) {
 						return nil
 					}
 					for i := range variants {
+						// Equal MIN values alone do not prove equal qualified sets.
+						// The original CASE keeps active rows but contributes NULL;
+						// the filtered variants exclude those rows before aggregation.
+						var count struct{ Matched int64 }
+						if err := variants[i].query(tx).Select("COUNT(*) AS matched").Scan(&count).Error; err != nil {
+							return err
+						}
+						expected := wantFiltered
+						if variants[i].name == "original_case" {
+							expected = wantUnderCap
+						}
+						if count.Matched != expected {
+							return fmt.Errorf("%s qualified=%d want=%d", variants[i].name, count.Matched, expected)
+						}
 						if err := run(i); err != nil {
 							return err
 						}

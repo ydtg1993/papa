@@ -2,10 +2,105 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"gorm.io/gorm"
 )
+
+// Comparing WHERE result sets alone cannot distinguish FALSE from UNKNOWN.
+// Project the actual production predicate as a nullable scalar as well.
+func TestRepeatLimitMySQLThreeValuedEquivalence(t *testing.T) {
+	db, _ := compensationMySQL(t)
+	rows := make([]map[string]any, 0)
+	for _, site := range []any{nil, "a", "b", "c", "d", "missing", "A", "á", "a ", "quote's"} {
+		for _, stage := range []string{"detail", "catalog", "missing", "DETAIL", ""} {
+			for _, round := range []any{nil, -1, 0, 1, 2, 3, 4, 5, 6} {
+				id := len(rows) + 1
+				rows = append(rows, map[string]any{"id": id, "site": site, "stage": stage, "repeat": round, "identity_hash": fmt.Sprintf("%064x", id), "url": "https://example.invalid/three-valued"})
+			}
+		}
+	}
+	if err := db.Table("crawler_tasks").CreateInBatches(rows, 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []string{"unlimited", "one_group", "mixed"} {
+		t.Run(profile, func(t *testing.T) {
+			e := &Engine{stages: make(map[string]*stageInfo)}
+			add := func(site, stage string, limit int) {
+				e.stages[site+":"+stage] = &stageInfo{stage: stage, config: StageConfig{Site: site, RepeatLimit: limit}}
+			}
+			add("free", "detail", 0)
+			add("negative", "detail", -1)
+			if profile != "unlimited" {
+				add("a", "detail", 3)
+				add("b", "detail", 3)
+				add("quote's", "detail", 3)
+			}
+			if profile == "mixed" {
+				add("c", "detail", 5)
+				// Equal limits across different stages must stay separate too.
+				add("a", "catalog", 3)
+				add("d", "catalog", 3)
+				// Depending on the real column collation, these can overlap
+				// existing constraints. Folding must not change that behavior.
+				add("A", "detail", 4)
+				add("b", "DETAIL", 6)
+			}
+			predicate := func(folded bool) string {
+				sql := db.ToSQL(func(d *gorm.DB) *gorm.DB {
+					q := d.Table("crawler_tasks").Select("1")
+					if folded {
+						q = e.withRepeatLimits(q)
+					} else {
+						q = referenceRepeatLimits(e, q)
+					}
+					return q.Find(&[]struct{ Value int }{})
+				})
+				_, where, found := strings.Cut(sql, " WHERE ")
+				if !found {
+					return "1"
+				}
+				return where
+			}
+			var values []struct {
+				ID               uint
+				Folded, Original *int64
+			}
+			// Predicates come from GORM-rendered, constant synthetic declarations;
+			// no external input is concatenated into this test SELECT.
+			if err := db.Raw("SELECT id, (" + predicate(true) + ") AS folded, (" + predicate(false) + ") AS original FROM crawler_tasks ORDER BY id").Scan(&values).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(values) != len(rows) {
+				t.Fatalf("truth fixture rows=%d want=%d", len(values), len(rows))
+			}
+			var truths, falses, unknowns int
+			for _, value := range values {
+				if !sameRepeatEpoch(value.Folded, value.Original) {
+					t.Fatalf("SQL truth value changed for row %d: fixture=%v", value.ID, rows[value.ID-1])
+				}
+				if value.Folded == nil {
+					unknowns++
+				} else if *value.Folded == 1 {
+					truths++
+				} else if *value.Folded == 0 {
+					falses++
+				} else {
+					t.Fatalf("not a SQL truth value: %d", *value.Folded)
+				}
+			}
+			if profile == "unlimited" {
+				if truths != len(rows) {
+					t.Fatal("unlimited scope filtered rows")
+				}
+			} else if truths == 0 || falses == 0 || unknowns == 0 {
+				t.Fatalf("missing truth-value coverage: true=%d false=%d null=%d", truths, falses, unknowns)
+			}
+			t.Logf("rows=%d true=%d false=%d null=%d", len(values), truths, falses, unknowns)
+		})
+	}
+}
 
 // These values can exist even after a session returns to strict SQL mode.
 // Test mixed rows: an invalid later DATETIME must not be hidden by a valid

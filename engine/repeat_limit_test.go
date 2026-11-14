@@ -88,6 +88,7 @@ func TestRepeatLimitGroupsOnlyEqualStageAndLimit(t *testing.T) {
 		"c:detail":    {stage: "detail", config: StageConfig{Site: "c", RepeatLimit: 5}},
 		"a:catalog":   {stage: "catalog", config: StageConfig{Site: "a", RepeatLimit: 2}},
 		"d:catalog":   {stage: "catalog", config: StageConfig{Site: "d", RepeatLimit: 2}},
+		"e:catalog":   {stage: "catalog", config: StageConfig{Site: "e", RepeatLimit: 3}},
 		"free:detail": {stage: "detail", config: StageConfig{Site: "free"}},
 	}}
 	db := dryRunMySQL(t)
@@ -100,12 +101,13 @@ func TestRepeatLimitGroupsOnlyEqualStageAndLimit(t *testing.T) {
 			"NOT (site IN ('a','b') AND stage = 'detail' AND `repeat` >= 3)",
 			"NOT (site = 'c' AND stage = 'detail' AND `repeat` >= 5)",
 			"NOT (site IN ('a','d') AND stage = 'catalog' AND `repeat` >= 2)",
+			"NOT (site = 'e' AND stage = 'catalog' AND `repeat` >= 3)",
 		} {
 			if !strings.Contains(sql, want) {
 				t.Fatalf("missing %s in %s", want, sql)
 			}
 		}
-		if strings.Count(sql, "NOT (") != 3 || strings.Contains(sql, "'free'") {
+		if strings.Count(sql, "NOT (") != 4 || strings.Contains(sql, "'free'") {
 			t.Fatalf("wrong cap groups: %s", sql)
 		}
 		if i > 0 && sql != previous {
