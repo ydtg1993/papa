@@ -86,10 +86,14 @@ func (f *deliveryMySQLFetcher) FetchHandler(ctx context.Context, task *Task, e *
 }
 
 func deliveryMySQLEngine(t *testing.T, db *gorm.DB, paused bool, stages ...*deliveryMySQLFetcher) *Engine {
+	return deliveryMySQLEngineWithConfig(t, db, &config.Config{}, paused, stages...)
+}
+
+func deliveryMySQLEngineWithConfig(t *testing.T, db *gorm.DB, cfg *config.Config, paused bool, stages ...*deliveryMySQLFetcher) *Engine {
 	t.Helper()
 	l := logrus.New()
 	l.SetOutput(io.Discard)
-	e := NewEngine(db, &config.Config{}, &loggers.LoggerSet{Sys: l, Engine: l, Fetcher: l, Monitor: l, DB: l})
+	e := NewEngine(db, cfg, &loggers.LoggerSet{Sys: l, Engine: l, Fetcher: l, Monitor: l, DB: l})
 	e.SetSite(core.Site{Key: "synthetic", StartPaused: paused})
 	e.SetSiteBreaker("synthetic", struct {
 		Enabled   bool

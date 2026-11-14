@@ -412,20 +412,18 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 		return &v
 	}
 	cases := []struct {
-		name    string
-		enabled bool
-		global  time.Duration
-		min     *int64 // 假库 MIN 的返回值；nil = NULL（没有可轮询的行）
-		failQ   bool
-		want    time.Duration
+		name   string
+		global time.Duration
+		min    *int64 // 假库 MIN 的返回值；nil = NULL（没有可轮询的行）
+		failQ  bool
+		want   time.Duration
 	}{
-		{"总开关关着 → 0（仅手动）", false, time.Hour, nil, false, 0},
-		{"全局 interval = 0 → 0（仅手动）", true, 0, nil, false, 0},
-		{"没有可轮询的行 → 全局节拍", true, time.Hour, nil, false, time.Hour},
-		{"查库出错 → 全局节拍（库抖动别把队列搞停）", true, time.Hour, nil, true, time.Hour},
-		{"30 秒后到点 → 跟随它（比全局细）", true, time.Hour, epochIn(30 * time.Second), false, 30 * time.Second},
-		{"已经到点 → 钳到最短刻度（别空转）", true, time.Hour, epochIn(-time.Minute), false, repeatMinTick},
-		{"下一个到点比全局还远 → 用全局（最粗兜底）", true, time.Minute, epochIn(time.Hour), false, time.Minute},
+		{"全局 interval = 0 使用默认", 0, nil, false, 12 * time.Hour},
+		{"没有可轮询的行 → 全局节拍", time.Hour, nil, false, time.Hour},
+		{"查库出错 → 全局节拍（库抖动别把队列搞停）", time.Hour, nil, true, time.Hour},
+		{"30 秒后到点 → 跟随它（比全局细）", time.Hour, epochIn(30 * time.Second), false, 30 * time.Second},
+		{"已经到点 → 钳到最短刻度（别空转）", time.Hour, epochIn(-time.Minute), false, repeatMinTick},
+		{"下一个到点比全局还远 → 用全局（最粗兜底）", time.Minute, epochIn(time.Hour), false, time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -435,7 +433,7 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 				f.failQueries = 1
 			}
 			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
-			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Interval: tc.global}
 
 			got := e.repeatTickInterval()
 			if diff := got - tc.want; diff > time.Second || diff < -time.Second {
@@ -475,7 +473,7 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 16)
 	e := queueEngine(t, f, pool)
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 1}
 
 	// ① 队列只捞 repeatable = 1 的终态行
 	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
@@ -535,7 +533,7 @@ func TestRepollRepeatableTasksProcessesAll(t *testing.T) {
 	}
 }
 
-/* ---------- 队列开关随配置走 ---------- */
+/* ---------- 治理队列状态守卫与关停 ---------- */
 
 // 批次 SELECT 与这次重置之间有窗口：那一行可能已经被删/标失败/自己跑完了。
 // 重置必须**带条件**并查 RowsAffected —— 否则 0 行时后面 SubmitTask 会走 Insert

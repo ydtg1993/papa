@@ -410,7 +410,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 
 | 列 | 含义 |
 | --- | --- |
-| 状态 | `运行中`（附带本轮已执行时长）/ `空闲` / `已停用`（配置里没写这段，或 `enabled: false`）；有上次执行错误时鼠标悬停可见 |
+| 状态 | `运行中`（附带本轮已执行时长）/ `空闲`；有上次执行错误时鼠标悬停可见 |
 | 上次执行 | 上次执行完成距今多久（悬停看绝对时间）· 上次执行耗时 |
 | 处理量 | 空闲时=上次处理数，运行中=本轮已处理数；副行显示累计处理数 |
 | 待处理 | 当前排队待处理的任务数（低频采样，副行显示采样时间） |
@@ -438,7 +438,7 @@ r.NoAuth().Post("/webhook/github", webhookHandler) // 对白名单外、没带�
 }
 ```
 
-队列的参数（`enabled` / `worker_count` / `interval` / …）取自 `config.yaml` 的全局段
+队列的参数（`worker_count` / `interval` / …）取自 `config.yaml` 的全局段
 （见 [CORE_CONFIG.md](./CORE_CONFIG.md)）。
 
 `last_duration` / `started_at` 等时间字段：`duration` 为纳秒，时间为 RFC3339。
@@ -723,3 +723,5 @@ SiteSpec{ Key: "example",
 下载统一使用标题右侧“全部打包下载”。已有单文件下载接口保留兼容，但设置页不再提供单文件下载入口。压缩轮转文件不能直接查看，需全部打包下载后解压。
 
 新增 `GET /api/logs/tail?file=文件名`，沿用后台令牌与 IP 白名单鉴权，禁止缓存；仅访问配置日志目录下的普通文件，拒绝路径穿越和符号链接。响应包含 `name`、`text`、`lines`、`truncated`。读取以打开文件的大小快照为准，追加内容在下次刷新展示。
+
+治理队列快照的公开 `enabled` 字段固定为 true，表示能力始终可用；`running` 表示当前是否正在处理批次，不能用它推断站点是否暂停。

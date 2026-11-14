@@ -127,11 +127,10 @@ server:
   shutdown_timeout: "10s"         # 优雅退出时等在途请求（如日志打包下载）的上限
   # write_timeout 默认 0 = 不限，这是有意的：给日志打包下载设上限等于掐断在途下载。
 
-# 失败重投与周期轮询按 enabled 开启；持久化恢复始终启用，各阶段独立等待容量。
+# 失败重投与周期轮询始终运行；持久化恢复始终启用，各阶段独立等待容量。
 # 缺一项 / 值越界启动就报。详见 docs/framework/CORE_CONFIG.md 的对应三节。
 error_queue:
-  enabled: true               # 失败任务重投；interval="0" = 不自动轮询，只留后台手动触发
-  worker_count: 1             # 并发重新投递数，必须 > 0
+  worker_count: 1             # 并发重新投递数，0 = 默认 1
   interval: "4h"              # 自动轮询间隔
   max_retry: 3                # 单条失败任务最多再处理几代；0 = 不限
   batch_size: 100             # 每批处理条数；0 = 默认 1000（分页流式，不能为负）
@@ -139,9 +138,8 @@ recover_queue:
   batch_size: 100 # 持久化恢复始终启用；按阶段独立恢复，队满阻塞
 
 repeat_queue:
-  enabled: true               # 周期轮询：把「到点的」repeatable 任务重投回各自阶段
   worker_count: 1
-  interval: "2h"              # 最粗兜底的扫描间隔，必须 > 0
+  interval: "2h"              # 最粗兜底的扫描间隔，0 = 默认 12h
   batch_size: 100
 
 # 业务自己的配置写在这里：框架**不解析、不校验**这一段，原样透出给 App

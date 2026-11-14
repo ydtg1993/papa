@@ -503,7 +503,6 @@
             return '<span class="badge running"' + title + '>运行中</span>'
                 + '<div class="muted">已执行 ' + (s === null ? '-' : fmtSpan(s)) + '</div>';
         }
-        if (!q.enabled) return '<span class="badge off"' + title + '>已停用</span>';
         return '<span class="badge ok"' + title + '>空闲</span>';
     }
     function renderQueues(queues) {

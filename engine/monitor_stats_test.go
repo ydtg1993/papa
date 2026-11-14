@@ -236,10 +236,6 @@ func TestQueueEnabledUnknownName(t *testing.T) {
 	if e.queueEnabled("no_such_queue") {
 		t.Fatal("未知队列名应当返回 false")
 	}
-	if e.queueEnabled(QueueError) {
-		t.Fatal("配置零值（关）时不该返回 true")
-	}
-	e.cfg.ErrorQueue.Enabled = true
 	if !e.queueEnabled(QueueError) {
 		t.Fatal("error_queue 开着时应返回 true")
 	}

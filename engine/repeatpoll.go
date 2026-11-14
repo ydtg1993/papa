@@ -189,7 +189,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	if limit > 0 {
 		reset = reset.Where("`repeat` < ?", limit)
 	}
-	res := reset.Updates(repeatResetUpdates(e.cfg.RepeatQueue.Interval))
+	res := reset.Updates(repeatResetUpdates(e.cfg.RepeatQueue.EffectiveInterval()))
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
@@ -228,24 +228,21 @@ func (e *Engine) wakeRepeatQueue() {
 	}
 }
 
-// repeatTickInterval 下一次扫描的节拍：0 = 不自动轮询（总开关关着，仅手动触发）。
+// repeatTickInterval 下一次扫描的节拍；全局零值使用默认间隔，始终自动轮询。
 //
 // 节拍 = min(全局 interval, 离最早一条到点还差多久)，并钳进 [repeatMinTick, 全局 interval]。
 // 查不到数据（没有可轮询的行 / 库抖动）→ 退回全局节拍。
 func (e *Engine) repeatTickInterval() time.Duration {
-	cfg := e.cfg.RepeatQueue
-	if !cfg.Enabled || cfg.Interval <= 0 {
-		return 0
-	}
+	interval := e.cfg.RepeatQueue.EffectiveInterval()
 	d, ok := e.soonestRepeatIn()
 	if !ok {
-		return cfg.Interval
+		return interval
 	}
 	if d < repeatMinTick {
 		d = repeatMinTick
 	}
-	if d > cfg.Interval {
-		return cfg.Interval
+	if d > interval {
+		return interval
 	}
 	return d
 }

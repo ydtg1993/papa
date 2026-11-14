@@ -91,7 +91,7 @@ For every submitted task:
 
 `Task.Meta` is persisted and restored by recovery, repeat, error-queue, and manual requeue paths. A URL lookup fallback can support old rows or malformed historic tasks, but do not design new task identity around URL encoding.
 
-The repeat queue must be enabled globally for automatic polling. `RepeatInterval` is per-task; the global `repeat_queue.interval` is a scan fallback. Submission does not overwrite an existing row’s operator-edited repeat settings.
+The repeat queue always runs automatically; no enabled switch is supported. `RepeatInterval` is per-task; the global `repeat_queue.interval` is a scan fallback. Submission does not overwrite an existing row’s operator-edited repeat settings.
 
 ### 4. Fetch with the least expensive engine
 

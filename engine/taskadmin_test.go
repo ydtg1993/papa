@@ -473,7 +473,7 @@ func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
 			e, _ := urgentEngine(t, f)
-			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: tc.global}
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Interval: tc.global}
 			e.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)} // 队列态先备好，唤醒才有地方落
 			wake := e.repeatQueue.wake
 

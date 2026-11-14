@@ -390,12 +390,12 @@ func TestUnknownRemovedKeyHasNoBogusSuggestion(t *testing.T) {
 // 负数才是真错的（照原样传下去会进 LIMIT）。
 func TestQueueBatchSizeZeroMeansDefault(t *testing.T) {
 	cfg := loadString(t, baseConfig+
-		"error_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: 0\n")
+		"error_queue:\n  worker_count: 1\n  batch_size: 0\n")
 	if cfg.ErrorQueue.BatchSize != 0 {
 		t.Fatalf("batch_size: 0 应当被接受（运行时按默认 1000 走），实得 %d", cfg.ErrorQueue.BatchSize)
 	}
 
-	msg := panicOn(t, baseConfig+"error_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: -1\n")
+	msg := panicOn(t, baseConfig+"error_queue:\n  worker_count: 1\n  batch_size: -1\n")
 	if !strings.Contains(msg, "batch_size") {
 		t.Fatalf("负数应当 panic 并点名 batch_size，实得：\n%s", msg)
 	}
@@ -404,24 +404,22 @@ func TestQueueBatchSizeZeroMeansDefault(t *testing.T) {
 // 三个治理队列现在又是 config.yaml 里的全局段：合法的能正常解析，开了缺项才会 panic 点名。
 func TestQueueSectionsParse(t *testing.T) {
 	cfg := loadString(t, baseConfig+
-		"error_queue:\n  enabled: true\n  worker_count: 1\n  interval: \"4h\"\n  max_retry: 3\n  batch_size: 100\n"+
+		"error_queue:\n  worker_count: 1\n  interval: \"4h\"\n  max_retry: 3\n  batch_size: 100\n"+
 		"recover_queue:\n  batch_size: 100\n"+
-		"repeat_queue:\n  enabled: true\n  worker_count: 1\n  interval: \"2h\"\n  batch_size: 100\n")
-	if !cfg.ErrorQueue.Enabled || cfg.ErrorQueue.WorkerCount != 1 || cfg.ErrorQueue.MaxRetry != 3 || cfg.ErrorQueue.BatchSize != 100 {
+		"repeat_queue:\n  worker_count: 1\n  interval: \"2h\"\n  batch_size: 100\n")
+	if cfg.ErrorQueue.WorkerCount != 1 || cfg.ErrorQueue.MaxRetry != 3 || cfg.ErrorQueue.BatchSize != 100 {
 		t.Fatalf("error_queue 没解析对：%+v", cfg.ErrorQueue)
 	}
 	if cfg.RecoverQueue.BatchSize != 100 {
 		t.Fatalf("recover_queue 没解析对：%+v", cfg.RecoverQueue)
 	}
-	if !cfg.RepeatQueue.Enabled || cfg.RepeatQueue.WorkerCount != 1 || cfg.RepeatQueue.BatchSize != 100 || cfg.RepeatQueue.Interval <= 0 {
+	if cfg.RepeatQueue.WorkerCount != 1 || cfg.RepeatQueue.BatchSize != 100 || cfg.RepeatQueue.Interval <= 0 {
 		t.Fatalf("repeat_queue 没解析对：%+v", cfg.RepeatQueue)
 	}
 
-	// 开了却缺 worker_count → panic 点名
-	msg := panicOn(t, baseConfig+"error_queue:\n  enabled: true\n  interval: \"4h\"\n")
-	if !strings.Contains(msg, "error_queue") || !strings.Contains(msg, "worker_count") {
-		t.Fatalf("开了缺 worker_count 应当 panic 点名，实得：\n%s", msg)
-	}
+	// 省略 worker_count 使用运行时默认 1。
+	loadString(t, baseConfig+"error_queue:\n  interval: \"4h\"\n")
+
 }
 
 // 降级开关在 **v2.7.0 拆掉了**（过渡期结束）。原来那句 `app.strict_config: false`

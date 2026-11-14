@@ -366,36 +366,36 @@ var rules = []rule{
 	}},
 
 	{"error_queue.worker_count", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.WorkerCount <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，失败任务会静静躺在队列里", c.ErrorQueue.WorkerCount)
+		if c.ErrorQueue.WorkerCount < 0 {
+			return fmt.Errorf("  不能为负；0 = 默认 1（实得 %d）", c.ErrorQueue.WorkerCount)
 		}
 		return nil
 	}},
 
 	{"error_queue.batch_size", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.BatchSize < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 每阶段查询批量；0 = 用默认的 100，运行时最多 1000（分页流式，避免一次性全量加载）", c.ErrorQueue.BatchSize)
+		if c.ErrorQueue.BatchSize < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 每批查询量；0 = 默认 1000（分页流式，避免一次性全量加载）", c.ErrorQueue.BatchSize)
 		}
 		return nil
 	}},
 
 	{"error_queue.max_retry", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.MaxRetry < 0 {
+		if c.ErrorQueue.MaxRetry < 0 {
 			return fmt.Errorf("  不能为负（实得 %d）—— 0 = 不限代数", c.ErrorQueue.MaxRetry)
 		}
 		return nil
 	}},
 
 	{"error_queue.interval", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.Interval < 0 {
-			return fmt.Errorf("  interval 不能为负（实得 %s）—— 0 = 不自动轮询，仅后台手动触发", c.ErrorQueue.Interval)
+		if c.ErrorQueue.Interval < 0 {
+			return fmt.Errorf("  interval 不能为负（实得 %s）—— 0 = 默认 4h，始终自动轮询", c.ErrorQueue.Interval)
 		}
 		return nil
 	}},
 
 	{"recover_queue.batch_size", func(c *Config) error {
 		if c.RecoverQueue.BatchSize < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 每阶段查询批量；0 = 用默认的 100，运行时最多 1000", c.RecoverQueue.BatchSize)
+			return fmt.Errorf("  不能为负（实得 %d）—— 每批查询量；0 = 默认 1000", c.RecoverQueue.BatchSize)
 		}
 		return nil
 	}},
@@ -425,22 +425,22 @@ var rules = []rule{
 	}},
 
 	{"repeat_queue.worker_count", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.WorkerCount <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，到点的任务会静静躺在队列里", c.RepeatQueue.WorkerCount)
+		if c.RepeatQueue.WorkerCount < 0 {
+			return fmt.Errorf("  不能为负；0 = 默认 1（实得 %d）", c.RepeatQueue.WorkerCount)
 		}
 		return nil
 	}},
 
 	{"repeat_queue.batch_size", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.BatchSize < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 每阶段查询批量；0 = 用默认的 100，运行时最多 1000", c.RepeatQueue.BatchSize)
+		if c.RepeatQueue.BatchSize < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 每批查询量；0 = 默认 1000", c.RepeatQueue.BatchSize)
 		}
 		return nil
 	}},
 
 	{"repeat_queue.interval", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.Interval <= 0 {
-			return fmt.Errorf("  interval 必须 > 0（实得 %s）—— 这是「最粗兜底」的扫描节拍", c.RepeatQueue.Interval)
+		if c.RepeatQueue.Interval < 0 {
+			return fmt.Errorf("  interval 不能为负，0 = 默认 12h（实得 %s）—— 这是「最粗兜底」的扫描节拍", c.RepeatQueue.Interval)
 		}
 		return nil
 	}},

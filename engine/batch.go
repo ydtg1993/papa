@@ -53,8 +53,14 @@ func (e *Engine) processInBatches(query func() *gorm.DB, batchSize, workers int,
 		lastID uint // keyset 游标：上一批的最大 id
 	)
 	for {
+		if e.ctx != nil && e.ctx.Err() != nil {
+			return total, nil
+		}
 		var tasks []models.CrawlerTask
 		q := query().Order("id").Limit(batchSize)
+		if e.ctx != nil {
+			q = q.WithContext(e.ctx)
+		}
 		if lastID > 0 {
 			q = q.Where("id > ?", lastID)
 		}
@@ -64,7 +70,12 @@ func (e *Engine) processInBatches(query func() *gorm.DB, batchSize, workers int,
 		if len(tasks) == 0 {
 			return total, nil
 		}
-		total += processConcurrently(tasks, workers, requeue)
+		total += processConcurrently(tasks, workers, func(task *models.CrawlerTask) bool {
+			if e.ctx != nil && e.ctx.Err() != nil {
+				return false
+			}
+			return requeue(task)
+		})
 		lastID = tasks[len(tasks)-1].ID
 		if len(tasks) < batchSize {
 			return total, nil // 最后一批

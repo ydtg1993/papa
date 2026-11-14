@@ -21,7 +21,7 @@ type Config struct {
 	// 这里只放**通用**的运行数据；业务指标与业务阈值属于业务仓库，不进框架配置。
 	Obs ObsConfig `mapstructure:"obs"`
 	// 三个治理队列都是**全局**一段：error_queue（失败重投，定期轮询）、recover_queue（启动恢复，
-	// 及运行期按阶段恢复）、repeat_queue（周期轮询）。恢复始终启用，另两者由 enabled 控制。
+	// 及运行期按阶段恢复）、repeat_queue（周期轮询）。三个队列始终运行，生命周期由引擎统一管理。
 	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
 	RecoverQueue RecoverQueueConfig `mapstructure:"recover_queue"`
 	RepeatQueue  RepeatQueueConfig  `mapstructure:"repeat_queue"`
@@ -41,11 +41,10 @@ type Config struct {
 
 // ErrorQueueConfig 错误队列（失败任务重投）：config.yaml 的 `error_queue` 段。
 //
-// **全局一条队列**，扫所有站点的 failed 任务重投回各自的阶段。Enabled=false（或没写这段）= 不跑。
+// **全局一条队列**，扫所有站点的 failed 任务重投回各自的阶段。始终运行，省略配置使用默认参数。
 type ErrorQueueConfig struct {
-	Enabled     bool          `mapstructure:"enabled"`      // 有没有这条队列（false 或没写 = 不跑）
-	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量（开启时必填 > 0）
-	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 不自动轮询，仅手动触发
+	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量（0 = 默认 1）
+	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 默认 4h
 	MaxRetry    int           `mapstructure:"max_retry"`    // 单个失败任务最多再处理代数；0 = 不限
 	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
@@ -62,9 +61,8 @@ type RecoverQueueConfig struct {
 // 周期是**每条任务自己的**（`Task.RepeatInterval`，0 = 用这里的 Interval）；这里的 Interval 是
 // "最粗兜底"的扫描间隔。
 type RepeatQueueConfig struct {
-	Enabled     bool          `mapstructure:"enabled"`      // 有没有这条队列（false 或没写 = 不跑）
-	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递 repeatable 任务的数量（开启时必填 > 0）
-	Interval    time.Duration `mapstructure:"interval"`     // 最粗兜底的扫描间隔（开启时必填 > 0）
+	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递 repeatable 任务的数量（0 = 默认 1）
+	Interval    time.Duration `mapstructure:"interval"`     // 最粗兜底的扫描间隔（0 = 默认 12h）
 	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式）
 }
 

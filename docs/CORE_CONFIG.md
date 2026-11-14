@@ -196,17 +196,14 @@
 
 ```yaml
 error_queue:
-  enabled: true               # 失败任务重投；false / 不写 = 不跑
-  worker_count: 1             # 并发重新投递数；开启时必填 > 0
-  interval: "4h"              # 自动轮询间隔；"0" = 不自动，仅后台手动触发
+  worker_count: 1             # 并发重新投递数；0 = 默认 1
+  interval: "4h"              # 自动轮询间隔；"0" = 默认 4h
   max_retry: 3                # 单个任务最多再处理代数；0 = 不限
   batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（分页流式，不能为负）
 ```
 
 > 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
-> 开着（`enabled: true`）时 `worker_count` 必填 > 0、`batch_size`（0 = 默认 1000）与 `max_retry` 不能为负、
-> `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker` 的
-> 「enabled=true 时 threshold 必填」同一档）。参数启动时读一次，改完要重启。
+> 队列始终运行，参数省略使用默认值：interval=4h、worker_count=1、batch_size=1000；负数拒绝。参数启动时读一次，改完要重启。
 
 ### archive —— 页面归档（失败时留下那一页）
 
@@ -266,13 +263,12 @@ recover_queue:
 
 ```yaml
 repeat_queue:
-  enabled: true               # 周期轮询；false / 不写 = 不跑
-  worker_count: 1             # 并发重新投递的数量；开启时必填 > 0
-  interval: "2h"              # 最粗兜底的扫描间隔；开启时必填 > 0
+  worker_count: 1             # 并发重新投递的数量；0 = 默认 1
+  interval: "2h"              # 最粗兜底的扫描间隔；0 = 默认 12h
   batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
 ```
 
-> 轮询队列是**全局一条**（后台一行）。"要不要自动跑"只有一层：`enabled`（false 就是仅手动触发）。
+> 轮询队列是**全局一条**（后台一行）。始终自动运行，不提供 enabled 开关。
 > `interval` 是"多久扫一次"的兜底；"**哪条任务**要轮询、**多久一次**"是任务行上的
 > `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
 > 播种（`repeat_interval` 为 0 = 用全局 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
@@ -385,3 +381,7 @@ v3 保留 trace.enabled 开关及成功尝试剥离普通步骤 data 的语义�
 每次执行具有独立 execution_id，内部重试共享轮次。每个尝试最多保留最近 500 步、约 512 KiB 的缓冲，单步 data 最多 16 KiB；截断会在后台提示。写入先完成临时文件、同步后再发布，读取只展示最近的已发布执行轮次。文件配额不足或写入失败只告警，不改变任务成败、不回退数据库；没有成功发布的新尝试不会替换最后一份可用证据。
 
 trace.retention 沿用默认 7 天，负数不自动清理（文件容量上限仍有效）。启动和每小时清理过期文件。进程硬杀可能丢失尚在内存中的尝试，不能将 trace 作为任务恢复依据。关停会等待 worker 的追踪发布；超时会报告未排空。
+
+### 必需治理队列
+
+`error_queue`、`repeat_queue` 始终运行，旧 `enabled` 键会被未知键校验拒绝。`interval` 省略或为 0 分别使用 4h、12h；worker_count=0 默认 1、batch_size=0 默认 1000。负数拒绝启动。暂停由站点闸门控制，关停由引擎生命周期控制；任务重复与失败重试上限保持原义。

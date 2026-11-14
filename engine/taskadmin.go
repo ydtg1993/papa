@@ -248,7 +248,7 @@ func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
 	eff := int64(seconds)
 	if eff == 0 {
 		// 0 = 用全局那份周期
-		eff = int64(e.cfg.RepeatQueue.Interval / time.Second)
+		eff = int64(e.cfg.RepeatQueue.EffectiveInterval() / time.Second)
 	}
 	res := setRepeatIntervalScope(e.db, id, wasSeconds).Updates(map[string]any{
 		"repeat_interval": seconds,

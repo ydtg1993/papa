@@ -127,13 +127,13 @@ func (e *Engine) GetQueueStats() map[string]QueueStat {
 	return out
 }
 
-// queueEnabled 返回队列是否启用自动轮询（读生效配置）。
+// queueEnabled 返回队列是否为始终运行的治理队列。
 func (e *Engine) queueEnabled(name string) bool {
 	switch name {
 	case QueueError:
-		return e.cfg.ErrorQueue.Enabled
+		return true
 	case QueueRepeat:
-		return e.cfg.RepeatQueue.Enabled
+		return true
 	}
 	return false
 }

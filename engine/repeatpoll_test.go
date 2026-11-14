@@ -60,7 +60,7 @@ func TestStopWaitsForTickers(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.pools.get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{Interval: 20 * time.Millisecond}
 	e.startRepeatQueue()
 
 	time.Sleep(80 * time.Millisecond) // 让它至少跑过一轮

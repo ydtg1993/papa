@@ -990,10 +990,10 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 2. **阶段间串联**：fetcher 里用 `engine.SubmitChildren(ctx, task, &papa.Task{URL: ..., Stage: "detail", Site: task.Site})` 派发子任务（见 1.6）。
 
 3. **定时重抓 / 恢复失败**：
-   - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；
+   - 定时轮询：`repeat_queue` 始终运行，，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)；
    - 中断恢复：`recover_queue` 配置开启后，**启动时**重投本进程启动前遗留的未终态任务（pending/processing，且 `updated_at` 早于本次启动时间）。这个边界用于排除本次运行已经碰过的行，不是按“卡死时长”猜测。详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)。
 
-4. **失败任务再处理**：`error_queue` 配置开启后，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
+4. **失败任务再处理**：`error_queue` 始终运行，，`failed` 任务会被自动（`interval` 轮询）或手动（后台「队列治理」模块里该队列的「立即执行」按钮 / `POST /api/errorqueue/process`）重新投递，带 `max_retry` 再处理代数上限。详见 [ERROR_QUEUE.md](./ERROR_QUEUE.md)。
 
 **看状态**：启动后打开监控页 `http://localhost:9090/monitor`（`server.enabled: true`），OA 后台布局：Dashboard 看机器 CPU/内存/磁盘、业务目录（downloads/logs）占用与任务队列概览（概览按站点分卡片，切到某站点 Tab 可看该站各阶段的五格数字、累计耗时与 Worker 明细），另有「队列治理」等模块。登录用**访问令牌**（`papa token add --operator <名字>` 创建，库里只存哈希）；来源 IP 限制在后台「设置」页改（存在 `crawler_config` 表，空 = 不限制）。
 

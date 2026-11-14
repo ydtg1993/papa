@@ -103,11 +103,7 @@ func (e *Engine) errorRetriedTotal() int64 {
 // startErrorQueue 启动错误队列定时自动处理（全局一条 ticker）。
 func (e *Engine) startErrorQueue() {
 	e.runDynamicTicker(func() time.Duration {
-		cfg := e.cfg.ErrorQueue
-		if !cfg.Enabled || cfg.Interval <= 0 {
-			return 0
-		}
-		return cfg.Interval
+		return e.cfg.ErrorQueue.EffectiveInterval()
 	}, nil /* 数据驱动的唤醒只有轮询队列用得上 */, func() {
 		if n, err := e.ProcessErrorQueue(); err != nil {
 			e.loggerSet.Engine.Errorf("error queue: auto process: %s", err.Error())

@@ -15,16 +15,13 @@
 
 ```yaml
 error_queue:
-  enabled: true               # 失败任务重投；false / 不写 = 不跑
-  worker_count: 2             # 并发重新投递失败任务的数量，开启时必填 > 0
-  interval: "10m"             # 自动轮询间隔；"0" = 不自动，仅后台手动触发
+  worker_count: 2             # 并发重新投递失败任务的数量，0 = 默认 1
+  interval: "10m"             # 自动轮询间隔；"0" = 默认 4h
   max_retry: 3                # 单个失败任务最多再处理代数；0 = 不限
-  batch_size: 100             # 每批查询处理的任务数，开启时必填 > 0（分页流式）
+  batch_size: 100             # 每批查询处理的任务数，0 = 默认 1000（分页流式）
 ```
 
-> 开着（`enabled: true`）时 `worker_count` / `batch_size` 必填 > 0，`max_retry` 不能为负、
-> `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker`
-> 「enabled=true 时 threshold 必填」同一档）。
+> 队列始终运行，不再支持 `enabled`。省略配置或间隔为 0 使用默认 4h；worker_count 为 0 默认 1，batch_size 为 0 默认 1000。负数配置拒绝启动。
 > 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
 > 队列参数是**启动时读一次**：改完要重启（后台没有热更这回事了）。
 
@@ -32,7 +29,7 @@ error_queue:
 
 | 方式 | 说明 |
 | --- | --- |
-| 自动轮询 | `enabled: true` 且 `interval` 不是 `"0"`，后台按间隔自动投递 |
+| 自动轮询 | 始终按有效间隔自动投递 |
 | 手动（OA） | 队列治理面板上那一行的「立即执行」（`POST /api/errorqueue/process`）。每次触发都写一条操作日志（`server.operation_log` 开启时） |
 | 手动（代码） | `engine.ProcessErrorQueue()` |
 
@@ -49,7 +46,7 @@ error_queue:
 - `return papa.WrapNoRetryKind("structure", err)` / `"not-found"` / `"protected"` 会让当前阶段跳过进程内尝试重试，并把错误种类写入失败信息；
 - 普通可重试错误（网络抖动、超时）则先按阶段的 `Retry` 策略尝试。
 
-需要注意：当前 `error_queue` 的查询条件只看 `status = failed` 和 `reprocess` 上限，**不会自动排除 `NoRetry` 错误种类**。若希望结构错误、404 等永久失败不再被自动重投，应关闭自动轮询并由业务实现带过滤的处理流程，或设置有限的 `max_retry`。公开的 `engine.ProcessErrorQueue()` 使用框架固定查询条件，不能通过参数附加按阶段或错误种类过滤；自定义筛选需要业务自行查询和重投。
+需要注意：当前 `error_queue` 的查询条件只看 `status = failed` 和 `reprocess` 上限，**不会自动排除 `NoRetry` 错误种类**。若希望结构错误、404 等永久失败不再被自动重投，应设置有限的 `max_retry`；没有关闭全局自动轮询的开关。公开的 `engine.ProcessErrorQueue()` 使用框架固定查询条件，不能通过参数附加按阶段或错误种类过滤；自定义筛选需要业务自行查询和重投。
 
 ## 5. 与 recover_queue 的分工
 

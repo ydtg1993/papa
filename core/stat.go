@@ -73,7 +73,7 @@ type StopStats struct {
 // QueueStat 单个治理队列的运行快照（纯值类型，供监控页读取，不暴露内部实现）。
 type QueueStat struct {
 	Name           string        `json:"name"`
-	Enabled        bool          `json:"enabled"`         // 是否启用自动轮询
+	Enabled        bool          `json:"enabled"`         // 治理队列能力始终可用，固定 true；运行中批次看 Running
 	Running        bool          `json:"running"`         // 本轮是否正在执行
 	Runs           int64         `json:"runs"`            // 累计执行次数
 	StartedAt      time.Time     `json:"started_at"`      // 本轮开始时间（Running 时有意义）

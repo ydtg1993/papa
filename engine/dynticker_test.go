@@ -29,70 +29,6 @@ func waitTicks(t *testing.T, n *atomic.Int64, want int64) {
 	}
 }
 
-// 间隔为 0 = 停用：一条都不该跑，协程只在 ctx.Done / 配置变更上等着。
-func TestRunDynamicTickerDisabledInterval(t *testing.T) {
-	e, _, wake := dyntickerEngine(t)
-	var ticks atomic.Int64
-	e.runDynamicTicker(func() time.Duration { return 0 }, wake, func() { ticks.Add(1) })
-
-	time.Sleep(80 * time.Millisecond)
-	if got := ticks.Load(); got != 0 {
-		t.Fatalf("停用状态不该 tick，实得 %d", got)
-	}
-
-	// 无关的配置变更（改浏览器头之类）来了也不能把它唤醒成"在跑"
-	wake <- struct{}{}
-	time.Sleep(60 * time.Millisecond)
-	if got := ticks.Load(); got != 0 {
-		t.Fatalf("间隔仍为 0 时不该 tick，实得 %d", got)
-	}
-}
-
-// 间隔从 0 变成正数（运行期把队列打开）：配置变更把它唤醒，立刻开始跑。
-func TestRunDynamicTickerStartsOnWake(t *testing.T) {
-	e, _, wake := dyntickerEngine(t)
-	var interval atomic.Int64 // 纳秒
-	var ticks atomic.Int64
-
-	e.runDynamicTicker(
-		func() time.Duration { return time.Duration(interval.Load()) },
-		wake, func() { ticks.Add(1) },
-	)
-	time.Sleep(50 * time.Millisecond)
-	if got := ticks.Load(); got != 0 {
-		t.Fatalf("初始停用，不该 tick，实得 %d", got)
-	}
-
-	interval.Store(int64(10 * time.Millisecond))
-	wake <- struct{}{}
-	waitTicks(t, &ticks, 3)
-}
-
-// 间隔再变回 0（运行期把队列关掉）：ticker 停掉，计数冻住。
-func TestRunDynamicTickerStopsWhenIntervalGoesAway(t *testing.T) {
-	e, _, wake := dyntickerEngine(t)
-	var interval atomic.Int64
-	var ticks atomic.Int64
-
-	interval.Store(int64(10 * time.Millisecond))
-	e.runDynamicTicker(
-		func() time.Duration { return time.Duration(interval.Load()) },
-		wake, func() { ticks.Add(1) },
-	)
-	waitTicks(t, &ticks, 2)
-
-	interval.Store(0)
-	wake <- struct{}{}
-	// 等它在途的那一次 tick 落定
-	time.Sleep(50 * time.Millisecond)
-
-	base := ticks.Load()
-	time.Sleep(120 * time.Millisecond)
-	if got := ticks.Load(); got != base {
-		t.Fatalf("停用后不该再 tick：从 %d 涨到了 %d", base, got)
-	}
-}
-
 // 间隔变了（不是开关，是数值）：重建 ticker，按新节奏跑。
 func TestRunDynamicTickerFollowsIntervalChange(t *testing.T) {
 	e, _, wake := dyntickerEngine(t)
@@ -130,21 +66,17 @@ func TestRunDynamicTickerExitsOnCtxCancel(t *testing.T) {
 	}
 }
 
-// 停用状态下停机也要退得干净（这时它等的是 ctx.Done 与 wake 两支）。
-func TestRunDynamicTickerExitsWhileDisabled(t *testing.T) {
+// 长间隔等待中取消，必须等实际 ticker 协程退出。
+func TestRunDynamicTickerExitsDuringLongWait(t *testing.T) {
 	e, cancel, wake := dyntickerEngine(t)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		e.runDynamicTicker(func() time.Duration { return 0 }, wake, func() {})
-	}()
-	time.Sleep(30 * time.Millisecond)
+	e.runDynamicTicker(func() time.Duration { return time.Hour }, wake, func() { t.Error("unexpected tick") })
 	cancel()
-
+	done := make(chan struct{})
+	go func() { e.tickerWG.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("停用状态下停机应当立刻退出")
+	case <-time.After(time.Second):
+		t.Fatal("ticker did not stop")
 	}
 }
 

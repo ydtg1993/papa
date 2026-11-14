@@ -73,3 +73,19 @@ func TestProcessInBatchesHonorsBatchPause(t *testing.T) {
 		t.Fatalf("批间停顿没有被执行：耗时 %v，want >= 50ms", elapsed)
 	}
 }
+
+// Cancellation must stop a zero-pause scan both within a batch and before the next query.
+func TestProcessInBatchesCancellationWithoutPause(t *testing.T) {
+	for _, batch := range []int{1, 3} {
+		f := newFakeTaskDB()
+		f.rows = []fakeRow{f.rowWithID(1), f.rowWithID(2), f.rowWithID(3)}
+		e, _ := urgentEngine(t, f)
+		ctx, cancel := context.WithCancel(context.Background())
+		e.ctx = ctx
+		n, err := e.processInBatches(e.recoverQueueQuery(), batch, 1, 0, func(*models.CrawlerTask) bool { cancel(); return true })
+		cancel()
+		if err != nil || n != 1 {
+			t.Fatalf("batch=%d count=%d err=%v", batch, n, err)
+		}
+	}
+}

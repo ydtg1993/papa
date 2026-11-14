@@ -530,7 +530,7 @@ func (e *Engine) ApplyRegisterStage() {
 
 	// 启动按阶段独立的持久化待投递恢复协程
 	e.startPendingRecovery()
-	// 启动错误队列后台自动轮询（配了 interval 才自动，否则仅手动触发）
+	// 启动错误队列后台自动轮询（省略间隔使用默认值）
 	e.startErrorQueue()
 	// 启动中断恢复队列（启动即恢复一次，没有定时轮询）
 	e.startRecoverQueue()
