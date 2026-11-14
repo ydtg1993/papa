@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// Opt-in measurements use the existing random-schema test helper. No cache,
-// index or query changes are installed in the production execution path.
+// Opt-in measurements compare the frozen aggregate with the production single
+// statement in a disposable schema; no cache, index or business data changes.
 func TestAlgorithmRepeatMySQL(t *testing.T) {
 	if os.Getenv("PAPA_ALGORITHM_LOAD_TEST") != "1" {
 		t.Skip("PAPA_ALGORITHM_LOAD_TEST=1 required for synthetic scale measurements")
@@ -37,8 +37,8 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 			}
 		}
 		previous = size
-		for _, distribution := range []string{"dense_future", "sparse_future", "mixed_due"} {
-			if err := db.Exec("UPDATE crawler_tasks SET repeatable = 1, next_repeat_at = FROM_UNIXTIME(1794618000)").Error; err != nil {
+		for _, distribution := range []string{"dense_future", "sparse_future", "mixed_due", "all_capped"} {
+			if err := db.Exec("UPDATE crawler_tasks SET `repeat` = MOD(FLOOR((id - 1) / 64), 10), repeatable = 1, next_repeat_at = FROM_UNIXTIME(1794618000)").Error; err != nil {
 				t.Fatal(err)
 			}
 			if distribution == "sparse_future" {
@@ -48,6 +48,11 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 			}
 			if distribution == "mixed_due" {
 				if err := db.Exec("UPDATE crawler_tasks SET next_repeat_at = NULL WHERE MOD(id, 10) = 0").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if distribution == "all_capped" {
+				if err := db.Exec("UPDATE crawler_tasks SET `repeat` = 100").Error; err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -81,35 +86,26 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 						e.db = tx
 						defer func() { e.db = db }()
 						var baseline struct{ Epoch *int64 }
-						if err := e.withRepeatLimits(soonestRepeatQueryOn(tx)).Scan(&baseline).Error; err != nil {
+						if err := e.withRepeatLimits(referenceSoonestRepeatQueryOn(tx)).Scan(&baseline).Error; err != nil {
 							return err
 						}
-						if baseline.Epoch == nil {
+						if baseline.Epoch == nil && !(distribution == "all_capped" && limits) {
 							t.Fatal("fixture must contain eligible repeat rows")
+						}
+						if distribution == "all_capped" && limits && baseline.Epoch != nil {
+							t.Fatal("all-capped fixture still contains an eligible row")
 						}
 						wantEpoch := int64(1794618000)
 						if distribution == "mixed_due" {
 							wantEpoch = 1794614400
 						}
-						if *baseline.Epoch != wantEpoch {
+						if baseline.Epoch != nil && *baseline.Epoch != wantEpoch {
 							t.Fatalf("aggregate=%d expected=%d", *baseline.Epoch, wantEpoch)
 						}
 						candidate := func() (*int64, error) {
-							var earliest *int64
-							for _, status := range []models.TaskStatus{models.TaskStatusPending, models.TaskStatusProcessing, models.TaskStatusSuccess, models.TaskStatusFailed} {
-								var row struct{ Epoch *int64 }
-								q := e.withRepeatLimits(tx.Model(&models.CrawlerTask{}).Where("repeatable = ? AND status = ?", models.RepeatableYes, status))
-								if status == models.TaskStatusPending || status == models.TaskStatusProcessing {
-									q = q.Where("next_repeat_at > NOW()")
-								}
-								if err := q.Select("CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) AS SIGNED) AS epoch").Order("next_repeat_at").Limit(1).Scan(&row).Error; err != nil {
-									return nil, err
-								}
-								if row.Epoch != nil && (earliest == nil || *row.Epoch < *earliest) {
-									earliest = row.Epoch
-								}
-							}
-							return earliest, nil
+							var row struct{ Epoch *int64 }
+							err := e.soonestRepeatQueryOn(tx).Scan(&row).Error
+							return row.Epoch, err
 						}
 						got, err := candidate()
 						if err != nil {
@@ -139,12 +135,12 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 						}{
 							{"soonest", func() error {
 								var r struct{ Epoch *int64 }
-								return e.withRepeatLimits(soonestRepeatQueryOn(tx)).Scan(&r).Error
+								return e.withRepeatLimits(referenceSoonestRepeatQueryOn(tx)).Scan(&r).Error
 							}, tx.ToSQL(func(d *gorm.DB) *gorm.DB {
 								var r struct{ Epoch *int64 }
-								return e.withRepeatLimits(soonestRepeatQueryOn(d)).Scan(&r)
+								return e.withRepeatLimits(referenceSoonestRepeatQueryOn(d)).Scan(&r)
 							})},
-							{"ordered_probe_4_queries", func() error { _, err := candidate(); return err }, ""},
+							{"optimized_single_statement", func() error { _, err := candidate(); return err }, tx.ToSQL(func(d *gorm.DB) *gorm.DB { var row struct{ Epoch *int64 }; return e.soonestRepeatQueryOn(d).Find(&row) })},
 							{"due_first_page", func() error {
 								var rows []models.CrawlerTask
 								return e.repeatQueueQuery()().Order("id").Limit(100).Find(&rows).Error
@@ -211,4 +207,11 @@ func algorithmHandlerReads(t *testing.T, db *gorm.DB) uint64 {
 		total += r.Value
 	}
 	return total
+}
+
+// Frozen pre-optimization expression: do not derive the reference from the
+// new builder, or semantic regressions would silently change both sides.
+func referenceSoonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
+	return db.Model(&models.CrawlerTask{}).Where("repeatable = ?", models.RepeatableYes).
+		Select(`MIN(CAST(CASE WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at) ELSE NULL END AS SIGNED)) AS epoch`, []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed})
 }

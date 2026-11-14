@@ -121,12 +121,15 @@ func TestSoonestRepeatQueryCastsToSignedInt(t *testing.T) {
 	// 用 ToSQL 把语句拼出来（DryRun 下 Scan 会报 "dry run mode unsupported"，Find 这条能出 SQL）
 	var rows []struct{ Epoch *int64 }
 	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return soonestRepeatQueryOn(tx).Find(&rows)
+		return (&Engine{}).soonestRepeatQueryOn(tx).Find(&rows)
 	})
 	for _, want := range []string{"MIN(CAST(CASE", "AS SIGNED", "AS epoch", "UNIX_TIMESTAMP"} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("「最早到点」查询里缺少 %q ｜ %s", want, sql)
 		}
+	}
+	if strings.Count(sql, "CAST(UNIX_TIMESTAMP") != 6 {
+		t.Fatalf("candidate integer casts missing: %s", sql)
 	}
 	// 反向：聚合外面必须是 CAST，不能又变回裸的 MIN(CASE ...)
 	if strings.Contains(sql, "MIN(CASE") {
@@ -134,20 +137,23 @@ func TestSoonestRepeatQueryCastsToSignedInt(t *testing.T) {
 	}
 }
 
-// 「最早到点」那条聚合的底必须是**只按 repeatable** 筛，不能套终态（status IN）条件。
-// 否则 pending/processing 行的未来 next_repeat_at 进不了聚合，节拍退回全局 interval
-// （见 soonestRepeatQueryOn 的注释：状态取舍交给 CASE，活跃行只看未来 next_repeat_at）。
+// Known active statuses and the original unknown/NULL-status fallback must
+// remain in the single statement; terminal-only filtering changes scheduling.
 func TestSoonestRepeatQueryIncludesActiveRows(t *testing.T) {
 	db := dryRunMySQL(t)
-	sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
-		var rows []struct{ Epoch *int64 }
-		return soonestRepeatQueryOn(tx).Find(&rows)
-	})
-	if !strings.Contains(sql, "WHERE repeatable = ?") {
-		t.Errorf("WHERE 应只按 repeatable 筛：%s", sql)
+	var rows []struct{ Epoch *int64 }
+	q := (&Engine{}).soonestRepeatQueryOn(db).Find(&rows)
+	sql := q.Statement.SQL.String()
+	for _, fragment := range []string{"UNION ALL", "status NOT IN", "status IS NULL", "next_repeat_at > NOW()", "next_repeat_at IS NULL", "MIN(epoch)"} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("missing %q: %s", fragment, sql)
+		}
 	}
-	if strings.Contains(sql, "repeatable = ? AND status IN") {
-		t.Errorf("WHERE 不应再把 status IN 套进去（会把活跃行排除掉）：%s", sql)
+	if strings.Count(sql, "UNION ALL") != 7 || strings.Count(sql, "LIMIT ?") != 6 {
+		t.Fatalf("unexpected branch shape: %s", sql)
+	}
+	if strings.Contains(sql, "FOR UPDATE") || strings.Contains(sql, ";") {
+		t.Fatal("query must be one non-locking statement")
 	}
 }
 

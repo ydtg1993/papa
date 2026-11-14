@@ -60,7 +60,7 @@ func TestRepeatLimitSQLScopesAndScheduler(t *testing.T) {
 		"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: 30}},
 		"other:detail":   {stage: "detail", config: StageConfig{Site: "other"}},
 	}}
-	for name, q := range map[string]*gorm.DB{"auto": e.repeatQueueQuery()(), "force": e.repeatForceQueueQuery()(), "scheduler": e.withRepeatLimits(soonestRepeatQueryOn(db))} {
+	for name, q := range map[string]*gorm.DB{"auto": e.repeatQueueQuery()(), "force": e.repeatForceQueueQuery()(), "scheduler": e.soonestRepeatQueryOn(db)} {
 		t.Run(name, func(t *testing.T) {
 			result := q.Find(&[]models.CrawlerTask{})
 			sql := result.Statement.SQL.String()

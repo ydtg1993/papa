@@ -55,7 +55,7 @@ var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess, models.Tas
 
 // repeatQueueQuery 「到点」的可轮询任务。
 //
-// 到点 = 未排期（NextRepeatAt 为 NULL：迁移前的老行、或从未被轮询过）或下次到点时间已过。
+// 到点 = 未排期（NextRepeatAt 为 NULL：从未被排期）或下次到点时间已过。
 // 这是一条纯比较谓词，走 idx_repeat_due（repeatable, status, next_repeat_at）；周期本身在
 // **写路径**换算成 NextRepeatAt（见 requeueRepeatTask 那条 UPDATE），读路径不做任何算术。
 func (e *Engine) repeatQueueQuery() func() *gorm.DB {
@@ -75,50 +75,29 @@ func (e *Engine) repeatForceQueueQuery() func() *gorm.DB {
 // 负数 = 已经有到点的了（立刻扫）。
 //
 // 只看 NextRepeatAt（判据列）：
-//   - 终态的行（会被真扫描）：已到点 / 未排期 → 0；否则它自己的到点时间。
+//   - 终态的行：过去时间保留负等待，未排期使用 NOW；最终节拍钳到最短刻度。
 //   - 跑着 / 排队中的行：只在**未来**才算数（它到点时多半已经跑完，扫描正好接上）；
 //     已经过期的（任务跑得比自己的周期还久）直接排除 —— 它跑完之前投不出去，
 //     让这种行参与只会把扫描钉在最短刻度上空转。
 //
 // 没有可轮询的行、或查库出错 → false，调用方退回配置节拍。
 func (e *Engine) soonestRepeatIn() (time.Duration, bool) {
+	ctx := e.queueContext()
+	if ctx.Err() != nil {
+		return 0, false
+	}
 	var row struct{ Epoch *int64 }
-	if err := e.withRepeatLimits(soonestRepeatQueryOn(e.db)).Scan(&row).Error; err != nil {
+	if err := e.soonestRepeatQueryOn(e.db.WithContext(ctx)).Scan(&row).Error; err != nil {
+		if ctx.Err() != nil {
+			return 0, false
+		}
 		e.loggerSet.Engine.Warnf("soonest repeat query 查询失败，退回配置节拍：%s", err.Error())
 		return 0, false
 	}
-	if row.Epoch == nil {
+	if ctx.Err() != nil || row.Epoch == nil {
 		return 0, false
 	}
 	return time.Until(time.Unix(*row.Epoch, 0)), true
-}
-
-// soonestRepeatSelect 「最早到点」那条聚合的表达式。
-//
-// **外面那层 CAST(... AS SIGNED) 不能省**：next_repeat_at 是 datetime(3)，而 MySQL 的
-// UNIX_TIMESTAMP(datetime(3)) 返回的是 **DECIMAL** —— 真库上回的是 "1791705102.000"（带小数位），
-// MIN() 之后 gorm 往 *int64 里扫直接报：
-//
-//	sql: Scan error on column index 0, name "epoch": converting driver.Value type
-//	[]uint8 ("1791705102.000") to a int64: invalid syntax
-//
-// 套一层 CAST 才是整数（同一条语句在真库上验过：原样 err≠nil、CAST 后 err=nil）。
-const soonestRepeatSelect = `MIN(CAST(CASE
-			WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW()))
-			WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at)
-			ELSE NULL END AS SIGNED)) AS epoch`
-
-// soonestRepeatQueryOn 「最早到点」那条查询（抽出来是为了能在不连库的前提下渲染 SQL 验它）。
-//
-// 底只按 `repeatable = yes` 筛（**不**套 repeatBaseQueryOn 的「已完成」条件）：soonestRepeatIn
-// 注释里那个「跑着 / 排队中的行只在未来才算数」的分支，正是要靠把 pending/processing 也纳入
-// 这张表才能命中 —— 用终态那套 WHERE 会把它整个过滤掉，活跃行的个人 next_repeat_at 就查不到，
-// 节拍只能退回全局 interval。状态怎么取舍交给 CASE（见 soonestRepeatSelect）：终态看
-// next_repeat_at（未排期即到点），活跃行只看未来的 next_repeat_at。
-func soonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
-	return db.Model(&models.CrawlerTask{}).
-		Where("repeatable = ?", models.RepeatableYes).
-		Select(soonestRepeatSelect, repeatDueStatuses)
 }
 
 // RepollRepeatableTasks 重新投递「到点」的可轮询任务（success/failed），返回实际投递数量。
