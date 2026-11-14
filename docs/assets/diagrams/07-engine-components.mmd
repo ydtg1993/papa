@@ -1,0 +1,27 @@
+flowchart TB
+    H["宿主 App / Fetcher / 管理操作<br/>注册阶段、提交、控制、Stop"] --> E["Engine 公开门面<br/>跨组件顺序与生命周期"]
+    subgraph CORE["Engine 内部：职责组件，不是多个服务进程"]
+      S["提交与身份<br/>submissionStore / dedupCache"]
+      Q["调度协调<br/>residentSet / spillQueue / refill"]
+      D["scheduler 内部包<br/>活池登记 / 延迟最小堆"]
+      X["执行编排<br/>stageHandler / attemptExecution"]
+      P["execution 内部包<br/>未确认状态 / 成功结算确认"]
+      B["breakerCoordinator<br/>准入 / 探测 / 可靠恢复"]
+      F["fetchruntime 内部包<br/>抓取资源 / 下载配置适配"]
+    end
+    E --> S --> Q --> D
+    D --> W["internal/workerpool<br/>阶段 worker / 普通与加急通道"] --> X
+    B -->|执行准入| X
+    E --> B
+    X --> P
+    X -->|调用业务 handler| U["业务 Fetcher<br/>获取、解析、保存、派生任务"]
+    U -->|按需使用 Engine 抓取 API| F
+    S --> T["internal/taskstore + MySQL<br/>身份约束 / 条件认领 / 轮次与终态"]
+    P --> T
+    X -.->|有界事件旁路| O["在线 obs<br/>分析与报告；不参与结算"]
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef business fill:#e9f1ff,color:#193e66,stroke:#658bb5;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    class E,S,Q,D,X,P,B,F,W,T runtime;
+    class H,U business;
+    class O observe;

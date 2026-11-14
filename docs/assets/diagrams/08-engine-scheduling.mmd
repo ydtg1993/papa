@@ -1,0 +1,21 @@
+flowchart TB
+    DB[("MySQL pending<br/>持久积压，不等于内存队列")] --> R["持续补充<br/>阶段轮转 + ID 游标 + 有限批次"]
+    R --> A{"全局 / 站点 / 阶段<br/>驻留预算允许？"}
+    A -->|否| KEEP["留在数据库<br/>下轮继续检查"]
+    A -->|是| G{"暂停、熔断与投递条件"}
+    G -->|可投递，尚未到期| D["delay 最小堆<br/>只等待最近到期时间"]
+    G -->|可投递，已到期| W["阶段 worker 池<br/>普通队列 + 加急优先"]
+    G -->|暂不能投递| S["spill 按阶段分桶<br/>有界批次轮转回灌"]
+    D -->|到期重验| W
+    W -->|满载或池不可用| S
+    S -->|容量恢复且状态仍有效| W
+    S -.->|已持久、未认领且允许卸载| KEEP
+    D -.->|暂停且允许卸载| KEEP
+    W --> C["worker 准入后条件认领<br/>pending → processing"]
+    C --> X["执行 / 结算 / 释放驻留责任"]
+    X -.->|容量释放，后续补充| R
+    N["驻留责任覆盖<br/>排队 / 执行 / spill / delay / 交接批次"] -.-> A
+    classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
+    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
+    class DB,R,A,G,D,W,S,C,X runtime;
+    class KEEP,N observe;
