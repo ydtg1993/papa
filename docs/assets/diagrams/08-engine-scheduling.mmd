@@ -1,21 +1,22 @@
 flowchart TB
-    DB[("MySQL pending<br/>持久积压，不等于内存队列")] --> R["持续补充<br/>阶段轮转 + ID 游标 + 有限批次"]
-    R --> A{"全局 / 站点 / 阶段<br/>驻留预算允许？"}
-    A -->|否| KEEP["留在数据库<br/>下轮继续检查"]
-    A -->|是| G{"暂停、熔断与投递条件"}
-    G -->|可投递，尚未到期| D["delay 最小堆<br/>只等待最近到期时间"]
-    G -->|可投递，已到期| W["阶段 worker 池<br/>普通队列 + 加急优先"]
-    G -->|暂不能投递| S["spill 按阶段分桶<br/>有界批次轮转回灌"]
-    D -->|到期重验| W
-    W -->|满载或池不可用| S
-    S -->|容量恢复且状态仍有效| W
-    S -.->|已持久、未认领且允许卸载| KEEP
+    DB[("MySQL pending<br/>持久积压，不等于内存队列")] --> R["持续补充：阶段轮转<br/>先检查暂停和额度，再有限 keyset 读取"]
+    R --> A{"逐行再次检查<br/>驻留准入是否成功？"}
+    A -->|否| KEEP["保留持久 pending<br/>后续补充，不占驻留引用"]
+    A -->|是| G["Engine 投递协调<br/>取消 / 到期时间 / 暂停 / 活池"]
+    G -->|窗口内未来任务或特殊样本| D["delay 最小堆<br/>单 dispatcher 等最近到期"]
+    G -->|远期普通任务卸载| KEEP
+    G -->|已到期且允许投递| W["阶段 worker 池<br/>普通队列 + 加急优先"]
+    G -->|暂不能投递| S["spill 阶段桶<br/>有限批次轮转回灌"]
+    W -->|高水位拒收 / 池不可用| S
+    S -->|回灌时按 ID 批量读库| V{"重验行仍存在<br/>仍 pending 且轮次有效？"}
+    D -->|到期先重新读库| V
+    V -->|有效，重新检查到期时间| G
+    V -->|已删除 / 状态或轮次已变| DROP["释放当前副本的驻留责任<br/>不重投旧执行轮次"]
+    V -->|读库失败| RETRY["保留责任，沿原路径稍后重试<br/>spill 放回 / delay 重新排期"]
+    S -.->|暂停且允许卸载| KEEP
     D -.->|暂停且允许卸载| KEEP
-    W --> C["worker 准入后条件认领<br/>pending → processing"]
-    C --> X["执行 / 结算 / 释放驻留责任"]
-    X -.->|容量释放，后续补充| R
-    N["驻留责任覆盖<br/>排队 / 执行 / spill / delay / 交接批次"] -.-> A
+    W --> C["worker 再做准入与条件认领<br/>认领成功才执行 / 结算"]
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
     classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
-    class DB,R,A,G,D,W,S,C,X runtime;
-    class KEEP,N observe;
+    class DB,R,A,G,D,W,S,V,C runtime;
+    class KEEP,DROP,RETRY observe;

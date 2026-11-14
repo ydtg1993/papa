@@ -23,6 +23,9 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bytes.Contains(raw, []byte("\r\n")) {
+		t.Fatal("diagram manifest must use LF to match checkout rules")
+	}
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +49,9 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if ext != "png" && bytes.Contains(want, []byte("\r\n")) {
+				t.Fatalf("diagram text must use LF to match checkout rules: %s", name)
+			}
 			hash := sha256.Sum256(want)
 			if hex.EncodeToString(hash[:]) != expectedHash {
 				t.Fatalf("diagram source/output manifest is stale: %s", name)
@@ -61,33 +67,56 @@ func TestDiagramAssetsArePublishedAndUpgradedExactly(t *testing.T) {
 			t.Fatalf("diagram missing from manifest: %s", name)
 		}
 	}
-	name := "assets/diagrams/01-capabilities.png"
-	want, _ := docs.Files.ReadFile(name)
-	corrupted := bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
-	if bytes.Equal(corrupted, want) {
-		t.Fatal("fixture must change PNG bytes")
+	// Exercise replacement of every diagram, including the Engine additions.
+	// Checking only the first image would miss a partial upgrade of later assets.
+	damaged := map[string][]byte{}
+	for _, diagram := range manifest.Diagrams {
+		name := "assets/diagrams/" + diagram.Name + ".png"
+		want, err := docs.Files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		corrupted := bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
+		if bytes.Equal(corrupted, want) {
+			t.Fatalf("fixture must change PNG bytes: %s", name)
+		}
+		damaged[name] = corrupted
 	}
-	file := filepath.Join(dir, filepath.FromSlash(name))
-	if err := os.WriteFile(file, corrupted, 0600); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"architecture/ENGINE_GUIDE.md", "assets/diagrams/manifest.json", "assets/diagrams/07-engine-components.mmd", "assets/diagrams/08-engine-scheduling.svg"} {
+		damaged[name] = []byte("outdated framework copy")
+	}
+	for name, corrupted := range damaged {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), corrupted, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := copyDocs(dir, true); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := os.ReadFile(file)
-	if !bytes.Equal(got, corrupted) {
-		t.Fatal("missing-only replaced an existing image")
+	for name, corrupted := range damaged {
+		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil || !bytes.Equal(got, corrupted) {
+			t.Fatalf("missing-only changed existing resource %s: %v", name, err)
+		}
 	}
 	adds, updates, stale := planDocs(root)
-	if !contains(updates, name) {
-		t.Fatal("binary image drift was hidden by newline normalization")
+	for name := range damaged {
+		if !contains(updates, name) {
+			t.Fatalf("upgrade omitted changed resource: %s", name)
+		}
 	}
 	if err := writeDocs(&upgradePlan{Root: root, DocAdds: adds, DocUpdates: updates, DocStale: stale}); err != nil {
 		t.Fatal(err)
 	}
-	got, _ = os.ReadFile(file)
-	if !bytes.Equal(got, want) {
-		t.Fatal("upgrade did not restore the exact PNG")
+	for name := range damaged {
+		want, err := docs.Files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("upgrade did not restore exact resource %s: %v", name, err)
+		}
 	}
 	adds, updates, _ = planDocs(root)
 	if len(adds)+len(updates) != 0 {

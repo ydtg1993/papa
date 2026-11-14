@@ -1,22 +1,25 @@
 flowchart TB
     A["阶段 worker 收到任务"] --> B{"取消 / 暂停 / 准入检查"}
-    B -->|允许| C["条件认领 + 轮次版本<br/>只有认领成功才调用 handler"]
+    B -->|允许| C["条件认领 + 读取轮次<br/>未确认认领不调用 handler"]
     B -->|取消或暂不允许| K["未认领保留 pending<br/>按条件寄放或退出"]
-    C --> H["一次 handler 尝试<br/>计时 / 账号反馈 / Trace 与归档收尾"]
+    C -->|认领与轮次已确认| H["一次 handler 尝试<br/>计时 / 账号反馈 / Trace 与归档收尾"]
     H --> J{"尝试结果"}
-    J -->|可重试且有剩余次数| D["可取消退避<br/>有界指数 + Equal Jitter"]
-    D --> I["确认 retry 加一<br/>仅确认后再次调用 handler"] --> H
-    J -->|成功| S["版本保护的成功结算<br/>遇取消保留有界确认窗口"]
-    J -->|不可重试 / 次数耗尽 / panic| F["失败结算<br/>与熔断可靠状态协调"]
-    J -->|纯取消，未成功| R["条件释放认领<br/>保留已有失败结算所有权"]
-    S --> T["确认后发布结果并收尾<br/>清活动身份或唤醒 repeat"]
-    F --> T
-    I -.->|加法确认不明| U["未确认状态<br/>停止业务重跑；Stop 不得假排空"]
-    S -.->|终态未确认| U
-    F -.->|终态未确认| U
+    J -->|可重试且还有次数| D["可取消退避<br/>有界指数 + Equal Jitter"]
+    D --> I["确认 retry 加一<br/>仅确认后允许下次尝试"] --> H
+    J -->|成功| S["成功结算<br/>遇取消保留有界确认窗口"]
+    J -->|不可重试 / 账号失败或补偿<br/>耗尽 / panic| F["失败结算<br/>与熔断可靠状态协调"]
+    J -->|错误返回后已取消<br/>样本例外见正文| R["条件释放认领<br/>保留已有失败结算所有权"]
+    S --> P["版本保护的终态确认<br/>只重试状态写入，不重跑业务"]
+    F --> P
+    P -->|暂态写库失败| P
+    P -->|已确认| T["发布结果并收尾<br/>清活动身份或唤醒 repeat"]
+    P -->|行删除 / 轮次冲突| EXIT["当前副本退出<br/>不重放 handler"]
+    P -.->|取消后仍未确认| U["未确认状态<br/>Stop 不得假排空"]
+    I -.->|加法确认不明| U
     H -.->|计时未确认且需保留| U
     D -->|等待取消| R
+    I -->|写入前已取消| R
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
     classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
-    class A,B,C,H,J,D,I,S,F,R,T runtime;
-    class K,U observe;
+    class A,B,C,H,J,D,I,S,F,P,R,T runtime;
+    class K,U,EXIT observe;

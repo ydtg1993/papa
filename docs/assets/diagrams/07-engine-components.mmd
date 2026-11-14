@@ -9,15 +9,16 @@ flowchart TB
       B["breakerCoordinator<br/>准入 / 探测 / 可靠恢复"]
       F["fetchruntime 内部包<br/>抓取资源 / 下载配置适配"]
     end
-    E --> S --> Q --> D
-    D --> W["internal/workerpool<br/>阶段 worker / 普通与加急通道"] --> X
+    E --> S --> Q
+    Q -->|使用登记表与时间堆| D
+    Q -->|经活池登记取得阶段池| W["internal/workerpool<br/>阶段 worker / 普通与加急通道"] --> X
     B -->|执行准入| X
     E --> B
-    X --> P
+    X -->|使用确认协议与未确认状态| P
     X -->|调用业务 handler| U["业务 Fetcher<br/>获取、解析、保存、派生任务"]
     U -->|按需使用 Engine 抓取 API| F
     S --> T["internal/taskstore + MySQL<br/>身份约束 / 条件认领 / 轮次与终态"]
-    P --> T
+    X -->|认领与结算存储适配| T
     X -.->|有界事件旁路| O["在线 obs<br/>分析与报告；不参与结算"]
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
     classDef business fill:#e9f1ff,color:#193e66,stroke:#658bb5;

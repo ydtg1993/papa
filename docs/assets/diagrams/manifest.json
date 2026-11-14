@@ -59,29 +59,29 @@
     {
       "name": "07-engine-components",
       "title": "核心引擎：组件与责任",
-      "width": 1367,
-      "height": 1272,
-      "sourceSHA256": "bd5de3572feada555d048509a0c67f2bdd2e48b79857f27364cb1d19272fe0b9",
-      "svgSHA256": "f0cfeb654f409746b1862e0c3a11935db738a57f486490b5bd5cfd4b0caaab55",
-      "pngSHA256": "2598659ada20285ac369854030d2be58d531a68f67d3a45f30d9a761b14236f2"
+      "width": 1327,
+      "height": 1412,
+      "sourceSHA256": "bb1473ebc7c8092e03aafc4fdf12c19167bf7c689247195ef4a00cddc67199d4",
+      "svgSHA256": "ce8054112dd8de729d51a6a70519962100a4ca7217f1345401561008005f93d4",
+      "pngSHA256": "7e2f693afc0b0bf3f75d29cba2a1a537e8642f9332afb359c5b7edf2e47a2469"
     },
     {
       "name": "08-engine-scheduling",
       "title": "核心引擎：调度与背压",
-      "width": 1200,
-      "height": 1943,
-      "sourceSHA256": "6ccd8366fae2e1488c3214042dee2e731f00346d4f3334d04bac2ef3a743dcdd",
-      "svgSHA256": "5c23a27a609e31e4824518b5829fcd5464573fb6e4d9f17650358f2485c842c5",
-      "pngSHA256": "0fdf22a9f82112ae083075ef892a9709771c2f3f3b9e22bdf10db4cd052c329f"
+      "width": 1202,
+      "height": 1996,
+      "sourceSHA256": "bca4ae8a22ccf565d688b0a9d2d072c57f4c4c8c1d9bfb4a2422350c09552dbd",
+      "svgSHA256": "789e4288ac8ed7c6880e01589824ac4120d79120dc67968e511efe8a6abb90fc",
+      "pngSHA256": "93e54836b5385585aa80f79c0594bd0824889c1b84e5d199d2086956c2f81e0a"
     },
     {
       "name": "09-engine-execution",
       "title": "核心引擎：尝试与结算",
-      "width": 1449,
-      "height": 1700,
-      "sourceSHA256": "64abedae88d8bd08b8de8ed6628bee8246f1681546291d5e6c7a5c96252974d4",
-      "svgSHA256": "f639a911a8f0f3505df2d8732bb530ffee0fc5458541795291054c95ff75f9e0",
-      "pngSHA256": "c2b7a4e18122d5b4532b0ec644d0027f1c774051e11a3175a92c48686d71ac57"
+      "width": 1408,
+      "height": 1778,
+      "sourceSHA256": "577671bcc44f69fdb5c7e217eea2c243058da18ad733fbd259299b6884f99f23",
+      "svgSHA256": "323597269ed88564f709c2906e05d153326c3abc0ca122bb8ee03f191760b8bd",
+      "pngSHA256": "da982377ae97d95a51db9eb7753891b25d20e729b75fd2ba5eea5d718ad0f64b"
     }
   ]
 }
