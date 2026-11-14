@@ -53,7 +53,7 @@ func setRows(f *fakeTaskDB, n int, stage string, status models.TaskStatus) {
 
 /* ---------- 失败队列（error_queue） ---------- */
 
-// 失败任务的查询条件：只捞 failed；配了 max_retry 时再按 reprocess 代数过滤。
+// 失败任务的查询条件：只捞允许自动重试的 failed；配了 max_retry 时按 auto_retry_count 过滤。
 func TestErrorQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
 	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
@@ -64,16 +64,16 @@ func TestErrorQueueQueryShape(t *testing.T) {
 	if !strings.Contains(read, "status = ?") {
 		t.Fatalf("应只捞 failed：\n%s", read)
 	}
-	if !strings.Contains(read, "reprocess < ?") {
-		t.Fatalf("配了 max_retry 就该按 reprocess 过滤：\n%s", read)
+	if !strings.Contains(read, "auto_retry_count < ?") {
+		t.Fatalf("配了 max_retry 就该按 auto_retry_count 过滤：\n%s", read)
 	}
 
-	// MaxRetry=0 表示不限代数 → 不带 reprocess 条件
+	// MaxRetry=0 表示不限自动重投轮数，仍受禁止标记约束
 	f2 := newFakeTaskDB()
 	e2 := queueEngine(t, f2, workerpool.NewWorkerPool[*Task](1, 8))
 	e2.errorQueueQuery()().Find(&[]models.CrawlerTask{})
-	if strings.Contains(f2.readSQL(), "reprocess < ?") {
-		t.Fatalf("max_retry=0 表示不限，不该有 reprocess 条件：\n%s", f2.readSQL())
+	if strings.Contains(f2.readSQL(), "auto_retry_count < ?") {
+		t.Fatalf("max_retry=0 表示不限，不该有 auto_retry_count 上限：\n%s", f2.readSQL())
 	}
 }
 
@@ -325,7 +325,7 @@ func TestRepeatQueueQueryShape(t *testing.T) {
 		t.Fatalf("应只捞 repeatable：\n%s", read)
 	}
 	if !strings.Contains(read, "status IN") {
-		t.Fatalf("应限定 success/failed：\n%s", read)
+		t.Fatalf("应限定 success：\n%s", read)
 	}
 	// 判据是 next_repeat_at（到点才捞）。这条只钉 SQL 形态 —— 假库不按 WHERE 过滤，
 	// 真过滤在 MySQL 那边，能证它的是"重置语句写 next_repeat_at + 复投前再确认一次"那两条。

@@ -214,8 +214,9 @@ func (e *Engine) claimTask(task *Task) (bool, error) {
 		return true, nil // 未落库的任务（理论上不该出现）：没有行可认领，直接执行
 	}
 	res := claimScope(e.db, uint(task.ID)).Updates(map[string]any{
-		"status": models.TaskStatusProcessing,
-		"urgent": false,
+		"status":        models.TaskStatusProcessing,
+		"urgent":        false,
+		"retry_blocked": gorm.Expr("COALESCE(retry_blocked, FALSE)"),
 	})
 	if res.Error != nil {
 		return false, res.Error

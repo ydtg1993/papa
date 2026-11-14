@@ -45,7 +45,7 @@ type Config struct {
 type ErrorQueueConfig struct {
 	WorkerCount int           `mapstructure:"worker_count"` // 并发重新投递失败任务的数量（0 = 默认 1）
 	Interval    time.Duration `mapstructure:"interval"`     // 自动轮询间隔；0 = 默认 4h
-	MaxRetry    int           `mapstructure:"max_retry"`    // 单个失败任务最多再处理代数；0 = 不限
+	MaxRetry    int           `mapstructure:"max_retry"`    // 连续失败期间最多自动再处理轮数（成功清零）；0 = 不限，NoRetry 仍禁止
 	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 

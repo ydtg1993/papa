@@ -381,7 +381,7 @@ var rules = []rule{
 
 	{"error_queue.max_retry", func(c *Config) error {
 		if c.ErrorQueue.MaxRetry < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 0 = 不限代数", c.ErrorQueue.MaxRetry)
+			return fmt.Errorf("  不能为负（实得 %d）—— 0 = 不限自动轮数（NoRetry仍禁止）", c.ErrorQueue.MaxRetry)
 		}
 		return nil
 	}},

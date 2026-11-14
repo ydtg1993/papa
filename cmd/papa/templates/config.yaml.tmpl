@@ -132,7 +132,7 @@ server:
 error_queue:
   worker_count: 1             # 并发重新投递数，0 = 默认 1
   interval: "4h"              # 自动轮询间隔
-  max_retry: 3                # 单条失败任务最多再处理几代；0 = 不限
+  max_retry: 3                # 连续失败期间最多自动重投轮数；0 = 不限
   batch_size: 100             # 每批处理条数；0 = 默认 1000（分页流式，不能为负）
 recover_queue:
   batch_size: 100 # 持久化恢复始终启用；按阶段独立恢复，队满阻塞

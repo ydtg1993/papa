@@ -54,27 +54,30 @@ type CrawlerTask struct {
 	// 不落库的话任务重投一次身份就没了（handler 拿不到业务键，报错还指不到这里）。
 	Meta  datatypes.JSON `gorm:"type:json;comment:业务键(如 series_id/episode_id)，随行落库"`
 	Retry int            `gorm:"default:0;comment:错误重试次数"`
-	// Status 挂了**两个**索引：
+	// Status 参与查询索引：
 	//   - idx_repeat_due 的第二列（轮询判据的复合索引，leading 是 repeatable）；
 	//   - idx_task_status 单列：恢复队列 `status IN (0,1)`、去重预热 `status IN (...) OR repeatable=1`
 	//     都只按 status 过滤，复合索引 leading 不是 status 时用不上，数据量大后会退化成全表扫描。
-	// gorm 允许同一字段写多个 `index:` tag（schema.ParseIndexes 会解析出两条；别被 TagSettings
+	//   - idx_task_auto_retry 按失败状态、禁止标记与预算筛选；idx_task_delivery 按站点阶段恢复。
+	// gorm 允许同一字段写多个 `index:` tag（schema.ParseIndexes 会解析全部；别被 TagSettings
 	// map 只留最后一个值误导 —— parseFieldIndexes 读的是原始 tag）。
-	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;index:idx_task_delivery,priority:3;comment:0:待处理 1:处理中 2:成功 3:失败"`
-	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
+	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;index:idx_task_auto_retry,priority:1;index:idx_task_delivery,priority:3;comment:0:待处理 1:处理中 2:成功 3:失败"`
+	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:成功后周期执行 0:关闭 1:开启"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
 	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 用本站 RepeatQueue 的 Interval。
 	// 只在首次入库时由 `Task.toModel` 播种；之后改它走 `Engine.SetTaskRepeatInterval`（后台「设轮询周期」动作）。
 	RepeatInterval int `gorm:"type:int(11);default:0;comment:轮询周期(秒)；0=用本站RepeatQueue的Interval"`
 	// NextRepeatAt 是周期到期判据。新任务首次落终态时在同一 UPDATE 初始化；
-	// 历史已终态的 NULL 仍视为到期。待执行/处理中任务不因 NULL 参与周期重投。
+	// 历史成功任务的 NULL 仍视为到期。待执行/处理中任务不因 NULL 参与周期重投。
 	// 用指针而非 time.Time：零值时间会被 gorm 写成 0001-01-01，而 MySQL DATETIME 下限是 1000-01-01，
 	// 严格模式下直接报 1292（比 0000-00-00 更早失败）。索引 idx_repeat_due 见 Repeatable/Status 上的同名 tag。
 	NextRepeatAt *time.Time `gorm:"index:idx_repeat_due,priority:3;comment:下次轮询到点；NULL=未排期"`
 	// LastRepeatAt 上次被轮询队列**投递**的时间（只给后台看，不参与任何判断）：
 	// 周期被改过之后，它与 NextRepeatAt 不再互为简单加减，所以不是可以推导出来的副本。
-	LastRepeatAt *time.Time `gorm:"comment:上次被轮询投递的时间；NULL=从未"`
-	Reprocess    int        `gorm:"type:int(11);default:0;comment:失败任务被错误队列再处理的代数"`
+	LastRepeatAt   *time.Time `gorm:"comment:上次被轮询投递的时间；NULL=从未"`
+	AutoRetryCount int        `gorm:"not null;default:0;index:idx_task_auto_retry,priority:3;comment:连续失败期间已自动再处理轮数"`
+	RetryBlocked   *bool      `gorm:"default:null;index:idx_task_auto_retry,priority:2;comment:自动重试禁止标记；NULL=历史未知禁止自动重试"`
+	Reprocess      int        `gorm:"type:int(11);default:0;comment:重投代次（自动与手动均递增，不清零）"`
 	// Urgent 加急：该任务投到所属阶段的快车道，插到常规队列前面。
 	// 它是「排队位置」的概念 —— worker 认领（置为处理中）时一并归零，跑过一次即完成使命。
 	Urgent    bool      `gorm:"type:tinyint(1);default:0;comment:加急 0:否 1:是"`
@@ -84,6 +87,10 @@ type CrawlerTask struct {
 }
 
 func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
+	if t.RetryBlocked == nil {
+		allowed := false
+		t.RetryBlocked = &allowed
+	}
 	// URL 的哈希在这里统一补上：任何创建路径（含业务直接 Create 这个模型）都覆盖到，
 	// 不会出现"唯一索引上是一串空串"这种撞车。
 	if t.URLHash == "" && t.URL != "" {

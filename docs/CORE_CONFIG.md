@@ -198,7 +198,7 @@
 error_queue:
   worker_count: 1             # 并发重新投递数；0 = 默认 1
   interval: "4h"              # 自动轮询间隔；"0" = 默认 4h
-  max_retry: 3                # 单个任务最多再处理代数；0 = 不限
+  max_retry: 3                # 连续失败最多自动再处理轮数；0 = 不限，NoRetry仍禁止
   batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（分页流式，不能为负）
 ```
 
@@ -385,3 +385,7 @@ trace.retention 沿用默认 7 天，负数不自动清理（文件容量上限�
 ### 必需治理队列
 
 `error_queue`、`repeat_queue` 始终运行，旧 `enabled` 键会被未知键校验拒绝。`interval` 省略或为 0 分别使用 4h、12h；worker_count=0 默认 1、batch_size=0 默认 1000。负数拒绝启动。暂停由站点闸门控制，关停由引擎生命周期控制；任务重复与失败重试上限保持原义。
+
+### 统一失败策略迁移
+
+新增 auto_retry_count 与可空 retry_blocked，必须先显式迁移再启动。旧失败行 retry_blocked=NULL 默认禁止自动重试；新任务显式false。max_retry约束连续失败期间的自动再处理轮数，成功清零，reprocess仍是单调代次。周期只处理success；手动单条重投保留限制，成功后解除。详见 ERROR_QUEUE.md。

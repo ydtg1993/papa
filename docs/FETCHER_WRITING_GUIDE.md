@@ -1008,12 +1008,12 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 5. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。
 6. **相对链接**：`href`/`src` 可能是相对路径，用 `papa.ResolveURL(base, href)` 解析成绝对地址再提交任务
    （rod 那条路的基础地址是 `page.Info().URL`，静态抓取是 `page.URL.String()`）；别用字符串拼接，也别把 `#锚点` 当成不同的页面（`ResolveURL` 会去掉它）。
-7. **重试语义**：fetcher 返回普通 error 会触发重试；对「确实失败、重试无意义」的（页面 404、缺字段、验证码拦截等），返回 `papa.WrapNoRetryKind("structure", err)`（或 `WrapNoRetry(err)`），引擎不重试、直接标 failed 并告警，别再「返回 nil 假装成功」。
+7. **重试语义**：fetcher 返回普通 error 会触发重试；对「确实失败、重试无意义」的（页面 404、缺字段、验证码拦截等），返回 `papa.WrapNoRetryKind("structure", err)`（或 `WrapNoRetry(err)`），引擎不重试、直接标 failed 并持久化禁止自动重试，人工重投成功才解除，别再「返回 nil 假装成功」。
 8. **写库用 task.ID**：子任务派发后，每个 fetcher 只写自己这个 `task.ID` 的记录。
 9. **ffmpeg**：`AutoMerge: true` 转 mp4 需要系统装 ffmpeg；只想拼 TS 就 `AutoMerge: false`。
 10. **延迟投递**：反爬随机间隔用 `task.Delay`（或 `NotBefore`）在派发时设置，别在 handler 里 `time.Sleep` 空等，那会浪费 worker 并发位。
 11. **别重复记日志**：`FetchHandler` 的 error 和 `SubmitTask` 的提交错误框架都会自动记，fetcher 里**不必再** `logger.Errorf` 记一遍，否则会刷双份。你只需判断 error 要不要改变控制流（继续/中止/告警）。
-12. **限流（429 / 503）现在按普通失败重试**：框架还不认 `Retry-After` —— 命中限流后它会立刻按该阶段的 `Retry.Backoff` 再打一次，容易把限流升级成封禁。反爬严的站点把 `delay` 调大（如 `"30s-60s"`），或对 429 返回 `papa.WrapNoRetryKind("rate_limited", err)`，交给 error_queue 稍后重投。
+12. **限流（429 / 503）现在按普通失败重试**：框架还不认 `Retry-After` —— 命中限流后它会立刻按该阶段的 `Retry.Backoff` 再打一次，容易把限流升级成封禁。反爬严的站点把 `delay` 调大（如 `"30s-60s"`），并保持普通可重试 error，交给错误队列按额度稍后重投。NoRetry 会持久化禁止所有自动重试，不能用来表达短暂退避。
 
 ---
 

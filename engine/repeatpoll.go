@@ -50,15 +50,15 @@ func (e *Engine) withRepeatLimits(q *gorm.DB) *gorm.DB {
 	return q
 }
 
-// repeatDueStatuses 可轮询的两个终态。
-var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed}
+// repeatDueStatuses 可轮询的成功状态；失败统一归错误队列。
+var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess}
 
 // repeatQueueQuery 「到点」的可轮询任务。
 //
 // 到点 = 未排期（NextRepeatAt 为 NULL：迁移前的老行、或从未被轮询过）或下次到点时间已过。
 // 这是一条纯比较谓词，走 idx_repeat_due（repeatable, status, next_repeat_at）；周期本身在
 // **写路径**换算成 NextRepeatAt（见 requeueRepeatTask 那条 UPDATE），读路径不做任何算术 ——
-// 函数谓词会让索引失效，而且本仓没有真库测试，SQL 里的算术验不了。
+// 读路径保持简单比较，避免对判据列施加函数。
 func (e *Engine) repeatQueueQuery() func() *gorm.DB {
 	return func() *gorm.DB {
 		return e.repeatBaseQuery().
@@ -76,7 +76,7 @@ func (e *Engine) repeatForceQueueQuery() func() *gorm.DB {
 // 负数 = 已经有到点的了（立刻扫）。
 //
 // 只看 NextRepeatAt（判据列）：
-//   - 终态的行（会被真扫描）：已到点 / 未排期 → 0；否则它自己的到点时间。
+//   - 成功的行（会被真扫描）：已到点 / 未排期 → 0；否则它自己的到点时间。
 //   - 跑着 / 排队中的行：只在**未来**才算数（它到点时多半已经跑完，扫描正好接上）；
 //     已经过期的（任务跑得比自己的周期还久）直接排除 —— 它跑完之前投不出去，
 //     让这种行参与只会把扫描钉在最短刻度上空转。
@@ -106,7 +106,7 @@ func (e *Engine) soonestRepeatIn() (time.Duration, bool) {
 // 套一层 CAST 才是整数（同一条语句在真库上验过：原样 err≠nil、CAST 后 err=nil）。
 const soonestRepeatSelect = `MIN(CAST(CASE
 			WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW()))
-			WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at)
+			WHEN status IN (0, 1) AND next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at)
 			ELSE NULL END AS SIGNED)) AS epoch`
 
 // soonestRepeatQueryOn 「最早到点」那条查询（抽出来是为了能在不连库的前提下渲染 SQL 验它）。
@@ -114,7 +114,7 @@ const soonestRepeatSelect = `MIN(CAST(CASE
 // 底只按 `repeatable = yes` 筛（**不**套 repeatBaseQueryOn 的「已完成」条件）：soonestRepeatIn
 // 注释里那个「跑着 / 排队中的行只在未来才算数」的分支，正是要靠把 pending/processing 也纳入
 // 这张表才能命中 —— 用终态那套 WHERE 会把它整个过滤掉，活跃行的个人 next_repeat_at 就查不到，
-// 节拍只能退回全局 interval。状态怎么取舍交给 CASE（见 soonestRepeatSelect）：终态看
+// 节拍只能退回全局 interval。状态怎么取舍交给 CASE（见 soonestRepeatSelect）：成功看
 // next_repeat_at（未排期即到点），活跃行只看未来的 next_repeat_at。
 func soonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
@@ -122,7 +122,7 @@ func soonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
 		Select(soonestRepeatSelect, repeatDueStatuses)
 }
 
-// RepollRepeatableTasks 重新投递「到点」的可轮询任务（success/failed），返回实际投递数量。
+// RepollRepeatableTasks 重新投递「到点」的可轮询任务（仅 success），返回实际投递数量。
 // 手动触发（后台「立即执行」）走的就是它，所以手动同样只扫到点的。
 func (e *Engine) RepollRepeatableTasks() (int, error) {
 	return e.repollRepeatQueue(false)
@@ -163,7 +163,7 @@ func (e *Engine) repollRepeatQueue(force bool) (int, error) {
 func repeatResetScope(db *gorm.DB, id uint) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
 		Where("id = ? AND repeatable = ? AND status IN ?", id, models.RepeatableYes,
-			[]models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed})
+			repeatDueStatuses)
 }
 
 // requeueRepeatTask 将单条 repeatable 任务重置为 pending 并重新投递。

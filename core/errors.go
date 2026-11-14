@@ -3,7 +3,7 @@ package core
 import "errors"
 
 // NoRetryError 包装错误，标记其不可重试（结构错误、资源不存在、访问受限等）。
-// 实现 Retryable() bool 以便 worker 识别后直接标 failed 且不再空转。
+// 实现 Retryable() bool 以便 worker 直接标 failed，并持久化禁止后续自动重试；仅手动重投可再次执行。
 type NoRetryError struct {
 	Err  error
 	kind string

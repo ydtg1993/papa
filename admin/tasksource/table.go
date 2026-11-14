@@ -67,7 +67,9 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Render: oao.RenderEnum, Enum: taskStatusEnum, Tone: taskStatusTone},
 			{Field: "retry", Label: "重试", Kind: oao.KindNumber, Width: "70px"},
-			{Field: "reprocess", Label: "重投", Kind: oao.KindNumber, Width: "70px"},
+			{Field: "reprocess", Label: "重投代次", Kind: oao.KindNumber, Width: "90px", NoEdit: true},
+			{Field: "auto_retry_count", Label: "连续失败自动重投", Kind: oao.KindNumber, NoEdit: true},
+			{Field: "retry_blocked", Label: "自动重试限制", Render: oao.RenderEnum, Enum: map[string]string{"0": "允许", "false": "允许", "1": "禁止", "true": "禁止", "": "历史待确认", "null": "历史待确认"}, NoEdit: true},
 			{Field: "repeatable", Label: "可轮询", Kind: oao.KindBool, Width: "90px"},
 			{Field: "repeat", Label: "轮询次数", Kind: oao.KindNumber, Width: "90px"},
 			// 周期与两个时刻：判据是 next_repeat_at（到点才重投），last_repeat_at 只是记录
@@ -106,7 +108,7 @@ func taskActions(acts TaskActions) []oao.Action {
 	return []oao.Action{
 		{
 			Key: "retry", Label: "重投", Tone: oao.ToneInfo,
-			Confirm: "重置该任务并重新投递到它的阶段队列？",
+			Confirm: "手动重投一轮？保留自动重试额度和禁止标记，执行成功后才重置限制。",
 			Handler: func(ctx context.Context, req oao.ActionRequest) error {
 				id, err := parseID(req)
 				if err != nil {

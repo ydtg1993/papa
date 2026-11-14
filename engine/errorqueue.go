@@ -17,7 +17,7 @@ type errorQueueState struct {
 	retried atomic.Int64 // 累计重新投递数（同时就是监控里那一行的"处理量"）
 }
 
-// errorQueueQuery 失败任务的查询条件：status=failed，配了上限时再处理代数未超 max_retry。
+// errorQueueQuery 失败任务的查询条件：status=failed、明确允许自动重试，且连续失败自动重投额度未用尽。
 //
 // **必须带上 Model**：这个构造器有两个消费方 —— `processInBatches` 的 `Find(&tasks)`
 // （切片元素类型能推出表名，带不带都行）和 `sampleQueueBacklogOne` 的 `Count(&n)`
@@ -25,12 +25,7 @@ type errorQueueState struct {
 func (e *Engine) errorQueueQuery() func() *gorm.DB {
 	cfg := e.cfg.ErrorQueue
 	return func() *gorm.DB {
-		q := e.db.Model(&models.CrawlerTask{}).
-			Where("status = ?", models.TaskStatusFailed)
-		if cfg.MaxRetry > 0 {
-			q = q.Where("reprocess < ?", cfg.MaxRetry)
-		}
-		return q
+		return taskstore.AutomaticRetryScope(e.db.Model(&models.CrawlerTask{}), cfg.MaxRetry)
 	}
 }
 
@@ -64,16 +59,8 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	}
 	// 状态挡住在途任务；repeat/reprocess 快照同时挡住另一队列重投并再次
 	// 落终态后的旧查询结果。计数在同一 UPDATE 增长，不靠两个队列的私有锁互斥。
-	reset := taskstore.GenerationScope(e.db.Model(&models.CrawlerTask{}), t).
-		Where("status = ?", models.TaskStatusFailed)
-	if limit := e.cfg.ErrorQueue.MaxRetry; limit > 0 {
-		reset = reset.Where("reprocess < ?", limit)
-	}
-	res := reset.Updates(map[string]any{
-		"status":    models.TaskStatusPending,
-		"retry":     0,
-		"reprocess": gorm.Expr("reprocess + 1"),
-	})
+	reset := taskstore.AutomaticRetryScope(taskstore.GenerationScope(e.db.Model(&models.CrawlerTask{}), t), e.cfg.ErrorQueue.MaxRetry)
+	res := reset.Updates(taskstore.RetryUpdates(true))
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false

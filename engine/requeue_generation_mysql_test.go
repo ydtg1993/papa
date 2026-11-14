@@ -193,7 +193,7 @@ func TestMySQLRequeueRechecksDeadlineAndRetryLimit(t *testing.T) {
 	if err := e.SubmitEntryTask(task); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Updates(map[string]any{"status": models.TaskStatusFailed, "reprocess": 3, "next_repeat_at": gorm.Expr("DATE_SUB(NOW(), INTERVAL 1 HOUR)")}).Error; err != nil {
+	if err := db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).Updates(map[string]any{"status": models.TaskStatusSuccess, "auto_retry_count": 3, "next_repeat_at": gorm.Expr("DATE_SUB(NOW(), INTERVAL 1 HOUR)")}).Error; err != nil {
 		t.Fatal(err)
 	}
 	snapshot := deliveryRows(t, db)[0]

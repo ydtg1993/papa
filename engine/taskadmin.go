@@ -3,9 +3,9 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"github.com/ydtg1993/papa/v3/internal/taskstore"
 	"time"
 
+	"github.com/ydtg1993/papa/v3/internal/taskstore"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/gorm"
 )
@@ -97,7 +97,7 @@ func (e *Engine) loadTask(id uint) (*models.CrawlerTask, error) {
 }
 
 // RetryTask 把一行任务重置为「待处理」并重新投递到它所属阶段的池。
-// 语义与 error_queue 的单行重投一致：重试次数归零、代次 +1。
+// 轮内重试次数归零、代次 +1；保留自动重投额度与禁止标记，成功后才清除。
 //
 // wasReprocess 是调用方从行快照里带回来的 reprocess 旧值，作为版本条件：
 // 手抖双击或两个人同时点时，只有第一次能匹配上，后一次拿到 ErrTaskChanged。
@@ -116,12 +116,7 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
-	res := retryScope(e.db, id, wasReprocess).
-		Updates(map[string]any{
-			"status":    models.TaskStatusPending,
-			"retry":     0,
-			"reprocess": gorm.Expr("reprocess + 1"),
-		})
+	res := taskstore.GenerationScope(retryScope(e.db, id, wasReprocess), t).Updates(taskstore.RetryUpdates(false))
 	if res.Error != nil {
 		return fmt.Errorf("reset task %d: %w", id, res.Error)
 	}
@@ -312,8 +307,9 @@ func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 	}
 	res := markFailedScope(e.db, id, e.startedAt).
 		Updates(map[string]any{
-			"status": models.TaskStatusFailed,
-			"error":  gorm.Expr("CONCAT(COALESCE(error, ''), ?)", msg+"\n"),
+			"status":        models.TaskStatusFailed,
+			"retry_blocked": true,
+			"error":         gorm.Expr("CONCAT(COALESCE(error, ''), ?)", msg+"\n"),
 		})
 	if res.Error != nil {
 		return fmt.Errorf("mark task %d failed: %w", id, res.Error)

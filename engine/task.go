@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v3/core"
+	"github.com/ydtg1993/papa/v3/internal/taskstore"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -166,14 +167,7 @@ func (t *Task) UpdateStatus(db *gorm.DB, status models.TaskStatus, err error) bo
 	if t.ID == 0 {
 		return false
 	}
-	updates := map[string]any{"status": status}
-	if status == models.TaskStatusFailed {
-		var errMsg string
-		if err != nil {
-			errMsg = err.Error()
-		}
-		updates["error"] = gorm.Expr("CONCAT(COALESCE(error, ''), ?)", errMsg+"\n")
-	}
+	updates := taskstore.TerminalUpdates(status, err)
 	return db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).Updates(updates).Error == nil
 }
 

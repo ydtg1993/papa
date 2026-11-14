@@ -30,7 +30,7 @@ Use this for audits and pull-request reviews. Report findings by severity with f
   `SiteSpec.StartPaused`, not to `Entry`.
 - Repeatable tasks are created while the global repeat queue is disabled, yet automatic polling is promised.
 - Code assumes resubmission changes existing repeat flags/intervals.
-- No-retry errors are assumed to be excluded from `error_queue`; they are still failed rows.
+- NoRetry must mean no automatic retry: permanent failures remain failed and require explicit manual retry. Do not use it for transient backoff.
 - Startup recovery is described as periodic timeout scanning; it runs once against pre-start pending/processing rows.
 
 ## Performance and target-site safety

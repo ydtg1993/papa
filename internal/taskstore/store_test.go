@@ -124,3 +124,16 @@ func TestGenerationScopeChecksBothRoundCounters(t *testing.T) {
 	}
 	assertSQL(t, r, "id = 7 AND `repeat` = 3 AND reprocess = 4", "status = 3")
 }
+
+func TestAutomaticRetryScopeNeverBypassesProhibition(t *testing.T) {
+	for _, limit := range []int{0, 3} {
+		db, r := dryStore(t)
+		if err := AutomaticRetryScope(db.Model(&models.CrawlerTask{}), limit).Updates(RetryUpdates(true)).Error; err != nil {
+			t.Fatal(err)
+		}
+		sql := assertSQL(t, r, "status = 3 AND retry_blocked = false", "auto_retry_count + 1", "reprocess + 1")
+		if strings.Contains(sql, "auto_retry_count <") != (limit > 0) {
+			t.Fatal(sql)
+		}
+	}
+}

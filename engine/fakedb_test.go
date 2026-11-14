@@ -91,7 +91,7 @@ var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 var fakeTaskColumns = []string{
 	"not_before",
 	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "idempotency_hash", "meta",
-	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
+	"auto_retry_count", "retry_blocked", "retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
 	"reprocess", "urgent", "error", "created_at", "updated_at",
 }
 

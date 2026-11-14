@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**已完成**（success/failed）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 用全局 `interval`）；配置里的 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
+框架内置「周期轮询队列」：把**到点的**（`next_repeat_at <= NOW()`，或还没排过期的）、**成功**（success）的 repeatable 任务重新投递回各自阶段，实现「周期重跑轮询任务」。周期是**每条任务自己的**（`repeat_interval`，0 = 用全局 `interval`）；配置里的 `interval` 只是"最粗兜底"。走的是与 error_queue 同构的分页 + 并发队列（分页用 keyset 游标，见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 第 6 节）。
 
 队列是**全局一条**：后台一行，锁/计数/运行快照/手动入口各一份（不再按站点拆）。
 
@@ -58,18 +58,18 @@ repeat_queue:
 - **周期从"上一轮投递"算起**：任务跑得比自己的周期还久时，等价于"一跑完就又投"（下一轮扫描正好接上）。
 - **只改标记，不顺手重投**：开/停/改周期都在**下一轮扫描**时才生效（开轮询会把排期置为"现在"，所以它就是下一轮）。想让某条**立刻**再跑一次，用「重投」。
 - **重复点得 409**：`repeatable` 这一列、以及行快照里的旧周期值，本身就是版本守卫；已经开着再开、已经停着再停、周期刚被别人改过，都会被拒并说明原因。
-- **停轮询不影响正在跑的那一轮**：它跑完这次就没有下一次。停在"这一轮已经捞到这行"之后也算数 —— 重投前的重置是带条件的（`repeatable = 1 AND status IN (已完成)`），影响 0 行就跳过。
+- **停轮询不影响正在跑的那一轮**：它跑完这次就没有下一次。停在"这一轮已经捞到这行"之后也算数 —— 重投前的重置是带条件的（`repeatable = 1 AND status = success`），影响 0 行就跳过。
 - **周期最小 10 秒**（`repeatMinTick`）：比它细会在写入侧被直接拒掉（返回"周期不合法"），不会静默按 10 秒跑。
 - **排期与时间比较都用库里的 `NOW()`**：写入端与判据端同一个时钟，不受应用/数据库时钟偏差影响。
 
 >
 > **停轮询 ≠ 放开去重**：行还在（`success`/`failed`），同一个 `site:stage:url` 再提交仍会被 `SubmitTask` 的去重命中分支静默吞掉（所有已完成任务都这样，与轮询无关）。想立刻再跑只能「重投」。
 >
-> **失败的任务走 error_queue 的节奏**：本队列只按任务周期捞 `success/failed`，而 `failed` 同时也在 [ERROR_QUEUE.md](./ERROR_QUEUE.md) 的集合里 —— 那条路有自己的 `interval` / `max_retry`，不受任务周期约束。想让"失败也别猛打目标站"，调的是 error_queue。
+> **失败统一交给错误队列**：周期扫描、最早到期聚合及强制轮询都不接管 failed。NoRetry 或额度耗尽后只能显式手动重投。
 
 ## 4. 语义：只重投「到点的、已完成的」
 
-`repeat_queue` 只重投 `status = success / failed`、且 `next_repeat_at IS NULL OR next_repeat_at <= NOW()` 的 repeatable 任务，**不碰还在 pending/processing 的**——后者由 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 在**启动时**兜底。这样避免「上一轮还没处理完，这一轮又入队」的双入队；到点条件则保证每条任务按自己的周期走。
+`repeat_queue` 只重投 `status = success`、且 `next_repeat_at IS NULL OR next_repeat_at <= NOW()` 的 repeatable 任务，**不碰还在 pending/processing 的**——后者由 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) 在**启动时**兜底。这样避免「上一轮还没处理完，这一轮又入队」的双入队；到点条件则保证每条任务按自己的周期走。
 
 这条判据是纯比较、走 `idx_repeat_due`（`repeatable, status, next_repeat_at`）：**周期换算只发生在写路径**（重投那一条 UPDATE 算 `now + 周期`），读路径一行算术都没有 —— 函数谓词（`TIMESTAMPDIFF(...) >= 周期` 那类）会让索引失效，而且 SQL 里的算术没法在没有真库的测试里验。
 重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
@@ -92,3 +92,5 @@ repeat_queue:
 周期和错误队列都以查询快照的 repeat/reprocess 组合做条件更新。任一重投开启新代次后，另一条旧快照即使再次遇到 success/failed 也不能重投。自动周期重投在 UPDATE 中再次检查 next_repeat_at 到期，防止扫描后运营改远排期仍被提前投递；手动强制轮询只忽略到期条件，仍受代次、状态、repeatable 和阶段 RepeatLimit 守卫。
 
 历史已终态且 next_repeat_at=NULL 的行仍沿用未排期即到期的处理方式，不做全表回填。后续周期继续按原有投递时刻计算下一次时间。此次不改变错误队列自己的重试节奏：首次周期未到期不禁止符合规则的错误重投。
+
+失败不会因为到期或“强制轮询”而绕过错误队列预算。成功周期不消耗 auto_retry_count；从失败恢复成功后清零失败预算，后续周期继续。

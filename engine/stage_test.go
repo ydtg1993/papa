@@ -1014,7 +1014,7 @@ func statementArgs(f *fakeTaskDB, i int) []driver.Value {
 // （success/failed 只按 id 写），停机取消时一条都不该有 —— assertNoTerminalStatusWrite 反向钉住。
 func conditionalStatusUpdates(f *fakeTaskDB) []int {
 	var out []int
-	for _, i := range statementIndexes(f, "SET `status`=?") {
+	for _, i := range statementIndexes(f, "`status`=?") {
 		if strings.Contains(statementSQL(f, i), "AND status = ?") {
 			out = append(out, i)
 		}
@@ -1065,9 +1065,14 @@ func assertNoTerminalStatusWrite(t *testing.T, f *fakeTaskDB) {
 	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
 		t.Fatalf("停机取消不该落 failed（会往 error 列追加 context canceled）：\n%s", f.written())
 	}
-	for _, i := range statementIndexes(f, "SET `status`=?") {
+	for _, i := range statementIndexes(f, "`status`=?") {
 		args := statementArgs(f, i)
-		status, ok := asInt64(args[0])
+		q := statementSQL(f, i)
+		param := strings.Count(q[:strings.Index(q, "`status`=?")], "?")
+		if param >= len(args) {
+			t.Fatalf("missing status parameter: %s", q)
+		}
+		status, ok := asInt64(args[param])
 		if !ok || status == int64(models.TaskStatusSuccess) || status == int64(models.TaskStatusFailed) {
 			t.Fatalf("停机取消不该写终态（success/failed 只按 id 条件写）：\n%s", statementSQL(f, i))
 		}
