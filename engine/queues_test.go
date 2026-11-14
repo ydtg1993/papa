@@ -304,7 +304,7 @@ func TestProcessRecoverQueueDoesNotResetLiveProcessing(t *testing.T) {
 	}
 }
 
-func TestPendingRecoveryRemainsAvailableWithLegacyRecoverQueueDisabled(t *testing.T) {
+func TestPendingRecoveryRemainsAvailableWithDefaultConfig(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)

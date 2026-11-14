@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -13,8 +14,8 @@ func TestHarvestStageTotalsAccumulates(t *testing.T) {
 	e := &Engine{stageTotals: make(map[string]stageTotals)}
 
 	pool1 := workerpool.NewWorkerPool[*Task](1, 8)
-	_ = pool1.Submit(&Task{Stage: "s", URL: "a"})
-	_ = pool1.Submit(&Task{Stage: "s", URL: "b"})
+	_ = pool1.SubmitContext(context.Background(), &Task{Stage: "s", URL: "a"})
+	_ = pool1.SubmitContext(context.Background(), &Task{Stage: "s", URL: "b"})
 	e.harvestStageTotals("s", pool1)
 	if got := e.stageTotals["s"].Submitted; got != 2 {
 		t.Fatalf("应收割 submitted=2，实得 %d", got)
@@ -22,7 +23,7 @@ func TestHarvestStageTotalsAccumulates(t *testing.T) {
 
 	pool2 := workerpool.NewWorkerPool[*Task](1, 8)
 	for i := 0; i < 3; i++ {
-		_ = pool2.Submit(&Task{Stage: "s", URL: fmt.Sprintf("c%d", i)})
+		_ = pool2.SubmitContext(context.Background(), &Task{Stage: "s", URL: fmt.Sprintf("c%d", i)})
 	}
 	e.harvestStageTotals("s", pool2)
 	if got := e.stageTotals["s"].Submitted; got != 5 {
@@ -37,7 +38,7 @@ func TestGetStageStatsAddsCumulative(t *testing.T) {
 		stageTotals: map[string]stageTotals{"a:stub": {Submitted: 10, Completed: 8, Failed: 2}},
 	}
 	pool := workerpool.NewWorkerPool[*Task](1, 8)
-	_ = pool.Submit(&Task{Stage: "stub", URL: "https://example.com"}) // 当前池 submitted=1
+	_ = pool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: "https://example.com"}) // 当前池 submitted=1
 	e.setStatsQueue("a:stub", track.NewStatsQueue[*Task](pool))
 
 	got := e.GetStageStats()["a:stub"]

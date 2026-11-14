@@ -90,7 +90,7 @@ func TestStartConsumesPoolActivities(t *testing.T) {
 	pool.Start(context.Background(), func(_ context.Context, _ fakeTask) error { return nil })
 	defer pool.Stop(time.Second)
 
-	if err := pool.Submit(fakeTask{key: "a"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), fakeTask{key: "a"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 

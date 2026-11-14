@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-// ErrQueueFull 是旧版非阻塞 Submit 的拒收结果；任务尚未被池接收。
-var ErrQueueFull = errors.New("worker pool queue full")
-
 // ErrStopped 表示池已经关闭接收；调用方仍拥有未接收任务。
 var ErrStopped = errors.New("worker pool already stopped")
 
@@ -23,8 +20,8 @@ const urgentMinQueueSize = 8
 
 // WorkerPool 泛型工作池。
 //
-// 两条队列：taskQueue 是常规通道，urgentQueue 是"快车道"（见 SubmitUrgent）。
-// 两条队列**从不 close** —— 停机靠 stopCh 信号，Submit 侧靠 stopped + 读写锁互斥，
+// 两条队列：taskQueue 是常规通道，urgentQueue 是"快车道"（见 SubmitUrgentContext）。
+// 两条队列**从不 close** —— 停机靠 stopCh 信号，投递侧靠 stopped + 读写锁互斥，
 // 于是"向已关闭 channel 发送"这一类隐患在结构上不存在。
 type WorkerPool[T Tasker] struct {
 	taskQueue    chan T
@@ -34,7 +31,7 @@ type WorkerPool[T Tasker] struct {
 	stopOnce     sync.Once
 	stopRes      stopResult    // Stop 的结局；stopOnce 跑完后才有效，供重复调用返回同一份
 	stopCh       chan struct{} // 停机信号；队列不 close，worker 靠它退出
-	mu           sync.RWMutex  // 保护 stopped，并与 Submit 的发送互斥，见 Submit/Stop
+	mu           sync.RWMutex  // 保护 stopped，并与 投递的发送互斥，见 admission.go/Stop
 	stopped      bool
 	spaceChanged chan struct{} // mu 保护；消费时广播，阻塞提交不轮询
 	waiting      atomic.Int64  // 正在执行可取消提交的调用数，供空闲回收判断
@@ -150,7 +147,7 @@ func (p *WorkerPool[T]) run(ctx context.Context, workerID int, handler TaskHandl
 
 // drainAndExit 停机后把两条队列里的存量跑完再退出，保持旧的 range 语义。
 //
-// 判定"空"时不会再有任务落进来：Submit/SubmitUrgent 全程持 RLock 完成"查 stopped + 发送"，
+// 判定"空"时不会再有任务落进来：SubmitContext/SubmitUrgentContext 全程持锁完成"查 stopped + 发送"，
 // Stop 取写锁后才置 stopped 并 close(stopCh)，两者互斥 —— close(stopCh) 之后不可能再有发送成功。
 //
 // **不看闸门**：闸门管的是运行期「要不要取下一个任务」，停机是人为的、明确的终止，
@@ -217,50 +214,6 @@ func (p *WorkerPool[T]) runHandler(ctx context.Context, task T, handler TaskHand
 		}
 	}()
 	return handler(ctx, task)
-}
-
-// Submit 是兼容旧调用的非阻塞投递；实际队列已满时返回 ErrQueueFull，调用方仍拥有任务。
-// 正常背压路径使用 SubmitContext。
-func (p *WorkerPool[T]) Submit(task T) error {
-	// 读锁覆盖「判断 stopped + 发送」整段：Stop 置位并 close(stopCh) 时持写锁，两者互斥。
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.submitLocked(task)
-}
-
-// SubmitUrgent 提交到快车道：让这一条插到所在队列的前面。
-//
-// 兼容旧调用的非阻塞入口。快车道已满时退到常规队列（best-effort 优先），
-// 两条都拒收才返回 ErrQueueFull；需要可取消等待时使用 SubmitUrgentContext。
-func (p *WorkerPool[T]) SubmitUrgent(task T) error {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if !p.stopped {
-		select {
-		case p.urgentQueue <- task:
-			p.submitted.Add(1)
-			return nil
-		default:
-		}
-	}
-	return p.submitLocked(task)
-}
-
-// submitLocked 向常规队列发送；调用方须已持锁。
-func (p *WorkerPool[T]) submitLocked(task T) error {
-	if p.stopped {
-		err := fmt.Errorf("worker pool already stopped,failed to submit task: %+v", task)
-		p.trackQueue.SendError(err)
-		return err
-	}
-	select {
-	case p.taskQueue <- task:
-		p.submitted.Add(1) // 提交成功，增加计数
-		return nil
-	default:
-		return ErrQueueFull
-	}
 }
 
 // stopResult 一次 Stop 的结局快照。存进池子里是为了让重复调用 Stop（stopOnce 只跑一次）

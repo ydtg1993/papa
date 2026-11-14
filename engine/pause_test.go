@@ -389,7 +389,7 @@ func TestPoolBuiltWhilePausedIsFrozen(t *testing.T) {
 	if pool == nil {
 		t.Fatal("阶段应当已登记")
 	}
-	if err := pool.Submit(&Task{ID: 1, Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{ID: 1, Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 	time.Sleep(60 * time.Millisecond)

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ func TestPoolRegistryReapIdle(t *testing.T) {
 	r.set("idle", idlePool)
 	r.set("busy", busyPool)
 	// busy 池里压着一条任务（队列非空）
-	if err := busyPool.Submit(&Task{Stage: "busy", URL: "https://example.com"}); err != nil {
+	if err := busyPool.SubmitContext(context.Background(), &Task{Stage: "busy", URL: "https://example.com"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 	// 两个池的 lastSubmit 都回拨到 2 分钟前

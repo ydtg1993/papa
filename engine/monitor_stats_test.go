@@ -28,7 +28,7 @@ func TestGetStageStatsSnapshot(t *testing.T) {
 
 	pool.Start(ctx, func(_ context.Context, _ *Task) error { return nil })
 	defer pool.Stop(time.Second)
-	if err := pool.Submit(&Task{ID: 7, Stage: "stub", URL: "https://example.com"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{ID: 7, Stage: "stub", URL: "https://example.com"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 

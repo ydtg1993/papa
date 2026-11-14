@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -71,13 +72,15 @@ func TestPoolErrorForwarderForwards(t *testing.T) {
 	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e.startPoolErrorForwarder("stub", pool)
 
-	// 停掉的池上 Submit 会 SendError("worker pool already stopped")
-	pool.Stop(0)
-	_ = pool.Submit(&Task{Stage: "stub", URL: "https://example.com"})
+	// 使用真实 handler 错误验证转发链，不依赖已移除的非阻塞提交副作用。
+	pool.Start(context.Background(), func(context.Context, *Task) error { return errors.New("fixture handler failed") })
+	defer pool.Stop(time.Second)
+	defer e.cancelPoolErrorForwarder("stub", pool)
+	_ = pool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: "https://example.com"})
 
 	select {
 	case err := <-e.errorCh:
-		if !strings.Contains(err.Error(), "already stopped") {
+		if !strings.Contains(err.Error(), "fixture handler failed") {
 			t.Fatalf("应转发池错误，实得：%v", err)
 		}
 	case <-time.After(time.Second):
@@ -425,13 +428,15 @@ func TestCancelPoolErrorForwarderChecksPoolIdentity(t *testing.T) {
 	// 旧 reaper 只该停旧池的转发，不能误关新池的
 	e.cancelPoolErrorForwarder("stub", oldPool)
 
-	// 新池的转发协程还活着：停掉 newPool 触发错误，应该还能从 Errors() 收到
-	newPool.Stop(0)
-	_ = newPool.Submit(&Task{Stage: "stub", URL: "https://example.com"})
+	// 新池 handler 的真实错误仍应转发。
+	newPool.Start(context.Background(), func(context.Context, *Task) error { return errors.New("fixture handler failed") })
+	defer newPool.Stop(time.Second)
+	defer e.cancelPoolErrorForwarder("stub", newPool)
+	_ = newPool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: "https://example.com"})
 
 	select {
 	case err := <-e.errorCh:
-		if !strings.Contains(err.Error(), "already stopped") {
+		if !strings.Contains(err.Error(), "fixture handler failed") {
 			t.Fatalf("应转发新池错误，实得：%v", err)
 		}
 	case <-time.After(time.Second):

@@ -18,11 +18,13 @@ func (t *testTask) Unique() string { return t.url }
 func TestSubmitUsesPhysicalCapacity(t *testing.T) {
 	p := NewWorkerPool[*testTask](1, 4)
 	for i := 0; i < 4; i++ {
-		if err := p.Submit(&testTask{url: "t"}); err != nil {
+		if err := p.SubmitContext(context.Background(), &testTask{url: "t"}); err != nil {
 			t.Fatalf("slot %d rejected: %v", i, err)
 		}
 	}
-	if err := p.Submit(&testTask{url: "t"}); err != ErrQueueFull {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := p.SubmitContext(ctx, &testTask{url: "t"}); err != context.DeadlineExceeded {
 		t.Fatalf("full queue: %v", err)
 	}
 }
@@ -30,8 +32,8 @@ func TestSubmitUsesPhysicalCapacity(t *testing.T) {
 func TestSubmitStopped(t *testing.T) {
 	p := NewWorkerPool[*testTask](1, 4)
 	p.Stop(0)
-	if err := p.Submit(&testTask{url: "t"}); err == nil || err == ErrQueueFull {
-		t.Fatalf("submit after stop = %v, want non-ErrQueueFull error", err)
+	if err := p.SubmitContext(context.Background(), &testTask{url: "t"}); err != ErrStopped {
+		t.Fatalf("submit after stop = %v, want ErrStopped", err)
 	}
 }
 
@@ -53,7 +55,7 @@ func TestSubmitStopConcurrent(t *testing.T) {
 				defer wg.Done()
 				<-start
 				for j := 0; j < 200; j++ {
-					_ = p.Submit(&testTask{url: "t"})
+					_ = p.SubmitContext(context.Background(), &testTask{url: "t"})
 				}
 			}()
 		}
@@ -81,10 +83,10 @@ func TestHandlerPanicKeepsWorker(t *testing.T) {
 		return nil
 	})
 
-	if err := p.Submit(&testTask{url: "boom"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "boom"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Submit(&testTask{url: "ok"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,11 +141,11 @@ func TestSubmitUrgentFallsBackToMainQueue(t *testing.T) {
 	p := NewWorkerPool[*testTask](1, 32)
 
 	for i := 0; i < 8; i++ {
-		if err := p.SubmitUrgent(&testTask{url: "u"}); err != nil {
+		if err := p.SubmitUrgentContext(context.Background(), &testTask{url: "u"}); err != nil {
 			t.Fatalf("快车道第 %d 条就报错了：%v", i+1, err)
 		}
 	}
-	if err := p.SubmitUrgent(&testTask{url: "overflow"}); err != nil {
+	if err := p.SubmitUrgentContext(context.Background(), &testTask{url: "overflow"}); err != nil {
 		t.Fatalf("快车道满时应退到主队列，实得 %v", err)
 	}
 
@@ -171,7 +173,7 @@ func TestUrgentLaneIsServedFirst(t *testing.T) {
 	})
 
 	// 先塞一条把唯一 worker 占住，之后的都堆在队列里
-	if err := p.Submit(&testTask{url: "blocker"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "blocker"}); err != nil {
 		t.Fatal(err)
 	}
 	// 不能只看 inProgress —— 它在任务入队时就为 1 了，worker 可能还没取到
@@ -180,13 +182,13 @@ func TestUrgentLaneIsServedFirst(t *testing.T) {
 	}
 
 	// 主队列先堆两条，快车道再进一条
-	if err := p.Submit(&testTask{url: "n1"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "n1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Submit(&testTask{url: "n2"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "n2"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.SubmitUrgent(&testTask{url: "urgent"}); err != nil {
+	if err := p.SubmitUrgentContext(context.Background(), &testTask{url: "urgent"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,7 +234,7 @@ func TestStopDrainsBothQueuesEvenWhenCtxCancelled(t *testing.T) {
 		return nil
 	})
 
-	if err := p.Submit(&testTask{url: "blocker"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "blocker"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { _, _, _, inProgress, _ := p.Stats(); return inProgress == 1 }, "blocker 进入 handler")
@@ -241,9 +243,9 @@ func TestStopDrainsBothQueuesEvenWhenCtxCancelled(t *testing.T) {
 	for i := 0; i < queued; i++ {
 		var err error
 		if i%3 == 0 {
-			err = p.SubmitUrgent(&testTask{url: fmt.Sprintf("u%d", i)})
+			err = p.SubmitUrgentContext(context.Background(), &testTask{url: fmt.Sprintf("u%d", i)})
 		} else {
-			err = p.Submit(&testTask{url: fmt.Sprintf("n%d", i)})
+			err = p.SubmitContext(context.Background(), &testTask{url: fmt.Sprintf("n%d", i)})
 		}
 		if err != nil {
 			t.Fatalf("第 %d 条入队失败：%v", i, err)
@@ -278,9 +280,9 @@ func TestSubmitUrgentStopConcurrent(t *testing.T) {
 				<-start
 				for j := 0; j < 100; j++ {
 					if i%2 == 0 {
-						_ = p.Submit(&testTask{url: "t"})
+						_ = p.SubmitContext(context.Background(), &testTask{url: "t"})
 					} else {
-						_ = p.SubmitUrgent(&testTask{url: "t"})
+						_ = p.SubmitUrgentContext(context.Background(), &testTask{url: "t"})
 					}
 				}
 			}(i)
@@ -311,7 +313,7 @@ func TestStopReportsInFlightOnTimeout(t *testing.T) {
 	})
 
 	for i := 0; i < 2; i++ {
-		if err := p.Submit(&testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
+		if err := p.SubmitContext(context.Background(), &testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
 			t.Fatalf("submit %d = %v", i, err)
 		}
 	}
@@ -344,7 +346,7 @@ func TestStopReportsDrainedAndIsIdempotent(t *testing.T) {
 		done <- struct{}{}
 		return nil
 	})
-	if err := p.Submit(&testTask{url: "t"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "t"}); err != nil {
 		t.Fatalf("submit = %v", err)
 	}
 	<-done
@@ -422,7 +424,7 @@ func TestGateBlocksWorkersFromConsuming(t *testing.T) {
 	})
 
 	for i := 0; i < 3; i++ {
-		if err := p.Submit(&testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
+		if err := p.SubmitContext(context.Background(), &testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
 			t.Fatalf("submit %d = %v", i, err)
 		}
 	}
@@ -466,7 +468,7 @@ func TestStopWhilePausedStillDrains(t *testing.T) {
 		return nil
 	})
 	for i := 0; i < 3; i++ {
-		_ = p.Submit(&testTask{url: "t"})
+		_ = p.SubmitContext(context.Background(), &testTask{url: "t"})
 	}
 
 	if drained, inFlight := p.Stop(5 * time.Second); !drained || inFlight != 0 {

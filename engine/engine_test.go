@@ -128,7 +128,7 @@ func TestEngineStopReportsUnfinishedStage(t *testing.T) {
 		<-release
 		return nil
 	})
-	if err := pool.Submit(&Task{ID: 7, URL: "https://example.com", Stage: "stub"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{ID: 7, URL: "https://example.com", Stage: "stub"}); err != nil {
 		t.Fatalf("submit = %v", err)
 	}
 	select {

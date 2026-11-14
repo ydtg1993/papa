@@ -26,7 +26,7 @@ func TestDeliveryFullQueueWaitsWithoutDatabaseWrites(t *testing.T) {
 	f := newFakeTaskDB()
 	p := workerpool.NewWorkerPool[*Task](1, 1)
 	e := submitEngine(t, f, p)
-	if err := p.Submit(&Task{ID: 99}); err != nil {
+	if err := p.SubmitContext(context.Background(), &Task{ID: 99}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -61,7 +61,7 @@ func TestDeliveryPauseReleasesBlockedSenderWithoutLosingTask(t *testing.T) {
 	f := newFakeTaskDB()
 	p := workerpool.NewWorkerPool[*Task](1, 1)
 	e := submitEngine(t, f, p)
-	if err := p.Submit(&Task{ID: 99}); err != nil {
+	if err := p.SubmitContext(context.Background(), &Task{ID: 99}); err != nil {
 		t.Fatal(err)
 	}
 	result := make(chan error, 1)
