@@ -27,7 +27,7 @@ type Task struct {
 	PID         int    `json:"pid"` // 父级任务ID
 	URL         string // 要打开的 URL
 	Retry       int
-	Repeat      int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮回灌不重复计数。
+	Repeat      int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮补位不重复计数。
 	Stage       string // 阶段标识，如 "catalog", "detail", "video"
 	Site        string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
 	AccountPool string // stable pool ownership, excluded from task deduplication
@@ -47,11 +47,8 @@ type Task struct {
 	// 追踪未开启时为 nil，Step/Fail 是安全的 no-op。handler 无需判空。
 	Trace *Trace
 
-	// repeatCounted 跳过当前副本的首轮初始化；幂等性由数据库 CASE/轮询条件更新保证。
-	// 后台重试、错误重投也置真，保持原轮次（包括历史零值）。
 	deliveryVersion       *taskRunVersion
 	deliveryDurable       bool
-	repeatCounted         bool
 	breakerEpoch          uint64
 	breakerTrial          uint64
 	breakerRound          string
@@ -172,6 +169,13 @@ func (t *Task) insert(db *gorm.DB) error {
 
 func taskStatusUpdates(status models.TaskStatus, err error) map[string]any {
 	updates := map[string]any{"status": status}
+	if status == models.TaskStatusSuccess {
+		updates["auto_retry_count"] = 0
+		updates["retry_blocked"] = false
+	}
+	if status == models.TaskStatusFailed {
+		updates["retry_blocked"] = gorm.Expr("COALESCE(retry_blocked, TRUE) OR ?", err != nil && !core.Retryable(err))
+	}
 	for key, value := range compensationStatusUpdates(status, err) {
 		updates[key] = value
 	}
@@ -229,7 +233,7 @@ type Fetcher interface {
 // 任意阶段，不必只在"自己这个阶段"上打转）；不写就是"这个阶段没有入口这回事"。
 //
 // **"有没有入口"与"现在跑不跑"是两件事**：后者是**站点级**的 `SiteSpec.StartPaused`
-// （入口任务照投，但整站在入队点被闸住 —— 每一条都寄放到溢出表里、池子一个都不建，
+// （入口任务照投，但整站在入队点被闸住 —— 每一条都保留为持久 pending、不执行 handler，
 // 后台点「恢复整站」才灌回）。两个字段合起来才是"先把入口排好、再放开这一站"。
 //
 // site 是本阶段的**站点声明快照**（`SiteSpec` 压成的 `core.Site`：BaseURL / Headers…）。

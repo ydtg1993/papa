@@ -80,7 +80,7 @@ func TestGetWorkerStatsUnknownWorker(t *testing.T) {
 
 // 端到端：Start 起消费协程，池子的活动经通道流进统计。
 func TestStartConsumesPoolActivities(t *testing.T) {
-	pool := workerpool.NewWorkerPool[fakeTask](1, 8, 1)
+	pool := workerpool.NewWorkerPool[fakeTask](1, 8)
 	stats := NewStatsQueue[fakeTask](pool)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -90,7 +90,7 @@ func TestStartConsumesPoolActivities(t *testing.T) {
 	pool.Start(context.Background(), func(_ context.Context, _ fakeTask) error { return nil })
 	defer pool.Stop(time.Second)
 
-	if err := pool.Submit(fakeTask{key: "a"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), fakeTask{key: "a"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 

@@ -2,6 +2,7 @@ package papa
 
 import (
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine"
 )
 
 // 本文件是**错误与告警门面**。
@@ -65,3 +66,9 @@ var ErrorKind = core.ErrorKind
 var WithFailureCode = core.WithFailureCode
 
 type FailureCodeError = core.FailureCodeError
+
+// ErrEngineStopped 表示引擎已经关闭接单入口，本次操作未开始持久化。
+var ErrEngineStopped = engine.ErrEngineStopped
+
+// ErrTaskFlow rejects submissions outside the declared downward stage graph.
+var ErrTaskFlow = engine.ErrTaskFlow

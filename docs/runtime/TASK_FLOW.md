@@ -6,11 +6,11 @@
 
 配置 `task_flow.enabled: true`，显式执行 `papa migrate` 后重启。可选的 `crawler_task_flows` 表保存运行策略；`crawler_tasks` 的 `flow_id/flow_lane/flow_branch/flow_path` 四列及 flow_id 索引属于共同 schema。普通启动不建表。v4 使用独立数据库，不提供旧版任务表原地转换，见 [运行配置](../configuration/CORE_CONFIG.md#v4-独立任务与恢复格式)。
 
-普通 SubmitTask/SubmitTasks 行为保持不变，不自动把现有积压解释成任务树。新流程通过专用 API 登记。不要在普通 SubmitTask 中自行填写 Flow 字段。
+普通 SubmitTask/SubmitTasks 仅供启动入口投递，不自动把现有积压解释成任务树。新流程通过专用 API 登记。不要在普通 SubmitTask 中自行填写 Flow 字段。
 
 ## 创建和投递
 
-阶段先按现有 API 注册，然后创建运行：
+阶段先声明 Downstream 有向无环图，例如 catalog → detail → content，然后在启动入口期创建运行并提交根任务。Entry 必须没有入边；TaskFlow 的 breadth/depth 策略不能放宽阶段图约束：
 
 ```go
 policy := papa.FlowPolicy{
@@ -27,7 +27,7 @@ err = e.SubmitFlowTask(ctx, "run-001", 0, root)
 err = e.SubmitFlowTask(ctx, task.FlowID, uint(task.ID), child)
 ```
 
-自定义 Fetcher 需要显式调用 SubmitFlowTask。不要启动一个异步 goroutine 派生任务后立即返回，父任务终态后新增子任务会被拒绝。重复登记同一运行/父任务下的同一标准身份子任务返回既有任务，不重复抓取；身份优先使用 ResourceID，留空才使用保留 origin 的规范 URL。
+自定义 Fetcher 的子任务需要显式调用 SubmitFlowTask，并沿用当前 handler 的有效 ctx 与父任务 ID。目标必须是本站在 Downstream 中声明的严格下游，禁止同阶段、反向、跨站和未声明边。不要启动一个异步 goroutine 派生任务后立即返回，父任务终态后新增子任务会被拒绝。重复登记同一运行/父任务下的同一标准身份子任务返回既有任务，不重复抓取；身份优先使用 ResourceID，留空才使用保留 origin 的规范 URL。
 
 ## 策略语义
 
@@ -42,7 +42,7 @@ err = e.SubmitFlowTask(ctx, task.FlowID, uint(task.ID), child)
 
 模式修改影响下一次认领；已运行任务不强停。缩小并发时先等待已有任务退出，不新开超过上限的分支。旧的在途顺序可能暂时与新策略不同，这是正常过渡。加急只能改变排队优先级，不能突破层次/分支限制。
 
-广度是对已登记任务树的层次约束，不保证未来尚未提交的新入口也在当前层次屏障内。目录各分页的树关系由业务决定；需要同层分页时应在同一父任务登记，而不是把每页都当作上一页的子级。
+广度是对已登记任务树的层次约束，不保证未来尚未提交的新入口也在当前层次屏障内。目录分页在当前 worker 内迭代；不能把下一页作为同阶段子任务。
 
 ## 动态切换与后台
 
@@ -54,7 +54,7 @@ POST 请求体最多 1 MiB，只接受一份 JSON；重复键（包括嵌套对�
 
 ## 持久化与限制
 
-- 策略更新、任务登记、认领锁定同一运行行，防并发越过策略。任务完成唤醒回灌；漏通知由原周期回灌兜底。持久 pending 的持续补充独立于 recover_queue；崩溃遗留的 processing 需要启用启动恢复，将其条件重置后再参与调度。
+- 策略更新、任务登记、认领锁定同一运行行，防并发越过策略。任务完成或策略更新唤醒阶段投递器，事件合并与容量释放协调后续补位；不存在周期 drain 兜底。启动时自动重置崩溃遗留的 processing，持久 pending 持续按阶段容量调度。
 - 每运行最多 10000 条持久任务、32 层、32 个阶段；并发上限 1..64。达限拒绝登记。调度读取有界活动集合；大规模无限采集需要后续独立容量设计。
 - 任务使用 `(site,stage,identity_hash)` 唯一约束。跨父任务/跨运行的相同标准身份返回关系冲突，不迁移既有任务；共享资源须在业务发现层选择唯一归属。一个运行内支持重试，不能直接复用同批身份创建新的周期运行。
 - 当前受控提交拒绝非空 `AccountPool`、`Repeatable: true`、非零 `Delay` 或 `NotBefore`，也不通过普通提交的池默认值解析来附加归属。周期应由业务明确创建具有正确身份的批次，不能让永久轮询任务占住父层屏障。普通任务继续使用原接口。

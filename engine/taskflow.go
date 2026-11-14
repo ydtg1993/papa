@@ -17,6 +17,11 @@ func (e *Engine) taskFlows() (taskFlowService, error) {
 
 // CreateTaskFlow creates a bounded run. Existing IDs are never overwritten.
 func (e *Engine) CreateTaskFlow(ctx context.Context, id, site string, p FlowPolicy) error {
+	if err := e.beginTaskAdmission(); err != nil {
+		return err
+	}
+	defer e.endTaskAdmission()
+
 	if id == "" || len(id) > 64 || strings.TrimSpace(id) != id || site == "" || len(site) > 128 || p.Validate() != nil {
 		return ErrFlowInvalid
 	}
@@ -34,6 +39,11 @@ func (e *Engine) CreateTaskFlow(ctx context.Context, id, site string, p FlowPoli
 
 // UpdateTaskFlow applies policy changes to future claims and wakes waiting work.
 func (e *Engine) UpdateTaskFlow(ctx context.Context, id string, revision uint64, p FlowPolicy) error {
+	if err := e.beginTaskAdmission(); err != nil {
+		return err
+	}
+	defer e.endTaskAdmission()
+
 	if p.Validate() != nil {
 		return ErrFlowInvalid
 	}
@@ -43,13 +53,49 @@ func (e *Engine) UpdateTaskFlow(ctx context.Context, id string, revision uint64,
 	}
 	err = service.update(ctx, id, revision, p)
 	if err == nil {
-		e.wakeDrainNow()
+		e.wakePendingRecovery()
 	}
 	return err
 }
 
 // SubmitFlowTask registers lineage atomically before transferring to delivery.
 func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, task *Task) error {
+	if err := e.beginTaskAdmission(); err != nil {
+		return err
+	}
+	defer e.endTaskAdmission()
+
+	if parent == 0 {
+		if ctx == nil {
+			return ErrTaskFlow
+		}
+		if _, handler := ctx.Value(taskExecutionKey{}).(*taskExecutionPermit); handler {
+			return ErrTaskFlow
+		}
+		if err := e.validateRootSubmissions([]*Task{task}); err != nil {
+			return err
+		}
+	} else {
+		if ctx == nil {
+			return ErrTaskFlow
+		}
+		candidate, _ := ctx.Value(taskExecutionKey{}).(*taskExecutionPermit)
+		if candidate == nil {
+			return ErrTaskFlow
+		}
+		p, release, err := e.acquireTaskExecution(ctx, candidate.parent)
+		if err != nil {
+			return err
+		}
+		defer release()
+		if uint(p.id) != parent || p.flow != id {
+			return ErrTaskFlow
+		}
+		if err := e.validateChildSubmission(p, task); err != nil {
+			return err
+		}
+	}
+
 	if task == nil || task.AccountPool != "" || task.Repeatable || task.Delay != 0 || !task.NotBefore.IsZero() {
 		return ErrFlowInvalid
 	}
@@ -68,23 +114,25 @@ func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, tas
 	if saved.Status == models.TaskStatusPending {
 		e.submitPendingTask(task)
 	}
-	e.wakeDrainNow()
+	e.wakePendingRecovery()
 	return nil
 }
 
 func (e *Engine) claimFlowTask(ctx context.Context, task *Task) (bool, error) {
 	service, err := e.taskFlows()
 	if err != nil {
-		e.spillTask(task)
+		// The durable row stays pending. An unavailable flow feature is not
+		// progress and must not restart this stage's scan from the beginning.
+		e.residents.release(task, "")
 		return false, nil
 	}
+	_, revision, _ := e.deliveryState().Scan(stageKeyOf(task))
 	claimed, waiting, err := service.claim(ctx, task.FlowID, uint(task.ID), task.deliveryVersion)
 	if err == nil && waiting {
-		if e.residents != nil {
-			e.residents.release(task, "")
-		} else {
-			e.spillTask(task)
-		}
+		e.deliveryState().ObservedWaiting(task.ID, stageKeyOf(task), revision)
+		// A later flow completion, registration or policy change restarts the
+		// scan. Returning this worker's capacity only continues the cursor.
+		e.residents.release(task, "")
 	}
 	return claimed, err
 }

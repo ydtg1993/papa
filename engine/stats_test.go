@@ -15,17 +15,17 @@ import (
 func TestHarvestStageTotalsAccumulates(t *testing.T) {
 	e := &Engine{stageTotals: make(map[string]stageTotals)}
 
-	pool1 := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	_ = pool1.Submit(&Task{Stage: "s", URL: "a"})
-	_ = pool1.Submit(&Task{Stage: "s", URL: "b"})
+	pool1 := workerpool.NewWorkerPool[*Task](1, 8)
+	_ = pool1.SubmitContext(context.Background(), &Task{Stage: "s", URL: "a"})
+	_ = pool1.SubmitContext(context.Background(), &Task{Stage: "s", URL: "b"})
 	e.harvestStageTotals("s", pool1)
 	if got := e.stageTotals["s"].Submitted; got != 2 {
 		t.Fatalf("应收割 submitted=2，实得 %d", got)
 	}
 
-	pool2 := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool2 := workerpool.NewWorkerPool[*Task](1, 8)
 	for i := 0; i < 3; i++ {
-		_ = pool2.Submit(&Task{Stage: "s", URL: fmt.Sprintf("c%d", i)})
+		_ = pool2.SubmitContext(context.Background(), &Task{Stage: "s", URL: fmt.Sprintf("c%d", i)})
 	}
 	e.harvestStageTotals("s", pool2)
 	if got := e.stageTotals["s"].Submitted; got != 5 {
@@ -39,8 +39,8 @@ func TestGetStageStatsAddsCumulative(t *testing.T) {
 		stages:      map[string]*stageInfo{"a:stub": {stage: "stub", config: StageConfig{Site: "a"}}},
 		stageTotals: map[string]stageTotals{"a:stub": {Submitted: 10, Completed: 8, Failed: 2}},
 	}
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	_ = pool.Submit(&Task{Stage: "stub", URL: "https://example.com"}) // 当前池 submitted=1
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
+	_ = pool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: "https://example.com"}) // 当前池 submitted=1
 	e.setStatsQueue("a:stub", track.NewStatsQueue[*Task](pool))
 
 	got := e.GetStageStats()["a:stub"]
@@ -55,7 +55,7 @@ func TestGetStageStatsAddsCumulative(t *testing.T) {
 
 func completedStatsPool(t *testing.T) *workerpool.WorkerPool[*Task] {
 	t.Helper()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	pool.Start(context.Background(), func(_ context.Context, task *Task) error {
 		if task.URL == "failed" {
 			return errors.New("synthetic failure")
@@ -64,7 +64,7 @@ func completedStatsPool(t *testing.T) *workerpool.WorkerPool[*Task] {
 	})
 	t.Cleanup(func() { pool.Stop(time.Second) })
 	for _, url := range []string{"completed", "failed"} {
-		if err := pool.Submit(&Task{Stage: "stub", URL: url}); err != nil {
+		if err := pool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: url}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -93,8 +93,8 @@ func TestHarvestStageTotalsRetiresCurrentSnapshotAtomically(t *testing.T) {
 	if got := e.stageTotals[key]; got != (stageTotals{Submitted: 2, Completed: 1, Failed: 1}) {
 		t.Fatalf("retiring the pool lost its cumulative totals: %+v", got)
 	}
-	newPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	if err := newPool.Submit(&Task{Stage: "stub", URL: "queued"}); err != nil {
+	newPool := workerpool.NewWorkerPool[*Task](1, 8)
+	if err := newPool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: "queued"}); err != nil {
 		t.Fatal(err)
 	}
 	stats := track.NewStatsQueue(newPool)
@@ -111,8 +111,8 @@ func TestHarvestStageTotalsPreservesReplacementSnapshot(t *testing.T) {
 	e := &Engine{}
 	oldPool := completedStatsPool(t)
 	e.setStatsQueue(key, track.NewStatsQueue(oldPool))
-	newPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	if err := newPool.Submit(&Task{Stage: "stub", URL: "queued"}); err != nil {
+	newPool := workerpool.NewWorkerPool[*Task](1, 8)
+	if err := newPool.SubmitContext(context.Background(), &Task{Stage: "stub", URL: "queued"}); err != nil {
 		t.Fatal(err)
 	}
 	newStats := track.NewStatsQueue(newPool)

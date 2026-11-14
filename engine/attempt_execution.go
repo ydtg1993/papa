@@ -55,7 +55,7 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 		// 步骤。放在归档步骤之后 —— 现场在前、"为什么死"在后，读起来就是这次尝试的顺序。
 		switch {
 		case r != nil:
-			tr.Fail(failureTraceStep, fmt.Errorf("panic: %v", r), nil)
+			tr.Fail(failureTraceStep, panicFailure(r), nil)
 			panic(r) // 原样抛回：workerpool 那头的栈与计数是既有行为
 		case err != nil:
 			if ctx.Err() == context.Canceled && cancellationOnly(err) {
@@ -95,7 +95,7 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 		r := recover()
 		cause := err
 		if r != nil {
-			cause = fmt.Errorf("panic: %v", r)
+			cause = panicFailure(r)
 		}
 		_, compensation := core.CompensationOf(cause)
 		terminal := cause != nil && (r != nil || ctx.Err() != nil || task.breakerFinalAttempt || !core.Retryable(cause) || account.IsAttemptFailure(cause) || compensation)
@@ -153,4 +153,13 @@ func (a *attemptExecution) run(ctx context.Context, handler func(context.Context
 
 	tr.setResult(err)
 	return err
+}
+
+// Preserve business error policy when a handler panics with an error value.
+// The original panic value is still propagated to the worker pool unchanged.
+func panicFailure(value any) error {
+	if err, ok := value.(error); ok {
+		return fmt.Errorf("panic: %w", err)
+	}
+	return fmt.Errorf("panic: %v", value)
 }

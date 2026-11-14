@@ -2,15 +2,13 @@ package engine
 
 import (
 	"context"
-	"errors"
+	"gorm.io/gorm"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ydtg1993/papa/v4/models"
 )
-
-var errNotSubmitted = errors.New("boom")
 
 func TestProcessConcurrently(t *testing.T) {
 	tasks := make([]models.CrawlerTask, 25)
@@ -37,42 +35,23 @@ func TestProcessConcurrently(t *testing.T) {
 	}
 }
 
-// 重新投递失败不能把行留在 pending。
-//
-// 回归点：error_queue 先把行重置成 pending 再提交，提交失败只 log 不管 —— 而本队列只捞
-// status=failed，于是这条任务再也不会被任何队列捞起来：运营看着是"排队中"，实际永远不会执行。
-// 治理队列现在统一走 markRequeueFailed。
-func TestRequeueFailureMarksTaskFailed(t *testing.T) {
+// A stopped destination cannot turn an acknowledged retry into terminal failure.
+func TestRequeueStoppedPoolRetainsPending(t *testing.T) {
 	f := newFakeTaskDB()
 	e, pool := urgentEngine(t, f)
-	pool.Stop(0) // 停掉的池：Submit 必然失败，且不是 ErrQueueFull（不会走溢出那条路）
-
-	row := &models.CrawlerTask{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
-	if e.requeueFailedTask()(row) {
-		t.Fatal("投递必然失败，应返回 false")
+	e.errorQueue = &errorQueueState{}
+	pool.Stop(0)
+	row := &models.CrawlerTask{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", Status: models.TaskStatusFailed}
+	if !e.requeueFailedTask()(row) {
+		t.Fatal("durable retry transition was not accepted")
 	}
-
 	got := f.written()
-	if !strings.Contains(got, "`status`") || !strings.Contains(got, "CONCAT") {
-		t.Fatalf("应把行标成 failed 并追加原因：\n%s", got)
+	if strings.Count(got, "UPDATE") != 1 || strings.Contains(got, "CONCAT") || !strings.Contains(got, "auto_retry_count + 1") {
+		t.Fatalf("retry must leave one pending transition without failure append: %s", got)
 	}
-	if !strings.Contains(f.writtenArgs(), "error_queue") {
-		t.Fatalf("原因里应带上是哪个队列写的：%s", f.writtenArgs())
+	if queued(t, pool) != 0 {
+		t.Fatal("stopped pool received task")
 	}
-}
-
-// 已经是 failed 的行不再重复写：走 SubmitTask 那条路失败时 submitToPool 已经标过，
-// 再标一次只会在 error 列里多贴一行重复的原因。
-func TestMarkRequeueFailedSkipsAlreadyFailed(t *testing.T) {
-	f := newFakeTaskDB()
-	e, _ := urgentEngine(t, f)
-
-	sql := f.written() // 空
-	e.markRequeueFailed(recoverQueueName, 7, errNotSubmitted)
-	if !strings.Contains(f.written(), "status = ?") {
-		t.Fatalf("守卫应写在语句里：\n%s", f.written())
-	}
-	_ = sql
 }
 
 // 分页必须靠自己的 keyset 游标推进，**不能**指望「处理过的行会离开结果集」。
@@ -92,7 +71,9 @@ func TestProcessInBatchesUsesKeysetCursor(t *testing.T) {
 
 	var mu sync.Mutex
 	seen := make(map[uint]int)
-	n, err := e.processInBatches(e.recoverQueueQuery(), 1, 1, 0, func(task *models.CrawlerTask) bool {
+	n, err := e.processInBatches(func() *gorm.DB {
+		return e.db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusPending)
+	}, 1, 1, func(task *models.CrawlerTask) bool {
 		mu.Lock()
 		seen[task.ID]++
 		mu.Unlock()

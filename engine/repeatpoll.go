@@ -25,7 +25,7 @@ type repeatQueueState struct {
 	repolled atomic.Int64  // 累计重投数（同时就是监控里那一行的"处理量"）
 }
 
-// repeatBaseQuery 可轮询查询的底：可轮询、已完成。
+// repeatBaseQuery 可轮询查询的底：可轮询、成功。
 func (e *Engine) repeatBaseQuery() *gorm.DB { return e.withRepeatLimits(repeatBaseQueryOn(e.db)) }
 
 // repeatBaseQueryOn 同上，但接显式的 *gorm.DB：让"不连库渲染 SQL"的测试能拼出同一条语句。
@@ -77,8 +77,8 @@ func (e *Engine) withRepeatLimits(q *gorm.DB) *gorm.DB {
 	return q
 }
 
-// repeatDueStatuses 可轮询的两个终态。
-var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed}
+// repeatDueStatuses 周期轮询只接收成功终态。
+var repeatDueStatuses = []models.TaskStatus{models.TaskStatusSuccess}
 
 // repeatQueueQuery 「到点」的可轮询任务。
 //
@@ -98,16 +98,9 @@ func (e *Engine) repeatForceQueueQuery() func() *gorm.DB {
 	return func() *gorm.DB { return e.repeatBaseQuery() }
 }
 
-// soonestRepeatIn 返回"离最早一条到点还差多久"，用来让 ticker 跟上各自的周期。
-// 负数 = 已经有到点的了（立刻扫）。
-//
-// 只看 NextRepeatAt（判据列）：
-//   - 终态的行：过去时间保留负等待，未排期使用 NOW；最终节拍钳到最短刻度。
-//   - 跑着 / 排队中的行：只在**未来**才算数（它到点时多半已经跑完，扫描正好接上）；
-//     已经过期的（任务跑得比自己的周期还久）直接排除 —— 它跑完之前投不出去，
-//     让这种行参与只会把扫描钉在最短刻度上空转。
-//
-// 没有可轮询的行、或查库出错 → false，调用方退回配置节拍。
+// soonestRepeatIn returns the earliest successful repeatable deadline. Failed,
+// pending and processing rows do not drive this ticker; successful settlement
+// wakes it. Missing rows or query errors fall back to the configured interval.
 func (e *Engine) soonestRepeatIn() (time.Duration, bool) {
 	ctx := e.queueContext()
 	if ctx.Err() != nil {
@@ -127,9 +120,14 @@ func (e *Engine) soonestRepeatIn() (time.Duration, bool) {
 	return time.Until(time.Unix(*row.Epoch, 0)), true
 }
 
-// RepollRepeatableTasks 重新投递「到点」的可轮询任务（success/failed），返回实际投递数量。
+// RepollRepeatableTasks 重新投递「到点」的可轮询任务（success），返回实际投递数量。
 // 手动触发（后台「立即执行」）走的就是它，所以手动同样只扫到点的。
 func (e *Engine) RepollRepeatableTasks() (int, error) {
+	if err := e.beginTaskAdmission(); err != nil {
+		return 0, err
+	}
+	defer e.endTaskAdmission()
+
 	return e.repollRepeatQueue(false)
 }
 
@@ -139,6 +137,11 @@ func (e *Engine) RepollRepeatableTasks() (int, error) {
 // 它与到点那条走同一套重置语句，所以每条的"下次到点"会按各自周期往后推 —— 手动插一轮不会
 // 把自动节奏打乱（下一跳该什么时候还是什么时候）。
 func (e *Engine) ForceRepollRepeatableTasks() (int, error) {
+	if err := e.beginTaskAdmission(); err != nil {
+		return 0, err
+	}
+	defer e.endTaskAdmission()
+
 	return e.repollRepeatQueue(true)
 }
 
@@ -154,7 +157,7 @@ func (e *Engine) repollRepeatQueue(force bool) (int, error) {
 		query = e.repeatForceQueueQuery()
 	}
 	e.beginQueueRun(QueueRepeat)
-	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueRepeatTask())
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, func(t *models.CrawlerTask) bool { return e.requeueRepeatTaskWithForce(t, force) })
 	e.endQueueRun(QueueRepeat, n, err)
 	if e.queueContext().Err() == nil {
 		e.sampleQueueBacklogOne(QueueRepeat, query)
@@ -178,6 +181,10 @@ func (e *Engine) requeueRepeatTask() func(*models.CrawlerTask) bool {
 
 // requeueRepeatTaskIn 单条重投的实体。
 func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
+	return e.requeueRepeatTaskWithForce(t, false)
+}
+
+func (e *Engine) requeueRepeatTaskWithForce(t *models.CrawlerTask, force bool) bool {
 	if e.queueContext().Err() != nil {
 		return false
 	}
@@ -200,7 +207,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	if limit > 0 && t.Repeat >= limit {
 		return false
 	}
-	res := taskstore.AdvanceRepeat(e.db.WithContext(e.queueContext()), t.ID, t.CompensationVersion, limit, int64(e.cfg.RepeatQueue.Interval/time.Second))
+	res := taskstore.AdvanceRepeat(e.db.WithContext(e.queueContext()), t.ID, taskstore.RunVersion{Repeat: t.Repeat, Reprocess: t.Reprocess}, t.CompensationVersion, limit, int64(e.cfg.RepeatQueue.EffectiveInterval()/time.Second), force)
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
@@ -213,13 +220,8 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	task.Repeatable = true
 	task.Repeat = t.Repeat + 1
 	task.deliveryVersion.Repeat = task.Repeat
-	task.repeatCounted = true
-	// 刚做完条件重置，行已经是 pending：用恢复队列同一条路径投递，省掉 SubmitTask 的去重查库。
-	if err := e.submitRecoveredTask(task); err != nil {
-		e.loggerSet.Engine.Errorf("repeat queue: submit task %d: %s", t.ID, err.Error())
-		e.markRequeueFailed(QueueRepeat, t.ID, err)
-		return false
-	}
+	// The acknowledged pending row is recovered by the owning stage loop.
+	e.afterTaskPending(task)
 	e.repeatQueue.repolled.Add(1)
 	e.emit(events.Event{
 		Type: events.TypeTaskRequeued, Queue: QueueRepeat, Source: "auto",
@@ -250,7 +252,8 @@ func (e *Engine) wakeRepeatQueue() {
 // 查不到数据（没有可轮询的行 / 库抖动）→ 退回全局节拍。
 func (e *Engine) repeatTickInterval() time.Duration {
 	cfg := e.cfg.RepeatQueue
-	if !cfg.Enabled || cfg.Interval <= 0 {
+	cfg.Interval = cfg.EffectiveInterval()
+	if cfg.Interval <= 0 {
 		return 0
 	}
 	d, ok := e.soonestRepeatIn()

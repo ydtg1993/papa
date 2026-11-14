@@ -15,6 +15,7 @@ func exampleShop() papa.SiteSpec {
                 WorkerCount: 1, QueueSize: 32, Delay: "2s-5s",
                 Retry: papa.RetrySpec{MaxAttempts: 3, Backoff: "20s"},
                 Entry:     true,
+                Downstream: []string{"example_shop_detail"},
             },
             {
                 Fetcher: &exampleshop.FetchDetail{},
@@ -51,10 +52,12 @@ func (*FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 }
 ```
 
+SubmitTask/SubmitTasks are startup entry-only. Runtime children require the active handler context and a declared same-site Downstream edge. Iterate pagination inside the worker; same-stage recursion is forbidden.
+
 When the catalog discovers a book, persist or derive its identity first, then submit:
 
 ```go
-err := engine.SubmitTask(&papa.Task{
+err := engine.SubmitChildren(ctx, task, &papa.Task{
     URL: detailURL, Site: task.Site, Stage: StageDetail, PID: task.ID,
     Meta: map[string]string{"book_id": bookID},
     ResourceID: bookID,

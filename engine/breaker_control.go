@@ -39,7 +39,7 @@ func (e *Engine) resumeSite(site string, force bool) bool {
 	if !e.knownSite(site) || !e.clearSite(site, force) {
 		return false
 	}
-	e.wakeDrainNow()
+	e.wakePendingRecovery()
 	e.writeSiteBreakerState(site, e.pauseInfoOf(site).Paused)
 	return true
 }

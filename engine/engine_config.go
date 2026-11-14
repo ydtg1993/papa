@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ type stageInfo struct {
 
 // StageConfig 阶段配置
 type StageConfig struct {
+	// Downstream lists permitted child stages in this site; empty means terminal.
+	Downstream []string
 	// Nonempty explicitly attests that a read-only probe covers the entire stage.
 	// Stages with writes, downloads or dispatch must leave this empty.
 	BreakerReadOnlyCoverage string
@@ -62,12 +65,25 @@ type StageConfig struct {
 // WorkerCount/QueueSize 必须 > 0；非法配置返回错误且不登记阶段。
 // 下载覆盖配置按登记时的值复制；修改调用方原值不会隐式修改阶段。
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stageSubmissions.mu.RLock()
+	frozen := e.stageSubmissions.frozen
+	e.stageSubmissions.mu.RUnlock()
+	if frozen {
+		return fmt.Errorf("%w: stage registration is frozen", ErrTaskFlow)
+	}
+	if strings.TrimSpace(stage) == "" || config.Site == "" || strings.Contains(stage, ":") || strings.Contains(config.Site, ":") {
+		return fmt.Errorf("%w: invalid site or stage", ErrTaskFlow)
+	}
+
 	if config.BreakerReadOnlyCoverage != "" && (strings.TrimSpace(config.BreakerReadOnlyCoverage) == "" || len(config.BreakerReadOnlyCoverage) > 1024) {
 		return fmt.Errorf("stage %q: BreakerReadOnlyCoverage 必须描述完整只读覆盖范围，且不超过 1024 字节", stage)
 	}
 	if err := workerpool.ValidateConfig(config.WorkerCount, config.QueueSize); err != nil {
 		return fmt.Errorf("stage %q: %w", core.StageKey(config.Site, stage), err)
 	}
+	config.Downstream = slices.Clone(config.Downstream)
 	downloads := fetchruntime.CloneDownloads(SiteDownloads{M3U8: config.M3U8, FileDown: config.FileDown})
 	config.M3U8, config.FileDown = downloads.M3U8, downloads.FileDown
 	e.stages[core.StageKey(config.Site, stage)] = &stageInfo{

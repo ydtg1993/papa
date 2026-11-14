@@ -9,7 +9,7 @@ import (
 )
 
 // Stage assembly is Engine lifecycle orchestration; mutable pool membership,
-// delayed work and overflow are owned by their scheduler components.
+// delayed work and pending delivery are owned by their scheduling components.
 // stageKeys 按名字排序返回已注册的**阶段键**（`core.StageKey`，含站点）。
 //
 // 建池与跑 submitFunc 都按这个顺序（而不是 map 遍历顺序）：启动期的副作用是**看得见**的
@@ -29,7 +29,7 @@ func (e *Engine) stageKeys() []string {
 // 调用方须保证 key（`core.StageKey`，不是裸阶段名）已注册。
 func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
 	cfg := info.config
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
+	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
 	if pool == nil {
 		e.loggerSet.Engine.Errorf("cannot build stage %q: %v", key, workerpool.ValidateConfig(cfg.WorkerCount, cfg.QueueSize))
 		return nil
@@ -166,6 +166,21 @@ func (e *Engine) startIdleReaper() {
 
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
+	// Startup owns one lifecycle slot while it creates the child dispatchers.
+	// Stop cancels under the same lock, so Wait cannot observe zero before a
+	// concurrently starting dispatcher has registered its own slot.
+	e.mu.Lock()
+	if e.queueContext().Err() != nil {
+		e.mu.Unlock()
+		return
+	}
+	e.tickerWG.Add(1)
+	e.mu.Unlock()
+	defer e.tickerWG.Done()
+	if err := e.sealStageSubmissions(); err != nil {
+		panic(err)
+	}
+
 	// 阶段的存在性只有一个来源：**注册进来的 e.stages**（配置里不再声明阶段，见 App.RegisterSites）。
 	// 于是"配置声明了、代码没实现"这一类不同源的问题在结构上不存在了；未注册的阶段在提交时
 	// 由 submitToPool 报 ErrStageNotRegistered。
@@ -190,7 +205,16 @@ func (e *Engine) ApplyRegisterStage() {
 
 	// **先闸住、再投入口任务**（顺序是硬的）：声明了 StartPaused 的站，这一刻整站被暂停 ——
 	// 反过来的话，投进去的头几条可能在"闸还没下"的那个窗口里被 worker 抢去跑掉。
-	// 闸住之后入队点直接折回溢出表、池子一个都不建（见 applyStartPaused）。
+	// 闸住之后持久 pending 不进入业务执行，恢复时按容量补位（见 applyStartPaused）。
+	if err := e.preparePendingRecovery(); err != nil {
+		if e.queueContext().Err() != nil {
+			return
+		}
+		panic(err)
+	}
+	if e.queueContext().Err() != nil {
+		return
+	}
 	e.applyStartPaused()
 	for _, key := range keys {
 		info := e.stages[key]
@@ -199,10 +223,12 @@ func (e *Engine) ApplyRegisterStage() {
 		}
 	}
 
+	e.closeRootSubmissions()
 	e.schedulerStarted = true
-	// 启动高水位溢出任务的回灌协程
-	e.startDrain()
-	// 启动错误队列后台自动轮询（配了 interval 才自动，否则仅手动触发）
+	// 启动每阶段独立的 pending 投递器
+	e.startPendingRecovery()
+	e.wakePendingRecovery()
+	// 启动始终运行的错误队列后台轮询
 	e.startErrorQueue()
 	// 启动中断恢复队列（启动即恢复一次，没有定时轮询）
 	e.startRecoverQueue()

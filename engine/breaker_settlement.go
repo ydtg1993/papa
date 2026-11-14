@@ -72,7 +72,7 @@ func (e *Engine) settleBreakerFailures(ctx context.Context) {
 // Both the original worker and restart settlement write the saved result.
 // An auxiliary cleanup failure must not replace its error or compensation policy.
 func pendingFailureUpdates(p *breaker.PendingFailure) map[string]any {
-	return map[string]any{"status": models.TaskStatusFailed, "error": gorm.Expr("CONCAT(COALESCE(error, ''), ?)", p.Error+"\n"),
+	return map[string]any{"retry_blocked": gorm.Expr("COALESCE(retry_blocked, TRUE) OR ?", p.RetryBlocked == nil || *p.RetryBlocked), "status": models.TaskStatusFailed, "error": gorm.Expr("CONCAT(COALESCE(error, ''), ?)", p.Error+"\n"),
 		"compensation_version": gorm.Expr("compensation_version + 1"), "failure_kind": p.FailureKind,
 		"compensation_mode": p.CompensationMode, "compensation_reason": p.CompensationReason, "next_compensation_at": taskTimePointer(p.NotBefore), "last_finished_at": p.At.UTC()}
 }

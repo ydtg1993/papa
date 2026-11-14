@@ -21,7 +21,9 @@ func TestBatchCancellationStopsZeroPauseAndPendingJobs(t *testing.T) {
 			defer cancel()
 			e.ctx = ctx
 			calls := 0
-			n, err := e.processInBatches(e.recoverQueueQuery(), size, 1, 0, func(*models.CrawlerTask) bool {
+			n, err := e.processInBatches(func() *gorm.DB {
+				return e.db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusPending)
+			}, size, 1, func(*models.CrawlerTask) bool {
 				calls++
 				cancel()
 				return true
@@ -36,13 +38,16 @@ func TestBatchCancellationStopsZeroPauseAndPendingJobs(t *testing.T) {
 // Cancellation after an acknowledged transition must not abandon delivery or
 // convert a durable pending row into a failed task merely because pools closed.
 func TestQueueCancellationAfterResetRetainsDelivery(t *testing.T) {
-	for _, operation := range []string{"error", "repeat", "recover"} {
+	for _, operation := range []string{"error", "repeat"} {
 		t.Run(operation, func(t *testing.T) {
 			f := newFakeTaskDB()
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := queueEngine(t, f, pool)
 			row := actionRow(7, "stub")
 			row.Repeatable = models.RepeatableYes
+			if operation == "repeat" {
+				row.Status = models.TaskStatusSuccess
+			}
 			if operation == "recover" {
 				row.Status = models.TaskStatusProcessing
 			}
@@ -69,11 +74,9 @@ func TestQueueCancellationAfterResetRetainsDelivery(t *testing.T) {
 				ok = e.requeueFailedTaskIn(row)
 			case "repeat":
 				ok = e.requeueRepeatTaskIn(row)
-			case "recover":
-				ok = e.requeueRecoverTask(row)
 			}
-			if !acknowledged || !ok || e.overflow.Count() != 1 || len(f.execs) == 0 {
-				t.Fatalf("ack=%v delivered=%v spill=%d writes=%d SQL=%s", acknowledged, ok, e.overflow.Count(), len(f.execs), f.written())
+			if !acknowledged || !ok || queued(t, pool) != 0 || len(f.execs) == 0 {
+				t.Fatalf("ack=%v delivered=%v writes=%d SQL=%s", acknowledged, ok, len(f.execs), f.written())
 			}
 		})
 	}
@@ -96,7 +99,7 @@ func TestQueueQueriesAndResetsCarryLifecycleContext(t *testing.T) {
 				cancel()
 			}
 			var err error
-			if operation == "query" {
+			if operation == "query" || operation == "recover" {
 				err = e.db.Callback().Query().Before("gorm:query").Register("test:cancel", check)
 			} else {
 				err = e.db.Callback().Update().Before("gorm:update").Register("test:cancel", check)
@@ -107,13 +110,15 @@ func TestQueueQueriesAndResetsCarryLifecycleContext(t *testing.T) {
 			row := &models.CrawlerTask{ID: 7, Site: "stub", Stage: "stub", URL: "https://example.com", Status: models.TaskStatusProcessing}
 			switch operation {
 			case "query":
-				_, err = e.processInBatches(e.recoverQueueQuery(), 1, 1, 0, func(*models.CrawlerTask) bool { t.Error("cancelled query delivered work"); return false })
+				_, err = e.processInBatches(func() *gorm.DB {
+					return e.db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusPending)
+				}, 1, 1, func(*models.CrawlerTask) bool { t.Error("cancelled query delivered work"); return false })
 			case "error":
 				e.requeueFailedTaskIn(row)
 			case "repeat":
 				e.requeueRepeatTaskIn(row)
 			case "recover":
-				e.requeueRecoverTask(row)
+				_, _ = e.recoverPendingStage("stub:stub")
 			}
 			if err != nil || !called || f.written() != "" {
 				t.Fatalf("called=%v err=%v writes=%s", called, err, f.written())
@@ -129,7 +134,9 @@ func TestCancelledBatchDoesNotQueryOrReset(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	e.ctx = ctx
-	n, err := e.processInBatches(e.recoverQueueQuery(), 1, 1, 0, func(*models.CrawlerTask) bool {
+	n, err := e.processInBatches(func() *gorm.DB {
+		return e.db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusPending)
+	}, 1, 1, func(*models.CrawlerTask) bool {
 		t.Error("cancelled batch admitted a task")
 		return true
 	})
@@ -137,11 +144,8 @@ func TestCancelledBatchDoesNotQueryOrReset(t *testing.T) {
 		t.Fatalf("cancelled batch queried: n=%d err=%v SQL=%s", n, err, f.readSQL())
 	}
 	row := &models.CrawlerTask{ID: 7, Site: "stub", Stage: "stub", URL: "https://example.com"}
-	if e.requeueFailedTaskIn(row) || e.requeueRepeatTaskIn(row) || e.requeueRecoverTask(row) || f.written() != "" {
+	if e.requeueFailedTaskIn(row) || e.requeueRepeatTaskIn(row) || f.written() != "" {
 		t.Fatalf("cancelled requeue wrote: %s", f.written())
-	}
-	if e.sleepBatchPause(0) || e.sleepBatchPause(-time.Second) {
-		t.Fatal("zero pause ignored cancellation")
 	}
 }
 

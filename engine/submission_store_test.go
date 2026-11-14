@@ -93,7 +93,7 @@ func TestSubmitTasksDeliversBeforeNextRowReload(t *testing.T) {
 			<-release
 		}
 	}
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	done := make(chan error, 1)
 	go func() {
@@ -118,9 +118,7 @@ func TestSubmitTasksDeliversBeforeNextRowReload(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("second reload was not reached")
 	}
-	if got := queued(t, pool); got != 1 {
-		t.Fatalf("later row reload postponed earlier committed row: queued=%d", got)
-	}
+	requirePendingNotification(t, e, "stub:stub")
 }
 
 type submissionLogWriter func([]byte) (int, error)
@@ -141,12 +139,12 @@ func TestSubmitTaskRetainsCommittedTaskBeforeErrorLogging(t *testing.T) {
 					f.failQueries = 1
 				}
 			}
-			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 			logged := false
 			e.loggerSet.Engine.SetOutput(submissionLogWriter(func(p []byte) (int, error) {
 				logged = true
-				if got := e.spillBacklog(); got != 1 {
-					t.Errorf("committed task was not retained before logger call: spill=%d", got)
+				if !strings.Contains(f.written(), "INSERT INTO") {
+					t.Error("task was not committed before error logging")
 				}
 				if panicLog {
 					panic("test log sink")
@@ -160,8 +158,8 @@ func TestSubmitTaskRetainsCommittedTaskBeforeErrorLogging(t *testing.T) {
 				defer func() { recovered = recover() }()
 				err = e.SubmitTask(task)
 			}()
-			if !logged || task.ID == 0 || e.spillBacklog() != 1 {
-				t.Fatalf("lost committed task: logged=%v id=%d spill=%d", logged, task.ID, e.spillBacklog())
+			if !logged || task.ID == 0 || !strings.Contains(f.written(), "INSERT INTO") {
+				t.Fatalf("lost committed task: logged=%v id=%d", logged, task.ID)
 			}
 			if panicLog && recovered != "test log sink" {
 				t.Fatalf("panic changed: %v", recovered)
@@ -186,7 +184,7 @@ func TestSubmissionBatchBackfillsDuplicatesWhenHandoffPanics(t *testing.T) {
 		defer func() { recovered = recover() }()
 		_, _ = s.prepareBatch([]*Task{first, &duplicate, later}, func(delivery submissionDelivery) {
 			transfers++
-			delivery.task.Repeat, delivery.task.repeatCounted = 1, true
+			delivery.task.Repeat = 1
 			panic("handoff failed")
 		})
 	}()
@@ -196,7 +194,7 @@ func TestSubmissionBatchBackfillsDuplicatesWhenHandoffPanics(t *testing.T) {
 	if first.ID == 0 || later.ID == 0 {
 		t.Fatal("batch was not persisted before handoff")
 	}
-	if duplicate.ID != first.ID || duplicate.Repeat != first.Repeat || !duplicate.repeatCounted {
+	if duplicate.ID != first.ID || duplicate.Repeat != first.Repeat {
 		t.Fatalf("panic skipped duplicate backfill: first=%+v duplicate=%+v", first, duplicate)
 	}
 }

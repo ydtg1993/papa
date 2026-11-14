@@ -53,8 +53,12 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 		t.Cleanup(func() { e.Stop(time.Second) })
 		for _, stage := range []string{"catalog", "detail", "content"} {
 			key := core.StageKey(site, stage)
-			e.stages[key] = &stageInfo{stage: stage, config: StageConfig{Site: site}}
-			e.pools.Set(key, workerpool.NewWorkerPool[*Task](1, 100, 1))
+			e.stages[key] = &stageInfo{stage: stage, config: StageConfig{Site: site, Entry: stage != "content"}}
+			e.pools.Set(key, workerpool.NewWorkerPool[*Task](1, 100))
+		}
+		e.stages[core.StageKey(site, "detail")].config.Downstream = []string{"content"}
+		if err := e.sealStageSubmissions(); err != nil {
+			t.Fatal(err)
 		}
 		return e
 	}
@@ -64,12 +68,20 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 	if err = e.CreateTaskFlow(ctx, id, site, p); err != nil {
 		t.Fatal(err)
 	}
+	parents := map[uint]*Task{}
 	submit := func(parent uint, stage, path string) *Task {
 		t.Helper()
 		task := &Task{Site: site, Stage: stage, URL: "https://example.invalid/" + path}
-		if err = e.SubmitFlowTask(ctx, id, parent, task); err != nil {
+		submitCtx := ctx
+		if parent != 0 {
+			var finish func()
+			submitCtx, finish = e.bindTaskExecution(ctx, parents[parent])
+			defer finish()
+		}
+		if err = e.SubmitFlowTask(submitCtx, id, parent, task); err != nil {
 			t.Fatal(err)
 		}
+		parents[uint(task.ID)] = task
 		return task
 	}
 	claim := func(task *Task, want bool) {
@@ -92,13 +104,13 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 	claim(a, true)
 	c := submit(uint(a.ID), "content", "a-content")
 	claim(c, false)
-	finish(a)
-	claim(b, false)
 	dup := submit(uint(a.ID), "content", "a-content")
 	if dup.ID != c.ID {
 		t.Fatal("duplicate child created")
 	}
-	if err = e.SubmitFlowTask(ctx, id, uint(a.ID), &Task{Site: site, Stage: "content", URL: "https://example.invalid/late"}); !errors.Is(err, ErrFlowConflict) {
+	finish(a)
+	claim(b, false)
+	if err = e.SubmitFlowTask(ctx, id, uint(a.ID), &Task{Site: site, Stage: "content", URL: "https://example.invalid/late"}); !errors.Is(err, ErrTaskFlow) {
 		t.Fatal("late child accepted", err)
 	}
 	// Reconstruct the engine and task solely from durable state; no in-memory scheduler ownership.
@@ -165,8 +177,9 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 	if ok, err := disabled.claimTaskContext(ctx, c); ok || err != nil {
 		t.Fatal("disabled flow executed", ok, err)
 	}
-	if disabled.spillBacklog() != 1 {
-		t.Fatal("disabled task lost")
+	var durable models.CrawlerTask
+	if err := db.First(&durable, c.ID).Error; err != nil || durable.Status != models.TaskStatusPending {
+		t.Fatal("disabled flow task lost its durable pending state", err, durable.Status)
 	}
 	// Strategy update and concurrent admission serialize through the same run row.
 	var changes atomic.Int32
@@ -188,7 +201,7 @@ func TestTaskFlowMySQLSwitchRestartConcurrencyAndBoundaries(t *testing.T) {
 	}
 	finish(c)
 	// Exercise the real stage handler: blocked tasks return immediately, child
-	// registration precedes parent terminal state, and terminal notification wakes drain.
+	// Registration precedes parent terminal state; completion wakes pending recovery.
 	var order []string
 	children := map[int]*Task{}
 	for _, stage := range []string{"detail", "content"} {

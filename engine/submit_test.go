@@ -29,7 +29,7 @@ func submitEngine(t *testing.T, f *fakeTaskDB, pool *workerpool.WorkerPool[*Task
 		db:         openFakeTaskDB(t, f),
 		loggerSet:  &loggers.LoggerSet{Engine: quietLogger(), DB: quietLogger()},
 		cfg:        cfg,
-		stages:     map[string]*stageInfo{"stub:stub": {stage: "stub", config: StageConfig{Site: "stub"}}},
+		stages:     map[string]*stageInfo{"stub:stub": {stage: "stub", config: StageConfig{Site: "stub", Entry: true}}},
 		pools:      newPoolRegistry(),
 		dedupCache: newDedupCache(0),
 	}
@@ -69,7 +69,7 @@ func TestSubmitTaskValidatesInput(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeTaskDB()
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := submitEngine(t, f, pool)
 
 			if err := e.SubmitTask(c.task); err == nil {
@@ -90,7 +90,7 @@ func TestSubmitTaskValidatesInput(t *testing.T) {
 // 内存去重命中 + 非轮询：视为成功直接返回，连库都不查。
 func TestSubmitTaskDedupHitSkipsEverything(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com"}
@@ -111,7 +111,7 @@ func TestSubmitTaskDedupHitSkipsEverything(t *testing.T) {
 // （周期轮询靠的就是反复投递同一个 stage|url）。
 func TestSubmitTaskRepeatableDedupHitRequeues(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com", Repeatable: true}
@@ -123,15 +123,16 @@ func TestSubmitTaskRepeatableDedupHitRequeues(t *testing.T) {
 	if task.ID != 7 {
 		t.Fatalf("应回填库里那行的 ID（假库是 7），实得 %d", task.ID)
 	}
-	if queued(t, pool) != 1 {
-		t.Fatalf("轮询任务应继续入队，实得 %d 条", queued(t, pool))
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 }
 
 // DB 命中且任务**没带 ID**（全新提交）：去重跳过，不入队。
 func TestSubmitTaskExistingRecordWithoutIDIsSkipped(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com"}
@@ -154,22 +155,23 @@ func TestSubmitTaskExistingRecordWithoutIDIsSkipped(t *testing.T) {
 // 把它当"新任务"跳过就等于恢复了个寂寞。
 func TestSubmitTaskExistingRecordWithIDRequeues(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
-	if queued(t, pool) != 1 {
-		t.Fatalf("带 ID 的重提交应入队，实得 %d 条", queued(t, pool))
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 }
 
 // 去重回查只投影 id/status：历史行的 error/meta 可能很宽，去重只要这两列。
 func TestFindTaskRecordProjectsIDAndStatus(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	var record models.CrawlerTask
@@ -193,7 +195,7 @@ func TestSubmitTaskTerminalRecordIsSkipped(t *testing.T) {
 		t.Run(statusName(status), func(t *testing.T) {
 			f := newFakeTaskDB()
 			f.row["status"] = int64(status)
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := submitEngine(t, f, pool)
 
 			task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
@@ -214,7 +216,7 @@ func TestSubmitTaskTerminalRecordIsSkipped(t *testing.T) {
 func TestSubmitTaskNewTaskInsertsBeforeEnqueue(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 库里还没有这一行
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/new"}
@@ -228,8 +230,9 @@ func TestSubmitTaskNewTaskInsertsBeforeEnqueue(t *testing.T) {
 	if task.ID == 0 {
 		t.Fatal("INSERT 应回填主键")
 	}
-	if queued(t, pool) != 1 {
-		t.Fatalf("新任务应入队，实得 %d 条", queued(t, pool))
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 }
 
@@ -245,7 +248,7 @@ func TestSubmitTaskInsertConflictBackfillsAndSkips(t *testing.T) {
 		}
 	}
 
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/race"}
@@ -270,7 +273,7 @@ func TestSubmitTaskInsertFailureIsReported(t *testing.T) {
 	f.noRows = true
 	f.failNext = 1
 
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"})
@@ -287,147 +290,84 @@ func TestSubmitTaskInsertFailureIsReported(t *testing.T) {
 
 /* ---------- 队列已满 → 溢出到 DB ---------- */
 
-// 队列达高水位：任务保持 pending、进溢出列表由 drain 回灌，**不算失败**。
+// 队列容量已满：任务保持持久 pending，等待阶段投递器补位，不算失败。
 // 对业务表现为"提交成功"，但它不会立刻被 worker 取走。
-func TestSubmitTaskSpillsWhenQueueAtWatermark(t *testing.T) {
+func TestSubmitTaskAcceptsDurablePendingWhenQueueFull(t *testing.T) {
 	f := newFakeTaskDB()
-	// 容量 4、水位 0.25 → 1 条就满
-	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25)
+	pool := workerpool.NewWorkerPool[*Task](1, 1)
 	e := submitEngine(t, f, pool)
-
-	if err := pool.Submit(&Task{URL: "occupy", Stage: "stub"}); err != nil {
-		t.Fatalf("占位提交 = %v", err)
+	if err := pool.SubmitContext(context.Background(), &Task{ID: 99}); err != nil {
+		t.Fatal(err)
 	}
-
-	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spill"}
-	if err := e.SubmitTask(task); err != nil {
-		t.Fatalf("溢出不该报错：%v", err)
+	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
+	done := make(chan error, 1)
+	go func() { done <- e.SubmitTask(task) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("persisted admission waited on worker queue")
 	}
-
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("溢出列表应有 1 条，实得 %d", got)
+	if queued(t, pool) != 1 {
+		t.Fatal("queue exceeded capacity")
 	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("溢出计数 = %d, want 1（监控页靠它看漏了多少）", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task lost pending state")
+	}
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatal("queue pressure marked task failed")
 	}
 }
-
-/* ---------- 投递失败 → 重新寄放 ---------- */
-
-// 池子已停机时的投递失败：任务**重新寄放到溢出表**（行保持 pending），不再标 failed。
-//
-// 这里一度是"回滚内存去重表 + 把行标成 failed 并记下原因"。换掉它的理由见 submitToPool 的注释：
-// 池被 reapIdle 回收不是这条任务的错（它判空与我们 Submit 之间有窗口），而 failed 不在启动恢复的
-// 集合里（recoverqueue 只收 pending/processing）—— 标了就只能等错误队列那一跳（默认 4h）捞回来。
-func TestSubmitTaskRespillsOnSubmitFailure(t *testing.T) {
+func TestSubmitTaskKeepsPendingAfterPoolStop(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	pool.Stop(time.Second) // 停掉，让 Submit 必然失败
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
+	pool.Stop(0)
 	e := submitEngine(t, f, pool)
-
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
 	if err := e.SubmitTask(task); err != nil {
-		t.Fatalf("任务已寄放到溢出表（drain 会重投），不该报错：%v", err)
+		t.Fatal(err)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("投递失败的任务应进溢出表等回灌，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("stopped pool changed durable pending")
 	}
 	if !e.dedupCache.Get(task.Unique()) {
-		t.Fatal("任务还在我们手上（溢出表里），去重键不该删：删了并发的同一 URL 会再插一行")
+		t.Fatal("durable accepted task lost dedup ownership")
 	}
-	// 不是容量压力：这条路径不该计进 queue_spilled（监控页拿它看队列水位）
-	if got := e.spilledCount.Load(); got != 0 {
-		t.Fatalf("非队满的投递失败不该计进 spilledCount，实得 %d", got)
-	}
-	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
-		t.Fatalf("不该再把行标成 failed（failed 不在启动恢复的集合里），语句：%s", f.written())
-	}
-	// 投递路径只写自己负责的列：整行写回会把运营在这期间改的 repeatable（后台「开/停轮询」）盖掉
-	if strings.Contains(f.written(), "`repeatable`") {
-		t.Fatalf("投递路径不该整行写回，语句：%s", f.written())
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") || strings.Contains(f.written(), "`repeatable`") {
+		t.Fatalf("delivery changed unrelated columns: %s", f.written())
 	}
 }
-
-// 回灌时拿到的是**已停止**的池（reapIdle 判空与 Submit 之间的那个窗口）→ 重新寄放，任务不丢。
-// 改之前这条是"记一条错误日志就没了"：任务离开溢出表、行被标 failed，只能人工重投。
-func TestDrainSpilledKeepsTaskWhenPoolStopped(t *testing.T) {
+func TestPendingDeliveryStoppedPoolDoesNotWriteFailure(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
-	pool.Stop(time.Second)
-
-	e.spillTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/spilled"})
-	e.drainSpilled()
-
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("投递不进去的任务应留在溢出表等下一轮，实得 %d", got)
+	pool.Stop(0)
+	if err := e.deliverPending(context.Background(), &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}); err == nil {
+		t.Fatal("stopped pool accepted delivery")
 	}
-	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
-		t.Fatalf("不该把它标成 failed，语句：%s", f.written())
+	if f.written() != "" {
+		t.Fatalf("delivery wrote state: %s", f.written())
 	}
 }
-
-/* ---------- 投递只写自己负责的列 ---------- */
-
-// 投递路径的 UPDATE 不得整行写回（原先的 e.db.Save(record) 会）：record 是更早 SELECT 出来的
-// 快照，延迟投递那条会把它压在 delayHeap 里直到 Delay 到点 —— 整行写回会把运营在这期间改的列
-// （repeatable / urgent / error…）静默盖回去。尤其 repeatable 现在由后台「开/停轮询」随时改，
-// 被盖回去就是"停轮询被数据面吃掉、队列永远继续轮询"。
-func TestSubmitToPoolWritesOnlyItsOwnColumns(t *testing.T) {
-	cases := []struct {
-		name           string
-		repeatable     bool
-		wantRepeatIncr bool
-	}{
-		{"普通任务：只标 pending", false, false},
-		{"轮询任务：顺带把轮询代数 +1", true, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFakeTaskDB()
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-			e := submitEngine(t, f, pool)
-
-			task := &Task{
-				ID: 7, Stage: "stub", URL: "https://example.com",
-				Repeatable: tc.repeatable, Site: "stub",
-				Meta: map[string]string{"series_id": "1"},
-			}
-			if err := e.SubmitTask(task); err != nil {
-				t.Fatalf("SubmitTask = %v", err)
-			}
-			sql := f.written()
-			// `` `repeat` `` 与 `` `repeatable` `` 不会互相误命中（尾引号），所以两条都要断言
-			for _, never := range []string{
-				"`repeatable`", "`url`", "`urgent`", "`error`",
-				// 周期与排期只由首次插入（toModel）与「设轮询周期」/「开轮询」写：
-				// 提交路径碰它们就等于把运营改的盖回去
-				"`repeat_interval`", "`next_repeat_at`", "`last_repeat_at`",
-			} {
-				if strings.Contains(sql, never) {
-					t.Fatalf("投递不该写 %s：\n%s", never, sql)
-				}
-			}
-			if got := strings.Contains(sql, "`repeat`="); got != tc.wantRepeatIncr {
-				t.Fatalf("repeat 自增 = %v, want %v：\n%s", got, tc.wantRepeatIncr, sql)
-			}
-			for _, want := range []string{"`status`", "`meta`", "`site`"} {
-				if !strings.Contains(sql, want) {
-					t.Fatalf("投递应写 %s：\n%s", want, sql)
-				}
-			}
-		})
+func TestSubmitToPoolDoesNotRewritePersistedState(t *testing.T) {
+	for _, repeatable := range []bool{false, true} {
+		f := newFakeTaskDB()
+		pool := workerpool.NewWorkerPool[*Task](1, 8)
+		e := submitEngine(t, f, pool)
+		task := &Task{ID: 7, Site: "stub", Stage: "stub", URL: "https://example.com", Repeatable: repeatable, Meta: map[string]string{"series_id": "1"}}
+		e.submitToPool(task, models.CrawlerTask{ID: 7, Status: models.TaskStatusPending, Repeat: 4})
+		if f.written() != "" || f.readSQL() != "" {
+			t.Fatalf("durable delivery rewrote metadata or round: %s", f.written())
+		}
 	}
 }
-
-/* ---------- 延迟投递 ---------- */
-
-// 未到点的任务先进延迟堆，不占 worker 的并发位；到点由 dispatcher 统一入队。
 func TestSubmitTaskDelayedGoesToHeap(t *testing.T) {
 	f := newFakeTaskDB()
 	f.row["not_before"] = time.Now().Add(time.Hour)
 	f.row["delay_ms"] = int64(time.Hour / time.Millisecond)
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", Delay: time.Hour}
@@ -440,23 +380,24 @@ func TestSubmitTaskDelayedGoesToHeap(t *testing.T) {
 
 	n := e.delays.Len()
 
-	if n != 1 {
-		t.Fatalf("延迟堆里应有 1 条，实得 %d", n)
+	if n != 0 {
+		t.Fatalf("普通持久化延迟任务不应驻留堆，实得 %d", n)
 	}
 }
 
 // NotBefore 已经是过去时间 → 不延迟，直接入队。
 func TestSubmitTaskPastNotBeforeEnqueuesImmediately(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com", NotBefore: time.Now().Add(-time.Minute)}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
-	if queued(t, pool) != 1 {
-		t.Fatalf("过期时间点应立刻入队，实得 %d 条", queued(t, pool))
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 }
 
@@ -464,7 +405,7 @@ func TestSubmitTaskPastNotBeforeEnqueuesImmediately(t *testing.T) {
 
 func TestSubmitTasksEmptyAndValidation(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	if err := e.SubmitTasks(nil); err != nil {
@@ -494,7 +435,7 @@ func TestSubmitTasksBatchInsertsThenEnqueues(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 两条都是全新的
 	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
@@ -515,14 +456,15 @@ func TestSubmitTasksBatchInsertsThenEnqueues(t *testing.T) {
 			t.Fatalf("第 %d 条没回填 ID", i)
 		}
 	}
-	if got := queued(t, pool); got != 2 {
-		t.Fatalf("两条都该入队，实得 %d 条", got)
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 }
 
 func TestSubmitTasksSkipsDedupedRows(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	dup := &Task{Stage: "stub", Site: "stub", URL: "https://example.com/dup"}
@@ -534,8 +476,9 @@ func TestSubmitTasksSkipsDedupedRows(t *testing.T) {
 	if err := e.SubmitTasks([]*Task{dup, fresh}); err != nil {
 		t.Fatalf("SubmitTasks = %v", err)
 	}
-	if queued(t, pool) != 1 {
-		t.Fatalf("只该入队没被去重的那条，实得 %d 条", queued(t, pool))
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 	if !e.dedupCache.Get(dup.Unique()) || !e.dedupCache.Get(fresh.Unique()) {
 		t.Fatal("两条的 key 都应在内存去重表里")
@@ -546,7 +489,7 @@ func TestSubmitTasksHonoursDelay(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 两条都当作全新任务，才会走到"延迟 vs 立即"这一步
 	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
@@ -557,14 +500,15 @@ func TestSubmitTasksHonoursDelay(t *testing.T) {
 		t.Fatalf("SubmitTasks = %v", err)
 	}
 
-	if queued(t, pool) != 1 {
-		t.Fatalf("只有非延迟的那条该立刻入队，实得 %d 条", queued(t, pool))
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 
 	n := e.delays.Len()
 
-	if n != 1 {
-		t.Fatalf("延迟堆里应有 1 条，实得 %d", n)
+	if n != 0 {
+		t.Fatalf("普通持久化延迟任务不应驻留堆，实得 %d", n)
 	}
 }
 
@@ -581,7 +525,7 @@ func TestSubmitTasksSkipsConflictingRows(t *testing.T) {
 		}
 	}
 
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	tasks := []*Task{
@@ -595,8 +539,9 @@ func TestSubmitTasksSkipsConflictingRows(t *testing.T) {
 		t.Fatalf("应当退到逐条插入：\n%s", f.written())
 	}
 	// 冲突那条被跳过（库里那行由别人投递），剩下的正常入队
-	if got := queued(t, pool); got != 1 {
-		t.Fatalf("只该入队未冲突的那条，实得 %d 条", got)
+	requirePendingNotification(t, e, "stub:stub")
+	if queued(t, pool) != 0 {
+		t.Fatal("acceptance synchronously enqueued work")
 	}
 	if tasks[0].ID != 7 {
 		t.Fatalf("冲突那条应回填库里已有行的 ID，实得 %d", tasks[0].ID)
@@ -621,7 +566,7 @@ func statusName(s models.TaskStatus) string {
 func TestSubmitTaskSeedsRepeatInterval(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 库里还没有这一行 → 走 INSERT
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	task := &Task{
@@ -641,51 +586,45 @@ func TestSubmitTaskSeedsRepeatInterval(t *testing.T) {
 
 /* ---------- 提交前的落库写失败 → 不入队 ---------- */
 
-// 提交前那次 UPDATE 失败时**不入队**，任务寄放到溢出表；回灌那一跳会重读行、重跑这一句。
-//
-// 这条不变量（已入队 ⇒ 行里是 pending）原先只靠注释撑着：写失败照样入队，worker 取到后
-// claimTask 拿不到行、直接跳过执行 —— 任务在队列里待过、谁都没跑过，库里那行还是旧状态。
-func TestSubmitTaskParksWhenStatusUpdateFails(t *testing.T) {
+// 已有 pending 重复提交不需要再次改写 status，也不应因额外状态 UPDATE 失败而丢失受理。
+func TestSubmitExistingPendingNeedsNoStatusUpdate(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
-	f.failNext = 1 // 第一条写就是提交前那次 UPDATE（前面都是 SELECT）
-
-	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
+	f.failNext = 1
+	task := &Task{ID: 7, Site: "stub", Stage: "stub", URL: "https://example.com"}
 	if err := e.SubmitTask(task); err != nil {
-		t.Fatalf("已寄放、回灌会重投，不该报错：%v", err)
+		t.Fatal(err)
 	}
-	if got := queued(t, pool); got != 0 {
-		t.Fatalf("落库没成功就不该入队，实得队列 %d 条", got)
+	if f.written() != "" {
+		t.Fatalf("pending handoff required redundant UPDATE: %s", f.written())
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("任务该寄放到溢出表等回灌，实得 %d", got)
+	if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+		t.Fatal(err)
 	}
-
-	// 回灌：这一跳库已经恢复 → 重新落库 + 入队
-	e.drainSpilled()
-	if got := queued(t, pool); got != 1 {
-		t.Fatalf("回灌后应当补上入队，实得队列 %d 条", got)
+	if queued(t, pool) != 1 {
+		t.Fatal("pending task not recovered")
 	}
-	if got := e.spillBacklog(); got != 0 {
-		t.Fatalf("回灌成功后应离开溢出表，实得 %d", got)
+	if f.written() != "" {
+		t.Fatal("recovery rewrote state")
+	}
+}
+func TestSubmitToPoolNeverResetsProcessingSnapshot(t *testing.T) {
+	f := newFakeTaskDB()
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
+	e := submitEngine(t, f, pool)
+	task := &Task{ID: 7, Site: "stub", Stage: "stub", URL: "https://example.com"}
+	e.submitToPool(task, models.CrawlerTask{ID: 7, Status: models.TaskStatusProcessing})
+	if f.written() != "" || queued(t, pool) != 0 {
+		t.Fatal("processing snapshot reactivated")
 	}
 }
 
-// 投递路径的状态重置必须带 status=pending 守卫：行在 SELECT 之后被 worker 认领成 processing 时，
-// 无条件 UPDATE 会把它翻回 pending，正在跑的旧 worker 失去状态保护（回灌 / 延迟投递都走这里）。
-// 守卫写在 WHERE 里而不是靠 RowsAffected 判 —— MySQL 下"已经是 pending"与"已被认领"都是 0 行。
-func TestSubmitToPoolResetsOnlyPending(t *testing.T) {
-	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e := submitEngine(t, f, pool)
-
-	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
-	if err := e.SubmitTask(task); err != nil {
-		t.Fatalf("SubmitTask = %v", err)
-	}
-
-	if sql := f.written(); !strings.Contains(sql, "id = ? AND status = ?") {
-		t.Fatalf("状态重置的 WHERE 应带 status=pending 守卫：\n%s", sql)
+func requirePendingNotification(t *testing.T, e *Engine, key string) {
+	t.Helper()
+	select {
+	case <-e.deliveryState().Notifications(key):
+	default:
+		t.Fatal("durable pending did not notify stage dispatcher")
 	}
 }

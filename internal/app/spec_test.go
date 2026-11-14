@@ -37,9 +37,15 @@ func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 	db, err := gorm.Open(mysql.New(mysql.Config{
 		DSN:                       "root@tcp(127.0.0.1:9)/none?charset=utf8mb4&parseTime=True",
 		SkipInitializeWithVersion: true,
-	}), &gorm.Config{DisableAutomaticPing: true, Logger: gormlogger.Discard})
+	}), &gorm.Config{DisableAutomaticPing: true, SkipDefaultTransaction: true, Logger: gormlogger.Discard})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
+	}
+	// This fixture tests declaration wiring only. Mandatory startup recovery now
+	// writes a processing reset before invoking entries; acknowledge that update
+	// without opening a database connection. Reads intentionally remain unavailable.
+	if err := db.Callback().Update().Replace("gorm:update", func(tx *gorm.DB) { tx.RowsAffected = 0 }); err != nil {
+		t.Fatal(err)
 	}
 	return engine.NewEngine(db, cfg, &loggers.LoggerSet{
 		Engine: quietLogger(), DB: quietLogger(), Monitor: quietLogger(), Sys: quietLogger(),
@@ -66,7 +72,7 @@ func (f *entryStageFetcher) SubmitEntries(_ *engine.Engine, site core.Site) {
 
 func TestAppSiteUsesEngineOwnedSnapshots(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	e := noDBEngine(t, cfg)
 	t.Cleanup(func() { e.Stop(time.Millisecond) })
 	a := &App{Config: cfg, Engine: e}
@@ -96,7 +102,7 @@ func TestAppSiteUsesEngineOwnedSnapshots(t *testing.T) {
 // RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 Entry 模式）、站点快照、按站的熔断阈值。
 func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
 
 	e := noDBEngine(t, cfg)

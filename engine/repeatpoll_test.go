@@ -38,7 +38,7 @@ func TestRepeatQueryShape(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
-			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 			tc.run(e)
 			read := f.readSQL()
 			for _, w := range tc.want {
@@ -74,9 +74,9 @@ func TestStopWaitsForTickers(t *testing.T) {
 		enterOnce.Do(func() { close(entered) })
 		<-release
 	}
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.pools.Get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
-	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: time.Millisecond}
+	e.cfg.RepeatQueue = config.RepeatQueueConfig{Interval: time.Millisecond}
 	e.startRepeatQueue()
 	select {
 	case <-entered:
@@ -97,8 +97,8 @@ func TestStopWaitsForTickers(t *testing.T) {
 	if got := strings.Count(f.written(), "UPDATE"); got != 1 {
 		t.Fatalf("expected exactly one in-flight repeat reset, got %d: %s", got, f.written())
 	}
-	if e.delays.Len() != 0 || e.overflow.Count() != 0 {
-		t.Fatalf("failed repeat CAS retained work: delayed=%d spill=%d", e.delays.Len(), e.overflow.Count())
+	if e.delays.Len() != 0 {
+		t.Fatalf("failed repeat CAS retained work: delayed=%d", e.delays.Len())
 	}
 }
 
@@ -137,14 +137,13 @@ func TestSoonestRepeatQueryCastsToSignedInt(t *testing.T) {
 	}
 }
 
-// Future rows include active and unknown/NULL statuses. Filtering them out
-// would change scheduling even though they are not currently due for submission.
-func TestSoonestRepeatQueryIncludesActiveRows(t *testing.T) {
+// Only successful rows participate in periodic scheduling, even for future dates.
+func TestSoonestRepeatQueryOnlySuccess(t *testing.T) {
 	db := dryRunMySQL(t)
 	var rows []struct{ Epoch *int64 }
 	q := (&Engine{}).soonestRepeatQueryOn(db).Find(&rows)
 	sql := q.Statement.SQL.String()
-	for _, fragment := range []string{"status IN (?,?) OR next_repeat_at > NOW()", "COALESCE(next_repeat_at, NOW())", "MIN(CAST(UNIX_TIMESTAMP"} {
+	for _, fragment := range []string{"status = ?", "COALESCE(next_repeat_at, NOW())", "MIN(CAST(UNIX_TIMESTAMP"} {
 		if !strings.Contains(sql, fragment) {
 			t.Fatalf("missing %q: %s", fragment, sql)
 		}
@@ -160,7 +159,7 @@ func TestSoonestRepeatQueryIncludesActiveRows(t *testing.T) {
 // finishTask 两条分支：非轮询清去重键，轮询留在去重表并唤醒轮询队列重算节拍。
 func TestFinishTaskWakesRepeatQueueForRepeatable(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	plain := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/plain"}
 	e.dedupCache.Add(plain.Unique())

@@ -22,7 +22,7 @@ import (
 // 落终态后 soonestRepeatIn 要立刻把它算进节拍，否则 ticker 还睡在上一次算出的全局 interval 上）。
 func (e *Engine) finishTask(task *Task) {
 	if task.FlowID != "" {
-		e.wakeDrainNow()
+		e.wakePendingRecovery()
 	}
 	if task.Repeatable {
 		e.wakeRepeatQueue()
@@ -79,23 +79,31 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
 		e.residents.move(task, "running")
-		defer e.residents.release(task, "running")
+		defer func() {
+			e.deliveryState().Release(task.ID)
+			e.residents.release(task, "running")
+			for _, key := range e.stageKeys() {
+				e.deliveryState().Continue(key)
+			}
+		}()
 		// 停机时的排水（WorkerPool.Stop → drainAndExit）会把队列里**还没开始**的存量任务
 		// 也原样交给 handler，而它拿到的 ctx 在进 Stop 那一刻就取消了
 		//（Engine.Stop 先 e.cancel() 再 pool.Stop，所以 workerpool.run 才故意不 select ctx.Done）。
 		// 这时候认领没有任何意义：fetch 一出手就被 ctx 打断，回头只会在库里留一行「处理中」。
 		// 所以**不认领、直接放弃**：行仍是 pending，下次启动的启动恢复会重新入队
-		//（recoverqueue.go 的 recoverQueueQuery 捞的正是 pending/processing）。
+		//（启动先重置旧 processing，恢复循环只读取 pending）。
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil
 		}
 		if e.residents != nil && e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
-			e.spillTask(task)
+			e.retainPausedTask(task)
 			return nil
 		}
+		_, admissionRevision, _ := e.deliveryState().Scan(stageKeyOf(task))
 		breakerRelease, admitted := e.breakers.admitBreakerTask(task)
 		if !admitted {
-			e.spillTask(task)
+			e.deliveryState().ObservedWaiting(task.ID, stageKeyOf(task), admissionRevision)
+			e.requeueDelayedAfter(&delayedTask{task: task}, time.Second)
 			return nil
 		}
 		defer breakerRelease()
@@ -110,7 +118,8 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		ctx, release, admissionErr = e.prepareRuntimeTask(ctx, task, cfg.WorkerCount)
 		if admissionErr != nil {
 			if ctx.Err() == nil {
-				e.spillTask(task)
+				e.deliveryState().ObservedWaiting(task.ID, stageKeyOf(task), admissionRevision)
+				e.requeueDelayedAfter(&delayedTask{task: task}, time.Second)
 			}
 			return admissionErr
 		}
@@ -119,7 +128,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		// Recheck before claiming so a pause during that wait keeps it pending.
 		if e.isPaused(pauseScope{Site: task.Site, Stage: task.Stage}) {
 			release()
-			e.spillTask(task)
+			e.retainPausedTask(task)
 			return nil
 		}
 		// claimedAt 认领时刻：事件里的 duration_ms 用它算整段在途时间（成功/失败都算）。
@@ -131,9 +140,14 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		// 这里补上终态落库 + 失败通知 + 清活动任务，栈照旧抛回给 workerpool（见 runAttempt 的注释）。
 		defer func() {
 			if r := recover(); r != nil {
-				err := fmt.Errorf("panic: %v", r)
+				err := panicFailure(r)
 				if !claimedAt.IsZero() {
-					if writeErr := e.persistTerminal(ctx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
+					terminalCtx, cancel := ctx, func() {}
+					if ctx.Err() != nil {
+						terminalCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+					}
+					defer cancel()
+					if writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
 						e.loggerSet.Engine.Errorf("panic task %d terminal write unconfirmed: %s", task.ID, writeErr)
 					} else {
 						e.emitTaskFailed(task, err, claimedAt)
@@ -201,7 +215,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if errors.Is(err, errAttemptTimingPersistence) {
 				var timingErr *attemptTimingError
-				if !task.breakerSampleDeadline.IsZero() && errors.As(err, &timingErr) && timingErr.handlerErr != nil && !cancellationOnly(timingErr.handlerErr) {
+				if errors.As(err, &timingErr) && timingErr.handlerErr != nil && !cancellationOnly(timingErr.handlerErr) {
 					terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 					defer cancel()
 					if writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusFailed, timingErr.handlerErr); writeErr != nil {
@@ -249,15 +263,13 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 				}
 				return nil
 			}
-			// 抓取返回错误后先看 ctx、再判错误：停机打断的那一次尝试不是「任务失败」——
-			// 它的错就是 context canceled，按 core.Retryable 会判真、随后在退避 select 里退出，
-			// 行就永远停在 processing。这里先回退成 pending，再如实返回 ctx 的错误；
-			// 不可重试分支也必须在它之后，否则一次停机取消会被当成「页面结构变了」记进 error 列。
+			// Only cancellation itself releases the claim. A real business error
+			// returned during shutdown retains its retry/compensation policy.
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				if !task.breakerSampleDeadline.IsZero() && !cancellationOnly(err) {
+				if !cancellationOnly(err) {
 					// The handler returned a real error after cancellation. Persist
 					// that terminal round without replaying business or releasing the
-					// serial slot before persistence and notification have finished.
+					// execution ownership before persistence and notification finish.
 					terminalCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 					defer cancel()
 					if writeErr := e.persistTerminal(terminalCtx, task, runVersion, models.TaskStatusFailed, err); writeErr != nil {
@@ -314,7 +326,11 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 	}
 	session := attemptExecution{task: task, attempt: attempt, trace: tr, archive: ar, headers: e.siteHeaders(task.Site), resources: &e.fetchResources,
 		persistence: attemptPersistence{db: e.db, state: &e.execution, breakers: &e.breakers, logger: e.loggerSet.Engine}}
-	return session.run(ctx, func(ctx context.Context) error { return fetcher.FetchHandler(ctx, task, e) })
+	return session.run(ctx, func(ctx context.Context) error {
+		bound, finish := e.bindTaskExecution(ctx, task)
+		defer finish()
+		return fetcher.FetchHandler(bound, task, e)
+	})
 }
 
 // A joined cancellation and business error is still a real failure. Wrapping

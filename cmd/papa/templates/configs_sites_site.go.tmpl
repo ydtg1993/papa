@@ -47,7 +47,7 @@ func {{.SiteFunc}}() papa.SiteSpec {
 		// 本站自己的"受限页"文案（追加到 htmlfetch.RestrictedReason 的默认词表之后）：
 		// RestrictedKeywords: []string{"安全验证", "请稍后再试"},
 		// Breaker: &papa.BreakerSpec{Enabled: true, Threshold: 100, Window: "5m"}, // 本站自己的熔断阈值；不写=用 crawler.breaker
-		// StartPaused: true, // 启动就把这一站闸住：入口任务照投（先寄放在溢出表），
+		// StartPaused: true, // 启动就把这一站闸住：入口任务照投（保留为持久 pending），
 		//                    // 后台「站点控制」卡上点「恢复整站」才开跑。每次启动都重新闸上。
 
 		Stages: []papa.StageSpec{
@@ -60,7 +60,10 @@ func {{.SiteFunc}}() papa.SiteSpec {
 				// 入口：true = 这个阶段有入口任务，启动那一趟就投（SubmitEntries 在 fetcher 自己身上）；
 				// 不写 = 这阶段没有入口。想"启动先别跑整站、等人来点"写上面的 StartPaused。
 				Entry: true,
+				Downstream: []string{"detail"}, // 仅允许派发到本站 detail；空列表表示末端。
 			},
+
+			{Fetcher: &fetcher.FetchDetail{}, WorkerCount: 1, QueueSize: 20},
 
 			// 加一个阶段：写一个 fetcher（GetStage 返回阶段名），然后在这里加一段（参数写全）。
 		},

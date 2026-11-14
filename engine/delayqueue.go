@@ -23,7 +23,7 @@ func (e *Engine) enqueueDelayed(at time.Time, task *Task, record models.CrawlerT
 	// Preserve unpublished submission metadata before handing responsibility to DB.
 	if e.residents != nil && e.residents.state(task) == "submission" && len(task.Meta) > 0 {
 		if err := e.submissions().preparePending(task, uint(task.ID)); err != nil {
-			e.spillTask(task)
+			e.deferPending(task)
 			return
 		}
 	}
@@ -31,36 +31,24 @@ func (e *Engine) enqueueDelayed(at time.Time, task *Task, record models.CrawlerT
 	// its token must stay resident through every retry/delay transfer.
 	if e.residents != nil && at.After(time.Now().Add(e.schedulerLimits().DelayWindow)) && task.breakerEpoch == 0 && task.breakerTrial == 0 && task.breakerSampleDeadline.IsZero() {
 		e.residents.release(task, "")
+		e.requestPendingRecovery(task)
 		return
 	}
 
 	if !e.residents.admit(task, "delay") {
 		return
 	}
-	if !e.delays.PushUnique(spillIdentity(task), at, &delayedTask{at: at, task: task, record: record}) {
+	if !e.delays.PushUnique(deliveryIdentity(task), at, &delayedTask{at: at, task: task, record: record}) {
 		e.residents.release(task, "delay")
 	}
 }
 func (e *Engine) delayDispatcher() {
-	for {
-		item, ok := e.delays.Next(e.ctx)
-		if !ok {
-			return
-		}
-		e.deliverDelayed(item)
-	}
+	e.delays.Dispatch(e.ctx, func(item *delayedTask) string {
+		return stageKeyOf(item.task)
+	}, e.deliverDelayed)
 }
 
-// deliverDelayed 到点后投递一条延迟任务。
-//
-// **不能拿入队那一刻的 record 直接投**：`Delay` 有多长，那份快照就有多旧，而到点前运营随时可能
-// 动过这一行 ——「重投」并跑完（success）、手动标失败（failed）、或已被别的路径投出去并被 worker
-// 认领（processing）。照旧快照投的后果是 `submitUpdates` 把它无条件写回 pending，紧接着
-// `claimTask`（要的正是 pending）必定认领成功 → 已经跑完的任务被**再跑一遍**（覆盖 content、
-// 重复下载、重复写业务），或者"标失败"这个拦截手段被静默绕过去。
-//
-// 所以到点先重读行，**只有仍是 pending 才投**（与 `drainSpilled` 对溢出任务的处理同一套：
-// 重读、遇终态即丢）。多投一份的代价远大于晚投一次。
+// deliverDelayed rechecks durable state before delivering a delayed task.
 func (e *Engine) deliverDelayed(item *delayedTask) {
 	e.residents.move(item.task, "detached")
 	defer e.residents.release(item.task, "detached")
@@ -71,9 +59,9 @@ func (e *Engine) deliverDelayed(item *delayedTask) {
 		return // 行已被删：没有可投的东西
 	case err != nil:
 		// 瞬态错误（库抖动）：**不能丢**（行还是 pending，丢了就再没人投它），
-		// 也不能立刻重排（会退化成忙等）—— 隔一个回灌间隔再看一次。
+		// 也不能立刻重排（会退化成忙等）—— 一秒后重试读取。
 		e.loggerSet.Engine.Warnf("delayed task %d: reread failed, will retry: %s", item.task.ID, err.Error())
-		e.requeueDelayedAfter(item, e.drainInterval())
+		e.requeueDelayedAfter(item, time.Second)
 		return
 	}
 	if record.Status != models.TaskStatusPending || item.task.staleDelivery(record) {
@@ -81,7 +69,16 @@ func (e *Engine) deliverDelayed(item *delayedTask) {
 		e.loggerSet.Engine.Infof("delayed task %d dropped: status is no longer pending", item.task.ID)
 		return
 	}
-	// 投不进去（池刚被回收 / 已停机）时 submitToPool 会把它放进溢出表，回灌那一跳重投
+	if item.task.breakerEpoch != 0 || item.task.breakerTrial != 0 || !item.task.breakerSampleDeadline.IsZero() {
+		if e.isPaused(pauseScope{Site: item.task.Site, Stage: item.task.Stage}) {
+			e.requeueDelayedAfter(item, time.Second)
+			return
+		}
+		if err := e.deliverPending(e.queueContext(), item.task); err != nil && e.queueContext().Err() == nil {
+			e.requeueDelayedAfter(item, time.Second)
+		}
+		return
+	}
 	e.submitToPool(item.task, record)
 }
 
@@ -89,15 +86,7 @@ func (e *Engine) deliverDelayed(item *delayedTask) {
 func (e *Engine) requeueDelayedAfter(item *delayedTask, after time.Duration) {
 	item.at = time.Now().Add(after)
 	e.residents.move(item.task, "delay")
-	if !e.delays.PushUnique(spillIdentity(item.task), item.at, item) {
+	if !e.delays.PushUnique(deliveryIdentity(item.task), item.at, item) {
 		e.residents.release(item.task, "delay")
 	}
-}
-
-// drainInterval 回灌/重试用的间隔（与 startDrain 同一个配置项与兜底）。
-func (e *Engine) drainInterval() time.Duration {
-	if interval := e.cfg.Crawler.DrainInterval; interval > 0 {
-		return interval
-	}
-	return 2 * time.Second
 }

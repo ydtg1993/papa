@@ -52,7 +52,7 @@ func TestStageHandlerCarriesClaimedRunVersion(t *testing.T) {
 					if !errors.Is(fetchCtx.Err(), context.Canceled) {
 						t.Fatal("claim context no longer propagates parent cancellation")
 					}
-					return errors.New("fetch interrupted")
+					return context.Canceled
 				}
 				return nil
 			})

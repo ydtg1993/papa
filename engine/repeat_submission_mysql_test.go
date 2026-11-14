@@ -53,9 +53,9 @@ func repeatMySQL(t *testing.T, foundRows bool) (*gorm.DB, string, func() *Engine
 	})
 	makeEngine := func() *Engine {
 		cfg := &config.Config{}
-		cfg.RecoverQueue.Enabled = true
+
 		cfg.RepeatQueue.BatchSize, cfg.RepeatQueue.WorkerCount, cfg.RepeatQueue.Interval = 16, 2, time.Hour
-		cfg.RecoverQueue.BatchSize, cfg.RecoverQueue.WorkerCount = 16, 2
+		cfg.RecoverQueue.BatchSize = 16
 		e := NewEngine(db, cfg, testLoggerSet())
 		t.Cleanup(func() { e.Stop(time.Second) })
 		if err := e.AddStage("detail", StageConfig{Site: site, WorkerCount: 1, QueueSize: 8, RepeatLimit: 13}, nil, nil); err != nil {
@@ -119,9 +119,11 @@ func TestRepeatSubmissionMySQLConcurrent(t *testing.T) {
 				close(start)
 				wg.Wait()
 				repeatMySQLStored(t, db, base.ID, 12)
-				if e.spillBacklog() != 2 {
-					t.Fatalf("spill=%d, want 2 distinct rounds (old round remains fenced until drain)", e.spillBacklog())
+				var pending int64
+				if err := db.Model(&models.CrawlerTask{}).Where("id = ? AND status = ?", base.ID, models.TaskStatusPending).Count(&pending).Error; err != nil || pending != 1 {
+					t.Fatalf("durable pending = %d, err=%v", pending, err)
 				}
+
 			})
 		}
 	}
@@ -136,7 +138,9 @@ func TestRepeatSubmissionMySQLRoundsAndRestart(t *testing.T) {
 	}
 	repeatMySQLStored(t, db, task.ID, 1)
 	for i := 0; i < 4; i++ {
-		e.drainSpilled()
+		if _, err := e.recoverPendingStage(site + ":detail"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	repeatMySQLStored(t, db, task.ID, 1)
 	// Recovery uses durable state only, including a previously claimed round.

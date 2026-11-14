@@ -67,8 +67,7 @@
 | `task_requeued` | 治理队列重投（`queue` = `error_queue` / `recover_queue` / `repeat_queue`） |
 | `queue_round` | 治理队列一轮跑完（`counts.processed`、`duration_ms`） |
 | `backlog_sampled` | 治理队列积压采样 |
-| `stage_snapshot` / `stage_pool` | 阶段与工作池的周期快照（排队/在跑/累计/溢出） |
-| `spill_changed` | 溢出表变化（`source=added` 新增；`source=drained` 一轮回灌的聚合） |
+| `stage_snapshot` / `stage_pool` | 阶段与工作池的周期快照（排队/在跑/累计） |
 | `breaker_tripped` / `breaker_transition` | 熔断触发及恢复状态变化 |
 | `pause_resumed` | 暂停/恢复信号变化 |
 
@@ -257,10 +256,7 @@ CLI 每次生成会逐份打印每天的判定与事件统计；真的清掉过�
 才能结合非轮询待处理量分析零吞吐；没有正的可观测跨度、引擎暂停/空闲或历史日报时，检查标不适用，
 不能据此推断 worker/队列故障。有吞吐时说明行写实际吞吐。积压数字来自生成期间的当前状态查询；多个查询不保证同一事务快照，也不代表窗口末的历史状态。
 
-**队列/溢出表**：报告只看 `stage_snapshot` 的队列与在途数，加上 `spill_changed` 的溢出表 backlog
-（引擎队列达高水位时任务先寄放在内存溢出表，`drain_interval` 再回灌）。所以 `queue_drained` 的
-「未完成」= `Σ未完成（含排队） + Σ治理队列 backlog + 溢出表 backlog`，不再把排队数重复加一遍；
-报告会单列一张「溢出表（spill，引擎内存）」小表，方便和 DB 的 pending 对上。
+**阶段队列与持久积压**：每个站点阶段使用独立投递器，把持久 pending 按容量送入有界 channel。任务提交受理完成后由持久记录接管，业务 worker 不等待自身阶段队列空位。内存中不再保存溢出表，也没有定时 drain 或 `spill_changed` 指标。队列快照反映已驻留的排队/在途任务，不能代替任务表的 pending 总量；报告判定应结合持久积压，避免把 channel 已空误认为所有任务完成。
 
 ### 5.3 事件完整性（判定项 `event_coverage`）
 

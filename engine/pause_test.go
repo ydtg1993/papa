@@ -10,6 +10,7 @@ import (
 
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/models"
 )
 
 func TestManualForceResumeDoesNotCertifySiteOrClearFailureWindow(t *testing.T) {
@@ -172,11 +173,11 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 		t.Fatal("整站暂停必须涵盖该站的每一个阶段")
 	}
 	// 入队点这一层：往那个阶段投任务会被寄放（不建池、不跑）
-	if err := e.SubmitTask(&Task{Stage: "detail", Site: "stub", URL: "https://example.com/d"}); err != nil {
+	if err := e.submitTask(&Task{Stage: "detail", Site: "stub", URL: "https://example.com/d"}); err != nil {
 		t.Fatalf("暂停中提交不该报错（寄放）：%v", err)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应当寄放 1 条，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task must remain durable pending")
 	}
 	if pool := e.pools.Get(core.StageKey("stub", "detail")); pool != nil {
 		t.Fatal("暂停期间不该为那个阶段建池")
@@ -188,7 +189,7 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 
 // 声明了 `StartPaused` 的站：**启动那一刻整站就是停的**。
 //
-// 入口任务照投（这正是"先把入口排好、再放开这一站"），但入队点把每一条都折回溢出表、
+// 入口任务照投（这正是"先把入口排好、再放开这一站"），但入队点把每一条保留为持久 pending、
 // 池子一个都不建、worker 一条都没跑；后台点「恢复整站」（ResumeSite）才灌回并跑起来。
 //
 // 这条钉的正是原来 `EntryManual` 想表达却做不到的那件事：manual 只管住了入口那一投，
@@ -196,6 +197,12 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
+	f.row["site"], f.row["stage"], f.row["id"] = "a", "catalog", int64(1)
+	f.onExec = func(n int) {
+		if strings.HasPrefix(f.execs[n-1], "INSERT INTO") {
+			f.noRows = false
+		}
+	}
 	e := newTestEngine(t, f)
 	e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
 	fetcher := &recordingFetcher{stage: "catalog"}
@@ -222,15 +229,15 @@ func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
 	if stale := e.pools.Get(core.StageKey("a", "catalog")); stale != nil {
 		t.Fatal("闸住的站启动时连池子都不该建（收口在建池之前）")
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("入口任务应当先寄放在溢出表，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task must remain durable pending")
 	}
 	if got := fetcher.calls(); len(got) != 0 {
 		t.Fatalf("闸住期间不该跑任务，实得 %v", got)
 	}
 
 	// 后台点「恢复整站」：立刻灌回（夹具把 DrainInterval 设成一小时，等 tick 就是永远等不到）
-	f.noRows = false // 回灌要按 id 回查那一行（真库里本来就在）
+	f.noRows = false // pending 补位要回查那一行（真库里本来就在）
 	if !e.ResumeSite("a") {
 		t.Fatal("恢复应当成功")
 	}
@@ -242,6 +249,12 @@ func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
 func TestStartPausedOnlyAffectsDeclaredSites(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
+	f.row["site"], f.row["stage"], f.row["id"] = "running", "catalog", int64(1)
+	f.onExec = func(n int) {
+		if strings.HasPrefix(f.execs[n-1], "INSERT INTO") {
+			f.noRows = false
+		}
+	}
 	e := newTestEngine(t, f)
 	e.SetSiteBreaker("stopped", breaker.Config{Enabled: false, Threshold: 1})
 	e.SetSiteBreaker("running", breaker.Config{Enabled: false, Threshold: 1})
@@ -258,7 +271,7 @@ func TestStartPausedOnlyAffectsDeclaredSites(t *testing.T) {
 	if e.isPaused(pauseScope{Site: "running"}) {
 		t.Fatal("没写 StartPaused 的站不该被带上")
 	}
-	if err := e.SubmitTask(&Task{Stage: "catalog", Site: "running", URL: "https://example.com/r"}); err != nil {
+	if err := e.submitTask(&Task{Stage: "catalog", Site: "running", URL: "https://example.com/r"}); err != nil {
 		t.Fatalf("照跑的站提交应当成功：%v", err)
 	}
 	run.waitCalls(t, 1)
@@ -381,7 +394,7 @@ func TestPoolBuiltWhilePausedIsFrozen(t *testing.T) {
 	if pool == nil {
 		t.Fatal("阶段应当已登记")
 	}
-	if err := pool.Submit(&Task{ID: 1, Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{ID: 1, Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 	time.Sleep(60 * time.Millisecond)
@@ -395,7 +408,7 @@ func TestPoolBuiltWhilePausedIsFrozen(t *testing.T) {
 	fetcher.waitCalls(t, 1)
 }
 
-// 暂停中提交：**在入队点收口** —— 不入队、寄放到溢出表、不建池；行已经落库且是 pending。
+// 暂停中提交：**在入队点收口** —— 不入队、保留为持久 pending、不建池；行已经落库且是 pending。
 func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
@@ -408,12 +421,12 @@ func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 	if !e.PauseSite("stub", "暂停") {
 		t.Fatal("暂停应当成功")
 	}
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
+	if err := e.submitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
 		t.Fatalf("暂停中提交不该报错（任务寄放，恢复后跑）：%v", err)
 	}
 
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应当寄放 1 条，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task must remain durable pending")
 	}
 	if pool := e.pools.Get(stubKey); pool != nil {
 		t.Fatal("暂停期间不该建池（收口在建池之前）")
@@ -426,10 +439,8 @@ func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 	}
 }
 
-// 暂停的桶在回灌时**整桶跳过**，而且**不查库** —— 这是本次改动的主要收益：
-// 以前闸住的站，每 drain_interval（默认 2s）对每条溢出任务做一次 SELECT + 一次 UPDATE，
-// 而入队又判队满 → 再溢出，永远推进不了。
-func TestDrainSpilledSkipsPausedBucketWithoutQuerying(t *testing.T) {
+// 暂停阶段的 pending 投递器直接返回，不查询数据库。
+func TestPendingRecoverySkipsPausedStageWithoutQuerying(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
 	e := newTestEngine(t, f)
@@ -437,21 +448,21 @@ func TestDrainSpilledSkipsPausedBucketWithoutQuerying(t *testing.T) {
 	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, &recordingFetcher{stage: "stub"}, nil)
 	e.ApplyRegisterStage()
 	e.PauseSite("stub", "暂停")
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
+	if err := e.submitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
 		t.Fatal(err)
 	}
 
 	before := f.readSQL()
-	e.drainSpilled()
+	_, _ = e.recoverPendingStage("stub:stub")
 	if got := f.readSQL(); got != before {
 		t.Fatalf("暂停中的桶不该被查库（空转就是这么来的）：\n%s", got)
 	}
-	if got := e.spillBacklog(); got != 0 {
-		t.Fatalf("durable paused bucket should release resident spill entries, got %d", got)
+	if f.written() == "" {
+		t.Fatal("accepted pending task was not persisted")
 	}
 }
 
-// 恢复要**立刻**灌回，不等下一个 drain tick（drain_interval 可以配到小时）。
+// 恢复立即唤醒阶段 pending 投递器，不依赖周期 tick。
 func TestResumeWakesDrainImmediately(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
@@ -461,11 +472,11 @@ func TestResumeWakesDrainImmediately(t *testing.T) {
 	e.AddStage("stub", StageConfig{Site: "stub", WorkerCount: 1, QueueSize: 8}, fetcher, nil)
 	e.ApplyRegisterStage()
 	e.PauseSite("stub", "暂停")
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
+	if err := e.submitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
 		t.Fatal(err)
 	}
 
-	f.noRows = false // 回灌要按 id 回查那一行（真库里本来就在）
+	f.noRows = false // pending 补位要回查那一行（真库里本来就在）
 	if !e.ResumeSite("stub") {
 		t.Fatal("放行应当成功")
 	}

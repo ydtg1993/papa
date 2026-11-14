@@ -290,6 +290,11 @@ type CompensationResult struct {
 // BatchCompensate revalidates each preview version and returns individual results.
 // At most 200 items are accepted; retries cannot bypass manual/time/readiness.
 func (e *Engine) BatchCompensate(ctx context.Context, requests []CompensationRequest) ([]CompensationResult, error) {
+	if err := e.beginTaskAdmission(); err != nil {
+		return nil, err
+	}
+	defer e.endTaskAdmission()
+
 	if len(requests) > 200 {
 		return nil, errors.New("at most 200 compensation requests are allowed")
 	}

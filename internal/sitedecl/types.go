@@ -32,7 +32,7 @@ type SiteSpec struct {
 	// RestrictedKeywords 本站自己的"受限页"文案，追加到 `htmlfetch.RestrictedReason` 的默认词表之后
 	//（如"安全验证""请稍后再试"这类本站特有的话术）。命中后一般返回 `papa.RestrictedPageError`。
 	RestrictedKeywords []string
-	// StartPaused 启动时就把**整站**闸住：入口任务照投（它们先寄放在溢出表里、池子一个都不建），
+	// StartPaused 启动时就把**整站**闸住：入口任务照投（它们保留为持久 pending、不执行 handler），
 	// 启动恢复与轮询队列捞回来的任务也一样不动 —— 等后台「站点控制」卡点「恢复整站」才灌回。
 	//
 	// 用途是"先把入口排好、再放开这一站"：多站项目里，某几站希望启动那一刻停在原地、由人来决定
@@ -66,6 +66,8 @@ type BreakerSpec struct {
 
 // StageSpec 一个阶段的完整声明。
 type StageSpec struct {
+	// Downstream lists the only permitted child stages in this site; empty means terminal.
+	Downstream []string
 	// 非空表示完整阶段可由只读探针验证；有写入/下载/派发的阶段不得声明。
 	BreakerReadOnlyCoverage string
 	RepeatLimit             int // 轮询队列上限：repeat >= 此值停止重投；0 不限，不影响恢复/错误队列。
@@ -85,7 +87,7 @@ type StageSpec struct {
 	// 零值 false = 这阶段没有入口这回事。
 	//
 	// 它**不是**"现在跑不跑"的开关 —— 那个在站点声明上（`SiteSpec.StartPaused`）：
-	// 一个站想"启动先别动、等人来点"，要的是整站级闸门（入口任务照投、任务先寄放在溢出表），
+	// 一个站想"启动先别动、等人来点"，要的是整站级闸门（入口任务照投、任务保留为持久 pending），
 	// 而不是"入口阶段不投、其它阶段照跑"。原先这两件事挤在一个三态枚举（auto/manual/off）里，
 	// 声明 manual 之后启动恢复与轮询队列照样把这一站跑起来 —— 接口就是那么写的，别改回去。
 	Entry bool

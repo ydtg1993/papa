@@ -15,7 +15,7 @@ Papa 是**单实例、单进程内模块化**的爬虫框架。多个站点、�
 | 通用名称 | Papa 中的实际对应 | 职责边界 |
 | --- | --- | --- |
 | Engine | `engine.Engine` | 协调任务提交、调度、执行和结算，通过各自组件维护状态 |
-| Scheduler | Engine 调度组件、`engine/internal/scheduler`、`internal/workerpool` | 驻留预算、阶段池、延迟/溢出及持续数据库补充；不是另一个独立调度服务 |
+| Scheduler | Engine 调度组件、`engine/internal/scheduler`、`internal/workerpool` | 驻留预算、阶段池、延迟与事件驱动的持久 pending 补充；不是另一个独立调度服务 |
 | Spider | 业务的 `SiteSpec` / `StageSpec`、`Fetcher`，可选 `EntrySubmitter` | 声明站点与阶段；提交入口；在 `FetchHandler` 中抓取、解析、保存结果和提交后续任务 |
 | Downloader | `pkg/htmlfetch`、`pkg/browser`，以及 `pkg/middleware/filedown` / `m3u8` | 前两者获取网页/浏览器响应；后两者下载文件/媒体。按需选择，不是每个任务都必须经过全部组件 |
 | Middlewares | 网络出口、请求治理、账号/身份、代理，以及下载器资源能力 | 分散在各自能力的调用边界；Papa 没有要求所有请求依次穿过的统一 Spider Middleware 链 |
@@ -40,7 +40,7 @@ flowchart TB
         Runtime["运行策略服务<br/>internal/runtimecontrol"]
         subgraph Execution["Engine 内部职责组合"]
             Engine["Engine 协调入口"]
-            Scheduler["Scheduler<br/>驻留预算、delay / spill、补充"]
+            Scheduler["Scheduler<br/>驻留预算、delay / pending、容量补位"]
             Worker["阶段 worker 池<br/>执行 Engine 装配的 handler"]
             Breaker["breakerCoordinator<br/>熔断准入、恢复与失败结算"]
         end
@@ -124,7 +124,7 @@ flowchart TD
     Submit["SubmitTask / SubmitTasks<br/>校验站点阶段、身份与归属"]
     Persist["提交持久化<br/>身份去重 / 条件更新"]
     Schedule["调度准入<br/>驻留预算、暂停、到期时间、任务流"]
-    Pending["保留持久待执行状态<br/>delay / spill / 后续数据库补充"]
+    Pending["保留持久待执行状态<br/>delay / 后续 pending 补位"]
     Worker["阶段 worker<br/>取消检查、熔断准入、资源与账号准备"]
     Claim{"条件认领并读取轮次成功？"}
     Skip["不调用业务 handler<br/>冲突退出；存储异常按协议重试或保留未确认"]
@@ -172,7 +172,7 @@ flowchart TD
     Backoff -->|计数已确认，仅重新确认开始计时| Attempt
     Backoff -->|计数写入错误或回执不明| Uncertain
     Retry -->|不可重试或次数耗尽| Settle
-    Return -->|ctx 已取消且业务未成功，特殊结算见表| Cancel
+    Return -->|纯取消且没有真实业务失败| Cancel
     Backoff -->|取消| Cancel
     Cancel -->|释放为 pending 后，后续准入允许时| Pending
     Cancel -->|仍为遗留 processing 时，需后续启动| Recover
@@ -195,14 +195,14 @@ flowchart TD
 
 | 场景 | 当前实现 |
 | --- | --- |
-| 准入等待后才发生暂停或取消 | worker 在认领前复查；不应调用 handler。未认领的 pending 可由调度持续补充，持续补充不依赖启动恢复开关 |
+| 准入等待后才发生暂停或取消 | worker 在认领前复查；不应调用 handler。未认领的 pending 可由调度持续补充，启动恢复始终启用 |
 | 认领成功 | 还需读取已认领轮次、保存账号尝试记录（如适用），并确认开始计时；不能仅凭 Claim 成功就认为业务已调用 |
 | 普通可重试业务错误 | 未取消且次数未耗尽时，可取消退避，再**一次性**增加 retry。计数写入错误/回执不明就退出并保留未确认，不能循环加法写入或继续 handler |
 | 计时写入失败 | 重试的是计时状态操作。最终仍无法确认时不把它当业务失败再执行 handler；普通取消路径按阶段释放认领或保留未确认 |
 | 终态写入失败或确认丢失 | `Complete` 按轮次写入并可读取当前终态确认丢失回执。普通存储错误留在 worker 中退避；行消失/版本变化立即退出，取消终止等待；不是所有错误都无限重试 |
 | 业务已成功，但取消与收尾并发 | 结束计时、终态各自使用 `ConfirmSuccess`，取消时各有最多 2 秒确认窗口；不是整个任务共用 2 秒，也不是无限脱离取消 |
-| ctx 已取消且 handler 返回错误 | 普通路径释放认领；**熔断选中样本**若返回真实业务错误（包括与取消组合的错误），仍需有限窗口持久失败。纯取消不作为健康失败证据；迟到成功不证明站点恢复 |
-| handler panic / 不可重试 / 账号失败 / 补偿策略错误 | 不进入普通同次尝试重试循环；按相应结算路径处理。panic 的步骤与归档先收尾，再由阶段 handler 尝试落失败；取消和未确认状态仍按实际分支处理 |
+| ctx 已取消且 handler 返回错误 | 普通 handler 与熔断样本都先保留真实业务错误：即使错误同时包含取消，也按 NoRetry / 补偿分类在有限窗口持久化终态。仅纯 context.Canceled 等取消结果释放认领回 pending；取消不能覆盖真实失败。纯取消不作为健康失败证据；迟到成功不证明站点恢复 |
+| handler panic / 不可重试 / 账号失败 / 补偿策略错误 | 不进入普通同次尝试重试循环；按相应结算路径处理。panic 的步骤与归档先收尾，再由阶段 handler 尝试落失败；panic(error) 保留原始错误链，errors.Is/As 仍能识别 NoRetry 与补偿分类；取消和未确认状态仍按实际分支处理 |
 | 熔断样本的最终失败 | 先保存可靠失败意图，再处理计时和终态，后续控制结算可接续；这条存储路径不经过 obs。终态已确认不等于熔断整个恢复事务或整个 App 已排空 |
 | processing 与 pending 恢复 | 持续补充只查符合条件的 pending；上次运行遗留 processing 需要启用启动恢复并满足筛选条件。未确认记录可能已经是终态，必须按持久状态核对，不能一概重跑 |
 

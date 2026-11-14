@@ -1,22 +1,14 @@
 flowchart TB
-    DB[("MySQL pending<br/>持久积压，不等于内存队列")] --> R["持续补充：阶段轮转<br/>先检查暂停和额度，再有限 keyset 读取"]
-    R --> A{"逐行再次检查<br/>驻留准入是否成功？"}
-    A -->|否| KEEP["保留持久 pending<br/>后续补充，不占驻留引用"]
-    A -->|是| G["Engine 投递协调<br/>取消 / 到期时间 / 暂停 / 活池"]
-    G -->|窗口内未来任务或特殊样本| D["delay 最小堆<br/>单 dispatcher 等最近到期"]
-    G -->|远期普通任务卸载| KEEP
-    G -->|已到期且允许投递| W["阶段 worker 池<br/>普通队列 + 加急优先"]
-    G -->|暂不能投递| S["spill 阶段桶<br/>有限批次轮转回灌"]
-    W -->|高水位拒收 / 池不可用| S
-    S -->|回灌时按 ID 批量读库| V{"重验行仍存在<br/>仍 pending 且轮次有效？"}
-    D -->|到期先重新读库| V
-    V -->|有效，重新检查到期时间| G
-    V -->|已删除 / 状态或轮次已变| DROP["释放当前副本的驻留责任<br/>不重投旧执行轮次"]
-    V -->|读库失败| RETRY["保留责任，沿原路径稍后重试<br/>spill 放回 / delay 重新排期"]
-    S -.->|暂停且允许卸载| KEEP
-    D -.->|暂停且允许卸载| KEEP
-    W --> C["worker 再做准入与条件认领<br/>认领成功才执行 / 结算"]
+    DB[("MySQL pending<br/>持久积压")] --> R["每阶段独立投递器<br/>事件唤醒 + 到期定时器"]
+    R --> A{"驻留容量与暂停检查"}
+    A -->|暂不能投递| KEEP["保留持久 pending<br/>释放容量或恢复时继续"]
+    A -->|允许| G["有界 keyset 查询<br/>版本化扫描游标"]
+    G --> W["阶段有界 channel<br/>满队列阻塞，可取消"]
+    W --> C["worker 准入与条件认领<br/>认领成功才执行"]
+    C -->|释放容量| R
+    C -->|终态或策略变化| DB
+    D["唯一延迟堆<br/>每阶段最多一个在途处理"] -->|到期重验状态与代次| W
+    STOP["暂停 / 关停"] -->|取消阻塞等待| KEEP
+    API["启动 Entry 根 / SubmitChildren"] -->|阶段图与执行许可校验后持久化| DB
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
-    classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
-    class DB,R,A,G,D,W,S,V,C runtime;
-    class KEEP,DROP,RETRY observe;
+    class DB,R,A,G,W,C,D,API runtime;

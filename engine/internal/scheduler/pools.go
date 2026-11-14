@@ -48,6 +48,15 @@ func (r *Registry[T]) Get(key string) *workerpool.WorkerPool[T] {
 	return r.pools[key]
 }
 
+func (r *Registry[T]) ForgetStopped(key string, pool *workerpool.WorkerPool[T]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pools[key] == pool {
+		delete(r.pools, key)
+		delete(r.lastSubmit, key)
+	}
+}
+
 // getOrCreate 取池，没有就建，并**刷新 lastSubmit**（每次投递都走它，所以「最后一次收到任务」是准的）。
 // create 在持有写锁时调用：建池只在「首次 submit」发生一次，之后全是 map 命中；短暂持锁换来
 // 「并发下只建一份」的保证，值。
@@ -58,7 +67,7 @@ func (r *Registry[T]) GetOrCreate(key string, create func() *workerpool.WorkerPo
 	if r.stopped {
 		// 停机之后不再建池：停机的语义是"没有新活"，新池会既不在 Stop 取的那份快照里、
 		// 又带着一群活着的 worker 跑任务，而调用方（app.Run）已经按 drained=true 去关库了。
-		// 返回 nil 由 submitToStage 翻成"先寄放"，任务留在待处理态等下次启动的启动恢复。
+		// 返回 nil 由 阶段投递器 翻成"先寄放"，任务留在待处理态等下次启动的启动恢复。
 		return nil
 	}
 	if p, ok := r.pools[key]; ok {
@@ -92,7 +101,9 @@ func (r *Registry[T]) ReapIdle(idle, stopTimeout time.Duration) map[string]*work
 		if _, _, _, inProgress, queueLen := pool.Stats(); inProgress != 0 || queueLen != 0 {
 			continue
 		}
-		pool.Stop(stopTimeout)
+		if !pool.StopIfIdle(stopTimeout) {
+			continue
+		}
 		delete(r.pools, key)
 		delete(r.lastSubmit, key)
 		reaped[key] = pool
@@ -104,9 +115,9 @@ func (r *Registry[T]) ReapIdle(idle, stopTimeout time.Duration) map[string]*work
 //
 // 置位与取快照必须原子，这是这段的关键：分成两步的话，两步之间进来的 getOrCreate 会建出一个
 // 既不在这份快照里、又已经不该存在的池 —— 就是"Stop 之后新池逃出关停"那条时序窗。
-// 而框架自己的收尾协程恰好就在这个窗口里投递：延迟投递的 deliverDelayed 与溢出回灌的
-// drainSpilled 都会走到 submitToStage → getOrCreatePool（它们只在 ctx 上 select，
-// 被 cancel 唤起的那个 tick 照样会把手里这条投出去）。
+// 而框架自己的收尾协程恰好就在这个窗口里投递：延迟投递的 deliverDelayed 与持久 pending 的
+// 阶段投递器都可能请求 getOrCreatePool（取消与获取池可能并发，
+// 关闭登记必须阻止停止快照之外产生新的工作池）。
 //
 // 原子之后只剩两种结局，没有第三种：要么池已在快照里（Stop 会停它、等它），
 // 要么 getOrCreate 被拒（投递方按"先寄放"处理，行保持 pending，下次启动恢复重新入队）。
@@ -126,7 +137,7 @@ func (r *Registry[T]) Shutdown() map[string]*workerpool.WorkerPool[T] {
 	return out
 }
 
-// isStopped 停机位是否已置。submitToStage 用它把"引擎在停机"与"阶段没注册"分开报 ——
+// isStopped 停机位是否已置。阶段投递器 用它把"引擎在停机"与"阶段没注册"分开报 ——
 // 两者都会让 getOrCreatePool 返回 nil，但给运维的结论完全不同。
 func (r *Registry[T]) IsStopped() bool {
 	if r == nil {

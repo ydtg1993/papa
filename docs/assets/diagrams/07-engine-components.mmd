@@ -2,7 +2,7 @@ flowchart TB
     H["宿主 App / Fetcher / 管理操作<br/>注册阶段、提交、控制、Stop"] --> E["Engine 公开门面<br/>跨组件顺序与生命周期"]
     subgraph CORE["Engine 内部：职责组件，不是多个服务进程"]
       S["提交与身份<br/>submissionStore / dedupCache"]
-      Q["调度协调<br/>residentSet / spillQueue / refill"]
+      Q["调度协调<br/>residentSet / delivery coordinator"]
       D["scheduler 内部包<br/>活池登记 / 延迟最小堆"]
       X["执行编排<br/>stageHandler / attemptExecution"]
       P["execution 内部包<br/>未确认状态 / 成功结算确认"]

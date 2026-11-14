@@ -132,39 +132,21 @@ func TestQueueDrainedCountsOutstandingOnce(t *testing.T) {
 	}
 }
 
-// spill（引擎内存溢出表）不在内存队列里，queue_drained 必须把最后一条 spill_changed 的 backlog 计入。
-func TestQueueDrainedIncludesSpillBacklog(t *testing.T) {
+// 阶段在途与治理积压分别计入，阶段排队已包含在 InProgress 内。
+func TestQueueDrainedIncludesGovernanceBacklog(t *testing.T) {
 	now := time.Date(2026, 10, 29, 14, 0, 0, 0, time.Local)
-	in := &obs.Input{Now: now, Run: obs.RunMeta{From: now.Add(-time.Hour), To: now},
-		Events: []events.Event{
-			{
-				Type: events.TypeStageSnapshot, TS: now.Add(-2 * time.Minute),
-				Stages: map[string]events.StageSnapshot{
-					"s:catalog": {Site: "s", Stage: "catalog", QueueLen: 1, InProgress: 3, Workers: 1},
-				},
-			},
-			{Type: events.TypeSpillChanged, TS: now.Add(-time.Minute),
-				Counts: map[string]int{"drained": 7}, Backlog: 5},
-		}}
+	in := &obs.Input{Now: now, Run: obs.RunMeta{From: now.Add(-time.Hour), To: now}, Events: []events.Event{{
+		Type: events.TypeStageSnapshot, TS: now.Add(-time.Minute),
+		Stages: map[string]events.StageSnapshot{"s:catalog": {Site: "s", Stage: "catalog", QueueLen: 1, InProgress: 3, Workers: 1}},
+		Queues: map[string]events.QueueSnapshot{"error_queue": {Enabled: true, Backlog: 5}},
+	}}}
 	res, err := (&Generic{}).Build(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := checkByID(res, "queue_drained")
-	if c == nil || c.Passed {
-		t.Fatalf("未完成 3 + spill 5 应判未通过：%+v", c)
-	}
-	for _, want := range []string{"未完成 3", "spill 5"} {
-		if !strings.Contains(c.Message, want) {
-			t.Fatalf("queue_drained message 缺 %q：%q", want, c.Message)
-		}
-	}
-	spill := tableByTitle(res, "溢出表（spill，引擎内存）")
-	if spill == nil || len(spill.Rows) != 1 {
-		t.Fatalf("应输出溢出表：%+v", spill)
-	}
-	if got := strings.Join(spill.Rows[0], " | "); !strings.Contains(got, "7") || !strings.Contains(got, "5") {
-		t.Fatalf("溢出表应含最近回灌 7 / 当前积压 5：%s", got)
+	if c == nil || c.Passed || !strings.Contains(c.Message, "8 条") || !strings.Contains(c.Message, "未完成 3、治理 5") {
+		t.Fatalf("unexpected backlog: %+v", c)
 	}
 }
 

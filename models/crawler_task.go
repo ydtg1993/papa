@@ -72,7 +72,7 @@ type CrawlerTask struct {
 	//     都只按 status 过滤，复合索引 leading 不是 status 时用不上，数据量大后会退化成全表扫描。
 	// gorm 允许同一字段写多个 `index:` tag（schema.ParseIndexes 会解析出两条；别被 TagSettings
 	// map 只留最后一个值误导 —— parseFieldIndexes 读的是原始 tag）。
-	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;index:idx_task_due,priority:1;comment:0:待处理 1:处理中 2:成功 3:失败"`
+	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;index:idx_task_auto_retry,priority:1;index:idx_task_due,priority:1;comment:0:待处理 1:处理中 2:成功 3:失败"`
 	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
 	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 用本站 RepeatQueue 的 Interval。
@@ -84,8 +84,10 @@ type CrawlerTask struct {
 	NextRepeatAt *time.Time `gorm:"index:idx_repeat_due,priority:3;comment:下次轮询到点；NULL=未排期"`
 	// LastRepeatAt 上次被轮询队列**投递**的时间（只给后台看，不参与任何判断）：
 	// 周期被改过之后，它与 NextRepeatAt 不再互为简单加减，所以不是可以推导出来的副本。
-	LastRepeatAt *time.Time `gorm:"comment:上次被轮询投递的时间；NULL=从未"`
-	Reprocess    int        `gorm:"type:int(11);default:0;comment:失败任务被错误队列再处理的代数"`
+	LastRepeatAt   *time.Time `gorm:"comment:上次被轮询投递的时间；NULL=从未"`
+	AutoRetryCount int        `gorm:"not null;default:0;index:idx_task_auto_retry,priority:3;comment:连续失败期间自动再处理轮数"`
+	RetryBlocked   *bool      `gorm:"default:null;index:idx_task_auto_retry,priority:2;comment:自动重试禁止标记；NULL=历史未知禁止自动重试"`
+	Reprocess      int        `gorm:"type:int(11);default:0;comment:任务被手动或错误队列再处理的单调代数"`
 	// Urgent 加急：该任务投到所属阶段的快车道，插到常规队列前面。
 	// 它是「排队位置」的概念 —— worker 认领（置为处理中）时一并归零，跑过一次即完成使命。
 	Urgent    bool      `gorm:"type:tinyint(1);default:0;comment:加急 0:否 1:是"`
@@ -95,6 +97,10 @@ type CrawlerTask struct {
 }
 
 func (t *CrawlerTask) BeforeCreate(tx *gorm.DB) error {
+	if t.RetryBlocked == nil {
+		blocked := false
+		t.RetryBlocked = &blocked
+	}
 	resourceID := ""
 	if t.IdentityType == "id" {
 		resourceID = t.IdentityValue

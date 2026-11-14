@@ -222,7 +222,7 @@ func algorithmHandlerReads(t *testing.T, db *gorm.DB) uint64 {
 // new builder, or semantic regressions would silently change both sides.
 func referenceSoonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).Where("repeatable = ?", models.RepeatableYes).
-		Select(`MIN(CAST(CASE WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at) ELSE NULL END AS SIGNED)) AS epoch`, []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed})
+		Select(`MIN(CAST(CASE WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) ELSE NULL END AS SIGNED)) AS epoch`, []models.TaskStatus{models.TaskStatusSuccess})
 }
 
 // Frozen pre-folding scope: semantic/performance comparisons must not use the

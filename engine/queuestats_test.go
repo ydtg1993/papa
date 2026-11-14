@@ -152,23 +152,12 @@ func TestQueueStatsBacklog(t *testing.T) {
 	}
 }
 
-func TestQueueStatsEnabledFollowsConfig(t *testing.T) {
+func TestQueueStatsAlwaysEnabled(t *testing.T) {
 	e := newStatsEngine(t)
-
-	// 没登记 = 零值 = 已停用（默认 scope 就是这样：未归属的任务不参与治理队列）
-	if got := e.GetQueueStats()[QueueError]; got.Enabled {
-		t.Fatal("没声明错误队列的站点，那一行应当是已停用")
-	}
-
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{Enabled: true}
-	if got := e.GetQueueStats()[QueueError]; !got.Enabled {
-		t.Fatal("声明里开着 → error_queue 那一行应当是启用")
-	}
-
-	// 声明里关掉：快照同步反映
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{Enabled: false}
-	if got := e.GetQueueStats()[QueueError]; got.Enabled {
-		t.Fatal("声明里关着 → error_queue 那一行应当是已停用")
+	for _, name := range []string{QueueError, QueueRepeat} {
+		if got := e.GetQueueStats()[name]; !got.Enabled {
+			t.Fatalf("%s must always be enabled", name)
+		}
 	}
 }
 
@@ -189,7 +178,7 @@ func TestQueueStatsAllQueuesReported(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("snapshot has %d queues, want 2: %v", len(got), got)
 	}
-	if _, ok := got[recoverQueueName]; ok {
+	if _, ok := got["recover_queue"]; ok {
 		t.Fatal("recover_queue 不该出现在监控快照里：它不是运行期队列")
 	}
 }

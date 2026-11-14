@@ -88,6 +88,7 @@ func (e *Engine) persistTerminal(ctx context.Context, task *Task, version taskRu
 }
 
 func (e *Engine) persistTerminalUpdates(ctx context.Context, task *Task, version taskRunVersion, status models.TaskStatus, updates map[string]any) error {
+	taskstore.ScheduleFirstRepeat(updates, e.cfg.RepeatQueue.EffectiveInterval().Seconds())
 	err := e.retryTaskState(ctx, task, "persist terminal state", func() error {
 		return taskstore.Complete(e.db.WithContext(ctx), task.ID, version, status, updates)
 	})

@@ -15,41 +15,25 @@ type testTask struct {
 
 func (t *testTask) Unique() string { return t.url }
 
-func TestSubmitWatermark(t *testing.T) {
-	p := NewWorkerPool[*testTask](1, 4, 0.75) // 高水位 75% = 3
-
-	// 低于高水位：正常入队
-	for i := 0; i < 3; i++ {
-		if err := p.Submit(&testTask{url: "t"}); err != nil {
-			t.Fatalf("submit %d below watermark = %v", i, err)
+func TestSubmitUsesPhysicalCapacity(t *testing.T) {
+	p := NewWorkerPool[*testTask](1, 4)
+	for i := 0; i < 4; i++ {
+		if err := p.SubmitContext(context.Background(), &testTask{url: "t"}); err != nil {
+			t.Fatalf("slot %d rejected: %v", i, err)
 		}
 	}
-	// 达到高水位：返回 ErrQueueFull
-	if err := p.Submit(&testTask{url: "t"}); err != ErrQueueFull {
-		t.Fatalf("submit at watermark = %v, want ErrQueueFull", err)
-	}
-}
-
-func TestSubmitWatermarkCustom(t *testing.T) {
-	p := NewWorkerPool[*testTask](1, 4, 0.5) // 高水位 50% = 2
-
-	if err := p.Submit(&testTask{url: "t"}); err != nil {
-		t.Fatalf("submit 1 = %v", err)
-	}
-	if err := p.Submit(&testTask{url: "t"}); err != nil {
-		t.Fatalf("submit 2 = %v", err)
-	}
-	// 第 3 个（len=2 >= 4*0.5=2）触发高水位
-	if err := p.Submit(&testTask{url: "t"}); err != ErrQueueFull {
-		t.Fatalf("submit at 50%% watermark = %v, want ErrQueueFull", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := p.SubmitContext(ctx, &testTask{url: "t"}); err != context.DeadlineExceeded {
+		t.Fatalf("full queue: %v", err)
 	}
 }
 
 func TestSubmitStopped(t *testing.T) {
-	p := NewWorkerPool[*testTask](1, 4, 0.75)
+	p := NewWorkerPool[*testTask](1, 4)
 	p.Stop(0)
-	if err := p.Submit(&testTask{url: "t"}); err == nil || err == ErrQueueFull {
-		t.Fatalf("submit after stop = %v, want non-ErrQueueFull error", err)
+	if err := p.SubmitContext(context.Background(), &testTask{url: "t"}); err != ErrStopped {
+		t.Fatalf("submit after stop = %v, want ErrStopped", err)
 	}
 }
 
@@ -59,8 +43,8 @@ func TestSubmitStopConcurrent(t *testing.T) {
 	handler := func(ctx context.Context, task *testTask) error { return nil }
 
 	for iter := 0; iter < 200; iter++ {
-		// watermark=1 → 高水位等于容量，不会因水位被拒，尽量让 Submit 走到发送
-		p := NewWorkerPool[*testTask](2, 64, 1)
+		// 使用实际容量判定队满，并发覆盖发送与停止的交接
+		p := NewWorkerPool[*testTask](2, 64)
 		p.Start(context.Background(), handler)
 
 		start := make(chan struct{})
@@ -71,7 +55,7 @@ func TestSubmitStopConcurrent(t *testing.T) {
 				defer wg.Done()
 				<-start
 				for j := 0; j < 200; j++ {
-					_ = p.Submit(&testTask{url: "t"})
+					_ = p.SubmitContext(context.Background(), &testTask{url: "t"})
 				}
 			}()
 		}
@@ -89,7 +73,7 @@ func TestSubmitStopConcurrent(t *testing.T) {
 
 // handler panic 不能带走 worker：同一 worker 必须继续处理后续任务，panic 记为失败并上报栈。
 func TestHandlerPanicKeepsWorker(t *testing.T) {
-	p := NewWorkerPool[*testTask](1, 4, 1)
+	p := NewWorkerPool[*testTask](1, 4)
 	ran := make(chan string, 4)
 	p.Start(context.Background(), func(ctx context.Context, task *testTask) error {
 		if task.url == "boom" {
@@ -99,10 +83,10 @@ func TestHandlerPanicKeepsWorker(t *testing.T) {
 		return nil
 	})
 
-	if err := p.Submit(&testTask{url: "boom"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "boom"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Submit(&testTask{url: "ok"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,33 +136,31 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 
 /* ---------- 快车道 ---------- */
 
-// 快车道容量 = max(workers*2, 8)；水位 0.75 时 8 个位子在 6 个时就不收了。
-// 满了必须**退到主队列**而不是 ErrQueueFull —— 调用方把 ErrQueueFull 翻译成
-// "溢出到 DB、每 2s 回灌一次"，对加急任务那等于把加急属性悄悄吃掉。
+// 快车道使用全部实际容量，满后尝试常规队列。
 func TestSubmitUrgentFallsBackToMainQueue(t *testing.T) {
-	p := NewWorkerPool[*testTask](1, 32, 0.75)
+	p := NewWorkerPool[*testTask](1, 32)
 
-	for i := 0; i < 6; i++ {
-		if err := p.SubmitUrgent(&testTask{url: "u"}); err != nil {
+	for i := 0; i < 8; i++ {
+		if err := p.SubmitUrgentContext(context.Background(), &testTask{url: "u"}); err != nil {
 			t.Fatalf("快车道第 %d 条就报错了：%v", i+1, err)
 		}
 	}
-	if err := p.SubmitUrgent(&testTask{url: "overflow"}); err != nil {
+	if err := p.SubmitUrgentContext(context.Background(), &testTask{url: "overflow"}); err != nil {
 		t.Fatalf("快车道满时应退到主队列，实得 %v", err)
 	}
 
 	main, urgent := p.QueueDepths()
-	if main != 1 || urgent != 6 {
-		t.Fatalf("main/urgent = %d/%d, want 1/6", main, urgent)
+	if main != 1 || urgent != 8 {
+		t.Fatalf("main/urgent = %d/%d, want 1/8", main, urgent)
 	}
-	if _, _, _, _, queueLen := p.Stats(); queueLen != 7 {
-		t.Fatalf("Stats queueLen = %d, want 7（两条队列之和）", queueLen)
+	if _, _, _, _, queueLen := p.Stats(); queueLen != 9 {
+		t.Fatalf("Stats queueLen = %d, want 9（两条队列之和）", queueLen)
 	}
 }
 
 // 快车道优先：worker 有空位时，快车道上的任务必须先于主队列里的被取走。
 func TestUrgentLaneIsServedFirst(t *testing.T) {
-	p := NewWorkerPool[*testTask](1, 32, 1)
+	p := NewWorkerPool[*testTask](1, 32)
 	gate := make(chan struct{})
 	entered := make(chan string, 8) // 进入 handler 就报一声，用来确认 worker 真的被占住了
 	order := make(chan string, 8)
@@ -191,7 +173,7 @@ func TestUrgentLaneIsServedFirst(t *testing.T) {
 	})
 
 	// 先塞一条把唯一 worker 占住，之后的都堆在队列里
-	if err := p.Submit(&testTask{url: "blocker"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "blocker"}); err != nil {
 		t.Fatal(err)
 	}
 	// 不能只看 inProgress —— 它在任务入队时就为 1 了，worker 可能还没取到
@@ -200,13 +182,13 @@ func TestUrgentLaneIsServedFirst(t *testing.T) {
 	}
 
 	// 主队列先堆两条，快车道再进一条
-	if err := p.Submit(&testTask{url: "n1"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "n1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Submit(&testTask{url: "n2"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "n2"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.SubmitUrgent(&testTask{url: "urgent"}); err != nil {
+	if err := p.SubmitUrgentContext(context.Background(), &testTask{url: "urgent"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -242,7 +224,7 @@ func TestStopDrainsBothQueuesEvenWhenCtxCancelled(t *testing.T) {
 	var mu sync.Mutex
 	ran := 0
 
-	p := NewWorkerPool[*testTask](1, 64, 1)
+	p := NewWorkerPool[*testTask](1, 64)
 	gate := make(chan struct{})
 	p.Start(ctx, func(context.Context, *testTask) error {
 		<-gate
@@ -252,7 +234,7 @@ func TestStopDrainsBothQueuesEvenWhenCtxCancelled(t *testing.T) {
 		return nil
 	})
 
-	if err := p.Submit(&testTask{url: "blocker"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "blocker"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { _, _, _, inProgress, _ := p.Stats(); return inProgress == 1 }, "blocker 进入 handler")
@@ -261,9 +243,9 @@ func TestStopDrainsBothQueuesEvenWhenCtxCancelled(t *testing.T) {
 	for i := 0; i < queued; i++ {
 		var err error
 		if i%3 == 0 {
-			err = p.SubmitUrgent(&testTask{url: fmt.Sprintf("u%d", i)})
+			err = p.SubmitUrgentContext(context.Background(), &testTask{url: fmt.Sprintf("u%d", i)})
 		} else {
-			err = p.Submit(&testTask{url: fmt.Sprintf("n%d", i)})
+			err = p.SubmitContext(context.Background(), &testTask{url: fmt.Sprintf("n%d", i)})
 		}
 		if err != nil {
 			t.Fatalf("第 %d 条入队失败：%v", i, err)
@@ -286,7 +268,7 @@ func TestStopDrainsBothQueuesEvenWhenCtxCancelled(t *testing.T) {
 // SubmitUrgent 与 Stop 并发：同样不得 panic（两条队列都不 close，结构上就不该有这条路径）。
 func TestSubmitUrgentStopConcurrent(t *testing.T) {
 	for iter := 0; iter < 100; iter++ {
-		p := NewWorkerPool[*testTask](2, 64, 1)
+		p := NewWorkerPool[*testTask](2, 64)
 		p.Start(context.Background(), func(context.Context, *testTask) error { return nil })
 
 		start := make(chan struct{})
@@ -298,9 +280,9 @@ func TestSubmitUrgentStopConcurrent(t *testing.T) {
 				<-start
 				for j := 0; j < 100; j++ {
 					if i%2 == 0 {
-						_ = p.Submit(&testTask{url: "t"})
+						_ = p.SubmitContext(context.Background(), &testTask{url: "t"})
 					} else {
-						_ = p.SubmitUrgent(&testTask{url: "t"})
+						_ = p.SubmitUrgentContext(context.Background(), &testTask{url: "t"})
 					}
 				}
 			}(i)
@@ -323,7 +305,7 @@ func TestStopReportsInFlightOnTimeout(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 2)
 
-	p := NewWorkerPool[*testTask](2, 8, 1)
+	p := NewWorkerPool[*testTask](2, 8)
 	p.Start(context.Background(), func(context.Context, *testTask) error {
 		started <- struct{}{}
 		<-release
@@ -331,7 +313,7 @@ func TestStopReportsInFlightOnTimeout(t *testing.T) {
 	})
 
 	for i := 0; i < 2; i++ {
-		if err := p.Submit(&testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
+		if err := p.SubmitContext(context.Background(), &testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
 			t.Fatalf("submit %d = %v", i, err)
 		}
 	}
@@ -359,12 +341,12 @@ func TestStopReportsInFlightOnTimeout(t *testing.T) {
 // 而不是零值 —— 否则第二次调用方会误以为没排空，进而跳过本该做的关库。
 func TestStopReportsDrainedAndIsIdempotent(t *testing.T) {
 	done := make(chan struct{}, 1)
-	p := NewWorkerPool[*testTask](1, 4, 1)
+	p := NewWorkerPool[*testTask](1, 4)
 	p.Start(context.Background(), func(context.Context, *testTask) error {
 		done <- struct{}{}
 		return nil
 	})
-	if err := p.Submit(&testTask{url: "t"}); err != nil {
+	if err := p.SubmitContext(context.Background(), &testTask{url: "t"}); err != nil {
 		t.Fatalf("submit = %v", err)
 	}
 	<-done
@@ -432,7 +414,7 @@ func TestGateBlocksWorkersFromConsuming(t *testing.T) {
 	gate := newFakeGate()
 	gate.Pause()
 
-	p := NewWorkerPool[*testTask](1, 8, 1)
+	p := NewWorkerPool[*testTask](1, 8)
 	p.SetGate(gate)
 
 	ran := make(chan string, 8)
@@ -442,7 +424,7 @@ func TestGateBlocksWorkersFromConsuming(t *testing.T) {
 	})
 
 	for i := 0; i < 3; i++ {
-		if err := p.Submit(&testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
+		if err := p.SubmitContext(context.Background(), &testTask{url: fmt.Sprintf("t%d", i)}); err != nil {
 			t.Fatalf("submit %d = %v", i, err)
 		}
 	}
@@ -477,7 +459,7 @@ func TestStopWhilePausedStillDrains(t *testing.T) {
 	gate := newFakeGate()
 	gate.Pause()
 
-	p := NewWorkerPool[*testTask](1, 8, 1)
+	p := NewWorkerPool[*testTask](1, 8)
 	p.SetGate(gate)
 
 	ran := make(chan string, 8)
@@ -486,7 +468,7 @@ func TestStopWhilePausedStillDrains(t *testing.T) {
 		return nil
 	})
 	for i := 0; i < 3; i++ {
-		_ = p.Submit(&testTask{url: "t"})
+		_ = p.SubmitContext(context.Background(), &testTask{url: "t"})
 	}
 
 	if drained, inFlight := p.Stop(5 * time.Second); !drained || inFlight != 0 {

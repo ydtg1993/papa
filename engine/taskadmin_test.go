@@ -146,12 +146,12 @@ func TestAdminScopesCarryConditions(t *testing.T) {
 func urgentEngine(t *testing.T, f *fakeTaskDB) (*Engine, *workerpool.WorkerPool[*Task]) {
 	t.Helper()
 	db := openFakeTaskDB(t, f)
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := &Engine{
 		db:         db,
 		loggerSet:  &loggers.LoggerSet{Engine: logrus.New(), DB: logrus.New()},
 		cfg:        &config.Config{},
-		stages:     map[string]*stageInfo{"stub:stub": {stage: "stub", config: StageConfig{Site: "stub"}}},
+		stages:     map[string]*stageInfo{"stub:stub": {stage: "stub", config: StageConfig{Site: "stub", Entry: true}}},
 		pools:      newPoolRegistry(),
 		dedupCache: newDedupCache(0),
 	}
@@ -173,6 +173,13 @@ func TestUrgentTaskHappyPath(t *testing.T) {
 
 	if err := e.UrgentTask(7); err != nil {
 		t.Fatalf("UrgentTask = %v, want nil", err)
+	}
+
+	f.mu.Lock()
+	f.row["urgent"] = true
+	f.mu.Unlock()
+	if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+		t.Fatal(err)
 	}
 
 	// 1) 先落库标记加急 —— 后台「加急」列要是「是」，溢出/重启后也还认得出
@@ -286,6 +293,10 @@ func TestUrgentTaskSecondClickIsRejected(t *testing.T) {
 		t.Fatalf("第二次加急 = %v, want ErrTaskUrgent", err)
 	}
 	// 两次点击只有第一次真的进了队列
+	if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+		t.Fatal(err)
+	}
+
 	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
 		t.Fatalf("队列里应有且只有 1 条，实得 main/urgent = %d/%d", main, urgent)
 	}
@@ -464,7 +475,7 @@ func TestSetTaskRepeatIntervalHappyPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
 			e, _ := urgentEngine(t, f)
-			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: tc.global}
+			e.cfg.RepeatQueue = config.RepeatQueueConfig{Interval: tc.global}
 			e.repeatQueue = &repeatQueueState{wake: make(chan struct{}, 1)} // 队列态先备好，唤醒才有地方落
 			wake := e.repeatQueue.wake
 

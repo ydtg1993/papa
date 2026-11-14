@@ -35,7 +35,7 @@ func TestEngineStopSnapshotsAfterTickerFinalization(t *testing.T) {
 				if settle {
 					e.execution.Forget(42)
 				} else {
-					e.overflow.Put(&Task{ID: 41, Site: "stub", Stage: "stub"})
+					e.requestPendingRecovery(&Task{ID: 41, Site: "stub", Stage: "stub"})
 					e.execution.Remember(42, "stub:stub")
 				}
 				e.tickerWG.Done()
@@ -49,7 +49,7 @@ func TestEngineStopSnapshotsAfterTickerFinalization(t *testing.T) {
 				if len(stats) != 0 {
 					t.Fatalf("reported persistence that ticker confirmed: %+v", stats)
 				}
-			} else if got := stats["stub:stub"]; got.Queued != 1 || got.Unfinished != 1 {
+			} else if got := stats["stub:stub"]; got.Queued != 0 || got.Unfinished != 1 {
 				t.Fatalf("lost ticker's final retained work: %+v", stats)
 			}
 		})

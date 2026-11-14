@@ -30,6 +30,7 @@ type Recovery struct {
 // A serial sample's business result awaiting terminal acknowledgement. Keep
 // the original round and classification; recovery retries SQL, never business.
 type PendingFailure struct {
+	RetryBlocked                                      *bool // nil is a legacy journal with unknown retry policy; conservatively blocked
 	TaskID                                            int
 	Stage, URL, Error, Category, Fingerprint          string
 	Repeat, Reprocess                                 int

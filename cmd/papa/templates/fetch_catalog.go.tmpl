@@ -17,7 +17,7 @@ func (f *FetchCatalog) GetStage() string { return "catalog" }
 
 // SubmitEntries 入口任务：本阶段"注册即投一批起始任务"。实现这个方法就够了 ——
 // 站点声明里写了 `Entry: true` 时，框架在启动那一趟自动调它
-// （那时**所有**阶段的池子都已备好，所以这里能往任意阶段投）。
+// （只能投本站声明为 Entry 且没有入边的入口阶段）。
 // 不想让它一启动就跑，写站点级的 `StartPaused: true`（整站先闸住，等后台点恢复）——
 // 别把入口这一投当开关用。
 // 不需要起始任务就删掉这个方法（阶段照常跑，只是没人往里投任务）。
@@ -72,7 +72,18 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	//   if items.Length() == 0 { return papa.WrapNoRetryKind("structure", fmt.Errorf("列表页没有条目：%s", page.URL)) }
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
-	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})
+	// 使用 engine.SubmitChildren(ctx, task, children...)；每个 child 的 Stage 为 detail、Site 为 task.Site。
+	// ctx 必须沿用本次 Handler 的上下文，返回后不可继续派发。分页在本 worker 内迭代。
 
 	return nil
+}
+
+// FetchDetail is the terminal stage; replace its parsing with site-owned logic.
+type FetchDetail struct{}
+
+func (f *FetchDetail) GetStage() string { return "detail" }
+
+func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine *papa.Engine) error {
+ _, err := engine.FetchHTML(ctx, task.URL)
+ return err
 }

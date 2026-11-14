@@ -74,6 +74,8 @@ func Table(db *gorm.DB, acts TaskActions) oao.Table {
 			{Field: "status", Label: "状态", Kind: oao.KindNumber,
 				Render: oao.RenderEnum, Enum: taskStatusEnum, Tone: taskStatusTone},
 			{Field: "retry", Label: "重试", Kind: oao.KindNumber, Width: "70px"},
+			{Field: "auto_retry_count", Label: "自动重试", Kind: oao.KindNumber, Width: "90px"},
+			{Field: "retry_blocked", Label: "禁止自动重试", Kind: oao.KindBool, Width: "110px"},
 			{Field: "reprocess", Label: "重投", Kind: oao.KindNumber, Width: "70px"},
 			{Field: "repeatable", Label: "可轮询", Kind: oao.KindBool, Width: "90px"},
 			{Field: "repeat", Label: "轮询次数", Kind: oao.KindNumber, Width: "90px"},

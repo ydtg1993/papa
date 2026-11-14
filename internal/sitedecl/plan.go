@@ -12,6 +12,7 @@ import (
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
+	"github.com/ydtg1993/papa/v4/internal/stageflow"
 )
 
 // Plan 是站点声明推导出的 Engine 注册计划。规划不操作运行实例；
@@ -113,6 +114,15 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 	// 三个治理队列现在是全局一段（config.yaml 的 error_queue / recover_queue / repeat_queue），
 	// 站点声明不再带队列参数 —— 这里没有队列要推导。
 
+	nodes := make(map[string]stageflow.Node, len(spec.Stages))
+	for _, st := range spec.Stages {
+		if st.Fetcher != nil {
+			nodes[strings.TrimSpace(st.Fetcher.GetStage())] = stageflow.Node{Downstream: st.Downstream, Entry: st.Entry}
+		}
+	}
+	if _, err := stageflow.Compile(nodes); err != nil {
+		errs = append(errs, fmt.Errorf("%s 的阶段图: %w", siteLabel(p.Site, idx), err))
+	}
 	for j, st := range spec.Stages {
 		sp, err := planStage(p.Site, st, owner)
 		if err != nil {
@@ -155,7 +165,7 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (StagePlan
 		return plan, fmt.Errorf("阶段 %q: WorkerCount 必须 > 0（为 0 时池子里没有 worker，任务会静静躺在队列里）", stage)
 	}
 	if st.QueueSize <= 0 {
-		return plan, fmt.Errorf("阶段 %q: QueueSize 必须 > 0（为 0 时高水位判定恒真，每次提交都溢出到 DB）", stage)
+		return plan, fmt.Errorf("阶段 %q: QueueSize 必须 > 0（必须为有界阶段 channel 提供正容量）", stage)
 	}
 	delay, err := parseDelay(st.Delay)
 	if err != nil {
@@ -176,6 +186,7 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (StagePlan
 		Stage:   stage,
 		Fetcher: st.Fetcher,
 		Config: engine.StageConfig{
+			Downstream:              slices.Clone(st.Downstream),
 			BreakerReadOnlyCoverage: st.BreakerReadOnlyCoverage,
 			RepeatLimit:             st.RepeatLimit,
 			MaxAttempts:             attempts,

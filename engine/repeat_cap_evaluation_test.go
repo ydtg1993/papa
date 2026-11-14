@@ -107,7 +107,7 @@ func TestRepeatCapCostMySQL(t *testing.T) {
 							return referenceRepeatScheduleStatusFirst(e, d)
 						}},
 						{"caps_first", func(d *gorm.DB) *gorm.DB {
-							return referenceRepeatLimits(e, d.Model(&models.CrawlerTask{}).Where("repeatable = ?", models.RepeatableYes)).Where("status IN ? OR next_repeat_at > NOW()", repeatDueStatuses).Select("MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) AS SIGNED)) AS epoch")
+							return referenceRepeatLimits(e, d.Model(&models.CrawlerTask{}).Where("repeatable = ?", models.RepeatableYes)).Where("status IN ?", repeatDueStatuses).Select("MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) AS SIGNED)) AS epoch")
 						}},
 						// A statement-local diagnostic, not a server/session setting
 						// or production hint. EXPLAIN must confirm its actual effect.
@@ -212,6 +212,6 @@ func TestRepeatCapCostMySQL(t *testing.T) {
 // The previous production shape, independent of the current cap folding.
 func referenceRepeatScheduleStatusFirst(e *Engine, d *gorm.DB) *gorm.DB {
 	return referenceRepeatLimits(e, d.Model(&models.CrawlerTask{}).Where("repeatable = ?", models.RepeatableYes).
-		Where("status IN ? OR next_repeat_at > NOW()", repeatDueStatuses).
+		Where("status IN ?", repeatDueStatuses).
 		Select("MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) AS SIGNED)) AS epoch"))
 }

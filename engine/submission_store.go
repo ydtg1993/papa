@@ -55,7 +55,6 @@ func (p submissionPlan) backfill() {
 	for _, t := range p.originals {
 		if first := p.first[t.Unique()]; first != nil && first != t {
 			t.ID, t.Repeat = first.ID, first.Repeat
-			t.repeatCounted = first.repeatCounted
 		}
 	}
 }
@@ -87,7 +86,7 @@ func (s submissionStore) protectTaskPoolReferences(tasks []*Task, insert func() 
 }
 
 func (s submissionStore) findTaskRecord(task *Task, record *models.CrawlerTask) error {
-	return s.dedupScope(task).Select("id", "status", "repeat", "reprocess", "site", "stage", "account_pool", "url", "not_before", "delay_ms").First(record).Error
+	return s.dedupScope(task).Select("id", "status", "repeat", "reprocess", "site", "stage", "flow_id", "account_pool", "url", "not_before", "delay_ms").First(record).Error
 }
 
 func (s submissionStore) dedupScope(task *Task) *gorm.DB {
@@ -339,6 +338,10 @@ func (s submissionStore) prepareBatch(tasks []*Task, accept func(submissionDeliv
 			}
 			continue
 		}
+		if err := adoptTaskOwnership(t, &record); err != nil {
+			submitErrors = append(submitErrors, err)
+			continue
+		}
 		accept(submissionDelivery{task: t, record: record, batch: true})
 	}
 	err := errors.Join(submitErrors...)
@@ -349,7 +352,7 @@ func (s submissionStore) prepareBatch(tasks []*Task, accept func(submissionDeliv
 }
 
 func adoptTaskOwnership(task *Task, record *models.CrawlerTask) error {
-	if (record.Site != "" && record.Site != task.Site) || (record.Stage != "" && record.Stage != task.Stage) || (task.AccountPool != "" && task.AccountPool != record.AccountPool) {
+	if record.Site != task.Site || record.Stage != task.Stage || record.FlowID != task.FlowID || (task.AccountPool != "" && task.AccountPool != record.AccountPool) {
 		return ErrTaskOwnershipConflict
 	}
 	task.AccountPool = record.AccountPool
@@ -365,11 +368,15 @@ func (s submissionStore) preparePending(task *Task, id uint) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	scope := s.db.WithContext(ctx).Model(&models.CrawlerTask{}).Where("id = ? AND status = ?", id, models.TaskStatusPending)
+	scope := s.db.WithContext(ctx).Model(&models.CrawlerTask{}).Where("id = ? AND status = ? AND site = ? AND stage = ? AND flow_id = ?", id, models.TaskStatusPending, task.Site, task.Stage, task.FlowID)
 	if task.deliveryVersion != nil {
 		scope = scope.Where("`repeat` = ? AND reprocess = ?", task.deliveryVersion.Repeat, task.deliveryVersion.Reprocess)
 	}
-	err := scope.Updates(submitUpdates(task)).Error
+	res := scope.Updates(submitUpdates(task))
+	err := res.Error
+	if err == nil && res.RowsAffected == 0 {
+		return ErrTaskChanged
+	}
 	if err == nil {
 		task.deliveryDurable = true
 	}
@@ -406,23 +413,11 @@ func (s submissionStore) claim(ctx context.Context, id uint, versions ...*taskRu
 // 抽出来是为了能在**不连库**的前提下把拼出来的 SQL 渲染出来验（engine/sqlshape_test.go）：
 // `repeat` 是 MySQL 保留字，裸写进表达式会被当成 REPEAT() 函数调用、整条 UPDATE 报 1064 ——
 // 这个坑真踩过（v3.1.0 起，只有真库跑得出来，假库测试看不见）。
+// Submission may update business metadata, never a persisted stage identity.
 func submitUpdates(task *Task) map[string]any {
-	updates := map[string]any{"status": models.TaskStatusPending}
-	if task.Repeatable && task.ID != 0 && !task.repeatCounted {
-		// 这里只初始化首轮；并发/顺序重复提交同一 pending 行都保持原计数。
-		// 真正的下一轮在 repeat queue 的终态→pending 条件更新中原子递增。
-		updates["repeat"] = gorm.Expr("CASE WHEN `repeat` = 0 THEN 1 ELSE `repeat` END")
-	}
-	// 这次提交带了 Meta 就刷新这一列（带空 Meta 的提交不动它）。
-	// 行是这条任务的记录，而重投路径全靠它还原身份 —— 不刷新的话库里会一直留着上一次的身份，
-	// 下一次重投就把任务带回旧的业务行上（SubmitTask/SubmitTasks 的 Meta 只是内存里的，
-	// 谁也看不出来它和库里的不一致）。
+	updates := map[string]any{}
 	if len(task.Meta) > 0 {
 		updates["meta"] = metaToJSON(task.Meta)
-	}
-	// 站点同理：行是这条任务的记录，重投路径全靠它认出"这条属于哪个站"
-	if task.Site != "" {
-		updates["site"] = task.Site
 	}
 	return updates
 }

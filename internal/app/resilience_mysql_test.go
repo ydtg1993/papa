@@ -550,7 +550,7 @@ func TestAppMySQLMixedChild(t *testing.T) {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
-	cfg := map[string]any{"app": map[string]any{"env": "test"}, "db": map[string]any{"driver": "mysql", "dsn": dsn, "log_level": "silent", "max_open_conns": 12, "max_idle_conns": 4}, "log": map[string]any{"dir": filepath.Join(dir, "logs"), "level": "error"}, "crawler": map[string]any{"stop_timeout": "100ms", "drain_interval": "20ms", "trace": map[string]any{"mode": "off"}}, "server": map[string]any{"enabled": true, "port": port, "operation_log": true, "shutdown_timeout": "2s"}, "recover_queue": map[string]any{"enabled": true, "worker_count": 1, "batch_size": 16, "batch_pause": "1ms"}, "obs": map[string]any{"events": map[string]any{"enabled": true}, "report": map[string]any{"on_exit": true, "dir": filepath.Join(dir, "reports")}}}
+	cfg := map[string]any{"app": map[string]any{"env": "test"}, "db": map[string]any{"driver": "mysql", "dsn": dsn, "log_level": "silent", "max_open_conns": 12, "max_idle_conns": 4}, "log": map[string]any{"dir": filepath.Join(dir, "logs"), "level": "error"}, "crawler": map[string]any{"stop_timeout": "100ms", "trace": map[string]any{"mode": "off"}}, "server": map[string]any{"enabled": true, "port": port, "operation_log": true, "shutdown_timeout": "2s"}, "recover_queue": map[string]any{"batch_size": 16}, "obs": map[string]any{"events": map[string]any{"enabled": true}, "report": map[string]any{"on_exit": true, "dir": filepath.Join(dir, "reports")}}}
 	cfg["browser"] = map[string]any{"enable": true, "pool_size": 1, "temp_dir": filepath.Join(dir, "browser"), "headless": true}
 	cfg["obs"].(map[string]any)["report"].(map[string]any)["interval"] = "2s"
 	data, _ := json.Marshal(cfg)

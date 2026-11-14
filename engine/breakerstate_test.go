@@ -17,7 +17,7 @@ import (
 func TestSiteSnapshotResetsPauseStateOnRestart(t *testing.T) {
 	store := &fakeSiteStore{}
 	newEngine := func() *Engine {
-		e := queueEngine(t, newFakeTaskDB(), workerpool.NewWorkerPool[*Task](1, 8, 1))
+		e := queueEngine(t, newFakeTaskDB(), workerpool.NewWorkerPool[*Task](1, 8))
 		e.SetSite(core.Site{Key: "a"})
 		e.SetSiteBreaker("a", breaker.Config{Enabled: false, Threshold: 1})
 		e.SetSiteStore(store)

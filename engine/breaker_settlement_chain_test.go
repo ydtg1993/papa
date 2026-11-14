@@ -246,6 +246,11 @@ func TestBreakerSettlementCrashCutsFromHandlerMySQL(t *testing.T) {
 				t.Fatal(err)
 			}
 			restoreCancel()
+			// Exercise the real startup reset, not just the pending dispatcher.
+			// Known journal failures must retain processing for terminal CAS.
+			if err := restarted.preparePendingRecovery(); err != nil {
+				t.Fatal(err)
+			}
 			restarted.cancel()
 			restarted.tickerWG.Wait()
 			if release, ok := restarted.breakers.admitBreakerTask(&Task{ID: 99, Site: "synthetic", Stage: "detail"}); ok {
@@ -255,8 +260,8 @@ func TestBreakerSettlementCrashCutsFromHandlerMySQL(t *testing.T) {
 			if err := db.First(&row, row.ID).Error; err != nil {
 				t.Fatal(err)
 			}
-			if row.Status == models.TaskStatusProcessing && restarted.requeueRecoverTask(&row) {
-				t.Fatal("restart requeued known failed business")
+			if _, err := restarted.recoverPendingStage("synthetic:detail"); err != nil || restarted.SchedulerResidentCount() != 0 {
+				t.Fatalf("restart requeued known failed business: %v", err)
 			}
 			var wg sync.WaitGroup
 			for i := 0; i < 8; i++ {

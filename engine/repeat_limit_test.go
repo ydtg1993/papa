@@ -23,7 +23,7 @@ func TestRepeatLimitBoundaryOnlyRestrictsRepeatQueue(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := queueEngine(t, f, pool)
 			e.stages["stub:stub"].config.RepeatLimit = tc.limit
 			row := actionRow(7, "stub")
@@ -36,7 +36,8 @@ func TestRepeatLimitBoundaryOnlyRestrictsRepeatQueue(t *testing.T) {
 				got = e.requeueRepeatTaskIn(row)
 			case "recover":
 				row.Status = models.TaskStatusPending
-				got = e.requeueRecoverTask(row)
+				_, err := e.recoverPendingStage("stub:stub")
+				got = err == nil
 			case "error":
 				row.Status = models.TaskStatusFailed
 				got = e.requeueFailedTaskIn(row)
@@ -119,7 +120,7 @@ func TestRepeatLimitGroupsOnlyEqualStageAndLimit(t *testing.T) {
 
 func TestRepeatCountDeliveredAfterRequeue(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 	got := make(chan int, 1)
 	pool.Start(context.Background(), func(_ context.Context, task *Task) error { got <- task.Repeat; return nil })
@@ -130,6 +131,12 @@ func TestRepeatCountDeliveredAfterRequeue(t *testing.T) {
 	row.Status = models.TaskStatusSuccess
 	if !e.requeueRepeatTaskIn(row) {
 		t.Fatal("requeue failed")
+	}
+	// The governance queue commits pending; the recovery loop delivers that row.
+	f.row["repeat"] = int64(13)
+	f.row["repeatable"] = int64(models.RepeatableYes)
+	if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+		t.Fatal(err)
 	}
 	select {
 	case count := <-got:

@@ -13,7 +13,7 @@ import (
 func TestEngineComponentDependenciesStayNarrow(t *testing.T) {
 	components := map[string]bool{
 		"attemptExecution": false, "attemptPersistence": false,
-		"breakerCoordinator": false, "spillQueue": false,
+		"breakerCoordinator": false, "Coordinator": false,
 		"siteCatalog": false, "accountAlertGate": false,
 		"submissionStore": false, "taskFlowService": false,
 		"traceService": false, "archiveService": false,
@@ -22,6 +22,11 @@ func TestEngineComponentDependenciesStayNarrow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	deliveryPaths, err := filepath.Glob("internal/delivery/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths = append(paths, deliveryPaths...)
 	for _, path := range paths {
 		if filepath.Ext(path) != ".go" {
 			continue

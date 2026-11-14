@@ -14,6 +14,7 @@
 internal/
 ├── backoff/             # 无状态安全退避计算，不持有等待或任务生命周期
 ├── app/                 # 应用装配、公开扩展和生命周期
+├── stageflow/           # 不可变站点阶段 DAG、直接边与层级校验
 ├── sitedecl/            # 冻结声明、规划与进程登记表
 ├── runtimecontrol/      # 运行策略校验、持久化核对和发布
 ├── browserdiagnostics/  # 身份操作、独立诊断和取消排空
@@ -202,7 +203,7 @@ NewApp 构造时已创建 Engine；NewEngine 会读库预热活跃任务并启�
 - TTL 缓存读取与 Invalidate 用失效代次协调；失效期间完成的旧读重新回源，不把旧值或旧错误交给发布者。读取失败不缓存，正常 TTL 与本地保存后的即时失效语义不变。
 - 引擎错误与中间件错误消费者都响应 App context，并由同一完成信号追踪；不会为让消费者退出而关闭 Engine 的公开错误通道。正在执行的日志写入也必须返回后才报告排空。
 
-App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩子、Engine、运行组件和日志监听全部排空。返回 false 可能表示仍有执行者，也可能只是 Engine 中留有 spill/delay/未确认任务或最终熔断写入失败；App 对这些情况统一保守保留 DB/浏览器。不能通过强制关闭连接或另起 goroutine 后立即返回来伪装成排空。这里的统一截止时间分别属于 HTTP 关停和运行组件关停，不表示整个 Run 的所有清理共用一个总预算。
+App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩子、Engine、运行组件和日志监听全部排空。返回 false 可能表示仍有执行者，也可能只是 Engine 中留有 pending/delay/未确认任务或最终熔断写入失败；App 对这些情况统一保守保留 DB/浏览器。不能通过强制关闭连接或另起 goroutine 后立即返回来伪装成排空。这里的统一截止时间分别属于 HTTP 关停和运行组件关停，不表示整个 Run 的所有清理共用一个总预算。
 
 这些条件不等于 App 汇总了所有资源的成功关闭：代理 Close、事件 sink 关闭和审计 Close 不参与上述五项布尔合取；run_stopped 的 drained/stopStats 来自 Engine.Stop，也不是 HTTP、业务钩子和身份服务的全应用排空结果。requestDrain 只跟踪 ServeHTTP 返回；handler 自行启动并在返回后继续运行的 goroutine，须由业务收尾钩子或所属服务另行管理。Shutdown 只发出取消信号，没有等待 Run 清理完毕的返回契约。
 
@@ -447,7 +448,7 @@ NewApp 在创建 Engine 前调用 database.CheckTaskSchema；拒绝旧 schema �
 | 文件 | 职责、入口与边界 |
 | --- | --- |
 | `doc.go` | 任务持久化语义包契约 |
-| `pending.go` | PendingWindow、LoadSchedulingBatch、CountPending；库时钟/补偿/keyset 查询、批量回灌读取及关停计数；不拥有扫描 goroutine、游标或内存成员 |
+| `pending.go` | PendingWindow、NextPendingDelay、CountPending；库时钟/补偿/keyset 查询、下次到期时间及关停计数；不拥有扫描 goroutine、游标或内存成员 |
 | `store.go` | RunVersion / ErrChanged；CompensationScope、ClaimScope、RetryScope、TerminalScope、RepeatScope；Claim、Complete、Release、RetryTask、RetryFailed、AdvanceRepeat，以及内部 Insert/IncrementRetry |
 
 没有包级可变状态、锁、后台循环或 Stop。数据库行的 status、repeat、reprocess 和 compensation_version 构成操作条件；调用方提供带 context/事务的 DB，并检查错误与命中行数。不能由 admin、治理队列或 Engine 的另一个入口重新实现一套不同的重投版本规则。
@@ -496,7 +497,7 @@ App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测�
 
 ### 7.1 Workerpool：双队列、有界准入与真实排空结果
 
-`internal/workerpool` 是泛型执行池，只要求任务满足 `Tasker.Unique()`，handler 接收 context 并返回 error。它不懂任务表、站点、账号或熔断原因；数据库溢出、站点暂停状态及执行持久化由 Engine 通过明确接口协调。
+`internal/workerpool` 是泛型执行池，只要求任务满足 `Tasker.Unique()`，handler 接收 context 并返回 error。它不懂任务表、站点、账号或熔断原因；持久 pending 补位、站点暂停状态及执行持久化由 Engine 通过明确接口协调。
 
 | 文件 | 职责、入口与边界 |
 | --- | --- |
@@ -506,11 +507,11 @@ App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测�
 
 池拥有常规/加急队列、stopCh、worker WaitGroup、stopOnce 和首次 Stop 的结果；`mu` 保护 stopped，并使“检查准入+发送”与停止写锁互斥。submitted/completed/failed 用原子计数，活动队列只用于观测。Gate 必须在 Start 前安装，Start 按宿主生命周期调用；它没有重复 Start 的 once 保护。
 
-常规提交在高水位返回 ErrQueueFull，由上层保存未入队责任；加急队列优先消费，达到其高水位则退回常规队列。两条队列都不 close；Stop 持写锁关准入并关闭 stopCh，然后 worker 排尽已接收任务，停机排空不再受运行期 Gate 阻挡。context 传给 handler，但 worker 不因 context 已取消就丢掉排队存量，宿主仍必须调用 Stop。
+常规与加急投递均通过有界 channel 形成背压，等待响应调用方取消或停止。加急通道优先消费；没有 ErrQueueFull 或高水位切换。Stop 关闭接收并唤醒阻塞发送，worker 排尽已接收任务，停机排空不再受运行期 Gate 阻挡。context 传给 handler，但 worker 不因 context 已取消就丢掉排队存量，宿主仍必须调用 Stop。
 
 Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与尚未完成数量，后者包含排队任务。重复 Stop 返回首次结果，不是重新采样后的新结论；超时不会终止 Go goroutine 或业务 handler，外层不能在仍有任务时关闭其 DB/浏览器依赖。暂停/取消后的任务是否执行业务由 Engine handler 的准入和持久化规则共同决定，不能仅看池层排空理解业务结果。
 
-仅依赖标准库与 `internal/msgqueue`。`config_test.go` 验证非法尺寸；`workerpool_test.go` 验证水位、加急优先/回退、Submit 与 Stop 并发、panic 后 worker 存活、取消后双队列排空、暂停 Gate、超时与幂等结果。代表测试为 `TestStopDrainsBothQueuesEvenWhenCtxCancelled`、`TestStopReportsInFlightOnTimeout`、`TestStopWhilePausedStillDrains`。
+仅依赖标准库与 `internal/msgqueue`。`config_test.go` 验证非法尺寸；`workerpool_test.go` 验证有界背压、加急优先、Submit 与 Stop 并发、panic 后 worker 存活、取消后双队列排空、暂停 Gate、超时与幂等结果。代表测试为 `TestStopDrainsBothQueuesEvenWhenCtxCancelled`、`TestStopReportsInFlightOnTimeout`、`TestStopWhilePausedStillDrains`。
 
 <a id="msgqueue"></a>
 
@@ -545,3 +546,9 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 Engine 与 filedown/M3U8 各自的 `retry_backoff.go` 拥有基数、指数编号和上限策略；调用方继续拥有 context 等待、重试计数、请求和结算。不得把 Sleep、数据库、obs、App/Engine 或配置对象引入本计算包，架构测试守卫该依赖边界。
 
 退避验证还包括任意精度整数参照、整秒转换临界值、生产采样入口分散，以及独立 Windows 386 计算包检查。测试可用 testing/synctest；生产 backoff 仍只计算，不持有 context/时钟服务或等待生命周期。
+
+### stageflow
+
+`internal/stageflow/graph.go` 只依赖标准库，拥有站点阶段图的不可变快照。`Compile` 拒绝未知节点、重复边、自环、环和有入边的 Entry；`Allows` 仅查询直接声明边，`Root` 查询入口根，`Level` 返回从零入度阶段开始的最长路径层级。它不持有任务、数据库、执行上下文或 Engine；声明规划和 Engine 注册共同调用同一校验器。
+
+`graph_test.go` 覆盖非法图拒绝、非传递路由、层级与输入快照；`internal/sitedecl/stageflow_test.go` 覆盖声明图校验和 Downstream 快照。

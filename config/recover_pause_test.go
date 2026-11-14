@@ -1,43 +1,34 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// 启动恢复的批间停顿：不写 = 默认 30m；写了 = 用写的值。
-// 这是"一次恢复别把队列灌爆"的节拍开关，默认值必须有测试钉住 —— 否则谁改坏了默认，
-// 线上重启会在启动瞬间重新灌入全部积压。
-func TestRecoverQueueBatchPauseDefaultAndOverride(t *testing.T) {
-	base := "log:\n  dir: ./logs\ndb:\n  max_idle_conns: 10\n  max_open_conns: 100\n" +
-		"recover_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: 200\n"
-
-	cases := []struct {
-		name    string
-		extra   string
-		want    time.Duration
-		wantErr bool
-	}{
-		{"不写 batch_pause → 默认 30m", "", 30 * time.Minute, false},
-		{"显式 5s", "  batch_pause: \"5s\"\n", 5 * time.Second, false},
-		{"负数归一后仍走默认 30m", "  batch_pause: \"-1s\"\n", 30 * time.Minute, false},
+func TestQueueDefaultsAndRemovedKeys(t *testing.T) {
+	for _, body := range []string{"", "error_queue:\n  interval: 0\nrepeat_queue:\n  interval: 0\n"} {
+		cfg := loadString(t, baseConfig+body)
+		if cfg.ErrorQueue.Interval != 4*time.Hour || cfg.RepeatQueue.Interval != 12*time.Hour || cfg.ErrorQueue.WorkerCount != 1 || cfg.RepeatQueue.WorkerCount != 1 {
+			t.Fatalf("unexpected defaults: %+v %+v", cfg.ErrorQueue, cfg.RepeatQueue)
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			p := filepath.Join(dir, "config.yaml")
-			if err := os.WriteFile(p, []byte(base+tc.extra), 0o644); err != nil {
-				t.Fatalf("write: %v", err)
-			}
-			cfg, err := Load(p)
-			if err != nil {
-				t.Fatalf("load: %v", err)
-			}
-			if cfg.RecoverQueue.BatchPause != tc.want {
-				t.Fatalf("batch_pause = %v, want %v", cfg.RecoverQueue.BatchPause, tc.want)
+	for _, tc := range []struct{ section, key, value string }{
+		{"crawler", "queue_watermark", "0.75"}, {"crawler", "drain_interval", "2s"},
+		{"recover_queue", "enabled", "false"}, {"recover_queue", "worker_count", "1"}, {"recover_queue", "batch_pause", "1ms"},
+		{"error_queue", "enabled", "false"}, {"repeat_queue", "enabled", "false"},
+	} {
+		t.Run(tc.section+"."+tc.key, func(t *testing.T) {
+			msg := panicOn(t, baseConfig+tc.section+":\n  "+tc.key+": "+tc.value+"\n")
+			if !strings.Contains(msg, tc.key) {
+				t.Fatalf("removed key accepted or unclear error: %s", msg)
 			}
 		})
+	}
+	for _, section := range []string{"error_queue", "repeat_queue"} {
+		msg := panicOn(t, baseConfig+section+":\n  interval: -1s\n")
+		if !strings.Contains(msg, section+".interval") {
+			t.Fatal(msg)
+		}
 	}
 }

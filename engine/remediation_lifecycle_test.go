@@ -15,6 +15,7 @@ func TestAddStageRejectsInvalidPoolConfig(t *testing.T) {
 		{WorkerCount: 0, QueueSize: 1}, {WorkerCount: -1, QueueSize: 1},
 		{WorkerCount: 1, QueueSize: 0}, {WorkerCount: 1, QueueSize: -1},
 	} {
+		cfg.Site = "synthetic"
 		e := &Engine{stages: map[string]*stageInfo{}}
 		err := e.AddStage("invalid", cfg, &recordingFetcher{stage: "invalid"}, nil)
 		if err == nil || !strings.Contains(err.Error(), "must be > 0") {
@@ -54,7 +55,7 @@ func TestStopSharesWorkerAndTickerDeadline(t *testing.T) {
 	e.tickerWG.Add(1)
 	go func() { defer e.tickerWG.Done(); <-release }()
 	t.Cleanup(func() { close(release); <-workerDone; e.tickerWG.Wait() })
-	if err := pool.Submit(&Task{ID: 7, Stage: "stub", URL: "https://example.test"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{ID: 7, Stage: "stub", URL: "https://example.test"}); err != nil {
 		t.Fatal(err)
 	}
 	<-started

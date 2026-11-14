@@ -12,7 +12,7 @@ import (
 
 func TestApplyStagePlanPropagatesAddStageError(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	e := noDBEngine(t, cfg)
 	t.Cleanup(func() { e.Stop(time.Second) })
 	a := &App{Engine: e}

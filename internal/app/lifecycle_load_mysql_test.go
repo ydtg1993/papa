@@ -211,9 +211,9 @@ func TestAppMySQLLoadChild(t *testing.T) {
 		"app":           map[string]any{"env": "test"},
 		"db":            map[string]any{"driver": "mysql", "dsn": dsn, "log_level": "silent", "max_open_conns": 12, "max_idle_conns": 4},
 		"log":           map[string]any{"dir": filepath.Join(dir, "logs"), "level": "error"},
-		"crawler":       map[string]any{"stop_timeout": "5s", "drain_interval": "10ms", "trace": map[string]any{"mode": "off"}},
+		"crawler":       map[string]any{"stop_timeout": "5s", "trace": map[string]any{"mode": "off"}},
 		"server":        map[string]any{"enabled": true, "port": port, "operation_log": true, "shutdown_timeout": "2s"},
-		"recover_queue": map[string]any{"enabled": false},
+		"recover_queue": map[string]any{"batch_size": 16},
 		"obs":           map[string]any{"events": map[string]any{"enabled": true}, "report": map[string]any{"on_exit": true, "interval": "2s", "dir": filepath.Join(dir, "reports")}},
 		"browser":       map[string]any{"enable": true, "pool_size": 1, "headless": true, "temp_dir": filepath.Join(dir, "browser")},
 	}

@@ -17,7 +17,7 @@ import (
 func persistenceFixture(t *testing.T) (*Engine, *fakeTaskDB, *Task, *collectorEmitter) {
 	t.Helper()
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	c := &collectorEmitter{}
 	e.SetEventsEmitter(c)
 	task := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"}
@@ -177,7 +177,7 @@ func TestUncertainClaimNeverAssumesOwnership(t *testing.T) {
 	}
 }
 
-func TestManualRetryAndUrgencyKeepRepeatCountWhenSpilled(t *testing.T) {
+func TestManualRetryAndUrgencyKeepRepeatCountWhilePending(t *testing.T) {
 	for _, action := range []string{"retry", "urgent"} {
 		t.Run(action, func(t *testing.T) {
 			f := newFakeTaskDB()
@@ -189,7 +189,7 @@ func TestManualRetryAndUrgencyKeepRepeatCountWhenSpilled(t *testing.T) {
 					f.row["repeat"] = f.row["repeat"].(int64) + 1
 				}
 			}
-			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 1, 1))
+			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 1))
 			e.setPause(pauseScope{Site: "stub"}, pauseState{Reason: "test"})
 			var err error
 			if action == "retry" {
@@ -200,11 +200,13 @@ func TestManualRetryAndUrgencyKeepRepeatCountWhenSpilled(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if e.spillBacklog() != 1 {
-				t.Fatal("test did not exercise spill")
+			if f.row["status"] != int64(models.TaskStatusPending) {
+				t.Fatal("paused administrative action did not retain pending row")
 			}
 			e.ForceResumeSite("stub")
-			e.drainSpilled()
+			if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+				t.Fatal(err)
+			}
 			if f.row["repeat"] != int64(12) {
 				t.Fatalf("%s consumed polling round: %v", action, f.row["repeat"])
 			}
@@ -243,7 +245,7 @@ func TestCancelledClaimReleaseFailureRemainsVisible(t *testing.T) {
 	e, _, task, _ := persistenceFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	e.stages["stub:stub"].fetcher = &cancelInFetchFetcher{cancel: cancel, err: errors.New("stopping")}
+	e.stages["stub:stub"].fetcher = &cancelInFetchFetcher{cancel: cancel, err: context.Canceled}
 	failStatusWrites(t, e, models.TaskStatusPending, -1)
 	if err := e.stageHandler(e.stages["stub:stub"])(ctx, task); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
@@ -283,9 +285,9 @@ func TestErrorRetryRepeatCountIndependentOfQueuePressure(t *testing.T) {
 					f.row["repeat"] = f.row["repeat"].(int64) + 1
 				}
 			}
-			pool := workerpool.NewWorkerPool[*Task](1, 1, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 1)
 			if mode == "full" {
-				if err := pool.Submit(&Task{ID: 99, Stage: "stub", Site: "stub", URL: "blocker"}); err != nil {
+				if err := pool.SubmitContext(context.Background(), &Task{ID: 99, Stage: "stub", Site: "stub", URL: "blocker"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -301,7 +303,9 @@ func TestErrorRetryRepeatCountIndependentOfQueuePressure(t *testing.T) {
 			if mode == "paused" {
 				e.ForceResumeSite("stub")
 			}
-			e.drainSpilled()
+			if f.row["status"] != int64(models.TaskStatusPending) {
+				t.Fatal("retry lost durable pending row")
+			}
 			if got := f.row["repeat"]; got != int64(12) {
 				t.Fatalf("error retry consumed repeat budget under %s pressure: %v", mode, got)
 			}

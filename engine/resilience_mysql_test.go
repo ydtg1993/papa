@@ -50,11 +50,9 @@ func resilienceEngine(t *testing.T, db *gorm.DB, run func(context.Context, *Task
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Crawler.Trace.Mode = config.TraceOff
-	cfg.Crawler.DrainInterval = 20 * time.Millisecond
-	cfg.Crawler.QueueWatermark = .5
-	cfg.RecoverQueue.Enabled = true
+
 	cfg.RecoverQueue.BatchSize = 32
-	cfg.RecoverQueue.WorkerCount = 1
+
 	e := NewEngine(db, cfg, testLoggerSet())
 	e.SetSiteBreaker("synthetic", breaker.Config{})
 	if err := e.SetSchedulerLimits(SchedulerLimits{Global: 16, Site: 16, Stage: 16, RefillBatch: 16, DelayWindow: time.Second}); err != nil {
@@ -583,7 +581,7 @@ func TestSingleInstanceMySQLSoak(t *testing.T) {
 	})
 	t.Cleanup(func() { e.Stop(5 * time.Second) })
 	// Isolate continuous durable refill from the optional startup recovery pass.
-	e.cfg.RecoverQueue.Enabled = false
+
 	// Initial backlog is guaranteed to exceed the resident budget before start.
 	if !e.PauseSite("synthetic", "synthetic initial backlog") {
 		t.Fatal("initial pause refused")

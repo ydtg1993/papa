@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
@@ -16,6 +15,8 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/egress"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
+	"gorm.io/gorm"
+	"strings"
 )
 
 func TestSiteChallengeTaskExecutesOnceWithoutAccountSwitch(t *testing.T) {
@@ -79,19 +80,21 @@ func TestSiteChallengeTaskExecutesOnceWithoutAccountSwitch(t *testing.T) {
 	}
 }
 
-func TestSiteChallengeErrorQueueCanCompensateLater(t *testing.T) {
+func TestSiteChallengeBlocksPersistentAutomaticRetry(t *testing.T) {
 	f := newFakeTaskDB()
-	setRows(f, 1, "stub", models.TaskStatusFailed)
-	f.rows[0]["error"] = (&core.SiteChallengeError{StatusCode: 403, Evidence: "cf-mitigated: challenge"}).Error()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	e := queueEngine(t, f, pool)
-	e.cfg.ErrorQueue = config.ErrorQueueConfig{BatchSize: 10, WorkerCount: 1, MaxRetry: 3}
-	n, err := e.ProcessErrorQueue()
-	if err != nil || n != 1 {
-		t.Fatalf("later compensation blocked: n=%d err=%v", n, err)
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
+	cause := &core.SiteChallengeError{StatusCode: 403, Evidence: "cf-mitigated: challenge"}
+	if core.Retryable(cause) {
+		t.Fatal("site challenge became retryable")
 	}
-	main, urgent := pool.QueueDepths()
-	if main+urgent != 1 {
-		t.Fatal("failed challenge not queued for later compensation")
+	sql := e.db.ToSQL(func(db *gorm.DB) *gorm.DB {
+		return db.Model(&models.CrawlerTask{}).Where("id = ?", 7).Updates(taskStatusUpdates(models.TaskStatusFailed, cause))
+	})
+	if !strings.Contains(sql, "COALESCE(retry_blocked, TRUE) OR true") {
+		t.Fatalf("challenge prohibition not persisted: %s", sql)
+	}
+	e.errorQueueQuery()().Find(&[]models.CrawlerTask{})
+	if !strings.Contains(f.readSQL(), "retry_blocked = ?") {
+		t.Fatal("automatic queue bypasses durable prohibition")
 	}
 }

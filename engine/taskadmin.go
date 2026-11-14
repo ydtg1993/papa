@@ -8,7 +8,6 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"time"
 
-	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/gorm"
 )
@@ -99,6 +98,11 @@ func (e *Engine) loadTask(ctx context.Context, id uint) (*models.CrawlerTask, er
 
 // RetryTaskVersioned fences both reprocess and compensation revision from the displayed row.
 func (e *Engine) RetryTaskVersioned(ctx context.Context, id uint, wasReprocess int, wasCompensationVersion uint64) error {
+	if err := e.beginTaskAdmission(); err != nil {
+		return err
+	}
+	defer e.endTaskAdmission()
+
 	t, err := e.loadTask(ctx, id)
 	if err != nil {
 		return err
@@ -134,21 +138,9 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 
 	task := e.taskFromRecord(t)
 	task.deliveryVersion.Reprocess++
-	task.repeatCounted = true // manual reprocess keeps the current polling round
-	task.Retry = 0            // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
+	task.Retry = 0 // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitToStage(task); err != nil {
-		// 队列达高水位：与正常投递一致，溢出到 DB 由 drain 回灌，不算失败
-		if errors.Is(err, workerpool.ErrQueueFull) {
-			e.spilledCount.Add(1)
-			e.spillTask(task)
-			return nil
-		}
-		e.dedupCache.Delete(task.Unique())
-		e.residents.release(task, "")
-		e.markRequeueFailed("manual", t.ID, err)
-		return fmt.Errorf("submit task %d: %w", id, err)
-	}
+	e.afterTaskPending(task)
 	return nil
 }
 
@@ -167,14 +159,14 @@ func (e *Engine) whyRetryRejected(ctx context.Context, id uint) error {
 	return ErrTaskChanged
 }
 
-// UrgentTask 给一行「还没被取走」的任务加急：另投一份到所属阶段的快车道，插到常规队列前面。
-//
-// 条件更新 `WHERE id = ? AND urgent = 0` 当版本守卫（与 RetryTaskVersioned 用 reprocess 同一思路）：
-// 手抖双击或两个人同时点时只有第一次能匹配上。
-//
-// 已知竞态（可接受）：这条任务本来就排在常规队列里时，池里会有同一行的两份副本，
-// 靠 claimTask 的条件更新仲裁 —— 谁先认领谁执行，另一份被跳过。窗口很小、后果自愈。
+// UrgentTask persists priority with a conditional update, then promotes an
+// already queued owner or wakes durable delivery. It never enqueues a duplicate.
 func (e *Engine) UrgentTask(id uint) error {
+	if err := e.beginTaskAdmission(); err != nil {
+		return err
+	}
+	defer e.endTaskAdmission()
+
 	t, err := e.loadTask(context.Background(), id)
 	if err != nil {
 		return err
@@ -189,7 +181,7 @@ func (e *Engine) UrgentTask(id uint) error {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
-	// 先落库再加急：这样后台「加急」列看得见，任务溢出回灌或进程重启后也还认得出它加急过。
+	// 先落库再加急：这样后台「加急」列看得见，任务等待容量或进程重启后也还认得出它加急过。
 	res := urgentScope(e.db, id).Update("urgent", true)
 	if res.Error != nil {
 		return fmt.Errorf("mark task %d urgent: %w", id, res.Error)
@@ -200,20 +192,9 @@ func (e *Engine) UrgentTask(id uint) error {
 
 	// Urgent 必须显式置真：上面的条件更新改的是库里的行，这里读到的 t 是更新**之前**的快照。
 	task := e.taskFromRecord(t)
-	task.repeatCounted = true // urgency changes position, never polling count
 	task.Urgent = true
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitToStage(task); err != nil {
-		// 与正常投递一致：队列满就溢出到 DB 由 drain 回灌，不算失败
-		if errors.Is(err, workerpool.ErrQueueFull) {
-			e.spilledCount.Add(1)
-			e.spillTask(task)
-			return nil
-		}
-		e.dedupCache.Delete(task.Unique())
-		e.residents.release(task, "")
-		return fmt.Errorf("submit urgent task %d: %w", id, err)
-	}
+	e.afterTaskPending(task)
 	return nil
 }
 

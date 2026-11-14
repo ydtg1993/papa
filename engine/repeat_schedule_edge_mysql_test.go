@@ -152,7 +152,7 @@ func TestRepeatScheduleMySQLInvalidDates(t *testing.T) {
 							t.Fatal(err)
 						}
 						want := int64(0)
-						if at == "0000-00-00 00:00:00" && status != 2 && status != 3 {
+						if status != 2 {
 							want = validEpoch
 						}
 						if got == nil || *got != want || !sameRepeatEpoch(got, old) {
@@ -300,7 +300,7 @@ func TestRepeatScheduleMySQLMixedCapGroups(t *testing.T) {
 						}
 						got, old := repeatScheduleEpoch(t, e, tx, false), repeatScheduleEpoch(t, e, tx, true)
 						future := at == "2027-01-01 00:00:00"
-						eligible := tc.eligible && (status == 2 || future)
+						eligible := tc.eligible && status == 2
 						want := int64(1794614400)
 						if at != nil {
 							if err := tx.Raw("SELECT CAST(UNIX_TIMESTAMP(?) AS SIGNED)", at).Scan(&want).Error; err != nil {

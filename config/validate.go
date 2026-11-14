@@ -78,9 +78,6 @@ const (
 	defaultObsCrawlFailRateMax = 0.05
 	defaultObsReportMode       = "auto"
 	defaultObsEventMaxGap      = 10 * time.Minute
-	// defaultRecoverBatchPause 启动恢复的默认批间停顿：把一次恢复摊到多个时间片里。
-	// 30m 是"第一批投完先让 worker 消化，再投下一批"的粗粒度节拍；可在 recover_queue.batch_pause 覆盖。
-	defaultRecoverBatchPause = 30 * time.Minute
 )
 
 // validLogLevels 是 log.level 的合法取值，切片顺序即报错信息里的展示顺序。
@@ -105,14 +102,14 @@ func applyDefaults(c *Config) {
 	if c.Obs.Events.SnapshotInterval < 0 {
 		c.Obs.Events.SnapshotInterval = 0
 	}
-	// 启动恢复的批间停顿：没写（0）补默认 30m；要连续跑完请显式写很小的值（如 1ms）。
-	// 写负数没有语义，归一成 0 后同样补默认值 —— 避免 time.NewTimer(负数) 在后台协程里 panic。
-	if c.RecoverQueue.BatchPause < 0 {
-		c.RecoverQueue.BatchPause = 0
+	if c.ErrorQueue.WorkerCount == 0 {
+		c.ErrorQueue.WorkerCount = 1
 	}
-	if c.RecoverQueue.BatchPause == 0 {
-		c.RecoverQueue.BatchPause = defaultRecoverBatchPause
+	if c.RepeatQueue.WorkerCount == 0 {
+		c.RepeatQueue.WorkerCount = 1
 	}
+	c.ErrorQueue.Interval = c.ErrorQueue.EffectiveInterval()
+	c.RepeatQueue.Interval = c.RepeatQueue.EffectiveInterval()
 	if strings.TrimSpace(c.Obs.Report.Mode) == "" {
 		c.Obs.Report.Mode = defaultObsReportMode
 	} else {
@@ -390,51 +387,36 @@ var rules = []rule{
 	}},
 
 	{"error_queue.worker_count", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.WorkerCount <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，失败任务会静静躺在队列里", c.ErrorQueue.WorkerCount)
+		if c.ErrorQueue.WorkerCount <= 0 {
+			return fmt.Errorf("  必须 > 0（0 使用默认 1）（实得 %d）—— 为 0 时池子里没有 worker，失败任务会静静躺在队列里", c.ErrorQueue.WorkerCount)
 		}
 		return nil
 	}},
 
 	{"error_queue.batch_size", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.BatchSize < 0 {
+		if c.ErrorQueue.BatchSize < 0 {
 			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000（分页流式，避免一次性全量加载）", c.ErrorQueue.BatchSize)
 		}
 		return nil
 	}},
 
 	{"error_queue.max_retry", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.MaxRetry < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 0 = 不限代数", c.ErrorQueue.MaxRetry)
+		if c.ErrorQueue.MaxRetry < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 0 = 不限自动重试次数", c.ErrorQueue.MaxRetry)
 		}
 		return nil
 	}},
 
 	{"error_queue.interval", func(c *Config) error {
-		if c.ErrorQueue.Enabled && c.ErrorQueue.Interval < 0 {
-			return fmt.Errorf("  interval 不能为负（实得 %s）—— 0 = 不自动轮询，仅后台手动触发", c.ErrorQueue.Interval)
-		}
-		return nil
-	}},
-
-	{"recover_queue.worker_count", func(c *Config) error {
-		if c.RecoverQueue.Enabled && c.RecoverQueue.WorkerCount <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，恢复出来的任务会静静躺在队列里", c.RecoverQueue.WorkerCount)
+		if c.ErrorQueue.Interval < 0 {
+			return fmt.Errorf("  interval 不能为负（实得 %s）—— 0 = 默认 4h", c.ErrorQueue.Interval)
 		}
 		return nil
 	}},
 
 	{"recover_queue.batch_size", func(c *Config) error {
-		if c.RecoverQueue.Enabled && c.RecoverQueue.BatchSize < 0 {
+		if c.RecoverQueue.BatchSize < 0 {
 			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000", c.RecoverQueue.BatchSize)
-		}
-		return nil
-	}},
-
-	{"recover_queue.batch_pause", func(c *Config) error {
-		// 默认值已在 applyDefaults 补齐（30m）；这里只拒绝"配了但归一不成合法时长"的负值。
-		if c.RecoverQueue.BatchPause < 0 {
-			return fmt.Errorf("  不能为负（实得 %s）—— 要连续跑完请写很小的正数（如 1ms），默认 30m", c.RecoverQueue.BatchPause)
 		}
 		return nil
 	}},
@@ -464,21 +446,21 @@ var rules = []rule{
 	}},
 
 	{"repeat_queue.worker_count", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.WorkerCount <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，到点的任务会静静躺在队列里", c.RepeatQueue.WorkerCount)
+		if c.RepeatQueue.WorkerCount <= 0 {
+			return fmt.Errorf("  必须 > 0（0 使用默认 1）（实得 %d）—— 为 0 时池子里没有 worker，到点的任务会静静躺在队列里", c.RepeatQueue.WorkerCount)
 		}
 		return nil
 	}},
 
 	{"repeat_queue.batch_size", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.BatchSize < 0 {
+		if c.RepeatQueue.BatchSize < 0 {
 			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000", c.RepeatQueue.BatchSize)
 		}
 		return nil
 	}},
 
 	{"repeat_queue.interval", func(c *Config) error {
-		if c.RepeatQueue.Enabled && c.RepeatQueue.Interval <= 0 {
+		if c.RepeatQueue.Interval <= 0 {
 			return fmt.Errorf("  interval 必须 > 0（实得 %s）—— 这是「最粗兜底」的扫描节拍", c.RepeatQueue.Interval)
 		}
 		return nil
@@ -566,6 +548,17 @@ func suggestKeys(unused []string) string {
 	}
 	var lines []string
 	for _, bad := range unused {
+		switch bad {
+		case "crawler.queue_watermark", "crawler.drain_interval":
+			lines = append(lines, "  "+bad+" 已删除：任务保留为持久 pending，按阶段容量补位；请删除旧键。")
+			continue
+		case "recover_queue.enabled", "recover_queue.worker_count", "recover_queue.batch_pause":
+			lines = append(lines, "  "+bad+" 已删除：恢复始终运行且按容量补位，仅保留 batch_size。")
+			continue
+		case "error_queue.enabled", "repeat_queue.enabled":
+			lines = append(lines, "  "+bad+" 已删除：治理队列始终运行；请删除旧键。")
+			continue
+		}
 		leaf := leafOf(bad)
 		best, bestDist := "", 3 // 只认距离 <= 2
 		// **遍历切片而不是 map**：这里是"取距离最小的那个"，而 map 的遍历顺序是随机的 ——

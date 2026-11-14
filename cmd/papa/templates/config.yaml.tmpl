@@ -6,8 +6,6 @@ app:
 # 爬虫核心配置
 crawler:
   dedup_cache_size: 10000      # 内存去重表上限：0=不限；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-  queue_watermark: 0.75        # 队列高水位(0-1)：达到后新任务溢出到 DB 待回灌，避免满队列丢任务
-  drain_interval: "2s"         # 溢出任务回灌队列的间隔
   stop_timeout: "5s"           # worker 与动态 ticker 共用退出等待预算；超时则跳过关库/关浏览器池
   stage_idle_timeout: "0s"     # 阶段工作池连续空闲多久就回收（0=常驻不回收）；多站/长跑建议配，如 "10m"
   # 单任务步骤追踪：默认仅保留异常尝试到文件，不需要迁移。详见 docs/framework/configuration/CORE_CONFIG.md
@@ -166,23 +164,17 @@ server:
   shutdown_timeout: "10s"         # 优雅退出时等在途请求（如日志打包下载）的上限
   # write_timeout 默认 0 = 不限，这是有意的：给日志打包下载设上限等于掐断在途下载。
 
-# 三个治理队列（全局各一条，不再按站点拆）。没写哪一段 = 那条不跑；开了（enabled: true）就得写全，
-# 缺一项 / 值越界启动就报。详见 docs/framework/configuration/CORE_CONFIG.md 的对应三节。
+# 三条全局治理队列始终运行；详见 docs/framework/configuration/CORE_CONFIG.md。
 error_queue:
-  enabled: true               # 失败任务重投；interval="0" = 不自动轮询，只留后台手动触发
-  worker_count: 1             # 并发重新投递数，必须 > 0
-  interval: "4h"              # 自动轮询间隔
-  max_retry: 3                # 单条失败任务最多再处理几代；0 = 不限
-  batch_size: 100             # 每批处理条数；0 = 默认 1000（分页流式，不能为负）
+  worker_count: 1
+  interval: "4h"              # 0 / 不写 = 4h
+  max_retry: 3                # 单条任务自动重试次数上限；0 = 不限
+  batch_size: 100             # 0 = 默认 1000
 recover_queue:
-  enabled: true               # 启动恢复：重启时捡回上次中断留下的「未到终态」任务（只在启动跑一次）
-  worker_count: 1
-  batch_size: 100             # 每批处理条数；0 = 默认 1000（分页流式）
-  batch_pause: "30m"          # 批间停顿（默认 30m）：每批投完先让 worker 消化，再继续下一批；要连续跑完写 1ms
+  batch_size: 100             # 持续按阶段空位恢复 pending，0 = 默认 1000
 repeat_queue:
-  enabled: true               # 周期轮询：把「到点的」repeatable 任务重投回各自阶段
   worker_count: 1
-  interval: "2h"              # 最粗兜底的扫描间隔，必须 > 0
+  interval: "12h"             # 0 / 不写 = 12h；只重投成功任务
   batch_size: 100
 
 # 业务自己的配置写在这里：框架**不解析、不校验**这一段，原样透出给 App

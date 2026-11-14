@@ -16,7 +16,7 @@ import (
 // 现在的分工：
 //   - **状态只在这里**：`paused` 表，按 scope（整站 / 某站的某阶段）记 reason / source / 触发快照；
 //   - **取任务点**（`pauseGate`，实现 workerpool.Gate）：冻住 —— 队列里那批也不动；
-//   - **入队点**（`submitToStage`）：收口 —— 不接新活，寄放到溢出表，恢复后回灌；
+//   - **入队点**：收口 —— 已受理任务保留为持久 pending，恢复后按容量补位；
 //   - **熔断器**退化成"自动往这张表里写一条的人"（`Source=breaker`），它只判据 + 报警。
 //
 // 往这张表里写的人有三个：后台/业务手动（`PauseSite` / `PauseStage` / `PauseCrawling`）、
@@ -277,12 +277,11 @@ func (e *Engine) broadcastPauseLocked() {
 	e.pauseChanged = make(chan struct{})
 }
 
-// wakeDrainNow 叫醒回灌循环（恢复之后立刻把寄放的任务灌回去，别等下一个 tick）。
+// wakePendingRecovery 唤醒阶段投递器（恢复之后按容量补充持久 pending）。
 // 非阻塞：容量 1 的通道 + default 分支，重复叫醒只留一次（与 wakeRepeatQueue / delayCh 同一写法）。
-func (e *Engine) wakeDrainNow() {
-	select {
-	case e.wakeDrain <- struct{}{}:
-	default:
+func (e *Engine) wakePendingRecovery() {
+	for key := range e.stages {
+		e.deliveryState().Wake(key)
 	}
 }
 
@@ -359,7 +358,7 @@ func (e *Engine) ResumeStage(site, stage string) bool {
 		e.breakers.resumeStageLocked(site, stage)
 	}
 	if cleared {
-		e.wakeDrainNow()
+		e.wakePendingRecovery()
 	}
 	return cleared
 }
@@ -387,9 +386,9 @@ func (e *Engine) knownSite(site string) bool {
 // core.Site、落到这里）。原先由一个三态枚举（auto/manual/off）兼职表达，结果是 manual 只管住
 // 了入口那一投：启动恢复、轮询队列照样把这一站跑起来，看着像"声明没生效"。
 //
-// 闸住之后这一站**什么都没发生**：入队点不再建池、任务一律折回溢出表（`queue_spill_backlog` 会涨），
-// 启动恢复与轮询队列捞回来的任务也一样；后台点「恢复整站」（`ResumeSite`）时 `wakeDrainNow`
-// 立刻把它们灌回。
+// 闸住之后这一站不执行 handler：已受理任务保留为持久 pending，
+// 启动恢复与轮询队列捞回来的任务也一样；后台点「恢复整站」（`ResumeSite`）时 `wakePendingRecovery`
+// 通知阶段投递器按容量补位。
 //
 // 只下**内存信号**、不逐站写快照：暂停态已经由 `buildSiteStats` 在启动播种那**一次**写里
 // 带上（declaredSiteStats 直接按 StartPaused 算 paused 字段）。走 PauseSite 会变成 1+N 条
@@ -403,7 +402,7 @@ func (e *Engine) applyStartPaused() {
 			continue
 		}
 		e.loggerSet.Engine.Infof("站点 %s: 声明了 StartPaused —— 启动即闸住整站；"+
-			"入口任务照投（先寄放在溢出表、池子不建），去后台「站点控制」卡点「恢复整站」放开", site)
+			"入口任务照投（保留为持久 pending、暂停业务执行），去后台「站点控制」卡点「恢复整站」放开", site)
 	}
 }
 

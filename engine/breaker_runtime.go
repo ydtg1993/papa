@@ -220,7 +220,7 @@ func (e *Engine) releaseSmartPauseLocked(site string) {
 	}
 	if changed {
 		e.broadcastPauseLocked()
-		e.wakeDrainNow()
+		e.wakePendingRecovery()
 	}
 }
 

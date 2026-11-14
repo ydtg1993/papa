@@ -50,7 +50,7 @@ engine/
 | --- | --- | --- |
 | `engine.go` | Engine 组件字段与 NewEngine 构造；预热活跃任务去重并启动延迟 dispatcher | 构造已经有读库及后台循环副作用，直接使用 Engine 的宿主也须负责 Stop；不放任务流/提交 SQL 或功能服务实现 |
 | `engine_config.go` | StageConfig、stageInfo、AddStage 声明登记与校验 | 下载覆盖项复制所有标量指针；声明期更新必须显式登记 |
-| `lifecycle.go` | Stop、Errors，取消/worker/ticker/存留任务统计/熔断报告排空 | 共用原 deadline；等 ticker 收尾后再统计溢出、延迟和未确认写入 |
+| `lifecycle.go` | Stop、Errors，取消/worker/ticker/存留任务统计/熔断报告排空 | 共用原 deadline；等投递器及 ticker 收尾后再统计持久 pending、延迟和未确认写入 |
 | `runtime_dependencies.go` | 数据库/配置/日志/事件/代理/默认下载器公开适配及 JSON 编码辅助 | 保留宿主和 Fetcher 当前公开入口，不持有第二份功能状态 |
 | `site_registry.go` | siteCatalog、SetSite/Site、请求头快照 | 使用原 breakerMu 协调；登记和读取都复制 map/slice，防止越过锁修改声明 |
 | `account_alerts.go` | accountAlertGate，按账号/池/事件种类限频和有界淘汰 | 只管理通知节流，不管理账号健康真相 |
@@ -64,7 +64,8 @@ engine/
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
 | `task.go` | 公开 Task、模型转换、v4 身份计算及私有插入实现 | Task 带有私有执行标记；状态和重试写入归带版本的执行协议 |
-| `submit.go` | 公开提交、阶段/池选择、提交结果投递、延迟/暂停/满池协调 | 部分失败仍承接成功记录；单条已入库但回读失败时先保留 spill 责任，再记录错误日志 |
+| `admission.go` | 公开提交与后台重投的接单入口 | 状态由 delivery.Coordinator 拥有；Begin/End 与 Stop.Close 使用同一门控，关闭后不开始持久化 |
+| `submit.go` | 公开提交、阶段/池选择、提交结果投递、延迟/暂停/满池协调 | 部分失败仍承接成功记录；单条已入库但回读失败时由持久 pending 保留责任，再记录错误日志 |
 | `submission_store.go` | submissionStore 的身份查找、引用保护入库、批量部分成功、投递前条件更新、认领存储；返回单条计划/批量逐行交接结果 | 只接收数据库、context、去重缓存、引用保护接口和日志；不拥有 worker 或 Engine |
 | `dedup.go` | 有界 LRU 去重状态、淘汰、活跃任务预热 | 缓存只做加速，数据库身份约束仍是持久依据 |
 | `persistence.go` | 执行轮次 context、认领、终态/释放相关持久化协调、未确认状态登记、重试计数 | 复用 taskstore 语义操作；不可把确认丢失当作业务 handler 应重跑 |
@@ -84,20 +85,18 @@ engine/
 | `attempt_execution.go` | attemptExecution：一次 handler 的 context、trace/归档终结、panic 传播、账号反馈与计时协调 | 不持有 Engine；handler 调用通过回调传入，持久化重试不能重新调用 handler |
 | `attempt_persistence.go` | attemptPersistence：本次尝试时间写入及失败结算依赖 | 不持有 Engine，但仍直接依赖 GORM、execution.State 和 breakerCoordinator；属于同包组件，不是完全独立存储层 |
 
-### 3.4 调度、溢出和治理队列
+### 3.4 调度、持久补位和治理队列
 
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
-| `delayqueue.go` | 把 Task 接入延迟堆、到期投递和必要的重新排期 | 堆/唤醒算法在 scheduler；这里只决定任务到期后怎么交回执行链 |
-| `scheduler_budget.go` | SchedulerLimits、residentSet；非阻塞准入、转移、释放和驻留计数 | 数量预算不等于 RSS；不执行 SQL |
-| `scheduler_refill.go` | 持续 pending 补充、阶段轮转/keyset 游标和暂停 delay 卸载 | 由 refillMu 串行化，查询谓词归 taskstore；独立于 RecoverQueue |
+| `delayqueue.go` | 把 Task 接入延迟堆、到期投递和必要的重新排期 | 单堆与按阶段单在途 consumer 的派发算法在 scheduler；这里只决定任务到期后怎么交回执行链，满池阶段不阻塞其他阶段 |
+| `scheduler_budget.go` | SchedulerLimits、residentSet；非阻塞准入、转移、释放和驻留计数 | 数量预算不等于 RSS；不执行 SQL；包括非 worker 路径在内的释放都唤醒容量补充 |
+| `delivery.go` / `engine/internal/delivery` | 每阶段 pending 投递器、事件唤醒、认领交接和生命周期 | 有界 channel 阻塞发送仅由投递器执行；协调器拥有投递状态，SQL 谓词归 taskstore |
 | `scheduler_stop.go` | 按注册阶段计数持久 pending | 共用停止 deadline，包含启动前已接受任务；查询失败不能报告排空 |
-| `scheduler_spill.go` | spillQueue：轮次成员索引、去重、TakeBatch/Restore/Put 与公平选择 | 无 Engine 回引用；取出的有限批次交由调用者持有，仍计入 resident 责任，锁不跨 SQL/worker 投递 |
-| `spill.go` | 溢出登记、回灌循环和任务重新投递 | 协调暂停、容量与持久状态，不自己复制溢出 map |
 | `batch.go` | 有界批处理、批间暂停、并发辅助及重投失败处理 | 为治理入口提供执行工具；不演变为任意功能工具集合 |
 | `errorqueue.go` | 失败任务查询、手动/周期重投及失败队列循环 | 一条全局治理队列；重投状态更新使用既有持久化协议 |
-| `recoverqueue.go` | 启动恢复范围、串行化处理、恢复投递及跳过统计 | 遵守进程启动截止时间，不能重新认领本进程已接管的任务 |
-| `repeatpoll.go` | 到期/强制轮询、轮次重置、上限、节拍读取与唤醒 | 首次提交、下一轮轮询与同轮回灌不可混为同一次计数 |
+| `recoverqueue.go` | 启动恢复范围、串行化处理、恢复投递及跳过统计 | 入口与 worker 启动前同步重置 processing；运行期只唤醒 pending |
+| `repeatpoll.go` | 到期/强制轮询、轮次重置、上限、节拍读取与唤醒 | 首次提交、下一轮轮询与同轮补位不可混为同一次计数 |
 | `repeat_schedule_query.go` | 单语句最早排期过滤聚合：终态/未来谓词、NULL 与日期转换、阶段上限 | 保留 MySQL 的 MIN(epoch) 与调用方查询作用域，不按 DATETIME 首条代替 epoch 最小值；不新增缓存、锁、事务或后台协程 |
 | `queuestats.go` | 队列运行/积压快照、计数及采样循环 | 运行状态在自身锁内更新，队列轮次事件在锁外发布，允许观察者查询完成后的统计 |
 
@@ -181,10 +180,10 @@ engine/
 | 状态 | 当前拥有者 | 协调约束 |
 | --- | --- | --- |
 | 阶段登记、阶段累计量、错误转发及部分运行配置 | Engine，部分字段使用 `e.mu` | 声明期登记与运行期修改有不同协议，不能默认所有 map 都允许任意并发修改 |
-| 驻留成员、ID 索引及站点/阶段计数 | residentSet，使用自己的 mu | 短锁维护准入/转移/释放；不跨 SQL 或用户回调；取出回灌的批次仍占令牌 |
-| 回灌过程、refillCursor/refillStage | Engine 的 refillMu | 串行化回灌与持续补充，允许跨该流程的 DB 调用；不等同于 e.mu、pauseMu 或容器锁，不可替换为全局状态锁 |
+| 驻留成员、ID 索引及站点/阶段计数 | residentSet，使用自己的 mu | 短锁维护准入/转移/释放；不跨 SQL 或用户回调；取出补位的批次仍占令牌 |
+| 阶段唤醒、游标、投递所有权及接单生命周期 | delivery.Coordinator，独立短锁 | 每阶段独立投递；锁不跨 SQL/阻塞发送；Stop 关闭接单并等待已准入持久化 |
 | residents 配置指针、schedulerStarted | Engine 装配阶段 | SetSchedulerLimits 必须与提交、启动及停止串行；先发布 started 再启动 drain goroutine，运行中不替换预算 |
-| 活池、延迟任务、溢出任务 | Registry、Delay、spillQueue | 关闭后不得新建池；回灌不重复计轮次；未投递任务要计入停机统计 |
+| 活池、延迟任务、持久 pending | Registry、Delay、阶段投递器 | 关闭后不得新建池；补位不重复计轮次；未投递任务要计入停机统计 |
 | 未确认任务写入 | execution.State | Retry 成功本身不删除条目，确认后的 Forget 由协调调用方负责；取消时 Remember 保留可见性，不能靠重复调用 handler 补写 |
 | 暂停 map、广播 channel、恢复时间 | Engine 的 pause 状态 | `breakerMu → pauseMu → (overflow.mu 或 e.mu)`；pause 锁不跨数据库调用 |
 | detector、trial、证据和报告串行门 | breakerCoordinator | 纯内部变更在 coordinator 方法内；涉及暂停/投递的事务由明确协调入口发布 |
@@ -194,19 +193,19 @@ engine/
 
 Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../configuration/RESOURCE_BUDGETS.md)。
 
-暂停下的持久 pool/spill/delay 任务可交还数据库以让出预算：预算模式允许 worker 取出引用，但 stageHandler 在 breaker/业务准入前拦截；heap 提取先快照暂停状态再取堆锁，避免锁序反转。flow 前置等待同样释放持久引用，不占住解除等待所需的最后一个槽。Stop 的持久计数也覆盖 ApplyRegisterStage 前已接受的远期任务。
+暂停下已排队的普通持久任务可交还数据库以让出预算：worker 取出引用后，stageHandler 在 breaker/业务准入前拦截；未来普通任务保留为数据库 pending，不占队列容量。flow 前置等待同样释放持久引用，不占住解除等待所需的最后一个槽。Stop 的持久计数也覆盖 ApplyRegisterStage 前已接受的远期任务。
 
 下载预算装配通过 SetDownloadResources 交给 fetchruntime.Downloads 的 ConfigureResources/Resources：首次构造基座时冻结限额，两种下载基座及 With 派生实例共享同一 DownloadBudget。Engine 不实现磁盘清点、输入解码或检查点算法。
 
-`refillPendingLocked` 的前置条件是持有 refillMu。回灌批读与扫描使用 100ms 时间片派生的查询 context；这不是所有准备写入、锁等待或整个停止流程的硬超时保证。停止通过生命周期取消及 tickerWG 等待在途回灌。
+阶段投递器在自身循环分页读取 pending，协调器只拥有游标、唤醒与投递所有权。SQL 和阻塞 channel 发送不持协调器锁。停止取消投递器，并等待 tickerWG 与接单计数，等待共用 Stop 的原始 deadline。
 
-Stop 不只是取消 context：还要关闭池登记并排空 worker、等待 ticker、统计溢出/延迟/未确认写入、结算熔断报告。worker 与 ticker 共用入口 deadline；统计必须在 ticker 等待结束后执行，避免漏掉它最后保留的任务或重复报告已确认写入。超时后的统计仅代表最后观察值，不表示后台已静止。Delay.Snapshot 保留任务，由 Engine 在锁外按阶段汇总，不清空堆。任何后续抽取的维护循环或服务必须明确如何加入这个关闭协议。
+Stop 不只是取消 context：还要关闭池登记并排空 worker、等待 ticker、统计持久 pending/延迟/未确认写入、结算熔断报告。worker 与 ticker 共用入口 deadline；统计必须在 ticker 等待结束后执行，避免漏掉它最后保留的任务或重复报告已确认写入。超时后的统计仅代表最后观察值，不表示后台已静止。Delay.Snapshot 保留任务，由 Engine 在锁外按阶段汇总，不清空堆。任何后续抽取的维护循环或服务必须明确如何加入这个关闭协议。
 
-`NewEngine` 使用独立的 background context，并在构造时预热去重、登记并启动延迟 dispatcher；它不是无副作用的纯容器构造。`ApplyRegisterStage` 再接入回灌、治理队列、证据清理、采样与回收循环，不能与 Stop 并发重复启动。池登记表停止位和 Engine context 都不可恢复，同一个 Engine 不支持停止后重启。
+`NewEngine` 使用独立的 background context，并在构造时预热去重、登记并启动延迟 dispatcher；它不是无副作用的纯容器构造。`ApplyRegisterStage` 再接入补位、治理队列、证据清理、采样与回收循环，不能与 Stop 并发重复启动。池登记表停止位和 Engine context 都不可恢复，同一个 Engine 不支持停止后重启。
 
 池锁也有具体限制：`Registry.GetOrCreate` 在登记写锁内运行创建回调；`ReapIdle` 在同一锁内检查空闲、调用 pool.Stop 并摘除。创建回调不得重入登记表；Engine 的 created/reaped 事件均在登记锁外发布。`Registry.Set` 是测试/历史路径，不检查 stopped，不能把它当作生产停机后的重新登记入口。
 
-`StopStats.Unfinished` 的池部分来自 submitted − completed − failed，已经包含尚在队列中的任务；`Queued` 又展示队列长度，并加入 spill/delay 存留，再与该阶段 durable pending 计数取较大值，避免简单相加重复计算卸载前后同一任务。两列不是可直接相加的互斥人数。未确认写入还会追加到 Unfinished；超时快照可能重叠，不能据此宣称获得了全局去重的任务总量。即使 stats 为空，ticker 未退出、持久 backlog 查询未确认或最终熔断快照写入失败仍使 drained=false。熔断 stop 记录与最终 flush 仅在 ticker 已退出后执行，并使用同一入口 deadline。
+`StopStats.Unfinished` 的池部分来自 submitted − completed − failed，已经包含尚在队列中的任务；`Queued` 又展示队列长度，并加入 pending/delay 存留，再与该阶段 durable pending 计数取较大值，避免简单相加重复计算卸载前后同一任务。两列不是可直接相加的互斥人数。未确认写入还会追加到 Unfinished；超时快照可能重叠，不能据此宣称获得了全局去重的任务总量。即使 stats 为空，ticker 未退出、持久 backlog 查询未确认或最终熔断快照写入失败仍使 drained=false。熔断 stop 记录与最终 flush 仅在 ticker 已退出后执行，并使用同一入口 deadline。
 
 排空范围也须区分：错误转发 goroutine 和 track 活动消费者响应 Engine context，但没有加入 tickerWG，Stop 不等待它们的 done；它不保证所有观测消息已消费。workerpool.Stop 返回首次任务计数快照，不是可反复查询的新结果。直接调用 Engine 公共管理/提交接口的外部 goroutine 也不自动进入 Stop 的等待组，宿主必须先停止这些生产者；App 的 HTTP 准入和业务收尾就是外层协调的一部分。
 
@@ -223,7 +222,7 @@ execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增
 - 内部包算法和并发状态直接在所属包测试；Engine 测试验证多个组件组合后的执行协议。
 - `component_boundaries_test.go` 防止同包组件重新持有 Engine 或完整配置；组件测试覆盖提交部分成功、任务流事务、证据清理排空及站点快照隔离。
 - 根包中的 `fakedb_test.go` 是共享假库，不等同真实 SQL 执行；`sqlshape_test.go`/`sqlreserved_test.go` 检查 SQL 形状与列名，`*_mysql_test.go` 验证实际事务/CAS/重启恢复。
-- `attempt_*`、`stage_runversion_test.go`、`persistence_test.go` 验证尝试与持久化确认；暂停、溢出、延迟、轮询相关测试验证调度协作；`breaker_*_test.go` 验证恢复证据与结算链。
+- `attempt_*`、`stage_runversion_test.go`、`persistence_test.go` 验证尝试与持久化确认；暂停、容量背压、延迟、轮询相关测试验证调度协作；`breaker_*_test.go` 验证恢复证据与结算链。
 - 保留同包测试访问必要内部状态的能力，但不能为了测试创建无生产用途的转发 API。若组件抽包，迁移算法单测，同时保留关键 Engine 集成用例。
 - 新能力先确定执行状态属于谁；Engine 只增加公开适配和跨组件编排。只处理 SQL 的实现优先归存储组件，纯策略优先保持无运行依赖。
 - 不把整个 Engine 传给新子组件。现有 Fetcher 公开契约接收 Engine 是当前公开入口，不能作为内部组件继续持有 Engine 的理由。
@@ -232,7 +231,7 @@ execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增
 
 ## 8. 收口结果与保留边界
 
-`resilience_mysql_test.go` 归属 Engine 跨组件集成验证：使用真实调度、任务认领/终态、启动恢复和 Stop，旧子进程退出后才启动恢复进程。验收校验器核对原始任务集合、逐任务执行次数、业务结果和时间约束，负向用例用真实 MySQL 事务篡改证据并回滚。持续负载关闭启动恢复队列以单独验证持续回灌、驻留预算和中途进展。父进程独占随机测试库并清理，DROP 后按精确库名确认不存在；另用故意断言失败的子进程覆盖失败清理。合成业务结果/执行次数/控制表只在测试库中，不进入框架迁移清单。不把数据库积压等同于内存驻留，也不把可重放恢复等同于业务 exactly-once。运行方式及边界见 [开发工具手册](../architecture/DEVELOPMENT.md#单实例持续负载与进程崩溃恢复)。
+`resilience_mysql_test.go` 归属 Engine 跨组件集成验证：使用真实调度、任务认领/终态、启动恢复和 Stop，旧子进程退出后才启动恢复进程。验收校验器核对原始任务集合、逐任务执行次数、业务结果和时间约束，负向用例用真实 MySQL 事务篡改证据并回滚。持续负载验证事件驱动的 pending 补位、驻留预算和中途进展；恢复始终运行。父进程独占随机测试库并清理，DROP 后按精确库名确认不存在；另用故意断言失败的子进程覆盖失败清理。合成业务结果/执行次数/控制表只在测试库中，不进入框架迁移清单。不把数据库积压等同于内存驻留，也不把可重放恢复等同于业务 exactly-once。运行方式及边界见 [开发工具手册](../architecture/DEVELOPMENT.md#单实例持续负载与进程崩溃恢复)。
 
 | 原审查问题 | 当前实现 | 后续约束 |
 | --- | --- | --- |
@@ -255,7 +254,7 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 ## 九项诊断修复后的治理取消契约
 
-`batch.go` 负责批处理生命周期：每次查询绑定 Engine context，每批和每条回调准入前检查取消，零批间停顿也不能跳过取消。`errorqueue.go`、`repeatpoll.go`、`recoverqueue.go` 的条件重置同样绑定生命周期；已经成功重置的任务继续既有投递/溢出收尾，不在提交中间插入新的提前返回。`queuestats.go` 的后续采样也使用该 context。取消不等于回调完成，批处理仍等待已经准入的 worker 返回，tickerWG/Stop 的排空判断不变。
+`batch.go` 负责批处理生命周期：每次查询绑定 Engine context，每批和每条回调准入前检查取消，零批间停顿也不能跳过取消。`errorqueue.go`、`repeatpoll.go`、`recoverqueue.go` 的条件重置同样绑定生命周期；已经成功重置的任务继续持久 pending 投递收尾，不在提交中间插入新的提前返回。`queuestats.go` 的后续采样也使用该 context。取消不等于回调完成，批处理仍等待已经准入的 worker 返回，tickerWG/Stop 的排空判断不变。
 
 `batch_cancel_test.go` 覆盖零暂停、同批未准入任务、已取消无查询/重置、SQL context 传播和在途回调排空；公开方法签名、条件更新谓词和队列锁顺序不变。
 
@@ -307,3 +306,5 @@ InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查�
 `repeat_limit_test.go` 钉住分组边界及 SQL 稳定顺序；`repeat_schedule_edge_mysql_test.go` 验证多组上限的 NULL/状态/日期资格及自动/强制轮询集合。`repeat_algorithm_evaluation_test.go` 冻结原 CASE **及原逐阶段上限作用域**，避免新旧两边共用修改后的过滤逻辑而假通过。`repeat_cap_evaluation_test.go` 只拥有随机实库的成本对照：交错执行原 CASE、原过滤聚合、条件交换、语句级 NO_ICP 诊断和生产分组查询，记录实际 EXPLAIN ANALYZE 与 Handler 读取量；诊断提示不进入生产。
 
 条件合并复审另以 `TestRepeatLimitMySQLThreeValuedEquivalence` 在真实 MySQL 中逐行投影 TRUE/FALSE/NULL，避免只比较 WHERE 集合掩盖 UNKNOWN 被改写；覆盖同阈值不同阶段、不同阈值同阶段、NULL site/repeat 和当前列排序规则下的大小写/重音/尾空格。取消与 Stop 回归实际配置可合并的多站点上限，实库阻塞观测要求 SQL 含 `site IN`。性能夹具独立检查终态/未来行数和各查询匹配数量，不能仅凭相同 MIN 判断负载正确。这些断言只验证 Engine 查询与生命周期契约，不增加生产职责。
+
+普通取消与真实失败同时出现时，attempt 结算保留 NoRetry / 补偿终态；panic(error) 保留错误链。启动恢复按可靠 journal 中的精确任务执行代次排除已有结算责任的 processing，不能仅按任务 ID 筛选。

@@ -47,10 +47,15 @@ type residentSet struct {
 	bound         map[*Task]int
 	ids           map[int]int
 	sites, stages map[string]int
+	onRelease     func()
 }
 
-func newResidentSet(l SchedulerLimits) *residentSet {
-	return &residentSet{limits: normalizeSchedulerLimits(l), tasks: map[*Task]string{}, bound: map[*Task]int{}, ids: map[int]int{}, sites: map[string]int{}, stages: map[string]int{}}
+func newResidentSet(l SchedulerLimits, onRelease ...func()) *residentSet {
+	r := &residentSet{limits: normalizeSchedulerLimits(l), tasks: map[*Task]string{}, bound: map[*Task]int{}, ids: map[int]int{}, sites: map[string]int{}, stages: map[string]int{}}
+	if len(onRelease) > 0 {
+		r.onRelease = onRelease[0]
+	}
+	return r
 }
 func (r *residentSet) admit(t *Task, state string) bool {
 	if r == nil {
@@ -98,9 +103,9 @@ func (r *residentSet) release(t *Task, only string) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	state, ok := r.tasks[t]
 	if !ok || (only != "" && state != only) {
+		r.mu.Unlock()
 		return
 	}
 	delete(r.tasks, t)
@@ -114,6 +119,13 @@ func (r *residentSet) release(t *Task, only string) {
 	}
 	r.sites[t.Site]--
 	r.stages[stageKeyOf(t)]--
+	r.mu.Unlock()
+	// Every transfer that drops a resident can free global capacity, including
+	// stale delays and failed submissions that never reach a worker. Notify
+	// outside the resident lock; listeners may immediately attempt admission.
+	if r.onRelease != nil {
+		r.onRelease()
+	}
 }
 func (r *residentSet) containsID(id int) bool {
 	if r == nil {
@@ -139,7 +151,7 @@ func (e *Engine) SetSchedulerLimits(l SchedulerLimits) error {
 	if e.schedulerStarted || (e.residents != nil && e.residents.count() != 0) {
 		return ErrSchedulerStarted
 	}
-	e.residents = newResidentSet(l)
+	e.residents = newResidentSet(l, e.deliveryState().ContinueAll)
 	return nil
 }
 

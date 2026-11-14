@@ -96,7 +96,7 @@ type Task struct {
   唯一性由**数据库**兜底：唯一索引为 `(site, stage, identity_hash)`，`identity_hash` 是版本化站点、阶段、身份类型和值的 SHA-256；ResourceID 和 URL 使用不同身份类型，所有任务都生成非空哈希。同一站点、阶段与身份并发提交时也只保留一行。
 - `NotBefore` / `Delay` 实现首次延迟投递：不在 worker 中空等，到期仍须通过数据库 UTC 时间认领检查。它不会每轮重施；阶段执行间隔使用 `StageSpec.Delay`，后续请求节奏使用请求治理，别用 handler 内 `time.Sleep` 代替。
 - `AccountPool` 非空时使用同站命名池；空值在首次提交时按阶段/站点运行策略解析。既有任务保持已保存归属，重复提交指定其他池返回冲突。账号失效使本次尝试结束并等待以后补偿，不能在 handler 内自行换号重放。见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md) §7。
-- `Repeat` 只读轮次计数：首次可轮询投递初始化为 1，轮询队列开启下一轮时递增；重复提交、回灌和启动恢复不新增轮次。handler 读取的是认领后校准的数据库轮次，不是成功次数或提交 API 调用次数；错误重投/后台重试保持原轮次。禁止用赋值方式重置数据库计数。
+- `Repeat` 只读轮次计数：首次成功认领可轮询任务时初始化为 1，轮询队列开启下一轮时递增；重复提交、补位和启动恢复不新增轮次。handler 读取的是认领后校准的数据库轮次，不是成功次数或提交 API 调用次数；错误重投/后台重试保持原轮次。禁止用赋值方式重置数据库计数。
 - `StageSpec.RepeatLimit` 可对某站某阶段设置轮询上限，例如 detail 设 30、catalog 保持 0（不限）。`repeat >= 30` 后仅 repeat_queue 停止重投，恢复/错误队列和后台单条重投仍可用。详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)。
 - `Repeatable` 周期轮询：`true` = 这条任务跑完后**留在库里**，由 `repeat_queue` 在**到点**时再捞起来重跑；`false`（默认）= 跑完就不再重投。它管的是**这条任务**，不是阶段 —— 同一个阶段里分类页可以是轮询的、详情页是一次性的（该给谁 `true` 由派发它的那处代码决定）。配套的 `RepeatInterval`（如 `10 * time.Minute`）就是它的周期；不写（0）= 用全局 `repeat_queue.interval`。两者都只在**首次落库**时播种，之后用后台的「开轮询」/「停轮询」/「设轮询周期」或 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 改（见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md) 第 3 节）。
 - `Urgent` 加急：该任务投到所属阶段的**快车道**，插到常规队列前面（`&papa.Task{URL: u, Stage: "detail", Site: task.Site, Urgent: true}`）。它只改变排队优先级，不突破去重、NotBefore、任务流或熔断门控；重跑既有完成任务应使用后台重投。该阶段 worker 全在忙时仍需等待；worker 认领后 `urgent` 列自动归零，是一次性的。
@@ -160,8 +160,8 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | `engine.GetDB()` | gorm 实例，用于写结果 / 查任务 |
 | `engine.Upsert(record, conflictCols, updateCols)` | 冲突更新并回填主键（替代手写 `clause.OnConflict` + `if ID==0` 查回） |
 | `engine.GetConfig()` | 全局配置 |
-| `engine.SubmitTask(&papa.Task{...})` | 派发子任务（列表页 → 详情页） |
-| `engine.SubmitTasks([]*papa.Task{...})` | 批量派发子任务（一次多行 INSERT，减少 DB 往返；撞唯一索引时自动降级为逐条并跳过冲突行，不会让整批失败） |
+| `engine.SubmitChildren(ctx, task, children...)` | 当前 handler 派发本站已声明下游子任务 |
+| `engine.SubmitTask(task)` / `engine.SubmitTasks(tasks)` | 仅启动入口期投递 Entry 根阶段任务 |
 | `engine.GetStageStats()` | 各阶段的统计快照（监控页读的就是它） |
 | `engine.AddNotifier(notifier)` | 注册失败告警通知器 |
 | `engine.GetProxy()` | 代理管理器 |
@@ -205,10 +205,15 @@ if err := engine.Upsert(record, []string{"site", "source_key"}, []string{"title"
 
 ### 1.6 派发子任务（阶段串联）
 
+阶段图是强制契约，无兼容关闭开关。每站用 `StageSpec.Downstream` 声明直接下游，例如 catalog → detail → episode；空列表表示末端。启动拒绝未知节点、重复边、自环、环和有入边的 Entry。框架按最长路径计算层级，只允许显式边上的向下投递，禁止同级、反向、跨站及未声明边。
+
+`SubmitTask` / `SubmitTasks` 仅供启动入口期投递 `Entry: true` 且没有入边的根阶段。运行期使用 `SubmitChildren(ctx, task, children...)`，必须传入当前 handler 的原始 task 与仍有效的 ctx；不能在 handler 返回后继续派发，不能自行拼父 ID 代替执行许可。分页在当前 worker 内迭代，不再把下一页作为同阶段子任务。恢复、重试和轮询继续处理原任务，不扩大业务派生权限。
+
+
 列表页抓到详情 URL 后，把详情页作为**子任务**提交到下一个 stage：
 
 ```go
-err := engine.SubmitTask(&papa.Task{
+err := engine.SubmitChildren(ctx, task, &papa.Task{
     PID:   task.ID,       // 关联父任务
     URL:   detailURL,
     Stage: "detail",      // 必须是已声明的阶段（internal/sites/<站名>.go 的 Stages 里，见 7.2）
@@ -227,7 +232,7 @@ URL 默认规范化主机大小写、默认端口和空路径并去掉 fragment�
 **首次延迟投递**：需要将新 episode 任务推迟执行时，设 `Delay`（或 `NotBefore`），引擎按排期调度，不空占 worker。这不是多个任务之间的严格请求间隔：
 
 ```go
-if err := engine.SubmitTask(&papa.Task{
+if err := engine.SubmitChildren(ctx, task, &papa.Task{
     URL:   episodeURL,
     Stage: "episode",
     Site:  task.Site, // 必填（同 §1.6）
@@ -235,18 +240,20 @@ if err := engine.SubmitTask(&papa.Task{
 }); err != nil { return err }
 ```
 
-**批量派发**：一次要投 N 个 episode 时用 `SubmitTasks`（批量入库，比循环 N 次 `SubmitTask` 更快）：
+**批量派发**：一次要投 N 个 episode 时用 `SubmitChildren(ctx, task, tasks...)`：
 
 同一批先按 `Task.Unique()` 去重，保留首次出现的任务参数（包括 Meta、轮询和延迟设置），重复项回填相同 ID 与 Repeat。每个保留项只入队一次；队满则只寄放一份，延迟任务只登记一次。数据库唯一索引及冲突后查库仍用于并发兜底；本批新建任务负责投递，外部冲突记录沿用原去重规则，不因批内重复重置已有任务状态。批量插入失败可能逐条回退，不应把整个调用视为全有或全无的事务。
 
-逐条插入时按“能成功多少就处理多少”：某条实际写入失败后继续后续行，成功行照常投递，最后汇总返回所有失败信息。返回非 nil 不代表整批都没成功；失败行不写入去重缓存，修正原因后可再次提交，成功的普通任务重试仍会被去重。落库后读取状态发生瞬态错误时，任务保留在溢出列表或延迟堆，稍后重读再投，不会拿空状态直接入队。入参和阶段合法性仍在写库前整批校验。
+公开 `SubmitTask` / `SubmitTasks` 与任务流、后台重投入口在持久化前取得接单许可。`Stop` 先关闭接单，再在同一个停止期限内等待已准入操作完成；关闭后新请求返回 `papa.ErrEngineStopped`。超时仍有持久化操作时返回未排空，调用方不能关闭其共享数据库。提交成功仅表示持久化受理，不表示 handler 已开始；阶段投递器按容量继续交接。
+
+逐条插入时按“能成功多少就处理多少”：某条实际写入失败后继续后续行，成功行照常投递，最后汇总返回所有失败信息。返回非 nil 不代表整批都没成功；失败行不写入去重缓存，修正原因后可再次提交，成功的普通任务重试仍会被去重。落库后读取状态发生瞬态错误时，任务保留为持久 pending，稍后重读并按容量投递，不会拿空状态直接入队。入参和阶段合法性仍在写库前整批校验。
 
 ```go
 var tasks []*papa.Task
 for _, ep := range episodes {
     tasks = append(tasks, &papa.Task{PID: task.ID, URL: ep.URL, Stage: "episode", Site: task.Site})
 }
-if err := engine.SubmitTasks(tasks); err != nil { return err }
+if err := engine.SubmitChildren(ctx, task, tasks...); err != nil { return err }
 ```
 
 ---
@@ -384,7 +391,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
 4. 域名用 `papa.SameHost(base, u)`（apex 与 `www.` 算同一个 host）与 `papa.IsSubdomainOf(u, base)`
    （按**点边界**比对 —— `evil-example.com` 不是 `example.com` 的子域，自己写 `strings.HasSuffix`
    最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
-5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`internal/sites/<站名>.go` 的 `Stages`），才为通过校验的链接调用 `engine.SubmitTask`。
+5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`internal/sites/<站名>.go` 的 `Stages`），且 catalog 声明 `Downstream: []string{"detail"}`，才为通过校验的链接调用 `engine.SubmitChildren(ctx, task, children...)`。
 
 > **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）之后，
 > `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
@@ -714,7 +721,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
         }
 
         // 4. 派发详情子任务
-        if err := engine.SubmitTask(&papa.Task{
+        if err := engine.SubmitChildren(ctx, task, &papa.Task{
             PID:   task.ID,
             URL:   detailURL,
             Stage: "detail",
@@ -1044,7 +1051,7 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	task.Trace.Step("抓取列表页", map[string]string{"url": page.URL.String()})
 
 	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
-	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})
+	// engine.SubmitChildren(ctx, task, &papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})
 
 	return nil
 }
@@ -1077,7 +1084,7 @@ var catalogRoutes = []struct {
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
     for _, route := range catalogRoutes {
         url := strings.TrimRight(site.BaseURL, "/") + "/" + strings.TrimLeft(route.Path, "/")
-        if err := engine.SubmitTask(&papa.Task{
+        if err := engine.SubmitChildren(ctx, task, &papa.Task{
             URL:            url,
             Stage:          "catalog",
             Site:           site.Key, // 必填：入口任务没有父任务，站点取自声明快照
@@ -1102,7 +1109,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > **"启动先别跑"不是这个字段的事**（它曾经是三态，`manual` 管的就是这个 —— 结果是只管住了
 > 入口那一投：启动恢复、轮询队列照样把这一站跑起来，看着像"声明没生效"）。要"先把入口排好、
 > 再放开这一站"，写**站点级**的 `SiteSpec.StartPaused: true`：入口任务照投，但整站在入队点被闸住 ——
-> 每一条都寄放到溢出表里、池子一个都不建，后台 Dashboard「站点控制」卡上点「重试恢复」才灌回。
+> 每一条都保留为持久 pending，不执行 handler；后台恢复整站后由阶段投递器按容量补位。
 > 它管的是**这一站的全部阶段**（包括 detail / episode 这种由上一级投出来的），而且暂停不跨重启，
 > 每次启动都重新闸上。只想掐某一个阶段（不想让入口阶段又跑一遍、其它照跑）用
 > `engine.PauseStage(site, stage, reason)` / `ResumeStage`，见 [MONITOR.md](../operations/MONITOR.md) §9。
@@ -1173,7 +1180,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
   入口路由表正相反：它**只**声明在 `fetcher/<站点>/fetch_catalog.go`（包级 `catalogRoutes` 那类，例见 §7.1），
   入口投递与 handler 反推任务的 key 共用同一张表 —— 别在 handler 里再抄一份 key → 路由的映射。
 
-已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/溢出桶都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、原始 HTML 归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/投递器都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、原始 HTML 归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
@@ -1203,7 +1210,7 @@ res := engine.GetFiledown().Download(ctx, coverURL, dir, name, &filedown.Downloa
 所以传了会**明确报错**（而不是静默直连、让人以为走了代理）；要按站换出口就用池上那套（proxied / direct 两类实例）
 或为账号配置固定出口的专用浏览器池。
 
-2. **阶段间串联**：fetcher 里用 `engine.SubmitTask(&papa.Task{PID: task.ID, URL: ..., Stage: "detail", Site: task.Site})` 派发子任务（见 1.6）。
+2. **阶段间串联**：fetcher 里用 `engine.SubmitChildren(ctx, task, &papa.Task{PID: task.ID, URL: ..., Stage: "detail", Site: task.Site})` 派发子任务（见 1.6）。
 
 3. **定时重抓 / 恢复失败**：
    - 定时轮询：`repeat_queue` 配置开启后，`repeatable: true` 的任务在到点时自动重跑（周期可逐条定、后台可改）。详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)；
@@ -1285,7 +1292,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 - 任务表只存调度状态（URL / 阶段 / 状态 / 重试 / 轮询 / `meta` 业务键）；结果的结构与落地全归业务，见 [DATA_LANDING_GUIDE.md](DATA_LANDING_GUIDE.md)。
 
 **任务派发 / 错误分类 / 告警**
-- `engine.SubmitTask(&papa.Task{...})` 派发单个子任务；`engine.SubmitTasks([]*papa.Task{...})` 批量派发。
+- `engine.SubmitChildren(ctx, task, children...)` 派发一个或多个已声明下游子任务；`SubmitTask` / `SubmitTasks` 仅用于启动入口。
 - `papa.WrapNoRetry(err)` / `papa.WrapNoRetryKind(kind, err)` 标记不可重试错误。
 - `papa.WithFailureCode(err, phase, code)` 为熔断诊断添加稳定错误规则，例如 `papa.WithFailureCode(papa.WrapNoRetryKind("structure", err), "parse", "title_missing")`。同一规则跨页面使用同一 code；不要放入 URL、任务 ID、账号或凭据。该包装保留原有重试与补偿语义，不能代替 `WrapNoRetryKind`。`parse` / `extract` / `validate` 阶段失败需要语义试探，单纯 HTTP 200 不能证明修复。框架优先读取结构化状态码、网络错误、浏览器等待与账号错误；缺少稳定 code 时才使用保留数字错误码的消息模板。
 - `papa.Retryable(err)` / `papa.ErrorKind(err)` 判断错误是否可重试 / 取其分类。
@@ -1350,7 +1357,7 @@ rep, err := obs.Generate(ctx, obs.Options{
 
 ## 按阶段组合动态调度
 
-普通任务接口不变。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](../runtime/TASK_FLOW.md)。
+普通任务与 TaskFlow 都受同一阶段图约束。需要目录广度与详情/内容深度组合时，用 `CreateTaskFlow` 创建运行、`SubmitFlowTask` 同步登记入口与子任务。策略通过 `UpdateTaskFlow` 人工 CAS 修改，在下一次认领生效。不要异步派生后提前返回，不要把普通 SubmitTask 当成受控提交。完整示例与边界见 [动态阶段调度](../runtime/TASK_FLOW.md)。
 
 
 ### 网络出口与内网采集

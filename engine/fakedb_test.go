@@ -28,8 +28,9 @@ import (
 type fakeTaskDB struct {
 	mu sync.Mutex
 
-	row          fakeRow  // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
-	noRows       bool     // true 时 SELECT 返回空结果集（模拟行不存在）
+	row          fakeRow // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
+	noRows       bool    // true 时 SELECT 返回空结果集（模拟行不存在）
+	nextInsertID int64
 	insertedTask bool     // newly inserted task has default round counters, even when noRows models the initial dedup miss
 	affected     int64    // UPDATE 的 RowsAffected，用来模拟条件没匹配上
 	failNext     int      // 让接下来的 N 次写失败（模拟批量插入撞唯一索引等）
@@ -78,7 +79,7 @@ var fakeTaskColumns = []string{
 	"failure_kind", "compensation_mode", "next_compensation_at", "compensation_reason", "compensation_version", "last_account_id", "last_account_selection_version", "account_attempts",
 	"id", "p_id", "stage", "site", "account_pool", "url", "meta",
 	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
-	"reprocess", "urgent", "error", "created_at", "updated_at",
+	"auto_retry_count", "retry_blocked", "reprocess", "urgent", "error", "created_at", "updated_at",
 }
 
 // TestFakeTaskColumnsCoverModel 假库的列清单必须覆盖模型全列（见 fakeTaskColumns 的注释）。
@@ -192,13 +193,14 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 	}
 	if strings.HasPrefix(q, "INSERT INTO `crawler_tasks`") {
 		f.insertedTask = true
+		f.nextInsertID++
 	}
 	vals := make([]driver.Value, len(args))
 	for i, a := range args {
 		vals[i] = a.Value
 	}
 	f.args = append(f.args, vals)
-	return fakeResult{affected: f.affected}, nil
+	return fakeResult{affected: f.affected, insertID: f.nextInsertID}, nil
 }
 
 // rowValues 把一行按 fakeTaskColumns 摊成 driver.Value 切片。
@@ -235,6 +237,9 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 	if strings.Contains(strings.ToUpper(q), "COUNT(") {
 		return &fakeRows{cols: []string{"count(*)"}, all: [][]driver.Value{{f.count}}}, nil
 	}
+	if strings.Contains(q, " AS micros") {
+		return &fakeRows{cols: []string{"micros"}, all: [][]driver.Value{{nil}}}, nil
+	}
 	if strings.Contains(strings.ToUpper(q), "MIN(") {
 		var v driver.Value
 		if f.minEpoch != nil {
@@ -250,24 +255,6 @@ func (f *fakeTaskDB) query(q string, args []driver.NamedValue) (driver.Rows, err
 			len(f.queries), f.maxQueries)
 	}
 	if f.rows == nil {
-		// Detached spill batches request actual inserted IDs. The old singleton
-		// fixture returned its canned ID=7 even for an inserted ID=1; a keyed batch
-		// must return the requested rows rather than relying on First ignoring ID.
-		if f.insertedTask && strings.Contains(q, "WHERE id IN (") {
-			out := &fakeRows{cols: fakeTaskColumns}
-			for i, arg := range args {
-				if i == len(args)-1 && strings.Contains(q, "LIMIT ?") {
-					break
-				}
-				id, ok := asInt64(arg.Value)
-				if ok {
-					row := f.rowWithID(id)
-					row["status"] = int64(models.TaskStatusPending)
-					out.all = append(out.all, rowValues(row))
-				}
-			}
-			return out, nil
-		}
 		if f.noRows {
 			if f.insertedTask && strings.HasPrefix(q, "SELECT * FROM `crawler_tasks` WHERE id = ?") {
 				row := f.rowWithID(1)
@@ -369,9 +356,14 @@ func (c *fakeConn) QueryContext(_ context.Context, q string, args []driver.Named
 	return c.f.query(q, args)
 }
 
-type fakeResult struct{ affected int64 }
+type fakeResult struct{ affected, insertID int64 }
 
-func (r fakeResult) LastInsertId() (int64, error) { return 1, nil }
+func (r fakeResult) LastInsertId() (int64, error) {
+	if r.insertID == 0 {
+		return 1, nil
+	}
+	return r.insertID, nil
+}
 func (r fakeResult) RowsAffected() (int64, error) { return r.affected, nil }
 
 type fakeRows struct {

@@ -21,7 +21,7 @@ func TestRegisterSitesRejectsInheritedBreakerBeforePublishingBatch(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{}
-			cfg.Crawler.DrainInterval = time.Hour
+
 			cfg.Crawler.Breaker = tc.defaults
 			e := noDBEngine(t, cfg)
 			t.Cleanup(func() { e.Stop(time.Millisecond) })
@@ -57,7 +57,7 @@ func TestRegisterSitesRejectsInheritedBreakerBeforePublishingBatch(t *testing.T)
 // 声明有问题时**一个字节都不落地**：原来是一边注册一边炸，前几个站已经进引擎了。
 func TestRegisterSitesAppliesNothingWhenDeclarationIsBad(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	e := noDBEngine(t, cfg)
 	t.Cleanup(func() { e.Stop(time.Millisecond) })
 	a := &App{Config: cfg, Engine: e, Logger: &loggers.LoggerSet{Engine: quietLogger()}}

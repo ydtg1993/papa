@@ -63,7 +63,7 @@ func TestTaskDeliverAt(t *testing.T) {
 func TestSubmitTaskPersistsMeta(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	task := &Task{
 		Stage: "stub", Site: "stub", URL: "https://example.com/1",
@@ -99,10 +99,8 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 		run  func(e *Engine, row *models.CrawlerTask) error
 	}{
 		{"恢复队列", func(e *Engine, row *models.CrawlerTask) error {
-			if !e.requeueRecoverTask(row) {
-				return errors.New("requeueRecoverTask 返回 false")
-			}
-			return nil
+			_, err := e.ProcessRecoverQueue()
+			return err
 		}},
 		{"轮询队列", func(e *Engine, row *models.CrawlerTask) error {
 			if !e.requeueRepeatTask()(row) {
@@ -127,7 +125,7 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeTaskDB()
 			f.row["meta"] = []byte(metaJSON) // 库里这列有值
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := queueEngine(t, f, pool)
 
 			delivered := make(chan *Task, 4)
@@ -144,6 +142,9 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 			}
 			if err := c.run(e, row); err != nil {
 				t.Fatalf("%s：%v", c.name, err)
+			}
+			if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+				t.Fatal(err)
 			}
 
 			select {
@@ -167,7 +168,7 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 
 	f := newFakeTaskDB()
 	f.row["meta"] = []byte(broken)
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	delivered := make(chan *Task, 4)
@@ -177,12 +178,8 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 	})
 	t.Cleanup(func() { pool.Stop(time.Second) })
 
-	row := &models.CrawlerTask{
-		ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com",
-		Status: models.TaskStatusPending, Meta: datatypes.JSON(broken),
-	}
-	if !e.requeueRecoverTask(row) {
-		t.Fatal("坏 meta 不该让这条任务被跳过")
+	if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+		t.Fatal(err)
 	}
 
 	select {
@@ -201,10 +198,10 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	// 同一台引擎里两个站各有一个 stub：阶段名只在本站内唯一，取用的是 `site:stage` 这个键 ——
 	// 所以带上站点 example 的任务能落到这个站的 stub 上，而不是夹具里那个 stub:stub。
-	e.stages["example:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "example"}}
+	e.stages["example:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "example", Entry: true}}
 
 	task := &Task{Stage: "stub", Site: "example", URL: "https://example.com/1"}
 	if err := e.SubmitTask(task); err != nil {

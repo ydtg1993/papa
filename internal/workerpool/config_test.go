@@ -10,7 +10,7 @@ func TestNewWorkerPoolRejectsInvalidDimensions(t *testing.T) {
 					t.Errorf("dimensions %v panic: %v", dims, p)
 				}
 			}()
-			if p := NewWorkerPool[*testTask](dims[0], dims[1], 1); p != nil {
+			if p := NewWorkerPool[*testTask](dims[0], dims[1]); p != nil {
 				t.Errorf("dimensions %v created invalid pool", dims)
 			}
 		}()

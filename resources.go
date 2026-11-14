@@ -22,5 +22,5 @@ func NewDownloadBudget(memoryBytes, diskBytes int64) *DownloadBudget {
 	return middleware.NewDownloadBudget(memoryBytes, diskBytes)
 }
 
-// SchedulerLimits bounds resident references across pools, spill and delay.
+// SchedulerLimits bounds resident references across pools, pending delivery and delay.
 type SchedulerLimits = engine.SchedulerLimits

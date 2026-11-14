@@ -132,7 +132,13 @@ func TestStopInterruptsSaturatedWorkerBackoff(t *testing.T) {
 		e.ApplyRegisterStage()
 		t.Cleanup(func() { e.Stop(5 * time.Second); time.Sleep(time.Minute + time.Second); synctest.Wait() })
 		task := &Task{Stage: "stub", Site: "stub", URL: "https://fixture.invalid/retry"}
-		if err := e.SubmitTask(task); err != nil {
+		if err := e.submitTask(task); err != nil {
+			t.Fatal(err)
+		}
+		f.mu.Lock()
+		f.noRows = false
+		f.mu.Unlock()
+		if _, err := e.recoverPendingStage(stubKey); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait()

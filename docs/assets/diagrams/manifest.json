@@ -24,19 +24,19 @@
       "name": "03-task-loop",
       "title": "动态数据流",
       "width": 1200,
-      "height": 1491,
-      "sourceSHA256": "c3635fdd2ae4a7dee3a89a8f256c49877b8cce01a836cc9cfb6ce85294be7415",
-      "svgSHA256": "fd7759a1fcdc19ab4c6dc91d65abd0980baab820e00b9c35688023ee0673d3b4",
-      "pngSHA256": "f09214e5c23542edd12e3e944ab98f01e09b5d4c20d751d28157e8fddccae822"
+      "height": 1518,
+      "sourceSHA256": "510f2451b1a28b3e921c1bb9a08a1ef761187911064039229b30602ca9b40e54",
+      "svgSHA256": "06820a6607986844cfb11153d0004d64e07816da31017f80d3f22f3a770170dd",
+      "pngSHA256": "8daa3d4150019aa9f840094a93d3052042cbc0020fcbf81f2ee9fe726bbb5214"
     },
     {
       "name": "04-recovery-budget",
       "title": "积压、背压与恢复",
-      "width": 2538,
-      "height": 555,
-      "sourceSHA256": "7d6edfc00e7d5c68461d286c79f8dd201dc3cf8e6210a202f9364316fdd99a05",
-      "svgSHA256": "178da6bb0802b9e14102d7bd739195bb3aa15ea894661ec7955bf5a8a4001cc8",
-      "pngSHA256": "a8b89fe8e7c65bbb08494f8e8f175fe1177d93fa31d485434f9744f3747bf84e"
+      "width": 2510,
+      "height": 550,
+      "sourceSHA256": "0e3b188310bd69697f75182b1c90ba2954c7dbb4b7771690e8205a1afb34f92e",
+      "svgSHA256": "5a7831d7454f659a50389642fce52027b859266dd489991cfe030993e1236019",
+      "pngSHA256": "be92ffa5b9015dba0d5c4534322d4a852c5cc0504ec7cf25f107d495699d04fd"
     },
     {
       "name": "05-observation",
@@ -61,18 +61,18 @@
       "title": "核心引擎：组件与责任",
       "width": 1327,
       "height": 1412,
-      "sourceSHA256": "bb1473ebc7c8092e03aafc4fdf12c19167bf7c689247195ef4a00cddc67199d4",
-      "svgSHA256": "ce8054112dd8de729d51a6a70519962100a4ca7217f1345401561008005f93d4",
-      "pngSHA256": "7e2f693afc0b0bf3f75d29cba2a1a537e8642f9332afb359c5b7edf2e47a2469"
+      "sourceSHA256": "93d7de1286db99e333c4c195e6f7d7608c70edd7a50cb8ae48b94325aa2caa27",
+      "svgSHA256": "90006894925bde78f97646f7f4892ee6365062975ac917b4c1675d19a4940066",
+      "pngSHA256": "0fa4c6c35aceaf6ab7ded24351c9f9847deeb2abf1b9ce4a4e088df601aa929b"
     },
     {
       "name": "08-engine-scheduling",
       "title": "核心引擎：调度与背压",
-      "width": 1202,
-      "height": 1996,
-      "sourceSHA256": "bca4ae8a22ccf565d688b0a9d2d072c57f4c4c8c1d9bfb4a2422350c09552dbd",
-      "svgSHA256": "789e4288ac8ed7c6880e01589824ac4120d79120dc67968e511efe8a6abb90fc",
-      "pngSHA256": "93e54836b5385585aa80f79c0594bd0824889c1b84e5d199d2086956c2f81e0a"
+      "width": 1200,
+      "height": 1422,
+      "sourceSHA256": "ef35460a266c7e84d80352fa4dc8c7ee2a4617fd60dd97bb125b4a86af2d35a2",
+      "svgSHA256": "699b64689cbe2a6d83b75cfb74607e7da2a5d2f4d1f149a6a677cea0f4e0df21",
+      "pngSHA256": "162910f636454c0eca6daa94e78a7b1f38e0f649f5f9bda4f30da33423a5de1d"
     },
     {
       "name": "09-engine-execution",

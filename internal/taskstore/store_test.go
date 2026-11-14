@@ -34,8 +34,8 @@ func TestClaimAndReleaseFences(t *testing.T) {
 }
 func TestRetryAndRepeatOwnGenerationTransitions(t *testing.T) {
 	requireSQL(t, RetryTask(dry(t), 7, models.TaskStatusFailed, RunVersion{3, 2}, 9), "reprocess = ?", "`repeat` = ?", "compensation_version = ?", "`reprocess`=reprocess + 1")
-	requireSQL(t, RetryFailed(dry(t), 7, 9, 4), "reprocess < ?", "compensation_version = ?")
-	requireSQL(t, AdvanceRepeat(dry(t), 7, 9, 12, 60), "repeatable = ? AND status IN", "`repeat` < ?", "`repeat`=`repeat` + 1", "FROM_UNIXTIME")
+	requireSQL(t, RetryFailed(dry(t), 7, RunVersion{3, 2}, 9, 4), "auto_retry_count < ?", "retry_blocked = ?", "`repeat` = ? AND reprocess = ?", "compensation_version = ?")
+	requireSQL(t, AdvanceRepeat(dry(t), 7, RunVersion{3, 2}, 9, 12, 60, false), "repeatable = ? AND status =", "next_repeat_at <= NOW()", "`repeat` = ? AND reprocess = ?", "`repeat` < ?", "`repeat`=`repeat` + 1", "FROM_UNIXTIME")
 }
 func TestTerminalScopeFencesExactRound(t *testing.T) {
 	requireSQL(t, TerminalScope(dry(t), 7, RunVersion{3, 2}).Updates(map[string]any{"status": models.TaskStatusSuccess}), "id = ? AND status = ? AND `repeat` = ? AND reprocess = ?")

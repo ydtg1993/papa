@@ -25,7 +25,7 @@ where it has already diverged from current Papa.
   `{{.CodeDir}}sites/` declaration — **not** in `config.yaml`.
 - The application assembly (new layout: `internal/app/run.go`) stays generic: `monitor.Register(app)` plus `app.RegisterSites(papa.Sites()...)`. Adding a
   site is adding a file.
-- The three governance queues (`error_queue` / `recover_queue` / `repeat_queue`) are **global**, configured
+- The three governance queues (`error_queue` / `recover_queue` / `repeat_queue`) are **global and always running**, configured
   in `config.yaml`.
 - Business identity travels in `Task.Meta`; it is persisted with the row and restored by every requeue path.
 

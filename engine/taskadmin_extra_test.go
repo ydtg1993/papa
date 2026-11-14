@@ -73,6 +73,10 @@ func TestRetryTaskHappyPath(t *testing.T) {
 		t.Fatalf("应带上 reprocess 版本条件：\n%s", sql)
 	}
 
+	if _, err := e.recoverPendingStage("stub:stub"); err != nil {
+		t.Fatal(err)
+	}
+
 	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
 		t.Fatalf("重投的任务应入队，实得 %d", main+urgent)
 	}
@@ -135,47 +139,49 @@ func TestRetryTaskRejections(t *testing.T) {
 	}
 }
 
-// 重投时队列已满 → 溢出到 DB 由 drain 回灌，**不算失败**（对后台表现为操作成功）。
-func TestRetryTaskSpillsWhenQueueFull(t *testing.T) {
+// 重投时队列已满，仍保持持久 pending 等待容量，对后台表现为受理成功。
+func TestRetryTaskRemainsPendingWhenQueueFull(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 水位 = 1 条
+	pool := workerpool.NewWorkerPool[*Task](1, 1) // 实际容量 1 条
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
 	e.pools.Set("stub:stub", pool)
 
-	if err := pool.Submit(&Task{URL: "occupy", Stage: "stub"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{URL: "occupy", Stage: "stub"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.RetryTaskVersioned(context.Background(), 7, 0, 0); err != nil {
 		t.Fatalf("队列满时应溢出而不是报错：%v", err)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应溢出 1 条，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task must remain durable pending")
 	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("溢出计数 = %d, want 1", got)
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatal("capacity pressure must not mark task failed")
 	}
 }
 
 // 投递真失败（池子已停机）：报错并把 key 从去重表里撤掉，让下次还能投。
-func TestRetryTaskReportsSubmitFailure(t *testing.T) {
+func TestRetryTaskRetainsPendingAcrossPoolRetirement(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	pool.Stop(0)
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
 	e.pools.Set("stub:stub", pool)
 
-	err := e.RetryTaskVersioned(context.Background(), 7, 0, 0)
-	if err == nil {
-		t.Fatal("投递失败应当报错")
+	if err := e.RetryTaskVersioned(context.Background(), 7, 0, 0); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "submit task 7") {
-		t.Fatalf("错误信息应带上任务 ID：%v", err)
+	select {
+	case <-e.deliveryState().Notifications("stub:stub"):
+	default:
+		t.Fatal("durable task was not scheduled")
 	}
-	if e.dedupCache.Get((&Task{Site: "stub", Stage: "stub", URL: "https://example.com"}).Unique()) {
-		t.Fatal("投递失败应把 key 从去重表里撤掉")
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatal("retired pool must not turn durable task into failure")
 	}
+
 }
 
 /* ---------- MarkTaskFailed ---------- */
@@ -382,19 +388,19 @@ func TestMarkTaskFailedTerminalGuardIsInStatement(t *testing.T) {
 
 // 加急时两条队列都满才溢出：快车道优先且满了会退到常规队列（best-effort 优先），
 // 只有两条都塞不下才回 ErrQueueFull、由上层溢出到 DB。
-func TestUrgentTaskSpillsWhenQueueFull(t *testing.T) {
+func TestUrgentTaskRemainsPendingWhenQueueFull(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 常规水位 1 条、快车道水位 2 条
+	pool := workerpool.NewWorkerPool[*Task](1, 1) // 常规容量 1 条、快车道容量 8 条
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
 	e.pools.Set("stub:stub", pool)
 
 	// 占满常规队列，再占满快车道
-	if err := pool.Submit(&Task{URL: "occupy-main", Stage: "stub"}); err != nil {
+	if err := pool.SubmitContext(context.Background(), &Task{URL: "occupy-main", Stage: "stub"}); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		if err := pool.SubmitUrgent(&Task{URL: "occupy-urgent", Stage: "stub"}); err != nil {
+	for i := 0; i < 8; i++ {
+		if err := pool.SubmitUrgentContext(context.Background(), &Task{URL: "occupy-urgent", Stage: "stub"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -402,33 +408,35 @@ func TestUrgentTaskSpillsWhenQueueFull(t *testing.T) {
 	if err := e.UrgentTask(7); err != nil {
 		t.Fatalf("两条队列都满时应溢出而不是报错：%v", err)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应溢出 1 条，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task must remain durable pending")
 	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("溢出计数 = %d, want 1", got)
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatal("capacity pressure must not mark task failed")
 	}
 }
 
 // 加急投递真失败时报错并撤掉去重表里的 key。
-func TestUrgentTaskReportsSubmitFailure(t *testing.T) {
+func TestUrgentTaskRetainsPendingAcrossPoolRetirement(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	pool.Stop(0)
 	e, _ := urgentEngine(t, f)
 	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
 	e.pools.Set("stub:stub", pool)
 
-	err := e.UrgentTask(7)
-	if err == nil {
-		t.Fatal("投递失败应当报错")
+	if err := e.UrgentTask(7); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "submit urgent task 7") {
-		t.Fatalf("错误信息应带上任务 ID：%v", err)
+	select {
+	case <-e.deliveryState().Notifications("stub:stub"):
+	default:
+		t.Fatal("durable task was not scheduled")
 	}
-	if e.dedupCache.Get((&Task{Site: "stub", Stage: "stub", URL: "https://example.com"}).Unique()) {
-		t.Fatal("投递失败应把 key 从去重表里撤掉")
+	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
+		t.Fatal("retired pool must not turn durable task into failure")
 	}
+
 }
 
 // loadTask 把 gorm 的哨兵错误翻成自己的 ErrTaskNotFound：上层（admin/tasksource）

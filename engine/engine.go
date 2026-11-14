@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine/internal/delivery"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,15 +32,15 @@ type Engine struct {
 	events events.Emitter
 
 	ctx context.Context
-	// startedAt 本进程启动时刻，只给启动恢复当截止用（见 recoverQueueQuery）：
-	// 「本进程启动之后被写过的行」= 本进程碰过的行 → 恢复不重投它们。
+	// startedAt is the cutoff for the administrative orphan-failure guard.
 	startedAt time.Time
 	cancel    context.CancelFunc
 	// Cancelled database state retries remain visible in the shutdown report.
 	execution execution.State
 	// stages 阶段登记表：**键是 `core.StageKey(site, stage)`**，不是裸的阶段名 ——
 	// 阶段名只在本站内唯一（两个站可以各有自己的 catalog）。凡是按阶段取东西的地方都用这个键。
-	stages map[string]*stageInfo
+	stages           map[string]*stageInfo
+	stageSubmissions stageSubmissionPolicy
 	// pools 活池登记表：阶段键 -> 当前活着的池。投递/关停/错误通道都从它取池，
 	// 不再散落在 stageInfo.workerPool 上（那是裸指针，池一旦懒建/回收就会并发读写）。
 	pools                   *poolRegistry
@@ -56,21 +57,19 @@ type Engine struct {
 
 	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
 	// 取任务点的闸门、入队点的寄放、后台的横幅/卡片/落库。
-	// 锁序是硬的：breakers.breakerMu → pauseMu → (overflow.mu | e.mu)，不许反向；pauseMu 绝不跨 DB 调用。
+	// 锁序是硬的：breakers.breakerMu → pauseMu → e.mu，不许反向；pauseMu 绝不跨 DB 调用。
 	pauseMu      sync.Mutex
 	paused       map[pauseScope]pauseState // scope -> 现场（整站条目的 Stage 为空）
 	pauseChanged chan struct{}             // 每次变更换一个新的并 close 旧的（叫醒所有等闸门的人）
 	lastResumed  map[pauseScope]time.Time  // 放行时刻（信号删了之后后台 payload 还要它）
-	wakeDrain    chan struct{}             // 容量 1：恢复时叫醒回灌循环，别让它等下一个 tick
 
 	residents        *residentSet
-	refillMu         sync.Mutex // serializes drain/refill, including DB I/O and cursor updates
-	refillCursor     map[string]uint
-	refillStage      int
 	schedulerStarted bool // published before startDrain; composition is serialized
-	overflow         spillQueue
-	spilledCount     atomic.Int64 // 累计溢出任务数（监控埋点）
-	recoveredCount   atomic.Int64 // 累计启动恢复任务数（recover_queue，只在启动跑一次）
+	deliveryOnce     sync.Once
+	delivery         *delivery.Coordinator
+	deliveryStart    sync.Once
+
+	recoveredCount atomic.Int64 // 累计启动恢复任务数（recover_queue，只在启动跑一次）
 	// recoverSkippedUnregistered 启动恢复里因"阶段未注册"被跳过的条数：
 	// 逐条降级为 Debug，启动后汇总一条 Warn（否则一次恢复能把日志刷几百行）。
 	recoverSkippedUnregistered atomic.Int64
@@ -120,7 +119,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 	engine := &Engine{
 		ctx:    ctx,
 		cancel: cancel,
-		// startedAt 本进程启动时刻：启动恢复（recover queue）拿它当截止 —— 见 recoverQueueQuery。
+		// Administrative orphan detection uses the process start cutoff.
 		// 用应用时钟（time.Now）而不是库时钟，是因为 updated_at 也是 gorm 在应用侧写的
 		// （autoUpdateTime），两边同一个钟，不需要校时。
 		startedAt:          time.Now(),
@@ -134,8 +133,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		stageTotals:        make(map[string]stageTotals),
 		errorCh:            make(chan error, 100),
 		errorForwardCancel: make(map[string]*poolForwarder),
-		// 容量 1：恢复时叫醒回灌循环（非阻塞发送，重复叫醒只留一次）
-		wakeDrain: make(chan struct{}, 1),
+		// 容量 1：合并恢复通知（非阻塞发送，重复叫醒只留一次）
 		// 启动恢复会连续 submit（每条都可能 wakeRepeatQueue）：合并窗口把同一批 wake 的
 		// N 次节拍重算（MIN 聚合查询）压成一次；见 dynticker.go。
 		wakeCoalesce: defaultWakeCoalesce,
@@ -150,9 +148,9 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		QueueError:  &engine.errorQueue.retried,
 		QueueRepeat: &engine.repeatQueue.repolled,
 	}
-	engine.residents = newResidentSet(SchedulerLimits{})
+	engine.residents = newResidentSet(SchedulerLimits{}, engine.deliveryState().ContinueAll)
 	engine.loadActiveTasks()
-	// 延迟投递 dispatcher 同样进 tickerWG：它到点时会写库（status=pending），
+	// 延迟投递 dispatcher 同样进 tickerWG：它到点时会读取持久状态并协调投递，
 	// Stop 要等它退出再返回（否则调用方关库时它可能正写到一半）。
 	engine.tickerWG.Add(1)
 	go func() {

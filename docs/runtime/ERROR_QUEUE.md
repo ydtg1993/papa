@@ -7,7 +7,7 @@
 
 ## 0. 一句话
 
-任务最终失败（`status = failed`）后不会丢，持久化在 `crawler_tasks` 表。`error_queue` 在补偿条件满足后把**原记录重置为 pending 并重新入队**，支持自动轮询和手动触发，用 `reprocess` 计数限制自动补偿代数。账号、时间或人工条件仍未满足时保留失败状态，不增加代数。
+任务最终失败（`status = failed`）后不会丢，持久化在 `crawler_tasks` 表。`error_queue` 在补偿条件满足后把**原记录重置为 pending 并重新入队**，支持自动轮询和手动触发，用 `auto_retry_count` 独立限制自动重试次数。账号、时间或人工条件仍未满足时保留失败状态，不增加代数。
 
 先在独立 v4 数据库显式执行 `papa migrate`（业务项目使用自己的迁移入口），创建任务补偿、账号关联列及索引。普通启动不会迁移，旧版本任务身份不原地转换。补偿模式空串表示默认自动策略，不改变任务 ID、标准身份或账号池归属。
 
@@ -17,43 +17,37 @@
 
 ```yaml
 error_queue:
-  enabled: true               # 自动失败重投；false / 不写 = 不自动，仍可手动触发
-  worker_count: 2             # 并发重新投递失败任务的数量，开启时必填 > 0
-  interval: "10m"             # 自动轮询间隔；"0" = 不自动，仅后台手动触发
-  max_retry: 3                # 单个失败任务最多再处理代数；0 = 不限
-  batch_size: 100             # 每批查询处理数；0 = 默认 1000，开启时不能为负
+  worker_count: 2             # 并发重新投递失败任务的数量，0 = 默认 1，不能为负
+  interval: "4h"              # 0 / 不写 = 默认 4h，不能为负
+  max_retry: 3                # 单个任务自动重试次数上限；0 = 不限
+  batch_size: 100             # 每批查询处理数；0 = 默认 1000，不能为负
 ```
 
-> 开着（`enabled: true`）时 `worker_count` 必填 > 0，`batch_size` 为 0 使用默认 1000，`batch_size` / `max_retry` 不能为负、
-> `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker`
-> 「enabled=true 时 threshold 必填」同一档）。
-> 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
-> 队列参数是**启动时读一次**：改完要重启（后台没有热更这回事了）。
+> 错误队列始终运行，全局扫描所有站点。`worker_count` 为 0 默认 1，`batch_size` 为 0 默认 1000，所有数值不能为负。参数启动时读取，修改后重启。旧 `enabled` 键会拒绝启动。
 
 ## 2. 触发方式
 
 | 方式 | 说明 |
 | --- | --- |
-| 自动轮询 | `enabled: true` 且 `interval` 不是 `"0"`，后台按间隔自动投递 |
+| 自动轮询 | 始终运行；后台按间隔自动投递，0 / 不写使用 4h |
 | 手动（OA） | 队列治理面板上那一行的「立即执行」（`POST /api/errorqueue/process`）。每次触发都写一条操作日志（`server.operation_log` 开启时） |
 | 手动（代码） | `engine.ProcessErrorQueue()` |
 
-## 3. 再处理代数上限（防无限重试）
+## 3. 自动重试预算与再处理计数
 
 错误队列或人工重投成功取得原记录时，把该任务的 `reprocess + 1`（同时 `retry` 清零）。只读预览、等待账号、等待时间、解除人工等待都不增加 `reprocess`。轮询队列沿用自己的 `repeat` / `RepeatLimit`，不会因此改成错误队列的代数模型。
 
-错误重投属于当前轮询轮次，**不增加 `repeat`**。直接入队、队满后溢出回灌、暂停后恢复的计数一致；后台单条「重投 / 加急」同样不因经过溢出路径而额外消耗 `RepeatLimit`。历史版本已经多计的存量值不自动回退。
-重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
-（`engine.Engine.markRequeueFailed`，只更新仍为 pending 的行）。未注册阶段直接跳过，保留原状态；投递责任和持续 pending 补充不等同于本队列的 failed 扫描。
-`max_retry > 0` 时，`reprocess >= max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。
+错误重投属于当前轮询轮次，**不增加 `repeat`**。直接入队、队满后保留 pending、暂停后恢复的计数一致；后台单条「重投 / 加急」同样不因等待阶段容量而额外消耗 `RepeatLimit`。历史版本已经多计的存量值不自动回退。
+条件重置成功后，任务由持久 pending 投递器接管。队列满、暂停或池回收不再触发 failed 回写；未注册阶段保持原状态。
+`max_retry > 0` 时，`auto_retry_count >= max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。
 
 ## 4. 与错误分类配合
 
-`WrapNoRetry` / `WrapNoRetryKind` 只停止当前阶段的立即重试，**不表示永久禁止后续补偿**。普通网络错误仍先按阶段 `MaxAttempts` / `Backoff` 执行。要声明后续条件，业务从 `github.com/ydtg1993/papa/v4/core` 返回带补偿策略的错误：
+`WrapNoRetry` / `WrapNoRetryKind` 停止当前阶段立即重试，并持久记录自动重试禁令；自动错误队列不再重投。人工操作仍需满足补偿模式等门控。普通网络错误仍先按阶段 `MaxAttempts` / `Backoff` 执行。要声明后续条件，业务从 `github.com/ydtg1993/papa/v4/core` 返回带补偿策略的错误：
 
 | 持久模式 | 业务写法或来源 | 放行条件 |
 | --- | --- | --- |
-| 空串（默认自动） | 普通错误、仅使用 `WrapNoRetry` | 符合队列状态和代数条件；有账号池的任务仍要求原池就绪 |
+| 空串（默认自动） | 普通可重试错误 | 符合队列状态和代数条件；有账号池的任务仍要求原池就绪 |
 | `retry_after` | `core.RetryAfter(err, time.Now().Add(5*time.Minute))` | 到达持久的 `next_compensation_at`，且原池就绪 |
 | `account_ready` | `ErrNeedsVerify`、确认失效、账号挑战、固定出口不可用、账号预算等待等账号错误 | 原任务的 `(site, account_pool)` 已就绪 |
 | `manual` | `core.ManualCompensation(err, "等待业务审核")` | 运营显式解除任务人工等待，再检查其他条件 |
@@ -65,18 +59,18 @@ error_queue:
 
 **显式非池账号调用的边界：**任务未声明 `AccountPool` 却返回账号错误时，自动策略会阻塞并提示 `account-ready compensation requires task pool ownership`，因为引擎不能安全判断它依赖哪个池。业务应声明正确池归属，或明确返回自己的 `retry_after` / `manual` / `permanent` 策略；显式策略优先于自动账号分类。不要通过创建重复页面任务绕过等待。
 
-错误队列、人工重投、普通/强制轮询共用时间和模式门控，任务认领的 SQL 同样检查这些条件。成功取得重投资格会递增补偿版本；自动队列与人工动作竞争时，旧版本不能再次取得这次资格。`max_retry` 仍是错误队列自动处理上限，人工重投和轮询的原有计数规则不变。
+错误队列、人工重投、普通/强制轮询共用时间和模式门控，任务认领的 SQL 同样检查这些条件。成功取得重投资格会递增补偿版本；自动队列与人工动作竞争时，旧版本不能再次取得这次资格。`max_retry` 仍是错误队列自动处理上限，人工重投不消耗自动预算，也不清空预算或自动禁令；只有任务成功后才重置这些字段。
 
 ## 5. 与 recover_queue 的分工
 
 | 机制 | 目标状态 | 语义 |
 | --- | --- | --- |
 | `error_queue` | `failed` | 重跑「明确失败」的任务 |
-| `recover_queue` | 本进程启动前遗留的 `pending` / `processing` | 启动时恢复中断任务（以 `updated_at < startedAt` 为边界，**只在启动跑一次**，见 [RECOVER_QUEUE.md](RECOVER_QUEUE.md)） |
+| `recover_queue` | 本进程启动前遗留的 `pending` / `processing` | 入口与 worker 启动前同步重置 processing，运行期持续补充 pending（见 [RECOVER_QUEUE.md](RECOVER_QUEUE.md)） |
 
 两者按状态互斥，不会同时盯上同一个任务。
 
-启动恢复也遵守持久的时间、人工和永久终止条件。原有 `pending` 账号任务可以恢复排队，其执行前仍会等待账号就绪，不增加错误补偿代数。处理中孤儿的重置语句再次确认 `updated_at < startedAt`，避免旧恢复快照覆盖本进程刚认领的任务。
+启动恢复也遵守持久的时间、人工和永久终止条件。原有 `pending` 账号任务可以恢复排队，其执行前仍会等待账号就绪，不增加错误补偿代数。处理中孤儿只在入口与 worker 启动前同步重置，运行期补充不会重置 processing。
 
 ## 6. 预览、人工解除与受影响任务
 
@@ -99,4 +93,6 @@ error_queue:
 
 ### 关停期间的批处理
 
-Engine 取消后不再开始新批次或领取同批后续任务，批间暂停为 0 时同样生效；查询和条件重置使用生命周期 context。已经成功重置的任务按原投递/溢出路径收尾，批处理等待已准入回调返回后才退出。返回计数只包含实际处理成功部分，取消不会把尚未处理的记录标成失败。
+Engine 取消后不再开始新批次或领取同批后续任务，查询和条件重置使用生命周期 context。已经成功重置的任务保留为持久 pending，按容量进入有界 channel，批处理等待已准入回调返回后才退出。返回计数只包含实际处理成功部分，取消不会把尚未处理的记录标成失败。
+
+自动认领错误重投时增加 `auto_retry_count`；自动或人工重投均增加 `reprocess`。手动重投保留自动预算及禁令直到成功，轮询只处理成功任务。旧任务的自动禁令列为可空值：历史 failed 且禁令未知时按阻止自动重试处理；升级必须显式执行迁移，普通启动不迁移，也不把历史 reprocess 推算成自动次数。

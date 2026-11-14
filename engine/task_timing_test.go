@@ -90,7 +90,7 @@ func TestSubmitExistingTaskCannotReplacePersistedDeadline(t *testing.T) {
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatal(err)
 	}
-	if !task.NotBefore.Equal(saved) || task.Delay != time.Hour || e.delays.Len() != 1 {
+	if !task.NotBefore.Equal(saved) || task.Delay != time.Hour || e.delays.Len() != 0 {
 		t.Fatal("duplicate changed persisted scheduling")
 	}
 }

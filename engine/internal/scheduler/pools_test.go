@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -10,12 +11,12 @@ import (
 // 空闲回收：lastSubmit 超了 idle 且空着 → 回收；队列非空 → 不回收。
 func TestPoolRegistryReapIdle(t *testing.T) {
 	r := NewRegistry[*testTask]()
-	idlePool := workerpool.NewWorkerPool[*testTask](1, 8, 1)
-	busyPool := workerpool.NewWorkerPool[*testTask](1, 8, 1)
+	idlePool := workerpool.NewWorkerPool[*testTask](1, 8)
+	busyPool := workerpool.NewWorkerPool[*testTask](1, 8)
 	r.Set("idle", idlePool)
 	r.Set("busy", busyPool)
 	// busy 池里压着一条任务（队列非空）
-	if err := busyPool.Submit(&testTask{Stage: "busy", URL: "https://example.com"}); err != nil {
+	if err := busyPool.SubmitContext(context.Background(), &testTask{Stage: "busy", URL: "https://example.com"}); err != nil {
 		t.Fatalf("Submit = %v", err)
 	}
 	// 两个池的 lastSubmit 都回拨到 2 分钟前
@@ -39,7 +40,7 @@ func TestPoolRegistryReapIdle(t *testing.T) {
 func TestPoolRegistryGetOrCreateRefreshesLastSubmit(t *testing.T) {
 	r := NewRegistry[*testTask]()
 	mk := func() *workerpool.WorkerPool[*testTask] {
-		return workerpool.NewWorkerPool[*testTask](1, 8, 1)
+		return workerpool.NewWorkerPool[*testTask](1, 8)
 	}
 	r.GetOrCreate("s", mk)
 	if r.lastSubmit["s"].IsZero() {
@@ -58,10 +59,10 @@ func TestPoolRegistryGetOrCreateRefreshesLastSubmit(t *testing.T) {
 //
 // 这是 F-01 的结构性收口 —— 置位与取快照分开做的话，两步之间进来的投递会建出一个
 // 既不在快照里（Stop 不会停它）、又有活 worker 的池；框架自己的收尾协程（deliverDelayed /
-// drainSpilled）恰好就在那个窗口里投递。
+// pending 投递器）可能恰好在该窗口尝试投递。
 func TestPoolRegistryShutdownRefusesNewPools(t *testing.T) {
 	r := NewRegistry[*testTask]()
-	existing := workerpool.NewWorkerPool[*testTask](1, 8, 1)
+	existing := workerpool.NewWorkerPool[*testTask](1, 8)
 	r.Set("stub:stub", existing)
 
 	if r.IsStopped() {
@@ -81,7 +82,7 @@ func TestPoolRegistryShutdownRefusesNewPools(t *testing.T) {
 	created := 0
 	if p := r.GetOrCreate("other:stage", func() *workerpool.WorkerPool[*testTask] {
 		created++
-		return workerpool.NewWorkerPool[*testTask](1, 8, 1)
+		return workerpool.NewWorkerPool[*testTask](1, 8)
 	}); p != nil {
 		t.Fatalf("停机之后不该再建池，实得 %v", p)
 	}

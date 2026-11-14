@@ -18,7 +18,7 @@ func TestAccountPoolTaskRoundTripAndDedupIdentity(t *testing.T) {
 		t.Fatal("account pool changed task uniqueness")
 	}
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	record := task.toModel()
 	record.ID = 7
 	got := e.taskFromRecord(&record)
@@ -32,7 +32,7 @@ func TestAccountPoolDedupConflictIncludesCacheAndFallback(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			f := newFakeTaskDB()
 			f.row["account_pool"] = "old"
-			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 			task := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a", AccountPool: "new"}
 			if path == "cache" {
 				e.dedupCache.Add(task.Unique())
@@ -60,7 +60,7 @@ func TestAccountPoolDedupConflictIncludesCacheAndFallback(t *testing.T) {
 func TestAccountPoolBatchConflictingMembersNeverInsert(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	a := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a", AccountPool: "one"}
 	b := *a
 	b.AccountPool = "two"
@@ -75,7 +75,7 @@ func TestAccountPoolBatchConflictingMembersNeverInsert(t *testing.T) {
 func TestAccountPoolExistingTaskPreservesStoredOwnership(t *testing.T) {
 	f := newFakeTaskDB()
 	f.row["account_pool"] = "original"
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	task := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a"}
 	if err := e.SubmitTask(task); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestAccountPoolUnknownCannotInsertAndFlowCannotBypassGuard(t *testing.T) {
 	for _, batch := range []bool{false, true} {
 		f := newFakeTaskDB()
 		f.noRows = true
-		e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+		e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 		task := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/new", AccountPool: "unknown"}
 		var err error
 		if batch {
@@ -101,7 +101,9 @@ func TestAccountPoolUnknownCannotInsertAndFlowCannotBypassGuard(t *testing.T) {
 			t.Fatalf("unregistered pool inserted task: batch=%v err=%v", batch, err)
 		}
 	}
-	if err := (&Engine{}).SubmitFlowTask(context.Background(), "flow", 0, &Task{AccountPool: "p"}); !errors.Is(err, ErrFlowInvalid) {
+	f := newFakeTaskDB()
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
+	if err := e.SubmitFlowTask(context.Background(), "flow", 0, &Task{Site: "stub", Stage: "stub", AccountPool: "p"}); !errors.Is(err, ErrFlowInvalid) {
 		t.Fatal("flow bypassed pool reference protection", err)
 	}
 }
@@ -109,7 +111,7 @@ func TestAccountPoolUnknownCannotInsertAndFlowCannotBypassGuard(t *testing.T) {
 func TestAccountPoolCachedDuplicateDoesNotEnqueue(t *testing.T) {
 	f := newFakeTaskDB()
 	f.row["account_pool"] = "p"
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	task := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a", AccountPool: "p"}
 	e.dedupCache.Add(task.Unique())

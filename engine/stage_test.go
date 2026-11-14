@@ -69,7 +69,7 @@ func TestAddNotifierSkipsNilAndReturnsCopy(t *testing.T) {
 // 熔断只数这个量，按 attempt 数会把一个烂 URL 记 3 次、阈值被噪声灌满。
 func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	// 闸门按站点取：这台引擎里那个阶段属于站点 stub
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
@@ -112,7 +112,7 @@ func TestNotifyFailureCountsBreakerAndEmitsAlert(t *testing.T) {
 // 没注册通知器时一切照旧：不 panic、不因为"没人收告警"而少记熔断。
 func TestNotifyFailureWithoutNotifiers(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: true, Window: time.Minute, Threshold: 1000})
 
@@ -126,7 +126,7 @@ func TestNotifyFailureWithoutNotifiers(t *testing.T) {
 // 没有闸门就没有"熔断"这回事，但任务收尾（日志 + 告警）照旧。
 func TestNotifyFailureWithoutGate(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool) // 一台没配任何闸门的引擎
 
 	n := &recordingNotifier{}
@@ -141,7 +141,7 @@ func TestNotifyFailureWithoutGate(t *testing.T) {
 // 通知器自己报错只记日志：告警发不出去**不能**把任务收尾带崩。
 func TestNotifyFailureSwallowsNotifierError(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	n := &recordingNotifier{err: errors.New("webhook 500")}
@@ -157,7 +157,7 @@ func TestNotifyFailureSwallowsNotifierError(t *testing.T) {
 // webhook 那边据此单独路由（钉钉 @全体之类）。
 func TestNotifyBreakerTripEmitsCritical(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	// 不用重赋 e.ctx：NewEngine 已经建好可取消的 ctx，重赋会与 delayDispatcher
 	// 读同一个字段（data race），还会让 dispatcher 永不退出。
@@ -263,7 +263,7 @@ func newTestEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	t.Helper()
 	cfg := &config.Config{}
 	// 阶段不在配置里了（参数搬进 Go 声明）：这个引擎的 "stub" 阶段由各用例自己 AddStage。
-	cfg.Crawler.DrainInterval = time.Hour
+
 	cfg.Crawler.Trace.Mode = config.TraceOff
 
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
@@ -293,7 +293,7 @@ func TestApplyRegisterStageRunsTaskEndToEnd(t *testing.T) {
 		t.Fatal("ApplyRegisterStage 不应建池（池子懒建，等第一条任务 submit 才建）")
 	}
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	if e.pools.Get(stubKey) == nil {
@@ -345,7 +345,7 @@ func TestStopWaitsStagesConcurrently(t *testing.T) {
 	}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	for _, name := range []string{"a", "b", "c"} {
-		pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+		pool := workerpool.NewWorkerPool[*Task](1, 8)
 		e.stages[name] = &stageInfo{}
 		e.pools.Set(name, pool)
 	}
@@ -366,7 +366,7 @@ func TestStopWaitsStagesConcurrently(t *testing.T) {
 // 与生产一致：熔断是在累积失败之后触发的，那时 worker 会立刻停在循环顶部。
 func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	// 假库有两个模式：noRows = 库里的行"查不到"（提交路径按全新任务走 INSERT），
-	// 反之查得到（提交路径会命中去重、静默跳过）。提交那一刻要前者，回灌那一刻要后者 ——
+	// 反之查得到（提交路径会命中去重、静默跳过）。提交那一刻要前者，pending 补位时要后者 ——
 	// 真库里两种情况都是真的（行刚 INSERT 过、当然查得到），假库不落写所以只能手动切。
 	f := newFakeTaskDB()
 	f.noRows = true
@@ -389,17 +389,17 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 
 	e.ApplyRegisterStage() // worker 一起来就停在闸门前
 
-	// 暂停中提交：**在入队点就收口** —— 任务不入队、寄放到溢出表（行已落库、状态 pending），
+	// 暂停中提交：**在入队点就收口** —— 任务不入队、保留为持久 pending（行已落库、状态 pending），
 	// 池子也不该被建起来（暂停期间连 worker 都不需要）。
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/paused"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/paused"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	time.Sleep(80 * time.Millisecond)
 	if got := fetcher.calls(); len(got) != 0 {
 		t.Fatalf("暂停中不该取任务，实得 %v", got)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("暂停中的任务应当寄放在溢出表里，实得 %d", got)
+	if f.row["status"] != int64(models.TaskStatusPending) {
+		t.Fatal("accepted task must remain durable pending")
 	}
 	if pool := e.pools.Get(stubKey); pool != nil {
 		t.Fatal("暂停期间不该建池（收口在建池之前）")
@@ -429,7 +429,7 @@ func TestStopDrainsWhileBreakerPaused(t *testing.T) {
 	if !e.ResumeCrawling() {
 		t.Fatal("放行应当成功")
 	}
-	// 恢复要**立刻**把寄放的任务灌回去（wakeDrainNow），不能等 drain_interval ——
+	// 恢复后立即通知 pending 投递器，不依赖定时轮询 ——
 	// 本夹具把它设成了 1 小时，所以这条断言就是那个唤醒机制的证明。
 	fetcher.waitCalls(t, 1)
 
@@ -501,7 +501,7 @@ func TestStopIsNotBlockedByPostSuccessDelay(t *testing.T) {
 	}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	fetcher.waitCalls(t, 1)
@@ -534,7 +534,7 @@ func TestPostSuccessDelayStillRateLimits(t *testing.T) {
 	}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	fetcher.waitCalls(t, 1)
@@ -578,7 +578,7 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 	f.noRows = true // 起始任务都是全新的，走 INSERT
 
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	e.breakers.breakerStore = &memoryBreakerRepository{}
 	e.breakers.breakerRuntime = true
@@ -595,10 +595,10 @@ func TestApplyRegisterStageAllowsCrossStageSubmit(t *testing.T) {
 
 	var submitErrs []error
 	e.AddStage("a", stageCfgA, fetcherA, func(eng *Engine) {
-		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "b", Site: "b", URL: "https://example.com/init-b"}))
+		submitErrs = append(submitErrs, submitAndDispatch(eng, &Task{Stage: "b", Site: "b", URL: "https://example.com/init-b"}))
 	})
 	e.AddStage("b", stageCfgB, fetcherB, func(eng *Engine) {
-		submitErrs = append(submitErrs, eng.SubmitTask(&Task{Stage: "a", Site: "a", URL: "https://example.com/init-a"}))
+		submitErrs = append(submitErrs, submitAndDispatch(eng, &Task{Stage: "a", Site: "a", URL: "https://example.com/init-a"}))
 	})
 
 	e.ApplyRegisterStage() // 原来这里会 panic
@@ -630,7 +630,7 @@ func TestSubmitCreatesPoolLazily(t *testing.T) {
 	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	// 注意：不调 ApplyRegisterStage —— 池子该由首次 submit 懒建
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("首次 submit 应懒建池子并成功，实得：%v", err)
 	}
 	if e.pools.Get(stubKey) == nil {
@@ -662,7 +662,7 @@ func TestSameStageNameInTwoSitesIsIsolated(t *testing.T) {
 	// 同一个 URL：站点不同就是两条独立任务（去重键是 site:stage:url）
 	const sameURL = "https://example.com/same"
 	for _, site := range []string{"a", "b"} {
-		if err := e.SubmitTask(&Task{Stage: "catalog", Site: site, URL: sameURL}); err != nil {
+		if err := submitAndDispatch(e, &Task{Stage: "catalog", Site: site, URL: sameURL}); err != nil {
 			t.Fatalf("站点 %s 投递失败：%v", site, err)
 		}
 	}
@@ -801,7 +801,7 @@ func stageDepEngine(t *testing.T) *Engine {
 	t.Helper()
 	f := newFakeTaskDB()
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	e.breakers.breakerStore = &memoryBreakerRepository{}
 	e.breakers.breakerRuntime = true
@@ -827,7 +827,7 @@ func TestRetryBackoffOnlyBetweenAttempts(t *testing.T) {
 	}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	// 上限给足：这个用例的 backoff 就是 3s，用默认的 3s 上限会正好卡在截止线上
@@ -918,7 +918,7 @@ func TestBreakerScopesAreIndependent(t *testing.T) {
 func TestBreakerTripCarriesSite(t *testing.T) {
 	f := newFakeTaskDB()
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
+
 	e := NewEngine(openFakeTaskDB(t, f), cfg, testLoggerSet())
 	e.breakers.breakerStore = &memoryBreakerRepository{}
 	e.breakers.breakerRuntime = true
@@ -976,7 +976,7 @@ func TestBreakerTripCarriesSite(t *testing.T) {
 // 中间没人把任务行收尾 —— 补在 stageHandler 这一层的 defer 里。
 func TestStageHandlerPanicMarksTaskFailed(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	e.stages["stub:stub"].fetcher = &pageFetcher{panicWith: "boom-in-handler"}
 
@@ -1056,7 +1056,7 @@ func statementArgs(f *fakeTaskDB, i int) []driver.Value {
 // （success/failed 只按 id 写），停机取消时一条都不该有 —— assertNoTerminalStatusWrite 反向钉住。
 func conditionalStatusUpdates(f *fakeTaskDB) []int {
 	var out []int
-	for _, i := range statementIndexes(f, "SET `status`=?") {
+	for _, i := range statementIndexes(f, "`status`=?") {
 		if strings.Contains(statementSQL(f, i), "AND status = ?") {
 			out = append(out, i)
 		}
@@ -1107,9 +1107,16 @@ func assertNoTerminalStatusWrite(t *testing.T, f *fakeTaskDB) {
 	if strings.Contains(f.written(), "CONCAT(COALESCE(error") {
 		t.Fatalf("停机取消不该落 failed（会往 error 列追加 context canceled）：\n%s", f.written())
 	}
-	for _, i := range statementIndexes(f, "SET `status`=?") {
-		if !strings.Contains(statementSQL(f, i), "AND status = ?") {
-			t.Fatalf("停机取消不该写终态（success/failed 只按 id 条件写）：\n%s", statementSQL(f, i))
+	for _, i := range statementIndexes(f, "`status`=?") {
+		sql := statementSQL(f, i)
+		index := strings.Count(sql[:strings.Index(sql, "`status`=?")], "?")
+		args := statementArgs(f, i)
+		if index >= len(args) {
+			t.Fatalf("missing status binding: %s", sql)
+		}
+		status, ok := asInt64(args[index])
+		if ok && (status == int64(models.TaskStatusSuccess) || status == int64(models.TaskStatusFailed)) {
+			t.Fatalf("cancellation wrote terminal status: %s", sql)
 		}
 	}
 }
@@ -1167,7 +1174,7 @@ func TestStopDrainDoesNotClaimQueuedTasks(t *testing.T) {
 	e.ApplyRegisterStage()
 
 	for i := 1; i <= 3; i++ {
-		if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: fmt.Sprintf("https://example.com/%d", i)}); err != nil {
+		if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: fmt.Sprintf("https://example.com/%d", i)}); err != nil {
 			t.Fatalf("SubmitTask(%d) = %v", i, err)
 		}
 	}
@@ -1221,7 +1228,7 @@ func TestStopDrainDoesNotClaimQueuedTasks(t *testing.T) {
 }
 
 // cancelInFetchFetcher 在 fetch 里把 ctx 取消再返回错误 —— 复现「任务跑到一半遇上停机」。
-// err 分别取可重试/不可重试：两条分支都不许把 context canceled 记成任务失败。
+// 纯取消及其包装不应记成任务失败；真实业务失败另测持久重试策略。
 type cancelInFetchFetcher struct {
 	cancel context.CancelFunc
 	err    error
@@ -1234,20 +1241,20 @@ func (f *cancelInFetchFetcher) FetchHandler(context.Context, *Task, *Engine) err
 	return f.err
 }
 
-// 已认领的任务在 ctx 取消后必须回退成 pending：SQL 上先看到认领、再看到回退，
+// 已认领的任务仅因 ctx 取消中断时回退成 pending：SQL 上先看到认领、再看到回退，
 // 没有 failed 的白等，也没有终态落库。
 func TestStageHandlerReleasesClaimWhenCtxCancelledAfterFetch(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
 	}{
-		{"可重试错误", errors.New("boom")},
-		{"不可重试错误", core.WrapNoRetryKind("structure", errors.New("页面结构变了"))},
+		{"取消错误", context.Canceled},
+		{"包装取消错误", fmt.Errorf("fetch interrupted: %w", context.Canceled)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
-			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			e.stages["stub:stub"].fetcher = &cancelInFetchFetcher{cancel: cancel, err: tc.err}
@@ -1280,7 +1287,7 @@ func TestStageHandlerReleasesClaimWhenCtxCancelledAfterFetch(t *testing.T) {
 // 停机排水把队列任务原样交给 handler 时 ctx 已经取消：一条都不该认领，也不该碰 fetcher。
 func TestStageHandlerDoesNotClaimWhenCtxAlreadyCancelled(t *testing.T) {
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	fetcher := &recordingFetcher{stage: "stub"}
 	e.stages["stub:stub"].fetcher = fetcher
 
@@ -1297,4 +1304,17 @@ func TestStageHandlerDoesNotClaimWhenCtxAlreadyCancelled(t *testing.T) {
 	if sql := f.written(); sql != "" {
 		t.Fatalf("ctx 已取消不该写任何语句（尤其不能认领），实得：\n%s", sql)
 	}
+}
+
+// submitAndDispatch exercises execution below public stage admission: the singleton SQL fake does not
+// retain newly inserted payloads. Durable recovery is covered by MySQL tests.
+func submitAndDispatch(e *Engine, task *Task) error {
+	if err := e.submitTask(task); err != nil {
+		return err
+	}
+	err := e.deliverPending(e.queueContext(), task)
+	if errors.Is(err, errDeliveryPaused) {
+		return nil
+	}
+	return err
 }

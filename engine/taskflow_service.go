@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"reflect"
 	"strings"
 
@@ -153,7 +154,7 @@ func (s taskFlowService) claim(ctx context.Context, flowID string, taskID uint, 
 			return nil
 		}
 		scope := claimScope(tx, taskID).Where("`repeat` = ? AND reprocess = ?", row.Repeat, row.Reprocess)
-		result := scope.Updates(map[string]any{"status": models.TaskStatusProcessing, "urgent": false})
+		result := scope.Updates(taskstore.ClaimUpdates())
 		claimed = result.RowsAffected == 1
 		return result.Error
 	})

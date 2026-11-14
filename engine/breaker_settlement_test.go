@@ -122,8 +122,8 @@ func TestBreakerSettlementRestartAndLostAcknowledgementMySQL(t *testing.T) {
 			cancel()
 			restarted.cancel()
 			restarted.tickerWG.Wait()
-			if restarted.requeueRecoverTask(&rows[0]) {
-				t.Fatal("recover queue reran failed business")
+			if _, err := restarted.recoverPendingStage("synthetic:detail"); err != nil || restarted.SchedulerResidentCount() != 0 {
+				t.Fatalf("recovery admitted unsettled failure: %v", err)
 			}
 			restarted.breakers.breakerMu.Lock()
 			rs := restarted.breakers.smartBreakers["synthetic"]

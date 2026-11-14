@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"github.com/ydtg1993/papa/v4/models"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -29,9 +30,9 @@ func TestReservedWordColumnsAreQuotedInRawSQL(t *testing.T) {
 	t.Run("提交可轮询任务：幂等初始化 repeat", func(t *testing.T) {
 		sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
 			return tx.Model(&models.CrawlerTask{}).Where("id = ?", 1).
-				Updates(submitUpdates(&Task{ID: 1, Repeatable: true}))
+				Updates(taskstore.ClaimUpdates())
 		})
-		if !strings.Contains(sql, "`repeat`=CASE WHEN `repeat` = 0 THEN 1 ELSE `repeat` END") {
+		if !strings.Contains(sql, "`repeat`=CASE WHEN repeatable = ? AND `repeat` = 0 THEN 1 ELSE `repeat` END") {
 			t.Errorf("`repeat` 是保留字，裸写会 1064；拼出来应当是带引号的：%s", sql)
 		}
 	})
@@ -57,7 +58,7 @@ func TestRepeatResetAtomicallyAdvancesQuotedRound(t *testing.T) {
 	if e.requeueRepeatTaskIn(row) {
 		t.Fatal("dry run unexpectedly enqueued")
 	}
-	for _, fragment := range []string{"`repeat`=`repeat` + 1", "`status`=?", "`last_repeat_at`=NOW()", "`next_repeat_at`=FROM_UNIXTIME", "repeatable = ? AND status IN", "`repeat` < ?"} {
+	for _, fragment := range []string{"`repeat`=`repeat` + 1", "`status`=?", "`last_repeat_at`=NOW()", "`next_repeat_at`=FROM_UNIXTIME", "repeatable = ? AND status =", "`repeat` < ?"} {
 		if !strings.Contains(sql, fragment) {
 			t.Fatalf("missing atomic reset fragment %q: %s", fragment, sql)
 		}

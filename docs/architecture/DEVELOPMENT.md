@@ -176,7 +176,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 | 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `StartPaused` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/sitedecl/SiteSpec`（`internal/app` 与根包 `papa` 以类型别名透出） |
 | 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine/stage.go` 建池那一段 |
 | 执行 | **每站一个终态 Detector**；阶段分类用于定位，自动保护统一整站；全阶段验证与在途排空完成后才清零，人工解除不清零 | `internal/sitedecl` 的 `defaultBreakerConfig`、`engine/breaker_runtime.go`、`engine/breaker_recovery.go` |
-| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
+| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（保留持久 pending，恢复后补位） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、阶段 pending 投递器 |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | 站点快照（**内存是源**：启动读 `crawler_config` 的 `sites` 键（没有就按声明生成）、按声明对齐；`StartPaused` 也在这**一次**写里落成暂停态，手动暂停/恢复整块回写） | `engine/sitestat.go`、`admin/configstore/sites.go` |
@@ -187,7 +187,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 ### 全局，且**有意**如此（别想着分站）
 
-- **进程级**：`crawler.stop_timeout`（停机怎么等）、`crawler.drain_interval`（溢出回灌跳多久一次）、
+- **进程级**：`crawler.stop_timeout`（停机怎么等）、
   `server.*`（HTTP 服务/白名单/采样间隔）、`db.*`、`log.*` —— 一个进程只有一份。
 - **客户端级**：`html.*` / `browser.*`（超时、体积上限、空闲回收、全局 headers）。站点要自己的头就用
   `SiteSpec.Headers`（同键覆盖全局那层）；单次请求还能 `papa.WithHeaders`。
@@ -198,10 +198,9 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 ### 维持全局的治理与资源配置
 
 - **`error_queue` / `recover_queue` / `repeat_queue` 全局各一条**：各一段写在 `config.yaml` 里，后台各占一行；任务仍按自身 site/stage 回到对应执行池。
-- **进程级采集资源配置留在 `config.yaml`**：`queue_watermark`（`engine/stage.go`
-  建池那行）、`archive.*`（原始 HTML 按 `{site}/{stage}/` 分层）、`trace.*` / `trace_files.*`
+- **进程级采集资源配置留在 `config.yaml`**：`archive.*`（原始 HTML 按 `{site}/{stage}/` 分层）、`trace.*` / `trace_files.*`
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
-  它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
+  它们是**进程级资源**那类数值（驻留预算、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
 - **`dedupCache` 是"按 key 分、预算共享"**：key 是版本化的站点、阶段、身份类型和值的 SHA-256（`Task.Unique()`），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
@@ -212,7 +211,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 一句话：**跟"某个站点的抓取"有关的按站点，跟"进程/服务本身"有关的不按站点。**
 并发、间隔、重试、请求头、出口这些按站点（阶段参数 + 站点声明上那几项）；
-**队列水位 / 归档 / trace / 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
+**归档 / trace / 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
 —— 一个进程只有一份答案。要动这条边界，先问一句：这是"**这一站怎么抓**"，还是"**这个进程扛不扛得住**"。
 
 
@@ -224,7 +223,7 @@ CLI 的 `cmd/papa/layout.go` 仅提供固定的 docs/framework 文档路径，�
 
 脚手架区分完整 module 与本地项目名：module 用于 import，本地项目名取最后一段，用于站点文件和构建/部署名称。`cmd/papa/module_path_test.go` 的 `TestRunNewNamespacedModuleBuilds` 覆盖多级路径、连字符和 `/v2` 后缀，实际生成临时项目、tidy/build、构建入口二进制并运行纯站点校验。
 
-轮询回灌计数回归在 `engine/spill_repeat_test.go` 的 `TestSpillRetriesPreservePendingRepeat`：覆盖连续满池、首次写库失败、容量释放后投递和下一轮计数；SQL 方言与保留字仍由 `engine/sqlshape_test.go` 的 MySQL DryRun 验证。
+轮询计数回归覆盖容量不足、持久化失败、容量释放后补位和下一轮计数；SQL 方言与保留字由 MySQL DryRun 验证。
 
 真实计数回归：配置 `PAPA_REPEAT_TEST_DSN` 后执行 `go test -race ./engine -run '^TestRepeatSubmissionMySQL' -count=1`。测试强制数据库名为 `papa_repeat_test`，需要预先建库并授予迁移表权限；自动迁移仅该库的任务表、按本次随机站点清理测试行，不接受业务库 DSN。覆盖 MySQL changed-rows/found-rows、首次并发、已有轮次重投、pending/processing 重启恢复、下一轮/上限，以及 UPDATE 已提交后注入错误的恢复。未配置时明确跳过。普通测试另用 MySQL DryRun 钉住初始化 CASE 与轮询 reset 的 SQL，fake 不代替真实数据库语义。
 
@@ -350,3 +349,5 @@ Trace 文件存储的包依赖、状态锁和文件归属见 [Internal 分册](.
 新增文件归属：pkg/events 的 detach.go（载荷限界与所有权），internal/app/observation.go（并列接线），internal/reportrunner 的 aggregate.go、tables.go、writer.go（有限聚合、投影和文件 worker）。obs/failure_isolation_test.go 覆盖所有扩展方法；engine/breaker_probe_evidence_test.go 保证窄证据复制等价。完整逐文件职责见各结构分册。
 
 可运行 `go test ./obs/... ./pkg/events ./pkg/incident ./internal/reportrunner ./internal/breakerstore ./internal/app ./engine`；并发边界再运行同范围 `go test -race`（Windows 需要 CGO_ENABLED=1 与 C 编译器）。关注堵塞/故障下的返回期限、队满与维度丢弃、固定 worker 数、来源 incomplete 标记，而不是将事件计数等同数据库权威任务数。在线报告和归档退出共用最长 2 秒，未完成报告不代表 Engine 未排空；真实任务/可靠恢复持久化仍用各自排空协议验收。
+
+阶段路由的不可变图归 `internal/stageflow`：仅依赖标准库，负责校验 DAG、直接边、Entry 根和最长路径层级；不依赖 Engine、不持有运行状态。`internal/sitedecl` 在注册前验证完整站点图并复制 Downstream；Engine 装配站点图与执行许可，通过语义接口约束子任务提交。

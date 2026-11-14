@@ -9,14 +9,14 @@ import (
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
 )
 
-// Stop 停止引擎：先取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
+// Stop 停止引擎：先关闭接单入口，再取消引擎 ctx（让在途的退避等待尽快结束），再让各阶段工作池排空队列。
 //
 // 从这一句起，引擎**不再接新活**：活池登记表置上停机位（pools.shutdown），之后任何投递
 // 都不会再懒建出新的池 —— 新池会既不在这次快照里、又带着活着的 worker 跑任务，而调用方
-// 已经拿 drained=true 去关库了。投进来的任务按"先寄放"处理（行保持 pending，
+// 已经拿 drained=true 去关库了。已受理任务仍由持久记录接管（行保持 pending，
 // 下次启动的启动恢复重新入队），不判失败。
 //
-// 返回 drained 表示所有阶段与后台 ticker 都在 timeout 内停下，且没有未完成、溢出、
+// 返回 drained 表示所有阶段与后台 ticker 都在 timeout 内停下，且没有未完成、持久 pending、
 // 延迟或未确认的任务；没排空时 stats 是最后观察到的存留情况。ticker 同样会写库，
 // 不等它们就关库，在途的那一跳会报 `sql: database is closed`。
 //
@@ -27,6 +27,7 @@ import (
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]core.StopStats) {
 	defer e.requestEventsClose()
 	deadline := time.Now().Add(timeout)
+	admissionsDone := e.deliveryState().Close()
 	// Startup storage registers its in-flight slot under the same short lock.
 	// Once canceled, no initializer may join after tickerWG has reached zero.
 	e.mu.Lock()
@@ -76,20 +77,21 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]cor
 			e.loggerSet.Engine.Warn("dynamic tickers still running after timeout")
 		}
 	}
+	// Already admitted persistence may still be finishing even after cancellation.
+	// Reuse the original deadline; a timeout forbids reporting drained.
+	select {
+	case <-admissionsDone:
+	default:
+		select {
+		case <-admissionsDone:
+		case <-time.After(max(0, time.Until(deadline))):
+			drained = false
+			e.loggerSet.Engine.Warn("task admission still persisting after timeout")
+		}
+	}
 	// Tickers can retain or confirm work while Stop waits. After they exit the
 	// snapshots are stable; on timeout report the latest observed retained work.
-	// 溢出表里**寄放**的任务也算进存留：被暂停的站点，任务不在任何池子的队列里（那正是收口的语义），
-	// 只报池子的存留就会得出 drained=true —— 调用方（app.Run）随即去关库，而几十上百条任务
-	// 还在溢出表里躺着。它们的行是 pending，重启后由启动恢复捞，但那一刻**运维看不到任何告警**。
-	// 这与池子队列里的任务同一性质（"这一轮没跑完"），所以并进同一个结构。
-	for key, count := range e.overflow.Counts() {
-		if count == 0 {
-			continue
-		}
-		st := stats[key]
-		st.Queued += count
-		stats[key] = st
-	}
+	// 已受理但尚未执行的任务保留在数据库 pending；下方持久积压统计也必须计入。
 	for _, key := range e.execution.Snapshot() {
 		st := stats[key]
 		st.Unfinished++

@@ -59,7 +59,7 @@ func TestStageHandlerEmitsClaimAndFinish(t *testing.T) {
 	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/1"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	fetcher.waitCalls(t, 1)
@@ -93,7 +93,7 @@ func TestStageHandlerEmitsFailed(t *testing.T) {
 	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8, Delay: config.DurationRange{}}, fetcher, nil)
 	e.ApplyRegisterStage()
 
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/2"}); err != nil {
+	if err := submitAndDispatch(e, &Task{Stage: "stub", Site: "stub", URL: "https://example.com/2"}); err != nil {
 		t.Fatalf("SubmitTask = %v", err)
 	}
 	failed := col.waitEvent(t, events.TypeTaskFailed)

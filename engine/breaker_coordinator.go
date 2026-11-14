@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine/internal/execution"
 	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"github.com/ydtg1993/papa/v4/internal/breakerstore"
@@ -499,6 +500,20 @@ func (b *breakerCoordinator) breakerSettlementBlocked(site string) bool {
 	return s != nil && s.event != nil && (s.event.PendingFailure != nil || s.savedRevision < s.controlRevision)
 }
 
+// pendingFailureRounds snapshots journal ownership without exposing mutable
+// breaker state or holding its lock across startup storage operations.
+func (b *breakerCoordinator) pendingFailureRounds() []breaker.PendingFailure {
+	b.breakerMu.Lock()
+	defer b.unlockAndEmit()
+	var rounds []breaker.PendingFailure
+	for _, s := range b.smartBreakers {
+		if s.event != nil && s.event.PendingFailure != nil {
+			rounds = append(rounds, *s.event.PendingFailure)
+		}
+	}
+	return rounds
+}
+
 func (b *breakerCoordinator) retainFailure(ctx context.Context, task *Task, version taskRunVersion, cause error, unresolved *execution.State) error {
 	b.breakerMu.Lock()
 	s := b.smartBreakers[task.Site]
@@ -512,9 +527,10 @@ func (b *breakerCoordinator) retainFailure(ctx context.Context, task *Task, vers
 			return errors.New("another serial failure is awaiting settlement")
 		}
 	} else {
+		blocked := !core.Retryable(cause)
 		f := incident.ClassifyError(cause)
 		kind, policy := failureCompensation(cause)
-		s.event.PendingFailure = &breaker.PendingFailure{TaskID: task.ID, Stage: task.Stage, URL: task.URL,
+		s.event.PendingFailure = &breaker.PendingFailure{RetryBlocked: &blocked, TaskID: task.ID, Stage: task.Stage, URL: task.URL,
 			Repeat: version.Repeat, Reprocess: version.Reprocess, At: time.Now(), SampleDeadline: task.breakerSampleDeadline,
 			Error: redact.Text(cause.Error()), Category: f.Category, Fingerprint: f.Fingerprint,
 			FailureKind: kind, CompensationMode: string(policy.Mode), CompensationReason: policy.Reason, NotBefore: policy.NotBefore}

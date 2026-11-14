@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"gorm.io/gorm"
@@ -75,9 +76,7 @@ func TestCompensationConditionsBlockEveryRequeueWithoutSpendingGeneration(t *tes
 			if err = e.RetryTaskVersioned(context.Background(), 7, 0, 0); !errors.Is(err, ErrCompensationBlocked) {
 				t.Fatalf("manual path bypassed condition: %v", err)
 			}
-			if tt.pool == "" && e.requeueRecoverTask(row) {
-				t.Fatal("startup path bypassed durable condition")
-			}
+
 			if f.written() != "" {
 				t.Fatalf("waiting consumed generation or changed task: %s", f.written())
 			}
@@ -87,11 +86,11 @@ func TestCompensationConditionsBlockEveryRequeueWithoutSpendingGeneration(t *tes
 
 func TestCompensationSQLGuardsCoverQueueClaimAndRecovery(t *testing.T) {
 	db := dryRunMySQL(t)
-	e := &Engine{db: db, startedAt: time.Now()}
+
 	for name, query := range map[string]*gorm.DB{
 		"claim": claimScope(db, 7), "manual": retryScope(db, 7, 4), "repeat": repeatResetScope(db, 7),
 		"error":   compensationVersionScope(db.Model(&models.CrawlerTask{}).Where("status = ?", models.TaskStatusFailed), &models.CrawlerTask{CompensationVersion: 9}),
-		"startup": e.recoverQueueQuery()(),
+		"startup": taskstore.PendingWindow(context.Background(), db, "stub", "stub", 0, 0, 100),
 	} {
 		sql := query.Find(&[]models.CrawlerTask{}).Statement.SQL.String()
 		for _, part := range []string{"compensation_mode IN", "next_compensation_at IS NULL OR next_compensation_at <= NOW()"} {

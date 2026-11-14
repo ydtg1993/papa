@@ -19,7 +19,7 @@ Engine 是**持久任务的执行编排器**。它把“已接受的任务”推
 | --- | --- | --- |
 | Engine 门面 | 组件装配引用、跨组件顺序、取消与等待组 | 把提交、执行、控制和停止接成一致协议 |
 | submissionStore / dedupCache | 提交存储操作、身份 LRU | 重复提交与批量部分成功；缓存不替代数据库约束 |
-| residentSet / spillQueue / refill | 驻留责任、溢出成员与阶段游标 | 有限内存承接持续数据库积压 |
+| residentSet / 阶段投递器 | 驻留责任、阶段游标和事件唤醒 | 按有界 channel 容量承接持久 pending |
 | `engine/internal/scheduler` | 活池登记、停止位、延迟堆与唤醒 | 阶段池懒建/回收、按时间投递；不拥有 SQL |
 | `internal/workerpool` | worker、普通/加急通道、暂停闸门 | 执行阶段任务并真实排空；不决定任务终态 |
 | stageHandler / attemptExecution | 认领后的执行顺序、一次尝试的资源与证据收尾 | 重试、panic、取消、成功/失败路径衔接 |
@@ -36,19 +36,19 @@ Engine 是**持久任务的执行编排器**。它把“已接受的任务”推
 
 [SVG 放大图](../assets/diagrams/08-engine-scheduling.svg) · [Mermaid 图源](../assets/diagrams/08-engine-scheduling.mmd)
 
-图中的“投递协调”汇总 Engine 多个函数的逻辑分支，不代表单一方法或所有路径相同的锁顺序。图从已持久化 pending 的补充路径展开，并汇合 delay/spill 回灌路径；初次提交可以直接进入调度，不必先等一次 refill。是否接受提交、是否准入内存、是否认领执行是三个不同判断。未持久任务不能套用“留在 DB 就不会丢”的保证。
+投递协调以持久 pending 为责任来源。入口 SubmitTask 或运行期 SubmitChildren 完成持久化受理后通知对应站点阶段投递器；投递器读取 pending 并阻塞送入有界 channel。业务 worker 经 SubmitChildren 派生已声明下游任务；阶段图禁止同级、反向、跨站和未声明边，分页留在当前 worker 内迭代。是否受理、是否驻留、是否认领执行仍是三个判断。
 
 1. **持久化与身份**：框架按站点、阶段及资源身份处理提交。已入库任务即使暂时无法进入 worker，也有数据库记录作为后续补充依据。
-2. **非阻塞驻留准入**：同时检查全局、站点、阶段三个数量预算。worker 派生子任务时不等待自己的执行槽位。`SubmitTask` 无驻留容量时，带既有 ID 或携带 Meta 的 repeatable 输入会在提交准备前返回 `ErrSchedulerCapacity`；其他新任务仍可先完成持久化，再由持续补充承接，不能一概说“未入库就报错”。内部投递无法接纳无 ID 引用时也返回容量错误。
-3. **持续补充**：按注册阶段轮转，跳过暂停/无容量阶段；每阶段使用 `id > cursor ORDER BY id LIMIT batch`，只读 pending、补偿资格允许且 `not_before` 在预取窗口内的行。不使用越来越大的 OFFSET。
-4. **时间与满载**：普通远期任务超出 DelayWindow 时不驻留；窗口内未来任务及需保留进程内许可的特殊样本交 delay 最小堆。delay 到期重读单行，spill 回灌批量重读；行已删除、非 pending 或 Repeat/Reprocess 已变就放弃当前副本，读失败保留责任稍后重试，有效行重新核对 NotBefore 后投递或再延迟。暂不可投递或达到队列高水位时由 spill 协调。已持久、未认领且不承担特殊熔断样本责任的引用，可按条件卸载，释放驻留容量。
+2. **持久受理与驻留准入**：启动入口 `SubmitTask` / `SubmitTasks` 与运行期 `SubmitChildren` 先完成持久受理，容量不足时任务保留为数据库 pending；业务 worker 派生子任务不等待自己的执行槽位。独立阶段投递器检查全局、站点、阶段三个驻留预算并按 channel 容量交接。`ErrSchedulerCapacity` 仅用于内部投递的容量协调，不是公开提交因为驻留已满而返回的错误。
+3. **持续补充**：每个注册阶段独立等待事件，跳过暂停/无容量阶段；每阶段使用 `id > cursor ORDER BY id LIMIT batch`，只读 pending、补偿资格允许且 `not_before` 在预取窗口内的行。不使用越来越大的 OFFSET。
+4. **时间与满载**：未来任务保留 not_before，按到期事件唤醒；超出驻留窗口的任务保留在数据库。阶段满载时由独立投递器等待 channel 容量，持久 pending 是唯一积压来源。不存在内存溢出表、高水位切换或定时 drain。
 5. **执行前再次确认**：内存投递不是执行权。worker 经过暂停、熔断和运行治理准入后，以条件更新认领当前轮次；未认领成功不调用业务。
 
-驻留责任覆盖排队、执行、spill、delay 及已取出但尚未交接的批次；一次 spill/refill 回灌使用同一个 100ms 尝试期限，先处理 spill 再补充 pending，耗尽本轮时间就等后续唤醒。它不是严格的 100ms 方法耗时保证。`refillMu` 是串行化这轮读库/回灌的独立锁；不能宣称“所有引擎锁均不跨 SQL”。
+驻留责任覆盖排队、执行、delay 和已取出但尚未交接的任务。每个站点阶段独立投递，提交通知、容量释放、暂停恢复和到期事件唤醒后续补位；满载阶段不会占住其他阶段投递器。取消必须打断阻塞发送并交还持久责任。
 
 默认驻留上限为全局 4096、每站 2048、每阶段 1024；补充批次 64、延迟预取窗口 1 分钟。它们限制任务引用数量，**不是进程 RSS 上限**。大 Meta、浏览器和下载缓冲还需要各自预算。设置必须在调度开始前按声明期契约完成，见 [资源预算](../configuration/RESOURCE_BUDGETS.md)。
 
-阶段轮转缓解一个阶段长期独占补充机会，但不是加权公平队列，也不承诺相同吞吐。spill 每轮选择阶段桶并取有限批次；worker 内部的加急通道优先，持续加急可能挤压普通任务，不能把“跨阶段轮转”误解为所有任务严格公平。
+阶段投递器相互独立，各自遵守容量和暂停约束；共享资源预算仍按既定策略分配。worker 内部的加急通道优先，持续加急可能挤压普通任务，不承诺严格公平或相同吞吐。
 
 ## 3. 执行：重试业务不等于重试写库
 
@@ -82,8 +82,7 @@ Trace/页面归档在尝试收尾中执行，慢盘仍可能延长 worker 收尾
 | --- | --- | --- | --- |
 | 身份去重 | 标准化站点/阶段/资源身份的 SHA-256；map + 双向链表 LRU；数据库身份约束兜底 | `core` 身份契约，`engine/task.go`、`dedup.go`、`submission_store.go` | LRU 查找/刷新平均 O(1)；散列成本随输入长度；显式无限缓存配置不受有限容量约束 |
 | 驻留背压 | 一次准入同时检查全局/站点/阶段计数，状态转移保留责任，退出释放 | `scheduler_budget.go` | map 操作平均 O(1)；数量限额不限制单任务字节数 |
-| 持续补充 | 阶段轮转 + 每阶段 ID keyset 游标 + 小批量窗口；读不足一批时游标归零重扫 | `scheduler_refill.go`、`internal/taskstore/pending.go` | 避免大 OFFSET；不是零扫描，也不是严格吞吐公平 |
-| spill 回灌 | 按阶段分桶、轮次身份去重、稳定循环选桶、有限批次重验持久状态 | `scheduler_spill.go`、`spill.go` | 选桶会排序 K 个阶段键，约 O(K log K)；取批/压缩桶也有搬移成本 |
+| 持续补充 | 每阶段事件唤醒 + ID keyset 分页 + 有界容量补位 | `delivery.go`、`engine/internal/delivery`、`internal/taskstore/pending.go` | 避免大 OFFSET；不是零扫描，也不是严格吞吐公平 |
 | 延迟调度 | 以到期时间为键的最小堆，单 dispatcher 等堆顶；新任务唤醒重算 | `engine/internal/scheduler/delay.go` | 入堆/出堆 O(log N)，看堆顶 O(1)；同到期时间不承诺 FIFO |
 | 认领与结算 | 状态/轮次/补偿版本条件更新；冲突不覆盖；未确认与业务重跑分开 | `persistence.go`、`internal/taskstore`、`engine/internal/execution` | 保证所定义状态转换的原子性，不是业务副作用 exactly-once |
 | 有界退避 | 先防溢出并封顶，再 Equal Jitter；等待由执行循环负责 | `retry_backoff.go`、`internal/backoff` | 常量计算；Handler 上限 60 秒，抖动不等于请求总数限额 |
@@ -146,10 +145,10 @@ CPU EWMA、自适应 α 和 repeat 结果缓存当前均未启用为生产算法
 ## 5. 取消、关停与崩溃恢复怎样约束算法
 
 - **取消是信号**：等待、数据库操作和 handler 需响应 context。信号发出并不证明 goroutine 已退出。
-- **Stop 是排空判定**：worker 与后台 ticker 共用 Engine 停止 deadline；还检查 spill/delay、未确认状态与注册阶段的持久 pending，并在 ticker 退出后刷新可靠熔断状态。计数或熔断持久化失败也不能报告 drained。只看到 worker 队列空不能判定 drained；未排空不能关闭仍可能使用的共享 DB/浏览器资源。
+- **Stop 是排空判定**：worker 与后台 ticker 共用 Engine 停止 deadline；还检查 pending/delay、未确认状态与注册阶段的持久 pending，并在 ticker 退出后刷新可靠熔断状态。计数或熔断持久化失败也不能报告 drained。只看到 worker 队列空不能判定 drained；未排空不能关闭仍可能使用的共享 DB/浏览器资源。
 - **等待期限不是强杀**：成功尝试的结束计时与成功终态分别调用 ConfirmSuccess，各自可在取消后获得一次最多 2 秒的确认 context；不是整个任务/Engine 共用一个 2 秒收尾期。Stop 先超时可以返回未排空，在途收尾仍继续。普通状态重试沿原 context，部分释放操作使用独立数据库调用，不能承诺所有 SQL 都在取消瞬间结束。
 - **暂停不等于停止**：暂停闸门阻止运行期消费，停止需要收尾在途和队列引用。已取消情况下，队列排水不代表会继续抓取每个任务。
-- **重启按持久事实恢复**：持续 pending 补充独立于 recover_queue；上个进程遗留 processing 的恢复需要启动恢复开启且符合筛选条件。不能把所有 processing 无条件重跑。
+- **重启按持久事实恢复**：持续 pending 补充独立于 recover_queue；启动恢复始终启用；上个进程遗留 processing 的恢复排除可靠结算 journal 拥有的精确执行代次。不能把所有 processing 无条件重跑。
 - **可靠控制与观测分开**：任务/熔断持久状态需要可靠确认，在线报告可降级。文件 Trace 的收尾成本仍在执行链中，不能宣称所有观测写入都完全异步。
 
 完整外层顺序见 [全框架图册：取消与关停](PAPA_OVERVIEW.md#6-取消与关停排空)。逐文件状态与锁归属见 [Engine 说明书](../package_structure/ENGINE_STRUCTURE.md)，三条治理队列分别见 [错误重投](../runtime/ERROR_QUEUE.md)、[启动恢复](../runtime/RECOVER_QUEUE.md)、[周期轮询](../runtime/REPEAT_QUEUE.md)。
@@ -162,8 +161,12 @@ CPU EWMA、自适应 α 和 repeat 结果缓存当前均未启用为生产算法
 | --- | --- | --- |
 | 分组、三值与真实查询 | `engine/repeatpoll.go`、`repeat_schedule_query.go` | `repeat_limit_test.go`、`repeat_schedule_edge_mysql_test.go`、`repeat_schedule_mysql_test.go` |
 | 退避与真实重试次序 | `engine/stage.go`、`retry_backoff.go`、`internal/backoff` | `engine/retry_backoff_test.go` 与 `internal/backoff` 测试 |
-| 调度预算/回灌/时间堆 | `engine/scheduler_*.go`、`spill.go`、`engine/internal/scheduler` | 对应包预算、补充、堆与取消测试 |
+| 调度预算/补位/时间堆 | `engine/scheduler_*.go`、`engine/internal/scheduler` | 对应包预算、补充、堆与取消测试 |
 | 许可与节流 | `pkg/governance/controller.go`、`resources.go` | 同包 controller、rate_limit 与算法评估测试 |
 | 结算与排空 | `engine/persistence.go`、`lifecycle.go`、`engine/internal/execution` | 执行确认、repeat submission、取消/Stop 回归 |
 
 这些是阅读入口，不代表每次文档更新都重新跑过所有实库或长稳测试。图片维护与分发校验见 [图册维护说明](DIAGRAM_ASSETS.md)。
+
+延迟调度使用单个时间堆，按站点阶段键最多保留一个在途 consumer。某阶段的 probe 因满池阻塞时，其他阶段的到期任务仍可推进；consumer 随生命周期取消并排空。resident 由 worker 或非 worker 路径释放时都会唤醒容量补充，避免有空位却没有后续事件唤醒 pending。
+
+普通 handler 在取消同时返回真实业务错误时，仍保留 NoRetry 与补偿分类并在有限窗口确认失败终态；只有纯取消结果回 pending。panic(error) 保留原始错误链供 errors.Is/As 分类，panic 收尾不能抹掉其不可重试或补偿语义。

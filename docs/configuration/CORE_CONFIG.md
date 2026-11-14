@@ -59,8 +59,6 @@
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限，`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底。启动预热每页最多 256 行，有限模式只取容量内最近活跃记录；`0` 仅查询暂存按页有界，总缓存仍不限。脚手架配置为 10000 |
-| `queue_watermark` | float | `0.75` | 队列高水位比例（0-1），达到后新任务溢出到 DB 待回灌，避免满队列丢任务 |
-| `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
 | `stop_timeout` | duration | `5s` | 优雅退出时 worker 与动态 ticker 共用从 Stop 入口开始的一份等待预算，不各等一个完整 timeout；不保证任意阻塞锁或外部调用的硬实时上限。超时则打错误日志，并**跳过**关库与关浏览器池，避免破坏仍在运行的 worker。认领或终态写入未确认的任务也计入未完成，即使其 worker 已因取消退出，也不会报告已排空。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
 | `trace.mode` | string | `errors` | off=关闭，errors=异常，all=全部尝试。 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），默认仅将异常尝试保存到 Trace 文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
@@ -86,7 +84,7 @@
 > 只关掉某一站）。每站一份计数是硬要求 —— 共用一份的话站点 A 被墙会把站点 B 一起闸住。
 >
 > **想"启动先别跑"不在这一节**：那是声明期的一道整站闸门 `SiteSpec.StartPaused: true`
-> （入口任务照投、任务寄放在溢出表，后台点「恢复整站」才放开），见 [MONITOR.md](../operations/MONITOR.md) §10。
+> （入口任务照投、任务保留在任务表 pending，后台点「恢复整站」才放开），见 [MONITOR.md](../operations/MONITOR.md) §10。
 > `policy` 的零值采用上表默认；负值不合法，时长不超过 24h，整数不超过 100000；`capacity` 必须覆盖短窗口两条阈值，`max_recovery` 至少覆盖冷却、单次试探和低速恢复时长。`BreakerSpec.Policy == nil` 继承配置文件策略；非 nil 用该站策略整体替换，未填字段采用框架默认。默认值是通用起点，应结合本站流量与报告调整。
 >
 > 这一节配置**判据与恢复预算**；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](../operations/MONITOR.md) §9），
@@ -248,7 +246,7 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 | 运行 | `run_started` / `run_stopped` |
 | 任务 | `task_claimed` / `task_finished` / `task_failed` / `task_retry_scheduled` |
 | 队列 | `queue_round` / `task_requeued` / `backlog_sampled` |
-| 运行时 | `stage_snapshot` / `stage_pool` / `spill_changed` / `breaker_tripped` / `pause_resumed` |
+| 运行时 | `stage_snapshot` / `stage_pool` / `breaker_tripped` / `pause_resumed` |
 
 业务侧可 `app.Events().Emit(events.Event{...})` 复用同一个 sink（同一 `run_id` / `seq` 序列）；业务事件类型由业务自己约定，框架只负责承载与落盘。
 
@@ -274,21 +272,17 @@ YAML 时长写字符串；运行 API JSON 的时长使用整数纳秒。策略�
 
 ### error_queue —— 失败任务错误队列（详见 [ERROR_QUEUE.md](../runtime/ERROR_QUEUE.md)）
 
-写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
+三条治理队列始终运行，参数为全局配置，修改后重启生效。
 
 ```yaml
 error_queue:
-  enabled: true               # 自动失败重投；false / 不写 = 不自动，仍可手动触发
-  worker_count: 1             # 并发重新投递数；开启时必填 > 0
-  interval: "4h"              # 自动轮询间隔；"0" = 不自动，仅后台手动触发
-  max_retry: 3                # 单个任务最多再处理代数；0 = 不限
-  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（分页流式，不能为负）
+  worker_count: 1             # 0 = 默认 1
+  interval: "4h"              # 0 / 不写 = 默认 4h
+  max_retry: 3                # 自动重试次数上限；0 = 不限
+  batch_size: 100             # 0 = 默认 1000，不能为负
 ```
 
-> 错误队列是**全局一条**：扫所有站点的 failed 任务重投回各自的阶段，后台一行。
-> 开着（`enabled: true`）时 `worker_count` 必填 > 0、`batch_size`（0 = 默认 1000）与 `max_retry` 不能为负、
-> `interval` 不能为负 —— 缺一项 / 越界启动就报（与 `crawler.breaker` 的
-> 「enabled=true 时 threshold 必填」同一档）。参数启动时读一次，改完要重启。
+`max_retry` 使用独立 `auto_retry_count`；`reprocess` 记录自动和人工再处理次数。NoRetry 持久禁止自动重试；人工重投保留预算和禁令直到成功。历史 failed 的禁令未知时阻止自动重试；升级须显式迁移，普通启动不迁移。
 
 ### archive —— 页面归档（失败时留下那一页）
 
@@ -335,38 +329,27 @@ crawler:
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](../runtime/RECOVER_QUEUE.md)）
 
-写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
+三条治理队列始终运行，参数为全局配置，修改后重启生效。
 
 ```yaml
 recover_queue:
-  enabled: true               # 启动恢复；false / 不写 = 不跑
-  worker_count: 1             # 并发重新入队的数量；开启时必填 > 0
-  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
-  batch_pause: "30m"          # 批间停顿；不写/0 = 默认 30m，要连续跑完写很小的正数
+  batch_size: 100             # 0 = 默认 1000，不能为负
 ```
 
-> 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `interval` / `max_retry`。
-> 恢复是**分批**投递的：每批 `batch_size` 条投完停 `batch_pause`（默认 30m）再继续，
-> 避免重启瞬间把几千条积压一次灌进各阶段队列；停机信号可立即打断停顿。
+启动时按进程边界重置 processing 孤儿，运行期事件唤醒、按阶段空位持续补充 pending。有界 channel 提供背压；不再使用溢出表或定时 drain。仅保留 batch_size，旧 enabled / worker_count / batch_pause 配置会拒绝启动。
 
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md)）
 
-写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
+三条治理队列始终运行，参数为全局配置，修改后重启生效。
 
 ```yaml
 repeat_queue:
-  enabled: true               # 周期轮询；false / 不写 = 不跑
-  worker_count: 1             # 并发重新投递的数量；开启时必填 > 0
-  interval: "2h"              # 最粗兜底的扫描间隔；开启时必填 > 0
-  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
+  worker_count: 1             # 0 = 默认 1
+  interval: "12h"              # 0 / 不写 = 默认 12h
+  batch_size: 100             # 0 = 默认 1000，不能为负
 ```
 
-> 轮询队列是**全局一条**（后台一行）。"要不要自动跑"只有一层：`enabled`（false 就是仅手动触发）。
-> `interval` 是"多久扫一次"的兜底；"**哪条任务**要轮询、**多久一次**"是任务行上的
-> `repeatable` / `repeat_interval` 两列 —— 提交时用 `papa.Task{Repeatable: true, RepeatInterval: 10*time.Minute}`
-> 播种（`repeat_interval` 为 0 = 用全局 `interval`），之后在后台任务表上用「开轮询」/「停轮询」/「设轮询周期」
-> 或代码里 `engine.SetTaskRepeatable(id, on)` / `engine.SetTaskRepeatInterval(id, was, seconds)` 随时改
->（见 [REPEAT_QUEUE.md](../runtime/REPEAT_QUEUE.md) 第 3 节）。
+只轮询到期的 success 任务，强制轮询也不处理 failed。任务上的 repeatable / repeat_interval 控制是否轮询及周期；repeat_interval 为 0 使用全局周期。旧 enabled 配置会拒绝启动。
 
 ### crawler_config 的 `sites` 键 —— 站点快照（**内存是源，库是投影**）
 
@@ -522,3 +505,5 @@ Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `cra
 ## Handler 与下载退避
 
 阶段重试仍通过 Go 声明 `RetrySpec` 配置；下载仍用 Config/Overlay 的 `RetryInterval` 和 `MaxRetries`。Handler 指数退避值上限 60 秒、下载上限 10 秒，均在安全封顶后执行 Equal Jitter（半值至全值）；不增加 `retry.max_backoff` 或 `retry.jitter` YAML 键。首次/末次尝试、取消与计数约定见 [Fetcher 手册](../guides/FETCHER_WRITING_GUIDE.md)。本地退避不缩短服务端 Retry-After。
+
+配置迁移：删除 `crawler.queue_watermark`、`crawler.drain_interval` 以及三队列的 `enabled`。删除 `recover_queue.worker_count`、`recover_queue.batch_pause`。所有已删除键均拒绝启动，不会静默忽略。

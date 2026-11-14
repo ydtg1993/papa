@@ -17,11 +17,11 @@ func TestResidentTransfersAndDuplicateRelease(t *testing.T) {
 	a := &Task{ID: 1, Site: "a", Stage: "s"}
 	b := &Task{ID: 2, Site: "a", Stage: "s"}
 	c := &Task{ID: 3, Site: "b", Stage: "s"}
-	if !r.admit(a, "spill") || r.admit(b, "pool") || !r.admit(c, "delay") {
+	if !r.admit(a, "delivery") || r.admit(b, "pool") || !r.admit(c, "delay") {
 		t.Fatal("quota admission")
 	}
 	r.move(a, "running")
-	r.move(a, "spill")
+	r.move(a, "delivery")
 	r.release(a, "running")
 	if r.count() != 2 {
 		t.Fatal("requeue released running token")
@@ -32,27 +32,15 @@ func TestResidentTransfersAndDuplicateRelease(t *testing.T) {
 		t.Fatal("exactly-once release")
 	}
 }
-func TestSpillBoundedRoundRobinAndDuplicateOwnership(t *testing.T) {
+func TestPendingDeliveryDuplicateOwnership(t *testing.T) {
 	e := &Engine{residents: newResidentSet(SchedulerLimits{Global: 10, Site: 10, Stage: 10})}
-	a := &Task{ID: 1, Site: "a", Stage: "s"}
-	e.spillTask(a)
-	e.spillTask(a)
-	e.spillTask(&Task{ID: 1, Site: "a", Stage: "s"})
-	for i := 2; i <= 4; i++ {
-		e.spillTask(&Task{ID: i, Site: "a", Stage: "s"})
+	c := e.deliveryState()
+	if !c.AcquireForStage(1, "a:s") || c.AcquireForStage(1, "a:s") {
+		t.Fatal("duplicate pending ownership")
 	}
-	e.spillTask(&Task{ID: 5, Site: "b", Stage: "s"})
-	if e.SchedulerResidentCount() != 5 {
-		t.Fatal("duplicate leaked token")
-	}
-	key, batch := e.overflow.TakeBatch(2)
-	if key != "a:s" || len(batch) != 2 || e.SchedulerResidentCount() != 5 {
-		t.Fatal("detach accounting")
-	}
-	e.spillTasks(key, batch)
-	key, batch = e.overflow.TakeBatch(2)
-	if key != "b:s" || len(batch) != 1 {
-		t.Fatal("fair rotation")
+	c.Release(1)
+	if !c.AcquireForStage(1, "a:s") {
+		t.Fatal("released pending cannot be admitted")
 	}
 }
 func TestDelayDedupAndDistantOffload(t *testing.T) {
@@ -86,8 +74,7 @@ func TestSchedulerMySQLRecursiveDurableRefillWithOneToken(t *testing.T) {
 	if err := e.SetSchedulerLimits(SchedulerLimits{Global: 1, Site: 1, Stage: 1, RefillBatch: 4}); err != nil {
 		t.Fatal(err)
 	}
-	e.cfg.RecoverQueue.Enabled = false
-	e.cfg.Crawler.DrainInterval = 10 * time.Millisecond
+
 	var completed atomic.Int64
 	info := e.stages["synthetic:detail"]
 	info.config.WorkerCount = 1
@@ -110,7 +97,7 @@ func TestSchedulerMySQLRecursiveDurableRefillWithOneToken(t *testing.T) {
 	}}
 	e.pools.Get("synthetic:detail").Start(e.ctx, e.stageHandler(info))
 	e.schedulerStarted = true
-	e.startDrain()
+	e.startPendingRecovery()
 	if err := e.SubmitTask(&Task{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/root", Meta: map[string]string{"root": "yes"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,6 +134,15 @@ func TestSchedulerMySQLStaleRoundAndDelayedBatchPointer(t *testing.T) {
 	if err := e.SubmitTasks([]*Task{task}); err != nil {
 		t.Fatal(err)
 	}
+	var delayedRow models.CrawlerTask
+	if err := db.First(&delayedRow, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if delayedRow.NotBefore == nil {
+		t.Fatal("delay deadline not persisted")
+	}
+	e.enqueueDelayed(*delayedRow.NotBefore, task, delayedRow)
+	e.enqueueDelayed(*delayedRow.NotBefore, task, delayedRow)
 	if e.delays.Len() != 1 || e.SchedulerResidentCount() != 1 {
 		t.Fatalf("same pointer lost token: heap/resident %d/%d", e.delays.Len(), e.SchedulerResidentCount())
 	}
@@ -172,13 +168,15 @@ func TestSchedulerMySQLStaleRoundAndDelayedBatchPointer(t *testing.T) {
 	}
 	old.residents.release(copy, "running")
 	old.schedulerStarted = true
-	old.drainSpilled()
+	if _, err := old.recoverPendingStage("synthetic:detail"); err != nil {
+		t.Fatal(err)
+	}
 	if old.SchedulerResidentCount() != 1 {
 		db.First(&row, task.ID)
-		t.Fatalf("new round not rediscovered: cursor=%v row=%+v", old.refillCursor, row)
+		t.Fatalf("new round not rediscovered: row=%+v", row)
 	}
 }
-func TestSchedulerMySQLPausedSpillReleasesCapacityForOtherSite(t *testing.T) {
+func TestSchedulerMySQLPausedPendingReleasesCapacityForOtherSite(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
 	if err := e.SetSchedulerLimits(SchedulerLimits{Global: 1, Site: 1, Stage: 1}); err != nil {
@@ -189,13 +187,15 @@ func TestSchedulerMySQLPausedSpillReleasesCapacityForOtherSite(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.stages["other:detail"] = &stageInfo{stage: "detail", config: StageConfig{Site: "other", WorkerCount: 1, QueueSize: 8}}
-	e.pools.Set("other:detail", workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e.pools.Set("other:detail", workerpool.NewWorkerPool[*Task](1, 8))
 	active := &Task{Site: "other", Stage: "detail", URL: "https://example.invalid/active"}
 	if err := e.SubmitTask(active); err != nil {
 		t.Fatal(err)
 	}
 	e.schedulerStarted = true
-	e.drainSpilled()
+	if _, err := e.recoverPendingStage("other:detail"); err != nil {
+		t.Fatal(err)
+	}
 	main, urgent := e.pools.Get("other:detail").QueueDepths()
 	if main+urgent != 1 || e.SchedulerResidentCount() != 1 {
 		t.Fatalf("paused site pinned budget: queue=%d resident=%d", main+urgent, e.SchedulerResidentCount())
@@ -241,13 +241,15 @@ func TestSchedulerMySQLWaitingFlowDoesNotPinLastToken(t *testing.T) {
 		t.Fatal("waiting flow pinned last token")
 	}
 	e.schedulerStarted = true
-	e.drainSpilled()
+	if _, err := e.recoverPendingStage("synthetic:detail"); err != nil {
+		t.Fatal(err)
+	}
 	if !e.residents.containsID(int(a.ID)) {
 		t.Fatal("eligible flow prerequisite not admitted")
 	}
 }
 
-func TestSchedulerMySQLPauseOffloadsExistingPoolAndDelay(t *testing.T) {
+func TestSchedulerMySQLPauseReleasesQueuedCapacityAndKeepsFutureDurable(t *testing.T) {
 	for _, delayed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("delayed=%v", delayed), func(t *testing.T) {
 			db, makeEngine := compensationMySQL(t)
@@ -266,12 +268,21 @@ func TestSchedulerMySQLPauseOffloadsExistingPoolAndDelay(t *testing.T) {
 			if err := e.SubmitTask(held); err != nil {
 				t.Fatal(err)
 			}
-			if e.SchedulerResidentCount() != 1 {
-				t.Fatal("initial task not resident")
+			if !delayed {
+				if _, err := e.recoverPendingStage("synthetic:detail"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantResident := 1
+			if delayed {
+				wantResident = 0
+			}
+			if e.SchedulerResidentCount() != wantResident {
+				t.Fatalf("initial resident=%d, want %d", e.SchedulerResidentCount(), wantResident)
 			}
 			e.setPause(pauseScope{Site: "synthetic"}, pauseState{Source: PauseSourceManual})
 			e.stages["other:detail"] = &stageInfo{stage: "detail", config: StageConfig{Site: "other", WorkerCount: 1, QueueSize: 8}}
-			e.pools.Set("other:detail", workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e.pools.Set("other:detail", workerpool.NewWorkerPool[*Task](1, 8))
 			if err := e.SubmitTask(&Task{Site: "other", Stage: "detail", URL: "https://example.invalid/other"}); err != nil {
 				t.Fatal(err)
 			}
@@ -282,7 +293,9 @@ func TestSchedulerMySQLPauseOffloadsExistingPoolAndDelay(t *testing.T) {
 			deadline := time.Now().Add(3 * time.Second)
 			queued := 0
 			for time.Now().Before(deadline) {
-				e.drainSpilled()
+				if _, err := e.recoverPendingStage("other:detail"); err != nil {
+					t.Fatal(err)
+				}
 				a, b := e.pools.Get("other:detail").QueueDepths()
 				queued = a + b
 				if queued == 1 {
@@ -317,7 +330,7 @@ func TestSchedulerMySQLStopCountsDurableBeforeApply(t *testing.T) {
 	}
 }
 
-func TestSchedulerMySQLDelayRefillInitializesFirstRound(t *testing.T) {
+func TestSchedulerMySQLDelayRecoveryInitializesFirstRoundOnlyOnClaim(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
 	task := &Task{Site: "synthetic", Stage: "detail", URL: "https://example.invalid/first-delayed", Delay: time.Hour, Repeatable: true}
@@ -331,12 +344,24 @@ func TestSchedulerMySQLDelayRefillInitializesFirstRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.schedulerStarted = true
-	e.drainSpilled()
+	if _, err := e.recoverPendingStage("synthetic:detail"); err != nil {
+		t.Fatal(err)
+	}
 	var row models.CrawlerTask
 	if err := db.First(&row, task.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if row.Repeat != 1 || e.SchedulerResidentCount() != 1 {
-		t.Fatalf("first pending round not initialized: repeat=%d residents=%d", row.Repeat, e.SchedulerResidentCount())
+	if row.Repeat != 0 || e.SchedulerResidentCount() != 1 {
+		t.Fatalf("pending delivery changed round: repeat=%d resident=%d", row.Repeat, e.SchedulerResidentCount())
+	}
+	claimed, err := e.claimTask(e.taskFromRecord(&row))
+	if err != nil || !claimed {
+		t.Fatalf("first claim=%v err=%v", claimed, err)
+	}
+	if err := db.First(&row, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Repeat != 1 {
+		t.Fatalf("claimed first round=%d", row.Repeat)
 	}
 }

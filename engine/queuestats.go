@@ -16,11 +16,6 @@ const (
 	QueueRepeat = "repeat_queue"
 )
 
-// recoverQueueName 启动恢复在日志与错误信息里的标识。
-// 它不再是监控面板上的「队列」—— 恢复只在启动那一刻发生一次，没有周期、没有积压可看 ——
-// 但重新投递失败时仍要写清是哪条路写的（见 markRequeueFailed）。
-const recoverQueueName = "recover_queue"
-
 // defaultQueueSampleInterval 积压采样的默认间隔。
 const defaultQueueSampleInterval = time.Minute
 
@@ -134,9 +129,9 @@ func (e *Engine) GetQueueStats() map[string]core.QueueStat {
 func (e *Engine) queueEnabled(name string) bool {
 	switch name {
 	case QueueError:
-		return e.cfg.ErrorQueue.Enabled
+		return true
 	case QueueRepeat:
-		return e.cfg.RepeatQueue.Enabled
+		return true
 	}
 	return false
 }
@@ -175,7 +170,7 @@ func (e *Engine) startQueueSampler() {
 	if interval <= 0 {
 		interval = defaultQueueSampleInterval
 	}
-	// 进 tickerWG：采样要查库，关库时不该还在跑（见 spill.go 同处的说明）。
+	// 进 tickerWG：采样要查库，关库时不该还在跑（与阶段投递器共同遵守生命周期）。
 	e.tickerWG.Add(1)
 	go func() {
 		defer e.tickerWG.Done()

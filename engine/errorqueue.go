@@ -1,13 +1,11 @@
 package engine
 
 import (
-	"errors"
 	"github.com/ydtg1993/papa/v4/internal/taskstore"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/ydtg1993/papa/v4/internal/workerpool"
 	"github.com/ydtg1993/papa/v4/models"
 	"github.com/ydtg1993/papa/v4/pkg/events"
 	"gorm.io/gorm"
@@ -19,7 +17,7 @@ type errorQueueState struct {
 	retried atomic.Int64 // 累计重新投递数（同时就是监控里那一行的"处理量"）
 }
 
-// errorQueueQuery 失败任务的查询条件：status=failed，配了上限时再处理代数未超 max_retry。
+// errorQueueQuery 失败任务的查询条件：status=failed 且明确允许自动重试，连续失败自动预算未超 max_retry。
 //
 // **必须带上 Model**：这个构造器有两个消费方 —— `processInBatches` 的 `Find(&tasks)`
 // （切片元素类型能推出表名，带不带都行）和 `sampleQueueBacklogOne` 的 `Count(&n)`
@@ -28,9 +26,9 @@ func (e *Engine) errorQueueQuery() func() *gorm.DB {
 	cfg := e.cfg.ErrorQueue
 	return func() *gorm.DB {
 		q := compensationScope(e.db.Model(&models.CrawlerTask{}).
-			Where("status = ?", models.TaskStatusFailed))
+			Where("status = ? AND retry_blocked = ?", models.TaskStatusFailed, false))
 		if cfg.MaxRetry > 0 {
-			q = q.Where("reprocess < ?", cfg.MaxRetry)
+			q = q.Where("auto_retry_count < ?", cfg.MaxRetry)
 		}
 		return q
 	}
@@ -38,6 +36,11 @@ func (e *Engine) errorQueueQuery() func() *gorm.DB {
 
 // ProcessErrorQueue 查询失败任务并重新投递到各自阶段，返回实际重新投递的数量。
 func (e *Engine) ProcessErrorQueue() (int, error) {
+	if err := e.beginTaskAdmission(); err != nil {
+		return 0, err
+	}
+	defer e.endTaskAdmission()
+
 	st := e.errorQueue
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -45,7 +48,7 @@ func (e *Engine) ProcessErrorQueue() (int, error) {
 	cfg := e.cfg.ErrorQueue
 	query := e.errorQueueQuery()
 	e.beginQueueRun(QueueError)
-	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, 0, e.requeueFailedTask())
+	n, err := e.processInBatches(query, cfg.BatchSize, cfg.WorkerCount, e.requeueFailedTask())
 	e.endQueueRun(QueueError, n, err)
 	// 本轮到点即采样一次积压，监控页无需等下一轮采样周期
 	if e.queueContext().Err() == nil {
@@ -79,7 +82,7 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	//（一条 `repeatable + failed` 的行同时命中两个队列，两者各自有锁、互不互斥）：那一份被 worker
 	// 认领、正在跑，而这次无条件 UPDATE 照样把它改回 pending 并再投一份 → 同一行被两个 worker
 	// 并发执行。带上 status 之后：已经不是 failed 的行（正在跑 / 已终态）匹配不上，0 行 → 跳过。
-	res := taskstore.RetryFailed(e.db.WithContext(e.queueContext()), t.ID, t.CompensationVersion, e.cfg.ErrorQueue.MaxRetry)
+	res := taskstore.RetryFailed(e.db.WithContext(e.queueContext()), t.ID, taskstore.RunVersion{Repeat: t.Repeat, Reprocess: t.Reprocess}, t.CompensationVersion, e.cfg.ErrorQueue.MaxRetry)
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
@@ -90,26 +93,9 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 
 	task := e.taskFromRecord(t)
 	task.deliveryVersion.Reprocess++
-	task.repeatCounted = true // retry this round; spill must not consume another polling round
-	task.Retry = 0            // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
+	task.Retry = 0 // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitToStage(task); err != nil {
-		if errors.Is(err, workerpool.ErrQueueFull) {
-			// 队列达高水位：**保持 pending**（上面刚重置过）、塞进溢出列表由 drain 每 2s 回灌。
-			// 否则行被标成 failed + `retry + 1`，而重置时**已经**把 `reprocess + 1` 写进去了。
-			// 队列自己的判据是 `reprocess < max_retry`，几轮之后这些行 `reprocess` 到顶，
-			// **永久不再被错误队列捞起**，只能人工点「重投」。
-			e.spilledCount.Add(1)
-			e.spillTask(task)
-		} else {
-			e.dedupCache.Delete(task.Unique())
-			e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
-			// 上面刚把这行重置成 pending，失败不管的话它就再也没人捞了（本队列只捞 failed）
-			e.residents.release(task, "")
-			e.markRequeueFailed(QueueError, t.ID, err)
-			return false
-		}
-	}
+	e.afterTaskPending(task)
 	e.errorQueue.retried.Add(1)
 	e.emit(events.Event{
 		Type: events.TypeTaskRequeued, Queue: QueueError, Source: "auto",
@@ -129,11 +115,7 @@ func (e *Engine) errorRetriedTotal() int64 {
 // startErrorQueue 启动错误队列定时自动处理（全局一条 ticker）。
 func (e *Engine) startErrorQueue() {
 	e.runDynamicTicker(func() time.Duration {
-		cfg := e.cfg.ErrorQueue
-		if !cfg.Enabled || cfg.Interval <= 0 {
-			return 0
-		}
-		return cfg.Interval
+		return e.cfg.ErrorQueue.EffectiveInterval()
 	}, nil /* 数据驱动的唤醒只有轮询队列用得上 */, func() {
 		if n, err := e.ProcessErrorQueue(); err != nil {
 			e.loggerSet.Engine.Errorf("error queue: auto process: %s", err.Error())

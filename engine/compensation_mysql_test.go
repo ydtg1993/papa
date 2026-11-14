@@ -89,7 +89,7 @@ func compensationMySQLWithOptions(t *testing.T, location *time.Location, foundRo
 	makeEngine := func() *Engine {
 		cfg := &config.Config{}
 		cfg.Crawler.TraceFiles.Dir = t.TempDir()
-		cfg.RecoverQueue.Enabled = true
+
 		cfg.ErrorQueue.MaxRetry = 4
 		cfg.ErrorQueue.BatchSize = 10
 		cfg.ErrorQueue.WorkerCount = 1
@@ -97,7 +97,7 @@ func compensationMySQLWithOptions(t *testing.T, location *time.Location, foundRo
 		e := NewEngine(db, cfg, testLoggerSet())
 		t.Cleanup(func() { e.Stop(time.Second) })
 		e.stages["synthetic:detail"] = &stageInfo{stage: "detail", config: StageConfig{Site: "synthetic"}}
-		e.pools.Set("synthetic:detail", workerpool.NewWorkerPool[*Task](1, 100, 1))
+		e.pools.Set("synthetic:detail", workerpool.NewWorkerPool[*Task](1, 100))
 		return e
 	}
 	return db, makeEngine

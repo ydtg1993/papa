@@ -22,12 +22,17 @@ func CountPending(ctx context.Context, db *gorm.DB, site, stage string) (int64, 
 	return n, err
 }
 
-// LoadSchedulingBatch rechecks detached members in one bounded SQL round trip.
-func LoadSchedulingBatch(ctx context.Context, db *gorm.DB, ids []int) ([]models.CrawlerTask, error) {
-	var rows []models.CrawlerTask
-	if len(ids) == 0 {
-		return rows, nil
+// NextPendingDelay uses the owning clocks of durable eligibility columns. It
+// ignores ready rows: capacity and policy releases signal their stage directly.
+func NextPendingDelay(ctx context.Context, db *gorm.DB, site, stage string) (time.Duration, error) {
+	var row struct{ Micros *int64 }
+	err := db.WithContext(ctx).Model(&models.CrawlerTask{}).
+		Where("site = ? AND stage = ? AND status = ?", site, stage, models.TaskStatusPending).
+		Where("compensation_mode IN ?", []string{"", "retry_after", "account_ready"}).
+		Where("not_before > UTC_TIMESTAMP(3) OR next_compensation_at > NOW()").
+		Select("MIN(GREATEST(COALESCE(TIMESTAMPDIFF(MICROSECOND, UTC_TIMESTAMP(3), not_before), 0), COALESCE(TIMESTAMPDIFF(MICROSECOND, NOW(), next_compensation_at), 0), 0)) AS micros").Scan(&row).Error
+	if err != nil || row.Micros == nil {
+		return 0, err
 	}
-	err := db.WithContext(ctx).Where("id IN ?", ids).Limit(len(ids)).Find(&rows).Error
-	return rows, err
+	return max(time.Millisecond, time.Duration(*row.Micros)*time.Microsecond), nil
 }

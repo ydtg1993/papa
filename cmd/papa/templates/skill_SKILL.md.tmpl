@@ -76,7 +76,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site)
 
 and set its `StageSpec.Entry` to `true` — entry tasks are submitted once at startup. To keep a site from
 running until an operator releases it, declare `SiteSpec.StartPaused: true` instead: entry tasks are still
-submitted (they park in the spill table), and the whole site stays frozen until 「恢复整站」 is clicked on the
+submitted (they remain durable pending tasks), and the whole site stays frozen until 「恢复整站」 is clicked on the
 back-office 「站点控制」 card.
 
 For every submitted task:
@@ -87,7 +87,7 @@ For every submitted task:
 - use a stable `ResourceID`, scoped automatically by site and stage, or leave it empty for canonical URL identity;
 - set `Repeatable` only for actual polling tasks;
 - seed `RepeatInterval` only at first creation when a per-task period is wanted;
-- check `SubmitTask`/`SubmitTasks` for control flow, but do not duplicate framework logging.
+- check startup `SubmitTask`/`SubmitTasks` and runtime `SubmitChildren(ctx, task, ...)` for control flow, but do not duplicate framework logging.
 
 `Task.Meta` is persisted and restored by recovery, repeat, error-queue, and manual requeue paths. Reject malformed task metadata explicitly; do not design task identity around URL encoding.
 

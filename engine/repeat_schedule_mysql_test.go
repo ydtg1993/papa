@@ -109,8 +109,7 @@ func TestRepeatScheduleMySQLBoundaries(t *testing.T) {
 				for _, status := range []any{0, 1, 2, 3, -7, 9, nil} {
 					for _, at := range []any{nil, "2020-01-02 03:04:05.600", "2027-01-02 03:04:05.600"} {
 						t.Run(fmt.Sprintf("status_%v/at_%v", status, at), func(t *testing.T) {
-							terminal := status == 2 || status == 3
-							eligible := terminal || at == "2027-01-02 03:04:05.600"
+							eligible := status == 2
 							check(t, at, eligible, repeatScheduleRow{status: status, at: at, round: 1})
 						})
 					}
@@ -122,7 +121,7 @@ func TestRepeatScheduleMySQLBoundaries(t *testing.T) {
 					}
 					for _, status := range []any{0, 1, 2, 3, 9, nil} {
 						t.Run(fmt.Sprintf("now_%d/status_%v", delta, status), func(t *testing.T) {
-							check(t, at, status == 2 || status == 3 || delta > 0, repeatScheduleRow{status: status, at: at, round: 1})
+							check(t, at, status == 2, repeatScheduleRow{status: status, at: at, round: 1})
 						})
 					}
 				}
@@ -133,7 +132,7 @@ func TestRepeatScheduleMySQLBoundaries(t *testing.T) {
 					check(t, "2020-01-01 00:00:00", true, repeatScheduleRow{status: 2, round: 1}, repeatScheduleRow{status: 2, round: 1, at: "2020-01-01 00:00:00"})
 				})
 				t.Run("out_of_range_future_zero_wins", func(t *testing.T) {
-					check(t, "9999-12-31 23:59:59", true, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"}, repeatScheduleRow{status: 0, round: 1, at: "9999-12-31 23:59:59"})
+					check(t, "9999-12-31 23:59:59", true, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"}, repeatScheduleRow{status: 2, round: 1, at: "9999-12-31 23:59:59"})
 				})
 				for _, round := range []any{2, 3, 4, nil} {
 					t.Run(fmt.Sprintf("limit_%v", round), func(t *testing.T) { check(t, nil, round == 2, repeatScheduleRow{status: 2, round: round}) })
@@ -170,7 +169,7 @@ func TestRepeatScheduleMySQLConcurrentSnapshot(t *testing.T) {
 func testRepeatScheduleConcurrentSnapshot(t *testing.T, limit int) {
 	db, _ := compensationMySQL(t)
 	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}, "peer:detail": {stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: limit}}}}
-	insertRepeatScheduleRows(t, db, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"}, repeatScheduleRow{status: 3, round: 1, at: "2028-01-01 00:00:00"})
+	insertRepeatScheduleRows(t, db, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"}, repeatScheduleRow{status: 2, round: 1, at: "2028-01-01 00:00:00"})
 	want := repeatScheduleEpoch(t, e, db, true)
 	var expected int64
 	if err := db.Raw("SELECT CAST(UNIX_TIMESTAMP('2027-01-01 00:00:00') AS SIGNED)").Scan(&expected).Error; err != nil {
@@ -287,7 +286,7 @@ func TestRepeatScheduleMySQLCancelBlockedQuery(t *testing.T) {
 	if err := db.Raw("SELECT DATABASE()").Scan(&name).Error; err != nil {
 		t.Fatal(err)
 	}
-	e.cfg.RepeatQueue.Enabled = true
+
 	e.startRepeatQueue()
 	defer func() {
 		e.cancel()
