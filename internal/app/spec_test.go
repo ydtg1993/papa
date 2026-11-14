@@ -30,14 +30,15 @@ func (f namedFetcher) GetStage() string { return f.name }
 
 func (f namedFetcher) FetchHandler(context.Context, *engine.Task, *engine.Engine) error { return nil }
 
-// noDBEngine 造一个**连不上库**的真引擎：阶段注册（AddStage / SetSite / SetSiteBreaker）不碰库，
-// 够把 RegisterSites 这条链测到底。NewEngine 里那次 loadActiveTasks 会失败并记日志（吞掉，不致命）。
+// noDBEngine uses DryRun for declaration/assembly tests, including the mandatory
+// pre-admission processing reset. It does not test task persistence; real DB
+// failure must still abort startup before a worker can claim any task.
 func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 	t.Helper()
 	db, err := gorm.Open(mysql.New(mysql.Config{
 		DSN:                       "root@tcp(127.0.0.1:9)/none?charset=utf8mb4&parseTime=True",
 		SkipInitializeWithVersion: true,
-	}), &gorm.Config{DisableAutomaticPing: true, Logger: gormlogger.Discard})
+	}), &gorm.Config{DryRun: true, SkipDefaultTransaction: true, DisableAutomaticPing: true, Logger: gormlogger.Discard})
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -49,7 +50,6 @@ func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 // RegisterSites 这条链把声明落到三个地方：引擎的阶段表（含 Entry 模式）、站点快照、按站的熔断阈值。
 func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Crawler.DrainInterval = time.Hour
 	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
 
 	e := noDBEngine(t, cfg)

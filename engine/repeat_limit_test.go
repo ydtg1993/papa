@@ -23,7 +23,7 @@ func TestRepeatLimitBoundaryOnlyRestrictsRepeatQueue(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := queueEngine(t, f, pool)
 			e.stages["stub:stub"].config.RepeatLimit = tc.limit
 			row := actionRow(7, "stub")
@@ -83,7 +83,7 @@ func TestRepeatLimitSQLScopesAndScheduler(t *testing.T) {
 
 func TestRepeatCountDeliveredAfterRequeue(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 	got := make(chan int, 1)
 	pool.Start(context.Background(), func(_ context.Context, task *Task) error { got <- task.Repeat; return nil })
@@ -94,6 +94,12 @@ func TestRepeatCountDeliveredAfterRequeue(t *testing.T) {
 	row.Status = models.TaskStatusSuccess
 	if !e.requeueRepeatTaskIn(row) {
 		t.Fatal("requeue failed")
+	}
+	f.mu.Lock()
+	f.row["repeat"] = int64(13)
+	f.mu.Unlock()
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
 	select {
 	case count := <-got:

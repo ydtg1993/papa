@@ -132,42 +132,6 @@ func TestQueueDrainedCountsOutstandingOnce(t *testing.T) {
 	}
 }
 
-// spill（引擎内存溢出表）不在内存队列里，queue_drained 必须把最后一条 spill_changed 的 backlog 计入。
-func TestQueueDrainedIncludesSpillBacklog(t *testing.T) {
-	now := time.Date(2026, 10, 29, 14, 0, 0, 0, time.Local)
-	in := &obs.Input{Now: now, Run: obs.RunMeta{From: now.Add(-time.Hour), To: now},
-		Events: []events.Event{
-			{
-				Type: events.TypeStageSnapshot, TS: now.Add(-2 * time.Minute),
-				Stages: map[string]events.StageSnapshot{
-					"s:catalog": {Site: "s", Stage: "catalog", QueueLen: 1, InProgress: 3, Workers: 1},
-				},
-			},
-			{Type: events.TypeSpillChanged, TS: now.Add(-time.Minute),
-				Counts: map[string]int{"drained": 7}, Backlog: 5},
-		}}
-	res, err := (&Generic{}).Build(context.Background(), in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := checkByID(res, "queue_drained")
-	if c == nil || c.Passed {
-		t.Fatalf("未完成 3 + spill 5 应判未通过：%+v", c)
-	}
-	for _, want := range []string{"未完成 3", "spill 5"} {
-		if !strings.Contains(c.Message, want) {
-			t.Fatalf("queue_drained message 缺 %q：%q", want, c.Message)
-		}
-	}
-	spill := tableByTitle(res, "溢出表（spill，引擎内存）")
-	if spill == nil || len(spill.Rows) != 1 {
-		t.Fatalf("应输出溢出表：%+v", spill)
-	}
-	if got := strings.Join(spill.Rows[0], " | "); !strings.Contains(got, "7") || !strings.Contains(got, "5") {
-		t.Fatalf("溢出表应含最近回灌 7 / 当前积压 5：%s", got)
-	}
-}
-
 // 同一失败组里两个不同任务时，证据要分别列出 task_id，不能写成「首条 task_id 失败 N 次」。
 func TestFailureEvidenceListsDistinctTasks(t *testing.T) {
 	now := time.Date(2026, 10, 29, 13, 0, 0, 0, time.Local)

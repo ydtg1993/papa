@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
 )
 
@@ -21,6 +20,9 @@ func TestRetryTaskHappyPath(t *testing.T) {
 		t.Fatalf("RetryTask = %v", err)
 	}
 
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
+	}
 	sql := f.written()
 	if !strings.Contains(sql, "`reprocess`") {
 		t.Fatalf("代次应 +1（它同时是防重复点击的版本号）：\n%s", sql)
@@ -95,52 +97,34 @@ func TestRetryTaskRejections(t *testing.T) {
 	}
 }
 
-// 重投时队列已满 → 溢出到 DB 由 drain 回灌，**不算失败**（对后台表现为操作成功）。
-func TestRetryTaskSpillsWhenQueueFull(t *testing.T) {
+func TestRetryTaskRequestsDurableDelivery(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 水位 = 1 条
-	e, _ := urgentEngine(t, f)
-	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
-
-	if err := pool.Submit(&Task{URL: "occupy", Stage: "stub"}); err != nil {
+	e, pool := urgentEngine(t, f)
+	if err := e.RetryTask(7, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.RetryTask(7, 0); err != nil {
-		t.Fatalf("队列满时应溢出而不是报错：%v", err)
+	if len(e.deliveryState().Notifications(stubKey)) != 1 || queued(t, pool) != 0 {
+		t.Fatal("admin action must request durable delivery without blocking HTTP")
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应溢出 1 条，实得 %d", got)
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("溢出计数 = %d, want 1", got)
+	if queued(t, pool) != 1 {
+		t.Fatal("accepted admin task was not recovered")
 	}
 }
 
-// 投递真失败（池子已停机）：报错并把 key 从去重表里撤掉，让下次还能投。
-func TestRetryTaskReportsSubmitFailure(t *testing.T) {
+func TestRetryTaskReportsPersistenceFailure(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	pool.Stop(0)
-	e, _ := urgentEngine(t, f)
-	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
-
-	err := e.RetryTask(7, 0)
-	if err == nil {
-		t.Fatal("投递失败应当报错")
+	e, pool := urgentEngine(t, f)
+	f.failNext = 1
+	if err := e.RetryTask(7, 0); err == nil {
+		t.Fatal("persistence failure must be reported")
 	}
-	if !strings.Contains(err.Error(), "submit task 7") {
-		t.Fatalf("错误信息应带上任务 ID：%v", err)
-	}
-	if e.dedupCache.Get("stub:stub:https://example.com") {
-		t.Fatal("投递失败应把 key 从去重表里撤掉")
+	if queued(t, pool) != 0 || len(e.deliveryState().Notifications(stubKey)) != 0 {
+		t.Fatal("failed reset must not deliver")
 	}
 }
-
-/* ---------- MarkTaskFailed ---------- */
 
 func TestMarkTaskFailedHappyPath(t *testing.T) {
 	f := newFakeTaskDB()
@@ -342,61 +326,35 @@ func TestMarkTaskFailedTerminalGuardIsInStatement(t *testing.T) {
 	}
 }
 
-// 加急时两条队列都满才溢出：快车道优先且满了会退到常规队列（best-effort 优先），
-// 只有两条都塞不下才回 ErrQueueFull、由上层溢出到 DB。
-func TestUrgentTaskSpillsWhenQueueFull(t *testing.T) {
+func TestUrgentTaskRequestsDurableDelivery(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 4, 0.25) // 常规水位 1 条、快车道水位 2 条
-	e, _ := urgentEngine(t, f)
-	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
-
-	// 占满常规队列，再占满快车道
-	if err := pool.Submit(&Task{URL: "occupy-main", Stage: "stub"}); err != nil {
+	e, pool := urgentEngine(t, f)
+	if err := e.UrgentTask(7); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
-		if err := pool.SubmitUrgent(&Task{URL: "occupy-urgent", Stage: "stub"}); err != nil {
-			t.Fatal(err)
-		}
+	if len(e.deliveryState().Notifications(stubKey)) != 1 || queued(t, pool) != 0 {
+		t.Fatal("admin action must request durable delivery without blocking HTTP")
 	}
-
-	if err := e.UrgentTask(7); err != nil {
-		t.Fatalf("两条队列都满时应溢出而不是报错：%v", err)
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应溢出 1 条，实得 %d", got)
-	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("溢出计数 = %d, want 1", got)
+	if queued(t, pool) != 1 {
+		t.Fatal("accepted admin task was not recovered")
 	}
 }
 
-// 加急投递真失败时报错并撤掉去重表里的 key。
-func TestUrgentTaskReportsSubmitFailure(t *testing.T) {
+func TestUrgentTaskReportsPersistenceFailure(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	pool.Stop(0)
-	e, _ := urgentEngine(t, f)
-	e.stages["stub:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "stub"}}
-	e.pools.set("stub:stub", pool)
-	e.spilled = make(map[string][]*Task) // NewEngine 会建，手搓的 Engine 得自己补
-
-	err := e.UrgentTask(7)
-	if err == nil {
-		t.Fatal("投递失败应当报错")
+	e, pool := urgentEngine(t, f)
+	f.failNext = 1
+	if err := e.UrgentTask(7); err == nil {
+		t.Fatal("persistence failure must be reported")
 	}
-	if !strings.Contains(err.Error(), "submit urgent task 7") {
-		t.Fatalf("错误信息应带上任务 ID：%v", err)
-	}
-	if e.dedupCache.Get("stub:stub:https://example.com") {
-		t.Fatal("投递失败应把 key 从去重表里撤掉")
+	if queued(t, pool) != 0 || len(e.deliveryState().Notifications(stubKey)) != 0 {
+		t.Fatal("failed reset must not deliver")
 	}
 }
 
-// loadTask 把 gorm 的哨兵错误翻成自己的 ErrTaskNotFound：上层（admin/tasksource）
-// 据此映射成 404，而不是把 "record not found" 原样回给浏览器。
 func TestLoadTaskTranslatesNotFound(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
@@ -419,7 +377,7 @@ func TestLoadTaskTranslatesNotFound(t *testing.T) {
 }
 
 // 「标失败」的孤儿例外：上一轮崩溃留下的 processing 行（updated_at 早于本进程启动）要能标，
-// 否则 recover_queue 关着时这类行没有任何人工出口（重投/删除/标失败全拒）。
+// 保留孤儿行的人工标失败能力，不能修改当前运行任务。
 // 判据与启动恢复同一套（updated_at < startedAt = 不是本进程碰过的行）—— 假库不解析 WHERE，
 // 所以这里钉"判据确实写进了语句"，并在 WHERE 不匹配时验证报错说得清原因。
 func TestMarkTaskFailedOrphanProcessingRow(t *testing.T) {

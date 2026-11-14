@@ -21,7 +21,6 @@ const (
 	TypeQueueRound     = "queue_round"
 	TypeBacklogSampled = "backlog_sampled"
 	TypeStageSnapshot  = "stage_snapshot"
-	TypeSpillChanged   = "spill_changed"
 	TypeBreakerTripped = "breaker_tripped"
 	TypePauseResumed   = "pause_resumed"
 	TypeStagePool      = "stage_pool"

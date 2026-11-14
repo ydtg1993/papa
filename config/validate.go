@@ -66,9 +66,6 @@ const (
 	defaultObsCrawlFailRateMax = 0.05
 	defaultObsReportMode       = "auto"
 	defaultObsEventMaxGap      = 10 * time.Minute
-	// defaultRecoverBatchPause 启动恢复的默认批间停顿：把一次恢复摊到多个时间片里。
-	// 30m 是"第一批投完先让 worker 消化，再投下一批"的粗粒度节拍；可在 recover_queue.batch_pause 覆盖。
-	defaultRecoverBatchPause = 30 * time.Minute
 )
 
 // validLogLevels 是 log.level 的合法取值，切片顺序即报错信息里的展示顺序。
@@ -92,14 +89,6 @@ func applyDefaults(c *Config) {
 	// 0 与负数都是"不发"：负间隔不能交给 time.NewTicker（它会 panic）。
 	if c.Obs.Events.SnapshotInterval < 0 {
 		c.Obs.Events.SnapshotInterval = 0
-	}
-	// 启动恢复的批间停顿：没写（0）补默认 30m；要连续跑完请显式写很小的值（如 1ms）。
-	// 写负数没有语义，归一成 0 后同样补默认值 —— 避免 time.NewTimer(负数) 在后台协程里 panic。
-	if c.RecoverQueue.BatchPause < 0 {
-		c.RecoverQueue.BatchPause = 0
-	}
-	if c.RecoverQueue.BatchPause == 0 {
-		c.RecoverQueue.BatchPause = defaultRecoverBatchPause
 	}
 	if strings.TrimSpace(c.Obs.Report.Mode) == "" {
 		c.Obs.Report.Mode = defaultObsReportMode
@@ -381,7 +370,7 @@ var rules = []rule{
 
 	{"error_queue.batch_size", func(c *Config) error {
 		if c.ErrorQueue.Enabled && c.ErrorQueue.BatchSize < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000（分页流式，避免一次性全量加载）", c.ErrorQueue.BatchSize)
+			return fmt.Errorf("  不能为负（实得 %d）—— 每阶段查询批量；0 = 用默认的 100，运行时最多 1000（分页流式，避免一次性全量加载）", c.ErrorQueue.BatchSize)
 		}
 		return nil
 	}},
@@ -400,24 +389,9 @@ var rules = []rule{
 		return nil
 	}},
 
-	{"recover_queue.worker_count", func(c *Config) error {
-		if c.RecoverQueue.Enabled && c.RecoverQueue.WorkerCount <= 0 {
-			return fmt.Errorf("  开启时必须 > 0（实得 %d）—— 为 0 时池子里没有 worker，恢复出来的任务会静静躺在队列里", c.RecoverQueue.WorkerCount)
-		}
-		return nil
-	}},
-
 	{"recover_queue.batch_size", func(c *Config) error {
-		if c.RecoverQueue.Enabled && c.RecoverQueue.BatchSize < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000", c.RecoverQueue.BatchSize)
-		}
-		return nil
-	}},
-
-	{"recover_queue.batch_pause", func(c *Config) error {
-		// 默认值已在 applyDefaults 补齐（30m）；这里只拒绝"配了但归一不成合法时长"的负值。
-		if c.RecoverQueue.BatchPause < 0 {
-			return fmt.Errorf("  不能为负（实得 %s）—— 要连续跑完请写很小的正数（如 1ms），默认 30m", c.RecoverQueue.BatchPause)
+		if c.RecoverQueue.BatchSize < 0 {
+			return fmt.Errorf("  不能为负（实得 %d）—— 每阶段查询批量；0 = 用默认的 100，运行时最多 1000", c.RecoverQueue.BatchSize)
 		}
 		return nil
 	}},
@@ -455,7 +429,7 @@ var rules = []rule{
 
 	{"repeat_queue.batch_size", func(c *Config) error {
 		if c.RepeatQueue.Enabled && c.RepeatQueue.BatchSize < 0 {
-			return fmt.Errorf("  不能为负（实得 %d）—— 每批处理多少条；0 = 用默认的 1000", c.RepeatQueue.BatchSize)
+			return fmt.Errorf("  不能为负（实得 %d）—— 每阶段查询批量；0 = 用默认的 100，运行时最多 1000", c.RepeatQueue.BatchSize)
 		}
 		return nil
 	}},

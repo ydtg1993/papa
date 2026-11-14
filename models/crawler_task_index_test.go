@@ -54,6 +54,19 @@ func TestCrawlerTaskIndexes(t *testing.T) {
 		t.Fatal("idx_task_status 不该是唯一索引")
 	}
 
+	delivery := indexes["idx_task_delivery"]
+	wantDelivery := []string{"site", "stage", "status"}
+	if len(delivery) != len(wantDelivery) {
+		t.Fatalf("delivery index=%v", delivery)
+	}
+	for i, col := range wantDelivery {
+		if delivery[i] != col {
+			t.Fatalf("delivery index=%v want %v", delivery, wantDelivery)
+		}
+	}
+	if unique["idx_task_delivery"] {
+		t.Fatal("delivery index must not be unique")
+	}
 	if !unique["idx_site_stage_url_hash"] {
 		t.Fatal("idx_site_stage_url_hash 必须仍是唯一索引")
 	}

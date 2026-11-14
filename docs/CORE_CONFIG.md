@@ -50,9 +50,7 @@
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限，`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
-| `queue_watermark` | float | `0.75` | 队列高水位比例（0-1），达到后新任务溢出到 DB 待回灌，避免满队列丢任务 |
-| `drain_interval` | duration | `2s` | 溢出任务回灌队列的间隔 |
-| `stop_timeout` | duration | `5s` | 优雅退出时等各阶段 worker 把队列跑完的上限（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
+| `stop_timeout` | duration | `5s` | 取消阻塞提交后等待各阶段 worker 与持久化操作退出的上限；未开始任务保留 pending 供恢复（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
@@ -65,7 +63,7 @@
 > 只关掉某一站）。每站一份计数是硬要求 —— 共用一份的话站点 A 被墙会把站点 B 一起闸住。
 >
 > **想"启动先别跑"不在这一节**：那是声明期的一道整站闸门 `SiteSpec.StartPaused: true`
-> （入口任务照投、任务寄放在溢出表，后台点「恢复整站」才放开），见 [MONITOR.md](./MONITOR.md) §10。
+> （入口任务照投、任务持久化为 pending，后台点「恢复整站」才放开），见 [MONITOR.md](./MONITOR.md) §10。
 > 这一节只管**判据**（窗口与阈值）；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](./MONITOR.md) §9），
 > 人工暂停写的是同一张表、来源标成 manual。
 
@@ -168,7 +166,7 @@
 | 运行 | `run_started` / `run_stopped` |
 | 任务 | `task_claimed` / `task_finished` / `task_failed` / `task_retry_scheduled` |
 | 队列 | `queue_round` / `task_requeued` / `backlog_sampled` |
-| 运行时 | `stage_snapshot` / `stage_pool` / `spill_changed` / `breaker_tripped` / `pause_resumed` |
+| 运行时 | `stage_snapshot` / `stage_pool` / `breaker_tripped` / `pause_resumed` |
 
 业务侧可 `app.Events().Emit(events.Event{...})` 复用同一个 sink（同一 `run_id` / `seq` 序列）；业务事件类型由业务自己约定，框架只负责承载与落盘。
 
@@ -253,21 +251,14 @@ crawler:
 > 服务端按 `archive.dir` 解析、拒绝 `..` 与绝对路径，回的是**文件本身**（`Content-Disposition: attachment`）
 > 而不是内联渲染，拿去本地对着真实页面改选择器最省事。要按自己的路由暴露归档目录，用 `monitor/router.go` 的 `Routes(app)`。
 
-### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
-
-写在 `config.yaml` 顶层的全局段（**不再按站点拆**）：
+### recover_queue —— 持久化恢复（详见 [RECOVER_QUEUE.md](./RECOVER_QUEUE.md)）
 
 ```yaml
 recover_queue:
-  enabled: true               # 启动恢复；false / 不写 = 不跑
-  worker_count: 1             # 并发重新入队的数量；开启时必填 > 0
-  batch_size: 100             # 每批查询处理的任务数；0 = 默认 1000（不能为负）
-  batch_pause: "30m"          # 批间停顿；不写/0 = 默认 30m，要连续跑完写很小的正数
+  batch_size: 100 # 每阶段读取批量，运行期上限 1000
 ```
 
-> 它**只在启动跑一次**（没有周期、没有后台手动入口），所以没有 `interval` / `max_retry`。
-> 恢复是**分批**投递的：每批 `batch_size` 条投完停 `batch_pause`（默认 30m）再继续，
-> 避免重启瞬间把几千条积压一次灌进各阶段队列；停机信号可立即打断停顿。
+已接受任务的恢复是强制安全保障：启动时在任何任务执行前释放上一进程的 processing；运行期按阶段事件恢复未持有的 pending。恢复仅提供 batch_size 配置，不提供关闭开关或全局批间等待。各阶段独立等待自身 channel 容量，暂停站点不会卡住其他站点。
 
 ### repeat_queue —— 周期轮询队列（详见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)）
 
@@ -377,3 +368,12 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 ### 阶段轮询次数上限
 
 轮询上限属于业务站点声明，不是 YAML 配置项：在 `papa.StageSpec` 上设置 `RepeatLimit: 30`。0 表示不限；达到数据库 `repeat` 计数上限后，该站该阶段的任务不再被自动或强制轮询，恢复及错误重投不受此限，不关闭任务的 `repeatable`。已有 `repeat` 列继续使用，不需要迁移。完整计数含义见 [REPEAT_QUEUE.md](./REPEAT_QUEUE.md)。
+
+
+### 阻塞投递升级与迁移
+
+本版新增 `crawler_tasks.not_before`，用于暂停、异常退出及重启后保留最早投递时间。升级后先运行 `papa migrate`，再启动程序；普通启动不自动迁移。旧行该列为 NULL，视为无延迟。阶段容量和 worker 数仍由各站 `StageSpec.QueueSize` / `WorkerCount` 决定，本次升级不自动改小业务配置。
+
+所有站点阶段还需补全 `StageSpec.Downstream`（直接下游白名单，空表示终点），入口改用 `SubmitEntryTask`，worker 子任务改用 `SubmitChildren(ctx, task, children...)`。详见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §1.6。
+
+升级时同时新增 `idx_task_delivery(site, stage, status)`，支持按阶段读取 pending 的游标查询。InnoDB 二级索引包含主键，可承接同阶段状态下的 ID 顺序；实际执行计划仍以目标数据库 EXPLAIN 为准。大表迁移需预留建索引时间；不在普通启动中自动迁移。

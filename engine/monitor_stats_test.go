@@ -17,7 +17,7 @@ import (
 // （监控页只该读值，不该摸到内部实现）。
 func TestGetStageStatsSnapshot(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -76,7 +76,7 @@ func TestGetStageStatsSnapshot(t *testing.T) {
 // 统计器在、阶段却没登记（只有测试会这么塞）时：两段留空、不 panic ——
 // 监控页少一行标注，好过整个 /api/monitor 500。
 func TestGetStageStatsWithoutRegisteredStage(t *testing.T) {
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := &Engine{statsQueue: map[string]*track.StatsQueue[*Task]{}}
 	e.setStatsQueue("ghost:catalog", track.NewStatsQueue[*Task](pool))
 
@@ -110,7 +110,7 @@ func TestGetStageStatsEmpty(t *testing.T) {
 func TestSampleQueueBacklogOneRecordsValue(t *testing.T) {
 	f := newFakeTaskDB()
 	f.count = 42
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	e.sampleQueueBacklogOne(QueueError, e.errorQueueQuery())
 
@@ -127,7 +127,7 @@ func TestSampleQueueBacklogOneRecordsValue(t *testing.T) {
 func TestSampleQueueBacklogWritesBothQueues(t *testing.T) {
 	f := newFakeTaskDB()
 	f.count = 7
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	e.sampleQueueBacklog()
 
@@ -146,7 +146,7 @@ func TestSampleQueueBacklogWritesBothQueues(t *testing.T) {
 func TestSampleQueueBacklogOneSurvivesDBError(t *testing.T) {
 	f := newFakeTaskDB()
 	f.failQueries = 1
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	e.sampleQueueBacklogOne(QueueError, e.errorQueueQuery())
 
@@ -165,7 +165,7 @@ func TestSampleQueueBacklogOneSurvivesDBError(t *testing.T) {
 // Find 能靠切片元素类型推出表，**Count 推不出来**（见下面的说明）。
 func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	qs := e.queueQueries()
 	// 错误队列与轮询队列**全局各一条**
@@ -201,7 +201,7 @@ func TestQueueQueriesCoverRegisteredQueues(t *testing.T) {
 func TestQueueQueriesCanBeCountedDirectly(t *testing.T) {
 	f := newFakeTaskDB()
 	f.count = 42
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	for _, c := range []struct {
 		name  string
@@ -231,7 +231,7 @@ func TestQueueQueriesCanBeCountedDirectly(t *testing.T) {
 // 队列名不认识时 enabled 一律 false（新队列忘了登记，也不该在页面上显示成"开着"）。
 func TestQueueEnabledUnknownName(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	if e.queueEnabled("no_such_queue") {
 		t.Fatal("未知队列名应当返回 false")
@@ -254,7 +254,7 @@ func TestQueueEnabledUnknownName(t *testing.T) {
 func TestStartQueueSamplerSamplesImmediately(t *testing.T) {
 	f := newFakeTaskDB()
 	f.count = 5
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.cfg.Server.QueueSampleInterval = 10 * time.Millisecond
 
 	e.startQueueSampler()

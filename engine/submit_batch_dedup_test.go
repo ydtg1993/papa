@@ -23,24 +23,22 @@ func TestSubmitTasksDuplicatesKeepOnePendingDelivery(t *testing.T) {
 					f.noRows = false
 				}
 			}
-			pool := workerpool.NewWorkerPool[*Task](1, 1, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 1)
 			e := submitEngine(t, f, pool)
 			first := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a", Repeatable: true}
 			duplicate := &Task{Site: first.Site, Stage: first.Stage, URL: first.URL, Repeatable: true}
 			if delayed {
 				first.Delay = time.Hour
-			} else if err := pool.Submit(&Task{URL: "blocker"}); err != nil {
-				t.Fatal(err)
 			}
 			if err := e.SubmitTasks([]*Task{first, duplicate}); err != nil {
 				t.Fatal(err)
 			}
 			if delayed {
-				if e.delayHeap.Len() != 1 || queued(t, pool) != 0 || e.spillBacklog() != 0 {
+				if e.delayHeap.Len() != 1 || queued(t, pool) != 0 || len(e.deliveryState().Notifications(stubKey)) != 0 {
 					t.Fatal("duplicate must produce one delayed delivery")
 				}
-			} else if e.spillBacklog() != 1 || queued(t, pool) != 1 {
-				t.Fatal("full queue must retain one spilled delivery")
+			} else if !e.deliveryState().Owned(first.ID) || queued(t, pool) != 1 {
+				t.Fatal("duplicate must produce one owned delivery")
 			}
 			if first.ID == 0 || duplicate.ID != first.ID {
 				t.Fatal("duplicate task identity was not filled")
@@ -69,7 +67,7 @@ func TestSubmitTasksDuplicateBatchKeepsNewTaskScheduled(t *testing.T) {
 					f.noRows = false
 				}
 			}
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := submitEngine(t, f, pool)
 			first := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a"}
 			duplicate := &Task{Site: "stub", Stage: "stub", URL: first.URL}
@@ -86,8 +84,8 @@ func TestSubmitTasksDuplicateBatchKeepsNewTaskScheduled(t *testing.T) {
 			if err := e.SubmitTasks([]*Task{first, duplicate}); err != nil {
 				t.Fatal(err)
 			}
-			if queued(t, pool) != 1 || e.spillBacklog() != 0 {
-				t.Fatalf("new task must be queued once: queued=%d spill=%d", queued(t, pool), e.spillBacklog())
+			if queued(t, pool) != 1 || len(e.deliveryState().Notifications(stubKey)) != 0 {
+				t.Fatalf("new task must be queued once: queued=%d recovery_notifications=%d", queued(t, pool), len(e.deliveryState().Notifications(stubKey)))
 			}
 			if inserts != 1 {
 				t.Fatalf("batch-local duplicates reached insert fallback: insert attempts=%d", inserts)
@@ -106,7 +104,7 @@ func TestSubmitTasksMixedBatchKeepsFirstOccurrence(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
 	f.onQuery = func(n int) { f.noRows = !strings.Contains(f.queries[n-1], "WHERE id = ?") }
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := submitEngine(t, f, pool)
 	first := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/a", Meta: map[string]string{"version": "first"}}
 	duplicate := &Task{Site: "stub", Stage: "stub", URL: first.URL, Meta: map[string]string{"version": "second"}}
@@ -130,7 +128,7 @@ func TestSubmitTasksExistingDuplicateDoesNotResetStatus(t *testing.T) {
 		t.Run(statusName(status), func(t *testing.T) {
 			f := newFakeTaskDB()
 			f.row["status"] = int64(status)
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := submitEngine(t, f, pool)
 			first := &Task{Site: "stub", Stage: "stub", URL: "https://example.com/existing"}
 			duplicate := &Task{Site: first.Site, Stage: first.Stage, URL: first.URL}

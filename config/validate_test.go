@@ -405,12 +405,12 @@ func TestQueueBatchSizeZeroMeansDefault(t *testing.T) {
 func TestQueueSectionsParse(t *testing.T) {
 	cfg := loadString(t, baseConfig+
 		"error_queue:\n  enabled: true\n  worker_count: 1\n  interval: \"4h\"\n  max_retry: 3\n  batch_size: 100\n"+
-		"recover_queue:\n  enabled: true\n  worker_count: 1\n  batch_size: 100\n"+
+		"recover_queue:\n  batch_size: 100\n"+
 		"repeat_queue:\n  enabled: true\n  worker_count: 1\n  interval: \"2h\"\n  batch_size: 100\n")
 	if !cfg.ErrorQueue.Enabled || cfg.ErrorQueue.WorkerCount != 1 || cfg.ErrorQueue.MaxRetry != 3 || cfg.ErrorQueue.BatchSize != 100 {
 		t.Fatalf("error_queue 没解析对：%+v", cfg.ErrorQueue)
 	}
-	if !cfg.RecoverQueue.Enabled || cfg.RecoverQueue.WorkerCount != 1 || cfg.RecoverQueue.BatchSize != 100 {
+	if cfg.RecoverQueue.BatchSize != 100 {
 		t.Fatalf("recover_queue 没解析对：%+v", cfg.RecoverQueue)
 	}
 	if !cfg.RepeatQueue.Enabled || cfg.RepeatQueue.WorkerCount != 1 || cfg.RepeatQueue.BatchSize != 100 || cfg.RepeatQueue.Interval <= 0 {

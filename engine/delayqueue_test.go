@@ -47,7 +47,7 @@ func TestDelayDispatcherDropsTaskNoLongerPending(t *testing.T) {
 			f.mu.Lock()
 			f.row["status"] = int64(tc.status)
 			f.mu.Unlock()
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := delayEngine(t, f, pool)
 
 			e.enqueueDelayed(time.Now().Add(-time.Second),
@@ -78,7 +78,7 @@ func TestDelayDispatcherDropsDeletedRow(t *testing.T) {
 	f.mu.Lock()
 	f.noRows = true
 	f.mu.Unlock()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := delayEngine(t, f, pool)
 
 	e.enqueueDelayed(time.Now().Add(-time.Second),
@@ -94,10 +94,9 @@ func TestDelayDispatcherDropsDeletedRow(t *testing.T) {
 }
 
 // 重读那一下撞上瞬态库错误：**不能丢**（行还是 pending，丢了就再没人投它），
-// 也不能立刻重排（会退化成忙等）—— 放回堆里、隔一个回灌间隔再看。
 func TestDelayDispatcherRetriesWhenRereadFails(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := delayEngine(t, f, pool)
 
 	f.mu.Lock()

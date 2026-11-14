@@ -177,3 +177,12 @@ return engine.SubmitTask(&papa.Task{
 | 防重复投递 | 任务的 `(url_hash, stage, site)` 唯一索引；需要业务语义时设 `IdempotencyKey`（`site:stage:<标识>`） |
 | 复杂查询 / 事务 | `engine.GetDB()` |
 | 查任务运行态 | 后台「任务」表格页（重投 / 加急 / 追踪 / 开停轮询） |
+
+
+## 任务投递时间与分页检查点
+
+任务表新增 `not_before` 保存最早投递时刻，业务升级需显式运行 `papa migrate`，普通启动不会迁移。该列为 NULL 时可立即投递；暂停、重启后仍遵守已保存的延迟。
+
+分页检查点属于业务 meta。worker 通过 `engine.SaveTaskMeta(ctx, task)` 保存当前任务 meta，必须使用当前执行上下文和原始 task，并在本页业务数据及子任务已经接受后推进。框架只提供带任务身份与 processing 条件的写入，不解释真实站点的页码、频道或终止规则。检查点落库失败应返回错误，不能继续推进到下一页。
+
+升级时同时新增 `idx_task_delivery(site, stage, status)`，支持按阶段读取 pending 的游标查询。InnoDB 二级索引包含主键，可承接同阶段状态下的 ID 顺序；实际执行计划仍以目标数据库 EXPLAIN 为准。大表迁移需预留建索引时间；不在普通启动中自动迁移。

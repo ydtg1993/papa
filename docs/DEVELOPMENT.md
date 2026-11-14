@@ -89,7 +89,8 @@ engine/                          引擎：Task · Trace · Fetcher · Engine
   stage.go     阶段装配与 worker 循环（ApplyRegisterStage / runAttempt）
   pools.go     活池登记表（懒建 / 空闲回收 / 关停都从这里取池）
   submit.go    提交路径（去重 → 落库 → 入队 → 认领）
-  spill.go     高水位溢出与回灌
+  delivery.go  持久化任务投递、阶段恢复通知与暂停等待
+  taskflow.go  worker 执行凭据与下游投递约束
   pause.go     暂停信号表（唯一真源：scope / reason / source）+ 取任务点的闸门
                （入队点的收口在 submit.go 的 submitToStage；熔断只往这张表里写）
   batch.go     各治理队列共用的分页扫描（keyset 游标）
@@ -117,6 +118,9 @@ admin/                          ★后台模块：**对外公开**，业务项�
   sysinfo/      机器指标 / 目录占用采集
 internal/                       真正的内部件：不对外承诺 API，**模块外也 import 不到**
   workerpool/ database/ msgqueue/ track/ breaker/
+  delivery/    单实例投递所有权、阶段唤醒与生命周期
+  taskflow/    无环阶段图纯校验
+  taskstore/   pending 批读取、启动孤儿释放、条件认领和终态落库
   app/                          装配层：把上面这些接成 App（门面 papa.App 指向它）
 pkg/                             可独立复用的件
   events/                        结构化运行事件：契约（event.go）+ 异步 emitter + JSONL sink
@@ -137,7 +141,7 @@ cmd/papa/                        CLI（new / check / upgrade / migrate / token /
 **依赖方向**（箭头 = import 方向，不允许反向）：
 
 ```
-papa 门面 ──► internal/app ──► engine ──► internal/{workerpool,database,track,breaker}
+papa 门面 ──► internal/app ──► engine ──► internal/{workerpool,delivery,taskstore,taskflow,database,track,breaker}
                  │               │              pkg/{browser,htmlfetch,loggers,middleware}
                  │               └──► core ◄── config
                  └──► admin/{server,auth,tokenadmin,oplog,tasksource,sysinfo,...} ──► core
@@ -179,7 +183,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 | 声明 | `Key` / `BaseURL` / `Headers` / `RestrictedKeywords` / `StartPaused` / `Breaker` / `M3U8` / `FileDown` / `Stages` | `internal/app/SiteSpec` |
 | 执行 | **每站每阶段一个 workerpool**（阶段键是 `core.StageKey(site, stage)`：阶段名只在本站内唯一，两个站的 `catalog` 是两个池子） | `engine.stage.go` 建池那一段 |
 | 执行 | **每站一个熔断计数器**（没单配阈值的站也用自己那份，阈值取 `crawler.breaker` 那份默认）；它只判据，不再持有暂停状态 | `internal/app/spec.go` 的 `defaultBreakerConfig`、`engine.breakerFor` |
-| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的寄放（不接新活，寄放到溢出表） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、`engine/spill.go` 的 `drainSpilled` |
+| 执行 | **暂停是一处信号**（`engine/pause.go`，按 scope：整站 / 某站某阶段）：写它的人有三个 —— 后台/业务手动、熔断触发、声明期的 `SiteSpec.StartPaused`（`applyStartPaused`，启动那一刻下一道整站闸）；两个消费者 —— 取任务点的闸门（冻住已排队的）+ 入队点的留库（已接受任务保持 pending，由恢复事件接管） | `engine/pause.go`、`engine/stage.go` 的 `ApplyRegisterStage`、`engine/submit.go` 的 `submitToStage`、`engine/delivery.go` 的阶段恢复入口 |
 | 执行 | 告警事件带 `site` | `core.TaskError.Site`（`core.AlertEvent` 内嵌它） |
 | 统计 | 阶段快照的键是 `site:stage`，条目里另带裸阶段名 `Stage` 与 `Site`（后台按 `site` 分组、标题用 `stage`）；熔断状态带 `Site` | `core.StageStats` / `core.BreakerStatus` |
 | 统计 | 站点快照（**内存是源**：启动读 `crawler_config` 的 `sites` 键（没有就按声明生成）、按声明对齐；`StartPaused` 也在这**一次**写里落成暂停态，手动暂停/恢复整块回写） | `engine/sitestat.go`、`admin/configstore/sites.go` |
@@ -189,7 +193,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 
 ### 全局，且**有意**如此（别想着分站）
 
-- **进程级**：`crawler.stop_timeout`（停机怎么等）、`crawler.drain_interval`（溢出回灌跳多久一次）、
+- **进程级**：`crawler.stop_timeout`（停机怎么等）、
   `server.*`（HTTP 服务/白名单/采样间隔）、`db.*`、`log.*` —— 一个进程只有一份。
 - **客户端级**：`html.*` / `browser.*`（超时、体积上限、空闲回收、全局 headers）。站点要自己的头就用
   `SiteSpec.Headers`（同键覆盖全局那层）；单次请求还能 `papa.WithHeaders`。
@@ -202,10 +206,9 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 - **`error_queue` / `recover_queue` / `repeat_queue` 现在是全局各一条**（不再按站点拆）：
   各一段写在 `config.yaml` 里，后台各占一行。当初按站点拆没有收益（三队列本质都是对
   `crawler_tasks` 表的一次复查），反而让"一个阶段占一个协程空等"的多站开销被放大 —— 已并回全局。
-- **`crawler` 的四项有意留在 `config.yaml`（定过的，不是待办）**：`queue_watermark`（`engine/stage.go`
-  建池那行）、`archive.*`（`engine/archive.go`，落盘路径按 `{site}/{stage}/` 分两层）、`trace.*`
+- **`crawler` 的进程配置留在 `config.yaml`**：`archive.*`（`engine/archive.go`，落盘路径按 `{site}/{stage}/` 分两层）、`trace.*`
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
-  它们是**进程级资源**那类数值（水位、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
+  它们是**进程级资源**那类数值（去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
 - **`dedupCache` 是"按 key 分、预算共享"**：key 是 `site:stage:url`（`Task.Unique()`；缺 site 时以空段出现），但只有**一个**
   LRU、一份 `dedup_cache_size`。某站刷爆缓存只会让别的站多几次 SELECT（DB 唯一索引兜底），
@@ -218,7 +221,7 @@ obs ──► pkg/events + models（只读；不依赖 engine / admin / app，�
 
 一句话：**跟"某个站点的抓取"有关的按站点，跟"进程/服务本身"有关的不按站点。**
 并发、间隔、重试、请求头、出口这些按站点（阶段参数 + 站点声明上那几项）；
-**队列水位 / 归档 / trace / 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
+**归档 / trace / 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
 —— 一个进程只有一份答案。要动这条边界，先问一句：这是"**这一站怎么抓**"，还是"**这个进程扛不扛得住**"。
 
 
@@ -230,9 +233,9 @@ CLI 实现中 `cmd/papa/layout.go` 统一识别站点和文档布局，供 check
 
 脚手架区分完整 module 与本地项目名：module 用于 import，本地项目名取最后一段，用于站点文件和构建/部署名称。`cmd/papa/module_path_test.go` 的 `TestRunNewNamespacedModuleBuilds` 覆盖多级路径、连字符和 `/v2` 后缀，实际生成临时项目、tidy/build、构建入口二进制并运行纯站点校验。
 
-轮询回灌计数回归在 `engine/spill_repeat_test.go` 的 `TestSpillRetriesCountRepeatOncePerSubmission`：覆盖连续满池、首次写库失败、容量释放后投递和下一轮计数；SQL 方言与保留字仍由 `engine/sqlshape_test.go` 的 MySQL DryRun 验证。
+阻塞投递回归需要覆盖满池无重复 UPDATE、容量释放后继续、暂停恢复、取消与关停，以及每轮计数仅一次；SQL 方言与保留字仍由 `engine/sqlshape_test.go` 的 MySQL DryRun 验证。
 
-批内重复提交回归在 `engine/submit_batch_dedup_test.go`：覆盖同 URL、相同幂等键、轮询任务、重复指针、混合批次首次参数保留、已有状态不重置、满池寄放及延迟投递。外部唯一冲突回查沿用 `TestSubmitTasksSkipsConflictingRows`。
+批内重复提交回归在 `engine/submit_batch_dedup_test.go`：覆盖同 URL、相同幂等键、轮询任务、重复指针、混合批次首次参数保留、已有状态不重置、满池等待及延迟投递。外部唯一冲突回查沿用 `TestSubmitTasksSkipsConflictingRows`。
 
 批量部分成功回归在 `engine/submit_partial_test.go`：覆盖首/中/尾行失败、多行与全批失败、成功项不重复投递、失败项可重试、延迟项保持等待，以及落库后读取失败仍保留投递责任。
 

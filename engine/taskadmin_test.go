@@ -146,7 +146,7 @@ func TestAdminScopesCarryConditions(t *testing.T) {
 func urgentEngine(t *testing.T, f *fakeTaskDB) (*Engine, *workerpool.WorkerPool[*Task]) {
 	t.Helper()
 	db := openFakeTaskDB(t, f)
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := &Engine{
 		db:         db,
 		loggerSet:  &loggers.LoggerSet{Engine: logrus.New(), DB: logrus.New()},
@@ -175,7 +175,12 @@ func TestUrgentTaskHappyPath(t *testing.T) {
 		t.Fatalf("UrgentTask = %v, want nil", err)
 	}
 
-	// 1) 先落库标记加急 —— 后台「加急」列要是「是」，溢出/重启后也还认得出
+	f.mu.Lock()
+	f.row["urgent"] = true
+	f.mu.Unlock()
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
+	}
 	sql := f.written()
 	if !strings.Contains(sql, "UPDATE `crawler_tasks`") || !strings.Contains(sql, "`urgent`") {
 		t.Fatalf("应先条件更新 urgent 列，实得：\n%s", sql)
@@ -276,6 +281,9 @@ func TestUrgentTaskSecondClickIsRejected(t *testing.T) {
 	// 第一次成功
 	if err := e.UrgentTask(7); err != nil {
 		t.Fatalf("第一次加急 = %v, want nil", err)
+	}
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
 	// 第二次：库里 urgent 已是 1，条件更新匹配不到行
 	f.mu.Lock()

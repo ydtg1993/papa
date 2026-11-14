@@ -37,7 +37,7 @@ func TestRepeatQueryShape(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeTaskDB()
-			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 			tc.run(e)
 			read := f.readSQL()
 			for _, w := range tc.want {
@@ -58,7 +58,7 @@ func TestRepeatQueryShape(t *testing.T) {
 // ticker 里正在写的语句会直接报 `sql: database is closed`。
 func TestStopWaitsForTickers(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.pools.get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
 	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, Interval: 20 * time.Millisecond}
 	e.startRepeatQueue()
@@ -126,7 +126,7 @@ func TestSoonestRepeatQueryIncludesActiveRows(t *testing.T) {
 // finishTask 两条分支：非轮询清去重键，轮询留在去重表并唤醒轮询队列重算节拍。
 func TestFinishTaskWakesRepeatQueueForRepeatable(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	plain := &Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com/plain"}
 	e.dedupCache.Add(plain.Unique())

@@ -11,8 +11,11 @@ import (
 	"time"
 )
 
-// ErrQueueFull 队列达到高水位（75%），任务应溢出到数据库而非入队。
+// ErrQueueFull 是旧版非阻塞 Submit 的拒收结果；任务尚未被池接收。
 var ErrQueueFull = errors.New("worker pool queue full")
+
+// ErrStopped 表示池已经关闭接收；调用方仍拥有未接收任务。
+var ErrStopped = errors.New("worker pool already stopped")
 
 // urgentMinQueueSize 快车道的容量下限；实际容量取 max(workers*2, urgentMinQueueSize)。
 // 容量必须小：快车道饱和时主队列会被饿住（这是快车道固有的代价），小容量把它限制在可接受的量级。
@@ -24,37 +27,35 @@ const urgentMinQueueSize = 8
 // 两条队列**从不 close** —— 停机靠 stopCh 信号，Submit 侧靠 stopped + 读写锁互斥，
 // 于是"向已关闭 channel 发送"这一类隐患在结构上不存在。
 type WorkerPool[T Tasker] struct {
-	taskQueue   chan T
-	urgentQueue chan T
-	workers     int
-	watermark   float64 // 队列高水位比例(0-1)，达到后 Submit 返回 ErrQueueFull
-	wg          sync.WaitGroup
-	stopOnce    sync.Once
-	stopRes     stopResult    // Stop 的结局；stopOnce 跑完后才有效，供重复调用返回同一份
-	stopCh      chan struct{} // 停机信号；队列不 close，worker 靠它退出
-	mu          sync.RWMutex  // 保护 stopped，并与 Submit 的发送互斥，见 Submit/Stop
-	stopped     bool
-	cancel      context.CancelFunc
-	gate        Gate                         // 暂停闸门；nil = 不设闸（老行为）。须在 Start 之前 SetGate
-	submitted   atomic.Int64                 // 已提交的任务总数
-	completed   atomic.Int64                 // 已完成的任务数
-	failed      atomic.Int64                 // 失败的任务数（可选）
-	trackQueue  *msgqueue.MsgQueue[Activity] //系统消息队列
+	taskQueue    chan T
+	urgentQueue  chan T
+	workers      int
+	wg           sync.WaitGroup
+	stopOnce     sync.Once
+	stopRes      stopResult    // Stop 的结局；stopOnce 跑完后才有效，供重复调用返回同一份
+	stopCh       chan struct{} // 停机信号；队列不 close，worker 靠它退出
+	mu           sync.RWMutex  // 保护 stopped，并与 Submit 的发送互斥，见 Submit/Stop
+	stopped      bool
+	spaceChanged chan struct{} // mu 保护；消费时广播，阻塞提交不轮询
+	waiting      atomic.Int64  // 正在执行可取消提交的调用数，供空闲回收判断
+	cancel       context.CancelFunc
+	gate         Gate                         // 暂停闸门；nil = 不设闸（老行为）。须在 Start 之前 SetGate
+	submitted    atomic.Int64                 // 已提交的任务总数
+	completed    atomic.Int64                 // 已完成的任务数
+	failed       atomic.Int64                 // 失败的任务数（可选）
+	trackQueue   *msgqueue.MsgQueue[Activity] //系统消息队列
 }
 
-// NewWorkerPool 创建工作池；watermark 为队列高水位比例(0-1)，非法值回退 0.75。
-func NewWorkerPool[T Tasker](workers, queueSize int, watermark float64) *WorkerPool[T] {
-	if watermark <= 0 || watermark > 1 {
-		watermark = 0.75
-	}
+// NewWorkerPool 创建有界工作池；queueSize 最小为 1。
+func NewWorkerPool[T Tasker](workers, queueSize int) *WorkerPool[T] {
 	urgentSize := max(workers*2, urgentMinQueueSize)
 	return &WorkerPool[T]{
-		taskQueue:   make(chan T, queueSize),
-		urgentQueue: make(chan T, urgentSize),
-		workers:     workers,
-		watermark:   watermark,
-		stopCh:      make(chan struct{}),
-		trackQueue:  msgqueue.NewMsgQueue[Activity](100),
+		taskQueue:    make(chan T, max(queueSize, 1)),
+		urgentQueue:  make(chan T, urgentSize),
+		workers:      workers,
+		stopCh:       make(chan struct{}),
+		spaceChanged: make(chan struct{}),
+		trackQueue:   msgqueue.NewMsgQueue[Activity](100),
 	}
 }
 
@@ -82,7 +83,7 @@ func (p *WorkerPool[T]) Start(ctx context.Context, handler TaskHandler[T]) {
 //   - 卡 claimTask 不行：那时任务已经被 worker 从 channel 里取走了，闸住就得把它塞回去 ——
 //     channel 塞不回去（可能已满，塞回去还会打乱顺序）。
 //
-// **引擎还会在 Submit 那一侧也拦一道**（提交点收口：暂停时把任务寄放到溢出表，压根不入队）——
+// 引擎还会在提交侧执行暂停策略，具体的任务持久化与恢复由引擎投递组件负责。
 // 那是引擎层的事（见 engine/submit.go 与 engine/pause.go），与池子无关：池子这一层只回答
 // "现在要不要取下一个"。两者分工是"冻住已排队的 + 不接新活"。
 //
@@ -168,6 +169,16 @@ func (p *WorkerPool[T]) drainAndExit(ctx context.Context, workerID int, handler 
 }
 
 func (p *WorkerPool[T]) processTask(ctx context.Context, workerID int, task T, handler TaskHandler[T]) {
+	// 发送方在锁内登记 submitted；先取得写锁再处理任务，保证完成计数
+	// 不会跑在接收计数之前。广播发生在消费之后，不依赖 handler 的耗时。
+	p.mu.Lock()
+	close(p.spaceChanged)
+	p.spaceChanged = make(chan struct{})
+	p.mu.Unlock()
+	// Pause can arrive while an idle worker is blocked receiving from a channel.
+	// Recheck after reception, before starting work. Stop releases this gate and
+	// keeps the existing drain semantics; the engine's canceled ctx skips claims.
+	p.waitGate()
 	start := time.Now()
 	p.trackQueue.SendActivity(Activity{
 		Type:      ActivityTaskStart,
@@ -208,7 +219,8 @@ func (p *WorkerPool[T]) runHandler(ctx context.Context, task T, handler TaskHand
 	return handler(ctx, task)
 }
 
-// Submit 提交到常规队列，若已停止则拒绝；达到水位时返回 ErrQueueFull 由上层溢出。
+// Submit 是兼容旧调用的非阻塞投递；实际队列已满时返回 ErrQueueFull，调用方仍拥有任务。
+// 正常背压路径使用 SubmitContext。
 func (p *WorkerPool[T]) Submit(task T) error {
 	// 读锁覆盖「判断 stopped + 发送」整段：Stop 置位并 close(stopCh) 时持写锁，两者互斥。
 	p.mu.RLock()
@@ -218,14 +230,13 @@ func (p *WorkerPool[T]) Submit(task T) error {
 
 // SubmitUrgent 提交到快车道：让这一条插到所在队列的前面。
 //
-// 快车道满了并不报错，而是**退到常规队列**（best-effort 优先）。调用方把 ErrQueueFull
-// 统一翻译成"溢出到 DB、每 2s 回灌一次"，对加急任务那等于把加急属性悄悄吃掉；
-// 而快车道容量小（见 urgentMinQueueSize），早早拒收反而更糟。只有两条都满才回 ErrQueueFull。
+// 兼容旧调用的非阻塞入口。快车道已满时退到常规队列（best-effort 优先），
+// 两条都拒收才返回 ErrQueueFull；需要可取消等待时使用 SubmitUrgentContext。
 func (p *WorkerPool[T]) SubmitUrgent(task T) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if !p.stopped && float64(len(p.urgentQueue)) < float64(cap(p.urgentQueue))*p.watermark {
+	if !p.stopped {
 		select {
 		case p.urgentQueue <- task:
 			p.submitted.Add(1)
@@ -242,10 +253,6 @@ func (p *WorkerPool[T]) submitLocked(task T) error {
 		err := fmt.Errorf("worker pool already stopped,failed to submit task: %+v", task)
 		p.trackQueue.SendError(err)
 		return err
-	}
-	// 达到水位时提前拒绝入队，避免 100% 时静默丢弃，由上层把任务留库/溢出。
-	if float64(len(p.taskQueue)) >= float64(cap(p.taskQueue))*p.watermark {
-		return ErrQueueFull
 	}
 	select {
 	case p.taskQueue <- task:
@@ -276,8 +283,10 @@ type stopResult struct {
 func (p *WorkerPool[T]) Stop(timeout time.Duration) (drained bool, inFlight int) {
 	p.stopOnce.Do(func() {
 		p.mu.Lock()
-		p.stopped = true
-		close(p.stopCh) // 通知 worker 停机；队列不 close，见 WorkerPool 的说明
+		if !p.stopped {
+			p.stopped = true
+			close(p.stopCh) // 队列不 close；空闲回收可能已原子关闭入口。
+		}
 		p.mu.Unlock()
 		done := make(chan struct{})
 		go func() {

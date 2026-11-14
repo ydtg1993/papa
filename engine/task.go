@@ -13,11 +13,13 @@ import (
 )
 
 type Task struct {
+	submitContext context.Context
+
 	ID         int    `json:"id"`  // 数据库记录 ID
 	PID        int    `json:"pid"` // 父级任务ID
 	URL        string // 要打开的 URL
 	Retry      int
-	Repeat     int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮回灌不重复计数。
+	Repeat     int    // 框架维护的提交轮次计数（数据库 repeat），只读；同轮恢复投递不重复计数。
 	Stage      string // 阶段标识，如 "catalog", "detail", "video"
 	Site       string // 所属站点（SiteSpec.Key，**必填**）；随行落库，供后台按站点筛/排障
 	Repeatable bool
@@ -34,10 +36,6 @@ type Task struct {
 	// Trace 本次尝试的步骤记录器，由 worker 在调用 FetchHandler 前挂上。
 	// 追踪未开启时为 nil，Step/Fail 是安全的 no-op。handler 无需判空。
 	Trace *Trace
-
-	// repeatCounted 标记本轮提交已成功写回 pending 并计数。
-	// 溢出回灌复用 Task，只重试投递；下一轮从 DB 重建 Task 时该进程内标记归零。
-	repeatCounted bool
 }
 
 // deliverAt 返回任务的延迟投递时间；无延迟时返回零值 time.Time。
@@ -63,7 +61,17 @@ func (t *Task) toModel() models.CrawlerTask {
 	if t.Repeatable {
 		repeat = models.RepeatableYes
 	}
+	var notBefore *time.Time
+	if at := t.deliverAt(); !at.IsZero() {
+		notBefore = &at
+	}
+	count := 0
+	if t.Repeatable {
+		count = 1
+	}
 	return models.CrawlerTask{
+		NotBefore:      notBefore,
+		Repeat:         count,
 		PID:            uint(t.PID),
 		URL:            t.URL,
 		Stage:          t.Stage,
@@ -128,6 +136,7 @@ func (e *Engine) taskFromRecord(t *models.CrawlerTask) *Task {
 		Retry:          t.Retry,
 		Repeat:         t.Repeat,
 		Repeatable:     t.Repeatable == models.RepeatableYes,
+		NotBefore:      timeValue(t.NotBefore),
 		RepeatInterval: time.Duration(t.RepeatInterval) * time.Second,
 		Urgent:         t.Urgent,
 		IdempotencyKey: t.IdempotencyKey,
@@ -180,7 +189,7 @@ func (t *Task) Unique() string {
 }
 
 // stageKeyOf / stageKeyOfRecord 这一条属于哪个阶段 —— 引擎内部一切"按阶段取东西"的键
-// （登记表、工作池、统计、覆盖层、溢出桶、三条治理队列的守卫）。
+// （登记表、工作池、统计、覆盖层、持久化恢复范围、三条治理队列的守卫）。
 //
 // **只用阶段名是不够的**：阶段名只在本站内唯一，两个站的 `catalog` 是两条独立记录。
 // 这两个函数就是"哪两个字段拼键"的唯一定义 —— 调用点一律走它们，别各自手写 `core.StageKey(...)`，
@@ -203,8 +212,8 @@ type Fetcher interface {
 // 任意阶段，不必只在"自己这个阶段"上打转）；不写就是"这个阶段没有入口这回事"。
 //
 // **"有没有入口"与"现在跑不跑"是两件事**：后者是**站点级**的 `SiteSpec.StartPaused`
-// （入口任务照投，但整站在入队点被闸住 —— 每一条都寄放到溢出表里、池子一个都不建，
-// 后台点「恢复整站」才灌回）。两个字段合起来才是"先把入口排好、再放开这一站"。
+// （入口任务照投，但整站在入队点被闸住 —— 每一条都保留在数据库 pending、池子一个都不建，
+// 后台点「恢复整站」才继续投递）。两个字段合起来才是"先把入口排好、再放开这一站"。
 //
 // site 是本阶段的**站点声明快照**（`SiteSpec` 压成的 `core.Site`：BaseURL / Headers…）。
 // 站点值只声明在 `sites/<站名>.go` 一处，框架把它交到这里 —— fetcher 里别存副本：存了就会漂。
@@ -212,4 +221,11 @@ type Fetcher interface {
 //	没实现这个接口、或实现返回后什么也不投：都合法，阶段照常跑（只是没有入口任务）。
 type EntrySubmitter interface {
 	SubmitEntries(engine *Engine, site core.Site)
+}
+
+func timeValue(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
 }

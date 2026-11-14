@@ -57,3 +57,6 @@ Use this for audits and pull-request reviews. Report findings by severity with f
 - SQL is scattered through parsers instead of repositories.
 - Saved HTML fixtures and parser tests are missing.
 - Business copied docs contradict current framework docs or exported APIs.
+
+- Child submissions must use the active handler context and `SubmitChildren`; no legacy `SubmitTask` fallback, same-stage pagination enqueue, or entry/admin admission inside handlers.
+- Every direct child edge must be declared in `StageSpec.Downstream`; entry callbacks use `SubmitEntryTask` for parentless Entry stages.

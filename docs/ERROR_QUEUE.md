@@ -1,7 +1,7 @@
 # Papa 错误队列处理手册
 
 > 面向：任务重试耗尽进入 `failed` 后，怎么把它重新投递回阶段重跑，以及如何防止永久坏任务无限空转。
-> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（启动恢复，两者按状态分工）。
+> 配套：[RECOVER_QUEUE.md](./RECOVER_QUEUE.md)（持久化投递恢复，两者按状态分工）。
 
 ---
 
@@ -39,9 +39,7 @@ error_queue:
 ## 3. 再处理代数上限（防无限重试）
 
 每次重新投递会把这个任务的 `reprocess + 1`（同时 `retry` 清零）。
-重新投递失败（队列满以外的提交错误）时，这一行会被标成 `failed` 并把原因追加进 `error` 列
-（`engine.Engine.markRequeueFailed`）。早先这里只记日志、行留在 `pending` —— 而本队列只捞 `failed`，
-于是这条任务再也没人管：运营看着是"排队中"，实际永远不会执行。
+重置成功后通知目标阶段的持久化投递协程；暂停或队满时保持 pending，不标业务失败、不再次消耗 reprocess。恢复投递按阶段独立进行，慢阶段不会阻塞其它阶段的重置。
 `max_retry > 0` 时，`reprocess >= max_retry` 的任务不再投递，避免「结构错误 / 404」这类永久坏任务无限空转。
 
 ## 4. 与错误分类配合

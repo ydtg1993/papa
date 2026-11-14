@@ -1,12 +1,10 @@
 package engine
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
 	"github.com/ydtg1993/papa/v3/pkg/events"
 	"gorm.io/gorm"
@@ -85,22 +83,7 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	task := e.taskFromRecord(t)
 	task.Retry = 0 // 上面刚把行里的 retry 归零，内存副本跟上，别让 handler 读到已经作废的重试次数
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitToStage(task); err != nil {
-		if errors.Is(err, workerpool.ErrQueueFull) {
-			// 队列达高水位：**保持 pending**（上面刚重置过）、塞进溢出列表由 drain 每 2s 回灌。
-			// 否则行被标成 failed + `retry + 1`，而重置时**已经**把 `reprocess + 1` 写进去了。
-			// 队列自己的判据是 `reprocess < max_retry`，几轮之后这些行 `reprocess` 到顶，
-			// **永久不再被错误队列捞起**，只能人工点「重投」。
-			e.spilledCount.Add(1)
-			e.spillTask(task)
-		} else {
-			e.dedupCache.Delete(task.Unique())
-			e.loggerSet.Engine.Errorf("error queue: submit task %d: %s", t.ID, err.Error())
-			// 上面刚把这行重置成 pending，失败不管的话它就再也没人捞了（本队列只捞 failed）
-			e.markRequeueFailed(QueueError, t.ID, err)
-			return false
-		}
-	}
+	e.requestPendingRecovery(task)
 	e.errorQueue.retried.Add(1)
 	e.emit(events.Event{
 		Type: events.TypeTaskRequeued, Queue: QueueError, Source: "auto",

@@ -10,6 +10,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/engine"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
+	"github.com/ydtg1993/papa/v3/internal/taskflow"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v3/pkg/middleware/m3u8"
 )
@@ -43,8 +44,8 @@ type SiteSpec struct {
 	// RestrictedKeywords 本站自己的"受限页"文案，追加到 `htmlfetch.RestrictedReason` 的默认词表之后
 	//（如"安全验证""请稍后再试"这类本站特有的话术）。命中后一般返回 `papa.RestrictedPageError`。
 	RestrictedKeywords []string
-	// StartPaused 启动时就把**整站**闸住：入口任务照投（它们先寄放在溢出表里、池子一个都不建），
-	// 启动恢复与轮询队列捞回来的任务也一样不动 —— 等后台「站点控制」卡点「恢复整站」才灌回。
+	// StartPaused 启动时就把**整站**闸住：入口任务照投（先持久化为 pending，不执行暂停阶段任务），
+	// 启动恢复与轮询队列捞回来的任务也一样不动 —— 等后台「站点控制」卡点「恢复整站」再恢复投递。
 	//
 	// 用途是"先把入口排好、再放开这一站"：多站项目里，某几站希望启动那一刻停在原地、由人来决定
 	// 什么时候开始跑（也让上线后先看一眼队列、再放量的做法成立）。
@@ -75,6 +76,9 @@ type BreakerSpec struct {
 
 // StageSpec 一个阶段的完整声明。
 type StageSpec struct {
+	// Downstream names the direct child stages allowed in this site. Empty means
+	// terminal. Self edges, unknown targets and cycles are rejected at startup.
+	Downstream  []string
 	RepeatLimit int // 轮询队列上限：repeat >= 此值停止重投；0 不限，不影响恢复/错误队列。
 	// Fetcher 阶段的实现。名字取自它自己的 `GetStage()`，不在这里写第二遍。
 	// 实现了 engine.EntrySubmitter（`SubmitEntries`）的阶段，声明里写了 `Entry: true` 时启动那一趟投一轮。
@@ -91,7 +95,7 @@ type StageSpec struct {
 	// 零值 false = 这阶段没有入口这回事。
 	//
 	// 它**不是**"现在跑不跑"的开关 —— 那个在站点声明上（`SiteSpec.StartPaused`）：
-	// 一个站想"启动先别动、等人来点"，要的是整站级闸门（入口任务照投、任务先寄放在溢出表），
+	// 一个站想"启动先别动、等人来点"，要的是整站级闸门（入口任务照投、任务先留库 pending），
 	// 而不是"入口阶段不投、其它阶段照跑"。原先这两件事挤在一个三态枚举（auto/manual/off）里，
 	// 声明 manual 之后启动恢复与轮询队列照样把这一站跑起来 —— 接口就是那么写的，别改回去。
 	Entry bool
@@ -263,6 +267,13 @@ func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map
 		}
 		p.stages = append(p.stages, sp)
 	}
+	edges := make(map[string][]string, len(p.stages))
+	for _, st := range p.stages {
+		edges[st.stage] = st.cfg.Downstream
+	}
+	if err := taskflow.Validate(spec.Key, edges); err != nil {
+		errs = append(errs, err)
+	}
 	return p, errors.Join(errs...)
 }
 
@@ -319,7 +330,7 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 		return plan, fmt.Errorf("阶段 %q: WorkerCount 必须 > 0（为 0 时池子里没有 worker，任务会静静躺在队列里）", stage)
 	}
 	if st.QueueSize <= 0 {
-		return plan, fmt.Errorf("阶段 %q: QueueSize 必须 > 0（为 0 时高水位判定恒真，每次提交都溢出到 DB）", stage)
+		return plan, fmt.Errorf("阶段 %q: QueueSize 必须 > 0（阶段执行队列必须有界）", stage)
 	}
 	delay, err := parseDelay(st.Delay)
 	if err != nil {
@@ -340,6 +351,8 @@ func planStage(site core.Site, st StageSpec, owner map[string]string) (stagePlan
 		stage:   stage,
 		fetcher: st.Fetcher,
 		cfg: engine.StageConfig{
+			Downstream:  append([]string(nil), st.Downstream...),
+			StrictFlow:  true,
 			RepeatLimit: st.RepeatLimit,
 			MaxAttempts: attempts,
 			Backoff:     backoff,

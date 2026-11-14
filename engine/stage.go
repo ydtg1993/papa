@@ -122,7 +122,7 @@ func (e *Engine) notifyBreakerTrip(st BreakerStatus) {
 	})
 	e.loggerSet.Engine.Errorf(
 		"熔断触发：%s（阶段 %s，%s 窗口内 %d 次终态失败 ≥ 阈值 %d）—— 已暂停整站："+
-			"worker 停在取任务点，新任务不再入队（先寄放到溢出表）。"+
+			"worker 停在取任务点，新任务持久化为 pending，恢复后投递。"+
 			"处理完后调 POST /api/breaker/resume（后台 Dashboard 上也有按钮）放行",
 		st.Reason, st.Stage, st.Window, st.Failures, st.Threshold)
 
@@ -211,6 +211,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	//（与下载器那边 max(MaxConcurrent, 1) 同一路数）。
 	attempts := max(cfg.MaxAttempts, 1)
 	return func(ctx context.Context, task *Task) error {
+		defer e.deliveryState().Release(task.ID)
 		// 停机时的排水（WorkerPool.Stop → drainAndExit）会把队列里**还没开始**的存量任务
 		// 也原样交给 handler，而它拿到的 ctx 在进 Stop 那一刻就取消了
 		//（Engine.Stop 先 e.cancel() 再 pool.Stop，所以 workerpool.run 才故意不 select ctx.Done）。
@@ -229,7 +230,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		defer func() {
 			if r := recover(); r != nil {
 				err := fmt.Errorf("panic: %v", r)
-				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				e.settleTask(ctx, task, models.TaskStatusFailed, err)
 				e.emitTaskFailed(task, err, claimedAt)
 				e.notifyFailure(ctx, task, err)
 				e.finishTask(task)
@@ -240,9 +241,17 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		// 也让三个后台动作的状态守卫成立。拿不到行就跳过执行 —— 原因不止一种：
 		// 运营已经动过它（标失败/删除），或同一行的另一份副本（后台「加急」会另投一份）先认领了。
 		claimed, err := e.claimTask(task)
-		if err != nil {
+		for err != nil {
 			e.loggerSet.Engine.Errorf("claim task %d: %s", task.ID, err.Error())
-		} else if !claimed {
+			select {
+			case <-ctx.Done():
+				e.requestPendingRecovery(task)
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+			claimed, err = e.reconcileClaim(task)
+		}
+		if !claimed {
 			e.loggerSet.Engine.Debugf("task %d 已被认领或改动（不再是待处理），跳过本次执行", task.ID)
 			return nil
 		}
@@ -281,7 +290,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			}
 			err := e.runAttempt(ctx, info.fetcher, task, attempt)
 			if err == nil {
-				task.UpdateStatus(e.db, models.TaskStatusSuccess, nil)
+				if !e.settleTask(ctx, task, models.TaskStatusSuccess, nil) {
+					return ctx.Err()
+				}
 				e.emit(events.Event{
 					Type: events.TypeTaskFinished, Site: task.Site, Stage: task.Stage,
 					TaskID: uint(task.ID), Outcome: "success", Attempt: attempt,
@@ -310,7 +321,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			}
 			// 不可重试的错误：直接标 failed，不再空转重试
 			if !Retryable(err) {
-				task.UpdateStatus(e.db, models.TaskStatusFailed, err)
+				if !e.settleTask(ctx, task, models.TaskStatusFailed, err) {
+					return ctx.Err()
+				}
 				e.emitTaskFailed(task, err, claimedAt)
 				e.notifyFailure(ctx, task, err)
 				e.finishTask(task)
@@ -325,7 +338,9 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 			return ctxErr
 		}
 		// 所有重试失败：记录错误并更新状态为 failed
-		task.UpdateStatus(e.db, models.TaskStatusFailed, lastErr)
+		if !e.settleTask(ctx, task, models.TaskStatusFailed, lastErr) {
+			return ctx.Err()
+		}
 		e.emitTaskFailed(task, lastErr, claimedAt)
 		e.notifyFailure(ctx, task, lastErr)
 		e.finishTask(task)
@@ -337,7 +352,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 // 调用方须保证 key（`core.StageKey`，不是裸阶段名）已注册。
 func (e *Engine) buildPool(key string, info *stageInfo) *workerpool.WorkerPool[*Task] {
 	cfg := info.config
-	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize, e.cfg.Crawler.QueueWatermark)
+	pool := workerpool.NewWorkerPool[*Task](cfg.WorkerCount, cfg.QueueSize)
 	// 闸门绑**这个池自己的 scope**（站点 + 阶段）：它问的是暂停信号，所以"整站暂停"与
 	// "某个阶段暂停"由同一个适配器回答，不需要在池子上串两道闸。
 	// 必须在 Start 之前：worker 直接读这个字段，Start 之后再设就是数据竞争。
@@ -474,6 +489,9 @@ func (e *Engine) startIdleReaper() {
 
 // ApplyRegisterStage 启用注册业务流程开启对应工作池
 func (e *Engine) ApplyRegisterStage() {
+	if err := e.validateStageFlows(); err != nil {
+		panic(err)
+	}
 	// 阶段的存在性只有一个来源：**注册进来的 e.stages**（配置里不再声明阶段，见 App.RegisterSites）。
 	// 于是"配置声明了、代码没实现"这一类不同源的问题在结构上不存在了；未注册的阶段在提交时
 	// 由 submitToPool 报 ErrStageNotRegistered。
@@ -498,7 +516,10 @@ func (e *Engine) ApplyRegisterStage() {
 
 	// **先闸住、再投入口任务**（顺序是硬的）：声明了 StartPaused 的站，这一刻整站被暂停 ——
 	// 反过来的话，投进去的头几条可能在"闸还没下"的那个窗口里被 worker 抢去跑掉。
-	// 闸住之后入队点直接折回溢出表、池子一个都不建（见 applyStartPaused）。
+	// 闸住之后新任务只保留数据库 pending、池子一个都不建（见 applyStartPaused）。
+	if err := e.preparePendingRecovery(); err != nil {
+		panic(err)
+	}
 	e.applyStartPaused()
 	for _, key := range keys {
 		info := e.stages[key]
@@ -507,8 +528,8 @@ func (e *Engine) ApplyRegisterStage() {
 		}
 	}
 
-	// 启动高水位溢出任务的回灌协程
-	e.startDrain()
+	// 启动按阶段独立的持久化待投递恢复协程
+	e.startPendingRecovery()
 	// 启动错误队列后台自动轮询（配了 interval 才自动，否则仅手动触发）
 	e.startErrorQueue()
 	// 启动中断恢复队列（启动即恢复一次，没有定时轮询）
@@ -584,6 +605,8 @@ func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, at
 		tr.Step(traceUrgentStep, nil)
 	}
 
+	ctx, releaseExecution := e.bindTaskExecution(ctx, task)
+	defer releaseExecution()
 	err = fetcher.FetchHandler(ctx, task, e)
 	tr.setResult(err)
 	return err

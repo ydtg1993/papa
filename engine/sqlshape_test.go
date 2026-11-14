@@ -3,6 +3,7 @@ package engine
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/driver/mysql"
@@ -24,10 +25,10 @@ import (
 func TestReservedWordColumnsAreQuotedInRawSQL(t *testing.T) {
 	db := dryRunMySQL(t)
 
-	t.Run("提交可轮询任务：repeat 自增", func(t *testing.T) {
+	t.Run("重置可轮询任务：repeat 自增", func(t *testing.T) {
 		sql := renderSQL(t, db, func(tx *gorm.DB) *gorm.DB {
 			return tx.Model(&models.CrawlerTask{}).Where("id = ?", 1).
-				Updates(submitUpdates(&Task{ID: 1, Repeatable: true}))
+				Updates(repeatResetUpdates(time.Hour))
 		})
 		if !strings.Contains(sql, "`repeat`=`repeat` + 1") {
 			t.Errorf("`repeat` 是保留字，裸写会 1064；拼出来应当是带引号的：%s", sql)

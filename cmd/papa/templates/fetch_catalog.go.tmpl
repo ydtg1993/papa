@@ -25,14 +25,14 @@ func (f *FetchCatalog) GetStage() string { return "catalog" }
 // site 是本站声明（internal/sites/{{.Project}}.go）的快照：BaseURL / Headers 都在里面 ——
 // 入口路由（"要抓哪些分类"）是本站业务逻辑，就写在这个文件里，不放站点声明。
 func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
-	if err := engine.SubmitTask(&papa.Task{
+	if err := engine.SubmitEntryTask(&papa.Task{
 		PID: 0,
 		// 起始 URL：根地址取自站点声明。任务里放什么都行（列表页、详情页、API 地址……）；
 		// 分类多于一个时，在本文件顶部声明一张包级路由表（`var catalogRoutes = []struct{...}`），
 		// 在这里遍历它 —— 写法见 docs/framework/FETCHER_WRITING_GUIDE.md「如何驱动任务」的初始任务示例。
 		URL:   strings.TrimRight(site.BaseURL, "/") + "/list",
 		Stage: "catalog",
-		// Site 必填：任务按「站点 + 阶段」找池子，空着 SubmitTask 直接拒收
+		// Site 必填：任务按「站点 + 阶段」找池子，空着 SubmitEntryTask 直接拒收
 		//（日志里只会留一句 "task stage or url or site is empty"，入口任务一条都进不来）。
 		Site: site.Key,
 		// Repeatable: true = 该任务会被「周期轮询」（到时重新抓取、发现新内容）。
@@ -42,7 +42,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 		Repeatable: true,
 		// RepeatInterval: 10 * time.Minute,
 	}); err != nil {
-		// SubmitTask 自带结构化日志；这里只补一句"入口没投进去"，然后就此打住。
+		// SubmitEntryTask 自带结构化日志；这里只补一句"入口没投进去"，然后就此打住。
 		engine.GetLoggerSet().Engine.Errorf("submit initial task: %s", err.Error())
 	}
 }
@@ -71,8 +71,8 @@ func (f *FetchCatalog) FetchHandler(ctx context.Context, task *papa.Task, engine
 	//   items := page.Selection().Find("article")
 	//   if items.Length() == 0 { return papa.WrapNoRetryKind("structure", fmt.Errorf("列表页没有条目：%s", page.URL)) }
 
-	// TODO: 遍历列表项，提取标题和详情链接，然后派发子任务：
-	// engine.SubmitTask(&papa.Task{PID: task.ID, URL: detailURL, Stage: "detail", Site: task.Site})
+	// 扩展详情阶段时，先声明 Downstream: []string{"detail"}，再使用
+	// engine.SubmitChildren(ctx, task, children...)；分页在本 handler 内迭代。
 
 	return nil
 }

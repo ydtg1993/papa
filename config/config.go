@@ -21,7 +21,7 @@ type Config struct {
 	// 这里只放**通用**的运行数据；业务指标与业务阈值属于业务仓库，不进框架配置。
 	Obs ObsConfig `mapstructure:"obs"`
 	// 三个治理队列都是**全局**一段：error_queue（失败重投，定期轮询）、recover_queue（启动恢复，
-	// 只在启动跑一次）、repeat_queue（周期轮询，定期轮询）。缺省（没写这段）= 那条队列不跑。
+	// 及运行期按阶段恢复）、repeat_queue（周期轮询）。恢复始终启用，另两者由 enabled 控制。
 	ErrorQueue   ErrorQueueConfig   `mapstructure:"error_queue"`
 	RecoverQueue RecoverQueueConfig `mapstructure:"recover_queue"`
 	RepeatQueue  RepeatQueueConfig  `mapstructure:"repeat_queue"`
@@ -50,21 +50,10 @@ type ErrorQueueConfig struct {
 	BatchSize   int           `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
 }
 
-// RecoverQueueConfig 启动恢复：config.yaml 的 `recover_queue` 段。
-//
-// 它只做一件事：**进程启动时**把「未到终态」的任务（pending/processing）全部重新入队，
-// **只在启动跑一次**（没有周期、没有手动入口，见 docs/RECOVER_QUEUE.md）。
+// RecoverQueueConfig controls durable pending recovery scan size.
+// Recovery is mandatory; each registered stage has an independent bounded scan.
 type RecoverQueueConfig struct {
-	Enabled     bool `mapstructure:"enabled"`      // 有没有启动恢复（false 或没写 = 不跑）
-	WorkerCount int  `mapstructure:"worker_count"` // 并发重新入队的数量（开启时必填 > 0）
-	BatchSize   int  `mapstructure:"batch_size"`   // 每批查询处理的任务数；0 = 默认 1000（分页流式，避免一次性全量加载）
-	// BatchPause 批间停顿：每处理完一批「可能还有下一批」的任务后停多久再继续。
-	//
-	// 默认 30m（见 applyDefaults）：启动恢复面对的是海量积压，一次性把几千条任务灌进各阶段队列
-	// 会把队列/溢出表/事件流同时打满；批间停顿把恢复摊到多个时间片里，让 worker 先消化一批。
-	// 停机信号（Engine.Stop 的 cancel）能立刻打断停顿，不会把优雅关停卡满 30 分钟。
-	// 写 0 或不写 = 默认 30m；要连续跑完请写很小的值（如 "1ms"）——默认值只在 0 时补，不提供"关掉"的开关。
-	BatchPause time.Duration `mapstructure:"batch_pause"`
+	BatchSize int `mapstructure:"batch_size"` // 每阶段持久化恢复查询批量；0=100，最多1000。
 }
 
 // RepeatQueueConfig 周期轮询队列：config.yaml 的 `repeat_queue` 段。
@@ -164,8 +153,6 @@ type ObsThresholdsConfig struct {
 
 type CrawlerConfig struct {
 	DedupCacheSize   int           `mapstructure:"dedup_cache_size"`   //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-	QueueWatermark   float64       `mapstructure:"queue_watermark"`    //队列高水位比例(0-1)，达到后溢出到 DB；<=0 或 >1 用默认 0.75
-	DrainInterval    time.Duration `mapstructure:"drain_interval"`     //溢出任务回灌间隔；<=0 用默认 2s
 	StopTimeout      time.Duration `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
 	StageIdleTimeout time.Duration `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
 	Trace            TraceConfig   `mapstructure:"trace"`              //单任务步骤追踪

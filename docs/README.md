@@ -46,7 +46,7 @@ cd mycrawler && go mod tidy
 | 把抓到的数据落库 | [DATA_LANDING_GUIDE.md](./DATA_LANDING_GUIDE.md) | 单表+JSON、三条落地路径、API 速查 |
 | 查 / 改某个配置项 | [CORE_CONFIG.md](./CORE_CONFIG.md) | 全部配置项字典、时长格式、站点/阶段声明，以及全局三个治理队列 |
 | 失败任务要重跑 | [ERROR_QUEUE.md](./ERROR_QUEUE.md) | error_queue 配置、自动/手动触发、再处理上限 |
-| 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | recover_queue、启动时重投本进程启动前遗留的未终态任务 |
+| 重启后捡回中断的任务 | [RECOVER_QUEUE.md](./RECOVER_QUEUE.md) | 启动未终态恢复、暂停恢复及已接受任务的持久化投递接管 |
 | 周期轮询 repeatable 任务 | [REPEAT_QUEUE.md](./REPEAT_QUEUE.md) | repeat_queue、到点才重投（周期可逐条定、后台可改） |
 | **加一个站 / 管多个站点**（站点维度都有什么） | [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §7、[DEVELOPMENT.md](./DEVELOPMENT.md) §7 | 一站一个文件（自登记）、站点键必填、阶段名按站点作用域（两个站可以同名）、站点级请求头/熔断/下载器；三个治理队列有意留在全局 |
 | 用监控后台 / 调它的 API / 挂自己的接口 | [MONITOR.md](./MONITOR.md) | Dashboard、设置/表格页/自定义页/自定义路由与中间件/站点 Tab 与队列治理/暂停铃铛/obs 报告/日志 API |

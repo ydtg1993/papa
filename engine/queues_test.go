@@ -56,7 +56,7 @@ func setRows(f *fakeTaskDB, n int, stage string, status models.TaskStatus) {
 // 失败任务的查询条件：只捞 failed；配了 max_retry 时再按 reprocess 代数过滤。
 func TestErrorQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.cfg.ErrorQueue = config.ErrorQueueConfig{MaxRetry: 3}
 
 	e.errorQueueQuery()().Find(&[]models.CrawlerTask{})
@@ -70,7 +70,7 @@ func TestErrorQueueQueryShape(t *testing.T) {
 
 	// MaxRetry=0 表示不限代数 → 不带 reprocess 条件
 	f2 := newFakeTaskDB()
-	e2 := queueEngine(t, f2, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e2 := queueEngine(t, f2, workerpool.NewWorkerPool[*Task](1, 8))
 	e2.errorQueueQuery()().Find(&[]models.CrawlerTask{})
 	if strings.Contains(f2.readSQL(), "reprocess < ?") {
 		t.Fatalf("max_retry=0 表示不限，不该有 reprocess 条件：\n%s", f2.readSQL())
@@ -81,7 +81,7 @@ func TestErrorQueueQueryShape(t *testing.T) {
 func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 	f := newFakeTaskDB()
 	setRows(f, 3, "stub", models.TaskStatusFailed)
-	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 16)
 	e := queueEngine(t, f, pool)
 	e.cfg.ErrorQueue = config.ErrorQueueConfig{BatchSize: 10, WorkerCount: 2}
 
@@ -94,6 +94,12 @@ func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 	}
 	if got := e.errorQueue.retried.Load(); got != 3 {
 		t.Fatalf("累计重投计数 = %d, want 3", got)
+	}
+	for _, r := range f.rows {
+		r["status"] = int64(models.TaskStatusPending)
+	}
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
 	main, urgent := pool.QueueDepths()
 	if main+urgent != 3 {
@@ -125,7 +131,7 @@ func TestProcessErrorQueueRequeuesFailedTasks(t *testing.T) {
 // 且**不该**把行标成失败 —— 否则版本升级时一批历史行会被无端改坏。
 func TestRequeueFailedTaskSkipsUnregisteredStage(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
@@ -144,7 +150,7 @@ func TestRequeueFailedTaskSkipsUnregisteredStage(t *testing.T) {
 // 本站那个阶段、投到错误的池子里（两个站各有 catalog 时这是最容易踩的一种）。
 func TestRequeueFailedTaskSkipsRowFromAnotherSite(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool) // 夹具里注册的是 stub:stub
 
 	row := actionRow(4, "stub")
@@ -164,87 +170,55 @@ func TestRequeueFailedTaskSkipsRowFromAnotherSite(t *testing.T) {
 // 重新投递失败时，必须把行标成 failed 并写下原因。
 // 上面刚把行重置成 pending，不管的话本队列（只捞 failed）再也捞不到它 ——
 // 运营看着是"排队中"，实际早就没人会执行。
-func TestRequeueFailedTaskMarksRowWhenSubmitFails(t *testing.T) {
+func TestRequeueFailedTaskLeavesPendingForDurableRecovery(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	pool.Stop(0) // 停掉，让 Submit 必然失败
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
+	pool.Stop(0)
 	e := queueEngine(t, f, pool)
-
-	row := actionRow(3, "stub")
-	if e.requeueFailedTask()(row) {
-		t.Fatal("投递失败应返回 false")
+	if !e.requeueFailedTask()(actionRow(3, "stub")) {
+		t.Fatal("persisted reset should be accepted independently of pool")
 	}
-	if got := e.errorQueue.retried.Load(); got != 0 {
-		t.Fatalf("没投成功不该计数，实得 %d", got)
+	if e.errorQueue.retried.Load() != 1 || len(e.deliveryState().Notifications(stubKey)) != 1 {
+		t.Fatal("reset lost recovery notification")
 	}
-
-	writes := f.written()
-	if !strings.Contains(writes, "status <> ?") {
-		t.Fatalf("标记失败应带 `status <> failed` 守卫（免得重复贴一行原因）：\n%s", writes)
-	}
-	if !strings.Contains(f.writtenArgs(), QueueError) {
-		t.Fatalf("原因里应写明是哪条队列写的：%s", f.writtenArgs())
+	if strings.Contains(f.written(), "CONCAT") {
+		t.Fatal("pool availability must not mark task failed")
 	}
 }
 
-/* ---------- 启动恢复（recover_queue） ---------- */
-
-// 恢复集合是「未到终态」（pending / processing）**且写于本进程启动之前**：
-// 「启动那一刻的 processing 都是上一次留下的孤儿」这句只在**进程刚起的那一瞬**成立 ——
-// 启动流程会先起 worker、再跑入口回调投任务，那些任务毫秒内就被认领成 processing（正在本进程里跑），
-// 所以判据必须排除"本进程碰过的行"（updated_at 晚于 startedAt）。
 func TestRecoverQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.recoverQueueQuery()().Find(&[]models.CrawlerTask{})
-	read := f.readSQL()
-	if !strings.Contains(read, "status IN") {
-		t.Fatalf("应按 status IN (pending, processing) 捞：%s", read)
-	}
-	// **这条断言与"当年被删掉的那条启发式"不是一回事**（别照着旧注释把它删了）：
-	//   - 旧的是「updated_at 早于 now-6h」：猜一个时长 —— 崩溃前几分钟认领的孤儿捞不到、
-	//     跑得久的任务又被误判成卡死重投；
-	//   - 现在是「updated_at < 本进程启动时刻」：**关于本进程的事实** —— 本进程认领/改过的行
-	//     updated_at 必然晚于启动时刻，于是"正在跑的行"自动排除，上次运行留下的孤儿照捞。
-	//     没有它，启动期入口回调刚投出去、刚被 worker 认领的那批任务会被重投一遍（同一行并发跑两遍）。
-	if !strings.Contains(read, "updated_at <") {
-		t.Fatalf("应按 updated_at < 本进程启动时刻 排除本进程正在跑的行：%s", read)
+	if sql := f.readSQL(); !strings.Contains(sql, "status =") || strings.Contains(sql, "updated_at") {
+		t.Fatalf("recovery must use durable pending state, got %s", sql)
 	}
 }
 
-func TestRequeueRecoverTaskResubmits(t *testing.T) {
+func TestStartupProcessingResetPrecedesPendingDelivery(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
-
+	if err := e.preparePendingRecovery(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.written(), "WHERE status = ?") {
+		t.Fatal("startup reset must be conditional on processing")
+	}
 	row := actionRow(7, "stub")
-	row.Status = models.TaskStatusProcessing
-
-	if !e.requeueRecoverTask(row) {
-		t.Fatal("已注册的阶段应当恢复成功")
-	}
-	if got := e.recoveredCount.Load(); got != 1 {
-		t.Fatalf("恢复计数 = %d, want 1", got)
-	}
-	if main, urgent := pool.QueueDepths(); urgent != 1 || main != 0 {
-		t.Fatalf("恢复的任务应走加急快车道，实得 main/urgent = %d/%d", main, urgent)
-	}
-	// 恢复的 Repeatable 照抄行上的值（丢了会让轮询任务恢复后不再参与周期轮询）；Urgent 显式置真
-	writes := f.written()
-	if !strings.Contains(writes, "`status`") {
-		t.Fatalf("应先把行重置为 pending：\n%s", writes)
+	row.Status = models.TaskStatusPending
+	if !e.requeueRecoverTask(row) || queued(t, pool) != 1 {
+		t.Fatal("reset pending task was not delivered")
 	}
 }
 
-// 恢复前必须把 key 从内存去重表里剔掉：不剔的话 SubmitTask 第一道
-// dedupCache.Get 就命中，非轮询任务直接 return nil —— 队列根本没进。
 func TestRequeueRecoverTaskClearsDedupCache(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(7, "stub")
+	row.Status = models.TaskStatusPending
 	key := (&Task{Stage: "stub", Site: row.Site, URL: row.URL}).Unique()
 	e.dedupCache.Add(key)
 
@@ -256,11 +230,10 @@ func TestRequeueRecoverTaskClearsDedupCache(t *testing.T) {
 	}
 }
 
-// 行本来就是 pending（上次被 StartPaused/高水位折回溢出表留下的那批）→ 恢复不写库、不查库，
 // 直接放回内存队列。这是启动恢复最常见的形态：再重置/再写 pending 只会刷新 updated_at。
 func TestRequeueRecoverTaskPendingRowSkipsDB(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(7, "stub")
@@ -278,14 +251,14 @@ func TestRequeueRecoverTaskPendingRowSkipsDB(t *testing.T) {
 	if got := f.readSQL(); got != "" {
 		t.Fatalf("不该再走 SubmitTask 的去重查库：\n%s", got)
 	}
-	if main, urgent := pool.QueueDepths(); urgent != 1 || main != 0 {
-		t.Fatalf("恢复的任务应走加急快车道，实得 main/urgent = %d/%d", main, urgent)
+	if main, urgent := pool.QueueDepths(); main != 1 || urgent != 0 {
+		t.Fatalf("普通 pending 恢复应保留原优先级，实得 main/urgent = %d/%d", main, urgent)
 	}
 }
 
 func TestRequeueRecoverTaskSkipsUnregisteredStage(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
@@ -297,73 +270,54 @@ func TestRequeueRecoverTaskSkipsUnregisteredStage(t *testing.T) {
 	}
 }
 
-// 启动恢复最常见的一批是「上次 StartPaused/高水位留下的 pending」：这类行状态本来就对，
+// 启动恢复最常见的一批是「上次暂停或中断投递留下的 pending」：这类行状态本来就对，
 // 恢复只该把它们放回内存队列，**一条 SQL 的写都不该有**（这是启动恢复从 ~500 条 SQL 降下来的主因）。
 func TestProcessRecoverQueuePendingRowsAreReadOnly(t *testing.T) {
 	f := newFakeTaskDB()
 	setRows(f, 120, "stub", models.TaskStatusPending)
-	pool := workerpool.NewWorkerPool[*Task](1, 256, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 256)
 	e := queueEngine(t, f, pool)
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 100, WorkerCount: 4}
-
-	n, err := e.ProcessRecoverQueue()
-	if err != nil {
-		t.Fatalf("ProcessRecoverQueue = %v", err)
+	if _, err := e.ProcessRecoverQueue(); err != nil {
+		t.Fatal(err)
 	}
-	if n != 120 {
-		t.Fatalf("应恢复 120 条，实得 %d", n)
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
-	if got := e.recoveredCount.Load(); got != 120 {
-		t.Fatalf("恢复计数 = %d, want 120", got)
-	}
-	if got := f.written(); got != "" {
-		t.Fatalf("pending 行的恢复不该写库：\n%s", got)
-	}
-	if main, urgent := pool.QueueDepths(); main+urgent != 120 {
-		t.Fatalf("应入队 120 条，实得 %d", main+urgent)
+	if f.written() != "" || queued(t, pool) != 120 {
+		t.Fatalf("pending recovery writes=%s queued=%d", f.written(), queued(t, pool))
 	}
 }
 
-func TestProcessRecoverQueueProcessesAllActive(t *testing.T) {
+func TestProcessRecoverQueueDoesNotResetLiveProcessing(t *testing.T) {
 	f := newFakeTaskDB()
 	setRows(f, 2, "stub", models.TaskStatusProcessing)
-	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 16)
 	e := queueEngine(t, f, pool)
-	// 站点级 enabled 是执行前的闸门（不写 = 跟全局）：这里显式开着
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
-
-	n, err := e.ProcessRecoverQueue()
-	if err != nil {
-		t.Fatalf("ProcessRecoverQueue = %v", err)
+	if _, err := e.ProcessRecoverQueue(); err != nil {
+		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("应恢复 2 条，实得 %d", n)
+	if err := e.recoverPendingStage(stubKey); err != nil {
+		t.Fatal(err)
 	}
-	if got := e.recoveredCount.Load(); got != 2 {
-		t.Fatalf("恢复计数 = %d, want 2", got)
+	if f.written() != "" || queued(t, pool) != 0 {
+		t.Fatal("runtime recovery reset or duplicated processing tasks")
 	}
 }
 
-// 恢复没开时不该起协程、也不该捞任何东西。
-func TestStartRecoverQueueDisabled(t *testing.T) {
+func TestPendingRecoveryRemainsAvailableWithLegacyRecoverQueueDisabled(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: false}
-
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{}
 	e.startRecoverQueue()
-	if got := e.recoveredCount.Load(); got != 0 {
-		t.Fatalf("关掉后不该恢复任何任务，实得 %d", got)
-	}
+	waitQueueDepth(t, pool, 1)
+	e.cancel()
+	e.tickerWG.Wait()
 }
 
-/* ---------- 周期轮询（repeat_queue） ---------- */
-
-// 轮询集合：已完成的（success/failed）repeatable 任务。
-// 不碰还在 pending/processing 的 —— 那些归 recover_queue，免得双入队。
 func TestRepeatQueueQueryShape(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	e.repeatQueueQuery()().Find(&[]models.CrawlerTask{})
 	read := f.readSQL()
@@ -385,7 +339,7 @@ func TestRepeatQueueQueryShape(t *testing.T) {
 
 func TestRequeueRepeatTaskResubmits(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(7, "stub")
@@ -397,8 +351,11 @@ func TestRequeueRepeatTaskResubmits(t *testing.T) {
 	if got := e.repeatRepolledTotal(); got != 1 {
 		t.Fatalf("轮询重投计数 = %d, want 1", got)
 	}
-	if main, urgent := pool.QueueDepths(); main+urgent != 1 {
-		t.Fatalf("应入队 1 条，实得 %d", main+urgent)
+	if got := len(e.deliveryState().Notifications(stubKey)); got != 1 {
+		t.Fatal("repeat reset must signal durable recovery")
+	}
+	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
+		t.Fatalf("重置阶段不直接阻塞投递，实得 %d", main+urgent)
 	}
 	// 轮询代数要 +1（后台「轮询次数」列看的就是它）
 	if !strings.Contains(f.written(), "`repeat`") {
@@ -412,7 +369,7 @@ func TestRequeueRepeatTaskResubmits(t *testing.T) {
 
 func TestRequeueRepeatTaskSkipsUnregisteredStage(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(3, "ghost")
@@ -477,7 +434,7 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 			if tc.failQ {
 				f.failQueries = 1
 			}
-			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+			e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 			e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: tc.enabled, Interval: tc.global}
 
 			got := e.repeatTickInterval()
@@ -493,7 +450,7 @@ func TestRepeatTickIntervalFollowsSoonestDue(t *testing.T) {
 func TestRequeueRepeatTaskSkipsWhenStopped(t *testing.T) {
 	f := newFakeTaskDB()
 	f.affected = 0 // 重置匹配不到行
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	if e.requeueRepeatTask()(actionRow(7, "stub")) {
@@ -516,7 +473,7 @@ func TestRequeueRepeatTaskSkipsWhenStopped(t *testing.T) {
 // ② 重投前的条件重置在"已不可轮询"时 0 行 → 跳过。
 func TestRepeatableFlagDrivesPolling(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 16)
 	e := queueEngine(t, f, pool)
 	e.cfg.RepeatQueue = config.RepeatQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
 
@@ -561,7 +518,7 @@ func TestRepeatableFlagDrivesPolling(t *testing.T) {
 func TestRepollRepeatableTasksProcessesAll(t *testing.T) {
 	f := newFakeTaskDB()
 	setRows(f, 2, "stub", models.TaskStatusSuccess)
-	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 16)
 	e := queueEngine(t, f, pool)
 	e.cfg.RepeatQueue = config.RepeatQueueConfig{BatchSize: 10, WorkerCount: 2}
 
@@ -585,7 +542,7 @@ func TestRepollRepeatableTasksProcessesAll(t *testing.T) {
 // 把删掉的任务重新插回来，或把已终态的行翻回 pending 再跑一遍。
 func TestRequeueRecoverTaskSkipsChangedRows(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(7, "stub")
@@ -605,21 +562,14 @@ func TestRequeueRecoverTaskSkipsChangedRows(t *testing.T) {
 	if main, urgent := pool.QueueDepths(); main+urgent != 0 {
 		t.Fatalf("跳过的不该入队，实得 %d", main+urgent)
 	}
-	// 守卫必须写在语句里（列名带引号那套同理：判据留给库，不拿到 Go 里比）
-	sql := f.written()
-	for _, want := range []string{"status IN"} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("重置语句里缺少守卫 %q：\n%s", want, sql)
-		}
+	if f.written() != "" {
+		t.Fatal("runtime recovery must never reset live processing rows")
 	}
 }
 
-// 错误队列的重置也要带 status 守卫：批次 SELECT 与这次重置之间，轮询队列可能已经把这一行捞走
-// 并重投（一条 repeatable + failed 的行同时命中两个队列，两者各自有锁）—— 那一份正在跑，
-// 而无条件 UPDATE 会把它改回 pending 再投一份 → 同一行被两个 worker 并发执行。
 func TestRequeueFailedTaskSkipsRowsNoLongerFailed(t *testing.T) {
 	f := newFakeTaskDB()
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	row := actionRow(5, "stub")
@@ -634,7 +584,7 @@ func TestRequeueFailedTaskSkipsRowsNoLongerFailed(t *testing.T) {
 
 	// 行为：条件没匹配上（轮询队列刚把它捞走了）→ 跳过，不计数也不投递
 	f2 := newFakeTaskDB()
-	pool2 := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool2 := workerpool.NewWorkerPool[*Task](1, 8)
 	e2 := queueEngine(t, f2, pool2)
 	f2.mu.Lock()
 	f2.affected = 0
@@ -650,57 +600,18 @@ func TestRequeueFailedTaskSkipsRowsNoLongerFailed(t *testing.T) {
 	}
 }
 
-// 队列到高水位（ErrQueueFull）时**不能**把这行标成终态失败：重置已经烧掉一代 reprocess，
-// 标失败 + 三轮之后它永久不再被错误队列捞起（"自动重投"静默失效）。
-// 与其它三条投递路径一致：保持 pending + 溢出留库，由 drain 回灌。
-func TestRequeueFailedTaskSpillsInsteadOfFailingOnQueueFull(t *testing.T) {
-	f := newFakeTaskDB()
-	// 队列容量 1、水位 1：先塞满，再投就一定 ErrQueueFull（池子不 Start，没人消费）
-	pool := workerpool.NewWorkerPool[*Task](1, 1, 1)
-	e := queueEngine(t, f, pool)
-	if err := pool.Submit(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/filler"}); err != nil {
-		t.Fatalf("先把队列塞满：%v", err)
-	}
-
-	row := actionRow(9, "stub")
-	row.Status = models.TaskStatusFailed
-	if !e.requeueFailedTask()(row) {
-		t.Fatal("溢出留库算投递成功（drain 会回灌），不该报失败")
-	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("应当计一次溢出，实得 %d", got)
-	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应当进溢出列表等 drain 回灌，实得 %d", got)
-	}
-	if writes := f.written(); strings.Contains(writes, "重新投递失败") {
-		t.Fatalf("队列满不等于重投失败，不该把这行标成终态失败：\n%s", writes)
-	}
-	if got := e.errorQueue.retried.Load(); got != 1 {
-		t.Fatalf("溢出留库应当照样计数（它确实被重投了），实得 %d", got)
-	}
-}
-
-// 回灌/采样/清理/延迟投递这几条后台协程以前**没进 tickerWG**：Stop 可能在它们某一跳还在写库时就
-// 返回，调用方随即关库 —— 那一跳的写入会撞 "database is closed"（spill 那条还会把读错误吞成
-// "重新塞回溢出列表"、submitToPool 的 UPDATE 错误本来就不检查），或者把从未执行过的行标成 failed。
-//
-// **诚实说清这条测试的分量**：它钉的是不变式"Stop 返回后没人再写库"（与 TestStopWaitsForTickers 同款），
-// 不是"撤掉修复立刻红"的复现 —— 不修也只是**竞态窗口**（goroutine 通常在 Stop 返回的几微秒后自己退出），
-// 不是必现。真正的结构保证是那五处都走 `tickerWG.Add/Done`。
+// Stop 必须等待阶段恢复等后台循环结束，不能仅因 worker 空闲就报告排空。
 func TestStopWaitsForBackgroundLoops(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
-	e.cfg.Crawler.DrainInterval = 20 * time.Millisecond
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	// worker 要真起：池子里压着没跑完的任务时 Stop 不该报"排空"（那是另一条契约）
 	e.pools.get("stub:stub").Start(e.ctx, func(context.Context, *Task) error { return nil })
-	// 塞一条溢出任务：回灌每一跳都会把它重新投一次（submitToPool 会写 status=pending）
-	e.spillTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/spilled"})
-	e.startDrain()
+	e.requestPendingRecovery(&Task{Stage: "stub", Site: "stub"})
+	e.startPendingRecovery()
 
 	time.Sleep(80 * time.Millisecond) // 至少跑过一轮
 	if drained, _ := e.Stop(time.Second); !drained {
-		t.Fatal("Stop 应当把回灌协程也算进「排空」")
+		t.Fatal("Stop 必须等待持久化恢复协程退出")
 	}
 	before := f.written()
 	time.Sleep(120 * time.Millisecond)
@@ -715,18 +626,21 @@ func TestStopWaitsForBackgroundLoops(t *testing.T) {
 func TestStopWaitsForStartupRecover(t *testing.T) {
 	f := newFakeTaskDB()
 	setRows(f, 1, "stub", models.TaskStatusProcessing)
-	pool := workerpool.NewWorkerPool[*Task](1, 16, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 16)
 	e := queueEngine(t, f, pool)
-	e.cfg.RecoverQueue = config.RecoverQueueConfig{Enabled: true, BatchSize: 10, WorkerCount: 1}
+	e.cfg.RecoverQueue = config.RecoverQueueConfig{BatchSize: 10}
 
 	release := make(chan struct{})
+	entered := make(chan struct{})
 	f.onQuery = func(n int) {
 		if n == 1 {
+			close(entered)
 			<-release
 		}
 	}
 
 	e.startRecoverQueue()
+	<-entered
 
 	stopped := make(chan struct{})
 	go func() {

@@ -26,12 +26,15 @@ const (
 )
 
 type CrawlerTask struct {
+	// NotBefore persists delayed admission across pause and process restart.
+	NotBefore *time.Time `gorm:"comment:最早投递时刻"`
+
 	ID  uint `gorm:"primarykey;comment:任务ID"`
 	PID uint `gorm:"index;type:int(11);default:0;comment:父级任务ID"`
 	// Stage 阶段名（fetcher 的 GetStage() 原值，**不带站点前缀**）。只在本站内唯一 ——
 	// 两个站可以各有自己的 catalog，所以它与 Site 一起才构成"哪个阶段"，唯一索引三者都带。
-	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_site_stage_url_hash,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`
-	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_site_stage_url_hash,priority:3;comment:所属站点(站点声明的 Key，必填；没有未归属那一档)"`
+	Stage string `gorm:"type:varchar(128);not null;index;uniqueIndex:idx_site_stage_url_hash,priority:2;index:idx_task_delivery,priority:2;comment:所属阶段(例如catalog/detail等；只在本站内唯一)"`
+	Site  string `gorm:"type:varchar(128);index;uniqueIndex:idx_site_stage_url_hash,priority:3;index:idx_task_delivery,priority:1;comment:所属站点(站点声明的 Key，必填；没有未归属那一档)"`
 	// URL 任务 URL。**不建索引，也不限长度**：整串进唯一索引会撞 InnoDB 的键长上限
 	//（utf8mb4 下 3072 字节 ≈ 768 字符），而带一串 query 的 URL 很容易更长。
 	URL string `gorm:"type:text;not null;comment:任务URL"`
@@ -57,7 +60,7 @@ type CrawlerTask struct {
 	//     都只按 status 过滤，复合索引 leading 不是 status 时用不上，数据量大后会退化成全表扫描。
 	// gorm 允许同一字段写多个 `index:` tag（schema.ParseIndexes 会解析出两条；别被 TagSettings
 	// map 只留最后一个值误导 —— parseFieldIndexes 读的是原始 tag）。
-	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;comment:0:待处理 1:处理中 2:成功 3:失败"`
+	Status     TaskStatus       `gorm:"default:0;index:idx_repeat_due,priority:2;index:idx_task_status;index:idx_task_delivery,priority:3;comment:0:待处理 1:处理中 2:成功 3:失败"`
 	Repeatable RepeatableStatus `gorm:"type:tinyint(1);default:0;index:idx_repeat_due,priority:1;comment:支持重试 0:不能 1:可以"`
 	Repeat     int              `gorm:"type:int(11);default:0;comment:轮询重试次数"`
 	// RepeatInterval 这条任务自己的轮询周期（秒）；0 = 用本站 RepeatQueue 的 Interval。

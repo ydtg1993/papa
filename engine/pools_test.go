@@ -10,8 +10,8 @@ import (
 // 空闲回收：lastSubmit 超了 idle 且空着 → 回收；队列非空 → 不回收。
 func TestPoolRegistryReapIdle(t *testing.T) {
 	r := newPoolRegistry()
-	idlePool := workerpool.NewWorkerPool[*Task](1, 8, 1)
-	busyPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	idlePool := workerpool.NewWorkerPool[*Task](1, 8)
+	busyPool := workerpool.NewWorkerPool[*Task](1, 8)
 	r.set("idle", idlePool)
 	r.set("busy", busyPool)
 	// busy 池里压着一条任务（队列非空）
@@ -39,7 +39,7 @@ func TestPoolRegistryReapIdle(t *testing.T) {
 func TestPoolRegistryGetOrCreateRefreshesLastSubmit(t *testing.T) {
 	r := newPoolRegistry()
 	mk := func() *workerpool.WorkerPool[*Task] {
-		return workerpool.NewWorkerPool[*Task](1, 8, 1)
+		return workerpool.NewWorkerPool[*Task](1, 8)
 	}
 	r.getOrCreate("s", mk)
 	if r.lastSubmit["s"].IsZero() {
@@ -58,10 +58,9 @@ func TestPoolRegistryGetOrCreateRefreshesLastSubmit(t *testing.T) {
 //
 // 这是 F-01 的结构性收口 —— 置位与取快照分开做的话，两步之间进来的投递会建出一个
 // 既不在快照里（Stop 不会停它）、又有活 worker 的池；框架自己的收尾协程（deliverDelayed /
-// drainSpilled）恰好就在那个窗口里投递。
 func TestPoolRegistryShutdownRefusesNewPools(t *testing.T) {
 	r := newPoolRegistry()
-	existing := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	existing := workerpool.NewWorkerPool[*Task](1, 8)
 	r.set("stub:stub", existing)
 
 	if r.isStopped() {
@@ -81,7 +80,7 @@ func TestPoolRegistryShutdownRefusesNewPools(t *testing.T) {
 	created := 0
 	if p := r.getOrCreate("other:stage", func() *workerpool.WorkerPool[*Task] {
 		created++
-		return workerpool.NewWorkerPool[*Task](1, 8, 1)
+		return workerpool.NewWorkerPool[*Task](1, 8)
 	}); p != nil {
 		t.Fatalf("停机之后不该再建池，实得 %v", p)
 	}

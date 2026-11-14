@@ -28,13 +28,14 @@ import (
 type fakeTaskDB struct {
 	mu sync.Mutex
 
-	row      fakeRow  // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
-	noRows   bool     // true 时 SELECT 返回空结果集（模拟行不存在）
-	affected int64    // UPDATE 的 RowsAffected，用来模拟条件没匹配上
-	failNext int      // 让接下来的 N 次写失败（模拟批量插入撞唯一索引等）
-	execs    []string // 执行过的写语句
-	args     [][]driver.Value
-	queries  []string
+	row          fakeRow  // 当前那一行（按列名）；配合 noRows 决定是"有一行"还是"查不到"
+	noRows       bool     // true 时 SELECT 返回空结果集（模拟行不存在）
+	affected     int64    // UPDATE 的 RowsAffected，用来模拟条件没匹配上
+	nextInsertID int64    // >0 时 INSERT 分配不同 ID；默认保留历史夹具固定 ID=1
+	failNext     int      // 让接下来的 N 次写失败（模拟批量插入撞唯一索引等）
+	execs        []string // 执行过的写语句
+	args         [][]driver.Value
+	queries      []string
 
 	// rows 多行结果集（测分页用）。非 nil 时取代 row：按 `id > ?` 过滤后返回全部。
 	// **只实现 `id > ?` 这一个条件** —— 够验分页游标，不是通用 SQL 引擎。
@@ -88,6 +89,7 @@ var limitRe = regexp.MustCompile(`(?i)LIMIT\s+(\d+)`)
 // **必须与模型全列一致**：rowValuesOf 只按这个列表取值，漏了新列不报错，
 // 测试里 `f.row["新列"] = ...` 会被静默丢弃、断言照样"通过"。TestFakeTaskColumnsCoverModel 钉住它。
 var fakeTaskColumns = []string{
+	"not_before",
 	"id", "p_id", "stage", "site", "url", "url_hash", "idempotency_key", "idempotency_hash", "meta",
 	"retry", "status", "repeatable", "repeat", "repeat_interval", "next_repeat_at", "last_repeat_at",
 	"reprocess", "urgent", "error", "created_at", "updated_at",
@@ -208,7 +210,12 @@ func (f *fakeTaskDB) exec(q string, args []driver.NamedValue) (driver.Result, er
 		vals[i] = a.Value
 	}
 	f.args = append(f.args, vals)
-	return fakeResult{affected: f.affected}, nil
+	id := int64(1)
+	if f.nextInsertID > 0 && strings.HasPrefix(strings.ToUpper(q), "INSERT INTO") {
+		id = f.nextInsertID
+		f.nextInsertID += int64(1 + strings.Count(q, "),("))
+	}
+	return fakeResult{affected: f.affected, insertID: id}, nil
 }
 
 // rowValues 把一行按 fakeTaskColumns 摊成 driver.Value 切片。
@@ -340,9 +347,17 @@ func (c *fakeConn) QueryContext(_ context.Context, q string, args []driver.Named
 	return c.f.query(q, args)
 }
 
-type fakeResult struct{ affected int64 }
+type fakeResult struct {
+	affected int64
+	insertID int64
+}
 
-func (r fakeResult) LastInsertId() (int64, error) { return 1, nil }
+func (r fakeResult) LastInsertId() (int64, error) {
+	if r.insertID == 0 {
+		return 1, nil
+	}
+	return r.insertID, nil
+}
 func (r fakeResult) RowsAffected() (int64, error) { return r.affected, nil }
 
 type fakeRows struct {

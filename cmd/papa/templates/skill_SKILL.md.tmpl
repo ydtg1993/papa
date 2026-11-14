@@ -64,7 +64,7 @@ A stage name is unique **within its site** — two sites may each declare `catal
 
 A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
 
-Put worker count, queue size, delay, retry, `Entry` (see below), and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
+Put worker count, queue size, delay, retry, `Downstream`, `Entry` (see below), and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
 
 ### 3. Implement task flow deliberately
 
@@ -76,7 +76,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site)
 
 and set its `StageSpec.Entry` to `true` — entry tasks are submitted once at startup. To keep a site from
 running until an operator releases it, declare `SiteSpec.StartPaused: true` instead: entry tasks are still
-submitted (they park in the spill table), and the whole site stays frozen until 「恢复整站」 is clicked on the
+submitted (they remain durable pending tasks), and the whole site stays frozen until 「恢复整站」 is clicked on the
 back-office 「站点控制」 card.
 
 For every submitted task:
@@ -87,7 +87,7 @@ For every submitted task:
 - use a stable `IdempotencyKey` whose meaning agrees with `(stage, URL)` under concurrency;
 - set `Repeatable` only for actual polling tasks;
 - seed `RepeatInterval` only at first creation when a per-task period is wanted;
-- check `SubmitTask`/`SubmitTasks` for control flow, but do not duplicate framework logging.
+- check `SubmitEntryTask`/`SubmitChildren` for control flow, but do not duplicate framework logging.
 
 `Task.Meta` is persisted and restored by recovery, repeat, error-queue, and manual requeue paths. A URL lookup fallback can support old rows or malformed historic tasks, but do not design new task identity around URL encoding.
 
@@ -204,3 +204,6 @@ Before finishing, verify:
 - Assuming file/M3U8 downloaders inherit fetch headers without explicit option propagation.
 - Running `AutoMigrate` on normal startup.
 - Guessing selectors without sample HTML or a reproducible fetch.
+
+
+Entry callbacks use `engine.SubmitEntryTask`, never the legacy `SubmitTask`. Handlers use `engine.SubmitChildren(ctx, task, children...)` with their original context and task. Declare direct downstream stages using `StageSpec.Downstream`; empty means terminal. Self edges, cycles, cross-site and undeclared child edges are rejected. Do not discard ctx to call entry/admin APIs from a handler.

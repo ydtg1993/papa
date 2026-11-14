@@ -13,18 +13,18 @@ import (
 // 后台重投 / 错误队列重投）都走它，所以路由只在这一个地方判。
 // 池子本身不认识优先级（Tasker 接口只有 Unique），队列深度是唯一可观测的证据。
 func TestSubmitToRoutesByUrgentFlag(t *testing.T) {
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := &Engine{stages: map[string]*stageInfo{"s:s": {stage: "s", config: StageConfig{Site: "s"}}}, pools: newPoolRegistry()}
 	e.pools.set("s:s", pool)
 
-	if err := e.submitToStage(&Task{URL: "a", Stage: "s", Site: "s"}); err != nil {
+	if err := e.submitToStage(&Task{ID: 1, URL: "a", Stage: "s", Site: "s"}); err != nil {
 		t.Fatalf("普通任务投递失败：%v", err)
 	}
 	if main, urgent := pool.QueueDepths(); main != 1 || urgent != 0 {
 		t.Fatalf("普通任务应进常规队列，实得 main/urgent = %d/%d", main, urgent)
 	}
 
-	if err := e.submitToStage(&Task{URL: "b", Stage: "s", Site: "s", Urgent: true}); err != nil {
+	if err := e.submitToStage(&Task{ID: 2, URL: "b", Stage: "s", Site: "s", Urgent: true}); err != nil {
 		t.Fatalf("加急任务投递失败：%v", err)
 	}
 	if main, urgent := pool.QueueDepths(); main != 1 || urgent != 1 {
@@ -156,11 +156,10 @@ func TestEngineStopReportsUnfinishedStage(t *testing.T) {
 // 不会出现「Stop 已返回 drained=true、新池的 worker 还在跑」那种状态。
 //
 // 这条窗口是框架自己的收尾协程踩出来的：Engine.Stop 先 e.cancel()，而延迟投递的
-// deliverDelayed 与溢出回灌的 drainSpilled 都在 ctx 上 select —— 被 cancel 唤醒的那一次
 // 照样会把手里这条投出去，于是快照之后又建出一个没人停的池。
 func TestEngineStopRefusesPoolCreationAfterwards(t *testing.T) {
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.pools = newPoolRegistry() // 该阶段处于「首次提交前」：登记表里没有活池
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 
@@ -171,16 +170,13 @@ func TestEngineStopRefusesPoolCreationAfterwards(t *testing.T) {
 
 	// Stop 已经返回（调用方此刻会去关库/关浏览器池）—— 这一次投递不许再建池、不许起 worker
 	err := e.SubmitTask(&Task{ID: 7, Stage: "stub", Site: "stub", URL: "https://example.com"})
-	if err != nil {
-		t.Fatalf("停机后的投递按「先寄放」处理，不该报错：%v", err)
+	if err == nil {
+		t.Fatal("stopped engine must reject new submissions")
 	}
 	if pool := e.pools.get("stub:stub"); pool != nil {
 		t.Fatalf("Stop 之后不该再建池，实得 %v", pool)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("任务该留在溢出表等下次启动恢复，实得 %d", got)
-	}
-	if got := e.spilledCount.Load(); got != 1 {
-		t.Fatalf("寄放要计进 queue_spilled（与暂停同一条路），实得 %d", got)
+	if f.written() != "" || f.readSQL() != "" {
+		t.Fatal("post-stop submission accessed database")
 	}
 }

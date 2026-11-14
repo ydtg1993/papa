@@ -86,10 +86,9 @@ func (r *poolRegistry) reapIdle(idle, stopTimeout time.Duration) map[string]*wor
 		if now.Sub(r.lastSubmit[key]) < idle {
 			continue
 		}
-		if _, _, _, inProgress, queueLen := pool.Stats(); inProgress != 0 || queueLen != 0 {
+		if !pool.StopIfIdle(stopTimeout) {
 			continue
 		}
-		pool.Stop(stopTimeout)
 		delete(r.pools, key)
 		delete(r.lastSubmit, key)
 		reaped[key] = pool
@@ -101,8 +100,7 @@ func (r *poolRegistry) reapIdle(idle, stopTimeout time.Duration) map[string]*wor
 //
 // 置位与取快照必须原子，这是这段的关键：分成两步的话，两步之间进来的 getOrCreate 会建出一个
 // 既不在这份快照里、又已经不该存在的池 —— 就是"Stop 之后新池逃出关停"那条时序窗。
-// 而框架自己的收尾协程恰好就在这个窗口里投递：延迟投递的 deliverDelayed 与溢出回灌的
-// drainSpilled 都会走到 submitToStage → getOrCreatePool（它们只在 ctx 上 select，
+// 而框架自己的收尾协程恰好就在这个窗口里投递：延迟任务通知与阶段持久化恢复 都会走到 submitToStage → getOrCreatePool（它们只在 ctx 上 select，
 // 被 cancel 唤起的那个 tick 照样会把手里这条投出去）。
 //
 // 原子之后只剩两种结局，没有第三种：要么池已在快照里（Stop 会停它、等它），
@@ -132,4 +130,14 @@ func (r *poolRegistry) isStopped() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.stopped
+}
+
+// forgetStopped removes only the stale pool observed by a rejected sender.
+func (r *poolRegistry) forgetStopped(key string, pool *workerpool.WorkerPool[*Task]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pools[key] == pool {
+		delete(r.pools, key)
+		delete(r.lastSubmit, key)
+	}
 }

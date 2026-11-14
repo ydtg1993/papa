@@ -60,7 +60,7 @@ func (s *fakeSiteStore) snapshot() []core.SiteStat {
 // siteEngine 造一个多站引擎：站点 a + 站点 b，并注入一份假落点。
 func siteEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	t.Helper()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.SetSite(core.Site{Key: "a"})
 	e.SetSite(core.Site{Key: "b"})
 	e.SetSiteStore(&fakeSiteStore{})
@@ -226,7 +226,7 @@ func TestStartPausedResetOnly(t *testing.T) {
 // 没注入落点时退化：不 panic、不落库，快照为空（手工拼的 Engine / 部分单测走这条路）。
 func TestSiteStatsWithoutStoreDegrade(t *testing.T) {
 	f := newFakeTaskDB()
-	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := queueEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.SetSite(core.Site{Key: "a"})
 
 	e.buildSiteStats() // 不 panic 就算过
@@ -292,7 +292,7 @@ func TestPauseTwoSitesConcurrentlyKeepsBoth(t *testing.T) {
 func TestStageStatsCarrySite(t *testing.T) {
 	f := newFakeTaskDB()
 	e := siteEngine(t, f)
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e.stages["a:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "a"}}
 	e.setStatsQueue("a:stub", track.NewStatsQueue[*Task](pool))
 

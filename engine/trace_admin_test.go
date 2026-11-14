@@ -14,7 +14,7 @@ import (
 // traceDBEngine 造一个追踪开着、并且认得 crawler_task_trace 的引擎。
 func traceDBEngine(t *testing.T, f *fakeTaskDB) *Engine {
 	t.Helper()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.cfg.Crawler.Trace.Enabled = true
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	t.Cleanup(e.cancel)
@@ -27,7 +27,7 @@ func traceDBEngine(t *testing.T, f *fakeTaskDB) *Engine {
 // 而不是让他对着 404 猜。
 func TestListTraceDisabled(t *testing.T) {
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	e.cfg.Crawler.Trace.Enabled = false
 
 	steps, err := e.ListTrace(7)

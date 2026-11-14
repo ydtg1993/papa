@@ -152,8 +152,7 @@ type stageRow struct {
 func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 	latest := map[string]events.StageSnapshot{}
 	var lastQueues map[string]events.QueueSnapshot
-	var lastSpill *events.Event // 窗口内最后一条 spill_changed：溢出表（引擎内存）现状
-	var latestTS time.Time      // 最近一次**含 stages** 的快照时间：queue_drained 的新鲜度判定
+	var latestTS time.Time // 最近一次**含 stages** 的快照时间：queue_drained 的新鲜度判定
 	hasSnapshotEvent := false
 	for i := range in.Events {
 		ev := &in.Events[i]
@@ -164,8 +163,6 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 			latest = ev.Stages // 完整快照，空值表示池已退出，不能保留上次队列。
 
 			lastQueues = ev.Queues
-		case events.TypeSpillChanged:
-			lastSpill = ev
 		}
 	}
 	if len(latest) == 0 {
@@ -226,30 +223,15 @@ func (g *Generic) addQueue(in *obs.Input, res *obs.SectionResult) {
 		res.Tables = append(res.Tables, qt)
 	}
 
-	// 溢出表（spill）是引擎内存里被高水位挤出来、等待每 drain_interval 回灌的任务：
-	// 它们不在内存队列里（QueueLen 看不到），但确实是没跑完的存量，单列一张小表并计入队列积压。
-	spillBacklog := 0
-	if lastSpill != nil {
-		spillBacklog = int(lastSpill.Backlog)
-		st := obs.Table{Title: "溢出表（spill，引擎内存）", Columns: []string{"最近时刻", "最近回灌", "当前积压"}}
-		st.Rows = append(st.Rows, []string{
-			fmtTime(lastSpill.TS), fmt.Sprintf("%d", lastSpill.Counts["drained"]), fmt.Sprintf("%d", spillBacklog),
-		})
-		res.Tables = append(res.Tables, st)
-	}
-
 	backlog := outstanding + govBacklog
-	if spillBacklog > 0 {
-		backlog += spillBacklog
-	}
 	if engineInactive(in) {
 		c := obs.NewCheck("queue_drained", obs.SeverityWarn, false, "", "")
 		c.Skipped, c.SkipReason = true, "引擎暂停/无活跃阶段，队列无法采样"
 		res.Checks = append(res.Checks, c)
 	} else {
 		stale := !latestTS.IsZero() && in.Now.Sub(latestTS) > g.Thresholds.stuckAfter()
-		msg := fmt.Sprintf("窗口末仍有 %d 条未完成/积压（未完成 %d、治理 %d、spill %d）",
-			backlog, outstanding, govBacklog, spillBacklog)
+		msg := fmt.Sprintf("窗口末仍有 %d 条未完成/积压（未完成 %d、治理 %d）",
+			backlog, outstanding, govBacklog)
 		if backlog == 0 {
 			msg = "窗口末队列已收敛（未完成 0）"
 		}

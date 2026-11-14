@@ -189,16 +189,7 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	if limit > 0 {
 		reset = reset.Where("`repeat` < ?", limit)
 	}
-	res := reset.Updates(map[string]any{
-		"status":         models.TaskStatusPending,
-		"last_repeat_at": gorm.Expr("NOW()"),
-		// 下次到点 = 现在 + 自己的周期（没定就用全局）。换算只在这一条写路径上做一次，
-		// 用 UNIX_TIMESTAMP 加法而不是 DATE_ADD(..., INTERVAL <表达式> SECOND)：后者把函数塞进
-		// INTERVAL 的写法有语法/优化器上的余地，而本仓没有真库测试去验。
-		"next_repeat_at": gorm.Expr(
-			"FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + COALESCE(NULLIF(repeat_interval, 0), ?))",
-			int64(e.cfg.RepeatQueue.Interval/time.Second)),
-	})
+	res := reset.Updates(repeatResetUpdates(e.cfg.RepeatQueue.Interval))
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
@@ -209,12 +200,10 @@ func (e *Engine) requeueRepeatTaskIn(t *models.CrawlerTask) bool {
 	// Repeatable 显式置真：本队列捞出来的行本来就该是可轮询的，写死比照抄行上的值更少一层怀疑。
 	task := e.taskFromRecord(t)
 	task.Repeatable = true
+	task.Repeat++
+	task.NotBefore = time.Time{}
 	// 刚做完条件重置，行已经是 pending：用恢复队列同一条路径投递，省掉 SubmitTask 的去重查库。
-	if err := e.submitRecoveredTask(task); err != nil {
-		e.loggerSet.Engine.Errorf("repeat queue: submit task %d: %s", t.ID, err.Error())
-		e.markRequeueFailed(QueueRepeat, t.ID, err)
-		return false
-	}
+	e.requestPendingRecovery(task)
 	e.repeatQueue.repolled.Add(1)
 	e.emit(events.Event{
 		Type: events.TypeTaskRequeued, Queue: QueueRepeat, Source: "auto",
@@ -282,4 +271,19 @@ func (e *Engine) startRepeatQueue() {
 			e.loggerSet.Engine.Debugf("repeat queue: auto repolled %d tasks", n)
 		}
 	})
+}
+
+func repeatResetUpdates(interval time.Duration) map[string]any {
+	return map[string]any{
+		"status":         models.TaskStatusPending,
+		"repeat":         gorm.Expr("`repeat` + 1"),
+		"not_before":     nil,
+		"last_repeat_at": gorm.Expr("NOW()"),
+		// 下次到点 = 现在 + 自己的周期（没定就用全局）。换算只在这一条写路径上做一次，
+		// 用 UNIX_TIMESTAMP 加法而不是 DATE_ADD(..., INTERVAL <表达式> SECOND)：后者把函数塞进
+		// INTERVAL 的写法有语法/优化器上的余地，而本仓没有真库测试去验。
+		"next_repeat_at": gorm.Expr(
+			"FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + COALESCE(NULLIF(repeat_interval, 0), ?))",
+			int64(interval/time.Second)),
+	}
 }

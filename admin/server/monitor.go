@@ -687,7 +687,7 @@ func (s *Monitor) breakerResumeHandler(w http.ResponseWriter, r *http.Request) {
 //
 // 暂停的语义（与熔断触发时同一套）：两层一起生效 ——
 //   - **取任务点**（闸门）：worker 停在取任务**之前**，队列里已经躺着的那批也冻住，在途任务跑完为止；
-//   - **入队点**（收口）：不再接新活，任务寄放到溢出表，点「恢复」时立刻灌回。
+//   - **入队点**（收口）：暂停入队，已接受任务保留数据库 pending，恢复时通知阶段继续投递。
 //
 // 所以它天然适合"多站分批放开"：停得干净、不堆积、放开即续跑。
 func (s *Monitor) breakerPauseHandler(w http.ResponseWriter, r *http.Request) {

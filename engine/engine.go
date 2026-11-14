@@ -8,6 +8,7 @@ import (
 	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/internal/breaker"
 	"github.com/ydtg1993/papa/v3/internal/database"
+	"github.com/ydtg1993/papa/v3/internal/delivery"
 	"github.com/ydtg1993/papa/v3/internal/track"
 	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/obs/incident"
@@ -26,6 +27,12 @@ import (
 )
 
 type Engine struct {
+	deliveryOnce    sync.Once
+	delivery        *delivery.Coordinator
+	deliveryStart   sync.Once
+	admissionCtx    context.Context
+	admissionCancel context.CancelFunc
+
 	db        *gorm.DB
 	loggerSet *loggers.LoggerSet
 	// events 运行事件流（默认关）。nil = 关闭；emit 对 nil 安全。
@@ -55,17 +62,12 @@ type Engine struct {
 
 	// 暂停信号：**暂停的唯一定义**（见 pause.go）。三个消费者都读它：
 	// 取任务点的闸门、入队点的寄放、后台的横幅/卡片/落库。
-	// 锁序是硬的：breakerMu → pauseMu → (spillMu | e.mu | siteMu)，不许反向；pauseMu 绝不跨 DB 调用。
-	pauseMu      sync.Mutex
-	paused       map[pauseScope]pauseState // scope -> 现场（整站条目的 Stage 为空）
-	pauseChanged chan struct{}             // 每次变更换一个新的并 close 旧的（叫醒所有等闸门的人）
-	lastResumed  map[pauseScope]time.Time  // 放行时刻（信号删了之后后台 payload 还要它）
-	wakeDrain    chan struct{}             // 容量 1：恢复时叫醒回灌循环，别让它等下一个 tick
-
-	spillMu        sync.Mutex
-	spilled        map[string][]*Task // 阶段键 -> 高水位溢出的待回灌任务
-	spilledCount   atomic.Int64       // 累计溢出任务数（监控埋点）
-	recoveredCount atomic.Int64       // 累计启动恢复任务数（recover_queue，只在启动跑一次）
+	// 锁序是硬的：breakerMu → pauseMu → (e.mu | siteMu)，不许反向；pauseMu 绝不跨 DB 调用。
+	pauseMu        sync.Mutex
+	paused         map[pauseScope]pauseState // scope -> 现场（整站条目的 Stage 为空）
+	pauseChanged   chan struct{}             // 每次变更换一个新的并 close 旧的（叫醒所有等闸门的人）
+	lastResumed    map[pauseScope]time.Time  // 放行时刻（信号删了之后后台 payload 还要它）
+	recoveredCount atomic.Int64              // 累计启动恢复任务数（recover_queue，只在启动跑一次）
 	// recoverSkippedUnregistered 启动恢复里因"阶段未注册"被跳过的条数：
 	// 逐条降级为 Debug，启动后汇总一条 Warn（否则一次恢复能把日志刷几百行）。
 	recoverSkippedUnregistered atomic.Int64
@@ -170,6 +172,9 @@ type stageInfo struct {
 
 // StageConfig 阶段配置
 type StageConfig struct {
+	Downstream []string
+	StrictFlow bool
+
 	RepeatLimit int                  // repeat_queue 重投上限：repeat >= 此值不再重投；<=0 不限。
 	MaxAttempts int                  // Handler 最大尝试次数（含首次执行）
 	Backoff     time.Duration        // Handler 错误重试退避时间
@@ -201,6 +206,7 @@ type StageConfig struct {
 // 站点归属取自声明层的 `StageConfig.Site`，所以调用方不可能"忘了带站点"。
 // 阶段名只在本站内唯一：两个站登记各自的 `catalog` 是两条独立记录（各自的池子与统计）。
 func (e *Engine) AddStage(stage string, config StageConfig, fetcher Fetcher, subFunc func(engine *Engine)) {
+	config.Downstream = append([]string(nil), config.Downstream...)
 	e.stages[core.StageKey(config.Site, stage)] = &stageInfo{
 		stage:      stage,
 		config:     config,
@@ -226,13 +232,11 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		cfg:                cfg,
 		loggerSet:          loggerSet,
 		delayCh:            make(chan struct{}, 1),
-		spilled:            make(map[string][]*Task),
 		queueRuns:          newQueueRuns(),
 		stageTotals:        make(map[string]stageTotals),
 		errorCh:            make(chan error, 100),
 		errorForwardCancel: make(map[string]*poolForwarder),
-		// 容量 1：恢复时叫醒回灌循环（非阻塞发送，重复叫醒只留一次）
-		wakeDrain: make(chan struct{}, 1),
+		// 恢复投递按阶段合并通知，不保存内存积压列表。
 		// 启动恢复会连续 submit（每条都可能 wakeRepeatQueue）：合并窗口把同一批 wake 的
 		// N 次节拍重算（MIN 聚合查询）压成一次；见 dynticker.go。
 		wakeCoalesce: defaultWakeCoalesce,
@@ -390,8 +394,8 @@ func (e *Engine) ResumeCrawling() bool {
 	if !e.clearAllPauses() {
 		return false
 	}
-	// 放行之后立刻把寄放在溢出表里的任务灌回去（不等下一个 drain tick）
-	e.wakeDrainNow()
+	// 放行后通知各阶段恢复数据库 pending。
+	e.wakePendingRecovery()
 	for _, site := range sites {
 		e.writeSiteBreakerState(site, false)
 	}
@@ -407,7 +411,7 @@ func (e *Engine) ResumeSite(site string) bool {
 	if !e.clearSite(site) {
 		return false
 	}
-	e.wakeDrainNow()
+	e.wakePendingRecovery()
 	// 落库放在放锁之后：pauseMu 绝不跨 DB 调用（锁序见 pause.go）。
 	// 熔断**触发**不写这一列（与今天一致）：它只写暂停信号，横幅读信号、站点表读库，两者在触发时
 	// 本来就不同步 —— 这是有意的，别顺手把两条路并成一条。
@@ -543,6 +547,8 @@ func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
 // 拿到 drained=false 时，调用方**不该接着关数据库 / 关浏览器池**：worker goroutine 还活着
 // （Go 杀不掉它，见 workerpool.Stop），关掉只会让在途的写入全部报 "sql: database is closed"。
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]StopStats) {
+	deadline := time.Now().Add(timeout)
+	admissionsDone := e.deliveryState().Close()
 	e.cancel()
 	var (
 		wg sync.WaitGroup
@@ -569,20 +575,6 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 		}(name, pool)
 	}
 	wg.Wait()
-	// 溢出表里**寄放**的任务也算进存留：被暂停的站点，任务不在任何池子的队列里（那正是收口的语义），
-	// 只报池子的存留就会得出 drained=true —— 调用方（app.Run）随即去关库，而几十上百条任务
-	// 还在溢出表里躺着。它们的行是 pending，重启后由启动恢复捞，但那一刻**运维看不到任何告警**。
-	// 这与池子队列里的任务同一性质（"这一轮没跑完"），所以并进同一个结构。
-	e.spillMu.Lock()
-	for key, tasks := range e.spilled {
-		if len(tasks) == 0 {
-			continue
-		}
-		st := stats[key]
-		st.Queued += len(tasks)
-		stats[key] = st
-	}
-	e.spillMu.Unlock()
 	drained = len(stats) == 0
 	// 动态 ticker（错误/恢复/每站的轮询队列）也要等在途的那一跳跑完：它们同样会写库。
 	// 与阶段池共用同一个 timeout（并发计），等不到就如实说"没排空"。
@@ -593,9 +585,14 @@ func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]Sto
 	}()
 	select {
 	case <-tickersDone:
-	case <-time.After(timeout):
+	case <-time.After(max(time.Until(deadline), 0)):
 		drained = false
 		e.loggerSet.Engine.Warn("dynamic tickers still running after timeout")
+	}
+	select {
+	case <-admissionsDone:
+	case <-time.After(max(time.Until(deadline), 0)):
+		drained = false
 	}
 	if drained {
 		e.loggerSet.Engine.Info("all workers stopped")

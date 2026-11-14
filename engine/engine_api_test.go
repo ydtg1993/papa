@@ -21,7 +21,7 @@ import (
 // 且 getter 返回的就是同一个对象（业务会拿回去自己用）。
 func TestEngineAccessorsRoundTrip(t *testing.T) {
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	if e.GetDB() != e.db {
 		t.Fatal("GetDB 应返回同一个 *gorm.DB")
@@ -68,7 +68,7 @@ func TestPoolErrorForwarderForwards(t *testing.T) {
 		errorForwardCancel: make(map[string]*poolForwarder),
 	}
 
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e.startPoolErrorForwarder("stub", pool)
 
 	// 停掉的池上 Submit 会 SendError("worker pool already stopped")
@@ -90,7 +90,7 @@ func TestPoolErrorForwarderForwards(t *testing.T) {
 // Upsert 落库后主键已被回填（插入路径），所以不需要再回查。
 func TestUpsertInsertsAndBackfills(t *testing.T) {
 	f := newFakeTaskDB()
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	rec := &crawlerTaskStub{URL: "https://example.com/upsert", Stage: "stub"}
 	err := e.Upsert(rec, []string{"url", "stage"}, []string{"title"})
@@ -415,11 +415,11 @@ func TestCancelPoolErrorForwarderChecksPoolIdentity(t *testing.T) {
 		errorForwardCancel: make(map[string]*poolForwarder),
 	}
 
-	oldPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	oldPool := workerpool.NewWorkerPool[*Task](1, 8)
 	e.startPoolErrorForwarder("stub", oldPool)
 
 	// 同阶段换池：新转发协程占住同一个 key（旧池的转发协程随之退掉）
-	newPool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	newPool := workerpool.NewWorkerPool[*Task](1, 8)
 	e.startPoolErrorForwarder("stub", newPool)
 
 	// 旧 reaper 只该停旧池的转发，不能误关新池的

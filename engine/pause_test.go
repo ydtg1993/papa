@@ -181,8 +181,8 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 	if err := e.SubmitTask(&Task{Stage: "detail", Site: "stub", URL: "https://example.com/d"}); err != nil {
 		t.Fatalf("暂停中提交不该报错（寄放）：%v", err)
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应当寄放 1 条，实得 %d", got)
+	if e.deliveryState().Owned(7) {
+		t.Fatal("paused task must stay durable without an in-memory delivery owner")
 	}
 	if pool := e.pools.get(core.StageKey("stub", "detail")); pool != nil {
 		t.Fatal("暂停期间不该为那个阶段建池")
@@ -194,8 +194,7 @@ func TestSitePauseCoversEveryStageOfThatSite(t *testing.T) {
 
 // 声明了 `StartPaused` 的站：**启动那一刻整站就是停的**。
 //
-// 入口任务照投（这正是"先把入口排好、再放开这一站"），但入队点把每一条都折回溢出表、
-// 池子一个都不建、worker 一条都没跑；后台点「恢复整站」（ResumeSite）才灌回并跑起来。
+// 池子一个都不建、worker 一条都没跑；后台点「恢复整站」（ResumeSite）才继续投递并跑起来。
 //
 // 这条钉的正是原来 `EntryManual` 想表达却做不到的那件事：manual 只管住了入口那一投，
 // 启动恢复与轮询队列照样把这一站跑起来 —— 而"这一站先别动"本来就是整站级的。
@@ -216,7 +215,7 @@ func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
 	e.ApplyRegisterStage()
 
 	if submitted != 1 {
-		t.Fatalf("入口任务照投（先排好队，恢复时才灌回），实得 %d 次", submitted)
+		t.Fatalf("入口任务照投（先排好队，恢复时才继续投递），实得 %d 次", submitted)
 	}
 	if !e.isPaused(pauseScope{Site: "a"}) {
 		t.Fatal("声明 StartPaused 的站，启动后整站该是停着的")
@@ -228,15 +227,19 @@ func TestStartPausedBlocksWholeSiteAtStartup(t *testing.T) {
 	if stale := e.pools.get(core.StageKey("a", "catalog")); stale != nil {
 		t.Fatal("闸住的站启动时连池子都不该建（收口在建池之前）")
 	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("入口任务应当先寄放在溢出表，实得 %d", got)
+	if e.deliveryState().Owned(7) {
+		t.Fatal("paused task must stay durable without an in-memory delivery owner")
 	}
 	if got := fetcher.calls(); len(got) != 0 {
 		t.Fatalf("闸住期间不该跑任务，实得 %v", got)
 	}
 
-	// 后台点「恢复整站」：立刻灌回（夹具把 DrainInterval 设成一小时，等 tick 就是永远等不到）
-	f.noRows = false // 回灌要按 id 回查那一行（真库里本来就在）
+	// 后台点「恢复整站」：立即唤醒阶段持久化恢复
+	f.mu.Lock()
+	f.row["site"] = "a"
+	f.row["stage"] = "catalog"
+	f.noRows = false // 模拟已提交的任务行
+	f.mu.Unlock()
 	if !e.ResumeSite("a") {
 		t.Fatal("恢复应当成功")
 	}
@@ -400,7 +403,6 @@ func TestPoolBuiltWhilePausedIsFrozen(t *testing.T) {
 	fetcher.waitCalls(t, 1)
 }
 
-// 暂停中提交：**在入队点收口** —— 不入队、寄放到溢出表、不建池；行已经落库且是 pending。
 func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
@@ -417,8 +419,8 @@ func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 		t.Fatalf("暂停中提交不该报错（任务寄放，恢复后跑）：%v", err)
 	}
 
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("应当寄放 1 条，实得 %d", got)
+	if e.deliveryState().Owned(7) {
+		t.Fatal("paused task must stay durable without an in-memory delivery owner")
 	}
 	if pool := e.pools.get(stubKey); pool != nil {
 		t.Fatal("暂停期间不该建池（收口在建池之前）")
@@ -431,36 +433,10 @@ func TestSubmitWhilePausedParksInsteadOfEnqueueing(t *testing.T) {
 	}
 }
 
-// 暂停的桶在回灌时**整桶跳过**，而且**不查库** —— 这是本次改动的主要收益：
-// 以前闸住的站，每 drain_interval（默认 2s）对每条溢出任务做一次 SELECT + 一次 UPDATE，
-// 而入队又判队满 → 再溢出，永远推进不了。
-func TestDrainSpilledSkipsPausedBucketWithoutQuerying(t *testing.T) {
+func TestResumeWakesPendingRecoveryImmediately(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true
 	e := newTestEngine(t, f)
-	e.SetSiteBreaker("stub", breaker.Config{Enabled: false, Threshold: 1})
-	e.AddStage("stub", StageConfig{Site: "stub", MaxAttempts: 1, WorkerCount: 1, QueueSize: 8}, &recordingFetcher{stage: "stub"}, nil)
-	e.ApplyRegisterStage()
-	e.PauseSite("stub", "暂停")
-	if err := e.SubmitTask(&Task{Stage: "stub", Site: "stub", URL: "https://example.com/x"}); err != nil {
-		t.Fatal(err)
-	}
-
-	before := f.readSQL()
-	e.drainSpilled()
-	if got := f.readSQL(); got != before {
-		t.Fatalf("暂停中的桶不该被查库（空转就是这么来的）：\n%s", got)
-	}
-	if got := e.spillBacklog(); got != 1 {
-		t.Fatalf("整桶应当放回溢出表，实得 %d", got)
-	}
-}
-
-// 恢复要**立刻**灌回，不等下一个 drain tick（drain_interval 可以配到小时）。
-func TestResumeWakesDrainImmediately(t *testing.T) {
-	f := newFakeTaskDB()
-	f.noRows = true
-	e := newTestEngine(t, f) // 夹具把 DrainInterval 设成 1 小时：等 tick 就是永远等不到
 	e.SetSiteBreaker("stub", breaker.Config{Enabled: false, Threshold: 1})
 	fetcher := &recordingFetcher{stage: "stub"}
 	e.AddStage("stub", StageConfig{Site: "stub", WorkerCount: 1, QueueSize: 8}, fetcher, nil)
@@ -470,7 +446,11 @@ func TestResumeWakesDrainImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.noRows = false // 回灌要按 id 回查那一行（真库里本来就在）
+	f.mu.Lock()
+
+	f.noRows = false // 模拟已提交的任务行
+
+	f.mu.Unlock()
 	if !e.ResumeSite("stub") {
 		t.Fatal("放行应当成功")
 	}

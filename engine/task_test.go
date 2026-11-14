@@ -95,7 +95,7 @@ func TestUpdateStatusOnlyTouchesItsOwnColumns(t *testing.T) {
 func TestSubmitTaskPersistsMeta(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 
 	task := &Task{
 		Stage: "stub", Site: "stub", URL: "https://example.com/1",
@@ -157,7 +157,7 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeTaskDB()
 			f.row["meta"] = []byte(metaJSON) // 库里这列有值
-			pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+			pool := workerpool.NewWorkerPool[*Task](1, 8)
 			e := queueEngine(t, f, pool)
 
 			delivered := make(chan *Task, 4)
@@ -176,6 +176,9 @@ func TestRowRebuildKeepsMeta(t *testing.T) {
 				t.Fatalf("%s：%v", c.name, err)
 			}
 
+			if err := e.recoverPendingStage(stubKey); err != nil {
+				t.Fatal(err)
+			}
 			select {
 			case task := <-delivered:
 				if task.Meta["series_id"] != "119002" || task.Meta["episode_id"] != "3" {
@@ -197,7 +200,7 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 
 	f := newFakeTaskDB()
 	f.row["meta"] = []byte(broken)
-	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)
+	pool := workerpool.NewWorkerPool[*Task](1, 8)
 	e := queueEngine(t, f, pool)
 
 	delivered := make(chan *Task, 4)
@@ -231,7 +234,7 @@ func TestRowRebuildToleratesBrokenMeta(t *testing.T) {
 func TestTaskSiteIsPersistedAndRestored(t *testing.T) {
 	f := newFakeTaskDB()
 	f.noRows = true // 全新任务：走 INSERT
-	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8, 1))
+	e := submitEngine(t, f, workerpool.NewWorkerPool[*Task](1, 8))
 	// 同一台引擎里两个站各有一个 stub：阶段名只在本站内唯一，取用的是 `site:stage` 这个键 ——
 	// 所以带上站点 example 的任务能落到这个站的 stub 上，而不是夹具里那个 stub:stub。
 	e.stages["example:stub"] = &stageInfo{stage: "stub", config: StageConfig{Site: "example"}}

@@ -3,9 +3,9 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"github.com/ydtg1993/papa/v3/internal/taskstore"
 	"time"
 
-	"github.com/ydtg1993/papa/v3/internal/workerpool"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/gorm"
 )
@@ -28,8 +28,7 @@ var (
 // 三个动作的 WHERE 条件抽成共用函数：production 和测试吃同一份，
 // 测试用 GORM 的 DryRun/ToSQL 断言条件确实写进了语句，而不是"先查再写"。
 func claimScope(db *gorm.DB, id uint) *gorm.DB {
-	return db.Model(&models.CrawlerTask{}).
-		Where("id = ? AND status = ?", id, models.TaskStatusPending)
+	return taskstore.ClaimScope(db, id)
 }
 
 func retryScope(db *gorm.DB, id uint, wasReprocess int) *gorm.DB {
@@ -55,7 +54,7 @@ func urgentScope(db *gorm.DB, id uint) *gorm.DB {
 //
 // 那个孤儿例外不能省。只认待处理的话，进程崩在任务中途留下的 `processing` 行会没有任何人工出口：
 // 「重投」按 retryScope 排除 processing、「删除」按 deleteScope 排除 processing、「标失败」也拒绝 ——
-// `recover_queue` 关着的部署就只能等下次把开关打开。判据与启动恢复完全同一套（也是同一个理由）：
+// 正常启动会先恢复孤儿；此处仍保留人工状态维护能力。孤儿判定使用启动时间：
 // `updated_at` 由应用侧写、认领也会写，所以「早于本进程启动」= 「不是本进程在跑」。
 func markFailedScope(db *gorm.DB, id uint, startedAt time.Time) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).
@@ -105,6 +104,10 @@ func (e *Engine) loadTask(id uint) (*models.CrawlerTask, error) {
 // 这里不用 updated_at 当版本号 —— 它从客户端回来是 RFC3339 字符串，
 // 直接和 MySQL 的 datetime 比会有格式/时区坑；reprocess 是纯整数且重投必 +1。
 func (e *Engine) RetryTask(id uint, wasReprocess int) error {
+	if !e.deliveryState().Begin() {
+		return ErrEngineStopped
+	}
+	defer e.deliveryState().End()
 	t, err := e.loadTask(id)
 	if err != nil {
 		return err
@@ -129,16 +132,7 @@ func (e *Engine) RetryTask(id uint, wasReprocess int) error {
 	task := e.taskFromRecord(t)
 	task.Retry = 0 // 与 error_queue 的单行重投同语义：行里 retry 刚归零，内存副本跟上
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitToStage(task); err != nil {
-		// 队列达高水位：与正常投递一致，溢出到 DB 由 drain 回灌，不算失败
-		if errors.Is(err, workerpool.ErrQueueFull) {
-			e.spilledCount.Add(1)
-			e.spillTask(task)
-			return nil
-		}
-		e.dedupCache.Delete(task.Unique())
-		return fmt.Errorf("submit task %d: %w", id, err)
-	}
+	e.requestPendingRecovery(task)
 	return nil
 }
 
@@ -162,6 +156,10 @@ func (e *Engine) whyRetryRejected(id uint) error {
 // 已知竞态（可接受）：这条任务本来就排在常规队列里时，池里会有同一行的两份副本，
 // 靠 claimTask 的条件更新仲裁 —— 谁先认领谁执行，另一份被跳过。窗口很小、后果自愈。
 func (e *Engine) UrgentTask(id uint) error {
+	if !e.deliveryState().Begin() {
+		return ErrEngineStopped
+	}
+	defer e.deliveryState().End()
 	t, err := e.loadTask(id)
 	if err != nil {
 		return err
@@ -176,7 +174,7 @@ func (e *Engine) UrgentTask(id uint) error {
 		return fmt.Errorf("%w: %s", ErrStageNotRegistered, t.Stage)
 	}
 
-	// 先落库再加急：这样后台「加急」列看得见，任务溢出回灌或进程重启后也还认得出它加急过。
+	// 先落库再加急：这样后台「加急」列看得见，任务恢复投递或进程重启后也还认得出它加急过。
 	res := urgentScope(e.db, id).Update("urgent", true)
 	if res.Error != nil {
 		return fmt.Errorf("mark task %d urgent: %w", id, res.Error)
@@ -189,16 +187,10 @@ func (e *Engine) UrgentTask(id uint) error {
 	task := e.taskFromRecord(t)
 	task.Urgent = true
 	e.dedupCache.Add(task.Unique())
-	if err := e.submitToStage(task); err != nil {
-		// 与正常投递一致：队列满就溢出到 DB 由 drain 回灌，不算失败
-		if errors.Is(err, workerpool.ErrQueueFull) {
-			e.spilledCount.Add(1)
-			e.spillTask(task)
-			return nil
-		}
-		e.dedupCache.Delete(task.Unique())
-		return fmt.Errorf("submit urgent task %d: %w", id, err)
+	if pool := e.pools.get(stageKeyOf(task)); pool != nil {
+		pool.Promote(func(queued *Task) bool { return queued.ID == task.ID })
 	}
+	e.requestPendingRecovery(task)
 	return nil
 }
 
@@ -211,6 +203,10 @@ func (e *Engine) UrgentTask(id uint) error {
 // （一条主键 SELECT，只在人工点按钮时发生）。叫本站而不是扇出所有站：每条唤醒都会让被叫到的
 // 队列跑一次整表 MIN 聚合，扇出的代价随站点数增长。
 func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
+	if !e.deliveryState().Begin() {
+		return ErrEngineStopped
+	}
+	defer e.deliveryState().End()
 	want, was := models.RepeatableYes, models.RepeatableNo
 	if !on {
 		want, was = models.RepeatableNo, models.RepeatableYes
@@ -242,6 +238,10 @@ func (e *Engine) SetTaskRepeatable(id uint, on bool) error {
 // 却还要等 55 分钟）；基准取"上次轮询时刻"（不是 NOW()），所以改短之后可能立刻就该跑；
 // 从未轮询过（LastRepeatAt 为空）就从这一刻起算。
 func (e *Engine) SetTaskRepeatInterval(id uint, wasSeconds, seconds int) error {
+	if !e.deliveryState().Begin() {
+		return ErrEngineStopped
+	}
+	defer e.deliveryState().End()
 	if seconds < 0 || (seconds > 0 && seconds < int(repeatMinTick/time.Second)) {
 		return ErrRepeatIntervalBad
 	}
@@ -300,8 +300,12 @@ func (e *Engine) whyRepeatRejected(id uint, on bool) error {
 // 任务其实还在跑，最后还会把自己写回成功。想让它停用 PauseSite，想重跑等它结束再「重投」。
 //
 // 上一轮崩溃留下的 processing 行**放行**（判据见 markFailedScope）：没有 worker 在跑它，
-// 而它是这类行唯一的人工出口 —— 尤其在 recover_queue 关着的时候。
+// 正常启动会先恢复孤儿，此处保留人工维护入口。
 func (e *Engine) MarkTaskFailed(id uint, reason string) error {
+	if !e.deliveryState().Begin() {
+		return ErrEngineStopped
+	}
+	defer e.deliveryState().End()
 	msg := "后台手动标记失败"
 	if reason != "" {
 		msg += "：" + reason
@@ -330,6 +334,10 @@ func (e *Engine) MarkTaskFailed(id uint, reason string) error {
 // DeleteTask 删除一行任务，并清掉它在内存去重表里的残留。
 // 处理中的行拒绝删除：worker 稍后会对已删行 UpdateStatus，且运营侧看到"行消失又冒出新行"很困惑。
 func (e *Engine) DeleteTask(id uint) error {
+	if !e.deliveryState().Begin() {
+		return ErrEngineStopped
+	}
+	defer e.deliveryState().End()
 	t, err := e.loadTask(id) // 先取 URL/Stage，删除后就没法算去重键了
 	if err != nil {
 		return err
