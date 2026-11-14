@@ -123,12 +123,12 @@ func TestSoonestRepeatQueryCastsToSignedInt(t *testing.T) {
 	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
 		return (&Engine{}).soonestRepeatQueryOn(tx).Find(&rows)
 	})
-	for _, want := range []string{"MIN(CAST(CASE", "AS SIGNED", "AS epoch", "UNIX_TIMESTAMP"} {
+	for _, want := range []string{"MIN(CAST(UNIX_TIMESTAMP", "AS SIGNED", "AS epoch", "UNIX_TIMESTAMP"} {
 		if !strings.Contains(sql, want) {
 			t.Errorf("「最早到点」查询里缺少 %q ｜ %s", want, sql)
 		}
 	}
-	if strings.Count(sql, "CAST(UNIX_TIMESTAMP") != 6 {
+	if strings.Count(sql, "CAST(UNIX_TIMESTAMP") != 1 {
 		t.Fatalf("candidate integer casts missing: %s", sql)
 	}
 	// 反向：聚合外面必须是 CAST，不能又变回裸的 MIN(CASE ...)
@@ -137,19 +137,19 @@ func TestSoonestRepeatQueryCastsToSignedInt(t *testing.T) {
 	}
 }
 
-// Known active statuses and the original unknown/NULL-status fallback must
-// remain in the single statement; terminal-only filtering changes scheduling.
+// Future rows include active and unknown/NULL statuses. Filtering them out
+// would change scheduling even though they are not currently due for submission.
 func TestSoonestRepeatQueryIncludesActiveRows(t *testing.T) {
 	db := dryRunMySQL(t)
 	var rows []struct{ Epoch *int64 }
 	q := (&Engine{}).soonestRepeatQueryOn(db).Find(&rows)
 	sql := q.Statement.SQL.String()
-	for _, fragment := range []string{"UNION ALL", "status NOT IN", "status IS NULL", "next_repeat_at > NOW()", "next_repeat_at IS NULL", "MIN(epoch)"} {
+	for _, fragment := range []string{"status IN (?,?) OR next_repeat_at > NOW()", "COALESCE(next_repeat_at, NOW())", "MIN(CAST(UNIX_TIMESTAMP"} {
 		if !strings.Contains(sql, fragment) {
 			t.Fatalf("missing %q: %s", fragment, sql)
 		}
 	}
-	if strings.Count(sql, "UNION ALL") != 7 || strings.Count(sql, "LIMIT ?") != 6 {
+	if strings.Contains(sql, "UNION") || strings.Contains(sql, "LIMIT") {
 		t.Fatalf("unexpected branch shape: %s", sql)
 	}
 	if strings.Contains(sql, "FOR UPDATE") || strings.Contains(sql, ";") {

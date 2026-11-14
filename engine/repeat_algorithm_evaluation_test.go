@@ -37,8 +37,8 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 			}
 		}
 		previous = size
-		for _, distribution := range []string{"dense_future", "sparse_future", "mixed_due", "all_capped"} {
-			if err := db.Exec("UPDATE crawler_tasks SET `repeat` = MOD(FLOOR((id - 1) / 64), 10), repeatable = 1, next_repeat_at = FROM_UNIXTIME(1794618000)").Error; err != nil {
+		for _, distribution := range []string{"dense_future", "sparse_future", "mixed_due", "all_capped", "expired_active"} {
+			if err := db.Exec("UPDATE crawler_tasks SET status = MOD(FLOOR((id - 1) / 16), 4), `repeat` = MOD(FLOOR((id - 1) / 64), 10), repeatable = 1, next_repeat_at = FROM_UNIXTIME(1794618000)").Error; err != nil {
 				t.Fatal(err)
 			}
 			if distribution == "sparse_future" {
@@ -53,6 +53,11 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 			}
 			if distribution == "all_capped" {
 				if err := db.Exec("UPDATE crawler_tasks SET `repeat` = 100").Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if distribution == "expired_active" {
+				if err := db.Exec("UPDATE crawler_tasks SET status = IF(MOD(id, 100) = 0, 2, 0), next_repeat_at = FROM_UNIXTIME(1577836800)").Error; err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -99,6 +104,9 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 						if distribution == "mixed_due" {
 							wantEpoch = 1794614400
 						}
+						if distribution == "expired_active" {
+							wantEpoch = 1577836800
+						}
 						if baseline.Epoch != nil && *baseline.Epoch != wantEpoch {
 							t.Fatalf("aggregate=%d expected=%d", *baseline.Epoch, wantEpoch)
 						}
@@ -120,7 +128,8 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 						}
 						expected := int64(0)
 						for i := 0; i < size; i++ {
-							if distribution == "mixed_due" && (i+1)%10 == 0 && (i/16)%4 >= 2 && (!limits || (i/64)%10 < 5) {
+							due := distribution == "mixed_due" && (i+1)%10 == 0 && (i/16)%4 >= 2 || distribution == "expired_active" && (i+1)%100 == 0
+							if due && (!limits || (i/64)%10 < 5) {
 								expected++
 							}
 						}

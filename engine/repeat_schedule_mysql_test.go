@@ -162,10 +162,23 @@ func TestRepeatScheduleMySQLBoundaries(t *testing.T) {
 }
 
 func TestRepeatScheduleMySQLConcurrentSnapshot(t *testing.T) {
+	for _, limit := range []int{0, 3} {
+		t.Run(fmt.Sprintf("limit_%d", limit), func(t *testing.T) { testRepeatScheduleConcurrentSnapshot(t, limit) })
+	}
+}
+
+func testRepeatScheduleConcurrentSnapshot(t *testing.T, limit int) {
 	db, _ := compensationMySQL(t)
-	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: 3}}}}
+	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}}}
 	insertRepeatScheduleRows(t, db, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"}, repeatScheduleRow{status: 3, round: 1, at: "2028-01-01 00:00:00"})
 	want := repeatScheduleEpoch(t, e, db, true)
+	var expected int64
+	if err := db.Raw("SELECT CAST(UNIX_TIMESTAMP('2027-01-01 00:00:00') AS SIGNED)").Scan(&expected).Error; err != nil {
+		t.Fatal(err)
+	}
+	if want == nil || *want != expected {
+		t.Fatal("concurrent fixture has no expected minimum")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -177,7 +190,14 @@ func TestRepeatScheduleMySQLConcurrentSnapshot(t *testing.T) {
 				if writes.Load()%2 == 0 {
 					a, b = b, a
 				}
-				return tx.Exec("UPDATE crawler_tasks SET next_repeat_at = CASE id WHEN 1 THEN ? ELSE ? END", a, b).Error
+				result := tx.Exec("UPDATE crawler_tasks SET next_repeat_at = CASE id WHEN 1 THEN ? ELSE ? END", a, b)
+				if result.Error != nil {
+					return result.Error
+				}
+				if result.RowsAffected != 2 {
+					return fmt.Errorf("flip updated %d rows, want 2", result.RowsAffected)
+				}
+				return nil
 			}); err != nil {
 				done <- err
 				return
@@ -192,14 +212,17 @@ func TestRepeatScheduleMySQLConcurrentSnapshot(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	for i := 0; i < 300; i++ {
-		got := repeatScheduleEpoch(t, e, db, false)
-		if !sameRepeatEpoch(got, want) {
-			t.Fatalf("torn snapshot on read %d", i)
+	for batch := 0; batch < 3; batch++ {
+		before := writes.Load()
+		for i := 0; i < 100; i++ {
+			got := repeatScheduleEpoch(t, e, db, false)
+			if !sameRepeatEpoch(got, want) {
+				t.Fatalf("torn snapshot on read %d", i)
+			}
 		}
-	}
-	if writes.Load() < 10 {
-		t.Fatalf("writer did not overlap enough: %d", writes.Load())
+		if writes.Load() <= before {
+			t.Fatalf("no writer commit overlapped read batch %d", batch)
+		}
 	}
 	t.Logf("consistent_reads=300 committed_flips=%d", writes.Load())
 }
@@ -212,14 +235,24 @@ func TestRepeatScheduleMySQLIsolation(t *testing.T) {
 			insertRepeatScheduleRows(t, db, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"})
 			if err := db.Transaction(func(tx *gorm.DB) error {
 				before := repeatScheduleEpoch(t, e, tx, false)
+				var earlier, later int64
+				if err := tx.Raw("SELECT CAST(UNIX_TIMESTAMP('2027-01-01 00:00:00') AS SIGNED)").Scan(&earlier).Error; err != nil {
+					return err
+				}
+				if err := tx.Raw("SELECT CAST(UNIX_TIMESTAMP('2028-01-01 00:00:00') AS SIGNED)").Scan(&later).Error; err != nil {
+					return err
+				}
+				if before == nil || *before != earlier {
+					t.Fatal("initial transaction read lost fixture")
+				}
 				if err := db.Exec("UPDATE crawler_tasks SET next_repeat_at = '2028-01-01 00:00:00'").Error; err != nil {
 					return err
 				}
 				after := repeatScheduleEpoch(t, e, tx, false)
-				if level == sql.LevelRepeatableRead && !sameRepeatEpoch(before, after) {
+				if level == sql.LevelRepeatableRead && (after == nil || *after != earlier) {
 					t.Fatal("RR view changed")
 				}
-				if level == sql.LevelReadCommitted && (after == nil || before == nil || *after <= *before) {
+				if level == sql.LevelReadCommitted && (after == nil || *after != later) {
 					t.Fatal("RC did not see committed change")
 				}
 				return nil
@@ -233,7 +266,7 @@ func TestRepeatScheduleMySQLIsolation(t *testing.T) {
 func TestRepeatScheduleMySQLCancelBlockedQuery(t *testing.T) {
 	db, makeEngine := compensationMySQL(t)
 	e := makeEngine()
-	// A metadata lock blocks the real UNION SELECT in MySQL. No injected sleep
+	// A metadata lock blocks the real aggregate SELECT in MySQL. No injected sleep
 	// or callback is used as proof that the query was actually in flight.
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -263,7 +296,7 @@ func TestRepeatScheduleMySQLCancelBlockedQuery(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var n int64
-		if err := db.Raw("SELECT COUNT(*) FROM information_schema.processlist WHERE DB = ? AND STATE = 'Waiting for table metadata lock' AND INFO LIKE '%repeat_candidates%'", name).Scan(&n).Error; err != nil {
+		if err := db.Raw("SELECT COUNT(*) FROM information_schema.processlist WHERE DB = ? AND STATE = 'Waiting for table metadata lock' AND INFO LIKE '%MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at%'", name).Scan(&n).Error; err != nil {
 			t.Fatal(err)
 		}
 		if n > 0 {
@@ -298,7 +331,7 @@ func TestRepeatScheduleMySQLCancelBlockedQuery(t *testing.T) {
 	deadline = time.Now().Add(3 * time.Second)
 	for {
 		var n int64
-		if err := db.Raw("SELECT COUNT(*) FROM information_schema.processlist WHERE DB = ? AND ID <> CONNECTION_ID() AND INFO LIKE '%repeat_candidates%'", name).Scan(&n).Error; err != nil {
+		if err := db.Raw("SELECT COUNT(*) FROM information_schema.processlist WHERE DB = ? AND ID <> CONNECTION_ID() AND INFO LIKE '%MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at%'", name).Scan(&n).Error; err != nil {
 			t.Fatal(err)
 		}
 		if n == 0 {
