@@ -2,6 +2,7 @@ package backoff
 
 import (
 	"math"
+	"math/big"
 	"math/rand/v2"
 	"sync"
 	"testing"
@@ -97,4 +98,57 @@ func TestDelayConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestExponentialMatchesExactIntegerArithmetic(t *testing.T) {
+	for _, base := range []time.Duration{1, 2, 3, 999999999, 1 << 32, math.MaxInt64 / 3, math.MaxInt64} {
+		for _, limit := range []time.Duration{1, 3, time.Second, time.Minute, math.MaxInt64} {
+			for exponent := 0; exponent <= 64; exponent++ {
+				exact := new(big.Int).Lsh(big.NewInt(int64(base)), uint(exponent))
+				want := limit
+				if exact.Cmp(big.NewInt(int64(limit))) <= 0 {
+					want = time.Duration(exact.Int64())
+				}
+				if got := exponential(base, exponent, limit); got != want {
+					t.Fatalf("base=%d exp=%d limit=%d got=%d want=%d", base, exponent, limit, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestSecondsAtRepresentableBoundary(t *testing.T) {
+	boundary := int64(math.MaxInt64) / int64(time.Second)
+	if uint64(math.MaxInt) < uint64(boundary+1) {
+		largest := math.MaxInt
+		if got := Seconds(largest); got != time.Duration(largest)*time.Second {
+			t.Fatal(got)
+		}
+		return
+	}
+	for _, seconds := range []int64{boundary - 1, boundary, boundary + 1} {
+		exact := new(big.Int).Mul(big.NewInt(seconds), big.NewInt(int64(time.Second)))
+		want := time.Duration(math.MaxInt64)
+		if exact.IsInt64() {
+			want = time.Duration(exact.Int64())
+		}
+		if got := Seconds(int(seconds)); got != want {
+			t.Fatalf("seconds=%d got=%d want=%d", seconds, got, want)
+		}
+	}
+}
+
+func TestDelayUsesJitterAfterCapping(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	for range 128 {
+		got := Delay(math.MaxInt64, math.MaxInt, time.Minute)
+		if got < 30*time.Second || got > time.Minute {
+			t.Fatal(got)
+		}
+		seen[got] = true
+	}
+	// Range checks alone also accept a fixed cap or midpoint (no jitter).
+	if len(seen) < 2 {
+		t.Fatal("production Delay returned a constant instead of jitter")
+	}
 }

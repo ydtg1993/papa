@@ -40,7 +40,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 74 个生产 Go 文件、98 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 74 个生产 Go 文件、100 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -285,3 +285,12 @@ InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查�
 ### Handler 退避回归归属
 
 `retry_backoff_test.go` 验证策略极值、实际 Handler 重试计数/单次认领、取消时认领释放及真实 worker Stop 退出。`stage_test.go` 保留首次不等、只在尝试之间等待和末次失败不空等的契约；Equal Jitter 的最低等待为封顶指数值的一半。`persistence_test.go` 继续验证 retry 加法回执不明不能重放。该退避不用于数据库确认重试、账号冷却、熔断探测或治理层 Retry-After。
+
+退避复审的虚拟时间测试在确认尝试收尾后再取消，并验证实际 Handler 的各次间隔及首次/末次不空等。Stop 测试显式模拟一条持久 pending，分别核验 worker stop 事件、驻留引用清零和整体 drained=false / Queued=1；不再用第二次 pool.Stop 代替 Engine.Stop 首次结论。事件测试边界在失败清理中也关闭，假库结果不替代真实 MySQL。
+
+`persistence.go` 的 retry 加一入口拥有写前取消判定：已观察到取消时交回认领；写入开始后返回取消/错误仍属未确认，不用 ctx.Err 推断数据库没有提交。`retry_backoff_test.go` 分别覆盖内存/持久任务写前取消与写入中/提交后回执丢失。
+
+
+## repeat 查询的规模实验归属
+
+`repeat_algorithm_evaluation_test.go` 在显式开启后借用现有 `compensationMySQL` / `pkg/testdb` 随机测试库，验证当前 repeat 查询在合成行数/状态/阶段上限下的耗时和读取量；测试侧有序探测只用于比较，没有生产缓存或查询替换。`repeat_wake_evaluation_test.go` 用虚拟时间验证持续 wake 的合并次数及到期 tick 不被饿死，不以虚拟时间测 SQL 性能。repeat 节拍和读策略仍归 `repeatpoll.go`，带版本条件的轮次更新仍归 `internal/taskstore`。实验结果不代表已完成生产 SQL 优化。

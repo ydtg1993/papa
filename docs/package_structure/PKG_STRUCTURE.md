@@ -257,7 +257,7 @@ Validator 保存构造时编译的规则，单次 Validate 的行结果和唯一
 
 请求预算按站点跨阶段/账号共享，任务与浏览器资源许可按进程全局分配。`WaitTaskReady` 在认领前等待，实际请求仍须 `AcquireRequest`。返回的归还函数或反馈函数属于该次许可；HTTP 包装器在 RoundTrip 返回时立即观察状态码、Retry-After 和该阶段延迟，许可则在 body 读到结束/错误、Close 或请求 context 取消时归还；失败或无 body 时立即归还。因此取消后的许可释放不等于底层 body 已关闭，调用方仍须关闭响应。`RunSampler` 是调用方启动并持 context 取消的循环，Controller 不拥有 App 生命周期或政策数据库。
 
-此包不依赖 Engine、配置存储或业务站点。持久运行政策与版本事务见 `internal/runtimecontrol`，Engine 只通过许可接口编排。测试在 `controller_test.go`、`rate_limit_test.go`、`transport_test.go`；受管浏览器适配的测试归 browser。使用说明见 [运行治理](../runtime/RUNTIME_CONTROL.md)。
+此包不依赖 Engine、配置存储或业务站点。持久运行政策与版本事务见 `internal/runtimecontrol`，Engine 只通过许可接口编排。测试在 `controller_test.go`、`rate_limit_test.go`、`transport_test.go`；`algorithm_evaluation_test.go` 拥有 CPU/反馈回放、任务积压模型及控制路径微基准，测试侧 EWMA/方向性 α 不属于生产能力，也不增加 Controller 状态；受管浏览器适配的测试归 browser。使用说明见 [运行治理](../runtime/RUNTIME_CONTROL.md)。
 
 ### 6.2 egress
 
@@ -453,3 +453,7 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 | 临时目录/恢复清理、测试库 | 分别进入 temporary、testdb | 框架内的业务删表事务或普通启动迁移 |
 
 新增实现须同时交代四项：所属语义、状态及资源拥有者、最小公开接口、允许依赖。出现持久化/锁/版本/生命周期交界时先保持原子性和关停语义，再决定是否拆文件或拆包。公开入口按当前职责归属，实现在所属组件；不能通过把整个 App/Engine 或可写私有状态传进新包完成表面拆分。
+
+### 下载退避的确定性验证
+
+两个下载包的 `retry_backoff_test.go` 使用 testing/synctest 和内存 RoundTripper 确认响应已关闭、调用已进入退避后再取消；M3U8 同时覆盖请求级/加密分片外层的 context deadline。还校验实际循环的首次/重试/末次时间、次数和取消后的临时文件/内存预留。原本地 HTTP 重试次数用例继续保留；内存 transport 不代表验证了网络出口或真实目标站行为。

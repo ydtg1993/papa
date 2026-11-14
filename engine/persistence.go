@@ -106,6 +106,15 @@ func (e *Engine) forgetUnsettled(task *Task)   { e.execution.Forget(task.ID) }
 // row stays processing and remains visible as unresolved; restart recovery can
 // revisit it. Neither an additive UPDATE nor the business handler is replayed.
 func (e *Engine) incrementExecutionRetry(ctx context.Context, task *Task) error {
+	// A ready timer does not establish that cancellation lost the race: select
+	// can choose it when Done is also ready. Before any additive write starts,
+	// observed cancellation is unambiguous and must release the existing claim.
+	// Cancellation during the write remains unconfirmed below; never infer that
+	// such a write did not commit or repeat it.
+	if err := ctx.Err(); err != nil {
+		e.releaseClaim(task)
+		return err
+	}
 	if task.ID != 0 {
 		if err := taskstore.IncrementRetry(e.db.WithContext(ctx), task.ID); err != nil {
 			e.rememberUnsettled(task)

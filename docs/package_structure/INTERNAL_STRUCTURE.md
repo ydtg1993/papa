@@ -543,3 +543,5 @@ Stop 等待给定 timeout 后按 submitted-completed-failed 返回 drained 与�
 `backoff.go` 仅依赖标准库，拥有饱和秒转换、指数溢出预判、Equal Jitter 采样，计算量不随异常指数线性增长。生产随机调用使用并发安全的 math/rand/v2 顶层函数，无包级可变随机源、goroutine、锁或关闭入口。`backoff_test.go` 验证极值、端点、固定种子分散与并发调用。
 
 Engine 与 filedown/M3U8 各自的 `retry_backoff.go` 拥有基数、指数编号和上限策略；调用方继续拥有 context 等待、重试计数、请求和结算。不得把 Sleep、数据库、obs、App/Engine 或配置对象引入本计算包，架构测试守卫该依赖边界。
+
+退避验证还包括任意精度整数参照、整秒转换临界值、生产采样入口分散，以及独立 Windows 386 计算包检查。测试可用 testing/synctest；生产 backoff 仍只计算，不持有 context/时钟服务或等待生命周期。
