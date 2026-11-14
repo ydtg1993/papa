@@ -40,7 +40,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 74 个生产 Go 文件、100 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 75 个生产 Go 文件、104 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -97,7 +97,8 @@ engine/
 | `batch.go` | 有界批处理、批间暂停、并发辅助及重投失败处理 | 为治理入口提供执行工具；不演变为任意功能工具集合 |
 | `errorqueue.go` | 失败任务查询、手动/周期重投及失败队列循环 | 一条全局治理队列；重投状态更新使用既有持久化协议 |
 | `recoverqueue.go` | 启动恢复范围、串行化处理、恢复投递及跳过统计 | 遵守进程启动截止时间，不能重新认领本进程已接管的任务 |
-| `repeatpoll.go` | 到期/强制轮询查询、轮次重置、上限、下次周期和唤醒 | 首次提交、下一轮轮询与同轮回灌不可混为同一次计数 |
+| `repeatpoll.go` | 到期/强制轮询、轮次重置、上限、节拍读取与唤醒 | 首次提交、下一轮轮询与同轮回灌不可混为同一次计数 |
+| `repeat_schedule_query.go` | 单语句最早排期过滤聚合：终态/未来谓词、NULL 与日期转换、阶段上限 | 保留 MySQL 的 MIN(epoch) 与调用方查询作用域，不按 DATETIME 首条代替 epoch 最小值；不新增缓存、锁、事务或后台协程 |
 | `queuestats.go` | 队列运行/积压快照、计数及采样循环 | 运行状态在自身锁内更新，队列轮次事件在锁外发布，允许观察者查询完成后的统计 |
 
 ### 3.5 暂停与熔断
@@ -293,4 +294,14 @@ InitBreakerRuntime 在访问存储前，通过 Engine.mu 的短准入区检查�
 
 ## repeat 查询的规模实验归属
 
-`repeat_algorithm_evaluation_test.go` 在显式开启后借用现有 `compensationMySQL` / `pkg/testdb` 随机测试库，验证当前 repeat 查询在合成行数/状态/阶段上限下的耗时和读取量；测试侧有序探测只用于比较，没有生产缓存或查询替换。`repeat_wake_evaluation_test.go` 用虚拟时间验证持续 wake 的合并次数及到期 tick 不被饿死，不以虚拟时间测 SQL 性能。repeat 节拍和读策略仍归 `repeatpoll.go`，带版本条件的轮次更新仍归 `internal/taskstore`。实验结果不代表已完成生产 SQL 优化。
+`repeat_schedule_query.go` 拥有最早排期 SQL 构造；`repeatpoll.go` 用 Engine 的 queueContext 执行，取消前不发查询、取消后不接受结果，不把正常取消记录为数据库故障。查询把原 CASE 的有效行条件下推到 WHERE：终态或未来排期；对留下的行计算 `MIN(CAST(UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) AS SIGNED))`。NULL/未知状态仍仅未来参与，终态 NULL 仍取 NOW，阶段上限和调用方 Scope 不变。MySQL 宽松模式能存入范围内非法日期，其 epoch 可为 0，因此不再使用有序首条/UNION/EXISTS 快速路径；正确性不依赖日期合法性或会话 SQL mode。单语句读视图依赖 InnoDB RC/RR，不引入锁定读或事务。
+
+`repeat_schedule_query_test.go` 验证一次数据库读取、预取消与 Stop 等待真实查询退出；`repeat_schedule_mysql_test.go` 使用随机隔离库验证旧聚合等价、边界、事务并发、隔离级别和元数据锁下的取消。`repeat_schedule_edge_mysql_test.go` 补充宽松写入后严格读取的异常日期混合集、NULL 轮次/站点、负数/零/正上限及调用方排序/分页/延迟 Scope；断言实际存储值，避免 MySQL 强制转换导致夹具假通过。`repeat_algorithm_evaluation_test.go` 保存测试专用原聚合对照，比较 1k/10k/100k、全部被上限排除及大量活跃过期行的成本，不保留四次独立读取的试验实现。`repeat_wake_evaluation_test.go` 验证持续 wake 不饿死 tick，不以虚拟时间测 SQL。
+
+原子轮次更新仍归 `internal/taskstore.AdvanceRepeat`，本次不改变重投写路径。tickerWG 仍拥有查询在途生命周期；查询未退出时 Stop 返回未排空，不能因 context 已取消就宣称可以关闭共享资源。小表存在分支构造/规划开销，全部被上限排除时仍需要扫描匹配行；无常驻缓存状态。
+
+## RepeatLimit 条件合并（2026-11-14）
+
+`repeatpoll.go` 的 `withRepeatLimits` 继续统一拥有自动轮询、强制轮询和最早排期的读取上限。每次构造 SQL 时，仅合并 **阶段名、正 RepeatLimit 均相同** 的站点，将多条 `NOT (site = ? AND stage = ? AND repeat >= ?)` 合为一条带 `site IN (...)` 的否定条件。组顺序及站点顺序由已排序的阶段键决定；不同阶段或不同上限不合并，单成员组仍用等号。SQL 三值逻辑不变；没有常驻分组缓存、新锁、数据库索引或优化器提示。写路径 `taskstore.AdvanceRepeat` 仍用每条任务所属阶段的单独上限做原子更新。
+
+`repeat_limit_test.go` 钉住分组边界及 SQL 稳定顺序；`repeat_schedule_edge_mysql_test.go` 验证多组上限的 NULL/状态/日期资格及自动/强制轮询集合。`repeat_algorithm_evaluation_test.go` 冻结原 CASE **及原逐阶段上限作用域**，避免新旧两边共用修改后的过滤逻辑而假通过。`repeat_cap_evaluation_test.go` 只拥有随机实库的成本对照：交错执行原 CASE、原过滤聚合、条件交换、语句级 NO_ICP 诊断和生产分组查询，记录实际 EXPLAIN ANALYZE 与 Handler 读取量；诊断提示不进入生产。
