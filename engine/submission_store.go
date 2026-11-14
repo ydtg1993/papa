@@ -329,7 +329,6 @@ func (s submissionStore) prepareBatch(tasks []*Task, accept func(submissionDeliv
 			s.dedupCache.Add(t.Unique())
 			continue
 		}
-		s.dedupCache.Add(t.Unique())
 		var record models.CrawlerTask
 		if err := s.db.Model(&models.CrawlerTask{}).Where("id = ?", t.ID).First(&record).Error; err != nil {
 			submitErrors = append(submitErrors, fmt.Errorf("reload task %d before enqueue: %w", t.ID, err))
@@ -342,6 +341,7 @@ func (s submissionStore) prepareBatch(tasks []*Task, accept func(submissionDeliv
 			submitErrors = append(submitErrors, err)
 			continue
 		}
+		s.dedupCache.Add(t.Unique())
 		accept(submissionDelivery{task: t, record: record, batch: true})
 	}
 	err := errors.Join(submitErrors...)
@@ -406,13 +406,6 @@ func (s submissionStore) claim(ctx context.Context, id uint, versions ...*taskRu
 	return false, &row, nil
 }
 
-// submitTo 按任务的加急标记选队列：加急走快车道，其余走常规队列。
-// 池子本身不认识优先级（Tasker 接口只有 Unique），路由决定留在这里。
-// submitUpdates 一次提交要写回行里的列 —— **只写这个函数负责的那几列**（见 submitToPool 的注释）。
-//
-// 抽出来是为了能在**不连库**的前提下把拼出来的 SQL 渲染出来验（engine/sqlshape_test.go）：
-// `repeat` 是 MySQL 保留字，裸写进表达式会被当成 REPEAT() 函数调用、整条 UPDATE 报 1064 ——
-// 这个坑真踩过（v3.1.0 起，只有真库跑得出来，假库测试看不见）。
 // Submission may update business metadata, never a persisted stage identity.
 func submitUpdates(task *Task) map[string]any {
 	updates := map[string]any{}
