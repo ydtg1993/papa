@@ -43,9 +43,36 @@ func (e *Engine) withRepeatLimits(q *gorm.DB) *gorm.DB {
 		}
 	}
 	sort.Strings(keys)
+	// Fold only identical stage/limit predicates. NOT ((site=a OR site=b)
+	// AND stage=s AND repeat>=n) preserves the original SQL three-valued
+	// logic, including NULL site/repeat, without repeating stage/limit tests.
+	type limitKey struct {
+		stage string
+		limit int
+	}
+	type limitGroup struct {
+		key   limitKey
+		sites []string
+	}
+	groups := make([]limitGroup, 0, len(keys))
+	indices := make(map[limitKey]int, len(keys))
 	for _, key := range keys {
 		info := e.stages[key]
-		q = q.Where("NOT (site = ? AND stage = ? AND `repeat` >= ?)", info.config.Site, info.stage, info.config.RepeatLimit)
+		groupKey := limitKey{info.stage, info.config.RepeatLimit}
+		index, exists := indices[groupKey]
+		if !exists {
+			index = len(groups)
+			indices[groupKey] = index
+			groups = append(groups, limitGroup{key: groupKey})
+		}
+		groups[index].sites = append(groups[index].sites, info.config.Site)
+	}
+	for _, group := range groups {
+		if len(group.sites) == 1 {
+			q = q.Where("NOT (site = ? AND stage = ? AND `repeat` >= ?)", group.sites[0], group.key.stage, group.key.limit)
+		} else {
+			q = q.Where("NOT (site IN ? AND stage = ? AND `repeat` >= ?)", group.sites, group.key.stage, group.key.limit)
+		}
 	}
 	return q
 }

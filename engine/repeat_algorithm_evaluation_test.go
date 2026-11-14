@@ -91,7 +91,7 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 						e.db = tx
 						defer func() { e.db = db }()
 						var baseline struct{ Epoch *int64 }
-						if err := e.withRepeatLimits(referenceSoonestRepeatQueryOn(tx)).Scan(&baseline).Error; err != nil {
+						if err := referenceRepeatLimits(e, referenceSoonestRepeatQueryOn(tx)).Scan(&baseline).Error; err != nil {
 							return err
 						}
 						if baseline.Epoch == nil && !(distribution == "all_capped" && limits) {
@@ -144,10 +144,10 @@ func TestAlgorithmRepeatMySQL(t *testing.T) {
 						}{
 							{"soonest", func() error {
 								var r struct{ Epoch *int64 }
-								return e.withRepeatLimits(referenceSoonestRepeatQueryOn(tx)).Scan(&r).Error
+								return referenceRepeatLimits(e, referenceSoonestRepeatQueryOn(tx)).Scan(&r).Error
 							}, tx.ToSQL(func(d *gorm.DB) *gorm.DB {
 								var r struct{ Epoch *int64 }
-								return e.withRepeatLimits(referenceSoonestRepeatQueryOn(d)).Scan(&r)
+								return referenceRepeatLimits(e, referenceSoonestRepeatQueryOn(d)).Scan(&r)
 							})},
 							{"optimized_single_statement", func() error { _, err := candidate(); return err }, tx.ToSQL(func(d *gorm.DB) *gorm.DB { var row struct{ Epoch *int64 }; return e.soonestRepeatQueryOn(d).Find(&row) })},
 							{"due_first_page", func() error {
@@ -223,4 +223,21 @@ func algorithmHandlerReads(t *testing.T, db *gorm.DB) uint64 {
 func referenceSoonestRepeatQueryOn(db *gorm.DB) *gorm.DB {
 	return db.Model(&models.CrawlerTask{}).Where("repeatable = ?", models.RepeatableYes).
 		Select(`MIN(CAST(CASE WHEN status IN ? THEN UNIX_TIMESTAMP(COALESCE(next_repeat_at, NOW())) WHEN next_repeat_at > NOW() THEN UNIX_TIMESTAMP(next_repeat_at) ELSE NULL END AS SIGNED)) AS epoch`, []models.TaskStatus{models.TaskStatusSuccess, models.TaskStatusFailed})
+}
+
+// Frozen pre-folding scope: semantic/performance comparisons must not use the
+// production helper on both sides of a RepeatLimit rewrite.
+func referenceRepeatLimits(e *Engine, q *gorm.DB) *gorm.DB {
+	keys := make([]string, 0, len(e.stages))
+	for key, info := range e.stages {
+		if info.config.RepeatLimit > 0 {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		info := e.stages[key]
+		q = q.Where("NOT (site = ? AND stage = ? AND `repeat` >= ?)", info.config.Site, info.stage, info.config.RepeatLimit)
+	}
+	return q
 }

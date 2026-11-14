@@ -81,6 +81,40 @@ func TestRepeatLimitSQLScopesAndScheduler(t *testing.T) {
 	}
 }
 
+func TestRepeatLimitGroupsOnlyEqualStageAndLimit(t *testing.T) {
+	e := &Engine{stages: map[string]*stageInfo{
+		"a:detail":    {stage: "detail", config: StageConfig{Site: "a", RepeatLimit: 3}},
+		"b:detail":    {stage: "detail", config: StageConfig{Site: "b", RepeatLimit: 3}},
+		"c:detail":    {stage: "detail", config: StageConfig{Site: "c", RepeatLimit: 5}},
+		"a:catalog":   {stage: "catalog", config: StageConfig{Site: "a", RepeatLimit: 2}},
+		"d:catalog":   {stage: "catalog", config: StageConfig{Site: "d", RepeatLimit: 2}},
+		"free:detail": {stage: "detail", config: StageConfig{Site: "free"}},
+	}}
+	db := dryRunMySQL(t)
+	var previous string
+	for i := 0; i < 10; i++ {
+		sql := db.ToSQL(func(d *gorm.DB) *gorm.DB {
+			return e.withRepeatLimits(d.Model(&models.CrawlerTask{})).Find(&[]models.CrawlerTask{})
+		})
+		for _, want := range []string{
+			"NOT (site IN ('a','b') AND stage = 'detail' AND `repeat` >= 3)",
+			"NOT (site = 'c' AND stage = 'detail' AND `repeat` >= 5)",
+			"NOT (site IN ('a','d') AND stage = 'catalog' AND `repeat` >= 2)",
+		} {
+			if !strings.Contains(sql, want) {
+				t.Fatalf("missing %s in %s", want, sql)
+			}
+		}
+		if strings.Count(sql, "NOT (") != 3 || strings.Contains(sql, "'free'") {
+			t.Fatalf("wrong cap groups: %s", sql)
+		}
+		if i > 0 && sql != previous {
+			t.Fatal("map iteration changed group/parameter order")
+		}
+		previous = sql
+	}
+}
+
 func TestRepeatCountDeliveredAfterRequeue(t *testing.T) {
 	f := newFakeTaskDB()
 	pool := workerpool.NewWorkerPool[*Task](1, 8, 1)

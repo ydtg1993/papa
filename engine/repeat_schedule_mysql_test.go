@@ -44,7 +44,7 @@ func repeatScheduleEpoch(t *testing.T, e *Engine, db *gorm.DB, legacy bool) *int
 	var row struct{ Epoch *int64 }
 	q := e.soonestRepeatQueryOn(db)
 	if legacy {
-		q = e.withRepeatLimits(referenceSoonestRepeatQueryOn(db))
+		q = referenceRepeatLimits(e, referenceSoonestRepeatQueryOn(db))
 	}
 	if err := q.Scan(&row).Error; err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func sameRepeatEpoch(a, b *int64) bool {
 
 func TestRepeatScheduleMySQLBoundaries(t *testing.T) {
 	db, _ := compensationMySQL(t)
-	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: 3}}}}
+	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: 3}}, "peer:detail": {stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: 3}}}}
 	for _, zone := range []string{"SYSTEM", "+00:00", "+08:00"} {
 		t.Run(zone, func(t *testing.T) {
 			if err := db.Connection(func(conn *gorm.DB) error {
@@ -169,7 +169,7 @@ func TestRepeatScheduleMySQLConcurrentSnapshot(t *testing.T) {
 
 func testRepeatScheduleConcurrentSnapshot(t *testing.T, limit int) {
 	db, _ := compensationMySQL(t)
-	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}}}
+	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}, "peer:detail": {stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: limit}}}}
 	insertRepeatScheduleRows(t, db, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"}, repeatScheduleRow{status: 3, round: 1, at: "2028-01-01 00:00:00"})
 	want := repeatScheduleEpoch(t, e, db, true)
 	var expected int64
@@ -229,7 +229,7 @@ func testRepeatScheduleConcurrentSnapshot(t *testing.T, limit int) {
 
 func TestRepeatScheduleMySQLIsolation(t *testing.T) {
 	db, _ := compensationMySQL(t)
-	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: 3}}}}
+	e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: 3}}, "peer:detail": {stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: 3}}}}
 	for _, level := range []sql.IsolationLevel{sql.LevelReadCommitted, sql.LevelRepeatableRead} {
 		t.Run(level.String(), func(t *testing.T) {
 			insertRepeatScheduleRows(t, db, repeatScheduleRow{status: 2, round: 1, at: "2027-01-01 00:00:00"})

@@ -32,7 +32,7 @@ func TestRepeatScheduleMySQLInvalidDates(t *testing.T) {
 			}
 		}()
 		for _, limit := range []int{-1, 0, 3} {
-			e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}}}
+			e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}, "peer:detail": {stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: limit}}}}
 			for _, status := range []any{0, 1, 2, 3, 9, nil} {
 				for _, at := range []string{"2027-00-01 00:00:00", "2027-01-00 00:00:00", "2027-02-30 00:00:00", "2027-04-31 00:00:00", "0000-00-00 00:00:00"} {
 					t.Run(fmt.Sprintf("limit_%d/status_%v/%s", limit, status, at), func(t *testing.T) {
@@ -110,7 +110,7 @@ func TestRepeatScheduleMySQLCallerScopeAndLimit(t *testing.T) {
 func TestRepeatScheduleMySQLNullableCaps(t *testing.T) {
 	db, _ := compensationMySQL(t)
 	for _, limit := range []int{-1, 0, 3} {
-		e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}}}
+		e := &Engine{stages: map[string]*stageInfo{"limited:detail": {stage: "detail", config: StageConfig{Site: "limited", RepeatLimit: limit}}, "peer:detail": {stage: "detail", config: StageConfig{Site: "peer", RepeatLimit: limit}}}}
 		for _, tc := range []struct {
 			name               string
 			site, stage, round any
@@ -154,5 +154,90 @@ func TestRepeatScheduleMySQLNullableCaps(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRepeatScheduleMySQLMixedCapGroups(t *testing.T) {
+	db, _ := compensationMySQL(t)
+	e := &Engine{stages: map[string]*stageInfo{
+		"a:detail":    {stage: "detail", config: StageConfig{Site: "a", RepeatLimit: 3}},
+		"b:detail":    {stage: "detail", config: StageConfig{Site: "b", RepeatLimit: 3}},
+		"c:detail":    {stage: "detail", config: StageConfig{Site: "c", RepeatLimit: 5}},
+		"a:catalog":   {stage: "catalog", config: StageConfig{Site: "a", RepeatLimit: 2}},
+		"d:catalog":   {stage: "catalog", config: StageConfig{Site: "d", RepeatLimit: 2}},
+		"free:detail": {stage: "detail", config: StageConfig{Site: "free"}},
+	}}
+	if err := db.Connection(func(conn *gorm.DB) error {
+		tx := conn.Session(&gorm.Session{NewDB: true})
+		e.db = tx
+		defer func() { e.db = nil }()
+		if err := tx.Exec("SET timestamp = 1794614400").Error; err != nil {
+			return err
+		}
+		defer func() {
+			if err := tx.Exec("SET timestamp = 0").Error; err != nil {
+				t.Error(err)
+			}
+		}()
+		for _, tc := range []struct {
+			name     string
+			site     any
+			stage    string
+			round    any
+			eligible bool
+		}{
+			{"a_below", "a", "detail", 2, true}, {"a_at", "a", "detail", 3, false},
+			{"b_at", "b", "detail", 3, false}, {"b_null", "b", "detail", nil, false},
+			{"c_different_limit", "c", "detail", 3, true}, {"c_at", "c", "detail", 5, false},
+			{"a_other_stage", "a", "catalog", 2, false}, {"d_below", "d", "catalog", 1, true},
+			{"d_at", "d", "catalog", 2, false}, {"d_unlimited_stage", "d", "detail", 100, true},
+			{"free", "free", "detail", nil, true}, {"unknown", "unknown", "detail", nil, true},
+			{"empty_stage", "a", "", nil, true}, {"unknown_stage", "a", "unknown", 100, true},
+			{"null_site_below_all", nil, "detail", 2, true}, {"null_site_between_limits", nil, "detail", 3, false},
+			{"null_site_null_round", nil, "detail", nil, false}, {"null_site_unknown_stage", nil, "unknown", nil, true},
+		} {
+			for _, status := range []any{2, 0, nil} {
+				for _, at := range []any{nil, "2020-01-01 00:00:00", "2027-01-01 00:00:00"} {
+					t.Run(fmt.Sprintf("%s/status_%v/at_%v", tc.name, status, at), func(t *testing.T) {
+						insertRepeatScheduleRows(t, tx, repeatScheduleRow{status: status, at: at, round: tc.round})
+						if err := tx.Exec("UPDATE crawler_tasks SET site = ?, stage = ?", tc.site, tc.stage).Error; err != nil {
+							t.Fatal(err)
+						}
+						got, old := repeatScheduleEpoch(t, e, tx, false), repeatScheduleEpoch(t, e, tx, true)
+						future := at == "2027-01-01 00:00:00"
+						eligible := tc.eligible && (status == 2 || future)
+						want := int64(1794614400)
+						if at != nil {
+							if err := tx.Raw("SELECT CAST(UNIX_TIMESTAMP(?) AS SIGNED)", at).Scan(&want).Error; err != nil {
+								t.Fatal(err)
+							}
+						}
+						if !sameRepeatEpoch(got, old) || (got != nil) != eligible || got != nil && *got != want {
+							t.Fatal("grouping changed scheduling qualification/epoch")
+						}
+						for _, force := range []bool{false, true} {
+							query := e.repeatQueueQuery()
+							if force {
+								query = e.repeatForceQueueQuery()
+							}
+							var count int64
+							if err := query().Count(&count).Error; err != nil {
+								t.Fatal(err)
+							}
+							wantCount := int64(0)
+							if tc.eligible && status == 2 && (force || !future) {
+								wantCount = 1
+							}
+							if count != wantCount {
+								t.Fatalf("force=%v count=%d want=%d", force, count, wantCount)
+							}
+						}
+					})
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
