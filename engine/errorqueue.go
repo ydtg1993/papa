@@ -78,10 +78,9 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 		e.loggerSet.Engine.Warnf("error queue: stage %s not registered, skip task %d", stageKeyOfRecord(t), t.ID)
 		return false
 	}
-	// **`status` 守卫不能省**：批次 SELECT 与这次重置之间，**轮询队列**可能已经把这一行捞走并重投
-	//（一条 `repeatable + failed` 的行同时命中两个队列，两者各自有锁、互不互斥）：那一份被 worker
-	// 认领、正在跑，而这次无条件 UPDATE 照样把它改回 pending 并再投一份 → 同一行被两个 worker
-	// 并发执行。带上 status 之后：已经不是 failed 的行（正在跑 / 已终态）匹配不上，0 行 → 跳过。
+	// 查询与重投之间，手动重投或补偿可能已改变任务。存储层同时校验 failed、执行代次、
+	// 补偿版本、NoRetry 和自动重试额度，旧快照不能覆盖新状态或再消耗一次额度。
+	// 周期队列只处理成功任务，不与错误队列共享 failed 候选。
 	res := taskstore.RetryFailed(e.db.WithContext(e.queueContext()), t.ID, taskstore.RunVersion{Repeat: t.Repeat, Reprocess: t.Reprocess}, t.CompensationVersion, e.cfg.ErrorQueue.MaxRetry)
 	if res.Error != nil {
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())

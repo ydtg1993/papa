@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"github.com/ydtg1993/papa/v4/core"
+	"github.com/ydtg1993/papa/v4/engine/internal/delivery"
 	"github.com/ydtg1993/papa/v4/models"
 	"strings"
 )
@@ -88,6 +89,9 @@ func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, tas
 			return err
 		}
 		defer release()
+		merged, finish := delivery.Merge(ctx, p.sourceContext)
+		defer finish()
+		ctx = merged
 		if uint(p.id) != parent || p.flow != id {
 			return ErrTaskFlow
 		}
@@ -96,6 +100,9 @@ func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, tas
 		}
 	}
 
+	merged, cancel := delivery.Merge(ctx, e.queueContext())
+	defer cancel()
+	ctx = merged
 	if task == nil || task.AccountPool != "" || task.Repeatable || task.Delay != 0 || !task.NotBefore.IsZero() {
 		return ErrFlowInvalid
 	}
