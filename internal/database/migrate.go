@@ -14,8 +14,8 @@ type Model struct {
 	Value any
 }
 
-// FrameworkModels 返回框架自带、需要建表的模型。两张带开关的按配置决定要不要包含 ——
-// 开关关着就不建那张表（`server.operation_log` / `crawler.trace.enabled`）。
+// FrameworkModels 返回框架自带、需要建表的模型。操作日志表按配置决定是否包含 ——
+// 开关关着就不建那张表（`server.operation_log`）。
 //
 // 抽成纯函数有两个用处：让"哪个开关带出哪张表"能离线断言；以及让启动时的 dev 自动迁移
 // 和 `papa migrate` 吃**同一份清单**（原来那份只写在 internal/app 里，命令行拿不到）。
@@ -29,9 +29,6 @@ func FrameworkModels(cfg *config.Config) []Model {
 	}
 	if cfg.Server.OperationLog {
 		out = append(out, Model{Name: "crawler_operation_log", Value: &models.OperationLog{}})
-	}
-	if cfg.Crawler.Trace.Enabled {
-		out = append(out, Model{Name: "crawler_task_trace", Value: &models.TaskTrace{}})
 	}
 	return out
 }

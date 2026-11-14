@@ -28,7 +28,7 @@ func decodeTraceData(t *testing.T, r models.TaskTrace) map[string]any {
 // 成功捕获：写一条 ok 步骤，data 带命中的 URL / 方法 / 资源类型 / elapsed。
 func TestRecordCaptureSuccessStep(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 7, 0)
+	tr := newTrace(nil, logrus.New(), 7, 0)
 	ctx := withTrace(context.Background(), tr)
 
 	res := &browser.CaptureResult{
@@ -65,7 +65,7 @@ func TestRecordCaptureSuccessStep(t *testing.T) {
 // 失败捕获：写一条 failed 步骤（带候选样本与超时），并把 HTML 登记进归档缓冲。
 func TestRecordCaptureFailureStep(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 9, 1)
+	tr := newTrace(nil, logrus.New(), 9, 1)
 	ar := e.newArchiveBuffer(&Task{ID: 9, Stage: "stub", Site: "site"}, 1)
 	if ar == nil {
 		t.Fatal("归档开着时 newArchiveBuffer 不该返回 nil")

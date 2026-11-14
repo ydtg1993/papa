@@ -77,6 +77,10 @@ var validLogLevels = []string{"debug", "info", "warn", "warning", "error"}
 // 只碰可选键：必填键（log.dir、db 的连接池两键）仍由规则拒绝，不会被这里"补"成合法。
 // 空白串与没写等价 —— 与 log.dir / archive.dir 的判法一致（YAML 里写了个空值也是没写）。
 func applyDefaults(c *Config) {
+	if c.Crawler.TraceFiles.MaxFileBytes < 0 || c.Crawler.TraceFiles.MaxTotalBytes < 0 || c.Crawler.TraceFiles.MaxFiles < 0 {
+		panic("config: crawler.trace_files: 容量预算不得为负数（0 使用默认值）")
+	}
+
 	if strings.TrimSpace(c.Log.Level) == "" {
 		c.Log.Level = defaultLogLevel
 	}

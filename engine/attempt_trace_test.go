@@ -31,7 +31,7 @@ func TestFailedAttemptRecordsFailureStep(t *testing.T) {
 		t.Fatalf("runAttempt = %v, want %v", err, boom)
 	}
 
-	trace := pool.all()
+	trace := pool.traceText(t)
 	if !strings.Contains(trace, failureTraceStep) {
 		t.Fatalf("trace 里应有 %q 步骤：\n%s", failureTraceStep, trace)
 	}
@@ -60,7 +60,7 @@ func TestPanickingAttemptRecordsFailureStep(t *testing.T) {
 		}, task, 0)
 	}()
 
-	trace := pool.all()
+	trace := pool.traceText(t)
 	if !strings.Contains(trace, failureTraceStep) || !strings.Contains(trace, "boom-in-handler") {
 		t.Fatalf("panic 的尝试也要在 trace 里留下原因：\n%s", trace)
 	}
@@ -75,8 +75,8 @@ func TestSuccessfulAttemptHasNoFailureStep(t *testing.T) {
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL}}, task, 0); err != nil {
 		t.Fatalf("runAttempt = %v", err)
 	}
-	if strings.Contains(pool.all(), failureTraceStep) {
-		t.Fatalf("成功的尝试不该写 %q 步骤：\n%s", failureTraceStep, pool.all())
+	if strings.Contains(pool.traceText(t), failureTraceStep) {
+		t.Fatalf("成功的尝试不该写 %q 步骤：\n%s", failureTraceStep, pool.traceText(t))
 	}
 }
 

@@ -23,7 +23,7 @@ import (
 
 /* ---------- 辅助 ---------- */
 
-// archiveEngine 造一个开了归档的引擎：stub 库（trace 走它能读回 SQL）+ HTML 客户端 + 归档目录。
+// archiveEngine 造一个开了归档的引擎：stub 库（确认 trace 不写 SQL）+ HTML 客户端 + 归档目录。
 func archiveEngine(t *testing.T, mode string) (*Engine, *stubConnPool, string) {
 	t.Helper()
 	pool := &stubConnPool{}
@@ -41,6 +41,8 @@ func archiveEngine(t *testing.T, mode string) (*Engine, *stubConnPool, string) {
 	t.Cleanup(e.cancel)
 
 	e.cfg.Crawler.Trace.Enabled = true
+	e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
+	pool.traceDir = e.cfg.Crawler.TraceFiles.Dir
 	e.cfg.HTML = config.HTMLConfig{Enable: true, Timeout: 3 * time.Second, MaxBodySize: 4 << 20}
 	e.cfg.Crawler.Archive = config.ArchiveConfig{Enabled: true, Dir: dir, Mode: mode}
 	e.SetHTMLClient()
@@ -164,7 +166,7 @@ func TestArchiveWritesRawBytesOnFailedAttempt(t *testing.T) {
 	}
 
 	// trace 里要有指向文件的那一步 —— 否则"失败了"和"那一页"连不起来
-	trace := pool.all()
+	trace := pool.traceText(t)
 	if !strings.Contains(trace, archiveTraceStep) {
 		t.Fatalf("trace 里应有一条 %q 步骤：\n%s", archiveTraceStep, trace)
 	}
@@ -185,8 +187,8 @@ func TestArchiveSkipsSuccessfulAttemptByDefault(t *testing.T) {
 	if files := listArchive(t, dir); len(files) != 0 {
 		t.Fatalf("成功的尝试不该落盘，实得 %v", files)
 	}
-	if strings.Contains(pool.all(), archiveTraceStep) {
-		t.Fatalf("没归档就不该写归档步骤：\n%s", pool.all())
+	if strings.Contains(pool.traceText(t), archiveTraceStep) {
+		t.Fatalf("没归档就不该写归档步骤：\n%s", pool.traceText(t))
 	}
 }
 
@@ -219,8 +221,8 @@ func TestArchiveOnPanic(t *testing.T) {
 		if len(files) != 2 {
 			t.Fatalf("panic 的尝试应当落盘，实得 %v", files)
 		}
-		if !strings.Contains(pool.all(), archiveTraceStep) {
-			t.Fatalf("panic 路径也要把归档写进 trace：\n%s", pool.all())
+		if !strings.Contains(pool.traceText(t), archiveTraceStep) {
+			t.Fatalf("panic 路径也要把归档写进 trace：\n%s", pool.traceText(t))
 		}
 	}()
 
@@ -300,8 +302,8 @@ func TestArchiveDisabledIsNoop(t *testing.T) {
 	if files := listArchive(t, dir); len(files) != 0 {
 		t.Fatalf("归档关着就不该写文件，实得 %v", files)
 	}
-	if strings.Contains(pool.all(), archiveTraceStep) {
-		t.Fatalf("归档关着就不该写归档步骤：\n%s", pool.all())
+	if strings.Contains(pool.traceText(t), archiveTraceStep) {
+		t.Fatalf("归档关着就不该写归档步骤：\n%s", pool.traceText(t))
 	}
 }
 

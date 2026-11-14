@@ -152,12 +152,13 @@ type ObsThresholdsConfig struct {
 }
 
 type CrawlerConfig struct {
-	DedupCacheSize   int           `mapstructure:"dedup_cache_size"`   //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-	StopTimeout      time.Duration `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
-	StageIdleTimeout time.Duration `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
-	Trace            TraceConfig   `mapstructure:"trace"`              //单任务步骤追踪
-	Breaker          BreakerConfig `mapstructure:"breaker"`            //熔断（计数 + 阈值）
-	Archive          ArchiveConfig `mapstructure:"archive"`            //页面归档：失败时把那一页的原样 HTML 落到本地文件
+	DedupCacheSize   int              `mapstructure:"dedup_cache_size"`   //内存去重表最大条目数；0=不限，>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
+	StopTimeout      time.Duration    `mapstructure:"stop_timeout"`       //优雅退出时等各阶段 worker 排空队列的上限；<=0 用默认 5s
+	StageIdleTimeout time.Duration    `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
+	TraceFiles       TraceFilesConfig `mapstructure:"trace_files"`
+	Trace            TraceConfig      `mapstructure:"trace"`   //单任务步骤追踪
+	Breaker          BreakerConfig    `mapstructure:"breaker"` //熔断（计数 + 阈值）
+	Archive          ArchiveConfig    `mapstructure:"archive"` //页面归档：失败时把那一页的原样 HTML 落到本地文件
 }
 
 // BreakerConfig 熔断：窗口内**终态失败**数达到阈值就**自动暂停那一站的抓取**，
@@ -205,11 +206,20 @@ func (c CrawlerConfig) StopTimeoutOrDefault() time.Duration {
 }
 
 // TraceConfig 单任务步骤追踪配置。
-// 开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入 crawler_task_trace 表；
-// 关闭时不建表、不写库，task.Trace 为 nil（调用是安全的 no-op）。
+// 开启后 handler 可用 task.Trace.Step/Fail 上报步骤，写入独立的追踪文件；
+// 关闭时不写追踪文件，task.Trace 为 nil（调用是安全的 no-op）。
 type TraceConfig struct {
 	Enabled   bool          `mapstructure:"enabled"`   // 是否开启步骤追踪（默认 false）
 	Retention time.Duration `mapstructure:"retention"` // 步骤记录保留期；0/未写 = 默认 7 天，负数 = 不自动清理
+}
+
+// TraceFilesConfig 是独立的文件预算；与追踪模式分开管理。
+// 零值采用默认值；负预算非法，不提供无限容量模式。
+type TraceFilesConfig struct {
+	Dir           string `mapstructure:"dir"`             // 默认 ./traces；专用于 Trace，不与其它数据目录共用
+	MaxFileBytes  int64  `mapstructure:"max_file_bytes"`  // 默认 4 MiB
+	MaxTotalBytes int64  `mapstructure:"max_total_bytes"` // 默认 256 MiB
+	MaxFiles      int    `mapstructure:"max_files"`       // 默认 10000
 }
 
 // ArchiveConfig 页面归档：把「失败那一刻抓到的那一页」原样落到本地文件。
@@ -351,7 +361,7 @@ type ServerConfig struct {
 	// 治理队列（error/recover/repeat）积压数的采样间隔；<=0 用默认 1m。监控页只读内存快照，仅采样时查库。
 	QueueSampleInterval time.Duration `mapstructure:"queue_sample_interval"`
 	// 操作日志：开启后后台所有增删改操作写入 crawler_operation_log 表（含失败）。
-	// 关闭时不建表、不写库。
+	// 关闭时不写追踪文件。
 	OperationLog bool `mapstructure:"operation_log"`
 	// HTTP 服务的超时。<=0 用默认值（写超时除外，见下）。
 	// ReadHeaderTimeout 挡慢连接（只发头不发送体的那种）；IdleTimeout 管 keep-alive 空闲连接。

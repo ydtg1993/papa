@@ -27,6 +27,8 @@ import (
 )
 
 type Engine struct {
+	traceOnce       sync.Once
+	traces          *traceService
 	deliveryOnce    sync.Once
 	delivery        *delivery.Coordinator
 	deliveryStart   sync.Once

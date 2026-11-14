@@ -2,14 +2,16 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"github.com/ydtg1993/papa/v3/core"
 	"github.com/ydtg1993/papa/v3/models"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 const (
@@ -17,8 +19,6 @@ const (
 	defaultTraceRetention = 7 * 24 * time.Hour
 	// traceCleanupInterval 保留期清理的巡检间隔。
 	traceCleanupInterval = time.Hour
-	// traceDeleteBatch 每次 DELETE 的行数上限，避免长事务锁表。
-	traceDeleteBatch = 10000
 	// maxTraceSteps ListTrace 单次返回的步骤数上限。
 	maxTraceSteps = 500
 	// traceUrgentStep 加急任务在 trace 里记的步骤名（引擎在第一次尝试时写，见 runAttempt）。
@@ -32,15 +32,20 @@ const (
 // Trace 一次尝试（一次 FetchHandler 调用）的步骤记录器。
 //
 // worker 在调用 handler 前把它挂到 Task.Trace 上，handler 用 Step/Fail 逐步骤上报；
-// 一次尝试结束时一次性批量落库（一条多行 INSERT），不是每步一条 INSERT。
+// 一次尝试结束时一次性批量写文件（一次原子发布），不逐步骤执行文件 I/O。
 //
 // **空指针安全**：trace 未开启、或测试里直接调 FetchHandler 时 Task.Trace 为 nil，
 // 此时 Step/Fail/setResult/finish 都是 no-op —— 可选协作者就该是可选的。
 type Trace struct {
-	db      *gorm.DB
-	logger  *logrus.Logger
-	taskID  int
-	attempt int
+	store        *traceService
+	executionID  string
+	identityHash string
+	truncated    bool
+	bytes        int
+	seq          int
+	logger       *logrus.Logger
+	taskID       int
+	attempt      int
 
 	mu      sync.Mutex
 	steps   []models.TaskTrace
@@ -50,8 +55,8 @@ type Trace struct {
 }
 
 // newTrace 构造一次尝试的记录器。
-func newTrace(db *gorm.DB, logger *logrus.Logger, taskID, attempt int) *Trace {
-	return &Trace{db: db, logger: logger, taskID: taskID, attempt: attempt, lastAt: time.Now()}
+func newTrace(store *traceService, logger *logrus.Logger, taskID, attempt int) *Trace {
+	return &Trace{store: store, logger: logger, taskID: taskID, attempt: attempt, executionID: uuid.NewString(), identityHash: fmt.Sprint(taskID), lastAt: time.Now()}
 }
 
 // traceCtxKey 把本次尝试的 Trace 挂到 ctx 上 —— 与 archiveCtxKey 同一个手法。
@@ -84,9 +89,13 @@ func (t *Trace) Step(name string, data any) {
 	if t == nil {
 		return
 	}
+	payload := tracePayload{}
+	if data != nil {
+		payload.data, payload.truncated = traceData(data)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.append(name, models.TraceOK, "", "", data)
+	t.append(name, models.TraceOK, "", "", payload)
 }
 
 // Fail 记录一个失败的步骤，并带上它的错误分类与上下文数据。
@@ -94,13 +103,17 @@ func (t *Trace) Fail(name string, err error, data any) {
 	if t == nil {
 		return
 	}
+	payload := tracePayload{}
+	if data != nil {
+		payload.data, payload.truncated = traceData(data)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var msg, kind string
 	if err != nil {
 		msg, kind = err.Error(), ErrorKind(err)
 	}
-	t.append(name, models.TraceFailed, kind, msg, data)
+	t.append(name, models.TraceFailed, kind, msg, payload)
 }
 
 // Warn 记录一个**非致命**的步骤：出了点事，但不该把任务判失败。
@@ -115,43 +128,56 @@ func (t *Trace) Warn(name string, err error, data any) {
 	if t == nil {
 		return
 	}
+	payload := tracePayload{}
+	if data != nil {
+		payload.data, payload.truncated = traceData(data)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var msg, kind string
 	if err != nil {
 		msg, kind = err.Error(), ErrorKind(err)
 	}
-	t.append(name, models.TraceWarn, kind, msg, data)
+	t.append(name, models.TraceWarn, kind, msg, payload)
 }
 
 // append 追加一个步骤；调用方需已持锁。
 func (t *Trace) append(name string, status models.TraceStatus, kind, msg string, data any) {
+	if t.done {
+		return
+	}
 	now := time.Now()
 	rec := models.TaskTrace{
-		TaskID:   uint(t.taskID),
-		Attempt:  t.attempt,
-		Seq:      len(t.steps),
-		Step:     name,
-		Status:   status,
-		Kind:     kind,
-		Message:  msg,
-		Duration: now.Sub(t.lastAt),
+		TaskID:    uint(t.taskID),
+		Attempt:   t.attempt,
+		Seq:       t.seq,
+		CreatedAt: now,
+		Step:      traceClip(name, 1024),
+		Status:    status,
+		Kind:      traceClip(kind, 256),
+		Message:   traceClip(msg, 4096),
+		Duration:  now.Sub(t.lastAt),
 	}
 	t.lastAt = now
-	if data != nil {
-		// 序列化失败不静默丢：写一条可读的标记进去，免得排查时以为 handler 没上报 data。
-		// 与 content 列同一条约定：JSON 列不做 HTML 转义，否则步骤里的 HTML 片段是一片 <。
-		if b, err := marshalNoHTMLEscape(data); err == nil {
-			rec.Data = datatypes.JSON(b)
-		} else {
-			marker, _ := marshalNoHTMLEscape(map[string]string{"_marshal_error": err.Error()})
-			rec.Data = datatypes.JSON(marker)
-		}
+	if payload, ok := data.(tracePayload); ok {
+		rec.Data = datatypes.JSON(payload.data)
+		t.truncated = t.truncated || payload.truncated
+	}
+	t.seq++
+	t.truncated = t.truncated || len(name) > 1024 || len(kind) > 256 || len(msg) > 4096
+	size := traceRecordBytes(rec)
+	for len(t.steps) > 0 && (len(t.steps) >= maxTraceSteps || t.bytes+size > maxTraceBufferBytes) {
+		t.bytes -= traceRecordBytes(t.steps[0])
+		copy(t.steps, t.steps[1:])
+		t.steps[len(t.steps)-1] = models.TaskTrace{}
+		t.steps = t.steps[:len(t.steps)-1]
+		t.truncated = true
 	}
 	t.steps = append(t.steps, rec)
+	t.bytes += size
 }
 
-// setResult 记下本次尝试的结局：err == nil 视为成功，成功尝试落库时不写 data。
+// setResult 记下本次尝试的结局：err == nil 视为成功，成功尝试写文件时不写 data。
 // 只在 handler 正常返回时被调用 —— handler panic 时不会走到，那次尝试按失败处理，
 // data 保留，正好是排查 panic 现场要看的。
 func (t *Trace) setResult(err error) {
@@ -163,17 +189,19 @@ func (t *Trace) setResult(err error) {
 	t.mu.Unlock()
 }
 
-// flush 取出本次尝试要落库的记录并清空缓冲：成功尝试剥离 data（写入量按失败率走）。
-// 幂等 —— 已 flush 过、或本次尝试一个步骤都没上报时返回 nil。
+// flush 取出本次尝试要写文件的记录并清空缓冲：成功尝试剥离 data（写入量按失败率走）。
+// 幂等 —— 已 flush 过时返回 nil；空尝试记录完成标记，避免展示上一轮旧记录。
 func (t *Trace) flush() []models.TaskTrace {
 	if t == nil {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.done || len(t.steps) == 0 {
-		t.done = true
+	if t.done {
 		return nil
+	}
+	if len(t.steps) == 0 {
+		t.append("执行完成", models.TraceOK, "", "", nil)
 	}
 	t.done = true
 	records := t.steps
@@ -193,21 +221,14 @@ func (t *Trace) flush() []models.TaskTrace {
 	return records
 }
 
-// finish 把本次尝试的步骤一次性落库（一条多行 INSERT）。幂等：正常路径调一次、
-// defer 兜底再调一次也不会重复写（所以 defer 可以无脑挂）。
-// 写库失败只记日志，不影响任务成败 —— 最常见的原因是开关开着但表没建，
-// 那种情况由 app.NewApp 启动时的缺表告警负责喊出来。
+// finish publishes one immutable attempt file; file errors do not change task outcome.
 func (t *Trace) finish() {
 	if t == nil {
 		return
 	}
 	records := t.flush()
-	if len(records) == 0 {
-		return
-	}
-	if err := t.db.Create(&records).Error; err != nil {
-		t.logger.Warnf("trace: write %d steps of task %d attempt %d failed: %s",
-			len(records), t.taskID, t.attempt, err.Error())
+	if len(records) > 0 && t.store != nil {
+		t.store.write(t, records)
 	}
 }
 
@@ -216,49 +237,40 @@ func (e *Engine) traceEnabled() bool {
 	return e.cfg.Crawler.Trace.Enabled
 }
 
-// newTrace 为一次尝试构造记录器；追踪关闭或任务未落库（没有任务行可挂）时返回 nil。
+// newTrace 为一次尝试构造记录器；追踪关闭或任务未写文件（没有任务行可挂）时返回 nil。
 func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 	if !e.traceEnabled() || task.ID == 0 {
 		return nil
 	}
-	return newTrace(e.db, e.loggerSet.DB, task.ID, attempt)
+	if attempt == 0 || task.traceExecutionID == "" {
+		task.traceExecutionID = uuid.NewString()
+	}
+	tr := newTrace(e.traceService(), e.loggerSet.Engine, task.ID, attempt)
+	tr.executionID = task.traceExecutionID
+	tr.identityHash = fmt.Sprintf("%x", sha256.Sum256([]byte(task.Unique())))
+	return tr
 }
 
-// ListTrace 返回一条任务的全部步骤记录，按（尝试、步骤）排序。供监控后台的「追踪」抽屉读取。
+// ListTrace returns the latest persisted execution, across its retries.
 func (e *Engine) ListTrace(taskID int) ([]TraceStep, error) {
-	if !e.traceEnabled() {
-		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
-	}
-	var rows []models.TaskTrace
-	err := e.db.Where("task_id = ?", taskID).
-		Order("attempt, seq").
-		Limit(maxTraceSteps).
-		Find(&rows).Error
+	rows, err := e.ListTraceExecution(taskID)
 	if err != nil {
-		return nil, fmt.Errorf("load trace of task %d: %w", taskID, err)
+		return nil, err
 	}
 	out := make([]TraceStep, 0, len(rows))
 	for _, r := range rows {
-		status := "ok"
-		switch r.Status {
-		case models.TraceFailed:
-			status = "failed"
-		case models.TraceWarn:
-			status = "warn"
-		}
-		out = append(out, TraceStep{
-			Attempt:   r.Attempt,
-			Seq:       r.Seq,
-			Step:      r.Step,
-			Status:    status,
-			Kind:      r.Kind,
-			Message:   r.Message,
-			Data:      string(r.Data),
-			Duration:  r.Duration,
-			CreatedAt: r.CreatedAt,
-		})
+		out = append(out, r.TraceStep)
 	}
 	return out, nil
+}
+func (e *Engine) ListTraceExecution(taskID int) ([]core.TraceExecutionStep, error) {
+	if !e.traceEnabled() {
+		return nil, fmt.Errorf("步骤追踪未开启（crawler.trace.enabled）")
+	}
+	if taskID <= 0 {
+		return nil, fmt.Errorf("invalid trace task ID")
+	}
+	return e.traceService().files.List(context.Background(), taskID, maxTraceSteps)
 }
 
 // traceRetention 返回生效的保留期；<=0（未配置）用默认值，显式负数表示不自动清理。
@@ -273,7 +285,7 @@ func (e *Engine) traceRetention() time.Duration {
 	return r
 }
 
-// startTraceCleanup 启动保留期清理巡检：按批删除过期的步骤记录，避免全表长事务。
+// startTraceCleanup 启动保留期清理巡检：删除过期追踪文件。
 // 追踪关闭或保留期为负（显式要求永久保留）时不启动。
 func (e *Engine) startTraceCleanup() {
 	if !e.traceEnabled() {
@@ -284,10 +296,11 @@ func (e *Engine) startTraceCleanup() {
 		e.loggerSet.Engine.Infof("trace cleanup disabled: retention is negative (keep forever)")
 		return
 	}
-	// 进 tickerWG：清理要写库（按批 DELETE），必须等待清理结束后才能关闭数据库。
+	// 进 tickerWG：清理访问文件存储，关停等待其结束。
 	e.tickerWG.Add(1)
 	go func() {
 		defer e.tickerWG.Done()
+		e.cleanupTrace(retention)
 		ticker := time.NewTicker(traceCleanupInterval)
 		defer ticker.Stop()
 		for {
@@ -301,29 +314,25 @@ func (e *Engine) startTraceCleanup() {
 	}()
 }
 
-// cleanupTrace 按批删除 created_at 早于 now-retention 的记录，直到一轮删不满一批为止。
-// 每批之间看一眼 ctx：积压极大时这一轮会连删很多批，Engine.Stop 得能打断它。
+// cleanupTrace removes expired files, never task rows.
 func (e *Engine) cleanupTrace(retention time.Duration) {
-	cutoff := time.Now().Add(-retention)
-	var total int64
-	for {
-		select {
-		case <-e.ctx.Done():
-			e.loggerSet.DB.Infof("trace cleanup: interrupted after deleting %d rows", total)
-			return
-		default:
-		}
-		res := e.db.Where("created_at < ?", cutoff).Limit(traceDeleteBatch).Delete(&models.TaskTrace{})
-		if res.Error != nil {
-			e.loggerSet.DB.Errorf("trace cleanup: %s", res.Error.Error())
-			return
-		}
-		total += res.RowsAffected
-		if res.RowsAffected < traceDeleteBatch {
-			break
-		}
+	e.traceService().cleanup(e.lifecycleContext(), retention)
+}
+
+const maxTraceBufferBytes = 512 << 10
+const maxTraceDataBytes = 16 << 10
+
+func traceClip(s string, limit int) string {
+	if len(s) <= limit {
+		return s
 	}
-	if total > 0 {
-		e.loggerSet.Engine.Infof("trace cleanup: deleted %d rows older than %s", total, cutoff.Format(time.RFC3339))
-	}
+	return s[:limit] + " [truncated]"
+}
+func traceRecordBytes(r models.TaskTrace) int {
+	return len(r.Step) + len(r.Kind) + len(r.Message) + len(r.Data) + 256
+}
+
+type tracePayload struct {
+	data      string
+	truncated bool
 }

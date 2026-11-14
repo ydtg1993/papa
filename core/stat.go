@@ -128,3 +128,10 @@ type TraceStep struct {
 	Duration  time.Duration `json:"duration"`
 	CreatedAt time.Time     `json:"created_at"`
 }
+
+// TraceExecutionStep includes the file execution identity and bounded-tail status.
+type TraceExecutionStep struct {
+	TraceStep
+	ExecutionID string `json:"execution_id"`
+	Truncated   bool   `json:"truncated,omitempty"`
+}

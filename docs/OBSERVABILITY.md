@@ -20,7 +20,7 @@
 | 层 | 产出 | 谁写 | 回答什么问题 | 默认 |
 | --- | --- | --- | --- | --- |
 | 指标层 | `logs/events.jsonl`（JSONL，一行一事件） | 引擎异步 emitter（`pkg/events`） | 成功多少、多快、卡在哪个阶段、失败怎么分组 | 关（`obs.events.enabled` 开） |
-| 证据层 | `logs/*.log`、`crawler_task_trace`、`logs/fetcher-html/` 归档 | logrus / 引擎 trace / 归档器 | 失败那一刻的原文、`file:line` 样本、task 级轨迹 | 日志默认开；trace/归档按配置 |
+| 证据层 | `logs/*.log`、`traces/`、`logs/fetcher-html/` 归档 | logrus / 引擎 trace / 归档器 | 失败那一刻的原文、`file:line` 样本、task 级轨迹 | 日志默认开；trace/归档按配置 |
 | 状态层 | MySQL `crawler_tasks`（及业务表） | 引擎 / 业务 | 当前事实：谁 pending、谁 processing、终态分布 | 永远在 |
 
 报告是**只读**的：只读事件文件、日志目录、数据库；不写业务表、不重新投递任务、不调用外部接收端。

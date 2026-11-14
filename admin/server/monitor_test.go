@@ -636,6 +636,23 @@ func TestMonitorDemoJSON(t *testing.T) {
 
 // 步骤追踪接口：非法 id 挡在解析层、未配置返回 404、业务错误（如追踪开关没开）
 // 原样带给前端而不是被吞成 500 —— 抽屉里要能显示那句「步骤追踪未开启」。
+func TestFileTaskTraceExecutionHandler(t *testing.T) {
+	m := NewMonitor(fakeStageStats, testLogger{t: t}, MonitorConfig{
+		TaskTraceExecution: func(id int) ([]core.TraceExecutionStep, error) {
+			return []core.TraceExecutionStep{{TraceStep: core.TraceStep{Step: "file step"}, ExecutionID: "round-2", Truncated: true}}, nil
+		},
+	})
+	rr := serve(m, http.MethodGet, "/api/task/trace?id=7", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSON(t, rr)
+	step := body["steps"].([]any)[0].(map[string]any)
+	if step["execution_id"] != "round-2" || step["truncated"] != true || step["step"] != "file step" {
+		t.Fatalf("execution metadata missing: %+v", step)
+	}
+}
+
 func TestTaskTraceHandler(t *testing.T) {
 	steps := []core.TraceStep{
 		{Attempt: 0, Seq: 0, Step: "打开列表页", Status: "ok", Duration: 12 * time.Millisecond},

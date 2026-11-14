@@ -53,9 +53,17 @@ var TRACE_ACTION_PATH = '/task/action/trace';
         }
         Dialog.open({
             title: '任务追踪 #' + id,
-            body: renderSteps(resp.data.steps || []),
+            body: renderExecutionInfo(resp.data.steps || []) + renderSteps(resp.data.steps || []),
             actions: [{ label: '关闭', value: 'close' }]
         });
+    }
+
+    function renderExecutionInfo(steps) {
+        if (!steps.length) return '';
+        var first = steps[0], html = '';
+        if (first.execution_id) html += '<p>执行轮次：' + esc(String(first.execution_id)) + '</p>';
+        if (first.truncated) html += '<p>记录已截断，仅显示最近的步骤。</p>';
+        return html;
     }
 
     function alertTrace(id, msg) {

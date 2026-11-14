@@ -18,6 +18,9 @@ func TestTraceDrawerRendersCaptureCandidates(t *testing.T) {
 	}
 	src := string(js)
 	for _, want := range []string{
+		"first.execution_id",
+		"first.truncated",
+		"esc(String(first.execution_id))",
 		"trace-candidates", // 候选请求的折叠块
 		"candidates_total", // 「共 N 条」的总数
 		"data.candidates",  // 样本数组

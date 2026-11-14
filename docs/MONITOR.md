@@ -304,8 +304,7 @@ worker 认领时 `urgent` 自动归零，是**一次性**的，不会让失败�
 步骤追踪需要在配置里显式开启（`crawler.trace.enabled`，见 [CORE_CONFIG.md](./CORE_CONFIG.md)），
 handler 侧的用法见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) 1.3。
 **未开启时点「追踪」不会白屏**，抽屉里会直接显示「步骤追踪未开启」。
-要先跑一次迁移把 `crawler_task_trace` 建出来（脚手架项目里 `make migrate` 与 `papa migrate` 等价）；开关开着但表不存在时，
-启动会打一条醒目的错误日志，不会静默丢数据。
+追踪直接写入专用文件目录，不需要建表。后台显示最近一次已发布执行轮次及其重试步骤；记录超限时显示截断提示。文件损坏会明确报错，不回退读取数据库。
 
 ## 4. 自定义页与注入（逃生舱）
 

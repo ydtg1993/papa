@@ -16,7 +16,7 @@ import (
 // 现场 HTML 登记进归档缓冲。
 func TestRecordRenderWaitFailure(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 31, 0)
+	tr := newTrace(nil, logrus.New(), 31, 0)
 	ar := e.newArchiveBuffer(&Task{ID: 31, Stage: "stub", Site: "site"}, 0)
 	ctx := withArchive(withTrace(context.Background(), tr), ar)
 
@@ -53,13 +53,15 @@ func TestRecordRenderWaitFailure(t *testing.T) {
 // 导航失败（不是 WaitError）没有页面可看，不该写「等待渲染」步骤。
 func TestRecordRenderWaitFailureIgnoresOtherErrors(t *testing.T) {
 	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	tr := newTrace(e.db, logrus.New(), 32, 0)
+	tr := newTrace(nil, logrus.New(), 32, 0)
 	ar := e.newArchiveBuffer(&Task{ID: 32, Stage: "stub", Site: "site"}, 0)
 	ctx := withArchive(withTrace(context.Background(), tr), ar)
 
 	recordRenderWaitFailure(ctx, "https://site.example/", browser.PageOptions{}, errors.New("navigate: connection refused"))
-	if got := tr.flush(); len(got) != 0 {
-		t.Fatalf("导航失败不该写等待步骤：%+v", got)
+	for _, got := range tr.flush() {
+		if got.Step == renderWaitTraceStep {
+			t.Fatalf("导航失败不该写等待步骤：%+v", got)
+		}
 	}
 	if len(ar.pages) != 0 {
 		t.Fatalf("导航失败没有页面可归档，实得 %d 页", len(ar.pages))

@@ -52,7 +52,7 @@
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限，`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
 | `stop_timeout` | duration | `5s` | 取消阻塞提交后等待各阶段 worker 与持久化操作退出的上限；未开始任务保留 pending 供恢复（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
-| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler_task_trace` 表。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler.trace_files.dir` 下的独立追踪文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
 | `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：计数与阈值**每站一份**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
 | `breaker.window` | duration | `5m` | 统计窗口。窗口是滑动切片（60 个等宽桶），粒度 = `window/60` |
@@ -351,8 +351,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 —— `papa migrate` 不会替你改。
 
 框架自带的表：`crawler_tasks`、`crawler_access_token`、`crawler_config` 总是建；
-`crawler_operation_log`（`server.operation_log`）与 `crawler_task_trace`（`crawler.trace.enabled`）
-跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则那张表不会建出来。
+`crawler_operation_log` 跟随 `server.operation_log` 开关迁移。步骤追踪只写文件，不再迁移 `crawler_task_trace`；旧表不自动删除、导出或回退查询。
 
 **业务自己的表由项目自己的进程建**：那些模型是通过 `papa.WithModels`（脚手架里是根 `models`
 包的 `Models()`）在业务进程里注册的，所以 `papa migrate` 在业务项目里会转交给它。
@@ -377,3 +376,12 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 所有站点阶段还需补全 `StageSpec.Downstream`（直接下游白名单，空表示终点），入口改用 `SubmitEntryTask`，worker 子任务改用 `SubmitChildren(ctx, task, children...)`。详见 [FETCHER_WRITING_GUIDE.md](./FETCHER_WRITING_GUIDE.md) §1.6。
 
 升级时同时新增 `idx_task_delivery(site, stage, status)`，支持按阶段读取 pending 的游标查询。InnoDB 二级索引包含主键，可承接同阶段状态下的 ID 顺序；实际执行计划仍以目标数据库 EXPLAIN 为准。大表迁移需预留建索引时间；不在普通启动中自动迁移。
+
+
+### crawler.trace_files —— 追踪文件预算
+
+v3 保留 trace.enabled 开关及成功尝试剥离普通步骤 data 的语义，存储层采用 v4 文件实现。trace_files.dir 默认 ./traces，必须专用，不能与日志/归档共用，也不能经过符号链接。max_file_bytes 默认 4194304（4 MiB），max_total_bytes 默认 268435456（256 MiB），max_files 默认 10000；0 使用默认值，负数拒绝。
+
+每次执行具有独立 execution_id，内部重试共享轮次。每个尝试最多保留最近 500 步、约 512 KiB 的缓冲，单步 data 最多 16 KiB；截断会在后台提示。写入先完成临时文件、同步后再发布，读取只展示最近的已发布执行轮次。文件配额不足或写入失败只告警，不改变任务成败、不回退数据库；没有成功发布的新尝试不会替换最后一份可用证据。
+
+trace.retention 沿用默认 7 天，负数不自动清理（文件容量上限仍有效）。启动和每小时清理过期文件。进程硬杀可能丢失尚在内存中的尝试，不能将 trace 作为任务恢复依据。关停会等待 worker 的追踪发布；超时会报告未排空。

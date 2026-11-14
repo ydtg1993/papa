@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -32,7 +35,7 @@ func TestTraceNilReceiverIsNoop(t *testing.T) {
 }
 
 func TestTraceBuffersStepsWithSeqAndDuration(t *testing.T) {
-	tr := newTrace(dryDB(t), logrus.New(), 7, 2)
+	tr := newTrace(nil, logrus.New(), 7, 2)
 	tr.Step("打开页面", nil)
 	time.Sleep(2 * time.Millisecond)
 	tr.Step("解析列表", nil)
@@ -57,7 +60,7 @@ func TestTraceBuffersStepsWithSeqAndDuration(t *testing.T) {
 
 // flush 幂等：正常路径调一次、defer 兜底再调一次，不能重复写。
 func TestTraceFlushIsIdempotent(t *testing.T) {
-	tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+	tr := newTrace(nil, logrus.New(), 7, 0)
 	tr.Step("第一步", nil)
 	if got := tr.flush(); len(got) != 1 {
 		t.Fatalf("首次 flush = %d 条, want 1", len(got))
@@ -81,7 +84,7 @@ func TestTraceDataOnlyKeptForFailedAttempts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+			tr := newTrace(nil, logrus.New(), 7, 0)
 			tr.Step("采集列表", map[string]string{"count": "3"})
 			tr.Fail("解析详情", errors.New("selector not found"), map[string]string{"url": "u"})
 			tc.setResult(tr)
@@ -106,34 +109,25 @@ func TestTraceDataOnlyKeptForFailedAttempts(t *testing.T) {
 	}
 }
 
-// 一次尝试 = 一条多行 INSERT，不是每步一条。用 DryRun 的 DB 把语句抓出来看。
-func TestTraceWritesOneMultiRowInsert(t *testing.T) {
-	db := dryDB(t)
-	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		tr := newTrace(tx, logrus.New(), 7, 0)
-		tr.Step("第一步", map[string]string{"k": "v"})
-		tr.Fail("第二步", errors.New("boom"), nil)
-		tr.setResult(errors.New("boom"))
-		tr.finish()
-		return tx
-	})
-
-	if n := strings.Count(sql, "INSERT INTO"); n != 1 {
-		t.Fatalf("应有且仅有一条 INSERT，实得 %d 条：\n%s", n, sql)
+func TestTraceWritesOneImmutableFile(t *testing.T) {
+	e, pool := traceEngine(t, true)
+	tr := e.newTrace(&Task{ID: 7, Site: "stub", Stage: "stub", URL: "u"}, 0)
+	tr.Step("第一步", nil)
+	tr.Fail("第二步", errors.New("boom"), nil)
+	tr.finish()
+	tr.finish()
+	rows, err := e.ListTrace(7)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("file trace: %+v %v", rows, err)
 	}
-	if !strings.Contains(sql, "crawler_task_trace") {
-		t.Fatalf("写错表了：\n%s", sql)
-	}
-	for _, want := range []string{"第一步", "第二步", "boom"} {
-		if !strings.Contains(sql, want) {
-			t.Fatalf("INSERT 里缺少 %q：\n%s", want, sql)
-		}
+	if pool.all() != "" {
+		t.Fatalf("trace issued SQL: %s", pool.all())
 	}
 }
 
 // 序列化不了的数据不静默丢：写一条可读的标记，免得排查时以为 handler 没上报。
 func TestTraceUnmarshalableDataLeavesMarker(t *testing.T) {
-	tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+	tr := newTrace(nil, logrus.New(), 7, 0)
 	tr.Fail("采集", errors.New("boom"), make(chan int))
 	records := tr.flush()
 	if len(records) != 1 {
@@ -151,7 +145,7 @@ func TestTraceFlushSurvivesPanicUnwind(t *testing.T) {
 	var flushed []models.TaskTrace
 	func() {
 		defer func() { _ = recover() }()
-		tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+		tr := newTrace(nil, logrus.New(), 7, 0)
 		defer func() { flushed = tr.flush() }() // 引擎闭包里那个 defer
 		tr.Step("打开页面", map[string]string{"url": "u"})
 		tr.Step("解析列表", map[string]string{"count": "3"})
@@ -177,10 +171,10 @@ func TestNewTraceRespectsSwitch(t *testing.T) {
 
 	e.cfg.Crawler.Trace.Enabled = true
 	if got := e.newTrace(&Task{ID: 0}, 0); got != nil {
-		t.Fatal("任务还没落库（没有行可挂）时不应造记录器")
+		t.Fatal("任务还没写文件（没有行可挂）时不应造记录器")
 	}
 	if got := e.newTrace(&Task{ID: 1}, 0); got == nil {
-		t.Fatal("开启且已落库时应造记录器")
+		t.Fatal("开启且已写文件时应造记录器")
 	}
 }
 
@@ -208,8 +202,9 @@ func TestTraceRetentionDefaults(t *testing.T) {
 // （gormsource 的测试没暴露这一点，因为它只断言 SQL、不看错误）。
 // 直接换连接池是确定的，也不依赖 gorm 的内部开关。
 type stubConnPool struct {
-	mu    sync.Mutex
-	stmts []string
+	mu       sync.Mutex
+	stmts    []string
+	traceDir string
 }
 
 func (p *stubConnPool) record(q string, args []any) {
@@ -253,10 +248,28 @@ type stubResult struct{}
 func (stubResult) LastInsertId() (int64, error) { return 1, nil }
 func (stubResult) RowsAffected() (int64, error) { return 1, nil }
 
-// traceDataColumn 是 data 列在 INSERT 里的两种形态：
-// 成功尝试被剥离成字面 NULL，失败尝试是绑定的参数（gorm 对 JSON 列会包一层 CAST）。
-// 用它们断言 data 的取舍，比去翻参数更直接。
-const traceDataColumn = "CAST(? AS JSON)"
+// traceText inspects actual published files, independent of the query adapter.
+func (p *stubConnPool) traceText(t *testing.T) string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(p.traceDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".json") {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			out = append(out, string(b))
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return strings.Join(out, "\n")
+}
 
 // stubFetcher 假数据：按脚本上报步骤，然后返回预设错误或 panic。
 type stubFetcher struct {
@@ -297,6 +310,8 @@ func traceEngine(t *testing.T, enabled bool) (*Engine, *stubConnPool) {
 		cfg:       &config.Config{},
 	}
 	e.cfg.Crawler.Trace.Enabled = enabled
+	e.cfg.Crawler.TraceFiles.Dir = t.TempDir()
+	pool.traceDir = e.cfg.Crawler.TraceFiles.Dir
 	return e, pool
 }
 
@@ -312,18 +327,20 @@ func TestRunAttemptFlushesTrace(t *testing.T) {
 		t.Fatal("追踪开启时 handler 里应拿到非 nil 的 recorder")
 	}
 
-	got := pool.all()
-	if n := strings.Count(got, "INSERT INTO"); n != 1 {
-		t.Fatalf("一次尝试应只有一条 INSERT，实得 %d：\n%s", n, got)
+	rows, err := e.ListTrace(task.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("trace: %+v %v", rows, err)
 	}
-	for _, want := range []string{"crawler_task_trace", "打开列表页", "解析字段"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("SQL 里缺少 %q：\n%s", want, got)
+	if rows[0].Step != "打开列表页" || rows[1].Step != "解析字段" {
+		t.Fatalf("steps: %+v", rows)
+	}
+	for _, r := range rows {
+		if r.Data != "" {
+			t.Fatal("successful step retained data")
 		}
 	}
-	// 成功的尝试不写 data
-	if strings.Contains(got, traceDataColumn) {
-		t.Fatalf("成功的尝试不该写 data：\n%s", got)
+	if pool.all() != "" {
+		t.Fatalf("trace issued SQL: %s", pool.all())
 	}
 }
 
@@ -338,13 +355,13 @@ func TestRunAttemptWithoutTraceWritesNothing(t *testing.T) {
 	if f.seen.Trace != nil {
 		t.Fatal("追踪关闭时 handler 里应是 nil（调用是 no-op）")
 	}
-	if got := pool.all(); strings.Contains(got, "crawler_task_trace") {
+	if got := pool.traceText(t); strings.Contains(got, "crawler_task_trace") {
 		t.Fatalf("追踪关闭时不该写 trace：\n%s", got)
 	}
 }
 
 // panic 必须照旧抛给 workerpool（它那边的栈诊断与 failed 计数不能被动），
-// 同时 panic 之前上报的步骤要已经落库。
+// 同时 panic 之前上报的步骤要已经写文件。
 func TestRunAttemptFlushesTraceOnPanic(t *testing.T) {
 	e, pool := traceEngine(t, true)
 	f := &stubFetcher{steps: []string{"打开列表页", "解析字段"}, panicWith: "handler 炸了"}
@@ -354,14 +371,14 @@ func TestRunAttemptFlushesTraceOnPanic(t *testing.T) {
 		if r := recover(); r == nil {
 			t.Fatal("panic 必须照旧抛出，不能被追踪层吞掉")
 		}
-		got := pool.all()
+		got := pool.traceText(t)
 		for _, want := range []string{"打开列表页", "解析字段"} {
 			if !strings.Contains(got, want) {
-				t.Fatalf("panic 之前上报的步骤 %q 未落库：\n%s", want, got)
+				t.Fatalf("panic 之前上报的步骤 %q 未写文件：\n%s", want, got)
 			}
 		}
 		// panic 路径上 setResult 没被调用 → 按失败处理 → data 保留
-		if !strings.Contains(got, traceDataColumn) {
+		if !strings.Contains(got, `\"step\"`) {
 			t.Fatalf("panic 的尝试应保留 data：\n%s", got)
 		}
 	}()
@@ -379,7 +396,7 @@ func TestRunAttemptRecordsUrgentMarker(t *testing.T) {
 	if err := e.runAttempt(context.Background(), f, task, 0); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	got := pool.all()
+	got := pool.traceText(t)
 	if !strings.Contains(got, traceUrgentStep) {
 		t.Fatalf("加急任务应在 trace 里记一步 %q：\n%s", traceUrgentStep, got)
 	}
@@ -397,7 +414,7 @@ func TestRunAttemptNoUrgentMarkerForNormalTask(t *testing.T) {
 	if err := e.runAttempt(context.Background(), f, task, 0); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if got := pool.all(); strings.Contains(got, traceUrgentStep) {
+	if got := pool.traceText(t); strings.Contains(got, traceUrgentStep) {
 		t.Fatalf("普通任务不该有加急标记：\n%s", got)
 	}
 }
@@ -413,8 +430,8 @@ func TestRunAttemptUrgentMarkerOnlyOnFirstAttempt(t *testing.T) {
 			t.Fatalf("attempt %d: %v", attempt, err)
 		}
 	}
-	if n := strings.Count(pool.all(), traceUrgentStep); n != 1 {
-		t.Fatalf("加急标记应只出现 1 次（第一次尝试），实得 %d 次：\n%s", n, pool.all())
+	if n := strings.Count(pool.traceText(t), traceUrgentStep); n != 1 {
+		t.Fatalf("加急标记应只出现 1 次（第一次尝试），实得 %d 次：\n%s", n, pool.traceText(t))
 	}
 }
 
@@ -423,7 +440,7 @@ func TestRunAttemptUrgentMarkerOnlyOnFirstAttempt(t *testing.T) {
 // 典型场景是附带产物（封面、附件）：任务本身成功了，用 Fail 语义不对
 // （那会把"任务失败了"的信号发出去），可"这次没拿到封面"必须留下痕迹。
 func TestTraceWarnRecordsWithoutFailing(t *testing.T) {
-	tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+	tr := newTrace(nil, logrus.New(), 7, 0)
 	tr.Step("解析详情", map[string]string{"title": "t"})
 	tr.Warn("下载封面", errors.New("封面 404"), map[string]string{"cover_url": "u"})
 	tr.setResult(nil) // handler 返回 nil：任务成功
@@ -449,7 +466,7 @@ func TestTraceWarnRecordsWithoutFailing(t *testing.T) {
 // 这是唯一一处例外，理由是它没有第二次机会：warn 记的正是"任务成功了、但这一步降级了"，
 // 下一个成功的尝试里它照样只是 warn —— 剥掉就等于把 warn 的 payload 永远丢掉。
 func TestTraceWarnKeepsDataOnSuccessfulAttempt(t *testing.T) {
-	tr := newTrace(dryDB(t), logrus.New(), 7, 0)
+	tr := newTrace(nil, logrus.New(), 7, 0)
 	tr.Step("解析详情", map[string]string{"title": "t"})
 	tr.Warn("下载封面", errors.New("boom"), map[string]string{"cover_url": "u"})
 	tr.setResult(nil)

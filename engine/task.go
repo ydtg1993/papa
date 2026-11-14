@@ -13,7 +13,8 @@ import (
 )
 
 type Task struct {
-	submitContext context.Context
+	traceExecutionID string
+	submitContext    context.Context
 
 	ID         int    `json:"id"`  // 数据库记录 ID
 	PID        int    `json:"pid"` // 父级任务ID
