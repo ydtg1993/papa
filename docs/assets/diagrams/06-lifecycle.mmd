@@ -1,14 +1,15 @@
 flowchart TB
-    A["运行上下文取消 / 启动失败"] --> B["停止 HTTP 并等待请求<br/>业务 shutdown hooks 逆序收尾"]
-    B --> C["Engine.Stop<br/>等待 worker / ticker 与结算<br/>同时核对持久积压与未确认状态"]
+    A["运行上下文取消 / 启动失败<br/>禁止配置新写"] --> B["停止 HTTP 并等待请求<br/>业务 hooks / 配置写入排空"]
+    B --> C["Engine.Stop<br/>等待 worker / ticker 与结算<br/>核对持久积压与未确认状态"]
     C --> D["运行服务与消息监听收尾<br/>记录各自真实排空结果"]
-    D --> E["尽力发送 run_stopped：Engine 结果<br/>转发 + 在线报告 + 事件归档<br/>共用最多 2 秒等待"]
+    D --> E["尽力发送 run_stopped：Engine 结果<br/>在线报告 + 事件归档共用最多 2 秒"]
     E --> F["操作审计限时收尾"]
-    F --> G{"HTTP / 业务 / Engine /<br/>运行服务 / 监听均已排空？"}
-    G -->|是| H["关闭公共浏览器池与 DB"]
-    G -->|否| I["保留共享依赖<br/>在途操作仍可收尾；记录未完成"]
-    E -.-> N["obs 超时不否决依赖关闭<br/>Trace 步骤与页面快照仍属于尝试收尾"]
+    F --> J["公共浏览器池 Shutdown<br/>独立 stop_timeout 预算<br/>中断借出实例并等待进程清理"]
+    J --> G{"HTTP / 业务 / 配置写入 / Engine /<br/>运行服务 / 监听 / 浏览器清理均成功？"}
+    G -->|是| H["关闭共享 DB"]
+    G -->|否| I["保留 DB；记录未完成<br/>清理超时不宣称浏览器零残留"]
+    E -.-> N["obs 超时不否决 DB 关闭<br/>Trace 仍属于尝试收尾"]
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
     classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
-    class A,B,C,D,F,G,H,I runtime;
+    class A,B,C,D,F,J,G,H,I runtime;
     class E,N observe;

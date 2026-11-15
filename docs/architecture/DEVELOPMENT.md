@@ -49,7 +49,7 @@ Remove-Item Env:PAPA_APP_MIX_DURATION
 go test -race ./internal/app -run '^TestAppMySQLMixedLifecycle/(cancel|timeout|crash)$' -count=3 -v -timeout 5m
 ```
 
-混合负载时长默认 3 秒，可显式指定 1 秒至 1 分钟（仅为这组受控验收，不是生产长稳配置）。初始 64 条任务包含延迟任务，catalog 向同站 detail 派生任务；检查暂停 alpha 不阻塞 beta、全局驻留预算 8、跨站同名阶段隔离及原始/派生任务清单。正常结束用在途 HTTP 请求和收尾 hook 验证依赖关闭顺序；合作取消只要求明确返回取消的 handler 释放认领，已成功执行但结算未确认的其他任务可保留 processing 待恢复，不能误改为“取消即全库 processing 清零”。关停超时保留 DB/浏览器池，旧子进程确认退出后才重启；逐任务核对重放与幂等结果。每轮退出另检查监听器、自有循环、审计 16 条记录、事件 outcome 和四份报告产物。
+混合负载时长默认 3 秒，可显式指定 1 秒至 1 分钟（仅为这组受控验收，不是生产长稳配置）。初始 64 条任务包含延迟任务，catalog 向同站 detail 派生任务；检查暂停 alpha 不阻塞 beta、全局驻留预算 8、跨站同名阶段隔离及原始/派生任务清单。正常结束用在途 HTTP 请求和收尾 hook 验证依赖关闭顺序；合作取消只要求明确返回取消的 handler 释放认领，已成功执行但结算未确认的其他任务可保留 processing 待恢复，不能误改为“取消即全库 processing 清零”。关停超时保留 DB，公共浏览器池仍进入最终 `Shutdown(ctx)` 清理，旧子进程确认退出后才重启；逐任务核对重放与幂等结果。每轮退出另检查监听器、自有循环、审计 16 条记录、事件 outcome 和四份报告产物。
 
 新增 `internal/app/lifecycle_load_mysql_test.go` 补齐三个组合根场景，仍仅使用独占测试库与合成任务：
 

@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -47,8 +48,9 @@ type Pool struct {
 	headers atomic.Pointer[map[string]string] // 共享可热更：默认请求头（copy-on-write）
 	maxIdle atomic.Int64                      // 共享可热更：空闲回收阈值（纳秒）
 
-	closed    atomic.Bool
-	closeOnce sync.Once
+	closed     atomic.Bool
+	closeOnce  sync.Once
+	cleanupErr error // first completed cleanup failure; guarded by mu
 
 	reaperMu   sync.Mutex
 	reaperWake chan struct{}
@@ -186,14 +188,22 @@ func NewPoolContext(ctx context.Context, cfg PoolConfig) (*Pool, error) {
 	// 起一次进程就知道浏览器这一环通不通（rod 模式会在这里触发下载）。
 	// 用完就关是刻意的：自检只负责验证，不占直连池的槽位（要常驻实例由 Get 按需建）。
 	if cfg.SelfCheck {
+		// Self-check also owns a process until cleanup completes. Register its
+		// temporary direct slot even when the operational direct capacity is zero.
+		p.directCreating++
+		p.directAlive.Add(1)
 		b, err := p.createBrowser(ctx, false)
-		if err != nil {
-			if b != nil {
-				b.Close()
-			}
-			return nil, fmt.Errorf("browser self-check: %w", err)
+		p.finishCreation(false, b)
+		if b != nil {
+			go b.Close()
 		}
-		b.Close()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*browserCleanupTimeout)
+		cleanupErr := p.waitCleanup(cleanupCtx)
+		cleanupCancel()
+		if err != nil || cleanupErr != nil {
+			p.stopAdmission()
+			return nil, fmt.Errorf("browser self-check: %w", errors.Join(err, cleanupErr))
+		}
 	}
 
 	p.ensureReaper()
@@ -293,12 +303,14 @@ func (p *Pool) newBrowser(ctx context.Context, useProxy bool) (result *Browser, 
 				// before Close, retaining its slot if cleanup is still pending.
 				result = &Browser{launcher: process, useProxy: useProxy}
 			} else if dir != "" {
-				_ = os.RemoveAll(dir)
+				cleanupErr := os.RemoveAll(dir)
+				p.recordCleanupError(cleanupErr)
+				err = errors.Join(err, cleanupErr)
 			}
 		}
 	}()
 
-	process, url, err := launchOwned(ctx, l)
+	process, url, err := launchOwned(ctx, l, dir)
 	if err != nil {
 		return nil, err
 	}

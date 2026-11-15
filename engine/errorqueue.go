@@ -83,6 +83,9 @@ func (e *Engine) requeueFailedTaskIn(t *models.CrawlerTask) bool {
 	// 周期队列只处理成功任务，不与错误队列共享 failed 候选。
 	res := taskstore.RetryFailed(e.db.WithContext(e.queueContext()), t.ID, taskstore.RunVersion{Repeat: t.Repeat, Reprocess: t.Reprocess}, t.CompensationVersion, e.cfg.ErrorQueue.MaxRetry)
 	if res.Error != nil {
+		// The reset may have committed despite a lost acknowledgement. Wake
+		// a read-only pending scan; never replay the additive round/budget write.
+		e.deliveryState().Wake(stageKeyOfRecord(t))
 		e.loggerSet.Engine.Errorf("error queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
 	}

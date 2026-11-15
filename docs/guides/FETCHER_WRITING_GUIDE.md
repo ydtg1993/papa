@@ -1180,7 +1180,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
   入口路由表正相反：它**只**声明在 `fetcher/<站点>/fetch_catalog.go`（包级 `catalogRoutes` 那类，例见 §7.1），
   入口投递与 handler 反推任务的 key 共用同一张表 —— 别在 handler 里再抄一份 key → 路由的映射。
 
-已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/投递器都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、Trace 记录中的站点与阶段身份、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/投递器都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站继承数据库 `execution_policy.breaker.defaults`，检测状态仍各站独立；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、Trace 记录中的站点与阶段身份、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
@@ -1299,7 +1299,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 - `engine.AddNotifier(notify.NewWebhook(url))` 注册失败告警；`notify` 在 `pkg/notify`。熔断触发时也会经这条通道发一条 `papa.AlertCritical`（级别比 `papa.AlertError` 高一级，可单独路由）。
 
 - `engine.SetBreakerProbe(site, stage, probe)` 注册只读阶段语义探针；空 stage 为逐阶段调用的兜底，回调必须识别 `req.Stage`，不可用同一次首页成功代表全部阶段。自动恢复默认要求所有注册阶段通过试探和限量真实任务验证，未运行阶段也不能默认通过；阶段失败、暂停重试和最终恢复进入可靠熔断历史与报告；在线 obs 只接收可丢弃的观测信号，不承担恢复判定。详见 [分类熔断与整站恢复](../runtime/BREAKER.md)。
-- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动暂停 / 请求重试恢复**所有站点**的抓取（纯人工暂停直接解除，自动保护须全阶段重新验证）；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。配 `crawler.breaker` 可由框架自动触发（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）。
+- `engine.PauseCrawling(reason)` / `engine.ResumeCrawling()`：手动暂停 / 请求重试恢复**所有站点**的抓取（纯人工暂停直接解除，自动保护须全阶段重新验证）；逐站操作用 `engine.PauseSite(site, reason)` / `engine.ResumeSite(site)`，读状态用 `engine.BreakerStatuses() map[string]BreakerStatus`（键是站点，站点是必填维度）。在数据库 `execution_policy.breaker` 启用自动检测后可由框架触发（见 [EXECUTION_POLICY.md](../runtime/EXECUTION_POLICY.md)）。
 - `engine.ForceResumeSite(site)` 明确跳过整站自动验证，保留失败窗口和报告；普通恢复不要调用它。
 - 只有全部操作可被只读检查覆盖的阶段，才可在 `StageSpec.BreakerReadOnlyCoverage` 填写完整范围（默认空）。这类阶段须间隔两次返回 `Healthy && Semantic && Complete` 且 `Detail` 非空，才能替代真实任务验证；请求提供 `Pass` 和 `Coverage`。缺少有效样本、只测部分解析、未覆盖写入/下载/派发时均不合格；其他阶段保持未验证。此声明需要业务如实维护，框架不能自动证明覆盖完整。报告明确展示验证方式和范围，重启全部重验，详见 [BREAKER.md](../runtime/BREAKER.md)。
 - 入口任务由框架在**启动那一趟**投（阶段声明写了 `Entry: true` 的话）—— 引擎侧没有「手动投入口」这个动作。想控制「什么时候开始跑」就声明 `SiteSpec.StartPaused: true`，再到后台「站点控制」卡上点「重试恢复」（那是整站级的暂停信号，见 [MONITOR.md](../operations/MONITOR.md) §10）。

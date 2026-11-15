@@ -10,6 +10,7 @@
 | [启动恢复](RECOVER_QUEUE.md) | processing 孤儿恢复及其与 pending 持续补充的区别 |
 | [周期轮询](REPEAT_QUEUE.md) | repeatable、任务周期、轮次和到期扫描 |
 | [分类熔断](BREAKER.md) | 可靠保护、失败样本、串行验证、持久状态和恢复 |
+| [数据库执行策略](EXECUTION_POLICY.md) | 显式初始化、公共浏览器动态容量、熔断事件冻结及版本化 OA/API |
 | [运行治理](RUNTIME_CONTROL.md) | 请求预算、AutoThrottle、资源准入、运行策略与账号池选择 |
 | [临时资源](TEMPORARY_RESOURCES.md) | 资源归属、排空后清理、删除意图恢复和独立测试库 |
 

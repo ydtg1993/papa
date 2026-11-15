@@ -19,6 +19,8 @@ defer root.Close()
 
 `Remove(id)` 只清理该 UUID 目录，已不存在时成功；拒绝符号链接、Windows reparse point、越界名称和非法父目录。不会删除相邻实验、共享样本或 namespace 根目录。它不负责取消仍在写入的作业，须先停止并排空。
 
+浏览器临时 profile 的拥有者是 `pkg/browser`，与此通用实验目录 API 分开。只有框架本次创建的目录才自动清理；配置指定的 `user-data-dir` 不构成删除授权。进程退出不等于 profile 清理成功，最终 `Pool.Shutdown(ctx)` 会返回有界保留的清理错误，不能以 Live=0 推断文件零残留；完整退出语义见 [资源预算](../configuration/RESOURCE_BUDGETS.md)。
+
 ## 数据与文件的一致清理
 
 业务实现 `temporary.CleanupStore`：

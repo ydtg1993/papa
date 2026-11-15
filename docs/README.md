@@ -31,17 +31,18 @@ cd mycrawler && go mod tidy
 2. **`papa migrate` 建表** —— 在项目目录下跑（它自己读 `configs/config.yaml`）。检测到这是业务
    项目时，它会转交项目自己的迁移入口，框架表与 `models` 包里的业务模型一起建。
    之后每新开一个带表的开关（`server.operation_log` / `task_flow.enabled`）都要**再跑一次**，对应表跟着开关走。
-3. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（物理并发/队列、间隔/重试默认值/
+3. 审核 `configs/execution-policy.json` 后执行 `go run . -init-policy configs/execution-policy.json`，显式初始化数据库执行策略；即使关闭浏览器或熔断，也需要合法的初始文档。已有配置不会被覆盖，后续调整通过 OA/API，见 [执行策略](runtime/EXECUTION_POLICY.md)。
+4. 写 fetcher（实现 `papa.Fetcher`）；**站点与阶段声明写在 `internal/sites/<站名>.go`**（物理并发/队列、间隔/重试默认值/
    入口开关在那儿声明；runtime/OA 可覆盖有效并发与固定间隔），`internal/app/run.go` 通过 `app.RegisterSites(papa.Sites()...)`
    统一注册 —— 加一个站只加文件。起始任务由 fetcher 自己实现 `SubmitEntries(engine, site)` 提交
    （见 [FETCHER_WRITING_GUIDE.md](guides/FETCHER_WRITING_GUIDE.md) 1.1）。
-4. 加数据模型写`internal/models/` 包（`internal/models/models.go` 里登记建表清单）；后台（`/monitor`）
+5. 加数据模型写`internal/models/` 包（`internal/models/models.go` 里登记建表清单）；后台（`/monitor`）
    要加表格页 / 自定义页 / 自己的接口，改 `internal/monitor/` 包 ——
    `internal/app/run.go` 通过 `monitor.Register(app)` 接入（分层与用法见 [MONITOR.md](operations/MONITOR.md) 第 5 节）。
-5. `go run .`（配置路径默认 `configs/config.yaml`，要用别处就 `go run . --config=./config.yaml`）。
+6. `go run .`（配置路径默认 `configs/config.yaml`，要用别处就 `go run . --config=./config.yaml`）。
 
 启动时**不会**自动建表 —— 迁移是显式的一步，所以本地和生产跑的是同一条命令。
-当前 v4 建表清单包含运行策略、账号池管理、`crawler_browser_profiles` 与 `crawler_browser_identity_bindings`；这些表不因关闭相应控制器而从基础清单移除。浏览器身份两表不含凭据，创建档案不自动启用绑定。
+当前 v4 建表清单包含运行策略、`crawler_config_operations` 操作核对、账号池管理、`crawler_browser_profiles` 与 `crawler_browser_identity_bindings`；这些表不因关闭相应控制器而从基础清单移除。浏览器身份两表不含凭据，创建档案不自动启用绑定。
 显式迁移在调用 GORM `AutoMigrate` 前先检查任务 schema；旧列、旧索引或缺失 v4 身份的数据会被拒绝，需使用独立 v4 数据库，不会自动回填旧任务。通过检查后，迁移创建或更新当前模型；GORM 也可能调整列类型，不能将其理解为“只新增”。重复执行支持当前 v4 schema，仍需审查变更 SQL；迁移不负责删除旧列或任意破坏性数据转换。
 
 > **在项目目录里 `papa migrate` 与 `make migrate` 等价**：CLI 是独立编译的进程，看不到你在
@@ -81,7 +82,7 @@ docs/
 | 配参数、建表、控制资源 | [配置与预算](configuration/README.md) | 配置字典 → 单实例资源预算 |
 | 接一个站点并保存结果 | [抓取接入](guides/README.md) | Fetcher → 数据落地 → 可选抓取工具 |
 | 接登录、账号池与稳定身份 | [账号与身份](accounts/README.md) | 账号运行 → OA 接入 → 浏览器身份 |
-| 控制任务运行与故障恢复 | [运行调度](runtime/README.md) | 任务时间/任务流 → 三队列 → 熔断与治理 |
+| 控制任务运行与故障恢复 | [运行调度](runtime/README.md) | 任务时间/任务流 → 三队列 → 熔断与治理 → 数据库执行策略 |
 | 用命令、后台或排查报告 | [运维观测](operations/README.md) | CLI → 后台 → 在线/离线观测 |
 | 查各包职责、状态与依赖 | [目录说明书](package_structure/README.md) | 总索引 → 根目录/Admin/Engine/Internal/Pkg/Obs/Cmd 分册 |
 
@@ -97,11 +98,9 @@ docs/
 ## 注意事项
 
 - 遵守目标网站 robots.txt 与法律法规，合理设置抓取频率。
-- 生产环境建议 `headless: true`，通过数据库执行策略按负载调公共浏览器 `pool_size`（>0，按需创建，在线平滑扩缩容）/ 数据库连接池。
+- 生产环境建议 `headless: true`，通过数据库执行策略按负载调公共浏览器 `pool_size`（>0，按需创建，在线平滑扩缩容）；数据库连接池仍由启动配置管理。
 - 自动合并 MP4 需系统安装 ffmpeg。
 
 ## License
 
 基于 [MIT License](https://github.com/ydtg1993/papa/LICENSE.txt) 开源。
-
-- [数据库执行策略](runtime/EXECUTION_POLICY.md)：显式初始化、熔断事件冻结、公共浏览器动态容量、OA/API 与版本回滚。

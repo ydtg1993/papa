@@ -82,13 +82,23 @@ func (b *Browser) Close() {
 	if b.diagnosticProcess != nil {
 		if err := b.diagnosticProcess.close(); err != nil {
 			log.Printf("browser: diagnostic cleanup incomplete: %v", err)
-			if b.pool != nil && b.diagnosticProcess.done != nil {
-				select {
-				case <-b.diagnosticProcess.done:
-				default:
-					cleanupPending = true
-					go func() { <-b.diagnosticProcess.done; b.pool.unregisterInstance(b) }()
-				}
+			if b.pool != nil {
+				process := b.diagnosticProcess
+				cleanupPending = true
+				go func() {
+					if process.done != nil {
+						<-process.done
+					}
+					// A process may exit just before or after Close's timeout.
+					// Evaluate final profile cleanup instead of persisting a stale
+					// process deadline as an irreversible failure.
+					if process.dir != "" {
+						ctx, cancel := context.WithTimeout(context.Background(), browserCleanupTimeout)
+						b.pool.recordCleanupError(removeDiagnosticProfile(ctx, process.dir))
+						cancel()
+					}
+					b.pool.unregisterInstance(b)
+				}()
 			}
 		}
 		return
@@ -112,6 +122,14 @@ func (b *Browser) Close() {
 	go func() {
 		defer close(done)
 		b.launcher.Cleanup()
+		if result, ok := b.launcher.(interface{ CleanupError() error }); ok {
+			if err := result.CleanupError(); err != nil {
+				log.Printf("browser: owned profile cleanup incomplete: %v", err)
+				if b.pool != nil {
+					b.pool.recordCleanupError(err)
+				}
+			}
+		}
 	}()
 	select {
 	case <-done:

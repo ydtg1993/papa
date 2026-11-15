@@ -130,6 +130,7 @@ func (e *Engine) retryTaskRecord(ctx context.Context, t *models.CrawlerTask, was
 
 	res := taskstore.RetryTask(e.db.WithContext(ctx), id, t.Status, taskRunVersion{Repeat: t.Repeat, Reprocess: wasReprocess}, t.CompensationVersion)
 	if res.Error != nil {
+		e.deliveryState().Wake(stageKeyOfRecord(t))
 		return fmt.Errorf("reset task %d: %w", id, res.Error)
 	}
 	if res.RowsAffected == 0 {

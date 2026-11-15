@@ -70,7 +70,7 @@ App 装配运行组件；Engine 通过内部调度、worker 和持久化组件�
 
 [矢量图](../assets/diagrams/06-lifecycle.svg) · [Mermaid 源码](../assets/diagrams/06-lifecycle.mmd)
 
-图示对应 App 的主要收尾顺序；启动失败也沿同一清理编排，未发出运行开始时不伪造 `run_stopped`。HTTP、业务 hooks、Engine、运行服务和消息监听分别报告真实排空结果；未排空时保留共享 DB/公共浏览器池，不把发出取消或超时返回当成“已经退出”。
+图示对应 App 的主要收尾顺序；启动失败也沿同一清理编排，未发出运行开始时不伪造 `run_stopped`。HTTP、业务 hooks、配置写入、Engine、运行服务和消息监听分别报告真实排空结果；最终退出仍以独立预算对引擎公共池调用 `Shutdown(ctx)`，中断借出实例并等待清理。上述排空与浏览器清理均成功才关闭 DB；任一失败则保留 DB，不把取消或超时返回当成“已经退出”。
 
 Engine 的排空判断还包含 ticker、pending/delay、未确认状态和持久 pending 积压检查；worker 已退出并不一定返回 drained。`run_stopped` 中的 outcome/counts 只来自 Engine.Stop，不汇总 HTTP、业务 hooks 等全部 App 组件，不能据此单独证明整个 App 已排空。
 

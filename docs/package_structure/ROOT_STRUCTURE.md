@@ -86,6 +86,7 @@ models 描述框架拥有的表、字段、索引和局部 GORM hook。它依赖
 | `breaker_history.go` | BreakerHistory / crawler_breaker_history | 事件内按序追加过程，事件 ID + 序号支撑重试核对；控制状态仍以事件快照为准 |
 | `browser_identity.go` | BrowserProfile、BrowserIdentityBinding | 档案版本与绑定 CAS 结构；绑定 revision 不等同于账号版本或账号池选择版本 |
 | `config.go` | Config / crawler_config | 框架运行配置的键值与版本；缓存、CAS 和历史事务由 admin/configstore 管理 |
+| `config_operation.go` | ConfigOperation / crawler_config_operations | 执行策略的操作 ID、预期版本与文档身份，与配置及历史同事务保存，支持提交确认丢失后的核对 |
 | `runtime_policy_history.go` | RuntimePolicyHistory | 运行策略变更记录，与策略保存的事务关系由 configstore 保证 |
 | `access_token.go` | AccessToken / crawler_access_token | 操作者、令牌哈希、启用状态；明文令牌不持久化，鉴权和管理归 admin/auth、tokenadmin |
 | `operation_log.go` | OperationLog / crawler_operation_log | 后台动作审计行；队列、写入和关闭归 admin/oplog |

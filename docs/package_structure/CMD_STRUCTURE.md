@@ -8,7 +8,7 @@
 
 `cmd/papa` 是独立 CLI 的组合入口，负责参数解析、目标项目识别、短时资源装配和结果展示。领域实现继续调用配置、数据库、抓取、观测和令牌组件，不能把 CLI 私有函数变成框架运行时依赖。`cmd/monitor-demo` 是本地合成数据演示程序，用真实后台组件验证展示；它不承载真实站点接入。
 
-当前目录有 **2 个 main 包、15 个生产 Go 文件、20 个测试 Go 文件、25 份 `.tmpl` 资源**。文档分发还依赖目录外的 `docs/embed.go`。
+当前目录有 **2 个 main 包、15 个生产 Go 文件、20 个测试 Go 文件、26 份 `.tmpl` 资源**。文档分发还依赖目录外的 `docs/embed.go`。
 
 ```text
 cmd/
@@ -73,6 +73,7 @@ CLI 是短生命周期进程。debug 显式管理浏览器池。migrate/token/re
 | `monitor_tables.go.tmpl` | internal/monitor/tables.go；表格展示声明，模型仍由业务 models 拥有 |
 | `monitor_controller_ping.go.tmpl` | internal/monitor/controller/ping.go；HTTP handler 示例 |
 | `monitor_view.go.tmpl` | internal/monitor/view/view.go；自定义页、JS/CSS 登记及页面分类示例，默认 data |
+| `execution-policy.json.tmpl` | configs/execution-policy.json；显式初始化完整数据库执行策略的输入，运行时不读取此文件作为默认值 |
 | `config.yaml.tmpl` | configs/config.yaml 与 config.yaml.example；配置字段说明及占位凭据，两份共用模板 |
 | `go.mod.tmpl`、`gitignore.tmpl` | go.mod、.gitignore；module、本地 replace 及生成物忽略规则 |
 | `Makefile.tmpl` | 构建/运行/迁移/测试/容器目标，按 Windows 补可执行文件后缀 |

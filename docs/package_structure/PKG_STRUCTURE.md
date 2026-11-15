@@ -137,6 +137,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `pool.go` | `PoolConfig`、二进制来源解析、`NewPool`、代理/直连容量、懒创建、Get/Put/With 借用、空闲回收、默认头热更和 Close |
 | `rod.go` | `Browser`、单实例关闭与使用计量；`PageOptions`、受管页面初始化、`NewPageWithOptions` / `WithPageOptions` / `WithNavigatedPage` / `FetchOnce` |
 | `stats.go` | 活实例登记、空闲/保留/借用状态、`Stats` 独立生命周期快照；统计受管实例，不统计 Chromium 子进程数量 |
+| `owned_startup.go` | 可取消的 Chromium/Leakless 启动握手、PID/连接/独占 profile 归属；失败和取消仍等待进程清理，不删除配置给定的持久目录 |
 | `shutdown.go` | 进程最终退出用的 `Shutdown(ctx)`：取消准入和创建，并行关闭所有实例，在截止时间内等待实例/创建计数归零；超时保留未完成状态 |
 | `temp_dir.go` | `ResolveTempDir` / `PrepareTempDir` / `NewTempProfile`，验证实际可写的配置根和创建独占 profile；`TempDir` 返回池实际使用的共享根；Pool 不删除该根，只由实例关闭清理独占 profile |
 | `page_creation.go` | 创建命令遇取消后最多等 3 秒取得 target ID；按原取消状态停止连接/执行，并用独立 3 秒 context 关闭已知 target |
@@ -334,7 +335,7 @@ OutputLocks 的 mutex、活动路径集合和广播通道属于该实例；不�
 
 WithResources 返回独立限额快照，With 继承共享预算。默认值、磁盘保守计量和物理配额限制见 [资源手册](../configuration/RESOURCE_BUDGETS.md)。`middleware/resources_test.go`、filedown/m3u8 的 `resources_test.go` 覆盖边界、当前格式恢复、旧格式拒绝和预算释放；检查点合并及失败传播由父包回归验证。
 
-两个下载器各自拥有 `state`，并非共享一个全局下载状态。状态内 `proxyMu` 保护代理 transport 缓存；连接池跨 With 实例复用，而每次取得的 client 持有本实例 Timeout/SegmentTimeout，`laborMu` 保护按来源/目录/文件组合标识的 labor 和引用数，labor 自己的 `resumeMu` 保护断点修改，`OutputLocks` 保护最终输出及断点路径。m3u8 的密钥缓存只属于单次下载的私有接收者副本，不能跨任务共享认证相关密钥。
+两个下载器各自拥有 `state`，并非共享一个全局下载状态。状态内 `middleware.ProxyTransportCache` 以自身锁保护共享64条 LRU代理 transport缓存；连接池跨 With 实例复用，而每次取得的 client 持有本实例 Timeout/SegmentTimeout，`laborMu` 保护按来源/目录/文件组合标识的 labor 和引用数，labor 自己的 `resumeMu` 保护断点修改，`OutputLocks` 保护最终输出及断点路径。m3u8 的密钥缓存只属于单次下载的私有接收者副本，不能跨任务共享认证相关密钥。
 
 `With` 返回独立配置实例，同时共享原实例的状态、路径互斥和错误消息队列；它会按新配置创建默认 HTTP client，不继承原实例通过 `SetClient` 注入的 client/transport。`Config` 返回网络授权列表副本。`Overlay.Clone` 保留 nil 与显式零值并复制指针，是站点声明/阶段覆盖快照的基础。`NewDownloader` 才建立另一组状态。`SetClient` 是客户端替换入口，不能因为 Download 支持并发就推断替换配置也有并发热更保证。
 
@@ -463,3 +464,5 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 ## executionpolicy：数据库执行策略
 
 `document.go` 拥有完整文档、带单位 Duration JSON、校验与 detached Clone；`service.go` 拥有公开 Service/Store/Target 契约及版本写入串行化、operation_id 核对和发布状态。Store 负责同事务持久化，Target 负责组件内策略接收；服务不持有 App/Engine。HTTP 页面属于 admin/executionpolicy，数据库适配属于 admin/configstore。
+
+`middleware/transport_cache.go` 拥有下载器代理缓存的容量、LRU与退役transport响应体清理；不选择代理、不改变出站授权、不拥有下载任务并发。`transport_cache_test.go` 验证容量、LRU、并发轮换、旧client退役后再请求及真实流式响应在淘汰中继续；filedown/m3u8 的 `proxy_cache_test.go` 验证 With 共享预算和无效地址同样受限。具体边界见 [资源预算](../configuration/RESOURCE_BUDGETS.md)。

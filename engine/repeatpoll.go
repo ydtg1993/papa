@@ -209,6 +209,9 @@ func (e *Engine) requeueRepeatTaskWithForce(t *models.CrawlerTask, force bool) b
 	}
 	res := taskstore.AdvanceRepeat(e.db.WithContext(e.queueContext()), t.ID, taskstore.RunVersion{Repeat: t.Repeat, Reprocess: t.Reprocess}, t.CompensationVersion, limit, int64(e.cfg.RepeatQueue.EffectiveInterval()/time.Second), force)
 	if res.Error != nil {
+		// An unconfirmed reset can already be durable pending, outside this
+		// queue's successful-row predicate. Let delivery inspect durable state.
+		e.deliveryState().Wake(stageKeyOfRecord(t))
 		e.loggerSet.Engine.Errorf("repeat queue: reset task %d: %s", t.ID, res.Error.Error())
 		return false
 	}

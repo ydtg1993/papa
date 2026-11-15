@@ -71,6 +71,50 @@ func TestPoolTempDirConflictAndLaunchFailureCleanup(t *testing.T) {
 	}
 }
 
+// A fixed profile is borrowed configuration, not a disposable instance folder.
+// Exercise the production child-process failure path, not only a fake launcher.
+func TestCancelledStartupPreservesConfiguredProfile(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := t.TempDir()
+	sentinel := filepath.Join(profile, "existing-credentials")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "child.pid")
+	t.Setenv("PAPA_DIAGNOSTIC_STARTUP_HELPER", "launch")
+	t.Setenv("PAPA_DIAGNOSTIC_STARTUP_PID", marker)
+	p, err := NewPool(PoolConfig{Size: 1, BrowserPath: bin, Flags: map[string]string{"user-data-dir": profile}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := p.Get(ctx); result <- err }()
+	waitPool(t, func() bool { _, err := os.Stat(marker); return err == nil })
+	cancel()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("cancelled startup unexpectedly succeeded")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled startup did not finish")
+	}
+	shutdown, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if err := p.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
+		t.Fatalf("configured profile was deleted during process cleanup: %v", err)
+	}
+}
+
 func TestLivePoolTempDirCleanup(t *testing.T) {
 	if os.Getenv("CRAWLER_ROD_DIAGNOSTIC_LIVE") != "1" {
 		t.Skip("explicit live browser test")

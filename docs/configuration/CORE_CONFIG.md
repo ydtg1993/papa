@@ -374,7 +374,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 **v4 使用独立数据库，不提供旧版任务表原地升级**：启动和迁移先校验已有任务身份结构与数据，拒绝旧格式。校验通过后，`papa migrate` 才以 `AutoMigrate` 创建/补齐当前模型；没有历史专项回填、删旧索引或旧列转换。AutoMigrate 仍可能调整其支持的类型和约束，不能代替业务的数据迁移脚本。
 
-框架自带的表：`crawler_tasks`、`crawler_breaker_incidents`、`crawler_breaker_history`、`crawler_access_token`、`crawler_config`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
+框架自带的表：`crawler_tasks`、`crawler_breaker_incidents`、`crawler_breaker_history`、`crawler_access_token`、`crawler_config`、`crawler_config_operations`、`crawler_runtime_policy_history`、`crawler_browser_profiles`、`crawler_browser_identity_bindings`、`crawler_account_pools`、`crawler_account_management`、`crawler_account_profiles` 总是建；
 `crawler_operation_log`（`server.operation_log`）、`crawler_task_flows`（`task_flow.enabled`）
 跟着开关走 —— **先开开关再跑一次 `papa migrate`**，否则对应表不会建出来。
 
@@ -390,7 +390,7 @@ if err := app.Config.BusinessSection("covers", &covers); err != nil {
 
 - 标准 Go 时长字符串：`"500ms"` / `"5s"` / `"10m"` / `"6h"`。
 - Go `StageSpec.Delay` 额外支持区间：`"10s-30s"` 表示在该区间内随机取间隔；`runtime` 的阶段 `delay` 覆盖值只接受单一固定时长。OA 展示 Go 声明范围，清除覆盖恢复该范围。
-- HTTP JSON 中的 duration 是整数纳秒，`"5s"` 只用于 YAML/Go 声明字符串；OA 表单按秒换算。
+- `runtime_policy` 等直接使用 Go `time.Duration` 的 HTTP JSON 字段为整数纳秒，OA 表单按秒换算；`execution_policy` 使用独立 Duration 类型，JSON 必须为 `"5s"` 这样的带单位字符串，不能传整数。以各 API 的类型契约为准。
 
 ### 阶段轮询次数上限
 

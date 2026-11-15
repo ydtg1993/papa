@@ -58,9 +58,8 @@ type Downloader struct {
 // 也就是说：**想要独立配置，不必（也不该）连这些也独立** —— 用 With；真要一座互不共享的孤岛，
 // 才用 NewDownloader（代价见它的注释）。
 type state struct {
-	// proxyTransports 按代理地址缓存的传输连接池（逐下载指定出口时用）；proxyMu 保护它。
-	proxyMu         sync.Mutex
-	proxyTransports map[string]http.RoundTripper
+	// proxyTransports is a bounded LRU shared by With copies.
+	proxyTransports middleware.ProxyTransportCache
 	trackQueue      *msgqueue.MsgQueue[any] // 系统消息队列
 	labors          map[string]*labor       // 任务专用锁管理
 	laborMu         sync.RWMutex            // 保护 labors map
@@ -154,32 +153,26 @@ func (d *Downloader) clientFor(opts *DownloadOptions) *http.Client {
 	if opts == nil || opts.Proxy == "" {
 		return d.client
 	}
-	d.st.proxyMu.Lock()
-	defer d.st.proxyMu.Unlock()
-	if transport, ok := d.st.proxyTransports[opts.Proxy]; ok {
-		return &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
-	}
-	proxyURL, err := neturl.Parse(opts.Proxy)
-	if err != nil {
-		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
-		proxyURL = &neturl.URL{Scheme: "invalid"}
-	}
-	if d.st.proxyTransports == nil {
-		d.st.proxyTransports = make(map[string]http.RoundTripper)
-	}
-	// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
-	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(proxyURL)
-	// **Timeout 不能省**：走代理这条路以前只设了 Transport，看起来"有连接池就够了"，但
-	// `doRequest` 只拿任务 ctx 建请求（没有逐请求 deadline）—— 代理"接了 TCP 却不回包"时
-	// `Do` 会永久阻塞：不报错、不重试，分片 goroutine 到不了 wg.Done()，worker 抱着并发位挂死。
-	// 非代理那份一直带 `Timeout: cfg.SegmentTimeout`，这里对齐它。
-	c := &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
-	c = egress.Client(c, d.config.Network)
-	c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, opts.Proxy)
-	d.st.proxyTransports[opts.Proxy] = c.Transport
-	return c
+	cached := d.st.proxyTransports.Get(opts.Proxy, func() http.RoundTripper {
+		proxyURL, err := neturl.Parse(opts.Proxy)
+		if err != nil {
+			d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
+			proxyURL = &neturl.URL{Scheme: "invalid"}
+		}
+		// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
+		// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(proxyURL)
+		// **Timeout 不能省**：走代理这条路以前只设了 Transport，看起来"有连接池就够了"，但
+		// `doRequest` 只拿任务 ctx 建请求（没有逐请求 deadline）—— 代理"接了 TCP 却不回包"时
+		// `Do` 会永久阻塞：不报错、不重试，分片 goroutine 到不了 wg.Done()，worker 抱着并发位挂死。
+		// 非代理那份一直带 `Timeout: cfg.SegmentTimeout`，这里对齐它。
+		c := &http.Client{Timeout: d.config.SegmentTimeout, Transport: transport}
+		c = egress.Client(c, d.config.Network)
+		c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, opts.Proxy)
+		return c.Transport
+	})
+	return &http.Client{Timeout: d.config.SegmentTimeout, Transport: cached}
 }
 
 // doRequest 执行 HTTP 请求，支持重试。

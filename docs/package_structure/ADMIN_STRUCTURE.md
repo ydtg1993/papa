@@ -199,7 +199,7 @@ App 的 `admin_routes.go` 直接挂载功能 handler 方法并应用统一 guard
 5. 前端 reset/unmount 后，之前发出的 HTTP、正文读取及错误回调不得更新新视图。destroy 还应释放注册的监听和资源；使用 lifecycle 的有效性检查和清理接口。
 6. 公开 API、JSON 响应、资源 URL 与私有实现分开维护。改包位置不能顺带改变鉴权、错误码、版本冲突和关停行为。
 
-白名单重载不保留完整 App 或 Monitor，只接受 ContextStringListReader 和发布回调。普通读失败仍记错并按不限制处理；取消/超时不发布空白名单。Stop 使用宿主给的 context 返回真实排空结果，读端不响应取消时返回 false。HTTP 服务自身及 handler 计数由 App 管理，包含 hijack，和重载结果共同参与共享 DB/浏览器关闭判断，详见 [Internal 分册的 App 章节](INTERNAL_STRUCTURE.md#app)。
+白名单重载不保留完整 App 或 Monitor，只接受 ContextStringListReader 和发布回调。普通读失败仍记错并按不限制处理；取消/超时不发布空白名单。Stop 使用宿主给的 context 返回真实排空结果，读端不响应取消时返回 false。HTTP 服务自身及 handler 计数由 App 管理，包含 hijack，和重载结果共同参与共享 DB 关闭判断；公共池在最终退出时独立执行 `Shutdown(ctx)`，详见 [Internal 分册的 App 章节](INTERNAL_STRUCTURE.md#app)。
 
 以下状态及关闭契约不能互相套用：
 
@@ -208,6 +208,8 @@ App 的 `admin_routes.go` 直接挂载功能 handler 方法并应用统一 guard
 - `oplog.Recorder` 拥有容量 1024 的队列、发送/关闭互斥锁、消费者和 drained 信号。队列满或关闭后的记录同步调用日志兜底，不等待队列空位；不能据此保证日志调用本身永不阻塞。首个 `Close(timeout)` 关闭队列并等真正排空，timeout 只是告警阈值，不会取消写库；重复 Close 见 closed 会直接返回，不能作为另一个等待排空的屏障。宿主应在首个关闭调用完成后再关闭 DB 和日志依赖。
 - `sysinfo.Collector.Start` 没有重复启动保护或 Stop/Wait 接口。取消在采样循环的 select 中观察；首次采样、CPU 窗口及目录遍历不接收 context，取消不等于这些操作已经返回。Snapshot 复制目录 map 和时间指针，不把可写内部状态借给 HTTP 读者。
 - `shell.Renderer` 用每实例 sync.Once 缓存模板及解析错误；前端 runtime 的控制器实例拥有 epoch、disposed 和清理回调。reset/unmount 使旧视图代次失效，但不会统一 abort 所有功能请求；请求取消仍由各控制器或 requests 的 AbortController 承担，不能把视图失效当成服务端操作已经取消。
+
+`admin/configstore/execution.go` 实现公开 executionpolicy.Store：配置、历史与操作身份同事务 CAS 保存，按精确 operation_id 和文档核对重复提交；普通通用 Save 不允许绕过此配置域审计。领域应用状态仍归 pkg/executionpolicy。
 
 ## 7. 源文件与浏览器资源地址
 

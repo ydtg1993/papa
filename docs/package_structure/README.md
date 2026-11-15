@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | [根目录与基础包](ROOT_STRUCTURE.md) | 根包 papa、config、core、models、docs、仓库配套文件 | 公开门面、配置和值契约、持久模型分别归谁；文档如何组织与分发 |
 | [Admin](ADMIN_STRUCTURE.md) | admin 全部功能包及 admin/internal/httpjson | HTTP、页面资源、前端状态、鉴权、表格和审计如何归属 |
-| [Engine](ENGINE_STRUCTURE.md) | engine 根包及 engine/internal 的 execution、fetchruntime、scheduler | 执行、调度、持久化、熔断的同包组件边界，以及锁序和排空 |
+| [Engine](ENGINE_STRUCTURE.md) | engine 根包及 engine/internal 的 delivery、execution、fetchruntime、scheduler | 执行、调度、持久化、熔断的同包组件边界，以及锁序和排空 |
 | [Internal](INTERNAL_STRUCTURE.md) | internal 全部包，包含 [app 组合根](INTERNAL_STRUCTURE.md#app) | 装配与声明、运行服务、存储适配、通用执行设施及测试基础设施怎样分工 |
 | [Pkg](PKG_STRUCTURE.md) | pkg 的账号、浏览器、HTTP、下载、治理、出口与辅助能力 | 可复用能力的公开接口、状态、锁和资源释放由谁负责 |
 | [Obs](OBS_STRUCTURE.md) | obs 及 analyze、eventlog、inputbudget、logidx、pattern、report | 观测数据如何读取、分析、形成证据和报告；何处有文件写入 |
@@ -60,10 +60,10 @@ papa/
 | 根目录 | 纳入的包 | 分册 |
 | --- | --- | --- |
 | 仓库根及基础包 | 根包 papa、config、core、models、docs | ROOT_STRUCTURE |
-| admin | access、accountpools、accounts、auth、breakers、configstore、diagnostics、frameworkdata、gormsource、internal/httpjson、logs、monitoring、oplog、page、queues、reports、runtimecontrol、server、settings、shell、sitesource、sysinfo、taskflow、tasksource、tasktrace、tokenadmin | ADMIN_STRUCTURE |
-| engine | 根包、internal/execution、internal/fetchruntime、internal/scheduler | ENGINE_STRUCTURE |
+| admin | access、accountpools、accounts、auth、breakers、configstore、diagnostics、executionpolicy、frameworkdata、gormsource、internal/httpjson、logs、monitoring、oplog、page、queues、reports、runtimecontrol、server、settings、shell、sitesource、sysinfo、taskflow、tasksource、tasktrace、tokenadmin | ADMIN_STRUCTURE |
+| engine | 根包、internal/delivery、internal/execution、internal/fetchruntime、internal/scheduler | ENGINE_STRUCTURE |
 | internal | backoff、tracestore、app、breaker、breakerstore、browserdiagnostics、database、gormfake、msgqueue、reportrunner、runtimecontrol、sitedecl、stageflow、taskstore、track、workerpool | INTERNAL_STRUCTURE |
-| pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、extract、governance、htmlfetch、incident、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、temporary、testdb | PKG_STRUCTURE |
+| pkg | account、account/contract、account/gormstore、account/onboarding、breakerpolicy、browser、browser/identity、browser/identity/runtime、discovery、egress、events、executionpolicy、extract、governance、htmlfetch、incident、loggers、middleware、middleware/filedown、middleware/m3u8、middleware/proxy、notify、redact、temporary、testdb | PKG_STRUCTURE |
 | obs | 根包、analyze、eventlog、inputbudget、logidx、pattern、report | OBS_STRUCTURE |
 | cmd | papa、monitor-demo | CMD_STRUCTURE |
 

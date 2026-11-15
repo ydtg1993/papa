@@ -8,8 +8,10 @@ flowchart TB
     D --> I["确认 retry 加一<br/>仅确认后允许下次尝试"] --> H
     J -->|成功| S["成功结算<br/>遇取消保留有界确认窗口"]
     J -->|不可重试 / 账号失败或补偿<br/>耗尽 / panic| F["失败结算<br/>与熔断可靠状态协调"]
-    J -->|错误返回后已取消<br/>样本例外见正文| R["条件释放认领<br/>保留已有失败结算所有权"]
+    J -->|纯取消错误| R["条件释放认领<br/>保留已有失败结算所有权"]
     S --> P["版本保护的终态确认<br/>只重试状态写入，不重跑业务"]
+    J -->|真实业务错误与取消并发| Q["失败终态独立确认窗口<br/>最多 2 秒，不抹掉失败策略"]
+    Q --> P
     F --> P
     P -->|暂态写库失败| P
     P -->|已确认| T["发布结果并收尾<br/>清活动身份或唤醒 repeat"]
@@ -21,5 +23,5 @@ flowchart TB
     I -->|写入前已取消| R
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
     classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
-    class A,B,C,H,J,D,I,S,F,P,R,T runtime;
+    class A,B,C,H,J,D,I,S,F,P,Q,R,T runtime;
     class K,U,EXIT observe;

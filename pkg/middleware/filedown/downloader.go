@@ -45,9 +45,8 @@ type Downloader struct {
 //
 // 想要独立配置不必连这些也独立（用 With）；真要一座互不共享的孤岛，才用 NewDownloader。
 type state struct {
-	// proxyTransports 按代理地址缓存的传输连接池（逐下载指定出口时用）；proxyMu 保护它。
-	proxyMu         sync.Mutex
-	proxyTransports map[string]http.RoundTripper
+	// proxyTransports is a bounded LRU shared by With copies.
+	proxyTransports middleware.ProxyTransportCache
 	trackQueue      *msgqueue.MsgQueue[any]
 	labors          map[string]*labor
 	laborMu         sync.RWMutex
@@ -934,34 +933,28 @@ func (d *Downloader) clientOf(cfg *requestConfig) *http.Client {
 
 // clientForProxy 返回走指定代理的 HTTP 客户端；同一个地址复用传输连接池，客户端超时属于本实例。
 //
-// 代理地址来自调用方（fetcher），所以数量由业务决定 —— 这里不做上限，也不清理。
+// 最多保留64个代理transport，LRU淘汰不打断在途响应。
 // 地址解析失败会记录错误并返回拒绝请求的客户端，绝不回落直连。
 func (d *Downloader) clientForProxy(addr string) *http.Client {
-	d.st.proxyMu.Lock()
-	defer d.st.proxyMu.Unlock()
-	if transport, ok := d.st.proxyTransports[addr]; ok {
-		return &http.Client{Timeout: d.config.Timeout, Transport: transport}
-	}
-	proxyURL, err := url.Parse(addr)
-	if err != nil {
-		d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
-		proxyURL = &url.URL{Scheme: "invalid"}
-	}
-	if d.st.proxyTransports == nil {
-		d.st.proxyTransports = make(map[string]http.RoundTripper)
-	}
-	// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
-	// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(proxyURL)
-	c := &http.Client{
-		Timeout:   d.config.Timeout,
-		Transport: transport,
-	}
-	c = egress.Client(c, d.config.Network)
-	c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, addr)
-	d.st.proxyTransports[addr] = c.Transport
-	return c
+	cached := d.st.proxyTransports.Get(addr, func() http.RoundTripper {
+		proxyURL, err := url.Parse(addr)
+		if err != nil {
+			d.st.trackQueue.SendError(fmt.Errorf("parse proxy URL: invalid address"))
+			proxyURL = &url.URL{Scheme: "invalid"}
+		}
+		// 克隆 DefaultTransport 再挂代理：直接 `&http.Transport{}` 会把连接池上限、空闲超时那套
+		// 调优全丢掉（每个代理一份全新 Transport，等于每次调用重做 TCP/TLS 握手）。
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(proxyURL)
+		c := &http.Client{
+			Timeout:   d.config.Timeout,
+			Transport: transport,
+		}
+		c = egress.Client(c, d.config.Network)
+		c.Transport = proxy.WrapFixedTransport(c.Transport, d.config.ProxyManager, addr)
+		return c.Transport
+	})
+	return &http.Client{Timeout: d.config.Timeout, Transport: cached}
 }
 
 // requestConfig 单次请求配置

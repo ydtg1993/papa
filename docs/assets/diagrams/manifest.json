@@ -51,10 +51,10 @@
       "name": "06-lifecycle",
       "title": "取消、排空与依赖关闭",
       "width": 1200,
-      "height": 1450,
-      "sourceSHA256": "e19576e646051502d40221e80f942351358981f22a381c6e4f1a610120aef392",
-      "svgSHA256": "68ee2b0dd034db27ab197c1487ee2ad2bb7331970513176c1a95a5673d51e4d9",
-      "pngSHA256": "764b4300c18136fa10926c0ec9c20c3ce06ccc159f1dd6e758bd3d75950b528b"
+      "height": 1685,
+      "sourceSHA256": "f4f56548bfd2418974554861551ce854f362f9fa4282f07a01368938ebb6ca82",
+      "svgSHA256": "81c1f2692bd73d5d84ec8aa6eed6862c5265d4f4d417890f5c75266de88bdec6",
+      "pngSHA256": "e15d042f34ec55e592982aa4717341d56f1ae9d140c27e18447f4cf53a30a30d"
     },
     {
       "name": "07-engine-components",
@@ -77,11 +77,11 @@
     {
       "name": "09-engine-execution",
       "title": "核心引擎：尝试与结算",
-      "width": 1408,
-      "height": 1805,
-      "sourceSHA256": "4d3cf20acd1635758886559d29cb347f42d6987f0d050c34ba4a0316ad856968",
-      "svgSHA256": "3eb11e5e2ca89840143876e292d0e1228b053ab2e2bcda7a4ded968cb054ca0a",
-      "pngSHA256": "487c821e1ae7aadbcd5919cf865a523a6107ef63a9f62f5b0d421992f13a0565"
+      "width": 1665,
+      "height": 1785,
+      "sourceSHA256": "9a537304019327cbba00cf15ad553f5298630da7938d50be7e1a67f506a6ec36",
+      "svgSHA256": "03901fa720574e1c607ef77e548399c77d70c39ca345f37945b792d6e5b11c1b",
+      "pngSHA256": "b04615f66a71b2ded4f1c2f336b7936dfd58d4be022225e5063d24f85ada9c4f"
     }
   ]
 }

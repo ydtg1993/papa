@@ -37,6 +37,10 @@ type ownedLauncher struct {
 	childPID int
 	guarded  bool
 	kill     sync.Once
+	// Only directories created by this launch are ours to delete. A configured
+	// user-data-dir can contain durable credentials and is not an ownership grant.
+	profileDir string
+	cleanupErr error // published when Cleanup returns
 }
 
 func (p *ownedLauncher) Get(f flags.Flag) string { return p.config.Get(f) }
@@ -73,8 +77,12 @@ func (p *ownedLauncher) Cleanup() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), browserCleanupTimeout)
 	defer cancel()
-	_ = removeDiagnosticProfile(ctx, p.Get(flags.UserDataDir))
+	if p.profileDir != "" {
+		p.cleanupErr = removeDiagnosticProfile(ctx, p.profileDir)
+	}
 }
+
+func (p *ownedLauncher) CleanupError() error { return p.cleanupErr }
 
 // Preserve the packaged leakless guard and its parent-death socket protocol,
 // but own both ends of setup so cancellation can interrupt Accept/Decode.
@@ -149,7 +157,7 @@ func acceptOwnedGuard(ctx context.Context, listener net.Listener, done <-chan st
 	return conn, nil
 }
 
-func launchOwned(ctx context.Context, l *launcher.Launcher) (owned *ownedLauncher, endpoint string, err error) {
+func launchOwned(ctx context.Context, l *launcher.Launcher, profileDir string) (owned *ownedLauncher, endpoint string, err error) {
 	bin, err := diagnosticBinary(ctx, l.Get(flags.Bin))
 	if err != nil {
 		return nil, "", err
@@ -205,7 +213,7 @@ func launchOwned(ctx context.Context, l *launcher.Launcher) (owned *ownedLaunche
 	if err := cmd.Start(); err != nil {
 		return nil, "", err
 	}
-	owned = &ownedLauncher{config: l, cmd: cmd, done: make(chan struct{}), guarded: listener != nil}
+	owned = &ownedLauncher{config: l, cmd: cmd, done: make(chan struct{}), guarded: listener != nil, profileDir: profileDir}
 	go func() { _ = cmd.Wait(); close(owned.done) }()
 	// Return ownership even on failure: the caller keeps its creation slot
 	// until process cleanup completes; no background launch escapes the pool.

@@ -53,9 +53,9 @@ func (e *Engine) UpdateTaskFlow(ctx context.Context, id string, revision uint64,
 		return err
 	}
 	err = service.update(ctx, id, revision, p)
-	if err == nil {
-		e.wakePendingRecovery()
-	}
+	// A commit error cannot prove rollback. Claims inspect the stored policy,
+	// so waking also on error safely recovers a committed policy relaxation.
+	e.wakePendingRecovery()
 	return err
 }
 
@@ -115,6 +115,9 @@ func (e *Engine) SubmitFlowTask(ctx context.Context, id string, parent uint, tas
 	}
 	saved, err := service.register(ctx, id, parent, task.toModel())
 	if err != nil {
+		// Registration may have committed before its acknowledgement was lost.
+		// Keep the caller's error, but allow durable pending work to be found.
+		e.wakePendingRecovery()
 		return err
 	}
 	*task = *e.taskFromRecord(&saved)

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod/lib/launcher"
 	"golang.org/x/sys/windows"
 )
 
@@ -19,6 +20,11 @@ func lockDiagnosticProfileFile(t *testing.T) (string, windows.Handle) {
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
+	return dir, lockDiagnosticFile(t, dir)
+}
+
+func lockDiagnosticFile(t *testing.T, dir string) windows.Handle {
+	t.Helper()
 	name, err := windows.UTF16PtrFromString(filepath.Join(dir, "cache.data"))
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +36,44 @@ func lockDiagnosticProfileFile(t *testing.T) (string, windows.Handle) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dir, handle
+	return handle
+}
+
+func TestSelfCheckReturnsProfileCleanupFailure(t *testing.T) {
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "child.pid")
+	t.Setenv("PAPA_DIAGNOSTIC_STARTUP_HELPER", "handshake")
+	t.Setenv("PAPA_DIAGNOSTIC_STARTUP_PID", marker)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		p, err := NewPoolContext(ctx, PoolConfig{Size: 1, SelfCheck: true, BrowserPath: bin, TempDir: root})
+		if p != nil {
+			p.Close()
+		}
+		result <- err
+	}()
+	waitPool(t, func() bool { _, err := os.Stat(marker + ".connected"); return err == nil })
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("missing self-check owned profile: %v %v", entries, err)
+	}
+	handle := lockDiagnosticFile(t, filepath.Join(root, entries[0].Name()))
+	defer windows.CloseHandle(handle)
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) || !retryDiagnosticCleanup(err) {
+			t.Fatalf("self-check lost startup cancellation or profile cleanup failure: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("self-check cleanup did not finish within its budget")
+	}
 }
 
 func TestDiagnosticCleanupWaitsForWindowsFileHandleRelease(t *testing.T) {
@@ -88,5 +131,46 @@ func TestDiagnosticCleanupDeadlineRetainsWindowsError(t *testing.T) {
 	}
 	if again := b.CloseDiagnostic(); again != err {
 		t.Fatalf("repeated close lost its original cleanup failure: %v", again)
+	}
+}
+
+func TestPoolShutdownReportsWindowsProfileCleanupFailure(t *testing.T) {
+	for _, diagnostic := range []bool{false, true} {
+		name := "ordinary"
+		if diagnostic {
+			name = "diagnostic"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir, handle := lockDiagnosticProfileFile(t)
+			defer windows.CloseHandle(handle)
+			b := testBrowser(true, true)
+			if diagnostic {
+				process := &diagnosticProcess{dir: dir}
+				ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+				defer cancel()
+				if err := process.closeWithin(ctx); err == nil {
+					t.Fatal("locked profile unexpectedly deleted")
+				}
+				b.diagnosticProcess = process
+			} else {
+				b.launcher = &ownedLauncher{config: launcher.New().UserDataDir(dir), profileDir: dir}
+			}
+			p := newTestPool(1, 0, func(bool) (*Browser, error) { return b, nil })
+			if _, err := p.Get(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			err := p.Shutdown(ctx)
+			if err == nil || !retryDiagnosticCleanup(err) {
+				t.Fatalf("shutdown hid owned profile deletion failure: %v", err)
+			}
+			if p.Stats().Live != 0 {
+				t.Fatal("completed process cleanup should release physical capacity")
+			}
+			if err := p.Shutdown(ctx); err == nil {
+				t.Fatal("repeated shutdown lost profile deletion failure")
+			}
+		})
 	}
 }

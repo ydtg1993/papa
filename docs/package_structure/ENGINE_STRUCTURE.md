@@ -9,7 +9,7 @@
 
 Engine 是单实例执行编排器，也是供 Fetcher 和宿主使用的公开门面。它连接任务持久化、阶段 worker、暂停/熔断、账号和抓取资源，负责跨组件的执行顺序及关停排空。
 
-scheduler、execution、fetchruntime 保持独立内部包；根包的 submissionStore、taskFlowService、traceService、siteCatalog、accountAlertGate 和 breakerCoordinator 各自拥有明确数据与操作契约。Engine 保留公开门面和跨暂停、持久化、投递的协调，不把完整 Engine 或 Config 交给这些组件。
+delivery、scheduler、execution、fetchruntime 保持独立内部包；根包的 submissionStore、taskFlowService、traceService、siteCatalog、accountAlertGate 和 breakerCoordinator 各自拥有明确数据与操作契约。Engine 保留公开门面和跨暂停、持久化、投递的协调，不把完整 Engine 或 Config 交给这些组件。
 
 判断是否需要拆分应看三个问题：是否拥有独立状态、是否存在语义接口、能否在不暴露内部字段的情况下独立验证。文件多或名字相似不构成单独拆包理由。涉及暂停、熔断和投递的原子协议尤其不能按目录机械拆开。
 
@@ -20,9 +20,11 @@ engine/
 ├── *.go                       # 公开门面、同包协调器、执行与领域适配
 ├── *_test.go                  # 功能单测、Engine 集成、SQL 和 MySQL 回归
 ├── internal/
+│   ├── delivery/              # 持久 pending 投递责任、唤醒与代次门控
 │   ├── scheduler/
 │   │   ├── pools.go           # 泛型活池登记、懒建、回收及停止
 │   │   ├── delay.go           # 泛型延迟堆、唤醒和取消协议
+│   │   ├── delay_dispatch.go  # 每组一个在途回调，满组不阻塞其他组
 │   │   ├── doc.go
 │   │   └── *_test.go
 │   ├── execution/
@@ -40,7 +42,7 @@ engine/
     └── mysql_reserved_words.txt # SQL 列名守卫测试输入
 ```
 
-当前根层有 75 个生产 Go 文件、104 个测试 Go 文件；engine/internal 下有 3 个包、10 个生产 Go 文件、7 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
+当前根层有 75 个生产 Go 文件、114 个测试 Go 文件；engine/internal 下有 4 个包、12 个生产 Go 文件、9 个测试 Go 文件。测试与所属职责同目录，根包保留跨组件集成回归。以下按职责分组列出全部根层生产 Go 文件。分组标题是逻辑分类，并不是当前存在的子目录。
 
 ## 3. 根包文件职责索引
 
@@ -55,6 +57,7 @@ engine/
 | `site_registry.go` | siteCatalog、SetSite/Site、请求头快照 | 使用原 breakerMu 协调；登记和读取都复制 map/slice，防止越过锁修改声明 |
 | `account_alerts.go` | accountAlertGate，按账号/池/事件种类限频和有界淘汰 | 只管理通知节流，不管理账号健康真相 |
 | `deps.go` | 阶段所需运行依赖检查 | 只验证声明/依赖是否可用，不隐式启动资源 |
+| `stage_submission.go` | stageSubmissionPolicy、启动入口冻结与关闭、带 Handler context 的直接下游提交校验 | 持有不可变 stageflow 图和准入位，不持有 Engine 或数据库；禁止运行期绕回 SubmitTask 创建根任务 |
 | `stage_registration.go` | 构建/懒建 worker 池、错误转发、空闲回收、ApplyRegisterStage 启动接线 | 池登记状态归 scheduler；created 事件在登记锁外由实际创建者发一次 |
 | `pools.go` | scheduler.Registry 的 Task 特化别名和构造桥 | 属于必要的类型适配，不应重新实现登记表 |
 | `dynticker.go` | 动态周期、唤醒合并、取消及 ticker 等待组协作 | 由 Engine 生命周期管理，不能启动脱离 Stop 的后台循环 |
@@ -105,6 +108,7 @@ engine/
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
 | `pause.go` | 站点/阶段暂停信号、继承查询、人工操作、广播闸门、声明期暂停 | 暂停信号必须只有一份；状态目前直接位于 Engine |
+| `breaker_policy.go` | 版本化目标发布、冻结活动事件策略及 deferred 状态投影 | 接收不可变代次；人工接管、活动事件或待结算失败不被新目标覆盖 |
 | `breaker_coordinator.go` | breakerCoordinator 状态、准入、历史与报告写入串行化 | 不持有 Engine；对外提供锁内语义操作和报告接口 |
 | `breaker_events.go` | 当前熔断事务的有界独立事件批次与安全出口 | 先完整发布状态及暂停，再交给 pkg/events 的有界非等待出口；外部 callback 不在执行栈运行 |
 | `breaker_control.go` | Engine 公开暂停/恢复/状态门面 | 协调既有暂停信号与站点投影 |
@@ -151,15 +155,18 @@ engine/
 | `snapshots.go` | 周期运行事件快照、失败事件、时间与阶段键投影 | 消费统计，不执行调度决策 |
 | `notifications.go` | Notifier 注册、失败和熔断告警、失败观测衔接 | 通知失败不能改写任务已确认的结局 |
 
-## 4. 三个内部包是否真正解耦
+`engine/internal/scheduler/delay_dispatch.go` 由单一 dispatcher 管理堆，并按注册阶段组最多运行一个交付回调；满池组的其它任务留在原堆，其他组仍可交付。取消等待已启动回调退出，不与 Next 或另一 Dispatch 并用。
+
+## 4. 四个内部包的职责边界
 
 | 包 | 独立拥有的状态/接口 | 判断与限制 |
 | --- | --- | --- |
+| `engine/internal/delivery` | Coordinator 的准入、任务交付所有权、阶段唤醒/代次、游标失效和停止门控 | 不持有 Engine、SQL 或业务 payload 队列；Engine 适配层负责读取 pending 和 worker 交接 |
 | `engine/internal/scheduler` | Registry 的池表/最后投递时间/停止位；Delay 的堆、锁、唤醒、timer 和待交付值快照 | 泛型接收任务值，不导入父包；Delay.Snapshot 只浅复制容器，指针值仍由调用方拥有；Next 只允许一个 dispatcher 消费者。Task 的持久化和暂停仍由 Engine 协调 |
 | `engine/internal/execution` | State 的 unresolved map、锁、快照和 Retry 背压；ConfirmSuccess 的取消后成功结算边界 | 已实质拆分，但职责是持久化确认状态，不是“所有任务执行”。依赖 GORM/taskstore 错误语义，后续不应随名称向此处堆执行功能 |
 | `engine/internal/fetchruntime` | Resources 资源登记与锁、资源申请/归还；Downloads 配置覆盖、解析和查找快照 | 不持有 Engine。download_config.go 复制站点/阶段覆盖值，不能保留调用方的可变指针。资源生命周期仍归各 Manager/Pool |
 
-三个包均有自己的测试，且架构守卫禁止其导入父 engine、admin 或 internal/app。导入守卫只证明依赖方向，不能证明父包已停止直接操作同包组件的字段。
+四个包均有自己的测试，且架构守卫禁止其导入父 engine、admin 或 internal/app。导入守卫只证明依赖方向，不能证明父包已停止直接操作同包组件的字段。
 
 ## 5. engine 目录之外的协作者
 
@@ -267,7 +274,7 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 维护沿既有 evidence maintenance ticker 生命周期执行，取消可中断清理；尝试结束在 worker 收尾内同步发布，不引入脱离 worker 的后台写队列。Trace 存储失败仅告警，不改变任务结果。默认保留七天，磁盘容量预算独立生效。旧 MySQL 验证记录仅说明迁移前实现，当前行为以文件回归为准。
 
-恢复只接受 `Snapshot.ValidateCurrent` 验证过的控制版本及精确窗口；旧控制升级与近似计数回退已删除。后台重投只提供 RetryTaskVersioned，始终检查补偿版本。
+恢复只接受 `Snapshot.ValidateCurrent` 验证过的控制版本及精确窗口；运行时不读取旧控制格式或回退近似计数；v4 控制版本 1 的冻结策略绑定仅通过 App 显式离线迁移完成。后台重投只提供 RetryTaskVersioned，始终检查补偿版本。
 
 Engine 的 SetEventsEmitter 将未知消费者隔离到固定异步边界；Stop 只请求关闭自己创建的包装器，不等待任意 observer。`breaker_probe_evidence_test.go` 验证探针证据与持久投影的边界/脱敏一致；`breaker_events_test.go` 验证阻塞或 panic observer 不阻止结算，重入操作通过已提交状态进行。可靠快照、窗口和追加历史仍为同步存储协议，依赖共享 `pkg/incident`，不依赖 obs 服务。
 

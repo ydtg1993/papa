@@ -240,16 +240,15 @@ func (p *Pool) newDiagnosticBrowser(ctx, taskCtx context.Context, useProxy bool)
 	process := &diagnosticProcess{dir: dir}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, process.close())
+			cleanupErr := process.close()
+			err = errors.Join(err, cleanupErr)
 			if process.done != nil {
-				select {
-				case <-process.done:
-				default:
-					// Retain partial ownership just like ordinary browser startup:
-					// Get registers this result before closing it, so a terminal
-					// Shutdown cannot mistake an unfinished process for drained.
-					result = &Browser{diagnosticProcess: process, useProxy: useProxy}
-				}
+				// Register even an already-exited process: Close reconciles any
+				// expired cleanup deadline against its final profile state.
+				result = &Browser{diagnosticProcess: process, useProxy: useProxy}
+			}
+			if result == nil {
+				p.recordCleanupError(cleanupErr)
 			}
 		}
 	}()

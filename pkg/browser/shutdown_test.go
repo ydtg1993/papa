@@ -159,7 +159,11 @@ func TestShutdownWaitsForAlreadyClosingProcess(t *testing.T) {
 }
 
 func TestShutdownRetainsTimedOutDiagnosticProcess(t *testing.T) {
-	diagnostic := &diagnosticProcess{done: make(chan struct{}), err: context.DeadlineExceeded}
+	dir := filepath.Join(t.TempDir(), "late-profile")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	diagnostic := &diagnosticProcess{done: make(chan struct{}), dir: dir, err: context.DeadlineExceeded}
 	// Model a completed close attempt whose process wait exceeded its budget.
 	diagnostic.once.Do(func() {})
 	b := testBrowser(true, true)
@@ -181,6 +185,46 @@ func TestShutdownRetainsTimedOutDiagnosticProcess(t *testing.T) {
 	defer cancel2()
 	if err := p.Shutdown(ctx2); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("late process exit did not finish owned profile cleanup: %v", err)
+	}
+}
+
+func TestShutdownAcceptsDiagnosticExitJustAfterCleanupDeadline(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	process := &diagnosticProcess{done: done, err: context.DeadlineExceeded}
+	process.once.Do(func() {})
+	b := testBrowser(true, true)
+	b.diagnosticProcess = process
+	p := newTestPool(1, 0, func(bool) (*Browser, error) { return b, nil })
+	if _, err := p.Get(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("completed diagnostic retained obsolete process timeout: %v", err)
+	}
+}
+
+func TestSelfCheckReleasesRegisteredProcess(t *testing.T) {
+	if _, ok := launcher.LookPath(); !ok {
+		t.Skip("system browser unavailable")
+	}
+	root := t.TempDir()
+	p, err := NewPool(PoolConfig{Size: 1, SelfCheck: true, TempDir: root, BinarySource: BrowserBinarySystem, Headless: true, NoSandbox: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if stats := p.Stats(); stats.Closed || stats.Live != 0 || stats.Creating != 0 {
+		t.Fatalf("self-check changed admission or retained its temporary slot: %+v", stats)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("successful self-check left temporary profiles: %v %v", entries, err)
 	}
 }
 

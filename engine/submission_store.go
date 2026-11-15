@@ -210,8 +210,10 @@ func (s submissionStore) prepare(task *Task) (out submissionPlan, resultErr erro
 
 	// A new task must be durable before returning its delivery responsibility.
 	if ierr := s.protectTaskPoolReferences([]*Task{task}, func() error { return task.insert(s.db) }); ierr != nil {
-		// 并发下撞唯一索引：另一 goroutine 已入库并将入队，此处回填 ID 后跳过，避免重复入队
+		// A failed INSERT may itself have committed. Retain a read-only pending
+		// scan even when the follow-up lookup fails; do not infer another owner.
 		if rerr := s.findTaskRecordFallback(task, &record); rerr != nil {
+			out.retain(task, false)
 			out.logFailure = true
 			return out, fmt.Errorf("insert crawler task to db failed: %w", ierr)
 		}
@@ -221,6 +223,7 @@ func (s submissionStore) prepare(task *Task) (out submissionPlan, resultErr erro
 		s.dedupCache.Add(key)
 		task.ID = int(record.ID)
 		task.Repeat = record.Repeat
+		out.retain(task, false)
 		return out, nil
 	}
 	if err := s.db.Model(&models.CrawlerTask{}).Where("id = ?", task.ID).First(&record).Error; err != nil {
@@ -322,11 +325,15 @@ func (s submissionStore) prepareBatch(tasks []*Task, accept func(submissionDeliv
 	// Successful rows become delivery responsibilities; failures remain retryable.
 	for _, t := range toProcess {
 		if _, hit := failed[t.Unique()]; hit {
+			// A failed insert/read acknowledgement does not prove rollback.
+			accept(submissionDelivery{task: t, unread: true, batch: true})
 			continue
 		}
-		// 并发撞车的那几条：库里那行已经被另一路入库并入队了，别再入一次（与 SubmitTask 同一处理）
+		// Conflict and lost acknowledgement are indistinguishable here. Only
+		// signal recovery; leave the winning row's metadata and status intact.
 		if _, hit := conflicted[t.Unique()]; hit {
 			s.dedupCache.Add(t.Unique())
+			accept(submissionDelivery{task: t, unread: true, batch: true})
 			continue
 		}
 		var record models.CrawlerTask
