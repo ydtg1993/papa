@@ -2,7 +2,6 @@ package tracestore
 
 import (
 	"context"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -24,23 +23,28 @@ func (s *Store) List(ctx context.Context, taskID, limit int) ([]core.TraceExecut
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	prefix := taskPath(taskID) + string(filepath.Separator)
 	var latest entry
 	for _, e := range s.files {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if strings.HasPrefix(e.path, prefix) && strings.HasSuffix(e.path, ".json") && e.seq > latest.seq {
+		id, _, ok := pathIdentity(e.path)
+		if ok && id == taskID && strings.HasSuffix(e.path, ".json") && e.seq > latest.seq {
 			latest = e
 		}
 	}
 	if latest.path == "" {
 		return []core.TraceExecutionStep{}, nil
 	}
-	dir := filepath.Dir(latest.path)
+	latestRecord, err := s.read(ctx, r, latest)
+	if err != nil {
+		return nil, err
+	}
+	_, execution, _ := pathIdentity(latest.path)
 	var entries []entry
 	for _, e := range s.files {
-		if filepath.Dir(e.path) == dir && strings.HasSuffix(e.path, ".json") {
+		id, exec, ok := pathIdentity(e.path)
+		if ok && id == taskID && exec == execution && strings.HasSuffix(e.path, ".json") {
 			entries = append(entries, e)
 		}
 	}
@@ -51,6 +55,9 @@ func (s *Store) List(ctx context.Context, taskID, limit int) ([]core.TraceExecut
 		rec, err := s.read(ctx, r, e)
 		if err != nil {
 			return nil, err
+		}
+		if rec.IdentityHash != latestRecord.IdentityHash || rec.ExecutionID != latestRecord.ExecutionID || (rec.Site != "" && latestRecord.Site != "" && rec.Site != latestRecord.Site) {
+			continue
 		}
 		truncated = truncated || rec.Truncated
 		for _, step := range rec.Steps {

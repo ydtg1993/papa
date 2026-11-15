@@ -32,6 +32,7 @@ type Options struct {
 	MaxFiles                    int
 }
 type Batch struct {
+	Site         string           `json:"site,omitempty"`
 	TaskID       int              `json:"task_id"`
 	IdentityHash string           `json:"identity_hash"`
 	ExecutionID  string           `json:"execution_id"`
@@ -86,6 +87,9 @@ func taskPath(id int) string {
 	return filepath.Join(fmt.Sprintf("%02x", id&255), fmt.Sprintf("task-%d", id))
 }
 func batchDir(b Batch) string {
+	return filepath.Join(b.Site, fmt.Sprintf("task-%d", b.TaskID))
+}
+func legacyBatchDir(b Batch) string {
 	return filepath.Join(taskPath(b.TaskID), identityComponent(b.IdentityHash), digest(b.ExecutionID))
 }
 func identityComponent(value string) string {

@@ -14,7 +14,7 @@ import (
 )
 
 func testBatch(exec string, attempt int) Batch {
-	return Batch{TaskID: 7, IdentityHash: "identity", ExecutionID: exec, Attempt: attempt, RecordedAt: time.Now().UTC(), Steps: []core.TraceStep{{Seq: 1, Step: "fetch", Status: "failed", Message: exec}}}
+	return Batch{Site: "example", TaskID: 7, IdentityHash: "identity", ExecutionID: exec, Attempt: attempt, RecordedAt: time.Now().UTC(), Steps: []core.TraceStep{{Seq: 1, Step: "fetch", Status: "failed", Message: exec}}}
 }
 func mustWrite(t *testing.T, s *Store, b Batch) {
 	t.Helper()
@@ -75,7 +75,7 @@ func TestQuotaCancelAndNoPartialPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := testBatch("rename", 1)
-	name := filepath.Join(batchDir(b), "00000000000000000001.json")
+	name := batchPath(b, 1)
 	if err := r.MkdirAll(name, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestRetentionUsesRecordTimeAndKeepsPending(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].ExecutionID != "fresh" {
 		t.Fatal(got, err)
 	}
-	pending := filepath.Join(s.opts.Dir, batchDir(fresh), "00000000000000000003.pending")
+	pending := filepath.Join(s.opts.Dir, strings.TrimSuffix(batchPath(fresh, 3), ".json")+".pending")
 	if err := os.WriteFile(pending, []byte("interrupted"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestLoweredQuotasAllowCleanup(t *testing.T) {
 func TestCanonicalIdentityDirectory(t *testing.T) {
 	b := testBatch("execution", 1)
 	b.IdentityHash = strings.Repeat("ab", 32)
-	if got := filepath.Base(filepath.Dir(batchDir(b))); got != b.IdentityHash {
+	if got := identityComponent(b.IdentityHash); got != b.IdentityHash {
 		t.Fatalf("identity double-hashed: %s", got)
 	}
 	s := New(Options{Dir: t.TempDir()})

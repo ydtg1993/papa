@@ -57,7 +57,7 @@ func (s *Store) inventory(ctx context.Context, r *os.Root) error {
 				if !info.Mode().IsRegular() {
 					return fmt.Errorf("tracestore: nonregular file: %s", p)
 				}
-				if depth != 4 {
+				if _, _, ok := pathIdentity(p); !ok {
 					return fmt.Errorf("tracestore: unexpected file: %s", p)
 				}
 				seq, err := fileSequence(item.Name())
@@ -97,7 +97,10 @@ func fileSequence(name string) (uint64, error) {
 		suffix = ".pending"
 	}
 	base := strings.TrimSuffix(name, suffix)
-	if len(base) != 20 || base == name {
+	if len(base) == 85 && base[64] == '-' && isDigest(base[:64]) {
+		base = base[65:]
+	}
+	if len(base) != 20 || !strings.HasSuffix(name, suffix) {
 		return 0, fmt.Errorf("tracestore: invalid filename %q", name)
 	}
 	seq, err := strconv.ParseUint(base, 10, 64)
@@ -126,7 +129,7 @@ func (s *Store) Write(ctx context.Context, b Batch) error {
 		return err
 	}
 	defer s.release()
-	if b.TaskID <= 0 || b.Attempt < 0 || b.IdentityHash == "" || b.ExecutionID == "" || len(b.IdentityHash) > 256 || len(b.ExecutionID) > 256 || b.RecordedAt.IsZero() || len(b.Steps) > 500 {
+	if !validSite(b.Site) || b.TaskID <= 0 || b.Attempt < 0 || b.IdentityHash == "" || b.ExecutionID == "" || len(b.IdentityHash) > 256 || len(b.ExecutionID) > 256 || b.RecordedAt.IsZero() || len(b.Steps) > 500 {
 		return errors.New("tracestore: invalid batch metadata or step count")
 	}
 	// Bound caller-controlled strings before JSON allocation (escaping can expand them).
@@ -140,7 +143,7 @@ func (s *Store) Write(ctx context.Context, b Batch) error {
 			return errors.New("tracestore: batch exceeds file limit")
 		}
 	}
-	data, err := json.Marshal(record{Version: 1, Batch: b})
+	data, err := json.Marshal(record{Version: 2, Batch: b})
 	if err != nil {
 		return err
 	}
@@ -166,7 +169,7 @@ func (s *Store) Write(ctx context.Context, b Batch) error {
 		return err
 	}
 	seq := s.sequence + 1
-	name := filepath.Join(dir, fmt.Sprintf("%020d.json", seq))
+	name := batchPath(b, seq)
 	tmp := strings.TrimSuffix(name, ".json") + ".pending"
 	f, err := r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
@@ -225,7 +228,7 @@ func (s *Store) read(ctx context.Context, r *os.Root, e entry) (record, error) {
 	if err = json.Unmarshal(data, &rec); err != nil {
 		return rec, fmt.Errorf("tracestore: corrupt record %s: %w", e.path, err)
 	}
-	if rec.Version != 1 || rec.TaskID <= 0 || rec.Attempt < 0 || rec.RecordedAt.IsZero() || len(rec.Steps) > 500 || len(rec.IdentityHash) > 256 || len(rec.ExecutionID) > 256 || rec.IdentityHash == "" || rec.ExecutionID == "" || batchDir(rec.Batch) != filepath.Dir(e.path) {
+	if !recordPathValid(rec, e) || rec.TaskID <= 0 || rec.Attempt < 0 || rec.RecordedAt.IsZero() || len(rec.Steps) > 500 || len(rec.IdentityHash) > 256 || len(rec.ExecutionID) > 256 || rec.IdentityHash == "" || rec.ExecutionID == "" {
 		return rec, fmt.Errorf("tracestore: invalid record metadata %s", e.path)
 	}
 	return rec, ctx.Err()

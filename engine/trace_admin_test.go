@@ -34,6 +34,10 @@ func TestTraceFilesSurviveRestartAndSeparateExecutions(t *testing.T) {
 		tr.Fail("retry", errors.New("fixture"), nil)
 		tr.finish()
 	}
+	files, err := filepath.Glob(filepath.Join(e.cfg.Crawler.TraceFiles.Dir, "stub", "task-7", "*.json"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("site/task layout not used: %v %v", files, err)
+	}
 	rows, err := e.ListTrace(7)
 	if err != nil || len(rows) != 2 || rows[1].Attempt != 1 {
 		t.Fatalf("retry: %+v %v", rows, err)
@@ -59,7 +63,7 @@ func TestTraceCleanupAndCorruptionUseFilesOnly(t *testing.T) {
 	e, pool := traceEngine(t, true)
 	store := e.traceService().files
 	for i, at := range []time.Time{time.Now().Add(-2 * time.Hour), time.Now()} {
-		if err := store.Write(context.Background(), tracestore.Batch{TaskID: i + 1, IdentityHash: "id", ExecutionID: "round", RecordedAt: at, Steps: []core.TraceStep{{Step: "fixture"}}}); err != nil {
+		if err := store.Write(context.Background(), tracestore.Batch{Site: "example", TaskID: i + 1, IdentityHash: "id", ExecutionID: "round", RecordedAt: at, Steps: []core.TraceStep{{Step: "fixture"}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

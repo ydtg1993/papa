@@ -37,6 +37,7 @@ const (
 // **空指针安全**：trace 未开启、或测试里直接调 FetchHandler 时 Task.Trace 为 nil，
 // 此时 Step/Fail/setResult/finish 都是 no-op —— 可选协作者就该是可选的。
 type Trace struct {
+	site         string
 	store        *traceService
 	executionID  string
 	identityHash string
@@ -56,7 +57,7 @@ type Trace struct {
 
 // newTrace 构造一次尝试的记录器。
 func newTrace(store *traceService, logger *logrus.Logger, taskID, attempt int) *Trace {
-	return &Trace{store: store, logger: logger, taskID: taskID, attempt: attempt, executionID: uuid.NewString(), identityHash: fmt.Sprint(taskID), lastAt: time.Now()}
+	return &Trace{site: "_unknown", store: store, logger: logger, taskID: taskID, attempt: attempt, executionID: uuid.NewString(), identityHash: fmt.Sprint(taskID), lastAt: time.Now()}
 }
 
 // traceCtxKey 把本次尝试的 Trace 挂到 ctx 上 —— 与 archiveCtxKey 同一个手法。
@@ -247,6 +248,9 @@ func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 	}
 	tr := newTrace(e.traceService(), e.loggerSet.Engine, task.ID, attempt)
 	tr.executionID = task.traceExecutionID
+	if task.Site != "" {
+		tr.site = task.Site
+	}
 	tr.identityHash = fmt.Sprintf("%x", sha256.Sum256([]byte(task.Unique())))
 	return tr
 }
