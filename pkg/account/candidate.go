@@ -23,10 +23,14 @@ func (m *Manager) Version(key Key) (uint64, error) {
 }
 
 func detachedCandidate(c *Credentials) (*Credentials, error) {
-	if c == nil || c.Session == nil {
+	if c == nil || (c.Session == nil && c.BrowserState == nil) {
 		return nil, errors.New("candidate session missing")
 	}
-	session, err := htmlfetch.RestoreSession(c.Session.Snapshot())
+	source := c.Session
+	if source == nil {
+		source = htmlfetch.NewSession()
+	}
+	session, err := htmlfetch.RestoreSession(source.Snapshot())
 	if err != nil {
 		return nil, &Failure{Code: "invalid-candidate-cookies", Cause: err}
 	}
@@ -46,6 +50,22 @@ func verifyCandidate(ctx context.Context, e *entry, c *Credentials) (err error) 
 	if err = e.checkCredentials(c); err != nil {
 		return &Failure{Code: "invalid-candidate", Cause: err}
 	}
+	bridged := c.BrowserState != nil && e.config.Browser != nil && e.config.Browser.SessionBridge
+	if bridged {
+		if err = useBrowser(ctx, e.config.Browser, c.BrowserState, func(page *rod.Page) error {
+			valid, err := e.config.Browser.Check(ctx, page)
+			if err != nil {
+				return &Failure{Code: "candidate-browser-check-failed", Cause: err}
+			}
+			if !valid {
+				return ErrExpired
+			}
+			c.BrowserState, err = exportSession(ctx, page, e.config.Browser, c)
+			return err
+		}); err != nil {
+			return err
+		}
+	}
 	if e.config.Check != nil {
 		probe, err := e.context(ctx)
 		if err != nil {
@@ -59,7 +79,7 @@ func verifyCandidate(ctx context.Context, e *entry, c *Credentials) (err error) 
 			return ErrExpired
 		}
 	}
-	if c.BrowserState != nil {
+	if c.BrowserState != nil && !bridged {
 		if e.config.Browser == nil {
 			return ErrUnsupported
 		}
@@ -236,6 +256,10 @@ func (m *Manager) PublishCandidate(ctx context.Context, key Key, expectedVersion
 		e.pageState = c.BrowserState
 		e.browserRevision++
 		e.browserCheck = e.lastLogin
+	} else if e.config.Browser != nil && e.config.Browser.SessionBridge {
+		e.pageState = nil
+		e.browserCheck = time.Time{}
+		e.browserRevision++
 	}
 	if scope, ok := identityruntime.FromContext(ctx); ok && scope.Snapshot() != nil {
 		metadata := identityMetadata(scope.Snapshot())

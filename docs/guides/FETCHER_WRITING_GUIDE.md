@@ -172,6 +172,8 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 
 **运行治理与账号身份**：任务启用池归属后，`FetchHTTP` / `FetchHTML` / `FetchIncremental`、标准 Render 与 Capture 入口绑定当前尝试账号。增量缓存按账号隔离，不能把旧账号的条件请求表示交给新账号复用。不要另取底层匿名客户端绕过绑定；受管请求必须继续传递原 ctx。filedown/M3U8 的请求预算通过 ctx 继承，但下载选项中的 Cookie/Headers/固定代理仍须按既有 API 显式传入，不自动导出账号凭据。
 
+同账号需要 HTTP/HTML 与 Rod 共用一次登录时，在账号 Config 的 Browser 中开启 `SessionBridge`，并配置两端身份 Check；通用 Cookie 转移、隔离、版本发布和保存由 Papa 完成，Fetcher 仍使用原来的账号/池接口。一个任务同时使用两端时选择 `both` 池并继续传递原 ctx；失败不会在当前 handler 换号或重放。共享会话按账号串行，特殊 Token 映射及完整接线见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md) §5。
+
 浏览器预算针对当前受管 page target：第一篇主文档同源及 `PageOptions.GovernanceOrigins`，含该范围导航/XHR/子资源；不覆盖新 popup、独立 worker、原始 Rod page 或业务覆盖 Fetch 拦截器后的请求。第三方 origin 不盲目计入目标站延迟。Get/GetDirect 及回调包装的浏览器借用均受资源许可约束，物理池容量不热改。详见 [RUNTIME_CONTROL.md](../runtime/RUNTIME_CONTROL.md)。
 
 使用代理管理器的低层 API 时，优先 `Acquire(ctx)` / `AcquireURL(ctx, fixedURL)`，完成后 `ReportHTTP(status, err)` 并 `defer Release()`；反馈与释放幂等。需要代理时必须处理 `ErrUnavailable`，不能将 `Next()` 的空串当直连理由。账号固定代理与已创建浏览器出口不能在途替换。

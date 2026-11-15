@@ -14,6 +14,8 @@ go run .
 
 先填写 `configs/config.yaml` 的数据库与后台配置。迁移与首次执行策略初始化需显式执行，正常启动不会自动建表或补建策略；初始化不会覆盖已有策略。
 
+`go run .` 默认启动后台并暂停全部站点；准备好账号、账号池等前置条件后，在 OA 对目标站点点击“恢复整站”。入口和历史待执行任务保留为 pending，每次重启重新暂停。站点文件无需逐个配置 `SiteSpec.StartPaused`，由业务启动入口统一设置。需要启动即采集时使用 `go run . --autostart`；它开放全部站点，仍遵守熔断及运行策略，不负责登录或创建账号池。
+
 后台“账号管理”需要业务显式注册站点登录适配器和加密存储；框架不预置真实站点账号。
 接线见 [账号接入手册](docs/framework/accounts/ACCOUNT_ONBOARDING.md)，健康缓冲与池策略见 [账号运行手册](docs/framework/accounts/ACCOUNT_RUNTIME.md)。
 

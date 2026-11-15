@@ -2,6 +2,12 @@
 
 `pkg/account/onboarding` 负责账号资料、临时登录过程、候选验证和发布。真实网站的密码协议、验证码发送、扫码状态、Cookie/Token 格式、第三方授权及身份识别由独立业务模块的 `Provider` 实现。Papa 只包含通用接口和本地合成测试。
 
+登录方式与采集传输分开：HTTP 或 Rod 登录一次后，可由 `Config.Browser.SessionBridge` 开启框架双向桥接。站点只提供登录及两端的真实身份 Check，特殊 Token 映射使用 Import/Export；不在 Provider 中重复复制 Cookie、维护浏览器快照或实现锁/版本发布。接线与失败语义见 [ACCOUNT_RUNTIME.md](ACCOUNT_RUNTIME.md) §5。Run 前接入框架公共池时使用 `PoolProvider: app.Engine.GetBrowserPool`，不要提前读取尚未初始化的池指针。
+
+HTTP 候选确认不强制打开 Chromium，账号资料的身份能力表示本次登录核验的证据；池设为 `both` 后由协调器准备两端，当前 `HTTPReady`/`BrowserReady` 分别展示，不因复制 Cookie 就提前标记浏览器就绪。共享会话不新增表，也不保存第二套账号密码。
+
+Rod 登录的 Flow 可以只返回 `Credentials{BrowserState: state}`。开启 SessionBridge 后，框架暂存该候选；确认发布时先恢复并核验浏览器，再导出 Cookie/特殊 Token 并执行 HTTP Check。Provider 不需要自己构造 HTTP CookieJar，也不会因为发布候选再调用一次 Login。未开启共享会话时仍沿用独立传输的候选验证契约。
+
 ## 业务接线
 
 先按项目现有流程显式执行 `papa migrate`。`onboarding.Models()` 中的 `crawler_account_profiles` 已纳入框架迁移；`NewGORMStore`、`Service.Load` 和普通启动都不创建表。

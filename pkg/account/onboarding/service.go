@@ -868,10 +868,14 @@ func (s *Service) saveSecret(ctx context.Context, key account.Key, state *accoun
 	return ref, nil
 }
 func credentialState(c *account.Credentials) (*account.StoredState, error) {
-	if c == nil || c.Session == nil {
+	if c == nil || (c.Session == nil && c.BrowserState == nil) {
 		return nil, errors.New("candidate session required")
 	}
-	return &account.StoredState{HTTP: &account.CredentialState{Cookies: c.Session.Snapshot(), Headers: maps.Clone(c.Headers), Values: maps.Clone(c.Values)}, Browser: c.BrowserState}, nil
+	session := c.Session
+	if session == nil {
+		session = htmlfetch.NewSession()
+	}
+	return &account.StoredState{HTTP: &account.CredentialState{Cookies: session.Snapshot(), Headers: maps.Clone(c.Headers), Values: maps.Clone(c.Values)}, Browser: c.BrowserState}, nil
 }
 func restoreCredentials(state *account.StoredState) (*account.Credentials, error) {
 	if state == nil || state.HTTP == nil {

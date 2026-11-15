@@ -94,7 +94,7 @@ FileStore 使用外部 32 字节密钥、随机 nonce 和 AES-GCM；账号 Key �
 
 低层 API 为 `Session.Snapshot() SessionState` 与 `htmlfetch.RestoreSession(state)`。SessionState 是明文凭据对象，不属于可发布的脱敏样本。
 
-## 5. Rod 账号流程与 HTTP 桥接
+## 5. Rod 账号流程与双向会话桥接
 
 Config.Browser 配置账号专用或明确共享策略的 Pool、URL、Login、Check。URL 是稳定的同源 bootstrap 页面。Manager.WithBrowser 为每次操作创建新隔离上下文，恢复快照、检查登录、必要时在新的干净上下文登录，然后执行业务回调一次；成功后保存当前页面 Cookie/LocalStorage。失败的业务回调不会自动重放。
 
@@ -110,7 +110,42 @@ err := engine.WithAccountBrowser(ctx, key, func(page *rod.Page) error {
 })
 ```
 
-HTTP 和浏览器后续凭据变化不自动双向同步；自动桥接仅发生在该 HTTP 账号需要登录时。账号快照包含当前 URL 及同源 `Browser.CookieURLs` 适用 Cookie 的并集、当前 origin LocalStorage；低层 `ExportPageState` 仍只导出当前 URL 适用 Cookie。快照不含 IndexedDB/sessionStorage/多 origin 状态。这里复用的是账号状态，不是长期占用池中的常驻 Chrome。回调结束即销毁上下文，页面不能带出回调。
+上述独立会话模式下，后续凭据变化不自动双向同步；自动桥接仅发生在该 HTTP 账号需要登录时。账号快照包含当前 URL 及同源 `Browser.CookieURLs` 适用 Cookie 的并集、当前 origin LocalStorage；低层 `ExportPageState` 仍只导出当前 URL 适用 Cookie。快照不含 IndexedDB/sessionStorage/多 origin 状态。这里复用的是账号状态，不是长期占用池中的常驻 Chrome。回调结束即销毁上下文，页面不能带出回调。
+
+### 共享会话：登录一次供 HTTP、HTML 和 Rod 使用
+
+显式设置 `BrowserConfig.SessionBridge: true` 开启。两端都要有身份 Check；只需实现一种登录：提供 `Config.Login` 时优先走 HTTP 登录，不提供时使用 `Browser.Login`。HTML 与 HTTP 共用 Session，不需要第三次登录。未开启的账号保持上面的独立会话行为。
+
+```go
+cfg := account.Config{
+    Origins: []string{"https://fixture.example"},
+    Login: loginHTTP, // 站点实现；Rod 登录站点省略它，并设置 Browser.Login
+    Check: checkHTTPIdentity,
+    Browser: &account.BrowserConfig{
+        PoolProvider: app.Engine.GetBrowserPool,
+        URL: "https://fixture.example/",
+        SessionBridge: true,
+        Check: checkBrowserIdentity,
+    },
+}
+```
+
+`PoolProvider` 延迟获取已经由框架拥有的浏览器池，适用于账号资料早于 Run 中浏览器池初始化加载的场景；也可以给 `Pool` 传已创建的固定池，两者互斥。Provider 必须线程安全，只返回同一个受管池，不创建池。池尚不可用时浏览器操作返回错误，HTTP 登录仍可使用；浏览器进程的关闭仍由池的原拥有者负责。
+
+共享会话按以下顺序工作：
+
+1. 普通 `WithAccountBrowser` 在需要时通过所选登录方式取得已验证 HTTP 会话；账号池路径只使用本次 Attempt 已准备的身份，不在任务中登录或换号。
+2. Papa 将最新 HTTP Cookie 恢复进独立浏览器上下文，保留作用域、host-only、路径、有效期、Secure、HttpOnly、SameSite。浏览器 Check 通过后才执行一次业务回调。
+3. 成功回调后导出 bootstrap host 范围内所有路径的 Cookie 和当前 origin LocalStorage，并将 Cookie 的删除/轮换同步到分离的 HTTP 候选；其他 origin 的 HTTP Cookie 保留。HTTP Check 通过、版本未改变、保存成功后才发布新状态。
+4. 后续 HTTP 响应更新的 Cookie 在下一次浏览器操作前导入；HTTP 重新登录或发布新候选会清除旧浏览器核验状态，之后重新恢复和核验。
+
+为保证两端 Cookie 轮换有序，开启后同账号受管交换的有效并发为 **1**（即使 MaxConcurrent 设置更大）；不同账号仍可并行。操作等待可取消；同账号回调不能重入 Manager。同步失败、回调失败、取消或保存失败保留之前的本地凭据，注销/新候选发布会阻止旧结果写回。远端已经发生的请求及会话失效无法撤回，不能因保存错误盲目重放业务回调。
+
+`Browser.Import(ctx, credentials, state)` 可将本站特有 Token 映射到 LocalStorage 等状态，`Browser.Export` 可反向提取 Token/CSRF。回调拿到分离候选，不得保留引用。普通 Cookie 不需站点手写搬运；框架不会猜测 LocalStorage 键、Authorization 格式或登录成功标准。分区 Cookie 不跨传输转换，不将其扩大为普通 Cookie。
+
+OA 或显式 `RegisterCandidate` / `PublishCandidate` 收到仅有 BrowserState 的候选时，共享会话模式会先核验浏览器，再通过相同导出路径生成 HTTP 会话并核验，不调用 Login。已验证候选、运行期登录和浏览器业务请求使用同一个通用导出实现。
+
+HTTP 候选确认成功不要求浏览器在线，初始 `BrowserReady` 可以为 false；第一次浏览器操作或账号池协调器验证成功后才为 true。需要同一任务同时用两端时，池设 `Transport: account.Both`；OA 的账号资料记录登录确认时的核验证据，当前两端就绪状态以账号池运行状态为准。浏览器环境不兼容时可继续使用 HTTP 池，不要把 HTTP 成功当成浏览器也已验证。
 
 HTTP 的 ProxyURL 固定该账号出口，空值固定直连；与 context 的显式代理冲突会报错。浏览器使用 Browser.Pool 的出口，Direct 可选直连池；HTTP ProxyURL 不会应用到 Rod。需要两端同 IP/设备时，应由应用配置相应专用池和 UA/设备，框架不会猜测或偷偷轮换。
 

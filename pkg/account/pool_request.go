@@ -191,6 +191,22 @@ func (m *Manager) withPoolBrowser(ctx context.Context, key PoolKey, options *bro
 	if e.config.Browser == nil {
 		return ErrUnsupported
 	}
+	if e.config.Browser.SessionBridge {
+		err = m.withSessionBrowser(ctx, e, a, options, fn)
+		if errors.Is(err, ErrExpired) {
+			p.reportFailure(a, Expired, a.TaskID, Browser)
+		}
+		if errors.Is(err, ErrNeedsVerify) {
+			p.reportFailure(a, NeedsVerify, a.TaskID, Browser)
+		}
+		if errors.Is(err, ErrChallenge) {
+			p.reportFailure(a, Challenge, a.TaskID, Browser)
+		}
+		if errors.Is(err, ErrFixedProxyUnavailable) {
+			p.reportFailure(a, ProxyUnavailable, a.TaskID, Browser)
+		}
+		return err
+	}
 	if err = e.validateIdentityState(ctx); err != nil {
 		return err
 	}

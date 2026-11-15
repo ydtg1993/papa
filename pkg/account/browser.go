@@ -13,6 +13,11 @@ import (
 
 func useBrowser(ctx context.Context, cfg *BrowserConfig, state *browser.PageState, fn func(*rod.Page) error) error {
 	detached := *cfg
+	var err error
+	detached.Pool, err = cfg.resolvePool()
+	if err != nil {
+		return err
+	}
 	if scope, ok := identityruntime.FromContext(ctx); ok && scope.Snapshot() != nil {
 		detached.Options.Identity = scope.Snapshot()
 	}
@@ -21,7 +26,7 @@ func useBrowser(ctx context.Context, cfg *BrowserConfig, state *browser.PageStat
 	if cfg.Direct {
 		use = cfg.Pool.WithDirectIsolatedBrowser
 	}
-	err := use(ctx, func(b *browser.Browser) error {
+	err = use(ctx, func(b *browser.Browser) error {
 		err := b.WithStatePage(ctx, cfg.URL, state, cfg.Options, fn)
 		if failure := b.ProxyFailure(); failure != nil {
 			return &Failure{Code: "fixed-proxy-unavailable", Cause: errors.Join(ErrFixedProxyUnavailable, failure)}
@@ -32,6 +37,17 @@ func useBrowser(ctx context.Context, cfg *BrowserConfig, state *browser.PageStat
 		return &Failure{Code: "fixed-proxy-unavailable", Cause: errors.Join(ErrFixedProxyUnavailable, err)}
 	}
 	return err
+}
+
+func (cfg *BrowserConfig) resolvePool() (*browser.Pool, error) {
+	pool := cfg.Pool
+	if cfg.PoolProvider != nil {
+		pool = cfg.PoolProvider()
+	}
+	if pool == nil {
+		return nil, ErrUnsupported
+	}
+	return pool, nil
 }
 
 func browserOrigin(page *rod.Page, rawURL string) error {
@@ -77,6 +93,10 @@ func browserLoginState(ctx context.Context, c *Credentials, cfg BrowserConfig) (
 				return ErrExpired
 			}
 			if err := browserOrigin(page, cfg.URL); err != nil {
+				return err
+			}
+			if cfg.SessionBridge {
+				c.BrowserState, err = exportSession(ctx, page, &cfg, c)
 				return err
 			}
 			urls := cfg.CookieURLs
@@ -190,6 +210,9 @@ func (m *Manager) WithBrowser(ctx context.Context, key Key, fn func(*rod.Page) e
 		if err = p.guardAccount(key); err != nil {
 			return err
 		}
+	}
+	if e.config.Browser.SessionBridge {
+		return m.withSessionBrowser(ctx, e, nil, nil, fn)
 	}
 	if err = e.enter(ctx); err != nil {
 		return err

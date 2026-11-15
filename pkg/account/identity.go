@@ -97,9 +97,13 @@ func (m *Manager) ResolveIdentity(ctx context.Context, s identityruntime.Subject
 		return nil, ErrUnsupported
 	}
 	cfg := e.config.Browser
-	use := cfg.Pool.WithIsolatedBrowser
+	pool, err := cfg.resolvePool()
+	if err != nil {
+		return nil, err
+	}
+	use := pool.WithIsolatedBrowser
 	if cfg.Direct {
-		use = cfg.Pool.WithDirectIsolatedBrowser
+		use = pool.WithDirectIsolatedBrowser
 	}
 	var result *identity.ResolvedProfile
 	err = use(ctx, func(b *browser.Browser) error {
@@ -273,7 +277,11 @@ func (m *Manager) DiagnosticBrowserConfig(key Key) (browser.PoolConfig, []string
 	if e.config.Browser == nil {
 		return browser.PoolConfig{}, nil, ErrUnsupported
 	}
-	cfg, omissions := e.config.Browser.Pool.DiagnosticConfig()
+	pool, err := e.config.Browser.resolvePool()
+	if err != nil {
+		return browser.PoolConfig{}, nil, err
+	}
+	cfg, omissions := pool.DiagnosticConfig()
 	protected := func(header string) bool {
 		h := strings.ToLower(header)
 		return h == "user-agent" || h == "accept-language" || strings.HasPrefix(h, "sec-ch-ua")

@@ -65,6 +65,7 @@ pkg/
 | `types.go` | `Key` 共享契约别名、`Credentials` / `Config` / `BrowserConfig` / `Status` / `Failure`；定义 `Manager`、账号 `entry`、许可及认证轮次，`NewManager` 构造注册表 |
 | `manager.go` | 登记和 origin/header 校验、HTTP 认证轮次合并、检查与登录、版本发布、`Invalidate` / `Pause` / `Resume` / `Status`；`Do` / `FetchHTML` 执行账号请求 |
 | `browser.go` | 账号浏览器许可、隔离页面、登录后 Cookie 与 token 桥接、浏览器状态导出及 `WithBrowser` |
+| `session_bridge.go` | 显式共享会话的 HTTP→Rod 导入、浏览器身份核验、单次回调、Rod→HTTP 核验及版本检查后保存；普通账号和池账号共用此路径 |
 | `store.go` | 凭据 `Store` / `StoredState`、加载保存、`Logout`；`FileStore` 使用调用方密钥加密文件，处理凭据与页面状态副本 |
 | `candidate.go` | 分离候选凭据、检查和持久化；`RegisterCandidate` / `PublishCandidate` 发布成功验证的候选，`CandidatePublished` 通知池健康恢复 |
 | `identity.go` | 认证状态的身份元数据、`SetIdentityManager` / `PinIdentity`、实际池上的 `ResolveIdentity`、分离候选的 `VerifyIdentity` 与无凭据诊断配置 |
@@ -146,6 +147,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `isolation.go` | `WithIsolatedBrowser` / `WithDirectIsolatedBrowser`，在借入的进程中创建独立浏览器上下文并负责回收；不继承共享凭据 |
 | `state.go`、`state_navigation.go` | `PageState` 校验、导出、恢复和加密读写；`WithStatePage` 在首次请求/站点脚本前恢复 Cookie 与同源 LocalStorage，并管理初始化监听的生命周期 |
 | `session.go` | `CopyCookiesToSession`，从受管页面将指定 URL 适用的 Cookie 桥接到 HTTP Session |
+| `session_bridge.go` | `PageStateFromSession` / `SessionWithPageState` 的纯状态转换，保留 Cookie 属性、作用域与删除语义；不登录、不持有账号运行状态 |
 | `capture.go`、`response.go` | 有界请求/响应捕获、已有页适配、失败现场和取消处理；返回独立快照，不直接保存凭据或归档业务数据 |
 | `record.go` | `RecordNetwork` 记录当前 page target 的有界网络观察；`NetworkEntry.WriteSample` 通过 htmlfetch 样本策略导出 |
 | `challenge.go` | 独立 Network 事件观察明确的站点挑战协议证据；不再安装一套与其他功能争用的 Fetch handler |

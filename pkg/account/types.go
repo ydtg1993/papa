@@ -82,14 +82,25 @@ type Config struct {
 // BrowserConfig binds an account to a caller-owned pool. For stable proxy/UA
 // identity use a dedicated configured pool; HTTP ProxyURL does not affect Rod.
 type BrowserConfig struct {
-	Pool       *browser.Pool
-	URL        string // same-origin bootstrap page, used for snapshot restore/export
-	Direct     bool
-	Options    browser.PageOptions
-	Login      func(context.Context, *rod.Page) error
-	Check      func(context.Context, *rod.Page) (bool, error)
-	CookieURLs []string                                             // browser-login bridge: cookies applicable to these URLs (default URL)
-	Export     func(context.Context, *rod.Page, *Credentials) error // optional token/CSRF extraction
+	// SessionBridge opts into one shared HTTP/browser session. Managed exchanges
+	// for this account are serialized, even if MaxConcurrent is greater than one.
+	// Both checks and at least one login implementation are required.
+	SessionBridge bool
+	// Import optionally maps site-specific credentials to LocalStorage/state.
+	// It receives detached values; do not retain them or reenter this account.
+	Import func(context.Context, *Credentials, *browser.PageState) error
+	Pool   *browser.Pool
+	// PoolProvider defers resolving a framework-owned pool until use. It must be
+	// concurrency-safe and return the same live pool; do not construct pools here.
+	// Set either Pool or PoolProvider, never both.
+	PoolProvider func() *browser.Pool
+	URL          string // same-origin bootstrap page, used for snapshot restore/export
+	Direct       bool
+	Options      browser.PageOptions
+	Login        func(context.Context, *rod.Page) error
+	Check        func(context.Context, *rod.Page) (bool, error)
+	CookieURLs   []string                                             // browser-login bridge: cookies applicable to these URLs (default URL)
+	Export       func(context.Context, *rod.Page, *Credentials) error // optional token/CSRF extraction
 }
 
 type Status struct {

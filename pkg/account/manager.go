@@ -75,6 +75,12 @@ func (m *Manager) Register(key Key, cfg Config) error {
 	if cfg.MaxConcurrent > 1024 {
 		return errors.New("account concurrency exceeds 1024")
 	}
+	if cfg.Browser != nil && cfg.Browser.SessionBridge {
+		if cfg.Check == nil || (cfg.Login == nil && cfg.Browser.Login == nil) {
+			return errors.New("session bridge requires HTTP Check and a login implementation")
+		}
+		cfg.MaxConcurrent = 1 // Cookie rotation must be ordered across transports.
+	}
 	if cfg.Classify == nil {
 		cfg.Classify = defaultClassify
 	}
@@ -113,8 +119,11 @@ func (m *Manager) Register(key Key, cfg Config) error {
 	}
 	if cfg.Browser != nil {
 		b := *cfg.Browser
-		if b.Pool == nil || b.Login == nil || b.Check == nil {
+		if (b.Pool == nil && b.PoolProvider == nil) || (b.Login == nil && !b.SessionBridge) || b.Check == nil || (autoBridge && b.Login == nil) {
 			return errors.New("browser pool, Login and Check required")
+		}
+		if b.Pool != nil && b.PoolProvider != nil {
+			return errors.New("choose browser Pool or PoolProvider")
 		}
 		o, err := origin(b.URL)
 		if err != nil || !e.origins[o] {
@@ -336,6 +345,10 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 				if credentials.BrowserState != nil {
 					e.pageState = credentials.BrowserState
 					e.browserCheck = e.lastCheck
+					e.browserRevision++
+				} else if e.config.Browser != nil && e.config.Browser.SessionBridge {
+					e.pageState = nil
+					e.browserCheck = time.Time{}
 					e.browserRevision++
 				}
 			}

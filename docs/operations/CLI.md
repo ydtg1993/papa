@@ -33,6 +33,7 @@ go install ./cmd/papa
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 第 2 节 |
 | `go run . -migrate-breaker-policy <旧有效策略.json> -confirmed-policy-revision N` | schema 迁移后显式给旧活动事件绑定经确认的正版本及完整策略快照，不重置事件或预算 |
 | `go run . -init-policy configs/execution-policy.json` | 标准业务入口显式初始化第一版数据库执行策略；先 migrate，再审核文档并初始化，最后普通启动。已有配置不覆盖 |
+| `go run . [--autostart]` | 新项目业务入口默认暂停全部站点，等待 OA“恢复整站”；`--autostart` 开放全部站点采集，仍遵守熔断及运行策略 |
 | `papa check [目录] [--boot] [-c <配置路径>]` | 默认离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、启用的治理队列缺项、`Delay` 与 `Backoff` 写法；`--boot` 另连库验证注册装配 |
 | `papa upgrade [目录] [--write]` | 刷新已有 v4 项目的框架文档和技能：刷新框架副本（`docs/framework/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](MONITOR.md) 第 1 节 |
@@ -80,6 +81,14 @@ mycrawler/
 框架目录说明书见 [package_structure/README.md](../package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留主题目录和说明书相对路径；`history/` 不分发。升级不会删除项目自行保留的文件，包括旧路径的框架副本；项目维护者核对后自行处理旧副本，当前导航只链接新路径。
 
 初始化和升级执行策略见 [EXECUTION_POLICY.md](../runtime/EXECUTION_POLICY.md)。初始化 JSON 只写数据库，不作为每次启动的 fallback；`papa check` 离线检查不能代替数据库文档及活动事件快照的启动检查。
+
+### 业务启动与 `--autostart`
+
+新生成项目的 `internal/app/run.go` 在注册站点前统一设置启动暂停：`go run .` 启动后台，全部站点等待 OA“恢复整站”。业务接入的账号登录服务仍可使用，可先登录、确认身份并设置账号池，再放行采集。入口仍提交为持久 pending，历史待执行任务同样受整站闸门约束；每次重启重新暂停，上次手动恢复不改变下次启动方式。
+
+`go run . --autostart`（或编译后的业务程序加 `--autostart`）对全部站点取消启动暂停，不自动登录、创建池或绕过熔断与运行策略。`--autostart=false` 等同默认启动。业务站点文件无需逐个配置 `SiteSpec.StartPaused`：标准入口统一覆盖该值；底层框架 API 仍保留，直接使用 App 的调用方行为不变。
+
+这是业务入口参数，不是 `papa` CLI 子命令或 YAML 配置。已有项目的 `papa upgrade` 不改业务入口，需要同步上述启动逻辑；仅升级库依赖不会自动获得该参数。
 
 几句要点：
 
