@@ -38,8 +38,12 @@ type Pool struct {
 	headers atomic.Pointer[map[string]string] // 共享可热更：默认请求头（copy-on-write）
 	maxIdle atomic.Int64                      // 共享可热更：空闲回收阈值（纳秒）
 
-	closed    atomic.Bool
-	closeOnce sync.Once
+	closed       atomic.Bool
+	closeOnce    sync.Once
+	instances    sync.Map       // All owned browsers, including checked-out instances.
+	creating     sync.WaitGroup // Add under mu, before Close marks the pool closed.
+	launchCtx    context.Context
+	cancelLaunch context.CancelFunc
 
 	reaperMu   sync.Mutex
 	reaperStop chan struct{} // 非 nil 表示空闲回收协程在运行
@@ -157,6 +161,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		direct:            make(chan *Browser, cfg.DirectSize),
 	}
 	p.newBrowserFn = p.newBrowser
+	p.launchCtx, p.cancelLaunch = context.WithCancel(context.Background())
 	p.cond = sync.NewCond(&p.mu)
 	h := copyMap(cfg.DefaultHeaders)
 	p.headers.Store(&h)
@@ -185,6 +190,9 @@ func (p *Pool) newLauncher(useProxy bool) *launcher.Launcher {
 		Headless(p.cfg.Headless).
 		NoSandbox(p.cfg.NoSandbox).
 		Leakless(p.cfg.Leakless)
+	if p.launchCtx != nil {
+		l.Context(p.launchCtx)
+	}
 	if p.cfg.BrowserPath != "" {
 		l = l.Bin(p.cfg.BrowserPath)
 	}
@@ -243,7 +251,11 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 
 	// 不用 MustConnect：连不上时它会 panic，而这里是在业务 goroutine 里取浏览器，
 	// 该返回错误而不是把整个流程炸掉。连不上还要把刚拉起来的 Chrome 收掉，否则进程泄漏。
-	browser := rod.New().ControlURL(url)
+	connectCtx := p.launchCtx
+	if connectCtx == nil {
+		connectCtx = context.Background()
+	}
+	browser := rod.New().ControlURL(url).Context(connectCtx)
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("connect browser: %w", err)
 	}
@@ -323,6 +335,9 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 	defer stopCtx()
 
 	for {
+		if p.closed.Load() {
+			return nil, fmt.Errorf("browser pool closed")
+		}
 		maxIdle := p.maxIdleDuration()
 
 		// 1. 非阻塞复用空闲实例
@@ -348,7 +363,7 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 
 		// 2. 未达容量上限则按需新建
 		if limit > 0 && alive.Add(1) <= limit {
-			b, err := p.newBrowserFn(useProxy)
+			b, err := p.createOwned(useProxy)
 			if err != nil {
 				alive.Add(-1)
 				// 槽位空出来了：叫醒睡在 cond.Wait 的 Get。照 broadcast 的约定，凡是改变
@@ -357,7 +372,6 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 				p.broadcast()
 				return nil, fmt.Errorf("create browser: %w", err)
 			}
-			b.pool = p
 			b.markUsed()
 			return b, nil
 		}
@@ -382,6 +396,36 @@ func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, u
 		p.cond.Wait()
 		p.mu.Unlock()
 	}
+}
+
+// createOwned serializes publication with shutdown. Close waits for in-flight
+// factories so a late Chromium cannot outlive the pool unaccounted for.
+func (p *Pool) createOwned(useProxy bool) (*Browser, error) {
+	p.mu.Lock()
+	if p.closed.Load() {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("browser pool closed")
+	}
+	p.creating.Add(1)
+	p.mu.Unlock()
+	defer p.creating.Done()
+	b, err := p.newBrowserFn(useProxy)
+	if err != nil {
+		if b != nil {
+			b.Close()
+		}
+		return nil, err
+	}
+	p.mu.Lock()
+	if p.closed.Load() {
+		p.mu.Unlock()
+		b.Close()
+		return nil, fmt.Errorf("browser pool closed")
+	}
+	b.pool = p
+	p.instances.Store(b, struct{}{})
+	p.mu.Unlock()
+	return b, nil
 }
 
 // usable 校验空闲实例：死掉或空闲超时的关闭并扣减存活计数，返回 nil 让调用方重试。
@@ -599,7 +643,12 @@ drain:
 // Close 关闭池中所有浏览器
 func (p *Pool) Close() {
 	p.closeOnce.Do(func() {
+		p.mu.Lock()
 		p.closed.Store(true)
+		p.mu.Unlock()
+		if p.cancelLaunch != nil {
+			p.cancelLaunch()
+		}
 		p.reaperMu.Lock()
 		if p.reaperStop != nil {
 			close(p.reaperStop)
@@ -614,12 +663,21 @@ func (p *Pool) Close() {
 		p.cond.Broadcast()
 		p.mu.Unlock()
 
+		var closing sync.WaitGroup
+		p.instances.Range(func(key, _ any) bool {
+			closing.Add(1)
+			go func(b *Browser) { defer closing.Done(); b.Close() }(key.(*Browser))
+			return true
+		})
+		// Drain channel references; tracked instances are closed in parallel.
 		for b := range p.browsers {
 			b.Close()
 		}
 		for b := range p.direct {
 			b.Close()
 		}
+		closing.Wait()
+		p.creating.Wait()
 		if p.removeRootOnClose {
 			_ = os.RemoveAll(p.cfg.TempDir)
 		}

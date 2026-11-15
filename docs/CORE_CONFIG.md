@@ -50,7 +50,7 @@
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限，`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底 |
-| `stop_timeout` | duration | `5s` | 取消阻塞提交后等待各阶段 worker 与持久化操作退出的上限；未开始任务保留 pending 供恢复（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，并**跳过**关库与关浏览器池 —— 此时 worker goroutine 还活着，关了只会让在途写入全部失败。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
+| `stop_timeout` | duration | `5s` | 取消阻塞提交后等待各阶段 worker 与持久化操作退出的上限；未开始任务保留 pending 供恢复（各阶段**并发**等，总等待约一个该值）。超时则打错误日志，保留数据库供在途写入，但退出前仍关闭浏览器池（包括借出中的实例），取消并等待创建收尾，不依赖 leakless 清理。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
 | `trace.enabled` | bool | `false` | 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），写入 `crawler.trace_files.dir` 下的独立追踪文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |

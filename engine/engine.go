@@ -546,8 +546,9 @@ func (e *Engine) breakerStatusOfLocked(site string) BreakerStatus {
 //
 // 各阶段的 timeout 是**并发**计的，所以总等待约等于一个 timeout，而不是「阶段数 × timeout」。
 //
-// 拿到 drained=false 时，调用方**不该接着关数据库 / 关浏览器池**：worker goroutine 还活着
-// （Go 杀不掉它，见 workerpool.Stop），关掉只会让在途的写入全部报 "sql: database is closed"。
+// 拿到 drained=false 时，调用方**不该接着关数据库**：worker goroutine 还活着
+// （Go 杀不掉它，见 workerpool.Stop），关库会让在途写入报 "sql: database is closed"。
+// 最终进程退出前仍需关闭浏览器池，回收 Chromium 进程。
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]StopStats) {
 	deadline := time.Now().Add(timeout)
 	admissionsDone := e.deliveryState().Close()

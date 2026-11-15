@@ -796,7 +796,7 @@ func (a *App) Run(ctx context.Context) {
 	stopTimeout := a.Config.Crawler.StopTimeoutOrDefault()
 	drained, stopStats := a.Engine.Stop(stopTimeout)
 	if !drained {
-		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 跳过关库与浏览器池关闭，让在途写入完成；"+
+		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 保留数据库供在途写入，退出前强制清理浏览器池；"+
 			"留在库里的 pending 任务下次启动的启动恢复会重新入队", stopTimeout, stopStats)
 	}
 
@@ -816,15 +816,12 @@ func (a *App) Run(ctx context.Context) {
 		a.oplog.Close(3 * time.Second)
 	}
 
-	// 没排空时**不关**浏览器池和数据库：pool.Stop 超时后返回，但 Go 杀不掉 goroutine，
-	// worker 还在跑 —— 它们可能正持着浏览器、正要把结果写回 DB。这会儿关掉，
-	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 UpdateStatus / SaveResult
-	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
-	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
+	// Browser processes must be reclaimed even when workers exceed the drain deadline.
+	// Keep the DB open on timeout so interrupted workers can persist their final state.
+	if pool := a.Engine.GetBrowserPool(); pool != nil {
+		pool.Close()
+	}
 	if drained {
-		if a.Engine.GetBrowserPool() != nil {
-			a.Engine.GetBrowserPool().Close()
-		}
 		if sqlDB, err := a.DB.DB(); err == nil {
 			_ = sqlDB.Close()
 		}

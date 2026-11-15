@@ -35,6 +35,8 @@ type Browser struct {
 	// cleanupTimeout 测试钩子：Close 里等 launcher 收尾的上限；<=0 用 browserCleanupTimeout。
 	// 只有测试会设它（真等 5 秒的用例太慢），生产路径一律走零值。
 	cleanupTimeout time.Duration
+	closeOnce      sync.Once
+	closed         atomic.Bool
 }
 
 // browserCleanupTimeout Close 里等进程收尾的上限（可被 Browser.cleanupTimeout 覆盖，测试用）。
@@ -55,11 +57,23 @@ const browserCleanupTimeout = 5 * time.Second
 //	   PID 拿不到时 Kill 什么都不做（rod 里 `l.PID() == 0` 直接 return），Cleanup 就还是那个永久等待。
 //	   到点就放弃等待、留一条日志：调用方可能正握着池锁，最坏留一个 goroutine，绝不把池与停机拖死。
 func (b *Browser) Close() {
+	b.closeOnce.Do(func() {
+		b.closed.Store(true)
+		b.closeOwned()
+		if b.pool != nil {
+			b.pool.instances.Delete(b)
+		}
+	})
+}
+
+func (b *Browser) closeOwned() {
 	if b.launcher != nil {
 		b.launcher.Kill()
 	}
 	if b.Browser != nil {
-		_ = b.Browser.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), browserCleanupTimeout)
+		defer cancel()
+		_ = b.Browser.Context(ctx).Close()
 	}
 	if b.launcher == nil {
 		return
@@ -110,6 +124,9 @@ func (b *Browser) GetLastUsed() time.Time {
 
 // IsAlive 检查浏览器是否可用
 func (b *Browser) IsAlive() bool {
+	if b.closed.Load() {
+		return false
+	}
 	if b.aliveOverride != nil {
 		return *b.aliveOverride
 	}
