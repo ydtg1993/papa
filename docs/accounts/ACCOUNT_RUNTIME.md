@@ -129,7 +129,7 @@ Status 给出账号键、HTTP 版本、是否暂停、是否正在认证、近�
 ### 接入顺序
 
 1. 在 App.Run 前注册账号 Manager、Login/Check、Store 和可选 Browser 配置；先执行 `papa migrate`。
-2. 在“数据与资源 → 账号池”创建池，选择已注册账号及顺序、HTTP/browser/both 传输要求。也可在业务初始化中使用 `NewPools` + `Upsert` 创建，但须提供持久 Store、站点预算 context 和任务引用检查。
+2. 在“数据与资源 → 账号池 → 池设置”创建池，先选择已注册站点，再选择同站账号及顺序、HTTP/browser/both 传输要求。未接入账号管理时显示“尚未施工”；没有账号时通过内部“账号”入口完成该站点的登录接入。代码已注册的账号不要求另装 OA 登录 Provider。也可在业务初始化中使用 `NewPools` + `Upsert` 创建，但须提供持久 Store、站点预算 context 和任务引用检查。
 3. 在“采集控制”设置站点/阶段 `pool`，或提交 `Task{Site: "fixture", Stage: "detail", AccountPool: "readers", URL: ...}`。持久策略不能引用不存在的池，因此应先建池再保存归属默认值。
 4. FetchHandler 继续传递收到的 ctx，调用普通 Engine HTML/HTTP/渲染入口，或显式 `FetchPoolHTTP` / `FetchPoolHTML` / `WithPoolBrowser`。在任务外先用 `RuntimeContext` 绑定站点。
 

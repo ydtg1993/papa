@@ -52,7 +52,7 @@ func TestAccountsUIRealBrowserDraftLoginIdentityAndSecretFields(t *testing.T) {
 		if err = wait(`()=>document.querySelector('.rt-status').textContent.includes('先保存资料')`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='新增账号').click();let fields=document.querySelectorAll('.ac-fields input');fields[0].value='browser-account';fields[1].value='浏览器合成账号';fields[2].value='alice';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='刷新').click();}`); err != nil {
+		if err = eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='新增账号').click();let site=document.querySelector('select[aria-label="账号所属站点"]');site.value='fixture';site.dispatchEvent(new Event('change'));let fields=document.querySelectorAll('.ac-fields input');fields[0].value='browser-account';fields[1].value='浏览器合成账号';fields[2].value='alice';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='刷新').click();}`); err != nil {
 			return err
 		}
 		if err = eval(`()=>{if(document.querySelector('.ac-fields input').value!=='browser-account')throw Error('refresh erased draft');Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='保存资料').click()}`); err != nil {

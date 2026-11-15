@@ -13,6 +13,14 @@ func (a *Handler) PoolsAPI(w http.ResponseWriter, r *http.Request) {
 	p := a.Pools
 	view := func() map[string]any {
 		v := map[string]any{"configured": p != nil, "pools": []account.PoolSnapshot{}, "accounts": a.Runtime.AccountStatus()}
+		v["sites"] = []string{}
+		if a.Sites != nil {
+			v["sites"] = a.Sites()
+		}
+		v["login_sites"] = []string{}
+		if a.LoginSites != nil {
+			v["login_sites"] = a.LoginSites()
+		}
 		if p != nil {
 			v["pools"] = p.Snapshot()
 			v["events"] = p.Events(account.Key{}, 0)

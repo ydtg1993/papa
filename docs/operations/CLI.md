@@ -75,7 +75,7 @@ mycrawler/
   .claude/skills/          开发技能（通用文件可刷新，项目约定不覆盖）
 ```
 
-后台自定义页模板 `internal/monitor/view/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
+后台自定义页模板 `internal/monitor/view/view.go` 仅保留空的 `Register` 扩展点，不自动注册“业务 / 示例页”菜单。业务需要时自行使用 `UsePage` 注册页面，`Page.Section` 可选 data/flow/monitor/system，不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册，旧项目中的示例页需自行移除。
 
 框架目录说明书见 [package_structure/README.md](../package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留主题目录和说明书相对路径；`history/` 不分发。升级不会删除项目自行保留的文件，包括旧路径的框架副本；项目维护者核对后自行处理旧副本，当前导航只链接新路径。
 

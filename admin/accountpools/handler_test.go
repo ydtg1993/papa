@@ -2,6 +2,7 @@ package accountpools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
@@ -12,6 +13,22 @@ import (
 	"testing"
 	"time"
 )
+
+func TestUnconfiguredPoolsStillListsDeclaredSites(t *testing.T) {
+	h := &Handler{Runtime: &runtimeStub{}, Sites: func() []string { return []string{"fixture"} }}
+	w := httptest.NewRecorder()
+	h.PoolsAPI(w, httptest.NewRequest("GET", "/api/account-pools", nil))
+	var result struct {
+		Configured bool     `json:"configured"`
+		Sites      []string `json:"sites"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || result.Configured || len(result.Sites) != 1 || result.Sites[0] != "fixture" {
+		t.Fatalf("missing unconfigured site selection: %+v", result)
+	}
+}
 
 type runtimeStub struct {
 	previewCalls int

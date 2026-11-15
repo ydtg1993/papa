@@ -6,7 +6,12 @@ Papa.page("accounts", function (root) {
   status.setAttribute("role", "status");
   var style = el("style");
   style.textContent = ".ac-flow{border-left:4px solid var(--primary,#ffd83d);padding:12px 18px;margin:20px 0}.ac-fields{display:grid;gap:14px;margin:20px 0}.ac-fields label{display:grid;gap:6px}.ac-fields input,.ac-fields select,.ac-fields textarea{padding:9px;width:100%;box-sizing:border-box}.ac-identity{background:var(--muted-fill,#f7f7f5);padding:18px;white-space:pre-wrap;overflow-wrap:anywhere}.ac-remote{width:100%;height:auto;display:block;outline:2px solid var(--border-color,#222);cursor:crosshair;touch-action:none}.ac-remote:focus{outline:3px solid var(--primary,#ffd83d)}.ac-ops{display:flex;gap:8px;flex-wrap:wrap}.ac-wide{width:min(1100px,100%)}";
-  bar.append(el("h2", "账号管理"), button("新增账号", function () { edit(); }), button("刷新", refresh));
+  var siteFilter = el("select"), selectedSite = sessionStorage.getItem("papa-account-site") || "";
+  siteFilter.setAttribute("aria-label", "筛选账号站点");
+  siteFilter.onchange = function () { if (!close()) { siteFilter.value = selectedSite; return; } selectedSite = siteFilter.value; sessionStorage.setItem("papa-account-site", selectedSite); render(); };
+  var accountsTab = button("账号", function () {}); accountsTab.setAttribute("aria-current", "page");
+  var tabs = el("nav", undefined, "rt-tabs"); tabs.setAttribute("aria-label", "账号池分区"); tabs.append(accountsTab, button("池设置", function () { openPage("account-pools", "账号池"); }));
+  bar.append(el("h2", "账号池"), tabs, siteFilter, button("新增账号", function () { edit(); }), button("刷新", refresh));
   root.append(style, bar, status, content);
   function current() { return !dead; }
   function setWriting(value) { writing = value; root.querySelectorAll("button,input,select,textarea").forEach(function (control) { if (value) { control.dataset.acWasDisabled = control.disabled ? "1" : "0"; control.disabled = true; } else if (control.dataset.acWasDisabled !== undefined) { control.disabled = control.dataset.acWasDisabled === "1"; delete control.dataset.acWasDisabled; } }); }
@@ -14,12 +19,19 @@ Papa.page("accounts", function (root) {
   function notice(e) { if (!dead) status.textContent = e.message || String(e); }
   async function refresh() {
     var generation = ++dataGeneration;
-    try { var latest = await request("/api/accounts"); if (dead || generation !== dataGeneration) return; data = latest; status.textContent = latest.configured ? "先保存资料，再完成登录并核对真实身份。验证通过后可加入同站账号池。" : latest.message; render(); } catch (e) { if (generation === dataGeneration) notice(e); }
+    try { var latest = await request("/api/accounts"); if (dead || generation !== dataGeneration) return; data = latest; fillSites(); status.textContent = latest.configured ? "先保存资料，再完成登录并核对真实身份。验证通过后可加入同站账号池。" : latest.message; render(); } catch (e) { if (generation === dataGeneration) notice(e); }
+  }
+  function fillSites() {
+    var sites = Array.from(new Set((data.sites || []).concat((data.providers || []).map(function (d) { return d.site; }).concat((data.profiles || []).map(function (p) { return p.key.site; }))))).sort();
+    siteFilter.replaceChildren(); var all = el("option", "全部站点"); all.value = ""; siteFilter.append(all);
+    sites.forEach(function (site) { var o = el("option", site); o.value = site; siteFilter.append(o); });
+    if (sites.indexOf(selectedSite) < 0) selectedSite = "";
+    siteFilter.value = selectedSite;
   }
   function render() {
     content.replaceChildren(); if (!data) return;
-    if (!data.providers.length) { content.append(el("p", "尚无站点声明登录方式。请由业务模块注册适配器，并显式提供加密存储密钥。")); return; }
-    var rows = (data.profiles || []).map(function (p) {
+    if (!data.providers.length) { content.append(el("p", "尚无站点接入账号登录。点击“新增账号”选择站点，查看接入状态。")); return; }
+    var rows = (data.profiles || []).filter(function (p) { return !selectedSite || p.key.site === selectedSite; }).map(function (p) {
       var ops = el("div", undefined, "ac-ops"); ops.append(button(p.state === "ready" ? "重新登录" : "登录", function () { login(p); }), button("资料", function () { edit(p); }));
       if (p.state === "ready") ops.append(button("加入账号池", function () { join(p); }));
       return [p.key.site, p.label + " · " + p.key.id, p.state === "ready" ? "已核验" : "待登录", p.identity ? p.identity.display : "尚未识别", p.identity ? [p.identity.http ? "HTTP" : "", p.identity.browser ? "浏览器" : ""].filter(Boolean).join(" / ") : "—", u.date(p.verified_at), ops];
@@ -30,17 +42,36 @@ Papa.page("accounts", function (root) {
   function open(title, wide) { if (!close()) return null; drawer = el("section", undefined, "rt-drawer" + (wide ? " ac-wide" : "")); drawer.setAttribute("role", "dialog"); drawer.setAttribute("aria-label", title); drawer.append(el("h2", title), button("关闭", close)); root.append(drawer); return drawer; }
   function field(form, label, type, value) { var row = el("label", label), input = el(type === "textarea" ? "textarea" : "input"); if (type !== "textarea") input.type = type || "text"; input.value = value || ""; input.autocomplete = "off"; row.append(input); form.append(row); return input; }
   function edit(p) {
-    if (!data || !data.configured || !data.providers.length) return;
-    var box = open(p ? "账号资料" : "新增账号"); if (!box) return; var form = el("div", undefined, "ac-fields"), select = el("select"), label = el("label", "站点");
-    data.providers.forEach(function (d) { var o = el("option", d.label + " · " + d.site); o.value = d.site; select.append(o); }); if (p) select.value = p.key.site; select.disabled = !!p; label.append(select); form.append(label);
-    var id = field(form, "稳定账号 ID", "text", p && p.key.id), name = field(form, "显示名称", "text", p && p.label), expected = field(form, "预期真实账号 ID（选填）", "text", p && p.expected_subject); id.disabled = !!p; expected.disabled = !!(p && p.state === "ready");
-    box.append(form, el("p", "账号 ID 不随密码、Cookie 或 Token 改变。资料草稿不会进入采集池。", "rt-muted"), button("保存资料", async function () {
-      if (writing) return; setWriting(true);
-      try { var saved = await request("/api/accounts", { action: "draft", revision: p ? p.revision : 0, profile: { key: { site: select.value, id: id.value }, label: name.value, expected_subject: expected.value } }); setWriting(false); close(); await refresh(); if (!p) login(saved); } catch (e) { setWriting(false); notice(e); }
-    }));
+    if (!data) { notice(new Error("站点资料尚未加载，请刷新后重试。")); return; }
+    var box = open(p ? "账号资料" : "新增账号"); if (!box) return;
+    var select = el("select"), label = el("label", "站点"), details = el("div");
+    select.setAttribute("aria-label", "账号所属站点");
+    var sites = Array.from(new Set((data.sites || []).concat((data.providers || []).map(function (d) { return d.site; })))).sort();
+    var placeholder = el("option", sites.length ? "请选择站点" : "尚未注册站点"); placeholder.value = ""; select.append(placeholder);
+    sites.forEach(function (site) { var provider = (data.providers || []).find(function (d) { return d.site === site; }); var o = el("option", provider ? provider.label + " · " + site : site); o.value = site; select.append(o); });
+    select.value = p ? p.key.site : sessionStorage.getItem("papa-account-site") || "";
+    select.disabled = !!p; label.append(select); box.append(label, details);
+    function build() {
+      details.replaceChildren();
+      var site = select.value, provider = (data.providers || []).find(function (d) { return d.site === site; });
+      if (!site) { details.append(el("p", sites.length ? "请先选择账号所属站点。" : "尚未注册站点，请先接入采集站点。", "rt-status")); return; }
+      sessionStorage.setItem("papa-account-site", site);
+      if (!data.configured || !provider || !(provider.methods || []).length) {
+        details.append(el("p", "站点「" + site + "」的账号登录接入尚未施工，请先由该站点实现登录流程。", "rt-status")); return;
+      }
+      details.append(el("p", "本站支持：" + provider.methods.map(function (m) { return m.label; }).join("、") + "。保存资料后选择登录方式。", "rt-muted"));
+      var form = el("div", undefined, "ac-fields"), id = field(form, "稳定账号 ID", "text", p && p.key.id), name = field(form, "显示名称", "text", p && p.label), expected = field(form, "预期真实账号 ID（选填）", "text", p && p.expected_subject);
+      id.disabled = !!p; expected.disabled = !!(p && p.state === "ready");
+      details.append(form, el("p", "账号 ID 不随密码、Cookie 或 Token 改变。资料草稿不会进入采集池。", "rt-muted"), button("保存资料", async function () {
+        if (writing) return; setWriting(true);
+        try { var saved = await request("/api/accounts", { action: "draft", revision: p ? p.revision : 0, profile: { key: { site: site, id: id.value }, label: name.value, expected_subject: expected.value } }); setWriting(false); close(); await refresh(); if (!p) login(saved); } catch (e) { setWriting(false); notice(e); }
+      }));
+    }
+    select.onchange = build; build();
   }
   function login(p) {
-    var provider = data.providers.find(function (v) { return v.site === p.key.site; }); if (!provider) return;
+    var provider = data.providers.find(function (v) { return v.site === p.key.site; });
+    if (!provider || !(provider.methods || []).length) { notice(new Error("站点「" + p.key.site + "」的账号登录接入尚未施工。")); return; }
     var box = open("登录 · " + p.label); if (!box) return; var select = el("select"), fields = el("div", undefined, "ac-fields"), values = {}, remember = el("input"); remember.type = "checkbox";
     provider.methods.forEach(function (m) { var o = el("option", m.label); o.value = m.id; select.append(o); });
     var rememberLabel = el("label", " 加密保存本方式允许保存的字段（可选）"); rememberLabel.prepend(remember);

@@ -25,7 +25,11 @@ func (a *App) registerBuiltinPages() {
 	}
 	for _, p := range pages {
 		a.UseCSS(p.CSS)
-		a.UsePage(Page{Key: p.Key, Label: p.Label, Group: p.Group, Section: p.Section, Script: p.Script})
+		entry := Page{Key: p.Key, Label: p.Label, Group: p.Group, Section: p.Section, Script: p.Script}
+		if p.Key == "account-pools" {
+			entry.Owns = []string{"page:accounts"}
+		}
+		a.UsePage(entry)
 	}
 }
 
@@ -64,7 +68,18 @@ func (a *App) runtimeHandler() *adminruntime.Handler {
 }
 
 func (a *App) accountPoolsHandler() *accountpools.Handler {
-	h := &accountpools.Handler{Pools: a.runtimeState.pools, Policy: a.runtimeState.service, Runtime: a.Engine, Audit: a.runtimeAudit}
+	h := &accountpools.Handler{Pools: a.runtimeState.pools, Policy: a.runtimeState.service, Runtime: a.Engine, Audit: a.runtimeAudit, Sites: a.accountSites}
+	if a.accountOnboarding != nil {
+		h.LoginSites = func() []string {
+			sites := []string{}
+			for _, provider := range a.accountOnboarding.Providers() {
+				if len(provider.Methods) > 0 {
+					sites = append(sites, provider.Site)
+				}
+			}
+			return sites
+		}
+	}
 	if a.BrowserIdentities() != nil {
 		h.IdentityView = a.diagnosticHandler().View
 	}
@@ -72,7 +87,7 @@ func (a *App) accountPoolsHandler() *accountpools.Handler {
 }
 
 func (a *App) accountsHandler() *accounts.Handler {
-	h := &accounts.Handler{Audit: a.runtimeAudit, Runtime: a.Engine.AccountStatus}
+	h := &accounts.Handler{Audit: a.runtimeAudit, Runtime: a.Engine.AccountStatus, Sites: a.accountSites}
 	if a.accountOnboarding != nil {
 		h.Service = a.accountOnboarding
 	}

@@ -28,6 +28,7 @@ type Service interface {
 }
 type Handler struct {
 	Service Service
+	Sites   func() []string
 	Runtime func() []account.Status
 	Audit   func(*http.Request, string, string, string, error)
 }
@@ -45,8 +46,12 @@ func (h *Handler) Accounts(w http.ResponseWriter, r *http.Request) {
 	}
 	s := h.Service
 	if r.Method == http.MethodGet {
+		sites := []string{}
+		if h.Sites != nil {
+			sites = h.Sites()
+		}
 		if s == nil {
-			httpjson.Write(w, 200, map[string]any{"configured": false, "providers": []any{}, "profiles": []any{}, "message": "业务尚未配置账号接入、站点适配器和外部加密密钥"})
+			httpjson.Write(w, 200, map[string]any{"configured": false, "sites": sites, "providers": []any{}, "profiles": []any{}, "message": "账号登录接入尚未施工。请选择站点查看接入状态。"})
 			return
 		}
 		if id := r.URL.Query().Get("process"); id != "" {
@@ -67,7 +72,7 @@ func (h *Handler) Accounts(w http.ResponseWriter, r *http.Request) {
 		if h.Runtime != nil {
 			runtime = h.Runtime()
 		}
-		httpjson.Write(w, 200, map[string]any{"configured": true, "providers": s.Providers(), "profiles": profiles, "runtime": runtime})
+		httpjson.Write(w, 200, map[string]any{"configured": true, "sites": sites, "providers": s.Providers(), "profiles": profiles, "runtime": runtime})
 		return
 	}
 	if r.Method != http.MethodPost {

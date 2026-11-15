@@ -113,7 +113,7 @@ function syncMonitorNavigation(focus) {
         });
         var empty = deps.document.getElementById('section-empty');
         if (empty && deps.getActiveModule() === 'section') {
-            empty.textContent = entries.length ? '请选择上方入口。' : '此分类暂无已注册入口。业务数据表和未指定分类的自定义页会显示在数据与资源中。';
+            empty.textContent = entries.length ? '请选择上方入口。' : '此分类暂无已注册入口。';
         }
     }
     syncMonitorSiteScope();

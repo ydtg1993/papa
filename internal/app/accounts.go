@@ -3,9 +3,20 @@ package app
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 )
+
+// accountSites exposes registered sites even before account login is integrated.
+func (a *App) accountSites() []string {
+	sites := []string{}
+	for site := range a.Engine.RuntimeDeclarations() {
+		sites = append(sites, site)
+	}
+	sort.Strings(sites)
+	return sites
+}
 
 // UseAccountOnboarding installs a business-constructed service before Run.
 // The business must explicitly supply encryption, store and site Providers.

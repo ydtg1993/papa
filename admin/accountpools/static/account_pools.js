@@ -18,13 +18,19 @@ Papa.page("account-pools", function (root) {
   search.placeholder = "站点或池名";
   search.setAttribute("aria-label", "筛选账号池");
   search.oninput = render;
+  var siteFilter = el("select"), selectedSite = sessionStorage.getItem("papa-account-site") || "";
+  siteFilter.setAttribute("aria-label", "筛选账号站点");
+  siteFilter.onchange = function () { if (!close()) { siteFilter.value = selectedSite; return; } selectedSite = siteFilter.value; sessionStorage.setItem("papa-account-site", selectedSite); render(); };
+  var poolsTab = button("池设置", function () {}); poolsTab.setAttribute("aria-current", "page");
+  var tabs = el("nav", undefined, "rt-tabs"); tabs.setAttribute("aria-label", "账号池分区"); tabs.append(button("账号", function () { openPage("accounts", "账号池"); }), poolsTab);
   bar.append(
     el("h2", "账号池"),
+    tabs,
+    siteFilter,
     search,
     button("创建池", function () {
       edit(null);
     }),
-    button("添加与管理账号", function () { openPage("accounts", "账号管理"); }),
     button("刷新", refresh),
   );
   root.append(bar, status, content);
@@ -40,9 +46,10 @@ Papa.page("account-pools", function (root) {
       });
       if (dead || n !== generation) return;
       data = d;
+      fillSites();
       status.textContent = d.configured
         ? "疑似失效先核验；额度不足等待，确认失效才切换备用。"
-        : "业务尚未注册账号管理器，请先通过公开 API 注册账号。";
+        : "账号池接入尚未施工。点击“创建池”选择站点，查看接入状态。";
       render();
     } catch (e) {
       if (!dead && n === generation) status.textContent = e.message;
@@ -56,12 +63,19 @@ Papa.page("account-pools", function (root) {
     dirty = false;
     return true;
   }
+  function fillSites() {
+    var sites = Array.from(new Set((data.sites || []).concat((data.accounts || []).map(function (a) { return a.key.site; }).concat((data.pools || []).map(function (p) { return p.key.site; }))))).sort();
+    siteFilter.replaceChildren(); var all = el("option", "全部站点"); all.value = ""; siteFilter.append(all);
+    sites.forEach(function (site) { var o = el("option", site); o.value = site; siteFilter.append(o); });
+    if (sites.indexOf(selectedSite) < 0) selectedSite = "";
+    siteFilter.value = selectedSite;
+  }
   function render() {
     if (!data) return;
     content.replaceChildren();
     var rows = (data.pools || [])
       .filter(function (p) {
-        return (p.key.site + " " + p.key.name).indexOf(search.value) >= 0;
+        return (!selectedSite || p.key.site === selectedSite) && (p.key.site + " " + p.key.name).indexOf(search.value) >= 0;
       })
       .map(function (p) {
         var ops = el("div");
@@ -326,8 +340,35 @@ Papa.page("account-pools", function (root) {
     );
     root.appendChild(drawer);
   }
-  function edit(p) {
-    if (!data || !data.configured || !close()) return;
+  function chooseSite() {
+    if (!close()) return;
+    drawer = el("aside", undefined, "rt-drawer"); drawer.setAttribute("role", "dialog"); drawer.setAttribute("aria-label", "创建账号池");
+    var select = el("select"), label = el("label", "站点"), detail = el("p", "", "rt-status");
+    select.setAttribute("aria-label", "账号池所属站点");
+    var sites = Array.from(new Set((data.sites || []).concat((data.accounts || []).map(function (a) { return a.key.site; })))).sort();
+    var placeholder = el("option", sites.length ? "请选择站点" : "尚未注册站点"); placeholder.value = ""; select.append(placeholder);
+    sites.forEach(function (site) { var o = el("option", site); o.value = site; select.append(o); });
+    select.value = sessionStorage.getItem("papa-account-site") || "";
+    var next = button("继续设置池", function () { if (!next.disabled) edit(null, select.value); });
+    var add = button("登录并添加账号", function () { openPage("accounts", "账号池"); });
+    function update() {
+      var site = select.value; next.disabled = true; add.hidden = true;
+      if (!site) { detail.textContent = sites.length ? "请先选择账号池所属站点。" : "尚未注册站点，请先接入采集站点。"; return; }
+      sessionStorage.setItem("papa-account-site", site);
+      if (!data.configured) { detail.textContent = "站点「" + site + "」的账号池接入尚未施工，请先实现本站账号登录与管理。"; return; }
+      if (!(data.accounts || []).some(function (a) { return a.key.site === site; })) {
+        if (!(data.login_sites || []).includes(site)) { detail.textContent = "站点「" + site + "」的账号登录接入尚未施工，请先由该站点实现登录流程。"; return; }
+        detail.textContent = "本站尚无可加入池的账号，请先登录并添加账号。"; add.hidden = false; return;
+      }
+      detail.textContent = "仅可加入本站账号；不同权限的账号应分别建池。"; next.disabled = false;
+    }
+    select.onchange = update; label.append(select); drawer.append(el("h2", "创建账号池"), label, detail, next, add, button("取消", function () { close(); })); root.append(drawer); update();
+  }
+  function edit(p, selectedSite) {
+    if (!data) { status.textContent = "站点资料尚未加载，请刷新后重试。"; return; }
+    if (!p && !selectedSite) { chooseSite(); return; }
+    if (!data.configured) { status.textContent = "账号池接入尚未施工，请先实现本站账号登录与管理。"; return; }
+    if (!close()) return;
     var cfg = p
       ? {
           key: u.clone(p.key),
@@ -341,7 +382,7 @@ Papa.page("account-pools", function (root) {
           standby_ttl: p.standby_ttl,
         }
       : {
-          key: { site: "", name: "" },
+          key: { site: selectedSite, name: "" },
           members: [],
           transport: "http",
           disabled: false,
@@ -385,7 +426,7 @@ Papa.page("account-pools", function (root) {
       members();
     });
     site.required = true;
-    site.disabled = !!p;
+    site.disabled = true;
     var name = input("池名", cfg.key.name, "text", function (v) {
       cfg.key.name = v;
     });

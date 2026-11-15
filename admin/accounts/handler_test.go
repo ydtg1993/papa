@@ -1,12 +1,32 @@
 package accounts
 
 import (
+	"encoding/json"
 	"github.com/ydtg1993/papa/v4/admin/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestUnconfiguredAccountsStillListsDeclaredSites(t *testing.T) {
+	h := &Handler{Sites: func() []string { return []string{"not-integrated"} }}
+	r := httptest.NewRequest("GET", "/api/accounts", nil)
+	r = r.WithContext(auth.WithOperator(r.Context(), "operator"))
+	w := httptest.NewRecorder()
+	h.Accounts(w, r)
+	var result struct {
+		Configured bool     `json:"configured"`
+		Sites      []string `json:"sites"`
+		Message    string   `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || result.Configured || len(result.Sites) != 1 || result.Sites[0] != "not-integrated" || !strings.Contains(result.Message, "尚未施工") {
+		t.Fatalf("missing site-specific unavailable state: %+v", result)
+	}
+}
 
 func TestUnconfiguredAndOwnershipWithoutApp(t *testing.T) {
 	h := &Handler{}

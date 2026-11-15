@@ -24,6 +24,8 @@ type Runtime interface {
 	BatchCompensate(context.Context, []engine.CompensationRequest) ([]engine.CompensationResult, error)
 }
 type Handler struct {
+	Sites        func() []string
+	LoginSites   func() []string
 	Pools        *account.Pools
 	Policy       Policy
 	Runtime      Runtime
