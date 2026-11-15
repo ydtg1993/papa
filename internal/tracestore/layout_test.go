@@ -105,3 +105,40 @@ func TestSiteMetadataMismatchRejected(t *testing.T) {
 		t.Fatal("site mismatch accepted")
 	}
 }
+
+func TestStoreEntrypointsRejectUnsupportedTraceRecords(t *testing.T) {
+	for _, oldPath := range []bool{false, true} {
+		t.Run(map[bool]string{false: "old-version", true: "old-layout"}[oldPath], func(t *testing.T) {
+			root := t.TempDir()
+			b := testBatch("run", 1)
+			rel := batchPath(b, 1)
+			if oldPath {
+				rel = filepath.Join("07", "task-7", digest("identity"), digest("run"), "00000000000000000001.json")
+			}
+			path := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(record{Version: 1, Batch: b})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			opts := Options{Dir: root}
+			if _, err = New(opts).List(context.Background(), 7, 500); err == nil {
+				t.Fatal("List accepted unsupported record")
+			}
+			if _, err = New(opts).Snapshot(context.Background(), snapshotToken(rel, 0)); err == nil {
+				t.Fatal("Snapshot accepted unsupported record")
+			}
+			if err = New(opts).Cleanup(context.Background(), time.Now().Add(time.Hour)); err == nil {
+				t.Fatal("Cleanup accepted unsupported record")
+			}
+			if _, err = os.Stat(path); err != nil {
+				t.Fatal("rejected file modified", err)
+			}
+		})
+	}
+}

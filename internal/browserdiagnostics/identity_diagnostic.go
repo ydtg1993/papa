@@ -168,7 +168,11 @@ func runIdentityDiagnosticWithConfig(ctx context.Context, p identity.Profile, s 
 	if err != nil {
 		return fail(err)
 	}
+	cleanupComplete := true
 	defer func() {
+		if !cleanupComplete {
+			return
+		}
 		if err := os.RemoveAll(root); err != nil {
 			r.OK = false
 			cleanupError := "诊断临时目录清理失败：" + Redact(err.Error(), nil)
@@ -194,7 +198,15 @@ func runIdentityDiagnosticWithConfig(ctx context.Context, p identity.Profile, s 
 	if err != nil {
 		return fail(err)
 	}
-	defer pool.Close()
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := pool.Shutdown(cleanupCtx); err != nil {
+			cleanupComplete = false
+			r.OK = false
+			r.Error += "\n诊断浏览器退出清理失败：" + Redact(err.Error(), nil)
+		}
+	}()
 	err = pool.WithBrowser(ctx, func(b *browser.Browser) (err error) {
 		defer func() { err = errors.Join(err, b.CloseDiagnostic()) }()
 		resolved, err := b.ResolveIdentity(ctx, p)

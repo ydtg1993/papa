@@ -7,33 +7,16 @@ import (
 	"os/user"
 	"runtime"
 	"sort"
-	"sync"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
-
-type rodLogBuffer struct {
-	mu   sync.Mutex
-	text []byte
-}
-
-func (b *rodLogBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.text = append(b.text, p...)
-	if len(b.text) > 32768 {
-		b.text = append([]byte(nil), b.text[len(b.text)-32768:]...)
-	}
-	return len(p), nil
-}
-func (b *rodLogBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return string(b.text) }
 
 func (a *Service) runRodDiagnostic(ctx context.Context) (report RodReport) {
 	report = newRodReport("about:blank")
@@ -56,22 +39,25 @@ func (a *Service) runRodDiagnostic(ctx context.Context) (report RodReport) {
 			report.Environment["shm"] = "不可读取"
 		}
 	}
-	var l *launcher.Launcher
+	var pool *browser.Pool
+	var poolConfig browser.PoolConfig
 	var b *rod.Browser
-	var control, dir string
-	var logs rodLogBuffer
+	var dir string
 	var secrets []string
 	defer func() {
 		start := time.Now()
-		if b != nil {
-			_ = b.Context(context.Background()).Timeout(3 * time.Second).Close()
-		}
-		if l != nil && l.PID() != 0 {
-			l.Kill()
+		var cleanupErr error
+		if pool != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cleanupErr = pool.Shutdown(cleanupCtx)
+			cancel()
 		}
 		// Only remove the directory created by this diagnostic, never a configured profile.
 		if dir != "" {
-			err := os.RemoveAll(dir)
+			err := cleanupErr
+			if err == nil {
+				err = os.RemoveAll(dir)
+			}
 			step := RodStep{Name: "清理临时浏览器与目录", Status: "ok", Milliseconds: time.Since(start).Milliseconds()}
 			if err != nil {
 				step.Status = "failed"
@@ -80,7 +66,6 @@ func (a *Service) runRodDiagnostic(ctx context.Context) (report RodReport) {
 			}
 			report.Steps = append(report.Steps, step)
 		}
-		report.BrowserLog = Redact(logs.String(), secrets)
 	}()
 	report.step("配置与环境", secrets, func() error {
 		if a.options.Config == nil {
@@ -159,43 +144,48 @@ func (a *Service) runRodDiagnostic(ctx context.Context) (report RodReport) {
 			report.Environment["temp_dir_total_bytes"] = usage.Total
 			report.Environment["temp_dir_free_bytes"] = usage.Free
 		}
-		l = launcher.New().Context(ctx).Headless(c.Headless).NoSandbox(c.NoSandbox).Leakless(c.Leakless).Logger(&logs)
-		if path != "" {
-			l.Bin(path)
-		}
-		for k, v := range c.Flags {
-			if v == "" {
-				l.Set(flags.Flag(k))
-			} else {
-				l.Set(flags.Flag(k), v)
-			}
-		}
-		dir, err = browser.NewTempProfile(l, root, "papa-rod-diagnostic-")
+		dir, err = os.MkdirTemp(root, "papa-rod-diagnostic-")
 		if err != nil {
 			return err
 		}
 		report.Environment["instance_temp_dir"] = dir
-		l.RemoteDebuggingPort(0)
-		l.Delete(flags.Flag("remote-debugging-pipe"))
-		if a.options.Resources != nil && a.options.Resources.GetProxy() != nil {
-			p, err := a.options.Resources.GetProxy().NextChecked(ctx)
-			if err != nil {
-				return err
+		safeFlags := make(map[string]string)
+		for k, v := range c.Flags {
+			switch strings.TrimLeft(k, "-") {
+			case "user-data-dir", "disk-cache-dir", "remote-debugging-port", "remote-debugging-pipe":
+				continue
 			}
-			if p != "" {
-				secrets = append(secrets, p)
-				l.Proxy(p)
-				report.Environment["proxy"] = "当前代理池选取（地址隐藏）"
-			}
+			safeFlags[k] = v
 		}
+		binary := browser.BrowserBinaryRod
+		if path != "" {
+			binary = browser.BrowserBinaryPath
+		}
+		poolConfig = browser.PoolConfig{Size: 1, TempDir: dir, BinarySource: binary, BrowserPath: path, Headless: c.Headless, NoSandbox: c.NoSandbox, Leakless: c.Leakless, Flags: safeFlags}
+		if a.options.Resources != nil {
+			poolConfig.ProxyManager = a.options.Resources.GetProxy()
+		}
+
 		return nil
 	})
-	report.step("启动 Chromium", secrets, func() error { var err error; control, err = l.Launch(); return err })
-	report.step("连接浏览器控制端", secrets, func() error { b = rod.New().Context(ctx).ControlURL(control); return b.Connect() })
+	report.step("启动 Chromium", secrets, func() error {
+		var err error
+		pool, err = browser.NewPoolContext(ctx, poolConfig)
+		if err != nil {
+			return err
+		}
+		owned, err := pool.Get(ctx)
+		if err != nil {
+			return err
+		}
+		b = owned.Browser
+		return nil
+	})
+	report.step("连接浏览器控制端", secrets, func() error { _, err := b.Context(ctx).Version(); return err })
 	var page *rod.Page
 	report.step("创建空白页面", secrets, func() error {
 		var err error
-		page, err = b.Page(proto.TargetCreateTarget{URL: "about:blank"})
+		page, err = b.Context(ctx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 		return err
 	})
 	report.OK = report.step("验证页面控制", secrets, func() error { _, err := page.Info(); return err })

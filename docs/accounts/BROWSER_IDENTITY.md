@@ -87,3 +87,5 @@ err := engine.WithSessionIdentity(ctx, "fixture", stableBusinessSessionKey,
 网站挑战停止当前执行内立即重试，不修改账号选择/管理版本、不清除有效凭据、不计为代理本身故障；429/Retry-After 沿用站点治理。错误队列仍可能按 failed 状态及补偿上限在以后重投。
 
 首期保证受管 page target 主文档。弹窗、跨进程 iframe、独立 Worker、业务原始 Rod/CDP 修改不在自动保证范围，同目标 frame 也需独立验证。HTTP 身份头不自动联动，Go net/http 的 TLS/HTTP2 指纹不模拟；没有 uTLS、自动验证码或特定站点规则。任务去重仍按站点、阶段与标准身份（ResourceID 优先，留空才采用规范 URL），不加入账号或 Profile 维度。
+
+启动诊断也使用独立临时浏览器池的托管启动与最终 `Shutdown`，取消会中断启动等待，结束时使用独立清理超时回收进程。连接初始化包含在启动步骤，连接检查通过版本查询验证；错误通过步骤返回，不再单独捕获 Rod Launcher 原始日志。身份诊断的临时池同样执行最终 Shutdown；清理超时会标记失败并保留临时目录。
