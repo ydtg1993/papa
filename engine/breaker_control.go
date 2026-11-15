@@ -2,15 +2,9 @@ package engine
 
 import (
 	"github.com/ydtg1993/papa/v4/core"
-	"github.com/ydtg1993/papa/v4/internal/breaker"
 
 	"sort"
 )
-
-// SetSiteBreaker registers the site's single outcome detector before Run.
-func (e *Engine) SetSiteBreaker(site string, cfg breaker.Config) {
-	e.breakers.SetSiteBreaker(site, cfg)
-}
 
 // ResumeCrawling retries automatic protection and releases ordinary manual pauses.
 func (e *Engine) ResumeCrawling() bool {

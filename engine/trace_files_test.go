@@ -279,3 +279,26 @@ func TestTraceAllRetainsCancellationWithoutFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestTraceBindsSiteDirectory(t *testing.T) {
+	for _, site := range []string{"site-a", ""} {
+		t.Run(site, func(t *testing.T) {
+			e, _ := traceEngine(t, true)
+			tr := e.newTrace(&Task{ID: 7, Site: site}, 0)
+			tr.Fail("failure", nil, nil)
+			tr.finish()
+			want := site
+			if want == "" {
+				want = "_unknown"
+			}
+			entries, err := os.ReadDir(e.cfg.Crawler.TraceFiles.Dir)
+			if err != nil || len(entries) != 1 || entries[0].Name() != want {
+				t.Fatal(entries, err)
+			}
+			rows, err := e.ListTraceExecution(7)
+			if err != nil || len(rows) != 1 {
+				t.Fatal(rows, err)
+			}
+		})
+	}
+}

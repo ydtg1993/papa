@@ -14,6 +14,7 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 	"github.com/ydtg1993/papa/v4/pkg/events"
+	ep "github.com/ydtg1993/papa/v4/pkg/executionpolicy"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"gorm.io/gorm"
 	"net/http"
@@ -51,11 +52,13 @@ type App struct {
 	cancel            context.CancelFunc
 	// configStore 运行期配置的读写口（crawler_config）：白名单与站点快照共用**同一个**实例 ——
 	// 它带一层内存缓存（见 admin/configstore 的 cache.go），两份数据共用一把锁、各自一个键。
-	configStore       *configstore.Store
-	runtimeState      runtimeState
-	identityState     browserIdentityState
-	accountOnboarding *onboarding.Service
-	messageListeners  messageListenerState
+	configStore              *configstore.Store
+	executionPolicy          *ep.Controller
+	executionPolicyAuthorize func(*http.Request, string) error
+	runtimeState             runtimeState
+	identityState            browserIdentityState
+	accountOnboarding        *onboarding.Service
+	messageListeners         messageListenerState
 
 	shutdownHooks []func(context.Context) error // Run 前注册，HTTP 退出后、关库前执行
 }
@@ -86,4 +89,9 @@ func WithModels(models ...any) Option {
 // 与 Migrate 的关系不变 —— Migrate 读的就是这份清单，所以必须在迁移之前调用。
 func (a *App) UseModels(models ...any) {
 	a.extraModels = append(a.extraModels, models...)
+}
+
+// WithExecutionPolicyAuthorization adds host read/write permission checks after token authentication.
+func WithExecutionPolicyAuthorization(check func(*http.Request, string) error) Option {
+	return func(a *App) error { a.executionPolicyAuthorize = check; return nil }
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/internal/workerpool"
+	ep "github.com/ydtg1993/papa/v4/pkg/executionpolicy"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
@@ -121,7 +122,7 @@ func TestUpsertInsertsAndBackfills(t *testing.T) {
 func TestSetPoolsSkippedWhenDisabled(t *testing.T) {
 	e := &Engine{cfg: &config.Config{}}
 
-	e.SetBrowserPool()
+	e.SetBrowserPool(ep.InitialDocument().Browser)
 	e.SetHTMLClient()
 
 	if e.GetBrowserPool() != nil {
@@ -147,24 +148,51 @@ func TestSetHTMLClientWhenEnabled(t *testing.T) {
 
 // 池子是按需建实例的，这里不配 max_idle_time（也就不起回收协程），
 // 所以建池这一步完全离线、不会去拉 Chrome。
+func TestInitBrowserPoolConcurrentInitializationKeepsSingleOwner(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Browser.Enable = true
+	e := &Engine{cfg: cfg}
+	start := make(chan struct{})
+	results := make(chan error, 12)
+	for i := 0; i < cap(results); i++ {
+		go func() {
+			<-start
+			results <- e.InitBrowserPool(context.Background(), ep.Browser{PoolSize: 1})
+		}()
+	}
+	close(start)
+	succeeded := 0
+	for i := 0; i < cap(results); i++ {
+		if err := <-results; err == nil {
+			succeeded++
+		}
+	}
+	if pool := e.GetBrowserPool(); pool != nil {
+		defer pool.Close()
+	}
+	if succeeded != 1 {
+		t.Fatalf("installed %d pools, want one", succeeded)
+	}
+}
+
 func TestSetBrowserPoolWhenEnabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Browser.Enable = true
-	cfg.Browser.PoolSize = 1
-	cfg.Browser.MaxIdleTime = 0
 	e := &Engine{cfg: cfg}
 
-	e.SetBrowserPool()
+	e.SetBrowserPool(ep.Browser{PoolSize: 1})
 	pool := e.GetBrowserPool()
 	if pool == nil {
 		t.Fatal("browser.enable=true 时应建池子")
 	}
 	defer pool.Close()
 
-	// 同一份配置再建一次也不该炸（业务可能在测试里反复调）
-	e.SetBrowserPool()
-	if e.GetBrowserPool() == pool {
-		t.Fatal("应替换成新建的池子")
+	// Policy targets retain this pool; runtime changes must update its limits.
+	if err := e.InitBrowserPool(context.Background(), ep.Browser{PoolSize: 2}); err == nil {
+		t.Fatal("duplicate initialization accepted")
+	}
+	if e.GetBrowserPool() != pool || pool.Stats().Closed {
+		t.Fatal("duplicate initialization changed the active pool")
 	}
 	e.GetBrowserPool().Close()
 }
@@ -196,7 +224,7 @@ func TestFetchRenderedPageWithoutPool(t *testing.T) {
 // 不借真 Chrome：判据看的是 Page.Document，htmlfetch.NewRenderedPage 造的页与引擎渲染出来的页
 // 在这一点上完全同类（真 Chrome 那条端到端见 TestFetchRenderedPageEndToEnd）。
 func TestRenderedPageFeedsRestrictedError(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, _ := snapshotEngine(t, config.TraceErrors)
 	e.SetSite(core.Site{Key: "s", RestrictedKeywords: []string{"本站专属拦截话术"}})
 
 	interstitial, err := htmlfetch.NewRenderedPage("https://example.com/drama/1/",
@@ -248,11 +276,9 @@ func TestFetchRenderedPageEndToEnd(t *testing.T) {
 	// Explicitly authorize only the local fixture under the egress policy.
 	cfg.Network.PrivateOrigins = []string{srv.URL}
 	cfg.Browser.Enable = true
-	cfg.Browser.PoolSize = 1
 	cfg.Browser.Headless = true
-	cfg.Browser.MaxIdleTime = 0
 	e := &Engine{cfg: cfg}
-	e.SetBrowserPool()
+	e.SetBrowserPool(ep.Browser{PoolSize: 1})
 	defer e.GetBrowserPool().Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -441,5 +467,29 @@ func TestCancelPoolErrorForwarderChecksPoolIdentity(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("新池的转发协程被误关了：1s 内没收到错误")
+	}
+}
+
+func TestInitBrowserPoolCancelledStartupPreservesExistingResource(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Browser.Enable = true
+	e := &Engine{cfg: cfg}
+	e.SetBrowserPool(ep.Browser{PoolSize: 1})
+	original := e.GetBrowserPool()
+	defer original.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := e.InitBrowserPool(ctx, ep.Browser{PoolSize: 2}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if e.GetBrowserPool() != original {
+		t.Fatal("cancelled startup replaced pool")
+	}
+	e.ctx = ctx
+	if err := e.InitBrowserPool(context.Background(), ep.Browser{PoolSize: 2}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if e.GetBrowserPool() != original {
+		t.Fatal("stopping engine installed a new pool")
 	}
 }

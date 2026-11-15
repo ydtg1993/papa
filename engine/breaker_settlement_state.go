@@ -11,7 +11,7 @@ import (
 
 func (b *breakerCoordinator) reserveFailureSettlementLocked(site string) (state *smartBreaker, pending breaker.PendingFailure, task *Task) {
 	s := b.smartBreakers[site]
-	if !s.cfg.Enabled || s.event == nil || s.event.PendingFailure == nil || s.inflight != 0 || s.sampleDispatching || s.savedRevision < s.controlRevision || time.Since(s.event.PendingFailure.LastAttempt) < time.Minute {
+	if s == nil || s.event == nil || s.event.PendingFailure == nil || s.inflight != 0 || s.sampleDispatching || s.savedRevision < s.controlRevision || time.Since(s.event.PendingFailure.LastAttempt) < time.Minute {
 		return nil, breaker.PendingFailure{}, nil
 	}
 	p := *s.event.PendingFailure

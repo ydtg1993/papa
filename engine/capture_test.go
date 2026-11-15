@@ -25,7 +25,7 @@ func decodeTraceData(t *testing.T, r core.TraceStep) map[string]any {
 
 // 成功捕获：写一条 ok 步骤，data 带命中的 URL / 方法 / 资源类型 / elapsed。
 func TestRecordCaptureSuccessStep(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, _ := snapshotEngine(t, config.TraceErrors)
 	tr := newTrace(nil, 7, 0)
 	ctx := withTrace(context.Background(), tr)
 
@@ -63,15 +63,11 @@ func TestRecordCaptureSuccessStep(t *testing.T) {
 	}
 }
 
-// 失败捕获：写一条 failed 步骤（带候选样本与超时），并把 HTML 登记进归档缓冲。
+// 失败捕获：写一条 failed 步骤（带候选样本与超时），并把 HTML 登记进页面快照缓冲。
 func TestRecordCaptureFailureStep(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+	e, _, _ := snapshotEngine(t, config.TraceErrors)
 	tr := newTrace(nil, 9, 1)
-	ar := e.newArchiveBuffer(&Task{ID: 9, Stage: "stub", Site: "site"}, 1)
-	if ar == nil {
-		t.Fatal("归档开着时 newArchiveBuffer 不该返回 nil")
-	}
-	ctx := withArchive(withTrace(context.Background(), tr), ar)
+	ctx := withTrace(context.Background(), tr)
 
 	const html = `<html><body><h1>安全验证</h1></body></html>`
 	res := &browser.CaptureResult{
@@ -117,31 +113,31 @@ func TestRecordCaptureFailureStep(t *testing.T) {
 		t.Fatalf("timeout/elapsed = %v/%v, want 30000/30000", data["timeout_ms"], data["elapsed_ms"])
 	}
 
-	// 失败现场进了归档缓冲（落盘由 runAttempt 的 defer 统一做）
-	if len(ar.pages) != 1 {
-		t.Fatalf("归档缓冲 = %d 页, want 1", len(ar.pages))
+	// 失败现场进了页面快照缓冲（落盘由 runAttempt 的 defer 统一做）
+	if len(tr.snapshots) != 1 {
+		t.Fatalf("页面快照缓冲 = %d 页, want 1", len(tr.snapshots))
 	}
-	if ar.pages[0].html != html || ar.pages[0].url != "https://site.example/play/1" {
-		t.Fatalf("归档页 = %+v", ar.pages[0])
+	if string(tr.snapshots[0].Body) != html || tr.snapshots[0].URL != "https://site.example/play/1" {
+		t.Fatalf("页面快照页 = %+v", tr.snapshots[0])
 	}
 }
 
-// trace / archive 都没开（ctx 上什么都没挂）时，recordCapture 必须安静地 no-op ——
+// trace 未开启（ctx 上什么都没挂）时，recordCapture 必须安静地 no-op ——
 // 这是「可选协作者真的可选」的承诺。
-func TestRecordCaptureWithoutTraceOrArchive(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
-	// 故意不带 withTrace / withArchive
+func TestRecordCaptureWithoutTrace(t *testing.T) {
+	e, _, _ := snapshotEngine(t, config.TraceErrors)
+	// 故意不带 withTrace
 	e.recordCapture(context.Background(), "https://site.example/play/1", &browser.CaptureResult{
 		HTML:    "<html>noise</html>",
 		Elapsed: time.Second,
 		Timeout: time.Second,
 	}, errors.New("boom"))
-	// 没 panic 就算过；归档缓冲是 nil，holdRendered 方法本身 nil 安全
+	// 没 panic 就算过；页面快照缓冲是 nil，holdRendered 方法本身 nil 安全
 }
 
-// 引擎层的 ctx 挂载：runAttempt 进去以后，handler 能从 ctx 取到本次尝试的 Trace 与归档缓冲。
-func TestRunAttemptAttachesTraceAndArchiveToCtx(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
+// 引擎层的 ctx 挂载：runAttempt 进去以后，handler 能从 ctx 取到本次尝试的 Trace 与页面快照缓冲。
+func TestRunAttemptAttachesTraceToCtx(t *testing.T) {
+	e, _, _ := snapshotEngine(t, config.TraceErrors)
 	f := &ctxProbeFetcher{}
 	task := &Task{ID: 21, Stage: "stub", Site: "site", URL: "https://site.example/"}
 
@@ -157,22 +153,17 @@ func TestRunAttemptAttachesTraceAndArchiveToCtx(t *testing.T) {
 	if f.trace != task.Trace {
 		t.Fatal("ctx 上的 Trace 应与 task.Trace 是同一个实例")
 	}
-	if !f.archive {
-		t.Fatal("归档开着时 handler 的 ctx 上应挂上归档缓冲")
-	}
 }
 
 // ctxProbeFetcher 只把 ctx 上的协作者取出来，不做任何抓取。
 type ctxProbeFetcher struct {
-	trace   *Trace
-	archive bool
+	trace *Trace
 }
 
 func (f *ctxProbeFetcher) GetStage() string { return "probe" }
 
 func (f *ctxProbeFetcher) FetchHandler(ctx context.Context, _ *Task, _ *Engine) error {
 	f.trace = traceFromCtx(ctx)
-	f.archive = archiveFromCtx(ctx) != nil
 	return nil
 }
 

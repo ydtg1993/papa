@@ -7,7 +7,7 @@ flowchart TB
     F --> G{"HTTP / 业务 / Engine /<br/>运行服务 / 监听均已排空？"}
     G -->|是| H["关闭公共浏览器池与 DB"]
     G -->|否| I["保留共享依赖<br/>在途操作仍可收尾；记录未完成"]
-    E -.-> N["obs 超时不否决依赖关闭<br/>Trace / 页面归档仍属于尝试收尾"]
+    E -.-> N["obs 超时不否决依赖关闭<br/>Trace 步骤与页面快照仍属于尝试收尾"]
     classDef runtime fill:#e7f5ef,color:#174c3c,stroke:#449c7a;
     classDef observe fill:#fff3d9,color:#634a15,stroke:#bf963b;
     class A,B,C,D,F,G,H,I runtime;

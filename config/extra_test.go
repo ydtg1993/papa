@@ -57,20 +57,7 @@ func TestDurationRangeUnmarshalTextRejectsBadInput(t *testing.T) {
 //
 // 阈值**没有对应的 helper** —— 它没有默认值：enabled=true 却没给正阈值是非法配置，
 // 由 breaker.New 直接 panic（见 internal/breaker 的 TestEnabledWithoutThresholdPanics）。
-func TestBreakerWindowOrDefault(t *testing.T) {
-	var zero BreakerConfig
-	if got := zero.WindowOrDefault(); got != 5*time.Minute {
-		t.Fatalf("默认窗口 = %v, want 5m", got)
-	}
-	if got := (BreakerConfig{Window: -time.Second}).WindowOrDefault(); got != 5*time.Minute {
-		t.Fatalf("负窗口应回退默认：%v", got)
-	}
-	if got := (BreakerConfig{Window: time.Minute}).WindowOrDefault(); got != time.Minute {
-		t.Fatalf("显式配置不该被覆盖：%v", got)
-	}
-}
 
-// 关停排空上限：0/负补成 5s。它和 server.shutdown_timeout 是两件事，各有各的默认值。
 func TestStopTimeoutOrDefault(t *testing.T) {
 	if got := (CrawlerConfig{}).StopTimeoutOrDefault(); got != 5*time.Second {
 		t.Fatalf("默认 = %v, want 5s", got)

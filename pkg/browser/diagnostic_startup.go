@@ -209,8 +209,7 @@ func (c *diagnosticCDP) Call(ctx context.Context, session, method string, params
 	return c.client.Call(ctx, session, method, params)
 }
 
-func (p *Pool) newDiagnosticBrowser(ctx context.Context, useProxy bool) (result *Browser, err error) {
-	taskCtx := ctx
+func (p *Pool) newDiagnosticBrowser(ctx, taskCtx context.Context, useProxy bool) (result *Browser, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	if err = ctx.Err(); err != nil {
@@ -242,6 +241,16 @@ func (p *Pool) newDiagnosticBrowser(ctx context.Context, useProxy bool) (result 
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, process.close())
+			if process.done != nil {
+				select {
+				case <-process.done:
+				default:
+					// Retain partial ownership just like ordinary browser startup:
+					// Get registers this result before closing it, so a terminal
+					// Shutdown cannot mistake an unfinished process for drained.
+					result = &Browser{diagnosticProcess: process, useProxy: useProxy}
+				}
+			}
 		}
 	}()
 	bin, err := diagnosticBinary(ctx, p.cfg.BrowserPath)

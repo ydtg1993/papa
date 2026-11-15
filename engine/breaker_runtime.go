@@ -36,6 +36,9 @@ type breakerRepository interface {
 	List(context.Context, string, int) ([]incident.Lifecycle, error)
 }
 type smartBreaker struct {
+	target            breaker.Config
+	targetRevision    uint64
+	policyRevision    uint64
 	cfg               breaker.Config
 	policy            breaker.Policy
 	detector          *breaker.Detector
@@ -65,6 +68,9 @@ func (e *Engine) SetBreakerProbe(site, stage string, probe BreakerProbe) {
 // InitBreakerRuntime restores protection before entry submission/recovery queues.
 // Schema migration remains an explicit operation; an unreadable store stops startup.
 func (e *Engine) InitBreakerRuntime(ctx context.Context) error {
+	if !e.breakers.policiesReady() {
+		return fmt.Errorf("execution_policy must be loaded before InitBreakerRuntime; explicitly initialize database configuration")
+	}
 	// Restoration itself uses shared storage. Register before touching it, and
 	// keep this slot until both maintenance loops have joined the same lifetime.
 	// The short admission lock also fences Stop; it is never held across I/O.

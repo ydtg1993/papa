@@ -179,6 +179,23 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) (*Page, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseResponse(resp)
+}
+
+// FetchWithResponse downloads once and returns the original bounded response
+// alongside the parsed page. HTTP failures retain their response body and typed
+// error. Oversized bodies are discarded, and challenge responses retain the
+// existing policy of returning metadata without reading the challenge body.
+func (c *Client) FetchWithResponse(ctx context.Context, rawURL string) (*Page, *Response, error) {
+	resp, err := c.do(ctx, Request{URL: rawURL}, true)
+	if err != nil {
+		return nil, resp, err
+	}
+	page, err := parseResponse(resp)
+	return page, resp, err
+}
+
+func parseResponse(resp *Response) (*Page, error) {
 	body := resp.Body
 
 	document, err := goquery.NewDocumentFromReader(bytes.NewReader(body))

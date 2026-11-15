@@ -41,8 +41,8 @@ func (f *countingFactory) count() int {
 func newTestPool(size, directSize int, factory func(bool) (*Browser, error)) *Pool {
 	p := &Pool{
 		cfg:      PoolConfig{Size: size, DirectSize: directSize},
-		browsers: make(chan *Browser, size),
-		direct:   make(chan *Browser, directSize),
+		browsers: nil,
+		direct:   nil,
 	}
 	if factory != nil {
 		p.newBrowserFn = factory
@@ -186,11 +186,15 @@ func TestPoolReapChannel(t *testing.T) {
 	fresh := testBrowser(true, true)
 	fresh.lastUsed = time.Now()
 
-	p.browsers <- stale
-	p.browsers <- fresh
+	p.browsers = append(p.browsers, stale)
+	p.browsers = append(p.browsers, fresh)
 	p.proxyAlive.Store(2)
 
-	p.reapChannel(p.browsers, &p.proxyAlive, time.Second)
+	stale.pool = p
+	fresh.pool = p
+	p.instances = map[*Browser]instanceState{stale: instanceIdle, fresh: instanceIdle}
+	p.maxIdle.Store(int64(time.Second))
+	p.reapIdle()
 
 	if p.proxyAlive.Load() != 1 {
 		t.Fatalf("after reap, alive=%d, want 1", p.proxyAlive.Load())
@@ -198,7 +202,7 @@ func TestPoolReapChannel(t *testing.T) {
 	if len(p.browsers) != 1 {
 		t.Fatalf("after reap, idle=%d, want 1", len(p.browsers))
 	}
-	got := <-p.browsers
+	got := p.browsers[0]
 	if got != fresh {
 		t.Fatal("expected the fresh browser to be kept, stale one reaped")
 	}

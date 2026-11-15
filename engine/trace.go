@@ -36,16 +36,20 @@ const (
 // **空指针安全**：trace 未开启、或测试里直接调 FetchHandler 时 Task.Trace 为 nil，
 // 此时 Step/Fail/setResult/finish 都是 no-op —— 可选协作者就该是可选的。
 type Trace struct {
-	store        *traceService
-	identityHash string
-	keepAll      bool
-	abnormal     bool
-	truncated    bool
-	bytes        int
-	seq          int
-	taskID       int
-	attempt      int
-	executionID  string
+	store         *traceService
+	site          string
+	identityHash  string
+	keepAll       bool
+	abnormal      bool
+	truncated     bool
+	bytes         int
+	seq           int
+	taskID        int
+	attempt       int
+	executionID   string
+	snapshots     []tracestore.Snapshot
+	snapshotBytes int64
+	snapshotLimit int64
 
 	mu      sync.Mutex
 	steps   []core.TraceStep
@@ -57,10 +61,10 @@ type Trace struct {
 
 // newTrace 构造一次尝试的记录器。
 func newTrace(store *traceService, taskID, attempt int) *Trace {
-	return &Trace{store: store, taskID: taskID, attempt: attempt, executionID: uuid.NewString(), lastAt: time.Now()}
+	return &Trace{store: store, site: "_unknown", taskID: taskID, attempt: attempt, executionID: uuid.NewString(), lastAt: time.Now()}
 }
 
-// traceCtxKey 把本次尝试的 Trace 挂到 ctx 上 —— 与 archiveCtxKey 同一个手法。
+// traceCtxKey 把本次尝试的步骤与页面快照记录器挂到 ctx 上。
 //
 // 为什么不让调用方直接读 task.Trace：`engine.render` / `engine.CaptureRequest` 这类
 // 「拿了 ctx 就开始干活」的方法签名里没有 task（前者本来就不带），而它们的失败
@@ -220,6 +224,8 @@ func (t *Trace) flush() []core.TraceStep {
 	t.steps = nil
 	t.bytes = 0
 	if t.succeed && !t.abnormal && !t.keepAll {
+		t.snapshots = nil
+		t.snapshotBytes = 0
 		return nil
 	}
 	return records
@@ -237,6 +243,10 @@ func (t *Trace) finish() {
 	if t.store != nil {
 		t.store.write(t, records)
 	}
+	t.mu.Lock()
+	t.snapshots = nil
+	t.snapshotBytes = 0
+	t.mu.Unlock()
 }
 func (e *Engine) traceService() *traceService {
 	e.traceOnce.Do(func() {
@@ -257,7 +267,11 @@ func (e *Engine) newTrace(task *Task, attempt int) *Trace {
 		return nil
 	}
 	tr := newTrace(e.traceService(), task.ID, attempt)
+	if task.Site != "" {
+		tr.site = task.Site
+	}
 	tr.keepAll = e.cfg.Crawler.Trace.ModeOrDefault() == config.TraceAll
+	tr.snapshotLimit = e.cfg.Crawler.TraceFiles.MaxFileBytes
 	tr.identityHash = task.Unique()
 	if tr.identityHash == "" {
 		tr.identityHash = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%s", task.ID, task.Site, task.Stage, task.URL))))

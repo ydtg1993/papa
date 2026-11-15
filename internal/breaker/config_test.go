@@ -23,7 +23,7 @@ func TestDetectorConfigValidationAndTinyWindow(t *testing.T) {
 			t.Fatal("reset did not clear window")
 		}
 	}
-	if got := NewDetector(Config{}).Observe(Outcome{TaskID: 1}); got.Rule != "" || got.Failures != 0 {
-		t.Fatal("disabled detector counted failures")
+	if got := NewDetector(Config{}).Observe(Outcome{TaskID: 1}); got.Rule != "" || got.Failures != 1 {
+		t.Fatal("disabled detector must retain failures without triggering")
 	}
 }

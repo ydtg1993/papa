@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+ "os"
+ ep "github.com/ydtg1993/papa/v4/pkg/executionpolicy"
 	"os/signal"
 	"syscall"
 
@@ -25,7 +27,10 @@ func Run(args []string) {
 		configPath = flags.String("config", "", "配置文件路径（默认 configs/config.yaml，也可用 PAPA_CONFIG）")
 		doMigrate  = flags.Bool("migrate", false, "建表后退出（papa migrate 会转交到这里）")
 	)
-	flags.Parse(args)
+	policyInit := flags.String("init-policy", "", "显式初始化执行策略 JSON 后退出，不覆盖已有策略")
+ migratePolicy:=flags.String("migrate-breaker-policy", "", "离线迁移旧熔断快照，输入升级前有效策略 JSON")
+ confirmedRevision:=flags.Uint64("confirmed-policy-revision", 0, "确认旧熔断策略版本，迁移时必须大于零")
+ flags.Parse(args)
 
 	var opts []papa.Option
 	if *configPath != "" {
@@ -60,8 +65,10 @@ func Run(args []string) {
 
 	// 3. 注册站点与阶段：站点在 internal/sites/ 下一站一个文件（自己登记），框架把它们收在
 	//    papa.Sites() 里 —— 加一个站只加文件，main 不用动。并发/队列/间隔/重试/要不要投入口/
-	//    熔断阈值都在各站的声明里；起始任务由 fetcher 自己的 SubmitEntries 提交。
+	//    起始任务由 fetcher 自己的 SubmitEntries 提交；熔断参数仅从数据库读取。
 	app.RegisterSites(papa.Sites()...)
+ if *migratePolicy!="" {raw,err:=os.ReadFile(*migratePolicy);if err!=nil{panic(err)};d,err:=ep.Decode(raw);if err!=nil{panic(err)};if err=app.MigrateExecutionPolicySnapshots(context.Background(),*confirmedRevision,d);err!=nil{panic(err)};fmt.Println("熔断策略快照迁移完成。");return}
+ if *policyInit != "" { raw,err:=os.ReadFile(*policyInit); if err!=nil{panic(err)};d,err:=ep.Decode(raw);if err!=nil{panic(err)};if err=app.InitializeExecutionPolicy(context.Background(),d,"local-cli");err!=nil{panic(err)};fmt.Println("执行策略已初始化。");return }
 
 	// 4. 优雅关闭
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/ydtg1993/papa/v4/pkg/breakerpolicy"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,10 +24,6 @@ import (
 // 它们都不报错，只会让人往错的方向排查。把这些判据收成一张表，
 // 比在每个 New* 里手写 if x <= 0 更难漏。
 // ─────────────────────────────────────────────────────────────────────────────
-
-// breakerMinWindow 熔断窗口的下限：窗口要切成 60 个等宽桶，桶宽 = window/60，
-// 小于 60ns 时桶宽被整数除法算成 0，add / sumLocked 会整数除零。
-const breakerMinWindow = 60 * time.Nanosecond
 
 // Validate 校验一份配置。**不符合直接 panic。**
 //
@@ -87,7 +81,7 @@ var validLogLevels = []string{"debug", "info", "warn", "warning", "error"}
 // applyDefaults 把**可选键**的"没写 / 零值"归一成生效值。
 //
 // 只碰可选键：必填键（log.dir、db 的连接池两键）仍由规则拒绝，不会被这里"补"成合法。
-// 空白串与没写等价 —— 与 log.dir / archive.dir 的判法一致（YAML 里写了个空值也是没写）。
+// 空白串与没写等价 —— 与 log.dir 的判法一致（YAML 里写了个空值也是没写）。
 func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.Log.Level) == "" {
 		c.Log.Level = defaultLogLevel
@@ -186,28 +180,8 @@ var rules = []rule{
 			strings.Join(validLogLevels, " / "), defaultLogLevel, c.Log.Level)
 	}},
 
-	{"crawler.breaker.window", func(c *Config) error {
-		w := c.Crawler.Breaker.Window
-		if w > 0 && w < breakerMinWindow {
-			return fmt.Errorf("  窗口要切成 60 个等宽桶（桶宽 = window/60），小于 %s 时桶宽被整数除法算成 0，\n"+
-				"  熔断计数会在 add / sumLocked 里整数除零。实得 %s；留空或 0 表示用默认 5m", breakerMinWindow, w)
-		}
-		return nil
-	}},
-
-	{"crawler.breaker.threshold", func(c *Config) error {
-		b := c.Crawler.Breaker
-		if b.Enabled && b.Threshold <= 0 {
-			return fmt.Errorf("  启用熔断时必须 > 0（没写与写 <= 0 都算没给），实得 %d；\n"+
-				"  要关掉熔断请把 enabled 改成 false", b.Threshold)
-		}
-		return nil
-	}},
 	// Capacity anchors the cross-field policy rule to a real YAML leaf; the
 	// shared validator names the precise invalid duration/threshold in its error.
-	{"crawler.breaker.policy.capacity", func(c *Config) error {
-		return breakerpolicy.ValidatePolicy(c.Crawler.Breaker.Policy)
-	}},
 
 	{"proxy.refresh_interval", func(c *Config) error {
 		if c.Proxy.APIURL == "" {
@@ -239,25 +213,6 @@ var rules = []rule{
 				"  下界挡的是**单位混淆**：隔壁 log.max_size 的单位是 MB，这里写 10 意思是 10 字节，\n"+
 				"  于是每次抓取都报「页面太大」；上界 %d 在模板值（10MB）之上，只防 100MB 那种笔误",
 				htmlMaxBodyMin, htmlMaxBodyMax, v, htmlMaxBodyMax)
-		}
-		return nil
-	}},
-
-	{"browser.pool_size", func(c *Config) error {
-		if !c.Browser.Enable {
-			return nil // 没启用浏览器池时这个值用不上
-		}
-		// 与 html.max_body_size 同一个形状：**开着的时候必填**。
-		// 零值 0（漏写也一样）时池容量就是 0 —— get 里"复用空闲实例"与"未达上限则新建"
-		// 两条路都跳过（各自带 `limit > 0` 的前缀），最后停在 cond.Wait 上**永久阻塞且不报错**；
-		// 配上 CLI 那种 context.Background() 就是死等，连取消都等不到。
-		// 隔壁 GetDirect 对同类情况是明确报错的（"direct browsers not configured"）——
-		// 所以这个不对称是漏了校验，不是设计。
-		if c.Browser.PoolSize <= 0 {
-			return fmt.Errorf("  启用浏览器池时必须 > 0（实得 %d）——\n"+
-				"  为 0（漏写也一样）时池容量是 0：Get 既不会复用空闲实例、也不会新建，\n"+
-				"  最后停在 cond.Wait 上永久阻塞且不报错（GetDirect 对同类情况会明确报错）。\n"+
-				"  要关掉浏览器池请把 enable 改成 false", c.Browser.PoolSize)
 		}
 		return nil
 	}},
@@ -347,41 +302,6 @@ var rules = []rule{
 			return fmt.Errorf("  不能大于 db.max_open_conns（%d > %d）——\n"+
 				"  Go 会把它静默压到 max_open_conns，你写的这个数不会生效",
 				c.DB.MaxIdleConns, c.DB.MaxOpenConns)
-		}
-		return nil
-	}},
-
-	{"crawler.archive.dir", func(c *Config) error {
-		if !c.Crawler.Archive.Enabled {
-			return nil // 没开归档就用不上这个目录
-		}
-		if strings.TrimSpace(c.Crawler.Archive.Dir) == "" {
-			return fmt.Errorf("  开了归档就必须给目录（archive.dir）——\n" +
-				"  空串会拼成「文件系统根 / 当前盘根」下的 {stage}/…：要么没权限、一个文件也写不出来，\n" +
-				"  要么把归档散在盘根。给一个目录，如 ./logs/fetcher-html")
-		}
-		return nil
-	}},
-
-	{"crawler.archive.mode", func(c *Config) error {
-		m := c.Crawler.Archive.Mode
-		if m == "" || m == ArchiveModeFailure || m == ArchiveModeAlways {
-			return nil // 留空 = failure
-		}
-		return fmt.Errorf("  只能是 %q（默认：只在失败的尝试落盘）或 %q（每次尝试都落，排查期用），实得 %q",
-			ArchiveModeFailure, ArchiveModeAlways, m)
-	}},
-
-	{"crawler.archive.max_file_mb", func(c *Config) error {
-		v := c.Crawler.Archive.MaxFileMB
-		if v == 0 {
-			return nil // 未写 = 默认 8MB
-		}
-		if v < archiveMaxFileMinMB || v > archiveMaxFileMaxMB {
-			return fmt.Errorf("  必须在 %d..%d 之间（实得 %d）——\n"+
-				"  这一项的单位是 **MB**（不是字节）：写 8 是「8MB 以内才归档」，而 1 就已经比"+
-				"绝大多数页面大了；上界 %d 只挡把字节数写进来的那种笔误",
-				archiveMaxFileMinMB, archiveMaxFileMaxMB, v, archiveMaxFileMaxMB)
 		}
 		return nil
 	}},
@@ -485,11 +405,6 @@ const (
 	dbPoolMax = 100
 )
 
-const (
-	archiveMaxFileMinMB = 1
-	archiveMaxFileMaxMB = 1024
-)
-
 // inPoolRange 报告连接池取值是否在允许区间内。
 func inPoolRange(v int) error {
 	if v < dbPoolMin || v > dbPoolMax {
@@ -548,6 +463,18 @@ func suggestKeys(unused []string) string {
 	}
 	var lines []string
 	for _, bad := range unused {
+		if bad == "crawler.breaker" || strings.HasPrefix(bad, "crawler.breaker.") || bad == "browser.pool_size" || bad == "browser.direct_pool_size" || bad == "browser.max_idle_time" {
+			lines = append(lines, "  "+bad+" 已迁至 crawler_config.execution_policy；删除旧 YAML 字段并显式初始化数据库策略。")
+			continue
+		}
+		if bad == "crawler.archive" || strings.HasPrefix(bad, "crawler.archive.") {
+			lines = append(lines, "  "+bad+" 已删除：请删除 crawler.archive 整段；使用 crawler.trace.mode（off/errors/all）统一保留步骤与快照，保留期用 crawler.trace.retention，目录和容量用 crawler.trace_files；旧归档文件不读取、不迁移、不删除。")
+			continue
+		}
+		if bad == "crawler.trace.enabled" {
+			lines = append(lines, "  "+bad+" 已删除：请改用 crawler.trace.mode（off/errors/all）。")
+			continue
+		}
 		switch bad {
 		case "crawler.queue_watermark", "crawler.drain_interval":
 			lines = append(lines, "  "+bad+" 已删除：任务保留为持久 pending，按阶段容量补位；请删除旧键。")

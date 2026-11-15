@@ -136,6 +136,6 @@ models 不列出框架所有可能使用的表：账号 GORM 适配器和 onboar
 
 新增公开入口先确定实现拥有者；新增配置先区分启动声明和运行状态；新增模型同时核对迁移清单及存储协议；新增手册同时维护说明书索引与分发链接。运行逻辑不因文档分册增加而机械新建包。
 
-执行证据由 engine 的认领 context 分配 UUID，Trace 与归档共用；文件记录保存 execution_id，core.TraceStep 是当前步骤值；core.TraceExecutionStep 承载 execution_id/truncated。Engine.ListTraceExecution 提供详细查询，旧 ListTrace 查询入口已删除。身份不改变任务状态所有权和终态原子性。Trace 不再迁移或读取 SQL 历史。
+执行证据由 engine 的认领 context 分配 UUID，Trace 步骤与内嵌快照共用；文件记录保存 execution_id，core.TraceStep 是当前步骤值；core.TraceExecutionStep 承载 execution_id/truncated。Engine.ListTraceExecution 提供详细查询，旧 ListTrace 查询入口已删除。身份不改变任务状态所有权和终态原子性。Trace 不再迁移或读取 SQL 历史。
 
 `config/trace.go` 拥有 TraceMode、默认 errors、非法模式校验；旧 enabled 键拒绝。TraceConfig 新增 Mode；TraceFilesConfig 独立承载文件目录和有限预算。配置规则见 CORE_CONFIG。

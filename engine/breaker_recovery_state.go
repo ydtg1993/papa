@@ -67,6 +67,10 @@ func (b *breakerCoordinator) resetBreakerChecksLocked(s *smartBreaker, coverage 
 }
 
 func (b *breakerCoordinator) beginBreakerRetryLocked(s *smartBreaker, now time.Time, action, reason string, coverage map[string]string) {
+	if !s.event.Active() {
+		_ = s.detector.UpdateConfig(s.event.FrozenPolicy, now)
+		s.cfg, s.policy, s.policyRevision = s.event.FrozenPolicy, s.event.FrozenPolicy.Policy, s.event.PolicyRevision
+	}
 	s.probeSettlement = nil
 	s.nextSampleRetry = time.Time{}
 	s.event.SampleID, s.event.SampleStage, s.event.SampleDeadline = "", "", time.Time{}
@@ -106,9 +110,9 @@ func (b *breakerCoordinator) finishBreakerRecoveryLocked(s *smartBreaker, now ti
 	// Freeze pre-reset totals in the report, then start the new site window.
 	b.updateBreakerEvidenceLocked(s, s.detector.Snapshot(now), governance)
 	s.epoch++
-	s.detector.ResetEpoch(s.epoch)
-	s.event.CountersResetAt = now
-	b.transitionBreakerLocked(s, "recovered", "所有阶段验证通过，全站在途任务已结束；清空运行计数，保留故障历史，报告保存后恢复正常运行", now)
+	s.detector.AdvanceEpoch(s.epoch)
+	// Retain evidence at recovery; policy updates never manufacture health.
+	b.transitionBreakerLocked(s, "recovered", "所有阶段验证通过，全站在途任务已结束；保留窗口证据和故障历史，报告保存后恢复正常运行", now)
 	return ""
 }
 

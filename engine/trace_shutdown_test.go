@@ -35,7 +35,7 @@ func TestTraceShutdownTransportDoesNotCreateAnomaly(t *testing.T) {
 				defer cancel()
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { cancel(); <-r.Context().Done() }))
 				defer srv.Close()
-				e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+				e, _, _ := snapshotEngine(t, config.TraceErrors, srv.URL)
 				err := e.runAttempt(ctx, &shutdownFetch{url: srv.URL, mode: mode, warn: warn}, &Task{ID: 7, Stage: "stub"}, 0)
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("expected cancellation: %v", err)

@@ -37,7 +37,7 @@ if err := app.Engine.SetSchedulerLimits(papa.SchedulerLimits{
 
 `App.UseReportInputLimits` 作用于在线信号入口和聚合维度：槽位取 `min(1024, MaxEvents, MaxRetainedBytes/64KiB)`，维度取 `min(256, MaxDedupKeys, MaxRetainedBytes/1KiB)`，两者至少为 1。在线不扫描 JSONL、日志或数据库，所以 MaxFiles、MaxLineBytes、MaxBytes、MaxSpoolBytes、MaxDays 不影响在线服务。满载信号可丢弃或截断，报告给出完整性说明；它不承担可靠结算。
 
-在线报告与事件归档在关停时共享最多 2 秒等待预算，超时不会扩大业务资源的存活边界；Engine 和宿主业务是否排空仍独立决定共享依赖能否关闭。Trace/页面归档在 worker 尝试收尾中写入，不属于此在线 obs 预算。
+在线报告与事件归档在关停时共享最多 2 秒等待预算，超时不会扩大业务资源的存活边界；Engine 和宿主业务是否排空仍独立决定共享依赖能否关闭。Trace（含页面/响应快照）在 worker 尝试收尾中写入，不属于此在线 obs 预算。
 
 下面的输入限制用于显式离线调用 `obs.LoadSourcesContext` / `obs.ConsumeDailySources`，参数类型为 `obs/inputbudget.Limits`。它们不从 App 继承在线配置。
 
@@ -94,6 +94,8 @@ if err := app.Engine.SetSchedulerLimits(papa.SchedulerLimits{
 数据库认领、轮次/版本和 NotBefore 条件仍决定是否执行，预算不替代 CAS。暂停站点不应持续耗尽其它站的补充机会；取消停止新读取，已准入收尾仍由既有等待协议负责。SchedulerResidentCount 用于观察引用数量；数据库 backlog 与内存 resident 应分开理解。
 
 ## 5. 部署验收
+
+进程最终退出时，App 对引擎公共浏览器池调用 `Shutdown(ctx)`：停止准入、取消启动并回收包括借出中实例在内的所有受管进程，以截止时间等待实际清理。普通 `Pool.Close()` 仅停止准入并清理空闲实例，仍允许借出任务自然归还；业务自行创建的专用池由其拥有者在最终退出阶段调用 `Shutdown(ctx)`。清理超时返回错误，Stats 仍保留未完成的实例/创建数量，不能据此宣称零残留。浏览器清理预算独立于任务排空预算，账号/业务写入未排空时数据库继续保留。
 
 根据任务负载和硬件逐步调整预算。至少观察进程 heap/RSS、resident 与 durable backlog、最老待执行延迟、超限错误、报告扫描量、临时磁盘、DB 查询率和关停耗时。提高上限会提高最坏资源成本；有限默认值不等于已完成生产容量标定。
 

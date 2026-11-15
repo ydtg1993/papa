@@ -12,6 +12,8 @@
 - **文件与运行覆盖分开**：改 `config.yaml` 或 Go 站点声明后需要重启；`runtime` 支持 OA 持久覆盖，保存后限制新工作并跨重启恢复。三个治理队列仍是全局启动配置，不能按站点覆盖；站点/阶段拓扑、物理 worker/队列容量和凭据来源不热改。任务自己的 repeat 周期仍可通过后台或 API 动态调整。
   运行覆盖保存在数据库中，不读写 `configs/runtime.yaml`。
 
+公共浏览器的 `pool_size`、`direct_pool_size`、`max_idle_time` 与完整 breaker 策略均由数据库独占，修改通过版本化 API 即时发布；没有 YAML/Go fallback。迁移及初始化见 [EXECUTION_POLICY.md](../runtime/EXECUTION_POLICY.md)。
+
 ## 1. 完整配置项参考
 
 > **配置校验层**：启动时（`config.Load`）校验两件事，**不符合直接 panic** —— 不返回错误、也不静默降级。
@@ -27,8 +29,7 @@
 >
 > 1. **三个必填键**（**没有**「没写也合法」那一态）：`log.dir`（空串会去写文件系统根）、
 >    `db.max_idle_conns` / `db.max_open_conns`（0 在 `database/sql` 里是「不限」，与"漏写"是同一个数、分不开）。
-> 2. **一族「开着才必填」**：`crawler.breaker.threshold`、`html.max_body_size`、`browser.pool_size`、
->    `crawler.archive.dir` —— 关掉对应开关时它们不参与校验（不许一个用不着的东西把人卡在启动上）。
+> 2. **一族「开着才必填」**：`html.max_body_size` —— 关掉对应开关时它们不参与校验（不许一个用不着的东西把人卡在启动上）。
 >
 > 各键见下面对应小节。
 >
@@ -59,40 +60,16 @@
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `dedup_cache_size` | int | `0` | 内存去重表最大条目数；`0`=不限，`>0` 用 LRU 限界，淘汰条目由 DB 唯一索引兜底。启动预热每页最多 256 行，有限模式只取容量内最近活跃记录；`0` 仅查询暂存按页有界，总缓存仍不限。脚手架配置为 10000 |
-| `stop_timeout` | duration | `5s` | 优雅退出时 worker 与动态 ticker 共用从 Stop 入口开始的一份等待预算，不各等一个完整 timeout；不保证任意阻塞锁或外部调用的硬实时上限。超时则打错误日志，并**跳过**关库与关浏览器池，避免破坏仍在运行的 worker。认领或终态写入未确认的任务也计入未完成，即使其 worker 已因取消退出，也不会报告已排空。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
+| `stop_timeout` | duration | `5s` | 优雅退出时 worker 与动态 ticker 共用从 Stop 入口开始的一份等待预算，不各等一个完整 timeout；不保证任意阻塞锁或外部调用的硬实时上限。排空失败时保留数据库；最终退出仍调用浏览器池 `Shutdown(ctx)`，另给一份该时长的清理预算，取消创建并回收借出、预留和空闲实例。清理超时明确记录剩余状态，不依赖 leakless 兜底。认领或终态写入未确认的任务也计入未完成，即使其 worker 已因取消退出，也不会报告已排空。与 `server.shutdown_timeout` 不是一回事：那个等的是在途 HTTP 请求（如日志打包下载） |
 | `stage_idle_timeout` | duration | `0`（不回收） | 阶段工作池连续空闲多久就回收（回收 = Stop 并撤出活池表，下次投递按需重建）。`0`/负数 = 常驻不回收。多站 / 长跑建议配，如 `10m` |
-| `trace.mode` | string | `errors` | off=关闭，errors=异常，all=全部尝试。 单任务步骤追踪：handler 用 `task.Trace.Step/Fail/Warn` 上报（`Warn` 是非致命档：任务成功但要留痕，如封面没下下来），默认仅将异常尝试保存到 Trace 文件。引擎自己也会补几条：「任务失败」（失败尝试的**原因**，带分类与消息）、「归档页面」（带文件名，抽屉里可直接下载），以及浏览器捕获/等待失败时的「捕获网络请求」（候选请求样本）与「等待渲染」（卡住的 selector / js / request-idle）。关闭时 `task.Trace` 为 `nil`，调用是安全 no-op |
+| `trace.mode` | string | `errors` | 同时控制步骤与原始快照：off=关闭；errors=保留 Fail/Warn、实际失败或 panic 的异常尝试；all=每次尝试。关闭时 `task.Trace` 为 nil，方法调用安全 no-op。详见下方 Trace 一节 |
 | `trace.retention` | duration | `168h` | 步骤记录保留期（后台按批清理）；填**负数**表示永久保留、不自动清理 |
-| `breaker.enabled` | bool | `false` | **每个站点没单配阈值时用的默认值**：计数与阈值**每站一份**（一个站被墙不会把别的站一起闸住），阈值取这里这份；某个站要自己的阈值就写 `SiteSpec.Breaker`（这一项也会成为它的默认）。站点是必填维度，没有「未归属」那一档 |
-| `breaker.window` | duration | `5m` | 常规统计窗口；精确记录窗口内终态失败任务轮次。成功不抵消失败，同一任务轮次重复上报只计一次 |
-| `breaker.threshold` | int | — | 窗口内终态失败数达到它即暂停。**`enabled: true` 时必填且必须 > 0** —— 没写、写 `0` 或负数都会在配置加载校验时 panic；`breaker.NewDetector` 还保留构造层防线。它没有默认值：`threshold <= 0` 时「多少条才算熔断」没有答案，补一个数只会让人以为开着、数的却是另一回事 |
-| `breaker.policy.short_window` | duration | `30s` | 短时爆发检测窗口 |
-| `breaker.policy.fast_threshold` | int | `5` | 同阶段、同分类、同错误指纹的不同任务数达到此值，立即保护整站；阶段分类只用于定位和报告 |
-| `breaker.policy.mixed_threshold` | int | `8` | 短窗口内失败的不同任务数达到此值、未命中快速或硬保护时，进入有期限的混合错误观察 |
-| `breaker.policy.observe_for` | duration | `30s` | 最后一次失败后的混合观察时长；所有已注册阶段完成三次本轮受控真实任务验证且没有新失败，排空在途任务后退出观察；选中的失败样本串行检查，最长等待/执行10分钟，受整轮预算限制。新增失败重计观察时间，不延长总恢复预算，不越过硬阈值 |
-| `breaker.policy.cooldown` | duration | `30s` | 自动保护后的冷却时间 |
-| `breaker.policy.probe_timeout` | duration | `10s` | 单次只读试探超时；选中后的等待和执行另受10分钟上限及整轮预算约束 |
-| `breaker.policy.max_probes` | int | `3` | 一次自动恢复最多进行的整站试探轮数；每轮逐阶段验证全部阶段 |
-| `breaker.policy.probe_interval` | duration | `30s` | 试探间隔；明确的 Retry-After 仍是下限 |
-| `breaker.policy.max_recovery` | duration | `5m` | 本轮自动恢复时间预算，耗尽后保持暂停并追加本轮结果，一小时后重新复查 |
-| `breaker.policy.ramp_for` | duration | `30s` | 试探通过后的低速恢复观察时长；到期且每个阶段都有本轮验证成功（混合错误为三个失败样本轮次）后停止继续放行，等待全站在途任务全部结束再确认恢复并清零 |
-| `breaker.policy.interval` | duration | `1s` | 观察和低速恢复阶段的任务启动间隔下限 |
-| `breaker.policy.capacity` | int | `4096` | 每站检测器保留的失败轮次上限；成功样本使用独立同容量空间。失败超限直接保护整站并标明证据受限，不通过丢弃失败降低计数 |
 
-> **熔断按站点分组**：这一节配的是**默认值**；每个站点可以在
-> `internal/sites/<站名>.go` 里用 `Breaker: &papa.BreakerSpec{...}` 覆盖（哪怕 `Enabled: false`
-> 只关掉某一站）。每站一份计数是硬要求 —— 共用一份的话站点 A 被墙会把站点 B 一起闸住。
->
-> **想"启动先别跑"不在这一节**：那是声明期的一道整站闸门 `SiteSpec.StartPaused: true`
-> （入口任务照投、任务保留在任务表 pending，后台点「恢复整站」才放开），见 [MONITOR.md](../operations/MONITOR.md) §10。
-> `policy` 的零值采用上表默认；负值不合法，时长不超过 24h，整数不超过 100000；`capacity` 必须覆盖短窗口两条阈值，`max_recovery` 至少覆盖冷却、单次试探和低速恢复时长。`BreakerSpec.Policy == nil` 继承配置文件策略；非 nil 用该站策略整体替换，未填字段采用框架默认。默认值是通用起点，应结合本站流量与报告调整。
->
-> 这一节配置**判据与恢复预算**；"停"这个动作与暂停状态在引擎的暂停信号里（见 [MONITOR.md](../operations/MONITOR.md) §9），
-> 人工暂停写的是同一张表、来源标成 manual。
+熔断完整策略已移入数据库 `execution_policy.breaker`，不再有 `crawler.breaker` YAML 键或 Go 站点覆盖。首次启动前必须显式初始化；全局默认及完整站点策略均在「系统设置 → 熔断与浏览器」调整，见 [EXECUTION_POLICY.md](../runtime/EXECUTION_POLICY.md)。`SiteSpec.StartPaused` 仍是独立启动暂停声明。
 
 ### browser —— 浏览器池（Rod）
 
-稳定身份档案不存放在 `config.yaml`；通过「浏览器诊断」页或公开 API 创建版本、绑定主体并复验生效，见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。没有绑定/显式 Profile 时保留旧行为。启用身份后，不允许 Device、UA/language 启动参数或普通请求头与身份字段冲突；物理池配置仍按本节管理。
+稳定身份档案不存放在 `config.yaml`；通过「浏览器诊断」页或公开 API 创建版本、绑定主体并复验生效，见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。没有绑定/显式 Profile 时保留旧行为。启用身份后，不允许 Device、UA/language 启动参数或普通请求头与身份字段冲突；二进制与启用开关按本节管理；公共池容量和空闲回收时长仅从数据库执行策略读取。
 
 > **默认不用它**：能用静态客户端拿到的页面一律用 `html`（`engine.FetchHTML`），rod 只在
 > 静态 HTML 里拿不到目标数据时才上（判据与理由见 FETCHER_WRITING_GUIDE.md §3）。
@@ -101,9 +78,6 @@
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
 | `enable` | bool | 是否启用浏览器池 |
-| `pool_size` | int | 代理浏览器**并发上限**（按需创建，非常驻实例数）。**`enable: true` 时必填且 > 0**，漏写、写 0 或负数会在配置加载时被拒绝；直接构造零容量 `Pool` 时，`Get` 也会立即返回 `browser pool not configured` |
-| `direct_pool_size` | int | 强制直连浏览器并发上限（不走代理）。**留 0 是合法的** = 不用直连池 —— 真调到 `GetDirect` 时会明确报 `direct browsers not configured` |
-| `max_idle_time` | duration | 空闲回收阈值，`0`=不回收 |
 | `headless` | bool | 无头模式 |
 | `no_sandbox` | bool | 关闭 Chromium sandbox |
 | `leakless` | bool | leakless 进程守护（Windows 上其 exe 易被杀软误报，谨慎开启） |
@@ -284,48 +258,29 @@ error_queue:
 
 `max_retry` 使用独立 `auto_retry_count`；`reprocess` 记录自动和人工再处理次数。NoRetry 持久禁止自动重试；人工重投保留预算和禁令直到成功。历史 failed 的禁令未知时阻止自动重试；升级须显式迁移，普通启动不迁移。
 
-### archive —— 页面归档（失败时留下那一页）
+### Trace —— 步骤与原始快照统一保留
 
 ```yaml
 crawler:
-  archive:
-    enabled: true
-    dir: "./logs/fetcher-html"
-    mode: failure        # failure（默认）/ always
-    retention: "168h"    # 默认 7 天；负数 = 永久保留
-    max_file_mb: 8       # 默认 8
+  trace:
+    mode: errors          # off / errors / all
+    retention: "168h"     # 默认 7 天；负数不自动清理
+  trace_files:
+    dir: "./traces"
+    max_file_bytes: 4194304
+    max_total_bytes: 268435456
+    max_files: 10000
 ```
 
-| 键 | 说明 |
-| --- | --- |
-| `enabled` | 是否开启；默认 `false` |
-| `dir` | 归档根目录。**开启时必填**（空串会拼成"文件系统根"下的 `{site}/{stage}/…`，见校验层） |
-| `mode` | `failure`（默认）= 只在**失败**的尝试落盘；`always` = 成功尝试也落盘 |
-| `retention` | 保留期；`0`/未写 = 默认 7 天（与 trace 对齐），**负数 = 永久保留** |
-| `max_file_mb` | 单页上限（**MB**）；`0`/未写 = 8。原始 HTML 归档超限时跳过并记 WARN |
+`trace.mode` 同时控制步骤与页面/响应快照：`off` 两者都关闭；`errors` 保留有 `Fail`、`Warn`、实际执行失败或 panic 的异常尝试；`all` 保留每次尝试。任务最终成功也可能有异常尝试。没有独立快照开关、目录或保留期。
 
-**原始 HTML 归档**：`FetchHTML` 等既有入口把「失败那一刻抓到的那一页」原样落到
+普通 `FetchHTML`、渲染/捕获入口已有的 HTML，以及非账号 `FetchHTTP`、`FetchIncremental`、`CaptureResponse` 获取的文本 HTML/JSON 响应体，会登记在当前尝试。快照保存抓取入口得到的原始字节，未经 goquery 重新序列化；不重新请求页面，也不下载或镜像 CSS、图片等外部资源。非账号 `CaptureRequest` 在 Trace 开启时自动启用 `IncludeHTML`，成功时读取当前 DOM，取证不重新导航。浏览器快照是当时获得的 HTML，并不保证还原完整离线页面。账号认证 HTTP/HTML 路径继续排除原始快照。
 
-```
-{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.html   ← 原始字节，可直接用浏览器打开
-{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.json   ← 状态码 / 最终 URL / 字节数 / 时间
-```
+Trace 新记录按 `traces/<site>/task-<id>/<execution-hash>-<sequence>.json` 分站点保存（根目录由 `trace_files.dir` 指定），文件名使用执行标识的 SHA-256 和 20 位递增序号；任务身份仍保留在记录元数据中；内部缺少站点的记录归入 `_unknown`。只支持当前目录及 v2 记录；旧目录、旧记录和旧快照令牌不再支持，使用前需清空旧 trace 目录。站点键必须是 1–128 位 ASCII 字母、数字、点、下划线或连字符，不允许路径分隔符、尾随点、`.`、`..` 或 Windows 保留设备名。
 
-- **不用写任何代码**：`engine.FetchHTML` 抓到的页面自动登记进"本次尝试"的缓冲，尝试结束（**含 panic**）时按结局决定落不落盘。业务只管照常 `FetchHTML`。
-- **必须是原始字节**：goquery 把文档重新序列化一遍会丢掉 `<noscript>` 里的回退标签 —— 延迟渲染的封面正藏在里面，而那恰恰是选择器坏掉时最该看的东西。所以落的是 `page.HTML`，不是 `doc.Html()`。
-- **文件名带 `run` 与 `try`**（本次认领的 UUID 与轮内 attempt）：同一任务重试 3 次不会互相覆盖，"第一次是登录墙、第三次正常"这种关键信息才留得住。
-- **trace 里连得起来**：归档后引擎会补一条 `归档页面` 步骤，data 里就是文件名 —— 后台「追踪」抽屉里"失败"与"那一页"是同一条线索。
-  （`always` 模式下**成功的**尝试里，这条步骤名还在但 data 会被 trace 的既有策略剥掉 —— 只有失败的尝试保留 data。那次尝试的文件照样在，按 `{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-*` 在目录里找即可。）
-- **写盘失败不影响任务**：归档是排查辅助，写不进去只记 WARN（磁盘满、目录只读都不该让任务失败）。
-- **几条抓取路径都覆盖**：`FetchHTML`（静态）、`FetchRendered` / `FetchRenderedPage(With)`（渲染）与
-  `engine.CaptureRequest`（捕获）。渲染/捕获的原始 HTML 本来就已读出来，登记不额外花 CDP 调用；
-  等待条件失败时由 `browser.WaitError.HTML` 带出、捕获失败时由 `CaptureResult.HTML` 带出，
-  引擎层统一登记。它们拿不到状态码与 Content-Type，元信息里留 0/空。
-- 保留期清理每小时巡检一次（与 trace 的清理同频），按文件修改时间删，`ctx` 取消即收工。
+快照以内嵌数据保存在同一有界 Trace 记录内，后台通过 Trace API 下载原始内容，不生成独立 HTML 或 JSON 归档文件。`trace_files.max_file_bytes` 限制整个序列化记录，包含快照及其编码开销；超限时丢弃快照并标记截断，优先保留步骤。记录共同受 `max_total_bytes`、`max_files` 与 `trace.retention` 管理；写盘失败或容量拒绝会告警，不改变任务结算。
 
-> **后台能直接把那一页拿走**：「追踪」抽屉里带「下载这一页」按钮，走 `GET /api/task/page?file=<相对路径>` ——
-> 服务端按 `archive.dir` 解析、拒绝 `..` 与绝对路径，回的是**文件本身**（`Content-Disposition: attachment`）
-> 而不是内联渲染，拿去本地对着真实页面改选择器最省事。要按自己的路由暴露归档目录，用 `monitor/router.go` 的 `Routes(app)`。
+**迁移**：删除旧 `crawler.archive` 整段；旧 `trace.enabled` 改用 `trace.mode`。这些旧键会拒绝启动并给出迁移提示，没有兼容分支。旧归档文件不读取、不迁移、不删除，需由使用者自行管理。
 
 ### recover_queue —— 启动恢复（详见 [RECOVER_QUEUE.md](../runtime/RECOVER_QUEUE.md)）
 
@@ -479,14 +434,14 @@ v4 任务使用 ResourceID（留空时规范 URL）及 `(site, stage, identity_h
 
 ### Trace 文件存储
 
-Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `crawler_task_trace`。旧表不删除，也不读取或自动导出；旧 SQL 历史不出现在当前后台。归档文件与下载接口保持独立。
+Trace 不再使用数据库；常规迁移与启动就绪检查不再包含 `crawler_task_trace`。旧表不删除，也不读取或自动导出；旧 SQL 历史不出现在当前后台。页面/响应快照内嵌在 Trace 文件中，下载接口按快照标识读取原始字节。
 
 `crawler.trace.mode` 可选 `off`（关闭）、`errors`（默认，仅保留失败、panic、显式 Fail/Warn）、`all`（所有尝试，含成功）。错误模式下干净成功不落盘，同轮失败后成功重试仍保留失败尝试。正常关停取消本身不触发异常保留。全量模式也保存正常取消的尝试；没有步骤的尝试补一个完成标记。后台展示最新**有保留证据**的执行，不代表当前任务状态。
 
 | `crawler.trace_files` 配置 | 默认 | 作用 |
 | --- | --- | --- |
 | `dir` | `./traces` | Trace 专用目录，单个 Store 拥有，不与其它产物共用 |
-| `max_file_bytes` | 4194304 | 单个尝试文件字节上限 |
+| `max_file_bytes` | 4194304 | 整个尝试记录（含快照与编码开销）的字节上限；超限丢弃快照并标记截断，优先保留步骤 |
 | `max_total_bytes` | 268435456 | 文件总字节预算 |
 | `max_files` | 10000 | 文件数量预算 |
 

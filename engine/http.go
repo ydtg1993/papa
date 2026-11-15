@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
@@ -35,6 +36,9 @@ func (e *Engine) FetchIncremental(ctx context.Context, rawURL string, previous *
 		return nil, fmt.Errorf("HTTP 客户端未启用：请开启 html.enable")
 	}
 	result, err := e.GetHTMLClient().FetchIncremental(ctx, rawURL, previous)
+	if result != nil {
+		traceFromCtx(ctx).holdResponse(result.Response)
+	}
 	data := map[string]any{}
 	if result != nil {
 		data["changed"] = result.Changed
@@ -50,7 +54,8 @@ func (e *Engine) FetchIncremental(ctx context.Context, rawURL string, previous *
 }
 
 // FetchHTTP performs an API/raw HTTP exchange using html configuration, proxy and
-// context headers. No response bodies or credentials are automatically archived.
+// context headers. Non-account textual response bodies join the attempt's Trace
+// snapshots; request headers and credentials are never added to those snapshots.
 func (e *Engine) FetchHTTP(ctx context.Context, request htmlfetch.Request) (*htmlfetch.Response, error) {
 	if a, ok := account.AttemptFromContext(ctx); ok {
 		return e.FetchPoolHTTP(ctx, a.Pool, request)
@@ -59,6 +64,7 @@ func (e *Engine) FetchHTTP(ctx context.Context, request htmlfetch.Request) (*htm
 		return nil, fmt.Errorf("HTTP 客户端未启用：请开启 html.enable")
 	}
 	response, err := e.GetHTMLClient().Do(ctx, request)
+	traceFromCtx(ctx).holdResponse(response)
 	method := request.Method
 	if method == "" {
 		method = http.MethodGet
@@ -112,6 +118,10 @@ func (e *Engine) CaptureResponse(ctx context.Context, pageURL string, opts brows
 		response, err = b.CaptureResponse(ctx, pageURL, opts)
 		return err
 	})
+	if response != nil {
+		u, _ := url.Parse(response.Request.URL)
+		traceFromCtx(ctx).holdResponse(&htmlfetch.Response{URL: u, StatusCode: response.StatusCode, Header: response.Header, Body: response.Body})
+	}
 	data := map[string]any{}
 	if response != nil {
 		data["status_code"] = response.StatusCode

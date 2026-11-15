@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "breaker": {
+    "defaults": {
+      "enabled": true,
+      "window": "5m",
+      "threshold": 50,
+      "policy": {
+        "short_window": "30s",
+        "fast_threshold": 5,
+        "mixed_threshold": 8,
+        "observe_for": "30s",
+        "cooldown": "30s",
+        "probe_timeout": "10s",
+        "max_probes": 3,
+        "probe_interval": "30s",
+        "max_recovery": "5m",
+        "ramp_for": "30s",
+        "interval": "1s",
+        "capacity": 4096
+      }
+    },
+    "sites": {}
+  },
+  "browser": {
+    "pool_size": 3,
+    "direct_pool_size": 0,
+    "max_idle_time": "5m"
+  }
+}

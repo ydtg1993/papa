@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/engine/internal/fetchruntime"
+	ep "github.com/ydtg1993/papa/v4/pkg/executionpolicy"
 	"maps"
 	"net/textproto"
 	"strings"
@@ -44,7 +45,7 @@ const renderWaitTraceStep = "等待渲染"
 // FetchRendered 借浏览器渲染页面，等待 waitSelector（可选）出现后，
 // 返回解析后的 goquery.Document 与导航后的最终 URL。用后自动归还浏览器。
 //
-// 要 `*htmlfetch.Page` —— 好直接喂给 `engine.RestrictedError`（受限页判据）或 archive 那套
+// 要 `*htmlfetch.Page` —— 好直接喂给 `engine.RestrictedError`（受限页判据）或 Trace 快照
 // 收 *Page 的工具 —— 用 FetchRenderedPage：两者抓的是同一份 HTML，只是包成什么给调用方不同。
 func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string) (*goquery.Document, string, error) {
 	html, finalURL, err := e.render(ctx, rawURL, browser.PageOptions{WaitSelector: waitSelector})
@@ -60,13 +61,13 @@ func (e *Engine) FetchRendered(ctx context.Context, rawURL, waitSelector string)
 
 // FetchRenderedPage 借浏览器渲染页面，返回 `*htmlfetch.Page` —— 与 `FetchHTML` 同一个类型。
 //
-// 为什么要有它：`FetchHTML` 拿到的页能直接喂给 `engine.RestrictedError`（受限页判据）与 archive，
+// 为什么要有它：`FetchHTML` 拿到的页能直接喂给 `engine.RestrictedError`（受限页判据）与 Trace 快照，
 // 因为那两处收的都是 `*htmlfetch.Page`；而 `FetchRendered` 只给 `*goquery.Document`，
 // 于是**走浏览器的阶段用不上框架的受限页判据** —— 被反爬拦下时只表现为"解析不出东西"，
 // 与静态路径的 `access_restricted`（不可重试、消息里带上命中的那句话）差着一层。
 //
 // 拿到的 Page 与静态路径的差别：StatusCode / ContentType 留零值（浏览器不给，见
-// htmlfetch.NewRenderedPage）；归档与 FetchRendered 完全一致（登记的本来就是渲染后的 HTML）。
+// htmlfetch.NewRenderedPage）；页面快照与 FetchRendered 完全一致（登记的本来就是渲染后的 HTML）。
 //
 //	page, err := engine.FetchRenderedPage(ctx, task.URL, ".detail-box")
 //	if err != nil { return err }
@@ -81,7 +82,7 @@ func (e *Engine) FetchRenderedPage(ctx context.Context, rawURL, waitSelector str
 //
 // ctx 上的站点级 / 逐请求头仍会合并进来；显式 opts.Headers 优先。
 // 等待失败时页面在关闭前被读一次 HTML，随 browser.WaitError 带出 —— 这里会把它登记进
-// 归档并在 trace 写一条「等待渲染」失败步骤。
+// 页面快照并在 trace 写一条「等待渲染」失败步骤。
 func (e *Engine) FetchRenderedPageWith(ctx context.Context, rawURL string, opts browser.PageOptions) (*htmlfetch.Page, error) {
 	html, finalURL, err := e.render(ctx, rawURL, opts)
 	if err != nil {
@@ -121,7 +122,7 @@ func mergeBrowserOptions(ctx context.Context, opts browser.PageOptions) browser.
 	return opts
 }
 
-// recordRenderWaitFailure 把「导航成功、等待失败」的现场写进归档与 trace。
+// recordRenderWaitFailure 把「导航成功、等待失败」的现场写进页面快照与 trace。
 // 只处理 browser.WaitError：导航本身失败没有页面可看，走原来的错误路径。
 func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.PageOptions, err error) {
 	var waitErr *browser.WaitError
@@ -130,7 +131,7 @@ func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.Pa
 	}
 	// 页面在 NewPageWithOptions 的失败路径上已经关了；HTML 是它关闭前读出来的现场。
 	if waitErr.HTML != "" {
-		archiveFromCtx(ctx).holdRendered(waitErr.HTML, rawURL)
+		traceFromCtx(ctx).holdRendered(waitErr.HTML, rawURL)
 	}
 	data := map[string]any{
 		"wait_stage": waitErr.Stage,
@@ -149,10 +150,10 @@ func recordRenderWaitFailure(ctx context.Context, rawURL string, opts browser.Pa
 }
 
 // render 借浏览器渲染一页，把原始 HTML 与导航后的最终 URL 交出去；两个公开方法共用它
-// （差别只在"把这份 HTML 包成 Document 还是 Page"）。归档也在这里做：那份 HTML 本来就在手上。
+// （差别只在"把这份 HTML 包成 Document 还是 Page"）。页面快照也在这里做：那份 HTML 本来就在手上。
 //
 // opts 里的 WaitSelector / WaitJS / WaitRequestIdle 由 NewPageWithOptions 应用；
-// 等待失败时会带回 browser.WaitError（含现场 HTML），这里负责归档与 trace。
+// 等待失败时会带回 browser.WaitError（含现场 HTML），这里负责页面快照与 trace。
 func (e *Engine) render(ctx context.Context, rawURL string, opts browser.PageOptions) (string, string, error) {
 	opts = mergeBrowserOptions(ctx, opts)
 	result, err := e.fetchResources.Render(ctx, rawURL, opts)
@@ -162,8 +163,8 @@ func (e *Engine) render(ctx context.Context, rawURL string, opts browser.PageOpt
 		}
 		return result.HTML, result.URL, err
 	}
-	if result.Archive {
-		archiveFromCtx(ctx).holdRendered(result.HTML, result.ArchiveURL)
+	if result.Snapshot {
+		traceFromCtx(ctx).holdRendered(result.HTML, result.SnapshotURL)
 	}
 	if err != nil {
 		recordRenderWaitFailure(ctx, rawURL, opts, err)
@@ -180,16 +181,52 @@ var defaultHeaders = map[string]string{
 }
 
 // SetBrowserPool 创建浏览器操作池，未启用时跳过
-func (e *Engine) SetBrowserPool() {
-	if !e.cfg.Browser.Enable {
-		return
+func (e *Engine) SetBrowserPool(limits ep.Browser) {
+	if err := e.InitBrowserPool(context.Background(), limits); err != nil {
+		panic(err)
 	}
-	pool, err := browser.NewPool(browser.PoolConfig{
+}
+
+// InitBrowserPool prepares the startup resource outside engine locks, then
+// installs it only while the startup and engine contexts still allow admission.
+// Runtime policy changes call Pool.ApplyLimits on this existing resource.
+func (e *Engine) InitBrowserPool(ctx context.Context, limits ep.Browser) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !e.cfg.Browser.Enable {
+		return nil
+	}
+	if limits.PoolSize <= 0 || limits.DirectPoolSize < 0 || limits.MaxIdleTime < 0 {
+		return fmt.Errorf("invalid browser pool limits")
+	}
+	e.mu.Lock()
+	if e.ctx != nil {
+		err := e.ctx.Err()
+		if err != nil {
+			e.mu.Unlock()
+			return err
+		}
+	}
+	alreadyInitialized := e.fetchResources.Browser() != nil
+	engineCtx := e.ctx
+	e.mu.Unlock()
+	if alreadyInitialized {
+		return fmt.Errorf("browser pool already initialized; use ApplyLimits for runtime updates")
+	}
+	startupCtx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
+	if engineCtx != nil {
+		stop := context.AfterFunc(engineCtx, cancelStartup)
+		defer stop()
+	}
+
+	pool, err := browser.NewPoolContext(startupCtx, browser.PoolConfig{
 		Network:        e.cfg.Network,
 		TempDir:        e.cfg.Browser.TempDir,
-		Size:           e.cfg.Browser.PoolSize,
-		DirectSize:     e.cfg.Browser.DirectSize,
-		MaxIdleTime:    e.browserMaxIdle(),
+		Size:           limits.PoolSize,
+		DirectSize:     limits.DirectPoolSize,
+		MaxIdleTime:    time.Duration(limits.MaxIdleTime),
 		Headless:       e.cfg.Browser.Headless,
 		NoSandbox:      e.cfg.Browser.NoSandbox,
 		Leakless:       e.cfg.Browser.Leakless,
@@ -201,9 +238,25 @@ func (e *Engine) SetBrowserPool() {
 		ProxyManager:   e.GetProxy(),
 	})
 	if err != nil {
-		panic(fmt.Errorf("new browser pool: %s", err.Error()))
+		return fmt.Errorf("new browser pool: %w", err)
 	}
-	e.fetchResources.SetBrowser(pool)
+	e.mu.Lock()
+	err = ctx.Err()
+	if err == nil && e.ctx != nil {
+		err = e.ctx.Err()
+	}
+	if err == nil && e.fetchResources.Browser() != nil {
+		err = fmt.Errorf("browser pool already initialized; use ApplyLimits for runtime updates")
+	}
+	if err == nil {
+		e.fetchResources.SetBrowser(pool)
+	}
+	e.mu.Unlock()
+	if err != nil {
+		pool.Close()
+		return err
+	}
+	return nil
 }
 
 // GetBrowserPool 获取浏览器池
@@ -218,8 +271,8 @@ func (e *Engine) GetHTMLClient() *htmlfetch.Client {
 
 // FetchHTML 抓取并解析静态 HTML 页面，不创建浏览器实例。
 //
-// 开了 `crawler.archive` 时，这里会**自动**把抓到的页面登记进本次尝试的归档缓冲
-// （handler 不用写任何代码，见 archive.go）——登记不写盘，落盘在本次尝试结束时按结局决定。
+// 开启 trace 时，这里会**自动**把抓到的页面登记进本次尝试的页面快照缓冲
+// （handler 不用写任何代码，见 trace_snapshot.go）——登记不写盘，落盘在本次尝试结束时按结局决定。
 func (e *Engine) FetchHTML(ctx context.Context, rawURL string) (*htmlfetch.Page, error) {
 	if a, ok := account.AttemptFromContext(ctx); ok {
 		return e.FetchPoolHTML(ctx, a.Pool, rawURL)
@@ -230,11 +283,22 @@ func (e *Engine) FetchHTML(ctx context.Context, rawURL string) (*htmlfetch.Page,
 		return nil, fmt.Errorf("静态 HTML 客户端未启用（crawler.html.enable = false）：FetchHTML 用不了。" +
 			"要用浏览器渲染走 FetchRendered（browser.enable），或把 html.enable 打开")
 	}
-	page, err := e.GetHTMLClient().Fetch(ctx, rawURL)
+	var page *htmlfetch.Page
+	var err error
+	tr := traceFromCtx(ctx)
+	if tr == nil {
+		page, err = e.GetHTMLClient().Fetch(ctx, rawURL)
+	} else {
+		var response *htmlfetch.Response
+		page, response, err = e.GetHTMLClient().FetchWithResponse(ctx, rawURL)
+		if err != nil {
+			tr.holdResponse(response)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	archiveFromCtx(ctx).hold(page)
+	tr.holdPage(page)
 	return page, nil
 }
 
@@ -253,9 +317,6 @@ func (e *Engine) browserHeaders() map[string]string {
 	maps.Copy(headers, e.cfg.Browser.Headers)
 	return headers
 }
-
-// browserMaxIdle 返回浏览器空闲回收阈值。
-func (e *Engine) browserMaxIdle() time.Duration { return e.cfg.Browser.MaxIdleTime }
 
 // htmlConfig 计算静态 HTML 客户端的配置（内置默认头 + 配置里的头）。
 func (e *Engine) htmlConfig() htmlfetch.Config {

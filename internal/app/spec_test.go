@@ -10,6 +10,7 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
+	"github.com/ydtg1993/papa/v4/pkg/breakerpolicy"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -30,7 +31,7 @@ func (f namedFetcher) GetStage() string { return f.name }
 
 func (f namedFetcher) FetchHandler(context.Context, *engine.Task, *engine.Engine) error { return nil }
 
-// noDBEngine 造一个**连不上库**的真引擎：阶段注册（AddStage / SetSite / SetSiteBreaker）不碰库，
+// noDBEngine 造一个**连不上库**的真引擎：阶段注册（AddStage / SetSite / RegisterBreakerSite）不碰库，
 // 够把 RegisterSites 这条链测到底。NewEngine 里那次 loadActiveTasks 会失败并记日志（吞掉，不致命）。
 func noDBEngine(t *testing.T, cfg *config.Config) *engine.Engine {
 	t.Helper()
@@ -103,8 +104,6 @@ func TestAppSiteUsesEngineOwnedSnapshots(t *testing.T) {
 func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 	cfg := &config.Config{}
 
-	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
-
 	e := noDBEngine(t, cfg)
 	// Stop 关掉引擎 ctx（delayDispatcher 那条协程随之退出）
 	t.Cleanup(func() { e.Stop(time.Millisecond) })
@@ -120,7 +119,6 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 			Key: "a", BaseURL: "https://a.example/",
 			Headers:            map[string]string{"User-Agent": "ua-a"},
 			RestrictedKeywords: []string{"安全验证"},
-			Breaker:            &BreakerSpec{Enabled: true, Threshold: 7, Window: "2m"},
 			// 启动即闸住这一站：入口任务照投（下面 ③ 会验），但整站在入队点被收口
 			StartPaused: true,
 			Stages: []StageSpec{{
@@ -134,6 +132,14 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 			Stages: []StageSpec{{Fetcher: namedFetcher{name: "detail"}, WorkerCount: 1, QueueSize: 8}},
 		},
 	)
+
+	base := config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50, Policy: breakerpolicy.EffectivePolicy(config.BreakerPolicy{})}
+	override := base
+	override.Threshold = 7
+	override.Window = 2 * time.Minute
+	if err := e.ApplyBreakerPolicies(1, base, map[string]config.BreakerConfig{"a": override}); err != nil {
+		t.Fatal(err)
+	}
 
 	// ① 站点快照：Key/BaseURL/站点级头/受限页文案
 	got, ok := a.Site("a")
@@ -154,8 +160,8 @@ func TestRegisterSitesWiresStagesSitesAndBreakers(t *testing.T) {
 		t.Fatalf("engine.Site(a) = %+v, %v", viaEngine, ok)
 	}
 
-	// ② 熔断**每站一份**：a 用自己声明的 7/2m；b 没单配阈值 → 也有**自己**那一份，
-	// 阈值取 crawler.breaker 那份默认（50/5m）。共用的后果是 a 站被墙会把 b 站一起闸住。
+	// ② 数据库策略发布后，每站有独立策略：a 用覆盖的 7/2m，b 使用默认。
+	// 全局数据库默认是 50/5m，声明不提供策略。
 	sts := e.BreakerStatuses()
 	if sts["a"].Threshold != 7 || sts["a"].Window != 2*time.Minute {
 		t.Fatalf("站点 a 的熔断阈值没生效：%+v", sts["a"])

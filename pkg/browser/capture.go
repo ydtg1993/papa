@@ -40,6 +40,11 @@ type CaptureOptions struct {
 	// 等待期间观察到主文档明确挑战时返回 SiteChallenge；这不保证已等到
 	// 所捕获请求自己的响应，需要响应判定时使用 CaptureResponse。
 	WaitLoad bool
+
+	// IncludeHTML captures the current DOM on success before closing the page.
+	// It is best effort, uses a short timeout, and performs no extra navigation.
+	// Default false preserves request-only capture and account isolation policy.
+	IncludeHTML bool
 }
 
 // CapturedRequest 捕获到的那条请求（只读快照）。
@@ -56,7 +61,7 @@ type CaptureResult struct {
 	ResponseObserved bool
 	// Request 命中那条；失败（超时/导航错误）时为 nil。
 	Request *CapturedRequest
-	// HTML 失败路径上尽力读到的页面 HTML（成功时为空 —— 命中即返回，页面已关）。
+	// HTML 失败路径上尽力读到的页面 HTML；成功时仅 IncludeHTML 开启才读取。
 	// 给上层登记归档用：捕获超时时页面到底渲染成了什么（验证码 / 404 / 播放器改版），
 	// 是排查的第一证据。读不到（页面已不可用）时留空，不算错误。
 	HTML string
@@ -129,8 +134,17 @@ func captureRequestOnPage(ctx context.Context, page *rod.Page, pageURL string, o
 		}
 		// Request-only success deliberately remains early success: a response
 		// need not exist yet. WaitLoad/account operations can classify it.
-		if opts.WaitLoad || err != nil {
+		if opts.WaitLoad || opts.IncludeHTML || err != nil {
 			err = challenge.prefer(err)
+		}
+		if opts.IncludeHTML && err == nil && result != nil && result.HTML == "" {
+			result.HTML = captureFailureHTML(ctx, page)
+			// The response may arrive during DOM capture. Never publish a
+			// success snapshot after explicit challenge evidence is observed.
+			if err = challenge.prefer(err); err != nil {
+				result.HTML = ""
+			}
+			result.ResponseObserved = challenge.responseObserved()
 		}
 	}()
 	navTimeout := opts.Page.Timeout

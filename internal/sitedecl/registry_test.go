@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
@@ -17,12 +16,10 @@ func TestRegistryOwnsNestedDeclarations(t *testing.T) {
 	t.Cleanup(resetRegisteredSites)
 	entry := &entryStageFetcher{}
 	newSpec := func() SiteSpec {
-		policy := config.BreakerPolicy{FastThreshold: 7}
 		dir, workers, chunk := "original", 2, int64(4096)
 		return SiteSpec{
 			Key: "example", Headers: map[string]string{"X-Test": "original"},
 			RestrictedKeywords: []string{"original"},
-			Breaker:            &BreakerSpec{Enabled: true, Threshold: 9, Policy: &policy},
 			M3U8:               &m3u8.Overlay{OutputDir: &dir}, FileDown: &filedown.Overlay{ChunkSize: &chunk},
 			Stages: []StageSpec{{Fetcher: entry, WorkerCount: 2, QueueSize: 8,
 				M3U8: &m3u8.Overlay{MaxConcurrent: &workers}, FileDown: &filedown.Overlay{OutputDir: &dir}}},
@@ -33,8 +30,6 @@ func TestRegistryOwnsNestedDeclarations(t *testing.T) {
 	mutate := func(s *SiteSpec) {
 		s.Headers["X-Test"] = "changed"
 		s.RestrictedKeywords[0] = "changed"
-		s.Breaker.Threshold = 99
-		s.Breaker.Policy.FastThreshold = 99
 		*s.M3U8.OutputDir = "changed"
 		*s.FileDown.ChunkSize = 99
 		s.Stages[0].WorkerCount = 99

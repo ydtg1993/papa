@@ -24,12 +24,14 @@ func (a *App) Run(ctx context.Context) {
 		panic(fmt.Errorf("采集控制初始化失败: %w", err))
 	}
 
+	// Validate/load durable execution settings before reporting a started run.
+	if err := a.initExecutionPolicy(runCtx); err != nil {
+		panic(err)
+	}
 	a.startReportLoop()
 	a.emitRunStarted()
 	started = true
 
-	// 初始化引擎浏览器池
-	a.Engine.SetBrowserPool()
 	a.BrowserPool = a.Engine.GetBrowserPool() // 同步给导出字段：外部读 App.BrowserPool 不该一直是 nil
 	// 初始化静态 HTML 抓取客户端（读取请求头与代理配置）
 	a.Engine.SetHTMLClient()
@@ -52,14 +54,26 @@ func (a *App) Run(ctx context.Context) {
 }
 
 func (a *App) shutdownRun(started bool) {
+	if a.executionPolicy != nil {
+		a.executionPolicy.BeginShutdown()
+	}
 	a.Logger.Sys.Info("stopping application components...")
 	// 顺序要紧：先把 HTTP 停下来、等在途请求（比如日志下载）跑完，再动引擎和数据库。
 	// 反过来的话，正在下载日志的请求会在读到大半时被关掉的连接 / 关掉的库打断。
 	httpDrained := a.shutdownHTTP()
 	if !httpDrained {
-		a.Logger.Sys.Error("HTTP 请求或白名单重载未排空，跳过关库与浏览器池关闭")
+		a.Logger.Sys.Error("HTTP 请求或白名单重载未排空，保留数据库，退出前仍强制清理浏览器池")
 	}
 	businessDrained := a.stopExtensions(a.Config.Crawler.StopTimeoutOrDefault())
+	policyDrained := true
+	if a.executionPolicy != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), a.Config.Crawler.StopTimeoutOrDefault())
+		policyDrained = a.executionPolicy.Drain(ctx) == nil
+		cancel()
+		if !policyDrained {
+			a.Logger.Sys.Error("配置写入未排空，保留数据库，退出前仍强制清理浏览器池")
+		}
+	}
 
 	// 引擎排空：Engine.Stop 内部先 e.cancel()，再等各阶段 worker 把队列跑完（上限 crawler.stop_timeout）。
 	// 各阶段是并发等的，所以这里最多等一个 stopTimeout。
@@ -67,17 +81,17 @@ func (a *App) shutdownRun(started bool) {
 	drained, stopStats := a.Engine.Stop(stopTimeout)
 	runtimeDrained := a.drainRuntime(stopTimeout)
 	if !runtimeDrained {
-		a.Logger.Sys.Errorf("账号登录、账号核验或浏览器身份诊断未在 %s 内排空，跳过关库与浏览器池关闭", stopTimeout)
+		a.Logger.Sys.Errorf("账号登录、账号核验或浏览器身份诊断未在 %s 内排空，保留数据库，退出前仍强制清理浏览器池", stopTimeout)
 	}
 	listenersDrained := a.stopMessageListeners(stopTimeout)
 	if !listenersDrained {
-		a.Logger.Sys.Errorf("错误日志监听未在 %s 内退出，跳过关库与浏览器池关闭", stopTimeout)
+		a.Logger.Sys.Errorf("错误日志监听未在 %s 内退出，保留数据库，退出前仍强制清理浏览器池", stopTimeout)
 	}
 	if manager := a.Engine.GetProxy(); manager != nil {
 		manager.Close()
 	}
 	if !drained {
-		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 跳过关库与浏览器池关闭，让在途写入完成；"+
+		a.Logger.Sys.Errorf("引擎未在 %s 内排空，仍有任务未跑完 %+v —— 保留数据库，退出前仍强制清理浏览器池；"+
 			"留在库里的 pending 任务下次启动的启动恢复会重新入队", stopTimeout, stopStats)
 	}
 
@@ -93,22 +107,29 @@ func (a *App) shutdownRun(started bool) {
 		a.oplog.Close(3 * time.Second)
 	}
 
-	// 没排空时**不关**浏览器池和数据库：pool.Stop 超时后返回，但 Go 杀不掉 goroutine，
-	// worker 还在跑 —— 它们可能正持着浏览器、正要把结果写回 DB。这会儿关掉，
-	// 等于把「让在途任务跑完」这件事又亲手掐断，而且剩下的每次 任务结算 / SaveResult
-	// 都会报 "sql: database is closed"（日志刷屏，结果照样丢）。
-	// 关库/关浏览器本是礼仪不是必须：进程退出时由 OS 回收连接，Chrome 由 leakless 收掉。
-	if httpDrained && drained && businessDrained && runtimeDrained && listenersDrained {
-		if a.Engine.GetBrowserPool() != nil {
-			a.Engine.GetBrowserPool().Close()
+	// Final process cleanup is independent of drain success. A timed-out
+	// callback may still need the database, but must not retain Chromium.
+	browserDrained := true
+	if pool := a.Engine.GetBrowserPool(); pool != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+		if err := pool.Shutdown(ctx); err != nil {
+			browserDrained = false
+			a.Logger.Sys.Errorf("浏览器池退出清理未完成: %v，剩余状态 %+v", err, pool.Stats())
 		}
+		cancel()
+	}
+	if httpDrained && drained && businessDrained && runtimeDrained && listenersDrained && policyDrained && browserDrained {
 		if a.DB != nil {
 			if sqlDB, err := a.DB.DB(); err == nil {
 				_ = sqlDB.Close()
 			}
 		}
 	}
-	a.Logger.Sys.Info("shutdown completed")
+	if browserDrained {
+		a.Logger.Sys.Info("shutdown completed")
+	} else {
+		a.Logger.Sys.Error("shutdown finished with browser cleanup pending")
+	}
 }
 
 // waitAppLoop waits for one owned background loop without extending the

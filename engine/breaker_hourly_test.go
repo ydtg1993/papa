@@ -133,7 +133,7 @@ func TestBreakerHourlyCycleCanAutoRecoverAndPreserveManualPause(t *testing.T) {
 	l = expectSmartState(t, e, "ramping")
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
 	l = expectSmartState(t, e, "recovered")
-	if !l.RecheckAt.IsZero() || e.breakerSum("synthetic") != 0 || !strings.Contains(l.Text(), "hourly_recheck") {
+	if !l.RecheckAt.IsZero() || !strings.Contains(l.Text(), "hourly_recheck") {
 		t.Fatal("hourly recovery did not finish normally")
 	}
 	e2, _ := readOnlyFixture(t, "detail")

@@ -11,7 +11,7 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
-	"github.com/ydtg1993/papa/v4/internal/breaker"
+
 	"github.com/ydtg1993/papa/v4/internal/stageflow"
 )
 
@@ -19,8 +19,8 @@ import (
 // 计划仍使用公开 Fetcher/阶段配置及入口回调协议，不是无依赖的纯数据 DTO。
 // RegisterSites 与 CheckSites 共用校验与推导。
 type Plan struct {
-	Site      core.Site            // 声明快照（Key / BaseURL / Headers / …）
-	Breaker   *breaker.Config      // 本站的熔断阈值；nil = 用默认那把
+	Site core.Site // 声明快照（Key / BaseURL / Headers / …）
+
 	Downloads engine.SiteDownloads // 本站的下载器覆盖层（nil 字段 = 不覆盖）
 	Stages    []StagePlan
 }
@@ -62,17 +62,13 @@ func planSites(cfg *config.Config, sites []SiteSpec) ([]Plan, error) {
 	if err := validateSites(sites); err != nil {
 		errs = append(errs, err)
 	}
-	defBreaker := config.BreakerConfig{}
-	if cfg != nil {
-		defBreaker = cfg.Crawler.Breaker
-	}
 	// 阶段名只在**本站内**唯一（两个站可以各有自己的 catalog）—— 所以查重的键是
 	// `site:stage` 的复合键，不是裸的阶段名。未命名的声明在上面就被 validateSites 拒掉了，
 	// 所以这里的站点键一定非空；用 core.StageKey 拼只是为了"键只有一处拼法"。
 	owner := make(map[string]string, len(sites)) // core.StageKey(site, stage) → 已声明的站点，用来查重
 	plans := make([]Plan, 0, len(sites))
 	for i, spec := range sites {
-		plan, err := planSite(spec, i, defBreaker, owner)
+		plan, err := planSite(spec, i, owner)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -82,34 +78,12 @@ func planSites(cfg *config.Config, sites []SiteSpec) ([]Plan, error) {
 }
 
 // planSite 一份声明 → 落地内容。纯函数：不碰引擎、不碰库，默认值由参数给（index 只用于报错文案）。
-func planSite(spec SiteSpec, idx int, defBreaker config.BreakerConfig, owner map[string]string) (Plan, error) {
+func planSite(spec SiteSpec, idx int, owner map[string]string) (Plan, error) {
 	var p Plan
 	var errs []error
 	p.Site = spec.snapshot() // 声明 → 框架内部流通的快照，一处转换
 	// 计划拥有覆盖层快照；解析时机仍在 ApplyRegisterStage（全局那份已 Set 好）。
 	p.Downloads = engine.SiteDownloads{M3U8: spec.M3U8.Clone(), FileDown: spec.FileDown.Clone()}
-
-	// 熔断**每站一份计数**：声明里写了阈值就用它，没写就用 `crawler.breaker` 那份默认 ——
-	// 要紧的是"每站各自一把"。共用的后果是 A 站被墙会把 B 站一起闸住（两个站同时被同一面墙
-	// 挡住时看着"对"，但它们本该各自判定、各自恢复；一方先恢复时更明显）。
-	// Key 一定非空（validateSites 已经拒掉没有 Key 的声明）—— 这里的判断纯属防御。
-	if p.Site.Key != "" {
-		bc := defaultBreakerConfig(defBreaker)
-		var err error
-		if spec.Breaker != nil {
-			bc, err = spec.Breaker.toConfig(defBreaker)
-		}
-		if err == nil {
-			// Validate the effective config even when the site inherits all of
-			// its defaults, before App publishes any part of the batch.
-			err = breaker.Validate(bc)
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("站点 %q 的熔断配置: %w", p.Site.Key, err))
-		} else {
-			p.Breaker = &bc
-		}
-	}
 
 	// 三个治理队列现在是全局一段（config.yaml 的 error_queue / recover_queue / repeat_queue），
 	// 站点声明不再带队列参数 —— 这里没有队列要推导。

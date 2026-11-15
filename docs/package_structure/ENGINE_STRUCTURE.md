@@ -9,7 +9,7 @@
 
 Engine 是单实例执行编排器，也是供 Fetcher 和宿主使用的公开门面。它连接任务持久化、阶段 worker、暂停/熔断、账号和抓取资源，负责跨组件的执行顺序及关停排空。
 
-scheduler、execution、fetchruntime 保持独立内部包；根包的 submissionStore、taskFlowService、traceService、archiveService、siteCatalog、accountAlertGate 和 breakerCoordinator 各自拥有明确数据与操作契约。Engine 保留公开门面和跨暂停、持久化、投递的协调，不把完整 Engine 或 Config 交给这些组件。
+scheduler、execution、fetchruntime 保持独立内部包；根包的 submissionStore、taskFlowService、traceService、siteCatalog、accountAlertGate 和 breakerCoordinator 各自拥有明确数据与操作契约。Engine 保留公开门面和跨暂停、持久化、投递的协调，不把完整 Engine 或 Config 交给这些组件。
 
 判断是否需要拆分应看三个问题：是否拥有独立状态、是否存在语义接口、能否在不暴露内部字段的情况下独立验证。文件多或名字相似不构成单独拆包理由。涉及暂停、熔断和投递的原子协议尤其不能按目录机械拆开。
 
@@ -82,7 +82,7 @@ engine/
 | --- | --- | --- |
 | `retry_backoff.go` | Handler 退避策略：首次重试指数 0、60s 封顶、Equal Jitter | 仅调用 internal/backoff 计算；等待、计数和结算仍在 stage.go，无新增状态/锁 |
 | `stage.go` | worker 执行编排、任务认领/释放、重试、成功/失败结算、单次尝试装配 | 保留跨组件顺序，避免把所有细节重新塞回 stageHandler |
-| `attempt_execution.go` | attemptExecution：一次 handler 的 context、trace/归档终结、panic 传播、账号反馈与计时协调 | 不持有 Engine；handler 调用通过回调传入，持久化重试不能重新调用 handler |
+| `attempt_execution.go` | attemptExecution：一次 handler 的 context、Trace 步骤与快照终结、panic 传播、账号反馈与计时协调 | 不持有 Engine；handler 调用通过回调传入，持久化重试不能重新调用 handler |
 | `attempt_persistence.go` | attemptPersistence：本次尝试时间写入及失败结算依赖 | 不持有 Engine，但仍直接依赖 GORM、execution.State 和 breakerCoordinator；属于同包组件，不是完全独立存储层 |
 
 ### 3.4 调度、持久补位和治理队列
@@ -125,7 +125,7 @@ engine/
 
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
-| `fetch.go` | 渲染/HTML 公开入口、选项和请求头合并、资源注入、trace/归档接入 | 浏览器资源申请与归还委派 fetchruntime；当前仍包含较多适配策略 |
+| `fetch.go` | 渲染/HTML 公开入口、选项和请求头合并、资源注入、Trace 步骤与快照接入 | 浏览器资源申请与归还委派 fetchruntime；当前仍包含较多适配策略 |
 | `http.go` | HTTP/增量抓取、响应捕获与执行上下文衔接 | 网络传输实现使用独立客户端，不在这里新增站点业务 |
 | `capture.go` | 浏览器网络请求捕获与捕获记录 | 只接通任务观测上下文，捕获实现依赖通用浏览器能力 |
 | `record.go` | 网络录制公开入口 | 录制规则在通用组件中，Engine 提供执行环境 |
@@ -137,15 +137,14 @@ engine/
 | `governance.go` | 运行策略解析/安装、声明与 schema 检查、任务 context/账号池准备 | controller 与独立的延迟 map 副本在同一 e.mu 临界区发布；后台策略事务不属于 Engine |
 | `restricted.go` | 特定运行场景的能力限制检查 | 统一执行限制入口，不能在各抓取路径另造互相冲突的开关 |
 
-### 3.7 追踪、归档、快照与通知
+### 3.7 追踪、快照与通知
 
 | 文件 | 当前职责 | 应守边界 |
 | --- | --- | --- |
 | `trace.go` | Trace 步骤缓冲/锁/终结、context 及公开查询/配置适配 | 单次记录器拥有异常判定与有界缓冲，委派文件存储 |
 | `trace_data.go` | 有界输入预检与JSON 编码 | 序列化异常转为证据标记，不改变 handler 结果 |
 | `trace_service.go` | traceService 的文件持久化与保留期维护 | 独占 tracestore；无待选任务状态，文件锁归 tracestore |
-| `archive.go` | archiveBuffer 的单次页缓冲、限额、结果选择及公开适配 | 单次尝试拥有页面，文件操作委派服务 |
-| `archive_service.go` | archiveService 的配置值、命名、文件写入、保留期清理 | 只接收归档配置值与日志，不接收 Engine |
+| `trace_snapshot.go` | 原始 HTML/JSON 快照登记、预算与下载适配 | 快照由 Trace 使用既有锁拥有，和步骤写入同一记录 |
 | `evidence_maintenance.go` | 共同巡检循环，启动前登记 tickerWG、取消后退出 | Engine 仍负责取消与等待；后台清理未完成时 Stop 不得报告 drained |
 | `stats.go` | 阶段统计队列、池回收后的累计量及阶段快照 | 不能把池回收误当累计统计清零 |
 | `sitestat.go` | SiteStore 契约、声明对齐、站点统计和熔断状态投影写入 | Store 注入，站点统计投影与运行暂停信号不是两个决策源 |
@@ -188,7 +187,7 @@ engine/
 | 暂停 map、广播 channel、恢复时间 | Engine 的 pause 状态 | `breakerMu → pauseMu → (overflow.mu 或 e.mu)`；pause 锁不跨数据库调用 |
 | detector、trial、证据和报告串行门 | breakerCoordinator | 纯内部变更在 coordinator 方法内；涉及暂停/投递的事务由明确协调入口发布 |
 | 站点声明 | siteCatalog，继续使用既有 breakerMu | 目录组件拥有声明内容并提供脱离内部存储的快照；为保持协调顺序不引入第二把锁 |
-| 单次 trace 与归档 | Trace、archiveBuffer、attemptExecution | 尝试结束和 panic 路径都终结；账号敏感内容不进入原始页面归档 |
+| 单次 Trace 与快照 | Trace、attemptExecution | 尝试结束和 panic 路径都终结；账号敏感内容不进入原始快照 |
 | 抓取资源登记及下载配置快照 | fetchruntime.Resources/Downloads | 短锁取依赖，网络工作和用户回调不在登记锁内执行 |
 
 Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../configuration/RESOURCE_BUDGETS.md)。
@@ -239,7 +238,7 @@ execution.State.Retry 在当前调用者中重试持久化，退避从 100ms 增
 | 提交 SQL 与投递混合 | submissionStore 负责持久化准备和认领；submissionPlan 显式交付成功/未读记录的投递责任 | 部分失败也必须处理成功项；重复项在投递后回填轮次信息 |
 | 任务流事务挂在 Engine | taskFlowService 只依赖数据库，统一版本、父子登记、认领与查询 | flow 行锁和事务范围不能随重构拆散 |
 | 熔断状态分散修改 | coordinator 收回内部状态操作；Engine 根据值结果执行暂停发布、任务操作和探测生命周期 | 原 breaker → pause → overflow/e.mu 顺序不变，不引入互相调用的新锁 |
-| 追踪/归档混合记录与维护 | 单次记录器 + 窄配置服务 + 统一维护循环 | 动态配置通过门面按调用取值；维护继续纳入 tickerWG，不能先报告排空再关闭数据库 |
+| Trace 记录与维护 | 单次记录器 + 窄配置服务 + 统一维护循环 | 动态配置通过门面按调用取值；维护继续纳入 tickerWG，不能先报告排空再关闭数据库 |
 | 站点及告警状态分散 | siteCatalog 拥有声明快照，accountAlertGate 拥有限频状态 | 站点继续使用原协调锁；不能用修改返回 map 的方式改变引擎声明 |
 
 Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandler 仍协调账号准入、执行轮次、终态确认和熔断结算；pause.go 仍拥有暂停信号及跨状态发布。它们是需要显式顺序的执行协议，不是应该按文件名机械拆包的剩余工作。
@@ -250,7 +249,7 @@ Task/Trace、Fetcher、StageConfig 以及 Engine 公开 API 保留。stageHandle
 
 ### 执行证据身份
 
-`evidence_identity.go` 为每次成功认领建立 context 内的 UUID，同轮重试共用，恢复/重投/轮询重新认领则换号；只标识观测证据，不参与 taskstore 终态栅栏。`attemptExecution` 装配时把同一身份交给 Trace 和 archiveBuffer，缓冲与锁仍由各自拥有。traceService 查询最新有记录的执行，保留末 500 步并明确截断；旧 SQL 历史不再读取，不虚构轮次。
+`evidence_identity.go` 为每次成功认领建立 context 内的 UUID，同轮重试共用，恢复/重投/轮询重新认领则换号；只标识观测证据，不参与 taskstore 终态栅栏。`attemptExecution` 装配 Trace；Trace 使用既有互斥锁共同拥有步骤与快照，traceService 通过 tracestore.Write 将两者写入同一记录。traceService 查询最新有记录的执行，保留末 500 步并明确截断；旧 SQL 历史不再读取，不虚构轮次。
 
 ## 九项诊断修复后的治理取消契约
 

@@ -1,2 +1,2 @@
-// Package tasktrace owns task trace transport, safe archived-page downloads and the trace drawer. It consumes a task lookup and archive root, not an engine instance.
+// Package tasktrace owns task trace transport, snapshot downloads and the trace drawer. It consumes lookup callbacks, not an engine instance or filesystem paths.
 package tasktrace

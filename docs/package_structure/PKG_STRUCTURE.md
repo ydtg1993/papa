@@ -29,6 +29,7 @@ pkg/
 │   ├── contract/             # 无凭据持久化值与 CAS 契约
 │   ├── gormstore/            # 账号池/管理状态的 GORM 适配
 │   └── onboarding/           # Provider 登录过程、候选确认、受控远程浏览器
+├── executionpolicy/          # 数据库策略文档、CAS/幂等应用服务、公开 DTO
 ├── breakerpolicy/            # 熔断策略值、默认值和校验
 ├── browser/                  # Rod 进程池、受管页面、状态和网络观察
 │   └── identity/             # 身份声明、原生 CDP 配置和实际观察
@@ -136,6 +137,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | `pool.go` | `PoolConfig`、二进制来源解析、`NewPool`、代理/直连容量、懒创建、Get/Put/With 借用、空闲回收、默认头热更和 Close |
 | `rod.go` | `Browser`、单实例关闭与使用计量；`PageOptions`、受管页面初始化、`NewPageWithOptions` / `WithPageOptions` / `WithNavigatedPage` / `FetchOnce` |
 | `stats.go` | 活实例登记、空闲/保留/借用状态、`Stats` 独立生命周期快照；统计受管实例，不统计 Chromium 子进程数量 |
+| `shutdown.go` | 进程最终退出用的 `Shutdown(ctx)`：取消准入和创建，并行关闭所有实例，在截止时间内等待实例/创建计数归零；超时保留未完成状态 |
 | `temp_dir.go` | `ResolveTempDir` / `PrepareTempDir` / `NewTempProfile`，验证实际可写的配置根和创建独占 profile；`TempDir` 返回池实际使用的共享根；Pool 不删除该根，只由实例关闭清理独占 profile |
 | `page_creation.go` | 创建命令遇取消后最多等 3 秒取得 target ID；按原取消状态停止连接/执行，并用独立 3 秒 context 关闭已知 target |
 | `navigation.go`、`wait.go` | 已有受管页的 `ConfigurePage` / `NavigatePage`、等待条件及 `WaitError`；页面创建时确定的拦截规则不在导航时随意替换 |
@@ -155,8 +157,8 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 
 | 状态或资源 | 拥有者与生命周期 |
 | --- | --- |
-| 空闲实例和借用容量 | `Pool.mu` / `cond` 保护通道收发与关闭；原子存活计数覆盖借出实例；`statsMu` 单独保护实例状态目录 |
-| 热更值和回收循环 | headers 使用原子副本发布，maxIdle 使用原子时长；`reaperMu` 管理回收协程的停止通道。池大小是固定容量上限，不是常驻实例数 |
+| 空闲实例和借用容量 | `Pool.mu` / `cond` 保护空闲切片、实例状态、目标容量、创建预留、等待与关闭准入；启动和关闭在锁外进行 |
+| 热更值和回收循环 | headers 使用原子副本发布，maxIdle 使用原子时长；`reaperMu` 管理同一回收循环，阈值更新唤醒并重置 timer。ApplyLimits 更新动态目标，不重建 Pool；借出实例归还后按最新目标复用或关闭 |
 | 进程、网关与借用许可 | 普通 `Browser` 拥有 launcher、网关、关闭标记及本次借用的资源归还函数；`Close` 幂等并对 launcher 收尾等待设上限 |
 | 隔离上下文 | 隔离 Browser 借用父进程及其网关，只销毁自己的上下文；外层 With 完成后归还父实例 |
 | 页面身份登记 | 包内 `identityPages` 使用 `sync.Map`，键为 target/session 值；单页 `identityPageState.mu` 保护快照、adapter 和头；浏览器事件在 target 关闭/分离时移除登记 |
@@ -164,7 +166,7 @@ Store 持有宿主注入的 `*gorm.DB`，不拥有连接关闭、不启动循环
 | 捕获与记录 | 每次操作自己的 channel、锁、监听和取消；回调结束或失败后收尾，调用方负责返回快照的后续用途 |
 | 诊断启动 | `diagnosticProcess` 拥有进程退出信号、临时 profile 和有界关闭；诊断资源不能作为普通任务浏览器随意复用 |
 
-`Pool.Close` 关闭准入并处理空闲实例；已借出的实例会在归还时销毁，不能把池关闭当作借用回调已经排空。上层须先停止并等待依赖浏览器的任务、诊断、账号验证和登录过程，再关闭池。直接 `NewPage` 的调用方负责关页；With 类入口限定回调作用域并执行清理。
+`Pool.Close` 关闭准入并处理空闲实例；已借出的实例会在归还时销毁，不能把池关闭当作借用回调已经排空。上层先停止并等待依赖浏览器的任务、诊断、账号验证和登录过程；进程最终退出时使用 `Shutdown(ctx)`，即使排空失败也强制清理借出的实例，超时返回错误。业务自行创建的专用池仍由其拥有者负责调用，App 只接管引擎公共池；数据库必须继续按排空状态管理。直接 `NewPage` 的调用方负责关页；With 类入口限定回调作用域并执行清理。
 
 浏览器基础包依赖 Rod、`identity`、`egress`、`governance`、`htmlfetch` 和 `middleware/proxy`；不依赖账号协调器、Engine 或后台。身份持久化不放进 `browser`，浏览器诊断报告算法及宿主操作生命周期见 `internal/browserdiagnostics`。现有公开原始 Rod 入口不等于所有自行创建的 page/popup/worker 都自动具备受管页面行为。
 
@@ -457,3 +459,7 @@ Close(ctx) 关闭入口并等待同一个完成信号，deadline 到即返回；
 ### 下载退避的确定性验证
 
 两个下载包的 `retry_backoff_test.go` 使用 testing/synctest 和内存 RoundTripper 确认响应已关闭、调用已进入退避后再取消；M3U8 同时覆盖请求级/加密分片外层的 context deadline。还校验实际循环的首次/重试/末次时间、次数和取消后的临时文件/内存预留。原本地 HTTP 重试次数用例继续保留；内存 transport 不代表验证了网络出口或真实目标站行为。
+
+## executionpolicy：数据库执行策略
+
+`document.go` 拥有完整文档、带单位 Duration JSON、校验与 detached Clone；`service.go` 拥有公开 Service/Store/Target 契约及版本写入串行化、operation_id 核对和发布状态。Store 负责同事务持久化，Target 负责组件内策略接收；服务不持有 App/Engine。HTTP 页面属于 admin/executionpolicy，数据库适配属于 admin/configstore。

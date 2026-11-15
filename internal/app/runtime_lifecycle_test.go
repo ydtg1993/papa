@@ -12,6 +12,7 @@ import (
 
 	"github.com/ydtg1993/papa/v4/pkg/account"
 	"github.com/ydtg1993/papa/v4/pkg/account/onboarding"
+	ep "github.com/ydtg1993/papa/v4/pkg/executionpolicy"
 	"github.com/ydtg1993/papa/v4/pkg/governance"
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/proxy"
@@ -316,6 +317,11 @@ func TestRuntimeDrainProfileTransactionCannotBlockOtherStops(t *testing.T) {
 func TestShutdownRunRetainsDatabaseForPendingRuntimeStorage(t *testing.T) {
 	a, _ := runtimeTestApp(t)
 	a.Config.Crawler.StopTimeout = 20 * time.Millisecond
+	a.Config.Browser.Enable = true
+	if err := a.Engine.InitBrowserPool(context.Background(), ep.Browser{PoolSize: 1}); err != nil {
+		t.Fatal(err)
+	}
+	pool := a.Engine.GetBrowserPool()
 	profiles := &runtimeBlockingProfiles{Store: onboarding.NewMemoryStore(), entered: make(chan context.Context, 1), release: make(chan struct{})}
 	service, profile, _ := newRuntimeOnboarding(t, profiles)
 	if err := a.UseAccountOnboarding(service); err != nil {
@@ -346,6 +352,9 @@ func TestShutdownRunRetainsDatabaseForPendingRuntimeStorage(t *testing.T) {
 		t.Fatal("application shutdown exceeded runtime storage drain budget")
 	}
 	assertRuntimeCanceled(t, "profile persistence", saveCtx)
+	if !pool.Stats().Closed {
+		t.Fatal("runtime timeout skipped browser shutdown")
+	}
 	if err := sqlDB.Ping(); err != nil {
 		t.Fatalf("application closed the database while runtime storage remained active: %v", err)
 	}

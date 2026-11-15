@@ -17,7 +17,7 @@ type traceService struct {
 func (s *traceService) write(t *Trace, steps []core.TraceStep) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.files.Write(ctx, tracestore.Batch{TaskID: t.taskID, IdentityHash: t.identityHash, ExecutionID: t.executionID, Attempt: t.attempt, RecordedAt: time.Now(), Truncated: t.truncated, Steps: steps}); err != nil && s.logger != nil {
+	if err := s.files.Write(ctx, tracestore.Batch{Site: t.site, TaskID: t.taskID, IdentityHash: t.identityHash, ExecutionID: t.executionID, Attempt: t.attempt, RecordedAt: time.Now(), Truncated: t.truncated, Steps: steps, Snapshots: t.snapshots}); err != nil && s.logger != nil {
 		s.logger.Warnf("trace: write task %d attempt %d failed: %v", t.taskID, t.attempt, err)
 	}
 }

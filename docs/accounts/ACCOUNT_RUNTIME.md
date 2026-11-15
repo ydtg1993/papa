@@ -14,7 +14,7 @@
 | `Register(key, Config)` | 注册站点＋账号，一次注册后配置不再外部修改 |
 | `RegisterCandidate` / `PublishCandidate` / `Version` | 核验独立候选后注册或按版本更新；失败保留原状态，见 §8 |
 | `Manager.Do` / `Engine.FetchAccountHTTP` | 有限认证恢复的 HTTP 请求 |
-| `Manager.FetchHTML` / `Engine.FetchAccountHTML` | 同账号抓 HTML，不进入原始 HTML 页面归档 |
+| `Manager.FetchHTML` / `Engine.FetchAccountHTML` | 同账号抓 HTML，不进入原始 HTML/响应快照 |
 | `Manager.WithBrowser` / `Engine.WithAccountBrowser` | 恢复、检查、必要时登录，执行一次浏览器回调并保存状态 |
 | `Pause` / `Resume` / `Logout` | 停止新操作、恢复并重新检查、清除本地状态并暂停 |
 | `Status` / `Engine.AccountStatus` | 无凭据状态列表，可接业务自定义后台 |
@@ -118,7 +118,7 @@ HTTP 的 ProxyURL 固定该账号出口，空值固定直连；与 context 的�
 
 Status 给出账号键、HTTP 版本、是否暂停、是否正在认证、近期检查/登录时间、冷却截止和失败类别。`HTTPReady` / `BrowserReady` 分别表示已有通过检查且未被暂停或失败阻断的本地状态，不保证服务端此刻有效；配置能力由 `HTTPConfigured` / `BrowserConfigured` 单独表达。不会包含 Cookie、Token、Values、代理密码或回调原始错误。业务后台可用 `engine.AccountStatus()` 挂只读自定义数据接口；暂停/注销等写操作应沿用业务后台权限。
 
-认证 HTTP/HTML 入口不进入原始 HTML 页面归档，避免登录后页面凭据随失败证据落盘。需要回归材料时显式使用 WriteSample 脱敏；浏览器截图和回调自行记录的数据仍由业务控制。Failure.Error 只返回类别，Unwrap 仍可供 errors.Is/As 检查，不能把解包的原始错误直接写日志。
+认证 HTTP/HTML 入口不进入原始 HTML/响应快照，避免登录后页面凭据随失败证据落盘。需要回归材料时显式使用 WriteSample 脱敏；浏览器截图和回调自行记录的数据仍由业务控制。Failure.Error 只返回类别，Unwrap 仍可供 errors.Is/As 检查，不能把解包的原始错误直接写日志。
 
 账号运行时服务于单实例采集；验证码处理、池内账号能否互换和生产站点是否允许 Cookie 桥接由业务负责。测试使用本地 HTTP 和真实 Chromium，站点登录协议与业务规则仍需独立业务模块验收。
 

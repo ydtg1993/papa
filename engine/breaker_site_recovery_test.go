@@ -96,8 +96,8 @@ func TestSmartBreakerAllStagesDrainThenResetWithReport(t *testing.T) {
 	done()
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
 	final := expectSmartState(t, e, "recovered")
-	if e.breakerSum("synthetic") != 0 || final.WindowFailures != 3 || final.CountersResetAt.IsZero() {
-		t.Fatal("verified reset lost pre-reset report")
+	if e.breakerSum("synthetic") != 3 || final.WindowFailures != 3 || !final.CountersResetAt.IsZero() {
+		t.Fatal("verified recovery lost retained evidence")
 	}
 	repo.err = errors.New("fixture save failure")
 	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {

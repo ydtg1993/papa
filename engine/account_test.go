@@ -15,7 +15,7 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/htmlfetch"
 )
 
-func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
+func TestAccountEngineScopeTraceAndNoRawSnapshot(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer private-token" {
 			t.Error("missing auth")
@@ -23,7 +23,7 @@ func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
 		_, _ = io.WriteString(w, "<h1>private-body</h1>")
 	}))
 	defer srv.Close()
-	e, _, _ := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
+	e, _, _ := snapshotEngine(t, config.TraceAll, srv.URL)
 	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
 	m := account.NewManager(e.GetHTMLClient())
 	key := account.Key{Site: "site", ID: "alice"}
@@ -34,10 +34,8 @@ func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.SetAccountManager(m)
-	task := &Task{ID: 1, Site: "site", Stage: "detail"}
-	archive := e.newArchiveBuffer(task, 0)
 	trace := newTrace(nil, 1, 0)
-	ctx := withTrace(withArchive(context.Background(), archive), trace)
+	ctx := withTrace(context.Background(), trace)
 	if _, err := e.FetchAccountHTTP(ctx, key, htmlfetch.Request{URL: srv.URL + "?token=private-url"}); err != nil {
 		t.Fatal(err)
 	}
@@ -45,8 +43,8 @@ func TestAccountEngineScopeTraceAndNoRawArchive(t *testing.T) {
 	if err != nil || !strings.Contains(p.HTML, "private-body") {
 		t.Fatal(p, err)
 	}
-	if len(archive.pages) != 0 {
-		t.Fatal("account HTML entered raw archive")
+	if len(trace.snapshots) != 0 {
+		t.Fatal("account HTML entered raw snapshots")
 	}
 	b, _ := json.Marshal(trace.flush())
 	if strings.Contains(string(b), "private-") {

@@ -198,7 +198,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 ### 维持全局的治理与资源配置
 
 - **`error_queue` / `recover_queue` / `repeat_queue` 全局各一条**：各一段写在 `config.yaml` 里，后台各占一行；任务仍按自身 site/stage 回到对应执行池。
-- **进程级采集资源配置留在 `config.yaml`**：`archive.*`（原始 HTML 按 `{site}/{stage}/` 分层）、`trace.*` / `trace_files.*`
+- **进程级采集资源配置留在 `config.yaml`**：`trace.*` / `trace_files.*`
   （`engine/trace.go`，步骤记录本来就带站点）、`dedup_cache_size`（`engine.NewEngine`）。
   它们是**进程级资源**那类数值（驻留预算、去重预算、保留期、归档总闸），调的是"这个进程扛不扛得住"，
   而不是"这个站要怎么抓"；目前没有逐站调的真实需求，按站点拆等于把一句话摊成 N 份。
@@ -211,7 +211,7 @@ Makefile 是 POSIX 语法，需要 Git Bash 的 sh。`make` 在 MinGW 下叫 **`
 
 一句话：**跟"某个站点的抓取"有关的按站点，跟"进程/服务本身"有关的不按站点。**
 并发、间隔、重试、请求头、出口这些按站点（阶段参数 + 站点声明上那几项）；
-**归档 / trace / 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
+**Trace（步骤与快照）/ 去重预算目前有意留在全局**，停机怎么等、HTTP 服务开不开、日志写哪儿也一样
 —— 一个进程只有一份答案。要动这条边界，先问一句：这是"**这一站怎么抓**"，还是"**这个进程扛不扛得住**"。
 
 
@@ -351,3 +351,9 @@ Trace 文件存储的包依赖、状态锁和文件归属见 [Internal 分册](.
 可运行 `go test ./obs/... ./pkg/events ./pkg/incident ./internal/reportrunner ./internal/breakerstore ./internal/app ./engine`；并发边界再运行同范围 `go test -race`（Windows 需要 CGO_ENABLED=1 与 C 编译器）。关注堵塞/故障下的返回期限、队满与维度丢弃、固定 worker 数、来源 incomplete 标记，而不是将事件计数等同数据库权威任务数。在线报告和归档退出共用最长 2 秒，未完成报告不代表 Engine 未排空；真实任务/可靠恢复持久化仍用各自排空协议验收。
 
 阶段路由的不可变图归 `internal/stageflow`：仅依赖标准库，负责校验 DAG、直接边、Entry 根和最长路径层级；不依赖 Engine、不持有运行状态。`internal/sitedecl` 在注册前验证完整站点图并复制 Downstream；Engine 装配站点图与执行许可，通过语义接口约束子任务提交。
+
+### 数据库执行策略边界与验证
+
+完整 breaker 和公共浏览器容量/空闲时长属于 `pkg/executionpolicy`；`admin/configstore` 实现事务存储，Engine 实现 Target 适配，`pkg/browser` 拥有动态池状态，熔断组件拥有活动事件冻结快照，App 只组织启动/关停。旧 runtime_policy 合并优先级不适用于此数据库独占域。API 与初始化说明见 [EXECUTION_POLICY.md](../runtime/EXECUTION_POLICY.md)。
+
+OA/API 定向验证：`go test ./admin/executionpolicy ./admin/server ./admin/shell`。页面行为测试使用 Node，验证草稿冲突、操作核对和销毁代次；这些测试不代替真实浏览器进程、MySQL 事务和故障恢复验证。

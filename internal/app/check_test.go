@@ -1,56 +1,33 @@
 package app
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/config"
+	"github.com/ydtg1993/papa/v4/pkg/breakerpolicy"
 	"github.com/ydtg1993/papa/v4/pkg/loggers"
 )
 
-func TestRegisterSitesRejectsInheritedBreakerBeforePublishingBatch(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		defaults config.BreakerConfig
-		want     string
-	}{
-		{"threshold", config.BreakerConfig{Enabled: true}, "threshold 必须 > 0"},
-		{"policy", config.BreakerConfig{Policy: config.BreakerPolicy{Capacity: -1}}, "capacity"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config.Config{}
-
-			cfg.Crawler.Breaker = tc.defaults
-			e := noDBEngine(t, cfg)
-			t.Cleanup(func() { e.Stop(time.Millisecond) })
-			a := &App{Config: cfg, Engine: e}
-			// A valid first site must not be published before the later inherited
-			// breaker fails, including when both sites have stages.
-			good := SiteSpec{Key: "good", Breaker: &BreakerSpec{Enabled: true, Threshold: 9, Policy: &config.BreakerPolicy{}},
-				Stages: []StageSpec{{Fetcher: namedFetcher{name: "catalog"}, WorkerCount: 1, QueueSize: 8}}}
-			bad := SiteSpec{Key: "bad", Stages: []StageSpec{{Fetcher: namedFetcher{name: "catalog"}, WorkerCount: 1, QueueSize: 8}}}
-			var panicked any
-			func() {
-				defer func() { panicked = recover() }()
-				a.RegisterSites(good, bad)
-			}()
-			if panicked == nil || !strings.Contains(fmt.Sprint(panicked), tc.want) {
-				t.Fatalf("expected inherited breaker validation panic, got %v", panicked)
-			}
-			for _, key := range []string{"good", "bad"} {
-				if _, ok := a.Site(key); ok {
-					t.Errorf("App published %q from an invalid batch", key)
-				}
-				if _, ok := e.Site(key); ok {
-					t.Errorf("Engine published %q from an invalid batch", key)
-				}
-			}
-			if len(e.GetStageStats()) != 0 || len(e.BreakerStatuses()) != 0 {
-				t.Fatalf("invalid batch published stages or breakers: stages=%v breakers=%v", e.GetStageStats(), e.BreakerStatuses())
-			}
-		})
+func TestRegisteredSitesRejectInvalidDynamicBreakerAtomically(t *testing.T) {
+	cfg := &config.Config{}
+	e := noDBEngine(t, cfg)
+	t.Cleanup(func() { e.Stop(time.Millisecond) })
+	a := &App{Config: cfg, Engine: e, Logger: &loggers.LoggerSet{Engine: quietLogger()}}
+	a.RegisterSites(SiteSpec{Key: "good"}, SiteSpec{Key: "bad"})
+	base := config.BreakerConfig{Enabled: true, Window: time.Minute, Threshold: 10, Policy: breakerpolicy.EffectivePolicy(config.BreakerPolicy{})}
+	if err := e.ApplyBreakerPolicies(1, base, nil); err != nil {
+		t.Fatal(err)
+	}
+	invalid := base
+	invalid.Threshold = 0
+	if err := e.ApplyBreakerPolicies(2, base, map[string]config.BreakerConfig{"bad": invalid}); err == nil {
+		t.Fatal("invalid policy accepted")
+	}
+	for site, st := range e.BreakerPolicyStatuses() {
+		if st.TargetRevision != 1 {
+			t.Fatalf("partial policy publication %s: %+v", site, st)
+		}
 	}
 }
 

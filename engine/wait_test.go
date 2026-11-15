@@ -6,17 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/pkg/browser"
 )
 
 // 等待渲染失败：trace 里一条「等待渲染」失败步骤（带卡住的步骤/选择器/耗时），
-// 现场 HTML 登记进归档缓冲。
+// 现场 HTML 登记进页面快照缓冲。
 func TestRecordRenderWaitFailure(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
 	tr := newTrace(nil, 31, 0)
-	ar := e.newArchiveBuffer(&Task{ID: 31, Stage: "stub", Site: "site"}, 0)
-	ctx := withArchive(withTrace(context.Background(), tr), ar)
+	ctx := withTrace(context.Background(), tr)
 
 	const html = `<html><body><p id="captcha">安全验证</p></body></html>`
 	waitErr := &browser.WaitError{
@@ -43,23 +40,21 @@ func TestRecordRenderWaitFailure(t *testing.T) {
 	if data["elapsed_ms"] != float64(3000) {
 		t.Fatalf("elapsed_ms = %v, want 3000", data["elapsed_ms"])
 	}
-	if len(ar.pages) != 1 || ar.pages[0].html != html {
-		t.Fatalf("等待失败的现场没进归档缓冲：%+v", ar.pages)
+	if len(tr.snapshots) != 1 || string(tr.snapshots[0].Body) != html {
+		t.Fatalf("等待失败的现场没进页面快照缓冲：%+v", tr.snapshots)
 	}
 }
 
 // 导航失败（不是 WaitError）没有页面可看，不该写「等待渲染」步骤。
 func TestRecordRenderWaitFailureIgnoresOtherErrors(t *testing.T) {
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure)
 	tr := newTrace(nil, 32, 0)
-	ar := e.newArchiveBuffer(&Task{ID: 32, Stage: "stub", Site: "site"}, 0)
-	ctx := withArchive(withTrace(context.Background(), tr), ar)
+	ctx := withTrace(context.Background(), tr)
 
 	recordRenderWaitFailure(ctx, "https://site.example/", browser.PageOptions{}, errors.New("navigate: connection refused"))
 	if got := tr.flush(); len(got) != 0 {
 		t.Fatalf("导航失败不该写等待步骤：%+v", got)
 	}
-	if len(ar.pages) != 0 {
-		t.Fatalf("导航失败没有页面可归档，实得 %d 页", len(ar.pages))
+	if len(tr.snapshots) != 0 {
+		t.Fatalf("导航失败没有页面可页面快照，实得 %d 页", len(tr.snapshots))
 	}
 }

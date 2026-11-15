@@ -135,7 +135,7 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 		var claimedAt time.Time
 		var runVersion taskRunVersion
 		// panic 收尾：FetchHandler 一次尝试里 panic 会展开跳过下面整段「重试 + 落终态」。
-		// runAttempt 只负责 trace/归档（记完原样抛回），workerpool 只负责计数 —— 谁都不碰任务行，
+		// runAttempt 只负责 trace/页面快照（记完原样抛回），workerpool 只负责计数 —— 谁都不碰任务行，
 		// 于是行会永远停在 processing、错误队列与失败通知都不触发、活动任务也没清掉。
 		// 这里补上终态落库 + 失败通知 + 清活动任务，栈照旧抛回给 workerpool（见 runAttempt 的注释）。
 		defer func() {
@@ -317,14 +317,11 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 // receives Engine, but no runtime component retains it as a dependency.
 func (e *Engine) runAttempt(ctx context.Context, fetcher Fetcher, task *Task, attempt int) error {
 	executionID := evidenceExecutionID(ctx)
-	tr, ar := e.newTrace(task, attempt), e.newArchiveBuffer(task, attempt)
+	tr := e.newTrace(task, attempt)
 	if tr != nil {
 		tr.executionID = executionID
 	}
-	if ar != nil {
-		ar.executionID = executionID
-	}
-	session := attemptExecution{task: task, attempt: attempt, trace: tr, archive: ar, headers: e.siteHeaders(task.Site), resources: &e.fetchResources,
+	session := attemptExecution{task: task, attempt: attempt, trace: tr, headers: e.siteHeaders(task.Site), resources: &e.fetchResources,
 		persistence: attemptPersistence{db: e.db, state: &e.execution, breakers: &e.breakers, logger: e.loggerSet.Engine}}
 	return session.run(ctx, func(ctx context.Context) error {
 		bound, finish := e.bindTaskExecution(ctx, task)

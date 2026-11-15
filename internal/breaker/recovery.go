@@ -7,6 +7,8 @@ const MaxRecoveryStages = 128
 // Recovery is control data. Display truncation and redaction must never change
 // its identities, coverage or admission state. All access is owned by Engine's lock.
 type Recovery struct {
+	PolicyRevision                                                      uint64
+	FrozenPolicy                                                        Config
 	Version                                                             int // recovery format; zero predates serial sample validation
 	ID, Site, Stage                                                     string
 	State                                                               string

@@ -23,7 +23,7 @@ func TestFetchHTTPTraceExcludesCredentialsAndBody(t *testing.T) {
 		_, _ = io.WriteString(w, "secret-body")
 	}))
 	defer srv.Close()
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := snapshotEngine(t, config.TraceErrors, srv.URL)
 	e.fetchResources.SetHTML(htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}}))
 	trace := newTrace(nil, 1, 0)
 	r, err := e.FetchHTTP(withTrace(context.Background(), trace), htmlfetch.Request{URL: srv.URL + "?token=secret-url", Headers: map[string]string{"Authorization": "secret-header"}})

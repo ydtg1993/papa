@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/ydtg1993/papa/v4/admin/executionpolicy"
 	"github.com/ydtg1993/papa/v4/admin/queues"
 	"github.com/ydtg1993/papa/v4/admin/sysinfo"
 	"github.com/ydtg1993/papa/v4/admin/taskflow"
@@ -26,9 +27,11 @@ type TaskFlowActionEvent = taskflow.TaskFlowActionEvent
 
 // MonitorConfig 监控服务配置
 type MonitorConfig struct {
-	OnTaskFlowAction func(TaskFlowActionEvent)
-	TaskFlow         func(context.Context, string) (engine.TaskFlowView, error)
-	UpdateTaskFlow   func(context.Context, string, uint64, engine.FlowPolicy) error
+	ExecutionPolicy          executionpolicy.Service
+	AuthorizeExecutionPolicy func(*http.Request, string) error
+	OnTaskFlowAction         func(TaskFlowActionEvent)
+	TaskFlow                 func(context.Context, string) (engine.TaskFlowView, error)
+	UpdateTaskFlow           func(context.Context, string, uint64, engine.FlowPolicy) error
 	// VerifyToken 校验访问令牌，返回（操作人, 是否通过）；为 nil 时拒绝访问。
 	// 由宿主注入（papa 用 admin/auth 的库表实现），本包不认识令牌怎么存 ——
 	// 这样这段安全关键逻辑可以用桩离线测，包也不必依赖 gorm。
@@ -46,10 +49,9 @@ type MonitorConfig struct {
 	// ReportDir obs 报告根目录（`obs.report.dir`；可空 = 没开报告）。后台「obs报告」页据此列出
 	// 历史运行目录并读取四份产物（report.md / report.json / ai-brief.md / ai-brief.json）。
 	ReportDir string
-	// ArchiveDir 页面归档根目录（可空 = 归档没开）。后台「追踪」抽屉里那条"归档页面"步骤
-	// 据此提供**下载**：`GET /api/task/page?file=<相对路径>`（原始 HTML，拿去本地分析）。
-	ArchiveDir string
-	OnShutdown func() // 优雅退出回调
+	// TaskTraceSnapshot retrieves a trace snapshot by opaque token; nil disables downloads.
+	TaskTraceSnapshot func(context.Context, string) ([]byte, error)
+	OnShutdown        func() // 优雅退出回调
 	// ProcessErrorQueue 错误队列手动触发回调（可空）：全局一条，无站点参数。
 	ProcessErrorQueue func() (int, error)
 	// ProcessRepeatQueue 周期轮询队列手动触发回调（可空）：全局一条，无站点参数。

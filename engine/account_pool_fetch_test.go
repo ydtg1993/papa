@@ -33,7 +33,7 @@ func TestAccountPoolStandardHTTPHelpersKeepIdentityAndCacheScope(t *testing.T) {
 		fmt.Fprint(w, "<h1>"+token+"</h1>")
 	}))
 	defer srv.Close()
-	e, _, _ := archiveEngine(t, config.ArchiveModeAlways, srv.URL)
+	e, _, _ := snapshotEngine(t, config.TraceAll, srv.URL)
 	client := htmlfetch.NewClient(htmlfetch.Config{Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
 	m := account.NewManager(client)
 	for _, id := range []string{"a", "b"} {
@@ -58,8 +58,8 @@ func TestAccountPoolStandardHTTPHelpersKeepIdentityAndCacheScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ar := e.newArchiveBuffer(&Task{ID: 1, Site: "s", Stage: "detail"}, 0)
-	ctx := account.WithAttempt(withArchive(deadline, ar), a)
+	tr := e.newTrace(&Task{ID: 1, Site: "s", Stage: "detail"}, 0)
+	ctx := account.WithAttempt(withTrace(deadline, tr), a)
 	page, err := e.FetchHTML(ctx, srv.URL)
 	if err != nil || !strings.Contains(page.HTML, "<h1>a</h1>") {
 		t.Fatalf("page=%v err=%v", page, err)
@@ -67,8 +67,8 @@ func TestAccountPoolStandardHTTPHelpersKeepIdentityAndCacheScope(t *testing.T) {
 	if _, err = e.FetchHTTP(ctx, htmlfetch.Request{URL: srv.URL}); err != nil {
 		t.Fatal(err)
 	}
-	if len(ar.pages) != 0 {
-		t.Fatal("bound account HTML entered raw archive")
+	if len(tr.snapshots) != 0 {
+		t.Fatal("bound account HTML entered raw snapshots")
 	}
 	first, err := e.FetchIncremental(ctx, srv.URL, nil)
 	if err != nil {

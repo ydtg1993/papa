@@ -184,7 +184,7 @@ func printUpgradePlan(p *upgradePlan) {
 
 	fmt.Printf("\n【要你自己看（框架不碰业务文件）】\n")
 	for _, line := range []string{
-		"config.yaml：三个治理队列（error_queue / recover_queue / repeat_queue）仍是全局段，缺省=那条队列不跑",
+		"config.yaml：三个治理队列仍是全局段；breaker 与浏览器容量/空闲时间已迁至数据库 execution_policy，删除旧 YAML 并显式初始化",
 		"go.mod：框架版本。还没发布时，用 `replace github.com/ydtg1993/papa/v4 => <本地 papa 仓库>` 先跑起来",
 		"main.go / internal/monitor/ / internal/models/ / internal/fetcher/：模板未动的不必改",
 		"升级后跑一次 `go build ./...` 与 `papa migrate`，再起服务确认",

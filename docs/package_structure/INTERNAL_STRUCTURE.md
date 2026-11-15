@@ -41,7 +41,7 @@ internal/
 | `internal/breaker` | 4 / 4 | `Detector.Observe/Snapshot/Checkpoint/Restore`，见[检测](#breaker) |
 | `internal/breakerstore` | 3 / 4 | `Store.Save/LoadRuntime/List/HistoryForWindow`，见[熔断存储](#breakerstore) |
 | `internal/database` | 5 / 7 | `NewDB`、`Migrate`、`Upsert`、schema 查询，见[数据库](#database) |
-| `internal/tracestore` | 4 / 1 | `New/Write/List/Cleanup`，见 [Trace 文件存储](#tracestore) |
+| `internal/tracestore` | 6 / 3 | `New/Write/List/Snapshot/Cleanup`，见 [Trace 文件存储](#tracestore) |
 | `internal/taskstore` | 3 / 2 | `Claim/Complete/Release/RetryTask/RetryFailed/AdvanceRepeat`，见[任务存储](#taskstore) |
 | `internal/gormfake` | 1 / 0 | `New`、`Open`、`MustOpen`、`Set*`，见[测试假库](#gormfake) |
 | `internal/workerpool` | 3 / 2 | `NewWorkerPool`、`Start`、`Submit/SubmitUrgent`、`Stop`，见[执行池](#workerpool) |
@@ -140,14 +140,14 @@ admin/*/                        # 功能 HTTP、页面资源、默认描述和�
 
 #### 2.3.3 声明规划与 Engine 落地
 
-`spec.go` 保留 SiteSpec/StageSpec/BreakerSpec/RetrySpec 别名，以及 RegisterSite/Sites/CheckSites/DescribeDownloadOverlays 入口。`App.RegisterSites` 先完成整批校验与规划，再登记到 Engine；`applyStagePlan` 只应用计划与记录日志。`App.Site` 委派 `Engine.Site`，Engine 的 siteCatalog 是已登记站点的唯一来源。
+`spec.go` 保留 SiteSpec/StageSpec/RetrySpec 别名，以及 RegisterSite/Sites/CheckSites/DescribeDownloadOverlays 入口。`App.RegisterSites` 先完成整批校验与规划，再登记到 Engine；`applyStagePlan` 只应用计划与记录日志。`App.Site` 委派 `Engine.Site`，Engine 的 siteCatalog 是已登记站点的唯一来源。
 
 | `internal/sitedecl` 文件 | 职责与快照边界 |
 | --- | --- |
 | `doc.go` | 声明包定位及允许依赖 |
-| `types.go` | 声明类型、站点快照、熔断默认值/覆盖转换；站点 Headers 和 RestrictedKeywords 在转换时复制 |
+| `types.go` | 声明类型、站点快照、站点声明转换；站点 Headers 和 RestrictedKeywords 在转换时复制 |
 | `registry.go` | 进程登记表及顺序；写入和 `Sites()` 返回时复制框架拥有的嵌套值 |
-| `plan.go` | 批量校验、阶段默认值、重试/延迟、最终有效熔断配置及入口选择；计划和每次入口回调各持独立快照 |
+| `plan.go` | 批量校验、阶段默认值、重试/延迟、入口选择；计划和每次入口回调各持独立快照 |
 | `overlay.go` | 下载器覆盖项的离线描述与自查 |
 
 复制范围包含 Headers、RestrictedKeywords、Breaker/Policy、Stages，以及站点/阶段下载覆盖中的标量指针。M3U8/FileDown 的复制由各自 Overlay.Clone 统一提供，Engine 的下载覆盖登记复用它们。Fetcher 是有自身身份与生命周期的业务对象，继续共享，不做反射深拷贝。
@@ -284,9 +284,9 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 | 文件 | 职责、入口与边界 |
 | --- | --- |
 | `doc.go` | 定义声明包定位及不依赖 App、HTTP、admin 的约束 |
-| `types.go` | `SiteSpec`、`StageSpec`、`BreakerSpec`、`RetrySpec`；转换 `core.Site`、合并全局/站点熔断配置；站点 Headers 和 RestrictedKeywords 独立复制 |
+| `types.go` | `SiteSpec`、`StageSpec`、`RetrySpec`；转换 `core.Site`、站点 Headers 和 RestrictedKeywords 独立复制 |
 | `registry.go` | `RegisterSite` / `Sites` 的进程登记表、登记顺序、站点键校验；`cloneSpec` 复制框架拥有的嵌套值 |
-| `plan.go` | `CheckSites` / `PlanSites` 共用批量校验与推导；检查站点/阶段键、worker/队列尺寸、轮询限制、只读覆盖、Delay/Backoff、最终有效熔断配置；选择入口回调并输出启动提示 |
+| `plan.go` | `CheckSites` / `PlanSites` 共用批量校验与推导；检查站点/阶段键、worker/队列尺寸、轮询限制、只读覆盖、Delay/Backoff；选择入口回调并输出启动提示 |
 | `overlay.go` | `DescribeDownloadOverlays` 只描述站点/阶段显式写过的下载覆盖，不创建下载器或执行请求 |
 
 `registeredMu` 只保护进程登记表与返回副本；`RegisterSite` 按调用顺序追加冻结值，`Sites` 再复制返回。运行计划不修改登记表。复制覆盖 Headers、RestrictedKeywords、Breaker/Policy、Stages、M3U8/FileDown 覆盖中的标量指针；下载覆盖复用各自 `Overlay.Clone`，Fetcher 保持同一个业务对象。
@@ -295,7 +295,7 @@ App 主动关闭共享 DB/浏览器的条件是 HTTP（含重载）、业务钩�
 
 依赖包括 `config`、`core`、`internal/breaker`、下载覆盖包和 `engine` 的 `Fetcher`、`StageConfig`、`SiteDownloads`、`EntrySubmitter` 协议。阶段唯一键是 `site:stage`；`Entry` 只控制启动入口，整站暂停由 `StartPaused` 表达，不让声明规划承担运行暂停状态。登记和规划不启动后台循环，无独立 Stop；登记扩展在应用运行前完成。
 
-测试归属：`registry_test.go` 验证登记顺序与嵌套副本；`plan_test.go` 验证参数、默认值、站点内阶段唯一性、入口政策和回调隔离；`check_test.go` 验证错误汇总、继承后熔断参数与覆盖描述；`spec_test.go` 验证轮询/只读覆盖声明和熔断继承转换；`helpers_test.go` 提供合成 Fetcher。代表回归为 `TestRegistryOwnsNestedDeclarations`、`TestEntryCallbacksReceiveFreshIndependentSnapshots`、`TestCheckSitesValidatesEffectiveInheritedBreaker`。落地顺序由 App 的集成测试继续验证。
+测试归属：`registry_test.go` 验证登记顺序与嵌套副本；`plan_test.go` 验证参数、默认值、站点内阶段唯一性、入口政策和回调隔离；`check_test.go` 验证错误汇总、站点参数与覆盖描述；`spec_test.go` 验证轮询/只读覆盖声明；`helpers_test.go` 提供合成 Fetcher。代表回归为 `TestRegistryOwnsNestedDeclarations`、`TestEntryCallbacksReceiveFreshIndependentSnapshots`。落地顺序由 App 的集成测试继续验证。
 
 ## 4. 运行服务
 
@@ -481,13 +481,15 @@ QueryContext 仅区分 count 和固定行，不解析 WHERE；ExecContext 返回
 | --- | --- |
 | `store.go` | Options/Batch、版本化记录、Store 状态与可取消串行门、根目录约束 |
 | `files.go` | 首次有限目录盘点、容量核算、暂存/同步/关闭/重命名发布、受限读取与格式验证 |
+| `layout.go` | 站点键安全校验、当前路径识别与记录路径一致性校验 |
+| `snapshots.go` | 有界快照编码、路径散列令牌与原始内容读取 |
 | `read.go` | 持久发布顺序选择最新执行、合并尝试、末 500 步截断 |
 | `cleanup.go` | 按记录时间清理，逐文件释放串行门；汇总损坏错误并继续清理其它记录 |
 | `store_test.go` | 发布、取消、配额、重启顺序、损坏、清理和路径边界回归 |
 
 仅依赖标准库及 core Trace 值类型，不依赖 Engine/App/GORM。Store 独占专用目录，拥有文件索引、总字节数及发布序号；它的串行门协调写入/查询/清理，不持有 Engine 调度锁。首次盘点仅扫描文件名和尺寸，后续写入不重新扫盘；实际步骤按文件大小限制读取。
 
-路径为分片/task-ID/identity-hash/execution-digest/发布序号.json。标准 identity_hash 直接作为目录名；非标准标识散列后使用。版本化 JSON 保存原执行 UUID、任务身份、尝试号、记录时间和截断状态。任务 ID 查询不依赖数据库或第二套索引。崩溃遗留 `.pending` 不展示，保守保留并计入预算；不自动递归删除未知目录。
+新记录使用 v2 格式，路径为 `<site>/task-<id>/<execution-digest>-<20位发布序号>.json`。不支持旧目录、v1 记录或旧快照令牌，不提供迁移与兼容分支。版本化 JSON 保存站点、原执行 UUID、任务身份、尝试号、记录时间和截断状态。任务 ID 查询不依赖数据库或第二套索引。崩溃遗留 `.pending` 不展示，保守保留并计入预算；不自动递归删除未知目录。
 
 App 只装配 Engine 查询回调。常规 FrameworkModels/Migrate/启动探测均排除 Trace；旧 TaskTrace 模型及 CheckTraceSchema 声明已经删除。
 
@@ -552,3 +554,5 @@ Engine 与 filedown/M3U8 各自的 `retry_backoff.go` 拥有基数、指数编�
 `internal/stageflow/graph.go` 只依赖标准库，拥有站点阶段图的不可变快照。`Compile` 拒绝未知节点、重复边、自环、环和有入边的 Entry；`Allows` 仅查询直接声明边，`Root` 查询入口根，`Level` 返回从零入度阶段开始的最长路径层级。它不持有任务、数据库、执行上下文或 Engine；声明规划和 Engine 注册共同调用同一校验器。
 
 `graph_test.go` 覆盖非法图拒绝、非传递路由、层级与输入快照；`internal/sitedecl/stageflow_test.go` 覆盖声明图校验和 Downstream 快照。
+
+执行策略 CAS、幂等与发布属于公开 `pkg/executionpolicy`，App 仅注入存储及 Engine target；其数据库唯一来源规则不使用 internal/runtimecontrol 的旧覆盖合并。

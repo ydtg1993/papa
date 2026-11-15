@@ -237,7 +237,6 @@ func (e *Engine) ApplyRegisterStage() {
 	// 启动步骤追踪的保留期清理（追踪未开启时不启动）
 	e.startTraceCleanup()
 	// 启动页面归档的保留期清理（归档未开启时不启动）
-	e.startArchiveCleanup()
 	// HTTP 服务开启时低频采样三队列积压（COUNT 查询，不进监控页请求路径）
 	if e.cfg.Server.Enabled {
 		e.startQueueSampler()

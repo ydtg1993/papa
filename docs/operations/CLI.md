@@ -31,7 +31,9 @@ go install ./cmd/papa
 | `papa diff <url> [flags]` | 同一 URL 分别用 html 与 rod 抓取并对比 |
 | `papa select <css> <url\|文件> [flags]` | 选择器测试（URL 抓取后查，或本地 html 文件离线查） |
 | `papa migrate [-c <配置路径>]` | 建/补表。在业务项目目录里跑会转交项目自己的迁移（`go run . -migrate`，连业务模型一起建），其余情况只建框架自带的表。详见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 第 2 节 |
-| `papa check [目录] [--boot] [-c <配置路径>]` | 默认离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、启用的治理队列缺项、熔断阈值、`Delay` 与 `Backoff` 写法；`--boot` 另连库验证注册装配 |
+| `go run . -migrate-breaker-policy <旧有效策略.json> -confirmed-policy-revision N` | schema 迁移后显式给旧活动事件绑定经确认的正版本及完整策略快照，不重置事件或预算 |
+| `go run . -init-policy configs/execution-policy.json` | 标准业务入口显式初始化第一版数据库执行策略；先 migrate，再审核文档并初始化，最后普通启动。已有配置不覆盖 |
+| `papa check [目录] [--boot] [-c <配置路径>]` | 默认离线校验全局配置及站点/阶段声明（**不用起库**）：阶段名重复、启用的治理队列缺项、`Delay` 与 `Backoff` 写法；`--boot` 另连库验证注册装配 |
 | `papa upgrade [目录] [--write]` | 刷新已有 v4 项目的框架文档和技能：刷新框架副本（`docs/framework/` 与 `.claude/skills/` 里的通用文件）+ 几项不用起库的检查。默认只报告，`--write` 才落盘；业务文件一律不碰 |
 | `papa token add --operator <名字> [--note "..."] [-c <配置路径>]` | 首次部署或无可用令牌时在服务器本机创建凭据（明文只打印一次；管理 API 默认拒绝匿名），详见 [MONITOR.md](MONITOR.md) 第 1 节 |
 | `papa report generate [-c <配置路径>] [--since/--until] [--run] [--snapshot 或 --acceptance] [--out] [--no-logs] [--fail-on-verdict]` | **只读**生成运行报告（`report.md`、`report.json`、`ai-brief.md`、`ai-brief.json`）：默认运行快照，按本地日历日拆分有事件的每天；`--acceptance` 显式验收，`--snapshot` 只生成最后一天，两者互斥且优先于配置；无时间/run 筛选时生成后按 `obs.report.retention` 清理过期目录；显式筛选不清理。业务段由业务自己的离线 obs.Generate 命令提供，papa CLI 只有框架通用段 |
@@ -54,7 +56,7 @@ mycrawler/
     fetcher/               抓取与入口提交
     models/models.go       业务模型与迁移清单
     monitor/               tables、router、middleware、controller、view
-  configs/                 config.yaml（本机）、config.yaml.example（范本）
+  configs/                 config.yaml（本机）、config.yaml.example（范本）、execution-policy.json（显式初始化输入）
   deploy/docker/           Dockerfile、docker-compose.yml
   docs/
     README.md              应用文档导航（项目所有）
@@ -76,6 +78,8 @@ mycrawler/
 后台自定义页模板 `internal/monitor/view/view.go` 显式演示 `Page.Section: "data"`。可按业务改为 flow/monitor/system；不填写仍回退数据与资源，Group 只在类内分组。`upgrade` 不改已有业务注册。
 
 框架目录说明书见 [package_structure/README.md](../package_structure/README.md)，包含根目录、Admin、Engine、Internal、Pkg、Obs、Cmd 分册；App 职责并入 Internal。新建与升级保留主题目录和说明书相对路径；`history/` 不分发。升级不会删除项目自行保留的文件，包括旧路径的框架副本；项目维护者核对后自行处理旧副本，当前导航只链接新路径。
+
+初始化和升级执行策略见 [EXECUTION_POLICY.md](../runtime/EXECUTION_POLICY.md)。初始化 JSON 只写数据库，不作为每次启动的 fallback；`papa check` 离线检查不能代替数据库文档及活动事件快照的启动检查。
 
 几句要点：
 

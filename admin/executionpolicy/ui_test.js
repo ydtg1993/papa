@@ -1,0 +1,35 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+function element(tag){return {tag,children:[],dataset:{},classList:{add(){}},setAttribute(){},append(...n){this.children.push(...n)},replaceChildren(...n){this.children=n},querySelectorAll(selector){let all=[];function walk(n){for(const c of n.children||[]){if(selector.split(',').includes(c.tag))all.push(c);walk(c)}}walk(this);return all}}}
+let mount,interval,cleared=false,requests=[],queue=[];
+const api=async(url,options)=>{requests.push({url,options});return await new Promise(resolve=>queue.push(resolve));};
+const win={crypto:{randomUUID:()=> 'operation-123'},confirm:()=>true,addEventListener(){},removeEventListener(){},setInterval(fn){interval=fn;return 1},clearInterval(){cleared=true}};
+const deps={document:{createElement:element},window:win,apiRequest:api,Papa:{settings(key,label,fn){mount=fn}}};
+vm.runInNewContext(fs.readFileSync(process.argv[2],'utf8'),{MonitorShell:{define(n,m,d,f){f(deps)},install(){}}});
+const root=element('div'),hooks=mount(root),flush=()=>new Promise(setImmediate),respond=(status,v)=>queue.shift()({ok:status<400,status,json:async()=>v});
+const document={schema_version:1,browser:{pool_size:3,direct_pool_size:1,max_idle_time:'5m'},breaker:{defaults:{enabled:true,window:'5m',threshold:50,policy:{}},sites:{}}};
+const view=revision=>({document,revision,applied_revision:revision,status:'applied',sites:['synthetic'],runtime:{}});
+const text=()=>{let out=[];function walk(n){out.push(n.textContent||'');(n.children||[]).forEach(walk)}walk(root);return out.join('\n')};
+const button=label=>root.querySelectorAll('button').find(b=>b.textContent===label);
+(async()=>{
+ respond(200,{...view(1),runtime:{breakers:{synthetic:{target_revision:8,effective_revision:5,incident_policy_revision:5},missing:{},zero:{target_revision:0,effective_revision:0}}}});await flush();
+ assert.match(text(),/synthetic：目标版本 8 \/ 生效版本 5 \/ 事件版本 5/);
+ assert.match(text(),/missing：目标版本 — \/ 生效版本 — \/ 事件版本 无活动事件/,'missing site target must not inherit the document revision');
+ assert.match(text(),/zero：目标版本 0 \/ 生效版本 0/,'zero revisions must remain visible');
+ assert.equal(root.querySelectorAll('input').length,19,'browser three fields + breaker 15 + reason');
+ let pool=root.querySelectorAll('input').find(i=>i.value===3);pool.value='6';pool.oninput();
+ interval();respond(200,view(2));await flush();
+ button('保存并应用').onclick();assert(button('保存并应用').disabled);assert.equal(JSON.parse(requests.at(-1).options.body).expected_revision,1,'polling must not silently rebase a draft');
+ respond(409,{error:'conflict',latest:view(2)});await flush();assert.equal(pool.value,'6');assert.match(text(),/草稿已保留/);
+ button('与最新版本对比').onclick();button('保存并应用').onclick();assert.equal(JSON.parse(requests.at(-1).options.body).expected_revision,2);
+ const originalRequest=requests.at(-1);
+ respond(503,{error:'timeout'});await flush();assert(button('保存并应用').disabled);assert(!button('核对操作结果').hidden);
+ button('核对操作结果').onclick();assert.match(requests.at(-1).url,/operations\/operation-123$/);respond(404,{error:'unknown'});await flush();assert(button('保存并应用').disabled);assert.match(text(),/不能认定保存失败/);
+ button('核对操作结果').onclick();respond(200,{operation_id:'operation-123',revision:3,status:'saved'});await flush();assert(button('保存并应用').disabled);assert(!button('重试应用已保存操作').hidden);assert.equal(pool.value,'6','saved-but-unapplied operation retains draft');
+ button('重试应用已保存操作').onclick();assert.equal(requests.at(-1).options.body,originalRequest.options.body,'retry must preserve operation ID, CAS and exact document');respond(200,view(3));await flush();respond(200,{operation_id:'operation-123',revision:3,status:'applied'});await flush();respond(503,{error:'read failed'});await flush();assert(button('保存并应用').disabled,'failed read cannot discard submission lock');
+ button('核对操作结果').onclick();respond(200,{operation_id:'operation-123',revision:3,status:'applied'});await flush();respond(200,view(3));await flush();assert.match(text(),/保存版本 3/);
+ button('历史与回滚').onclick();respond(200,[{revision:1,document,operator:'admin',created_at:'now',reason:'initial'}]);await flush();
+ interval();respond(200,{...view(3),status:'pending'});await flush();assert(button('回滚为新版本').disabled,'pending runtime must lock historical writes');
+ interval();respond(200,view(4));await flush();button('回滚为新版本').onclick();assert.equal(JSON.parse(requests.at(-1).options.body).expected_revision,3,'rollback uses reviewed base revision');respond(409,{error:'conflict',latest:view(4)});await flush();
+ interval();hooks.destroy();assert(cleared);respond(200,view(99));await flush();assert.doesNotMatch(text(),/保存版本 99/);
+ console.log('execution policy UI: structured fields, conflict draft, CAS rebase, uncertain operation reconciliation and stale-request cleanup passed');
+})().catch(e=>{console.error(e);process.exitCode=1});

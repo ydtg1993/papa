@@ -98,7 +98,7 @@ func (d *Detector) Observe(o Outcome) Decision {
 	if o.At.IsZero() {
 		o.At = time.Now()
 	}
-	if !d.cfg.Enabled || o.Epoch != d.epoch {
+	if o.Epoch != d.epoch {
 		return d.snapshot(d.last)
 	}
 	if o.At.After(d.last) {
@@ -198,9 +198,6 @@ func (d *Detector) prune(now time.Time) {
 
 func (d *Detector) snapshot(now time.Time) Decision {
 	out := Decision{Epoch: d.epoch, Limited: d.successLimited, Groups: []Group{}}
-	if !d.cfg.Enabled {
-		return out
-	}
 	short, regular := now.Add(-d.policy.ShortWindow), now.Add(-d.cfg.Window)
 	type aggregate struct {
 		g     Group
@@ -246,6 +243,9 @@ func (d *Detector) snapshot(now time.Time) Decision {
 		}
 		return a.Fingerprint < b.Fingerprint
 	})
+	if !d.cfg.Enabled {
+		return out
+	}
 	if now.Before(d.overflowUntil) {
 		out.Rule = "capacity"
 		out.Limited = true

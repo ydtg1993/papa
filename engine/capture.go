@@ -16,7 +16,7 @@ const captureTraceStep = "捕获网络请求"
 //
 // 与直接调 pkg/browser 的差别（业务应优先用这个）：
 //
-//  1. 失败时把那一刻的页面 HTML 登记进归档（尝试结束时由「归档页面」步骤落盘，
+//  1. 失败时把那一刻的页面 HTML 登记进快照（尝试结束时由「页面快照」步骤落盘，
 //     OA 抽屉可直接下载）—— 浏览器层已经把 HTML 读进 CaptureResult.HTML，这里只转交；
 //  2. 往本次尝试的 Trace 写结构化步骤：成功一条「捕获网络请求」，失败一条带
 //     candidates / timeout 的失败步骤（见 docs 的 trace 约定表）；
@@ -26,7 +26,7 @@ const captureTraceStep = "捕获网络请求"
 // 显式 opts.Page.Headers 优先。与 FetchRendered 一致，逐请求代理地址
 // （papa.WithProxyURL）在这里直接报错 —— Chrome 不支持逐请求改路由。
 //
-// trace 与归档都从 ctx 取（runAttempt 用 withTrace / withArchive 挂上）——
+// 步骤与页面快照从同一个 Trace 获取（runAttempt 用 withTrace 挂上）——
 // 未开启时取出来的是 nil，方法照常干活、只少留痕。
 func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browser.CaptureOptions) (*browser.CapturedRequest, error) {
 	if a, ok := account.AttemptFromContext(ctx); ok {
@@ -61,6 +61,7 @@ func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browse
 	opts.Page = mergeBrowserOptions(ctx, opts.Page)
 
 	var res *browser.CaptureResult
+	opts.IncludeHTML = traceFromCtx(ctx) != nil
 	err := e.GetBrowserPool().WithBrowser(ctx, func(b *browser.Browser) error {
 		var cerr error
 		res, cerr = b.CaptureRequest(ctx, pageURL, opts)
@@ -77,13 +78,12 @@ func (e *Engine) CaptureRequest(ctx context.Context, pageURL string, opts browse
 	return res.Request, nil
 }
 
-// recordCapture 把一次捕获的结果写进 trace 与归档缓冲。两部分都是可选的：
-// trace 未开启时 traceFromCtx 返回 nil（方法 no-op），归档未开启时 buffer 为 nil（方法 no-op）。
+// recordCapture 把一次捕获的结果写进 trace 缓冲。
+// trace 未开启时 traceFromCtx 返回 nil，步骤与快照方法均为 no-op。
 func (e *Engine) recordCapture(ctx context.Context, pageURL string, res *browser.CaptureResult, err error) {
-	// 失败现场：页面 HTML 交给归档，尝试结束时按结局落盘。
-	// 成功路径没有 HTML（命中即返回），这一段自然跳过。
+	// 已有页面 HTML 交给 Trace，尝试结束时统一按 mode 保留或丢弃。
 	if res != nil && res.HTML != "" {
-		archiveFromCtx(ctx).holdRendered(res.HTML, pageURL)
+		traceFromCtx(ctx).holdRendered(res.HTML, pageURL)
 	}
 
 	if err == nil && res != nil && res.Request != nil {

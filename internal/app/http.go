@@ -82,6 +82,8 @@ func (a *App) httpServer(ctx context.Context) {
 	}
 
 	mon := server.NewMonitor(getter, a.Logger.Sys, server.MonitorConfig{
+		ExecutionPolicy:          a.executionPolicy,
+		AuthorizeExecutionPolicy: a.executionPolicyAuthorize,
 		OnTaskFlowAction: func(ev server.TaskFlowActionEvent) {
 			if rec != nil {
 				rec.RecordEvent(ev.OperationLog())
@@ -108,7 +110,7 @@ func (a *App) httpServer(ctx context.Context) {
 		LogDir:     a.Config.Log.Dir,
 		// obs 报告目录：「obs报告」页列这里的历史运行报告（papa report / 退出自动报告写同一目录）。
 		ReportDir:          a.Config.Obs.Report.Dir,
-		ArchiveDir:         a.Engine.ArchiveDir(),
+		TaskTraceSnapshot:  a.Engine.TraceSnapshot,
 		OnShutdown:         a.Shutdown,
 		ProcessErrorQueue:  a.Engine.ProcessErrorQueue,
 		ProcessRepeatQueue: a.Engine.RepollRepeatableTasks,

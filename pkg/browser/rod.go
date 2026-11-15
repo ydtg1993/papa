@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/devices"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/ydtg1993/papa/v4/pkg/browser/identity"
 	"github.com/ydtg1993/papa/v4/pkg/egress"
@@ -20,8 +19,8 @@ import (
 // Browser 封装一个 rod实例
 type Browser struct {
 	gateway           *egress.Proxy
-	Browser           *rod.Browser       // rod 浏览器对象
-	launcher          *launcher.Launcher // 启动器，用于关闭
+	Browser           *rod.Browser    // rod 浏览器对象
+	launcher          browserLauncher // 启动器，用于关闭
 	diagnosticProcess *diagnosticProcess
 	useProxy          bool      // 是否走代理（false 为强制直连）
 	useCount          int64     // 已使用次数（原子操作）
@@ -67,22 +66,40 @@ func (b *Browser) Close() {
 	if b.closed.Swap(true) {
 		return
 	}
+	cleanupPending := false
 	if b.pool != nil {
-		b.pool.unregisterInstance(b)
+		b.pool.markClosing(b)
+		defer func() {
+			if !cleanupPending {
+				b.pool.unregisterInstance(b)
+			}
+		}()
 	}
 	b.releaseBorrow()
 	if b.gateway != nil {
 		b.gateway.Close()
 	}
 	if b.diagnosticProcess != nil {
-		b.diagnosticProcess.close()
+		if err := b.diagnosticProcess.close(); err != nil {
+			log.Printf("browser: diagnostic cleanup incomplete: %v", err)
+			if b.pool != nil && b.diagnosticProcess.done != nil {
+				select {
+				case <-b.diagnosticProcess.done:
+				default:
+					cleanupPending = true
+					go func() { <-b.diagnosticProcess.done; b.pool.unregisterInstance(b) }()
+				}
+			}
+		}
 		return
 	}
 	if b.launcher != nil {
 		b.launcher.Kill()
 	}
 	if b.Browser != nil {
-		_ = b.Browser.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), browserCleanupTimeout)
+		defer cancel()
+		_ = b.Browser.Context(ctx).Close()
 	}
 	if b.launcher == nil {
 		return
@@ -99,6 +116,10 @@ func (b *Browser) Close() {
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		if b.pool != nil {
+			cleanupPending = true
+			go func() { <-done; b.pool.unregisterInstance(b) }()
+		}
 		log.Printf("browser: launcher cleanup still running after %v, giving up waiting（进程可能仍在，PID 拿不到时 Kill 是空操作）", timeout)
 	}
 }
@@ -133,6 +154,17 @@ func (b *Browser) GetLastUsed() time.Time {
 
 // IsAlive 检查浏览器是否可用
 func (b *Browser) IsAlive() bool {
+	return b.IsAliveContext(context.Background())
+}
+
+// IsAliveContext bounds a health check without changing the reusable client's
+// lifetime. Return paths without a task context still have a finite deadline.
+func (b *Browser) IsAliveContext(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, browserCleanupTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		return false
+	}
 	if b.closed.Load() {
 		return false
 	}
@@ -142,7 +174,7 @@ func (b *Browser) IsAlive() bool {
 	if b.Browser == nil {
 		return false
 	}
-	_, err := proto.TargetGetTargets{}.Call(b.Browser)
+	_, err := proto.TargetGetTargets{}.Call(b.Browser.Context(ctx))
 	return err == nil
 }
 

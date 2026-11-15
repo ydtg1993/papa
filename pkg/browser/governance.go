@@ -13,18 +13,35 @@ import (
 	"github.com/ydtg1993/papa/v4/pkg/governance"
 )
 
+var errPolicyChanged = fmt.Errorf("browser pool policy changed")
+
 // Physical capacity has already been reserved when this is called. Thus a full
 // account-specific pool cannot hold global browser capacity while it queues.
-func (p *Pool) acquireBrowserPermit(ctx context.Context) (func(), error) {
+func (p *Pool) acquireBrowserPermit(ctx context.Context, useProxy bool) (func(), error) {
 	c, site := governance.FromContext(ctx), governance.SiteFromContext(ctx)
 	if c == nil || site == "" {
 		return func() {}, nil
 	}
 	p.mu.Lock()
+	_, alive, _, _, target := p.classLocked(useProxy)
+	// A resize may have happened after the physical reservation but before
+	// this waiter subscribed to policy cancellation. Recheck under that same
+	// lock so a disabled/overfull pool cannot wait on a fresh policy context.
+	if target == 0 || int(alive.Load()) > target {
+		p.mu.Unlock()
+		return nil, errPolicyChanged
+	}
 	if p.admissionCtx == nil {
 		p.admissionCtx, p.admissionCancel = context.WithCancel(context.Background())
 	}
+	_, _, _, waiting, _ := p.classLocked(useProxy)
+	*waiting++
+	defer func() { p.mu.Lock(); *waiting--; p.mu.Unlock() }()
 	poolCtx := p.admissionCtx
+	if p.policyCtx == nil {
+		p.policyCtx, p.policyCancel = context.WithCancel(context.Background())
+	}
+	policyCtx := p.policyCtx
 	if p.closed.Load() {
 		p.admissionCancel()
 	}
@@ -33,10 +50,23 @@ func (p *Pool) acquireBrowserPermit(ctx context.Context) (func(), error) {
 	defer cancel()
 	stop := context.AfterFunc(poolCtx, cancel)
 	defer stop()
-	return c.Acquire(ctx, site, governance.ClassBrowser)
+	stopPolicy := context.AfterFunc(policyCtx, cancel)
+	defer stopPolicy()
+	release, err := c.Acquire(ctx, site, governance.ClassBrowser)
+	if err != nil && policyCtx.Err() != nil {
+		return nil, errPolicyChanged
+	}
+	return release, err
 }
 func (b *Browser) setBorrowRelease(release func()) {
 	b.mu.Lock()
+	if b.closed.Load() {
+		b.mu.Unlock()
+		if release != nil {
+			release()
+		}
+		return
+	}
 	b.borrowRelease = release
 	b.mu.Unlock()
 }

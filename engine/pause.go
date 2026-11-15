@@ -364,7 +364,7 @@ func (e *Engine) ResumeStage(site, stage string) bool {
 }
 
 // knownSite 引擎认不认识这个站点。判据是**它有没有一份 per-site 抓取配置（熔断器）**：
-// `SetSiteBreaker` 是导出 API，使用者会只调它、不调 `SetSite`；而 `smartBreakers` 正好就是
+// `RegisterBreakerSite` 注册的站点可能尚未设置 Site 信息；`smartBreakers` 就是
 // "有哪些站配了抓取策略"—— 那才是"暂停这个站的抓取"该管的那批。
 // 用 `e.sites` 的话，`PauseCrawling` 会静默漏掉这类站点（"全部暂停"变成半停）。
 func (e *Engine) knownSite(site string) bool {

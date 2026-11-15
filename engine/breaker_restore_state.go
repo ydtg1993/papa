@@ -46,7 +46,20 @@ func (b *breakerCoordinator) restoreSiteLocked(saved breakerstore.Snapshot, now 
 	s.savedRevision = saved.Control.Revision
 	s.controlRevision = saved.Control.Revision
 	s.epoch = saved.Control.Epoch + 1
+	if copy.Active() || copy.PendingFailure != nil {
+		s.cfg, s.policy, s.policyRevision = copy.FrozenPolicy, copy.FrozenPolicy.Policy, copy.PolicyRevision
+		if err := s.detector.UpdateConfig(s.cfg, now); err != nil {
+			return nil, false, err
+		}
+	}
 	s.detector.Restore(*saved.Window, s.epoch, now)
+	if !copy.Active() && copy.PendingFailure == nil {
+		// A terminal snapshot uses today's database target. Bound retained evidence
+		// by the new capacity while preserving the latest original timestamps.
+		if err := s.detector.UpdateConfig(s.cfg, now); err != nil {
+			return nil, false, err
+		}
+	}
 	if copy.PendingFailure != nil {
 		b.noteBreakerLocked(s, "failure_settlement_restart", copy.PendingFailure.Stage, "重启接续未确认失败；保留原任务轮次和错误，只重试结算，不重跑业务", now)
 		pending = &Task{ID: copy.PendingFailure.TaskID, Site: copy.Site, Stage: copy.PendingFailure.Stage}

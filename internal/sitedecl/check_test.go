@@ -3,37 +3,11 @@ package sitedecl
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
-
-func TestCheckSitesValidatesEffectiveInheritedBreaker(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		defaults config.BreakerConfig
-		want     string
-	}{
-		{"threshold", config.BreakerConfig{Enabled: true}, "threshold 必须 > 0"},
-		{"policy", config.BreakerConfig{Policy: config.BreakerPolicy{Capacity: -1}}, "capacity"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			cfg.Crawler.Breaker = tc.defaults
-			err := CheckSites(cfg, SiteSpec{Key: "inherited"})
-			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "inherited") {
-				t.Fatalf("invalid inherited breaker must fail declaration validation: %v", err)
-			}
-			// Validate the merged site config, not unused global values.
-			fixed := &BreakerSpec{Enabled: true, Threshold: 9, Policy: &config.BreakerPolicy{}}
-			if err := CheckSites(cfg, SiteSpec{Key: "overridden", Breaker: fixed}); err != nil {
-				t.Fatalf("valid site override should replace invalid defaults: %v", err)
-			}
-		})
-	}
-}
 
 // CheckSites：不起库、不建池、不改状态，把启动时会 panic 的问题**一次收集全**（而不是报第一条就停）。
 // 这条是给"升级后确认声明写对了"用的 —— 起服务要连库，这一步不用。
@@ -89,27 +63,6 @@ func TestCheckSitesAcceptsGoodDeclarations(t *testing.T) {
 	}
 	if err := CheckSites(&config.Config{}, site, other); err != nil {
 		t.Fatalf("两个站同名阶段不该报错：%v", err)
-	}
-}
-
-// 站点熔断阈值那条规则（enabled=true 时 threshold 必须 > 0）与 breaker.New 共用一份判据：
-// 阈值只在全局默认里时，传了 cfg 就该放行；不传 cfg 就该报出来 —— 而不是等到真起引擎才炸。
-func TestCheckSitesChecksSiteBreakerThreshold(t *testing.T) {
-	site := SiteSpec{
-		Key:     "a",
-		Breaker: &BreakerSpec{Enabled: true}, // 阈值/窗口都留给默认那份
-		Stages:  []StageSpec{{Fetcher: namedFetcher{name: "a_x"}, WorkerCount: 1, QueueSize: 8}},
-	}
-
-	cfg := &config.Config{}
-	cfg.Crawler.Breaker = config.BreakerConfig{Enabled: true, Window: 5 * time.Minute, Threshold: 50}
-	if err := CheckSites(cfg, site); err != nil {
-		t.Fatalf("阈值取全局默认时不该报错：%v", err)
-	}
-
-	err := CheckSites(nil, site)
-	if err == nil || !strings.Contains(err.Error(), "threshold 必须 > 0") {
-		t.Fatalf("没有全局阈值时应当报 threshold：%v", err)
 	}
 }
 

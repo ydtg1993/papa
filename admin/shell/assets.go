@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ydtg1993/papa/v4/admin/breakers"
+	"github.com/ydtg1993/papa/v4/admin/executionpolicy"
 	"github.com/ydtg1993/papa/v4/admin/logs"
 	"github.com/ydtg1993/papa/v4/admin/monitoring"
 	"github.com/ydtg1993/papa/v4/admin/queues"
@@ -33,7 +34,7 @@ var assembled *resourceFS
 // bundles. Missing embedded inputs are startup errors, never partial pages.
 func Assets() fs.ReadFileFS {
 	assembledOnce.Do(func() {
-		sources := []featureSource{{"shell", resources}, {"monitoring", monitoring.Assets}, {"queues", queues.Assets}, {"breakers", breakers.Assets}, {"settings", settings.Assets}, {"tokenadmin", tokenadmin.Assets}, {"logs", logs.Assets}, {"reports", reports.Assets}, {"tasktrace", tasktrace.Assets}, {"taskflow", taskflow.Assets}}
+		sources := []featureSource{{"shell", resources}, {"executionpolicy", executionpolicy.Assets}, {"monitoring", monitoring.Assets}, {"queues", queues.Assets}, {"breakers", breakers.Assets}, {"settings", settings.Assets}, {"tokenadmin", tokenadmin.Assets}, {"logs", logs.Assets}, {"reports", reports.Assets}, {"tasktrace", tasktrace.Assets}, {"taskflow", taskflow.Assets}}
 		var err error
 		assembled, err = assemble(sources)
 		if err != nil {
@@ -125,7 +126,7 @@ func assemble(sources []featureSource) (*resourceFS, error) {
 	var bundle strings.Builder
 	bundle.Write(runtime)
 	bundle.WriteString("\n;\n")
-	for _, name := range []string{"shell/ui", "shell/session", "shell/table-adapter", "shell/login-refresh", "shell/navigation-controller", "monitoring/controller", "queues/controller", "breakers/controller", "settings/controller", "tokenadmin/controller", "logs/controller", "shell/download", "reports/controller", "shell/theme", "shell/startup"} {
+	for _, name := range []string{"shell/ui", "shell/session", "shell/table-adapter", "shell/login-refresh", "shell/navigation-controller", "monitoring/controller", "queues/controller", "breakers/controller", "settings/controller", "tokenadmin/controller", "logs/controller", "shell/download", "reports/controller", "shell/theme", "executionpolicy/controller", "shell/startup"} {
 		owner, file, _ := strings.Cut(name, "/")
 		b, err := read("features/" + owner + "/static/" + file + ".js")
 		if err != nil {

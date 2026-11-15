@@ -12,7 +12,7 @@ const RuntimeHistoryLimit = 100
 
 // History lists recent committed revisions, without changing policy or retention.
 func (s *Store) History(ctx context.Context, key string) ([]models.RuntimePolicyHistory, error) {
-	if key != KeyRuntimePolicy {
+	if !versionedKey(key) {
 		return nil, ErrCASRequired
 	}
 	rows := make([]models.RuntimePolicyHistory, 0)
@@ -22,7 +22,7 @@ func (s *Store) History(ctx context.Context, key string) ([]models.RuntimePolicy
 
 func (s *Store) HistoryRevision(ctx context.Context, key string, revision uint64) (models.RuntimePolicyHistory, error) {
 	var row models.RuntimePolicyHistory
-	if key != KeyRuntimePolicy {
+	if !versionedKey(key) {
 		return row, ErrCASRequired
 	}
 	err := s.db.WithContext(ctx).Where("cfg_key = ? AND revision = ?", key, revision).Take(&row).Error

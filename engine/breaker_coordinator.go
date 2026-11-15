@@ -26,6 +26,9 @@ import (
 // would split their atomicity. Locked methods require breakerMu; no database
 // operation runs under it. flushBreakerReports owns a separate cancellable gate.
 type breakerCoordinator struct {
+	policyRevision     uint64
+	policyDefaults     breaker.Config
+	policyOverrides    map[string]breaker.Config
 	breakerMu          sync.Mutex
 	breakerIncidentSeq uint64
 	smartBreakers      map[string]*smartBreaker
@@ -195,6 +198,13 @@ func (b *breakerCoordinator) prepareNextBreakerProbeLocked(s *smartBreaker, now 
 
 func (b *breakerCoordinator) transitionBreakerLocked(s *smartBreaker, state, reason string, now time.Time) {
 	l := s.event
+	if !l.Active() && state != "closed" && state != "recovered" {
+		// An unsaved terminal transition or manual takeover can resume this same
+		// incident. Its identity and recovery budget must use its frozen policy,
+		// even if a target was applied while it was terminal.
+		_ = s.detector.UpdateConfig(l.FrozenPolicy, now)
+		s.cfg, s.policy, s.policyRevision = l.FrozenPolicy, l.FrozenPolicy.Policy, l.PolicyRevision
+	}
 	if state != "probing" {
 		for i := range l.Checks {
 			c := &l.Checks[i]
@@ -244,6 +254,7 @@ func (b *breakerCoordinator) transitionBreakerLocked(s *smartBreaker, state, rea
 	l.trimReport()
 	s.dirty = true
 	b.queueEventLocked(events.Event{Type: events.TypeBreakerTransition, Site: l.Site, Attrs: map[string]string{"incident_id": l.ID, "state": state, "action": state, "round": fmt.Sprint(l.ProbeAttempts)}})
+	s.applyTargetPolicy(now)
 }
 
 func (b *breakerCoordinator) closeSmartBreakerLocked(site, stage, reason string) {
@@ -261,9 +272,13 @@ func (b *breakerCoordinator) admitBreakerTask(task *Task) (func(), bool) {
 	task.breakerSampleFinished = false
 	b.breakerMu.Lock()
 	s := b.smartBreakers[task.Site]
-	if s == nil || (!s.cfg.Enabled && (s.event == nil || s.event.PendingFailure == nil)) {
+	if s == nil {
 		b.unlockAndEmit()
 		return func() {}, true
+	}
+	if s.targetRevision == 0 {
+		b.unlockAndEmit()
+		return nil, false
 	}
 	now := time.Now()
 	if l := s.event; l != nil {

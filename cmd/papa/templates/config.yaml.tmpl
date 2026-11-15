@@ -6,58 +6,26 @@ app:
 # 爬虫核心配置
 crawler:
   dedup_cache_size: 10000      # 内存去重表上限：0=不限；>0 用 LRU 限界，淘汰条目由 DB 唯一索引兜底
-  stop_timeout: "5s"           # worker 与动态 ticker 共用退出等待预算；超时则跳过关库/关浏览器池
+  stop_timeout: "5s"           # worker/ticker 共用排空预算；超时保留DB，最终另用此预算强制清理浏览器池
   stage_idle_timeout: "0s"     # 阶段工作池连续空闲多久就回收（0=常驻不回收）；多站/长跑建议配，如 "10m"
-  # 单任务步骤追踪：默认仅保留异常尝试到文件，不需要迁移。详见 docs/framework/configuration/CORE_CONFIG.md
+  # 步骤与原始 HTML/JSON 快照：默认仅保留异常尝试到同一 Trace 文件，不需要迁移。详见 docs/framework/configuration/CORE_CONFIG.md
   trace:
-    mode: errors              # off=关闭；errors=异常（默认）；all=全任务
-    retention: "168h"          # 步骤记录保留期（默认 7 天）；负数 = 不自动清理
+    mode: errors              # off=关闭；errors=异常（默认）；all=全部尝试
+    retention: "168h"          # 步骤与快照保留期（默认 7 天）；负数 = 不自动清理
   trace_files:
     dir: "./traces"           # 专用目录；容量满时拒绝新证据并告警，不影响任务结算
-    max_file_bytes: 4194304
+    max_file_bytes: 4194304   # 整个记录上限；超限丢弃快照并标记截断，保留步骤
     max_total_bytes: 268435456
     max_files: 10000
-  # 页面归档：**失败那一刻抓到的那一页**按原始字节落盘（不重新序列化，否则丢 <noscript> 回退标签）；
-  # 本次尝试结束自动写、handler 不用写代码，trace 里多一条「归档页面」步骤指向 {dir}/{site}/{stage}/task-{id}-try-{retry}-{urlhash8}.html。
-  archive:
-    enabled: false             # 默认关。排查选择器/登录墙/地区限制时打开
-    dir: "./logs/fetcher-html" # 归档根目录（enabled=true 时必填，没写会启动 panic）
-    mode: failure              # failure = 只在失败的尝试落（默认，写入量按失败率走）；always = 每次都落
-    retention: "168h"          # 保留期（默认 7 天，与 trace 对齐）；负数 = 不自动清理
-    max_file_mb: 8             # 单页上限（MB）；超了不归档并记 WARN
   # 熔断闸门：窗口内**终态失败**数（重试耗尽或不可重试，不是每次 attempt）达阈值就把该站所有阶段的 worker 闸住，
   # 并发一条 critical 告警；自动保护状态持久化，按冷却/试探预算恢复，人工暂停不自动解除。
   # **闸门每站一把**：这里这份是**没单配阈值的站点**用的默认值（`SiteSpec.Breaker` 按站点覆盖），
   # 一个站被墙不会把别的站一起闸住。详见 docs/framework/configuration/CORE_CONFIG.md
-  breaker:
-    enabled: true              # 是否启用（默认 false）
-    window: "5m"               # 统计窗口
-    threshold: 50              # 达阈值即暂停。enabled=true 时必填且必须 > 0（没写会启动 panic）
-    policy:
-      short_window: "30s"      # 同指纹爆发及混合错误观察窗口
-      fast_threshold: 5       # 同阶段/同指纹的不同失败任务数
-      mixed_threshold: 8      # 短窗口不同失败任务数；先受限观察
-      observe_for: "30s"       # 最后一次失败后观察；成功覆盖要求见 BREAKER 手册
-      cooldown: "30s"
-      probe_timeout: "10s"
-      max_probes: 3           # 整站试探轮数，每轮验证全部阶段
-      probe_interval: "30s"
-      max_recovery: "5m"      # 单轮预算；耗尽后保持保护，一小时后复查
-      ramp_for: "30s"          # 全部阶段验证成功后仍须等全站在途任务结束
-      interval: "1s"
-      capacity: 4096          # 错误任务轮去重上限；超限保护而不丢失败计数
   # 阶段结构/物理容量声明在 internal/sites/<站名>.go；有效并发与间隔可由 runtime/OA 覆盖。
 
-# 浏览器自动化池：按需创建，pool_size / direct_pool_size 是并发上限（走池 / 直连两类实例），不是常驻实例数，
-# 空闲超过 max_idle_time 的会被回收。
-# 本段物理容量/浏览器启动参数改完重启生效；动态借用预算在 runtime.resources。
-# 身份档案默认不绑定；在 OA「浏览器诊断」创建版本、绑定并复验，见 docs/framework/accounts/BROWSER_IDENTITY.md。
-# 绑定后不要用 Device/UA/语言启动参数或普通头覆盖身份；档案不写入本 YAML。
+# 浏览器启动配置；池容量与空闲时间在 OA 数据库策略中调整。
 browser:
   enable: true
-  pool_size: 3                 # 并发上限（按需创建）。enable=true 时必填且 > 0；无效值在加载时拒绝
-  direct_pool_size: 0          # 强制直连浏览器并发上限；0 = 不用直连池（合法，调到时会明确报错）
-  max_idle_time: "5m"
   headless: false
   no_sandbox: false
   # leakless 默认关，**别开**：rod 的 leakless 辅助程序会被 Windows Defender 直接拦掉

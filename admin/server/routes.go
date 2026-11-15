@@ -7,6 +7,9 @@ import (
 
 // Register mounts the monitor page, feature APIs and composed page assets.
 func (s *Monitor) Register(mux *http.ServeMux) {
+	for _, path := range []string{"/api/config/execution-policy", "/api/config/execution-policy/validate", "/api/config/execution-policy/history", "/api/config/execution-policy/rollback", "/api/config/operations/", "/api/config/capabilities"} {
+		mux.HandleFunc(path, s.access.Wrap(s.executionPolicy.ServeHTTP))
+	}
 	// 静态资源（CSS/JS），无需鉴权
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
 		mux.Handle("/static/", http.StripPrefix("/static/", noCache(http.FileServer(http.FS(sub)))))

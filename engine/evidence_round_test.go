@@ -12,9 +12,9 @@ import (
 	"github.com/ydtg1993/papa/v4/config"
 )
 
-func TestArchiveExecutionIdentitySurvivesRetryReset(t *testing.T) {
+func TestSnapshotExecutionIdentitySurvivesRetryReset(t *testing.T) {
 	srv := serveBody(t, "first evidence")
-	e, _, dir := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, dir := snapshotEngine(t, config.TraceErrors, srv.URL)
 	task := &Task{ID: 9, Stage: "stub", URL: srv.URL}
 	ids := map[string]bool{}
 	for round := 0; round < 3; round++ {
@@ -27,9 +27,9 @@ func TestArchiveExecutionIdentitySurvivesRetryReset(t *testing.T) {
 		for attempt := 0; attempt < 2; attempt++ {
 			task.Retry = attempt
 			fetch := &pageFetcher{urls: []string{srv.URL}, err: errors.New("failure"), wrap: func(c context.Context) context.Context {
-				tr, ar := traceFromCtx(c), archiveFromCtx(c)
-				if tr.executionID != id || ar.executionID != id {
-					t.Fatal("trace/archive identity mismatch")
+				tr := traceFromCtx(c)
+				if tr.executionID != id {
+					t.Fatal("trace/snapshot identity mismatch")
 				}
 				return c
 			}}
@@ -37,7 +37,7 @@ func TestArchiveExecutionIdentitySurvivesRetryReset(t *testing.T) {
 		}
 	}
 	count := 0
-	for _, rel := range listArchive(t, dir) {
+	for _, rel := range listEvidenceFiles(t, dir) {
 		if !strings.HasSuffix(rel, ".json") {
 			continue
 		}
@@ -51,7 +51,7 @@ func TestArchiveExecutionIdentitySurvivesRetryReset(t *testing.T) {
 			t.Fatal(err)
 		}
 		id, _ := meta["execution_id"].(string)
-		if !ids[id] || !strings.Contains(rel, id) {
+		if !ids[id] {
 			t.Fatalf("missing identity: %s", b)
 		}
 	}

@@ -12,7 +12,6 @@ import (
 func TestBrowserDiagnosticLaunchFailureAndCleanup(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Browser.Enable = true
-	cfg.Browser.PoolSize = 1
 	cfg.Browser.Binary = "path"
 	cfg.Browser.BrowserPath = "nonexistent-diagnostic-browser"
 	cfg.Browser.TempDir = t.TempDir()

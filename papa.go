@@ -64,9 +64,6 @@ type StageSpec = app.StageSpec
 // RetrySpec 重试声明（MaxAttempts / Backoff）。
 type RetrySpec = app.RetrySpec
 
-// BreakerSpec 站点自己的熔断阈值（覆盖 crawler.breaker 的默认值）。
-type BreakerSpec = app.BreakerSpec
-
 // BreakerPolicy bounds short-window detection, observation and recovery.
 type BreakerPolicy = config.BreakerPolicy
 
@@ -187,3 +184,6 @@ type TaskIdentity = core.TaskIdentity
 
 var NormalizeTaskIdentity = core.NormalizeTaskIdentity
 var CanonicalTaskURL = core.CanonicalTaskURL
+
+// WithExecutionPolicyAuthorization checks execution configuration read/write permissions.
+var WithExecutionPolicyAuthorization = app.WithExecutionPolicyAuthorization

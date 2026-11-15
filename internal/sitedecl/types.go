@@ -1,16 +1,12 @@
 package sitedecl
 
 import (
-	"fmt"
 	"maps"
 	"slices"
-	"strings"
-	"time"
 
-	"github.com/ydtg1993/papa/v4/config"
 	"github.com/ydtg1993/papa/v4/core"
 	"github.com/ydtg1993/papa/v4/engine"
-	"github.com/ydtg1993/papa/v4/internal/breaker"
+
 	"github.com/ydtg1993/papa/v4/pkg/middleware/filedown"
 	"github.com/ydtg1993/papa/v4/pkg/middleware/m3u8"
 )
@@ -41,8 +37,6 @@ type SiteSpec struct {
 	// 它是**声明期的值**：每次启动都按它重新闸上；运行期在后台点的那次「恢复」不会被它改回去
 	//（进程重启即失效，与全局的"暂停不跨重启"同一条规矩）。
 	StartPaused bool
-	// Breaker 本站的熔断阈值；nil = 用 crawler.breaker 那份默认。
-	Breaker *BreakerSpec
 	// M3U8 / FileDown 本站的下载器覆盖层：本站所有阶段默认用这一份（阶段还能再各自叠一层）。
 	// nil = 不覆盖（用**基座**那份，即框架按 `DefaultConfig()` 备好的）。**字段全是指针，
 	// 只写要改的那几项**：`M3U8: &papa.M3U8Spec{OutputDir: &dir, Output: &papa.OutputSegments}`。
@@ -51,17 +45,6 @@ type SiteSpec struct {
 	M3U8     *m3u8.Overlay
 	FileDown *filedown.Overlay
 	Stages   []StageSpec
-}
-
-// BreakerSpec 一个站点的熔断阈值（覆盖 crawler.breaker 的默认值）。
-type BreakerSpec struct {
-	// Policy overrides the global detection/recovery policy; nil inherits it.
-	Policy *config.BreakerPolicy
-	// Enabled 本站是否启用熔断。**注意它不看默认值** —— 写了这个字段就由它说了算，
-	// 于是"全局开着、某个站关掉"和"全局关着、某个站单独开"都能表达。
-	Enabled   bool
-	Threshold int    // 窗口内终态失败数达到它即暂停；Enabled 时必须 > 0（0 = 用默认值）
-	Window    string // 统计窗口，如 "5m"；空 = 用默认值
 }
 
 // StageSpec 一个阶段的完整声明。
@@ -109,42 +92,4 @@ func (s SiteSpec) snapshot() core.Site {
 		RestrictedKeywords: slices.Clone(s.RestrictedKeywords),
 		StartPaused:        s.StartPaused,
 	}
-}
-
-// defaultBreakerConfig 把全局那份默认阈值翻成引擎侧的 breaker.Config：给**没单独声明**
-// 的站点当它自己的阈值用（每站一个计数器，见 planSite）。
-func defaultBreakerConfig(def config.BreakerConfig) breaker.Config {
-	return breaker.Config{
-		Policy:    def.Policy,
-		Enabled:   def.Enabled,
-		Window:    def.WindowOrDefault(),
-		Threshold: def.Threshold,
-	}
-}
-
-// toConfig 把站点自己的熔断声明合到默认值上；未给的字段用默认值。
-func (b BreakerSpec) toConfig(def config.BreakerConfig) (breaker.Config, error) {
-	out := breaker.Config{
-		Policy:    def.Policy,
-		Enabled:   b.Enabled, // 不看默认：写了就由它说了算（见 BreakerSpec.Enabled）
-		Threshold: def.Threshold,
-		Window:    def.WindowOrDefault(),
-	}
-	if b.Policy != nil {
-		out.Policy = *b.Policy
-	}
-	if err := breaker.ValidatePolicy(out.Policy); err != nil {
-		return out, err
-	}
-	if b.Threshold != 0 {
-		out.Threshold = b.Threshold
-	}
-	if strings.TrimSpace(b.Window) != "" {
-		w, err := time.ParseDuration(b.Window)
-		if err != nil {
-			return out, fmt.Errorf("Window 无法解析: %w", err)
-		}
-		out.Window = w
-	}
-	return out, nil
 }

@@ -8,7 +8,7 @@
 
 ## 0. 在线辅助报告与离线分析
 
-框架自带三层运行数据：**指标层**（`logs/events.jsonl` 结构化事件）、**证据层**（人类日志 + 任务 trace + 失败页面归档）、
+框架自带三层运行数据：**指标层**（`logs/events.jsonl` 结构化事件）、**证据层**（人类日志 + 任务 trace + 异常尝试快照）、
 **状态层**（MySQL 任务表）。`papa report` 把这三层合成 4 个产物：人读的 `report.md`、机读的 `report.json`、
 给 AI/接手人用的 `ai-brief.md` 与 `ai-brief.json`。
 
@@ -23,7 +23,7 @@
 | 层 | 产出 | 谁写 | 回答什么问题 | 默认 |
 | --- | --- | --- | --- | --- |
 | 指标层 | `logs/events.jsonl`（JSONL，一行一事件） | 引擎异步 emitter（`pkg/events`） | 成功多少、多快、卡在哪个阶段、失败怎么分组 | 关（`obs.events.enabled` 开） |
-| 证据层 | `logs/*.log`、`crawler.trace_files.dir`（默认 `./traces`）、`logs/fetcher-html/` 归档 | logrus / 引擎 trace / 归档器 | 失败那一刻的原文、`file:line` 样本、task 级轨迹 | 日志默认开；trace/归档按配置 |
+| 证据层 | `logs/*.log`、`crawler.trace_files.dir`（默认 `./traces`，按 `<site>/task-<id>/<execution-hash>-<sequence>.json` 保存，步骤与快照在同一文件） | logrus / 引擎 Trace | 失败那一刻的原文、`file:line` 样本、task 级轨迹 | 日志默认开；步骤/快照统一按 trace.mode |
 | 状态层 | MySQL `crawler_tasks`（及业务表） | 引擎 / 业务 | 当前事实：谁 pending、谁 processing、终态分布 | 永远在 |
 
 离线分析对被观测数据只读：可以读事件文件、日志目录和数据库；不写业务表、不重新投递任务、不调用外部接收端。在线服务只持有值信号与自有报告文件，两者都会写报告产物。
@@ -32,7 +32,7 @@
 
 框架 `LoggerSet` 的文件/控制台格式化、JSONL 事件、任务失败 error 列、Webhook 告警正文、日志索引和四份报告产物使用 `pkg/redact` 处理诊断副本。已知键包括 token/sign/sig/key/api_key/access_token/session/password/authorization/cookie/dsn 等，大小写不敏感；URL userinfo 会去除，已知查询参数值变成 `***`，Authorization/Cookie 行与常见 MySQL DSN 也会遮盖。JSON 的 `attrs/fields/headers/environment` 属性包中，敏感键的数字、对象、数组同样整体遮盖；结构化站点/报表的普通 `key` 保持原值。历史 logfmt 先解码再脱敏，发生遮盖的 Raw 样本会重建为等价 logfmt，因此字段顺序/引号可能不同，定位仍看 file:line。
 
-实际请求 URL、任务身份/去重键、数据库中的任务 URL 和断点恢复内容不被改写，Webhook 的签名目标 URL 也原样请求。自定义 logger/formatter/sink/notifier 不自动继承这些出口约束。此机制不会清除任意正文中的秘密或未知字段，更不能替代业务采样脱敏；Trace 的任意 data、原始 HTML 归档、SQL 字面量和历史原文件不属于自动清洗承诺范围。敏感原文件仍需访问与保留期管理。
+实际请求 URL、任务身份/去重键、数据库中的任务 URL 和断点恢复内容不被改写，Webhook 的签名目标 URL 也原样请求。自定义 logger/formatter/sink/notifier 不自动继承这些出口约束。此机制不会清除任意正文中的秘密或未知字段，更不能替代业务采样脱敏；Trace 的任意 data、Trace 中的原始 HTML/JSON 快照、SQL 字面量和历史原文件不属于自动清洗承诺范围。敏感原文件仍需访问与保留期管理。
 
 事件的 `counts/stages/queues` 字典键是指标或阶段名称，即使叫 `token/session` 也保留原名和数字/快照类型；队列错误与阶段描述文字单独在副本中脱敏。凭据字段与指标名称不能混为一谈。错误已经截断、缺少闭引号时仍遮盖可识别的凭据片段；URI userinfo 内的单引号、MySQL DSN 密码内的 `@` 也不会使匹配提前停止。Emit 在异步边界内复制并限长字符串和 map，返回后调用方可修改原 map；调用期间仍不得并发修改同一 map。单字符串最多 2 KiB、总字符串最多 16 KiB、所有 map 合计最多 64 项；超出字符串预算时整体省略，不能保留截掉凭据分隔符的前缀后再依赖脱敏；省略内容标记 `truncated`。
 
@@ -120,7 +120,7 @@ App 在 Engine 真实排空结果确定后发出 `run_stopped`，随后停止在
 
 在线聚合为一个固定消费者，写报告为一个固定 writer，最多一个在写与一个待写快照；新快照可合并旧请求。队满、维度上限、panic 和文件错误会丢弃或降级；这些组件共享进程 CPU/内存/磁盘，不承诺物理零开销或隔离 OOM/fatal。
 
-该旁路契约只适用于在线信号、事件归档和报告链路。Trace 文件与页面归档在执行尝试收尾时写入，不经过在线 obs 队列；后台读取已有报告文件也不调用在线 Runner 生成。静态组件关系及任务结算与观测的分界见 [架构图解](../architecture/ARCHITECTURE_DIAGRAMS.md)。
+该旁路契约只适用于在线信号、事件归档和报告链路。Trace 文件（含页面/响应快照）在执行尝试收尾时写入，不经过在线 obs 队列；后台读取已有报告文件也不调用在线 Runner 生成。静态组件关系及任务结算与观测的分界见 [架构图解](../architecture/ARCHITECTURE_DIAGRAMS.md)。
 
 CLI 报告产物**按本地日历日拆分**：一次生成把事件窗口按本地时区切成若干天，有事件的每天各写一份
 `<dir>/<2006-01-02>/`（四份产物；同一天重跑刷新当天那份）。进程内定时和退出报告仅写当前本地日，不重写历史日报。

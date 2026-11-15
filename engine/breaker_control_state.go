@@ -2,26 +2,11 @@ package engine
 
 import (
 	"github.com/ydtg1993/papa/v4/core"
-	"github.com/ydtg1993/papa/v4/internal/breaker"
 	"time"
 )
 
 // Coordinator operations own their state. Locked methods require breakerMu;
 // callers publish cross-component pause changes before releasing that lock.
-
-func (b *breakerCoordinator) SetSiteBreaker(site string, cfg breaker.Config) {
-	if site == "" {
-		return
-	}
-	cfg = breaker.EffectiveConfig(cfg)
-	detector := breaker.NewDetector(cfg)
-	b.breakerMu.Lock()
-	defer b.unlockAndEmit()
-	if b.smartBreakers == nil {
-		b.smartBreakers = make(map[string]*smartBreaker)
-	}
-	b.smartBreakers[site] = &smartBreaker{cfg: cfg, policy: cfg.Policy, detector: detector}
-}
 
 func (b *breakerCoordinator) breakerSum(site string) int {
 	b.breakerMu.Lock()
@@ -92,6 +77,9 @@ func (b *breakerCoordinator) forceResumeLocked(site string) {
 		s.manualTakeover = false
 	}
 	b.closeSmartBreakerLocked(site, "", "人工强制解除整站保护")
+	if s := b.smartBreakers[site]; s != nil {
+		s.applyTargetPolicy(time.Now())
+	}
 }
 
 func (b *breakerCoordinator) resumeStageLocked(site, stage string) {

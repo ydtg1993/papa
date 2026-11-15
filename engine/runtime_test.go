@@ -12,8 +12,7 @@ import (
 func TestBrowserAndHTMLConfigComeFromCfg(t *testing.T) {
 	e := &Engine{cfg: &config.Config{
 		Browser: config.BrowserConfig{
-			MaxIdleTime: 5 * time.Minute,
-			Headers:     map[string]string{"User-Agent": "base-ua", "X-Base": "1"},
+			Headers: map[string]string{"User-Agent": "base-ua", "X-Base": "1"},
 		},
 		HTML: config.HTMLConfig{
 			Timeout:     15 * time.Second,
@@ -22,9 +21,6 @@ func TestBrowserAndHTMLConfigComeFromCfg(t *testing.T) {
 		},
 	}}
 
-	if got := e.browserMaxIdle(); got != 5*time.Minute {
-		t.Fatalf("browserMaxIdle = %v, want 5m", got)
-	}
 	if headers := e.browserHeaders(); headers["User-Agent"] != "base-ua" || headers["X-Base"] != "1" {
 		t.Fatalf("browserHeaders = %+v", headers)
 	}

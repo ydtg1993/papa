@@ -14,9 +14,6 @@ type SiteSpec = sitedecl.SiteSpec
 // StageSpec 一个阶段的完整声明：fetcher + 并发/队列/间隔/重试 + 有没有入口任务。
 type StageSpec = sitedecl.StageSpec
 
-// BreakerSpec 站点自己的熔断阈值（覆盖 crawler.breaker 的默认值）。
-type BreakerSpec = sitedecl.BreakerSpec
-
 // RetrySpec 重试声明（MaxAttempts / Backoff）。
 type RetrySpec = sitedecl.RetrySpec
 
@@ -48,8 +45,8 @@ func (a *App) RegisterSites(sites ...SiteSpec) {
 			a.Engine.SetSite(p.Site)
 			a.Engine.SetSiteDownloads(p.Site.Key, p.Downloads)
 		}
-		if p.Breaker != nil {
-			a.Engine.SetSiteBreaker(p.Site.Key, *p.Breaker)
+		if p.Site.Key != "" {
+			a.Engine.RegisterBreakerSite(p.Site.Key)
 		}
 		for _, sp := range p.Stages {
 			if err := a.applyStagePlan(sp); err != nil {

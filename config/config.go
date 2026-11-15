@@ -173,43 +173,20 @@ type CrawlerConfig struct {
 	StageIdleTimeout time.Duration    `mapstructure:"stage_idle_timeout"` //阶段工作池连续空闲多久就回收；<=0 = 不回收（常驻）
 	Trace            TraceConfig      `mapstructure:"trace"`              //单任务步骤追踪
 	TraceFiles       TraceFilesConfig `mapstructure:"trace_files"`        // Trace 文件目录与容量预算
-	Breaker          BreakerConfig    `mapstructure:"breaker"`            //熔断（计数 + 阈值）
-	Archive          ArchiveConfig    `mapstructure:"archive"`            //页面归档：失败时把那一页的原样 HTML 落到本地文件
+
 }
 
-// BreakerConfig 熔断：窗口内**终态失败**数达到阈值就**自动暂停那一站的抓取**，
-// 等人处理完再从后台手动放行（`POST /api/breaker/resume`）。
-//
-// 只数终态失败（重试耗尽 / 不可重试），**不数每次尝试失败** —— 否则一个任务重试 3 次会记 3 次，
-// 几个烂 URL 就能把窗口灌满、熔断误触发，把整个爬虫停掉。
-//
-// 这一节配的是**判据**（窗口与阈值）；"停"这个动作与暂停状态在引擎的暂停信号里
-// （人工暂停写的是同一张表，只是来源标成 manual）。**暂停状态不跨重启**：进程重启即恢复运行
-// （起进程本身就是一次人工介入）。
+// BreakerConfig is the typed engine policy value. It is not part of YAML;
+// runtime values come exclusively from the database execution policy.
 type BreakerConfig struct {
-	Policy    BreakerPolicy `mapstructure:"policy"`
-	Enabled   bool          `mapstructure:"enabled"`   //是否启用熔断（计数与阈值；默认 false）
-	Window    time.Duration `mapstructure:"window"`    //统计窗口；<=0 用默认 5m
-	Threshold int           `mapstructure:"threshold"` //窗口内终态失败数达到它即暂停；enabled=true 时必填且 > 0，否则启动 panic
+	Policy    BreakerPolicy
+	Enabled   bool
+	Window    time.Duration
+	Threshold int
 }
 
 // BreakerPolicy configures bounded classification, observation and recovery.
 type BreakerPolicy = breakerpolicy.Policy
-
-// defaultBreakerWindow 未配置窗口时的默认值。
-const defaultBreakerWindow = 5 * time.Minute
-
-// WindowOrDefault 返回生效的统计窗口。
-func (b BreakerConfig) WindowOrDefault() time.Duration {
-	if b.Window <= 0 {
-		return defaultBreakerWindow
-	}
-	return b.Window
-}
-
-// 阈值**故意没有** OrDefault：它是"启用时必填"的项，enabled=true 却没给正阈值由
-// breaker.New 直接 panic（调用点在 engine.NewEngine，即启动时）。
-// 兜一个默认值只会让人以为开着、数的却是另一回事。
 
 // defaultStopTimeout 引擎关停时等各阶段 worker 排空队列的默认上限。
 const defaultStopTimeout = 5 * time.Second
@@ -225,60 +202,34 @@ func (c CrawlerConfig) StopTimeoutOrDefault() time.Duration {
 	return c.StopTimeout
 }
 
-// TraceConfig 单任务步骤追踪配置。
+// TraceConfig 单任务步骤与页面/响应快照的统一保留配置。
 // 开启后 handler 可用 task.Trace.Step/Fail/Warn 上报步骤，默认仅保留异常尝试到文件。
 // 关闭时 task.Trace 为 nil（调用是安全的 no-op）；Trace 不使用数据库。
 type TraceConfig struct {
 	Mode      TraceMode     `mapstructure:"mode"`      // off/errors/all；默认 errors
-	Retention time.Duration `mapstructure:"retention"` // 步骤记录保留期；0/未写 = 默认 7 天，负数 = 不自动清理
+	Retention time.Duration `mapstructure:"retention"` // 步骤与快照共同保留期；0/未写 = 默认 7 天，负数 = 不自动清理
 }
 
 // TraceFilesConfig 是独立的文件预算；与追踪模式分开管理。
 // 零值采用默认值；负预算非法，不提供无限容量模式。
 type TraceFilesConfig struct {
 	Dir           string `mapstructure:"dir"`             // 默认 ./traces；专用于 Trace，不与其它数据目录共用
-	MaxFileBytes  int64  `mapstructure:"max_file_bytes"`  // 默认 4 MiB
+	MaxFileBytes  int64  `mapstructure:"max_file_bytes"`  // 默认 4 MiB；整个记录（含快照）的上限
 	MaxTotalBytes int64  `mapstructure:"max_total_bytes"` // 默认 256 MiB
 	MaxFiles      int    `mapstructure:"max_files"`       // 默认 10000
 }
-
-// ArchiveConfig 页面归档：把「失败那一刻抓到的那一页」原样落到本地文件。
-//
-// 为什么是文件而不是 DB 的 content 列：**原始字节**才是证据 —— goquery 把文档重新序列化一遍
-// 会丢掉 `<noscript>` 里的回退标签（延迟渲染的封面正是藏在里面），而那恰恰是选择器坏掉时
-// 最需要看的东西。文件还能直接用浏览器打开、看它到底长什么样。
-//
-// 归档由 `FetchHTML` 自动完成：handler 不用写任何代码，抓到的页面先登记在本次尝试的缓冲里，
-// 尝试结束（含 panic）时按结局决定落不落盘，并在 trace 里留一条指向文件的步骤。
-type ArchiveConfig struct {
-	Enabled bool   `mapstructure:"enabled"` // 是否开启（默认 false）
-	Dir     string `mapstructure:"dir"`     // 归档根目录，如 logs/fetcher-html（**必填**，见校验层）
-	// Mode 落盘时机：failure = 只在失败的尝试落（默认，写入量按失败率走，与 trace「只在失败尝试写 data」同构）；
-	// always = 每次尝试都落（排查期开，一天几万个文件很正常）。
-	Mode      string        `mapstructure:"mode"`
-	Retention time.Duration `mapstructure:"retention"`   // 保留期；0/未写 = 默认 7 天（与 trace 对齐），负数 = 不自动清理
-	MaxFileMB int           `mapstructure:"max_file_mb"` // 单页上限（MB）；0/未写 = 默认 8；超了不归档并 WARN
-}
-
-// crawler.archive.mode 的两个取值（校验层认这两个，别处一律按 failure 处理）。
-const (
-	ArchiveModeFailure = "failure" // 只在失败的尝试落盘（默认）
-	ArchiveModeAlways  = "always"  // 每次尝试都落盘（排查期用）
-)
 
 // StageConfig / RetryConfig 已随"阶段参数搬进 Go 声明"一起移除（见 internal/app/spec.go 的
 // StageSpec / RetrySpec）—— 配置里不再有 crawler.stages 段，重试参数也在阶段声明里。
 
 // BrowserConfig 浏览器池配置（go-rod 驱动）
 type BrowserConfig struct {
-	TempDir     string        `mapstructure:"temp_dir"`         // 临时用户数据根目录；空值使用系统临时目录，修改后重启。
-	Enable      bool          `mapstructure:"enable"`           //是否启用浏览器池，false 则不创建
-	PoolSize    int           `mapstructure:"pool_size"`        //浏览器并发上限（按需创建，非常驻数量；改需重启）
-	DirectSize  int           `mapstructure:"direct_pool_size"` //强制直连浏览器并发上限（不经过代理）
-	MaxIdleTime time.Duration `mapstructure:"max_idle_time"`    //池内实例的闲置上限：超时回收；0 = 不回收
-	Headless    bool          `mapstructure:"headless"`         //无头模式
-	NoSandbox   bool          `mapstructure:"no_sandbox"`
-	Leakless    bool          `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
+	TempDir string `mapstructure:"temp_dir"` // 临时用户数据根目录；空值使用系统临时目录，修改后重启。
+	Enable  bool   `mapstructure:"enable"`   //是否启用浏览器池，false 则不创建
+
+	Headless  bool `mapstructure:"headless"` //无头模式
+	NoSandbox bool `mapstructure:"no_sandbox"`
+	Leakless  bool `mapstructure:"leakless"` //是否启用 leakless 进程守护（Windows 上其 exe 易被杀软误报）
 	// Binary 浏览器二进制从哪来：rod / system / path（见下面三个常量）。
 	// 留空 = 看 browser_path：给了就按 path，没给就按 rod。
 	Binary string `mapstructure:"binary"`

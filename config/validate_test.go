@@ -102,20 +102,6 @@ func TestRuleBoundaries(t *testing.T) {
 		bad    string
 	}{
 		{
-			name:   "crawler.breaker.window",
-			key:    "crawler.breaker.window",
-			absent: baseConfig,
-			ok:     baseConfig + "crawler:\n  breaker:\n    enabled: true\n    threshold: 1\n    window: 5m\n",
-			bad:    baseConfig + "crawler:\n  breaker:\n    enabled: true\n    threshold: 1\n    window: 10ns\n",
-		},
-		{
-			name:   "crawler.breaker.threshold",
-			key:    "crawler.breaker.threshold",
-			absent: baseConfig, // 整个 breaker 段不写 = 没开熔断，合法
-			ok:     baseConfig + "crawler:\n  breaker:\n    enabled: true\n    threshold: 50\n",
-			bad:    baseConfig + "crawler:\n  breaker:\n    enabled: true\n", // 开了却不给阈值
-		},
-		{
 			// browser.binary 的三种取值都合法；拼错（或写成 auto/default 这类
 			// "看起来像默认"的词）必须拒绝 —— 否则值悄悄不生效，二进制仍按 rod 走。
 			name:   "browser.binary",
@@ -139,27 +125,6 @@ func TestRuleBoundaries(t *testing.T) {
 			absent: baseConfig + "proxy:\n  api_url: \"\"\n", // 没有 api_url 就不会起刷新协程，这个值用不上
 			ok:     baseConfig + "proxy:\n  api_url: http://example.com/proxies\n  refresh_interval: 500s\n",
 			bad:    baseConfig + "proxy:\n  api_url: http://example.com/proxies\n  refresh_interval: 0s\n",
-		},
-		{
-			name:   "crawler.archive.dir",
-			key:    "crawler.archive.dir",
-			absent: baseConfig, // 没开归档，用不上目录
-			ok:     baseConfig + "crawler:\n  archive:\n    enabled: true\n    dir: ./logs/fetcher-html\n",
-			bad:    baseConfig + "crawler:\n  archive:\n    enabled: true\n",
-		},
-		{
-			name:   "crawler.archive.mode",
-			key:    "crawler.archive.mode",
-			absent: baseConfig, // 留空 = failure
-			ok:     baseConfig + "crawler:\n  archive:\n    mode: always\n",
-			bad:    baseConfig + "crawler:\n  archive:\n    mode: sometimes\n",
-		},
-		{
-			name:   "crawler.archive.max_file_mb",
-			key:    "crawler.archive.max_file_mb",
-			absent: baseConfig, // 留空 = 8MB
-			ok:     baseConfig + "crawler:\n  archive:\n    max_file_mb: 8\n",
-			bad:    baseConfig + "crawler:\n  archive:\n    max_file_mb: 8192\n",
 		},
 		{
 			name:   "db.log_level",
@@ -245,9 +210,6 @@ func TestRequiredKeys(t *testing.T) {
 		// browser.pool_size 与 html.max_body_size 同一个形状：「开着的时候必填」。
 		// 零值 0 让池容量为 0 —— Get 的两条快路径（复用空闲 / 未达上限则新建）都带
 		// `limit > 0` 前缀，于是全跳过，直接停在 cond.Wait 上永久阻塞且**不报错**。
-		{"pool_size 漏写（browser.enable=true）", "browser.pool_size", browserOn("")},
-		{"pool_size 写 0", "browser.pool_size", browserOn("  pool_size: 0\n")},
-		{"pool_size 写负数", "browser.pool_size", browserOn("  pool_size: -1\n")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			assertPanicNamesKey(t, c.key, func() { Load(mustWrite(t, c.body)) })
@@ -268,10 +230,7 @@ func TestRequiredKeys(t *testing.T) {
 
 	// browser.pool_size：模板值要放行；**direct_pool_size 留 0 也必须合法**（不用直连池是常态，
 	// GetDirect 自己会报"direct browsers not configured"，不需要启动期拦）
-	loadString(t, browserOn("  pool_size: 3\n"))
-	loadString(t, browserOn("  pool_size: 3\n  direct_pool_size: 0\n"))
 	// 关掉浏览器池时 pool_size 根本不参与
-	loadString(t, baseConfig+"browser:\n  enable: false\n  pool_size: 0\n")
 }
 
 // browser.binary 与 browser_path 的组合规则：
@@ -451,7 +410,7 @@ func TestValidKeysShapes(t *testing.T) {
 	for _, want := range []string{
 		"app.env",
 		"log.dir",
-		"crawler.breaker.window",
+		"crawler.stop_timeout",
 		"browser.headers[]", // map 的叶子
 		"server.port",
 		"db.log_level",

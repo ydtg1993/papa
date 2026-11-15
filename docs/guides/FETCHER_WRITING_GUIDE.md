@@ -136,9 +136,9 @@ func (f *FetchDetail) FetchHandler(ctx context.Context, task *papa.Task, engine 
 手动追踪 API 已删除，不维护手动选择状态，也不提供主动追踪按钮。需要完整记录时设置 `crawler.trace.mode: all`。
 - **它与日志的分工**：1.1 那条「日志由框架兜底、不要再自己记」的规则**不变** —— trace 是可查询的结构化步骤，不是日志的替代品。返回 `error` 该返回还是返回，`task.Trace` 只是额外告诉框架「走到哪一步了」。
 - **模式配置**：`crawler.trace.mode` 默认为 `errors`；`all` 保留正常成功，`off` 关闭。关闭时 `task.Trace` 为 nil，方法调用安全，无需判空。`crawler.trace.retention` 默认 7 天，按记录时间清理。
-- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断。handler panic 时也会按保留模式尝试把此前缓冲步骤写入 Trace 文件；写盘失败不等于证据已保存。当前 Trace 不落数据库，不需要 Trace 表迁移。Trace 与页面归档在尝试收尾执行，不经过在线 obs 异步队列，不能套用 obs 的收尾等待预算；运行关系见 [架构图解](../architecture/ARCHITECTURE_DIAGRAMS.md)。
+- 每次尝试（`FetchHandler` 的一次调用）单独成组，同次认领的重试共用执行身份。后台「追踪」展示最新有记录执行的末 500 步，并提示截断。handler panic 时也会按保留模式尝试把此前缓冲步骤写入 Trace 文件；写盘失败不等于证据已保存。当前 Trace 不落数据库，不需要 Trace 表迁移。Trace（含页面/响应快照）在尝试收尾执行，不经过在线 obs 异步队列，不能套用 obs 的收尾等待预算；运行关系见 [架构图解](../architecture/ARCHITECTURE_DIAGRAMS.md)。
 - **框架自己也会写一步**：任务被加急时（`Urgent: true` 或后台「加急」动作），第一次尝试的第一步是「加急执行」。它不需要你做什么，但你的步骤名别撞车。
-- **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。两者后面都会跟「归档页面」（若开了归档），抽屉里可直接下载那一页。
+- **框架写的失败现场步骤**：用 `engine.CaptureRequest` 时失败会写「捕获网络请求」（data 里有候选请求样本）；用 `FetchRenderedPageWith` 等等待条件失败会写「等待渲染」（卡住的 selector / js / request-idle）。已有的现场 HTML 会登记为同次尝试的快照，按 trace.mode 统一保留，抽屉里可直接下载。
 
 ### 1.4 Engine 暴露的能力
 
@@ -148,7 +148,7 @@ fetcher 里通过 `engine` 参数能拿到的东西：
 | --- | --- |
 | `engine.GetBrowserPool().WithBrowser(ctx, fn)` / `WithDirectBrowser` | 借实例执行回调，成功 / 报错 / panic 都保证归还（**推荐**；底层 `Get(ctx)` / `Put(bw)` 仍可用） |
 | `bw.WithPage(ctx, fn)` / `bw.WithNavigatedPage(ctx, url, opts, fn)` | 页面生命周期托管：返回后保证关页 |
-| `engine.CaptureRequest(ctx, url, browser.CaptureOptions{...})` | 导航前挂监听、截第一条匹配的网络请求；失败现场自动进归档 + trace（见 §5） |
+| `engine.CaptureRequest(ctx, url, browser.CaptureOptions{...})` | 导航前挂监听、截第一条匹配的网络请求；失败现场自动进入同一 Trace（见 §5） |
 | `engine.FetchRendered(ctx, url, waitSelector)` | 借浏览器渲染页面并等待选择器，返回 `*goquery.Document` + 最终 URL（比手写 Get/Put + NewPage 省事） |
 | `engine.FetchRenderedPage(ctx, url, waitSelector)` | 同上，但返回 `*htmlfetch.Page`（与 `FetchHTML` 同一种）—— 走浏览器的阶段要接着做受限页判定、或按 `page.Selection()` 解析时用它 |
 | `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{...})` | 同上，另支持 `WaitSelector` / `WaitJS` / `WaitRequestIdle` / `Block`（按页拦资源） |
@@ -293,8 +293,8 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 > 判据只有一条，可执行：**把 `FetchHTML` 抓回来的 HTML 翻一遍，目标节点在不在。** 在 → HTMLFetch；
 > 不在 → 再看能不能直接从接口拿（不少站点的数据接口就是普通 HTTP，`FetchHTML` 一样能取）；都不行才上 rod。
 >
-> 为什么这么定：浏览器是重量级资源（真进程 + 内存 + 受 `browser.pool_size` 限制的池位 + 每页几秒），
-> 而静态路还能多拿到状态码、Content-Type 与**原始字节**（归档更完整、排查更容易，见 §3.1 末）；
+> 为什么这么定：浏览器是重量级资源（真进程 + 内存 + 受 `execution_policy.browser.pool_size` 限制的池位 + 每页几秒），
+> 而静态路还能多拿到状态码、Content-Type 与**原始字节**（快照更完整、排查更容易，见 §3.1 末）；
 > 站点一多、量一大，"明明能静态却上了浏览器"会先把自己的并发位吃光 —— 那时表现为"整体变慢"，
 > 而不是报错，最难查。
 
@@ -303,7 +303,7 @@ AI 不是神仙，写 fetcher 前请提供以下信息，越具体写得越准�
 | **HTMLFetch（默认，一律先用它）** | `engine.FetchHTML(ctx, task.URL)` | 服务端渲染；页面源码已包含列表、详情字段和链接 | `page.Document.Find/ Text/ Attr`，CSS 选择器由 goquery 执行 | HTTP 非 2xx 已自动返回错误；检查目标选择器匹配数、必填文本、链接属性与 URL 解析 | 数据仅在 JS 执行、滚动或点击接口后出现；需监听网络请求 |
 | **Rod 浏览器（例外，静态拿不到才用）** | `engine.GetBrowserPool().WithBrowser(ctx, fn)`（底层 `Get` / `Put` 仍可用） | 数据必须经 JS 执行、登录交互、下拉/滚动懒加载、点击播放并截获 m3u8 才产生的页面 | `page.MustElement(s)`、`Attribute`、`MustText`，必要时执行 JS / 监听事件 | 等待页面或目标节点完成渲染；检查节点存在和属性；设置导航超时 | **静态 HTML 里已经拿得到目标数据的页面** —— 哪怕它有 JS、有交互（浏览器贵且占池位，见上面那条规则） |
 
-HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`（此时 `pool_size` 必填且 > 0）；浏览器二进制默认由 Rod 自动下载（`browser.binary: rod`，服务器不用预装），要用系统已装的浏览器写 `binary: system`，启动自检见 `CORE_CONFIG.md` 的 `browser.self_check`。`browser.pool_size` 是**全局**并发上限（浏览器按需创建，非常驻实例数）：调得比并发用浏览器的 worker 数小，多出来的 worker 只会等在池上、不报错；它不需要机械等于 worker 总数。
+HTMLFetch 不启动 Chromium，受 `html.timeout`、`html.max_body_size` 和 `html.headers` 控制；配置文件须保持 `html.enable: true`。Rod 需要同时配置 `browser.enable: true`，并先初始化数据库执行策略；浏览器二进制默认由 Rod 自动下载（`browser.binary: rod`，服务器不用预装），要用系统已装的浏览器写 `binary: system`，启动自检见 `CORE_CONFIG.md` 的 `browser.self_check`。`execution_policy.browser.pool_size` 是**全局**并发上限（浏览器按需创建，非常驻实例数）：调得比并发用浏览器的 worker 数小，多出来的 worker 只会等在池上、不报错；它不需要机械等于 worker 总数。
 （这两段说的是**配置层**的开关怎么开；**该不该用浏览器是策略问题**，判据是上面那条规则 —— 不是"把 `browser.enable` 打开就该用它"。）
 
 ### 3.1 HTMLFetch：静态目录页的完整方式
@@ -374,7 +374,7 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    if err != nil { return err }
    if err := engine.RestrictedError(task, page, ""); err != nil { return err }
    ```
-   `FetchRendered` 只给 `*goquery.Document`，收 `*Page` 的判据（与归档）都用不上，于是被反爬拦下时
+   `FetchRendered` 只给 `*goquery.Document`，收 `*Page` 的判据用不上，于是被反爬拦下时
    只表现为"选择器解析不出东西"。两条方法抓的是同一份 HTML，改一个字符串就行；拿到的 Page 里
    `StatusCode` / `Content-Type` 是零值 —— 浏览器不给这两个值，别当成"HTTP 200"用。
 
@@ -393,11 +393,9 @@ entries.EachWithBreak(func(index int, entry *goquery.Selection) bool {
    最容易在这儿翻车）校验；路径前缀、ID 格式、条目数下限也在这里一起把关。
 5. 将列表快照写入当前 `catalog` 任务；只有已声明 `detail` 阶段时（`internal/sites/<站名>.go` 的 `Stages`），且 catalog 声明 `Downstream: []string{"detail"}`，才为通过校验的链接调用 `engine.SubmitChildren(ctx, task, children...)`。
 
-> **失败时自动留现场**：开了 `crawler.archive.enabled`（见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)）之后，
-> `engine.FetchHTML` 抓到的**每一页**都会在本次尝试失败时原样落到
-> `{dir}/{site}/{stage}/task-{id}-run-{execution_id}-try-{attempt}-{urlhash8}.html`，并在后台「追踪」里多一条 `归档页面` 步骤指向它。
-> **handler 一行代码都不用改** —— 排查"选择器为什么没匹配上"时，直接打开那个文件看它到底长什么样。
-> 落的是**原始字节**（不是 goquery 再序列化的结果），所以 `<noscript>` 里的延迟渲染回退标签也在。
+> **异常时自动留现场**：`crawler.trace.mode: errors`（默认）统一保留异常尝试的步骤与快照；`all` 保留每次尝试，`off` 全部关闭。
+> 普通 `FetchHTML`、渲染/捕获入口已有的 HTML 和非账号 `FetchHTTP` 的文本 HTML/JSON 响应体按原始字节内嵌在同一 Trace 文件中，可从后台追踪抽屉下载。
+> 不重新抓取、不镜像 CSS/图片，不用 goquery 重新序列化。账号认证入口仍排除原始快照。容量不足时会丢弃快照并标记截断，优先保留步骤；配置见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)。
 
 ### 3.2 Rod：动态页面或浏览器交互方式
 
@@ -444,7 +442,7 @@ if len(items) == 0 {
 >
 > 要等 JS 表达式 / 网络空闲，或按页拦图片、统计脚本，用
 > `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{WaitSelector: ..., WaitJS: ...,
-> WaitRequestIdle: ..., Block: ...})`：同样返回 `*htmlfetch.Page`，等待失败时页面 HTML 会进归档、
+> WaitRequestIdle: ..., Block: ...})`：同样返回 `*htmlfetch.Page`，等待失败时已有页面 HTML 会登记为 Trace 快照、
 > trace 里多一条「等待渲染」。
 
 需要下拉、滚动或点击时，先完成操作并等待新节点出现，再提取；m3u8 这类只在播放后产生的资源，必须先通过 `EachEvent` 挂好网络监听，再点击播放。Rod 的 `Must*` 方法遇到节点缺失会 panic，因此生产 fetcher 更适合使用返回 `error` 的 API 或预先检查元素存在性，保证错误交给引擎重试。
@@ -477,8 +475,8 @@ if err := response.DecodeJSON(&result); err != nil { return err }
 - `Response` 包含最终 `URL`、`StatusCode`、完整 `Header` 和限长 `Body`。非 2xx 返回响应和 `StatusError`，可在判错后读取接口错误正文；正文超限时 Body 为空，返回 `BodyTooLargeError`。状态错误可与读错误并存，使用 `errors.As` / `htmlfetch.StatusCode` 判断。
 - `DecodeJSON` 要求恰好一份 JSON，拒绝尾随垃圾；解到 `any` 时数字是 `json.Number`，避免长整数被转成 float64。它不强制 Content-Type，也不替业务校验字段。
 - 本封装不增加重试循环，标准库 transport 的重试规则仍适用；307/308 跟随重定向时可重放 Body。Fetcher 返回错误后，阶段重试仍然生效：有副作用的 POST 要自行设置幂等键或返回不可重试错误，不能把网络超时当作服务器未处理。
-- `engine.FetchHTTP` 的自动 trace 只保存方法、状态、字节数，不保存 URL、请求头或响应正文；返回的 error 仍可能包含 URL，业务自行处理敏感信息。此路径不写 HTML 归档。
-- 可直接调用 `engine.GetHTMLClient().Do(ctx, request)`，但没有 Engine trace，且需自行确认客户端已启用。原 `FetchHTML` 保持 HTML 解析与归档行为。
+- `engine.FetchHTTP` 的步骤元数据保存方法、状态、字节数，不保存 URL 或请求头；非账号请求获取的文本 HTML/JSON 响应正文会作为原始快照，与步骤按 `trace.mode` 统一保留。`FetchIncremental` 同样适用；304 无响应正文时不产生正文快照。返回的 error 仍可能包含 URL，业务自行处理敏感信息。账号受管路径仍排除原始响应快照。
+- 可直接调用 `engine.GetHTMLClient().Do(ctx, request)`，但没有 Engine trace，且需自行确认客户端已启用。`FetchHTML` 保持 HTML 解析，并将原始 HTML 登记为同一 Trace 的快照。
 
 **Cookie 会话：** 每个账号创建并复用独立 Session。默认 HTTP 客户端不保存 Cookie。
 
@@ -515,7 +513,7 @@ if err := htmlfetch.DecodeJSON(response.Body, &payload); err != nil { return err
 
 监听在导航前建立，匹配第一条响应后等待同一请求完成，再读取 Body；其他请求不会串入。默认超时 30 秒，正文上限 10 MiB；超时/取消会关闭页面。Match 只看到元数据，必须快速返回，不能在回调中调用浏览器方法。请求元数据暂存最多 256 条，超出后 Method 可能为空，URL 和资源类型仍来自响应事件。
 
-这条路径用于有限大小的 API 响应，不用于下载和长连接。CDP 读取完整正文后才能检查解码后大小，上限限制返回值，**不是 Chrome 内存的硬限制**。响应头和正文仅返回调用方，自动 trace 不落原文；需要保存样本时由业务先脱敏。它不会自动回放接口或复制 Cookie。`RequestHeader` 和 `RequestBody` 保存对应 CDP 请求事件的头与正文；`MaxRequestBodySize` 默认 64 KiB，超限仅保留前缀。`RequestBodyIncomplete` 为 true 表示截断、Chrome 未提供正文或请求事件未被保留，不能把这类样本当作完整请求重放。`Page` 使用设备、请求头、Cookie、资源拦截和导航 Timeout；WaitSelector/WaitJS/WaitRequestIdle 不作为捕获完成条件。
+这条路径用于有限大小的 API 响应，不用于下载和长连接。CDP 读取完整正文后才能检查解码后大小，上限限制返回值，**不是 Chrome 内存的硬限制**。响应头返回调用方；非账号捕获的文本 HTML/JSON 正文会登记为 Trace 快照，按 `trace.mode` 和共享预算保留。账号受管捕获仍排除原始正文快照；需要业务样本时另行脱敏。它不会自动回放接口或复制 Cookie。`RequestHeader` 和 `RequestBody` 保存对应 CDP 请求事件的头与正文；`MaxRequestBodySize` 默认 64 KiB，超限仅保留前缀。`RequestBodyIncomplete` 为 true 表示截断、Chrome 未提供正文或请求事件未被保留，不能把这类样本当作完整请求重放。`Page` 使用设备、请求头、Cookie、资源拦截和导航 Timeout；WaitSelector/WaitJS/WaitRequestIdle 不作为捕获完成条件。
 
 ### 3.4.1 按账号隔离浏览器上下文
 
@@ -796,7 +794,7 @@ func deref(s *string) string {
 > **先看这里：请求会自动发出时，不要手写事件循环。**
 > 如果播放器自动播放、请求在页面加载过程中自己发出（不需要点击），用
 > `engine.CaptureRequest` —— 它负责「导航前挂监听 → 截第一条匹配请求 → 关页面」，
-> 失败时还会把**那一刻的页面 HTML 与期间发出的请求样本**写进归档和任务追踪
+> 失败时还会把**那一刻的页面 HTML 与期间发出的请求样本**登记为同一 Trace 的快照与步骤
 > （OA 抽屉里的「捕获网络请求」步骤，见 [MONITOR.md](../operations/MONITOR.md) §3）：
 >
 > ```go
@@ -809,7 +807,7 @@ func deref(s *string) string {
 >     CaptureTimeout: 30 * time.Second,
 > })
 > if err != nil {
->     return err // 现场已登记；不要再自己归档/上报
+>     return err // 现场已登记；不要重复登记快照/上报
 > }
 > mediaURL := res.URL
 > ```
@@ -818,6 +816,8 @@ func deref(s *string) string {
 > 不执行交互）。需要等渲染条件（元素 / JS 表达式 / 网络空闲）时用
 > `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{WaitSelector: ..., WaitJS: ...,
 > WaitRequestIdle: ...})`；要按页拦图片/统计脚本用 `browser.PageOptions{Block: ...}`。
+
+非账号 `CaptureRequest` 在 Trace 开启时会自动启用 `IncludeHTML`，成功时也读取当前 DOM 登记为快照；取证不重新导航。`errors` 模式仍只保留异常尝试，干净成功的快照不会落盘。账号受管捕获继续排除原始 HTML 快照。
 
 `CaptureRequest` 失败或调用方取消后，使用独立、最长 3 秒的 DOM 协议读取现场，随后用独立短时上下文关页；不会因为取证失败替换原捕获错误。HTML 为空表示当时未能读到完整现场，请结合 Seen 请求样本判断。`WaitLoad=true` 会先等待已发起的导航结束，再等待加载，避免与导航并发使用 Rod 的 JavaScript helper 缓存。
 
@@ -1121,7 +1121,7 @@ func (f *FetchCatalog) SubmitEntries(engine *papa.Engine, site papa.Site) {
 > 下载器覆盖，以及每个阶段的并发·队列·间隔·重试·入口开关都在那一处；**三个治理队列不在这里，统一写在 `config.yaml`**。站点声明没有汇总清单 —— 文件自己在
 > `init()` 里登记），`internal/app/run.go` 只要一行 `app.RegisterSites(papa.Sites()...)`。
 > 加阶段 = 写一个 fetcher（`GetStage()` 返回阶段名）+ 在这个站的文件里加一段 `StageSpec`。
-> 阶段名取自 `GetStage()`，**同一个站里**重名启动就报错并点名；两个站之间同名是允许的（键是 `site:stage`，池子/统计/归档/唯一索引都按它分）。
+> 阶段名取自 `GetStage()`，**同一个站里**重名启动就报错并点名；两个站之间同名是允许的（键是 `site:stage`，池子/统计/Trace 身份/唯一索引都按它分）。
 
 ### 7.2 多站：一站一个文件（框架自己收集）
 
@@ -1161,7 +1161,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
 
 - **三个治理队列在 `config.yaml` 里全局配**（error_queue / recover_queue / repeat_queue，各一段，不再按站点拆；
   文件改完要重启）。`runtime` 的站点请求、有效执行并发和账号池默认值另有 OA 持久覆盖。没写配置即不自动启动该治理扫描；错误与轮询队列仍可手动触发。启用时校验必填项和范围，batch_size 为 0 使用默认 1000。见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)。
-- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与原始 HTML 归档目录（键是 `site:stage`，库里的唯一索引也是 `(site, stage, identity_hash)`）。**同一个站里**重名会在启动时 panic 并点名。
+- **阶段名只在本站内唯一**：两个站可以各有自己的 `catalog`，各自一份池子、统计与 Trace 证据身份（键是 `site:stage`，库里的唯一索引也是 `(site, stage, identity_hash)`）。**同一个站里**重名会在启动时 panic 并点名。
 - **别把 Go 包放进 `configs/`**：那是数据目录（config.yaml / config.yaml.example）。声明放 `internal/sites/`。
   fetcher 怎么摆由你定：**脚手架就是一个扁平的 `fetcher/` 包，多站也照样能用**（加一个 fetcher 文件即可）；
   站点多了想按站点分包（`fetcher/<站点>/`，如 `fetcher/example/`）也行。硬要求只有一条 ——
@@ -1180,7 +1180,7 @@ internal/app/run.go 仍然一行：`app.RegisterSites(papa.Sites()...)`。**框�
   入口路由表正相反：它**只**声明在 `fetcher/<站点>/fetch_catalog.go`（包级 `catalogRoutes` 那类，例见 §7.1），
   入口投递与 handler 反推任务的 key 共用同一张表 —— 别在 handler 里再抄一份 key → 路由的映射。
 
-已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/投递器都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、原始 HTML 归档目录 `{dir}/{site}/{stage}/`、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
+已按站切开的东西：**阶段键 `site:stage`**（阶段名只在本站内唯一，登记表/工作池/统计/覆盖层/投递器都按它分）、每站每阶段一个池子（并发/间隔/重试各自独立）、**每站一个熔断计数器**（没单配阈值的站用 `crawler.breaker` 那份默认值，但仍是自己那份；后台右上角铃铛逐 scope 一行、可逐个放行）；**暂停是一处信号**（人工暂停、熔断触发、以及声明期的 `SiteSpec.StartPaused` 写的是同一张表，来源记在 `source` 里；取任务点冻住、入队点寄放）、Trace 记录中的站点与阶段身份、任务表 `site` 列（提交时**必填**，跨站派发自然落到目标站）、后台任务表的「站点」列与筛选、告警事件带 `site`、`engine.Site(task.Site)` 取站点声明。
 
 **请求头按站切开了**：`SiteSpec.Headers` —— 这个站的任务抓任何页面都自动带上（静态抓取与浏览器渲染都认），
 同键覆盖 `html.headers` / `browser.headers`，空值表示删掉那个头；handler 里对**单次请求**还能
@@ -1228,7 +1228,7 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 
 
 1. **同一个站里阶段名重复** → `RegisterSites` 直接 panic 并点出是这个站的哪两个阶段（多半是复制站点文件后两份声明指向了同一个 fetcher）。两个站用同一个阶段名**不是**错误 —— 那是这一版的常态，不必为了避开重名去硬加前缀。
-2. **浏览器池容量规划**：`browser.pool_size` 是浏览器抓取的全局并发上限，不必机械地大于等于所有阶段 `worker_count` 之和。容量较小时，超出的 browser worker 会在 `pool.Get(ctx)` 等待实例，这是正常背压；应按机器资源、目标站承载能力和可接受等待时间调优。`browser.enable: true` 时 `pool_size` 必须 > 0，配置加载会拒绝零/负值。
+2. **浏览器池容量规划**：`execution_policy.browser.pool_size` 是浏览器抓取的全局并发上限，不必机械地大于等于所有阶段 `worker_count` 之和。容量较小时，超出的 browser worker 会在 `pool.Get(ctx)` 等待实例，这是正常背压；应按机器资源、目标站承载能力和可接受等待时间调优。数据库执行策略的 `pool_size` 必须 > 0；通过 OA/API 调整并平滑收敛，不在 YAML 中配置。
 3. **m3u8 需要 referer/cookie**：多数 m3u8 站点校验 referer，用 `m3u8.OptionsFromRequest(ctx, task.URL)` 一步带上（站点头/逐请求头/代理一起过来），或自己写 `m3u8.DownloadOptions{Referer: ...}`。
 4. **下载器不继承抓取的头**：`SiteSpec.Headers` / `papa.WithHeaders` 只作用于**抓取**（静态 + 浏览器），下载（filedown / m3u8）要自己带 —— 用 `OptionsFromRequest(ctx, referer)`，它不会自动发生。
 5. **懒加载**：滚动加载别只滚一次，循环滚到底 + 等待，直到没有新元素。
@@ -1260,9 +1260,9 @@ HTTP API 返回 2xx 不代表业务成功；JSON 解码后仍需验证业务状�
 **浏览器托管 / 捕获 / 等待（推荐优先用这组）**
 - `pool.WithBrowser(ctx, fn)` / `pool.WithDirectBrowser(ctx, fn)`：借实例执行回调，成功 / 报错 / panic 都保证归还。
 - `bw.WithPage(ctx, fn)` / `bw.WithNavigatedPage(ctx, url, opts, fn)`：页面生命周期托管，返回后保证关页。
-- `engine.CaptureRequest(ctx, url, browser.CaptureOptions{Page, Match, CaptureTimeout, WaitLoad})`：导航前挂监听、截第一条匹配请求；失败时现场 HTML 与候选请求自动进归档 + trace。
+- `engine.CaptureRequest(ctx, url, browser.CaptureOptions{Page, Match, CaptureTimeout, WaitLoad})`：导航前挂监听、截第一条匹配请求；失败时现场 HTML 与候选请求自动进入同一 Trace。
 - `engine.FetchRenderedPageWith(ctx, url, browser.PageOptions{...})`：比 `FetchRenderedPage` 多支持 `WaitSelector` / `WaitJS`（表达式）/ `WaitRequestIdle` / `Block`（按页拦资源）。顺序：`WaitSelector → WaitJS → WaitRequestIdle`，共享 `Timeout` 的等待预算。
-- 等待失败返回 `*browser.WaitError`（`Stage` / `HTML` / `Elapsed`）；引擎层已自动归档并写「等待渲染」步骤，业务直接返回 error 即可。
+- 等待失败返回 `*browser.WaitError`（`Stage` / `HTML` / `Elapsed`）；引擎层已登记 Trace 快照并写「等待渲染」步骤，业务直接返回 error 即可。
 
 **任务身份 / 站点地址**
 - `papa.PageIdentity(rawURL)`：`path[?query]`，与域名无关（`https://a.com` 与 `https://a.com/` 都是 `/`）。

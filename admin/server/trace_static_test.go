@@ -24,7 +24,7 @@ func TestTraceDrawerRendersCaptureCandidates(t *testing.T) {
 		"timeout_ms",       // 步骤头的「超时 30s」
 		"elapsed_ms",       // 步骤头的「实等 30.2s」
 		"fmtMillis",        // 毫秒格式化（不是 fmtDuration 的纳秒）
-		"stepData",         // data 解析的唯一出口（archivedFiles 也走它）
+		"stepData",         // data 解析的唯一出口（snapshotFiles 也走它）
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("trace.js 里缺少 %q —— 捕获失败现场在抽屉里会静默不显示", want)

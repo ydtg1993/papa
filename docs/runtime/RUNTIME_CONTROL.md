@@ -2,6 +2,8 @@
 
 > 面向：在单实例中调整采集速度、资源预算、账号池与代理健康。配置字典见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md)，账号注册与登录回调见 [ACCOUNT_RUNTIME.md](../accounts/ACCOUNT_RUNTIME.md)，后台入口见 [MONITOR.md](../operations/MONITOR.md)。
 
+完整 breaker 和公共浏览器池三个字段属于独立数据库域 `execution_policy`，见 [执行策略手册](EXECUTION_POLICY.md)。下文默认/声明/YAML/OA 的合并优先级仅适用于 `runtime_policy`，不能用于执行策略；后者必须显式初始化且只从数据库读取。
+
 ## 1. 启用与配置来源
 
 浏览器身份是独立的档案/绑定服务，不存入 `runtime_policy`。改绑等待发生在任务认领及全局资源放行前，旧任务继续使用冻结快照；账号池选择版本与身份修订分开。明确网站挑战返回 `site_challenge`，本次不立即重试、不换号、不计代理故障；之后仍可由错误队列补偿。详见 [BROWSER_IDENTITY.md](../accounts/BROWSER_IDENTITY.md)。身份表需通过显式迁移建立。
@@ -42,7 +44,7 @@ YAML 时长使用 Go 字符串（`"300ms"`、`"30s"`）；HTTP JSON 中 `time.Du
 | 可动态调整 | 仍由启动配置/Go 决定 |
 | --- | --- |
 | 阶段有效执行并发、固定任务间隔、站点请求并发/速率/AutoThrottle | `WorkerCount` 物理 worker 数、`QueueSize`、站点/阶段拓扑、Retry 声明 |
-| CPU/内存阈值、任务与浏览器借用许可、站点权重 | 浏览器物理池容量、二进制与网络授权、数据库连接池 |
+| CPU/内存阈值、任务与浏览器借用许可、站点权重；execution_policy 的公共池容量与空闲时长 | 浏览器启用开关、二进制与网络授权、数据库连接池 |
 | 池归属默认值、代理失败阈值与冷却参数 | 账号凭据来源、Login/Check 实现、账号固定代理来源 |
 
 有效执行并发不超过物理 worker 数。降低限额只限制新工作，已有任务和浏览器借用自然完成；在途数暂时高于新限额表示正在收敛，不会强杀实例。Task.Delay/NotBefore 的延迟投递、阶段任务间隔、实际请求间隔是三个不同概念。

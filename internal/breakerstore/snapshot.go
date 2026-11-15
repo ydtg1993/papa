@@ -45,8 +45,30 @@ func (s Snapshot) Clean() Snapshot {
 
 // ValidateCurrent rejects snapshots that cannot supply v4 recovery evidence.
 func (s Snapshot) ValidateCurrent() error {
-	if s.Control.Version != 1 || s.Control.ID == "" || s.Window == nil {
-		return fmt.Errorf("unsupported breaker snapshot: v4 control version 1 and exact window required")
+	if s.Control.Version != 2 || s.Control.ID == "" || s.Window == nil {
+		return fmt.Errorf("unsupported breaker snapshot: control version 2, frozen policy and exact window required; explicitly migrate legacy incidents before startup")
 	}
-	return nil
+	if s.Control.PolicyRevision == 0 {
+		return fmt.Errorf("breaker snapshot missing frozen policy revision; explicit migration required")
+	}
+	return breaker.ValidateExplicit(s.Control.FrozenPolicy)
+}
+
+// MigratePolicySnapshot explicitly binds the operator-confirmed old effective
+// policy to a legacy incident; identities, deadlines and budgets are unchanged.
+// The caller must persist the returned snapshot before starting the new runtime.
+func MigratePolicySnapshot(s Snapshot, revision uint64, old breaker.Config) (Snapshot, error) {
+	if s.Control.Version != 1 || s.Control.ID == "" || s.Window == nil {
+		return Snapshot{}, fmt.Errorf("migration requires version 1 exact control/window")
+	}
+	if revision == 0 {
+		return Snapshot{}, fmt.Errorf("migration requires confirmed policy revision")
+	}
+	if err := breaker.ValidateExplicit(old); err != nil {
+		return Snapshot{}, err
+	}
+	s.Control.Version = 2
+	s.Control.PolicyRevision = revision
+	s.Control.FrozenPolicy = old
+	return s, nil
 }

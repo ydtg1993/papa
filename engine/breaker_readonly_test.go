@@ -136,7 +136,7 @@ func TestBreakerReadOnlyIdleStageRecoversWithoutTask(t *testing.T) {
 	flushSmart(t, e)
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
 	l = expectSmartState(t, e, "recovered").Clean()
-	if l.Checks[0].TaskSuccesses != 0 || !l.Checks[0].Verified || e.breakerSum("synthetic") != 0 {
+	if l.Checks[0].TaskSuccesses != 0 || !l.Checks[0].Verified || e.breakerSum("synthetic") != 3 {
 		t.Fatal("idle complete verification failed")
 	}
 }
@@ -212,8 +212,8 @@ func TestBreakerReadOnlyRequiresTwoSpacedChecksAndDurableFinish(t *testing.T) {
 	done()
 	e.tickBreakers(context.Background(), l.UpdatedAt.Add(31*time.Second))
 	final := expectSmartState(t, e, "recovered").Clean()
-	if e.breakerSum("synthetic") != 0 || !strings.Contains(final.Text(), fixtureReadOnlyCoverage) {
-		t.Fatal("missing reset or coverage report")
+	if e.breakerSum("synthetic") != 3 || !strings.Contains(final.Text(), fixtureReadOnlyCoverage) {
+		t.Fatal("missing retained evidence or coverage report")
 	}
 	r.err = errors.New("fixture final save failure")
 	if err := e.breakers.flushBreakerReports(context.Background()); err == nil {

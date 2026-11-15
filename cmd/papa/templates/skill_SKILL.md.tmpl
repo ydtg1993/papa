@@ -36,7 +36,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 | Persist results | `{{.CodeDir}}models/`, fetcher repository calls | Data landing guide |
 | Change retries/recovery/repeat polling | site stage declaration, `configs/config.yaml`, task fields | Error/recover/repeat queue manuals |
 | Add monitor table/action/API/page | `{{.CodeDir}}monitor/`, possibly `{{.CodeDir}}models/` | Monitor manual and oao README |
-| Diagnose startup or behavior | declarations, config, archived HTML, traces, tests | CLI, development, relevant queue manual |
+| Diagnose startup or behavior | declarations, config, Trace HTML snapshots, traces, tests | CLI, development, relevant queue manual |
 
 ## Workflow
 
@@ -44,7 +44,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 
 - Read `go.mod`, `main.go`, `configs/config.yaml`, existing `{{.CodeDir}}sites/*.go`, and the nearest fetcher package.
 - Search exported API names rather than guessing signatures.
-- For selector work, look for saved HTML under `docs/samples/` or archived failure pages. If no representative HTML or reachable URL exists, request one or clearly mark selectors as placeholders.
+- For selector work, look for saved HTML under `docs/samples/` or retained Trace snapshots. If no representative HTML or reachable URL exists, request one or clearly mark selectors as placeholders.
 - Results go into the project’s own GORM tables under `{{.CodeDir}}models/`; the framework task table carries scheduling state only (url / stage / site / status / retry / repeat / `meta`) and has no result columns.
 
 ### 2. Design the site pipeline
@@ -52,7 +52,7 @@ Read [references/doc-map.md](references/doc-map.md) to select manuals. Read [ref
 Keep each site self-contained:
 
 ```text
-{{.CodeDir}}sites/<site>.go              site identity, headers, breaker/download overrides, StageSpec values
+{{.CodeDir}}sites/<site>.go              site identity, headers, download overrides, StageSpec values
 {{.CodeDir}}fetcher/<site>/site.go        stage constants and site lookup helper
 {{.CodeDir}}fetcher/<site>/fetch_*.go     stage handlers and entry submission
 {{.CodeDir}}fetcher/<site>/*_test.go      parser/URL/task behavior tests using saved HTML
@@ -60,11 +60,11 @@ Keep each site self-contained:
 {{.CodeDir}}monitor/                      presentation, actions, routes, and pages
 ```
 
-A stage name is unique **within its site** — two sites may each declare `catalog`. The engine keys a stage by `site:stage`, so pools, stats, archive directories and the DB unique index stay separate. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
+A stage name is unique **within its site** — two sites may each declare `catalog`. The engine keys a stage by `site:stage`, so pools, stats, Trace identities and the DB unique index stay separate. Define constants once in the fetcher package and use them in `GetStage`, `Task.Stage`, tests, and diagnostics.
 
 A site file should register itself from `init()` with `papa.RegisterSite`. The application should retain one anonymous import of `sites` and call `app.RegisterSites(papa.Sites()...)`; adding a site should not require a central switch or edits to `main.go`.
 
-Put worker count, queue size, delay, retry, `Entry` (see below), and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide settings and the three governance queues in `configs/config.yaml`.
+Put worker count, queue size, delay, retry, `Entry` (see below), and stage download overrides in `StageSpec`, not in `config.yaml`. Keep process-wide startup settings and the three governance queues in `configs/config.yaml`. Full breaker policy and public browser pool sizes/idle timeout are database-owned execution_policy: migrate explicitly, then initialize with `go run . -init-policy configs/execution-policy.json`; edit through OA/API. Do not add BreakerSpec or the removed YAML keys; read `runtime/EXECUTION_POLICY.md`.
 
 ### 3. Implement task flow deliberately
 
@@ -95,7 +95,7 @@ The repeat queue must be enabled globally for automatic polling. `RepeatInterval
 
 ### 4. Fetch with the least expensive engine
 
-Use `engine.FetchHTML` when static HTML contains the target data. Use Rod/browser APIs only after evidence shows content exists only after JavaScript execution, interaction, or network interception. If the request fires automatically during page load (no click needed), use `engine.CaptureRequest` instead of hand-rolled `EachEvent` loops — failures record the page HTML and candidate requests into archive/trace. Use `engine.FetchRenderedPageWith` when you need `WaitSelector` / `WaitJS` / `WaitRequestIdle` or per-page `Block` rules. Implement `NeedsBrowser()` when a stage requires browser startup validation. Current Papa has no effective `NeedsFiledown` or `NeedsM3U8` capability contract: the downloader bases are always initialized, and callers select task-aware instances through `FiledownForTask` or `M3U8ForTask`.
+Use `engine.FetchHTML` when static HTML contains the target data. Use Rod/browser APIs only after evidence shows content exists only after JavaScript execution, interaction, or network interception. If the request fires automatically during page load (no click needed), use `engine.CaptureRequest` instead of hand-rolled `EachEvent` loops — failures record the page HTML and candidate requests into the same Trace record according to trace.mode. Use `engine.FetchRenderedPageWith` when you need `WaitSelector` / `WaitJS` / `WaitRequestIdle` or per-page `Block` rules. Implement `NeedsBrowser()` when a stage requires browser startup validation. Current Papa has no effective `NeedsFiledown` or `NeedsM3U8` capability contract: the downloader bases are always initialized, and callers select task-aware instances through `FiledownForTask` or `M3U8ForTask`.
 
 Use site-level headers for shared fetch context and `papa.WithHeaders` for request-specific fetch overrides. File and M3U8 downloaders do **not** implicitly inherit those values: explicitly pass `filedown.OptionsFromRequest(ctx, referer)` or `m3u8.OptionsFromRequest(ctx, referer)`, or copy the required options deliberately. Use `papa.ResolveURL`, `papa.SameHost`, and related facade helpers instead of fragile string concatenation when appropriate.
 

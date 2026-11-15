@@ -42,7 +42,7 @@ func (e *Engine) FetchAccountHTTP(ctx context.Context, key account.Key, req html
 	return r, err
 }
 
-// FetchAccountHTML does not register credential-bearing HTML in the raw archive.
+// FetchAccountHTML does not register credential-bearing HTML in the raw snapshots.
 func (e *Engine) FetchAccountHTML(ctx context.Context, key account.Key, rawURL string) (*htmlfetch.Page, error) {
 	ctx = e.RuntimeContext(ctx, key.Site)
 	m := e.GetAccountManager()

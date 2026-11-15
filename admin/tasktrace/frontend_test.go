@@ -27,6 +27,13 @@ steps[0].execution_id='';steps[0].truncated=false;
 await feature.showTaskTrace('2');
 if(!body.includes('记录缺少执行轮次标识')||body.includes('最后 500 步'))throw Error(body);
 steps.length=0;
+steps.push({step:'页面快照',data:JSON.stringify({files:['opaque-token',null,{}]})});
+await feature.showTaskTrace('4');
+if((body.match(/data-file=/g)||[]).length!==1||!body.includes('data-file="opaque-token"'))throw Error(body);
+steps[0].step='归档页面';
+await feature.showTaskTrace('5');
+if(body.includes('data-file='))throw Error('legacy archive download rendered');
+steps.length=0;
 await feature.showTaskTrace('3');
 if(!body.includes('没有保留的追踪记录')||!body.includes('正常成功不会留存'))throw Error(body);
 })().catch(e=>{console.error(e);process.exitCode=1});`

@@ -42,7 +42,10 @@ func (b *breakerCoordinator) updateBreakerEvidenceLocked(s *smartBreaker, d brea
 
 func (b *breakerCoordinator) recordSmartOutcomeLocked(task *Task, err error, coverage map[string]string, governance breakerGovernanceEvidence) (pauseReason string, notify bool) {
 	s := b.smartBreakers[task.Site]
-	if s == nil || !s.cfg.Enabled || task.breakerEpoch != s.epoch {
+	if s != nil {
+		s.applyTargetPolicy(time.Now())
+	}
+	if s == nil || task.breakerEpoch != s.epoch {
 		return pauseReason, false
 	}
 	now := time.Now()
@@ -64,6 +67,7 @@ func (b *breakerCoordinator) recordSmartOutcomeLocked(task *Task, err error, cov
 				s.event.PendingFailure = nil
 				b.noteBreakerLocked(s, "failure_settled", task.Stage, fmt.Sprintf("任务 %d 轮次 %s 失败终态已确认；按原发生时间和轮次幂等结算，已过窗口的失败不补入当前窗口；保存后才允许后续验证", task.ID, task.breakerRound), now)
 				s.controlRevision = s.event.Revision
+				s.applyTargetPolicy(now)
 			}()
 		}
 	}
@@ -183,7 +187,7 @@ func (b *breakerCoordinator) recordSmartOutcomeLocked(task *Task, err error, cov
 		report.Evidence = append(report.Evidence, incident.Sample{At: o.At, TaskID: o.TaskID, Stage: o.Stage, URL: o.URL, Kind: o.Kind, Error: o.Error})
 	}
 
-	l := &breakerEvent{Recovery: breaker.Recovery{Version: 1, ID: report.Capture.ID, Site: task.Site, State: report.State, Epoch: s.epoch, StartedAt: now, UpdatedAt: now, Deadline: report.Deadline, NextProbeAt: report.NextProbeAt, LastFailureAt: now}, report: report}
+	l := &breakerEvent{Recovery: breaker.Recovery{Version: 2, PolicyRevision: s.policyRevision, FrozenPolicy: s.cfg, ID: report.Capture.ID, Site: task.Site, State: report.State, Epoch: s.epoch, StartedAt: now, UpdatedAt: now, Deadline: report.Deadline, NextProbeAt: report.NextProbeAt, LastFailureAt: now}, report: report}
 	s.event = l
 	l.MixedSamples = d.Rule == "mixed"
 	l.Cycle = 1

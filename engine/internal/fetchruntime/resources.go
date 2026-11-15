@@ -39,11 +39,11 @@ func (r *Resources) Browser() *browser.Pool      { r.mu.RLock(); defer r.mu.RUnl
 func (r *Resources) SetHTML(m *htmlfetch.Client) { r.mu.Lock(); defer r.mu.Unlock(); r.html = m }
 func (r *Resources) HTML() *htmlfetch.Client     { r.mu.RLock(); defer r.mu.RUnlock(); return r.html }
 
-// RenderResult separates resource execution from Engine trace/archive policy.
-// Account content must never be offered to the raw archive.
+// RenderResult separates resource execution from Engine trace evidence policy.
+// Account content must never be offered to the raw snapshots.
 type RenderResult struct {
-	HTML, URL, ArchiveURL string
-	Account, Archive      bool
+	HTML, URL, SnapshotURL string
+	Account, Snapshot      bool
 }
 
 func BrowserProxyError(ctx context.Context) error {
@@ -96,11 +96,11 @@ func (r *Resources) Render(ctx context.Context, rawURL string, opts browser.Page
 		return out, fmt.Errorf("read html of %s: %w", rawURL, err)
 	}
 	info, infoErr := page.Info()
-	out.Archive = true
+	out.Snapshot = true
 	out.HTML = html
-	out.ArchiveURL = rawURL
+	out.SnapshotURL = rawURL
 	if infoErr == nil && info.URL != "" {
-		out.ArchiveURL = info.URL
+		out.SnapshotURL = info.URL
 	}
 	if infoErr != nil {
 		return out, fmt.Errorf("get page info of %s: %w", rawURL, infoErr)

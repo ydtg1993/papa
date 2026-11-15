@@ -22,8 +22,6 @@ db:
   max_open_conns: 100
 browser:
   enable: true
-  pool_size: 3
-  max_idle_time: "5m"
   headers:
     User-Agent: "test-ua"
     Accept-Language: "zh-CN"
@@ -52,9 +50,6 @@ crawler:
 		t.Fatalf("load: %v", err)
 	}
 
-	if cfg.Browser.MaxIdleTime != 5*time.Minute {
-		t.Fatalf("max_idle_time = %v, want 5m", cfg.Browser.MaxIdleTime)
-	}
 	if got := cfg.Crawler.TraceFiles; got.Dir != "./test-traces" || got.MaxFileBytes != 65536 || got.MaxTotalBytes != 1048576 || got.MaxFiles != 50 {
 		t.Fatalf("trace_files not decoded: %+v", got)
 	}

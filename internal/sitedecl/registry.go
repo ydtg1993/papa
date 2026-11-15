@@ -51,14 +51,6 @@ func Sites() []SiteSpec {
 func cloneSpec(s SiteSpec) SiteSpec {
 	s.Headers = maps.Clone(s.Headers)
 	s.RestrictedKeywords = slices.Clone(s.RestrictedKeywords)
-	if s.Breaker != nil {
-		b := *s.Breaker
-		if b.Policy != nil {
-			policy := *b.Policy
-			b.Policy = &policy
-		}
-		s.Breaker = &b
-	}
 	s.M3U8, s.FileDown = s.M3U8.Clone(), s.FileDown.Clone()
 	s.Stages = slices.Clone(s.Stages)
 	for i := range s.Stages {

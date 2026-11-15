@@ -57,7 +57,7 @@ flowchart TB
     subgraph Storage["持久数据：各归所属组件"]
         FrameworkDB[("MySQL 框架表<br/>任务与控制状态")]
         BusinessData[("业务表 / 业务产物")]
-        Evidence["Trace 文件 / 页面归档<br/>执行证据"]
+        Evidence["Trace 文件（含页面/响应快照）<br/>执行证据"]
         ReportFiles["已有报告文件"]
     end
 
@@ -133,7 +133,7 @@ flowchart TD
     Parse["业务解析与处理<br/>可产生结果、后续任务，或两者都不产生"]
     Item["业务结果处理<br/>校验、幂等写业务表 / 产物"]
     Child["构造后续 Task<br/>同阶段翻页或跨阶段派发"]
-    Finish["每次尝试收尾<br/>结束计时与 Trace / 页面归档；异常见表"]
+    Finish["每次尝试收尾<br/>结束计时与 Trace（含页面/响应快照）；异常见表"]
     Return{"本次尝试结果分类"}
     Retry{"普通错误且允许再次尝试？"}
     Backoff["可取消退避<br/>一次性增加重试计数"]
@@ -208,7 +208,7 @@ flowchart TD
 
 观测虚线只表示一个典型信号位置；App/Engine 还会发出运行开始、认领、重试及采样指标。默认 App 接线在 `obs.events.enabled` 开启时建立信号入口，并给在线 Runner 注入该入口；后台只读报告文件。转发、归档和报告各有固定消费者/有界工作集，但 App 收尾**共享同一个最长 2 秒 deadline**，不是每路各等 2 秒。故障、满载或退出报告缺失不改变任务结算与熔断恢复；共享 CPU/内存/磁盘的物理影响仍存在。
 
-Trace/页面归档是尝试 `defer` 中执行的独立证据写入路径，**不经过 obs 异步队列**，也不自动享有 obs 的 2 秒收尾预算。它们不承担恢复日志职责，不能把“obs 旁路”外推为所有日志/证据 I/O 都不会影响 worker。在线报告也不包含全部离线分析能力：CLI 显式离线分析可读取归档或配置的数据库输入，但不在爬虫执行/关停链中运行。
+Trace（含页面/响应快照）是尝试 `defer` 中执行的独立证据写入路径，**不经过 obs 异步队列**，也不自动享有 obs 的 2 秒收尾预算。它们不承担恢复日志职责，不能把“obs 旁路”外推为所有日志/证据 I/O 都不会影响 worker。在线报告也不包含全部离线分析能力：CLI 显式离线分析可读取归档或配置的数据库输入，但不在爬虫执行/关停链中运行。
 
 本次源码核对落点：`internal/app/lifecycle.go`、`bootstrap.go`、`observation.go`、`reports.go`；`engine/stage.go`、`attempt_execution.go`、`attempt_persistence.go`、`persistence.go`、`scheduler_refill.go`、`recoverqueue.go`、`breaker_runtime.go`；`engine/internal/execution/{state,settlement}.go`、`internal/taskstore/store.go`；`pkg/events/emitter.go`、`admin/reports/handler.go`。这些路径相对框架源码根目录，便于维护时追溯，不是业务项目中的相对文件路径。
 

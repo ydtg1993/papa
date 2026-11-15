@@ -24,7 +24,7 @@ func (p *attemptPersistence) recordTime(ctx context.Context, task *Task, column 
 	version, claimed := taskRunVersionFrom(ctx)
 	if !claimed {
 		// Only the claimed execution protocol may mutate task timing. Direct
-		// internal runAttempt calls (offline parsing/archive tests) own no round.
+		// internal runAttempt calls (offline parsing/snapshot tests) own no round.
 		return nil
 	}
 	var captured string

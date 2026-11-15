@@ -50,7 +50,8 @@ type Spec struct {
 
 // registry 已知配置项。**只有这里的键能读能写** —— 键名打错时报错会把它列出来。
 var registry = map[string]Spec{
-	KeyRuntimePolicy: {Key: KeyRuntimePolicy, Doc: "版本化采集运行策略；必须通过 SaveCAS 写入"},
+	"execution_policy": {Key: "execution_policy", Doc: "数据库唯一执行策略，版本化接口写入"},
+	KeyRuntimePolicy:   {Key: KeyRuntimePolicy, Doc: "版本化采集运行策略；必须通过 SaveCAS 写入"},
 	KeyIPWhitelist: {
 		Key:      KeyIPWhitelist,
 		Doc:      "来源 IP/CIDR 白名单（字符串数组）；空数组 = 不限制来源",
@@ -214,7 +215,7 @@ func (s *Store) LoadStringsContext(ctx context.Context, key string) ([]string, e
 // 两道前置：键必须在注册表里、值的形状必须过这一项的 Validate —— 写坏一项运行期配置
 // 的代价是"限制悄悄放宽"这类安静的事故，而写入点就这么几个，拦在这里最便宜。
 func (s *Store) Save(key string, val any, operator string) error {
-	if key == KeyRuntimePolicy {
+	if versionedKey(key) {
 		return ErrCASRequired
 	}
 	sp, err := SpecOf(key)

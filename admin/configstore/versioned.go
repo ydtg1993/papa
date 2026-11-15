@@ -25,7 +25,7 @@ var (
 // LoadVersioned returns revision zero only for an absent policy. The database
 // column is authoritative; the JSON document must not contain a second revision.
 func (s *Store) LoadVersioned(ctx context.Context, key string) (json.RawMessage, uint64, error) {
-	if key != KeyRuntimePolicy {
+	if !versionedKey(key) {
 		return nil, 0, ErrCASRequired
 	}
 	var row models.Config
@@ -51,6 +51,13 @@ func (s *Store) LoadVersioned(ctx context.Context, key string) (json.RawMessage,
 // after success. An ambiguous database error must be reconciled by reloading.
 func (s *Store) SaveCAS(ctx context.Context, key string, val any, expected uint64, operator string) (uint64, error) {
 	if key != KeyRuntimePolicy {
+		return 0, ErrCASRequired
+	}
+	return s.saveCAS(ctx, key, val, expected, operator)
+}
+
+func (s *Store) saveCAS(ctx context.Context, key string, val any, expected uint64, operator string) (uint64, error) {
+	if !versionedKey(key) {
 		return 0, ErrCASRequired
 	}
 	if expected == math.MaxUint64 {
@@ -114,3 +121,5 @@ func (s *Store) SaveCAS(ctx context.Context, key string, val any, expected uint6
 	}
 	return next, nil
 }
+
+func versionedKey(key string) bool { return key == KeyRuntimePolicy || key == "execution_policy" }

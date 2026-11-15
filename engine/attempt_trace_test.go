@@ -16,11 +16,11 @@ import (
 
 // 失败的尝试必须在 trace 里留下**原因**。
 //
-// 这是从一次真实抓取里发现的：一条解析失败的任务，追踪抽屉里只有「抓取分类页 ✔」「归档页面 ✔」
+// 这是从一次真实抓取里发现的：一条解析失败的任务，追踪抽屉里只有「抓取分类页 ✔」「页面快照页面 ✔」
 // 两条 —— 前几步都成功，到底为什么死掉只在引擎日志里。而"这一次为什么失败"正是点开追踪最想知道的事。
 func TestFailedAttemptRecordsFailureStep(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := snapshotEngine(t, config.TraceErrors, srv.URL)
 
 	// 带分类的错误：抽屉里要能一眼分清"结构变了"还是"重试耗尽"
 	boom := core.WrapNoRetryKind("structure", errors.New("catalog grid missing"))
@@ -46,7 +46,7 @@ func TestFailedAttemptRecordsFailureStep(t *testing.T) {
 // panic 也是失败，而且更该在抽屉里看见（workerpool 那头照旧记栈与失败计数）。
 func TestPanickingAttemptRecordsFailureStep(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := snapshotEngine(t, config.TraceErrors, srv.URL)
 	task := &Task{ID: 11, Stage: "stub", URL: srv.URL}
 
 	func() {
@@ -69,7 +69,7 @@ func TestPanickingAttemptRecordsFailureStep(t *testing.T) {
 // 成功的尝试不写这条步骤 —— 否则每条任务都挂着"任务失败"，抽屉里全是噪声。
 func TestSuccessfulAttemptHasNoFailureStep(t *testing.T) {
 	srv := serveBody(t, "<html>ok</html>")
-	e, _, _ := archiveEngine(t, config.ArchiveModeFailure, srv.URL)
+	e, _, _ := snapshotEngine(t, config.TraceErrors, srv.URL)
 	task := &Task{ID: 10, Stage: "stub", URL: srv.URL}
 
 	if err := e.runAttempt(context.Background(), &pageFetcher{urls: []string{srv.URL}}, task, 0); err != nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/devices"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
@@ -21,24 +22,27 @@ import (
 // Pool Browser池封装管理多个rod。
 // 浏览器按需懒创建：Get 时若无空闲实例且未达容量上限才新建；归还后不再立即重建。
 // 空闲超过 max_idle_time 的实例由后台回收协程定期关闭，避免长期无任务仍反复唤起浏览器。
-// Size/DirectSize 是并发上限（按需创建），不是常驻实例数，运行期不可调整。
+// Size/DirectSize 是并发上限（按需创建），不是常驻实例数，运行期可通过 ApplyLimits 调整。
 // headers/max_idle_time 为共享可热更字段，改动即时全局生效。
 type Pool struct {
 	cfg          PoolConfig
 	newBrowserFn func(useProxy bool) (*Browser, error) // 浏览器工厂，测试可注入
 
-	browsers chan *Browser // 空闲的代理浏览器
-	direct   chan *Browser // 空闲的强制直连浏览器
-	cond     *sync.Cond    // L: mu，广播唤醒阻塞中的 Get
-
-	proxyAlive  atomic.Int64 // 当前存活（含借用中）的代理浏览器数
-	directAlive atomic.Int64 // 当前存活（含借用中）的直连浏览器数
-
-	mu              sync.Mutex // 保护空闲通道的收发与关闭，见 get/put/reapChannel/Close
-	admissionCtx    context.Context
-	admissionCancel context.CancelFunc
-	statsMu         sync.Mutex
-	instances       map[*Browser]instanceState
+	browsers                      []*Browser
+	direct                        []*Browser
+	cond                          *sync.Cond
+	proxyAlive                    atomic.Int64
+	directAlive                   atomic.Int64
+	mu                            sync.Mutex
+	admissionCtx                  context.Context
+	admissionCancel               context.CancelFunc
+	policyCtx                     context.Context
+	policyCancel                  context.CancelFunc
+	instances                     map[*Browser]instanceState
+	proxyTarget, directTarget     int
+	proxyCreating, directCreating int
+	proxyWaiting, directWaiting   int
+	initialized                   bool
 
 	headers atomic.Pointer[map[string]string] // 共享可热更：默认请求头（copy-on-write）
 	maxIdle atomic.Int64                      // 共享可热更：空闲回收阈值（纳秒）
@@ -47,6 +51,7 @@ type Pool struct {
 	closeOnce sync.Once
 
 	reaperMu   sync.Mutex
+	reaperWake chan struct{}
 	reaperStop chan struct{} // 非 nil 表示空闲回收协程在运行
 }
 
@@ -119,6 +124,15 @@ func resolveBrowserBinary(source, path string) (string, string, error) {
 
 // NewPool 创建浏览器池
 func NewPool(cfg PoolConfig) (*Pool, error) {
+	return NewPoolContext(context.Background(), cfg)
+}
+
+// NewPoolContext propagates cancellation through startup/self-check. Successful
+// pooled browsers have their own lifetime and remain reusable after it ends.
+func NewPoolContext(ctx context.Context, cfg PoolConfig) (*Pool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := cfg.Network.Validate(); err != nil {
 		return nil, err
 	}
@@ -159,9 +173,8 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 
 	// 只分配空闲通道，浏览器按需在 Get 时创建
 	p := &Pool{
-		cfg:      cfg,
-		browsers: make(chan *Browser, cfg.Size),
-		direct:   make(chan *Browser, cfg.DirectSize),
+		cfg:         cfg,
+		proxyTarget: cfg.Size, directTarget: cfg.DirectSize, initialized: true,
 	}
 	p.cond = sync.NewCond(&p.mu)
 	h := copyMap(cfg.DefaultHeaders)
@@ -173,8 +186,11 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 	// 起一次进程就知道浏览器这一环通不通（rod 模式会在这里触发下载）。
 	// 用完就关是刻意的：自检只负责验证，不占直连池的槽位（要常驻实例由 Get 按需建）。
 	if cfg.SelfCheck {
-		b, err := p.createBrowser(context.Background(), false)
+		b, err := p.createBrowser(ctx, false)
 		if err != nil {
+			if b != nil {
+				b.Close()
+			}
 			return nil, fmt.Errorf("browser self-check: %w", err)
 		}
 		b.Close()
@@ -211,14 +227,30 @@ func (p *Pool) createBrowser(ctx context.Context, useProxy bool) (*Browser, erro
 	if p.newBrowserFn != nil {
 		return p.newBrowserFn(useProxy)
 	}
-	if p.cfg.diagnosticStartup {
-		return p.newDiagnosticBrowser(ctx, useProxy)
+	p.mu.Lock()
+	if p.admissionCtx == nil {
+		p.admissionCtx, p.admissionCancel = context.WithCancel(context.Background())
 	}
-	return p.newBrowser(useProxy)
+	poolCtx := p.admissionCtx
+	if p.closed.Load() {
+		p.admissionCancel()
+	}
+	p.mu.Unlock()
+	startup, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(poolCtx, cancel)
+	defer stop()
+	if p.cfg.diagnosticStartup {
+		return p.newDiagnosticBrowser(startup, ctx, useProxy)
+	}
+	return p.newBrowser(startup, useProxy)
 }
 
-func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
-	l := p.newLauncher()
+func (p *Pool) newBrowser(ctx context.Context, useProxy bool) (result *Browser, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	l := p.newLauncher().Context(ctx)
 	upstream, observeProxy, proxyState, err := p.selectBrowserProxy(useProxy, l.Get(flags.Flag("proxy-server")))
 	if err != nil {
 		return nil, err
@@ -253,34 +285,59 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 			return nil, err
 		}
 	}
+	var process *ownedLauncher
 	defer func() {
 		if !success {
-			if l.PID() != 0 {
-				l.Kill()
-			}
-			if dir != "" {
+			if process != nil {
+				// Hand partial ownership back with the error. Get registers it
+				// before Close, retaining its slot if cleanup is still pending.
+				result = &Browser{launcher: process, useProxy: useProxy}
+			} else if dir != "" {
 				_ = os.RemoveAll(dir)
 			}
 		}
 	}()
 
-	url, err := l.Launch()
+	process, url, err := launchOwned(ctx, l)
 	if err != nil {
 		return nil, err
 	}
 
 	// 不用 MustConnect：连不上时它会 panic，而这里是在业务 goroutine 里取浏览器，
 	// 该返回错误而不是把整个流程炸掉。连不上还要把刚拉起来的 Chrome 收掉，否则进程泄漏。
-	browser := rod.New().ControlURL(url)
+	// Bound TCP/WebSocket/CDP startup, but detach the established connection
+	// from this borrower's context before handing it to the reusable pool.
+	dialer := &diagnosticDialer{ctx: ctx}
+	ws := &cdp.WebSocket{Dialer: dialer}
+	defer func() {
+		if !success && dialer.conn != nil {
+			_ = dialer.conn.Close()
+		}
+		if dialer.stop != nil {
+			dialer.stop()
+		}
+	}()
+	if err := ws.Connect(ctx, url, nil); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return nil, fmt.Errorf("connect browser: %w", err)
+	}
+	client := &diagnosticCDP{client: cdp.New().Start(ws), startup: ctx}
+	browser := rod.New().Client(client)
 	if err := browser.Connect(); err != nil {
 		return nil, fmt.Errorf("connect browser: %w", err)
 	}
+	if err := dialer.release(); err != nil {
+		return nil, err
+	}
+	client.ready.Store(true)
 	success = true
 	return &Browser{
 		proxyState:     proxyState,
 		Browser:        browser,
 		gateway:        gateway,
-		launcher:       l,
+		launcher:       process,
 		useProxy:       useProxy,
 		defaultDevice:  p.cfg.DefaultDevice,
 		defaultCookies: copyCookies(p.cfg.DefaultCookies),
@@ -288,32 +345,8 @@ func (p *Pool) newBrowser(useProxy bool) (*Browser, error) {
 }
 
 // Get 从池中获取一个代理浏览器实例（阻塞直到有可用）
-func (p *Pool) Get(ctx context.Context) (*Browser, error) {
-	if p.closed.Load() {
-		return nil, fmt.Errorf("browser pool closed")
-	}
-	// 容量 0 = 这个池没配代理浏览器，**必须立刻报错**，不能放行到 cond.Wait：
-	// get 里"复用空闲实例"与"未达上限则新建"两条快路径各自带 `limit > 0` 前缀，
-	// 容量 0 时全被跳过 → 停在 cond.Wait 上**永久阻塞且不报错**；而 CLI 那种
-	// `context.Background()` 永不 cancel（ctx 取消那条退路要靠 AfterFunc 广播去唤醒），
-	// 调用方只看到"抓取挂死"，没有任何线索指向池容量。与 GetDirect 对同类情况的处理对称。
-	// 生产路径到不了这里：config 校验层在 browser.enable=true 时已要求 pool_size > 0（config/validate.go）。
-	if cap(p.browsers) == 0 {
-		return nil, fmt.Errorf("browser pool not configured（pool_size 为 0）")
-	}
-	return p.get(ctx, p.browsers, &p.proxyAlive, true)
-}
-
-// GetDirect 从池中获取一个强制直连浏览器实例（阻塞直到有可用）
-func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) {
-	if p.closed.Load() {
-		return nil, fmt.Errorf("browser pool closed")
-	}
-	if cap(p.direct) == 0 {
-		return nil, fmt.Errorf("direct browsers not configured")
-	}
-	return p.get(ctx, p.direct, &p.directAlive, false)
-}
+func (p *Pool) Get(ctx context.Context) (*Browser, error)       { return p.get(ctx, true) }
+func (p *Pool) GetDirect(ctx context.Context) (*Browser, error) { return p.get(ctx, false) }
 
 // WithBrowser 从代理池借一个实例执行 fn，返回后保证归还。
 //
@@ -340,126 +373,147 @@ func (p *Pool) withBrowser(ctx context.Context, get func(context.Context) (*Brow
 	return fn(b)
 }
 
-// get 从指定通道获取浏览器实例：优先复用空闲，其次按需新建，最后阻塞等待状态变化。
-// 快路径（取空闲 / 新建）在锁外完成，避免慢操作（CDP 探测、Chrome 启动）持锁；
-// 慢路径在 p.mu 下复查条件并用 cond.Wait 原子休眠，所有状态变化均持 p.mu 广播，杜绝丢失唤醒。
-func (p *Pool) get(ctx context.Context, ch chan *Browser, alive *atomic.Int64, useProxy bool) (*Browser, error) {
-	limit := int64(cap(ch))
-	stopCtx := context.AfterFunc(ctx, func() {
-		p.mu.Lock()
-		p.cond.Broadcast()
-		p.mu.Unlock()
-	})
-	defer stopCtx()
+// ErrDirectDisabled means subsequent direct borrows are disabled by policy.
+var ErrDirectDisabled = fmt.Errorf("direct browsers not configured")
 
+func (p *Pool) initLocked() {
+	if p.initialized {
+		return
+	}
+	p.proxyTarget, p.directTarget = p.cfg.Size, p.cfg.DirectSize
+	p.initialized = true
+}
+func (p *Pool) classLocked(proxy bool) (*[]*Browser, *atomic.Int64, *int, *int, int) {
+	p.initLocked()
+	if proxy {
+		return &p.browsers, &p.proxyAlive, &p.proxyCreating, &p.proxyWaiting, p.proxyTarget
+	}
+	return &p.direct, &p.directAlive, &p.directCreating, &p.directWaiting, p.directTarget
+}
+func (p *Pool) get(ctx context.Context, proxy bool) (*Browser, error) {
+	stop := context.AfterFunc(ctx, p.broadcast)
+	defer stop()
 	for {
+		p.mu.Lock()
+		idle, alive, creating, waiting, target := p.classLocked(proxy)
 		if err := ctx.Err(); err != nil {
+			p.mu.Unlock()
 			return nil, err
 		}
-		maxIdle := p.maxIdleDuration()
-
-		// 1. 非阻塞复用空闲实例
-		select {
-		case b := <-ch:
-			if b == nil {
-				return nil, fmt.Errorf("browser pool closed")
-			}
-			if b = p.usable(b, alive, maxIdle); b == nil {
-				// usable 关掉了一个死掉/超时空闲的实例并扣了 alive —— 那是"槽位空出来了"，
-				// 得叫一声，否则可能有个已入睡的 Get 一直等不到人叫它。
-				//
-				// 触发很窄，写下来免得被当成多余代码删掉：实例是活的才能进池（put 会判 IsAlive），
-				// 所以它只能在「put 广播 → 抢到的那个 Get 睡回去 → 实例随即死掉」这条缝里
-				// 变成死实例；此时若接着这次新建又失败，槽位就一直空着，直到下一次 put / Close。
-				p.broadcast()
-				continue
-			}
-			b.markUsed()
-			p.setInstanceState(b, instanceReserved)
-			if b.proxyState != nil {
-				b.proxyState.reset()
-			}
-			release, err := p.acquireBrowserPermit(ctx)
-			if err != nil {
-				_ = p.put(b)
-				return nil, err
-			}
-			b.setBorrowRelease(release)
-			p.setInstanceState(b, instanceBorrowed)
-			if p.closed.Load() {
-				_ = p.put(b)
-				return nil, fmt.Errorf("browser pool closed")
-			}
-			return b, nil
-		default:
-		}
-
-		// 2. 未达容量上限则按需新建
-		if limit > 0 && alive.Add(1) <= limit {
-			release, permitErr := p.acquireBrowserPermit(ctx)
-			if permitErr != nil {
-				alive.Add(-1)
-				p.broadcast()
-				return nil, permitErr
-			}
-			b, err := func() (*Browser, error) {
-				defer func() {
-					if v := recover(); v != nil {
-						release()
-						alive.Add(-1)
-						p.broadcast()
-						panic(v)
-					}
-				}()
-				return p.createBrowser(ctx, useProxy)
-			}()
-			if err != nil {
-				release()
-				alive.Add(-1)
-				// 槽位空出来了：叫醒睡在 cond.Wait 的 Get。照 broadcast 的约定，凡是改变
-				// "还有没有空闲槽位"的状态变化都要叫一声 —— 这里不广播的话，池满时那个
-				// 等待者会一直睡到下一次 put / Close / 自己 ctx 取消（传不取消的 ctx 就是无限期）。
-				p.broadcast()
-				return nil, fmt.Errorf("create browser: %w", err)
-			}
-			b.pool = p
-			p.registerInstance(b)
-			b.setBorrowRelease(release)
-			b.markUsed()
-			if p.closed.Load() {
-				_ = p.put(b)
-				return nil, fmt.Errorf("browser pool closed")
-			}
-			if err := ctx.Err(); err != nil {
-				_ = p.put(b)
-				return nil, err
-			}
-			return b, nil
-		}
-		if limit > 0 {
-			alive.Add(-1)
-		}
-
-		// 3. 加锁复查条件，仍不满足则 cond.Wait（原子释放锁休眠）
-		p.mu.Lock()
 		if p.closed.Load() {
 			p.mu.Unlock()
 			return nil, fmt.Errorf("browser pool closed")
 		}
-		if err := ctx.Err(); err != nil {
+		if target == 0 {
 			p.mu.Unlock()
-			return nil, err
+			if !proxy {
+				return nil, ErrDirectDisabled
+			}
+			return nil, fmt.Errorf("browser pool not configured（pool_size 为 0）")
 		}
-		if len(ch) > 0 || (limit > 0 && alive.Load() < limit) {
+		var b *Browser
+		if int(alive.Load()) <= target && len(*idle) > 0 {
+			b = (*idle)[len(*idle)-1]
+			*idle = (*idle)[:len(*idle)-1]
+			p.instances[b] = instanceReserved
+		} else if int(alive.Load()) < target {
+			alive.Add(1)
+			*creating++
+		} else {
+			*waiting++
+			p.cond.Wait()
+			*waiting--
 			p.mu.Unlock()
 			continue
 		}
-		p.cond.Wait()
 		p.mu.Unlock()
+		maxIdle := p.maxIdleDuration()
+		if b != nil && (!b.IsAliveContext(ctx) || (maxIdle > 0 && time.Since(b.GetLastUsed()) > maxIdle)) {
+			b.Close()
+			continue
+		}
+		release, err := p.acquireBrowserPermit(ctx, proxy)
+		created := b == nil
+		if b == nil {
+			if err == nil {
+				func() {
+					defer func() {
+						if v := recover(); v != nil {
+							release()
+							p.finishCreation(proxy, nil)
+							panic(v)
+						}
+					}()
+					b, err = p.createBrowser(ctx, proxy)
+				}()
+			}
+			p.finishCreation(proxy, b)
+		}
+		if err != nil {
+			if release != nil {
+				release()
+			}
+			if b != nil {
+				if created {
+					b.Close()
+				} else {
+					_ = p.put(b)
+				}
+			}
+			if err == errPolicyChanged {
+				continue
+			}
+			return nil, err
+		}
+		if b == nil {
+			release()
+			return nil, fmt.Errorf("browser factory returned nil")
+		}
+		b.setBorrowRelease(release)
+		p.mu.Lock()
+		_, alive, _, _, target = p.classLocked(proxy)
+		err = ctx.Err()
+		closed := p.closed.Load()
+		accepted := err == nil && !closed && target > 0 && int(alive.Load()) <= target && !b.closed.Load()
+		if accepted {
+			p.instances[b] = instanceBorrowed
+		}
+		p.mu.Unlock()
+		if !accepted {
+			b.Close()
+			if err != nil {
+				return nil, err
+			}
+			if closed {
+				return nil, fmt.Errorf("browser pool closed")
+			}
+			continue
+		}
+		b.markUsed()
+		if b.proxyState != nil {
+			b.proxyState.reset()
+		}
+		return b, nil
 	}
 }
+func (p *Pool) finishCreation(proxy bool, b *Browser) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, alive, creating, _, _ := p.classLocked(proxy)
+	*creating--
+	if b == nil {
+		alive.Add(-1)
+	} else {
+		b.pool = p
+		if p.instances == nil {
+			p.instances = make(map[*Browser]instanceState)
+		}
+		p.instances[b] = instanceReserved
+	}
+	p.cond.Broadcast()
+}
 
-// usable 校验空闲实例：死掉或空闲超时的关闭并扣减存活计数，返回 nil 让调用方重试。
+// usable remains a small standalone health helper for unregistered instances.
 func (p *Pool) usable(b *Browser, alive *atomic.Int64, maxIdle time.Duration) *Browser {
 	if !b.IsAlive() || (maxIdle > 0 && time.Since(b.GetLastUsed()) > maxIdle) {
 		b.Close()
@@ -468,27 +522,10 @@ func (p *Pool) usable(b *Browser, alive *atomic.Int64, maxIdle time.Duration) *B
 	}
 	return b
 }
-
-// broadcast 唤醒所有阻塞在 get 里的调用方。
-//
-// 约定：**凡是会改变「还有没有空闲槽位」的状态变化，都要经它叫一声** ——
-// 睡在 cond.Wait 上的 Get 只有被广播才会重新检查条件。
-// 目前会改变条件的是：归还（put）、关闭池（Close）、空闲回收（reapChannel）、
-// 以及取到死实例后把它关掉（get 的快路径，usable 扣掉 alive 那一下）。
-func (p *Pool) broadcast() {
-	p.mu.Lock()
-	p.cond.Broadcast()
-	p.mu.Unlock()
-}
-
-// Put 将浏览器实例归还池中
+func (p *Pool) broadcast() { p.mu.Lock(); p.cond.Broadcast(); p.mu.Unlock() }
 func (p *Pool) Put(b *Browser) error {
 	if b == nil {
 		return fmt.Errorf("browser is nil")
-	}
-	if p.closed.Load() {
-		b.Close()
-		return fmt.Errorf("browser pool closed")
 	}
 	if b.pool == nil {
 		b.Close()
@@ -496,45 +533,84 @@ func (p *Pool) Put(b *Browser) error {
 	}
 	return b.pool.put(b)
 }
-
-// put 归还浏览器：死实例直接回收不重建，池已关闭则直接回收。
 func (p *Pool) put(b *Browser) error {
-	b.releaseBorrow()
-	p.setInstanceState(b, instanceIdle)
-	enqueued := false
-	if b.IsAlive() {
-		b.markIdle()
-		// 持锁发送：Close 也在同一把锁下 close(ch)，两者互斥，避免 send on closed channel
-		p.mu.Lock()
-		if !p.closed.Load() {
-			ch := p.browsers
-			if !b.useProxy {
-				ch = p.direct
-			}
-			select {
-			case ch <- b:
-				enqueued = true
-			default:
-			}
-		}
+	p.mu.Lock()
+	state, ok := p.instances[b]
+	if !ok || (state != instanceBorrowed && state != instanceReserved) {
 		p.mu.Unlock()
+		return fmt.Errorf("browser already returned or closed")
 	}
-	if !enqueued {
-		b.Close()
-		p.decAlive(b)
+	p.instances[b] = instanceReturning
+	p.mu.Unlock()
+	b.releaseBorrow()
+	healthy := b.IsAlive()
+	p.mu.Lock()
+	idle, alive, _, _, target := p.classLocked(b.useProxy)
+	closed := p.closed.Load()
+	if healthy && !closed && int(alive.Load()) <= target && !b.closed.Load() {
+		b.markIdle()
+		*idle = append(*idle, b)
+		p.instances[b] = instanceIdle
+		p.cond.Broadcast()
+		p.mu.Unlock()
+		return nil
 	}
-
-	p.broadcast()
+	p.mu.Unlock()
+	b.Close()
+	if closed {
+		return fmt.Errorf("browser pool closed")
+	}
 	return nil
 }
 
-// decAlive 扣减存活计数（实例已关闭）。
-func (p *Pool) decAlive(b *Browser) {
-	if b.useProxy {
-		p.proxyAlive.Add(-1)
-	} else {
-		p.directAlive.Add(-1)
+// ApplyLimits publishes capacities without waiting for borrowed instances to drain.
+// Closing instances continue to occupy their slots until cleanup completes.
+func (p *Pool) ApplyLimits(size, direct int, idle time.Duration) error {
+	if size <= 0 || direct < 0 || idle < 0 {
+		return fmt.Errorf("invalid browser limits: %d/%d/%s", size, direct, idle)
 	}
+	p.mu.Lock()
+	if p.closed.Load() {
+		p.mu.Unlock()
+		return fmt.Errorf("browser pool closed")
+	}
+	p.initLocked()
+	if p.policyCancel != nil {
+		p.policyCancel()
+		p.policyCtx = nil
+		p.policyCancel = nil
+	}
+	p.proxyTarget = size
+	p.directTarget = direct
+	p.maxIdle.Store(int64(idle))
+	retired := p.trimLocked(true)
+	retired = append(retired, p.trimLocked(false)...)
+	p.cond.Broadcast()
+	p.mu.Unlock()
+	for _, b := range retired {
+		go b.Close()
+	}
+	p.ensureReaper()
+	return nil
+}
+func (p *Pool) trimLocked(proxy bool) []*Browser {
+	idle, alive, _, _, target := p.classLocked(proxy)
+	excess := int(alive.Load()) - target
+	// Already closing instances are already committed to retirement.
+	for b, state := range p.instances {
+		if b.useProxy == proxy && state == instanceClosing {
+			excess--
+		}
+	}
+	var retired []*Browser
+	for excess > 0 && len(*idle) > 0 {
+		b := (*idle)[len(*idle)-1]
+		*idle = (*idle)[:len(*idle)-1]
+		p.instances[b] = instanceClosing
+		retired = append(retired, b)
+		excess--
+	}
+	return retired
 }
 
 // SetHeaders 运行期热更默认请求头（copy-on-write）。
@@ -565,32 +641,44 @@ func (p *Pool) maxIdleDuration() time.Duration {
 
 // ensureReaper 空闲回收协程：max_idle_time > 0 时启动，定期关闭空闲超时的浏览器。
 func (p *Pool) ensureReaper() {
-	if p.maxIdleDuration() <= 0 {
-		return
-	}
 	p.reaperMu.Lock()
 	defer p.reaperMu.Unlock()
-	// closed 必须在持锁时再查一次：锁外查完、进锁前若被 Close 抢先（Close 看到 reaperStop==nil
-	// 就返回），这里仍会建 stop channel 并起协程 —— 那个协程再也停不掉，每个 tick 空转直到进程退出。
-	if p.closed.Load() || p.reaperStop != nil {
+	if p.closed.Load() {
 		return
 	}
-	p.reaperStop = make(chan struct{})
-	go p.reaperLoop(p.reaperStop)
+	if p.reaperStop == nil {
+		if p.maxIdleDuration() <= 0 {
+			return
+		}
+		p.reaperStop = make(chan struct{})
+		p.reaperWake = make(chan struct{}, 1)
+		go p.reaperLoop(p.reaperStop)
+	}
+	select {
+	case p.reaperWake <- struct{}{}:
+	default:
+	}
 }
-
 func (p *Pool) reaperLoop(stop <-chan struct{}) {
-	interval := p.reaperInterval()
-	if interval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
 	for {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		var tick <-chan time.Time
+		if interval := p.reaperInterval(); interval > 0 {
+			timer.Reset(interval)
+			tick = timer.C
+		}
 		select {
 		case <-stop:
 			return
-		case <-ticker.C:
+		case <-p.reaperWake:
+		case <-tick:
 			p.reapIdle()
 		}
 	}
@@ -613,97 +701,62 @@ func (p *Pool) reaperInterval() time.Duration {
 }
 
 func (p *Pool) reapIdle() {
-	maxIdle := p.maxIdleDuration()
-	if maxIdle <= 0 {
-		return
-	}
-	p.reapChannel(p.browsers, &p.proxyAlive, maxIdle)
-	p.reapChannel(p.direct, &p.directAlive, maxIdle)
-}
-
-// reapChannel 排空空闲通道，关闭死掉/空闲超时的实例，放回仍有效的实例。
-func (p *Pool) reapChannel(ch chan *Browser, alive *atomic.Int64, maxIdle time.Duration) {
 	p.mu.Lock()
-	if p.closed.Load() {
+	maxIdle := p.maxIdleDuration()
+	if p.closed.Load() || maxIdle <= 0 {
 		p.mu.Unlock()
 		return
 	}
-	idle := make([]*Browser, 0, len(ch))
-drain:
-	for {
-		select {
-		case b := <-ch:
-			idle = append(idle, b)
-		default:
-			break drain
-		}
-	}
-	p.mu.Unlock()
-
-	now := time.Now()
-	fresh := idle[:0]
-	for _, b := range idle {
-		if !b.IsAlive() || now.Sub(b.GetLastUsed()) > maxIdle {
-			b.Close()
-			alive.Add(-1)
-		} else {
-			fresh = append(fresh, b)
-		}
-	}
-
-	p.mu.Lock()
-	if p.closed.Load() {
-		for _, b := range fresh {
-			b.Close()
-			alive.Add(-1)
-		}
-	} else {
-		for _, b := range fresh {
-			select {
-			case ch <- b:
-			default:
-				b.Close()
-				alive.Add(-1)
+	var retired []*Browser
+	for _, idle := range []*[]*Browser{&p.browsers, &p.direct} {
+		fresh := (*idle)[:0]
+		for _, b := range *idle {
+			if b.closed.Load() || time.Since(b.GetLastUsed()) > maxIdle {
+				p.instances[b] = instanceClosing
+				retired = append(retired, b)
+			} else {
+				fresh = append(fresh, b)
 			}
 		}
-	}
-	if len(idle) > 0 {
-		p.cond.Broadcast()
+		*idle = fresh
 	}
 	p.mu.Unlock()
+	for _, b := range retired {
+		b.Close()
+	}
 }
 
-// Close stops admission and closes idle browsers. Borrowed/creating instances
-// finish through their return path; callers own draining work before shutdown.
-// TempDir is a shared parent, even when explicitly configured. Only instance
-// cleanup may remove its own profile; the pool must never delete this parent.
+// Close stops admission and retires idle instances; borrowed work drains on Put.
 func (p *Pool) Close() {
+	for _, b := range p.stopAdmission() {
+		b.Close()
+	}
+}
+
+// stopAdmission never performs process I/O under the lifecycle gate. Shutdown
+// can retire every instance in parallel while Close preserves borrowed work.
+func (p *Pool) stopAdmission() (retired []*Browser) {
 	p.closeOnce.Do(func() {
+		p.mu.Lock()
 		p.closed.Store(true)
+		if p.admissionCancel != nil {
+			p.admissionCancel()
+		}
+		retired = append(p.browsers, p.direct...)
+		p.browsers = nil
+		p.direct = nil
+		for _, b := range retired {
+			p.instances[b] = instanceClosing
+		}
+		p.cond.Broadcast()
+		p.mu.Unlock()
 		p.reaperMu.Lock()
 		if p.reaperStop != nil {
 			close(p.reaperStop)
 		}
 		p.reaperMu.Unlock()
-
-		// 持锁关通道（与 put/reapChannel 的发送互斥），再广播唤醒阻塞在 cond.Wait 的 Get；
-		// 它们醒来后从已关闭的空通道收到 nil，返回 "browser pool closed" 而不是挂住。
-		p.mu.Lock()
-		if p.admissionCancel != nil {
-			p.admissionCancel()
-		}
-		close(p.browsers)
-		close(p.direct)
-		p.cond.Broadcast()
-		p.mu.Unlock()
-
-		for b := range p.browsers {
-			b.Close()
-		}
-		for b := range p.direct {
-			b.Close()
-		}
 	})
+	return retired
 }
 
 // 辅助函数：深拷贝 map

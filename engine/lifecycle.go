@@ -22,8 +22,8 @@ import (
 //
 // 各阶段与 ticker 从 Stop 入口共用同一个 deadline；不为后等待的对象重新计时。
 //
-// 拿到 drained=false 时，调用方**不该接着关数据库 / 关浏览器池**：worker goroutine 还活着
-// 的可能性仍在（Go 杀不掉它，见 workerpool.Stop），关闭依赖可能使在途写入报 "sql: database is closed"。
+// 拿到 drained=false 时，调用方不应关闭数据库：worker goroutine 仍可能写库。
+// App 最终退出仍以独立有限预算调用浏览器池 Shutdown，回收超时任务持有的进程。
 func (e *Engine) Stop(timeout time.Duration) (drained bool, stats map[string]core.StopStats) {
 	defer e.requestEventsClose()
 	deadline := time.Now().Add(timeout)

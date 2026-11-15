@@ -182,4 +182,4 @@ v4 不提供旧版本的表结构或任务身份转换。使用独立数据库�
 
 Trace 不再参与框架数据库迁移或启动表结构检查。旧 `crawler_task_trace` 表不会自动删除，但也不会回退读取；需要历史 SQL 证据时自行保留原库备份。本次不改变任务主表认领、终态和结算条件。
 
-新执行在成功认领后取得 UUID，同轮重试共用；`errors` 模式保存异常尝试，`all` 保存全部尝试，`off` 关闭。没有手动选择任务的 Trace 模式。执行身份与归档关联保持一致，归档下载路径独立于 Trace。详见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 Trace 文件存储。
+新执行在成功认领后取得 UUID，同轮重试共用；`errors` 模式保存异常尝试，`all` 保存全部尝试，`off` 关闭。没有手动选择任务的 Trace 模式。步骤与原始快照使用同一执行身份，快照内嵌在同一 Trace 记录内并通过 Trace API 下载。详见 [CORE_CONFIG.md](../configuration/CORE_CONFIG.md) 的 Trace 文件存储。

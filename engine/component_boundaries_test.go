@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestEngineComponentDependenciesStayNarrow(t *testing.T) {
 		"breakerCoordinator": false, "Coordinator": false,
 		"siteCatalog": false, "accountAlertGate": false,
 		"submissionStore": false, "taskFlowService": false,
-		"traceService": false, "archiveService": false,
+		"traceService": false,
 	}
 	paths, err := filepath.Glob("*.go")
 	if err != nil {
@@ -34,6 +35,20 @@ func TestEngineComponentDependenciesStayNarrow(t *testing.T) {
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if err != nil {
 			t.Fatal(err)
+		}
+		wholeConfigImports := make(map[string]bool)
+		for _, imp := range file.Imports {
+			importPath, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if importPath == "github.com/ydtg1993/papa/v4/config" {
+				name := "config"
+				if imp.Name != nil {
+					name = imp.Name.Name
+				}
+				wholeConfigImports[name] = true
+			}
 		}
 		for _, decl := range file.Decls {
 			group, ok := decl.(*ast.GenDecl)
@@ -56,7 +71,8 @@ func TestEngineComponentDependenciesStayNarrow(t *testing.T) {
 							t.Errorf("%s retains Engine instead of explicit dependencies", typ.Name.Name)
 						}
 					case *ast.SelectorExpr:
-						if n.Sel.Name == "Config" {
+						pkg, _ := n.X.(*ast.Ident)
+						if n.Sel.Name == "Config" && pkg != nil && wholeConfigImports[pkg.Name] {
 							t.Errorf("%s retains whole configuration instead of feature options", typ.Name.Name)
 						}
 					}

@@ -101,13 +101,10 @@ func (a *Service) runRodDiagnostic(ctx context.Context) (report RodReport) {
 		}
 		sort.Strings(flagNames)
 		report.Environment["flag_names"] = flagNames
-		report.Environment["browser"] = map[string]any{"enabled": c.Enable, "binary": c.Binary, "headless": c.Headless, "no_sandbox": c.NoSandbox, "leakless": c.Leakless, "pool_size": c.PoolSize, "headers_count": len(c.Headers), "flags_count": len(c.Flags)}
+		report.Environment["browser"] = map[string]any{"enabled": c.Enable, "binary": c.Binary, "headless": c.Headless, "no_sandbox": c.NoSandbox, "leakless": c.Leakless, "headers_count": len(c.Headers), "flags_count": len(c.Flags)}
 		report.Environment["isolation"] = "独立临时用户目录、随机调试端口；配置中的 profile/调试端口由诊断隔离值覆盖"
 		if !c.Enable {
 			return fmt.Errorf("browser.enable=false，生产浏览器池未启用")
-		}
-		if c.PoolSize <= 0 {
-			return fmt.Errorf("browser.pool_size 必须大于 0")
 		}
 		source, path := c.Binary, c.BrowserPath
 		if source == "" {

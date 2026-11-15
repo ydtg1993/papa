@@ -24,7 +24,7 @@
 }
 .trace-data, .trace-candidates { margin-top: 6px; }
 .trace-data summary, .trace-candidates summary { cursor: pointer; font-size: 12px; color: var(--muted-foreground); }
-/* 归档步骤的下载按钮：现场文件拿下去本地分析（见 trace.js 的 «下载这一页»） */
+/* 快照步骤的下载按钮：现场文件拿下去本地分析（见 trace.js 的 «下载这一页»） */
 .trace-files { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .trace-files .btn { padding: 4px 10px; font-size: 12px; }
 

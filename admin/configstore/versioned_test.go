@@ -65,3 +65,13 @@ func TestRuntimePolicyVersionedReadAndFailures(t *testing.T) {
 		t.Fatal("duplicate version allowed")
 	}
 }
+
+func TestExecutionPolicyRejectsUnversionedAndUnauditedWrites(t *testing.T) {
+	s := New(nil)
+	if err := s.Save("execution_policy", map[string]any{}, "actor"); !errors.Is(err, ErrCASRequired) {
+		t.Fatalf("generic save: %v", err)
+	}
+	if _, err := s.SaveCAS(context.Background(), "execution_policy", map[string]any{}, 0, "actor"); !errors.Is(err, ErrCASRequired) {
+		t.Fatalf("unaudited CAS: %v", err)
+	}
+}

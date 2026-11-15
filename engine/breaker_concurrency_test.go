@@ -132,9 +132,6 @@ func TestSmartBreakerObservationRequiresAffectedStagesAndFreshSuccess(t *testing
 			if mode == "new-failure" {
 				failures++
 			}
-			if mode == "covered" {
-				failures = 0
-			}
 			if got := e.breakerSum("synthetic"); got != failures {
 				t.Fatalf("observation erased hard-window failures: %d", got)
 			}

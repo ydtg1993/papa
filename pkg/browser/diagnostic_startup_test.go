@@ -37,6 +37,7 @@ func init() {
 			os.Exit(3)
 		}
 		defer conn.Close()
+		_ = os.WriteFile(os.Getenv("PAPA_DIAGNOSTIC_STARTUP_PID")+".connected", []byte("connected"), 0600)
 	}
 	for {
 		time.Sleep(time.Hour)

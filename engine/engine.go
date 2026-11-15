@@ -138,7 +138,7 @@ func NewEngine(db *gorm.DB, cfg *config.Config, loggerSet *loggers.LoggerSet) *E
 		// N 次节拍重算（MIN 聚合查询）压成一次；见 dynticker.go。
 		wakeCoalesce: defaultWakeCoalesce,
 	}
-	// 熔断计数器不在这里建：每站一个、由声明层按站点建（SetSiteBreaker）。
+	// 熔断计数器不在这里建：每站一个、由声明注册站点标识，数据库策略初始化后启用。
 	// 终态结果进入 Detector；达到保护线之后写暂停信号并发一条
 	// core.AlertCritical（业务不用再接一套告警通道）。
 	// 两条治理队列（全局各一条）的运行态 + 累计计数：键就是监控面板上的队列名。

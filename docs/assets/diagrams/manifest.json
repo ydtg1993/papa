@@ -14,20 +14,20 @@
     {
       "name": "02-components",
       "title": "组件关系",
-      "width": 2661,
+      "width": 2683,
       "height": 804,
-      "sourceSHA256": "3929307c822092f3193471bb4241ae35d3840604d4e9fc50ad9270bf0266e223",
-      "svgSHA256": "54098d89d0c72a06965215b069abae8fe359fac08512c7111c31ed8e72544d6c",
-      "pngSHA256": "b4662bf5b8f60e7f0cf0be39f3bc442b6b9324e0b02a205f8cab480c8ede594a"
+      "sourceSHA256": "9b86ca961c4fe96f5cd8ab5480fca6563e4916d0115f4d7ecb08c469bca9decf",
+      "svgSHA256": "d69a54afd812c7c9e8615b38b60a185ac66f644541057bf550d16f9ee24080a9",
+      "pngSHA256": "c188e3ec69f2a7e7def66007ee2f0d17106004835549cf7ee6886c9c22ca7606"
     },
     {
       "name": "03-task-loop",
       "title": "动态数据流",
       "width": 1200,
       "height": 1518,
-      "sourceSHA256": "510f2451b1a28b3e921c1bb9a08a1ef761187911064039229b30602ca9b40e54",
-      "svgSHA256": "06820a6607986844cfb11153d0004d64e07816da31017f80d3f22f3a770170dd",
-      "pngSHA256": "8daa3d4150019aa9f840094a93d3052042cbc0020fcbf81f2ee9fe726bbb5214"
+      "sourceSHA256": "f57c1a024ec07ecf5aa086cb50f6c470f7faf8e3a2aecef7a10d4cc93b3fa659",
+      "svgSHA256": "9f84014136f5ac183f7c2fc3d8f49b5b8c343f84dda32c8f9a6c1f9b47aec28d",
+      "pngSHA256": "13a99998cedae4b0e6e5a0e57ba841706497ca2b088377116317cbbf1e72b773"
     },
     {
       "name": "04-recovery-budget",
@@ -41,20 +41,20 @@
     {
       "name": "05-observation",
       "title": "可靠控制与观测证据",
-      "width": 1557,
+      "width": 1583,
       "height": 767,
-      "sourceSHA256": "a025f029c85895aa823d34592997e142d800ab203f9e293e1063d78ba61ca040",
-      "svgSHA256": "ad16bca2465ed16e19cebcf1cd82844b27e857b4ebbd3feebb9f47ae627d1a27",
-      "pngSHA256": "f571fa88382e99bd7cb7e24d64e18edd6a2fba570f95258138b5bcf77379aa4c"
+      "sourceSHA256": "1df6b8d754540c93016e61b8ce89a253f861656f6b3b8d5e07e1863d1e9661bd",
+      "svgSHA256": "310a71ce346f210d431c490994d4ac78d4ed17d2bea36e302a8ae6cc7571b33c",
+      "pngSHA256": "cdd6f6b2c267c2ac9aa4d2983efdcee7acb5516bc87fb2e70c4c59ac70145343"
     },
     {
       "name": "06-lifecycle",
       "title": "取消、排空与依赖关闭",
       "width": 1200,
       "height": 1450,
-      "sourceSHA256": "cf206838d3ed8e178f3728fe40c45c7837f0b2c687c9b6bcf59d587aef30f739",
-      "svgSHA256": "52fe993682038d59a4d2581702efba571ac4dba53b9b1920ba8185c59c5650ba",
-      "pngSHA256": "566d317c8365acf6809566c664beeae3412a8118aedb5ff7828e55ac19de591c"
+      "sourceSHA256": "e19576e646051502d40221e80f942351358981f22a381c6e4f1a610120aef392",
+      "svgSHA256": "68ee2b0dd034db27ab197c1487ee2ad2bb7331970513176c1a95a5673d51e4d9",
+      "pngSHA256": "764b4300c18136fa10926c0ec9c20c3ce06ccc159f1dd6e758bd3d75950b528b"
     },
     {
       "name": "07-engine-components",
@@ -78,10 +78,10 @@
       "name": "09-engine-execution",
       "title": "核心引擎：尝试与结算",
       "width": 1408,
-      "height": 1778,
-      "sourceSHA256": "577671bcc44f69fdb5c7e217eea2c243058da18ad733fbd259299b6884f99f23",
-      "svgSHA256": "323597269ed88564f709c2906e05d153326c3abc0ca122bb8ee03f191760b8bd",
-      "pngSHA256": "da982377ae97d95a51db9eb7753891b25d20e729b75fd2ba5eea5d718ad0f64b"
+      "height": 1805,
+      "sourceSHA256": "4d3cf20acd1635758886559d29cb347f42d6987f0d050c34ba4a0316ad856968",
+      "svgSHA256": "3eb11e5e2ca89840143876e292d0e1228b053ab2e2bcda7a4ded968cb054ca0a",
+      "pngSHA256": "487c821e1ae7aadbcd5919cf865a523a6107ef63a9f62f5b0d421992f13a0565"
     }
   ]
 }

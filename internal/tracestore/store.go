@@ -32,6 +32,7 @@ type Options struct {
 	MaxFiles                    int
 }
 type Batch struct {
+	Site         string           `json:"site,omitempty"`
 	TaskID       int              `json:"task_id"`
 	IdentityHash string           `json:"identity_hash"`
 	ExecutionID  string           `json:"execution_id"`
@@ -39,6 +40,16 @@ type Batch struct {
 	RecordedAt   time.Time        `json:"recorded_at"`
 	Truncated    bool             `json:"truncated,omitempty"`
 	Steps        []core.TraceStep `json:"steps"`
+	Snapshots    []Snapshot       `json:"snapshots,omitempty"`
+}
+
+// Snapshot is stored atomically with its trace. JSON encodes Body as base64,
+// preserving arbitrary response bytes, including invalid UTF-8.
+type Snapshot struct {
+	URL         string `json:"url"`
+	Status      int    `json:"status"`
+	ContentType string `json:"content_type"`
+	Body        []byte `json:"body"`
 }
 type record struct {
 	Version int `json:"version"`
@@ -82,19 +93,8 @@ func (s *Store) acquire(ctx context.Context) error {
 }
 func (s *Store) release()    { <-s.gate }
 func digest(v string) string { h := sha256.Sum256([]byte(v)); return hex.EncodeToString(h[:]) }
-func taskPath(id int) string {
-	return filepath.Join(fmt.Sprintf("%02x", id&255), fmt.Sprintf("task-%d", id))
-}
 func batchDir(b Batch) string {
-	return filepath.Join(taskPath(b.TaskID), identityComponent(b.IdentityHash), digest(b.ExecutionID))
-}
-func identityComponent(value string) string {
-	if len(value) == 64 && value == strings.ToLower(value) {
-		if _, err := hex.DecodeString(value); err == nil {
-			return value
-		}
-	}
-	return digest(value)
+	return filepath.Join(b.Site, fmt.Sprintf("task-%d", b.TaskID))
 }
 func (s *Store) open(ctx context.Context) (*os.Root, error) {
 	if err := ctx.Err(); err != nil {

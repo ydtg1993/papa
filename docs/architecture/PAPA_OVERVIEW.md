@@ -58,7 +58,7 @@ App 装配运行组件；Engine 通过内部调度、worker 和持久化组件�
 [矢量图](../assets/diagrams/05-observation.svg) · [Mermaid 源码](../assets/diagrams/05-observation.mmd)
 
 - 任务结算和熔断恢复使用可靠状态，不以报告是否生成作为成功条件。
-- Trace 是文件证据，配置仅 `off/errors/all`，默认 errors、默认七天保留；Trace 和页面归档在尝试收尾中写入，慢盘仍可能延长 worker 收尾。
+- Trace 是文件证据，配置仅 `off/errors/all`，默认 errors、默认七天保留；Trace（含页面/响应快照）在尝试收尾中写入，慢盘仍可能延长 worker 收尾。
 - 在线 obs 只接收有限信号、分析和写报告，不查业务 DB 或运行分析回调；满载可以丢信号，在线判定固定 unknown。Admin 只读已有报告。
 - CLI 离线报告可读事件、日志和数据库；CLI 所有生成模式都要求相应事件。业务可自行组织来源调用 `obs.Generate`，须明确证据缺失。在线/离线写报告没有跨文件事务或共享目录锁，离线建议用独立输出目录。
 
@@ -74,7 +74,7 @@ App 装配运行组件；Engine 通过内部调度、worker 和持久化组件�
 
 Engine 的排空判断还包含 ticker、pending/delay、未确认状态和持久 pending 积压检查；worker 已退出并不一定返回 drained。`run_stopped` 中的 outcome/counts 只来自 Engine.Stop，不汇总 HTTP、业务 hooks 等全部 App 组件，不能据此单独证明整个 App 已排空。
 
-观测转发、在线报告和事件归档共用最多 2 秒等待，超时不否决业务依赖关闭；这不是全 App 的总关停期限，也不包含 Trace/页面归档。审计另有限时收尾；调用方拥有的账号专用资源仍按自身生命周期处理。具体锁、资源和时间预算见 [Internal 说明书](../package_structure/INTERNAL_STRUCTURE.md)。
+观测转发、在线报告和事件归档共用最多 2 秒等待，超时不否决业务依赖关闭；这不是全 App 的总关停期限，也不包含 Trace（含页面/响应快照）。审计另有限时收尾；调用方拥有的账号专用资源仍按自身生命周期处理。具体锁、资源和时间预算见 [Internal 说明书](../package_structure/INTERNAL_STRUCTURE.md)。
 
 ## 继续深入核心引擎
 

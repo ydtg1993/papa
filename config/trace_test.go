@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,4 +56,24 @@ func TestTraceRejectsRemovedEnabled(t *testing.T) {
 		}
 	}()
 	_, _ = Load(p)
+}
+
+func TestTraceRejectsRemovedArchive(t *testing.T) {
+	for _, body := range []string{"archive: {enabled: false}", "archive: {mode: always, dir: ./old, retention: 168h, max_file_mb: 8}"} {
+		t.Run(body, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(p, []byte("crawler:\n  "+body+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				got := fmt.Sprint(recover())
+				for _, hint := range []string{"crawler.archive", "crawler.trace.mode", "crawler.trace_files"} {
+					if !strings.Contains(got, hint) {
+						t.Fatalf("missing migration hint %q: %s", hint, got)
+					}
+				}
+			}()
+			_, _ = Load(p)
+		})
+	}
 }

@@ -1,24 +1,15 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 )
 
-func TestBreakerPolicyYAML(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "config.yaml")
-	body := baseConfig + "crawler:\n  breaker:\n    enabled: true\n    threshold: 20\n    policy:\n      short_window: 12s\n      fast_threshold: 4\n      max_recovery: 6m\n"
-	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := cfg.Crawler.Breaker.Policy
-	if got.ShortWindow != 12*time.Second || got.FastThreshold != 4 || got.MaxRecovery != 6*time.Minute {
-		t.Fatalf("YAML policy lost: %+v", got)
+func TestExecutionPolicyYAMLRejected(t *testing.T) {
+	for _, body := range []string{"crawler:\n  breaker:\n    enabled: false\n", "browser:\n  pool_size: 3\n", "browser:\n  direct_pool_size: 0\n", "browser:\n  max_idle_time: 5m\n"} {
+		msg := panicOn(t, baseConfig+body)
+		if !strings.Contains(msg, "execution_policy") {
+			t.Fatal(msg)
+		}
 	}
 }

@@ -34,6 +34,7 @@ admin/
 ├── tokenadmin/              # 访问令牌管理 API 与存储实现
 │   ├── static/              # controller.js、secret.css
 │   └── views/               # tokens.html
+├── executionpolicy/         # 数据库执行策略 HTTP、结构化设置表单和交互测试
 ├── settings/                # 设置概览、显式关停
 │   ├── static/              # controller.js
 │   └── views/               # settings.html
@@ -47,7 +48,7 @@ admin/
 │   └── static/              # controller.js、analysis.css、alerts.css
 ├── taskflow/                # 任务流策略 HTTP 与编辑器
 │   └── static/              # taskflow.js、taskflow.css
-├── tasktrace/               # 任务追踪与归档页下载
+├── tasktrace/               # 任务追踪与内嵌快照下载
 │   └── static/              # trace.js、trace.css
 ├── logs/                    # 日志列表、尾部读取、下载
 │   ├── static/              # controller.js、logs.css
@@ -131,7 +132,7 @@ admin/
 - `helpers_test.go`：Monitor 构造、请求发送、JSON 解码和通用测试替身。
 - `access_routes_test.go`、`settings_routes_test.go`、`logs_routes_test.go`、`trace_routes_test.go`、`breaker_routes_test.go`、`queue_routes_test.go`、`monitor_routes_test.go`：通过真实路由验证装配、身份传播和响应契约。
 - `page_contract_test.go` 及现有页面/资源测试：验证组合后的 HTML、JS、CSS 和后端响应配合；完整页面 Chrome 与跨控制器 Node 测试留在这里。
-- 白名单解析和来源 IP 单元测试在 `access/parsing_test.go`；归档路径单元测试在 `tasktrace/path_test.go`；日志尾部算法测试在 `logs/handler_test.go`。单元测试直接验证所属功能，不借道 Monitor。
+- 白名单解析和来源 IP 单元测试在 `access/parsing_test.go`；快照下载单元测试在 `tasktrace/snapshot_test.go`；日志尾部算法测试在 `logs/handler_test.go`。单元测试直接验证所属功能，不借道 Monitor。
 
 ## 4. 功能包职责明细
 
@@ -145,7 +146,7 @@ admin/
 | `queues` | handler.go：Error/Repeat 和 QueueProcessEvent；audit.go：事件到操作日志值的转换 | controller、queue-governance 与 queues 视图管理队列操作展示；table.css 是队列相关表格样式 | 重投、持久化、并发约束通过运行回调执行；任务表行操作归 tasksource |
 | `breakers` | handler.go：暂停/恢复/强制恢复；analysis.go：HTTP 投影；audit.go：动作、作用域和审计文案 | controller 管熔断交互，analysis/alerts 样式管理分析与告警呈现 | 检测器、恢复流程、持久状态归 engine 及对应领域组件，不能在 handler 重写状态机 |
 | `taskflow` | handler.go：策略校验/CAS/操作事件；assets.go：Script/CSS 和 Page()；audit.go：操作日志值 | taskflow.js/css 管策略编辑与页面生命周期 | 调度、持久化及版本更新通过注入契约完成 |
-| `tasktrace` | `handler.go`：`Trace`、`Page`、`ResolveArchivedFile`；追踪查询及归档路径检查 | trace.js/css 管任务追踪抽屉与交互 | 追踪记录生成归执行链；这里只读取并安全下载 |
+| `tasktrace` | `handler.go`：`Trace`、`Page`；追踪查询及内嵌快照下载 | trace.js/css 管任务追踪抽屉与交互 | 追踪记录生成归执行链；这里只读取并安全下载 |
 | `logs` | `handler.go`：`List`、`Tail`、`Download`；文件名、读取范围、ZIP 与下载边界 | controller、logs.html/css 拥有文件选择、请求代次和重置逻辑 | 日志生产和轮转归日志组件；只注入日志目录 |
 | `reports` | `handler.go`：`List`、`File`；报告目录枚举、摘要读取、产物大小/路径限制；每请求持有 os.Root，链接解析不得越根，下载在同一普通文件句柄上检查尺寸并限读 16 MiB + 1，摘要限读 8 MiB + 1 | controller、obs.html、reports.css 拥有报告/文件选择和请求代次 | 报告生成与调度归 obs 和 reportrunner；不在 GET 中生成报告 |
 | `tokenadmin` | `api.go`：`API.Register` 与操作事件；`store.go`：Store 契约和 DBStore；`mem.go`：MemStore；支持创建、启停、删除、轮换 | controller、tokens.html、secret.css 管令牌页面与一次性明文展示 | 访问令牌与爬虫站点账号不同；验证基础能力归 auth |
@@ -267,3 +268,9 @@ Trace 查询通过 `MonitorConfig.TaskTrace` → `tasktrace.Options.Trace` 在�
 任务写操作接口 `tasksource.TaskActions` 要求 `RetryTaskVersioned(ctx, id, reprocess, compensationVersion)`；HTTP 层先校验两个版本字段，再交给引擎执行，不提供无补偿版本的重投回退。
 
 `server/testdata/oao_lifecycle_test.js` 配合 `oao_dom.js` 执行当前链接 oao 的真实资源，覆盖筛选、正常写入、确认框销毁和迟到响应隔离。`controllers.js` 仅在测试中通过所属实例导出项注入替身；`controller_lifecycle_test.js` 另外验证生产全局操作入口不可写。
+
+## executionpolicy
+
+`handler.go` 只依赖公开 `pkg/executionpolicy.Service`，负责严格解码、鉴权主体、读写授权扩展、同源检查和错误状态映射。冲突响应附最新 View，版本存储与运行组件应用不放在 handler。`static/controller.js` 通过 Papa.settings 挂载结构化表单，拥有草稿、请求代次、轮询和操作核对状态；退出销毁自身轮询。资源由 shell 组合，server 仅注册路由和注入服务。
+
+`handler_test.go` 验证认证、授权、未知字段、同源限制、错误映射、冲突 latest、校验无写入和历史限制；`ui_test.go` 执行 Node 行为测试，覆盖表单、CAS 草稿保留/重定基线、响应不明时查询 operation_id、退出后旧请求隔离。

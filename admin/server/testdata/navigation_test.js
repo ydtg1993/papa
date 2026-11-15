@@ -46,7 +46,7 @@ function setup() {
     ['dashboard', 'obs', 'logs', 'queues', 'settings', 'tokens', 'tables', 'pages', 'section'].forEach(key => { node('mod-' + key).className = 'module'; });
     ['flow', 'monitor', 'data', 'system'].forEach(key => { const button = new Element('button'); button.className = 'nav-category'; button.dataset.section = key; node('main-nav').appendChild(button); });
     node('site-tabs').appendChild(new Element('button')); node('site-meta').innerHTML = 'site detail';
-    const c = vm.createContext({ console, document, window: { addEventListener() {} }, setTimeout, clearTimeout, WeakMap,
+    const c = vm.createContext({ console, document, window: { addEventListener() {}, removeEventListener() {}, setInterval() { return 1; }, clearInterval() {} }, setTimeout, clearTimeout, WeakMap,
         localStorage: { getItem: key => values.get(key) || '', setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) },
         Oao: { init() {}, destroy() {}, list: () => { const d = deferred(); lists.push(d); return d.promise; }, render: async (...args) => calls.push(['render', ...args]) },
         apiFetch: (url, opts) => { const d = deferred(); requests.push({ url, opts, ...d }); return d.promise; },

@@ -257,6 +257,7 @@ func runNew(name string, args []string) error {
 		{"docs_README.md.tmpl", filepath.Join("docs", "README.md")},
 		{"docs_DEVELOPMENT.md.tmpl", filepath.Join("docs", "operations", "DEVELOPMENT.md")},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml")},
+		{"execution-policy.json.tmpl", filepath.Join("configs", "execution-policy.json")},
 		{"config.yaml.tmpl", filepath.Join("configs", "config.yaml.example")},
 		{"configs_sites_site.go.tmpl", filepath.Join("internal", "sites", "{{.Project}}.go")},
 		{"fetch_catalog.go.tmpl", filepath.Join("internal", "fetcher", "fetch_catalog.go")},
