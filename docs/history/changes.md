@@ -18,6 +18,13 @@
 
   回归包含 TestTraceFileRetentionPolicy、TestTraceCancellationAndDeadline、TestTraceManualSelectionOneShotRetryAndCapacity、TestTracePersistenceFailureDoesNotChangeOutcome、TestCleanupContinuesAfterCorruptRecord、TestLoweredQuotasAllowCleanup；通过 API 兼容、文件故障和本地合成 HTTP/浏览器检查发现并修正 JSON 编码语义与取消记录边界。全仓验证额外出现真实输出 `state page leaked`，并以 TestPageCreationCancellationClosesPartialTarget 确定性复现另一个创建中断清理缺陷：`created=true closed=false bounded=false`；浏览器组件现用独立三秒清理 context，保留原取消错误。原高负载失败与该缺陷是否同因未证实。各批验证及未验证项见 [Trace 文件实施](reviews/2026-11-13-framework-diagnosis/trace-files.md)，不以历史 MySQL 测试证明新文件实现。
 
+
+- **2026-11-15：breaker 与公共浏览器池参数改为数据库唯一来源，新增 OA 与版本化公开接口。** 用户要求运行期调整，源码确认浏览器按需启动但容量绑定固定 channel，YAML 与 Go 站点熔断覆盖无法统一管理。新增 `crawler_config.execution_policy`、事务内操作记录与共享 CAS；浏览器使用可变目标和创建/关闭占位平滑排空，活动熔断事件冻结完整策略及版本。OA/HTTP/公开 Go 服务统一校验、幂等操作、历史和回滚；配置修改不解除暂停、不刷新恢复预算。并发审查发现并修正 Engine.mu→breakerMu 锁顺序反转；新回归覆盖终态与策略并发。
+
+  **升级步骤与代价**：删除 YAML `crawler.breaker`、`browser.pool_size/direct_pool_size/max_idle_time` 和 Go `BreakerSpec`；显式 `-migrate`，再用确认后的 JSON 执行 `-init-policy`（不覆盖已有值）。已有旧事件需停采集后执行 `-migrate-breaker-policy <旧有效策略.json> -confirmed-policy-revision N`，保留事件证据和剩余预算；运行路径不兼容旧控制快照。直接 Engine 调用者按新显式策略 API 接入。新增操作表，历史最多 100 个版本，幂等记录保留 90 天；强杀不承诺未落库业务副作用 exactly-once。
+
+  验证包含 `TestExecutionPolicyMySQLTransactions`（真实隔离库 CAS/事务回滚/幂等）、`TestExecutionPolicyMigrationMySQLRollsBackAllRows`、`TestExecutionPolicyMySQLPauseAndShutdownPreserveDelivery`、`TestServiceShutdownDuringSaveKeepsSavedForRestart`、`TestServiceUnknownCommitBlocksNewWritesThenReconciles` 与真实 Chrome `TestMonitorFeatureCompositionRealBrowser`。验证中真实输出 `task submission violates stage flow: startup entry admission closed; use SubmitChildren with handler context` 暴露测试在启动入口关闭后投任务；夹具改为授权入口提交，未放宽生产投递约束。完整结果见专项实施报告。
+
 ## 修复
 
 1. **2026-11-12：延迟投递和最近执行时间进入任务持久化契约。** 源码审查发现原 `Task.Delay/NotBefore` 仅进入内存堆，恢复时没有可重建的排期；用户要求将延迟及最近执行时间落库。增加 `delay_ms/not_before/last_started_at/last_finished_at`，首次相对排期以数据库 UTC 时钟生成，重复提交沿用既有期限；恢复、回灌、加急及数据库认领守卫共同防止提前执行。最近执行时间按每次 Handler 尝试记录，时间写入失败只重试持久化，不重跑已经执行的业务。代价是每次尝试增加时间记录写入，数据库持续故障时保留责任并背压；升级须停 worker 后显式执行 `papa migrate`，不改业务数据、不自动启动迁移。`TestTaskTimingRestoresDeadlineAndClaimSQL`、`TestAttemptFinishPersistenceFailureNeverReplaysHandler`、`TestAttemptStartPersistenceFailureDoesNotCallHandler`、`TestClaimRejectedByDurableDeadlineRetainsTask`、`TestSubmitExistingTaskCannotReplacePersistedDeadline` 与 `TestTaskTimingMySQLPersistenceRecoveryAndAttempts` 覆盖这些边界。此项通过审查和合成回归发现，无线上报错原文；完整规则见 `docs/runtime/TASK_TIMING.md`。
@@ -125,3 +132,8 @@
 ### 2026-11-13 v4 独立版本：清除旧兼容层
 
 用户要求 v4 不再兼容旧版本。逐模块删除旧API、配置/数据转换、旧适配和无效配置，当前门面/协议保留；完整清单见 [v4清理记录](reviews/2026-11-13-v4-independent-cleanup.md)。代价：旧调用和配置直接编译/校验失败，旧库需独立保留，不能原地兼容启动。检查发现预热 SQL 残留旧列（`SQL missing "`idempotency_key`"`），已移除；旧表非空字段/索引和 NULL 身份类型会破坏新写入，已增加启动与迁移前只读拒绝。回归包括 TestTraceRejectsRemovedEnabled、TestCurrentTaskColumnsRejectBackfilledOldTable、TestTaskIdentityDataRejectsMissingValuesAndPropagatesFailure、TestDecodeRejectsUnsupportedSnapshotFormats、TestBreakerRejectsUnsupportedSnapshotBeforeRestore；取消/终态/恢复使用当前版本协议。浏览器合成端口偶发 `net::ERR_UNSAFE_PORT`，仅测试夹具显式允许自己监听的端口，不改变生产限制。
+
+1. **2026-11-15：数据库执行策略二次审查修正资源释放、熔断策略代次与配置关停屏障。** 用户要求审查后发现：浏览器工厂返回部分实例加错误时可能入池，关闭后挂入的借用许可可能漏释放，扩缩容订阅窗口可能错过禁用，重复初始化会使配置应用器持有旧池；已分别关闭部分实例、即时释放晚许可、锁内复查容量并拒绝重复初始化。人工接管及未结算失败的终态事件保留冻结策略，重开同事件先恢复原策略，避免 disabled 新目标阻断结算。配置应用入口严格比较同版本完整默认/覆盖内容；OA 不再把 saved 当作已应用，保留草稿并用原 CAS/操作 ID 重试。公开 Go 写入纳入 App 关停排空，未排空不关数据库。代价是重复初始化公开 API 现在明确报错；HTTP 写入口严格拒绝 null/数组，旧的宽松客户端须提交完整对象。测试覆盖 TestPoolPermitAfterCloseReleased、TestPoolResizeBeforeResourceSubscription、TestShutdownRetainsDatabaseForPublicExecutionPolicyWrite、TestServiceShutdownDuringSaveKeepsSavedForRestart、TestExecutionPolicyMySQLTransactions 及新的熔断/OA 行为回归。真实 MySQL 用例验证大小写操作 ID 冲突回滚且后续写入不被锁死；本项通过源码锁序审查与合成故障注入发现，不据此宣称生产现场无任何任务副作用重复。
+
+
+- **2026-11-15：执行策略复查补齐浏览器启动取消与进程所有权。** 源码审查发现 Rod 启动含无 context 的 PID 等待和 HTTP 地址确认，可能使创建占位和关停长期等待；框架现保留原启动参数与 Leakless 保护，自行管理可取消握手和直连 WebSocket，成功后解绑借用 context。失败部分实例保留关闭占位直至清理完成，未知 PID 不提前杀守护进程；健康探测和 CDP 关闭有超时。代价是增加框架内启动适配维护职责，无新增配置或依赖版本升级。无线上报错原文；TestPoolProductionStartupCancellation、TestPoolProductionBorrowContextDoesNotOwnBrowser、TestPoolProductionChromiumStartupDeadline、TestOwnedGuardCancellationDuringPIDWait、TestBrowserHealthProbeRespectsCancellation 及真实 Chrome 全浏览器 race 通过。
