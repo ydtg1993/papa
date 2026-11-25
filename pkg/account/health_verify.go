@@ -37,6 +37,9 @@ func (p *Pools) checkTransport(ctx context.Context, key Key, t Transport, expect
 	if err = e.validateIdentityState(ctx); err != nil {
 		return 0, 0, err
 	}
+	if e.sessionBridge() {
+		return e.checkSessionTransport(ctx, t, expected, browserVersion)
+	}
 	e.mu.Lock()
 	version, bv = e.version, e.browserRevision
 	if (expected != 0 && expected != version) || (browserVersion != 0 && (t == Browser || t == Both) && browserVersion != bv) {
@@ -115,7 +118,7 @@ func (p *Pools) finishVerification(key Key, t Transport, before ManagementState,
 	}
 	if e != nil {
 		e.mu.Lock()
-		if mode == CheckExisting && (e.version != v || ((t == Browser || t == Both) && e.browserRevision != bv)) {
+		if mode == CheckExisting && (e.version != v || ((t == Browser || t == Both || e.sessionBridge()) && e.browserRevision != bv) || (e.sessionBridge() && e.paused)) {
 			err = ErrSuperseded
 		}
 		if errors.Is(err, ErrSuperseded) {
@@ -125,6 +128,7 @@ func (p *Pools) finishVerification(key Key, t Transport, before ManagementState,
 			a.state.InvalidChecks = 0
 		}
 		if err == nil && mode == CheckExisting {
+			a.state.CredentialVersion, a.state.BrowserVersion = v, bv
 			if t == HTTP || t == Both {
 				e.lastCheck = time.Now()
 			}
@@ -185,6 +189,7 @@ func (p *Pools) finishVerification(key Key, t Transport, before ManagementState,
 		}
 		p.eventLocked(a, "proxy-unavailable", a.state.Reason)
 	case errors.Is(err, ErrExpired):
+		failedTransport := sessionFailureTransport(err, t)
 		a.state.ProxyUnavailable = false
 		a.state.ProxyChecks = 0
 		a.state.InvalidChecks++
@@ -199,8 +204,8 @@ func (p *Pools) finishVerification(key Key, t Transport, before ManagementState,
 			// Keep the other transport's credentials. Quarantine itself is durable.
 			if e != nil {
 				e.mu.Lock()
-				if e.version == v && mode == CheckExisting {
-					if t == HTTP || t == Both {
+				if e.version == v && mode == CheckExisting && (!e.sessionBridge() || (e.browserRevision == bv && !e.paused)) {
+					if failedTransport == HTTP || failedTransport == Both {
 						if e.current != nil {
 							e.seed = e.current.Values
 						}
@@ -208,7 +213,7 @@ func (p *Pools) finishVerification(key Key, t Transport, before ManagementState,
 						e.lastCheck = time.Time{}
 						e.version++
 					}
-					if t == Browser || t == Both {
+					if failedTransport == Browser || failedTransport == Both {
 						e.pageState = nil
 						e.browserCheck = time.Time{}
 						e.browserRevision++

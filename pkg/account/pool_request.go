@@ -109,8 +109,12 @@ func (m *Manager) DoPool(ctx context.Context, key PoolKey, req htmlfetch.Request
 		return nil, err
 	}
 	response, fetchErr := m.client.Do(htmlfetch.WithSession(ctx, c.Session), r)
+	syncErr := e.observeSession(version)
 	if errors.Is(fetchErr, core.ErrSiteChallenge) {
 		return response, fetchErr
+	}
+	if syncErr != nil {
+		return response, syncErr
 	}
 	if e.config.ProxyURL != "" {
 		status := 0
@@ -193,17 +197,18 @@ func (m *Manager) withPoolBrowser(ctx context.Context, key PoolKey, options *bro
 	}
 	if e.config.Browser.SessionBridge {
 		err = m.withSessionBrowser(ctx, e, a, options, fn)
+		transport := sessionFailureTransport(err, Browser)
 		if errors.Is(err, ErrExpired) {
-			p.reportFailure(a, Expired, a.TaskID, Browser)
+			p.reportFailure(a, NeedsVerify, a.TaskID, transport)
 		}
 		if errors.Is(err, ErrNeedsVerify) {
-			p.reportFailure(a, NeedsVerify, a.TaskID, Browser)
+			p.reportFailure(a, NeedsVerify, a.TaskID, transport)
 		}
 		if errors.Is(err, ErrChallenge) {
-			p.reportFailure(a, Challenge, a.TaskID, Browser)
+			p.reportFailure(a, Challenge, a.TaskID, transport)
 		}
 		if errors.Is(err, ErrFixedProxyUnavailable) {
-			p.reportFailure(a, ProxyUnavailable, a.TaskID, Browser)
+			p.reportFailure(a, ProxyUnavailable, a.TaskID, transport)
 		}
 		return err
 	}

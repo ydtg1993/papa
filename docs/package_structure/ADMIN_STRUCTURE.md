@@ -157,6 +157,8 @@ admin/
 
 `reports` 的根边界是本次 `os.OpenRoot` 打开的配置目录；配置根本身属于可信部署输入。列表返回最多 100 份，但仍先枚举全部目录并读取摘要；这不是遍历工作量上限。HTTP 请求取消目前不会中断这些本地文件枚举/读取，前端请求代次失效也不代表后端文件操作已经停止。
 
+账号池前端的 `PapaAccountPools.mount` 拥有单页列表和池操作，`PapaAccounts.mount` 提供可销毁的账号弹窗控制器，复用原登录接口与轮询；`PapaRuntime.modal` 统一居中弹窗、焦点隔离和关闭行为，不改变其他运行控制页的抽屉。
+
 独立 handler 本身并不等于已安装访问控制：宿主挂载 accounts、accountpools、runtimecontrol、diagnostics 等接口时仍需统一包裹鉴权。`Monitor.Auth` 对所有路径执行令牌校验；Monitor 自有页面的 Wrap 为加载登录壳保留页面路径规则，不能拿该豁免套用到业务接口。
 
 App 的 `admin_routes.go` 直接挂载功能 handler 方法并应用统一 guard。`admin_audit.go` 负责操作者/时间/Recorder 接线；功能包决定 action、table、note 等语义，不能把这些分支重新堆回 HTTP 服务构造函数。身份 View 的站点导航由 diagnostics.Handler 补充，账号池通过同一适配复用。

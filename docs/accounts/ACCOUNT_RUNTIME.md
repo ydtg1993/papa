@@ -137,9 +137,13 @@ cfg := account.Config{
 1. 普通 `WithAccountBrowser` 在需要时通过所选登录方式取得已验证 HTTP 会话；账号池路径只使用本次 Attempt 已准备的身份，不在任务中登录或换号。
 2. Papa 将最新 HTTP Cookie 恢复进独立浏览器上下文，保留作用域、host-only、路径、有效期、Secure、HttpOnly、SameSite。浏览器 Check 通过后才执行一次业务回调。
 3. 成功回调后导出 bootstrap host 范围内所有路径的 Cookie 和当前 origin LocalStorage，并将 Cookie 的删除/轮换同步到分离的 HTTP 候选；其他 origin 的 HTTP Cookie 保留。HTTP Check 通过、版本未改变、保存成功后才发布新状态。
-4. 后续 HTTP 响应更新的 Cookie 在下一次浏览器操作前导入；HTTP 重新登录或发布新候选会清除旧浏览器核验状态，之后重新恢复和核验。
+4. 后续 HTTP 响应更新的 Cookie 同步到已有浏览器快照；Rod 导出之后 HTTP Check 再次轮换的 Cookie 也以最后结果保存。实际浏览器操作始终从最新 HTTP 会话导入。HTTP 重新登录或发布 HTTP 候选会清除旧浏览器核验状态，之后重新恢复和核验。
 
-为保证两端 Cookie 轮换有序，开启后同账号受管交换的有效并发为 **1**（即使 MaxConcurrent 设置更大）；不同账号仍可并行。操作等待可取消；同账号回调不能重入 Manager。同步失败、回调失败、取消或保存失败保留之前的本地凭据，注销/新候选发布会阻止旧结果写回。远端已经发生的请求及会话失效无法撤回，不能因保存错误盲目重放业务回调。
+为保证两端 Cookie 轮换有序，开启后同账号受管交换的有效并发为 **1**（即使 MaxConcurrent 设置更大）；HTTP、Rod、健康核验及已有账号的候选核验/发布使用同一许可，不同账号仍可并行。候选发布等待期间若会话已更新，返回 `ErrSuperseded`，不使用旧候选覆盖新 Cookie。操作等待可取消；同账号回调不能重入 Manager，包括 `PublishCandidate`。
+
+HTTP 预检、浏览器桥接及健康核验使用分离候选；核验错误、取消、回调失败、保存错误或保存 panic 都不会替换之前已提交的本地凭据。认证错误仍可能触发冷却，池健康政策仍可暂时阻止采集。普通 HTTP 业务响应已被 CookieJar 接收的变化遵守 §4 的规则；远端已经发生的请求及会话失效无法撤回，不能因保存错误盲目重放业务回调。
+
+账号池的仅检查模式也从最新 HTTP Cookie 导入 Rod，通过检查后保存期间发生的轮换，不执行 Login。池内浏览器候选检查失败时，先按实际失败的 HTTP/Rod 端标记待核验，保留旧的两端快照；复核旧状态并达到失效确认阈值后，只清理确认失效的一端。过时检查结果不能清空或标记较新的会话。
 
 `Browser.Import(ctx, credentials, state)` 可将本站特有 Token 映射到 LocalStorage 等状态，`Browser.Export` 可反向提取 Token/CSRF。回调拿到分离候选，不得保留引用。普通 Cookie 不需站点手写搬运；框架不会猜测 LocalStorage 键、Authorization 格式或登录成功标准。分区 Cookie 不跨传输转换，不将其扩大为普通 Cookie。
 

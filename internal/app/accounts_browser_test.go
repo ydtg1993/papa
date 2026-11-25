@@ -30,7 +30,7 @@ func TestAccountsUIRealBrowserDraftLoginIdentityAndSecretFields(t *testing.T) {
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>window.pages={};window.Papa={page:(name,fn)=>pages[name]=fn};window.apiRequest=async function(url,o){return fetch(url,o)};</script><script>`+featurecontrol.Script+featureaccounts.Script+`</script><script>window.active=pages.accounts(document.getElementById('root'));</script></body></html>`)
+		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>window.pages={};window.Papa={page:(name,fn)=>pages[name]=fn};window.apiRequest=async function(url,o){return fetch(url,o)};</script><script>`+featurecontrol.Script+featureaccounts.Script+`</script><script>window.active=PapaAccounts.mount(document.getElementById('root'));</script></body></html>`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -49,19 +49,13 @@ func TestAccountsUIRealBrowserDraftLoginIdentityAndSecretFields(t *testing.T) {
 		defer p.Close()
 		wait := func(js string) error { return p.Timeout(5 * time.Second).Wait(rod.Eval(js)) }
 		eval := func(js string) error { _, e := p.Eval(js); return e }
-		if err = wait(`()=>document.querySelector('.rt-status').textContent.includes('先保存资料')`); err != nil {
+		if err = wait(`()=>document.querySelector('.rt-status').textContent.includes('选择站点')`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='新增账号').click();let site=document.querySelector('select[aria-label="账号所属站点"]');site.value='fixture';site.dispatchEvent(new Event('change'));let fields=document.querySelectorAll('.ac-fields input');fields[0].value='browser-account';fields[1].value='浏览器合成账号';fields[2].value='alice';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='刷新').click();}`); err != nil {
+		if err = eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='新增账号').click();let site=document.querySelector('select[aria-label="账号所属站点"]');site.value='fixture';site.dispatchEvent(new Event('change'));window.inputFor=(text)=>Array.from(document.querySelectorAll('.ac-fields label')).find(x=>x.textContent.startsWith(text)).querySelector('input');inputFor('内部账号 ID').value='browser-account';inputFor('账号备注').value='浏览器合成账号';inputFor('预期真实账号 ID').value='alice';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='刷新').click();}`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{if(document.querySelector('.ac-fields input').value!=='browser-account')throw Error('refresh erased draft');Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='保存资料').click()}`); err != nil {
-			return err
-		}
-		if err = wait(`()=>Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='开始登录')`); err != nil {
-			return err
-		}
-		if err = eval(`()=>{let field=document.querySelector('.ac-fields input');if(field.type!=='password')throw Error('secret input unmasked');field.value='private-password';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='开始登录').click()}`); err != nil {
+		if err = eval(`()=>{if(inputFor('内部账号 ID').value!=='browser-account')throw Error('refresh erased draft');let field=document.querySelector('[data-login-field]');if(field.type!=='password')throw Error('secret input unmasked');field.value='private-password';Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='登录并验证').click()}`); err != nil {
 			return err
 		}
 		if err = wait(`()=>Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='身份正确，保存并启用')`); err != nil {
@@ -101,7 +95,7 @@ if(url==='/api/accounts/remote'){let frame={lease:'lease-'+b.id,width:1280,heigh
 throw Error('Unexpected mock request '+url)};`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>`+mock+`</script><script>`+featurecontrol.Script+featureaccounts.Script+`</script><script>window.active=pages.accounts(document.getElementById('root'));window.seenFrames=[];new MutationObserver(ms=>ms.forEach(m=>{if(m.attributeName==='src')seenFrames.push(m.target.src)})).observe(document.body,{subtree:true,attributes:true,attributeFilter:['src']});</script></body></html>`)
+		fmt.Fprint(w, `<!doctype html><html><body><div id="root"></div><script>`+mock+`</script><script>`+featurecontrol.Script+featureaccounts.Script+`</script><script>window.active=PapaAccounts.mount(document.getElementById('root'));window.seenFrames=[];new MutationObserver(ms=>ms.forEach(m=>{if(m.attributeName==='src')seenFrames.push(m.target.src)})).observe(document.body,{subtree:true,attributes:true,attributeFilter:['src']});</script></body></html>`)
 	}))
 	defer srv.Close()
 	pool, err := browser.NewPool(browser.PoolConfig{Size: 1, Headless: true, NoSandbox: true, BrowserPath: bin, Network: egress.Config{PrivateOrigins: []string{srv.URL}}})
@@ -140,16 +134,16 @@ throw Error('Unexpected mock request '+url)};`
 		if err = wait(`()=>document.body.textContent.includes('登录已取消')`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{document.querySelector('.rt-drawer button').click();document.querySelector('.rt-table tbody tr button').click();document.querySelector('.rt-drawer select').value='remote';document.querySelector('.rt-drawer select').dispatchEvent(new Event('change'));Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='开始登录').click()}`); err != nil {
+		if err = eval(`()=>{document.querySelector('.rt-modal button').click();document.querySelector('.rt-table tbody tr button').click();document.querySelector('.rt-modal select').value='remote';document.querySelector('.rt-modal select').dispatchEvent(new Event('change'));Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='开始登录').click()}`); err != nil {
 			return err
 		}
 		if err = wait(`()=>!!window.oldFrameResolve&&!!window.oldPollResolve`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{document.querySelector('.rt-drawer button').click();document.querySelectorAll('.rt-table tbody tr')[1].querySelector('button').click();document.querySelector('.rt-drawer select').value='remote';document.querySelector('.rt-drawer select').dispatchEvent(new Event('change'));Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='开始登录').click()}`); err != nil {
+		if err = eval(`()=>{document.querySelector('.rt-modal button').click();document.querySelectorAll('.rt-table tbody tr')[1].querySelector('button').click();document.querySelector('.rt-modal select').value='remote';document.querySelector('.rt-modal select').dispatchEvent(new Event('change'));Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='开始登录').click()}`); err != nil {
 			return err
 		}
-		if err = wait(`()=>document.querySelector('.rt-drawer').dataset.process==='p3'`); err != nil {
+		if err = wait(`()=>document.querySelector('.rt-modal').dataset.process==='p3'`); err != nil {
 			return err
 		}
 		if err = eval(`()=>{oldFrameResolve();oldPollResolve()}`); err != nil {
@@ -158,19 +152,19 @@ throw Error('Unexpected mock request '+url)};`
 		if err = wait(`()=>window.newFrameRequested&&document.querySelector('.ac-remote').src.endsWith('NEW_FRAME')`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{if(seenFrames.some(x=>x.endsWith('OLD_FRAME')))throw Error('old frame crossed process');if(document.querySelector('.rt-drawer').dataset.process!=='p3'||document.querySelector('.rt-drawer').textContent.includes('OLD'))throw Error('old progress crossed process');window.holdClosed=true}`); err != nil {
+		if err = eval(`()=>{if(seenFrames.some(x=>x.endsWith('OLD_FRAME')))throw Error('old frame crossed process');if(document.querySelector('.rt-modal').dataset.process!=='p3'||document.querySelector('.rt-modal').textContent.includes('OLD'))throw Error('old progress crossed process');window.holdClosed=true}`); err != nil {
 			return err
 		}
 		if err = wait(`()=>!!window.closedResolve`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{document.querySelector('.rt-drawer button').click();closedResolve()}`); err != nil {
+		if err = eval(`()=>{document.querySelector('.rt-modal button').click();closedResolve()}`); err != nil {
 			return err
 		}
 		if err = wait(`()=>window.closedDelivered`); err != nil {
 			return err
 		}
-		return eval(`()=>{if(document.querySelector('.rt-drawer'))throw Error('late poll reopened closed panel');window.active()}`)
+		return eval(`()=>{if(document.querySelector('.rt-modal'))throw Error('late poll reopened closed panel');window.active()}`)
 	})
 	if err != nil {
 		t.Fatal(err)

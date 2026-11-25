@@ -66,6 +66,7 @@ pkg/
 | `manager.go` | 登记和 origin/header 校验、HTTP 认证轮次合并、检查与登录、版本发布、`Invalidate` / `Pause` / `Resume` / `Status`；`Do` / `FetchHTML` 执行账号请求 |
 | `browser.go` | 账号浏览器许可、隔离页面、登录后 Cookie 与 token 桥接、浏览器状态导出及 `WithBrowser` |
 | `session_bridge.go` | 显式共享会话的 HTTP→Rod 导入、浏览器身份核验、单次回调、Rod→HTTP 核验及版本检查后保存；普通账号和池账号共用此路径 |
+| `health_session.go` | 共享会话的仅检查路径：最新 Cookie 导入、按传输核验、轮换结果持久化；不调用登录或业务回调 |
 | `store.go` | 凭据 `Store` / `StoredState`、加载保存、`Logout`；`FileStore` 使用调用方密钥加密文件，处理凭据与页面状态副本 |
 | `candidate.go` | 分离候选凭据、检查和持久化；`RegisterCandidate` / `PublishCandidate` 发布成功验证的候选，`CandidatePublished` 通知池健康恢复 |
 | `identity.go` | 认证状态的身份元数据、`SetIdentityManager` / `PinIdentity`、实际池上的 `ResolveIdentity`、分离候选的 `VerifyIdentity` 与无凭据诊断配置 |

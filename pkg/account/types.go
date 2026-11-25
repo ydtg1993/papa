@@ -155,7 +155,7 @@ type entry struct {
 	identityState                               *IdentityState
 	version                                     uint64
 	revision                                    uint64 // lifecycle epoch (load, pause, logout), independent of credential changes
-	browserRevision                             uint64 // browser snapshot epoch, independent of HTTP generation
+	browserRevision                             uint64 // browser snapshot epoch; SessionBridge also advances it for HTTP cookie exchanges
 	loaded                                      bool
 	paused                                      bool
 	flight                                      *flight

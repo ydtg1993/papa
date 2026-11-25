@@ -1,4 +1,8 @@
-Papa.page("account-pools", function (root) {
+(function () {
+"use strict";
+function mountPools(root) {
+  root.classList.add("ap-page");
+  var accountController, accountHost, accountNames = {};
   "use strict";
   var u = window.PapaRuntime,
     el = u.el,
@@ -21,19 +25,14 @@ Papa.page("account-pools", function (root) {
   var siteFilter = el("select"), selectedSite = sessionStorage.getItem("papa-account-site") || "";
   siteFilter.setAttribute("aria-label", "筛选账号站点");
   siteFilter.onchange = function () { if (!close()) { siteFilter.value = selectedSite; return; } selectedSite = siteFilter.value; sessionStorage.setItem("papa-account-site", selectedSite); render(); };
-  var poolsTab = button("池设置", function () {}); poolsTab.setAttribute("aria-current", "page");
-  var tabs = el("nav", undefined, "rt-tabs"); tabs.setAttribute("aria-label", "账号池分区"); tabs.append(button("账号", function () { openPage("accounts", "账号池"); }), poolsTab);
   bar.append(
-    el("h2", "账号池"),
-    tabs,
-    siteFilter,
-    search,
-    button("创建池", function () {
-      edit(null);
-    }),
-    button("刷新", refresh),
+    el("p", "按站点组织采集账号", "ap-intro"), siteFilter, search,
+    button("创建池", function () { edit(null); }),
+    button("站点账号", function () { manageAccounts(null); }),
+    button("刷新", refresh)
   );
   root.append(bar, status, content);
+  function normalize(value) { value.pools = value.pools || []; value.pools.forEach(function (p) { p.members = p.members || []; p.accounts = p.accounts || []; }); return value; }
   function current() {
     return !dead;
   }
@@ -45,10 +44,10 @@ Papa.page("account-pools", function (root) {
         return !dead && n === generation;
       });
       if (dead || n !== generation) return;
-      data = d;
+      data = normalize(d);
       fillSites();
       status.textContent = d.configured
-        ? "疑似失效先核验；额度不足等待，确认失效才切换备用。"
+        ? "在“管理账号”中添加、登录和调整成员；失效后按备用顺序切换。"
         : "账号池接入尚未施工。点击“创建池”选择站点，查看接入状态。";
       render();
     } catch (e) {
@@ -58,77 +57,40 @@ Papa.page("account-pools", function (root) {
   function close(force) {
     if (writing && !force) return false;
     if (dirty && !force && !window.confirm("放弃未保存的修改？")) return false;
-    if (drawer) drawer.remove();
+    u.dismissModal(drawer);
     drawer = null;
     dirty = false;
     return true;
   }
   function fillSites() {
-    var sites = Array.from(new Set((data.sites || []).concat((data.accounts || []).map(function (a) { return a.key.site; }).concat((data.pools || []).map(function (p) { return p.key.site; }))))).sort();
+    var sites = Array.from(new Set((data.sites || []).concat(data.login_sites || []).concat((data.accounts || []).map(function (a) { return a.key.site; }).concat((data.pools || []).map(function (p) { return p.key.site; }))))).sort();
     siteFilter.replaceChildren(); var all = el("option", "全部站点"); all.value = ""; siteFilter.append(all);
     sites.forEach(function (site) { var o = el("option", site); o.value = site; siteFilter.append(o); });
     if (sites.indexOf(selectedSite) < 0) selectedSite = "";
     siteFilter.value = selectedSite;
   }
+  function ensureAccountController() {
+    if (accountController || !window.PapaAccounts) return;
+    accountHost = el("div"); root.append(accountHost);
+    accountController = window.PapaAccounts.mount(accountHost, { embedded: true, onChange: refresh, onProfiles: function (profiles) { accountNames = {}; profiles.forEach(function (p) { accountNames[p.key.site + ":" + p.key.id] = p.label && p.label !== p.key.id ? p.label : p.identity ? p.identity.display : p.key.id; }); render(); }, createPool: function (site, member) { edit(null, site, member); } });
+  }
+  function manageAccounts(pool) {
+    if (!close()) return;
+    ensureAccountController();
+    if (!accountController) { status.textContent = "账号管理组件尚未加载，请刷新页面。"; return; }
+    if (!pool && selectedSite) sessionStorage.setItem("papa-account-site", selectedSite);
+    accountController.manage(pool, selectedSite);
+  }
   function render() {
     if (!data) return;
     content.replaceChildren();
-    var rows = (data.pools || [])
-      .filter(function (p) {
-        return (!selectedSite || p.key.site === selectedSite) && (p.key.site + " " + p.key.name).indexOf(search.value) >= 0;
-      })
-      .map(function (p) {
-        var ops = el("div");
-        ops.append(
-          button("查看", function () {
-            detail(p);
-          }),
-          button("设置", function () {
-            edit(p);
-          }),
-        );
-        return [
-          p.key.site,
-          p.key.name,
-          p.current_id || "等待选择",
-          p.available + " / " + p.members.length,
-          ["needs-verification", "invalid", "disabled", "cooling"]
-            .map(function (state) {
-              return p.accounts.filter(function (m) {
-                return m.state === state;
-              }).length;
-            })
-            .join(" / "),
-          p.disabled ? "已停用" : p.wait_reason || "可用",
-          p.waiting,
-          (p.history || []).length
-            ? u.date(p.history[p.history.length - 1].at) +
-              " · " +
-              p.history[p.history.length - 1].reason
-            : "—",
-          ops,
-        ];
-      });
-    content.appendChild(
-      u.table(
-        [
-          "站点",
-          "池名",
-          "当前账号",
-          "可用 / 总数",
-          "待核验 / 失效 / 停用 / 冷却",
-          "状态",
-          "等待任务",
-          "最近切换原因",
-          "操作",
-        ],
-        rows,
-      ),
-    );
-    if (!rows.length)
-      content.appendChild(
-        el("p", "暂无账号池。账号凭据仍由业务注册与凭据存储管理。"),
-      );
+    var rows = (data.pools || []).filter(function (p) { return (!selectedSite || p.key.site === selectedSite) && (p.key.site + " " + p.key.name).indexOf(search.value) >= 0; }).map(function (p) {
+      var ops = el("div", undefined, "ap-ops");
+      ops.append(button("管理账号", function () { manageAccounts(p); }), button("设置", function () { edit(p); }), button("运行详情", function () { detail(p); }));
+      return [p.key.site, p.key.name, accountNames[p.key.site + ":" + p.current_id] || p.current_id || "尚未选择", p.available + " / " + p.members.length, p.disabled ? "已停用" : p.wait_reason ? stateLabel(p.wait_reason) : "可用", p.waiting, ops];
+    });
+    content.append(u.table(["站点", "账号池", "当前账号", "可用 / 总数", "状态", "等待任务", "操作"], rows));
+    if (!rows.length) { var empty = el("div", undefined, "ap-empty"); empty.append(el("h3", "还没有账号池"), el("p", "先创建一个池，再添加账号完成登录。已有账号可直接加入。", "ac-help"), button("创建第一个账号池", function () { edit(null); })); content.append(empty); }
   }
   async function act(body) {
     if (writing) return;
@@ -147,9 +109,10 @@ Papa.page("account-pools", function (root) {
         current,
       );
       if (dead) return;
-      data = result;
+      data = normalize(result);
       close(true);
       render();
+      if (body.action === "save" && body.revision === 0) { var created = data.pools.find(function (p) { return p.key.site === body.config.key.site && p.key.name === body.config.key.name; }); if (created) { writing = false; manageAccounts(created); } }
       status.textContent =
         body.action === "verify" || body.action === "check"
           ? "已提交" + (body.action === "check" ? "原状态检查" : "恢复登录") + "，刷新详情可查看结果。"
@@ -215,7 +178,7 @@ Papa.page("account-pools", function (root) {
   }
   function detail(p) {
     if (!close()) return;
-    drawer = el("aside", undefined, "rt-drawer");
+    drawer = u.modal(root, "账号池", function () { close(); }, true);
     drawer.setAttribute("role", "dialog");
     drawer.setAttribute("aria-label", "账号池详情");
     drawer.append(
@@ -340,34 +303,8 @@ Papa.page("account-pools", function (root) {
     );
     root.appendChild(drawer);
   }
-  function chooseSite() {
-    if (!close()) return;
-    drawer = el("aside", undefined, "rt-drawer"); drawer.setAttribute("role", "dialog"); drawer.setAttribute("aria-label", "创建账号池");
-    var select = el("select"), label = el("label", "站点"), detail = el("p", "", "rt-status");
-    select.setAttribute("aria-label", "账号池所属站点");
-    var sites = Array.from(new Set((data.sites || []).concat((data.accounts || []).map(function (a) { return a.key.site; })))).sort();
-    var placeholder = el("option", sites.length ? "请选择站点" : "尚未注册站点"); placeholder.value = ""; select.append(placeholder);
-    sites.forEach(function (site) { var o = el("option", site); o.value = site; select.append(o); });
-    select.value = sessionStorage.getItem("papa-account-site") || "";
-    var next = button("继续设置池", function () { if (!next.disabled) edit(null, select.value); });
-    var add = button("登录并添加账号", function () { openPage("accounts", "账号池"); });
-    function update() {
-      var site = select.value; next.disabled = true; add.hidden = true;
-      if (!site) { detail.textContent = sites.length ? "请先选择账号池所属站点。" : "尚未注册站点，请先接入采集站点。"; return; }
-      sessionStorage.setItem("papa-account-site", site);
-      if (!data.configured) { detail.textContent = "站点「" + site + "」的账号池接入尚未施工，请先实现本站账号登录与管理。"; return; }
-      if (!(data.accounts || []).some(function (a) { return a.key.site === site; })) {
-        if (!(data.login_sites || []).includes(site)) { detail.textContent = "站点「" + site + "」的账号登录接入尚未施工，请先由该站点实现登录流程。"; return; }
-        detail.textContent = "本站尚无可加入池的账号，请先登录并添加账号。"; add.hidden = false; return;
-      }
-      detail.textContent = "仅可加入本站账号；不同权限的账号应分别建池。"; next.disabled = false;
-    }
-    select.onchange = update; label.append(select); drawer.append(el("h2", "创建账号池"), label, detail, next, add, button("取消", function () { close(); })); root.append(drawer); update();
-  }
-  function edit(p, selectedSite) {
+  function edit(p, selectedSite, initialMember) {
     if (!data) { status.textContent = "站点资料尚未加载，请刷新后重试。"; return; }
-    if (!p && !selectedSite) { chooseSite(); return; }
-    if (!data.configured) { status.textContent = "账号池接入尚未施工，请先实现本站账号登录与管理。"; return; }
     if (!close()) return;
     var cfg = p
       ? {
@@ -382,8 +319,8 @@ Papa.page("account-pools", function (root) {
           standby_ttl: p.standby_ttl,
         }
       : {
-          key: { site: selectedSite, name: "" },
-          members: [],
+          key: { site: selectedSite || siteFilter.value || ((data.sites || []).length === 1 ? data.sites[0] : ""), name: "" },
+          members: initialMember ? [initialMember] : [],
           transport: "http",
           disabled: false,
           verify_attempts: 1,
@@ -392,11 +329,11 @@ Papa.page("account-pools", function (root) {
           standby_target: 0,
           standby_ttl: 900e9,
         };
-    drawer = el("aside", undefined, "rt-drawer");
+    drawer = u.modal(root, "账号池", function () { close(); }, true);
     drawer.setAttribute("role", "dialog");
     drawer.setAttribute("aria-label", p ? "账号池设置" : "创建账号池");
     drawer.appendChild(el("h2", p ? "账号池设置" : "创建账号池"));
-    var form = el("form");
+    var form = el("form"), fieldTarget = form;
     form.onsubmit = function (e) {
       e.preventDefault();
     };
@@ -417,16 +354,15 @@ Papa.page("account-pools", function (root) {
         );
       };
       row.append(el("span", label), x);
-      form.appendChild(row);
+      fieldTarget.appendChild(row);
       return x;
     }
-    var site = input("站点", cfg.key.site, "text", function (v) {
-      cfg.key.site = v;
-      cfg.members = [];
-      members();
-    });
-    site.required = true;
-    site.disabled = true;
+    var site = el("select"), siteRow = el("label", undefined, "rt-field"), hint = el("p", undefined, "rt-status");
+    site.setAttribute("aria-label", "账号池所属站点");
+    var sites = Array.from(new Set((data.sites || []).concat(data.login_sites || []).concat((data.accounts || []).map(function (a) { return a.key.site; })))).sort();
+    var placeholder = el("option", "请选择站点"); placeholder.value = ""; site.append(placeholder);
+    sites.forEach(function (value) { var o = el("option", value); o.value = value; site.append(o); }); site.value = cfg.key.site; site.disabled = !!p; site.required = true;
+    siteRow.append(el("span", "所属站点"), site); form.append(siteRow, hint);
     var name = input("池名", cfg.key.name, "text", function (v) {
       cfg.key.name = v;
     });
@@ -435,9 +371,9 @@ Papa.page("account-pools", function (root) {
     var row = el("label", undefined, "rt-field"),
       transport = el("select");
     [
-      ["http", "HTTP"],
-      ["browser", "浏览器"],
-      ["both", "两者均需验证"],
+      ["http", "HTTP / HTML 抓取"],
+      ["browser", "浏览器抓取"],
+      ["both", "同时使用两种方式"],
     ].forEach(function (pair) {
       var o = el("option", pair[1]);
       o.value = pair[0];
@@ -450,6 +386,7 @@ Papa.page("account-pools", function (root) {
     };
     row.append(el("span", "使用方式"), transport);
     form.appendChild(row);
+    var advanced = el("details"); advanced.append(el("summary", "高级设置：停用、验证与备用策略")); fieldTarget = advanced;
     input("停用整个池", cfg.disabled, "checkbox", function (v) {
       cfg.disabled = v;
     });
@@ -488,12 +425,13 @@ Papa.page("account-pools", function (root) {
     var ttl = input("备用验证有效期（秒）", (cfg.standby_ttl || 900e9) / 1e9, "number", function (v) { cfg.standby_ttl = v * 1e9; });
     ttl.min = 0.001;
     ttl.step = "any";
+    form.append(advanced); fieldTarget = form;
     var memberBox = el("div");
     form.append(
-      el("h3", "备用顺序"),
+      el("h3", "池成员（可稍后添加）"),
       el(
         "p",
-        "正常完成任务不会轮换。当前账号失效后，按此顺序选择已验证成员。",
+        "成员从上到下排列。当前账号失效后，依次尝试备用账号。",
         "rt-muted",
       ),
       memberBox,
@@ -544,16 +482,15 @@ Papa.page("account-pools", function (root) {
       );
     }
     members();
-    drawer.append(
-      form,
-      button("保存", function () {
-        if (form.reportValidity())
-          act({ action: "save", revision: p ? p.revision : 0, config: cfg });
-      }),
-      button("取消", function () {
-        close();
-      }),
-    );
+    var save = button(p ? "保存设置" : "创建并管理账号", function () { if (form.reportValidity()) act({ action: "save", revision: p ? p.revision : 0, config: cfg }); }); save.className += " ac-primary";
+    var actions = el("div", undefined, "ac-actions"); actions.append(save, button("取消", function () { close(); })); drawer.append(form, actions);
+    function updateSite() {
+      cfg.key.site = site.value;
+      var integrated = data.configured && ((data.login_sites || []).includes(site.value) || (data.accounts || []).some(function (a) { return a.key.site === site.value; }));
+      hint.textContent = !site.value ? "选择账号所属站点。" : !integrated ? "站点「" + site.value + "」的账号登录接入尚未施工，请先由该站点实现登录流程。" : "可以先创建空池，再在弹窗中添加或登录账号。";
+      save.disabled = !site.value || !integrated;
+    }
+    site.onchange = function () { dirty = true; cfg.members = []; updateSite(); members(); }; updateSite();
     if (p)
       drawer.appendChild(
         button("删除已停用池", function () {
@@ -567,12 +504,13 @@ Papa.page("account-pools", function (root) {
     site.focus();
   }
   function stateLabel(value) {
-    return ({"needs-verification":"待核验", "available":"可用", "invalid":"已隔离", "disabled":"已停用", "cooling":"冷却", "verifying":"核验中", "pending":"待验证", "proxy-unavailable":"代理不可用", "daily-budget-exhausted":"日预算已用尽", "operation-interval":"使用间隔", "outside-work-hours":"非工作时段", "manual":"等待人工", "permanent":"永久终止", "retry_after":"等待时间", "account_ready":"等待账号就绪", "recovered":"已恢复", "verification-unknown":"核验结果未知", "verification-invalid":"无效核验结果", "verification-overdue":"核验等待过久", "pool-exhausted":"账号池耗尽", "standby-shortage":"备用不足", "manual-verification":"待人工验证", "manual intervention required":"需人工解除", "permanently terminated":"永久终止", "retry-after deadline has not elapsed":"未到最早补偿时间", "account pools are not configured":"尚未配置账号池", "account pool is not ready":"账号池未就绪", "task stage is not registered":"任务阶段未注册", "account-ready compensation requires task pool ownership":"等待账号就绪的任务缺少账号池归属"})[value] || value || "默认补偿";
+    if (value && value.indexOf("current-account-") === 0) return "当前账号：" + stateLabel(value.slice(16));
+    return ({"pool-disabled":"池已停用", "no-verified-account":"等待账号就绪", "needs-verification":"待核验", "available":"可用", "invalid":"已隔离", "disabled":"已停用", "cooling":"冷却", "verifying":"核验中", "pending":"待验证", "proxy-unavailable":"代理不可用", "daily-budget-exhausted":"日预算已用尽", "operation-interval":"使用间隔", "outside-work-hours":"非工作时段", "manual":"等待人工", "permanent":"永久终止", "retry_after":"等待时间", "account_ready":"等待账号就绪", "recovered":"已恢复", "verification-unknown":"核验结果未知", "verification-invalid":"无效核验结果", "verification-overdue":"核验等待过久", "pool-exhausted":"账号池耗尽", "standby-shortage":"备用不足", "manual-verification":"待人工验证", "manual intervention required":"需人工解除", "permanently terminated":"永久终止", "retry-after deadline has not elapsed":"未到最早补偿时间", "account pools are not configured":"尚未配置账号池", "account pool is not ready":"账号池未就绪", "task stage is not registered":"任务阶段未注册", "account-ready compensation requires task pool ownership":"等待账号就绪的任务缺少账号池归属"})[value] || value || "默认补偿";
   }
   function policy(member) {
     if (!close()) return;
     var value = Object.assign({}, data.default_policy || {}, member.management.policy || {}), form = el("form");
-    drawer = el("aside", undefined, "rt-drawer");
+    drawer = u.modal(root, "账号池", function () { close(); }, true);
     drawer.setAttribute("role", "dialog");
     drawer.setAttribute("aria-label", "账号健康与使用策略");
     drawer.append(el("h2", member.key.site + " / " + member.key.id), el("p", "策略按账号跨池共享。计量单位为 HTTP 交换和浏览器操作，不是页面内所有网络请求。额度不足时等待，不会换号。", "rt-muted"));
@@ -614,7 +552,7 @@ Papa.page("account-pools", function (root) {
   }
   async function compensation(key, accountID) {
     if (!close()) return;
-    var pane = el("aside", undefined, "rt-drawer"), note = el("p", "正在预览…", "rt-status"), rows = el("div"), results = el("div"), selected = [], previewGeneration = 0;
+    var pane = u.modal(root, "关联任务", function () { close(); }, true), note = el("p", "正在预览…", "rt-status"), rows = el("div"), results = el("div"), selected = [], previewGeneration = 0;
     drawer = pane;
     pane.setAttribute("role", "dialog"); pane.setAttribute("aria-label", "关联任务与补偿预览");
     var apply = button("补偿所选任务", function () { submit({action:"retry", requests:selected.slice()}); });
@@ -677,6 +615,7 @@ Papa.page("account-pools", function (root) {
       return close();
     },
   );
+  ensureAccountController();
   refresh();
   var timer = setInterval(refresh, 5000);
   return {
@@ -690,6 +629,11 @@ Papa.page("account-pools", function (root) {
       window.removeEventListener("beforeunload", beforeLeave);
       unbindKeyboard();
       close(true);
+      if (accountController) accountController();
+      root.classList.remove("ap-page");
     },
   };
-});
+}
+window.PapaAccountPools = { mount: mountPools };
+Papa.page("account-pools", mountPools);
+})();

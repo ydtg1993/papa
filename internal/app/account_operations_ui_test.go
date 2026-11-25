@@ -105,17 +105,17 @@ func TestAccountOperationsUIRealBrowserPolicyAndPartialCompensation(t *testing.T
 		if err = wait(`()=>document.querySelector('.rt-table tbody tr')!==null`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{window.click=(text)=>{let b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent===text);if(!b)throw Error('missing '+text);b.click()};click('设置');click('保存')}`); err != nil {
+		if err = eval(`()=>{window.click=(text)=>{let b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent===text);if(!b)throw Error('missing '+text);b.click()};click('设置');click('保存设置')}`); err != nil {
 			return err
 		}
-		if err = wait(`()=>!document.querySelector('.rt-drawer')`); err != nil {
+		if err = wait(`()=>!document.querySelector('.rt-modal')`); err != nil {
 			return err
 		}
 		snapshot, e := pools.Get(account.PoolKey{Site: "fixture", Name: "main"})
 		if e != nil || snapshot.StandbyTarget != 1 || snapshot.StandbyTTL != time.Minute {
 			return fmt.Errorf("pool editor lost standby settings: %v", e)
 		}
-		if err = eval(`()=>{click('查看');click('健康与使用策略');let row=Array.from(document.querySelectorAll('.rt-field')).find(n=>n.textContent.startsWith('每日操作上限'));let input=row.querySelector('input');input.value='25';input.dispatchEvent(new Event('input'));click('刷新')}`); err != nil {
+		if err = eval(`()=>{click('运行详情');click('健康与使用策略');let row=Array.from(document.querySelectorAll('.rt-field')).find(n=>n.textContent.startsWith('每日操作上限'));let input=row.querySelector('input');input.value='25';input.dispatchEvent(new Event('input'));click('刷新')}`); err != nil {
 			return err
 		}
 		if dir := os.Getenv("PAPA_RUNTIME_SCREENSHOT_DIR"); dir != "" {
@@ -133,32 +133,32 @@ func TestAccountOperationsUIRealBrowserPolicyAndPartialCompensation(t *testing.T
 		if err = eval(`()=>{let row=Array.from(document.querySelectorAll('.rt-field')).find(n=>n.textContent.startsWith('每日操作上限'));if(row.querySelector('input').value!=='25')throw Error('refresh overwrote policy draft');click('保存策略')}`); err != nil {
 			return err
 		}
-		if err = wait(`()=>!document.querySelector('.rt-drawer')`); err != nil {
+		if err = wait(`()=>!document.querySelector('.rt-modal')`); err != nil {
 			return err
 		}
 		policy, _, e := pools.Policy(key)
 		if e != nil || policy.DailyLimit != 25 {
 			return fmt.Errorf("policy not persisted: %v", e)
 		}
-		if err = eval(`()=>{click('查看');click('关联任务')}`); err != nil {
+		if err = eval(`()=>{click('运行详情');click('关联任务')}`); err != nil {
 			return err
 		}
-		if err = wait(`()=>document.querySelectorAll('.rt-drawer input[type=checkbox]').length===3`); err != nil {
+		if err = wait(`()=>document.querySelectorAll('.rt-modal input[type=checkbox]').length===3`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{let c=Array.from(document.querySelectorAll('.rt-drawer input[type=checkbox]'));if(!c[2].disabled)throw Error('permanent task selectable');c.slice(0,2).forEach(x=>{x.checked=true;x.dispatchEvent(new Event('change'))});click('补偿所选任务')}`); err != nil {
+		if err = eval(`()=>{let c=Array.from(document.querySelectorAll('.rt-modal input[type=checkbox]'));if(!c[2].disabled)throw Error('permanent task selectable');c.slice(0,2).forEach(x=>{x.checked=true;x.dispatchEvent(new Event('change'))});click('补偿所选任务')}`); err != nil {
 			return err
 		}
-		if err = wait(`()=>document.querySelector('.rt-drawer').textContent.includes('版本已变化')`); err != nil {
+		if err = wait(`()=>document.querySelector('.rt-modal').textContent.includes('版本已变化')`); err != nil {
 			return err
 		}
-		if err = eval(`()=>{if(!document.querySelector('.rt-drawer').textContent.includes('已提交'))throw Error('missing partial success');let b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='补偿所选任务');if(!b.disabled)throw Error('stale resubmit enabled');click('重新预览')}`); err != nil {
+		if err = eval(`()=>{if(!document.querySelector('.rt-modal').textContent.includes('已提交'))throw Error('missing partial success');let b=Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='补偿所选任务');if(!b.disabled)throw Error('stale resubmit enabled');click('重新预览')}`); err != nil {
 			return err
 		}
-		if err = wait(`()=>Array.from(document.querySelectorAll('.rt-drawer input[type=checkbox]')).filter(x=>!x.disabled).length===2`); err != nil {
+		if err = wait(`()=>Array.from(document.querySelectorAll('.rt-modal input[type=checkbox]')).filter(x=>!x.disabled).length===2`); err != nil {
 			return err
 		}
-		return eval(`()=>{active.destroy();if(document.querySelector('.rt-drawer'))throw Error('dialog retained')}`)
+		return eval(`()=>{active.destroy();if(document.querySelector('.rt-modal'))throw Error('dialog retained')}`)
 	})
 	if err != nil {
 		t.Fatal(err)

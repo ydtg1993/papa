@@ -299,6 +299,7 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 	browserRevision := e.browserRevision
 	oldVersion := e.version
 	old := cloneCredentials(e.current)
+	oldPage := e.pageState
 	seed := maps.Clone(e.seed)
 	e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, e.config.Timeout)
@@ -319,10 +320,15 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 		}
 		e.mu.Lock()
 		finished := false
+		rollback := e.sessionRollbackLocked()
 		defer func() {
 			if !finished {
-				e.current = nil
-				e.version++
+				if e.sessionBridge() {
+					rollback()
+				} else {
+					e.current = nil
+					e.version++
+				}
 				credentials = nil
 				err = &Failure{Code: "authentication-finalize-aborted"}
 			}
@@ -336,6 +342,10 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			err = ErrSuperseded
 		}
 		if err == nil {
+			if e.sessionBridge() && !loggedIn && e.current != nil &&
+				(!maps.Equal(e.current.Headers, credentials.Headers) || !maps.Equal(e.current.Values, credentials.Values)) {
+				e.version++
+			}
 			e.current = credentials
 			e.seed = maps.Clone(credentials.Values)
 			e.lastCheck = time.Now()
@@ -352,14 +362,26 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 					e.browserRevision++
 				}
 			}
+			if e.sessionBridge() {
+				if !loggedIn {
+					e.browserRevision++
+				}
+				if credentials.BrowserState != nil {
+					e.pageState = credentials.BrowserState
+				}
+			}
 			e.failure = nil
 			e.retryAt = time.Time{}
 			version = e.version
 			if saveErr := e.saveLocked(ctx); saveErr != nil {
 				err = saveErr
-				e.current = nil
-				e.lastCheck = time.Time{}
-				e.version++
+				if e.sessionBridge() {
+					rollback()
+				} else {
+					e.current = nil
+					e.lastCheck = time.Time{}
+					e.version++
+				}
 			}
 		}
 		if err != nil {
@@ -378,12 +400,24 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			panic(p)
 		}
 	}()
+	if old != nil && e.sessionBridge() {
+		old, err = detachedCandidate(old)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
 	if old != nil {
 		valid, checkErr := e.config.Check(ctx, old)
 		if checkErr != nil {
 			return nil, 0, &Failure{Code: "check-failed", Cause: checkErr}
 		}
 		if valid {
+			if e.sessionBridge() && oldPage != nil {
+				old.BrowserState, err = sessionPageState(old, oldPage, e.config.Browser)
+				if err != nil {
+					return nil, 0, err
+				}
+			}
 			if err = e.checkCredentials(old); err != nil {
 				return nil, 0, &Failure{Code: "invalid-credentials", Cause: err}
 			}
@@ -458,6 +492,12 @@ func (e *entry) ensure(ctx context.Context) (credentials *Credentials, version u
 			return nil, 0, &Failure{Code: "invalid-credentials", Cause: err}
 		}
 		loggedIn = true
+		if e.sessionBridge() && candidate.BrowserState != nil {
+			candidate.BrowserState, err = sessionPageState(candidate, candidate.BrowserState, e.config.Browser)
+			if err != nil {
+				return nil, 0, err
+			}
+		}
 		return candidate, 0, nil
 	}
 	return nil, 0, ErrExpired
@@ -620,8 +660,12 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 			return nil, err
 		}
 		response, fetchErr := m.client.Do(htmlfetch.WithSession(ctx, c.Session), r)
+		syncErr := e.observeSession(version)
 		if errors.Is(fetchErr, core.ErrSiteChallenge) {
 			return response, fetchErr
+		}
+		if syncErr != nil {
+			return response, syncErr
 		}
 		outcome := e.config.Classify(response, fetchErr)
 		switch outcome {
@@ -656,6 +700,31 @@ func (m *Manager) Do(ctx context.Context, key Key, req htmlfetch.Request) (*html
 		return response, fetchErr
 	}
 	return nil, ErrExpired
+}
+
+// Observe every HTTP response, including forbidden/challenge/error responses:
+// net/http may have accepted Set-Cookie before classification returns early.
+func (e *entry) observeSession(version uint64) error {
+	if !e.sessionBridge() {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.version != version || e.paused || e.current == nil {
+		return nil
+	}
+	// CookieJar has already accepted response cookies, even if Update or
+	// persistence fails. Invalidate old probe/publication evidence now.
+	e.browserRevision++
+	if e.pageState != nil {
+		state, err := sessionPageState(e.current, e.pageState, e.config.Browser)
+		if err != nil {
+			return err
+		}
+		e.pageState = state
+		e.current.BrowserState = state
+	}
+	return nil
 }
 
 func (e *entry) observe(ctx context.Context, version uint64, response *htmlfetch.Response, valid bool) error {

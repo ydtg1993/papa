@@ -101,6 +101,12 @@ func verifyCandidate(ctx context.Context, e *entry, c *Credentials) (err error) 
 	if err = ctx.Err(); err != nil {
 		return err
 	}
+	if bridged {
+		c.BrowserState, err = sessionPageState(c, c.BrowserState, e.config.Browser)
+		if err != nil {
+			return err
+		}
+	}
 	return e.checkCredentials(c)
 }
 
@@ -207,12 +213,31 @@ func (m *Manager) PublishCandidate(ctx context.Context, key Key, expectedVersion
 	e.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, e.config.Timeout)
 	defer cancel()
+	if e.sessionBridge() {
+		// Account onboarding must also work while paused. Take the same exchange
+		// permit as HTTP/Rod without enter's pause guard, then recheck the epochs.
+		select {
+		case e.slots <- struct{}{}:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+		defer e.leave()
+		if err = ctx.Err(); err != nil {
+			return 0, err
+		}
+		e.mu.Lock()
+		stale := e.version != expectedVersion || e.revision != revision || e.browserRevision != initialBrowserRevision
+		e.mu.Unlock()
+		if stale {
+			return 0, ErrSuperseded
+		}
+	}
 	if err = verifyCandidate(ctx, e, c); err != nil {
 		return 0, err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.version != expectedVersion || e.revision != revision || (c.BrowserState != nil && e.browserRevision != initialBrowserRevision) {
+	if e.version != expectedVersion || e.revision != revision || ((c.BrowserState != nil || e.sessionBridge()) && e.browserRevision != initialBrowserRevision) {
 		return 0, ErrSuperseded
 	}
 	old, seed, page, version, rev, browserRev := e.current, e.seed, e.pageState, e.version, e.revision, e.browserRevision

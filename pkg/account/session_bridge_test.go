@@ -50,11 +50,14 @@ func newSessionBridgeFixture(t *testing.T) *sessionBridgeFixture {
 			w.WriteHeader(401)
 			return
 		}
-		if r.URL.Path == "/rotate" {
+		if r.URL.Path == "/rotate" || r.URL.Path == "/forbidden-rotate" {
 			cookie.Value = strings.Split(cookie.Value, "/")[0] + "/" + r.URL.Query().Get("to")
 			cookie.Path = "/"
 			cookie.HttpOnly = true
 			http.SetCookie(w, cookie)
+			if r.URL.Path == "/forbidden-rotate" {
+				w.WriteHeader(http.StatusForbidden)
+			}
 		}
 		fmt.Fprint(w, cookie.Value)
 	}))
@@ -329,7 +332,7 @@ func TestSessionBridgeDeferredPoolAndHTTPFirst(t *testing.T) {
 	}
 }
 
-func TestSessionBridgeTokenMappingAndNewCandidateWins(t *testing.T) {
+func TestSessionBridgeTokenMappingAndCandidatePublication(t *testing.T) {
 	f := newSessionBridgeFixture(t)
 	m := NewManager(f.client)
 	key := Key{Site: "s", ID: "alice"}
@@ -365,21 +368,23 @@ func TestSessionBridgeTokenMappingAndNewCandidateWins(t *testing.T) {
 		if r.Value.Str() != "rotated-token" {
 			return errors.New("HTTP token import failed")
 		}
-		e, _ := m.get(key)
-		e.mu.Lock()
-		candidate, err := detachedCandidate(e.current)
-		version := e.version
-		e.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		candidate.BrowserState = nil
-		candidate.Headers["X-Csrf-Token"] = "new-publication"
-		_, err = m.PublishCandidate(ctx, key, version, candidate)
-		return err
+		return nil
 	})
-	if !errors.Is(err, ErrSuperseded) {
-		t.Fatalf("old browser overwrote new candidate: %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := m.get(key)
+	e.mu.Lock()
+	candidate, err := detachedCandidate(e.current)
+	version := e.version
+	e.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.BrowserState = nil
+	candidate.Headers["X-Csrf-Token"] = "new-publication"
+	if _, err = m.PublishCandidate(ctx, key, version, candidate); err != nil {
+		t.Fatal(err)
 	}
 	r, err = m.Do(ctx, key, htmlfetch.Request{URL: f.url + "/header"})
 	if err != nil || string(r.Body) != "new-publication" {

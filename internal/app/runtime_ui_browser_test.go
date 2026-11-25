@@ -142,7 +142,7 @@ func TestRuntimeUIRealBrowserDraftSaveConflictAndNavigation(t *testing.T) {
 		if err = page.Timeout(8 * time.Second).Wait(rod.Eval(`()=>document.querySelector('.rt-table')!==null`)); err != nil {
 			return err
 		}
-		return eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='创建池').click();if(!document.querySelector('.rt-drawer'))throw new Error('account editor missing');active.destroy();if(document.querySelector('.rt-drawer'))throw new Error('destroy retained dialog');}`)
+		return eval(`()=>{Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='创建池').click();if(!document.querySelector('.rt-modal'))throw new Error('account editor missing');active.destroy();if(document.querySelector('.rt-modal'))throw new Error('destroy retained dialog');}`)
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -125,44 +125,33 @@ window.pick=(label,value)=>{let s=document.querySelector('select[aria-label="'+l
 			}
 			return nil
 		}
-		steps := []string{
-			`()=>document.getElementById('root').textContent.includes('尚未施工')`,
-			`()=>{click('新增账号');pick('账号所属站点','todo');return document.querySelector('.rt-drawer').textContent.includes('站点「todo」的账号登录接入尚未施工') && !document.querySelector('.rt-drawer input')}`,
-			`()=>{click('关闭');click('池设置');return true}`,
-			`()=>document.getElementById('root').textContent.includes('账号池接入尚未施工')`,
-			`()=>{click('创建池');pick('账号池所属站点','todo');return document.querySelector('.rt-drawer').textContent.includes('站点「todo」') && Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='继续设置池').disabled}`,
+		if err := wait(`()=>document.getElementById('root').textContent.includes('账号池接入尚未施工')`); err != nil {
+			return err
 		}
-		for _, js := range steps {
-			if err := wait(js); err != nil {
-				return err
-			}
+		if err := eval(`()=>{if(Array.from(document.querySelectorAll('button')).some(b=>['账号','池设置'].includes(b.textContent)))throw Error('split account page remained');click('创建池');pick('账号池所属站点','todo');let d=document.querySelector('dialog');if(!d.textContent.includes('尚未施工')||!Array.from(d.querySelectorAll('button')).find(b=>b.textContent==='创建并管理账号').disabled)throw Error('unconfigured pool enabled');click('取消');click('站点账号')}`); err != nil {
+			return err
+		}
+		if err := wait(`()=>document.querySelector('dialog')?.textContent.includes('新增账号')`); err != nil {
+			return err
+		}
+		if err := eval(`()=>{click('新增账号');pick('账号所属站点','todo');if(!document.querySelector('dialog').textContent.includes('站点「todo」的账号登录接入尚未施工'))throw Error('unconfigured account enabled')}`); err != nil {
+			return err
 		}
 		if writes.Load() != 0 {
-			return fmt.Errorf("unconfigured UI submitted %d writes", writes.Load())
+			return fmt.Errorf("unconfigured UI wrote %d times", writes.Load())
 		}
 		configured.Store(true)
-		if err := eval(`()=>{click('取消');click('账号')}`); err != nil {
+		if err := eval(`()=>{document.querySelector('dialog .rt-modal-close').click();click('刷新');click('站点账号')}`); err != nil {
 			return err
 		}
-		if err := wait(`()=>document.getElementById('root').textContent.includes('先保存资料')`); err != nil {
+		if err := wait(`()=>document.querySelector('dialog')?.textContent.includes('新增账号')`); err != nil {
 			return err
 		}
-		if err := eval(`()=>{click('新增账号');pick('账号所属站点','todo');if(!document.querySelector('.rt-drawer').textContent.includes('尚未施工'))throw Error('partially integrated site enabled');pick('账号所属站点','password');let d=document.querySelector('.rt-drawer');if(!d.textContent.includes('账号密码')||d.textContent.includes('扫码授权'))throw Error('wrong methods');let inputs=d.querySelectorAll('input');inputs[0].value='new';inputs[1].value='New account';click('保存资料')}`); err != nil {
+		if err := eval(`()=>{click('新增账号');pick('账号所属站点','password');let d=document.querySelector('dialog');if(!d.querySelector('input[type=password]')||!d.textContent.includes('登录并验证'))throw Error('login was not combined');pick('账号所属站点','scan');if(d.querySelector('input[type=password]'))throw Error('cross-site fields retained');document.querySelector('dialog .rt-modal-close').click();click('创建池');pick('账号池所属站点','password');let options=Array.from(document.querySelectorAll('dialog select option')).map(x=>x.value);if(!options.includes('a')||options.includes('b'))throw Error('cross-site pool members');}`); err != nil {
 			return err
 		}
-		if err := wait(`()=>document.querySelector('.rt-drawer input[type=password]')!==null`); err != nil {
-			return err
-		}
-		if writes.Load() != 1 {
-			return fmt.Errorf("expected one draft write, got %d", writes.Load())
-		}
-		if err := eval(`()=>{click('关闭');click('新增账号');pick('账号所属站点','scan');let d=document.querySelector('.rt-drawer');if(!d.textContent.includes('扫码授权')||d.textContent.includes('账号密码'))throw Error('cross-site methods');click('关闭');click('池设置')}`); err != nil {
-			return err
-		}
-		if err := wait(`()=>document.getElementById('root').textContent.includes('疑似失效先核验')`); err != nil {
-			return err
-		}
-		return eval(`()=>{click('创建池');pick('账号池所属站点','todo');if(!document.querySelector('.rt-drawer').textContent.includes('站点「todo」的账号登录接入尚未施工'))throw Error('missing empty member guidance');pick('账号池所属站点','password');click('继续设置池');let d=document.querySelector('.rt-drawer');let site=d.querySelector('input');if(!site.disabled||site.value!=='password')throw Error('pool site can drift');let options=Array.from(d.querySelectorAll('select option')).map(x=>x.value);if(!options.includes('a')||options.includes('b'))throw Error('cross-site pool members')}`)
+		return nil
+
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@
   var css = document.createElement("style");
   css.textContent =
     ".rt-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}.rt-toolbar h2{margin:0 auto 0 0}.rt-tabs{display:flex;gap:8px;border-bottom:1px solid var(--border-color,#ddd);padding-bottom:12px}.rt-tabs [aria-selected=true],.rt-tabs [aria-current=page]{border-color:var(--border-color,#111);color:var(--foreground,#111);background:var(--primary,#FFD83D)}.rt-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.rt-table th,.rt-table td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--border-color,#ddd);vertical-align:top}.rt-muted{font-size:12px;opacity:.7}.rt-status{min-height:24px;white-space:pre-wrap}.rt-scroll{overflow:auto}.rt-drawer{position:fixed;right:0;top:0;bottom:0;width:min(640px,100%);box-sizing:border-box;background:var(--card,#fff);color:var(--foreground,#20262c);box-shadow:-5px 0 0 var(--shadow-color,#111);border-left:2px solid var(--border-color,#111);z-index:800;overflow:auto;padding:24px}.rt-field{display:grid;grid-template-columns:1fr 150px;gap:8px;margin:16px 0;align-items:center}.rt-field small{grid-column:1/-1;opacity:.7}.rt-field input[type=number],.rt-field input[type=text],.rt-field select{width:100%;box-sizing:border-box;padding:8px}.rt-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;font-size:12px;border-left:3px solid var(--primary,#FFD83D);padding:12px;background:var(--muted-fill,#f7f7f5)}.rt-kpis{display:flex;gap:30px;flex-wrap:wrap;margin:24px 0}.rt-kpis strong{display:block;font-size:25px}.rt-badge{display:inline-block;border:1px solid currentColor;border-radius:4px;font-size:12px;padding:2px 6px}.rt-members{display:flex;gap:8px;align-items:center;margin:8px 0}.rt-members span{flex:1}@media(max-width:650px){.rt-drawer{padding:16px}.rt-field{grid-template-columns:1fr}.rt-table th,.rt-table td{padding:8px}.rt-toolbar h2{width:100%}}";
+  css.textContent += ".ap-page [hidden],.rt-modal [hidden]{display:none!important}.ap-page .rt-toolbar{gap:10px;justify-content:flex-end}.ap-page .rt-toolbar .ap-intro{margin-right:auto}.ap-page .rt-table th,.ap-page .rt-table td,.rt-modal .rt-table th,.rt-modal .rt-table td{vertical-align:middle}.ap-page button,.ap-page select,.ap-page input,.rt-modal button,.rt-modal select,.rt-modal input:not([type=checkbox]){min-height:36px;box-sizing:border-box;font:inherit;font-size:13px;line-height:20px}.ap-page button,.rt-modal button{display:inline-flex;align-items:center;justify-content:center;padding:7px 12px;white-space:nowrap}.ap-page select,.ap-page input,.rt-modal select,.rt-modal input:not([type=checkbox]){padding:7px 10px}.ap-ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.ap-empty{padding:40px 24px;text-align:center;border:1px dashed var(--border-color,#ddd)}.rt-modal{position:fixed;inset:0;margin:auto;width:min(920px,calc(100% - 40px));max-width:none;max-height:calc(100dvh - 64px);box-sizing:border-box;padding:24px;border:1px solid var(--border-color,#cbd5d5);border-radius:12px;background:var(--card,#fff);color:var(--foreground,#20262c);box-shadow:0 20px 70px #0003;overflow:auto;font:inherit}.rt-modal::backdrop{background:#17252e66}.rt-modal.rt-modal-wide{width:min(1220px,calc(100% - 40px))}.rt-modal h2{margin:0 48px 20px 0;font-size:20px}.rt-modal h3{font-size:15px}.rt-modal .rt-modal-close{float:right;width:36px;padding:4px;font-size:22px;border:0;background:transparent;color:inherit}.rt-modal .rt-field{grid-template-columns:minmax(180px,1fr) minmax(180px,1.5fr)}.rt-modal details{margin:20px 0;padding:14px 0;border-top:1px solid var(--border-color,#ddd)}.rt-modal summary{cursor:pointer;font-weight:600}.rt-modal .ac-feedback{color:var(--danger,#b42318);padding:10px 0}.rt-modal .ac-feedback:empty{display:none}.ac-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:22px;padding-top:16px;border-top:1px solid var(--border-color,#ddd)}.ac-primary{background:var(--primary,#ffd83d)!important;color:var(--foreground,#20262c);font-weight:600}.ac-manager-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}.ac-manager-head p{flex:1}.ac-secondary{display:block;font-size:12px;opacity:.65;margin-top:4px}.ac-inline{display:flex;gap:8px;align-items:center}.ac-inline input[type=checkbox]{width:auto}.ac-form{max-width:720px}.ac-help{font-size:13px;opacity:.75;line-height:1.6}@media(max-width:650px){.rt-modal,.rt-modal.rt-modal-wide{width:calc(100% - 20px);max-height:calc(100dvh - 24px);padding:18px;border-radius:8px}.rt-modal .rt-field{grid-template-columns:1fr}.ap-page .rt-toolbar{justify-content:flex-start}.ap-page .rt-toolbar .ap-intro{width:100%}.ap-page .rt-toolbar input{max-width:100%}}";
   document.head.appendChild(css);
   function el(tag, text, cls) {
     var n = document.createElement(tag);
@@ -93,12 +94,26 @@
     table: table,
     request: request,
     dialogKeyboard: dialogKeyboard,
+    modal: modal,
+    dismissModal: dismissModal,
   };
+
+  function modal(root, title, onClose, wide) {
+    var pane = el("dialog", undefined, "rt-modal" + (wide ? " rt-modal-wide" : ""));
+    pane.setAttribute("aria-label", title); pane.setAttribute("aria-modal", "true");
+    var x = button("×", onClose); x.className += " rt-modal-close"; x.setAttribute("aria-label", "关闭弹窗"); pane.append(x);
+    pane.addEventListener("cancel", function (e) { e.preventDefault(); onClose(); });
+    pane.addEventListener("invalid", function (e) { var group = e.target.closest("details"); if (group) group.open = true; }, true);
+    root.append(pane);
+    queueMicrotask(function () { if (pane.isConnected && !pane.open) { pane.showModal(); var first = Array.from(pane.querySelectorAll("input:not(:disabled),select:not(:disabled),textarea:not(:disabled)")).find(function (node) { return node.getClientRects().length > 0; }); if (first) first.focus(); } });
+    return pane;
+  }
+  function dismissModal(pane) { if (!pane) return; if (pane.open && pane.close) pane.close(); pane.remove(); }
 
   function dialogKeyboard(getDrawer, close) {
     function onKey(e) {
       var drawer = getDrawer();
-      if (!drawer) return;
+      if (!drawer || drawer.tagName === "DIALOG") return;
       if (e.key === "Escape") {
         if (close()) e.preventDefault();
         return;
