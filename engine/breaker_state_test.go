@@ -44,7 +44,7 @@ func TestBreakerCoordinatorProbeTimeoutRejectsLateHealthyResult(t *testing.T) {
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "fixture", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
 	probeCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	token, reason := b.settleStageProbeLocked(BreakerProbeRequest{Site: "fixture", Stage: "detail"}, "incident", 1, BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil, probeCtx)
+	token, reason := b.settleStageProbeLocked(fixtureBreakerProbeJob(s, nil), BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil, probeCtx)
 	if token != nil {
 		reason = b.finishStageProbeLocked(token, context.Background())
 	}

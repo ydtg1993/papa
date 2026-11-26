@@ -17,10 +17,12 @@ func (e *Engine) retainBreakerFailure(ctx context.Context, task *Task, version t
 
 // Called by the existing report writer. sampleDispatching owns SQL outside the
 // lock, and inflight prevents overlapping the original handler's cleanup.
-func (e *Engine) settleBreakerFailures(ctx context.Context) {
-	e.breakers.breakerMu.Lock()
-	sites := e.breakers.siteKeysLocked()
-	e.breakers.unlockAndEmit()
+func (e *Engine) settleBreakerFailures(ctx context.Context, sites ...string) {
+	if len(sites) == 0 {
+		e.breakers.breakerMu.Lock()
+		sites = e.breakers.siteKeysLocked()
+		e.breakers.unlockAndEmit()
+	}
 	for _, site := range sites {
 		if ctx.Err() != nil {
 			return
@@ -33,7 +35,7 @@ func (e *Engine) settleBreakerFailures(ctx context.Context) {
 		}
 		e.breakers.unlockAndEmit()
 
-		err := e.breakers.flushBreakerReports(ctx)
+		err := e.breakers.flushBreakerReportsForSite(ctx, site)
 		if err == nil {
 			var row models.CrawlerTask
 			err = e.db.WithContext(ctx).First(&row, p.TaskID).Error

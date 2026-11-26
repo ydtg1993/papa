@@ -31,7 +31,7 @@ func testBreakerCancellationAfterMilestone(t *testing.T, healthy bool) {
 		resultErr = context.DeadlineExceeded
 	}
 	e.breakers.breakerMu.Lock()
-	token, reason := e.breakers.settleStageProbeLocked(BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, result, resultErr, ctx)
+	token, reason := e.breakers.settleStageProbeLocked(fixtureBreakerProbeJob(s, nil), result, resultErr, ctx)
 	e.breakers.unlockAndEmit()
 	if token == nil || reason != "" {
 		t.Fatalf("missing settlement: %v %s", token, reason)

@@ -51,13 +51,15 @@ func breakerSampleTimedOut(s *smartBreaker) bool {
 
 // Reserve under the admission lock BEFORE SQL so normal scheduling cannot
 // complete the selected sample between lookup and requeue. I/O holds no lock.
-func (e *Engine) retryBreakerSamples(ctx context.Context) {
+func (e *Engine) retryBreakerSamples(ctx context.Context, sites ...string) {
 	if e.db == nil {
 		return
 	}
-	e.breakers.breakerMu.Lock()
-	sites := e.breakers.siteKeysLocked()
-	e.breakers.unlockAndEmit()
+	if len(sites) == 0 {
+		e.breakers.breakerMu.Lock()
+		sites = e.breakers.siteKeysLocked()
+		e.breakers.unlockAndEmit()
+	}
 	for _, site := range sites {
 		if ctx.Err() != nil {
 			return

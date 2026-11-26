@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ydtg1993/papa/v4/core"
+	"slices"
 	"time"
 
 	"github.com/ydtg1993/papa/v4/internal/breaker"
@@ -52,8 +54,9 @@ type smartBreaker struct {
 	nextAdmission     time.Time
 	probeRunning      bool
 	probeExecuting    bool
-	manualTakeover    bool   // process-local; ordinary resume must still revalidate
-	trial             uint64 // admission generation for controlled real-task evidence
+	probeJob          *breakerProbeJob // owns both controller and user-probe cleanup across incident replacement
+	manualTakeover    bool             // process-local; ordinary resume must still revalidate
+	trial             uint64           // admission generation for controlled real-task evidence
 	nextSampleRetry   time.Time
 	probeSettlement   *breakerProbeSettlement // fences the unlocked milestone callback phase
 	sampleDispatching bool                    // owns the selected sample while SQL/requeue runs outside breakerMu
@@ -187,13 +190,7 @@ func (e *Engine) writeBreakerReports(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			err := e.breakers.flushBreakerReports(writeCtx)
-			if err == nil {
-				e.settleBreakerFailures(writeCtx)
-				e.retryBreakerSamples(writeCtx)
-			}
-			cancel()
+			err := e.writeBreakerReportBatch(ctx)
 			delay := 200 * time.Millisecond
 			if err != nil {
 				delay = time.Second
@@ -204,6 +201,31 @@ func (e *Engine) writeBreakerReports(ctx context.Context) {
 			timer.Reset(delay)
 		}
 	}
+}
+
+// Keep report writes serialized, but budget and advance each site independently.
+// A slow/failed site's journal cannot consume the next site's settlement budget.
+func (e *Engine) writeBreakerReportBatch(ctx context.Context) error {
+	e.breakers.breakerMu.Lock()
+	sites := e.breakers.siteKeysLocked()
+	e.breakers.unlockAndEmit()
+	slices.Sort(sites)
+	var writeErr error
+	for _, site := range sites {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(writeErr, err)
+		}
+		writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := e.breakers.flushBreakerReportsForSite(writeCtx, site)
+		if err == nil {
+			e.settleBreakerFailures(writeCtx, site)
+			e.retryBreakerSamples(writeCtx, site)
+		} else {
+			writeErr = errors.Join(writeErr, fmt.Errorf("site %s: %w", site, err))
+		}
+		cancel()
+	}
+	return writeErr
 }
 
 func (e *Engine) pauseSmartBreakerLocked(site, reason string) bool {
@@ -250,14 +272,15 @@ func (e *Engine) tickBreakers(ctx context.Context, now time.Time) {
 		}
 		if job != nil {
 			e.tickerWG.Add(1)
-			go e.runBreakerProbe(ctx, job.probe, job.request, job.id, job.round, job.timeout)
+			go e.runBreakerProbe(ctx, job)
 		}
 	}
 }
 
-func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req BreakerProbeRequest, id string, round int, timeout time.Duration) {
+func (e *Engine) runBreakerProbe(ctx context.Context, job *breakerProbeJob) {
 	defer e.tickerWG.Done()
-	probeCtx, cancel := context.WithTimeout(e.RuntimeContext(ctx, req.Site), timeout)
+	req := job.request
+	probeCtx, cancel := context.WithTimeout(e.RuntimeContext(ctx, req.Site), job.timeout)
 	defer cancel()
 	type outcome struct {
 		result BreakerProbeResult
@@ -269,7 +292,7 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 	e.tickerWG.Add(1)
 	go func() {
 		defer e.tickerWG.Done()
-		defer e.breakers.probeExited(req.Site)
+		defer e.breakers.probeExited(job)
 
 		var o outcome
 		defer func() {
@@ -278,7 +301,7 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 			}
 			ch <- o
 		}()
-		o.result, o.err = probe(probeCtx, req)
+		o.result, o.err = job.probe(probeCtx, req)
 	}()
 	var o outcome
 	select {
@@ -288,7 +311,7 @@ func (e *Engine) runBreakerProbe(ctx context.Context, probe BreakerProbe, req Br
 	}
 	o.result.Detail = incident.Clean(incident.Sample{Error: o.result.Detail}).Error
 	e.breakers.breakerMu.Lock()
-	token, reason := e.breakers.settleStageProbeLocked(req, id, round, o.result, o.err, probeCtx)
+	token, reason := e.breakers.settleStageProbeLocked(job, o.result, o.err, probeCtx)
 	if token != nil {
 		defer e.breakers.abandonStageProbeSettlement(token)
 	}

@@ -318,6 +318,16 @@ func (b *breakerCoordinator) admitBreakerTask(task *Task) (func(), bool) {
 }
 
 func (b *breakerCoordinator) flushBreakerReports(ctx context.Context) error {
+	return b.flushBreakerReportsForSite(ctx, "")
+}
+
+// An empty site flushes every dirty checkpoint for startup/shutdown. Runtime
+// settlement uses one site, sharing the same serialization and acknowledgement
+// protocol without depending on another site's persistence result.
+func (b *breakerCoordinator) flushBreakerReportsForSite(ctx context.Context, site string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	b.breakerMu.Lock()
 	if b.breakerStoreGate == nil {
 		b.breakerStoreGate = make(chan struct{}, 1)
@@ -333,8 +343,8 @@ func (b *breakerCoordinator) flushBreakerReports(ctx context.Context) error {
 	b.breakerMu.Lock()
 	store := b.breakerStore
 	var pending []breakerstore.Snapshot
-	for _, s := range b.smartBreakers {
-		if s.dirty && s.event != nil {
+	for key, s := range b.smartBreakers {
+		if (site == "" || site == key) && s.dirty && s.event != nil {
 			// Window expiry can change the checkpoint without a terminal outcome.
 			// A retry after a lost commit acknowledgement needs a fresh revision.
 			s.event.Revision++
@@ -560,5 +570,5 @@ func (b *breakerCoordinator) retainFailure(ctx context.Context, task *Task, vers
 	}
 	unresolved.Remember(task.ID, stageKeyOf(task))
 	b.unlockAndEmit()
-	return b.flushBreakerReports(ctx)
+	return b.flushBreakerReportsForSite(ctx, task.Site)
 }

@@ -80,8 +80,11 @@ func (e *Engine) stageHandler(info *stageInfo) workerpool.TaskHandler[*Task] {
 	return func(ctx context.Context, task *Task) error {
 		e.residents.move(task, "running")
 		defer func() {
-			e.deliveryState().Release(task.ID)
+			// Keep delivery ownership until the resident is gone. Release may
+			// wake a newer pending round; that scan must not skip the old
+			// resident and exhaust its cursor before cleanup finishes.
 			e.residents.release(task, "running")
+			e.deliveryState().Release(task.ID)
 			for _, key := range e.stageKeys() {
 				e.deliveryState().Continue(key)
 			}

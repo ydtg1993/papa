@@ -199,6 +199,10 @@ engine/
 
 Task 的私有 deliveryVersion 用于将持久补充出的轮次带到认领条件，不作为公开任务字段。运行中调度上限不热变更；有界工作集不能以丢任务换内存，持久 pending 必须由连续补充发现。停止结果描述在途资源安全，不能把内存 resident 下降解释为数据库 backlog 清空。设置和默认值见 [资源预算手册](../configuration/RESOURCE_BUDGETS.md)。
 
+stageHandler 收尾先移除 resident，再释放 delivery owner；后者发布的新轮次重扫通知不能早于 resident 清理。后台重投或自动 repeat 可以在旧任务终态已保存、worker 尚在间隔等待时创建新 pending 轮次，回归由 `stage_release_test.go` 覆盖。
+
+breakerCoordinator 的单站/全站快照写入共用可取消的串行门和 revision/history 确认协议。运行期 writer 按站分配预算，失败意图及结算只保存本站日志；结算预留产生的新控制版本也须确认后才能做任务终态 CAS。探针的 `breakerProbeJob` 身份拥有 controller 与用户回调两种运行占用，incident 变更不转移该所有权。相关回归见 `breaker_site_isolation_test.go`、`breaker_probe_ownership_test.go`。
+
 暂停下已排队的普通持久任务可交还数据库以让出预算：worker 取出引用后，stageHandler 在 breaker/业务准入前拦截；未来普通任务保留为数据库 pending，不占队列容量。flow 前置等待同样释放持久引用，不占住解除等待所需的最后一个槽。Stop 的持久计数也覆盖 ApplyRegisterStage 前已接受的远期任务。
 
 下载预算装配通过 SetDownloadResources 交给 fetchruntime.Downloads 的 ConfigureResources/Resources：首次构造基座时冻结限额，两种下载基座及 With 派生实例共享同一 DownloadBudget。Engine 不实现磁盘清点、输入解码或检查点算法。

@@ -14,7 +14,9 @@ import (
 
 // breakerProbeJob transfers invocation to the Engine lifecycle with copied
 // request evidence and a bounded deadline; it carries no live event pointer.
+// Its identity owns both controller and extension-goroutine bookkeeping.
 type breakerProbeJob struct {
+	state   *smartBreaker
 	probe   BreakerProbe
 	request BreakerProbeRequest
 	id      string
@@ -62,7 +64,6 @@ func (b *breakerCoordinator) selectStageProbeLocked(s *smartBreaker, now, retryA
 			b.transitionBreakerLocked(s, "manual", "存在未验证阶段；保持整站暂停，等待人工处理", now)
 			return nil
 		}
-		s.probeRunning, s.probeExecuting = true, true
 		l := s.event
 		req := BreakerProbeRequest{Site: site, Stage: check.Stage, Category: l.report.Category, Evidence: l.probeEvidence(), Pass: check.ProbeSuccesses + 1}
 		if len(check.Samples) > 0 {
@@ -73,7 +74,10 @@ func (b *breakerCoordinator) selectStageProbeLocked(s *smartBreaker, now, retryA
 		if check.Verification == "readonly" {
 			req.Coverage = check.Coverage
 		}
-		return &breakerProbeJob{probe: probe, request: req, id: l.ID, round: l.ProbeAttempts, timeout: min(s.policy.ProbeTimeout, l.Deadline.Sub(now), check.StartedAt.Add(breakerSampleTimeout).Sub(now))}
+		job := &breakerProbeJob{state: s, probe: probe, request: req, id: l.ID, round: l.ProbeAttempts, timeout: min(s.policy.ProbeTimeout, l.Deadline.Sub(now), check.StartedAt.Add(breakerSampleTimeout).Sub(now))}
+		s.probeJob = job
+		s.probeRunning, s.probeExecuting = true, true
+		return job
 	}
 	return nil
 }
@@ -94,13 +98,19 @@ type breakerProbeSettlement struct {
 
 // settleStageProbeLocked records the result milestone, without making the final
 // recovery transition. The caller publishes its events before finishing below.
-func (b *breakerCoordinator) settleStageProbeLocked(req BreakerProbeRequest, id string, round int, result BreakerProbeResult, resultErr error, probeCtx context.Context) (*breakerProbeSettlement, string) {
+func (b *breakerCoordinator) settleStageProbeLocked(job *breakerProbeJob, result BreakerProbeResult, resultErr error, probeCtx context.Context) (*breakerProbeSettlement, string) {
+	req, id, round := job.request, job.id, job.round
 	s := b.smartBreakers[req.Site]
-	if s == nil || s.event == nil || s.event.ID != id || s.event.ProbeAttempts != round {
+	if s == nil || s != job.state || s.probeJob != job {
 		return nil, ""
 	}
+	// The job owns process-local cleanup even after force resume replaces its
+	// incident. Keep the reservation while an uncooperative probe still runs.
 	s.probeRunning = false
-	if s.event.State != "probing" {
+	if !s.probeExecuting {
+		s.probeJob = nil
+	}
+	if s.event == nil || s.event.ID != id || s.event.ProbeAttempts != round || s.event.State != "probing" {
 		return nil, ""
 	}
 	now := time.Now()
@@ -190,11 +200,14 @@ func (b *breakerCoordinator) finishStageProbeLocked(token *breakerProbeSettlemen
 	return ""
 }
 
-func (b *breakerCoordinator) probeExited(site string) {
+func (b *breakerCoordinator) probeExited(job *breakerProbeJob) {
 	b.breakerMu.Lock()
 	defer b.unlockAndEmit()
-	if s := b.smartBreakers[site]; s != nil {
+	if s := b.smartBreakers[job.request.Site]; s != nil && s == job.state && s.probeJob == job {
 		s.probeExecuting = false
+		if !s.probeRunning {
+			s.probeJob = nil
+		}
 	}
 }
 

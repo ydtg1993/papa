@@ -84,7 +84,6 @@ func TestBreakerProbeObserverRetryCannotBeOverwrittenByOldResult(t *testing.T) {
 	e, _ := newSmartBreakerFixture(t, 3)
 	s := e.breakers.smartBreakers["synthetic"]
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
-	s.probeRunning, s.probeExecuting = true, true
 	retried := false
 	retryDone := make(chan struct{})
 	probeFinished := make(chan struct{})
@@ -115,9 +114,9 @@ func TestBreakerProbeObserverRetryCannotBeOverwrittenByOldResult(t *testing.T) {
 		retried = true
 	}))
 	e.tickerWG.Add(1)
-	e.runBreakerProbe(context.Background(), func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
+	e.runBreakerProbe(context.Background(), fixtureBreakerProbeJob(s, func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
 		return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
-	}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
+	}))
 	e.tickerWG.Wait()
 	priorTrial := s.trial
 	close(probeFinished)
@@ -222,7 +221,6 @@ func TestBreakerProbeObserverStopDoesNotJoinObservation(t *testing.T) {
 	e.pools = newPoolRegistry()
 	s := e.breakers.smartBreakers["synthetic"]
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
-	s.probeRunning, s.probeExecuting = true, true
 	stopped := false
 	stopDone := make(chan struct{})
 	probeFinished := make(chan struct{})
@@ -237,9 +235,9 @@ func TestBreakerProbeObserverStopDoesNotJoinObservation(t *testing.T) {
 		}
 	}))
 	e.tickerWG.Add(1)
-	e.runBreakerProbe(e.ctx, func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
+	e.runBreakerProbe(e.ctx, fixtureBreakerProbeJob(s, func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
 		return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
-	}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
+	}))
 	e.tickerWG.Wait()
 	close(probeFinished)
 	awaitBreakerObservation(t, stopDone)
@@ -326,7 +324,7 @@ func TestBreakerProbeLocalCancellationAfterMilestonePreservesOriginalDecision(t 
 	probeCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	b.breakerMu.Lock()
-	token, reason := b.settleStageProbeLocked(BreakerProbeRequest{Site: "fixture", Stage: "detail"}, "incident", 1, BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil, probeCtx)
+	token, reason := b.settleStageProbeLocked(fixtureBreakerProbeJob(s, nil), BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil, probeCtx)
 	b.unlockAndEmit()
 	cancel()
 	if token == nil || reason != "" || probeCtx.Err() == nil {
@@ -347,7 +345,6 @@ func TestBreakerProbeObserverPanicDoesNotStrandSettlementToken(t *testing.T) {
 	e, _ := newSmartBreakerFixture(t, 3)
 	s := e.breakers.smartBreakers["synthetic"]
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}, {Stage: "catalog", State: "pending", RequiredProbes: 1}}}}
-	s.probeRunning, s.probeExecuting = true, true
 	panicObserved := make(chan struct{})
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
 		if ev.Attrs["action"] == "stage_probe_passed" {
@@ -359,9 +356,9 @@ func TestBreakerProbeObserverPanicDoesNotStrandSettlementToken(t *testing.T) {
 	func() {
 		defer func() { recovered = recover() }()
 		e.tickerWG.Add(1)
-		e.runBreakerProbe(context.Background(), func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
+		e.runBreakerProbe(context.Background(), fixtureBreakerProbeJob(s, func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
 			return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
-		}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
+		}))
 	}()
 	e.tickerWG.Wait()
 	awaitBreakerObservation(t, panicObserved)
@@ -389,7 +386,6 @@ func TestBreakerBlockedObserverDoesNotGateProbeDecision(t *testing.T) {
 	e, _ := newSmartBreakerFixture(t, 3)
 	s := e.breakers.smartBreakers["synthetic"]
 	s.event = &breakerEvent{Recovery: breaker.Recovery{ID: "incident", Site: "synthetic", State: "probing", Deadline: time.Now().Add(time.Minute), ProbeAttempts: 1, Checks: []breaker.StageCheck{{Stage: "detail", State: "probing", RequiredProbes: 1}}}}
-	s.probeRunning, s.probeExecuting = true, true
 	entered, release := make(chan struct{}), make(chan struct{})
 	defer close(release)
 	e.SetEventsEmitter(stagePoolEventFunc(func(ev events.Event) {
@@ -401,9 +397,9 @@ func TestBreakerBlockedObserverDoesNotGateProbeDecision(t *testing.T) {
 	finished := make(chan struct{})
 	e.tickerWG.Add(1)
 	go func() {
-		e.runBreakerProbe(context.Background(), func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
+		e.runBreakerProbe(context.Background(), fixtureBreakerProbeJob(s, func(context.Context, BreakerProbeRequest) (BreakerProbeResult, error) {
 			return BreakerProbeResult{Healthy: true, Semantic: true, Detail: "healthy"}, nil
-		}, BreakerProbeRequest{Site: "synthetic", Stage: "detail"}, "incident", 1, time.Minute)
+		}))
 		e.tickerWG.Wait()
 		close(finished)
 	}()
